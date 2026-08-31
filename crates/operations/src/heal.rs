@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use remus_math::tolerance::Tolerance;
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
-use remus_topology::edge::{Edge, EdgeId};
+use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
 use remus_topology::face::{Face, FaceId, FaceSurface};
 use remus_topology::shell::Shell;
 use remus_topology::solid::SolidId;
@@ -241,7 +241,12 @@ pub fn merge_coincident_vertices(
 
     for (eid, new_start, new_end) in updates {
         let edge = topo.edge_mut(eid)?;
-        *edge = remus_topology::edge::Edge::new(new_start, new_end, edge.curve().clone());
+        // `set_start`/`set_end`, never a whole-`Edge` rebuild: an explicit
+        // trim (RFC 0002, Stage 3) and an edge-specific tolerance are not
+        // recoverable from the endpoints, and a vertex merge changes neither
+        // the curve nor the parameter interval on it.
+        edge.set_start(new_start);
+        edge.set_end(new_end);
     }
 
     Ok(merged_count)
@@ -649,16 +654,18 @@ pub fn close_wire_gaps(
                             cur_end
                         };
                         if new_start != cur_start || new_end != cur_end {
-                            let curve = edge.curve().clone();
-                            updates.push((oe.edge(), new_start, new_end, curve));
+                            updates.push((oe.edge(), new_start, new_end));
                         }
                     }
                 }
 
                 // Allocate: apply the updates.
-                for (eid, new_start, new_end, curve) in updates {
+                for (eid, new_start, new_end) in updates {
                     let em = topo.edge_mut(eid)?;
-                    *em = remus_topology::edge::Edge::new(new_start, new_end, curve);
+                    // See `merge_coincident_vertices`: preserve trim and
+                    // edge tolerance across a pure endpoint change.
+                    em.set_start(new_start);
+                    em.set_end(new_end);
                 }
                 gaps_closed += 1;
             }
@@ -1121,6 +1128,16 @@ pub(crate) fn unify_faces_with_history(
     topo: &mut Topology,
     solid: SolidId,
 ) -> Result<FaceUnifyHistory, crate::OperationsError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        unify_faces_with_history_impl(topo, solid)
+    })
+}
+
+#[allow(clippy::too_many_lines)]
+fn unify_faces_with_history_impl(
+    topo: &mut Topology,
+    solid: SolidId,
+) -> Result<FaceUnifyHistory, crate::OperationsError> {
     /// Maximum boundary edges for a merged face. Groups whose boundary
     /// exceeds this are skipped to prevent O(N²) slowdowns in subsequent
     /// boolean intersection computations. 200 edges is generous for any
@@ -1490,6 +1507,7 @@ pub(crate) fn unify_faces_with_history(
 
     // Build edge replacement map: old EdgeId → new EdgeId with canonical vertices.
     let mut edge_replace: HashMap<usize, EdgeId> = HashMap::new();
+    let mut replacement_plans = Vec::new();
     for gd in &group_data {
         for oe in &gd.boundary_edges {
             let eid = oe.edge();
@@ -1512,11 +1530,98 @@ pub(crate) fn unify_faces_with_history(
                     reason: "canonical vertex not found for edge end".to_string(),
                 })?;
             if canon_start != edge.start() || canon_end != edge.end() {
-                let new_edge = Edge::new(canon_start, canon_end, edge.curve().clone());
-                let new_eid = topo.add_edge(new_edge);
-                edge_replace.insert(eid.index(), new_eid);
+                let source_start_tolerance = topo.vertex(edge.start())?.tolerance();
+                let source_end_tolerance = topo.vertex(edge.end())?.tolerance();
+                let canonical_start_tolerance = topo.vertex(canon_start)?.tolerance();
+                let canonical_end_tolerance = topo.vertex(canon_end)?.tolerance();
+                let edge_tolerance = edge.tolerance();
+                if [
+                    source_start_tolerance,
+                    source_end_tolerance,
+                    canonical_start_tolerance,
+                    canonical_end_tolerance,
+                ]
+                .into_iter()
+                .any(|value| !value.is_finite() || value < 0.0)
+                    || edge_tolerance.is_some_and(|value| !value.is_finite() || value < 0.0)
+                {
+                    return Err(crate::OperationsError::InvalidInput {
+                        reason: format!(
+                            "unify_faces edge has invalid tolerance authority (source \
+                             {source_start_tolerance}/{source_end_tolerance}, canonical \
+                             {canonical_start_tolerance}/{canonical_end_tolerance}, edge \
+                             {edge_tolerance:?})"
+                        ),
+                    });
+                }
+                let source_range =
+                    edge.strict_domain()
+                        .map_err(|error| crate::OperationsError::InvalidInput {
+                            reason: format!(
+                                "unify_faces cannot canonicalize an edge without parameter \
+                             authority: {error}"
+                            ),
+                        })?;
+                let trim = (!matches!(edge.curve(), EdgeCurve::Line)).then_some(source_range);
+                let curve = edge.curve().clone();
+                if let Some(range) = trim {
+                    let tolerance = edge_tolerance
+                        .unwrap_or_else(|| canonical_start_tolerance.max(canonical_end_tolerance));
+                    let source_start = topo.vertex(edge.start())?.point();
+                    let source_end = topo.vertex(edge.end())?.point();
+                    let expected_points = [
+                        topo.vertex(canon_start)?.point(),
+                        curve.evaluate_with_endpoints(
+                            f64::midpoint(range.0, range.1),
+                            source_start,
+                            source_end,
+                        ),
+                        topo.vertex(canon_end)?.point(),
+                    ];
+                    for (label, parameter, expected) in [
+                        ("start", range.0, expected_points[0]),
+                        (
+                            "midpoint",
+                            f64::midpoint(range.0, range.1),
+                            expected_points[1],
+                        ),
+                        ("end", range.1, expected_points[2]),
+                    ] {
+                        let actual = curve.evaluate_with_endpoints(
+                            parameter,
+                            expected_points[0],
+                            expected_points[2],
+                        );
+                        let residual = (actual - expected).length();
+                        if !residual.is_finite() || residual > tolerance {
+                            return Err(crate::OperationsError::InvalidInput {
+                                reason: format!(
+                                    "unify_faces canonical edge {label} changes its certified \
+                                     curve by {residual} (tolerance {tolerance})"
+                                ),
+                            });
+                        }
+                    }
+                }
+                let mut probe =
+                    Edge::with_tolerance(canon_start, canon_end, curve.clone(), edge_tolerance);
+                probe.set_trim(trim);
+                probe
+                    .strict_domain()
+                    .map_err(|error| crate::OperationsError::InvalidInput {
+                        reason: format!(
+                            "unify_faces canonical edge has invalid parameter authority: {error}"
+                        ),
+                    })?;
+                replacement_plans.push((eid, canon_start, canon_end, curve, edge_tolerance, trim));
             }
         }
+    }
+    for (eid, canon_start, canon_end, curve, tolerance, trim) in replacement_plans {
+        let mut new_edge = Edge::with_tolerance(canon_start, canon_end, curve, tolerance);
+        new_edge.set_trim(trim);
+        let new_eid = topo.add_edge(new_edge);
+        edge_replace.insert(eid.index(), new_eid);
     }
 
     // Step 5: For each merge group, form loops and build merged faces.
@@ -1559,14 +1664,16 @@ pub(crate) fn unify_faces_with_history(
         // Edge count is unreliable — a hole tessellated into many short edges
         // would be misclassified as the outer boundary.
         let outer_idx = if loops.len() > 1 {
-            loops
+            let loop_areas = loops
+                .iter()
+                .map(|edges| loop_area_3d(topo, edges))
+                .collect::<Result<Vec<_>, _>>()?;
+            loop_areas
                 .iter()
                 .enumerate()
-                .max_by(|(_, a), (_, b)| {
-                    let area_a = loop_area_3d(topo, a);
-                    let area_b = loop_area_3d(topo, b);
+                .max_by(|(_, area_a), (_, area_b)| {
                     area_a
-                        .partial_cmp(&area_b)
+                        .partial_cmp(area_b)
                         .unwrap_or(std::cmp::Ordering::Equal)
                 })
                 .map_or(0, |(i, _)| i)
@@ -1638,20 +1745,20 @@ pub(crate) fn unify_faces_with_history(
 /// degenerates (< 3 distinct points) and reads as area 0, which breaks
 /// outer-loop selection for merged faces bounded by whole circles.
 ///
-/// Returns 0.0 if any topology lookup fails (defensive fallback).
-fn loop_area_3d(topo: &Topology, loop_edges: &[OrientedEdge]) -> f64 {
+fn loop_area_3d(
+    topo: &Topology,
+    loop_edges: &[OrientedEdge],
+) -> Result<f64, crate::OperationsError> {
     const SAMPLES_PER_EDGE: usize = 8;
     let mut positions: Vec<Point3> = Vec::with_capacity(loop_edges.len() * SAMPLES_PER_EDGE);
     for oe in loop_edges {
-        let edge = match topo.edge(oe.edge()) {
-            Ok(e) => e,
-            Err(_) => return 0.0,
-        };
-        let (sp, ep) = match (topo.vertex(edge.start()), topo.vertex(edge.end())) {
-            (Ok(s), Ok(e)) => (s.point(), e.point()),
-            _ => return 0.0,
-        };
-        let (t_min, t_max) = edge.domain_with_endpoints(sp, ep);
+        let edge = topo.edge(oe.edge())?;
+        let (sp, ep) = (
+            topo.vertex(edge.start())?.point(),
+            topo.vertex(edge.end())?.point(),
+        );
+        let (t_min, t_max) =
+            crate::authoritative_edge_domain(edge, "face-unification loop-area sampling")?;
         // Sample the edge from its oriented start, excluding the final
         // endpoint (the next edge in the loop supplies it).
         for i in 0..SAMPLES_PER_EDGE {
@@ -1662,10 +1769,10 @@ fn loop_area_3d(topo: &Topology, loop_edges: &[OrientedEdge]) -> f64 {
         }
     }
     if positions.len() < 3 {
-        return 0.0;
+        return Ok(0.0);
     }
     // Newell normal magnitude = 2× enclosed area.
-    crate::winding::newell_normal(&positions).length() * 0.5
+    Ok(crate::winding::newell_normal(&positions).length() * 0.5)
 }
 
 /// Quantized 3D position key for vertex matching in edge chaining.

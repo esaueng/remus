@@ -8,14 +8,20 @@
 mod analytic;
 mod ray_cast;
 
-pub use analytic::{AnalyticClassifier, classify_analytic, try_build_analytic_classifier};
+pub use analytic::{
+    AnalyticClassifier, classify_analytic, classify_analytic_with_tolerance,
+    try_build_analytic_classifier, try_build_analytic_classifier_with_tolerance,
+};
 pub use ray_cast::{
-    RayCastGeoms, classify_ray_cast, classify_ray_cast_cached, compute_solid_bbox,
+    RayCastGeoms, classify_ray_cast, classify_ray_cast_cached,
+    classify_ray_cast_cached_with_tolerance, classify_ray_cast_with_tolerance, compute_solid_bbox,
     planar_face_polygons, point_in_face_3d, point_in_planar_region, ray_cast_inside_votes,
-    ray_cast_inside_votes_cached,
+    ray_cast_inside_votes_cached, ray_cast_inside_votes_cached_with_tolerance,
+    ray_cast_inside_votes_with_tolerance,
 };
 pub(crate) use ray_cast::{largest_u_gap, u_in_gap};
 
+use remus_math::tolerance::Tolerance;
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
 use remus_topology::face::FaceSurface;
@@ -39,11 +45,25 @@ pub fn classify_point(
     solid: SolidId,
     point: Point3,
 ) -> Result<FaceClass, AlgoError> {
-    if let Some(class) = classify_analytic(topo, solid, point) {
+    classify_point_with_tolerance(topo, solid, point, Tolerance::default())
+}
+
+/// Classify a point relative to a solid using the caller's tolerance.
+///
+/// # Errors
+///
+/// Returns [`AlgoError::ClassificationFailed`] if classification is indeterminate.
+pub fn classify_point_with_tolerance(
+    topo: &Topology,
+    solid: SolidId,
+    point: Point3,
+    tolerance: Tolerance,
+) -> Result<FaceClass, AlgoError> {
+    if let Some(class) = classify_analytic_with_tolerance(topo, solid, point, tolerance) {
         return Ok(class);
     }
 
-    classify_ray_cast(topo, solid, point)
+    classify_ray_cast_with_tolerance(topo, solid, point, tolerance)
 }
 
 /// Like [`classify_point`], but reuses pre-collected ray-cast geometry for the
@@ -64,13 +84,28 @@ pub fn classify_point_cached(
     geoms: Option<&ray_cast::RayCastGeoms>,
     point: Point3,
 ) -> Result<FaceClass, AlgoError> {
-    if let Some(class) = classify_analytic(topo, solid, point) {
+    classify_point_cached_with_tolerance(topo, solid, geoms, point, Tolerance::default())
+}
+
+/// Cached point classification using the caller's tolerance.
+///
+/// # Errors
+///
+/// Returns [`AlgoError::ClassificationFailed`] if classification is indeterminate.
+pub fn classify_point_cached_with_tolerance(
+    topo: &Topology,
+    solid: SolidId,
+    geoms: Option<&ray_cast::RayCastGeoms>,
+    point: Point3,
+    tolerance: Tolerance,
+) -> Result<FaceClass, AlgoError> {
+    if let Some(class) = classify_analytic_with_tolerance(topo, solid, point, tolerance) {
         return Ok(class);
     }
 
     match geoms {
-        Some(g) => ray_cast::classify_ray_cast_cached(g, point),
-        None => classify_ray_cast(topo, solid, point),
+        Some(g) => ray_cast::classify_ray_cast_cached_with_tolerance(g, point, tolerance),
+        None => classify_ray_cast_with_tolerance(topo, solid, point, tolerance),
     }
 }
 
@@ -383,7 +418,12 @@ fn sub_face_outer_vertices(
         if !matches!(e.curve(), remus_topology::edge::EdgeCurve::Line) {
             let sp = topo.vertex(e.start())?.point();
             let ep = topo.vertex(e.end())?.point();
-            let (t0, t1) = e.curve().domain_with_endpoints(sp, ep);
+            let (t0, t1) = e.strict_domain().map_err(|error| {
+                AlgoError::ClassificationFailed(format!(
+                    "sub-face {face_id:?} edge {:?} lacks authoritative parameter range: {error}",
+                    oe.edge()
+                ))
+            })?;
             for k in 1..CURVE_SAMPLES {
                 let t = f64::from(k).mul_add((t1 - t0) / f64::from(CURVE_SAMPLES), t0);
                 verts.push(e.curve().evaluate_with_endpoints(t, sp, ep));

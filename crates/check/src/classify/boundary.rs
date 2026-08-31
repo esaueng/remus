@@ -5,8 +5,6 @@
 //! for analytic surfaces and 3D polygon containment for surfaces with
 //! pole singularities (spheres).
 
-use std::f64::consts::PI;
-
 use smallvec::SmallVec;
 
 use remus_math::predicates::point_in_polygon;
@@ -28,40 +26,94 @@ const HALF_SPACE_EPS: f64 = 1e-10;
 /// Threshold for coincident vertex detection (squared distance).
 const COINCIDENT_SQ: f64 = 1e-12;
 
-/// Unwrap a step in a periodic (angular) coordinate so the difference
-/// lies in `[-PI, PI)`.
+/// Unwrap a step in a periodic coordinate so the difference lies in
+/// `[-period/2, period/2)`.
 ///
 /// Given the previous unwrapped value `prev` and the next raw value `next`,
-/// returns the next value adjusted so the step is continuous.
+/// returns the next value adjusted so the step is continuous. `period` is the
+/// coordinate's actual period: `2*PI` for the analytic surfaces' angular `u`,
+/// the knot span for a NURBS direction that closes.
 #[inline]
-fn unwrap_angle(prev: f64, next: f64) -> f64 {
-    let tau = std::f64::consts::TAU;
+fn unwrap_periodic(prev: f64, next: f64, period: f64) -> f64 {
+    let half = period * 0.5;
     let diff = next - prev;
-    prev + diff - tau * ((diff + PI) / tau).floor()
+    prev + diff - period * ((diff + half) / period).floor()
 }
 
 /// Build a UV boundary polygon from 3D face boundary vertices,
 /// with proper unwrapping of periodic coordinates.
 ///
-/// `v_periodic`: whether the v-coordinate is periodic (e.g. torus). Cylinder
-/// and cone have linear v (height / distance), so only u is unwrapped for them.
-fn build_uv_boundary<F>(verts: &[Point3], project: &F, v_periodic: bool) -> Vec<(f64, f64)>
+/// `u_period` / `v_period`: that direction's period, or `None` when the
+/// direction does not close. The analytic surfaces are angular in u (`2*PI`)
+/// and, for the torus alone, in v. A NURBS parameter is a knot value with no
+/// inherent period: it gets `Some(knot span)` only when the control grid
+/// actually closes in that direction, and `None` otherwise.
+fn build_uv_boundary<F>(
+    verts: &[Point3],
+    project: &F,
+    u_period: Option<f64>,
+    v_period: Option<f64>,
+) -> Vec<(f64, f64)>
 where
     F: Fn(Point3) -> (f64, f64),
 {
     let mut uv: Vec<(f64, f64)> = verts.iter().map(|&p| project(p)).collect();
 
     for i in 1..uv.len() {
-        // u is always periodic (angular coordinate for all analytic surfaces).
-        uv[i].0 = unwrap_angle(uv[i - 1].0, uv[i].0);
-
-        // v is periodic only for doubly-periodic surfaces (torus).
-        if v_periodic {
-            uv[i].1 = unwrap_angle(uv[i - 1].1, uv[i].1);
+        if let Some(period) = u_period {
+            uv[i].0 = unwrap_periodic(uv[i - 1].0, uv[i].0, period);
+        }
+        if let Some(period) = v_period {
+            uv[i].1 = unwrap_periodic(uv[i - 1].1, uv[i].1, period);
         }
     }
 
     uv
+}
+
+/// Twice the signed area of a UV polygon (the shoelace sum).
+fn uv_polygon_double_area(poly: &[(f64, f64)]) -> f64 {
+    let n = poly.len();
+    if n < 3 {
+        return 0.0;
+    }
+    let mut acc = 0.0;
+    let mut j = n - 1;
+    for i in 0..n {
+        acc += (poly[j].0 - poly[i].0) * (poly[j].1 + poly[i].1);
+        j = i;
+    }
+    acc
+}
+
+/// True when a UV boundary encloses no region, so no containment test can use
+/// it.
+///
+/// A face's boundary usually bounds a patch of its surface. Sometimes it merely
+/// SPLITS it: a sphere hemisphere's entire boundary is the equator, which maps
+/// to one constant `v` sweeping the whole `u` period. Measured on a converted
+/// sphere, the trim polygon's v span is `0.000000` and its area is zero, so
+/// every point-in-polygon test answers "outside" and the face contributes no
+/// crossing for any ray.
+///
+/// Judged against the polygon's own extent so it holds at any parameter scale.
+fn uv_boundary_is_degenerate(poly: &[(f64, f64)]) -> bool {
+    if poly.len() < 3 {
+        return true;
+    }
+    let (mut u_lo, mut u_hi) = (f64::INFINITY, f64::NEG_INFINITY);
+    let (mut v_lo, mut v_hi) = (f64::INFINITY, f64::NEG_INFINITY);
+    for (u, v) in poly {
+        u_lo = u_lo.min(*u);
+        u_hi = u_hi.max(*u);
+        v_lo = v_lo.min(*v);
+        v_hi = v_hi.max(*v);
+    }
+    let scale = (u_hi - u_lo).max(v_hi - v_lo);
+    if scale <= 0.0 {
+        return true;
+    }
+    uv_polygon_double_area(poly).abs() <= 1e-9 * scale * scale
 }
 
 /// Test if a (u,v) point is inside the UV boundary polygon.
@@ -72,7 +124,8 @@ fn point_in_uv_boundary(
     hit_u: f64,
     hit_v: f64,
     uv_boundary: &[(f64, f64)],
-    v_periodic: bool,
+    u_period: Option<f64>,
+    v_period: Option<f64>,
 ) -> bool {
     let u_min = uv_boundary
         .iter()
@@ -85,10 +138,10 @@ fn point_in_uv_boundary(
     let u_center = (u_min + u_max) * 0.5;
 
     // Shift hit_u to be closest to the polygon's u center.
-    let hu = unwrap_angle(u_center, hit_u);
+    let hu = u_period.map_or(hit_u, |p| unwrap_periodic(u_center, hit_u, p));
 
-    // For doubly-periodic surfaces (torus), also shift hit_v.
-    let hv = if v_periodic {
+    // For surfaces that also close in v (torus), shift hit_v the same way.
+    let hv = v_period.map_or(hit_v, |period| {
         let v_min = uv_boundary
             .iter()
             .map(|(_, v)| *v)
@@ -98,10 +151,8 @@ fn point_in_uv_boundary(
             .map(|(_, v)| *v)
             .fold(f64::NEG_INFINITY, f64::max);
         let v_center = (v_min + v_max) * 0.5;
-        unwrap_angle(v_center, hit_v)
-    } else {
-        hit_v
-    };
+        unwrap_periodic(v_center, hit_v, period)
+    });
 
     let poly: Vec<Point2> = uv_boundary
         .iter()
@@ -123,23 +174,30 @@ fn hole_uv_boundaries<F>(
     topo: &Topology,
     face_id: FaceId,
     project: &F,
-    v_periodic: bool,
+    u_period: Option<f64>,
+    v_period: Option<f64>,
 ) -> Result<Vec<Vec<(f64, f64)>>, CheckError>
 where
     F: Fn(Point3) -> (f64, f64),
 {
     Ok(face_hole_polygons(topo, face_id)?
         .iter()
-        .map(|poly| build_uv_boundary(poly, project, v_periodic))
+        .map(|poly| build_uv_boundary(poly, project, u_period, v_period))
         .collect())
 }
 
 /// True when a hit lands in one of the face's holes, where the trimmed face
 /// has no material and therefore no crossing.
-fn hit_in_hole_uv(holes: &[Vec<(f64, f64)>], hit_u: f64, hit_v: f64, v_periodic: bool) -> bool {
+fn hit_in_hole_uv(
+    holes: &[Vec<(f64, f64)>],
+    hit_u: f64,
+    hit_v: f64,
+    u_period: Option<f64>,
+    v_period: Option<f64>,
+) -> bool {
     holes
         .iter()
-        .any(|hole| point_in_uv_boundary(hit_u, hit_v, hole, v_periodic))
+        .any(|hole| point_in_uv_boundary(hit_u, hit_v, hole, u_period, v_period))
 }
 
 /// True when a hit lands in one of the face's holes (3D polygon variant).
@@ -187,8 +245,13 @@ where
             .iter()
             .all(|v| (*v - ref_pt).length_squared() < COINCIDENT_SQ)
     };
-    let uv_boundary = (!is_full_surface).then(|| build_uv_boundary(&verts, &project, v_periodic));
-    let holes = hole_uv_boundaries(topo, face_id, &project, v_periodic)?;
+    // Every analytic surface here parameterizes u as an angle with period 2pi;
+    // v is angular only for the torus.
+    let u_period = Some(std::f64::consts::TAU);
+    let v_period = v_periodic.then_some(std::f64::consts::TAU);
+    let uv_boundary =
+        (!is_full_surface).then(|| build_uv_boundary(&verts, &project, u_period, v_period));
+    let holes = hole_uv_boundaries(topo, face_id, &project, u_period, v_period)?;
 
     let mut crossings = 0u32;
     for &t in roots {
@@ -199,18 +262,150 @@ where
         let (hit_u, hit_v) = project(hit);
 
         if let Some(boundary) = &uv_boundary
-            && !point_in_uv_boundary(hit_u, hit_v, boundary, v_periodic)
+            && !point_in_uv_boundary(hit_u, hit_v, boundary, u_period, v_period)
         {
             continue;
         }
         // The trimmed face carries no material inside its inner wires.
-        if hit_in_hole_uv(&holes, hit_u, hit_v, v_periodic) {
+        if hit_in_hole_uv(&holes, hit_u, hit_v, u_period, v_period) {
             continue;
         }
         crossings += 1;
     }
 
     Ok(crossings)
+}
+
+/// Count ray crossings of a spherical face whose outer boundary is planar,
+/// trimming against the boundary PLANE rather than a polygon inscribed in it.
+///
+/// Returns `None` when the boundary is not planar, so the caller keeps the
+/// polygon path for lunes and boolean-made spherical triangles.
+///
+/// # Why this exists
+///
+/// `face_polygon` samples a closed boundary edge at a fixed 32 points, so a
+/// hemisphere's equator becomes a 32-gon INSCRIBED in the true circle. A ray
+/// leaving the sphere within the scalloped band between chord and arc — angular
+/// half-width ~pi/n, so 0.098 r at n = 32 — is inside neither hemisphere's
+/// polygon: the north face rejects it on containment and the south face rejects
+/// it on the half-space test. The crossing is counted by NO face, parity flips,
+/// and an interior point is reported `Outside`. Measured on `make_sphere(1, s)`
+/// at 0.9 r: 32.4% wrong at s = 8, 3.3% at s = 32, still 0.25% at s = 128, every
+/// failure Inside -> Outside. The sphere CENTRE is always right, which is why
+/// the single-point tests never caught it.
+///
+/// This is the sagitta gap the `numerical-robustness` guidance names, and the
+/// same one `sphere_seam_plane_crossings` (`algo/src/pave_filler/phase_ff.rs`)
+/// already fixes for section circles — its doc describes this defect verbatim.
+///
+/// # Why the cap side comes from the surface, not the winding
+///
+/// The obvious form of this fix reuses the sign already computed here from the
+/// boundary polygon's Newell normal negated by `is_reversed`. That sign is
+/// wrong on boolean-produced spherical faces, where it survives today only
+/// because two complementary hemispheres tile the sphere and the errors cancel.
+/// Break the symmetry — `cut(box, sphere)` leaves an annular face whose
+/// complementary cap is not a face of the same solid — and a winding-derived
+/// half-space counts a phantom cap, which is an O(1) error rather than the
+/// bounded one it replaces.
+///
+/// So the side is taken from geometry the B-Rep states directly: the outward
+/// surface normal at a boundary point (analytic, `(p - centre)/r` flipped by
+/// `is_reversed`) crossed with the boundary's own traversal direction gives the
+/// inward tangent, and its component along the plane normal says which cap the
+/// face occupies.
+fn count_sphere_cap_crossings(
+    topo: &Topology,
+    face_id: FaceId,
+    origin: Point3,
+    direction: Vec3,
+    roots: &SmallVec<[f64; 4]>,
+    sph: &remus_math::surfaces::SphericalSurface,
+) -> Result<Option<u32>, CheckError> {
+    if roots.is_empty() {
+        return Ok(Some(0));
+    }
+
+    let verts = face_polygon(topo, face_id)?;
+    if verts.len() < 3 {
+        return Ok(None);
+    }
+
+    let plane_normal = polygon_normal(&verts);
+    let n_len = plane_normal.length();
+    if n_len < 1e-12 {
+        return Ok(None); // degenerate or self-intersecting boundary
+    }
+    let plane_normal = plane_normal * (1.0 / n_len);
+    let ref_pt = verts[0];
+
+    // Planar to tolerance? A cap boundary is; a lune's is not.
+    let radius = sph.radius();
+    let planarity_tol = 1e-9_f64.mul_add(radius, 1e-9);
+    if verts
+        .iter()
+        .any(|v| ((*v - ref_pt).dot(plane_normal)).abs() > planarity_tol)
+    {
+        return Ok(None);
+    }
+
+    // Which cap does the face occupy? Outward surface normal at a boundary
+    // vertex, crossed with the direction the boundary is walked, points into
+    // the face along the surface; its component along the plane normal is the
+    // cap side. `face_polygon` returns the loop in traversal order.
+    let mut inward_side = 0.0_f64;
+    for i in 0..verts.len() {
+        let v = verts[i];
+        let next = verts[(i + 1) % verts.len()];
+        let tangent = next - v;
+        if tangent.length() < 1e-12 {
+            continue;
+        }
+        let outward = v - sph.center();
+        let r = outward.length();
+        if r < 1e-12 {
+            continue;
+        }
+        let outward = outward * (1.0 / r);
+        // NOT negated by `is_reversed`. The traversal direction already carries
+        // the face's orientation — `face_polygon` walks the outer wire as the
+        // B-Rep stores it — so flipping the surface normal here as well applies
+        // the same reversal twice. Measured: with the extra flip, the annular
+        // face left by `cut(box, sphere)` where the sphere breaks the surface
+        // (so its complementary cap is NOT a face of the same solid) gets 34.3%
+        // of its carved region wrong; without it, 0.000%. The double flip is
+        // invisible on a whole `make_sphere`, where two complementary
+        // hemispheres tile the sphere and the errors cancel.
+        let candidate = outward.cross(tangent).dot(plane_normal);
+        if candidate.abs() > inward_side.abs() {
+            inward_side = candidate;
+        }
+    }
+    if inward_side.abs() < 1e-12 {
+        return Ok(None);
+    }
+    // +1 when the face lies on the +plane_normal side, -1 otherwise.
+    let cap_sign = if inward_side > 0.0 { 1.0 } else { -1.0 };
+
+    let holes = face_hole_polygons(topo, face_id)?;
+    let mut crossings = 0u32;
+    for &t in roots {
+        if t <= RAY_T_MIN {
+            continue;
+        }
+        let hit = origin + direction * t;
+        // Exact: the cap is every point of the sphere on this side of the plane.
+        if (hit - ref_pt).dot(plane_normal) * cap_sign < -HALF_SPACE_EPS {
+            continue;
+        }
+        if hit_in_hole_3d(&holes, hit, plane_normal) {
+            continue;
+        }
+        crossings += 1;
+    }
+
+    Ok(Some(crossings))
 }
 
 /// Count crossings using 3D polygon containment (for faces with planar
@@ -318,11 +513,20 @@ pub fn count_face_ray_crossings(
             )
         }
         FaceSurface::Sphere(sph) => {
-            // Sphere boundaries are planar (equator, small circles), so
-            // point_in_polygon_3d works. UV projection fails at poles.
+            // A spherical cap's boundary is planar, and the plane cuts the
+            // sphere in a circle — so the exact trim is a half-space test
+            // against that plane, with no polygon involved. Take it when the
+            // boundary really is planar; fall back to the chorded polygon for a
+            // lune or a boolean-made spherical triangle, whose boundary is not.
             let sph = sph.clone();
             let roots = ray_surface::ray_sphere(origin, direction, &sph);
-            count_3d_polygon_crossings(topo, face_id, origin, direction, &roots)
+            if let Some(count) =
+                count_sphere_cap_crossings(topo, face_id, origin, direction, &roots, &sph)?
+            {
+                Ok(count)
+            } else {
+                count_3d_polygon_crossings(topo, face_id, origin, direction, &roots)
+            }
         }
         FaceSurface::Torus(tor) => {
             let tor = tor.clone();
@@ -390,19 +594,64 @@ fn ray_crossings_nurbs(
 
     let verts = face_polygon(topo, face_id)?;
     let project = |p: Point3| -> (f64, f64) { surface.project_point(p) };
-    // A full-surface face (fewer than 3 boundary points) counts every forward
-    // hit that does not land in a hole.
-    let uv_boundary = (verts.len() >= 3).then(|| build_uv_boundary(&verts, &project, false));
-    let holes = hole_uv_boundaries(topo, face_id, &project, false)?;
+    // A full-surface face counts every forward hit that does not land in a
+    // hole. `count_analytic_crossings` tests this two ways -- too few boundary
+    // points, OR every boundary point coincident -- and only the first test was
+    // made here. A doubly-periodic face (a full torus) has a boundary of
+    // exactly its seam endpoints: four vertices, all at one place. That passes
+    // `len() >= 3`, so a degenerate polygon was built and every hit on the face
+    // was then trimmed away against it.
+    let is_full_surface = verts.len() < 3 || {
+        let ref_pt = verts[0];
+        verts
+            .iter()
+            .all(|v| (*v - ref_pt).length_squared() < COINCIDENT_SQ)
+    };
+    // A NURBS u/v are knot parameters, not angles. Unwrapping them by 2pi is
+    // meaningless -- and actively wrong, since a b-spline domain routinely
+    // spans more than pi (a converted box face spans 12.0), so consecutive
+    // boundary vertices get shifted by a spurious 2pi. When the surface really
+    // does close in a direction, the period is that direction's knot span:
+    // without it the seam projects onto the wrong branch and the trim polygon
+    // collapses, rejecting every hit on the face.
+    let u_period = surface
+        .is_periodic_u()
+        .then(|| surface.domain_u().1 - surface.domain_u().0);
+    let v_period = surface
+        .is_periodic_v()
+        .then(|| surface.domain_v().1 - surface.domain_v().0);
+    let uv_boundary =
+        (!is_full_surface).then(|| build_uv_boundary(&verts, &project, u_period, v_period));
+
+    // A boundary that encloses no UV area does not bound a patch -- it splits
+    // the surface, and which half this face takes is carried by the WINDING of
+    // its boundary, not by anything in UV. `count_3d_polygon_crossings` reads
+    // exactly that (the two hemispheres of a sphere traverse their shared
+    // equatorial wire in opposite senses), and it needs no surface type, so it
+    // serves any NURBS face of this shape.
+    //
+    // It tests a half-space, so it assumes the degenerate boundary is planar in
+    // 3D. That holds for the case this addresses -- an equator -- and matches
+    // what the analytic sphere path already assumes. A non-planar zero-area
+    // boundary would not be handled correctly here, though it is no worse off
+    // than under the UV test, which credits it with no crossings at all.
+    if let Some(boundary) = &uv_boundary
+        && uv_boundary_is_degenerate(boundary)
+    {
+        let roots: SmallVec<[f64; 4]> = hits.iter().map(|(t, _, _)| *t).collect();
+        return count_3d_polygon_crossings(topo, face_id, origin, direction, &roots);
+    }
+
+    let holes = hole_uv_boundaries(topo, face_id, &project, u_period, v_period)?;
 
     let mut crossings = 0u32;
     for (_, hit_u, hit_v) in &hits {
         if let Some(boundary) = &uv_boundary
-            && !point_in_uv_boundary(*hit_u, *hit_v, boundary, false)
+            && !point_in_uv_boundary(*hit_u, *hit_v, boundary, u_period, v_period)
         {
             continue;
         }
-        if hit_in_hole_uv(&holes, *hit_u, *hit_v, false) {
+        if hit_in_hole_uv(&holes, *hit_u, *hit_v, u_period, v_period) {
             continue;
         }
         crossings += 1;

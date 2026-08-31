@@ -1,13 +1,13 @@
 //! SSI marching: tracing intersection curves from seed points, including
 //! branch detection, RKF45 adaptive stepping, and singular tangent analysis.
 
+use crate::MathError;
+use crate::context::OperationContext;
 use crate::nurbs::surface::NurbsSurface;
 use crate::vec::{Point3, Vec3};
 
-use crate::context::WorkBudgets;
-
 use super::IntersectionPoint;
-use super::surface_seeding::refine_ssi_point;
+use super::surface_seeding::refine_ssi_point_with_context;
 
 /// March along an intersection curve, detecting branch points.
 ///
@@ -22,18 +22,19 @@ pub(super) fn march_with_branches(
     seed: &IntersectionPoint,
     step_size: f64,
     tolerance: f64,
-    budgets: &WorkBudgets,
-) -> (Vec<IntersectionPoint>, Vec<IntersectionPoint>) {
+    context: &OperationContext,
+) -> Result<(Vec<IntersectionPoint>, Vec<IntersectionPoint>), MathError> {
+    context.check_cancelled()?;
     let mut branch_seeds: Vec<IntersectionPoint> = Vec::new();
 
     // March forward, collecting branch points.
     let (forward, fwd_branches) =
-        march_direction_with_branches(s1, s2, seed, true, step_size, tolerance, budgets);
+        march_direction_with_branches(s1, s2, seed, true, step_size, tolerance, context)?;
     branch_seeds.extend(fwd_branches);
 
     // March backward, collecting branch points.
     let (backward, bwd_branches) =
-        march_direction_with_branches(s1, s2, seed, false, step_size, tolerance, budgets);
+        march_direction_with_branches(s1, s2, seed, false, step_size, tolerance, context)?;
     branch_seeds.extend(bwd_branches);
 
     // Combine: backward (reversed) + seed + forward.
@@ -41,7 +42,7 @@ pub(super) fn march_with_branches(
     result.push(*seed);
     result.extend(forward);
 
-    (result, branch_seeds)
+    Ok((result, branch_seeds))
 }
 
 /// Detect branch directions at a near-tangential point.
@@ -57,7 +58,8 @@ fn find_branch_directions(
     current_tangent: Vec3,
     step_size: f64,
     tolerance: f64,
-) -> Vec<IntersectionPoint> {
+    context: &OperationContext,
+) -> Result<Vec<IntersectionPoint>, MathError> {
     let eps = step_size * 0.1;
     let (u1, v1) = point.param1;
     let (u2, v2) = point.param2;
@@ -77,10 +79,13 @@ fn find_branch_directions(
     let mut branch_seeds = Vec::new();
 
     for &(du, dv) in &directions {
+        context.check_cancelled()?;
         let u1p = u1 + du;
         let v1p = v1 + dv;
 
-        if let Some(refined) = refine_ssi_point(s1, s2, u1p, v1p, u2, v2, tolerance) {
+        if let Some(refined) =
+            refine_ssi_point_with_context(s1, s2, u1p, v1p, u2, v2, tolerance, context)?
+        {
             let d = refined.point - point.point;
             let dist = d.length();
             if dist < tolerance {
@@ -98,7 +103,7 @@ fn find_branch_directions(
         }
     }
 
-    branch_seeds
+    Ok(branch_seeds)
 }
 
 /// March in one direction, detecting branch points where `|n1 x n2|`
@@ -111,8 +116,8 @@ fn march_direction_with_branches(
     forward: bool,
     step_size: f64,
     tolerance: f64,
-    budgets: &WorkBudgets,
-) -> (Vec<IntersectionPoint>, Vec<IntersectionPoint>) {
+    context: &OperationContext,
+) -> Result<(Vec<IntersectionPoint>, Vec<IntersectionPoint>), MathError> {
     let traced = march_direction(
         s1,
         s2,
@@ -120,15 +125,17 @@ fn march_direction_with_branches(
         forward,
         step_size,
         tolerance,
-        budgets.march_steps,
-    );
+        context.budgets.march_steps,
+        context,
+    )?;
     let mut branch_seeds: Vec<IntersectionPoint> = Vec::new();
 
     // Post-process: scan traced points for near-tangential locations.
     let branch_threshold = tolerance * 1000.0;
 
     for pt in &traced {
-        if branch_seeds.len() >= budgets.branches_per_direction {
+        context.check_cancelled()?;
+        if branch_seeds.len() >= context.budgets.branches_per_direction {
             break;
         }
 
@@ -210,11 +217,12 @@ fn march_direction_with_branches(
                 .unwrap_or(Vec3::new(1.0, 0.0, 0.0))
         };
 
-        let new_seeds = find_branch_directions(s1, s2, pt, current_tangent, step_size, tolerance);
+        let new_seeds =
+            find_branch_directions(s1, s2, pt, current_tangent, step_size, tolerance, context)?;
         branch_seeds.extend(new_seeds);
     }
 
-    (traced, branch_seeds)
+    Ok((traced, branch_seeds))
 }
 
 /// March along an intersection curve from a seed point.
@@ -235,11 +243,18 @@ pub(super) fn march_intersection(
     tolerance: f64,
 ) -> Vec<IntersectionPoint> {
     let max_steps = 200;
+    let context = OperationContext::new();
 
     // March forward.
-    let forward = march_direction(s1, s2, seed, true, step_size, tolerance, max_steps);
+    let forward = march_direction(
+        s1, s2, seed, true, step_size, tolerance, max_steps, &context,
+    )
+    .unwrap_or_default();
     // March backward.
-    let backward = march_direction(s1, s2, seed, false, step_size, tolerance, max_steps);
+    let backward = march_direction(
+        s1, s2, seed, false, step_size, tolerance, max_steps, &context,
+    )
+    .unwrap_or_default();
 
     // Combine: backward (reversed) + seed + forward.
     let mut result: Vec<IntersectionPoint> = backward.into_iter().rev().collect();
@@ -251,7 +266,7 @@ pub(super) fn march_intersection(
 
 /// Compute the SSI tangent in parameter space at the given parameters.
 /// Returns `(du1, dv1, du2, dv2)` or `None` if normals are degenerate.
-#[allow(clippy::similar_names)]
+#[allow(clippy::similar_names, clippy::too_many_arguments)]
 fn ssi_tangent_params(
     s1: &NurbsSurface,
     s2: &NurbsSurface,
@@ -260,9 +275,12 @@ fn ssi_tangent_params(
     u2: f64,
     v2: f64,
     sign: f64,
-) -> Option<[f64; 4]> {
-    let n1 = s1.normal(u1, v1).ok()?;
-    let n2 = s2.normal(u2, v2).ok()?;
+    context: &OperationContext,
+) -> Result<Option<[f64; 4]>, MathError> {
+    context.check_cancelled()?;
+    let (Ok(n1), Ok(n2)) = (s1.normal(u1, v1), s2.normal(u2, v2)) else {
+        return Ok(None);
+    };
 
     let tangent_raw = n1.cross(n2);
     let tangent = if let Ok(t) = tangent_raw.normalize() {
@@ -275,7 +293,10 @@ fn ssi_tangent_params(
             param1: (u1, v1),
             param2: (u2, v2),
         };
-        singular_tangent_direction(s1, s2, &pt)?
+        let Some(tangent) = singular_tangent_direction(s1, s2, &pt, context)? else {
+            return Ok(None);
+        };
+        tangent
     };
 
     let t = Vec3::new(tangent.x() * sign, tangent.y() * sign, tangent.z() * sign);
@@ -289,15 +310,15 @@ fn ssi_tangent_params(
     // Normalize so the maximum component magnitude is 1.0.
     let max_comp = du1.abs().max(dv1.abs()).max(du2.abs()).max(dv2.abs());
     if max_comp < 1e-20 {
-        return None;
+        return Ok(None);
     }
 
-    Some([
+    Ok(Some([
         du1 / max_comp,
         dv1 / max_comp,
         du2 / max_comp,
         dv2 / max_comp,
-    ])
+    ]))
 }
 
 /// At a singular point (where surface normals are parallel/antiparallel),
@@ -324,17 +345,18 @@ fn singular_tangent_direction(
     s1: &NurbsSurface,
     s2: &NurbsSurface,
     point: &IntersectionPoint,
-) -> Option<Vec3> {
+    context: &OperationContext,
+) -> Result<Option<Vec3>, MathError> {
     let (u1, v1) = point.param1;
     let (u2, v2) = point.param2;
 
     // Try second-order analysis first.
     if let Some(dir) = second_order_tangent(s1, s2, u1, v1, u2, v2) {
-        return Some(dir);
+        return Ok(Some(dir));
     }
 
     // Fallback: perturbation-based search (original method).
-    perturbation_tangent(s1, s2, point)
+    perturbation_tangent(s1, s2, point, context)
 }
 
 /// Second-order curvature analysis for tangential intersection direction.
@@ -451,7 +473,8 @@ fn perturbation_tangent(
     s1: &NurbsSurface,
     s2: &NurbsSurface,
     point: &IntersectionPoint,
-) -> Option<Vec3> {
+    context: &OperationContext,
+) -> Result<Option<Vec3>, MathError> {
     let eps = 1e-4;
     let (u1, v1) = point.param1;
     let (u2, v2) = point.param2;
@@ -471,10 +494,13 @@ fn perturbation_tangent(
     let mut best_dist = 0.0_f64;
 
     for &(du, dv) in &directions {
+        context.check_cancelled()?;
         let u1p = (u1 + du).clamp(0.001, 0.999);
         let v1p = (v1 + dv).clamp(0.001, 0.999);
 
-        if let Some(refined) = refine_ssi_point(s1, s2, u1p, v1p, u2, v2, 1e-8) {
+        if let Some(refined) =
+            refine_ssi_point_with_context(s1, s2, u1p, v1p, u2, v2, 1e-8, context)?
+        {
             let d = refined.point - point.point;
             let dist = d.length();
             if dist > best_dist
@@ -487,7 +513,7 @@ fn perturbation_tangent(
         }
     }
 
-    best_dir
+    Ok(best_dir)
 }
 
 /// Constrain a parameter value to the domain, wrapping if periodic or
@@ -559,6 +585,7 @@ fn at_boundary(state: &[f64; 4], s1: &NurbsSurface, s2: &NurbsSurface) -> bool {
 ///   high-curvature regions (tight bends) and efficient large steps on
 ///   straight portions.
 #[allow(clippy::too_many_lines, clippy::many_single_char_names)]
+#[allow(clippy::too_many_arguments)]
 fn march_direction(
     s1: &NurbsSurface,
     s2: &NurbsSurface,
@@ -567,7 +594,8 @@ fn march_direction(
     step_size: f64,
     tolerance: f64,
     max_steps: usize,
-) -> Vec<IntersectionPoint> {
+    context: &OperationContext,
+) -> Result<Vec<IntersectionPoint>, MathError> {
     // Maximum number of turning points (tangent reversals) to traverse.
     // Realistic SSI curves have at most 2-3 turning points; the limit
     // prevents infinite loops on degenerate near-tangential cases.
@@ -608,6 +636,7 @@ fn march_direction(
     let mut turning_points_count = 0_usize;
 
     for _ in 0..max_steps {
+        context.check_cancelled()?;
         let y = [
             current.param1.0,
             current.param1.1,
@@ -617,13 +646,14 @@ fn march_direction(
 
         // Try RKF45 with adaptive step, allowing a few retries per accepted step.
         let (y4, accepted_h) = loop {
+            context.check_cancelled()?;
             total_evals += 1;
             if total_evals > max_evals {
-                return points;
+                return Ok(points);
             }
 
-            let Some(result) = rkf45_step(s1, s2, &y, h, sign) else {
-                return points;
+            let Some(result) = rkf45_step(s1, s2, &y, h, sign, context)? else {
+                return Ok(points);
             };
 
             let (y4, y5) = result;
@@ -657,9 +687,9 @@ fn march_direction(
         let next = constrain_state(&y4, s1, s2);
 
         // Newton-refine to stay on the intersection curve.
-        if let Some(refined) =
-            refine_ssi_point(s1, s2, next[0], next[1], next[2], next[3], tolerance)
-        {
+        if let Some(refined) = refine_ssi_point_with_context(
+            s1, s2, next[0], next[1], next[2], next[3], tolerance, context,
+        )? {
             // Check that we actually moved.
             if (refined.point - current.point).length() < tolerance {
                 break;
@@ -770,24 +800,34 @@ fn march_direction(
         }
     }
 
-    points
+    Ok(points)
 }
 
 /// Perform one RKF45 step. Returns `(y_4th, y_5th)` or `None` if
 /// tangent evaluation fails at any stage.
-#[allow(clippy::many_single_char_names, clippy::similar_names)]
+#[allow(
+    clippy::many_single_char_names,
+    clippy::similar_names,
+    clippy::type_complexity
+)]
 fn rkf45_step(
     s1: &NurbsSurface,
     s2: &NurbsSurface,
     y: &[f64; 4],
     h: f64,
     sign: f64,
-) -> Option<([f64; 4], [f64; 4])> {
+    context: &OperationContext,
+) -> Result<Option<([f64; 4], [f64; 4])>, MathError> {
     // Helper: evaluate f at a state, scaling by h.
-    let f = |state: &[f64; 4]| -> Option<[f64; 4]> {
+    let f = |state: &[f64; 4]| -> Result<Option<[f64; 4]>, MathError> {
         let clamped = constrain_state(state, s1, s2);
-        let t = ssi_tangent_params(s1, s2, clamped[0], clamped[1], clamped[2], clamped[3], sign)?;
-        Some([t[0] * h, t[1] * h, t[2] * h, t[3] * h])
+        let Some(t) = ssi_tangent_params(
+            s1, s2, clamped[0], clamped[1], clamped[2], clamped[3], sign, context,
+        )?
+        else {
+            return Ok(None);
+        };
+        Ok(Some([t[0] * h, t[1] * h, t[2] * h, t[3] * h]))
     };
 
     // Helper: y + sum of scaled k vectors.
@@ -801,18 +841,27 @@ fn rkf45_step(
         out
     };
 
-    let k1 = f(y)?;
-    let k2 = f(&add(y, &[(&k1, 1.0 / 4.0)]))?;
-    let k3 = f(&add(y, &[(&k1, 3.0 / 32.0), (&k2, 9.0 / 32.0)]))?;
-    let k4 = f(&add(
+    let Some(k1) = f(y)? else {
+        return Ok(None);
+    };
+    let Some(k2) = f(&add(y, &[(&k1, 1.0 / 4.0)]))? else {
+        return Ok(None);
+    };
+    let Some(k3) = f(&add(y, &[(&k1, 3.0 / 32.0), (&k2, 9.0 / 32.0)]))? else {
+        return Ok(None);
+    };
+    let Some(k4) = f(&add(
         y,
         &[
             (&k1, 1932.0 / 2197.0),
             (&k2, -7200.0 / 2197.0),
             (&k3, 7296.0 / 2197.0),
         ],
-    ))?;
-    let k5 = f(&add(
+    ))?
+    else {
+        return Ok(None);
+    };
+    let Some(k5) = f(&add(
         y,
         &[
             (&k1, 439.0 / 216.0),
@@ -820,8 +869,11 @@ fn rkf45_step(
             (&k3, 3680.0 / 513.0),
             (&k4, -845.0 / 4104.0),
         ],
-    ))?;
-    let k6 = f(&add(
+    ))?
+    else {
+        return Ok(None);
+    };
+    let Some(k6) = f(&add(
         y,
         &[
             (&k1, -8.0 / 27.0),
@@ -830,7 +882,10 @@ fn rkf45_step(
             (&k4, 1859.0 / 4104.0),
             (&k5, -11.0 / 40.0),
         ],
-    ))?;
+    ))?
+    else {
+        return Ok(None);
+    };
 
     // 4th-order solution.
     let y4 = add(
@@ -855,7 +910,7 @@ fn rkf45_step(
         ],
     );
 
-    Some((y4, y5))
+    Ok(Some((y4, y5)))
 }
 
 /// Project a 3D tangent vector onto surface parameter space.

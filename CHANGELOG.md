@@ -1,6 +1,73 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+* **context:** make the caller's NURBS SSI Newton-iteration budget authoritative
+  across seed discovery and marching, with cooperative cancellation inside the
+  refinement loop.
+* **context:** replace SSI seed subdivision's hard-coded recursion depth with
+  the caller-owned `WorkBudgets::subdivision_depth` cap; depth 0 performs no
+  recursive split and the default depth 6 preserves prior behavior.
+* **wasm:** expose the Newton-iteration and seed-subdivision caps to JS — additive optional
+  `newton_iterations` argument on `booleanWithQuality` and
+  `booleanWithCancellation` alongside `subdivision_depth`, and optional
+  `newtonIterations` / `subdivisionDepth` fields on the `executeBatch`
+  `booleanWithQuality` op; values are validated as non-negative integers within
+  the public work budget, and omitting them reproduces prior behavior exactly.
+
+### Bug Fixes
+
+* **measure:** integrate planar faces bounded by lines, circles, and parabolas
+  exactly, including circular inner wires, instead of reporting a fixed
+  256-segment polygon area.
+* **algo:** keep thin-wall coaxial blind-bore cylinder seams unsplit across the
+  wall/radius boundary and scale sweep.
+* **operations:** refuse overlapping linear, circular, and grid pattern
+  instances transactionally instead of returning a compound that double-counts
+  material.
+* **wasm:** preserve the `quality_refused` / `exact_only_unattainable`
+  diagnostic through `executeBatchV2` and expose `booleanWithQuality` through
+  batch dispatch.
+* **topology:** split snapshot restoration into the two contracts its callers
+  actually hold. Transactional rollback (`run_transacted` / `run_validated`,
+  via the new `Topology::restore_for_rollback`) now undoes retirements staged
+  inside the failed operation — previously a rolled-back re-derivation or
+  `delete_solid` stayed retired, contradicting the transaction contract. The
+  checkpoint barrier (`restore_preserving_handle_slots`) keeps retirements
+  tombstoned and no longer restores the face-loop derivation map into
+  referencing retired loops or faces.
+
+### Tests
+
+* **boolean:** qualify the historical tangent-boss operand-loss fix with a
+  versioned WASM repro, closed-form ratio/scale oracles, and exact-or-disclosed
+  fallback policy checks.
+* **fuzz:** add bounded scheduled NURBS construction, evaluation, and
+  surface-intersection fuzzing with independent plane-section oracles and a
+  clustered-refit regression corpus.
+* **fuzz:** add bounded scheduled topology-mutation fuzzing — derivation,
+  rollback, checkpoint-restore, and deletion sequences over a bounded box
+  against exact-state, stale-handle, atomic-refusal, and closed-form volume
+  oracles, with a checkpoint re-derivation regression corpus.
+
 ## 2.130.0
+
+### Features
+
+* **context:** add typed, transactional cooperative cancellation for GFA and NURBS SSI, including the WASM `OperationCancellationToken` contract.
+
+### Bug Fixes
+
+* **wasm,tessellate:** make mesh-quality reports non-vacuous and honor the
+  render tessellation's angular tolerance, with cross-drilled ratio/scale
+  qualification.
+
+### CI
+
+* Ratchet the semantic `approx_census` output so approximation-path, result
+  topology, error, and revolve-surface drift requires explicit review.
 
 ### Licensing
 
@@ -9,6 +76,12 @@
   permissively licensed upstream release.
 * Exclude upstream v3 and later code and regenerate distributable artifacts
   from this source lineage.
+
+### Bug Fixes
+
+* **operations:** rebuild simple analytic cylinders exactly when either cap is
+  pushed or pulled, including inward top-cap edits that previously returned
+  only the removed slab.
 
 ## [3.0.1](https://github.com/esaueng/brepkit/compare/v3.0.0...v3.0.1) (2026-08-08)
 

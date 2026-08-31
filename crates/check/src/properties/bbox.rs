@@ -5,12 +5,14 @@ use remus_topology::Topology;
 use remus_topology::solid::SolidId;
 
 use crate::CheckError;
-use crate::util::expand_aabb_for_surface;
+use crate::util::face_aabb;
 
 /// Compute the axis-aligned bounding box of a solid.
 ///
-/// Collects all vertex positions from the outer shell, then expands the
-/// box for surface curvature (spheres, cylinders, tori, NURBS).
+/// Unions the conservative bounds of every face in the outer shell. Per-face
+/// bounds account for curved edges as well as surface curvature, using exact
+/// full-curve extents for circles and ellipses and conservative hulls for
+/// other curve types.
 ///
 /// # Errors
 ///
@@ -20,24 +22,13 @@ pub fn bounding_box(topo: &Topology, solid: SolidId) -> Result<Aabb3, CheckError
     let solid_data = topo.solid(solid)?;
     let shell = topo.shell(solid_data.outer_shell())?;
 
-    let mut points = Vec::new();
-    for &fid in shell.faces() {
-        let face = topo.face(fid)?;
-        let wire = topo.wire(face.outer_wire())?;
-        for oe in wire.edges() {
-            let edge = topo.edge(oe.edge())?;
-            points.push(topo.vertex(edge.start())?.point());
-            points.push(topo.vertex(edge.end())?.point());
-        }
-    }
-
-    let mut aabb = Aabb3::try_from_points(points.iter().copied())
+    let mut faces = shell.faces().iter();
+    let first = faces
+        .next()
         .ok_or_else(|| CheckError::ClassificationFailed("solid has no vertices".into()))?;
-
-    for &fid in shell.faces() {
-        if let Ok(face) = topo.face(fid) {
-            expand_aabb_for_surface(&mut aabb, face.surface());
-        }
+    let mut aabb = face_aabb(topo, *first)?;
+    for &face in faces {
+        aabb = aabb.union(face_aabb(topo, face)?);
     }
 
     Ok(aabb)

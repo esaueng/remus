@@ -173,23 +173,35 @@ impl BrepKernel {
     /// Tessellate a solid and report position-welded mesh quality metrics.
     ///
     /// Returns a JSON string containing
-    /// `{ boundaryEdges, nonManifoldEdges, eulerCharacteristic, isWatertight }`
+    /// `{ triangleCount, boundaryEdges, nonManifoldEdges, eulerCharacteristic, isWatertight }`
     /// (see the `MeshQualityResult` TypeScript type). Vertices are welded on a
     /// 1 µm grid before counting, so position-duplicate vertices cannot mask
-    /// a leak. Use before export to verify the mesh is watertight.
+    /// a leak. Pass the same optional angular tolerance used for rendering or
+    /// export so the quality report describes that exact tessellation.
     ///
     /// # Errors
     ///
     /// Returns an error if the solid handle is invalid or tessellation fails.
     #[wasm_bindgen(js_name = "meshQuality")]
-    pub fn mesh_quality(&self, solid: u32, deflection: f64) -> Result<JsValue, JsError> {
+    pub fn mesh_quality(
+        &self,
+        solid: u32,
+        deflection: f64,
+        angular_tolerance: Option<f64>,
+    ) -> Result<JsValue, JsError> {
         validate_positive(deflection, "deflection")?;
+        let angular_tol = super::tessellate::resolve_angular_tol(angular_tolerance)?;
         let solid_id = self.resolve_solid(solid)?;
-        let mesh =
-            remus_operations::tessellate::tessellate_solid(&self.topo, solid_id, deflection)?;
+        let mesh = remus_operations::tessellate::tessellate_solid_with_tolerance(
+            &self.topo,
+            solid_id,
+            deflection,
+            angular_tol,
+        )?;
         let quality = remus_operations::tessellate::welded_mesh_quality(&mesh);
         #[allow(clippy::cast_possible_truncation)]
         let result = crate::types::MeshQualityResult {
+            triangle_count: quality.triangle_count as u32,
             boundary_edges: quality.boundary_edges as u32,
             non_manifold_edges: quality.non_manifold_edges as u32,
             euler_characteristic: quality.euler_characteristic as i32,
@@ -628,6 +640,50 @@ mod tests {
     }
 
     #[test]
+    fn cylinder_surface_area_is_exact_in_direct_and_batch_contracts() {
+        let (radius, height) = (3.0_f64, 10.0_f64);
+        let expected = 2.0 * std::f64::consts::PI * radius * (radius + height);
+        let expected_cap = std::f64::consts::PI * radius * radius;
+        let mut k = BrepKernel::new();
+        let solid = k.make_cylinder_solid(radius, height).unwrap();
+        let faces = k.get_solid_faces(solid).unwrap();
+
+        for deflection in [1e-6, 1e6] {
+            let mut face_areas: Vec<_> = faces
+                .iter()
+                .map(|&face| k.face_area(face, deflection).unwrap())
+                .collect();
+            face_areas.sort_by(f64::total_cmp);
+            assert_eq!(face_areas.len(), 3, "cylinder must expose three faces");
+            for cap in &face_areas[..2] {
+                let rel = (*cap - expected_cap).abs() / expected_cap;
+                assert!(
+                    rel < 1e-12,
+                    "direct faceArea cap: expected {expected_cap}, got {cap}, rel={rel:e}"
+                );
+            }
+
+            let direct = k.surface_area(solid, deflection).unwrap();
+            let direct_rel = (direct - expected).abs() / expected;
+            assert!(
+                direct_rel < 1e-12,
+                "direct surfaceArea: expected {expected}, got {direct}, rel={direct_rel:e}"
+            );
+
+            let batch = k.execute_batch(&format!(
+                r#"[{{"op":"surfaceArea","args":{{"solid":{solid},"deflection":{deflection}}}}}]"#
+            ));
+            let parsed: serde_json::Value = serde_json::from_str(&batch).unwrap();
+            let actual = parsed[0]["ok"].as_f64().unwrap();
+            let batch_rel = (actual - expected).abs() / expected;
+            assert!(
+                batch_rel < 1e-12,
+                "batch surfaceArea: expected {expected}, got {actual}, rel={batch_rel:e}"
+            );
+        }
+    }
+
+    #[test]
     fn surface_area_invalid_handle_is_error() {
         let mut k = BrepKernel::new();
         let r = k.execute_batch(r#"[{"op": "surfaceArea", "args": {"solid": 9999}}]"#);
@@ -818,6 +874,7 @@ mod tests {
         );
         let parsed: serde_json::Value = serde_json::from_str(&r).unwrap();
         let q = &parsed[1]["ok"];
+        assert!(q["triangleCount"].as_u64().unwrap() > 0);
         assert_eq!(q["boundaryEdges"].as_u64().unwrap(), 0);
         assert_eq!(q["nonManifoldEdges"].as_u64().unwrap(), 0);
         assert_eq!(q["eulerCharacteristic"].as_i64().unwrap(), 2);
@@ -835,8 +892,90 @@ mod tests {
         );
         let parsed: serde_json::Value = serde_json::from_str(&r).unwrap();
         let q = &parsed[1]["ok"];
+        assert!(q["triangleCount"].as_u64().unwrap() > 0);
         assert!(q["isWatertight"].as_bool().unwrap(), "quality = {q}");
         assert_eq!(q["eulerCharacteristic"].as_i64().unwrap(), 2);
+    }
+
+    #[test]
+    fn cross_drilled_render_and_measure_agree_across_ratios_and_scales() {
+        // Independent unit-scale volume oracles: shaft volume minus the
+        // orthogonal-cylinder intersection, evaluated by high-resolution
+        // Simpson quadrature (the equal-radius case is also 270π - 144).
+        let cases = [
+            (3.0_f64, 704.230_016_469_242_4_f64),
+            (2.0, 777.293_907_481_907),
+            (1.0, 829.646_029_044_615_8),
+        ];
+
+        for scale in [0.1_f64, 1.0, 10.0] {
+            for (bore_radius, unit_volume) in cases {
+                let mut k = BrepKernel::new();
+                let operations = serde_json::json!([
+                    {"op": "makeCylinder", "args": {
+                        "radius": 3.0 * scale, "height": 30.0 * scale
+                    }},
+                    {"op": "makeCylinder", "args": {
+                        "radius": bore_radius * scale, "height": 40.0 * scale
+                    }},
+                    {"op": "transform", "args": {"solid": 1, "matrix": [
+                        0, 0, 1, 0,
+                        0, 1, 0, 0,
+                        -1, 0, 0, 0,
+                        0, 0, 0, 1
+                    ]}},
+                    {"op": "transform", "args": {"solid": 1, "matrix": [
+                        1, 0, 0, -20.0 * scale,
+                        0, 1, 0, 0,
+                        0, 0, 1, 15.0 * scale,
+                        0, 0, 0, 1
+                    ]}},
+                    {"op": "cut", "args": {"solidA": 0, "solidB": 1}},
+                    {"op": "volume", "args": {
+                        "solid": 2, "deflection": 0.08 * scale
+                    }},
+                    {"op": "meshQuality", "args": {
+                        "solid": 2, "deflection": 0.3 * scale, "angularTolerance": 0.06
+                    }},
+                    {"op": "meshQuality", "args": {
+                        "solid": 2, "deflection": 0.01 * scale, "angularTolerance": 0.06
+                    }}
+                ]);
+                let output = k.execute_batch(&operations.to_string());
+                let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
+                assert_eq!(
+                    parsed[4]["ok"], 2,
+                    "scale={scale} bore={bore_radius}: {parsed}"
+                );
+
+                let measured = parsed[5]["ok"].as_f64().unwrap();
+                let expected = unit_volume * scale.powi(3);
+                assert!(
+                    (measured - expected).abs() <= 1e-4 * expected,
+                    "scale={scale} bore={bore_radius}: volume {measured} vs {expected}"
+                );
+                for quality in [&parsed[6]["ok"], &parsed[7]["ok"]] {
+                    assert!(
+                        quality["triangleCount"]
+                            .as_u64()
+                            .is_some_and(|count| count > 0),
+                        "scale={scale} bore={bore_radius}: empty mesh = {quality}"
+                    );
+                    assert_eq!(
+                        quality["boundaryEdges"], 0,
+                        "scale={scale} bore={bore_radius}: open mesh = {quality}"
+                    );
+                    assert_eq!(
+                        quality["nonManifoldEdges"], 0,
+                        "scale={scale} bore={bore_radius}: branching mesh = {quality}"
+                    );
+                    assert_eq!(
+                        quality["isWatertight"], true,
+                        "scale={scale} bore={bore_radius}: non-watertight mesh = {quality}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -844,6 +983,20 @@ mod tests {
         let mut k = BrepKernel::new();
         let r = k.execute_batch(r#"[{"op": "meshQuality", "args": {"solid": 9999}}]"#);
         assert!(batch_has_error(&r, 0));
+    }
+
+    #[test]
+    fn mesh_quality_rejects_nonpositive_angular_tolerance() {
+        let mut k = BrepKernel::new();
+        let r = k.execute_batch(
+            r#"[
+                {"op": "makeBox", "args": {"width": 1, "height": 1, "depth": 1}},
+                {"op": "meshQuality", "args": {
+                    "solid": 0, "deflection": 0.1, "angularTolerance": 0
+                }}
+            ]"#,
+        );
+        assert!(batch_has_error(&r, 1));
     }
 
     // ── Edge length ────────────────────────────────────────────────

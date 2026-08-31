@@ -146,7 +146,7 @@ pub(super) fn tessellate_with_uvs_floor(
                 );
                 let nv = 1;
                 let cyl = cyl.clone();
-                Ok(tessellate_analytic(
+                tessellate_analytic(
                     |u, v| cyl.evaluate(u, v),
                     |u, v| cyl.normal(u, v),
                     u_range,
@@ -154,7 +154,7 @@ pub(super) fn tessellate_with_uvs_floor(
                     nu,
                     nv,
                     AnalyticKind::General,
-                ))
+                )
             }
         }
         FaceSurface::Cone(cone) => {
@@ -197,7 +197,7 @@ pub(super) fn tessellate_with_uvs_floor(
                     AnalyticKind::General
                 };
                 let cone = cone.clone();
-                Ok(tessellate_analytic(
+                tessellate_analytic(
                     |u, v| cone.evaluate(u, v),
                     |u, v| cone.normal(u, v),
                     u_range,
@@ -205,7 +205,7 @@ pub(super) fn tessellate_with_uvs_floor(
                     nu,
                     nv,
                     kind,
-                ))
+                )
             }
         }
         FaceSurface::Sphere(sphere) => {
@@ -257,7 +257,7 @@ pub(super) fn tessellate_with_uvs_floor(
                 );
                 let kind = sphere_analytic_kind(v_range);
                 let sphere = sphere.clone();
-                Ok(tessellate_analytic(
+                tessellate_analytic(
                     |u, v| sphere.evaluate(u, v),
                     |u, v| sphere.normal(u, v),
                     u_range,
@@ -265,7 +265,7 @@ pub(super) fn tessellate_with_uvs_floor(
                     nu,
                     nv,
                     kind,
-                ))
+                )
             }
         }
         FaceSurface::Torus(torus) => {
@@ -286,7 +286,7 @@ pub(super) fn tessellate_with_uvs_floor(
                 true,
             );
             let torus = torus.clone();
-            Ok(tessellate_analytic(
+            tessellate_analytic(
                 |u, v| torus.evaluate(u, v),
                 |u, v| torus.normal(u, v),
                 u_range,
@@ -294,7 +294,7 @@ pub(super) fn tessellate_with_uvs_floor(
                 nu,
                 nv,
                 AnalyticKind::General,
-            ))
+            )
         }
     }?;
 

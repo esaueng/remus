@@ -53,7 +53,8 @@ fn validate_cap_wires_planar(
             let edge = topo.edge(oriented.edge())?;
             let start = topo.vertex(edge.start())?.point();
             let end = topo.vertex(edge.end())?.point();
-            let (t0, t1) = edge.domain_with_endpoints(start, end);
+            let (t0, t1) =
+                crate::authoritative_edge_domain(edge, "revolve cap-planarity validation")?;
             for index in 0..=CURVE_INTERVALS {
                 #[allow(clippy::cast_precision_loss)]
                 let fraction = index as f64 / CURVE_INTERVALS as f64;
@@ -93,6 +94,158 @@ fn rotate_vec(dir: Vec3, axis: Vec3, angle: f64) -> Vec3 {
     let k_dot_v = axis.dot(dir);
     let k_cross_v = axis.cross(dir);
     dir * cos_a + k_cross_v * sin_a + axis * (k_dot_v * (1.0 - cos_a))
+}
+
+/// Add a generated circular edge only when its stored branch agrees with its
+/// two vertices and an independently constructed interior point.
+fn add_certified_circle_edge(
+    topo: &mut Topology,
+    start: VertexId,
+    end: VertexId,
+    circle: remus_math::curves::Circle3D,
+    range: (f64, f64),
+    midpoint_oracle: Point3,
+    label: &str,
+) -> Result<remus_topology::edge::EdgeId, crate::OperationsError> {
+    let start_vertex = topo.vertex(start)?;
+    let end_vertex = topo.vertex(end)?;
+    let start_point = start_vertex.point();
+    let end_point = end_vertex.point();
+    let start_tolerance = start_vertex.tolerance();
+    let end_tolerance = end_vertex.tolerance();
+    for (vertex_label, tolerance) in [
+        ("start vertex", start_tolerance),
+        ("end vertex", end_tolerance),
+    ] {
+        if !tolerance.is_finite() || tolerance.is_sign_negative() {
+            return Err(crate::OperationsError::InvalidInput {
+                reason: format!("{label} has invalid {vertex_label} tolerance {tolerance}"),
+            });
+        }
+    }
+    let tolerance = start_tolerance
+        .max(end_tolerance)
+        .max(Tolerance::new().linear);
+    if !range.0.is_finite()
+        || !range.1.is_finite()
+        || range.0.partial_cmp(&range.1) == Some(std::cmp::Ordering::Equal)
+    {
+        return Err(crate::OperationsError::InvalidInput {
+            reason: format!(
+                "{label} has invalid parameter span [{}, {}]",
+                range.0, range.1
+            ),
+        });
+    }
+    for (oracle_label, parameter, expected) in [
+        ("start", range.0, start_point),
+        ("interior", f64::midpoint(range.0, range.1), midpoint_oracle),
+        ("end", range.1, end_point),
+    ] {
+        let residual = (circle.evaluate(parameter) - expected).length();
+        if !residual.is_finite() || residual > tolerance {
+            return Err(crate::OperationsError::InvalidInput {
+                reason: format!(
+                    "{label} {oracle_label} misses its exact oracle by {residual} mm \
+                     (tolerance {tolerance} mm)"
+                ),
+            });
+        }
+    }
+
+    let mut edge = Edge::with_tolerance(start, end, EdgeCurve::Circle(circle), Some(tolerance));
+    edge.set_trim(Some(range));
+    edge.strict_domain()
+        .map_err(|error| crate::OperationsError::InvalidInput {
+            reason: format!("{label} has no authoritative parameter domain: {error}"),
+        })?;
+    Ok(topo.add_edge(edge))
+}
+
+fn add_certified_full_circle_edge(
+    topo: &mut Topology,
+    seam: VertexId,
+    circle: remus_math::curves::Circle3D,
+    label: &str,
+) -> Result<remus_topology::edge::EdgeId, crate::OperationsError> {
+    let seam_point = topo.vertex(seam)?.point();
+    let start = circle.project(seam_point);
+    let antipode = circle.center() - (seam_point - circle.center());
+    add_certified_circle_edge(
+        topo,
+        seam,
+        seam,
+        circle,
+        (start, start + std::f64::consts::TAU),
+        antipode,
+        label,
+    )
+}
+
+fn add_certified_sweep_arc_edge(
+    topo: &mut Topology,
+    start: VertexId,
+    end: VertexId,
+    curve: NurbsCurve,
+    midpoint_oracle: Point3,
+) -> Result<remus_topology::edge::EdgeId, crate::OperationsError> {
+    let start_vertex = topo.vertex(start)?;
+    let end_vertex = topo.vertex(end)?;
+    let start_point = start_vertex.point();
+    let end_point = end_vertex.point();
+    for (label, tolerance) in [
+        ("start vertex", start_vertex.tolerance()),
+        ("end vertex", end_vertex.tolerance()),
+    ] {
+        if !tolerance.is_finite() || tolerance.is_sign_negative() {
+            return Err(crate::OperationsError::InvalidInput {
+                reason: format!(
+                    "segmented revolve sweep arc has invalid {label} tolerance {tolerance}"
+                ),
+            });
+        }
+    }
+    let tolerance = start_vertex
+        .tolerance()
+        .max(end_vertex.tolerance())
+        .max(Tolerance::new().linear);
+    let range = curve.domain();
+    if !range.0.is_finite()
+        || !range.1.is_finite()
+        || range.0.partial_cmp(&range.1) != Some(std::cmp::Ordering::Less)
+    {
+        return Err(crate::OperationsError::InvalidInput {
+            reason: format!(
+                "segmented revolve sweep arc has invalid NURBS domain [{}, {}]",
+                range.0, range.1
+            ),
+        });
+    }
+    for (label, parameter, expected) in [
+        ("start", range.0, start_point),
+        ("interior", f64::midpoint(range.0, range.1), midpoint_oracle),
+        ("end", range.1, end_point),
+    ] {
+        let residual = (curve.evaluate(parameter) - expected).length();
+        if !residual.is_finite() || residual > tolerance {
+            return Err(crate::OperationsError::InvalidInput {
+                reason: format!(
+                    "segmented revolve sweep arc {label} misses its exact oracle by {residual} mm \
+                     (tolerance {tolerance} mm)"
+                ),
+            });
+        }
+    }
+
+    let mut edge = Edge::with_tolerance(start, end, EdgeCurve::NurbsCurve(curve), Some(tolerance));
+    edge.set_trim(Some(range));
+    edge.strict_domain()
+        .map_err(|error| crate::OperationsError::InvalidInput {
+            reason: format!(
+                "segmented revolve sweep arc has no authoritative parameter domain: {error}"
+            ),
+        })?;
+    Ok(topo.add_edge(edge))
 }
 
 /// Compute the number of arc segments needed and the angle per segment.
@@ -629,7 +782,8 @@ fn try_analytic_full_revolution(
         // — sampling with traversal endpoints directly would pick the CCW
         // complement of a reversed arc.
         let interior = if matches!(class, RevEdge::Torus { .. }) {
-            let (t0, t1) = edge.domain_with_endpoints(ns, ne);
+            let (t0, t1) =
+                crate::authoritative_edge_domain(edge, "analytic revolve profile sampling")?;
             let mut pts: Vec<Point3> = [0.25, 0.5, 0.75]
                 .iter()
                 .map(|f| curve.evaluate_with_endpoints((t1 - t0).mul_add(*f, t0), ns, ne))
@@ -751,7 +905,12 @@ fn build_analytic_revolution(
         let center = axis_origin + axis * z;
         let circle = remus_math::curves::Circle3D::new(center, axis, r)
             .map_err(crate::OperationsError::Math)?;
-        rim_circle[i] = Some(topo.add_edge(Edge::new(pe.sv, pe.sv, EdgeCurve::Circle(circle))));
+        rim_circle[i] = Some(add_certified_full_circle_edge(
+            topo,
+            pe.sv,
+            circle,
+            "analytic revolution rim",
+        )?);
     }
 
     let mut faces: Vec<FaceId> = Vec::with_capacity(n);
@@ -1057,10 +1216,19 @@ fn try_circle_revolution_torus(
     let end_normal = rotate_vec(circ_normal, axis, angle);
     let end_circle = remus_math::curves::Circle3D::new(end_center, end_normal, radius)
         .map_err(crate::OperationsError::Math)?;
-    let end_eid = topo.add_edge(Edge::new(v1, v1, EdgeCurve::Circle(end_circle)));
+    let end_eid = add_certified_full_circle_edge(topo, v1, end_circle, "partial torus end rim")?;
     let seam_circle = remus_math::curves::Circle3D::new(axis_origin + axis * seam_z, axis, seam_r)
         .map_err(crate::OperationsError::Math)?;
-    let seam_eid = topo.add_edge(Edge::new(profile_vid, v1, EdgeCurve::Circle(seam_circle)));
+    let seam_start = seam_circle.project(p0);
+    let seam_eid = add_certified_circle_edge(
+        topo,
+        profile_vid,
+        v1,
+        seam_circle,
+        (seam_start, seam_start + angle),
+        rotate_point(p0, axis_origin, axis, angle / 2.0),
+        "partial torus sweep seam",
+    )?;
 
     let wall_wire = Wire::new(
         vec![
@@ -1154,7 +1322,8 @@ fn profile_chart_is_ccw(
         pts.push(if oe.is_forward() { ns } else { ne });
         if !matches!(edge.curve(), EdgeCurve::Line) {
             let curve = edge.curve();
-            let (t0, t1) = edge.domain_with_endpoints(ns, ne);
+            let (t0, t1) =
+                crate::authoritative_edge_domain(edge, "revolve profile winding sampling")?;
             // Sample in the curve's NATURAL direction, then reverse to traversal
             // order — sampling from traversal endpoints picks the CCW complement
             // of a reversed arc.
@@ -1227,8 +1396,20 @@ fn profile_chart_is_ccw(
 ///
 /// Returns an error if the axis is zero-length, the angle is out of range, or a
 /// partial revolution is requested for a non-planar profile boundary.
-#[allow(clippy::too_many_lines)]
 pub fn revolve(
+    topo: &mut Topology,
+    face: FaceId,
+    axis_origin: Point3,
+    axis_direction: Vec3,
+    angle_radians: f64,
+) -> Result<SolidId, crate::OperationsError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        revolve_impl(topo, face, axis_origin, axis_direction, angle_radians)
+    })
+}
+
+#[allow(clippy::too_many_lines)]
+fn revolve_impl(
     topo: &mut Topology,
     face: FaceId,
     axis_origin: Point3,
@@ -1267,6 +1448,18 @@ pub fn revolve(
     };
     let input_wire_id = face_data.outer_wire();
     let inner_wire_ids: Vec<remus_topology::wire::WireId> = face_data.inner_wires().to_vec();
+
+    for wire_id in std::iter::once(input_wire_id).chain(inner_wire_ids.iter().copied()) {
+        let edge_ids: Vec<_> = topo
+            .wire(wire_id)?
+            .edges()
+            .iter()
+            .map(OrientedEdge::edge)
+            .collect();
+        for edge_id in edge_ids {
+            crate::normalize_legacy_edge_domain(topo, edge_id, "revolve raw profile edge")?;
+        }
+    }
 
     // Fast exact path: a revolution of a single circular profile that clears
     // the axis is a torus (full turn: one doubly-periodic face; partial turn:
@@ -1480,11 +1673,13 @@ pub fn revolve(
                 let start_pos = topo.vertex(start_vid)?.point();
                 let end_pos = topo.vertex(end_vid)?.point();
                 let curve = make_arc_curve(start_pos, end_pos, axis_origin, axis, seg_angle)?;
-                seg_edges.push(topo.add_edge(Edge::new(
+                seg_edges.push(add_certified_sweep_arc_edge(
+                    topo,
                     start_vid,
                     end_vid,
-                    EdgeCurve::NurbsCurve(curve),
-                )));
+                    curve,
+                    rotate_point(start_pos, axis_origin, axis, seg_angle / 2.0),
+                )?);
             }
             arc_edges.push(seg_edges);
         }

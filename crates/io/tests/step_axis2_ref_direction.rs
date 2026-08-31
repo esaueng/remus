@@ -30,7 +30,15 @@ use remus_topology::wire::{OrientedEdge, Wire};
 fn one_edge_solid(topo: &mut Topology, curve: EdgeCurve, s: Point3, e: Point3) -> SolidId {
     let v0 = topo.add_vertex(Vertex::new(s, 1e-7));
     let v1 = topo.add_vertex(Vertex::new(e, 1e-7));
-    let eid = topo.add_edge(Edge::new(v0, v1, curve));
+    let domain = match &curve {
+        EdgeCurve::Ellipse(curve) => (curve.project(s), curve.project(e)),
+        EdgeCurve::Hyperbola(curve) => (curve.project(s), curve.project(e)),
+        EdgeCurve::Parabola(curve) => (curve.project(s), curve.project(e)),
+        other => panic!("test scaffold needs an analytic conic, got {other:?}"),
+    };
+    let mut edge = Edge::new(v0, v1, curve);
+    edge.set_trim(Some(domain));
+    let eid = topo.add_edge(edge);
     let wid = topo.add_wire(Wire::new(vec![OrientedEdge::new(eid, true)], false).unwrap());
     let fid = topo.add_face(Face::new(
         wid,

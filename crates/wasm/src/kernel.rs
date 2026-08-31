@@ -15,7 +15,7 @@
 
 use std::rc::Rc;
 
-use remus_math::curves::{Circle3D, Ellipse3D};
+use remus_math::curves::{Circle3D, Ellipse3D, Hyperbola3D, Parabola3D};
 use remus_math::curves2d::Line2D;
 use remus_math::nurbs::curve::NurbsCurve;
 use remus_math::nurbs::surface::NurbsSurface;
@@ -107,6 +107,172 @@ impl BrepKernel {
         result
     }
 
+    pub(crate) fn curve_point(curve: &EdgeCurve, parameter: f64) -> Point3 {
+        match curve {
+            EdgeCurve::Line => Point3::new(parameter, 0.0, 0.0),
+            EdgeCurve::Circle(curve) => curve.evaluate(parameter),
+            EdgeCurve::Ellipse(curve) => curve.evaluate(parameter),
+            EdgeCurve::Hyperbola(curve) => curve.evaluate(parameter),
+            EdgeCurve::Parabola(curve) => curve.evaluate(parameter),
+            EdgeCurve::NurbsCurve(curve) => curve.evaluate(parameter),
+        }
+    }
+
+    fn point_is_finite(point: Point3) -> bool {
+        point.0.iter().all(|value| value.is_finite())
+    }
+
+    /// Certify endpoint and interior geometry before a non-linear edge enters
+    /// the arena. The temporary topology is deliberately avoided here: this
+    /// check must run before allocating the real vertices.
+    pub(crate) fn certify_curve_trim(
+        curve: &EdgeCurve,
+        trim: (f64, f64),
+        start: Point3,
+        end: Point3,
+        closed: bool,
+        tolerance: f64,
+    ) -> Result<(), WasmError> {
+        let (t0, t1) = trim;
+        if matches!(curve, EdgeCurve::Line)
+            || !t0.is_finite()
+            || !t1.is_finite()
+            || t0.partial_cmp(&t1) == Some(std::cmp::Ordering::Equal)
+            || !tolerance.is_finite()
+            || tolerance.is_sign_negative()
+        {
+            return Err(WasmError::InvalidInput {
+                reason: "non-linear edge has an invalid authoritative trim".into(),
+            });
+        }
+
+        match curve {
+            EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_) => {
+                let span = (t1 - t0).abs();
+                let allowance = 4.0 * f64::EPSILON * std::f64::consts::TAU;
+                if span > std::f64::consts::TAU + allowance
+                    || (closed && (span - std::f64::consts::TAU).abs() > allowance)
+                {
+                    return Err(WasmError::InvalidInput {
+                        reason: "periodic edge trim is not a single certified turn".into(),
+                    });
+                }
+            }
+            EdgeCurve::NurbsCurve(curve) => {
+                let (domain_start, domain_end) = curve.domain();
+                if t0 < domain_start || t0 > domain_end || t1 < domain_start || t1 > domain_end {
+                    return Err(WasmError::InvalidInput {
+                        reason: format!(
+                            "NURBS edge trim [{t0}, {t1}] is outside native domain [{domain_start}, {domain_end}]"
+                        ),
+                    });
+                }
+            }
+            EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => {}
+            EdgeCurve::Line => {
+                return Err(WasmError::InvalidInput {
+                    reason: "line edges must remain untrimmed".into(),
+                });
+            }
+        }
+
+        let midpoint = f64::midpoint(t0, t1);
+        let curve_start = Self::curve_point(curve, t0);
+        let curve_midpoint = Self::curve_point(curve, midpoint);
+        let curve_end = Self::curve_point(curve, t1);
+        if !Self::point_is_finite(curve_start)
+            || !Self::point_is_finite(curve_midpoint)
+            || !Self::point_is_finite(curve_end)
+            || (curve_start - start).length() > tolerance
+            || (curve_end - end).length() > tolerance
+        {
+            return Err(WasmError::InvalidInput {
+                reason: "edge vertices do not agree with its authoritative curve trim".into(),
+            });
+        }
+        Ok(())
+    }
+
+    pub(crate) fn add_certified_curve_edge(
+        &mut self,
+        curve: EdgeCurve,
+        trim: (f64, f64),
+        start: Point3,
+        end: Point3,
+        closed: bool,
+        tolerance: f64,
+    ) -> Result<remus_topology::edge::EdgeId, WasmError> {
+        Self::certify_curve_trim(&curve, trim, start, end, closed, tolerance)?;
+        let v_start = self.topo_mut().add_vertex(Vertex::new(start, tolerance));
+        let v_end = if closed {
+            v_start
+        } else {
+            self.topo_mut().add_vertex(Vertex::new(end, tolerance))
+        };
+        let mut edge = Edge::with_tolerance(v_start, v_end, curve, Some(tolerance));
+        edge.set_trim(Some(trim));
+        edge.strict_domain()
+            .map_err(|error| WasmError::InvalidInput {
+                reason: format!("invalid authoritative edge trim: {error}"),
+            })?;
+        Ok(self.topo_mut().add_edge(edge))
+    }
+
+    pub(crate) fn native_nurbs_trim(
+        curve: &NurbsCurve,
+        start: Point3,
+        end: Point3,
+        tolerance: f64,
+    ) -> Result<(f64, f64), WasmError> {
+        let (t0, t1) = curve.domain();
+        let natural_start = curve.evaluate(t0);
+        let natural_end = curve.evaluate(t1);
+        let forward = (natural_start - start)
+            .length()
+            .max((natural_end - end).length());
+        let reverse = (natural_end - start)
+            .length()
+            .max((natural_start - end).length());
+        if forward <= tolerance && forward <= reverse {
+            Ok((t0, t1))
+        } else if reverse <= tolerance {
+            Ok((t1, t0))
+        } else {
+            Err(WasmError::InvalidInput {
+                reason: "NURBS edge endpoints do not match either orientation of its native domain"
+                    .into(),
+            })
+        }
+    }
+
+    pub(crate) fn periodic_trim_from_endpoints(
+        curve: &EdgeCurve,
+        start: Point3,
+        end: Point3,
+        closed: bool,
+    ) -> Result<(f64, f64), WasmError> {
+        let (t0, raw_end) = match curve {
+            EdgeCurve::Circle(curve) => (curve.project(start), curve.project(end)),
+            EdgeCurve::Ellipse(curve) => (curve.project(start), curve.project(end)),
+            _ => {
+                return Err(WasmError::InvalidInput {
+                    reason: "periodic trim reconstruction requires a circle or ellipse".into(),
+                });
+            }
+        };
+        if closed {
+            Ok((t0, t0 + std::f64::consts::TAU))
+        } else {
+            let span = (raw_end - t0).rem_euclid(std::f64::consts::TAU);
+            if span.partial_cmp(&0.0) == Some(std::cmp::Ordering::Equal) {
+                return Err(WasmError::InvalidInput {
+                    reason: "periodic edge endpoints do not establish a non-zero span".into(),
+                });
+            }
+            Ok((t0, t0 + span))
+        }
+    }
+
     /// Inner implementation for `make_tangent_arc_3d`.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn make_tangent_arc_3d_impl(
@@ -183,15 +349,20 @@ impl BrepKernel {
             }
         })?;
 
-        let v_start = self.topo_mut().add_vertex(Vertex::new(start, TOL));
-        let v_end = if (start - end).length() < TOL * 100.0 {
-            v_start
+        let projected_end = circle.project(end);
+        let forward = circle.tangent(0.0).dot(t_norm) >= 0.0;
+        let curve = EdgeCurve::Circle(circle);
+        let trim_end = if forward {
+            projected_end.rem_euclid(std::f64::consts::TAU)
         } else {
-            self.topo_mut().add_vertex(Vertex::new(end, TOL))
+            -(-projected_end).rem_euclid(std::f64::consts::TAU)
         };
-        let eid = self
-            .topo_mut()
-            .add_edge(Edge::new(v_start, v_end, EdgeCurve::Circle(circle)));
+        if trim_end.partial_cmp(&0.0) == Some(std::cmp::Ordering::Equal) {
+            return Err(WasmError::InvalidInput {
+                reason: "tangent arc endpoints do not establish a non-zero span".into(),
+            });
+        }
+        let eid = self.add_certified_curve_edge(curve, (0.0, trim_end), start, end, false, TOL)?;
         Ok(edge_id_to_u32(eid))
     }
 
@@ -303,16 +474,16 @@ impl BrepKernel {
                 let start_3d = circle.evaluate(t_start);
                 let end_3d = circle.evaluate(t_end);
 
-                let full_circle = (t_end - t_start).abs() >= std::f64::consts::TAU - 1e-10;
-                let v_start = self.topo_mut().add_vertex(Vertex::new(start_3d, TOL));
-                let v_end = if full_circle {
-                    v_start
-                } else {
-                    self.topo_mut().add_vertex(Vertex::new(end_3d, TOL))
-                };
-                let eid =
-                    self.topo_mut()
-                        .add_edge(Edge::new(v_start, v_end, EdgeCurve::Circle(circle)));
+                let full_circle = (t_end - t_start).abs()
+                    >= std::f64::consts::TAU - 4.0 * f64::EPSILON * std::f64::consts::TAU;
+                let eid = self.add_certified_curve_edge(
+                    EdgeCurve::Circle(circle),
+                    (t_start, t_end),
+                    start_3d,
+                    end_3d,
+                    full_circle,
+                    TOL,
+                )?;
                 Ok(edge_id_to_u32(eid))
             }
             2 => {
@@ -341,18 +512,16 @@ impl BrepKernel {
                 let start_3d = ellipse.evaluate(t_start);
                 let end_3d = ellipse.evaluate(t_end);
 
-                let full_ellipse = (t_end - t_start).abs() >= std::f64::consts::TAU - 1e-10;
-                let v_start = self.topo_mut().add_vertex(Vertex::new(start_3d, TOL));
-                let v_end = if full_ellipse {
-                    v_start
-                } else {
-                    self.topo_mut().add_vertex(Vertex::new(end_3d, TOL))
-                };
-                let eid = self.topo_mut().add_edge(Edge::new(
-                    v_start,
-                    v_end,
+                let full_ellipse = (t_end - t_start).abs()
+                    >= std::f64::consts::TAU - 4.0 * f64::EPSILON * std::f64::consts::TAU;
+                let eid = self.add_certified_curve_edge(
                     EdgeCurve::Ellipse(ellipse),
-                ));
+                    (t_start, t_end),
+                    start_3d,
+                    end_3d,
+                    full_ellipse,
+                    TOL,
+                )?;
                 Ok(edge_id_to_u32(eid))
             }
             3 => {
@@ -406,17 +575,15 @@ impl BrepKernel {
                 let start_3d = curve.evaluate(t_start);
                 let end_3d = curve.evaluate(t_end);
 
-                let v_start = self.topo_mut().add_vertex(Vertex::new(start_3d, TOL));
-                let v_end = if (start_3d - end_3d).length() < TOL * 100.0 {
-                    v_start
-                } else {
-                    self.topo_mut().add_vertex(Vertex::new(end_3d, TOL))
-                };
-                let eid = self.topo_mut().add_edge(Edge::new(
-                    v_start,
-                    v_end,
+                let closed = (start_3d - end_3d).length() <= TOL;
+                let eid = self.add_certified_curve_edge(
                     EdgeCurve::NurbsCurve(curve),
-                ));
+                    (t_start, t_end),
+                    start_3d,
+                    end_3d,
+                    closed,
+                    TOL,
+                )?;
                 Ok(edge_id_to_u32(eid))
             }
             _ => Err(WasmError::InvalidInput {
@@ -498,8 +665,18 @@ impl BrepKernel {
 
     /// Internal implementation of `fromBREP` that returns `WasmError`
     /// for easier testing in native (non-WASM) contexts.
-    #[allow(clippy::too_many_lines, clippy::wrong_self_convention)]
+    #[allow(clippy::wrong_self_convention)]
     pub(crate) fn from_brep_impl(&mut self, json: &str) -> Result<u32, WasmError> {
+        let snapshot = self.topo().clone();
+        let result = self.from_brep_impl_unchecked(json);
+        if result.is_err() {
+            self.topo_mut().restore_preserving_handle_slots(&snapshot);
+        }
+        result
+    }
+
+    #[allow(clippy::too_many_lines, clippy::wrong_self_convention)]
+    fn from_brep_impl_unchecked(&mut self, json: &str) -> Result<u32, WasmError> {
         let parsed: serde_json::Value =
             serde_json::from_str(json).map_err(|e| WasmError::InvalidInput {
                 reason: format!("invalid BREP JSON: {e}"),
@@ -659,6 +836,95 @@ impl BrepKernel {
                         };
                     EdgeCurve::Ellipse(ellipse)
                 }
+                "hyperbola" => {
+                    let p = params.ok_or_else(|| WasmError::InvalidInput {
+                        reason: format!("edge {id}: hyperbola missing curveParams"),
+                    })?;
+                    let center = Self::parse_point3(
+                        p.get("center").and_then(|v| v.as_array()).ok_or_else(|| {
+                            WasmError::InvalidInput {
+                                reason: format!("edge {id}: hyperbola missing center"),
+                            }
+                        })?,
+                        "center",
+                    )?;
+                    let axis = Self::parse_vec3(
+                        p.get("axis").and_then(|v| v.as_array()).ok_or_else(|| {
+                            WasmError::InvalidInput {
+                                reason: format!("edge {id}: hyperbola missing axis"),
+                            }
+                        })?,
+                        "axis",
+                    )?;
+                    let major_axis = Self::parse_vec3(
+                        p.get("majorAxis")
+                            .and_then(|v| v.as_array())
+                            .ok_or_else(|| WasmError::InvalidInput {
+                                reason: format!("edge {id}: hyperbola missing majorAxis"),
+                            })?,
+                        "majorAxis",
+                    )?;
+                    let major_radius =
+                        p.get("majorRadius")
+                            .and_then(|v| v.as_f64())
+                            .ok_or_else(|| WasmError::InvalidInput {
+                                reason: format!("edge {id}: hyperbola missing majorRadius"),
+                            })?;
+                    let minor_radius =
+                        p.get("minorRadius")
+                            .and_then(|v| v.as_f64())
+                            .ok_or_else(|| WasmError::InvalidInput {
+                                reason: format!("edge {id}: hyperbola missing minorRadius"),
+                            })?;
+                    EdgeCurve::Hyperbola(Hyperbola3D::with_axes(
+                        center,
+                        axis,
+                        major_axis,
+                        major_radius,
+                        minor_radius,
+                    )?)
+                }
+                "parabola" => {
+                    let p = params.ok_or_else(|| WasmError::InvalidInput {
+                        reason: format!("edge {id}: parabola missing curveParams"),
+                    })?;
+                    let vertex = Self::parse_point3(
+                        p.get("vertex").and_then(|v| v.as_array()).ok_or_else(|| {
+                            WasmError::InvalidInput {
+                                reason: format!("edge {id}: parabola missing vertex"),
+                            }
+                        })?,
+                        "vertex",
+                    )?;
+                    let normal = Self::parse_vec3(
+                        p.get("axis").and_then(|v| v.as_array()).ok_or_else(|| {
+                            WasmError::InvalidInput {
+                                reason: format!("edge {id}: parabola missing axis"),
+                            }
+                        })?,
+                        "axis",
+                    )?;
+                    let axis_dir = Self::parse_vec3(
+                        p.get("axisDir").and_then(|v| v.as_array()).ok_or_else(|| {
+                            WasmError::InvalidInput {
+                                reason: format!("edge {id}: parabola missing axisDir"),
+                            }
+                        })?,
+                        "axisDir",
+                    )?;
+                    let focal_length =
+                        p.get("focalLength")
+                            .and_then(|v| v.as_f64())
+                            .ok_or_else(|| WasmError::InvalidInput {
+                                reason: format!("edge {id}: parabola missing focalLength"),
+                            })?;
+                    EdgeCurve::Parabola(Parabola3D::with_axes(
+                        vertex,
+                        axis_dir,
+                        normal.cross(axis_dir),
+                        focal_length,
+                    )?)
+                }
                 "nurbs" => {
                     let p = params.ok_or_else(|| WasmError::InvalidInput {
                         reason: format!("edge {id}: nurbs missing curveParams"),
@@ -724,10 +990,78 @@ impl BrepKernel {
                     EdgeCurve::Line
                 }
             };
-
-            let eid = self
-                .topo_mut()
-                .add_edge(Edge::new(start_vid, end_vid, curve));
+            let supplied_trim = match e.get("trim") {
+                None | Some(serde_json::Value::Null) => None,
+                Some(value) => {
+                    let values = value.as_array().ok_or_else(|| WasmError::InvalidInput {
+                        reason: format!("edge {id}: trim must be [start, end]"),
+                    })?;
+                    if values.len() != 2 {
+                        return Err(WasmError::InvalidInput {
+                            reason: format!("edge {id}: trim must contain exactly two values"),
+                        });
+                    }
+                    let t0 = values[0].as_f64().ok_or_else(|| WasmError::InvalidInput {
+                        reason: format!("edge {id}: invalid trim start"),
+                    })?;
+                    let t1 = values[1].as_f64().ok_or_else(|| WasmError::InvalidInput {
+                        reason: format!("edge {id}: invalid trim end"),
+                    })?;
+                    if !t0.is_finite() || !t1.is_finite() {
+                        return Err(WasmError::InvalidInput {
+                            reason: format!("edge {id}: trim values must be finite"),
+                        });
+                    }
+                    Some((t0, t1))
+                }
+            };
+            let start_point = self.topo.vertex(start_vid)?.point();
+            let end_point = self.topo.vertex(end_vid)?.point();
+            let closed = start_vid == end_vid;
+            let eid = if matches!(curve, EdgeCurve::Line) {
+                // Older BREP writers serialized endpoint-local line ranges.
+                // Their values never parameterized retained carrier geometry,
+                // so any finite pair normalizes to the intrinsic [0, 1].
+                self.topo_mut()
+                    .add_edge(Edge::new(start_vid, end_vid, EdgeCurve::Line))
+            } else {
+                let trim = if let Some(trim) = supplied_trim {
+                    trim
+                } else {
+                    match &curve {
+                        EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_) => {
+                            Self::periodic_trim_from_endpoints(
+                                &curve,
+                                start_point,
+                                end_point,
+                                closed,
+                            )?
+                        }
+                        EdgeCurve::Hyperbola(curve) => {
+                            (curve.project(start_point), curve.project(end_point))
+                        }
+                        EdgeCurve::Parabola(curve) => {
+                            (curve.project(start_point), curve.project(end_point))
+                        }
+                        EdgeCurve::NurbsCurve(curve) => {
+                            Self::native_nurbs_trim(curve, start_point, end_point, TOL)?
+                        }
+                        EdgeCurve::Line => {
+                            return Err(WasmError::InvalidInput {
+                                reason: format!("edge {id}: line trim reconstruction is invalid"),
+                            });
+                        }
+                    }
+                };
+                Self::certify_curve_trim(&curve, trim, start_point, end_point, closed, TOL)?;
+                let mut edge = Edge::with_tolerance(start_vid, end_vid, curve, Some(TOL));
+                edge.set_trim(Some(trim));
+                edge.strict_domain()
+                    .map_err(|error| WasmError::InvalidInput {
+                        reason: format!("edge {id}: invalid authoritative trim: {error}"),
+                    })?;
+                self.topo_mut().add_edge(edge)
+            };
             edge_map.insert(id, eid);
         }
 
@@ -1258,6 +1592,7 @@ mod tangent_arc_tests {
             .unwrap();
         let edge = get_edge(&k, eid);
         assert!(matches!(edge.curve(), EdgeCurve::Circle(_)));
+        assert_eq!(edge.strict_domain().unwrap(), (0.0, std::f64::consts::PI));
         if let EdgeCurve::Circle(c) = edge.curve() {
             assert!((c.radius() - 1.0).abs() < 1e-10);
             let center = c.center();
@@ -1275,8 +1610,14 @@ mod tangent_arc_tests {
             .unwrap();
         let edge = get_edge(&k, eid);
         assert!(matches!(edge.curve(), EdgeCurve::Circle(_)));
+        let (t0, t1) = edge.strict_domain().unwrap();
+        assert!((t0 - 0.0).abs() < 1e-12);
+        assert!((t1 - std::f64::consts::FRAC_PI_2).abs() < 1e-12);
         if let EdgeCurve::Circle(c) = edge.curve() {
             assert!((c.radius() - 1.0).abs() < 1e-10);
+            let midpoint = c.evaluate(f64::midpoint(t0, t1));
+            assert!((midpoint.x() - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-10);
+            assert!((midpoint.y() - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-10);
         }
         let s = k.topo.vertex(edge.start()).unwrap().point();
         let e = k.topo.vertex(edge.end()).unwrap().point();
@@ -1331,6 +1672,20 @@ mod tangent_arc_tests {
             .make_tangent_arc_3d_impl(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0)
             .unwrap_err();
         assert!(err.to_string().contains("tangent"));
+    }
+
+    #[test]
+    fn batch_tangent_arc_returns_strictly_trimmed_edge() {
+        let mut kernel = BrepKernel::new();
+        let output = kernel.execute_batch(
+            r#"[{"op":"makeTangentArc3d","args":{"startX":1,"startY":0,"startZ":0,"tangentX":0,"tangentY":1,"tangentZ":0,"endX":0,"endY":1,"endZ":0}}]"#,
+        );
+        let result: serde_json::Value = serde_json::from_str(&output).unwrap();
+        let handle = u32::try_from(result[0]["ok"].as_u64().unwrap()).unwrap();
+        let edge = get_edge(&kernel, handle);
+        let (start, end) = edge.strict_domain().unwrap();
+        assert!((start - 0.0).abs() < 1e-12);
+        assert!((end - std::f64::consts::FRAC_PI_2).abs() < 1e-12);
     }
 }
 
@@ -1400,6 +1755,7 @@ mod lift_curve2d_tests {
         assert!(e.x().abs() < 1e-10);
         assert!((e.y() - 1.0).abs() < 1e-10);
         assert!(matches!(edge.curve(), EdgeCurve::Circle(_)));
+        assert_eq!(edge.strict_domain().unwrap(), (0.0, FRAC_PI_2));
     }
 
     #[test]
@@ -1457,6 +1813,7 @@ mod lift_curve2d_tests {
         let edge_id = k.resolve_edge(eid).unwrap();
         let edge = k.topo.edge(edge_id).unwrap();
         assert_eq!(edge.start(), edge.end());
+        assert_eq!(edge.strict_domain().unwrap(), (0.0, TAU));
     }
 
     #[test]
@@ -1541,6 +1898,34 @@ mod lift_curve2d_tests {
         assert!((e.x() - 3.0).abs() < 1e-10);
         assert!((e.y() - 4.0).abs() < 1e-10);
         assert!(matches!(edge.curve(), EdgeCurve::NurbsCurve(_)));
+        assert_eq!(edge.strict_domain().unwrap(), (0.0, 1.0));
+    }
+
+    #[test]
+    fn nurbs2d_subspan_keeps_caller_parameter_authority() {
+        let mut kernel = BrepKernel::new();
+        let handle = kernel
+            .lift_curve2d_to_plane_impl(
+                3,
+                vec![1.0, 2.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 4.0, 0.0, 1.0, 1.0],
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+                0.25,
+                0.75,
+            )
+            .unwrap();
+        let edge_id = kernel.resolve_edge(handle).unwrap();
+        let edge = kernel.topo().edge(edge_id).unwrap();
+        assert_eq!(edge.strict_domain().unwrap(), (0.25, 0.75));
+        let midpoint = BrepKernel::curve_point(edge.curve(), 0.5);
+        assert!((midpoint - Point3::new(2.0, 0.0, 0.0)).length() < 1e-12);
     }
 
     #[test]
@@ -1587,5 +1972,123 @@ mod lift_curve2d_tests {
             )
             .unwrap_err();
         assert!(err.to_string().contains("Circle expects 3 params"));
+    }
+}
+
+#[cfg(test)]
+mod json_brep_trim_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+
+    fn circle_brep(trim: serde_json::Value) -> String {
+        serde_json::json!({
+            "vertices": [{"id": 0, "position": [1.0, 0.0, 0.0]}],
+            "edges": [{
+                "id": 0,
+                "curveType": "circle",
+                "curveParams": {
+                    "center": [0.0, 0.0, 0.0],
+                    "axis": [0.0, 0.0, 1.0],
+                    "xAxis": [1.0, 0.0, 0.0],
+                    "radius": 1.0
+                },
+                "trim": trim,
+                "startVertex": 0,
+                "endVertex": 0
+            }],
+            "faces": [{
+                "outerWireEdges": [0],
+                "outerWireOrientations": [true],
+                "surfaceType": "plane",
+                "surfaceParams": {"normal": [0.0, 0.0, 1.0], "d": 0.0},
+                "reversed": false,
+                "innerWires": []
+            }]
+        })
+        .to_string()
+    }
+
+    fn legacy_line_brep() -> String {
+        serde_json::json!({
+            "vertices": [
+                {"id": 0, "position": [0.0, 0.0, 0.0]},
+                {"id": 1, "position": [1.0, 0.0, 0.0]},
+                {"id": 2, "position": [0.0, 1.0, 0.0]}
+            ],
+            "edges": [
+                {"id": 0, "curveType": "line", "trim": [42.0, -17.0], "startVertex": 0, "endVertex": 1},
+                {"id": 1, "curveType": "line", "trim": [-3.0, -3.0], "startVertex": 1, "endVertex": 2},
+                {"id": 2, "curveType": "line", "trim": [9.0, 2.0], "startVertex": 2, "endVertex": 0}
+            ],
+            "faces": [{
+                "outerWireEdges": [0, 1, 2],
+                "outerWireOrientations": [true, true, true],
+                "surfaceType": "plane",
+                "surfaceParams": {"normal": [0.0, 0.0, 1.0], "d": 0.0},
+                "reversed": false,
+                "innerWires": []
+            }]
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn json_brep_import_preserves_authoritative_trim_and_interior() {
+        let mut kernel = BrepKernel::new();
+        let solid = kernel
+            .from_brep_impl(&circle_brep(serde_json::json!([
+                0.0,
+                std::f64::consts::TAU
+            ])))
+            .unwrap();
+        let solid_id = kernel.resolve_solid(solid).unwrap();
+        let edges = remus_topology::explorer::solid_edges(kernel.topo(), solid_id).unwrap();
+        let edge = kernel.topo().edge(edges[0]).unwrap();
+        assert_eq!(edge.strict_domain().unwrap(), (0.0, std::f64::consts::TAU));
+        let midpoint = BrepKernel::curve_point(edge.curve(), std::f64::consts::PI);
+        assert!((midpoint - Point3::new(-1.0, 0.0, 0.0)).length() < 1e-12);
+    }
+
+    #[test]
+    fn json_brep_invalid_trim_is_atomic() {
+        let mut kernel = BrepKernel::new();
+        let before = (
+            kernel.topo().num_vertices(),
+            kernel.topo().num_edges(),
+            kernel.topo().num_faces(),
+            kernel.topo().num_solids(),
+        );
+        let error = kernel
+            .from_brep_impl(&circle_brep(serde_json::json!([
+                0.0,
+                2.0 * std::f64::consts::TAU
+            ])))
+            .unwrap_err();
+        assert!(error.to_string().contains("periodic edge trim"));
+        assert_eq!(
+            before,
+            (
+                kernel.topo().num_vertices(),
+                kernel.topo().num_edges(),
+                kernel.topo().num_faces(),
+                kernel.topo().num_solids(),
+            )
+        );
+    }
+
+    #[test]
+    fn json_brep_normalizes_finite_legacy_line_trims() {
+        let mut kernel = BrepKernel::new();
+        let solid = kernel.from_brep_impl(&legacy_line_brep()).unwrap();
+        let solid = kernel.resolve_solid(solid).unwrap();
+        let edges = remus_topology::explorer::solid_edges(kernel.topo(), solid).unwrap();
+        assert_eq!(edges.len(), 3);
+        for edge in edges {
+            let edge = kernel.topo().edge(edge).unwrap();
+            assert!(matches!(edge.curve(), EdgeCurve::Line));
+            assert_eq!(edge.trim(), None);
+            assert_eq!(edge.strict_domain().unwrap(), (0.0, 1.0));
+        }
     }
 }

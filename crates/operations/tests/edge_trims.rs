@@ -5,21 +5,21 @@
 //! shortcuts, solid copies, transforms, and the arena format must carry those
 //! intervals without reconstructing them from endpoints.
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::f64::consts::TAU;
 
 use remus_math::mat::Mat4;
+use remus_operations::OperationsError;
 use remus_operations::boolean::{BooleanOp, boolean};
 use remus_operations::copy::copy_solid;
-use remus_operations::primitives::make_cylinder;
+use remus_operations::primitives::{make_cone, make_cylinder};
 use remus_operations::transform::transform_solid;
 use remus_topology::edge::EdgeCurve;
 use remus_topology::{SolidId, Topology};
 
-/// A cylinder whose rim circle edge gets an explicit (partial) trim
-/// stamped on it, standing in for a boolean split arc.
-fn cylinder_with_trimmed_rim() -> (Topology, remus_topology::SolidId) {
+/// A cylinder with one authoritative seam-anchored full-turn rim.
+fn cylinder_with_trimmed_rim() -> (Topology, remus_topology::SolidId, (f64, f64)) {
     let mut topo = Topology::new();
     let solid = make_cylinder(&mut topo, 3.0, 4.0).unwrap();
     let rims: Vec<_> = topo
@@ -28,15 +28,9 @@ fn cylinder_with_trimmed_rim() -> (Topology, remus_topology::SolidId) {
         .filter(|(_, e)| matches!(e.curve(), EdgeCurve::Circle(_)))
         .map(|(id, _)| id)
         .collect();
-    for &rim in &rims {
-        topo.edge_mut(rim).unwrap().set_trim(None);
-    }
-    // Not geometrically meaningful for the closed rim; the point is purely
-    // that the stored interval survives every copy path bit-for-bit.
-    let mut edge = topo.edge(rims[0]).unwrap().clone();
-    edge.set_trim(Some((0.5, 2.5)));
-    *topo.edge_mut(rims[0]).unwrap() = edge;
-    (topo, solid)
+    let trim = topo.edge(rims[0]).unwrap().trim().unwrap();
+    topo.edge_mut(rims[1]).unwrap().set_trim(None);
+    (topo, solid, trim)
 }
 
 fn trimmed_edges(topo: &Topology) -> usize {
@@ -56,23 +50,99 @@ fn solid_trims(topo: &Topology, solid: SolidId) -> Vec<(f64, f64)> {
     trims
 }
 
-fn stamp_exact_full_circle_trims(topo: &mut Topology, solid: SolidId) {
+fn assert_primitive_full_circle_contract(
+    topo: &Topology,
+    solid: SolidId,
+    expected_circles: usize,
+    expected_volume: f64,
+) {
+    let mut circles = 0;
     for edge_id in remus_topology::explorer::solid_edges(topo, solid).unwrap() {
         let edge = topo.edge(edge_id).unwrap();
-        let EdgeCurve::Circle(circle) = edge.curve() else {
-            continue;
-        };
-        let start = topo.vertex(edge.start()).unwrap().point();
-        let parameter = circle.project(start);
-        topo.edge_mut(edge_id)
-            .unwrap()
-            .set_trim(Some((parameter, parameter + TAU)));
+        match edge.curve() {
+            EdgeCurve::Circle(circle) => {
+                circles += 1;
+                let (t0, t1) = edge.trim().expect("primitive rim needs an explicit trim");
+                assert!(t0.is_finite() && t1.is_finite());
+                assert!((t1 - t0 - TAU).abs() < 1e-12);
+                let vertex = topo.vertex(edge.start()).unwrap().point();
+                assert!((circle.evaluate(t0) - vertex).length() < 1e-9);
+                assert!((circle.evaluate(t1) - vertex).length() < 1e-9);
+            }
+            EdgeCurve::Line => {
+                assert!(edge.trim().is_none(), "primitive seam lines stay untrimmed");
+            }
+            other => panic!("unexpected primitive edge curve: {}", other.type_tag()),
+        }
+    }
+    assert_eq!(circles, expected_circles);
+
+    let volume = remus_operations::measure::solid_volume(topo, solid, 0.001).unwrap();
+    assert!(
+        (volume - expected_volume).abs() < 1e-3,
+        "closed-form volume oracle: {volume} vs {expected_volume}"
+    );
+}
+
+#[test]
+fn primitive_cylinder_rims_are_explicit_full_turns() {
+    let mut topo = Topology::new();
+    let solid = make_cylinder(&mut topo, 3.0, 4.0).unwrap();
+    assert_primitive_full_circle_contract(&topo, solid, 2, std::f64::consts::PI * 9.0 * 4.0);
+}
+
+#[test]
+fn primitive_pointed_cone_rim_is_an_explicit_full_turn() {
+    for (bottom, top) in [(2.0, 0.0), (0.0, 2.0)] {
+        let mut topo = Topology::new();
+        let solid = make_cone(&mut topo, bottom, top, 3.0).unwrap();
+        let expected = std::f64::consts::PI * 4.0;
+        assert_primitive_full_circle_contract(&topo, solid, 1, expected);
+    }
+}
+
+#[test]
+fn primitive_frustum_rims_are_explicit_full_turns() {
+    let mut topo = Topology::new();
+    let solid = make_cone(&mut topo, 2.0, 1.0, 3.0).unwrap();
+    let expected = std::f64::consts::PI * 7.0;
+    assert_primitive_full_circle_contract(&topo, solid, 2, expected);
+}
+
+#[test]
+fn primitive_trim_writers_refuse_non_finite_dimensions() {
+    for (radius, height) in [
+        (f64::NAN, 1.0),
+        (f64::INFINITY, 1.0),
+        (1.0, f64::NAN),
+        (1.0, f64::INFINITY),
+    ] {
+        let mut topo = Topology::new();
+        assert!(matches!(
+            make_cylinder(&mut topo, radius, height),
+            Err(OperationsError::InvalidInput { .. })
+        ));
+        assert_eq!(topo.edges().len(), 0, "refusal must precede allocation");
+    }
+
+    for (bottom, top, height) in [
+        (f64::NAN, 1.0, 1.0),
+        (1.0, f64::INFINITY, 1.0),
+        (1.0, 0.0, f64::NAN),
+        (1.0, 0.0, f64::INFINITY),
+    ] {
+        let mut topo = Topology::new();
+        assert!(matches!(
+            make_cone(&mut topo, bottom, top, height),
+            Err(OperationsError::InvalidInput { .. })
+        ));
+        assert_eq!(topo.edges().len(), 0, "refusal must precede allocation");
     }
 }
 
 #[test]
 fn trims_survive_solid_copy() {
-    let (mut topo, solid) = cylinder_with_trimmed_rim();
+    let (mut topo, solid, _) = cylinder_with_trimmed_rim();
     assert_eq!(trimmed_edges(&topo), 1);
     let copied = copy_solid(&mut topo, solid).unwrap();
     assert_ne!(copied, solid);
@@ -85,7 +155,7 @@ fn trims_survive_solid_copy() {
 
 #[test]
 fn trims_survive_arena_round_trip() {
-    let (topo, solid) = cylinder_with_trimmed_rim();
+    let (topo, solid, expected) = cylinder_with_trimmed_rim();
     let bytes = remus_io::arena_io::serialize_solid(&topo, solid).unwrap();
     let mut restored = Topology::new();
     let _ = remus_io::arena_io::deserialize_solid(&bytes, &mut restored).unwrap();
@@ -94,7 +164,11 @@ fn trims_survive_arena_round_trip() {
         .iter()
         .filter_map(|(_, e)| e.trim())
         .collect();
-    assert_eq!(trims, vec![(0.5, 2.5)]);
+    assert_eq!(
+        trims,
+        vec![expected, expected],
+        "the legacy missing rim range must be reconstructed during replay"
+    );
 }
 
 #[test]
@@ -102,8 +176,6 @@ fn coaxial_cylinder_fast_path_preserves_full_circle_trims() {
     let mut topo = Topology::new();
     let lower = make_cylinder(&mut topo, 2.0, 2.0).unwrap();
     let upper = make_cylinder(&mut topo, 2.0, 2.0).unwrap();
-    stamp_exact_full_circle_trims(&mut topo, lower);
-    stamp_exact_full_circle_trims(&mut topo, upper);
     transform_solid(&mut topo, upper, &Mat4::translation(0.0, 0.0, 1.0)).unwrap();
 
     let result = boolean(&mut topo, BooleanOp::Fuse, lower, upper).unwrap();
@@ -190,8 +262,6 @@ fn coaxial_cylinder_fast_path_keeps_each_rim_in_phase() {
     let mut topo = Topology::new();
     let lower = make_cylinder(&mut topo, 2.0, 2.0).unwrap();
     let upper = make_cylinder(&mut topo, 2.0, 2.0).unwrap();
-    stamp_exact_full_circle_trims(&mut topo, lower);
-    stamp_exact_full_circle_trims(&mut topo, upper);
     transform_solid(&mut topo, upper, &Mat4::translation(0.0, 0.0, 1.0)).unwrap();
 
     let result = boolean(&mut topo, BooleanOp::Fuse, lower, upper).unwrap();
@@ -207,4 +277,187 @@ fn coaxial_cylinder_fast_path_keeps_each_rim_in_phase() {
             "stored interval must start at this rim's own vertex: {t0} vs {anchor}"
         );
     }
+}
+
+/// Same full-circle contract as the cylinder shortcut, on the coaxial-cone
+/// frustum merge.
+#[test]
+fn coaxial_cone_fast_path_preserves_full_circle_trims() {
+    let mut topo = Topology::new();
+    // Frustums of the same cone (apex z = -2, slope 0.5): r = 1..2 and 2..3.
+    let lower = make_cone(&mut topo, 1.0, 2.0, 2.0).unwrap();
+    let upper = make_cone(&mut topo, 2.0, 3.0, 2.0).unwrap();
+    // A source may encode a full circle with the opposite parameter sense.
+    // Fresh shortcut topology keeps its constructor's coedge winding and
+    // therefore canonicalizes the new rims to positive full turns.
+    for edge_id in remus_topology::explorer::solid_edges(&topo, lower).unwrap() {
+        let edge = topo.edge(edge_id).unwrap();
+        let EdgeCurve::Circle(circle) = edge.curve() else {
+            continue;
+        };
+        let start = circle.project(topo.vertex(edge.start()).unwrap().point());
+        topo.edge_mut(edge_id)
+            .unwrap()
+            .set_trim(Some((start, start - TAU)));
+    }
+    transform_solid(&mut topo, upper, &Mat4::translation(0.0, 0.0, 2.0)).unwrap();
+
+    let result = boolean(&mut topo, BooleanOp::Fuse, lower, upper).unwrap();
+    assert_eq!(
+        remus_topology::explorer::solid_entity_counts(&topo, result).unwrap(),
+        (3, 3, 2),
+        "coaxial shortcut must return one analytic cone frustum"
+    );
+    let result_trims = solid_trims(&topo, result);
+    assert_eq!(result_trims.len(), 2, "both rims must carry intervals");
+    assert!(
+        result_trims
+            .iter()
+            .all(|(start, end)| ((end - start) - TAU).abs() < 1e-12),
+        "rebuilt rims must retain exact full-turn domains: {result_trims:?}"
+    );
+
+    let vol = remus_operations::measure::solid_volume(&topo, result, 0.01).unwrap();
+    // Frustum of slope 0.5 from z=0 (r=1) to z=4 (r=3):
+    // V = pi*h/3*(R^2 + R*r + r^2) = pi*4/3*(9+3+1) = 52/3*pi.
+    let expected = 52.0 / 3.0 * std::f64::consts::PI;
+    assert!(
+        (vol - expected).abs() < 1e-3,
+        "volume oracle: {vol} vs {expected}"
+    );
+}
+
+/// Analytic fast paths that mint arc edges into RESULT topology must store
+/// the exact CCW span instead of leaving consumers to re-derive it through
+/// the projection fallback (RFC 0002 reader migration). The box-sphere
+/// octant shortcut's three boundary arcs are quarter circles.
+#[test]
+fn box_sphere_intersect_shortcut_arcs_carry_quarter_span_trims() {
+    let mut topo = Topology::new();
+    let bx = remus_operations::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+    let sp = remus_operations::primitives::make_sphere(&mut topo, 7.0, 16).unwrap();
+    let result = boolean(&mut topo, BooleanOp::Intersect, bx, sp).unwrap();
+
+    let mut arc_trims = Vec::new();
+    for edge_id in remus_topology::explorer::solid_edges(&topo, result).unwrap() {
+        let edge = topo.edge(edge_id).unwrap();
+        if let EdgeCurve::Circle(_) = edge.curve() {
+            arc_trims.push(edge.trim().expect("octant arc carries an exact span"));
+        }
+    }
+    assert_eq!(arc_trims.len(), 3, "three quarter-arc edges: {arc_trims:?}");
+    for (t0, t1) in &arc_trims {
+        assert!(
+            (t1 - t0 - std::f64::consts::FRAC_PI_2).abs() < 1e-9,
+            "each octant arc spans exactly a quarter turn: ({t0}, {t1})"
+        );
+    }
+
+    // The stored span must anchor at each arc's own start vertex.
+    for edge_id in remus_topology::explorer::solid_edges(&topo, result).unwrap() {
+        let edge = topo.edge(edge_id).unwrap();
+        if let EdgeCurve::Circle(circle) = edge.curve() {
+            let (t0, _) = edge.trim().expect("octant arc carries an exact span");
+            let anchor = circle.project(topo.vertex(edge.start()).unwrap().point());
+            assert!(
+                (t0 - anchor).abs() < 1e-9,
+                "trim anchors at the arc's own start vertex: {t0} vs {anchor}"
+            );
+        }
+    }
+
+    // The analytic census and oracle are unchanged by storing the spans.
+    let (f, e, v) = remus_topology::explorer::solid_entity_counts(&topo, result).unwrap();
+    assert_eq!((f, e, v), (4, 6, 4), "octant topology unchanged");
+    let vol = remus_operations::measure::solid_volume(&topo, result, 0.01).unwrap();
+    let exact = std::f64::consts::PI * 7.0_f64.powi(3) / 6.0;
+    assert!(
+        (vol - exact).abs() < 0.5,
+        "closed-form octant volume: {vol} vs {exact}"
+    );
+}
+
+/// `copy_and_transform_solid` must apply the same exact trim policy as
+/// `transform_edges` (they duplicated the curve math until the helper was
+/// shared): retain under a similarity, remap the Circle→Ellipse axis swap,
+/// drop only where the parameterization provably changes.
+#[test]
+fn copy_and_transform_solid_follows_the_exact_trim_policy() {
+    let mut topo = Topology::new();
+    let solid = make_cylinder(&mut topo, 3.0, 4.0).unwrap();
+    let source_trims = solid_trims(&topo, solid);
+    assert_eq!(source_trims.len(), 2);
+    let seam = remus_topology::explorer::solid_edges(&topo, solid)
+        .unwrap()
+        .into_iter()
+        .find(|&e| matches!(topo.edge(e).unwrap().curve(), EdgeCurve::Line))
+        .unwrap();
+    topo.edge_mut(seam).unwrap().set_trim(Some((2.0, 3.0)));
+
+    // Pure translation: the parameterization is untouched — trim retained.
+    let moved = remus_operations::copy::copy_and_transform_solid(
+        &mut topo,
+        solid,
+        &Mat4::translation(5.0, 0.0, 0.0),
+    )
+    .unwrap();
+    assert_eq!(solid_trims(&topo, moved), source_trims);
+
+    // Rotation: still a similarity — trim retained.
+    let rotated = remus_operations::copy::copy_and_transform_solid(
+        &mut topo,
+        solid,
+        &Mat4::rotation_z(std::f64::consts::FRAC_PI_2),
+    )
+    .unwrap();
+    assert_eq!(solid_trims(&topo, rotated), source_trims);
+
+    // Anisotropic x-scale: the primitive circle's +Z frame has its major
+    // transformed extent on the second axis. The right-handed axis swap maps
+    // `t` exactly to `t - π/2`.
+    let stretched = remus_operations::copy::copy_and_transform_solid(
+        &mut topo,
+        solid,
+        &Mat4::scale(2.0, 1.0, 1.0),
+    )
+    .unwrap();
+    let mut expected_stretched: Vec<_> = source_trims
+        .iter()
+        .map(|(t0, t1)| {
+            (
+                t0 - std::f64::consts::FRAC_PI_2,
+                t1 - std::f64::consts::FRAC_PI_2,
+            )
+        })
+        .collect();
+    expected_stretched.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
+    assert_eq!(solid_trims(&topo, stretched), expected_stretched);
+    let stretched_edges = remus_topology::explorer::solid_edges(&topo, stretched).unwrap();
+    let mut ellipse_count = 0;
+    for edge_id in stretched_edges {
+        let edge = topo.edge(edge_id).unwrap();
+        let EdgeCurve::Ellipse(ellipse) = edge.curve() else {
+            continue;
+        };
+        ellipse_count += 1;
+        assert!(
+            ellipse
+                .u_axis()
+                .cross(ellipse.v_axis())
+                .dot(ellipse.normal())
+                > 0.999_999,
+            "transformed ellipse frame must remain right-handed"
+        );
+        let (t0, t1) = edge.trim().unwrap();
+        let start = topo.vertex(edge.start()).unwrap().point();
+        assert!((ellipse.evaluate(t0) - start).length() < 1e-9);
+        assert!((ellipse.evaluate(t1) - start).length() < 1e-9);
+    }
+    assert_eq!(ellipse_count, 2);
+
+    transform_solid(&mut topo, solid, &Mat4::translation(0.0, 0.0, 1.0)).unwrap();
+    assert!(
+        topo.edge(seam).unwrap().trim().is_none(),
+        "Line geometry is endpoint-normalized and cannot retain an explicit trim"
+    );
 }

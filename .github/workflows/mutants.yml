@@ -9,6 +9,10 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+# Scheduled/dispatch-only workflow; read-only token is sufficient.
+permissions:
+  contents: read
+
 jobs:
   mutants:
     name: Cargo Mutants
@@ -23,11 +27,9 @@ jobs:
         with:
           fetch-depth: 0
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
-      - uses: taiki-e/install-action@288e746965032cfcc232e09af2daf5f23c14d780 # v2.62.30
+      - uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518 # v2.62.30
         with:
-          tool: nextest
-      - name: Install cargo-mutants
-        run: cargo install cargo-mutants --version 27.0.0 --locked
+          tool: nextest,cargo-mutants@27.0.0
       # The package list and mutants.toml's examine_globs INTERSECT: a glob for
       # a package not named here is silently inert. Adding the engine crates to
       # mutants.toml alone would have changed nothing.

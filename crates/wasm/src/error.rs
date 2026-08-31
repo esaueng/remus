@@ -68,6 +68,7 @@ pub(crate) enum WasmErrorCode {
     InvalidHandle,
     TopologyError,
     OperationFailed,
+    Cancelled,
     #[cfg_attr(not(feature = "io"), allow(dead_code))]
     ResourceLimitExceeded,
     InternalError,
@@ -88,6 +89,7 @@ impl WasmErrorCode {
                 FailureCategory::ResourceLimit
             }
             Self::TopologyError => FailureCategory::InvalidTopology,
+            Self::Cancelled => FailureCategory::Cancelled,
             Self::OperationFailed | Self::InternalError => FailureCategory::Internal,
         }
     }
@@ -306,6 +308,13 @@ impl From<remus_topology::TopologyError> for StructuredWasmError {
                 ("face", Some(face.index()))
             }
             remus_topology::TopologyError::Empty { entity } => (*entity, None),
+            remus_topology::TopologyError::InvalidToleranceValue { entity, .. } => (*entity, None),
+            remus_topology::TopologyError::VertexBallExceeded { vertex, .. } => {
+                ("vertex", Some(vertex.index()))
+            }
+            remus_topology::TopologyError::EdgeTubeExceeded { face, .. } => {
+                ("face", Some(face.index()))
+            }
             remus_topology::TopologyError::NonManifold { .. } => ("topology", None),
         };
         let mut structured = Self::new(WasmErrorCode::TopologyError, message);
@@ -325,6 +334,7 @@ impl From<remus_math::MathError> for StructuredWasmError {
     fn from(error: remus_math::MathError) -> Self {
         let code = match &error {
             remus_math::MathError::ConvergenceFailure { .. } => WasmErrorCode::OperationFailed,
+            remus_math::MathError::Cancelled => WasmErrorCode::Cancelled,
             _ => WasmErrorCode::InvalidArgument,
         };
         Self::new(code, error.to_string()).with_kernel_diagnostic(&error)
@@ -346,14 +356,52 @@ impl From<remus_operations::OperationsError> for StructuredWasmError {
     fn from(error: remus_operations::OperationsError) -> Self {
         let message = error.to_string();
         match error {
+            remus_operations::OperationsError::ExactOnlyUnattainable => {
+                let mut structured = Self::operation_failed(message);
+                structured.category = FailureCategory::QualityRefused.as_str();
+                structured.details.insert(
+                    "kernelCode".to_string(),
+                    Value::from("exact_only_unattainable"),
+                );
+                structured
+            }
             remus_operations::OperationsError::InvalidInput { .. } => {
                 Self::invalid_argument(message, None)
             }
             remus_operations::OperationsError::Topology(error) => Self::from(error),
             remus_operations::OperationsError::Math(error) => Self::from(error),
+            remus_operations::OperationsError::Algo(remus_algo::error::AlgoError::Math(error)) => {
+                Self::from(error)
+            }
             remus_operations::OperationsError::Check(error) => {
                 let mut structured = Self::from(error);
                 structured.message = message;
+                structured
+            }
+            remus_operations::OperationsError::PatternInstancesOverlap {
+                first,
+                second,
+                overlap_volume,
+                threshold,
+            } => {
+                let mut structured = Self::operation_failed(message);
+                structured.category = FailureCategory::Unsupported.as_str();
+                structured.details.insert(
+                    "kernelCode".to_string(),
+                    Value::from("pattern_instances_overlap"),
+                );
+                structured
+                    .details
+                    .insert("firstInstance".to_string(), Value::from(first));
+                structured
+                    .details
+                    .insert("secondInstance".to_string(), Value::from(second));
+                structured
+                    .details
+                    .insert("overlapVolume".to_string(), Value::from(overlap_volume));
+                structured
+                    .details
+                    .insert("threshold".to_string(), Value::from(threshold));
                 structured
             }
             _ => Self::operation_failed(message),
@@ -502,6 +550,31 @@ pub fn validate_move_faces_work(
         });
     }
     Ok(())
+}
+
+/// Validate a JS-supplied iteration budget (a non-negative integer count).
+///
+/// Zero is legal — it disables the governed refinement entirely, matching the
+/// Rust-side `WorkBudgets` semantics. The upper bound reuses the public work
+/// budget so a JS caller cannot buy unbounded per-refinement work.
+///
+/// # Errors
+///
+/// Returns [`WasmError::InvalidInput`] if `value` is NaN, infinite, negative,
+/// fractional, or exceeds the public work budget.
+pub fn validate_iteration_budget(value: f64, name: &str) -> Result<usize, WasmError> {
+    validate_finite(value, name)?;
+    if value < 0.0 || value.fract() != 0.0 {
+        return Err(WasmError::InvalidInput {
+            reason: format!("{name} must be a non-negative integer, got {value}"),
+        });
+    }
+    if value > f64::from(MAX_WASM_WORK_ITEMS) {
+        return Err(WasmError::InvalidInput {
+            reason: format!("{name} must be at most {MAX_WASM_WORK_ITEMS}, got {value}"),
+        });
+    }
+    Ok(value as usize)
 }
 
 /// Bound a potentially quadratic face-pair query before topology work starts.

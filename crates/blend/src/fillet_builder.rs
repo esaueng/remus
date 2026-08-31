@@ -19,8 +19,9 @@ use remus_topology::wire::{OrientedEdge, Wire, WireId};
 use crate::analytic;
 use crate::blend_func::{ConstRadBlend, EvolRadBlend};
 use crate::builder_utils::{
-    FlippedNormalSurface, project_onto_axis, radial_distance, sample_nurbs_endpoints,
-    surface_ref_or_adapter, wire_axial_range, wire_radial_extremum,
+    FlippedNormalSurface, add_certified_curve_edge, project_onto_axis, radial_distance,
+    refuse_non_line_rim_neighbors, sample_nurbs_endpoints, surface_ref_or_adapter,
+    wire_axial_range, wire_radial_extremum,
 };
 use crate::corner;
 use crate::g1_chain;
@@ -526,16 +527,23 @@ fn make_end_arc(
         let delta = if delta < 1e-12 { TAU } else { delta };
         ParametricCurve::evaluate(&circle, a0 + delta / 2.0)
     };
-    let (start, end) = if (mid_of(pa, pb) - v_pt).length() <= (mid_of(pb, pa) - v_pt).length() {
-        (c_a, c_b)
-    } else {
-        (c_b, c_a)
-    };
-    Ok(Some(topo.add_edge(Edge::new(
+    let (start, end, start_point, end_point) =
+        if (mid_of(pa, pb) - v_pt).length() <= (mid_of(pb, pa) - v_pt).length() {
+            (c_a, c_b, pa, pb)
+        } else {
+            (c_b, c_a, pb, pa)
+        };
+    let start_parameter = circle.project(start_point);
+    let delta = (circle.project(end_point) - start_parameter).rem_euclid(TAU);
+    let delta = if delta < 1e-12 { TAU } else { delta };
+    let edge = add_certified_curve_edge(
+        topo,
         start,
         end,
         EdgeCurve::Circle(circle),
-    ))))
+        (start_parameter, start_parameter + delta),
+    )?;
+    Ok(Some(edge))
 }
 
 /// Close one spine end of a straight-edge fillet against the surrounding
@@ -999,15 +1007,16 @@ fn closed_rim_info(topo: &Topology, stripe: &Stripe) -> Result<Option<ClosedRimI
         return Ok(None);
     }
     let rim_edge = edges[0];
-    {
+    let rim_normal = {
         let e = topo.edge(rim_edge)?;
         if e.start() != e.end() {
             return Ok(None);
         }
-        if !matches!(e.curve(), EdgeCurve::Circle(_)) {
+        let EdgeCurve::Circle(circle) = e.curve() else {
             return Ok(None);
-        }
-    }
+        };
+        circle.normal()
+    };
 
     // One side is the plane (cap), the other the cylinder/cone wall.
     let s1 = topo.face(stripe.face1)?.surface().clone();
@@ -1098,8 +1107,11 @@ fn closed_rim_info(topo: &Topology, stripe: &Stripe) -> Result<Option<ClosedRimI
         let v = topo.vertex(topo.edge(rim_edge)?.start())?.point() - axis_origin;
         v - axis * axis.dot(v)
     };
-    let plate_circle = Circle3D::new_with_ref(plate_center, axis, plate_radius, seam_dir)?;
-    let wall_circle = Circle3D::new_with_ref(wall_center, axis, wall_radius, seam_dir)?;
+    // Keep the source rim's parameter direction. The cap and wall retain the
+    // source edge-use flags, so rebuilding around the unsigned wall axis can
+    // silently reverse a bore loop whose source circle uses the opposite axis.
+    let plate_circle = Circle3D::new_with_ref(plate_center, rim_normal, plate_radius, seam_dir)?;
+    let wall_circle = Circle3D::new_with_ref(wall_center, rim_normal, wall_radius, seam_dir)?;
 
     // When the contact moves INTO the wall, the rebuild shortens the wall to
     // meet it — and can only do that with material the wall HAS. On a 6 mm
@@ -1282,6 +1294,15 @@ fn assemble_closed_rim(
         }
     }
 
+    let old_rim_vertex = topo.edge(rim.rim_edge)?.start();
+    refuse_non_line_rim_neighbors(
+        topo,
+        &wall_oriented,
+        rim.rim_edge,
+        old_rim_vertex,
+        rim.wall_face,
+    )?;
+
     // Vertices for the two closed contact circles (start == end → degenerate).
     let plate_point = rim.plate_circle.evaluate(0.0);
     let wall_point = rim.wall_circle.evaluate(0.0);
@@ -1289,16 +1310,20 @@ fn assemble_closed_rim(
     let wall_v = topo.add_vertex(Vertex::new(wall_point, TOL));
 
     // Shared contact-circle edges.
-    let plate_edge = topo.add_edge(Edge::new(
+    let plate_edge = add_certified_curve_edge(
+        topo,
         plate_v,
         plate_v,
         EdgeCurve::Circle(rim.plate_circle.clone()),
-    ));
-    let wall_edge = topo.add_edge(Edge::new(
+        (0.0, std::f64::consts::TAU),
+    )?;
+    let wall_edge = add_certified_curve_edge(
+        topo,
         wall_v,
         wall_v,
         EdgeCurve::Circle(rim.wall_circle.clone()),
-    ));
+        (0.0, std::f64::consts::TAU),
+    )?;
     // Exact minor-circle seam connecting the two contacts. A straight chord is
     // not on the torus and makes paired rim fillets lose volume during surface
     // integration. Choose the circle normal from the ordered contact vectors
@@ -1310,8 +1335,22 @@ fn assemble_closed_rim(
     let seam_normal = (plate_point - seam_center)
         .cross(wall_point - seam_center)
         .normalize()?;
-    let seam_circle = Circle3D::new(seam_center, seam_normal, torus.minor_radius())?;
-    let seam_edge = topo.add_edge(Edge::new(plate_v, wall_v, EdgeCurve::Circle(seam_circle)));
+    let seam_circle = Circle3D::new_with_ref(
+        seam_center,
+        seam_normal,
+        torus.minor_radius(),
+        plate_point - seam_center,
+    )?;
+    let seam_end = seam_circle
+        .project(wall_point)
+        .rem_euclid(std::f64::consts::TAU);
+    let seam_edge = add_certified_curve_edge(
+        topo,
+        plate_v,
+        wall_v,
+        EdgeCurve::Circle(seam_circle),
+        (0.0, seam_end),
+    )?;
 
     // --- Rebuild the cap with the rim loop replaced by the plate contact. ---
     // Exactly one of the cap's loops is the rim; that loop becomes the
@@ -1376,7 +1415,6 @@ fn assemble_closed_rim(
     // any seam edge touching the old rim vertex so its lower endpoint becomes
     // the new wall-circle vertex (otherwise the wire no longer closes — the
     // seam would still start at the old rim height).
-    let old_rim_vertex = topo.edge(rim.rim_edge)?.start();
     // A seam edge may appear twice in the wall wire (fwd + rev); rebuild each
     // distinct edge once so both references share the new edge (otherwise the
     // two copies each become a free edge).
@@ -1396,7 +1434,11 @@ fn assemble_closed_rim(
                 id
             } else {
                 // Rebuild this edge with `wall_v` substituted for the old rim vertex.
-                let curve = e.curve().clone();
+                if !matches!(e.curve(), EdgeCurve::Line) {
+                    return Err(BlendError::TrimmingFailure {
+                        face: rim.wall_face,
+                    });
+                }
                 let new_start = if e.start() == old_rim_vertex {
                     wall_v
                 } else {
@@ -1407,7 +1449,7 @@ fn assemble_closed_rim(
                 } else {
                     e.end()
                 };
-                let id = topo.add_edge(Edge::new(new_start, new_end, curve));
+                let id = topo.add_edge(Edge::new(new_start, new_end, EdgeCurve::Line));
                 rebuilt.insert(oe.edge(), id);
                 id
             };
@@ -1861,6 +1903,42 @@ mod tests {
     use remus_topology::adjacency::AdjacencyIndex;
     use remus_topology::face::FaceSurface;
     use remus_topology::test_utils::make_unit_cube_manifold;
+
+    #[test]
+    fn straight_spine_end_arc_stores_selected_quarter_turn_authority() {
+        let mut topo = Topology::new();
+        let center = Point3::new(0.0, 0.0, 0.0);
+        let first = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
+        let second = topo.add_vertex(Vertex::new(Point3::new(0.0, 1.0, 0.0), 1e-7));
+        let diagonal = 0.5_f64.sqrt();
+        let selected_midpoint = Point3::new(diagonal, diagonal, 0.0);
+
+        let arc = make_end_arc(
+            &mut topo,
+            first,
+            second,
+            center,
+            Vec3::new(0.0, 0.0, 1.0),
+            1.0,
+            selected_midpoint,
+        )
+        .unwrap()
+        .expect("quarter-turn end arc");
+        let edge = topo.edge(arc).unwrap();
+        let range = edge.strict_domain().unwrap();
+        assert!((range.1 - range.0 - std::f64::consts::FRAC_PI_2).abs() < 1e-12);
+
+        let start = topo.vertex(edge.start()).unwrap().point();
+        let end = topo.vertex(edge.end()).unwrap().point();
+        assert!(
+            (edge.curve().evaluate_with_endpoints(range.0, start, end) - start).length() < 1e-12
+        );
+        assert!((edge.curve().evaluate_with_endpoints(range.1, start, end) - end).length() < 1e-12);
+        let midpoint =
+            edge.curve()
+                .evaluate_with_endpoints(f64::midpoint(range.0, range.1), start, end);
+        assert!((midpoint - selected_midpoint).length() < 1e-12);
+    }
 
     #[test]
     fn fillet_builder_empty_edges_error() {

@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/*"]
+members = ["crates/*", "tools/*"]
 resolver = "3"
 
 [workspace.package]
@@ -32,8 +32,8 @@ smallvec = "1"
 
 # WASM
 serde-wasm-bindgen = "0.6"
-tsify = {version = "0.5", features = ["js"]}
-wasm-bindgen = "=0.2.126"                    # Pinned: must match wasm-bindgen-cli in CI
+tsify = {version = "0.5.8", features = ["js"]}
+wasm-bindgen = "=0.2.126"                      # Pinned: must match wasm-bindgen-cli in CI
 
 # Testing
 proptest = "1"
@@ -121,3 +121,12 @@ debug = true
 inherits = "release"
 lto = false
 opt-level = 3
+
+# CI's geometry-heavy tests spend far more time executing than compiling.
+# Keep test assertions and overflow checks while enabling lightweight
+# optimization and omitting debug info that hosted runners never consume.
+[profile.ci-test]
+debug = false
+incremental = false
+inherits = "test"
+opt-level = 1

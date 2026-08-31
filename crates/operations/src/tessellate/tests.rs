@@ -1728,6 +1728,36 @@ fn tessellate_thin_box() {
 }
 
 #[test]
+fn analytic_grid_refuses_an_unbounded_deflection() {
+    // `nu`/`nv` come straight from the chord-deviation helper, so a small enough
+    // deflection asks for an arbitrarily large grid. Before the bound, a torus at
+    // 1e-6 allocated until the process died; it now refuses in microseconds.
+    let mut topo = Topology::new();
+    let torus = crate::primitives::make_torus(&mut topo, 10.0, 3.0, 32).unwrap();
+
+    let refused = super::tessellate_solid(&topo, torus, 1e-6);
+    assert!(
+        refused.is_err(),
+        "an unbounded analytic grid must be refused, not attempted; got {} triangles",
+        refused.map_or(0, |m| m.indices.len() / 3)
+    );
+    if let Err(err) = super::tessellate_solid(&topo, torus, 1e-6) {
+        assert!(
+            err.to_string().contains("work limit"),
+            "expected the grid work-limit refusal, got: {err}"
+        );
+    }
+
+    // A deflection a caller would actually use is untouched.
+    let mesh = super::tessellate_solid(&topo, torus, 1e-2).unwrap();
+    assert!(
+        mesh.indices.len() / 3 > 1000,
+        "a normal deflection must still tessellate, got {} triangles",
+        mesh.indices.len() / 3
+    );
+}
+
+#[test]
 fn tessellate_small_torus_reasonable_count() {
     let mut topo = Topology::new();
     let solid = crate::primitives::make_torus(&mut topo, 5.0, 0.1, 32).unwrap();
@@ -3078,7 +3108,20 @@ fn welded_mesh_quality_rejects_out_of_range_indices_without_panicking() {
     };
     let quality = welded_mesh_quality(&mesh);
     assert!(!quality.is_watertight());
+    assert_eq!(quality.triangle_count, 0);
     assert_eq!(quality.boundary_edges, usize::MAX);
+}
+
+#[test]
+fn empty_mesh_is_not_watertight() {
+    let mesh = TriangleMesh::default();
+    let quality = welded_mesh_quality(&mesh);
+
+    assert_eq!(quality.triangle_count, 0);
+    assert_eq!(quality.boundary_edges, 0);
+    assert_eq!(quality.non_manifold_edges, 0);
+    assert!(!quality.is_watertight());
+    assert!(!is_watertight(&mesh));
 }
 
 /// A converted all-B-spline cylinder: the wall is a closed-u NURBS surface
@@ -3105,6 +3148,38 @@ fn tessellate_bspline_cylinder_seam_wall_watertight_and_correct() {
         assert!(
             (volume - expected).abs() / expected < 0.02,
             "deflection {deflection}: mesh volume {volume:.4} vs exact {expected:.4}"
+        );
+    }
+}
+
+/// A perpendicular bore whose breakout rim crosses the shaft wall's seam
+/// meridian: the holed-wall chart mesher cuts the hole loop at the seam and
+/// fabricates a boundary vertex there, which the bore-wall band (stitching the
+/// shared rim polyline) previously never saw — leaving an isolated
+/// micro-triangle hole at (3, ~0, ~16.5). The pool pre-split now hands both
+/// faces the same seam-crossing vertex. 0.005 is the deflection that exposed
+/// it; the coarser values guard the other sampling densities.
+#[test]
+fn cross_drilled_shaft_bore_rim_on_seam_is_watertight() {
+    let (topo, solid) = shaft_drilled_with(1.5);
+    let brep_volume = crate::measure::solid_volume(&topo, solid, 0.05).unwrap();
+    for deflection in [0.05, 0.01, 0.005] {
+        let mesh = tessellate_solid(&topo, solid, deflection).unwrap();
+        assert_eq!(
+            (boundary_edge_count(&mesh), non_manifold_edge_count(&mesh)),
+            (0, 0),
+            "deflection {deflection}: mesh indices must describe a closed manifold"
+        );
+        let quality = welded_mesh_quality(&mesh);
+        assert_eq!(
+            (quality.boundary_edges, quality.non_manifold_edges),
+            (0, 0),
+            "deflection {deflection}: position-welded mesh must be closed and manifold"
+        );
+        let mesh_volume = signed_volume_raw(&mesh).abs();
+        assert!(
+            (mesh_volume - brep_volume).abs() / brep_volume < 0.02,
+            "deflection {deflection}: mesh volume {mesh_volume:.6} vs B-rep {brep_volume:.6}"
         );
     }
 }

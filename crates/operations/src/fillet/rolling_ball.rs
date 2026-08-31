@@ -426,12 +426,13 @@ pub fn fillet_rolling_ball_with_origins(
                         }
                     }
                 }
-                if radius > min_adj && min_adj < f64::MAX {
-                    return Err(crate::OperationsError::InvalidInput {
-                        reason: format!(
-                            "fillet radius {radius:.6} exceeds adjacent edge length {min_adj:.6}"
-                        ),
-                    });
+                if radius >= min_adj && min_adj < f64::MAX {
+                    return Err(crate::OperationsError::Blend(
+                        remus_blend::BlendError::RadiusTooLarge {
+                            edge: edge_id,
+                            max_radius: min_adj,
+                        },
+                    ));
                 }
             }
         }
@@ -2072,7 +2073,7 @@ pub fn fillet_rolling_ball_with_origins(
             .get(&vi)
             .map(Vec::as_slice)
             .unwrap_or(&[]);
-        let is_concave = corner_is_concave(topo, vi, fillet_edges, normal_sum);
+        let is_concave = corner_is_concave(topo, vi, fillet_edges, normal_sum)?;
         let offset_sign = if is_concave { 1.0 } else { -1.0 };
         let sphere_center = original_vertex.map(|v_pos| {
             Point3::new(
@@ -2677,7 +2678,7 @@ fn corner_is_concave(
     vi: usize,
     fillet_edges: &[EdgeId],
     normal_sum: Vec3,
-) -> bool {
+) -> Result<bool, crate::OperationsError> {
     let mut tangent_sum = Vec3::new(0.0, 0.0, 0.0);
     let mut count = 0;
     for &eid in fillet_edges {
@@ -2687,7 +2688,7 @@ fn corner_is_concave(
         };
         let (p_s, p_e) = (vs.point(), ve.point());
         let curve = edge.curve().clone();
-        let domain = edge.domain_with_endpoints(p_s, p_e);
+        let domain = crate::authoritative_edge_domain(edge, "rolling-ball corner classification")?;
         let (t_param, sign) = if edge.start().index() == vi {
             (domain.0, 1.0)
         } else {
@@ -2703,7 +2704,7 @@ fn corner_is_concave(
             count += 1;
         }
     }
-    count >= 2 && normal_sum.dot(tangent_sum) > 0.0
+    Ok(count >= 2 && normal_sum.dot(tangent_sum) > 0.0)
 }
 
 /// Build the corner patch where exactly two filleted edges meet at a vertex

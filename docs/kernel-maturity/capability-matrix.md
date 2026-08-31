@@ -97,9 +97,24 @@ does not itself promote or demote anything.
   (as fast paths under the contract) or retired.
 - Known qualified evidence: cavity semantics regressions, fail-closed bounded
   mesh fallback, 64-cut determinism gate, analytic cylinder-crossing-plane
-  overlap sweep with operand-loss acceptance gate.
-- Known Unsupported-untyped / Partial cells: exact tangency (falls over to the
-  approximate path; pinch vertex not built), sliver crossings (~1e-5 to
+  overlap sweep with operand-loss acceptance gate, and exact coaxial blind-bore
+  cuts across wall/radius 0.01–0.10 and 1e-3–1e3 scale
+  (`regress_thin_wall_coaxial_bore.rs`; six canonical edges, closed-form
+  volume, closed B-Rep, and watertight indexed meshes). The tangent-boss
+  witness is also pinned at d/r +0.01, 0, and -0.01 over 1e-3/1/1e3 scale: the
+  1e-3 and unit tangent cells are exact, while the 1e3 tangent cell refuses
+  under `ExactOnly` and succeeds only with disclosed approximation quality.
+  Native, direct WASM, batch-v2, and versioned repro coverage all retain the
+  operand. The OpenZCAD cross-drilled shaft sequence is qualified at
+  bore/shaft radius ratios 1, 2/3, and 1/3 and scales 0.1, 1, and 10:
+  independent orthogonal-cylinder volume oracles match, and coarse/fine
+  display meshes are non-empty, closed, and manifold through the deterministic
+  WASM batch path and a versioned replay bundle. The CI-ratcheted
+  `approx_census` additionally exposes exact/fallback/error path and result
+  face-count drift across its representative operation matrix; it is a drift
+  detector, not by itself qualification evidence for a cell.
+- Known Unsupported-untyped / Partial cells: exact plane/cylinder tangency is
+  not generally qualified beyond those witnesses; sliver crossings (~1e-5 to
   0.05 mm on r = 10) fall over to approximate; general torus pairs limited;
   seam-crossing, nested-shell, sheet-solid, and multi-body General Fuse cells
   Unqualified.
@@ -119,8 +134,14 @@ does not itself promote or demote anything.
   sphere–cylinder.
 - Known gaps: remaining surface pairs delegate to the legacy path and are
   wrapped as Unclassified/incomplete (declared, not silent); curve-curve
-  and curve-surface qualification pending; hard iteration budgets
-  incomplete; conic curve cells (hyperbola, parabola) Unqualified;
+  and curve-surface qualification pending. NURBS SSI consumes caller-owned
+  march/queue/segment/branch, coupled-Newton, and recursive seed-subdivision
+  budgets, and is cooperatively cancellable through seed discovery, Newton
+  refinement, and marching via `OperationContext`; its scheduled
+  `nurbs_surface` fuzzer validates bounded rational patch
+  construction/evaluation and plane-section output against an independent
+  plane oracle. Parameter-space budgets remain incomplete. Conic curve cells
+  (hyperbola, parabola) Unqualified;
   periodic seam parameter reporting and pole cells Unqualified.
 
 ### Blends (fillet, chamfer, blend resize/removal)
@@ -148,6 +169,19 @@ does not itself promote or demote anything.
   self-intersection removal; NURBS-NURBS 3D intersection in the offset path;
   excluded faces on cavity solids.
 
+### Direct edits (push/pull and move face)
+
+- Ledger row: "Push/pull face" (Stable for the declared domain, guarded).
+- **Qualified cell:** moving either untrimmed cap of a three-face analytic
+  cylinder is exact for positive and negative distances, both cap sides,
+  rotated and translated frames, and 1e-3/1/1e3 model scales. The height-collapse
+  boundary is a typed invalid-input error. Native closed-form volume and
+  topology oracles plus the versioned WASM `push-pull-cylinder-top-cap` repro
+  bundle pin the public contract.
+- Known Partial/Unqualified cells: decorated cylindrical solids and general
+  planar faces retain the validated boolean/re-limitation paths; generalized
+  curved-face re-limitation and direct-edit evolution remain roadmap work.
+
 ### Sweeps (extrude, revolve, sweep, loft, pipe, helix)
 
 - Ledger rows: "Extrude", "Revolve, sweep, loft, pipe", "Helical sweep"
@@ -165,19 +199,38 @@ does not itself promote or demote anything.
 
 - Ledger rows: "Coons fill, sew, untrim" (blocked); "Primitives" (blocked);
   mirror/pattern under the offset row (guarded).
+- Pattern qualification: linear, circular, and grid patterns now preflight
+  pairwise material overlap using exact-only intersections and a
+  scale-relative volume floor. Material overlap is a typed, transactional
+  `pattern_instances_overlap` refusal at native and WASM batch boundaries;
+  touching and disjoint instances preserve copy-derived face provenance.
+  Native tests pin closed-form box intersection volume, rollback, contact, and
+  1e-3/1/1e3 scale behavior; the versioned
+  `pattern-overlap-typed-refusal` bundle pins deterministic WASM behavior.
 - Known gaps: native/WASM invalid-input, scale, and postcondition matrices
-  incomplete; convex hull / Minkowski degenerate coverage incomplete.
+  incomplete outside the qualified pattern cells; exact fusing of overlapping
+  pattern instances and provenance through that fuse remain unimplemented;
+  convex hull / Minkowski degenerate coverage incomplete.
 
 ### Measurement, classification, distance
 
 - Ledger rows: "Bounding box, area, center of mass", "Distance and
   classification" (evidence pending). Inner-shell regressions pass;
-  curved-cavity and scale matrices incomplete.
+  cross-drilled volume now has a WASM ratio/scale matrix against independent
+  orthogonal-cylinder oracles. Planar face area is exact and independent of
+  caller deflection when every boundary is made from lines, circles, or
+  parabolas; closed-form scale and circular-hole oracles cover native, direct
+  WASM, and batch WASM paths. Ellipse, hyperbola, and NURBS planar boundaries,
+  general curved-face area, exact curved-body volume, and the remaining
+  curved-cavity and scale cells remain incomplete.
 
 ### Tessellation
 
 - Ledger row: "Adaptive/CDT/analytic optimization". Face-failure abort is
-  qualified; broader scale/performance cells Unqualified.
+  qualified. Cross-drilled display tessellation is qualified at two relative
+  deflections, three bore ratios, and scales 0.1 through 10; `meshQuality`
+  accepts the render angular tolerance and cannot label an empty mesh
+  watertight. Broader scale/performance cells remain Unqualified.
 
 ### Validation and healing
 
@@ -359,9 +412,12 @@ claim, and they are the first implementation targets of the program:
    SameRange validation cannot be stated, let alone enforced.
 3. **Face-only, one-level evolution.** No vertex/edge events, no lineage
    graph, no persistent references.
-4. **No operation context.** Tolerance, budget, fallback, cancellation, and
-   determinism options are not carried explicitly; high-risk paths use local
-   constants.
+4. **Partial operation-context coverage.** Public booleans carry tolerance,
+   fallback policy, NURBS marching, coupled-Newton, and recursive
+   seed-subdivision budgets, and cooperative cancellation explicitly.
+   Generated-topology/memory budgets,
+   parameter-space tolerance, determinism policy, and non-boolean operation
+   families remain local or unmigrated.
 
 ## Maintenance rules
 

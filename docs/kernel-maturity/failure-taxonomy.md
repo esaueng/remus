@@ -25,7 +25,9 @@ Implementation: the categories and the native code registry live in
 currently implemented for `MathError`, `TopologyError`, and `AlgoError` with
 pinned registry tests. `executeBatchV2` errors carry `category` and, when the
 failure originated in a typed native error, `details.kernelCode` — see the
-book's WebAssembly chapter for the wire contract.
+book's WebAssembly chapter for the wire contract. The batch
+`booleanWithQuality` path pins `ExactOnlyUnattainable` as
+`quality_refused` / `exact_only_unattainable`, including rollback.
 
 ## Categories
 
@@ -41,7 +43,7 @@ stable coarse level; codes within them are the stable fine level.
 | `resource_limit` | A byte/entity/work/memory budget was exceeded (import limits, batch caps, topology growth caps). | `resource_limit_exceeded`, `batch_limit_exceeded` |
 | `tolerance_violation` | A result was produced but failed its own tolerance contract (SameParameter/SameRange deviation, validation deviation beyond limit) and the policy forbids repair. | `same_parameter_exceeded`, `validation_deviation` |
 | `quality_refused` | The only achievable result would degrade quality beyond the caller's fallback policy (ExactOnly meets a case needing approximation). | `exact_only_unattainable` |
-| `cancelled` | The operation observed a cancellation request and stopped at a safe point (rollback complete). | `cancelled` |
+| `cancelled` | The operation observed a cancellation request and stopped at a safe point (rollback complete). | `operation_cancelled` (native), `cancelled` (WASM) |
 | `internal` | A failure that cannot be safely classified. Reaching this category is itself a defect to burn down. | `internal_error`, `operation_failed` (legacy broad code) |
 
 Rules:

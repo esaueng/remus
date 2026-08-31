@@ -9,6 +9,7 @@
 
 use remus_math::aabb::Aabb3;
 use remus_math::analytic_intersection;
+use remus_math::context::OperationContext;
 use remus_math::nurbs::intersection as nurbs_isect;
 use remus_math::tolerance::Tolerance;
 use remus_math::traits::ParametricCurve;
@@ -63,6 +64,10 @@ fn ff_trace_x() -> Option<f64> {
 #[derive(Default)]
 struct JunctionRegistry {
     cells: std::collections::HashMap<(i64, i64, i64), JunctionEntry>,
+    /// Characteristic size per face pair, so the snap bands below track the
+    /// geometry instead of a fixed length. Cached because `resolve` runs per
+    /// section endpoint and a face AABB costs a surface sampling pass.
+    extents: std::collections::HashMap<(usize, usize), f64>,
 }
 
 #[derive(Clone, Copy)]
@@ -75,6 +80,25 @@ struct JunctionEntry {
 impl JunctionRegistry {
     const CELL: f64 = 1e-4;
     const BOUNDARY_TRIGGER_MAX: f64 = 1e-3;
+    /// Ceiling on the boundary-candidate band as a fraction of the face
+    /// pair's own extent.
+    ///
+    /// The band above is an absolute length, which is a sane search radius
+    /// only while the model is much larger than it. On a body whose features
+    /// are 1e-3 across, 1e-3 is the WHOLE MODEL: a section endpoint adopts
+    /// any boundary junction of the pair however far away, and a through-cut
+    /// section lands on the tool's own cap rim instead of the blank's face.
+    /// The band was also `.max()`-floored, so lowering the caller's tolerance
+    /// could not shrink it — the boolean returned bit-identical wrong output
+    /// at every tolerance, which is what disguised this as a tolerance
+    /// problem.
+    ///
+    /// A cap rather than a replacement: the absolute band is load-bearing at
+    /// the scales real parts live at (removing it mesh-falls-back the
+    /// dovetail nub fuse), so this only ever NARROWS it, and only once it has
+    /// grown to a significant fraction of the geometry it searches. Any pair
+    /// whose extent exceeds 0.1 keeps the historical band bit-for-bit.
+    const BOUNDARY_TRIGGER_EXTENT_FRACTION: f64 = 0.01;
 
     fn key(p: Point3) -> (i64, i64, i64) {
         #[allow(clippy::cast_possible_truncation)]
@@ -108,11 +132,21 @@ impl JunctionRegistry {
         p: Point3,
         tol: Tolerance,
     ) -> Point3 {
+        // The band must track the geometry it searches, never a fixed length.
+        // The extent cap applies to the WHOLE band, including the
+        // tolerance-scaled term: at default tolerance `tol.linear * 1000.0`
+        // is 1e-4, which is the whole model at scale 1e-4 and ten models at
+        // 1e-5 — leaving it outside the cap re-created the exact defect the
+        // cap exists for, one decade down. At default tolerance, pairs whose
+        // extent exceeds 0.1 keep the historical band bit-for-bit.
+        let trigger = (tol.linear * 1000.0)
+            .max(Self::BOUNDARY_TRIGGER_MAX)
+            .min(self.pair_extent(topo, fa, fb, tol) * Self::BOUNDARY_TRIGGER_EXTENT_FRACTION)
+            .max(tol.linear);
         // A broad trigger is safe only for finding a boundary candidate: the
         // returned point is recomputed on a boundary of this exact face pair.
         // Never adopt a registry point directly from the untrusted fitted
         // endpoint, because an unrelated nearby feature could redirect it.
-        let trigger = (tol.linear * 1000.0).max(Self::BOUNDARY_TRIGGER_MAX);
         let Some(boundary_junction) = snap_to_boundary_junction_band(topo, fa, fb, p, tol, trigger)
         else {
             return p;
@@ -149,18 +183,12 @@ impl JunctionRegistry {
                     [prev_a, prev_b].contains(&fa) || [prev_a, prev_b].contains(&fb)
                 });
                 if (!shares_face && !face_uses_source)
-                    || (entry.point - boundary_junction).length() > Self::BOUNDARY_TRIGGER_MAX
+                    || (entry.point - boundary_junction).length() > trigger
                 {
                     return None;
                 }
-                let validated = snap_to_boundary_junction_band(
-                    topo,
-                    fa,
-                    fb,
-                    entry.point,
-                    tol,
-                    Self::BOUNDARY_TRIGGER_MAX,
-                )?;
+                let validated =
+                    snap_to_boundary_junction_band(topo, fa, fb, entry.point, tol, trigger)?;
                 ((validated - entry.point).length() <= weld).then_some(entry.point)
             })
             .collect::<Vec<_>>();
@@ -190,6 +218,35 @@ impl JunctionRegistry {
         boundary_junction
     }
 
+    /// Diagonal of the union of the two faces' AABBs — the characteristic
+    /// length of this pair. Falls back to the caller's tolerance if either
+    /// face's box cannot be built, which keeps the band at its minimum rather
+    /// than letting a failure widen it.
+    fn pair_extent(&mut self, topo: &Topology, fa: FaceId, fb: FaceId, tol: Tolerance) -> f64 {
+        let key = if fa.index() <= fb.index() {
+            (fa.index(), fb.index())
+        } else {
+            (fb.index(), fa.index())
+        };
+        if let Some(&cached) = self.extents.get(&key) {
+            return cached;
+        }
+        let extent = match (
+            compute_face_bbox(topo, fa, tol),
+            compute_face_bbox(topo, fb, tol),
+        ) {
+            (Ok(a), Ok(b)) => {
+                let dx = a.max.x().max(b.max.x()) - a.min.x().min(b.min.x());
+                let dy = a.max.y().max(b.max.y()) - a.min.y().min(b.min.y());
+                let dz = a.max.z().max(b.max.z()) - a.min.z().min(b.min.z());
+                dz.mul_add(dz, dx.mul_add(dx, dy * dy)).sqrt()
+            }
+            _ => tol.linear,
+        };
+        self.extents.insert(key, extent);
+        extent
+    }
+
     fn seed(&mut self, p: Point3, source_edge: remus_topology::edge::EdgeId) {
         if self.lookup(p, 1e-4).is_none() {
             self.cells.insert(
@@ -204,6 +261,7 @@ impl JunctionRegistry {
     }
 }
 
+#[allow(dead_code)]
 pub fn perform(
     topo: &mut Topology,
     solid_a: SolidId,
@@ -211,6 +269,28 @@ pub fn perform(
     tol: Tolerance,
     arena: &mut GfaArena,
 ) -> Result<(), AlgoError> {
+    let context = OperationContext::new().with_tolerance(tol);
+    perform_with_context(topo, solid_a, solid_b, &context, arena)
+}
+
+/// Detect face-face intersections under an explicit operation context.
+///
+/// The context tolerance drives geometric predicates and its work budgets
+/// bound NURBS surface-surface marching.
+///
+/// # Errors
+///
+/// Returns [`AlgoError`] if any topology lookup or intersection computation fails.
+#[allow(clippy::too_many_lines)]
+pub fn perform_with_context(
+    topo: &mut Topology,
+    solid_a: SolidId,
+    solid_b: SolidId,
+    context: &OperationContext,
+    arena: &mut GfaArena,
+) -> Result<(), AlgoError> {
+    context.check_cancelled()?;
+    let tol = context.tolerance;
     let faces_a = remus_topology::explorer::solid_faces(topo, solid_a)?;
     let faces_b = remus_topology::explorer::solid_faces(topo, solid_b)?;
 
@@ -258,12 +338,12 @@ pub fn perform(
         .iter()
         .zip(surfs_a.iter())
         .map(|(&fid, surf)| face_v_range(topo, fid, surf))
-        .collect();
+        .collect::<Result<_, _>>()?;
     let v_ranges_b: Vec<Option<(f64, f64)>> = faces_b
         .iter()
         .zip(surfs_b.iter())
         .map(|(&fid, surf)| face_v_range(topo, fid, surf))
-        .collect();
+        .collect::<Result<_, _>>()?;
 
     // Registry of endpoint vertices created for the EXACT faceted-ramp arcs
     // (see `trim_ellipse_to_boundary_crossings`). Adjacent treads share a
@@ -279,10 +359,12 @@ pub fn perform(
     let ff_trace = ff_trace_x();
 
     for (idx_a, &fa) in faces_a.iter().enumerate() {
+        context.check_cancelled()?;
         let bbox_a = &bboxes_a[idx_a];
         let surf_a = &surfs_a[idx_a];
 
         for (idx_b, &fb) in faces_b.iter().enumerate() {
+            context.check_cancelled()?;
             let bbox_b = &bboxes_b[idx_b];
 
             let traced = ff_trace.is_some_and(|x| {
@@ -342,8 +424,13 @@ pub fn perform(
 
             let v_range_a = v_ranges_a[idx_a];
             let v_range_b = v_ranges_b[idx_b];
-            let raw_curves =
-                compute_raw_curves(surf_a, surf_b, bbox_a, bbox_b, v_range_a, v_range_b)?;
+            let raw_curves = compute_raw_curves(
+                surf_a, surf_b, bbox_a, bbox_b, v_range_a, v_range_b, context,
+            )?;
+            // Intersection implementations are allowed to refuse, never to
+            // smuggle an invalid parameter span into a sampler that would
+            // quietly classify every NaN point as outside and drop the curve.
+            validate_raw_curve_collection("compute_raw_curves", &raw_curves)?;
             if std::env::var("BK_RAWC").is_ok() {
                 log::debug!(
                     "RAWC a[{idx_a}]={} b[{idx_b}]={} n={}",
@@ -488,6 +575,7 @@ pub fn perform(
             } else {
                 raw_curves
             };
+            validate_raw_curve_collection("phase_ff line clipping", &raw_curves)?;
 
             // Exact faceted-ramp × cylinder/cone arc assembly. A thin planar
             // tread meeting a corner cylinder yields a closed ellipse whose
@@ -499,8 +587,8 @@ pub fn perform(
             // the surface — shared between adjacent treads, so the arcs chain.
             // These exact arcs bypass the generic filters below.
             let (exact_arcs, raw_curves): (Vec<RawCurve>, Vec<RawCurve>) = {
-                let ext_a = FaceExtent::new(topo, fa, surf_a, v_range_a, tol);
-                let ext_b = FaceExtent::new(topo, fb, surf_b, v_range_b, tol);
+                let ext_a = FaceExtent::new(topo, fa, surf_a, v_range_a, tol)?;
+                let ext_b = FaceExtent::new(topo, fb, surf_b, v_range_b, tol)?;
                 let mut exact = Vec::new();
                 let mut rest = Vec::new();
                 for raw in raw_curves {
@@ -516,6 +604,8 @@ pub fn perform(
                 }
                 (exact, rest)
             };
+            validate_raw_curve_collection("phase_ff exact-arc output", &exact_arcs)?;
+            validate_raw_curve_collection("phase_ff exact-arc remainder", &raw_curves)?;
 
             // Raw curves come from UNTRIMMED surface-surface intersection, so
             // a curve can lie entirely beyond both faces' trimmed extents
@@ -687,7 +777,8 @@ pub fn perform(
                 raw_curves,
                 tol,
                 &mut junction_registry,
-            );
+            )?;
+            validate_raw_curve_collection("phase_ff face restriction", &raw_curves)?;
             if traced {
                 log::debug!(
                     "FF_TRACE restrict a={} b={} {} -> {}",
@@ -702,7 +793,7 @@ pub fn perform(
             // boundary-line crossing of the adjacent tread's arc, so consult
             // the registry (and pre-existing paves/boundary vertices) and snap.
             for raw in &exact_arcs {
-                emit_exact_arc(topo, arena, fa, fb, raw, tol, &mut exact_arc_vertices);
+                emit_exact_arc(topo, arena, fa, fb, raw, tol, &mut exact_arc_vertices)?;
             }
 
             for raw in raw_curves {
@@ -729,11 +820,12 @@ pub fn perform(
                 if let EdgeCurve::Circle(circle) = &raw.curve {
                     let is_closed = (raw.p_start - raw.p_end).length() < tol.linear;
                     if is_closed {
-                        let crossings = closed_circle_boundary_crossings(topo, fa, fb, circle, tol);
+                        let crossings =
+                            closed_circle_boundary_crossings(topo, fa, fb, circle, tol)?;
                         if crossings.len() >= 2 {
                             emit_split_circle_arcs(
                                 topo, arena, fa, fb, &raw, circle, &crossings, tol,
-                            );
+                            )?;
                             continue;
                         }
                     }
@@ -778,6 +870,10 @@ pub fn perform(
                     raw.p_end = p_seam;
                 }
 
+                // Validate the FINAL range, after closed-circle seam adoption,
+                // before endpoint resolution can allocate a topology vertex.
+                validate_section_range("phase_ff generic writer", raw.t_range)?;
+
                 let start_vid = adopted_seam.map(|(vid, _, _)| vid).unwrap_or_else(|| {
                     super::helpers::find_nearby_pave_vertex(topo, arena, raw.p_start, tol)
                         .or_else(|| find_nearby_face_vertex(topo, fa, raw.p_start, tol))
@@ -793,7 +889,13 @@ pub fn perform(
                         .unwrap_or_else(|| topo.add_vertex(Vertex::new(raw.p_end, tol.linear)))
                 };
 
-                let edge = Edge::new(start_vid, end_vid, raw.curve.clone());
+                let mut edge = Edge::new(start_vid, end_vid, raw.curve.clone());
+                // A Line's parameterization is endpoint-local [0, 1], so its
+                // DS range is not an authoritative trim on the stored edge.
+                // Every other curve keeps the exact writer-owned parameter span.
+                if !matches!(raw.curve, EdgeCurve::Line) {
+                    edge.set_trim(Some(raw.t_range));
+                }
                 let edge_id = topo.add_edge(edge);
                 arena
                     .section_edge_origins
@@ -843,6 +945,76 @@ pub fn perform(
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SectionRangeReason {
+    NonFinite,
+    NonAscending,
+}
+
+impl std::fmt::Display for SectionRangeReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NonFinite => f.write_str("bounds must be finite"),
+            Self::NonAscending => f.write_str("end must be greater than start"),
+        }
+    }
+}
+
+fn section_range_reason((t0, t1): (f64, f64)) -> Option<SectionRangeReason> {
+    if !t0.is_finite() || !t1.is_finite() {
+        Some(SectionRangeReason::NonFinite)
+    } else if t1 <= t0 {
+        Some(SectionRangeReason::NonAscending)
+    } else {
+        None
+    }
+}
+
+fn validate_section_range(writer: &str, range: (f64, f64)) -> Result<(), AlgoError> {
+    if let Some(reason) = section_range_reason(range) {
+        return Err(AlgoError::IntersectionFailed(format!(
+            "{writer} refused invalid section range [{:?}, {:?}]: {reason}",
+            range.0, range.1
+        )));
+    }
+    Ok(())
+}
+
+fn validate_raw_curve_collection(stage: &str, curves: &[RawCurve]) -> Result<(), AlgoError> {
+    for (index, raw) in curves.iter().enumerate() {
+        if let Some(reason) = section_range_reason(raw.t_range) {
+            return Err(AlgoError::IntersectionFailed(format!(
+                "{stage} produced invalid section range at curve {index}: [{:?}, {:?}]: {reason}",
+                raw.t_range.0, raw.t_range.1
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_split_crossings(crossings: &[(f64, Point3)]) -> Result<(), AlgoError> {
+    for (index, (parameter, _)) in crossings.iter().enumerate() {
+        if !parameter.is_finite() {
+            return Err(AlgoError::IntersectionFailed(format!(
+                "phase_ff split-circle writer refused crossing {index} parameter {parameter:?}: {}",
+                SectionRangeReason::NonFinite
+            )));
+        }
+    }
+    for (index, pair) in crossings.windows(2).enumerate() {
+        if pair[1].0 <= pair[0].0 {
+            return Err(AlgoError::IntersectionFailed(format!(
+                "phase_ff split-circle writer refused crossing parameters [{:?}, {:?}] at indices [{index}, {}]: {}",
+                pair[0].0,
+                pair[1].0,
+                index + 1,
+                SectionRangeReason::NonAscending
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Quantize a point to a fine grid for the exact-arc vertex registry. The
 /// step (1e-9) is far below the linear tolerance, so only crossings that are
 /// numerically the same point (the same boundary-line × surface root computed
@@ -869,7 +1041,10 @@ fn emit_exact_arc(
     raw: &RawCurve,
     tol: Tolerance,
     registry: &mut std::collections::HashMap<(i64, i64, i64), remus_topology::vertex::VertexId>,
-) {
+) -> Result<(), AlgoError> {
+    // Refuse before `resolve` can allocate or register either endpoint.
+    validate_section_range("phase_ff exact-arc writer", raw.t_range)?;
+
     let resolve = |topo: &mut Topology,
                    arena: &GfaArena,
                    registry: &mut std::collections::HashMap<
@@ -893,7 +1068,10 @@ fn emit_exact_arc(
     let start_vid = resolve(topo, arena, registry, raw.p_start);
     let end_vid = resolve(topo, arena, registry, raw.p_end);
 
-    let edge = Edge::new(start_vid, end_vid, raw.curve.clone());
+    let mut edge = Edge::new(start_vid, end_vid, raw.curve.clone());
+    if !matches!(raw.curve, EdgeCurve::Line) {
+        edge.set_trim(Some(raw.t_range));
+    }
     let edge_id = topo.add_edge(edge);
     arena
         .section_edge_origins
@@ -919,6 +1097,8 @@ fn emit_exact_arc(
         f2: fb,
         curve_index,
     });
+
+    Ok(())
 }
 
 /// A face's trimmed extent, used to test whether a 3D point lies inside the
@@ -954,32 +1134,35 @@ impl FaceExtent {
         surface: &FaceSurface,
         v_range: Option<(f64, f64)>,
         tol: Tolerance,
-    ) -> Option<Self> {
+    ) -> Result<Option<Self>, AlgoError> {
         if let FaceSurface::Plane { normal, .. } = surface {
-            let face = topo.face(face_id).ok()?;
-            let outer = topo.wire(face.outer_wire()).ok()?;
-            let first = outer.edges().first()?;
-            let origin = topo
-                .vertex(topo.edge(first.edge()).ok()?.start())
-                .ok()?
-                .point();
+            let face = topo.face(face_id)?;
+            let outer = topo.wire(face.outer_wire())?;
+            let Some(first) = outer.edges().first() else {
+                return Ok(None);
+            };
+            let origin = topo.vertex(topo.edge(first.edge())?.start())?.point();
             let frame =
                 crate::builder::plane_frame::PlaneFrame::from_normal_and_point(*normal, origin);
             // Project a wire's boundary into the plane frame, sampling each arc
             // edge (endpoints included) so curved corners aren't chord-cut.
-            let wire_poly = |wid| -> Option<Vec<remus_math::vec::Point2>> {
-                let wire = topo.wire(wid).ok()?;
+            let wire_poly = |wid| -> Result<Vec<remus_math::vec::Point2>, AlgoError> {
+                let wire = topo.wire(wid)?;
                 let mut poly = Vec::new();
                 for oe in wire.edges() {
-                    let edge = topo.edge(oe.edge()).ok()?;
-                    let s3 = topo.vertex(edge.start()).ok()?.point();
-                    let e3 = topo.vertex(edge.end()).ok()?.point();
+                    let edge = topo.edge(oe.edge())?;
+                    let s3 = topo.vertex(edge.start())?.point();
+                    let e3 = topo.vertex(edge.end())?.point();
                     match edge.curve() {
                         EdgeCurve::Line => {
                             poly.push(frame.project(if oe.is_forward() { s3 } else { e3 }));
                         }
                         curve => {
-                            let (t0, t1) = curve.domain_with_endpoints(s3, e3);
+                            let (t0, t1) = super::helpers::authoritative_edge_domain(
+                                edge,
+                                oe.edge(),
+                                "face-extent boundary sampling",
+                            )?;
                             for i in 0..=16 {
                                 #[allow(clippy::cast_precision_loss)]
                                 let f = i as f64 / 16.0;
@@ -993,18 +1176,19 @@ impl FaceExtent {
                         }
                     }
                 }
-                Some(poly)
+                Ok(poly)
             };
             let poly = wire_poly(face.outer_wire())?;
             if poly.len() < 3 {
-                return None;
+                return Ok(None);
             }
-            let holes: Vec<_> = face
-                .inner_wires()
-                .iter()
-                .filter_map(|&iw| wire_poly(iw))
-                .filter(|h| h.len() >= 3)
-                .collect();
+            let mut holes = Vec::new();
+            for &inner_wire in face.inner_wires() {
+                let hole = wire_poly(inner_wire)?;
+                if hole.len() >= 3 {
+                    holes.push(hole);
+                }
+            }
             // Margin keeps boundary-coincident points (the shared cap) inside;
             // scaled to the SMALLER in-plane extent so a thin band (a scoop
             // staircase tread is full-width but ~0.1 mm tall) keeps a tight
@@ -1017,12 +1201,12 @@ impl FaceExtent {
             );
             let extent = bb.max - bb.min;
             let smaller = extent.x().abs().min(extent.y().abs());
-            Some(Self::Plane {
+            Ok(Some(Self::Plane {
                 frame,
                 poly,
                 holes,
                 margin: (smaller * 0.01).max(tol.linear),
-            })
+            }))
         } else {
             // A whole, untrimmed torus has no `v_range` (its boundary is the
             // degenerate fundamental-polygon seam), yet it IS a real extent: the
@@ -1035,11 +1219,11 @@ impl FaceExtent {
                 Some(r) => r,
                 None => {
                     if matches!(surface, FaceSurface::Torus(_))
-                        && face_boundary_all_degenerate(topo, face_id, tol).unwrap_or(false)
+                        && face_boundary_all_degenerate(topo, face_id, tol)?
                     {
                         (0.0, std::f64::consts::TAU)
                     } else {
-                        return None;
+                        return Ok(None);
                     }
                 }
             };
@@ -1051,14 +1235,14 @@ impl FaceExtent {
             // near-tangent section curve "inside" the v-band but on the far
             // half of the cylinder is wrongly kept, wrapping the trimmed arc
             // onto the wrong side of the wedge.
-            let u_gap = face_circumferential_u_gap(topo, face_id, surface);
-            Some(Self::Analytic {
+            let u_gap = face_circumferential_u_gap(topo, face_id, surface)?;
+            Ok(Some(Self::Analytic {
                 surface: surface.clone(),
                 v0,
                 v1,
                 margin,
                 u_gap,
-            })
+            }))
         }
     }
 
@@ -1188,7 +1372,7 @@ fn face_circumferential_u_gap(
     topo: &Topology,
     face_id: FaceId,
     surface: &FaceSurface,
-) -> Option<(f64, f64)> {
+) -> Result<Option<(f64, f64)>, AlgoError> {
     // Sample densely so a FULL-revolution rim circle (one closed edge spanning
     // the whole period) leaves only a tiny per-step gap, well under the
     // `largest_u_gap` threshold — otherwise a 16-step pass (~0.39 rad/step)
@@ -1197,16 +1381,20 @@ fn face_circumferential_u_gap(
     // corner) still shows its large angular gap.
     const N_GAP: usize = 64;
     if !matches!(surface, FaceSurface::Cylinder(_) | FaceSurface::Cone(_)) {
-        return None;
+        return Ok(None);
     }
-    let face = topo.face(face_id).ok()?;
-    let wire = topo.wire(face.outer_wire()).ok()?;
+    let face = topo.face(face_id)?;
+    let wire = topo.wire(face.outer_wire())?;
     let mut u_samples = Vec::new();
     for oe in wire.edges() {
-        let edge = topo.edge(oe.edge()).ok()?;
-        let sp = topo.vertex(edge.start()).ok()?.point();
-        let ep = topo.vertex(edge.end()).ok()?.point();
-        let (t0, t1) = edge.curve().domain_with_endpoints(sp, ep);
+        let edge = topo.edge(oe.edge())?;
+        let sp = topo.vertex(edge.start())?.point();
+        let ep = topo.vertex(edge.end())?.point();
+        let (t0, t1) = super::helpers::authoritative_edge_domain(
+            edge,
+            oe.edge(),
+            "circumferential face-gap sampling",
+        )?;
         for i in 0..=N_GAP {
             #[allow(clippy::cast_precision_loss)]
             let f = i as f64 / N_GAP as f64;
@@ -1217,7 +1405,7 @@ fn face_circumferential_u_gap(
             }
         }
     }
-    crate::classifier::largest_u_gap(&u_samples)
+    Ok(crate::classifier::largest_u_gap(&u_samples))
 }
 
 /// Minimum distance from a 2D point to a closed polygon's edges.
@@ -1337,13 +1525,13 @@ fn restrict_curves_to_faces(
     raw_curves: Vec<RawCurve>,
     tol: Tolerance,
     junctions: &mut JunctionRegistry,
-) -> Vec<RawCurve> {
+) -> Result<Vec<RawCurve>, AlgoError> {
     let (Some(ext_a), Some(ext_b)) = (
-        FaceExtent::new(topo, fa, surf_a, v_range_a, tol),
-        FaceExtent::new(topo, fb, surf_b, v_range_b, tol),
+        FaceExtent::new(topo, fa, surf_a, v_range_a, tol)?,
+        FaceExtent::new(topo, fb, surf_b, v_range_b, tol)?,
     ) else {
         // Conservative: if either face's extent can't be built, don't restrict.
-        return raw_curves;
+        return Ok(raw_curves);
     };
 
     const N: usize = 24;
@@ -1553,7 +1741,7 @@ fn restrict_curves_to_faces(
         }
         out.push(raw);
     }
-    out
+    Ok(out)
 }
 
 /// Does this LINE section meet the two faces only along a measure-zero
@@ -2192,7 +2380,12 @@ fn snap_to_boundary_junction_band(
                 continue;
             };
             let (sp, ep) = (sv.point(), ev.point());
-            let (d0, d1) = edge.curve().domain_with_endpoints(sp, ep);
+            let (d0, d1) = super::helpers::authoritative_edge_domain(
+                edge,
+                oe.edge(),
+                "boundary-junction search",
+            )
+            .ok()?;
             let mut best_k = 0;
             let mut best_d = f64::MAX;
             for k in 0..=NS {
@@ -2267,7 +2460,9 @@ fn snap_to_boundary_junction_band(
             .and_then(|(u, v)| other_surf.evaluate(u, v))
             .map_or(f64::MAX, |s| (s - q).length())
     };
-    let (d0, d1) = edge.curve().domain_with_endpoints(sp, ep);
+    let (d0, d1) =
+        super::helpers::authoritative_edge_domain(edge, eid, "boundary-junction refinement")
+            .ok()?;
     let half = (d1 - d0).abs().max(1e-9) * 0.01;
     // Clamp the refine window to the edge's own span so the search never
     // evaluates (and snaps to) a point past the boundary arc's ends.
@@ -3184,7 +3379,8 @@ fn compute_face_bbox(topo: &Topology, face_id: FaceId, tol: Tolerance) -> Result
         let edge = topo.edge(eid)?;
         let start_pos = topo.vertex(edge.start())?.point();
         let end_pos = topo.vertex(edge.end())?.point();
-        let (t0, t1) = edge.curve().domain_with_endpoints(start_pos, end_pos);
+        let (t0, t1) =
+            super::helpers::authoritative_edge_domain(edge, eid, "face bounding-box sampling")?;
 
         let n: usize = 8;
         for i in 0..=n {
@@ -3204,7 +3400,7 @@ fn compute_face_bbox(topo: &Topology, face_id: FaceId, tol: Tolerance) -> Result
         // Bound to the hemisphere the face occupies (pole side from the boundary
         // winding) — the full-sphere box would let one hemisphere admit the
         // other's sections. Ambiguous winding falls back to the full sphere.
-        FaceSurface::Sphere(s) => Some(match sphere_region_axis(topo, face_id, s.center(), tol) {
+        FaceSurface::Sphere(s) => Some(match sphere_region_axis(topo, face_id, s.center(), tol)? {
             Some(axis) => s.aabb_region(axis),
             None => s.aabb(),
         }),
@@ -3241,23 +3437,24 @@ fn sphere_region_axis(
     face_id: FaceId,
     center: Point3,
     tol: Tolerance,
-) -> Option<Vec3> {
-    let face = topo.face(face_id).ok()?;
-    let wire = topo.wire(face.outer_wire()).ok()?;
+) -> Result<Option<Vec3>, AlgoError> {
+    let face = topo.face(face_id)?;
+    let wire = topo.wire(face.outer_wire())?;
     // Sample the outer wire into an oriented closed polyline. Endpoint-only
     // sampling fails for a boundary built from a single closed `Circle` edge
     // (start == end, so every chord is zero); sampling along each edge recovers
     // the loop shape so the winding below still yields the pole-side axis.
     let mut pts: Vec<Point3> = Vec::new();
     for oe in wire.edges() {
-        let Ok(edge) = topo.edge(oe.edge()) else {
-            continue;
-        };
-        let (Ok(sv), Ok(ev)) = (topo.vertex(edge.start()), topo.vertex(edge.end())) else {
-            continue;
-        };
+        let edge = topo.edge(oe.edge())?;
+        let sv = topo.vertex(edge.start())?;
+        let ev = topo.vertex(edge.end())?;
         let (sp, ep) = (sv.point(), ev.point());
-        let (t0, t1) = edge.curve().domain_with_endpoints(sp, ep);
+        let (t0, t1) = super::helpers::authoritative_edge_domain(
+            edge,
+            oe.edge(),
+            "sphere-region winding sampling",
+        )?;
         // Sample in the edge's natural direction (omit the endpoint — it is the
         // next edge's start), then flip for a reversed orientation.
         let n = 8;
@@ -3273,7 +3470,7 @@ fn sphere_region_axis(
         pts.append(&mut edge_pts);
     }
     if pts.len() < 3 {
-        return None;
+        return Ok(None);
     }
     // Summed (midpoint − center) × chord around the closed loop ≈ 2·(area
     // vector): its direction is the face's outward pole axis (negated for a
@@ -3298,9 +3495,9 @@ fn sphere_region_axis(
     }
     let len = axis.length();
     if scale < tol.linear * tol.linear || len < scale * tol.linear {
-        return None;
+        return Ok(None);
     }
-    Some(axis * (1.0 / len))
+    Ok(Some(axis * (1.0 / len)))
 }
 
 /// True when every edge of the face has zero spatial extent (a degenerate seam
@@ -3325,7 +3522,11 @@ fn face_boundary_all_degenerate(
         let edge = topo.edge(eid)?;
         let sp = topo.vertex(edge.start())?.point();
         let ep = topo.vertex(edge.end())?.point();
-        let (t0, t1) = edge.curve().domain_with_endpoints(sp, ep);
+        let (t0, t1) = super::helpers::authoritative_edge_domain(
+            edge,
+            eid,
+            "degenerate face-boundary sampling",
+        )?;
         for frac in [0.0, 0.25, 0.5, 0.75, 1.0] {
             let t = t0 + (t1 - t0) * frac;
             let p = edge.curve().evaluate_with_endpoints(t, sp, ep);
@@ -3352,16 +3553,21 @@ fn compute_face_bboxes(
 
 /// Compute the v-parameter range of a face by projecting boundary vertices.
 /// Returns `None` for planes (which have no UV parameterization) or if projection fails.
-fn face_v_range(topo: &Topology, face_id: FaceId, surface: &FaceSurface) -> Option<(f64, f64)> {
-    let face = topo.face(face_id).ok()?;
-    let wire = topo.wire(face.outer_wire()).ok()?;
+fn face_v_range(
+    topo: &Topology,
+    face_id: FaceId,
+    surface: &FaceSurface,
+) -> Result<Option<(f64, f64)>, AlgoError> {
+    let face = topo.face(face_id)?;
+    let wire = topo.wire(face.outer_wire())?;
     let mut v_min = f64::MAX;
     let mut v_max = f64::MIN;
     for oe in wire.edges() {
-        let edge = topo.edge(oe.edge()).ok()?;
-        let sp = topo.vertex(edge.start()).ok()?.point();
-        let ep = topo.vertex(edge.end()).ok()?.point();
-        let (t0, t1) = edge.curve().domain_with_endpoints(sp, ep);
+        let edge = topo.edge(oe.edge())?;
+        let sp = topo.vertex(edge.start())?.point();
+        let ep = topo.vertex(edge.end())?.point();
+        let (t0, t1) =
+            super::helpers::authoritative_edge_domain(edge, oe.edge(), "face v-range sampling")?;
         // Sample 5 points to capture v-extremes on curved/closed edges
         for frac in [0.0, 0.25, 0.5, 0.75, 1.0] {
             let t = t0 + (t1 - t0) * frac;
@@ -3373,9 +3579,9 @@ fn face_v_range(topo: &Topology, face_id: FaceId, surface: &FaceSurface) -> Opti
         }
     }
     if v_min < v_max {
-        Some((v_min, v_max))
+        Ok(Some((v_min, v_max)))
     } else {
-        None
+        Ok(None)
     }
 }
 
@@ -3406,7 +3612,9 @@ fn compute_raw_curves(
     bbox_b: &Aabb3,
     v_range_a: Option<(f64, f64)>,
     v_range_b: Option<(f64, f64)>,
+    context: &OperationContext,
 ) -> Result<Vec<RawCurve>, AlgoError> {
+    context.check_cancelled()?;
     match (surf_a, surf_b) {
         (FaceSurface::Plane { normal: na, d: da }, FaceSurface::Plane { normal: nb, d: db }) => {
             plane_plane_intersection(*na, *da, *nb, *db, bbox_a, bbox_b)
@@ -3433,7 +3641,7 @@ fn compute_raw_curves(
 
         (FaceSurface::Plane { normal, d }, other) if other.as_analytic().is_some() => {
             if let Some(analytic) = other.as_analytic() {
-                plane_analytic_intersection(*normal, *d, &analytic, bbox_b)
+                plane_analytic_intersection(*normal, *d, &analytic, bbox_b, context.tolerance)
             } else {
                 Ok(Vec::new())
             }
@@ -3441,7 +3649,7 @@ fn compute_raw_curves(
 
         (other, FaceSurface::Plane { normal, d }) if other.as_analytic().is_some() => {
             if let Some(analytic) = other.as_analytic() {
-                plane_analytic_intersection(*normal, *d, &analytic, bbox_a)
+                plane_analytic_intersection(*normal, *d, &analytic, bbox_a, context.tolerance)
             } else {
                 Ok(Vec::new())
             }
@@ -3677,16 +3885,26 @@ fn compute_raw_curves(
         }
 
         (analytic_surf, FaceSurface::Nurbs(nurbs)) if analytic_surf.as_analytic().is_some() => {
-            analytic_nurbs_intersection(analytic_surf, v_range_a, nurbs)
+            analytic_nurbs_intersection(analytic_surf, v_range_a, nurbs, context)
         }
         (FaceSurface::Nurbs(nurbs), analytic_surf) if analytic_surf.as_analytic().is_some() => {
-            analytic_nurbs_intersection(analytic_surf, v_range_b, nurbs)
+            analytic_nurbs_intersection(analytic_surf, v_range_b, nurbs, context)
         }
 
-        (FaceSurface::Nurbs(na), FaceSurface::Nurbs(nb)) => nurbs_nurbs_intersection(na, nb),
+        (FaceSurface::Nurbs(na), FaceSurface::Nurbs(nb)) => {
+            nurbs_nurbs_intersection(na, nb, context)
+        }
 
-        // Fallback: unsupported pair
-        _ => Ok(Vec::new()),
+        // Defensive: every face-surface pair combination is armed above
+        // (specific exact arms, the generic analytic×analytic marcher, and
+        // the NURBS arms). If a future surface variant or refactor makes
+        // this arm reachable, refuse typed instead of returning empty
+        // sections — empty would tell classification the faces provably do
+        // not meet, a silent wrong answer whenever they do (issue 2.1, R1).
+        (a, b) => Err(AlgoError::UnsupportedSurfacePair {
+            a: a.type_tag(),
+            b: b.type_tag(),
+        }),
     }
 }
 
@@ -3796,6 +4014,7 @@ fn plane_analytic_intersection(
     d: f64,
     analytic: &analytic_intersection::AnalyticSurface<'_>,
     analytic_bbox: &Aabb3,
+    tolerance: Tolerance,
 ) -> Result<Vec<RawCurve>, AlgoError> {
     let cone_v_max = match analytic {
         analytic_intersection::AnalyticSurface::Cone(cone) => {
@@ -3862,9 +4081,10 @@ fn plane_analytic_intersection(
                 // interferences are EE/EF/VF territory).
                 let mut pts_dedup: Vec<Point3> = Vec::with_capacity(pts.len());
                 for &p in &pts {
-                    if pts_dedup.last().is_none_or(|&q| {
-                        (p - q).length() > remus_math::tolerance::Tolerance::new().linear
-                    }) {
+                    if pts_dedup
+                        .last()
+                        .is_none_or(|&q| (p - q).length() > tolerance.linear)
+                    {
                         pts_dedup.push(p);
                     }
                 }
@@ -4110,6 +4330,7 @@ fn analytic_nurbs_intersection(
     analytic: &FaceSurface,
     v_range: Option<(f64, f64)>,
     nurbs: &remus_math::nurbs::surface::NurbsSurface,
+    context: &OperationContext,
 ) -> Result<Vec<RawCurve>, AlgoError> {
     // The wire-derived v-range under-covers curved faces slightly (5 samples
     // per edge); pad it so the marcher sees the whole face. Overshoot is
@@ -4145,14 +4366,21 @@ fn analytic_nurbs_intersection(
             ));
         }
     };
-    nurbs_nurbs_intersection(&converted, nurbs)
+    nurbs_nurbs_intersection(&converted, nurbs, context)
 }
 
 fn nurbs_nurbs_intersection(
     na: &remus_math::nurbs::surface::NurbsSurface,
     nb: &remus_math::nurbs::surface::NurbsSurface,
+    context: &OperationContext,
 ) -> Result<Vec<RawCurve>, AlgoError> {
-    let isect_curves = nurbs_isect::intersect_nurbs_nurbs(na, nb, NURBS_SAMPLES, NURBS_MARCH_STEP)?;
+    let isect_curves = nurbs_isect::intersect_nurbs_nurbs_with_context(
+        na,
+        nb,
+        NURBS_SAMPLES,
+        NURBS_MARCH_STEP,
+        context,
+    )?;
 
     let mut results = Vec::new();
     for ic in isect_curves {
@@ -4400,9 +4628,9 @@ fn circle_exits_plane_boundary(
     plane_face: FaceId,
     circle: &remus_math::curves::Circle3D,
     tol: Tolerance,
-) -> bool {
+) -> Result<bool, AlgoError> {
     let Ok(face) = topo.face(plane_face) else {
-        return false;
+        return Ok(false);
     };
     let wires: Vec<remus_topology::wire::WireId> = std::iter::once(face.outer_wire())
         .chain(face.inner_wires().iter().copied())
@@ -4425,7 +4653,7 @@ fn circle_exits_plane_boundary(
                         let at_endpoint = (p - sp).length() < tol.linear * 10.0
                             || (p - ep).length() < tol.linear * 10.0;
                         if !at_endpoint {
-                            return true;
+                            return Ok(true);
                         }
                     }
                 }
@@ -4435,11 +4663,11 @@ fn circle_exits_plane_boundary(
                 // from the crossing set, and the closed section was never
                 // split (the parallel-boss coplanar cap crescent drop).
                 EdgeCurve::Circle(bc) => {
-                    for (p, _) in circle_arc_crossings(edge, sp, ep, bc, circle, tol) {
+                    for (p, _) in circle_arc_crossings(edge, oe.edge(), sp, ep, bc, circle, tol)? {
                         let at_endpoint = (p - sp).length() < tol.linear * 10.0
                             || (p - ep).length() < tol.linear * 10.0;
                         if !at_endpoint {
-                            return true;
+                            return Ok(true);
                         }
                     }
                 }
@@ -4447,7 +4675,7 @@ fn circle_exits_plane_boundary(
             }
         }
     }
-    false
+    Ok(false)
 }
 
 /// Crossings of a section `circle` with a boundary edge lying on circle `bc`,
@@ -4455,22 +4683,24 @@ fn circle_exits_plane_boundary(
 /// crossings). Returns `(point, t-on-section-circle)` pairs.
 fn circle_arc_crossings(
     edge: &remus_topology::edge::Edge,
+    edge_id: remus_topology::edge::EdgeId,
     sp: Point3,
     ep: Point3,
     bc: &remus_math::curves::Circle3D,
     circle: &remus_math::curves::Circle3D,
     tol: Tolerance,
-) -> Vec<(Point3, f64)> {
+) -> Result<Vec<(Point3, f64)>, AlgoError> {
     const NS: usize = 128;
     let full = (sp - ep).length() < tol.linear;
     let cand = circle.intersect_circle(bc, tol.linear);
     if cand.is_empty() || full {
-        return cand;
+        return Ok(cand);
     }
     // Filter to the edge's actual arc by proximity to its sampled polyline.
     // The band covers the sampling sagitta plus the fit weld.
     let mut samples: Vec<Point3> = Vec::new();
-    let (t0, t1) = edge.curve().domain_with_endpoints(sp, ep);
+    let (t0, t1) =
+        super::helpers::authoritative_edge_domain(edge, edge_id, "circle boundary-arc crossing")?;
     for i in 0..=NS {
         #[allow(clippy::cast_precision_loss)]
         let t = t0 + (t1 - t0) * (i as f64) / (NS as f64);
@@ -4484,7 +4714,8 @@ fn circle_arc_crossings(
         };
         (step * step / (8.0 * bc.radius().max(tol.linear))).mul_add(2.0, tol.linear * 100.0)
     };
-    cand.into_iter()
+    Ok(cand
+        .into_iter()
         .filter(|(p, _)| {
             samples.windows(2).any(|w| {
                 let d = w[1] - w[0];
@@ -4497,7 +4728,7 @@ fn circle_arc_crossings(
                 (*p - (w[0] + d * f)).length() <= band
             })
         })
-        .collect()
+        .collect())
 }
 
 fn closed_circle_boundary_crossings(
@@ -4506,7 +4737,7 @@ fn closed_circle_boundary_crossings(
     face_b: FaceId,
     circle: &remus_math::curves::Circle3D,
     tol: Tolerance,
-) -> Vec<(f64, Point3)> {
+) -> Result<Vec<(f64, Point3)>, AlgoError> {
     // Hits carry the boundary edge they came from when that edge is an ARC
     // (`Some(edge_id)`); line-edge hits carry `None`. Adjacent same-arc hit
     // pairs get a midpoint inserted below — the kept span between them would
@@ -4515,13 +4746,16 @@ fn closed_circle_boundary_crossings(
     // the lens region to a zero-area slit. The midpoint split is the
     // sanctioned splitter-side resolution (never make the shared merge
     // smarter).
-    let face_hits = |fid: FaceId| -> Vec<(f64, Point3, Option<remus_topology::edge::EdgeId>)> {
+    let face_hits = |fid: FaceId| -> Result<
+        Vec<(f64, Point3, Option<remus_topology::edge::EdgeId>)>,
+        AlgoError,
+    > {
         let mut hits: Vec<(f64, Point3, Option<remus_topology::edge::EdgeId>)> = Vec::new();
         let Ok(face) = topo.face(fid) else {
-            return hits;
+            return Ok(hits);
         };
         let Ok(wire) = topo.wire(face.outer_wire()) else {
-            return hits;
+            return Ok(hits);
         };
         for oe in wire.edges() {
             let Ok(edge) = topo.edge(oe.edge()) else {
@@ -4547,9 +4781,15 @@ fn closed_circle_boundary_crossings(
                 // desynchronize `emit_split_circle_arcs`' cyclic pairing and
                 // whole in-face spans vanish (the lite magnet-pad fuse).
                 EdgeCurve::Circle(bc) => {
-                    for (p, t) in
-                        circle_arc_crossings(edge, sv.point(), ev.point(), bc, circle, tol)
-                    {
+                    for (p, t) in circle_arc_crossings(
+                        edge,
+                        oe.edge(),
+                        sv.point(),
+                        ev.point(),
+                        bc,
+                        circle,
+                        tol,
+                    )? {
                         edge_hits.push((t, p, Some(oe.edge())));
                     }
                 }
@@ -4564,7 +4804,7 @@ fn closed_circle_boundary_crossings(
                 }
             }
         }
-        hits
+        Ok(hits)
     };
 
     let surface_of = |fid: FaceId| topo.face(fid).ok().map(|f| f.surface().clone());
@@ -4592,14 +4832,14 @@ fn closed_circle_boundary_crossings(
             // plane boundary, so the in-plane band case is unaffected (it
             // yields no plane-boundary hits).
             (true, false) => {
-                if circle_exits_plane_boundary(topo, face_a, circle, tol) {
+                if circle_exits_plane_boundary(topo, face_a, circle, tol)? {
                     vec![face_a, face_b]
                 } else {
                     vec![face_b]
                 }
             }
             (false, true) => {
-                if circle_exits_plane_boundary(topo, face_b, circle, tol) {
+                if circle_exits_plane_boundary(topo, face_b, circle, tol)? {
                     vec![face_a, face_b]
                 } else {
                     vec![face_a]
@@ -4638,7 +4878,7 @@ fn closed_circle_boundary_crossings(
                 continue;
             }
         }
-        let fh = face_hits(fid);
+        let fh = face_hits(fid)?;
         // The boundary is coincident with the section circle when its
         // segments are chords of an *inscribed* polygon: every vertex lands
         // on the circle, so the hits are the polygon's vertices, evenly
@@ -4699,7 +4939,7 @@ fn closed_circle_boundary_crossings(
         hits.len()
     );
 
-    hits.into_iter().map(|(t, p, _)| (t, p)).collect()
+    Ok(hits.into_iter().map(|(t, p, _)| (t, p)).collect())
 }
 
 /// Crossings of a section `circle` with a sphere face's seam (boundary) plane.
@@ -4871,15 +5111,22 @@ fn emit_split_circle_arcs(
     circle: &remus_math::curves::Circle3D,
     crossings: &[(f64, Point3)],
     tol: Tolerance,
-) {
+) -> Result<(), AlgoError> {
+    // The raw full-circle domain is part of the writer contract even though
+    // emitted edges use ranges derived from the crossing sequence.
+    validate_section_range("phase_ff split-circle source", raw.t_range)?;
+    // The collector contract is sorted, unique circle parameters. Validate it
+    // at entry so only the deliberate last-to-first interval wraps through 2π.
+    validate_split_crossings(crossings)?;
+
     // Compute AABBs for each face. For analytic faces the outer wire
     // alone doesn't enclose the face region (e.g. a sphere hemisphere has
     // its outer wire on the equator plane while the surface extends to
     // the pole) — so we union the wire AABB with the surface's AABB to
     // get a usable bounding region.
-    let face_aabb = |fid: FaceId| -> Option<Aabb3> {
-        let face = topo.face(fid).ok()?;
-        let wire = topo.wire(face.outer_wire()).ok()?;
+    let face_aabb = |fid: FaceId| -> Result<Option<Aabb3>, AlgoError> {
+        let face = topo.face(fid)?;
+        let wire = topo.wire(face.outer_wire())?;
         let mut min = Point3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);
         let mut max = Point3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
         let mut any = false;
@@ -4889,7 +5136,11 @@ fn emit_split_circle_arcs(
                     continue;
                 };
                 let (sp, ep) = (sv.point(), ev.point());
-                let (t0, t1) = edge.curve().domain_with_endpoints(sp, ep);
+                let (t0, t1) = super::helpers::authoritative_edge_domain(
+                    edge,
+                    oe.edge(),
+                    "split-circle face bounding box",
+                )?;
                 // Sample along the curve, not just endpoints: a cylinder/cone
                 // lateral face's circular edges are closed (start == end at the
                 // seam vertex), so endpoint-only bounds collapse to a line at
@@ -4908,7 +5159,7 @@ fn emit_split_circle_arcs(
             }
         }
         if !any {
-            return None;
+            return Ok(None);
         }
         // For analytic surfaces with finite extent, union the wire AABB
         // with the surface AABB. This expands a "degenerate-in-Z hemisphere
@@ -4927,26 +5178,26 @@ fn emit_split_circle_arcs(
                 max.z().max(c.z() + r),
             );
         }
-        Some(Aabb3 { min, max }.expanded(tol.linear * 10.0))
+        Ok(Some(Aabb3 { min, max }.expanded(tol.linear * 10.0)))
     };
-    let bbox_a = face_aabb(face_a);
-    let bbox_b = face_aabb(face_b);
+    let bbox_a = face_aabb(face_a)?;
+    let bbox_b = face_aabb(face_b)?;
 
     // A sphere face's wire+surface AABB covers the whole ball, so the AABB
     // filter alone cannot tell its hemisphere from its twin's. Derive the
     // hemisphere axis from the boundary wire orientation (region lies to
     // the left of the wire under the outward surface normal): the sum of
     // normal x edge-direction over the wire points into the face's region.
-    let sphere_side = |fid: FaceId| -> Option<(Point3, Vec3)> {
-        let face = topo.face(fid).ok()?;
+    let sphere_side = |fid: FaceId| -> Result<Option<(Point3, Vec3)>, AlgoError> {
+        let face = topo.face(fid)?;
         let FaceSurface::Sphere(s) = face.surface() else {
-            return None;
+            return Ok(None);
         };
         let center = s.center();
-        sphere_region_axis(topo, fid, center, tol).map(|axis| (center, axis))
+        Ok(sphere_region_axis(topo, fid, center, tol)?.map(|axis| (center, axis)))
     };
-    let side_a = sphere_side(face_a);
-    let side_b = sphere_side(face_b);
+    let side_a = sphere_side(face_a)?;
+    let side_b = sphere_side(face_b)?;
     let side_eps = tol.linear * 10.0;
     let in_both = |p: Point3| -> bool {
         let a_ok = bbox_a.as_ref().is_none_or(|b| b.contains_point(p));
@@ -4991,6 +5242,10 @@ fn emit_split_circle_arcs(
             t1 += std::f64::consts::TAU;
         }
 
+        // Validate before evaluating the midpoint or collecting any survivor;
+        // pass 2 is the first point at which this writer mutates topology.
+        validate_section_range("phase_ff split-circle writer", (t0, t1))?;
+
         let t_mid = (t0 + t1) * 0.5;
         let mid_3d = circle.evaluate(t_mid);
         if !in_both(mid_3d) {
@@ -5021,6 +5276,17 @@ fn emit_split_circle_arcs(
         points.push((t1, crossings[next_i].1, Some(next_i)));
 
         survivors.push(points);
+    }
+
+    // Subdivision arithmetic must preserve strict order too. Check every
+    // range that pass 2 will write before resolving its first vertex.
+    for arc_points in &survivors {
+        for pair in arc_points.windows(2) {
+            validate_section_range(
+                "phase_ff split-circle subdivided writer",
+                (pair[0].0, pair[1].0),
+            )?;
+        }
     }
 
     // Pass 2: allocate vertices only for crossings/midpoints used by
@@ -5097,7 +5363,8 @@ fn emit_split_circle_arcs(
                 }
                 None => resolve_crossing(topo, arena, p_e),
             };
-            let edge = Edge::new(start_vid, end_vid, EdgeCurve::Circle(circle.clone()));
+            let mut edge = Edge::new(start_vid, end_vid, EdgeCurve::Circle(circle.clone()));
+            edge.set_trim(Some((t_s, t_e)));
             let edge_id = topo.add_edge(edge);
             arena
                 .section_edge_origins
@@ -5135,6 +5402,7 @@ fn emit_split_circle_arcs(
     }
 
     log::debug!("FF: emitted {emitted}/{n} arcs after AABB filter for {face_a:?}/{face_b:?}");
+    Ok(())
 }
 
 /// Compute AABB for a NURBS curve.
@@ -5551,6 +5819,359 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
+    fn square_plane_face(topo: &mut Topology, half_extent: f64) -> FaceId {
+        use remus_topology::face::Face;
+        use remus_topology::wire::{OrientedEdge, Wire};
+
+        let points = [
+            Point3::new(-half_extent, -half_extent, 0.0),
+            Point3::new(half_extent, -half_extent, 0.0),
+            Point3::new(half_extent, half_extent, 0.0),
+            Point3::new(-half_extent, half_extent, 0.0),
+        ];
+        let vertices: Vec<_> = points
+            .into_iter()
+            .map(|point| topo.add_vertex(Vertex::new(point, 1e-7)))
+            .collect();
+        let edges: Vec<_> = (0..vertices.len())
+            .map(|i| {
+                topo.add_edge(Edge::new(
+                    vertices[i],
+                    vertices[(i + 1) % vertices.len()],
+                    EdgeCurve::Line,
+                ))
+            })
+            .collect();
+        let wire = topo.add_wire(
+            Wire::new(
+                edges
+                    .into_iter()
+                    .map(|edge| OrientedEdge::new(edge, true))
+                    .collect(),
+                true,
+            )
+            .unwrap(),
+        );
+        topo.add_face(Face::new(
+            wire,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ))
+    }
+
+    fn writer_state(
+        topo: &Topology,
+        arena: &GfaArena,
+    ) -> (usize, usize, usize, usize, usize, usize) {
+        (
+            topo.num_vertices(),
+            topo.num_edges(),
+            arena.pave_blocks.len(),
+            arena.curves.len(),
+            arena.interference.ff.len(),
+            arena.section_edge_origins.len(),
+        )
+    }
+
+    #[test]
+    fn phase_ff_refuses_missing_boundary_authority_before_mutation() {
+        use remus_math::curves::Circle3D;
+        use remus_math::surfaces::SphericalSurface;
+        use remus_topology::face::Face;
+        use remus_topology::shell::Shell;
+        use remus_topology::solid::Solid;
+        use remus_topology::wire::{OrientedEdge, Wire};
+
+        let mut topo = Topology::new();
+        let plane_face = square_plane_face(&mut topo, 2.0);
+        let plane_shell = topo.add_shell(Shell::new(vec![plane_face]).unwrap());
+        let plane_solid = topo.add_solid(Solid::new(plane_shell, vec![]));
+
+        let circle =
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+        let seam = topo.add_vertex(Vertex::new(circle.evaluate(0.0), 1e-7));
+        let circle_edge = topo.add_edge(Edge::new(seam, seam, EdgeCurve::Circle(circle)));
+        let sphere_wire =
+            topo.add_wire(Wire::new(vec![OrientedEdge::new(circle_edge, true)], true).unwrap());
+        let sphere = SphericalSurface::new(Point3::new(0.0, 0.0, 0.0), 1.0).unwrap();
+        let sphere_face =
+            topo.add_face(Face::new(sphere_wire, vec![], FaceSurface::Sphere(sphere)));
+        let sphere_shell = topo.add_shell(Shell::new(vec![sphere_face]).unwrap());
+        let sphere_solid = topo.add_solid(Solid::new(sphere_shell, vec![]));
+
+        let mut arena = GfaArena::new();
+        let before = writer_state(&topo, &arena);
+        let error = perform(
+            &mut topo,
+            plane_solid,
+            sphere_solid,
+            Tolerance::default(),
+            &mut arena,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            AlgoError::IntersectionFailed(message)
+                if message.contains("face bounding-box sampling")
+                    && message.contains(&format!("{circle_edge:?}"))
+        ));
+        assert_eq!(writer_state(&topo, &arena), before);
+    }
+
+    fn assert_range_close(actual: (f64, f64), expected: (f64, f64)) {
+        assert!(
+            (actual.0 - expected.0).abs() < 1e-12 && (actual.1 - expected.1).abs() < 1e-12,
+            "range {actual:?} != {expected:?}"
+        );
+    }
+
+    fn assert_point_close(actual: Point3, expected: Point3) {
+        assert!(
+            (actual - expected).length() < 1e-12,
+            "point {actual:?} != {expected:?}"
+        );
+    }
+
+    #[test]
+    fn section_range_validator_matrix() {
+        use SectionRangeReason::{NonAscending, NonFinite};
+
+        assert_eq!(section_range_reason((0.0, 1.0)), None);
+        assert_eq!(section_range_reason((-3.0, -2.0)), None);
+        assert_eq!(
+            section_range_reason((5.5, std::f64::consts::TAU + 0.5)),
+            None,
+            "periodic ranges may intentionally cross 2pi"
+        );
+        assert_eq!(section_range_reason((f64::NAN, 1.0)), Some(NonFinite));
+        assert_eq!(section_range_reason((0.0, f64::INFINITY)), Some(NonFinite));
+        assert_eq!(section_range_reason((1.0, 1.0)), Some(NonAscending));
+        assert_eq!(section_range_reason((2.0, 1.0)), Some(NonAscending));
+    }
+
+    #[test]
+    fn raw_curve_collection_validator_refuses_invalid_range_before_filtering() {
+        let raw = |t_range| RawCurve {
+            curve: EdgeCurve::Line,
+            bbox: Aabb3::from_points([Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 0.0, 0.0)]),
+            t_range,
+            p_start: Point3::new(0.0, 0.0, 0.0),
+            p_end: Point3::new(1.0, 0.0, 0.0),
+        };
+        let valid = raw((5.5, std::f64::consts::TAU + 0.5));
+        validate_raw_curve_collection("pre-filter test", std::slice::from_ref(&valid)).unwrap();
+
+        for invalid in [(f64::NAN, 1.0), (0.0, f64::INFINITY), (2.0, 1.0)] {
+            let curves = vec![valid.clone(), raw(invalid)];
+            let err = validate_raw_curve_collection("pre-filter test", &curves).unwrap_err();
+            assert!(matches!(err, AlgoError::IntersectionFailed(_)));
+            let AlgoError::IntersectionFailed(message) = err else {
+                return;
+            };
+            assert!(message.contains("pre-filter test"));
+            assert!(message.contains("curve 1"));
+        }
+    }
+
+    #[test]
+    fn exact_arc_writer_preserves_wrapping_ellipse_range() {
+        use remus_math::curves::Ellipse3D;
+
+        let mut topo = Topology::new();
+        let face = square_plane_face(&mut topo, 10.0);
+        let ellipse = Ellipse3D::new_with_ref(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            2.0,
+            1.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let expected = (5.5, std::f64::consts::TAU + 0.5);
+        let raw = RawCurve {
+            curve: EdgeCurve::Ellipse(ellipse.clone()),
+            bbox: Aabb3::from_points([Point3::new(-2.0, -1.0, 0.0), Point3::new(2.0, 1.0, 0.0)]),
+            t_range: expected,
+            p_start: ellipse.evaluate(expected.0),
+            p_end: ellipse.evaluate(expected.1),
+        };
+        let mut arena = GfaArena::new();
+        let mut registry = std::collections::HashMap::new();
+
+        emit_exact_arc(
+            &mut topo,
+            &mut arena,
+            face,
+            face,
+            &raw,
+            Tolerance::default(),
+            &mut registry,
+        )
+        .unwrap();
+
+        assert_eq!(arena.curves.len(), 1);
+        let ds = &arena.curves[0];
+        assert_range_close(ds.t_range, expected);
+        assert!(ds.t_range.1 > std::f64::consts::TAU);
+        let pb = arena.pave_blocks.get(ds.pave_blocks[0]).unwrap();
+        assert_range_close(pb.parameter_range(), expected);
+        let edge = topo.edge(pb.original_edge).unwrap();
+        assert_range_close(edge.trim().unwrap(), expected);
+        assert_eq!(edge.start(), pb.start.vertex);
+        assert_eq!(edge.end(), pb.end.vertex);
+        assert_point_close(
+            topo.vertex(edge.start()).unwrap().point(),
+            ellipse.evaluate(expected.0),
+        );
+        assert_point_close(
+            topo.vertex(edge.end()).unwrap().point(),
+            ellipse.evaluate(expected.1),
+        );
+    }
+
+    #[test]
+    fn exact_arc_writer_refuses_invalid_range_before_mutation() {
+        use remus_math::curves::Ellipse3D;
+
+        let mut topo = Topology::new();
+        let face = square_plane_face(&mut topo, 10.0);
+        let ellipse = Ellipse3D::new(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            2.0,
+            1.0,
+        )
+        .unwrap();
+        let raw = RawCurve {
+            curve: EdgeCurve::Ellipse(ellipse.clone()),
+            bbox: Aabb3::from_points([Point3::new(-2.0, -1.0, 0.0), Point3::new(2.0, 1.0, 0.0)]),
+            t_range: (f64::NAN, 1.0),
+            p_start: ellipse.evaluate(0.0),
+            p_end: ellipse.evaluate(1.0),
+        };
+        let mut arena = GfaArena::new();
+        let mut registry = std::collections::HashMap::new();
+        let before = writer_state(&topo, &arena);
+
+        let err = emit_exact_arc(
+            &mut topo,
+            &mut arena,
+            face,
+            face,
+            &raw,
+            Tolerance::default(),
+            &mut registry,
+        )
+        .unwrap_err();
+
+        assert!(matches!(err, AlgoError::IntersectionFailed(_)));
+        assert_eq!(writer_state(&topo, &arena), before);
+        assert!(registry.is_empty());
+    }
+
+    #[test]
+    fn split_circle_writer_preserves_cyclic_ranges_and_geometry() {
+        use remus_math::curves::Circle3D;
+
+        let mut topo = Topology::new();
+        let face = square_plane_face(&mut topo, 2.0);
+        let circle = Circle3D::new_with_ref(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            1.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let raw = RawCurve {
+            curve: EdgeCurve::Circle(circle.clone()),
+            bbox: Aabb3::from_points([Point3::new(-1.0, -1.0, 0.0), Point3::new(1.0, 1.0, 0.0)]),
+            t_range: (0.0, std::f64::consts::TAU),
+            p_start: circle.evaluate(0.0),
+            p_end: circle.evaluate(std::f64::consts::TAU),
+        };
+        let crossings = [(0.5, circle.evaluate(0.5)), (5.5, circle.evaluate(5.5))];
+        let expected = [(0.5, 3.0), (3.0, 5.5), (5.5, std::f64::consts::TAU + 0.5)];
+        let mut arena = GfaArena::new();
+
+        emit_split_circle_arcs(
+            &mut topo,
+            &mut arena,
+            face,
+            face,
+            &raw,
+            &circle,
+            &crossings,
+            Tolerance::default(),
+        )
+        .unwrap();
+
+        assert_eq!(arena.curves.len(), expected.len());
+        for (ds, expected_range) in arena.curves.iter().zip(expected) {
+            assert!(ds.t_range.0.is_finite() && ds.t_range.1.is_finite());
+            assert_range_close(ds.t_range, expected_range);
+            let pb = arena.pave_blocks.get(ds.pave_blocks[0]).unwrap();
+            assert_range_close(pb.parameter_range(), expected_range);
+            let edge = topo.edge(pb.original_edge).unwrap();
+            assert_range_close(edge.trim().unwrap(), expected_range);
+
+            let start = topo.vertex(edge.start()).unwrap().point();
+            let end = topo.vertex(edge.end()).unwrap().point();
+            let mid = circle.evaluate((expected_range.0 + expected_range.1) * 0.5);
+            assert_point_close(start, circle.evaluate(expected_range.0));
+            assert_point_close(end, circle.evaluate(expected_range.1));
+            assert!(((mid - circle.center()).length() - circle.radius()).abs() < 1e-12);
+            assert!(mid.z().abs() < 1e-12);
+        }
+        assert!(arena.curves.last().unwrap().t_range.1 > std::f64::consts::TAU);
+    }
+
+    #[test]
+    fn split_circle_writer_refuses_invalid_range_before_mutation() {
+        use remus_math::curves::Circle3D;
+
+        let mut topo = Topology::new();
+        let face = square_plane_face(&mut topo, 2.0);
+        let circle =
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+        let raw = RawCurve {
+            curve: EdgeCurve::Circle(circle.clone()),
+            bbox: Aabb3::from_points([Point3::new(-1.0, -1.0, 0.0), Point3::new(1.0, 1.0, 0.0)]),
+            t_range: (0.0, std::f64::consts::TAU),
+            p_start: circle.evaluate(0.0),
+            p_end: circle.evaluate(std::f64::consts::TAU),
+        };
+        let mut arena = GfaArena::new();
+        let before = writer_state(&topo, &arena);
+        let invalid_crossings = [
+            vec![
+                (0.5, circle.evaluate(0.5)),
+                (f64::INFINITY, circle.evaluate(1.0)),
+            ],
+            vec![(0.5, circle.evaluate(0.5)), (0.5, circle.evaluate(0.5))],
+            vec![(1.0, circle.evaluate(1.0)), (0.5, circle.evaluate(0.5))],
+        ];
+
+        for crossings in invalid_crossings {
+            let err = emit_split_circle_arcs(
+                &mut topo,
+                &mut arena,
+                face,
+                face,
+                &raw,
+                &circle,
+                &crossings,
+                Tolerance::default(),
+            )
+            .unwrap_err();
+
+            assert!(matches!(err, AlgoError::IntersectionFailed(_)));
+            assert_eq!(writer_state(&topo, &arena), before);
+        }
+    }
+
     fn boxes(
         a: ([f64; 3], [f64; 3]),
         b: ([f64; 3], [f64; 3]),
@@ -5747,7 +6368,9 @@ mod tests {
         let v0 = topo.add_vertex(Vertex::new(Point3::new(6.0, 0.0, 0.0), 1e-7));
         let circle =
             Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 6.0).unwrap();
-        let edge = topo.add_edge(Edge::new(v0, v0, EdgeCurve::Circle(circle)));
+        let mut circle_edge = Edge::new(v0, v0, EdgeCurve::Circle(circle));
+        circle_edge.set_trim(Some((0.0, std::f64::consts::TAU)));
+        let edge = topo.add_edge(circle_edge);
         let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap());
         let sphere = SphericalSurface::new(Point3::new(0.0, 0.0, 0.0), 6.0).unwrap();
         let face = topo.add_face(Face::new(wire, vec![], FaceSurface::Sphere(sphere)));
@@ -5757,6 +6380,7 @@ mod tests {
             Point3::new(0.0, 0.0, 0.0),
             Tolerance::default(),
         )
+        .expect("sphere-region sampling should not fail")
         .expect("closed-circle boundary should yield a pole axis");
         // The equatorial circle's plane normal is ±z; sampling recovers it.
         assert!(axis.z().abs() > 0.99, "axis not aligned with z: {axis:?}");
@@ -5778,7 +6402,9 @@ mod tests {
         // (10,0,0), in the x-z plane, radius = minor radius 3.
         let circle =
             Circle3D::new(Point3::new(10.0, 0.0, 0.0), Vec3::new(0.0, 1.0, 0.0), 3.0).unwrap();
-        let edge = topo.add_edge(Edge::new(v0, v0, EdgeCurve::Circle(circle)));
+        let mut circle_edge = Edge::new(v0, v0, EdgeCurve::Circle(circle));
+        circle_edge.set_trim(Some((0.0, std::f64::consts::TAU)));
+        let edge = topo.add_edge(circle_edge);
         let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap());
         let torus = ToroidalSurface::new(Point3::new(0.0, 0.0, 0.0), 10.0, 3.0).unwrap();
         let face = topo.add_face(Face::new(wire, vec![], FaceSurface::Torus(torus)));
@@ -6036,7 +6662,9 @@ mod tests {
         ));
         let tol = Tolerance::default();
         let surface = topo.face(face).unwrap().surface().clone();
-        let ext = FaceExtent::new(&topo, face, &surface, None, tol).unwrap();
+        let ext = FaceExtent::new(&topo, face, &surface, None, tol)
+            .unwrap()
+            .unwrap();
 
         // Circular ellipse r=3 centered (5,-1,0) with u_axis pinned to +x
         // (a raw Circle3D picks its own reference axis, and closed Circles
@@ -6167,5 +6795,113 @@ mod ellipse_span_tests {
         // A small window stays ONE arc (no perturbation of the normal case).
         let small = trim_closed_curve_to_inboth_arc(&raw, 10, 20, 64);
         assert_eq!(small.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod context_budget_tests {
+    #![allow(clippy::unwrap_used)]
+
+    use remus_math::context::{OperationContext, WorkBudgets};
+    use remus_math::nurbs::surface::NurbsSurface;
+    use remus_math::vec::Point3;
+    use remus_topology::edge::EdgeCurve;
+
+    use super::nurbs_nurbs_intersection;
+
+    fn flat_surface() -> NurbsSurface {
+        NurbsSurface::new(
+            1,
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![
+                vec![Point3::new(0.0, 0.0, 0.0), Point3::new(0.0, 1.0, 0.0)],
+                vec![Point3::new(1.0, 0.0, 0.0), Point3::new(1.0, 1.0, 0.0)],
+            ],
+            vec![vec![1.0, 1.0], vec![1.0, 1.0]],
+        )
+        .unwrap()
+    }
+
+    fn tilted_surface() -> NurbsSurface {
+        NurbsSurface::new(
+            1,
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![
+                vec![Point3::new(0.0, 0.0, -0.5), Point3::new(0.0, 1.0, -0.5)],
+                vec![Point3::new(1.0, 0.0, 0.5), Point3::new(1.0, 1.0, 0.5)],
+            ],
+            vec![vec![1.0, 1.0], vec![1.0, 1.0]],
+        )
+        .unwrap()
+    }
+
+    fn off_center_tilted_surface() -> NurbsSurface {
+        NurbsSurface::new(
+            1,
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![
+                vec![Point3::new(0.0, 0.0, -0.3), Point3::new(0.0, 1.0, -0.3)],
+                vec![Point3::new(1.0, 0.0, 0.7), Point3::new(1.0, 1.0, 0.7)],
+            ],
+            vec![vec![1.0, 1.0], vec![1.0, 1.0]],
+        )
+        .unwrap()
+    }
+
+    fn control_point_count(curves: &[super::RawCurve]) -> usize {
+        curves
+            .iter()
+            .map(|raw| match &raw.curve {
+                EdgeCurve::NurbsCurve(curve) => curve.control_points().len(),
+                _ => 0,
+            })
+            .sum()
+    }
+
+    #[test]
+    fn caller_budgets_reach_nurbs_ff_marching() {
+        let a = flat_surface();
+        let b = tilted_surface();
+        let full = nurbs_nurbs_intersection(&a, &b, &OperationContext::new()).unwrap();
+        let tiny = OperationContext::new().with_budgets(
+            WorkBudgets::new()
+                .with_march_steps(2)
+                .with_segments(1)
+                .with_queue_size(1),
+        );
+        let bounded = nurbs_nurbs_intersection(&a, &b, &tiny).unwrap();
+
+        let full_points = control_point_count(&full);
+        let bounded_points = control_point_count(&bounded);
+        assert!(full_points > 4, "fixture must trace a real FF curve");
+        assert!(
+            bounded_points < full_points,
+            "tiny caller budget must bound FF output ({bounded_points} vs {full_points})"
+        );
+    }
+
+    #[test]
+    fn caller_newton_budget_reaches_nurbs_ff_refinement() {
+        let a = flat_surface();
+        let b = off_center_tilted_surface();
+        let full = nurbs_nurbs_intersection(&a, &b, &OperationContext::new()).unwrap();
+        assert!(
+            control_point_count(&full) > 4,
+            "default Newton budget must recover the off-centre FF curve"
+        );
+
+        let disabled =
+            OperationContext::new().with_budgets(WorkBudgets::new().with_newton_iterations(0));
+        let bounded = nurbs_nurbs_intersection(&a, &b, &disabled).unwrap();
+        assert!(
+            bounded.is_empty(),
+            "a zero-iteration caller budget must prevent FF Newton refinement"
+        );
     }
 }

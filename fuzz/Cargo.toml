@@ -91,6 +91,20 @@ test = false
 [[bin]]
 bench = false
 doc = false
+name = "nurbs_surface"
+path = "fuzz_targets/nurbs_surface.rs"
+test = false
+
+[[bin]]
+bench = false
+doc = false
+name = "topology_mutation"
+path = "fuzz_targets/topology_mutation.rs"
+test = false
+
+[[bin]]
+bench = false
+doc = false
 name = "wasm_batch"
 path = "fuzz_targets/wasm_batch.rs"
 test = false

@@ -87,21 +87,29 @@ pub(crate) fn edge_is_convex(
     solid: SolidId,
     edge: EdgeId,
     probe: f64,
-) -> Option<bool> {
-    let adjacency = topo.build_adjacency(solid).ok()?;
+) -> Result<Option<bool>, OperationsError> {
+    let Ok(adjacency) = topo.build_adjacency(solid) else {
+        return Ok(None);
+    };
     let faces = adjacency.faces_for_edge(edge);
     if faces.len() != 2 {
-        return None;
+        return Ok(None);
     }
-    let e = topo.edge(edge).ok()?;
-    let start = topo.vertex(e.start()).ok()?.point();
-    let end = topo.vertex(e.end()).ok()?.point();
+    let Ok(e) = topo.edge(edge) else {
+        return Ok(None);
+    };
+    let (Ok(start_vertex), Ok(end_vertex)) = (topo.vertex(e.start()), topo.vertex(e.end())) else {
+        return Ok(None);
+    };
+    let start = start_vertex.point();
+    let end = end_vertex.point();
 
     // For planar faces, use only the two boundary edges incident to the
     // target edge.  Looking at the complete face boundary makes this local
     // property depend on unrelated holes or distant concave portions.
-    let face1_data = topo.face(faces[0]).ok()?;
-    let face2_data = topo.face(faces[1]).ok()?;
+    let (Ok(face1_data), Ok(face2_data)) = (topo.face(faces[0]), topo.face(faces[1])) else {
+        return Ok(None);
+    };
     if let (FaceSurface::Plane { normal: n1, .. }, FaceSurface::Plane { normal: n2, .. }) =
         (face1_data.surface(), face2_data.surface())
     {
@@ -138,10 +146,14 @@ pub(crate) fn edge_is_convex(
             }
             None
         };
-        let w1 = local_witness(face1_data, inward2)?;
-        let w2 = local_witness(face2_data, inward1)?;
+        let (Some(w1), Some(w2)) = (
+            local_witness(face1_data, inward2),
+            local_witness(face2_data, inward1),
+        ) else {
+            return Ok(None);
+        };
         if w1.abs() > 1e-9 && w2.abs() > 1e-9 {
-            return Some(!(w1 < -1e-9 && w2 < -1e-9));
+            return Ok(Some(!(w1 < -1e-9 && w2 < -1e-9)));
         }
     }
 
@@ -149,7 +161,7 @@ pub(crate) fn edge_is_convex(
         if matches!(e.curve(), EdgeCurve::Line) {
             0.5
         } else {
-            let (t0, t1) = e.domain_with_endpoints(start, end);
+            let (t0, t1) = crate::authoritative_edge_domain(e, "blend convexity classification")?;
             f64::midpoint(t0, t1)
         },
         start,
@@ -163,17 +175,28 @@ pub(crate) fn edge_is_convex(
         let n = if face.is_reversed() { -n } else { n };
         n.normalize().ok()
     };
-    let n1 = outward(faces[0])?;
-    let n2 = outward(faces[1])?;
-    let bisector = (n1 + n2).normalize().ok()?;
+    let Some(n1) = outward(faces[0]) else {
+        return Ok(None);
+    };
+    let Some(n2) = outward(faces[1]) else {
+        return Ok(None);
+    };
+    let Ok(bisector) = (n1 + n2).normalize() else {
+        return Ok(None);
+    };
 
     // Step inward along the bisector. Inside the material ⇒ convex edge.
     let sample = mid - bisector * probe;
-    match crate::classify::classify_point_robust(topo, solid, sample, 0.01, 1e-7).ok()? {
+    let Ok(classification) =
+        crate::classify::classify_point_robust(topo, solid, sample, 0.01, 1e-7)
+    else {
+        return Ok(None);
+    };
+    Ok(match classification {
         crate::classify::PointClassification::Inside => Some(true),
         crate::classify::PointClassification::Outside => Some(false),
         crate::classify::PointClassification::OnBoundary => None,
-    }
+    })
 }
 
 /// Reject a blend whose volume change is geometrically impossible.
@@ -204,7 +227,7 @@ fn validate_blend_volume(
         let end = topo.vertex(e.end())?.point();
         let length = if e.start() == e.end() {
             // Closed edge: use the curve's own extent.
-            let (t0, t1) = e.domain_with_endpoints(start, end);
+            let (t0, t1) = crate::authoritative_edge_domain(e, "blend-volume validation")?;
             let mut len = 0.0;
             let mut prev = e.curve().evaluate_with_endpoints(t0, start, end);
             for i in 1..=32 {
@@ -368,7 +391,7 @@ fn sample_edge(
     let e = topo.edge(edge)?;
     let start = topo.vertex(e.start())?.point();
     let end = topo.vertex(e.end())?.point();
-    let (t0, t1) = e.domain_with_endpoints(start, end);
+    let (t0, t1) = crate::authoritative_edge_domain(e, "blend edge sampling")?;
     Ok((0..=samples)
         .map(|i| {
             let t = t0
@@ -702,6 +725,9 @@ fn fillet_group(
         // fall-through starts from a clean arena.
         match transactional(topo, |t| planar_fillet_result(t, solid, edges, radius)) {
             Ok(result) => return Ok(result),
+            Err(error @ OperationsError::Blend(BlendError::RadiusTooLarge { .. })) => {
+                return Err(error);
+            }
             Err(e) => {
                 log::warn!("planar fillet fast path failed ({e}); falling back to walking builder");
             }
@@ -727,9 +753,13 @@ fn fillet_group(
     // would lift the fork's compatibility pin. Retry only when every requested
     // edge is positively classified as concave and the legacy route above has
     // already failed closed.
-    let all_concave = edges
-        .iter()
-        .all(|&edge| edge_is_convex(topo, solid, edge, radius * 0.25) == Some(false));
+    let mut all_concave = true;
+    for &edge in edges {
+        if edge_is_convex(topo, solid, edge, radius * 0.25)? != Some(false) {
+            all_concave = false;
+            break;
+        }
+    }
     if !all_concave {
         return Err(legacy_refusal);
     }

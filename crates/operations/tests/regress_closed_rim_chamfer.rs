@@ -26,8 +26,9 @@ use std::collections::HashMap;
 
 use remus_blend::BlendError;
 use remus_check::classify::{ClassifyOptions, PointClassification, classify_point};
+use remus_math::curves::Circle3D;
 use remus_math::mat::Mat4;
-use remus_math::vec::Point3;
+use remus_math::vec::{Point3, Vec3};
 use remus_operations::OperationsError;
 use remus_operations::blend_ops;
 use remus_operations::boolean::{BooleanOp, boolean};
@@ -36,7 +37,7 @@ use remus_operations::primitives;
 use remus_operations::tessellate::tessellate_solid_with_tolerance;
 use remus_operations::transform::transform_solid;
 use remus_topology::Topology;
-use remus_topology::edge::EdgeId;
+use remus_topology::edge::{EdgeCurve, EdgeId};
 use remus_topology::explorer::solid_faces;
 use remus_topology::solid::SolidId;
 
@@ -143,6 +144,52 @@ fn closed_rims(topo: &Topology, s: SolidId) -> Vec<EdgeId> {
         .collect()
 }
 
+fn assert_curved_edge_authority(topo: &Topology, solid: SolidId) -> usize {
+    let mut curved = 0;
+    for edge_id in solid_edges(topo, solid) {
+        let edge = topo.edge(edge_id).unwrap();
+        if matches!(edge.curve(), EdgeCurve::Line) {
+            continue;
+        }
+        curved += 1;
+        let range = edge.strict_domain().unwrap();
+        let start = topo.vertex(edge.start()).unwrap();
+        let end = topo.vertex(edge.end()).unwrap();
+        let tolerance = edge
+            .effective_tolerance(start.tolerance().max(end.tolerance()))
+            .max(1e-7);
+        for (parameter, expected) in [(range.0, start.point()), (range.1, end.point())] {
+            let residual =
+                (edge
+                    .curve()
+                    .evaluate_with_endpoints(parameter, start.point(), end.point())
+                    - expected)
+                    .length();
+            assert!(
+                residual <= tolerance,
+                "edge {edge_id:?} endpoint residual {residual} exceeds {tolerance}"
+            );
+        }
+        let midpoint = edge.curve().evaluate_with_endpoints(
+            f64::midpoint(range.0, range.1),
+            start.point(),
+            end.point(),
+        );
+        assert!(
+            [midpoint.x(), midpoint.y(), midpoint.z()]
+                .into_iter()
+                .all(f64::is_finite),
+            "edge {edge_id:?} midpoint must be finite"
+        );
+        if let EdgeCurve::Circle(circle) = edge.curve() {
+            let radial = midpoint - circle.center();
+            assert!((radial.length() - circle.radius()).abs() <= tolerance);
+            assert!(radial.dot(circle.normal()).abs() <= tolerance);
+        }
+    }
+    curved
+}
+
 /// Material removed by a symmetric chamfer of setback `d` on a rim of radius
 /// `R`, by Pappus: the right triangle (legs `d`, `d`, area `d²/2`) revolved
 /// about the axis at centroid radius `R − d/3`.
@@ -204,6 +251,98 @@ fn closed_rim_chamfer_is_exact_and_watertight() {
             );
         }
     }
+}
+
+#[test]
+fn closed_rim_chamfer_step_roundtrip_preserves_authoritative_circles() {
+    let mut topo = Topology::new();
+    let cylinder = primitives::make_cylinder(&mut topo, R, H).unwrap();
+    let top_rim = closed_rims(&topo, cylinder)
+        .into_iter()
+        .find(|&edge_id| {
+            let edge = topo.edge(edge_id).unwrap();
+            (topo.vertex(edge.start()).unwrap().point().z() - H).abs() < 1e-12
+        })
+        .expect("top cylinder rim");
+    let chamfered = blend_ops::chamfer_v2(&mut topo, cylinder, &[top_rim], 1.5, 1.5)
+        .unwrap()
+        .solid;
+    let curved_before = assert_curved_edge_authority(&topo, chamfered);
+    assert_eq!(curved_before, 3, "bottom rim plus two contact circles");
+    let census_before = surface_census(&topo, chamfered);
+    let volume_before = measure::solid_volume(&topo, chamfered, 0.01).unwrap();
+
+    let step = remus_io::step::write_step(&topo, &[chamfered]).unwrap();
+    let mut reread_topology = Topology::new();
+    let reread = remus_io::step::read_step(&step, &mut reread_topology).unwrap()[0];
+    assert_eq!(
+        assert_curved_edge_authority(&reread_topology, reread),
+        curved_before
+    );
+    assert_eq!(surface_census(&reread_topology, reread), census_before);
+    let volume_after = measure::solid_volume(&reread_topology, reread, 0.01).unwrap();
+    assert!((volume_after - volume_before).abs() <= 1e-7 * volume_before.abs().max(1.0));
+}
+
+#[test]
+fn closed_rim_chamfer_refuses_nonlinear_changed_endpoint_without_mutation() {
+    let mut topo = Topology::new();
+    let cylinder = primitives::make_cylinder(&mut topo, R, H).unwrap();
+    let edges = solid_edges(&topo, cylinder);
+    let top_rim = edges
+        .iter()
+        .copied()
+        .find(|&edge_id| {
+            let edge = topo.edge(edge_id).unwrap();
+            edge.start() == edge.end()
+                && (topo.vertex(edge.start()).unwrap().point().z() - H).abs() < 1e-12
+        })
+        .expect("top cylinder rim");
+    let seam = edges
+        .into_iter()
+        .find(|&edge_id| matches!(topo.edge(edge_id).unwrap().curve(), EdgeCurve::Line))
+        .expect("cylinder seam");
+    let seam_edge = topo.edge(seam).unwrap();
+    let start = topo.vertex(seam_edge.start()).unwrap().point();
+    let end = topo.vertex(seam_edge.end()).unwrap().point();
+    let center = start + (end - start) * 0.5;
+    let hostile_curve =
+        Circle3D::new_with_ref(center, Vec3::new(0.0, 1.0, 0.0), H * 0.5, start - center).unwrap();
+    let hostile_edge = topo.edge_mut(seam).unwrap();
+    hostile_edge.set_curve(EdgeCurve::Circle(hostile_curve));
+    hostile_edge.set_trim(Some((0.0, std::f64::consts::PI)));
+    let counts = (
+        topo.num_vertices(),
+        topo.num_edges(),
+        topo.num_wires(),
+        topo.num_faces(),
+        topo.num_shells(),
+        topo.num_solids(),
+    );
+
+    let error = match blend_ops::chamfer_v2(&mut topo, cylinder, &[top_rim], 1.0, 1.0) {
+        Err(error) => error,
+        Ok(_) => panic!("moving one endpoint of a nonlinear carrier must be refused"),
+    };
+    assert!(
+        matches!(
+            error,
+            OperationsError::Blend(BlendError::TrimmingFailure { .. })
+        ),
+        "unexpected refusal: {error:?}"
+    );
+    assert_eq!(
+        (
+            topo.num_vertices(),
+            topo.num_edges(),
+            topo.num_wires(),
+            topo.num_faces(),
+            topo.num_shells(),
+            topo.num_solids(),
+        ),
+        counts,
+        "transaction must roll back every attempted replacement"
+    );
 }
 
 #[test]

@@ -67,6 +67,24 @@ boolean operation sequences, blend and offset inputs, WASM batch decoding,
 native serialization. Minimized corpus inputs are stored under version control
 when licensing permits.
 
+Current scheduled coverage includes the public import readers, structured
+boolean trees, modifiers, `nurbs_surface`, and `topology_mutation`. The
+NURBS target generates bounded rational surfaces and an independent
+horizontal NURBS plane, then requires finite evaluation/derivatives, typed
+constructor refusal for corrupted data, and SSI points, parameters, and
+fitted curves that satisfy both surfaces and the plane equation. The
+topology-mutation target drives derivation, transactional-rollback,
+checkpoint-restore, and solid-deletion sequences over a bounded box against
+the mutation contracts: exact-state rollback, tombstoned checkpoint
+retirements with a never-dangling derivation map, permanent stale-handle
+invalidation without slot reissue, atomic typed deletion refusal, and
+complete unshared-tree retirement, with validation, closed-manifold census,
+and closed-form volume oracles checked after every mutation. Its committed
+corpus carries the checkpoint re-derivation seed that exposed a dangling
+loop-derivation map after restore. `arena_reader` and `wasm_batch`
+currently compile in PR CI but are not scheduled; native serialization,
+curve-intersection, and offset-specific fuzzing remain outstanding.
+
 ## Corpus
 
 Licensed or generated corpora: primitive adversarial cases, imported STEP,
@@ -74,6 +92,17 @@ periodic seams, tangency/coincidence, slivers and short edges, large and tiny
 scales, cavities and nested shells, high-degree NURBS, realistic mechanical
 parts, long operation sequences. Corpus replay is deterministic and becomes a
 CI stage.
+
+## Approximation census
+
+CI runs `scripts/check-approx-census.py` against the committed
+`crates/operations/examples/approx_census.snapshot`. The snapshot is a
+semantic ratchet: operation and case identity, result face count,
+exact/fallback/error provenance, and revolve surface counts are authoritative.
+Wall-clock timings and rebuild-local arena IDs are normalized away. Any other
+movement fails with a reviewable diff; an intentional change updates the
+snapshot in the same PR after the affected geometry has its own oracle-backed
+regression.
 
 ## Performance and resource qualification
 

@@ -152,6 +152,98 @@ fn pave_filler_initializes_pave_blocks() {
 }
 
 #[test]
+fn pave_block_initialization_preserves_stored_periodic_and_line_domains() {
+    const SEAM_U: f64 = 1.0;
+    let mut topo = Topology::default();
+    let box_id = make_box(&mut topo, [-2.0, -2.0, -1.0], [2.0, 2.0, 2.0]);
+    let (cylinder_id, _, _) = make_cylinder_with_seam_u(&mut topo, 0.0, 0.0, 0.0, 0.5, 1.0, SEAM_U);
+
+    let mut arena = GfaArena::new();
+    PaveFiller::new(&mut topo, box_id, cylinder_id)
+        .init_pave_blocks(&mut arena)
+        .unwrap();
+
+    let mut curved = 0;
+    let mut lines = 0;
+    for (&edge_id, blocks) in &arena.edge_pave_blocks {
+        assert_eq!(blocks.len(), 1);
+        let edge = topo.edge(edge_id).unwrap();
+        let range = arena.pave_blocks.get(blocks[0]).unwrap().parameter_range();
+        match edge.curve() {
+            EdgeCurve::Line => {
+                lines += 1;
+                assert_eq!(range, (0.0, 1.0));
+                assert_eq!(edge.trim(), None);
+            }
+            EdgeCurve::Circle(_) => {
+                curved += 1;
+                assert_eq!(range, edge.trim().unwrap());
+                assert_eq!(range, (SEAM_U, SEAM_U + std::f64::consts::TAU));
+                assert!(range.1 > std::f64::consts::TAU);
+            }
+            other => panic!("unexpected edge curve in fixture: {}", other.type_tag()),
+        }
+    }
+    assert_eq!(curved, 2);
+    assert_eq!(lines, 13);
+}
+
+#[test]
+fn pave_block_initialization_refuses_missing_curved_authority_atomically() {
+    let mut topo = Topology::default();
+    let box_id = make_box(&mut topo, [-2.0, -2.0, -1.0], [2.0, 2.0, 2.0]);
+    let cylinder_id = make_cylinder(&mut topo, 0.0, 0.0, 0.0, 0.5, 1.0);
+    let circle_id = remus_topology::explorer::solid_edges(&topo, cylinder_id)
+        .unwrap()
+        .into_iter()
+        .find(|&edge_id| matches!(topo.edge(edge_id).unwrap().curve(), EdgeCurve::Circle(_)))
+        .unwrap();
+    topo.edge_mut(circle_id).unwrap().set_trim(None);
+
+    let mut arena = GfaArena::new();
+    let error = PaveFiller::new(&mut topo, box_id, cylinder_id)
+        .init_pave_blocks(&mut arena)
+        .unwrap_err();
+    let crate::error::AlgoError::IntersectionFailed(message) = error else {
+        panic!("expected typed intersection failure");
+    };
+    assert!(message.contains("pave-block initialization"));
+    assert!(message.contains(&format!("{circle_id:?}")));
+    assert!(arena.pave_blocks.is_empty());
+    assert!(arena.edge_pave_blocks.is_empty());
+    assert!(arena.curves.is_empty());
+    assert!(arena.interference.vv.is_empty());
+    assert!(arena.interference.ve.is_empty());
+    assert!(arena.interference.ee.is_empty());
+    assert!(arena.interference.ef.is_empty());
+    assert!(arena.interference.ff.is_empty());
+}
+
+#[test]
+fn n_way_pave_block_initialization_refuses_late_missing_authority_atomically() {
+    let mut topo = Topology::default();
+    let first = make_box(&mut topo, [-3.0, -3.0, -1.0], [-1.0, -1.0, 1.0]);
+    let second = make_box(&mut topo, [1.0, 1.0, -1.0], [3.0, 3.0, 1.0]);
+    let third = make_cylinder(&mut topo, 0.0, 0.0, 0.0, 0.5, 1.0);
+    let circle_id = remus_topology::explorer::solid_edges(&topo, third)
+        .unwrap()
+        .into_iter()
+        .find(|&edge_id| matches!(topo.edge(edge_id).unwrap().curve(), EdgeCurve::Circle(_)))
+        .unwrap();
+    topo.edge_mut(circle_id).unwrap().set_trim(None);
+
+    let mut arena = GfaArena::new();
+    let error = super::init_pave_blocks_n(&topo, &[first, second, third], &mut arena).unwrap_err();
+    assert!(matches!(
+        error,
+        crate::error::AlgoError::IntersectionFailed(message)
+            if message.contains("N-way pave-block initialization")
+    ));
+    assert!(arena.pave_blocks.is_empty());
+    assert!(arena.edge_pave_blocks.is_empty());
+}
+
+#[test]
 fn vv_detects_no_coincident_vertices_for_offset_boxes() {
     let (_topo, arena) = two_overlapping_boxes();
 
@@ -191,6 +283,53 @@ fn ff_detects_plane_plane_intersections() {
         !arena.curves.is_empty(),
         "FF phase should produce intersection curves"
     );
+}
+
+#[test]
+fn ff_line_sources_keep_carrier_parameters_off_endpoint_local_edges() {
+    let (topo, arena) = two_overlapping_boxes();
+    let lines: Vec<_> = arena
+        .curves
+        .iter()
+        .filter(|curve| matches!(curve.curve, EdgeCurve::Line))
+        .collect();
+    assert_eq!(
+        lines.len(),
+        6,
+        "the overlapping-box fixture has six non-coplanar face-pair sections"
+    );
+    let mut ranges: Vec<_> = lines.iter().map(|curve| curve.t_range).collect();
+    ranges.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
+    assert_eq!(
+        ranges,
+        vec![
+            (-1.0, -0.5),
+            (-1.0, -0.5),
+            (-1.0, -0.5),
+            (0.5, 1.0),
+            (0.5, 1.0),
+            (0.5, 1.0),
+        ],
+        "DS ranges are coordinates on the plane-plane carrier, not local edge parameters"
+    );
+
+    for curve_ds in lines {
+        assert_eq!(curve_ds.pave_blocks.len(), 1);
+        let pb = arena.pave_blocks.get(curve_ds.pave_blocks[0]).unwrap();
+        assert_eq!(pb.parameter_range(), curve_ds.t_range);
+        let edge = topo.edge(pb.original_edge).unwrap();
+        assert!(matches!(edge.curve(), EdgeCurve::Line));
+        assert_eq!(
+            edge.trim(),
+            None,
+            "the absolute DS/PB range must not be stamped onto an endpoint-local Line"
+        );
+
+        let start = topo.vertex(edge.start()).unwrap().point();
+        let end = topo.vertex(edge.end()).unwrap().point();
+        assert!((edge.curve().evaluate_with_endpoints(0.0, start, end) - start).length() < 1e-12);
+        assert!((edge.curve().evaluate_with_endpoints(1.0, start, end) - end).length() < 1e-12);
+    }
 }
 
 #[test]
@@ -1185,9 +1324,16 @@ fn make_cylinder(
     .unwrap();
     let cyl_surface =
         CylindricalSurface::new(Point3::new(cx, cy, z0), Vec3::new(0.0, 0.0, 1.0), radius).unwrap();
+    let bottom_seam = bot_circle.project(Point3::new(cx + radius, cy, z0));
+    let top_seam = top_circle.project(Point3::new(cx + radius, cy, z0 + height));
 
-    let e_bot = topo.add_edge(Edge::new(v_bot, v_bot, EdgeCurve::Circle(bot_circle)));
-    let e_top = topo.add_edge(Edge::new(v_top, v_top, EdgeCurve::Circle(top_circle)));
+    let mut bottom_rim =
+        Edge::with_tolerance(v_bot, v_bot, EdgeCurve::Circle(bot_circle), Some(1e-7));
+    bottom_rim.set_trim(Some((bottom_seam, bottom_seam + std::f64::consts::TAU)));
+    let e_bot = topo.add_edge(bottom_rim);
+    let mut top_rim = Edge::with_tolerance(v_top, v_top, EdgeCurve::Circle(top_circle), Some(1e-7));
+    top_rim.set_trim(Some((top_seam, top_seam + std::f64::consts::TAU)));
+    let e_top = topo.add_edge(top_rim);
     let e_seam = topo.add_edge(Edge::new(v_bot, v_top, EdgeCurve::Line));
 
     let lateral_wire = Wire::new(
@@ -1231,6 +1377,190 @@ fn make_cylinder(
 
     let shell = topo.add_shell(Shell::new(vec![lateral, bot_cap, top_cap]).unwrap());
     topo.add_solid(Solid::new(shell, vec![]))
+}
+
+/// Build the same cylinder with its periodic seam fixed at the cylinder's
+/// native angular parameter `seam_u`.
+///
+/// Returns the solid, bottom/top seam vertices, and the analytic surface used
+/// by the lateral face so tests can compare section-curve winding against an
+/// independent surface-parameter oracle.
+fn make_cylinder_with_seam_u(
+    topo: &mut Topology,
+    cx: f64,
+    cy: f64,
+    z0: f64,
+    radius: f64,
+    height: f64,
+    seam_u: f64,
+) -> (
+    remus_topology::solid::SolidId,
+    [remus_topology::vertex::VertexId; 2],
+    remus_math::surfaces::CylindricalSurface,
+) {
+    use remus_math::curves::Circle3D;
+    use remus_math::surfaces::CylindricalSurface;
+
+    let axis = Vec3::new(0.0, 0.0, 1.0);
+    let bottom_center = Point3::new(cx, cy, z0);
+    let top_center = Point3::new(cx, cy, z0 + height);
+    let bottom_circle = Circle3D::new(bottom_center, axis, radius).unwrap();
+    let top_circle = Circle3D::new(top_center, axis, radius).unwrap();
+    let surface = CylindricalSurface::new(bottom_center, axis, radius).unwrap();
+    let v_bottom = topo.add_vertex(Vertex::new(bottom_circle.evaluate(seam_u), 1e-7));
+    let v_top = topo.add_vertex(Vertex::new(top_circle.evaluate(seam_u), 1e-7));
+
+    let mut bottom_rim = Edge::with_tolerance(
+        v_bottom,
+        v_bottom,
+        EdgeCurve::Circle(bottom_circle),
+        Some(1e-7),
+    );
+    bottom_rim.set_trim(Some((seam_u, seam_u + std::f64::consts::TAU)));
+    let e_bottom = topo.add_edge(bottom_rim);
+    let mut top_rim = Edge::with_tolerance(v_top, v_top, EdgeCurve::Circle(top_circle), Some(1e-7));
+    top_rim.set_trim(Some((seam_u, seam_u + std::f64::consts::TAU)));
+    let e_top = topo.add_edge(top_rim);
+    let e_seam = topo.add_edge(Edge::new(v_bottom, v_top, EdgeCurve::Line));
+
+    let lateral_wire = topo.add_wire(
+        Wire::new(
+            vec![
+                OrientedEdge::new(e_bottom, true),
+                OrientedEdge::new(e_seam, true),
+                OrientedEdge::new(e_top, false),
+                OrientedEdge::new(e_seam, false),
+            ],
+            true,
+        )
+        .unwrap(),
+    );
+    let lateral = topo.add_face(Face::new(
+        lateral_wire,
+        vec![],
+        FaceSurface::Cylinder(surface.clone()),
+    ));
+
+    let bottom_wire =
+        topo.add_wire(Wire::new(vec![OrientedEdge::new(e_bottom, false)], true).unwrap());
+    let bottom_cap = topo.add_face(Face::new(
+        bottom_wire,
+        vec![],
+        FaceSurface::Plane {
+            normal: -axis,
+            d: -z0,
+        },
+    ));
+    let top_wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(e_top, true)], true).unwrap());
+    let top_cap = topo.add_face(Face::new(
+        top_wire,
+        vec![],
+        FaceSurface::Plane {
+            normal: axis,
+            d: z0 + height,
+        },
+    ));
+    let shell = topo.add_shell(Shell::new(vec![lateral, bottom_cap, top_cap]).unwrap());
+    let solid = topo.add_solid(Solid::new(shell, vec![]));
+    (solid, [v_bottom, v_top], surface)
+}
+
+#[test]
+fn ff_coplanar_cylinder_adopted_seams_preserve_exact_periodic_ranges() {
+    use remus_math::tolerance::Tolerance;
+
+    const SEAM_U: f64 = 1.0;
+    const RADIUS: f64 = 0.3;
+    const HEIGHT: f64 = 2.0;
+    let tau = std::f64::consts::TAU;
+    let mut topo = Topology::default();
+    let box_id = make_box(&mut topo, [0.0, 0.0, 0.0], [4.0, 4.0, HEIGHT]);
+    let (cylinder_id, seam_vertices, cylinder_surface) =
+        make_cylinder_with_seam_u(&mut topo, 1.0, 1.0, 0.0, RADIUS, HEIGHT, SEAM_U);
+
+    let mut arena = GfaArena::new();
+    PaveFiller::with_tolerance(&mut topo, box_id, cylinder_id, Tolerance::default())
+        .perform(&mut arena)
+        .unwrap();
+
+    let circles: Vec<_> = arena
+        .curves
+        .iter()
+        .filter(|curve| matches!(curve.curve, EdgeCurve::Circle(_)))
+        .collect();
+    assert_eq!(
+        circles.len(),
+        2,
+        "the two coplanar cap planes must produce exactly two circular FF sections"
+    );
+
+    let close = |a: f64, b: f64| (a - b).abs() < 1e-10;
+    let close_point = |a: Point3, b: Point3| (a - b).length() < 1e-9;
+    for curve_ds in circles {
+        let EdgeCurve::Circle(circle) = &curve_ds.curve else {
+            unreachable!();
+        };
+        let z = circle.center().z();
+        let is_top = close(z, HEIGHT);
+        assert!(is_top || close(z, 0.0), "unexpected section height {z}");
+        let expected_range = if is_top {
+            (SEAM_U, SEAM_U + tau)
+        } else {
+            (
+                std::f64::consts::PI - SEAM_U,
+                3.0 * std::f64::consts::PI - SEAM_U,
+            )
+        };
+        assert!(close(curve_ds.t_range.0, expected_range.0));
+        assert!(close(curve_ds.t_range.1, expected_range.1));
+        assert!(curve_ds.t_range.0.is_finite() && curve_ds.t_range.1.is_finite());
+        assert!(
+            curve_ds.t_range.1 > tau,
+            "the lifted periodic end must exceed TAU"
+        );
+        assert_eq!(curve_ds.pave_blocks.len(), 1);
+
+        let pb = arena.pave_blocks.get(curve_ds.pave_blocks[0]).unwrap();
+        let pb_range = pb.parameter_range();
+        assert!(close(pb_range.0, curve_ds.t_range.0));
+        assert!(close(pb_range.1, curve_ds.t_range.1));
+        let original = topo.edge(pb.original_edge).unwrap();
+        let edge_range = original
+            .trim()
+            .expect("curved FF source edge must carry its exact trim");
+        assert!(close(edge_range.0, curve_ds.t_range.0));
+        assert!(close(edge_range.1, curve_ds.t_range.1));
+        assert!(edge_range.0.is_finite() && edge_range.1.is_finite());
+
+        let expected_vertex = seam_vertices[usize::from(is_top)];
+        assert_eq!(pb.start.vertex, expected_vertex);
+        assert_eq!(pb.end.vertex, expected_vertex);
+        assert_eq!(original.start(), expected_vertex);
+        assert_eq!(original.end(), expected_vertex);
+        let seam_point = topo.vertex(expected_vertex).unwrap().point();
+        assert!(close_point(circle.evaluate(edge_range.0), seam_point));
+        assert!(close_point(circle.evaluate(edge_range.1), seam_point));
+
+        // Independent surface oracle: the top curve advances with cylinder u;
+        // the bottom curve has the opposite plane normal and advances against u.
+        let direction = if is_top { 1.0 } else { -1.0 };
+        let interior_u = SEAM_U + direction * std::f64::consts::FRAC_PI_2;
+        let interior_v = if is_top { HEIGHT } else { 0.0 };
+        let interior_t = edge_range.0 + std::f64::consts::FRAC_PI_2;
+        assert!(close_point(
+            circle.evaluate(interior_t),
+            cylinder_surface.evaluate(interior_u, interior_v)
+        ));
+        let tangent_step = 1e-6;
+        let forward = circle.evaluate(interior_t + tangent_step) - circle.evaluate(interior_t);
+        let surface_forward = cylinder_surface
+            .evaluate(interior_u + direction * tangent_step, interior_v)
+            - cylinder_surface.evaluate(interior_u, interior_v);
+        assert!(
+            forward.dot(surface_forward) > 0.0,
+            "section curve winding must agree with the signed cylinder-u oracle"
+        );
+    }
 }
 
 /// Compute (face_count, edge_count, vertex_count, euler) for a solid.

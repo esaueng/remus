@@ -4,10 +4,18 @@ name: Refresh Apache Staging Package
 # `main`. That directory is a real distribution channel: it is installed
 # directly by git path, so whatever is committed there is what a consumer gets.
 # A stale snapshot silently serves old kernel behavior while the Rust source
-# looks current, which is why this runs on every push rather than on request.
+# looks current, so every package-affecting push runs this automatically.
 on:
   push:
     branches: [main]
+    paths:
+      - ".cargo/**"
+      - ".github/workflows/publish.yml"
+      - "crates/**"
+      - "xtask/**"
+      - "Cargo.toml"
+      - "LICENSE-APACHE"
+      - "rust-toolchain.toml"
   workflow_dispatch:
     inputs:
       sync_package:
@@ -26,8 +34,8 @@ jobs:
   # The committed package directory is a real distribution channel, not a
   # build leftover: OpenZCAD installs this repo as
   #   "remus-wasm": "github:esaueng/remus#main&path:/crates/wasm/pkg"
-  # so npm/pnpm fetches whatever `crates/wasm/pkg` holds on main. Nothing
-  # A missed refresh would leave consumers running stale generated code while
+  # so npm/pnpm fetches whatever `crates/wasm/pkg` holds on main.
+  # A missed package-affecting refresh would leave consumers running stale generated code while
   # main's Rust source appears current.
   build-committed-package:
     name: Build committed WASM package
@@ -63,7 +71,7 @@ jobs:
       # rust-toolchain.toml provides the pinned Rust version + wasm32 target
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
 
-      - uses: taiki-e/install-action@288e746965032cfcc232e09af2daf5f23c14d780 # v2.86.1
+      - uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518 # v2.86.5
         with:
           tool: wasm-pack
 

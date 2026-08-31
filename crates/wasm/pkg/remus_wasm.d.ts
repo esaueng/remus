@@ -11,6 +11,7 @@ export type BatchErrorCodeV2 =
 | "invalid_handle"
 | "topology_error"
 | "operation_failed"
+| "cancelled"
 | "resource_limit_exceeded"
 | "internal_error";
 
@@ -113,8 +114,8 @@ export interface GcsConstraintResidual {
      */
     constraint: number;
     /**
-     * Largest absolute residual across the constraint\'s equations, measured
-     * at the solver\'s final iterate — its best attempt, before any rollback.
+     * Largest absolute residual across the constraint's equations, measured
+     * at the solver's final iterate — its best attempt, before any rollback.
      * Constraints the system could satisfy read ~0 here, so a magnitude that
      * survives marks where it could not.
      */
@@ -150,6 +151,33 @@ export interface FaceEvolutionPayloadV1 {
 }
 
 /**
+ * Terminal state of a cancellable operation.
+ */
+export type CancellableOperationStatus = "completed" | "cancelled";
+
+/**
+ * Typed result for `booleanWithCancellation`.
+ *
+ * Cancellation is returned as data rather than an unstructured JavaScript
+ * exception, so callers can distinguish it without parsing prose. Other
+ * operation failures still reject the call normally.
+ */
+export interface CancellableBooleanResult {
+    /**
+     * Discriminates a committed result from a rolled-back cancellation.
+     */
+    status: CancellableOperationStatus;
+    /**
+     * Stable native cancellation code, present only when cancelled.
+     */
+    code?: string;
+    /**
+     * Completed boolean result, absent when cancelled.
+     */
+    result?: BooleanQualityResult;
+}
+
+/**
  * Typed result for `booleanWithQuality`: a boolean result with its
  * disclosed quality, so a consumer can tell an exact result from a
  * mesh-fallback one instead of silently losing analytic surfaces.
@@ -160,14 +188,14 @@ export interface BooleanQualityResult {
      */
     solid: number;
     /**
-     * `\"exact\"` when the exact pipeline produced the result; `\"approximate\"`
+     * `"exact"` when the exact pipeline produced the result; `"approximate"`
      * when the mesh (co-refinement) fallback ran and analytic surface types
      * were lost.
      */
     quality: string;
     /**
      * Tessellation deflection the fallback ran at, in model units. Present
-     * only when `quality` is `\"approximate\"`.
+     * only when `quality` is `"approximate"`.
      */
     deflection?: number;
 }
@@ -231,10 +259,10 @@ export interface GcsDofResult {
 /**
  * Typed result for `gcsSolveDetailed`.
  *
- * Kernel-internal constraints (an arc\'s centre–endpoint tie) carry no
+ * Kernel-internal constraints (an arc's centre–endpoint tie) carry no
  * `gcsAddConstraint` handle. They are excluded from `constraintResiduals`
  * entirely and summarised by `internalMaxResidual` instead, so no internal
- * equation is ever attributed to a caller\'s constraint.
+ * equation is ever attributed to a caller's constraint.
  */
 export interface GcsSolveDiagnostics {
     /**
@@ -246,7 +274,7 @@ export interface GcsSolveDiagnostics {
      */
     iterations: number;
     /**
-     * Maximum absolute residual at the solver\'s final iterate.
+     * Maximum absolute residual at the solver's final iterate.
      */
     maxResidual: number;
     /**
@@ -319,6 +347,44 @@ export interface GcsSolveResult {
 }
 
 /**
+ * Typed result for `getFaceCurvature`.
+ *
+ * Principal curvatures at `(u, v)` on a face's surface, sorted `k1 >= k2`,
+ * signed positive for convex-outward relative to the face's effective
+ * outward normal (flipping the face orientation flips `k1`, `k2`, `mean`;
+ * `gaussian` is orientation-independent). `directions` is `null` at
+ * umbilic points (sphere, plane, near-umbilic NURBS regions), where every
+ * tangent direction is principal.
+ */
+export interface FaceCurvatureResult {
+    /**
+     * Largest principal curvature (convex-outward positive).
+     */
+    k1: number;
+    /**
+     * Smallest principal curvature.
+     */
+    k2: number;
+    /**
+     * Gaussian curvature `K = k1·k2` (orientation-independent).
+     */
+    gaussian: number;
+    /**
+     * Mean curvature `H = (k1 + k2)/2` (flips with face orientation).
+     */
+    mean: number;
+    /**
+     * Unit principal direction of `k1` `[x, y, z]`, or `null` at an
+     * umbilic point.
+     */
+    d1: number[] | undefined;
+    /**
+     * Unit principal direction of `k2`, or `null` at an umbilic point.
+     */
+    d2: number[] | undefined;
+}
+
+/**
  * Typed result for `massProperties`.
  */
 export interface MassPropertiesResult {
@@ -351,6 +417,11 @@ export interface MassPropertiesResult {
  */
 export interface MeshQualityResult {
     /**
+     * Non-degenerate triangles retained after position welding. A value of
+     * zero is never watertight.
+     */
+    triangleCount: number;
+    /**
      * Edges used by exactly one triangle after position welding (0 for a
      * watertight mesh).
      */
@@ -365,7 +436,8 @@ export interface MeshQualityResult {
      */
     eulerCharacteristic: number;
     /**
-     * True when the welded mesh has no boundary and no non-manifold edges.
+     * True when the welded mesh is non-empty and has no boundary or
+     * non-manifold edges.
      */
     isWatertight: boolean;
 }
@@ -559,6 +631,15 @@ export class BrepKernel {
      */
     assemblyNew(name: string): number;
     /**
+     * Performs a boolean governed by a cooperative cancellation token.
+     *
+     * Cancellation is typed (`operation_cancelled`) and transactional: no
+     * partial topology is retained. Result quality follows
+     * `booleanWithQuality`, including the optional exact-only policy and the
+     * optional Newton and subdivision caps.
+     */
+    booleanWithCancellation(op: string, a: number, b: number, token: OperationCancellationToken, exact_only?: boolean | null, newton_iterations?: number | null, subdivision_depth?: number | null): CancellableBooleanResult;
+    /**
      * Perform a boolean with disclosed result quality.
      *
      * `op` is `"fuse"`/`"union"`, `"cut"`/`"difference"`, or
@@ -569,12 +650,21 @@ export class BrepKernel {
      * `exact_only = true` turns the fallback into a typed refusal so an
      * exact-or-nothing caller never receives a faceted body.
      *
+     * `newton_iterations` optionally caps the coupled Newton refinement
+     * iterations of every NURBS surface-surface intersection inside the
+     * operation (a non-negative integer; `0` disables refinement). Omitted
+     * or `null` keeps the kernel default, reproducing prior behavior.
+     * `subdivision_depth` likewise caps recursive SSI seed subdivision
+     * (`0` disables recursive splitting; omitted or `null` keeps depth 6).
+     *
      * # Errors
      *
-     * Returns an error if a handle is invalid, the op string is unknown, or
+     * Returns an error if a handle is invalid, the op string is unknown,
+     * `newton_iterations` is not a non-negative integer within the public
+     * work budget, `subdivision_depth` is invalid under the same rules, or
      * (under `exact_only`) the exact pipeline cannot produce the result.
      */
-    booleanWithQuality(op: string, a: number, b: number, exact_only?: boolean | null): BooleanQualityResult;
+    booleanWithQuality(op: string, a: number, b: number, exact_only?: boolean | null, newton_iterations?: number | null, subdivision_depth?: number | null): BooleanQualityResult;
     /**
      * Compute the axis-aligned bounding box of a solid.
      *
@@ -1660,11 +1750,50 @@ export class BrepKernel {
      */
     getEntityCounts(solid: number): Uint32Array;
     /**
+     * Principal curvatures at `(u, v)` on a face's surface.
+     *
+     * Returns a JSON string `{ k1, k2, gaussian, mean, d1, d2 }` (see the
+     * `FaceCurvatureResult` TypeScript type). Curvatures are sorted
+     * `k1 >= k2` and signed positive for convex-outward relative to the
+     * face's effective outward normal; flipping the face orientation flips
+     * `k1`, `k2`, and `mean`, while `gaussian` is orientation-independent.
+     * `d1`/`d2` are the unit principal directions matching `(k1, k2)`, or
+     * `null` at umbilic points (sphere, plane, near-umbilic NURBS regions)
+     * where every tangent direction is principal.
+     *
+     * `(u, v)` are parameters of the underlying surface, not restricted to
+     * the face's trimmed region. For a plane face the report is identically
+     * zero and the directions are `null`.
+     *
+     * # Errors
+     *
+     * Returns an error if the face handle is invalid or curvature is
+     * undefined at `(u, v)`: a cone at or below its apex, a torus parallel
+     * that degenerates (self-intersecting configurations only), a
+     * non-finite parameter, or a NURBS point where the parametrization
+     * collapses (e.g. a sphere pole).
+     */
+    getFaceCurvature(face: number, u: number, v: number): any;
+    /**
      * Get the edge handles of a face.
      *
      * Returns an array of edge handles (`u32[]`).
      */
     getFaceEdges(face: number): Uint32Array;
+    /**
+     * Minimum radius of curvature over a face (`1 / max(|k1|, |k2|)` across
+     * the face's trimmed domain), orientation-independent.
+     *
+     * Exact for the five analytic surface types; a coarse-grid-plus-
+     * refinement approximation for NURBS. A plane face has no curvature and
+     * returns `Infinity`; a cone face reaching its apex returns `0`.
+     *
+     * # Errors
+     *
+     * Returns an error if the face handle is invalid or the face boundary
+     * cannot be projected onto its surface.
+     */
+    getFaceMinRadius(face: number): number;
     /**
      * A face's semantic name, or null.
      */
@@ -2529,16 +2658,17 @@ export class BrepKernel {
      * Tessellate a solid and report position-welded mesh quality metrics.
      *
      * Returns a JSON string containing
-     * `{ boundaryEdges, nonManifoldEdges, eulerCharacteristic, isWatertight }`
+     * `{ triangleCount, boundaryEdges, nonManifoldEdges, eulerCharacteristic, isWatertight }`
      * (see the `MeshQualityResult` TypeScript type). Vertices are welded on a
      * 1 µm grid before counting, so position-duplicate vertices cannot mask
-     * a leak. Use before export to verify the mesh is watertight.
+     * a leak. Pass the same optional angular tolerance used for rendering or
+     * export so the quality report describes that exact tessellation.
      *
      * # Errors
      *
      * Returns an error if the solid handle is invalid or tessellation fails.
      */
-    meshQuality(solid: number, deflection: number): any;
+    meshQuality(solid: number, deflection: number, angular_tolerance?: number | null): any;
     /**
      * Convex Minkowski sum of two solids (`A ⊕ B`).
      *
@@ -3253,9 +3383,9 @@ export class BrepKernel {
     /**
      * Export a solid as a JSON-encoded BREP representation.
      *
-     * Returns a JSON string with vertices, edges (with curve parameters),
-     * and faces (with surface parameters). This is a remus-specific format
-     * that preserves all analytic geometry types.
+     * Returns a JSON string with vertices, edges (with curve parameters and
+     * authoritative trims), and faces (with surface parameters). This is a
+     * remus-specific format that preserves all analytic geometry types.
      */
     toBrepJson(solid: number): any;
     /**
@@ -3553,6 +3683,32 @@ export class JsVec3 {
      * Z component.
      */
     z: number;
+}
+
+/**
+ * A one-shot cooperative cancellation signal for a modeling operation.
+ *
+ * Clones share one monotonic flag. Native multithreaded hosts can signal it
+ * concurrently; cancelling before a call also refuses that call without
+ * touching topology. A single-threaded browser worker cannot process a new
+ * JS call while WASM is running, so active browser cancellation still needs
+ * the app's worker/shared-memory transport.
+ */
+export class OperationCancellationToken {
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * Requests cancellation. The request cannot be reset.
+     */
+    cancel(): void;
+    /**
+     * Whether cancellation has been requested.
+     */
+    isCancelled(): boolean;
+    /**
+     * Creates an uncancelled token.
+     */
+    constructor();
 }
 
 /**

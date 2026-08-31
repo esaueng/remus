@@ -2,14 +2,73 @@
 
 use remus_math::curves::{Circle3D, Ellipse3D, Hyperbola3D, Parabola3D};
 use remus_math::nurbs::curve::NurbsCurve;
+use remus_math::tolerance::Tolerance;
 use remus_math::traits::ParametricCurve;
 use remus_math::vec::{Point3, Vec3};
 
+use crate::TopologyError;
 use crate::arena;
 use crate::vertex::VertexId;
 
 /// Typed handle for an [`Edge`] stored in an [`Arena`](crate::Arena).
 pub type EdgeId = arena::Id<Edge>;
+
+/// Failure to obtain an authoritative parameter range for an edge.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum EdgeDomainError {
+    /// A non-Line edge has no stored trim interval.
+    #[error("{curve_type} edge has no authoritative parameter range")]
+    Missing {
+        /// Stable edge-curve type tag.
+        curve_type: &'static str,
+    },
+    /// A stored interval violates the edge-domain invariant.
+    #[error("{curve_type} edge has invalid parameter range [{start}, {end}]")]
+    Invalid {
+        /// Stable edge-curve type tag.
+        curve_type: &'static str,
+        /// Stored range start.
+        start: f64,
+        /// Stored range end.
+        end: f64,
+    },
+}
+
+impl remus_math::diagnostic::ToDiagnostic for EdgeDomainError {
+    fn diagnostic(&self) -> remus_math::diagnostic::Diagnostic {
+        use remus_math::diagnostic::{Diagnostic, FailureCategory};
+
+        let message = self.to_string();
+        match self {
+            Self::Missing { curve_type } => Diagnostic::new(
+                FailureCategory::InvalidTopology,
+                "edge_domain_missing",
+                message,
+            )
+            .with_detail("curveType", *curve_type),
+            Self::Invalid {
+                curve_type,
+                start,
+                end,
+            } => {
+                let diagnostic = Diagnostic::new(
+                    FailureCategory::InvalidTopology,
+                    "edge_domain_invalid",
+                    message,
+                )
+                .with_detail("curveType", *curve_type);
+                if start.is_finite() && end.is_finite() {
+                    diagnostic
+                        .with_detail("start", *start)
+                        .with_detail("end", *end)
+                } else {
+                    diagnostic
+                }
+            }
+        }
+    }
+}
 
 /// The geometric curve associated with an edge.
 #[derive(Debug, Clone)]
@@ -73,7 +132,7 @@ impl EdgeCurve {
         }
     }
 
-    /// Parameter domain of this curve.
+    /// Reconstructs a parameter domain from endpoint geometry.
     ///
     /// `Line` uses `[0, 1]`. Closed Circle and Ellipse edges (`start ≈ end`)
     /// use the full `[0, 2π]` domain. Open arcs project both endpoints onto
@@ -85,7 +144,7 @@ impl EdgeCurve {
     /// validated open sub-span returns the projected `[t₀, t₁]` so the edge
     /// samples only its own piece of a shared curve.
     #[must_use]
-    pub fn domain_with_endpoints(&self, start: Point3, end: Point3) -> (f64, f64) {
+    pub fn reconstruct_domain_from_endpoints(&self, start: Point3, end: Point3) -> (f64, f64) {
         const TAU: f64 = std::f64::consts::TAU;
         // Below this chord the endpoints are considered coincident and the
         // edge is treated as a closed (full) curve.
@@ -163,6 +222,17 @@ impl EdgeCurve {
                 (d0, d1)
             }
         }
+    }
+
+    /// Parameter domain reconstructed from endpoint geometry.
+    ///
+    /// This compatibility accessor is retained for raw construction and
+    /// controlled import/healing adapters. Stored topology readers use
+    /// [`Edge::strict_domain`] instead so a missing trim cannot silently
+    /// select a different arc.
+    #[must_use]
+    pub fn domain_with_endpoints(&self, start: Point3, end: Point3) -> (f64, f64) {
+        self.reconstruct_domain_from_endpoints(start, end)
     }
 
     /// Type tag string for debugging and serialization.
@@ -299,7 +369,7 @@ impl Edge {
 
     /// The edge's parameter domain: the stored trim when present, otherwise
     /// reconstructed from the endpoints via
-    /// [`EdgeCurve::domain_with_endpoints`].
+    /// [`EdgeCurve::reconstruct_domain_from_endpoints`].
     ///
     /// This is the preferred domain accessor (RFC 0002, Stage 3): explicit
     /// trims are exact where projection-based reconstruction depends on
@@ -308,7 +378,84 @@ impl Edge {
     #[must_use]
     pub fn domain_with_endpoints(&self, start: Point3, end: Point3) -> (f64, f64) {
         self.trim
-            .unwrap_or_else(|| self.curve.domain_with_endpoints(start, end))
+            .unwrap_or_else(|| self.curve.reconstruct_domain_from_endpoints(start, end))
+    }
+
+    /// Returns the edge's authoritative parameter range.
+    ///
+    /// Lines are intrinsically endpoint-local on `[0, 1]`. Every other curve
+    /// requires a finite stored trim; `None` means the topology has not yet
+    /// established parameter authority and callers must refuse or enter an
+    /// explicitly named reconstruction adapter.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EdgeDomainError::Missing`] when a non-Line edge lacks a trim,
+    /// or [`EdgeDomainError::Invalid`] when stored authority violates the
+    /// edge-domain invariant.
+    pub fn strict_domain(&self) -> Result<(f64, f64), EdgeDomainError> {
+        if matches!(self.curve, EdgeCurve::Line) {
+            return if let Some((start, end)) = self.trim {
+                if start.partial_cmp(&0.0) == Some(std::cmp::Ordering::Equal)
+                    && end.partial_cmp(&1.0) == Some(std::cmp::Ordering::Equal)
+                {
+                    Ok((0.0, 1.0))
+                } else {
+                    Err(EdgeDomainError::Invalid {
+                        curve_type: self.curve.type_tag(),
+                        start,
+                        end,
+                    })
+                }
+            } else {
+                Ok((0.0, 1.0))
+            };
+        }
+
+        let (start, end) = self.trim.ok_or_else(|| EdgeDomainError::Missing {
+            curve_type: self.curve.type_tag(),
+        })?;
+        let invalid_common = !start.is_finite()
+            || !end.is_finite()
+            || start.partial_cmp(&end) == Some(std::cmp::Ordering::Equal);
+        let invalid_for_curve = match &self.curve {
+            EdgeCurve::Line => true,
+            EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_) => !periodic_curve_domain_is_valid(
+                &self.curve,
+                start,
+                end,
+                self.is_closed(),
+                self.tolerance.unwrap_or(Tolerance::new().linear),
+            ),
+            EdgeCurve::NurbsCurve(curve) => {
+                let (domain_start, domain_end) = curve.domain();
+                start < domain_start || start > domain_end || end < domain_start || end > domain_end
+            }
+            EdgeCurve::Hyperbola(curve) => {
+                [curve.evaluate(start), curve.evaluate(end)]
+                    .iter()
+                    .any(|point| point.0.iter().any(|value| !value.is_finite()))
+                    || [curve.tangent(start), curve.tangent(end)]
+                        .iter()
+                        .any(|tangent| tangent.0.iter().any(|value| !value.is_finite()))
+            }
+            EdgeCurve::Parabola(curve) => {
+                [curve.evaluate(start), curve.evaluate(end)]
+                    .iter()
+                    .any(|point| point.0.iter().any(|value| !value.is_finite()))
+                    || [curve.tangent(start), curve.tangent(end)]
+                        .iter()
+                        .any(|tangent| tangent.0.iter().any(|value| !value.is_finite()))
+            }
+        };
+        if invalid_common || invalid_for_curve {
+            return Err(EdgeDomainError::Invalid {
+                curve_type: self.curve.type_tag(),
+                start,
+                end,
+            });
+        }
+        Ok((start, end))
     }
 
     /// Returns the edge-specific tolerance, or `None` if the edge inherits
@@ -318,11 +465,36 @@ impl Edge {
         self.tolerance
     }
 
-    /// Sets the edge-specific tolerance.
+    /// Sets the edge-specific tolerance (RFC 0004, Stage 1).
     ///
-    /// Pass `None` to revert to inheriting the vertex tolerance.
-    pub fn set_tolerance(&mut self, tol: Option<f64>) {
+    /// Pass `None` to revert to inheriting the vertex tolerance; `None` is
+    /// always accepted. A stored value is a claim, and this setter guards
+    /// only its sanity: it must be finite and non-negative.
+    ///
+    /// The deeper rule — that a declared value must be no smaller than the
+    /// measured 3D↔p-curve deviation it claims to cover — needs the p-curve
+    /// registry and the bounding vertices' balls, neither of which a bare
+    /// [`Edge`] can see, so it lives in
+    /// [`crate::validation::validate_edge_tube`] instead of here. Callers
+    /// raising a tolerance should record it in the journal as an
+    /// [`EntityEvent::Modified`](crate::journal::EntityEvent::Modified).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TopologyError::InvalidToleranceValue`] when `tol` is
+    /// `Some` with a non-finite or negative value; the previous value is
+    /// left unchanged.
+    pub fn set_tolerance(&mut self, tol: Option<f64>) -> Result<(), TopologyError> {
+        if let Some(value) = tol
+            && (!value.is_finite() || value.is_sign_negative())
+        {
+            return Err(TopologyError::InvalidToleranceValue {
+                entity: "edge",
+                value,
+            });
+        }
         self.tolerance = tol;
+        Ok(())
     }
 
     /// Returns the effective tolerance for this edge.
@@ -334,6 +506,84 @@ impl Edge {
     pub fn effective_tolerance(&self, vertex_tol: f64) -> f64 {
         self.tolerance.unwrap_or(vertex_tol)
     }
+}
+
+fn periodic_domain_is_valid(
+    start: f64,
+    end: f64,
+    closed: bool,
+    tolerance: f64,
+    evaluate: impl Fn(f64) -> Point3,
+) -> bool {
+    let span = (end - start).abs();
+    let roundoff_allowance = 4.0 * f64::EPSILON * std::f64::consts::TAU;
+    if !closed {
+        return span <= std::f64::consts::TAU;
+    }
+    // Anchored full turns can subtract to one ULP above TAU. Accept that
+    // roundoff only when the numeric curve still closes within tolerance.
+    if !tolerance.is_finite()
+        || tolerance.is_sign_negative()
+        || (span - std::f64::consts::TAU).abs() > roundoff_allowance
+    {
+        return false;
+    }
+
+    let closure = (evaluate(start) - evaluate(end)).length();
+    closure.is_finite() && closure <= tolerance
+}
+
+pub(crate) fn periodic_curve_domain_is_valid(
+    curve: &EdgeCurve,
+    start: f64,
+    end: f64,
+    closed: bool,
+    tolerance: f64,
+) -> bool {
+    match curve {
+        EdgeCurve::Circle(circle) => {
+            periodic_curve_is_finite(
+                circle.center(),
+                circle.u_axis(),
+                circle.v_axis(),
+                circle.radius(),
+                circle.radius(),
+            ) && periodic_domain_is_valid(start, end, closed, tolerance, |parameter| {
+                circle.evaluate(parameter)
+            })
+        }
+        EdgeCurve::Ellipse(ellipse) => {
+            periodic_curve_is_finite(
+                ellipse.center(),
+                ellipse.u_axis(),
+                ellipse.v_axis(),
+                ellipse.semi_major(),
+                ellipse.semi_minor(),
+            ) && periodic_domain_is_valid(start, end, closed, tolerance, |parameter| {
+                ellipse.evaluate(parameter)
+            })
+        }
+        EdgeCurve::Line
+        | EdgeCurve::Hyperbola(_)
+        | EdgeCurve::Parabola(_)
+        | EdgeCurve::NurbsCurve(_) => false,
+    }
+}
+
+fn periodic_curve_is_finite(
+    center: Point3,
+    u_axis: Vec3,
+    v_axis: Vec3,
+    u_extent: f64,
+    v_extent: f64,
+) -> bool {
+    (0..3).all(|component| {
+        let u_bound = u_axis.0[component].abs() * u_extent;
+        let v_bound = v_axis.0[component].abs() * v_extent;
+        let tangent_bound = u_bound + v_bound;
+        let position_bound = center.0[component].abs() + tangent_bound;
+        tangent_bound.is_finite() && position_bound.is_finite()
+    })
 }
 
 #[cfg(test)]
@@ -378,11 +628,41 @@ mod tests {
         let (v0, v1) = make_test_vertices();
         let mut edge = Edge::new(v0, v1, EdgeCurve::Line);
 
-        edge.set_tolerance(Some(0.001));
+        edge.set_tolerance(Some(0.001)).unwrap();
         assert_eq!(edge.tolerance(), Some(0.001));
 
-        edge.set_tolerance(None);
+        edge.set_tolerance(None).unwrap();
         assert!(edge.tolerance().is_none());
+    }
+
+    #[test]
+    fn set_tolerance_rejects_non_finite_and_negative_raises() {
+        // Flipped from "set_tolerance accepts arbitrary values" (RFC 0004,
+        // Stage 1): the setter is checked, not asserted. `with_tolerance`
+        // stays a stored claim — the arena deserializer replays legacy
+        // documents through it byte-identically — but the setter refuses
+        // to *record* a new value that no predicate could honor honestly.
+        let (v0, v1) = make_test_vertices();
+        let mut edge = Edge::new(v0, v1, EdgeCurve::Line);
+
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1e-9] {
+            let err = edge.set_tolerance(Some(bad)).unwrap_err();
+            assert!(matches!(
+                err,
+                crate::TopologyError::InvalidToleranceValue { .. }
+            ));
+            assert_eq!(edge.tolerance(), None, "a rejected raise is not stored");
+        }
+
+        // `None` always reverts to inheriting the vertex tolerance.
+        edge.set_tolerance(None).unwrap();
+        assert!(edge.tolerance().is_none());
+
+        // Zero and positive values are sanity-clean and stored.
+        edge.set_tolerance(Some(0.0)).unwrap();
+        assert_eq!(edge.tolerance(), Some(0.0));
+        edge.set_tolerance(Some(3.5e-8)).unwrap();
+        assert_eq!(edge.tolerance(), Some(3.5e-8));
     }
 
     #[test]
@@ -706,5 +986,238 @@ mod trim_tests {
         assert_eq!(edge.trim(), None);
         edge.set_trim(Some((0.0, f64::INFINITY)));
         assert_eq!(edge.trim(), None);
+    }
+
+    #[test]
+    fn strict_domain_requires_non_line_authority() {
+        use remus_math::curves::Circle3D;
+        use remus_math::diagnostic::{FailureCategory, ToDiagnostic};
+
+        let (v0, v1) = vertices(Point3::new(1.0, 0.0, 0.0), Point3::new(0.0, 1.0, 0.0));
+        let line = Edge::new(v0, v1, EdgeCurve::Line);
+        assert_eq!(line.strict_domain().unwrap(), (0.0, 1.0));
+
+        let circle =
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+        let mut curved = Edge::new(v0, v1, EdgeCurve::Circle(circle));
+        let missing = curved.strict_domain().unwrap_err();
+        assert_eq!(
+            missing.diagnostic().category(),
+            FailureCategory::InvalidTopology
+        );
+        assert_eq!(missing.diagnostic().code(), "edge_domain_missing");
+
+        curved.set_trim(Some((2.0, -1.0)));
+        assert_eq!(curved.strict_domain().unwrap(), (2.0, -1.0));
+
+        curved.set_trim(Some((0.5, 0.5)));
+        let invalid = curved.strict_domain().unwrap_err();
+        assert_eq!(
+            invalid.diagnostic().category(),
+            FailureCategory::InvalidTopology
+        );
+        assert_eq!(invalid.diagnostic().code(), "edge_domain_invalid");
+
+        curved.set_trim(Some((0.0, std::f64::consts::TAU + 1e-6)));
+        assert!(matches!(
+            curved.strict_domain(),
+            Err(EdgeDomainError::Invalid { .. })
+        ));
+
+        let nurbs = fitted_open_nurbs();
+        let (d0, d1) = nurbs.domain();
+        let mut nurbs_edge = Edge::new(v0, v1, EdgeCurve::NurbsCurve(nurbs));
+        nurbs_edge.set_trim(Some((d1, d0)));
+        assert_eq!(nurbs_edge.strict_domain().unwrap(), (d1, d0));
+        nurbs_edge.set_trim(Some((d0 - 1.0, d1)));
+        assert!(matches!(
+            nurbs_edge.strict_domain(),
+            Err(EdgeDomainError::Invalid { .. })
+        ));
+    }
+
+    #[test]
+    fn strict_domain_accepts_only_canonical_line_trim_and_rejects_non_finite_storage() {
+        use remus_math::curves::Circle3D;
+
+        let (v0, v1) = vertices(Point3::new(1.0, 0.0, 0.0), Point3::new(0.0, 1.0, 0.0));
+        let mut line = Edge::new(v0, v1, EdgeCurve::Line);
+        line.set_trim(Some((0.2, 0.8)));
+        assert!(matches!(
+            line.strict_domain(),
+            Err(EdgeDomainError::Invalid { .. })
+        ));
+        assert_eq!(
+            line.domain_with_endpoints(Point3::new(1.0, 0.0, 0.0), Point3::new(0.0, 1.0, 0.0)),
+            (0.2, 0.8),
+            "compatibility access must continue honoring an explicit Line trim"
+        );
+        line.set_trim(Some((0.0, 1.0)));
+        assert_eq!(line.strict_domain().unwrap(), (0.0, 1.0));
+
+        let circle =
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+        let mut curved = Edge::new(v0, v1, EdgeCurve::Circle(circle));
+        curved.trim = Some((f64::NAN, 1.0));
+        assert!(matches!(
+            curved.strict_domain(),
+            Err(EdgeDomainError::Invalid { .. })
+        ));
+    }
+
+    #[test]
+    fn strict_domain_rejects_periodic_overrun_and_open_conic_overflow() {
+        use remus_math::curves::{Circle3D, Hyperbola3D, Parabola3D};
+
+        let (v0, v1) = vertices(Point3::new(1e15, 0.0, 0.0), Point3::new(1e15, 0.0, 0.0));
+        let circle =
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1e15).unwrap();
+        let periodic_end = std::f64::consts::TAU + 5e-13;
+        assert!((circle.evaluate(periodic_end) - circle.evaluate(0.0)).length() > 100.0);
+        let mut periodic = Edge::new(v0, v1, EdgeCurve::Circle(circle));
+        periodic.set_trim(Some((0.0, periodic_end)));
+        assert!(matches!(
+            periodic.strict_domain(),
+            Err(EdgeDomainError::Invalid { .. })
+        ));
+
+        let normal_circle =
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 5.0).unwrap();
+        for trim in [
+            (2.8, 2.8 + std::f64::consts::TAU),
+            (2.8, 2.8 - std::f64::consts::TAU),
+        ] {
+            let mut anchored = Edge::new(v0, v0, EdgeCurve::Circle(normal_circle.clone()));
+            anchored.set_trim(Some(trim));
+            assert_eq!(anchored.strict_domain().unwrap(), trim);
+        }
+
+        let tiny_circle =
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1e-9).unwrap();
+        let unresolved_anchor = (1e16, 1e16 + 2.0);
+        assert!(
+            (tiny_circle.evaluate(unresolved_anchor.0) - tiny_circle.evaluate(unresolved_anchor.1))
+                .length()
+                < Tolerance::new().linear
+        );
+        let mut unresolved = Edge::new(v0, v0, EdgeCurve::Circle(tiny_circle));
+        unresolved.set_trim(Some(unresolved_anchor));
+        assert!(matches!(
+            unresolved.strict_domain(),
+            Err(EdgeDomainError::Invalid { .. })
+        ));
+
+        let overflowing_circle = Circle3D::new_with_ref(
+            Point3::new(-1e308, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            1e308,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        for trim in [(0.0, std::f64::consts::TAU), (std::f64::consts::TAU, 0.0)] {
+            assert!(
+                [
+                    overflowing_circle.evaluate(trim.0),
+                    overflowing_circle.evaluate(trim.1),
+                ]
+                .iter()
+                .all(|point| point.0.iter().all(|value| value.is_finite()))
+            );
+            assert!(
+                overflowing_circle
+                    .evaluate(trim.0.midpoint(trim.1))
+                    .0
+                    .iter()
+                    .any(|value| !value.is_finite())
+            );
+            let mut periodic = Edge::new(v0, v1, EdgeCurve::Circle(overflowing_circle.clone()));
+            periodic.set_trim(Some(trim));
+            assert!(matches!(
+                periodic.strict_domain(),
+                Err(EdgeDomainError::Invalid { .. })
+            ));
+        }
+
+        let huge_circle =
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1e15).unwrap();
+        for trim in [
+            (2.8, 2.8 + std::f64::consts::TAU),
+            (2.8, 2.8 - std::f64::consts::TAU),
+        ] {
+            assert!((huge_circle.evaluate(trim.0) - huge_circle.evaluate(trim.1)).length() > 0.1);
+            let mut anchored = Edge::new(v0, v0, EdgeCurve::Circle(huge_circle.clone()));
+            anchored.set_trim(Some(trim));
+            assert!(matches!(
+                anchored.strict_domain(),
+                Err(EdgeDomainError::Invalid { .. })
+            ));
+        }
+
+        let hyperbola = Hyperbola3D::new(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            3.0,
+            2.0,
+        )
+        .unwrap();
+        assert!(
+            hyperbola
+                .evaluate(1000.0)
+                .0
+                .iter()
+                .any(|value| !value.is_finite())
+        );
+        let mut hyperbolic = Edge::new(v0, v1, EdgeCurve::Hyperbola(hyperbola));
+        hyperbolic.set_trim(Some((0.0, 1000.0)));
+        assert!(matches!(
+            hyperbolic.strict_domain(),
+            Err(EdgeDomainError::Invalid { .. })
+        ));
+
+        let tangent_overflow = Hyperbola3D::new(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            1.0,
+            1e308,
+        )
+        .unwrap();
+        assert!(
+            tangent_overflow
+                .evaluate(1.2)
+                .0
+                .iter()
+                .all(|value| value.is_finite())
+        );
+        assert!(
+            tangent_overflow
+                .tangent(1.2)
+                .0
+                .iter()
+                .any(|value| !value.is_finite())
+        );
+        for trim in [(0.0, 1.2), (1.2, 0.0)] {
+            let mut hyperbolic = Edge::new(v0, v1, EdgeCurve::Hyperbola(tangent_overflow.clone()));
+            hyperbolic.set_trim(Some(trim));
+            assert!(matches!(
+                hyperbolic.strict_domain(),
+                Err(EdgeDomainError::Invalid { .. })
+            ));
+        }
+
+        let parabola =
+            Parabola3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+        assert!(
+            parabola
+                .evaluate(1e200)
+                .0
+                .iter()
+                .any(|value| !value.is_finite())
+        );
+        let mut parabolic = Edge::new(v0, v1, EdgeCurve::Parabola(parabola));
+        parabolic.set_trim(Some((0.0, 1e200)));
+        assert!(matches!(
+            parabolic.strict_domain(),
+            Err(EdgeDomainError::Invalid { .. })
+        ));
     }
 }

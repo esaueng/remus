@@ -18,8 +18,8 @@ use remus_topology::wire::{OrientedEdge, Wire};
 
 use crate::analytic;
 use crate::builder_utils::{
-    project_onto_axis, radial_distance, sample_nurbs_endpoints, wire_axial_range,
-    wire_radial_extremum,
+    add_certified_curve_edge, project_onto_axis, radial_distance, refuse_non_line_rim_neighbors,
+    sample_nurbs_endpoints, wire_axial_range, wire_radial_extremum,
 };
 use crate::spine::Spine;
 use crate::stripe::{Stripe, StripeResult};
@@ -510,15 +510,16 @@ fn closed_rim_info(topo: &Topology, stripe: &Stripe) -> Result<Option<ClosedRimI
         return Ok(None);
     }
     let rim_edge = edges[0];
-    {
+    let rim_normal = {
         let e = topo.edge(rim_edge)?;
         if e.start() != e.end() {
             return Ok(None);
         }
-        if !matches!(e.curve(), EdgeCurve::Circle(_)) {
+        let EdgeCurve::Circle(circle) = e.curve() else {
             return Ok(None);
-        }
-    }
+        };
+        circle.normal()
+    };
 
     // One side is the plane (cap), the other the cylinder/cone wall.
     let s1 = topo.face(stripe.face1)?.surface().clone();
@@ -598,8 +599,11 @@ fn closed_rim_info(topo: &Topology, stripe: &Stripe) -> Result<Option<ClosedRimI
         let v = topo.vertex(topo.edge(rim_edge)?.start())?.point() - axis_origin;
         v - axis * axis.dot(v)
     };
-    let plate_circle = Circle3D::new_with_ref(plate_center, axis, plate_radius, seam_dir)?;
-    let wall_circle = Circle3D::new_with_ref(wall_center, axis, wall_radius, seam_dir)?;
+    // Keep the source rim's parameter direction. The cap and wall retain the
+    // source edge-use flags, so rebuilding around the unsigned wall axis can
+    // silently reverse a bore loop whose source circle uses the opposite axis.
+    let plate_circle = Circle3D::new_with_ref(plate_center, rim_normal, plate_radius, seam_dir)?;
+    let wall_circle = Circle3D::new_with_ref(wall_center, rim_normal, wall_radius, seam_dir)?;
 
     // At a bore mouth the chamfer must widen the hole. If the contact came out
     // the other way the configuration is not the one this rebuild models, so
@@ -718,6 +722,15 @@ fn assemble_closed_rim(
     let wall_outer_wire = topo.face(current_wall)?.outer_wire();
     let wall_inner = topo.face(current_wall)?.inner_wires().to_vec();
     let wall_oriented: Vec<OrientedEdge> = topo.wire(wall_outer_wire)?.edges().to_vec();
+    let old_rim_vertex = topo.edge(rim.rim_edge)?.start();
+
+    refuse_non_line_rim_neighbors(
+        topo,
+        &wall_oriented,
+        rim.rim_edge,
+        old_rim_vertex,
+        rim.wall_face,
+    )?;
 
     // Vertices for the two closed contact circles (start == end → degenerate).
     let plate_point = rim.plate_circle.evaluate(0.0);
@@ -725,16 +738,20 @@ fn assemble_closed_rim(
     let plate_v = topo.add_vertex(Vertex::new(plate_point, TOL));
     let wall_v = topo.add_vertex(Vertex::new(wall_point, TOL));
 
-    let plate_edge = topo.add_edge(Edge::new(
+    let plate_edge = add_certified_curve_edge(
+        topo,
         plate_v,
         plate_v,
         EdgeCurve::Circle(rim.plate_circle.clone()),
-    ));
-    let wall_edge = topo.add_edge(Edge::new(
+        (0.0, std::f64::consts::TAU),
+    )?;
+    let wall_edge = add_certified_curve_edge(
+        topo,
         wall_v,
         wall_v,
         EdgeCurve::Circle(rim.wall_circle.clone()),
-    ));
+        (0.0, std::f64::consts::TAU),
+    )?;
     // The chamfer band is ruled, so its seam is the straight generator between
     // the two contacts — unlike the fillet's minor-circle arc. `EdgeCurve::Line`
     // takes its geometry from the endpoints, so no explicit curve is needed.
@@ -791,7 +808,6 @@ fn assemble_closed_rim(
     // rim circle with the wall contact, and rebuild any seam edge touching the
     // old rim vertex so it starts at the new wall vertex — otherwise the wire
     // no longer closes.
-    let old_rim_vertex = topo.edge(rim.rim_edge)?.start();
     // A seam edge may appear twice in the wall wire (fwd + rev); rebuild each
     // distinct edge once so both references share the new edge.
     let mut rebuilt: std::collections::HashMap<EdgeId, EdgeId> = std::collections::HashMap::new();
@@ -809,7 +825,6 @@ fn assemble_closed_rim(
             let new_eid = if let Some(&id) = rebuilt.get(&oe.edge()) {
                 id
             } else {
-                let curve = e.curve().clone();
                 let new_start = if e.start() == old_rim_vertex {
                     wall_v
                 } else {
@@ -820,7 +835,7 @@ fn assemble_closed_rim(
                 } else {
                     e.end()
                 };
-                let id = topo.add_edge(Edge::new(new_start, new_end, curve));
+                let id = topo.add_edge(Edge::new(new_start, new_end, EdgeCurve::Line));
                 rebuilt.insert(oe.edge(), id);
                 id
             };

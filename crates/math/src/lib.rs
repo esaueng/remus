@@ -113,6 +113,10 @@ pub enum MathError {
         /// Number of iterations attempted.
         iterations: usize,
     },
+
+    /// The caller requested cooperative cancellation at a safe checkpoint.
+    #[error("operation cancelled")]
+    Cancelled,
 }
 
 pub mod aabb;
@@ -122,6 +126,7 @@ pub mod cdt;
 pub mod chord;
 pub mod context;
 pub mod convex_hull;
+pub mod curvature;
 pub mod curves;
 pub mod curves2d;
 pub mod det_hash;

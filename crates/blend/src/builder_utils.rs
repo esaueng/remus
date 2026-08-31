@@ -8,13 +8,113 @@ use remus_math::nurbs::curve::NurbsCurve;
 use remus_math::traits::ParametricSurface;
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
-use remus_topology::edge::{Edge, EdgeCurve};
+use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
 use remus_topology::face::{Face, FaceId, FaceSurface};
 use remus_topology::vertex::{Vertex, VertexId};
 use remus_topology::wire::{OrientedEdge, Wire, WireId};
 
 use crate::BlendError;
 use crate::stripe::Stripe;
+
+/// Add a curved edge only after its stored parameter span has been certified
+/// against both topological endpoints.
+pub fn add_certified_curve_edge(
+    topo: &mut Topology,
+    start: VertexId,
+    end: VertexId,
+    curve: EdgeCurve,
+    domain: (f64, f64),
+) -> Result<EdgeId, BlendError> {
+    if matches!(curve, EdgeCurve::Line) {
+        return Err(BlendError::InvalidInput {
+            reason: "a generated Line must use its endpoint-local domain".to_string(),
+        });
+    }
+    let start_vertex = topo.vertex(start)?;
+    let end_vertex = topo.vertex(end)?;
+    let start_point = start_vertex.point();
+    let end_point = end_vertex.point();
+    let start_tolerance = start_vertex.tolerance();
+    let end_tolerance = end_vertex.tolerance();
+    for (label, tolerance) in [
+        ("start vertex", start_tolerance),
+        ("end vertex", end_tolerance),
+    ] {
+        if !tolerance.is_finite() || tolerance.is_sign_negative() {
+            return Err(BlendError::InvalidInput {
+                reason: format!("generated curved edge has invalid {label} tolerance {tolerance}"),
+            });
+        }
+    }
+    let tolerance = start_tolerance
+        .max(end_tolerance)
+        .max(remus_math::tolerance::Tolerance::new().linear);
+    if !domain.0.is_finite()
+        || !domain.1.is_finite()
+        || domain.0.partial_cmp(&domain.1) == Some(std::cmp::Ordering::Equal)
+    {
+        return Err(BlendError::InvalidInput {
+            reason: format!(
+                "generated {} edge has invalid parameter span [{}, {}]",
+                curve.type_tag(),
+                domain.0,
+                domain.1
+            ),
+        });
+    }
+    for (label, parameter, expected) in [
+        ("start", domain.0, start_point),
+        ("end", domain.1, end_point),
+    ] {
+        let residual =
+            (curve.evaluate_with_endpoints(parameter, start_point, end_point) - expected).length();
+        if !residual.is_finite() || residual > tolerance {
+            return Err(BlendError::InvalidInput {
+                reason: format!(
+                    "generated {} edge {label} misses its vertex by {residual} (tolerance {tolerance})",
+                    curve.type_tag()
+                ),
+            });
+        }
+    }
+    let midpoint =
+        curve.evaluate_with_endpoints(f64::midpoint(domain.0, domain.1), start_point, end_point);
+    if midpoint.0.iter().any(|coordinate| !coordinate.is_finite()) {
+        return Err(BlendError::InvalidInput {
+            reason: format!(
+                "generated {} edge has a non-finite interior point",
+                curve.type_tag()
+            ),
+        });
+    }
+
+    let mut edge = Edge::with_tolerance(start, end, curve, Some(tolerance));
+    edge.set_trim(Some(domain));
+    edge.strict_domain()
+        .map_err(|error| BlendError::InvalidInput {
+            reason: format!("generated curved edge lacks parameter authority: {error}"),
+        })?;
+    Ok(topo.add_edge(edge))
+}
+
+fn generated_edge(
+    topo: &mut Topology,
+    start: VertexId,
+    end: VertexId,
+    curve: EdgeCurve,
+    domain: Option<(f64, f64)>,
+) -> Result<EdgeId, BlendError> {
+    match (curve, domain) {
+        (EdgeCurve::Line, None) => Ok(topo.add_edge(Edge::new(start, end, EdgeCurve::Line))),
+        (curve, Some(domain)) => add_certified_curve_edge(topo, start, end, curve, domain),
+        (curve, None) => Err(BlendError::InvalidInput {
+            reason: format!(
+                "generated {} edge is missing parameter authority",
+                curve.type_tag()
+            ),
+        }),
+    }
+}
 
 /// Sample the start and end points of a NURBS curve.
 #[must_use]
@@ -137,58 +237,68 @@ pub fn create_blend_face_with_contacts(
     // Use actual contact curves for e0 and e2 (the longitudinal edges along
     // the spine direction). Cross edges e1 and e3 are straight lines connecting
     // the two contact curves at the spine endpoints.
-    let (e0, e0_fwd) = adopt1.map_or_else(
-        || {
-            (
-                topo.add_edge(Edge::new(
-                    v1s,
-                    v1e,
-                    EdgeCurve::NurbsCurve(stripe.contact1.clone()),
-                )),
-                true,
-            )
-        },
-        |(eid, fwd, _, _)| (eid, fwd),
-    );
+    let (e0, e0_fwd) = if let Some((eid, fwd, _, _)) = adopt1 {
+        (eid, fwd)
+    } else {
+        (
+            add_certified_curve_edge(
+                topo,
+                v1s,
+                v1e,
+                EdgeCurve::NurbsCurve(stripe.contact1.clone()),
+                (t0_1, t1_1),
+            )?,
+            true,
+        )
+    };
     // Cross edges carry the true end cross-section arcs when the stripe has
     // sections: the fillet's end profile is a circular arc, and a straight
     // chord both misrepresents the surface boundary and can never be shared
     // with a notched end cap. The arc's plane normal comes from the two
     // contact endpoints and the section centre.
-    let arc_curve =
-        |sec: &crate::section::CircSection, a: Point3, b: Point3| -> Option<EdgeCurve> {
-            let u = a - sec.center;
-            let v = b - sec.center;
-            let n = u.cross(v);
-            let n = n.normalize().ok()?;
-            let circle = remus_math::curves::Circle3D::new(sec.center, n, sec.radius).ok()?;
-            Some(EdgeCurve::Circle(circle))
-        };
-    let end_curve = stripe
+    let arc_curve = |sec: &crate::section::CircSection,
+                     a: Point3,
+                     b: Point3|
+     -> Option<(EdgeCurve, (f64, f64))> {
+        let u = a - sec.center;
+        let v = b - sec.center;
+        let n = u.cross(v);
+        let n = n.normalize().ok()?;
+        let circle = remus_math::curves::Circle3D::new(sec.center, n, sec.radius).ok()?;
+        let start = circle.project(a);
+        let end = start + (circle.project(b) - start).rem_euclid(std::f64::consts::TAU);
+        Some((EdgeCurve::Circle(circle), (start, end)))
+    };
+    let (end_curve, end_domain) = stripe
         .sections
         .last()
         .and_then(|sec| arc_curve(sec, p1_end, p2_end))
-        .unwrap_or(EdgeCurve::Line);
-    let start_curve = stripe
+        .map_or((EdgeCurve::Line, None), |(curve, domain)| {
+            (curve, Some(domain))
+        });
+    let (start_curve, start_domain) = stripe
         .sections
         .first()
         .and_then(|sec| arc_curve(sec, p2_start, p1_start))
-        .unwrap_or(EdgeCurve::Line);
-    let e1 = topo.add_edge(Edge::new(v1e, v2e, end_curve));
-    let (e2, e2_fwd) = adopt2.map_or_else(
-        || {
-            (
-                topo.add_edge(Edge::new(
-                    v2e,
-                    v2s,
-                    EdgeCurve::NurbsCurve(stripe.contact2.clone()),
-                )),
-                true,
-            )
-        },
-        |(eid, fwd, _, _)| (eid, fwd),
-    );
-    let e3 = topo.add_edge(Edge::new(v2s, v1s, start_curve));
+        .map_or((EdgeCurve::Line, None), |(curve, domain)| {
+            (curve, Some(domain))
+        });
+    let e1 = generated_edge(topo, v1e, v2e, end_curve, end_domain)?;
+    let (e2, e2_fwd) = if let Some((eid, fwd, _, _)) = adopt2 {
+        (eid, fwd)
+    } else {
+        (
+            add_certified_curve_edge(
+                topo,
+                v2e,
+                v2s,
+                EdgeCurve::NurbsCurve(stripe.contact2.clone()),
+                (t1_2, t0_2),
+            )?,
+            true,
+        )
+    };
+    let e3 = generated_edge(topo, v2s, v1s, start_curve, start_domain)?;
 
     let wire = Wire::new(
         vec![
@@ -465,6 +575,41 @@ pub fn radial_distance(p: Point3, origin: Point3, axis: Vec3) -> f64 {
     (d - axis * axis.dot(d)).length()
 }
 
+/// Refuse a closed-rim wall rebuild whose wire carries a curved edge touching
+/// the rim vertex.
+///
+/// Moving one endpoint preserves an endpoint-local Line, but it does not
+/// preserve the parameter authority of an arbitrary curved carrier. This must
+/// run BEFORE any replacement topology is allocated: callers fall back to the
+/// trim path on this error, so nothing may have landed in the arena or in the
+/// face-replacement map first.
+///
+/// # Errors
+///
+/// Returns [`BlendError::TrimmingFailure`] naming `wall_face` when a non-Line
+/// edge of the wire touches `old_rim_vertex`, and propagates topology lookup
+/// failures.
+pub fn refuse_non_line_rim_neighbors(
+    topo: &Topology,
+    wall_oriented: &[OrientedEdge],
+    rim_edge: EdgeId,
+    old_rim_vertex: VertexId,
+    wall_face: FaceId,
+) -> Result<(), BlendError> {
+    for oriented in wall_oriented {
+        if oriented.edge() == rim_edge {
+            continue;
+        }
+        let edge = topo.edge(oriented.edge())?;
+        if (edge.start() == old_rim_vertex || edge.end() == old_rim_vertex)
+            && !matches!(edge.curve(), EdgeCurve::Line)
+        {
+            return Err(BlendError::TrimmingFailure { face: wall_face });
+        }
+    }
+    Ok(())
+}
+
 /// How far a wire reaches along the axis, either side of `origin`, as
 /// `(min, max)` signed distances.
 ///
@@ -499,7 +644,7 @@ pub fn wire_axial_range(
             // endpoints already bound it.
             continue;
         }
-        let (t0, t1) = e.domain_with_endpoints(sp, ep);
+        let (t0, t1) = e.strict_domain().map_err(crate::edge_domain_input)?;
         let mut prev: Option<Point3> = None;
         let mut spacing: f64 = 0.0;
         let (mut c_lo, mut c_hi) = (f64::INFINITY, f64::NEG_INFINITY);
@@ -579,6 +724,7 @@ pub fn wire_radial_extremum(
             EdgeCurve::Circle(c)
                 if e.start() == e.end() && c.normal().cross(axis).length() < 1e-9 =>
             {
+                let _ = e.strict_domain().map_err(crate::edge_domain_input)?;
                 // A whole circle in a plane perpendicular to the axis: the
                 // radial distance sweeps the full interval about its centre.
                 let d = radial_distance(c.center(), origin, axis);
@@ -592,7 +738,7 @@ pub fn wire_radial_extremum(
                 );
             }
             curve => {
-                let (t0, t1) = e.domain_with_endpoints(sp, ep);
+                let (t0, t1) = e.strict_domain().map_err(crate::edge_domain_input)?;
                 let mut prev: Option<Point3> = None;
                 let mut spacing: f64 = 0.0;
                 for k in 0..=SAMPLES {
@@ -621,6 +767,156 @@ pub fn wire_radial_extremum(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn rim_neighbor_preflight_refuses_curved_seam_without_mutation() {
+        let mut topo = Topology::new();
+        let rim_circle = remus_math::curves::Circle3D::new_with_ref(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            1.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let seam_arc = remus_math::curves::Circle3D::new_with_ref(
+            Point3::new(1.0, 0.0, 0.5),
+            Vec3::new(0.0, 1.0, 0.0),
+            0.5,
+            Vec3::new(0.0, 0.0, -1.0),
+        )
+        .unwrap();
+        let rim_v = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
+        let top_v = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 1.0), 1e-7));
+        let rim_edge = topo.add_edge(Edge::new(rim_v, rim_v, EdgeCurve::Circle(rim_circle)));
+        // A curved (non-Line) edge touching the rim vertex must trip the guard.
+        let curved_seam = topo.add_edge(Edge::new(rim_v, top_v, EdgeCurve::Circle(seam_arc)));
+        let wall_oriented = vec![
+            OrientedEdge::new(rim_edge, true),
+            OrientedEdge::new(curved_seam, true),
+        ];
+        let wall_wire = topo.add_wire(Wire::new(wall_oriented.clone(), true).unwrap());
+        let wall_face = topo.add_face(Face::new(
+            wall_wire,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+
+        let vertices = topo.num_vertices();
+        let edges = topo.num_edges();
+        let wires = topo.num_wires();
+        let faces = topo.num_faces();
+
+        let refusal =
+            refuse_non_line_rim_neighbors(&topo, &wall_oriented, rim_edge, rim_v, wall_face);
+        assert!(matches!(
+            refusal,
+            Err(BlendError::TrimmingFailure { face }) if face == wall_face
+        ));
+        // The guard takes &Topology, so refusal cannot have mutated the arena.
+        assert_eq!(topo.num_vertices(), vertices);
+        assert_eq!(topo.num_edges(), edges);
+        assert_eq!(topo.num_wires(), wires);
+        assert_eq!(topo.num_faces(), faces);
+
+        // A Line seam in the same position passes.
+        let line_seam = topo.add_edge(Edge::new(rim_v, top_v, EdgeCurve::Line));
+        let ok_oriented = vec![
+            OrientedEdge::new(rim_edge, true),
+            OrientedEdge::new(line_seam, true),
+        ];
+        assert!(
+            refuse_non_line_rim_neighbors(&topo, &ok_oriented, rim_edge, rim_v, wall_face).is_ok()
+        );
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn certified_circle_edges_preserve_full_turn_and_open_branch_oracles() {
+        let mut topo = Topology::new();
+        let center = Point3::new(3.0, -2.0, 5.0);
+        let circle = remus_math::curves::Circle3D::new_with_ref(
+            center,
+            Vec3::new(0.0, 0.0, 1.0),
+            2.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let seam = topo.add_vertex(Vertex::new(circle.evaluate(0.0), 1e-7));
+        let full = add_certified_curve_edge(
+            &mut topo,
+            seam,
+            seam,
+            EdgeCurve::Circle(circle.clone()),
+            (0.0, std::f64::consts::TAU),
+        )
+        .unwrap();
+        let full_edge = topo.edge(full).unwrap();
+        assert_eq!(
+            full_edge.strict_domain().unwrap(),
+            (0.0, std::f64::consts::TAU)
+        );
+        assert!(
+            (circle.evaluate(std::f64::consts::PI) - Point3::new(1.0, -2.0, 5.0)).length() < 1e-12
+        );
+
+        let quarter_end = topo.add_vertex(Vertex::new(
+            circle.evaluate(std::f64::consts::FRAC_PI_2),
+            1e-7,
+        ));
+        let quarter = add_certified_curve_edge(
+            &mut topo,
+            seam,
+            quarter_end,
+            EdgeCurve::Circle(circle),
+            (0.0, std::f64::consts::FRAC_PI_2),
+        )
+        .unwrap();
+        let quarter_edge = topo.edge(quarter).unwrap();
+        let range = quarter_edge.strict_domain().unwrap();
+        let midpoint = quarter_edge.curve().evaluate_with_endpoints(
+            f64::midpoint(range.0, range.1),
+            topo.vertex(seam).unwrap().point(),
+            topo.vertex(quarter_end).unwrap().point(),
+        );
+        let root_two = 2.0_f64.sqrt();
+        let expected = center + Vec3::new(root_two, root_two, 0.0);
+        assert!((midpoint - expected).length() < 1e-12);
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn certified_nurbs_edge_preserves_reversed_endpoint_and_midpoint_oracles() {
+        let curve = NurbsCurve::new(
+            1,
+            vec![2.0, 2.0, 5.0, 5.0],
+            vec![Point3::new(0.0, 0.0, 0.0), Point3::new(3.0, 6.0, 0.0)],
+            vec![1.0, 1.0],
+        )
+        .unwrap();
+        let mut topo = Topology::new();
+        let start = topo.add_vertex(Vertex::new(curve.evaluate(5.0), 1e-7));
+        let end = topo.add_vertex(Vertex::new(curve.evaluate(2.0), 1e-7));
+        let edge = add_certified_curve_edge(
+            &mut topo,
+            start,
+            end,
+            EdgeCurve::NurbsCurve(curve),
+            (5.0, 2.0),
+        )
+        .unwrap();
+        let edge = topo.edge(edge).unwrap();
+        assert_eq!(edge.strict_domain().unwrap(), (5.0, 2.0));
+        let midpoint = edge.curve().evaluate_with_endpoints(
+            3.5,
+            topo.vertex(start).unwrap().point(),
+            topo.vertex(end).unwrap().point(),
+        );
+        assert!((midpoint - Point3::new(1.5, 3.0, 0.0)).length() < 1e-12);
+    }
 
     #[test]
     #[allow(clippy::expect_used)]

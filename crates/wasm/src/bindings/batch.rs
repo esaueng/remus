@@ -30,8 +30,8 @@ use crate::handles::{
     compound_id_to_u32, edge_id_to_u32, face_id_to_u32, solid_id_to_u32, wire_id_to_u32,
 };
 use crate::helpers::{
-    TOL, classify_to_string, get_f64, get_f64_array, get_u32, get_u32_array, panic_message,
-    try_chamfer, try_fillet,
+    TOL, classify_to_string, get_f64, get_f64_array, get_u32, get_u32_array,
+    get_u32_array_optional, panic_message, try_chamfer, try_fillet,
 };
 use crate::kernel::BrepKernel;
 
@@ -55,6 +55,16 @@ fn get_deflection(args: &serde_json::Value) -> Result<f64, StructuredWasmError> 
     validate_deflection(deflection)
 }
 
+fn get_angular_tolerance(args: &serde_json::Value) -> Result<f64, StructuredWasmError> {
+    let angular_tolerance = match args.get("angularTolerance") {
+        None => remus_math::chord::DEFAULT_ANGULAR_TOL,
+        Some(_) => get_f64(args, "angularTolerance")?,
+    };
+    crate::error::validate_positive(angular_tolerance, "angularTolerance")
+        .map_err(StructuredWasmError::from)?;
+    Ok(angular_tolerance)
+}
+
 #[wasm_bindgen(typescript_custom_section)]
 const BATCH_V2_TYPES: &str = r#"
 /** Stable error codes returned by `executeBatchV2`. */
@@ -67,6 +77,7 @@ export type BatchErrorCodeV2 =
   | "invalid_handle"
   | "topology_error"
   | "operation_failed"
+  | "cancelled"
   | "resource_limit_exceeded"
   | "internal_error";
 
@@ -143,6 +154,8 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "getBlendRegion"
         | "getSolidFaces"
         | "getFaceNormal"
+        | "getFaceCurvature"
+        | "getFaceMinRadius"
         | "getFaceVertexPositions"
         | "getOpposingPlanarFacePairs"
         | "volume" => Some(BatchOpKind::ReadOnly),
@@ -177,6 +190,7 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "fuse"
         | "cut"
         | "intersect"
+        | "booleanWithQuality"
         | "fuseWithOptions"
         | "cutWithOptions"
         | "intersectWithOptions"
@@ -581,7 +595,11 @@ impl BrepKernel {
             let start = self.topo.vertex(edge.start())?.point();
             let end = self.topo.vertex(edge.end())?.point();
             let curve = edge.curve();
-            let (t0, t1) = edge.domain_with_endpoints(start, end);
+            let (t0, t1) = edge
+                .strict_domain()
+                .map_err(|error| WasmError::InvalidInput {
+                    reason: format!("batch plane-face UV bounds require edge authority: {error}"),
+                })?;
             for i in 0..=EDGE_SAMPLES {
                 let t = t0 + (t1 - t0) * (i as f64 / EDGE_SAMPLES as f64);
                 let p = curve.evaluate_with_endpoints(t, start, end);
@@ -627,23 +645,40 @@ impl BrepKernel {
         Ok((v_min, v_max))
     }
 
-    /// Create an edge from a `NurbsCurve`, using its endpoints.
+    /// Create an edge over the `NurbsCurve`'s authoritative native domain.
     pub(crate) fn nurbs_curve_to_edge(
         &mut self,
-        points: &[Point3],
         curve: NurbsCurve,
-    ) -> remus_topology::edge::EdgeId {
-        let start = points[0];
-        let end = points[points.len() - 1];
-        remus_topology::builder::make_nurbs_edge(self.topo_mut(), start, end, curve, TOL)
+    ) -> Result<remus_topology::edge::EdgeId, WasmError> {
+        let (t0, t1) = curve.domain();
+        let start = curve.evaluate(t0);
+        let end = curve.evaluate(t1);
+        self.add_certified_curve_edge(
+            EdgeCurve::NurbsCurve(curve),
+            (t0, t1),
+            start,
+            end,
+            (start - end).length() <= TOL,
+            TOL,
+        )
     }
 
     /// Create an edge from a `NurbsCurve`, evaluating its endpoints.
     pub(crate) fn nurbs_curve_to_edge_from_curve(
         &mut self,
         curve: &NurbsCurve,
-    ) -> remus_topology::edge::EdgeId {
-        remus_topology::builder::make_nurbs_edge_from_curve(self.topo_mut(), curve, TOL)
+    ) -> Result<remus_topology::edge::EdgeId, WasmError> {
+        let (t0, t1) = curve.domain();
+        let start = curve.evaluate(t0);
+        let end = curve.evaluate(t1);
+        self.add_certified_curve_edge(
+            EdgeCurve::NurbsCurve(curve.clone()),
+            (t0, t1),
+            start,
+            end,
+            (start - end).length() <= TOL,
+            TOL,
+        )
     }
 
     /// Create a face from a `NurbsSurface` with a rectangular domain wire.
@@ -755,6 +790,95 @@ impl BrepKernel {
                 let result = boolean(self.topo_mut(), BooleanOp::Intersect, a_id, b_id)
                     .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(result)))
+            }
+            "booleanWithQuality" => {
+                use remus_operations::boolean::{BooleanQuality, boolean_with_context};
+
+                let a = get_u32(args, "solidA")?;
+                let b = get_u32(args, "solidB")?;
+                let operation = args["operation"].as_str().ok_or_else(|| {
+                    StructuredWasmError::invalid_argument(
+                        "missing or invalid 'operation' string",
+                        Some("operation"),
+                    )
+                })?;
+                let bool_op = match operation {
+                    "fuse" | "union" => BooleanOp::Fuse,
+                    "cut" | "difference" => BooleanOp::Cut,
+                    "intersect" | "intersection" => BooleanOp::Intersect,
+                    _ => {
+                        return Err(StructuredWasmError::invalid_argument(
+                            format!("unknown boolean op: {operation}"),
+                            Some("operation"),
+                        ));
+                    }
+                };
+                let exact_only = match args.get("exactOnly") {
+                    None | Some(serde_json::Value::Null) => false,
+                    Some(value) => value.as_bool().ok_or_else(|| {
+                        StructuredWasmError::invalid_argument(
+                            "invalid 'exactOnly': expected boolean",
+                            Some("exactOnly"),
+                        )
+                    })?,
+                };
+                let newton_budget = match args.get("newtonIterations") {
+                    None | Some(serde_json::Value::Null) => None,
+                    Some(value) => {
+                        let raw = value.as_f64().ok_or_else(|| {
+                            StructuredWasmError::invalid_argument(
+                                "invalid 'newtonIterations': expected number",
+                                Some("newtonIterations"),
+                            )
+                        })?;
+                        Some(
+                            crate::error::validate_iteration_budget(raw, "newtonIterations")
+                                .map_err(|e| {
+                                    StructuredWasmError::invalid_argument(
+                                        e.to_string(),
+                                        Some("newtonIterations"),
+                                    )
+                                })?,
+                        )
+                    }
+                };
+                let subdivision_budget = match args.get("subdivisionDepth") {
+                    None | Some(serde_json::Value::Null) => None,
+                    Some(value) => {
+                        let raw = value.as_f64().ok_or_else(|| {
+                            StructuredWasmError::invalid_argument(
+                                "invalid 'subdivisionDepth': expected number",
+                                Some("subdivisionDepth"),
+                            )
+                        })?;
+                        Some(
+                            crate::error::validate_iteration_budget(raw, "subdivisionDepth")
+                                .map_err(|e| {
+                                    StructuredWasmError::invalid_argument(
+                                        e.to_string(),
+                                        Some("subdivisionDepth"),
+                                    )
+                                })?,
+                        )
+                    }
+                };
+                let a_id = self.resolve_solid(a).map_err(StructuredWasmError::from)?;
+                let b_id = self.resolve_solid(b).map_err(StructuredWasmError::from)?;
+                let context =
+                    super::booleans::quality_context(exact_only, newton_budget, subdivision_budget);
+                let outcome = boolean_with_context(self.topo_mut(), bool_op, a_id, b_id, &context)
+                    .map_err(StructuredWasmError::from)?;
+                match outcome.quality {
+                    BooleanQuality::Exact => Ok(serde_json::json!({
+                        "solid": solid_id_to_u32(outcome.solid),
+                        "quality": "exact"
+                    })),
+                    BooleanQuality::Approximate { deflection } => Ok(serde_json::json!({
+                        "solid": solid_id_to_u32(outcome.solid),
+                        "quality": "approximate",
+                        "deflection": deflection
+                    })),
+                }
             }
             "fuseWithOptions" | "cutWithOptions" | "intersectWithOptions" => {
                 let a = get_u32(args, "solidA")?;
@@ -963,13 +1087,18 @@ impl BrepKernel {
             "meshQuality" => {
                 let s = get_u32(args, "solid")?;
                 let deflection = get_deflection(args)?;
+                let angular_tolerance = get_angular_tolerance(args)?;
                 let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
-                let mesh = remus_operations::tessellate::tessellate_solid(
-                    &self.topo, solid_id, deflection,
+                let mesh = remus_operations::tessellate::tessellate_solid_with_tolerance(
+                    &self.topo,
+                    solid_id,
+                    deflection,
+                    angular_tolerance,
                 )
                 .map_err(StructuredWasmError::from)?;
                 let quality = remus_operations::tessellate::welded_mesh_quality(&mesh);
                 Ok(serde_json::json!({
+                    "triangleCount": quality.triangle_count,
                     "boundaryEdges": quality.boundary_edges,
                     "nonManifoldEdges": quality.non_manifold_edges,
                     "eulerCharacteristic": quality.euler_characteristic,
@@ -1197,14 +1326,7 @@ impl BrepKernel {
                 Ok(serde_json::json!(solid_id_to_u32(result)))
             }
             "multiSectionSweep" => {
-                let faces: Vec<u32> = args["faces"]
-                    .as_array()
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(|v| v.as_u64().map(|n| n as u32))
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                let faces: Vec<u32> = get_u32_array_optional(args, "faces")?;
                 let params: Vec<f64> = args["params"]
                     .as_array()
                     .map(|a| a.iter().filter_map(serde_json::Value::as_f64).collect())
@@ -1307,14 +1429,7 @@ impl BrepKernel {
                 let s = get_u32(args, "solid")?;
                 let dist = get_f64(args, "distance")?;
                 let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
-                let edge_handles: Vec<u32> = args["edges"]
-                    .as_array()
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_u64().map(|n| n as u32))
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                let edge_handles: Vec<u32> = get_u32_array_optional(args, "edges")?;
                 let edge_ids: Vec<_> = edge_handles
                     .iter()
                     .map(|&h| self.resolve_edge(h).map_err(StructuredWasmError::from))
@@ -1343,14 +1458,7 @@ impl BrepKernel {
                 let s = get_u32(args, "solid")?;
                 let radius = get_f64(args, "radius")?;
                 let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
-                let edge_handles: Vec<u32> = args["edges"]
-                    .as_array()
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_u64().map(|n| n as u32))
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                let edge_handles: Vec<u32> = get_u32_array_optional(args, "edges")?;
                 let edge_ids: Vec<_> = edge_handles
                     .iter()
                     .map(|&h| self.resolve_edge(h).map_err(StructuredWasmError::from))
@@ -1424,14 +1532,7 @@ impl BrepKernel {
                 let s = get_u32(args, "solid")?;
                 let radius = get_f64(args, "radius")?;
                 let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
-                let edge_handles: Vec<u32> = args["edges"]
-                    .as_array()
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_u64().map(|n| n as u32))
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                let edge_handles: Vec<u32> = get_u32_array_optional(args, "edges")?;
                 let edge_ids: Vec<_> = edge_handles
                     .iter()
                     .map(|&h| self.resolve_edge(h).map_err(StructuredWasmError::from))
@@ -1450,14 +1551,7 @@ impl BrepKernel {
                 let d1 = get_f64(args, "d1")?;
                 let d2 = get_f64(args, "d2")?;
                 let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
-                let edge_handles: Vec<u32> = args["edges"]
-                    .as_array()
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_u64().map(|n| n as u32))
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                let edge_handles: Vec<u32> = get_u32_array_optional(args, "edges")?;
                 let edge_ids: Vec<_> = edge_handles
                     .iter()
                     .map(|&h| self.resolve_edge(h).map_err(StructuredWasmError::from))
@@ -1480,14 +1574,7 @@ impl BrepKernel {
                     return Err("angle must be less than π/2".into());
                 }
                 let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
-                let edge_handles: Vec<u32> = args["edges"]
-                    .as_array()
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_u64().map(|n| n as u32))
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                let edge_handles: Vec<u32> = get_u32_array_optional(args, "edges")?;
                 let edge_ids: Vec<_> = edge_handles
                     .iter()
                     .map(|&h| self.resolve_edge(h).map_err(StructuredWasmError::from))
@@ -1506,14 +1593,7 @@ impl BrepKernel {
                 let s = get_u32(args, "solid")?;
                 let thickness = get_f64(args, "thickness")?;
                 let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
-                let face_handles: Vec<u32> = args["faces"]
-                    .as_array()
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_u64().map(|n| n as u32))
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                let face_handles: Vec<u32> = get_u32_array_optional(args, "faces")?;
                 let face_ids: Vec<_> = face_handles
                     .iter()
                     .map(|&h| self.resolve_face(h).map_err(StructuredWasmError::from))
@@ -1609,14 +1689,7 @@ impl BrepKernel {
                 Ok(serde_json::json!(classify_to_string(result)))
             }
             "loft" => {
-                let face_handles: Vec<u32> = args["faces"]
-                    .as_array()
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_u64().map(|n| n as u32))
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                let face_handles: Vec<u32> = get_u32_array_optional(args, "faces")?;
                 let face_ids: Vec<_> = face_handles
                     .iter()
                     .map(|&h| self.resolve_face(h).map_err(StructuredWasmError::from))
@@ -1642,14 +1715,7 @@ impl BrepKernel {
                 Ok(serde_json::json!(solid_id_to_u32(result)))
             }
             "loftSmooth" => {
-                let face_handles: Vec<u32> = args["faces"]
-                    .as_array()
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_u64().map(|n| n as u32))
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                let face_handles: Vec<u32> = get_u32_array_optional(args, "faces")?;
                 let face_ids: Vec<_> = face_handles
                     .iter()
                     .map(|&h| self.resolve_face(h).map_err(StructuredWasmError::from))
@@ -1786,6 +1852,50 @@ impl BrepKernel {
                 };
                 Ok(serde_json::json!([normal.x(), normal.y(), normal.z()]))
             }
+            "getFaceCurvature" => {
+                // Principal curvatures at (u, v) on a face's surface, sorted
+                // k1 >= k2, signed positive for convex-outward relative to
+                // the face's effective outward normal. d1/d2 are null at
+                // umbilic points (sphere, plane) rather than fabricated.
+                let f = get_u32(args, "face")?;
+                let u = get_f64(args, "u")?;
+                let v = get_f64(args, "v")?;
+                let face_id = self.resolve_face(f).map_err(StructuredWasmError::from)?;
+                let report =
+                    remus_check::analyze::curvature::surface_curvature(self.topo(), face_id, u, v)
+                        .map_err(StructuredWasmError::from)?;
+                let (d1, d2) = match report.directions {
+                    Some((d1, d2)) => (
+                        serde_json::json!([d1.x(), d1.y(), d1.z()]),
+                        serde_json::json!([d2.x(), d2.y(), d2.z()]),
+                    ),
+                    None => (serde_json::Value::Null, serde_json::Value::Null),
+                };
+                Ok(serde_json::json!({
+                    "k1": report.k1,
+                    "k2": report.k2,
+                    "gaussian": report.gaussian,
+                    "mean": report.mean,
+                    "d1": d1,
+                    "d2": d2,
+                }))
+            }
+            "getFaceMinRadius" => {
+                // 1 / max(|k1|, |k2|) over the face's trimmed domain.
+                // Orientation-independent; exact on analytic surfaces,
+                // approximate on NURBS. JSON has no Infinity, so a plane's
+                // infinite radius is reported as `minRadius: null` with the
+                // explicit `isInfinite` flag.
+                let f = get_u32(args, "face")?;
+                let face_id = self.resolve_face(f).map_err(StructuredWasmError::from)?;
+                let min_radius =
+                    remus_check::analyze::curvature::min_radius_of_curvature(self.topo(), face_id)
+                        .map_err(StructuredWasmError::from)?;
+                Ok(serde_json::json!({
+                    "minRadius": min_radius,
+                    "isInfinite": !min_radius.is_finite(),
+                }))
+            }
             "getFaceVertexPositions" => {
                 // Flat [x, y, z, ...] positions of every vertex the face's
                 // wires reference (outer first, then holes), in wire order.
@@ -1828,14 +1938,7 @@ impl BrepKernel {
             "defeature" => {
                 let s = get_u32(args, "solid")?;
                 let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
-                let face_handles: Vec<u32> = args["faces"]
-                    .as_array()
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_u64().map(|n| n as u32))
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                let face_handles: Vec<u32> = get_u32_array_optional(args, "faces")?;
                 let face_ids: Vec<_> = face_handles
                     .iter()
                     .map(|&h| self.resolve_face(h).map_err(StructuredWasmError::from))
@@ -2000,14 +2103,7 @@ impl BrepKernel {
                 }))
             }
             "sewFaces" => {
-                let face_handles: Vec<u32> = args["faces"]
-                    .as_array()
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_u64().map(|n| n as u32))
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                let face_handles: Vec<u32> = get_u32_array_optional(args, "faces")?;
                 let tol = get_f64(args, "tolerance").unwrap_or(1e-6);
                 let face_ids: Vec<_> = face_handles
                     .iter()
@@ -2061,14 +2157,7 @@ impl BrepKernel {
                 let s = get_u32(args, "solid")?;
                 let angle = get_f64(args, "angle")?;
                 let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
-                let face_handles: Vec<u32> = args["faces"]
-                    .as_array()
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_u64().map(|n| n as u32))
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                let face_handles: Vec<u32> = get_u32_array_optional(args, "faces")?;
                 let face_ids: Vec<_> = face_handles
                     .iter()
                     .map(|&h| self.resolve_face(h).map_err(StructuredWasmError::from))
@@ -2354,6 +2443,123 @@ mod batch_contract_tests {
     }
 
     #[test]
+    fn plane_face_bounds_refuse_missing_curved_authority_without_mutation() {
+        use remus_topology::edge::EdgeCurve;
+        use remus_topology::explorer::solid_faces;
+        use remus_topology::face::FaceSurface;
+
+        let mut kernel = BrepKernel::new();
+        let solid = remus_operations::primitives::make_cylinder(kernel.topo_mut(), 2.0, 3.0)
+            .expect("cylinder fixture");
+        let cap = solid_faces(kernel.topo(), solid)
+            .expect("cylinder faces")
+            .into_iter()
+            .find(|&face_id| {
+                kernel
+                    .topo()
+                    .face(face_id)
+                    .is_ok_and(|face| matches!(face.surface(), FaceSurface::Plane { .. }))
+            })
+            .expect("planar cylinder cap");
+        let rim = {
+            let face = kernel.topo().face(cap).expect("cap");
+            let wire = kernel.topo().wire(face.outer_wire()).expect("cap wire");
+            wire.edges()
+                .iter()
+                .map(remus_topology::wire::OrientedEdge::edge)
+                .find(|&edge_id| {
+                    kernel
+                        .topo()
+                        .edge(edge_id)
+                        .is_ok_and(|edge| matches!(edge.curve(), EdgeCurve::Circle(_)))
+                })
+                .expect("cap rim")
+        };
+        kernel.topo_mut().edge_mut(rim).expect("rim").set_trim(None);
+        let before = (
+            kernel.topo().num_vertices(),
+            kernel.topo().num_edges(),
+            kernel.topo().num_wires(),
+            kernel.topo().num_faces(),
+        );
+        let face = kernel.topo().face(cap).expect("cap");
+        let FaceSurface::Plane { normal, d } = face.surface() else {
+            unreachable!("selected face must remain planar");
+        };
+
+        let error = kernel
+            .plane_face_uv_bounds(cap, *normal, *d)
+            .expect_err("missing rim authority must refuse");
+        assert!(error.to_string().contains("require edge authority"));
+        assert_eq!(
+            before,
+            (
+                kernel.topo().num_vertices(),
+                kernel.topo().num_edges(),
+                kernel.topo().num_wires(),
+                kernel.topo().num_faces(),
+            )
+        );
+    }
+
+    /// Handle arrays used to be parsed with
+    /// `filter_map(|v| v.as_u64().map(|n| n as u32))`, which fails open twice:
+    /// `filter_map` DROPS an element it cannot read, and `as u32` truncates.
+    /// Both produced a wrong answer reported as success, which a caller cannot
+    /// notice. Measured before the fix: `edges: [0, "not-a-handle", 1]` filleted
+    /// two of the three edges and returned `{"ok":1}`, and the handle
+    /// `4294967296` wrapped to `0` and filleted edge 0, also `{"ok":1}`.
+    #[test]
+    fn batch_handle_arrays_reject_malformed_and_out_of_range_elements() {
+        const BOX: &str = r#"{"op":"makeBox","args":{"width":10,"height":10,"depth":10}}"#;
+
+        // A well-formed selection still works, so the guard is not just refusing.
+        let mut kernel = BrepKernel::new();
+        let ok = parse(&kernel.execute_batch(&format!(
+            r#"[{BOX},{{"op":"fillet","args":{{"solid":0,"edges":[0],"radius":0.5}}}}]"#
+        )));
+        assert_eq!(ok[1]["ok"], 1, "a valid edge selection must still fillet");
+
+        // An element that is not a handle names its own index instead of
+        // vanishing from the selection.
+        let mut kernel = BrepKernel::new();
+        let dropped = parse(&kernel.execute_batch(&format!(
+            r#"[{BOX},{{"op":"fillet","args":{{"solid":0,"edges":[0,"not-a-handle",1],"radius":0.5}}}}]"#
+        )));
+        assert_eq!(
+            dropped[1]["error"], "edges[1] is not a u32",
+            "a malformed element must be reported, not silently dropped: {dropped}"
+        );
+
+        // 2^32 truncates to 0 under `as u32`, which is a DIFFERENT live entity.
+        let mut kernel = BrepKernel::new();
+        let wrapped = parse(&kernel.execute_batch(&format!(
+            r#"[{BOX},{{"op":"fillet","args":{{"solid":0,"edges":[4294967296],"radius":0.5}}}}]"#
+        )));
+        assert_eq!(
+            wrapped[1]["error"], "edges[0] is not a u32",
+            "a handle above u32::MAX must be rejected, not wrapped: {wrapped}"
+        );
+
+        // chamfer shares the parser.
+        let mut kernel = BrepKernel::new();
+        let chamfer = parse(&kernel.execute_batch(&format!(
+            r#"[{BOX},{{"op":"chamfer","args":{{"solid":0,"edges":[0,null],"distance":0.5}}}}]"#
+        )));
+        assert_eq!(chamfer[1]["error"], "edges[1] is not a u32");
+
+        // An ABSENT optional key keeps its old meaning: an empty selection.
+        let mut kernel = BrepKernel::new();
+        let absent = parse(&kernel.execute_batch(&format!(
+            r#"[{BOX},{{"op":"shell","args":{{"solid":0,"thickness":1.0}}}}]"#
+        )));
+        assert_eq!(
+            absent[1]["ok"], 1,
+            "an absent optional handle array must still mean 'none': {absent}"
+        );
+    }
+
+    #[test]
     fn batch_deflection_validation_matches_direct_bindings() {
         for deflection in [f64::NAN, f64::INFINITY, 0.0, -0.1] {
             let direct_error = crate::error::validate_positive(deflection, "deflection")
@@ -2595,6 +2801,136 @@ mod batch_contract_tests {
         ));
         assert_eq!(response[1]["error"]["code"], "operation_failed");
         assert_eq!(response[1]["error"]["details"]["operation"], "cut");
+    }
+
+    #[test]
+    fn batch_boolean_with_quality_accepts_ssi_budgets() {
+        // Default omitted vs explicit budgets (the historical values, and 0
+        // which disables the governed work): analytic operands never enter
+        // NURBS SSI, so every case must produce the identical
+        // exact result — the cap is additive, never a behavior change for
+        // exact-analytic paths. The JS-value-to-context link is pinned by
+        // `bindings::booleans` unit tests; math and FF regressions pin the
+        // context's authority below that.
+        for extra in [
+            "",
+            r#","newtonIterations":20,"subdivisionDepth":6"#,
+            r#","newtonIterations":0,"subdivisionDepth":0"#,
+        ] {
+            let mut kernel = BrepKernel::new();
+            let script = format!(
+                r#"[
+                    {{"op":"makeBox","args":{{"width":2,"height":2,"depth":2}}}},
+                    {{"op":"makeBox","args":{{"width":1,"height":1,"depth":1}}}},
+                    {{"op":"booleanWithQuality","args":{{"operation":"fuse","solidA":0,"solidB":1,"exactOnly":true{extra}}}}},
+                    {{"op":"volume","args":{{"solid":2,"deflection":0.05}}}}
+                ]"#
+            );
+            let response = parse(&kernel.execute_batch_v2(&script));
+            assert_eq!(
+                response[2]["ok"]["quality"], "exact",
+                "budget '{extra}' must not disturb the exact analytic path: {response}"
+            );
+            let volume = response[3]["ok"].as_f64().expect("numeric volume");
+            assert!(
+                (volume - 8.0).abs() < 1e-6,
+                "budget '{extra}' fused volume {volume}"
+            );
+        }
+    }
+
+    #[test]
+    fn batch_boolean_with_quality_rejects_invalid_newton_iterations() {
+        for bad in ["-1", "2.5", r#""twenty""#, "10001", "true"] {
+            let mut kernel = BrepKernel::new();
+            let script = format!(
+                r#"[
+                    {{"op":"makeBox","args":{{"width":2,"height":2,"depth":2}}}},
+                    {{"op":"makeBox","args":{{"width":1,"height":1,"depth":1}}}},
+                    {{"op":"booleanWithQuality","args":{{"operation":"fuse","solidA":0,"solidB":1,"newtonIterations":{bad}}}}}
+                ]"#
+            );
+            let response = parse(&kernel.execute_batch_v2(&script));
+            assert_eq!(
+                response[2]["error"]["code"], "invalid_argument",
+                "newtonIterations={bad} must be a typed argument error: {response}"
+            );
+            assert_eq!(
+                response[2]["error"]["details"]["argument"], "newtonIterations",
+                "error must name the argument: {response}"
+            );
+        }
+    }
+
+    #[test]
+    fn batch_boolean_with_quality_rejects_invalid_subdivision_depth() {
+        for bad in ["-1", "2.5", r#""deep""#, "10001", "true"] {
+            let mut kernel = BrepKernel::new();
+            let script = format!(
+                r#"[
+                    {{"op":"makeBox","args":{{"width":2,"height":2,"depth":2}}}},
+                    {{"op":"makeBox","args":{{"width":1,"height":1,"depth":1}}}},
+                    {{"op":"booleanWithQuality","args":{{"operation":"fuse","solidA":0,"solidB":1,"subdivisionDepth":{bad}}}}}
+                ]"#
+            );
+            let response = parse(&kernel.execute_batch_v2(&script));
+            assert_eq!(
+                response[2]["error"]["code"], "invalid_argument",
+                "subdivisionDepth={bad} must be a typed argument error: {response}"
+            );
+            assert_eq!(
+                response[2]["error"]["details"]["argument"], "subdivisionDepth",
+                "error must name the argument: {response}"
+            );
+        }
+    }
+
+    #[test]
+    fn tangent_boss_batch_contract_refuses_exact_or_discloses_approximation() {
+        let mut kernel = BrepKernel::new();
+        let response = parse(&kernel.execute_batch_v2(
+            r#"[
+                {"op":"makeBox","args":{"width":60,"height":40,"depth":8}},
+                {"op":"makeCylinder","args":{"radius":10,"height":16}},
+                {"op":"transform","args":{"solid":1,"matrix":[1,0,0,9.999,0,1,0,20,0,0,1,0,0,0,0,1]}},
+                {"op":"booleanWithQuality","args":{"operation":"fuse","solidA":0,"solidB":1,"exactOnly":true}},
+                {"op":"volume","args":{"solid":0,"deflection":0.01}},
+                {"op":"booleanWithQuality","args":{"operation":"fuse","solidA":0,"solidB":1}},
+                {"op":"volume","args":{"solid":5,"deflection":0.01}},
+                {"op":"validateSolid","args":{"solid":5}}
+            ]"#,
+        ));
+
+        assert_eq!(response[3]["error"]["code"], "operation_failed");
+        assert_eq!(response[3]["error"]["category"], "quality_refused");
+        assert_eq!(
+            response[3]["error"]["details"]["kernelCode"],
+            "exact_only_unattainable"
+        );
+        assert_eq!(
+            response[3]["error"]["details"]["operation"],
+            "booleanWithQuality"
+        );
+        assert_eq!(response[4]["ok"], 19_200.0, "refusal must roll back");
+        assert_eq!(
+            response[5]["ok"]["solid"], 5,
+            "rolled-back handles must not alias the later result"
+        );
+        assert_eq!(response[5]["ok"]["quality"], "approximate");
+        assert_eq!(response[5]["ok"]["deflection"], 0.1);
+        let volume = response[6]["ok"].as_f64().expect("numeric volume");
+        let radius = 10.0_f64;
+        let d = -0.001_f64;
+        let wall_from_axis = radius + d;
+        let outside_segment = radius.powi(2) * (wall_from_axis / radius).acos()
+            - wall_from_axis * (radius.powi(2) - wall_from_axis.powi(2)).sqrt();
+        let shared_area = std::f64::consts::PI * radius.powi(2) - outside_segment;
+        let expected = 19_200.0 + std::f64::consts::PI * radius.powi(2) * 16.0 - shared_area * 8.0;
+        assert!(
+            (volume - expected).abs() / expected < 4e-3,
+            "tangent-boss fallback volume {volume} against {expected}"
+        );
+        assert_eq!(response[7]["ok"], 0);
     }
 
     #[test]

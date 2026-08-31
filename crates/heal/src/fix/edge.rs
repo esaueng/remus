@@ -85,10 +85,40 @@ pub fn fix_same_parameter_on_face(
     ctx: &mut HealContext,
     config: &FixConfig,
 ) -> Result<FixResult, HealError> {
-    let has_pcurve = topo.has_pcurve(edge_id, face_id)?;
+    // How does this face use the edge? A SEAM edge appears in the face's wires
+    // twice — once forward, once reversed — and each use carries its own
+    // p-curve, so `(edge, face)` does not name one of them. The registry is
+    // right to refuse that (RFC 0002 fails closed rather than picking a side),
+    // but this function used to let the refusal escape, and `fix_shape` aborts
+    // on the first error. Every cylinder, cone, sphere, revolve and most
+    // imported STEP carries a seam, so the whole heal pipeline was unusable on
+    // them: a plain cylinder and a box with a through-hole both came back
+    // `seam_pcurve_ambiguous`.
+    //
+    // Declining the seam use is the honest repair. Rebuilding one needs to know
+    // WHICH side of the seam it is, and `project_edge_to_pcurve` projects the
+    // 3D curve without that information — it cannot tell u = 0 from u = 2*pi.
+    // Fabricating one would be worse than leaving it. The rest of the face, and
+    // the rest of the pipeline, now proceed.
+    let senses = face_edge_senses(topo, face_id, edge_id)?;
+    let forward = match senses.as_slice() {
+        [] => return Ok(FixResult::ok()),
+        [only] => *only,
+        _ => {
+            ctx.info(format!(
+                "Edge {edge_id:?} on Face {face_id:?}: seam edge (used in both senses);                  SameParameter needs a side the projection cannot infer, skipping",
+            ));
+            return Ok(FixResult {
+                status: Status::FAIL1,
+                actions_taken: 0,
+            });
+        }
+    };
+
+    let has_pcurve = topo.pcurve_oriented(edge_id, face_id, forward).is_some();
 
     if has_pcurve {
-        let max_dev = compute_pcurve_deviation(topo, edge_id, face_id)?;
+        let max_dev = compute_pcurve_deviation(topo, edge_id, face_id, forward)?;
         let tol = ctx.tolerance.linear;
         let needs_fix = max_dev > tol;
 
@@ -142,12 +172,34 @@ pub fn fix_same_parameter_on_face(
     let t_end = knots[knots.len() - degree - 1];
 
     let pcurve = PCurve::new(Curve2D::Nurbs(nurbs_2d), t_start, t_end);
-    topo.set_pcurve(edge_id, face_id, pcurve)?;
+    topo.set_pcurve_oriented(edge_id, face_id, forward, pcurve);
 
     Ok(FixResult {
         status: Status::DONE3,
         actions_taken: 1,
     })
+}
+
+/// The senses in which `face` uses `edge`, deduplicated.
+///
+/// Empty when the face does not use the edge at all; one entry for an ordinary
+/// edge; two for a seam, which is the case every caller here has to decide
+/// about explicitly rather than let the p-curve registry refuse.
+fn face_edge_senses(
+    topo: &Topology,
+    face_id: FaceId,
+    edge_id: EdgeId,
+) -> Result<Vec<bool>, HealError> {
+    let face = topo.face(face_id)?;
+    let mut senses: Vec<bool> = Vec::new();
+    for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+        for oe in topo.wire(wid)?.edges() {
+            if oe.edge() == edge_id && !senses.contains(&oe.is_forward()) {
+                senses.push(oe.is_forward());
+            }
+        }
+    }
+    Ok(senses)
 }
 
 /// Check vertex-curve deviation and warn if it exceeds tolerance.
@@ -239,12 +291,15 @@ fn compute_pcurve_deviation(
     topo: &Topology,
     edge_id: EdgeId,
     face_id: FaceId,
+    forward: bool,
 ) -> Result<f64, HealError> {
-    let pcurve = topo.pcurve(edge_id, face_id)?.ok_or_else(|| {
-        HealError::FixFailed(format!(
-            "no PCurve found for edge {edge_id:?} on face {face_id:?}"
-        ))
-    })?;
+    let pcurve = topo
+        .pcurve_oriented(edge_id, face_id, forward)
+        .ok_or_else(|| {
+            HealError::FixFailed(format!(
+                "no PCurve found for edge {edge_id:?} on face {face_id:?}"
+            ))
+        })?;
 
     let edge = topo.edge(edge_id)?;
     let start_pos = topo.vertex(edge.start())?.point();
@@ -254,7 +309,9 @@ fn compute_pcurve_deviation(
     let face = topo.face(face_id)?;
     let surface = face.surface();
 
-    let (t0_3d, t1_3d) = edge.domain_with_endpoints(start_pos, end_pos);
+    let (t0_3d, t1_3d) = edge
+        .strict_domain()
+        .map_err(crate::error::fix_edge_domain)?;
     let t0_pc = pcurve.t_start();
     let t1_pc = pcurve.t_end();
 
@@ -312,12 +369,24 @@ pub fn repair_pcurve_within_budget(
     ctx: &mut HealContext,
     budget: f64,
 ) -> Result<PcurveRepairReport, HealError> {
-    let deviation_before = if topo.has_pcurve(edge_id, face_id)? {
-        compute_pcurve_deviation(topo, edge_id, face_id)?
+    // Same seam reasoning as `fix_same_parameter_on_face`: a face that uses the
+    // edge twice does not name one p-curve, and this entry point has no side to
+    // repair. Refuse with the budget error rather than the registry's.
+    let forward = match face_edge_senses(topo, face_id, edge_id)?.as_slice() {
+        [only] => *only,
+        _ => {
+            return Err(HealError::FixFailed(format!(
+                "edge {edge_id:?} is a seam of face {face_id:?}; \
+                 pcurve repair needs a single edge use"
+            )));
+        }
+    };
+    let deviation_before = if topo.pcurve_oriented(edge_id, face_id, forward).is_some() {
+        compute_pcurve_deviation(topo, edge_id, face_id, forward)?
     } else {
         f64::INFINITY
     };
-    let original = topo.pcurve(edge_id, face_id)?.cloned();
+    let original = topo.pcurve_oriented(edge_id, face_id, forward).cloned();
 
     let config = crate::fix::config::FixConfig {
         fix_same_parameter: crate::fix::config::FixMode::On,
@@ -325,14 +394,14 @@ pub fn repair_pcurve_within_budget(
     };
     fix_same_parameter_on_face(topo, edge_id, face_id, ctx, &config)?;
 
-    let deviation_after = compute_pcurve_deviation(topo, edge_id, face_id)?;
+    let deviation_after = compute_pcurve_deviation(topo, edge_id, face_id, forward)?;
     if deviation_after > budget {
         // Roll back: a repair that misses its budget must not look like
         // success, and must not replace the caller's data.
         match original {
-            Some(pcurve) => topo.set_pcurve(edge_id, face_id, pcurve)?,
+            Some(pcurve) => topo.set_pcurve_oriented(edge_id, face_id, forward, pcurve),
             None => {
-                let _ = topo.remove_pcurve(edge_id, face_id)?;
+                let _ = topo.remove_pcurve_oriented(edge_id, face_id, forward);
             }
         }
         return Err(HealError::RepairBudgetExceeded {
@@ -374,7 +443,9 @@ mod repair_budget_tests {
             Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
         let p0 = ParametricCurve::evaluate(&circle, 0.0);
         let v = topo.add_vertex(Vertex::new(p0, 1e-7));
-        let rim = topo.add_edge(Edge::new(v, v, EdgeCurve::Circle(circle)));
+        let mut rim_edge = Edge::new(v, v, EdgeCurve::Circle(circle));
+        rim_edge.set_trim(Some((0.0, std::f64::consts::TAU)));
+        let rim = topo.add_edge(rim_edge);
         let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(rim, true)], true).unwrap());
         let face = topo.add_face(Face::new(
             wire,

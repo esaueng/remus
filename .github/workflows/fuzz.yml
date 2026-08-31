@@ -9,12 +9,33 @@ permissions:
   contents: read
 
 jobs:
+  prepare-cargo-fuzz:
+    name: Prepare cargo-fuzz
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@c93f4f9c67595668add93d3d6895795ce52d8c2d # nightly
+        with:
+          toolchain: nightly
+      - name: Install cargo-fuzz once
+        run: |
+          cargo +nightly install cargo-fuzz --locked
+          mkdir -p "$RUNNER_TEMP/cargo-fuzz"
+          cp "$HOME/.cargo/bin/cargo-fuzz" "$RUNNER_TEMP/cargo-fuzz/cargo-fuzz"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cargo-fuzz
+          path: ${{ runner.temp }}/cargo-fuzz/cargo-fuzz
+          if-no-files-found: error
+          retention-days: 1
+
   # The reader targets hunt a panic on malformed input. The engine targets hunt
   # a different animal — a well-formed, confident, wrong solid — and a failure
   # there is a correctness bug, not a robustness one. They share a job shape but
   # not a purpose.
   targets:
     name: ${{ matrix.target }}
+    needs: prepare-cargo-fuzz
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -30,13 +51,21 @@ jobs:
           - threemf_reader
           - boolean_tree
           - modifier_ops
+          - nurbs_surface
+          - topology_mutation
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@c93f4f9c67595668add93d3d6895795ce52d8c2d # nightly
         with:
           toolchain: nightly
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
-      - name: Install cargo-fuzz
-        run: cargo +nightly install cargo-fuzz --locked
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: cargo-fuzz
+          path: ${{ runner.temp }}/cargo-fuzz
+      - name: Add cargo-fuzz to PATH
+        run: |
+          chmod +x "$RUNNER_TEMP/cargo-fuzz/cargo-fuzz"
+          echo "$RUNNER_TEMP/cargo-fuzz" >> "$GITHUB_PATH"
       - name: Run bounded smoke fuzzing
         run: cargo +nightly fuzz run ${{ matrix.target }} -- -max_total_time=120 -rss_limit_mb=2048

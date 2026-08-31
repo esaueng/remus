@@ -5,7 +5,10 @@ use crate::vec::{Point3, Vec3};
 
 use super::surface_marching::march_intersection;
 use super::surface_marching::{near_existing_segment, second_order_tangent};
-use super::surface_seeding::{find_ssi_seeds_grid, find_ssi_seeds_subdivision, refine_ssi_point};
+use super::surface_seeding::{
+    find_ssi_seeds_grid, find_ssi_seeds_subdivision, find_ssi_seeds_subdivision_with_context,
+    refine_ssi_point, refine_ssi_point_with_context,
+};
 use super::*;
 
 /// Create a simple bilinear NURBS surface (flat plane at z=0, from (0,0) to (1,1)).
@@ -473,6 +476,29 @@ fn subdivision_finds_seeds() {
     }
 }
 
+#[test]
+fn caller_subdivision_depth_budget_is_authoritative_for_ssi_seeding() {
+    use crate::context::{OperationContext, WorkBudgets};
+
+    let dome = dome_surface();
+    let plane = flat_plane_at_z(0.0);
+    let counts: Vec<usize> = (0..=6)
+        .map(|depth| {
+            let context = OperationContext::new()
+                .with_budgets(WorkBudgets::new().with_subdivision_depth(depth));
+            find_ssi_seeds_subdivision_with_context(&dome, &plane, 1e-6, &context)
+                .unwrap()
+                .len()
+        })
+        .collect();
+
+    assert_eq!(counts[0], 0, "zero budget must perform no recursive split");
+    assert!(
+        counts[6] > 0,
+        "the legacy depth budget must discover the closed intersection: {counts:?}"
+    );
+}
+
 // -- Chain building tests --
 
 #[test]
@@ -676,6 +702,75 @@ fn ssi_wide_domain_surfaces() {
                 pt.point.z()
             );
         }
+    }
+}
+
+/// A flat patch of the size a b-spline-converted box face has.
+fn wide_flat_patch() -> NurbsSurface {
+    NurbsSurface::new(
+        1,
+        1,
+        vec![0.0, 0.0, 1.0, 1.0],
+        vec![0.0, 0.0, 1.0, 1.0],
+        vec![
+            vec![Point3::new(-1.0, -1.0, 0.0), Point3::new(-1.0, 11.0, 0.0)],
+            vec![Point3::new(11.0, -1.0, 0.0), Point3::new(11.0, 11.0, 0.0)],
+        ],
+        vec![vec![1.0, 1.0], vec![1.0, 1.0]],
+    )
+    .unwrap()
+}
+
+/// Rays that are OBLIQUE to the surface must be found too.
+///
+/// Every other ray test here fires along the surface normal, which is the one
+/// direction where the refinement's normal matrix is already correct: the
+/// tangents are perpendicular to the ray, so projecting them changes nothing.
+/// Off that axis the raw matrix is inflated by the ray-parallel component of
+/// each tangent, every step is under-relaxed, and the iteration budget runs out
+/// with the intersection undiscovered — silently, as an empty result.
+///
+/// These directions are the ones `remus-check` casts for point-in-solid
+/// classification. Before the fix a plain b-spline box misclassified a quarter
+/// of its interior points because of it.
+#[test]
+fn line_nurbs_oblique_rays_are_found() {
+    let surface = wide_flat_patch();
+    let dirs = [
+        Vec3::new(
+            0.573_576_436_351_046,
+            0.740_535_693_464_567_5,
+            0.350_889_803_483_932_2,
+        ),
+        Vec3::new(
+            0.267_261_241_912_424_4,
+            0.534_522_483_824_849,
+            0.801_783_725_737_273,
+        ),
+        Vec3::new(
+            -0.424_264_068_711_928_5,
+            0.565_685_424_949_238,
+            0.707_106_781_186_547_5,
+        ),
+    ];
+    for (k, dir) in dirs.iter().enumerate() {
+        // Aim from below so the ray crosses z = 0 at a point well inside the patch.
+        let target = Point3::new(4.0, 6.0, 0.0);
+        let origin = target - *dir * 7.0;
+
+        let hits = intersect_line_nurbs(&surface, origin, *dir, 20).unwrap();
+        assert!(
+            !hits.is_empty(),
+            "dir {k}: oblique ray must hit the patch, got no intersection"
+        );
+        let best = hits
+            .iter()
+            .map(|h| (h.point - target).length())
+            .fold(f64::INFINITY, f64::min);
+        assert!(
+            best < 1e-6,
+            "dir {k}: expected the hit at {target:?}, closest returned was {best:.3e} away"
+        );
     }
 }
 
@@ -1166,6 +1261,57 @@ fn with_context_default_matches_legacy_entry_point() {
 }
 
 #[test]
+fn caller_newton_budget_is_authoritative_for_ssi_refinement() {
+    use crate::context::{OperationContext, WorkBudgets};
+
+    let s1 = flat_surface();
+    let s2 = tilted_surface();
+    let full = refine_ssi_point_with_context(
+        &s1,
+        &s2,
+        0.5263,
+        0.5,
+        0.5263,
+        0.5,
+        1e-6,
+        &OperationContext::new(),
+    )
+    .unwrap();
+    assert!(full.is_some(), "default Newton budget must converge");
+
+    let disabled =
+        OperationContext::new().with_budgets(WorkBudgets::new().with_newton_iterations(0));
+    let bounded =
+        refine_ssi_point_with_context(&s1, &s2, 0.5263, 0.5, 0.5263, 0.5, 1e-6, &disabled).unwrap();
+    assert!(
+        bounded.is_none(),
+        "a zero-iteration caller budget must perform no Newton step"
+    );
+}
+
+#[test]
+fn cancellation_is_polled_inside_ssi_newton_refinement() {
+    use crate::MathError;
+    use crate::context::{CancellationToken, OperationContext};
+
+    let token = CancellationToken::new();
+    let context = OperationContext::new().with_cancellation(token.clone());
+    token.cancel();
+
+    let result = refine_ssi_point_with_context(
+        &flat_surface(),
+        &tilted_surface(),
+        0.5263,
+        0.5,
+        0.5263,
+        0.5,
+        1e-6,
+        &context,
+    );
+    assert!(matches!(result, Err(MathError::Cancelled)));
+}
+
+#[test]
 fn tiny_march_budget_bounds_the_trace_and_terminates() {
     use crate::context::{OperationContext, WorkBudgets};
 
@@ -1191,4 +1337,18 @@ fn tiny_march_budget_bounds_the_trace_and_terminates() {
         bounded_points < full_points,
         "tiny budget must trace fewer points ({bounded_points} vs {full_points})"
     );
+}
+
+#[test]
+fn cancelled_context_refuses_ssi_with_typed_result() {
+    use crate::MathError;
+    use crate::context::{CancellationToken, OperationContext};
+
+    let token = CancellationToken::new();
+    let context = OperationContext::new().with_cancellation(token.clone());
+    token.cancel();
+
+    let result =
+        intersect_nurbs_nurbs_with_context(&flat_surface(), &tilted_surface(), 15, 0.02, &context);
+    assert!(matches!(result, Err(MathError::Cancelled)));
 }

@@ -26,6 +26,7 @@ use crate::helpers::{
 };
 use crate::kernel::BrepKernel;
 use crate::types::FaceEvolutionPayloadV1;
+use tsify::Tsify as _;
 
 use remus_operations::extrude::extrude;
 use remus_operations::offset_wire::JoinType;
@@ -389,32 +390,10 @@ impl BrepKernel {
         solid: u32,
         edge_handles: Vec<u32>,
         distance: f64,
-    ) -> Result<FaceEvolutionPayloadV1, JsError> {
-        validate_positive(distance, "distance")?;
-        let solid_id = self.resolve_solid(solid)?;
-        let edge_ids: Vec<remus_topology::edge::EdgeId> = edge_handles
-            .iter()
-            .map(|&handle| self.resolve_edge(handle))
-            .collect::<Result<_, _>>()?;
-        let source_faces: Vec<u32> = remus_topology::explorer::solid_faces(&self.topo, solid_id)?
-            .into_iter()
-            .map(face_id_to_u32)
-            .collect();
-        let (result, origins) =
-            try_chamfer_with_origins(self.topo_mut(), solid_id, &edge_ids, distance)?;
-        let evolution = wasm_blend_evolution(&self.topo, result, origins.as_ref())?;
-        let result_faces: Vec<u32> = remus_topology::explorer::solid_faces(&self.topo, result)?
-            .into_iter()
-            .map(face_id_to_u32)
-            .collect();
-        FaceEvolutionPayloadV1::from_map(
-            solid,
-            solid_id_to_u32(result),
-            source_faces,
-            result_faces,
-            &evolution,
-        )
-        .map_err(|error| JsError::new(&error))
+    ) -> Result<tsify::Ts<FaceEvolutionPayloadV1>, JsError> {
+        Ok(self
+            .chamfer_with_evolution_impl(solid, edge_handles, distance)?
+            .into_ts()?)
     }
 
     // ── Fillet ────────────────────────────────────────────────────
@@ -494,6 +473,54 @@ impl BrepKernel {
         solid: u32,
         edge_handles: Vec<u32>,
         radius: f64,
+    ) -> Result<tsify::Ts<FaceEvolutionPayloadV1>, JsError> {
+        Ok(self
+            .fillet_with_evolution_impl(solid, edge_handles, radius)?
+            .into_ts()?)
+    }
+}
+
+/// Natively-testable evolution bodies (`Ts` cannot be inspected off-wasm).
+impl BrepKernel {
+    pub(crate) fn chamfer_with_evolution_impl(
+        &mut self,
+        solid: u32,
+        edge_handles: Vec<u32>,
+        distance: f64,
+    ) -> Result<FaceEvolutionPayloadV1, JsError> {
+        validate_positive(distance, "distance")?;
+        let solid_id = self.resolve_solid(solid)?;
+        let edge_ids: Vec<remus_topology::edge::EdgeId> = edge_handles
+            .iter()
+            .map(|&handle| self.resolve_edge(handle))
+            .collect::<Result<_, _>>()?;
+        let source_faces: Vec<u32> = remus_topology::explorer::solid_faces(&self.topo, solid_id)?
+            .into_iter()
+            .map(face_id_to_u32)
+            .collect();
+        let (result, origins) =
+            try_chamfer_with_origins(self.topo_mut(), solid_id, &edge_ids, distance)?;
+        let evolution = wasm_blend_evolution(&self.topo, result, origins.as_ref())?;
+        let result_faces: Vec<u32> = remus_topology::explorer::solid_faces(&self.topo, result)?
+            .into_iter()
+            .map(face_id_to_u32)
+            .collect();
+        FaceEvolutionPayloadV1::from_map(
+            solid,
+            solid_id_to_u32(result),
+            source_faces,
+            result_faces,
+            &evolution,
+        )
+        .map_err(|error| JsError::new(&error))
+    }
+
+    #[allow(clippy::needless_pass_by_value)]
+    pub(crate) fn fillet_with_evolution_impl(
+        &mut self,
+        solid: u32,
+        edge_handles: Vec<u32>,
+        radius: f64,
     ) -> Result<FaceEvolutionPayloadV1, JsError> {
         if self.poisoned {
             return Err(JsError::new(
@@ -543,7 +570,10 @@ impl BrepKernel {
             }
         }
     }
+}
 
+#[wasm_bindgen]
+impl BrepKernel {
     // ── Operations ─────────────────────────────────────────────────
 
     /// Move a planar face of a solid along its outward normal.
@@ -711,6 +741,21 @@ impl BrepKernel {
         face: u32,
         expected_radius: f64,
         new_radius: f64,
+    ) -> Result<tsify::Ts<FaceEvolutionPayloadV1>, JsError> {
+        Ok(self
+            .resize_blend_with_evolution_impl(solid, face, expected_radius, new_radius)?
+            .into_ts()?)
+    }
+}
+
+/// Natively-testable resize-blend evolution body.
+impl BrepKernel {
+    pub(crate) fn resize_blend_with_evolution_impl(
+        &mut self,
+        solid: u32,
+        face: u32,
+        expected_radius: f64,
+        new_radius: f64,
     ) -> Result<FaceEvolutionPayloadV1, JsError> {
         validate_positive(expected_radius, "expected_radius")?;
         validate_finite(new_radius, "new_radius")?;
@@ -755,7 +800,10 @@ impl BrepKernel {
             Err(panic_info) => Err(JsError::new(&panic_message(&panic_info, "Resize blend"))),
         }
     }
+}
 
+#[wasm_bindgen]
+impl BrepKernel {
     /// Extrude a planar face along a direction vector to create a solid.
     ///
     /// Returns a solid handle (`u32`).
@@ -1446,11 +1494,7 @@ impl BrepKernel {
     /// Returns an error if the distance is zero or the solid is invalid.
     #[wasm_bindgen(js_name = "offsetSolid")]
     pub fn offset_solid(&mut self, solid: u32, distance: f64) -> Result<u32, JsError> {
-        validate_finite(distance, "distance")?;
-        let solid_id = self.resolve_solid(solid)?;
-        let result =
-            remus_operations::offset_v2::offset_solid_v2(self.topo_mut(), solid_id, distance)?;
-        Ok(solid_id_to_u32(result))
+        Ok(self.offset_solid_impl(solid, distance)?)
     }
 
     /// Offset all faces of a solid outward or inward (V2 pipeline).
@@ -1462,10 +1506,7 @@ impl BrepKernel {
     /// Returns an error if the distance is not finite or the solid is invalid.
     #[wasm_bindgen(js_name = "offsetSolidV2")]
     pub fn offset_solid_v2(&mut self, solid: u32, distance: f64) -> Result<u32, JsError> {
-        validate_finite(distance, "distance")?;
-        let sid = self.resolve_solid(solid)?;
-        let result = remus_operations::offset_v2::offset_solid_v2(self.topo_mut(), sid, distance)?;
-        Ok(solid_id_to_u32(result))
+        Ok(self.offset_solid_impl(solid, distance)?)
     }
 
     /// Thicken a face into a solid by offsetting it by the given distance.
@@ -2025,7 +2066,37 @@ impl BrepKernel {
         // Try as edge
         if let Ok(edge_id) = self.resolve_edge(id) {
             let edge = self.topo.edge(edge_id)?;
-            let new_edge = Edge::new(edge.end(), edge.start(), edge.curve().clone());
+            let start = edge.end();
+            let end = edge.start();
+            let curve = edge.curve().clone();
+            let tolerance = edge.tolerance();
+            let trim = if matches!(curve, EdgeCurve::Line) {
+                None
+            } else {
+                let (t0, t1) = edge
+                    .strict_domain()
+                    .map_err(|error| WasmError::InvalidInput {
+                        reason: format!("cannot reverse edge without authoritative trim: {error}"),
+                    })?;
+                let start_point = self.topo.vertex(start)?.point();
+                let end_point = self.topo.vertex(end)?.point();
+                let vertex_tolerance = self
+                    .topo
+                    .vertex(start)?
+                    .tolerance()
+                    .max(self.topo.vertex(end)?.tolerance());
+                Self::certify_curve_trim(
+                    &curve,
+                    (t1, t0),
+                    start_point,
+                    end_point,
+                    start == end,
+                    tolerance.unwrap_or(vertex_tolerance),
+                )?;
+                Some((t1, t0))
+            };
+            let mut new_edge = Edge::with_tolerance(start, end, curve, tolerance);
+            new_edge.set_trim(trim);
             let new_eid = self.topo_mut().add_edge(new_edge);
             return Ok(edge_id_to_u32(new_eid));
         }
@@ -2155,6 +2226,22 @@ impl BrepKernel {
         edge_handles: Vec<u32>,
         distance: f64,
         angle: f64,
+    ) -> Result<tsify::Ts<FaceEvolutionPayloadV1>, JsError> {
+        Ok(self
+            .chamfer_distance_angle_with_evolution_impl(solid, edge_handles, distance, angle)?
+            .into_ts()?)
+    }
+}
+
+/// Natively-testable distance-angle chamfer evolution body.
+impl BrepKernel {
+    #[allow(clippy::needless_pass_by_value)]
+    pub(crate) fn chamfer_distance_angle_with_evolution_impl(
+        &mut self,
+        solid: u32,
+        edge_handles: Vec<u32>,
+        distance: f64,
+        angle: f64,
     ) -> Result<FaceEvolutionPayloadV1, JsError> {
         validate_positive(distance, "distance")?;
         validate_positive(angle, "angle")?;
@@ -2195,6 +2282,22 @@ impl BrepKernel {
     }
 }
 
+impl BrepKernel {
+    /// Shared fallible implementation for both direct solid-offset exports.
+    pub(crate) fn offset_solid_impl(
+        &mut self,
+        solid: u32,
+        distance: f64,
+    ) -> Result<u32, WasmError> {
+        validate_finite(distance, "distance")?;
+        let solid_id = self.resolve_solid(solid)?;
+        let result = self.with_topology_transaction(|topology| {
+            remus_operations::offset_v2::offset_solid_v2(topology, solid_id, distance)
+        })?;
+        Ok(solid_id_to_u32(result))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -2204,7 +2307,7 @@ mod tests {
     use remus_math::vec::Point3;
     use remus_topology::builder::make_polygon_wire;
 
-    use crate::handles::{solid_id_to_u32, wire_id_to_u32};
+    use crate::handles::{edge_id_to_u32, solid_id_to_u32, wire_id_to_u32};
     use crate::helpers::TOL;
     use crate::kernel::BrepKernel;
 
@@ -2217,6 +2320,43 @@ mod tests {
         ];
         let wid = make_polygon_wire(k.topo_mut(), &pts, TOL).unwrap();
         wire_id_to_u32(wid)
+    }
+
+    fn topology_counts(
+        topology: &remus_topology::Topology,
+    ) -> (usize, usize, usize, usize, usize, usize) {
+        (
+            topology.num_vertices(),
+            topology.num_edges(),
+            topology.num_wires(),
+            topology.num_faces(),
+            topology.num_shells(),
+            topology.num_solids(),
+        )
+    }
+
+    #[test]
+    fn direct_offset_exports_rollback_postcondition_failure() {
+        let mut kernel = BrepKernel::new();
+        let solid = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
+        let before = topology_counts(kernel.topo());
+
+        let mut unguarded = kernel.topo().clone();
+        let solid_id = kernel.resolve_solid(solid).unwrap();
+        remus_operations::offset_v2::offset_solid_v2(&mut unguarded, solid_id, -6.0)
+            .expect_err("collapsed offset must fail its postcondition");
+        assert_ne!(
+            topology_counts(&unguarded),
+            before,
+            "witness must exercise a failure after topology allocation"
+        );
+
+        let error = kernel
+            .offset_solid_impl(solid, -6.0)
+            .expect_err("direct offset must surface the collapse refusal");
+        assert!(error.to_string().contains("collapsed"));
+        assert_eq!(topology_counts(kernel.topo()), before);
+        assert!(kernel.resolve_solid(solid).is_ok());
     }
 
     fn dispatch(k: &mut BrepKernel, op: &str, args: serde_json::Value) -> serde_json::Value {
@@ -2344,7 +2484,9 @@ mod tests {
             let solid = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
             let edges = kernel.get_solid_edges(solid).unwrap();
             let selected: Vec<u32> = edge_slots.iter().map(|&slot| edges[slot]).collect();
-            let payload = kernel.fillet_with_evolution(solid, selected, 1.0).unwrap();
+            let payload = kernel
+                .fillet_with_evolution_impl(solid, selected, 1.0)
+                .unwrap();
 
             assert_eq!(payload.schema_version, 1);
             assert_eq!(payload.source.solid, solid);
@@ -2396,7 +2538,7 @@ mod tests {
         let sharp = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
         let edge = kernel.get_solid_edges(sharp).unwrap()[0];
         let fillet = kernel
-            .fillet_with_evolution(sharp, vec![edge], 1.0)
+            .fillet_with_evolution_impl(sharp, vec![edge], 1.0)
             .unwrap();
         let bands: HashSet<u32> = fillet
             .evolution
@@ -2416,7 +2558,7 @@ mod tests {
         assert_eq!(grouped["ok"]["radius"].as_f64(), Some(1.0));
 
         let resized = kernel
-            .resize_blend_with_evolution_binding(fillet.result.solid, band, 1.0, 2.0)
+            .resize_blend_with_evolution_impl(fillet.result.solid, band, 1.0, 2.0)
             .unwrap();
         assert_eq!(resized.schema_version, 1);
         assert_eq!(
@@ -2430,7 +2572,7 @@ mod tests {
         let sharp = direct_kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
         let edge = direct_kernel.get_solid_edges(sharp).unwrap()[0];
         let fillet = direct_kernel
-            .fillet_with_evolution(sharp, vec![edge], 1.0)
+            .fillet_with_evolution_impl(sharp, vec![edge], 1.0)
             .unwrap();
         let band = fillet.evolution.generated[0].results[0];
         let result = direct_kernel
@@ -2444,7 +2586,7 @@ mod tests {
         let mut fillet_kernel = BrepKernel::new();
         let (fillet_solid, fillet_rims) = rim_cylinder(&mut fillet_kernel);
         let fillet = fillet_kernel
-            .fillet_with_evolution(fillet_solid, vec![fillet_rims[0]], 2.0)
+            .fillet_with_evolution_impl(fillet_solid, vec![fillet_rims[0]], 2.0)
             .unwrap();
         assert_eq!(
             fillet.evolution.provenance,
@@ -2456,7 +2598,7 @@ mod tests {
         let mut chamfer_kernel = BrepKernel::new();
         let (chamfer_solid, chamfer_rims) = rim_cylinder(&mut chamfer_kernel);
         let chamfer = chamfer_kernel
-            .chamfer_with_evolution(chamfer_solid, vec![chamfer_rims[0]], 2.0)
+            .chamfer_with_evolution_impl(chamfer_solid, vec![chamfer_rims[0]], 2.0)
             .unwrap();
         assert_eq!(
             chamfer.evolution.provenance,
@@ -2472,7 +2614,7 @@ mod tests {
         let solid = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
         let edge = kernel.get_solid_edges(solid).unwrap()[0];
         let payload = kernel
-            .chamfer_with_evolution(solid, vec![edge], 1.0)
+            .chamfer_with_evolution_impl(solid, vec![edge], 1.0)
             .unwrap();
         assert_eq!(
             payload.evolution.provenance,
@@ -2510,7 +2652,7 @@ mod tests {
         let solid = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
         let edge = kernel.get_solid_edges(solid).unwrap()[0];
         let payload = kernel
-            .chamfer_distance_angle_with_evolution(solid, vec![edge], 2.0, angle)
+            .chamfer_distance_angle_with_evolution_impl(solid, vec![edge], 2.0, angle)
             .unwrap();
         let volume = kernel.volume(payload.result.solid, 0.1).unwrap();
         assert!((volume - plain_volume).abs() < 1e-9);
@@ -3036,5 +3178,50 @@ mod tests {
             entry.get("error").is_some(),
             "unknown join type should error: {entry}"
         );
+    }
+
+    #[test]
+    fn reverse_shape_reverses_authoritative_curve_trim() {
+        let mut kernel = BrepKernel::new();
+        let circle = remus_math::curves::Circle3D::new(
+            Point3::new(0.0, 0.0, 0.0),
+            remus_math::vec::Vec3::new(0.0, 0.0, 1.0),
+            3.0,
+        )
+        .unwrap();
+        let start_parameter = 0.7;
+        let end_parameter = 2.2;
+        let start = circle.evaluate(start_parameter);
+        let end = circle.evaluate(end_parameter);
+        let expected_midpoint = circle.evaluate(f64::midpoint(start_parameter, end_parameter));
+        let edge = kernel
+            .add_certified_curve_edge(
+                remus_topology::edge::EdgeCurve::Circle(circle),
+                (start_parameter, end_parameter),
+                start,
+                end,
+                false,
+                TOL,
+            )
+            .unwrap();
+
+        let reversed = kernel.reverse_shape(edge_id_to_u32(edge)).unwrap();
+        let reversed_id = kernel.resolve_edge(reversed).unwrap();
+        let reversed_edge = kernel.topo().edge(reversed_id).unwrap();
+        assert_eq!(
+            reversed_edge.strict_domain().unwrap(),
+            (end_parameter, start_parameter)
+        );
+        assert!(
+            (kernel.topo().vertex(reversed_edge.start()).unwrap().point() - end).length() < 1e-12
+        );
+        assert!(
+            (kernel.topo().vertex(reversed_edge.end()).unwrap().point() - start).length() < 1e-12
+        );
+        let midpoint = BrepKernel::curve_point(
+            reversed_edge.curve(),
+            f64::midpoint(end_parameter, start_parameter),
+        );
+        assert!((midpoint - expected_midpoint).length() < 1e-12);
     }
 }

@@ -12,7 +12,7 @@ use crate::types::{GroupedMeshResult, UvMeshResult};
 
 /// Resolve an optional angular-tolerance argument, validating it when present
 /// and falling back to the default angular cap when absent.
-fn resolve_angular_tol(angular_tolerance: Option<f64>) -> Result<f64, JsError> {
+pub(super) fn resolve_angular_tol(angular_tolerance: Option<f64>) -> Result<f64, JsError> {
     match angular_tolerance {
         Some(a) => {
             validate_positive(a, "angularTolerance")?;
