@@ -33,7 +33,7 @@ ALLOWLIST=(
 
 FAIL=0
 
-FILE_LIST=$(find crates xtask/src tests -name '*.rs' -type f -not -path '*/target/*' 2>/dev/null | sed 's|^|/|')
+FILE_LIST=$(find crates fuzz/fuzz_targets xtask/src tests -name '*.rs' -type f -not -path '*/target/*' 2>/dev/null | sed 's|^|/|')
 
 is_allowlisted() {
   local path="$1"
