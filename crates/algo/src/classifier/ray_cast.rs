@@ -440,7 +440,12 @@ fn wire_polygon(
         let raw_end = topo.vertex(edge.end())?.point();
         let mut pts = vec![raw_start];
         if !matches!(edge.curve(), remus_topology::edge::EdgeCurve::Line) {
-            let (t0, t1) = edge.domain_with_endpoints(raw_start, raw_end);
+            let (t0, t1) = edge.strict_domain().map_err(|error| {
+                AlgoError::ClassificationFailed(format!(
+                    "wire {wire_id:?} edge {:?} lacks authoritative parameter range: {error}",
+                    oe.edge()
+                ))
+            })?;
             let is_closed = (raw_start - raw_end).length() < 1e-9;
             let n_samples = if is_closed { 16_i32 } else { 3_i32 };
             for k in 1..=n_samples {
@@ -1272,7 +1277,12 @@ pub fn compute_solid_bbox(
             points.push(end_pos);
             // Curved edges can bulge beyond their endpoints
             if !matches!(edge.curve(), remus_topology::edge::EdgeCurve::Line) {
-                let (t0, t1) = edge.domain_with_endpoints(start_pos, end_pos);
+                let (t0, t1) = edge.strict_domain().map_err(|error| {
+                    AlgoError::ClassificationFailed(format!(
+                        "solid {solid:?} edge {:?} lacks authoritative parameter range: {error}",
+                        oe.edge()
+                    ))
+                })?;
                 let t_mid = 0.5_f64.mul_add(t1 - t0, t0);
                 let mid = edge
                     .curve()
@@ -1361,7 +1371,9 @@ mod tests {
             4.0,
         )
         .unwrap();
-        let e = topo.add_edge(Edge::new(v0, v0, EdgeCurve::Circle(circle)));
+        let mut edge = Edge::new(v0, v0, EdgeCurve::Circle(circle));
+        edge.set_trim(Some((0.0, std::f64::consts::TAU)));
+        let e = topo.add_edge(edge);
         let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(e, true)], true).unwrap());
         let face = topo.add_face(Face::new(wire, vec![], FaceSurface::Torus(t)));
         let shell = topo.add_shell(Shell::new(vec![face]).unwrap());

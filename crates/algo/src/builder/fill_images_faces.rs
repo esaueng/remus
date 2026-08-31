@@ -230,7 +230,7 @@ pub fn fill_images_faces<S: BuildHasher, S2: BuildHasher>(
         pool
     };
 
-    let section_map = build_section_map(topo, arena);
+    let section_map = build_section_map(topo, arena)?;
 
     // ── Periodic seam anchor pre-pass ───────────────────────────────
     // Closed circle intersection curves on a u-periodic face (cylinder /
@@ -330,7 +330,7 @@ pub fn fill_images_faces<S: BuildHasher, S2: BuildHasher>(
             &section_map,
             &seam_anchors,
             tol.linear,
-        );
+        )?;
 
         log::debug!(
             "fill_images_faces: face {:?} has_sections={} sections={}",
@@ -1743,7 +1743,10 @@ fn split_nurbs_at(
     Some(pieces)
 }
 
-fn build_section_map(topo: &Topology, arena: &GfaArena) -> HashMap<FaceId, Vec<SectionSource>> {
+fn build_section_map(
+    topo: &Topology,
+    arena: &GfaArena,
+) -> Result<HashMap<FaceId, Vec<SectionSource>>, AlgoError> {
     if std::env::var("BK_PAVES").is_ok() {
         for (ci, curve) in arena.curves.iter().enumerate() {
             for &pb_id in &curve.pave_blocks {
@@ -1829,7 +1832,7 @@ fn build_section_map(topo: &Topology, arena: &GfaArena) -> HashMap<FaceId, Vec<S
         let cap_disc = cap_disc_circle(topo, face_id);
         for &pb_id in &fi.pave_blocks_in {
             if let Some(circle) = &cap_disc
-                && !pb_strictly_inside_circle(topo, arena, pb_id, circle)
+                && !pb_strictly_inside_circle(topo, arena, pb_id, circle)?
             {
                 continue;
             }
@@ -1838,7 +1841,7 @@ fn build_section_map(topo: &Topology, arena: &GfaArena) -> HashMap<FaceId, Vec<S
                 .push(SectionSource::PaveBlock(pb_id, None));
         }
     }
-    map
+    Ok(map)
 }
 
 /// If `face_id` is a plane whose outer wire is a single closed circular edge
@@ -1867,24 +1870,29 @@ fn pb_strictly_inside_circle(
     arena: &GfaArena,
     pb_id: crate::ds::PaveBlockId,
     circle: &remus_math::curves::Circle3D,
-) -> bool {
+) -> Result<bool, AlgoError> {
     let Some(pb) = arena.pave_blocks.get(pb_id) else {
-        return false;
+        return Ok(false);
     };
     let Ok(edge) = topo.edge(pb.original_edge) else {
-        return false;
+        return Ok(false);
     };
     let (Ok(sv), Ok(ev)) = (topo.vertex(edge.start()), topo.vertex(edge.end())) else {
-        return false;
+        return Ok(false);
     };
     let (sp, ep) = (sv.point(), ev.point());
-    let (t0, t1) = edge.curve().domain_with_endpoints(sp, ep);
+    let (t0, t1) = edge.strict_domain().map_err(|error| {
+        AlgoError::FaceSplitFailed(format!(
+            "pave block {pb_id:?} source edge {:?} lacks authoritative parameter range: {error}",
+            pb.original_edge
+        ))
+    })?;
     let mid = edge
         .curve()
         .evaluate_with_endpoints(0.5 * (t0 + t1), sp, ep);
     let radial = mid - circle.center();
     let in_plane = radial - circle.normal() * radial.dot(circle.normal());
-    in_plane.length() < circle.radius() - SEAM_ON_CIRCLE_TOL
+    Ok(in_plane.length() < circle.radius() - SEAM_ON_CIRCLE_TOL)
 }
 
 /// Parametric span below which a chord-collapsed arc section is treated as
@@ -1905,17 +1913,17 @@ fn build_section_edges(
     section_map: &HashMap<FaceId, Vec<SectionSource>>,
     seam_anchors: &BTreeMap<usize, Point3>,
     tol: f64,
-) -> Vec<SectionEdge> {
+) -> Result<Vec<SectionEdge>, AlgoError> {
     use remus_math::vec::Point3;
 
     let sources = match section_map.get(&face_id) {
         Some(s) => s,
-        None => return Vec::new(),
+        None => return Ok(Vec::new()),
     };
 
     let face = match topo.face(face_id) {
         Ok(f) => f,
-        Err(_) => return Vec::new(),
+        Err(_) => return Ok(Vec::new()),
     };
 
     // Pre-compute wire points for PCurve (needed for plane frame).
@@ -1969,7 +1977,7 @@ fn build_section_edges(
                     curve_ds.face_a
                 };
                 if closed_curve_coincides_with_boundary(topo, face_id, &curve_ds.curve, tol)
-                    && circle_inside_face(topo, partner, &curve_ds.curve, tol)
+                    && circle_inside_face(topo, partner, &curve_ds.curve, tol)?
                 {
                     continue;
                 }
@@ -2099,7 +2107,11 @@ fn build_section_edges(
                     let start_uv = face.surface().project_point(start);
                     if let Some((su, sv)) = start_uv {
                         // Sample the curve at t=0.25 to determine winding direction.
-                        let (t0, t1) = curve_3d.domain_with_endpoints(start, end);
+                        let (t0, t1) = trim.ok_or_else(|| {
+                            AlgoError::FaceSplitFailed(format!(
+                                "face {face_id:?} closed section curve {curve_idx} lacks carried parameter authority"
+                            ))
+                        })?;
                         let mid_3d =
                             curve_3d.evaluate_with_endpoints(t0 + (t1 - t0) * 0.25, start, end);
                         let mid_uv = face.surface().project_point(mid_3d);
@@ -2178,6 +2190,19 @@ fn build_section_edges(
                     Ok(v) => v.point(),
                     Err(_) => continue,
                 };
+                if !matches!(edge.curve(), EdgeCurve::Line)
+                    && (raw_end - raw_start).length() < tol * 100.0
+                    && edge
+                        .trim()
+                        .is_some_and(|(t0, t1)| (t1 - t0).abs() < DEGENERATE_ARC_SPAN)
+                {
+                    continue;
+                }
+                let edge_domain = edge.strict_domain().map_err(|error| {
+                    AlgoError::FaceSplitFailed(format!(
+                        "face {face_id:?} section edge {edge_id:?} lacks authoritative parameter range: {error}"
+                    ))
+                })?;
 
                 let intervals: Vec<(Point3, Point3)> =
                     if matches!(edge.curve(), remus_topology::edge::EdgeCurve::Line) {
@@ -2248,7 +2273,7 @@ fn build_section_edges(
                     if !matches!(edge.curve(), remus_topology::edge::EdgeCurve::Line)
                         && (end - start).length() < tol * 100.0
                     {
-                        let (t0, t1) = edge.curve().domain_with_endpoints(start, end);
+                        let (t0, t1) = edge_domain;
                         if (t1 - t0).abs() < DEGENERATE_ARC_SPAN {
                             continue;
                         }
@@ -2264,7 +2289,7 @@ fn build_section_edges(
                     // top-row-merged compartment bin).
                     let interior_samples: Vec<Point3> = {
                         const SAMPLES: usize = 9;
-                        let (t0, t1) = edge.curve().domain_with_endpoints(start, end);
+                        let (t0, t1) = edge_domain;
                         (1..SAMPLES)
                             .map(|k| {
                                 #[allow(clippy::cast_precision_loss)]
@@ -2351,7 +2376,7 @@ fn build_section_edges(
     // region only. Keeping both creates degenerate face splits.
     dedup_collinear_sections(&mut sections, tol);
 
-    sections
+    Ok(sections)
 }
 
 /// Whether the closed `curve` (a circle/ellipse) is contained within
@@ -2366,25 +2391,30 @@ fn circle_inside_face(
     face_id: FaceId,
     curve: &remus_topology::edge::EdgeCurve,
     tol: f64,
-) -> bool {
+) -> Result<bool, AlgoError> {
     let Ok(face) = topo.face(face_id) else {
-        return false;
+        return Ok(false);
     };
     let Ok(wire) = topo.wire(face.outer_wire()) else {
-        return false;
+        return Ok(false);
     };
     let mut min = Point3::new(f64::MAX, f64::MAX, f64::MAX);
     let mut max = Point3::new(f64::MIN, f64::MIN, f64::MIN);
     let mut have = false;
     for oe in wire.edges() {
         let Ok(edge) = topo.edge(oe.edge()) else {
-            return false;
+            return Ok(false);
         };
         let (Ok(sv), Ok(ev)) = (topo.vertex(edge.start()), topo.vertex(edge.end())) else {
-            return false;
+            return Ok(false);
         };
         let (sp, ep) = (sv.point(), ev.point());
-        let (t0, t1) = edge.curve().domain_with_endpoints(sp, ep);
+        let (t0, t1) = edge.strict_domain().map_err(|error| {
+            AlgoError::FaceSplitFailed(format!(
+                "face {face_id:?} boundary edge {:?} lacks authoritative parameter range: {error}",
+                oe.edge()
+            ))
+        })?;
         for k in 0..=8 {
             #[allow(clippy::cast_precision_loss)]
             let frac = k as f64 / 8.0;
@@ -2397,13 +2427,16 @@ fn circle_inside_face(
         }
     }
     if !have {
-        return false;
+        return Ok(false);
     }
 
     // Closed Circle/Ellipse: evaluate_with_endpoints ignores the reference
     // points and dispatches to the parametric domain directly.
     let origin = Point3::new(0.0, 0.0, 0.0);
-    let (t0, t1) = curve.domain_with_endpoints(origin, origin);
+    let (t0, t1) = match curve {
+        EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_) => (0.0, std::f64::consts::TAU),
+        _ => return Ok(false),
+    };
     for k in 0..16 {
         #[allow(clippy::cast_precision_loss)]
         let frac = k as f64 / 16.0;
@@ -2415,10 +2448,10 @@ fn circle_inside_face(
             || p.z() < min.z() - tol
             || p.z() > max.z() + tol
         {
-            return false;
+            return Ok(false);
         }
     }
-    true
+    Ok(true)
 }
 
 /// Check whether a closed section curve (Circle/Ellipse) coincides with
@@ -3804,7 +3837,7 @@ fn build_topology_face(
         return Ok(None);
     }
 
-    orient_planar_outer_wire(topo, &split.surface, split.reversed, &mut oriented_edges);
+    orient_planar_outer_wire(topo, &split.surface, split.reversed, &mut oriented_edges)?;
 
     // Step 3: Build wire.
     let Some(wire) = Wire::new(oriented_edges, true).ok() else {
@@ -3863,22 +3896,27 @@ fn orient_planar_outer_wire(
     surface: &FaceSurface,
     reversed: bool,
     oriented_edges: &mut [OrientedEdge],
-) {
+) -> Result<(), AlgoError> {
     let FaceSurface::Plane { normal, .. } = surface else {
-        return;
+        return Ok(());
     };
     let effective_normal = if reversed { -*normal } else { *normal };
     let mut points = Vec::with_capacity(oriented_edges.len() * 4);
 
     for oriented in oriented_edges.iter() {
         let Ok(edge) = topo.edge(oriented.edge()) else {
-            return;
+            return Ok(());
         };
         let (Ok(start), Ok(end)) = (topo.vertex(edge.start()), topo.vertex(edge.end())) else {
-            return;
+            return Ok(());
         };
         let (start, end) = (start.point(), end.point());
-        let (t0, t1) = edge.curve().domain_with_endpoints(start, end);
+        let (t0, t1) = edge.strict_domain().map_err(|error| {
+            AlgoError::FaceSplitFailed(format!(
+                "planar result edge {:?} lacks authoritative parameter range: {error}",
+                oriented.edge()
+            ))
+        })?;
         let (from, to) = if oriented.is_forward() {
             (t0, t1)
         } else {
@@ -3917,6 +3955,7 @@ fn orient_planar_outer_wire(
             *oriented = OrientedEdge::new(oriented.edge(), !oriented.is_forward());
         }
     }
+    Ok(())
 }
 
 /// Create a topology edge for a wire's pcurve edge, returning the edge id
