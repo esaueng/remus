@@ -358,6 +358,11 @@ fn tessellate_solid_core(
     // then welds to it via the 1e-6 boundary snap).
     {
         let refine_tol = remus_math::tolerance::Tolerance::new().linear * 10.0;
+        // Keep the pool immutable while discovering crossings.  A malformed
+        // non-manifold model may reuse one edge from many faces with different
+        // seam meridians; growing that edge after every face would make each
+        // later face rescan and clone all earlier insertions (quadratic work).
+        let mut refinements: DetHashMap<usize, Vec<(usize, f64, Point3)>> = DetHashMap::default();
         for &face_id in &all_faces {
             let face_data = topo.face(face_id)?;
             let FaceSurface::Cylinder(cyl) = face_data.surface() else {
@@ -405,7 +410,6 @@ fn tessellate_solid_core(
                         continue;
                     };
                     let offsets: Vec<f64> = pts.iter().map(|&p| meridian_offset(p)).collect();
-                    let mut insertions: Vec<(usize, Point3)> = Vec::new();
                     for i in 0..pts.len().saturating_sub(1) {
                         let (a, b) = (offsets[i], offsets[i + 1]);
                         // A genuine meridian crossing changes sign over a
@@ -426,17 +430,31 @@ fn tessellate_solid_core(
                         {
                             continue;
                         }
-                        insertions.push((i + 1, crossing));
+                        refinements
+                            .entry(edge_idx)
+                            .or_default()
+                            .push((i + 1, t, crossing));
                     }
-                    if insertions.is_empty() {
-                        continue;
-                    }
-                    let mut new_pts = pts.clone();
-                    for &(at, p) in insertions.iter().rev() {
-                        new_pts.insert(at, p);
-                    }
-                    edge_points.insert(edge_idx, new_pts);
                 }
+            }
+        }
+
+        // Apply each shared edge's requested splits once. Sorting by original
+        // segment and interpolation parameter both preserves polyline order
+        // and puts coincident requests next to one another for linear dedup.
+        for (edge_idx, mut insertions) in refinements {
+            insertions.sort_by(|(at_a, t_a, _), (at_b, t_b, _)| {
+                at_a.cmp(at_b).then_with(|| t_a.total_cmp(t_b))
+            });
+            insertions.dedup_by(|(at_b, _, point_b), (at_a, _, point_a)| {
+                at_a == at_b && (*point_a - *point_b).length() < refine_tol
+            });
+            let Some(pts) = edge_points.get_mut(&edge_idx) else {
+                continue;
+            };
+            pts.reserve(insertions.len());
+            for &(at, _, point) in insertions.iter().rev() {
+                pts.insert(at, point);
             }
         }
     }
