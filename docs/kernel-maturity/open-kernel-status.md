@@ -12,7 +12,7 @@ that flips them; agents do not flip them autonomously.
 
 | Issue | Wave | State | PR |
 | --- | --- | --- | --- |
-| O1.1a Gauntlet pipeline skeleton | A | Blocked — workspace registration must update `Cargo.lock`, currently claimed by open PR #131; retry after it lands | [#131](https://github.com/esaueng/remus/pull/131) (blocker) |
+| O1.1a Gauntlet pipeline skeleton | A | Complete — isolated bounded workers run import, validation, disclosed probe boolean, manifold tessellation, and property-checked STEP round-trip; JSONL and aggregate JSON/Markdown outputs use stable taxonomy codes | This PR |
 | O1.1b Corpus manifests + fetcher | A | Pending | — |
 | O1.1c Gauntlet CI wiring | A | Pending | — |
 | O1.1d Triage loop (recurring) | A | Pending | — |
