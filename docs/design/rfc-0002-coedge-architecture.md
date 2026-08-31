@@ -399,11 +399,15 @@ stored lifted/reversed ranges verbatim, and keeps Lines on their intrinsic
 non-tessellation operations readers and the final WASM batch reader, moving the
 checked ratchet from 61 to 36. Public raw-profile compatibility is confined to
 named, validated extrude/revolve adapters; stored topology and read-only
-measurements fail closed. The remaining sites are eight algorithm transient
-splitter support/complement readers, 27 tessellation readers, and one topology
-validation reader. This is progress evidence, not the 2.0c exit gate;
-SameParameter/SameRange boolean-output validation and the zero-reader gate
-remain open.
+measurements fail closed. The following algorithm-transient continuation
+removes all eight direct splitter support/complement readers, moving the
+ratchet from 36 to 28. Exact evaluation and child construction use carried
+native/traversal ranges; structural partition sampling stays behind one named
+endpoint-reconstruction adapter because weld-shifted fitted endpoints define
+that support interval until per-use Coedge authority lands. The remaining
+sites are 27 tessellation readers and one topology validation reader. This is
+progress evidence, not the 2.0c exit gate; SameParameter/SameRange
+boolean-output validation and the zero-reader gate remain open.
 
 Once Issue 2.0e lands, new code must not construct face boundaries from raw
 `OrientedEdge` lists. Enforcement:

@@ -8,7 +8,6 @@
 use std::f64::consts::TAU;
 
 use remus_math::curves2d::{Curve2D, Line2D, NurbsCurve2D};
-use remus_math::traits::ParametricCurve;
 use remus_math::vec::{Point2, Point3, Vec2, Vec3};
 use remus_topology::edge::EdgeCurve;
 use remus_topology::face::FaceSurface;
@@ -33,6 +32,51 @@ pub fn compute_pcurve_on_surface(
     curve_3d: &EdgeCurve,
     start: Point3,
     end: Point3,
+    surface: &FaceSurface,
+    wire_pts: &[Point3],
+    frame: Option<&PlaneFrame>,
+) -> Curve2D {
+    let domain = reconstruct_structural_sampling_domain(curve_3d, start, end);
+    compute_pcurve_on_surface_in_domain(curve_3d, start, end, domain, surface, wire_pts, frame)
+}
+
+/// Reconstruct the face-splitter's historical structural sampling interval.
+///
+/// Open circles and ellipses use the signed shorter arc. Closed curves use
+/// their intrinsic range, and other carriers use the named compatibility
+/// reconstruction adapter. Exact topology/result authority is carried and
+/// evaluated separately.
+pub(super) fn reconstruct_structural_sampling_domain(
+    curve: &EdgeCurve,
+    start: Point3,
+    end: Point3,
+) -> (f64, f64) {
+    match curve {
+        EdgeCurve::Line => (0.0, 1.0),
+        EdgeCurve::Circle(circle) if (start - end).length() > 1e-12 => {
+            let t0 = circle.project(start);
+            (t0, t0 + shorter_arc_delta(circle.project(end) - t0))
+        }
+        EdgeCurve::Ellipse(ellipse) if (start - end).length() > 1e-12 => {
+            let t0 = ellipse.project(start);
+            (t0, t0 + shorter_arc_delta(ellipse.project(end) - t0))
+        }
+        _ => curve.reconstruct_domain_from_endpoints(start, end),
+    }
+}
+
+/// Compute a pcurve over an explicit authoritative 3D-curve parameter range.
+///
+/// Internal topology and face-splitter callers use this entry point. The
+/// source-compatible [`compute_pcurve_on_surface`] wrapper is retained only
+/// as the named raw-construction adapter for callers that do not yet carry a
+/// range.
+#[must_use]
+pub(super) fn compute_pcurve_on_surface_in_domain(
+    curve_3d: &EdgeCurve,
+    start: Point3,
+    end: Point3,
+    domain: (f64, f64),
     surface: &FaceSurface,
     wire_pts: &[Point3],
     frame: Option<&PlaneFrame>,
@@ -66,9 +110,9 @@ pub fn compute_pcurve_on_surface(
             owned = PlaneFrame::from_plane_face(*normal, wire_pts);
             &owned
         };
-        sample_edge_to_uv_via_frame(curve_3d, start, end, f)
+        sample_edge_to_uv_via_frame(curve_3d, start, end, domain, f)
     } else {
-        sample_edge_to_uv(curve_3d, start, end, surface)
+        sample_edge_to_uv(curve_3d, start, end, domain, surface)
     };
     if uv_pts.len() < 2 {
         // Degenerate: just project endpoints.
@@ -176,6 +220,7 @@ pub(super) fn sample_edge_to_uv(
     curve_3d: &EdgeCurve,
     start: Point3,
     end: Point3,
+    domain: (f64, f64),
     surface: &FaceSurface,
 ) -> Vec<Point2> {
     let n = PCURVE_SAMPLES;
@@ -183,7 +228,7 @@ pub(super) fn sample_edge_to_uv(
     for i in 0..=n {
         #[allow(clippy::cast_precision_loss)]
         let t = i as f64 / n as f64;
-        let p = evaluate_edge_at_t(curve_3d, start, end, t);
+        let p = evaluate_edge_at_t(curve_3d, start, end, domain, t);
         pts_3d.push(p);
     }
 
@@ -205,36 +250,24 @@ pub(super) fn sample_edge_to_uv(
 /// Evaluate a 3D edge curve at parameter t in [0, 1].
 ///
 /// For `Line`, linearly interpolates between start and end.
-/// For open `Circle`/`Ellipse` edges, traces the shorter arc between the
-/// endpoints. For closed edges and `NurbsCurve`, uses the curve domain.
-pub(super) fn evaluate_edge_at_t(curve: &EdgeCurve, start: Point3, end: Point3, t: f64) -> Point3 {
-    match curve {
-        EdgeCurve::Line => Point3::new(
+/// Non-Line curves are evaluated over the supplied authoritative domain.
+pub(super) fn evaluate_edge_at_t(
+    curve: &EdgeCurve,
+    start: Point3,
+    end: Point3,
+    domain: (f64, f64),
+    t: f64,
+) -> Point3 {
+    if matches!(curve, EdgeCurve::Line) {
+        Point3::new(
             start.x() + (end.x() - start.x()) * t,
             start.y() + (end.y() - start.y()) * t,
             start.z() + (end.z() - start.z()) * t,
-        ),
-        // Open circle/ellipse edges follow the shorter-arc convention shared
-        // with tessellation and topology wire sampling: `domain_with_endpoints`
-        // returns the full [0, 2pi] regardless of endpoints, which is only
-        // right for closed edges — sampling an open arc over it would trace
-        // the whole circle.
-        EdgeCurve::Circle(c) if (start - end).length() > 1e-12 => {
-            let t0 = c.project(start);
-            let d = shorter_arc_delta(c.project(end) - t0);
-            ParametricCurve::evaluate(c, t0 + d * t)
-        }
-        EdgeCurve::Ellipse(e) if (start - end).length() > 1e-12 => {
-            let t0 = e.project(start);
-            let d = shorter_arc_delta(e.project(end) - t0);
-            ParametricCurve::evaluate(e, t0 + d * t)
-        }
-        _ => {
-            // Closed curves and NURBS: parametric evaluation over the domain.
-            let (t0, t1) = curve.domain_with_endpoints(start, end);
-            let param = t0 + (t1 - t0) * t;
-            curve.evaluate_with_endpoints(param, start, end)
-        }
+        )
+    } else {
+        let (t0, t1) = domain;
+        let param = t0 + (t1 - t0) * t;
+        curve.evaluate_with_endpoints(param, start, end)
     }
 }
 
@@ -242,16 +275,13 @@ pub(super) fn evaluate_edge_at_t(curve: &EdgeCurve, start: Point3, end: Point3, 
 /// honouring the wire traversal direction (`forward = false` samples
 /// `1 - k/n`).
 ///
-/// Matches [`evaluate_edge_at_t`]'s conventions per curve arm but hoists the
-/// per-arm setup OUT of the sample loop: `evaluate_edge_at_t` re-derives
-/// `domain_with_endpoints` on every call, and for a trimmed NURBS sub-span
-/// that is two iterative point-to-curve projections per sample — the
-/// same-domain samplers over spline-carrying faces paid hundreds of
-/// milliseconds per boolean for it.
+/// Matches [`evaluate_edge_at_t`]'s conventions per curve arm while hoisting
+/// the interval setup out of the sample loop.
 pub(super) fn sample_edge_uniform(
     curve: &EdgeCurve,
     start: Point3,
     end: Point3,
+    domain: (f64, f64),
     n: usize,
     forward: bool,
     out: &mut Vec<Point3>,
@@ -261,34 +291,17 @@ pub(super) fn sample_edge_uniform(
         let f = k as f64 / n as f64;
         if forward { f } else { 1.0 - f }
     };
-    match curve {
-        EdgeCurve::Line => {
-            let d = end - start;
-            for k in 0..n {
-                let t = frac_at(k);
-                out.push(start + d * t);
-            }
+    if matches!(curve, EdgeCurve::Line) {
+        let d = end - start;
+        for k in 0..n {
+            let t = frac_at(k);
+            out.push(start + d * t);
         }
-        EdgeCurve::Circle(c) if (start - end).length() > 1e-12 => {
-            let t0 = c.project(start);
-            let d = shorter_arc_delta(c.project(end) - t0);
-            for k in 0..n {
-                out.push(ParametricCurve::evaluate(c, frac_at(k).mul_add(d, t0)));
-            }
-        }
-        EdgeCurve::Ellipse(e) if (start - end).length() > 1e-12 => {
-            let t0 = e.project(start);
-            let d = shorter_arc_delta(e.project(end) - t0);
-            for k in 0..n {
-                out.push(ParametricCurve::evaluate(e, frac_at(k).mul_add(d, t0)));
-            }
-        }
-        _ => {
-            let (t0, t1) = curve.domain_with_endpoints(start, end);
-            let span = t1 - t0;
-            for k in 0..n {
-                out.push(curve.evaluate_with_endpoints(frac_at(k).mul_add(span, t0), start, end));
-            }
+    } else {
+        let (t0, t1) = domain;
+        let span = t1 - t0;
+        for k in 0..n {
+            out.push(curve.evaluate_with_endpoints(frac_at(k).mul_add(span, t0), start, end));
         }
     }
 }
@@ -307,6 +320,7 @@ fn sample_edge_to_uv_via_frame(
     curve_3d: &EdgeCurve,
     start: Point3,
     end: Point3,
+    domain: (f64, f64),
     frame: &PlaneFrame,
 ) -> Vec<Point2> {
     let n = PCURVE_SAMPLES;
@@ -314,7 +328,7 @@ fn sample_edge_to_uv_via_frame(
     for i in 0..=n {
         #[allow(clippy::cast_precision_loss)]
         let t = i as f64 / n as f64;
-        let p = evaluate_edge_at_t(curve_3d, start, end, t);
+        let p = evaluate_edge_at_t(curve_3d, start, end, domain, t);
         uv_pts.push(frame.project(p));
     }
     uv_pts
@@ -451,6 +465,7 @@ fn fit_nurbs2d_through_points(pts: &[Point2]) -> Curve2D {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
+    use remus_math::traits::ParametricCurve;
     use remus_math::vec::Vec3;
 
     #[test]
@@ -684,44 +699,51 @@ mod tests {
         let nurbs_mid_a = ParametricCurve::evaluate(&nurbs, 0.2);
         let nurbs_mid_b = ParametricCurve::evaluate(&nurbs, 0.75);
 
-        let cases: Vec<(EdgeCurve, Point3, Point3)> = vec![
+        let cases: Vec<(EdgeCurve, Point3, Point3, (f64, f64))> = vec![
             (
                 EdgeCurve::Line,
                 Point3::new(0.0, 1.0, 2.0),
                 Point3::new(3.0, -1.0, 0.5),
+                (0.0, 1.0),
             ),
             (
                 EdgeCurve::Circle(circle.clone()),
                 circle.evaluate(0.3),
                 circle.evaluate(2.1),
+                (0.3, 2.1),
             ),
-            // Closed circle (start == end): domain-based arm.
+            // Closed circle keeps its non-zero seam anchor.
             (
                 EdgeCurve::Circle(circle.clone()),
                 circle.evaluate(0.3),
                 circle.evaluate(0.3),
+                (0.3, 0.3 + TAU),
             ),
             (
                 EdgeCurve::Ellipse(ellipse.clone()),
                 ellipse.evaluate(1.0),
                 ellipse.evaluate(2.4),
+                (1.0, 2.4),
             ),
-            // NURBS trimmed sub-span: the arm whose per-call domain
-            // re-derivation the sampler exists to hoist.
-            (EdgeCurve::NurbsCurve(nurbs), nurbs_mid_a, nurbs_mid_b),
+            (
+                EdgeCurve::NurbsCurve(nurbs),
+                nurbs_mid_a,
+                nurbs_mid_b,
+                (0.2, 0.75),
+            ),
         ];
 
-        for (curve, start, end) in cases {
+        for (curve, start, end, domain) in cases {
             for forward in [true, false] {
                 let n = 7usize;
                 let mut batch = Vec::new();
-                sample_edge_uniform(&curve, start, end, n, forward, &mut batch);
+                sample_edge_uniform(&curve, start, end, domain, n, forward, &mut batch);
                 assert_eq!(batch.len(), n);
                 for (k, got) in batch.iter().enumerate() {
                     #[allow(clippy::cast_precision_loss)]
                     let frac = k as f64 / n as f64;
                     let frac = if forward { frac } else { 1.0 - frac };
-                    let want = evaluate_edge_at_t(&curve, start, end, frac);
+                    let want = evaluate_edge_at_t(&curve, start, end, domain, frac);
                     assert!(
                         (*got - want).length() < 1e-12,
                         "{} fwd={forward} k={k}: {got:?} vs {want:?}",
@@ -730,5 +752,51 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn explicit_wrapped_domain_controls_pcurve_despite_perturbed_endpoints() {
+        use remus_math::curves::Circle3D;
+
+        let circle = Circle3D::new_with_ref(
+            Point3::new(2.0, -1.0, 4.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            3.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let domain = (5.5, TAU + 0.5);
+        let exact_start = circle.evaluate(domain.0);
+        let exact_end = circle.evaluate(domain.1);
+        let perturbed_start = exact_start + Vec3::new(0.0, 0.0, 1e-3);
+        let perturbed_end = exact_end + Vec3::new(0.0, 0.0, -1e-3);
+        let curve = EdgeCurve::Circle(circle.clone());
+        let surface = FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: 4.0,
+        };
+        let wire_pts = [
+            exact_start,
+            exact_end,
+            circle.evaluate(f64::midpoint(domain.0, domain.1)),
+        ];
+        let frame = PlaneFrame::from_plane_face(Vec3::new(0.0, 0.0, 1.0), &wire_pts);
+
+        let pcurve = compute_pcurve_on_surface_in_domain(
+            &curve,
+            perturbed_start,
+            perturbed_end,
+            domain,
+            &surface,
+            &wire_pts,
+            Some(&frame),
+        );
+        let expected_mid = circle.evaluate(f64::midpoint(domain.0, domain.1));
+        let uv_mid = pcurve.evaluate(0.5);
+        let actual_mid = frame.evaluate(uv_mid.x(), uv_mid.y());
+        let chord_mid = perturbed_start + (perturbed_end - perturbed_start) * 0.5;
+
+        assert!((actual_mid - expected_mid).length() < 1e-7);
+        assert!((actual_mid - chord_mid).length() > 0.1);
     }
 }

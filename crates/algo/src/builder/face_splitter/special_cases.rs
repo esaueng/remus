@@ -461,10 +461,11 @@ fn build_seam_arcs(
             continue;
         }
         let curve = EdgeCurve::Circle(seam_circle.clone());
-        let pcurve = super::super::pcurve_compute::compute_pcurve_on_surface(
+        let pcurve = super::super::pcurve_compute::compute_pcurve_on_surface_in_domain(
             &curve,
             start_3d,
             end_3d,
+            (start_parameter, end_parameter),
             surface,
             &[],
             None,
@@ -702,6 +703,7 @@ fn patch_interior_point(
             &e.curve_3d,
             e.start_3d,
             e.end_3d,
+            e.traversal_domain(),
             0.5,
         );
         if let Ok(d) = (mid - sphere.center()).normalize() {
@@ -813,6 +815,7 @@ fn sphere_loop_interior(surface: &FaceSurface, edges: &[OrientedPCurveEdge]) -> 
             &e.curve_3d,
             e.start_3d,
             e.end_3d,
+            e.traversal_domain(),
             0.5,
         );
         if let Ok(d) = (mid - center).normalize() {
@@ -3074,7 +3077,7 @@ pub(super) fn try_split_disk_by_chords(
     use std::f64::consts::{PI, TAU};
 
     use crate::builder::classify_2d::{sample_interior_point, signed_area_2d};
-    use crate::builder::pcurve_compute::compute_pcurve_on_surface;
+    use crate::builder::pcurve_compute::compute_pcurve_on_surface_in_domain;
 
     // A traced sub-edge: straight chord piece, or a circle arc gap (always
     // stored CCW from `lo` to `hi`; the reverse half-edge traverses it CW).
@@ -3590,7 +3593,15 @@ pub(super) fn try_split_disk_by_chords(
                     let start_parameter = aligned_rev.project(s3);
                     (start_parameter, start_parameter + (from_phi - to_phi))
                 };
-                let pcurve = compute_pcurve_on_surface(&curve, s3, e3, surface, &[], Some(frame));
+                let pcurve = compute_pcurve_on_surface_in_domain(
+                    &curve,
+                    s3,
+                    e3,
+                    trim,
+                    surface,
+                    &[],
+                    Some(frame),
+                );
                 Some(OrientedPCurveEdge {
                     trim: Some(trim),
                     curve_3d: curve,
