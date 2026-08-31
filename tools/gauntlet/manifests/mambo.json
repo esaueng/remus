@@ -1,0 +1,797 @@
+{
+  "schema": "remus-gauntlet-manifest-v1",
+  "name": "mambo",
+  "models": [
+    {
+      "id": "mambo-basic-b0",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B0.step",
+      "sha256": "4600982af0cd4d9f80c7b2847b2e2e79a28a2973c9c40ff69f557134972e13c4",
+      "license_class": "Apache-2.0",
+      "size": 10682
+    },
+    {
+      "id": "mambo-basic-b1",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B1.step",
+      "sha256": "57313cb73f87b7b8e1521952017ea4162c77f875e014b7f7939a92c3ca644d10",
+      "license_class": "Apache-2.0",
+      "size": 41027
+    },
+    {
+      "id": "mambo-basic-b10",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B10.step",
+      "sha256": "bf139ca0a2bc78c36e18db356a49d5800f42b962176a256ba4f18249afa17d25",
+      "license_class": "Apache-2.0",
+      "size": 8109
+    },
+    {
+      "id": "mambo-basic-b11",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B11.step",
+      "sha256": "1bd6b569575dd4f0806e6f24f081b99a88d910d079177bc5d89146ea547787a6",
+      "license_class": "Apache-2.0",
+      "size": 6868
+    },
+    {
+      "id": "mambo-basic-b12",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B12.step",
+      "sha256": "a84ccd2860ac51df55a88463e2ab16d89bc309791538dadb2eb21a90dbec281f",
+      "license_class": "Apache-2.0",
+      "size": 3438
+    },
+    {
+      "id": "mambo-basic-b13",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B13.step",
+      "sha256": "711de446025872ac757d763f8acfc9003b852dd5025238a689a4bc5901129240",
+      "license_class": "Apache-2.0",
+      "size": 17694
+    },
+    {
+      "id": "mambo-basic-b14",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B14.step",
+      "sha256": "b846f04c64d7b2bd5a66ba0648ee94c2fb844c1849c11d1a927cbce727562a75",
+      "license_class": "Apache-2.0",
+      "size": 3364
+    },
+    {
+      "id": "mambo-basic-b15",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B15.step",
+      "sha256": "6446b377d9c05ce185e5350e1bb04289d0f8b9d8c70e5d3ef90c81ca14f1df9f",
+      "license_class": "Apache-2.0",
+      "size": 9492
+    },
+    {
+      "id": "mambo-basic-b16",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B16.step",
+      "sha256": "7585ed76bef1272a120278233798f0392b5c3ffc6aa8bf9a5ffb1b2951b7b9c2",
+      "license_class": "Apache-2.0",
+      "size": 7277
+    },
+    {
+      "id": "mambo-basic-b17",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B17.step",
+      "sha256": "67a161124009d3ad9dc59af4623f5d0ca42b3729cafea37c85f7466c014ab4e3",
+      "license_class": "Apache-2.0",
+      "size": 9375
+    },
+    {
+      "id": "mambo-basic-b18",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B18.step",
+      "sha256": "a96beee8974a92cf9f62c30d26e2840f71eff1484544ba5ae78aac82e3de71b9",
+      "license_class": "Apache-2.0",
+      "size": 35952
+    },
+    {
+      "id": "mambo-basic-b19",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B19.step",
+      "sha256": "211a482c2e808007ccc8a2c0706d475d7953a93c7e127be89275156dfd48b25e",
+      "license_class": "Apache-2.0",
+      "size": 10716
+    },
+    {
+      "id": "mambo-basic-b2",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B2.step",
+      "sha256": "de6622bc93c90d421dca38d1cd03e44a43dcd2c50942d53dfc921b2c32307b13",
+      "license_class": "Apache-2.0",
+      "size": 8308
+    },
+    {
+      "id": "mambo-basic-b20",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B20.step",
+      "sha256": "d4bf4733e79a1e5abf6b1a098802babad8c522555ef045e75c676cf7f180548c",
+      "license_class": "Apache-2.0",
+      "size": 6039
+    },
+    {
+      "id": "mambo-basic-b21",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B21.step",
+      "sha256": "01c4c3e080094c4607c25179fc181ad0f9a583904965b69eeafb778ffe4475bd",
+      "license_class": "Apache-2.0",
+      "size": 9569
+    },
+    {
+      "id": "mambo-basic-b23",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B23.step",
+      "sha256": "4a1424a2f5f2542e6ec4e16a4687a5825dbf143a98fa9e342b8e96ef9afaa6c6",
+      "license_class": "Apache-2.0",
+      "size": 5990
+    },
+    {
+      "id": "mambo-basic-b25",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B25.step",
+      "sha256": "5216824a6675a4067d0eb9a2b3d096da7f758674ef5a8f8759b090bce665662a",
+      "license_class": "Apache-2.0",
+      "size": 22907
+    },
+    {
+      "id": "mambo-basic-b27",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B27.step",
+      "sha256": "0b39d764b07773aaf95e9f4befd6006760fee325b5163f8fd6707f94467e2c97",
+      "license_class": "Apache-2.0",
+      "size": 7614
+    },
+    {
+      "id": "mambo-basic-b28",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B28.step",
+      "sha256": "ce31b7ad6606a8a32e70de5d4a9fd04d01bdfa20e4415ce2c41d9c5c4b196fca",
+      "license_class": "Apache-2.0",
+      "size": 8192
+    },
+    {
+      "id": "mambo-basic-b29",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B29.step",
+      "sha256": "092c0d4a28b17bc4d180ec9d079cd0ae6bb976aaa0b7370b78d28176d76d77c8",
+      "license_class": "Apache-2.0",
+      "size": 9918
+    },
+    {
+      "id": "mambo-basic-b3",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B3.step",
+      "sha256": "3518a204eb955c7005ed093921d1f06327887d818db71fb9c3dc7bb279c55584",
+      "license_class": "Apache-2.0",
+      "size": 9313
+    },
+    {
+      "id": "mambo-basic-b30",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B30.step",
+      "sha256": "ca4a9c357029aa9ca95a55817abca05c956380a6637dd129eb964aba6ff04b1f",
+      "license_class": "Apache-2.0",
+      "size": 15478
+    },
+    {
+      "id": "mambo-basic-b31",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B31.step",
+      "sha256": "df003f1cec42ad29d873bdfa334ba15d71f9a0fec53c8820c93917ff134a2511",
+      "license_class": "Apache-2.0",
+      "size": 17712
+    },
+    {
+      "id": "mambo-basic-b32",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B32.step",
+      "sha256": "ad854e8c9302f4c99933185e3697dfc1ea873f07515d81a91ffa80fddf1802d6",
+      "license_class": "Apache-2.0",
+      "size": 19214
+    },
+    {
+      "id": "mambo-basic-b33",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B33.step",
+      "sha256": "fe5e027b98fccf6aa0c42ce62e25721ed3abfdb1b1d82ab954fb638080bc5652",
+      "license_class": "Apache-2.0",
+      "size": 19356
+    },
+    {
+      "id": "mambo-basic-b34",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B34.step",
+      "sha256": "5992c4927018c45bf9b2c4236011486385413676a4c8c00cb50ae17f3342f80a",
+      "license_class": "Apache-2.0",
+      "size": 9090
+    },
+    {
+      "id": "mambo-basic-b35",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B35.step",
+      "sha256": "a6053465fc70a35fb170acc3f53f58ac78b7a1e7ce49b16cd6cb43f47fe6604b",
+      "license_class": "Apache-2.0",
+      "size": 20535
+    },
+    {
+      "id": "mambo-basic-b36",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B36.step",
+      "sha256": "9880edff5086d33586c7c1326703616665eb4bcf89e44e952ad95d2ad4642916",
+      "license_class": "Apache-2.0",
+      "size": 34372
+    },
+    {
+      "id": "mambo-basic-b37",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B37.step",
+      "sha256": "8ceb582154f390d40a67c06d809f84f6d7d23d7b83245b2c13991709cd0ec873",
+      "license_class": "Apache-2.0",
+      "size": 34150
+    },
+    {
+      "id": "mambo-basic-b38",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B38.step",
+      "sha256": "622beb99eaf27145b017f09f6a32720b459d656af36e8218aeebb50bbbadb775",
+      "license_class": "Apache-2.0",
+      "size": 23414
+    },
+    {
+      "id": "mambo-basic-b39",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B39.step",
+      "sha256": "7c4f1dab36676a0b14f9f49cf44cc8ef74c28162c33232101c4cb9296bab0546",
+      "license_class": "Apache-2.0",
+      "size": 28428
+    },
+    {
+      "id": "mambo-basic-b4",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B4.step",
+      "sha256": "309ef6ad4d930b1aba0f3e415e8f6748986ea2a94b48b9ed158027b4896dbefa",
+      "license_class": "Apache-2.0",
+      "size": 6378
+    },
+    {
+      "id": "mambo-basic-b40",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B40.step",
+      "sha256": "72ca2da13a1a3f0a293866592f92df4d6ddc5dd83abdaf729852a7e1f6e543f4",
+      "license_class": "Apache-2.0",
+      "size": 50558
+    },
+    {
+      "id": "mambo-basic-b41",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B41.step",
+      "sha256": "efcfbee4772e30434fccad676137a4968af3141bd95c08a4c33fe1f0deece6d5",
+      "license_class": "Apache-2.0",
+      "size": 42097
+    },
+    {
+      "id": "mambo-basic-b42",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B42.step",
+      "sha256": "0ce696013a235bb3a3fc1eea6687d07789fa2b50423786bfc234855a6a2ad00c",
+      "license_class": "Apache-2.0",
+      "size": 10806
+    },
+    {
+      "id": "mambo-basic-b43",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B43.step",
+      "sha256": "eac3cda0bc026da8f45d930c84ed0f6f90e54395d39533fc96c60318a4495a08",
+      "license_class": "Apache-2.0",
+      "size": 16746
+    },
+    {
+      "id": "mambo-basic-b44",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B44.step",
+      "sha256": "d3df2cd3b648277f448f424d10c17ccfd31033d969511ca9f1081bc6c8670513",
+      "license_class": "Apache-2.0",
+      "size": 19949
+    },
+    {
+      "id": "mambo-basic-b45",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B45.step",
+      "sha256": "f373fc73a94854cfe5fb1bfb9497dbf7070d36957a5402a944570d28b322cdc2",
+      "license_class": "Apache-2.0",
+      "size": 10719
+    },
+    {
+      "id": "mambo-basic-b46",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B46.step",
+      "sha256": "e1903f633f2038c24adbc3dfa3b2063dcf50a46569b20dbd40fc96a853ca6838",
+      "license_class": "Apache-2.0",
+      "size": 14517
+    },
+    {
+      "id": "mambo-basic-b47",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B47.step",
+      "sha256": "5d8f3869c31e7d2b17fab2555cfcffefb8d06e362e0ca34257daa5a7545e88bf",
+      "license_class": "Apache-2.0",
+      "size": 20223
+    },
+    {
+      "id": "mambo-basic-b48",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B48.step",
+      "sha256": "9e1ac777d10c7a785abdc007fd4979609a7237af02c8f1fa86386aa6ae7dd807",
+      "license_class": "Apache-2.0",
+      "size": 15731
+    },
+    {
+      "id": "mambo-basic-b49",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B49.step",
+      "sha256": "f91c7590c2c3e8a50cdab302382789b1545cd690b9a512c1ac9ddee19fc1cba2",
+      "license_class": "Apache-2.0",
+      "size": 9559
+    },
+    {
+      "id": "mambo-basic-b5",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B5.step",
+      "sha256": "b1b80b235ae7eb061dca5998f240b61049617de02a5401d5f8097c304b3d6c32",
+      "license_class": "Apache-2.0",
+      "size": 3373
+    },
+    {
+      "id": "mambo-basic-b50",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B50.step",
+      "sha256": "beb4dd7577ce5bb6f91530c3365769ea56426a7771462a0b158668652f6fa6be",
+      "license_class": "Apache-2.0",
+      "size": 10924
+    },
+    {
+      "id": "mambo-basic-b51",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B51.step",
+      "sha256": "4670be1c451ef7b60f3578245c3cd30e4093b7643d986df788ea9dcb0245ee9b",
+      "license_class": "Apache-2.0",
+      "size": 13669
+    },
+    {
+      "id": "mambo-basic-b52",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B52.step",
+      "sha256": "c91c549cff04dfc2783f4f24e0b741d4eb3eb357c64311d476881b75dc8f7497",
+      "license_class": "Apache-2.0",
+      "size": 9656
+    },
+    {
+      "id": "mambo-basic-b53",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B53.step",
+      "sha256": "e21130068d7f2be8c4b55f38211c60035ba174559cc5284069bf68983b7455ba",
+      "license_class": "Apache-2.0",
+      "size": 12400
+    },
+    {
+      "id": "mambo-basic-b54",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B54.step",
+      "sha256": "a28bfff32570ce65e34431bac6384bb5e9355c2b89a3674ff8e780319e290f48",
+      "license_class": "Apache-2.0",
+      "size": 7033
+    },
+    {
+      "id": "mambo-basic-b55",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B55.step",
+      "sha256": "a0dca9a562dc4de7555c3bd8e55d160ad45eeef6e095672e2f0dd820570af7c1",
+      "license_class": "Apache-2.0",
+      "size": 9775
+    },
+    {
+      "id": "mambo-basic-b56",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B56.step",
+      "sha256": "42edeac9b2e594c70c0ff4aa288e27df29a3b323faea2443650273d1352f4de7",
+      "license_class": "Apache-2.0",
+      "size": 10991
+    },
+    {
+      "id": "mambo-basic-b57",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B57.step",
+      "sha256": "240b66879f3d932d33a903336e73c377d836a2ac3b23d8d0f46c647ad08fd8af",
+      "license_class": "Apache-2.0",
+      "size": 22914
+    },
+    {
+      "id": "mambo-basic-b58",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B58.step",
+      "sha256": "1a2d3f9b9b2d464d0367a20dc1226b57a2c8da03445d20ccffb67697f86f3ac1",
+      "license_class": "Apache-2.0",
+      "size": 21096
+    },
+    {
+      "id": "mambo-basic-b59",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B59.step",
+      "sha256": "8de71258d54f0801e3f7951ce0fafd23d96f17e802508065df0a6810623acfa5",
+      "license_class": "Apache-2.0",
+      "size": 21028
+    },
+    {
+      "id": "mambo-basic-b6",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B6.step",
+      "sha256": "48b42a8b1746f7cc0ae3eba41f7966e5710f8955f503cff25478d87ad12a01d4",
+      "license_class": "Apache-2.0",
+      "size": 6631
+    },
+    {
+      "id": "mambo-basic-b60",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B60.step",
+      "sha256": "977ccca2937fffd42d5e9f6653905d39c23b9f7798e76c5d521207f5b3f1f923",
+      "license_class": "Apache-2.0",
+      "size": 6169
+    },
+    {
+      "id": "mambo-basic-b61",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B61.step",
+      "sha256": "34068edabaeb3da2f9743f4e869e07b898eae90d5ad60a335233e177b520c722",
+      "license_class": "Apache-2.0",
+      "size": 6304
+    },
+    {
+      "id": "mambo-basic-b62",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B62.step",
+      "sha256": "51f2828a4fc9f74c11825b0b14d79afc3d5bcd9eb9d3fafb92e9266bb5ab1f10",
+      "license_class": "Apache-2.0",
+      "size": 9773
+    },
+    {
+      "id": "mambo-basic-b63",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B63.step",
+      "sha256": "24d353d54b6502e2a5951589b8b43ded2b3fe0708b9747e0485757a66e50cf81",
+      "license_class": "Apache-2.0",
+      "size": 9719
+    },
+    {
+      "id": "mambo-basic-b64",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B64.step",
+      "sha256": "04f5599109bda87e6cd5daa5bea26c0cb6781c8fee9536a5192f4e0faea21b5c",
+      "license_class": "Apache-2.0",
+      "size": 9599
+    },
+    {
+      "id": "mambo-basic-b65",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B65.step",
+      "sha256": "91193ca732902896b751fb55a780971e2f10548b943ebe5d5befb56c3d46f174",
+      "license_class": "Apache-2.0",
+      "size": 9599
+    },
+    {
+      "id": "mambo-basic-b66",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B66.step",
+      "sha256": "735e5e856b431a3192475f9ca87469c9846db86f6acd00757e3196a849ac88fa",
+      "license_class": "Apache-2.0",
+      "size": 12170
+    },
+    {
+      "id": "mambo-basic-b67",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B67.step",
+      "sha256": "bdd41a860bef9de249cd0010d3ab1e7e15068edcdda44336b2dd1f571018701f",
+      "license_class": "Apache-2.0",
+      "size": 8981
+    },
+    {
+      "id": "mambo-basic-b68",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B68.step",
+      "sha256": "cf33b1eb4ffa223e7fd52e526c7951a6f3ddad6e77a30784c53e327edfcbef4f",
+      "license_class": "Apache-2.0",
+      "size": 12342
+    },
+    {
+      "id": "mambo-basic-b69",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B69.step",
+      "sha256": "dfdfe02ed2190cae0a077c40ba8a16a7dd7cdff75833314b09bf1e20124e2c2e",
+      "license_class": "Apache-2.0",
+      "size": 11114
+    },
+    {
+      "id": "mambo-basic-b7",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B7.step",
+      "sha256": "b9de185817d53755a1bab585e6f0ccd755c033822fdfa36d596dd73b4728197a",
+      "license_class": "Apache-2.0",
+      "size": 4825
+    },
+    {
+      "id": "mambo-basic-b70",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B70.step",
+      "sha256": "c273bb9ebf3d2910e8f25a1d28b886940b4f344b8b6ab96b56d84255443c6610",
+      "license_class": "Apache-2.0",
+      "size": 17445
+    },
+    {
+      "id": "mambo-basic-b71",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B71.step",
+      "sha256": "718db3695ff16bad3b49814d85b8087ca8247c3faecf06ab6fbbd0f3bb7e35c4",
+      "license_class": "Apache-2.0",
+      "size": 11104
+    },
+    {
+      "id": "mambo-basic-b72",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B72.step",
+      "sha256": "cac7fa954d0688f73016b7528f4cffaa9f86ae41d18e0e63c549b08a166857ba",
+      "license_class": "Apache-2.0",
+      "size": 14098
+    },
+    {
+      "id": "mambo-basic-b73",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B73.step",
+      "sha256": "babd770a8d8794c4fa5624dbcae1fdef77375c57b72486bfbc4f3b343657b5b1",
+      "license_class": "Apache-2.0",
+      "size": 19756
+    },
+    {
+      "id": "mambo-basic-b74",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B74.step",
+      "sha256": "b9d282afdf898e216e32783dd278d116fbd6de57e7b48cfda3a183a2eb62a432",
+      "license_class": "Apache-2.0",
+      "size": 16836
+    },
+    {
+      "id": "mambo-basic-b75",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B75.step",
+      "sha256": "6e75cfbb04702bbcd8e072d6b80a2c86d8e0a303bc93a02c7c2c08b82637a9ff",
+      "license_class": "Apache-2.0",
+      "size": 28950
+    },
+    {
+      "id": "mambo-basic-b76",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B76.step",
+      "sha256": "50279489a70a9a3761b1ded3075ece8501f219d949a3acf134643ce9119708ab",
+      "license_class": "Apache-2.0",
+      "size": 19984
+    },
+    {
+      "id": "mambo-basic-b8",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B8.step",
+      "sha256": "61f3027f93c57eb0f837cb8b24690a997592bbc89526ae7a12474fc35c747d93",
+      "license_class": "Apache-2.0",
+      "size": 8348
+    },
+    {
+      "id": "mambo-basic-b9",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Basic/B9.step",
+      "sha256": "14e3f846b187df4561d8b40280cd718c93e14153e4989446830bb6bfe9f58a01",
+      "license_class": "Apache-2.0",
+      "size": 3621
+    },
+    {
+      "id": "mambo-medium-m1",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Medium/M1.step",
+      "sha256": "411db5aa3f495feb4594961188456511a9a418b874e15dadd6dc0a051387b727",
+      "license_class": "Apache-2.0",
+      "size": 58717
+    },
+    {
+      "id": "mambo-medium-m2",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Medium/M2.step",
+      "sha256": "bf6b6fb337c8988314aebfd068bdb31064856a8770f88779aa2aefb30476577d",
+      "license_class": "Apache-2.0",
+      "size": 38418
+    },
+    {
+      "id": "mambo-medium-m3",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Medium/M3.step",
+      "sha256": "c4ee098cddc22c3abf74f65c251324eb4636ef0fd998fa3e285f4aea81bb056c",
+      "license_class": "Apache-2.0",
+      "size": 99976
+    },
+    {
+      "id": "mambo-medium-m4",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Medium/M4.step",
+      "sha256": "cde3c577050f543475cd6aa709abfbfd438bf7ff5c382afee45ecaea5c86626c",
+      "license_class": "Apache-2.0",
+      "size": 74086
+    },
+    {
+      "id": "mambo-medium-m5",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Medium/M5.step",
+      "sha256": "eece51369ab35f88090275c2f640b462bc8b3f65ff3d456479347592222200c9",
+      "license_class": "Apache-2.0",
+      "size": 113416
+    },
+    {
+      "id": "mambo-medium-m6",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Medium/M6.step",
+      "sha256": "edb99da67dde58484fbeb44052da827b7866df9c197b4078698ff6477a7ae34b",
+      "license_class": "Apache-2.0",
+      "size": 49127
+    },
+    {
+      "id": "mambo-medium-m7",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Medium/M7.step",
+      "sha256": "75f223e60823b9f45669e4e365233a98464df9608d293f50c98d2066a16151ff",
+      "license_class": "Apache-2.0",
+      "size": 289187
+    },
+    {
+      "id": "mambo-medium-m8",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Medium/M8.step",
+      "sha256": "183bf89052d739e29cb8efcfaa1c3e3dd3769ef18d53c2e09acb9a2549ef3660",
+      "license_class": "Apache-2.0",
+      "size": 1151635
+    },
+    {
+      "id": "mambo-medium-m9",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Medium/M9.step",
+      "sha256": "d8dfc4c9be4807a208bfbd2b6be03b528ca496679c4dc8fafccc6d5a8c88dd7d",
+      "license_class": "Apache-2.0",
+      "size": 64157
+    },
+    {
+      "id": "mambo-simple-s0",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Simple/S0.step",
+      "sha256": "ca409132631ae4edf4ccea902c203959fb33b66736f6d3f1a67841ca77287d5b",
+      "license_class": "Apache-2.0",
+      "size": 24249
+    },
+    {
+      "id": "mambo-simple-s1",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Simple/S1.step",
+      "sha256": "00cecb936d848546f2e408fd80161a59a9fb2177f90c367e0691e4d7cd8fc691",
+      "license_class": "Apache-2.0",
+      "size": 17957
+    },
+    {
+      "id": "mambo-simple-s20",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Simple/S20.step",
+      "sha256": "01db50a1cb7040ee49d3d5e500fc4b341999b99fad1ba3211e3af051fe615014",
+      "license_class": "Apache-2.0",
+      "size": 62110
+    },
+    {
+      "id": "mambo-simple-s22",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Simple/S22.step",
+      "sha256": "fb61f068c6d7103d9af11a7bbefd51374deb5cda02a6f40069e5aeb3560163d2",
+      "license_class": "Apache-2.0",
+      "size": 36926
+    },
+    {
+      "id": "mambo-simple-s23",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Simple/S23.step",
+      "sha256": "47438f78240816ed9edc4b11a3928ec57ca2e9c336969c90ce7a82e2f612a79c",
+      "license_class": "Apache-2.0",
+      "size": 36648
+    },
+    {
+      "id": "mambo-simple-s24",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Simple/S24.step",
+      "sha256": "bc808d5dbf2e57d32b09bb988148c2a6d0c975f43beeea9fcd20af08d46bde09",
+      "license_class": "Apache-2.0",
+      "size": 30128
+    },
+    {
+      "id": "mambo-simple-s25",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Simple/S25.step",
+      "sha256": "c8363f95d1c56611cb04289f940d97cb3de9176d547a0fc5cf21daf3faffbd46",
+      "license_class": "Apache-2.0",
+      "size": 40758
+    },
+    {
+      "id": "mambo-simple-s26",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Simple/S26.step",
+      "sha256": "126a5747d70f96b6324d12d7bfd1b19a568e0539e8a7bd3f3300cca883bfeedb",
+      "license_class": "Apache-2.0",
+      "size": 57881
+    },
+    {
+      "id": "mambo-simple-s27",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Simple/S27.step",
+      "sha256": "fb5c8c3f0791217604962d68326ca273587218de20870a831761b815b73d5eeb",
+      "license_class": "Apache-2.0",
+      "size": 65579
+    },
+    {
+      "id": "mambo-simple-s3",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Simple/S3.step",
+      "sha256": "dc44c805aa0f11ffd4d680b7807e599d6b53d0973d68b298c3fba55277aa2687",
+      "license_class": "Apache-2.0",
+      "size": 18899
+    },
+    {
+      "id": "mambo-simple-s31",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Simple/S31.step",
+      "sha256": "8f75cbf46839c67f3a0916fd59c4670722355fe550fc4a4a8d05c82aee52da55",
+      "license_class": "Apache-2.0",
+      "size": 84091
+    },
+    {
+      "id": "mambo-simple-s33",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Simple/S33.step",
+      "sha256": "7e60a02d0f05dbac51e7907dc06329193a27e8a6d276e06e458f07ec7dfa8550",
+      "license_class": "Apache-2.0",
+      "size": 18724
+    },
+    {
+      "id": "mambo-simple-s34",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Simple/S34.step",
+      "sha256": "09236388357a432c7bea717daab415475fbc482145eaf21c8968c9bde1f3e9de",
+      "license_class": "Apache-2.0",
+      "size": 86320
+    },
+    {
+      "id": "mambo-simple-s35",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Simple/S35.step",
+      "sha256": "5ee2f493ba1ac3623aeb7ab2ddefe4e31460fb619676fdf0543ec5bbbe9398a4",
+      "license_class": "Apache-2.0",
+      "size": 15391
+    },
+    {
+      "id": "mambo-simple-s36",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Simple/S36.step",
+      "sha256": "ad0a6136762ce715c9729aaf57c9a437e7bf53379372a30deb45be1e9a2f23ae",
+      "license_class": "Apache-2.0",
+      "size": 26215
+    },
+    {
+      "id": "mambo-simple-s37",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Simple/S37.step",
+      "sha256": "bae24c3cd1d522036539a5b205fc94b5530d9066905d84039e27d09f502520b4",
+      "license_class": "Apache-2.0",
+      "size": 16607
+    },
+    {
+      "id": "mambo-simple-s38",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Simple/S38.step",
+      "sha256": "d2ccf6095bc2e7fddeb2f3d6a6b634d050cfd7ca1a3b2b88c29d917cddb32018",
+      "license_class": "Apache-2.0",
+      "size": 27115
+    },
+    {
+      "id": "mambo-simple-s39",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Simple/S39.step",
+      "sha256": "a5a82e6b27b6c9ecad1d0b047375565f771f86e2c70de9b566b29c93f1a1eda1",
+      "license_class": "Apache-2.0",
+      "size": 22600
+    },
+    {
+      "id": "mambo-simple-s4",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Simple/S4.step",
+      "sha256": "e3820d25da73fa159f187200595f97214a5e041c72b3b4909330cb890d240c04",
+      "license_class": "Apache-2.0",
+      "size": 20598
+    },
+    {
+      "id": "mambo-simple-s40",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Simple/S40.step",
+      "sha256": "4c02c3c1f28ef45db07538c1ca89ed70bbddae4c101a1af9ccbdffbeed1752fd",
+      "license_class": "Apache-2.0",
+      "size": 68155
+    },
+    {
+      "id": "mambo-simple-s41",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Simple/S41.step",
+      "sha256": "7f04c75f764e189946dcc1ae93ff78dcfa00cdd7dfb37ff402ae384b5101f664",
+      "license_class": "Apache-2.0",
+      "size": 61223
+    },
+    {
+      "id": "mambo-simple-s42",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Simple/S42.step",
+      "sha256": "42a33aec18f31df9155a7c911d353a085fe57bd614a312cb549b82b4990bdb51",
+      "license_class": "Apache-2.0",
+      "size": 53821
+    },
+    {
+      "id": "mambo-simple-s43",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Simple/S43.step",
+      "sha256": "33db0c1f48190a6e8bc2b8a4fd23a7e943ec64755451983fff1c4777cbed63ff",
+      "license_class": "Apache-2.0",
+      "size": 47777
+    },
+    {
+      "id": "mambo-simple-s44",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Simple/S44.step",
+      "sha256": "94e37b219a0e5bb6c621bd1460827e470f05467705e81602752fef483648dadb",
+      "license_class": "Apache-2.0",
+      "size": 40265
+    },
+    {
+      "id": "mambo-simple-s45",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Simple/S45.step",
+      "sha256": "253accba208884014ed6d95af739cff9f6f86050d9143d057436c741fc955e1d",
+      "license_class": "Apache-2.0",
+      "size": 32693
+    },
+    {
+      "id": "mambo-simple-s5",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Simple/S5.step",
+      "sha256": "826da53e3af7eb79badd4490060e71b03adc8d59438a47bcd60e7ae5b5b7139e",
+      "license_class": "Apache-2.0",
+      "size": 163128
+    },
+    {
+      "id": "mambo-simple-s6",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Simple/S6.step",
+      "sha256": "5eba9fe5f42aa059bc7b2063a14b98d49b31d12ace8e57c597e7419bed83e890",
+      "license_class": "Apache-2.0",
+      "size": 68502
+    },
+    {
+      "id": "mambo-simple-s7",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Simple/S7.step",
+      "sha256": "e1b0aa6f90234fb6a6bb0d8e96ad31623ec58699fc8e34db0f1e69771dcaf0ea",
+      "license_class": "Apache-2.0",
+      "size": 12964
+    },
+    {
+      "id": "mambo-simple-s8",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Simple/S8.step",
+      "sha256": "b40875857d47802652cd2458cec2944786b8f5397352cafcc792653956f4a208",
+      "license_class": "Apache-2.0",
+      "size": 44939
+    },
+    {
+      "id": "mambo-simple-s9",
+      "url": "https://gitlab.com/franck.ledoux/mambo/-/raw/302b8bf33f5126d0c749f60226b76dbe94f21728/Simple/S9.step",
+      "sha256": "1c1f841f341f3d58a48428ea08a7139bf835b50306a6a0cee2df6882991200ff",
+      "license_class": "Apache-2.0",
+      "size": 37662
+    }
+  ]
+}
