@@ -7,9 +7,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use remus_gauntlet::manifest::{CorpusManifest, MANIFEST_SCHEMA, ModelEntry, write_manifest};
 use remus_gauntlet::{ModelResult, Scoreboard};
 use remus_operations::primitives::make_box;
 use remus_topology::Topology;
+use sha2::{Digest, Sha256};
 
 fn temp_dir(name: &str) -> PathBuf {
     let nanos = SystemTime::now()
@@ -27,6 +29,11 @@ fn write_box_step(path: &Path) {
     let solid = make_box(&mut topology, 10.0, 8.0, 6.0).unwrap();
     let step = remus_io::step::write_step(&topology, &[solid]).unwrap();
     fs::write(path, step).unwrap();
+}
+
+fn sha256(contents: &[u8]) -> String {
+    let digest = Sha256::digest(contents);
+    format!("{digest:x}")
 }
 
 #[test]
@@ -101,5 +108,56 @@ fn zero_budget_kills_only_its_model_and_reports_resource_limit() {
         );
     }
 
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn fetch_command_writes_a_verified_deterministic_sample_list() {
+    let root = temp_dir("fetch");
+    fs::create_dir_all(&root).unwrap();
+    let mut models = Vec::new();
+    for index in 0..3 {
+        let path = root.join(format!("model-{index}.step"));
+        let contents = format!("ISO-10303-21;model-{index};END-ISO-10303-21;");
+        fs::write(&path, &contents).unwrap();
+        models.push(ModelEntry {
+            id: format!("model-{index}"),
+            url: format!("file://{}", path.display()),
+            sha256: sha256(contents.as_bytes()),
+            license_class: "test-only".to_owned(),
+            size: u64::try_from(contents.len()).unwrap(),
+        });
+    }
+    let manifest_path = root.join("manifest.json");
+    write_manifest(
+        &manifest_path,
+        &CorpusManifest {
+            schema: MANIFEST_SCHEMA.to_owned(),
+            name: "cli-test".to_owned(),
+            selection: None,
+            archives: Vec::new(),
+            models,
+        },
+    )
+    .unwrap();
+    let output_list = root.join("models.txt");
+    let status = Command::new(env!("CARGO_BIN_EXE_remus-gauntlet"))
+        .arg("fetch")
+        .arg(&manifest_path)
+        .args(["--cache"])
+        .arg(root.join("cache"))
+        .args(["--sample", "1", "--seed", "42", "--output-list"])
+        .arg(&output_list)
+        .status()
+        .unwrap();
+    assert!(status.success());
+
+    let paths: Vec<_> = fs::read_to_string(output_list)
+        .unwrap()
+        .lines()
+        .map(PathBuf::from)
+        .collect();
+    assert_eq!(paths.len(), 1);
+    assert!(paths[0].is_file());
     fs::remove_dir_all(&root).unwrap();
 }
