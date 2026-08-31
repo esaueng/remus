@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788206154591,
+  "lastUpdate": 1788207363376,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -5615,6 +5615,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 39743189,
             "range": "± 93168",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "950e373bce0ddf27fc4a4869dcfa51bfcee0f419",
+          "message": "feat(gauntlet): add verified corpus manifests (#166)\n\n* docs(roadmap): record O1.1b source block\n\n* feat(gauntlet): add verified corpus manifests\n\n* chore(deps): allow root certificate data license\n\n---------\n\nCo-authored-by: Codex Review <codex-review@localhost>",
+          "timestamp": "2026-08-31T16:13:04-04:00",
+          "tree_id": "945070e443045ad1cfedd78bd5e38ec58a6ca0a6",
+          "url": "https://github.com/esaueng/remus/commit/950e373bce0ddf27fc4a4869dcfa51bfcee0f419"
+        },
+        "date": 1788207362356,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1403649,
+            "range": "± 3062",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1502771,
+            "range": "± 2112",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 16236,
+            "range": "± 35",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 1036368,
+            "range": "± 48891",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 42418700,
+            "range": "± 122276",
             "unit": "ns/iter"
           }
         ]
