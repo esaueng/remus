@@ -56,6 +56,18 @@ fn surface_name(s: &FaceSurface) -> &'static str {
     }
 }
 
+fn replace_circle_preserving_domain(
+    topo: &mut Topology,
+    edge_id: EdgeId,
+    circle: remus_math::curves::Circle3D,
+) {
+    let domain = topo.edge(edge_id).unwrap().strict_domain().unwrap();
+    let edge = topo.edge_mut(edge_id).unwrap();
+    edge.set_curve(EdgeCurve::Circle(circle));
+    edge.set_trim(Some(domain));
+    assert_eq!(edge.strict_domain().unwrap(), domain);
+}
+
 /// Every edge of the solid, deduplicated.
 fn all_edges(topo: &Topology, solid: SolidId) -> Vec<EdgeId> {
     let mut seen = std::collections::BTreeSet::new();
@@ -687,9 +699,7 @@ fn e7_in_place_resize_ring_band() {
         let new_circle =
             remus_math::curves::Circle3D::new_with_ref(center, c.normal(), radius, c.u_axis())
                 .unwrap();
-        topo.edge_mut(e)
-            .unwrap()
-            .set_curve(EdgeCurve::Circle(new_circle));
+        replace_circle_preserving_domain(&mut topo, e, new_circle);
     }
 
     // Rebuild the seam cross edges: circles of radius r_new in the seam
@@ -706,9 +716,7 @@ fn e7_in_place_resize_ring_band() {
         let new_circle =
             remus_math::curves::Circle3D::new_with_ref(new_center, c.normal(), r_new, c.u_axis())
                 .unwrap();
-        topo.edge_mut(e)
-            .unwrap()
-            .set_curve(EdgeCurve::Circle(new_circle));
+        replace_circle_preserving_domain(&mut topo, e, new_circle);
     }
 
     // Move every vertex that sat on the old cylinder-side spring
@@ -848,19 +856,23 @@ fn e8_resized_matches_fresh_fillet() {
                 r_c,
             )
         };
-        topo.edge_mut(e).unwrap().set_curve(EdgeCurve::Circle(
+        replace_circle_preserving_domain(
+            &mut topo,
+            e,
             remus_math::curves::Circle3D::new_with_ref(center, c.normal(), radius, c.u_axis())
                 .unwrap(),
-        ));
+        );
     }
     for (e, c) in cross {
         let d = c.center() - torus.center();
         let radial_dir = (d - axis * d.dot(axis)).normalize().unwrap();
         let new_center = Point3::new(cxy.x(), cxy.y(), z_top - r_new) + radial_dir * (r_c + r_new);
-        topo.edge_mut(e).unwrap().set_curve(EdgeCurve::Circle(
+        replace_circle_preserving_domain(
+            &mut topo,
+            e,
             remus_math::curves::Circle3D::new_with_ref(new_center, c.normal(), r_new, c.u_axis())
                 .unwrap(),
-        ));
+        );
     }
     // Move vertices: seam vertex on the wall spring (z=5->3) and on the
     // plate spring (r=13->15).
@@ -1070,9 +1082,7 @@ fn e10_in_place_resize_open_plane_plane_band() {
             circle.u_axis(),
         )
         .unwrap();
-        topo.edge_mut(edge)
-            .unwrap()
-            .set_curve(EdgeCurve::Circle(new_circle));
+        replace_circle_preserving_domain(&mut topo, edge, new_circle);
     }
 
     // Every affected vertex is shared by one spring and one cross arc. Move
@@ -1248,7 +1258,7 @@ fn e11_in_place_resize_trihedral_corner() {
         let replacement = match topo.edge(edge).unwrap().curve() {
             EdgeCurve::Circle(circle) if (circle.radius() - 3.0).abs() < 1e-9 => {
                 circle_count += 1;
-                Some(EdgeCurve::Circle(
+                Some(
                     remus_math::curves::Circle3D::new_with_ref(
                         map_point(circle.center()),
                         circle.normal(),
@@ -1256,12 +1266,12 @@ fn e11_in_place_resize_trihedral_corner() {
                         circle.u_axis(),
                     )
                     .unwrap(),
-                ))
+                )
             }
             _ => None,
         };
-        if let Some(curve) = replacement {
-            topo.edge_mut(edge).unwrap().set_curve(curve);
+        if let Some(circle) = replacement {
+            replace_circle_preserving_domain(&mut topo, edge, circle);
         }
     }
     assert_eq!(circle_count, 6);
@@ -1668,7 +1678,7 @@ fn e16_counterbore_large_stage_radius_edit_matches_fresh_feature() {
                         || (circle.center().z() - 10.0).abs() < 1e-9) =>
             {
                 changed_circles += 1;
-                Some(EdgeCurve::Circle(
+                Some(
                     remus_math::curves::Circle3D::new_with_ref(
                         circle.center(),
                         circle.normal(),
@@ -1676,12 +1686,12 @@ fn e16_counterbore_large_stage_radius_edit_matches_fresh_feature() {
                         circle.u_axis(),
                     )
                     .unwrap(),
-                ))
+                )
             }
             _ => None,
         };
-        if let Some(curve) = replacement {
-            topo.edge_mut(edge).unwrap().set_curve(curve);
+        if let Some(circle) = replacement {
+            replace_circle_preserving_domain(&mut topo, edge, circle);
         }
     }
     assert_eq!(changed_circles, 2);
@@ -1809,7 +1819,7 @@ fn e17_counterbore_depth_edit_matches_fresh_feature() {
         let replacement = match topo.edge(edge).unwrap().curve() {
             EdgeCurve::Circle(circle) if (circle.center().z() - 7.0).abs() < 1e-9 => {
                 changed_circles += 1;
-                Some(EdgeCurve::Circle(
+                Some(
                     remus_math::curves::Circle3D::new_with_ref(
                         Point3::new(circle.center().x(), circle.center().y(), 5.0),
                         circle.normal(),
@@ -1817,12 +1827,12 @@ fn e17_counterbore_depth_edit_matches_fresh_feature() {
                         circle.u_axis(),
                     )
                     .unwrap(),
-                ))
+                )
             }
             _ => None,
         };
-        if let Some(curve) = replacement {
-            topo.edge_mut(edge).unwrap().set_curve(curve);
+        if let Some(circle) = replacement {
+            replace_circle_preserving_domain(&mut topo, edge, circle);
         }
     }
     assert_eq!(changed_circles, 2);
@@ -2033,9 +2043,7 @@ fn e19_unfillet_plane_cylinder_ring_restores_sharp_bore() {
     topo.vertex_mut(sharp_vertex)
         .unwrap()
         .set_point(sharp_circle.evaluate(0.0));
-    topo.edge_mut(wall_edge)
-        .unwrap()
-        .set_curve(EdgeCurve::Circle(sharp_circle.clone()));
+    replace_circle_preserving_domain(&mut topo, wall_edge, sharp_circle.clone());
 
     // Replace the plate spring occurrence by the recovered wall edge while
     // preserving the plate's existing traversal direction relative to its
