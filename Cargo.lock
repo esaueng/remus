@@ -2031,6 +2031,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "remus-gauntlet"
+version = "0.1.0"
+dependencies = [
+ "remus-check",
+ "remus-io",
+ "remus-math",
+ "remus-operations",
+ "remus-topology",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "remus-geometry"
 version = "0.1.0"
 dependencies = [
