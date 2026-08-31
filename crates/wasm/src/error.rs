@@ -9,6 +9,11 @@ use serde_json::{Map, Value};
 
 /// Maximum JS-controlled work count accepted by scalar WASM parameters.
 pub const MAX_WASM_WORK_ITEMS: u32 = 10_000;
+/// Maximum topology-derived work allowed for one blend-aware face move.
+///
+/// The move implementation may scan and reconstruct the complete solid once
+/// for every edge incident to the selected faces.
+pub const MAX_MOVE_FACES_TOPOLOGY_WORK: u64 = 1_000_000;
 /// Maximum faces accepted by a query that may compare every unordered pair.
 pub const MAX_WASM_FACE_PAIR_FACES: u32 = 512;
 
@@ -478,6 +483,27 @@ pub fn validate_work_product(left: u32, right: u32, name: &str) -> Result<usize,
     Ok(work as usize)
 }
 
+/// Bound the solid-wide work implied by a multi-face direct edit.
+///
+/// # Errors
+///
+/// Returns [`WasmError::InvalidInput`] when repeated full-solid scans implied
+/// by the selected faces exceed the operation budget.
+pub fn validate_move_faces_work(
+    entity_count: usize,
+    incident_edge_count: usize,
+) -> Result<(), WasmError> {
+    let work = (entity_count as u64).saturating_mul((incident_edge_count as u64).saturating_add(1));
+    if work > MAX_MOVE_FACES_TOPOLOGY_WORK {
+        return Err(WasmError::InvalidInput {
+            reason: format!(
+                "moveFaces topology work must be at most {MAX_MOVE_FACES_TOPOLOGY_WORK}, got {work}"
+            ),
+        });
+    }
+    Ok(())
+}
+
 /// Bound a potentially quadratic face-pair query before topology work starts.
 ///
 /// # Errors
@@ -500,9 +526,21 @@ mod work_limit_tests {
     #![allow(clippy::unwrap_used)]
 
     use super::{
-        MAX_WASM_FACE_PAIR_FACES, MAX_WASM_WORK_ITEMS, validate_face_pair_count,
-        validate_work_count, validate_work_product,
+        MAX_MOVE_FACES_TOPOLOGY_WORK, MAX_WASM_FACE_PAIR_FACES, MAX_WASM_WORK_ITEMS,
+        validate_face_pair_count, validate_move_faces_work, validate_work_count,
+        validate_work_product,
     };
+
+    #[test]
+    fn move_faces_work_is_bounded_by_topology_and_incident_edges() {
+        validate_move_faces_work(10_000, 99).unwrap();
+        let error = validate_move_faces_work(10_000, 100).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("at most {MAX_MOVE_FACES_TOPOLOGY_WORK}"))
+        );
+    }
 
     #[test]
     fn scalar_work_count_accepts_limit_and_rejects_larger_values() {

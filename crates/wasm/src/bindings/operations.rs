@@ -14,7 +14,8 @@ use remus_topology::edge::{Edge, EdgeCurve};
 use remus_topology::face::{Face, FaceSurface};
 
 use crate::error::{
-    WasmError, validate_finite, validate_positive, validate_work_count, validate_work_product,
+    WasmError, validate_finite, validate_move_faces_work, validate_positive, validate_work_count,
+    validate_work_product,
 };
 use crate::handles::{edge_id_to_u32, face_id_to_u32, solid_id_to_u32, wire_id_to_u32};
 use remus_geometry::extrema::point_to_nurbs_surface;
@@ -32,6 +33,25 @@ use remus_operations::push_pull::{move_faces, push_pull_face, resize_cylindrical
 use remus_operations::resize_blend::{blend_region, resize_blend, resize_blend_failure_code};
 use remus_operations::revolve::revolve;
 use remus_operations::sweep::sweep;
+
+pub(crate) fn validate_move_faces_topology_work(
+    topo: &remus_topology::Topology,
+    solid: remus_topology::solid::SolidId,
+    faces: &[remus_topology::face::FaceId],
+) -> Result<(), WasmError> {
+    let (face_count, edge_count, vertex_count) =
+        remus_topology::explorer::solid_entity_counts(topo, solid)?;
+    let mut incident_edges = std::collections::HashSet::new();
+    for &face in faces {
+        incident_edges.extend(remus_topology::explorer::face_edges(topo, face)?);
+    }
+    validate_move_faces_work(
+        face_count
+            .saturating_add(edge_count)
+            .saturating_add(vertex_count),
+        incident_edges.len(),
+    )
+}
 
 fn wasm_blend_evolution(
     topo: &remus_topology::Topology,
@@ -574,6 +594,7 @@ impl BrepKernel {
             .into_iter()
             .map(|face| self.resolve_face(face))
             .collect::<Result<Vec<_>, _>>()?;
+        validate_move_faces_topology_work(&self.topo, solid_id, &face_ids)?;
         let result =
             self.with_topology_transaction(|topo| move_faces(topo, solid_id, &face_ids, distance))?;
         Ok(solid_id_to_u32(result))
