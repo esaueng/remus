@@ -12,7 +12,7 @@ Issue 2.0's measured baseline is
 | --- | --- | --- |
 | 2.0a Measurement and semantic ratchet | Merged | [#120](https://github.com/esaueng/remus/pull/120) |
 | 2.0b Missing writers, invariants, oracles, and census | Complete — operations and phase-FF contributions | [#122](https://github.com/esaueng/remus/pull/122) + [#125](https://github.com/esaueng/remus/pull/125) |
-| 2.0c Reader migration and seam-safe validation | Pending | — |
+| 2.0c Reader migration and seam-safe validation | In progress — strict-domain foundation and producer normalization merged; this stored-edge algorithm tranche removes 18 more readers (98 → 80 current) while transient splitter semantics and PaveFiller readers remain | [#154](https://github.com/esaueng/remus/pull/154) + [#159](https://github.com/esaueng/remus/pull/159) |
 | 2.0d Topology-owned atomic boundary mutation | Pending | — |
 | 2.0e Physical Loop/Coedge p-curve authority | Pending | — |
 | 2.0f STEP per-use deterministic round-trip | Pending | — |

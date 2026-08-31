@@ -116,9 +116,9 @@ splitter and classifier robustness to carry them.
 [rfc-0002-coedge-architecture.md](../design/rfc-0002-coedge-architecture.md)
 
 The consciously staged 0002 deferrals come due before 2.5 and M3 build on
-them: result-assembly and analytic-fast-path writers still don't carry
-explicit trims into result topologies, ~168 `domain_with_endpoints` reader
-sites still reconstruct domains from endpoint projection, and physical
+them: although the measured missing-writer ratchet is closed, the 132-site
+`domain_with_endpoints` production-reader ratchet still has migrations to
+complete, and physical
 p-curve storage in Coedge (the boundary-authority flip) waits on sanctioned
 mutation. NURBS booleans and tolerant edges on top of
 reconstruct-by-projection is building on sand — the mixed-trim bug class from
