@@ -280,12 +280,10 @@ fn validate_intersection_curves(
 /// fails.
 fn refit_from_samples(ic: &IntersectionCurve) -> IntersectionCurve {
     let positions: Vec<Point3> = ic.points.iter().map(|p| p.point).collect();
-    let degree = if positions.len() <= 3 {
-        1
-    } else {
-        3.min(positions.len() - 1)
-    };
-    if let Ok(refit) = interpolate(&positions, degree) {
+    // This path is the safety fallback after a higher-order fit failed
+    // geometric validation. A degree-one interpolant cannot overshoot densely
+    // clustered marching samples, and it still passes through every sample.
+    if let Ok(refit) = interpolate(&positions, 1) {
         IntersectionCurve {
             curve: refit,
             points: ic.points.clone(),
@@ -999,4 +997,51 @@ pub(super) fn solve_4x4(a: [[f64; 4]; 4], b: [f64; 4]) -> Option<[f64; 4]> {
     }
 
     Some(x)
+}
+
+#[cfg(test)]
+mod refit_tests {
+    #![allow(clippy::cast_precision_loss, clippy::unwrap_used)]
+
+    use super::{IntersectionCurve, IntersectionPoint, refit_from_samples};
+    use crate::nurbs::fitting::interpolate;
+    use crate::vec::Point3;
+
+    #[test]
+    fn failed_higher_order_fit_falls_to_a_stable_polyline() {
+        let plane_height = -0.031_176_470_588_235_295;
+        let points: Vec<IntersectionPoint> = (0..25)
+            .map(|index| {
+                let t = index as f64 / 24.0;
+                IntersectionPoint {
+                    point: Point3::new(
+                        0.027 + 0.032 * t + t * t * 0.002,
+                        0.000_1 + 0.093 * t,
+                        plane_height + (index % 3) as f64 * 1.0e-7,
+                    ),
+                    param1: (t, t),
+                    param2: (t, t),
+                }
+            })
+            .collect();
+        let source = IntersectionCurve {
+            curve: interpolate(
+                &points.iter().map(|sample| sample.point).collect::<Vec<_>>(),
+                3,
+            )
+            .unwrap(),
+            points,
+        };
+
+        let refit = refit_from_samples(&source);
+
+        assert_eq!(refit.curve.degree(), 1);
+        for index in 0..=16 {
+            let point = refit.curve.evaluate(index as f64 / 16.0);
+            assert!(
+                (point.z() - plane_height).abs() <= 3.0e-7,
+                "refit point {point:?} escaped the source plane"
+            );
+        }
+    }
 }
