@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788142292842,
+  "lastUpdate": 1788149447542,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -5291,6 +5291,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 42286027,
             "range": "± 210041",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "2f3788562655a2f2f6b823118c1234a3807a8783",
+          "message": "refactor(algo): remove unreachable degenerate-arc branch in build_section_edges (#161)\n\nPR #159 added an early continue in the PaveBlock section arm that skips\ndegenerate curved remnants (non-Line curve, chord < 100·tol, trim span\n< DEGENERATE_ARC_SPAN) before the strict_domain() call. For non-Line\ncurves strict_domain() returns exactly the stored trim (or errors out\nvia ?), and the curved-path interval is exactly (raw_start, raw_end),\nso the later edge_domain-based degenerate check could no longer fire:\nany item matching it was already skipped, and mid-loop work items only\nexist for Line curves, which both checks exclude. Move the rationale\ncomment to the surviving early check and drop the dead branch.",
+          "timestamp": "2026-08-31T00:08:04-04:00",
+          "tree_id": "6b7dd391a146564027b11a7ef0f945ec19a689fe",
+          "url": "https://github.com/esaueng/remus/commit/2f3788562655a2f2f6b823118c1234a3807a8783"
+        },
+        "date": 1788149446957,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1378889,
+            "range": "± 1769",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1478657,
+            "range": "± 1292",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 15631,
+            "range": "± 710",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 1021154,
+            "range": "± 7343",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 41482589,
+            "range": "± 118550",
             "unit": "ns/iter"
           }
         ]
