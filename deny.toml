@@ -18,7 +18,9 @@ ignore = [
 [licenses]
 # CC0-1.0 (hexf-parse) and ISC (libloading) enter via the wgpu/naga dependency
 # tree; BSD-2-Clause / BSD-3-Clause enter via the winit dependency tree (the
-# interactive viewer's `window` feature). All are permissive.
+# interactive viewer's `window` feature). CDLA-Permissive-2.0 covers Mozilla's
+# root-certificate data bundled by webpki-roots, which enters through ureq/rustls
+# for the gauntlet's HTTPS fetcher. All are permissive.
 allow = [
   "Apache-2.0",
   "MIT",
@@ -28,6 +30,7 @@ allow = [
   "ISC",
   "BSD-2-Clause",
   "BSD-3-Clause",
+  "CDLA-Permissive-2.0",
 ]
 
 [bans]
