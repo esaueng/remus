@@ -6,8 +6,8 @@ use crate::vec::{Point3, Vec3};
 use super::surface_marching::march_intersection;
 use super::surface_marching::{near_existing_segment, second_order_tangent};
 use super::surface_seeding::{
-    find_ssi_seeds_grid, find_ssi_seeds_subdivision, refine_ssi_point,
-    refine_ssi_point_with_context,
+    find_ssi_seeds_grid, find_ssi_seeds_subdivision, find_ssi_seeds_subdivision_with_context,
+    refine_ssi_point, refine_ssi_point_with_context,
 };
 use super::*;
 
@@ -474,6 +474,29 @@ fn subdivision_finds_seeds() {
             "seed should lie on surface 2"
         );
     }
+}
+
+#[test]
+fn caller_subdivision_depth_budget_is_authoritative_for_ssi_seeding() {
+    use crate::context::{OperationContext, WorkBudgets};
+
+    let dome = dome_surface();
+    let plane = flat_plane_at_z(0.0);
+    let counts: Vec<usize> = (0..=6)
+        .map(|depth| {
+            let context = OperationContext::new()
+                .with_budgets(WorkBudgets::new().with_subdivision_depth(depth));
+            find_ssi_seeds_subdivision_with_context(&dome, &plane, 1e-6, &context)
+                .unwrap()
+                .len()
+        })
+        .collect();
+
+    assert_eq!(counts[0], 0, "zero budget must perform no recursive split");
+    assert!(
+        counts[6] > 0,
+        "the legacy depth budget must discover the closed intersection: {counts:?}"
+    );
 }
 
 // -- Chain building tests --
