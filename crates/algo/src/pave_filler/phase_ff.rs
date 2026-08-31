@@ -338,12 +338,12 @@ pub fn perform_with_context(
         .iter()
         .zip(surfs_a.iter())
         .map(|(&fid, surf)| face_v_range(topo, fid, surf))
-        .collect();
+        .collect::<Result<_, _>>()?;
     let v_ranges_b: Vec<Option<(f64, f64)>> = faces_b
         .iter()
         .zip(surfs_b.iter())
         .map(|(&fid, surf)| face_v_range(topo, fid, surf))
-        .collect();
+        .collect::<Result<_, _>>()?;
 
     // Registry of endpoint vertices created for the EXACT faceted-ramp arcs
     // (see `trim_ellipse_to_boundary_crossings`). Adjacent treads share a
@@ -587,8 +587,8 @@ pub fn perform_with_context(
             // the surface — shared between adjacent treads, so the arcs chain.
             // These exact arcs bypass the generic filters below.
             let (exact_arcs, raw_curves): (Vec<RawCurve>, Vec<RawCurve>) = {
-                let ext_a = FaceExtent::new(topo, fa, surf_a, v_range_a, tol);
-                let ext_b = FaceExtent::new(topo, fb, surf_b, v_range_b, tol);
+                let ext_a = FaceExtent::new(topo, fa, surf_a, v_range_a, tol)?;
+                let ext_b = FaceExtent::new(topo, fb, surf_b, v_range_b, tol)?;
                 let mut exact = Vec::new();
                 let mut rest = Vec::new();
                 for raw in raw_curves {
@@ -777,7 +777,7 @@ pub fn perform_with_context(
                 raw_curves,
                 tol,
                 &mut junction_registry,
-            );
+            )?;
             validate_raw_curve_collection("phase_ff face restriction", &raw_curves)?;
             if traced {
                 log::debug!(
@@ -820,7 +820,8 @@ pub fn perform_with_context(
                 if let EdgeCurve::Circle(circle) = &raw.curve {
                     let is_closed = (raw.p_start - raw.p_end).length() < tol.linear;
                     if is_closed {
-                        let crossings = closed_circle_boundary_crossings(topo, fa, fb, circle, tol);
+                        let crossings =
+                            closed_circle_boundary_crossings(topo, fa, fb, circle, tol)?;
                         if crossings.len() >= 2 {
                             emit_split_circle_arcs(
                                 topo, arena, fa, fb, &raw, circle, &crossings, tol,
@@ -1133,32 +1134,35 @@ impl FaceExtent {
         surface: &FaceSurface,
         v_range: Option<(f64, f64)>,
         tol: Tolerance,
-    ) -> Option<Self> {
+    ) -> Result<Option<Self>, AlgoError> {
         if let FaceSurface::Plane { normal, .. } = surface {
-            let face = topo.face(face_id).ok()?;
-            let outer = topo.wire(face.outer_wire()).ok()?;
-            let first = outer.edges().first()?;
-            let origin = topo
-                .vertex(topo.edge(first.edge()).ok()?.start())
-                .ok()?
-                .point();
+            let face = topo.face(face_id)?;
+            let outer = topo.wire(face.outer_wire())?;
+            let Some(first) = outer.edges().first() else {
+                return Ok(None);
+            };
+            let origin = topo.vertex(topo.edge(first.edge())?.start())?.point();
             let frame =
                 crate::builder::plane_frame::PlaneFrame::from_normal_and_point(*normal, origin);
             // Project a wire's boundary into the plane frame, sampling each arc
             // edge (endpoints included) so curved corners aren't chord-cut.
-            let wire_poly = |wid| -> Option<Vec<remus_math::vec::Point2>> {
-                let wire = topo.wire(wid).ok()?;
+            let wire_poly = |wid| -> Result<Vec<remus_math::vec::Point2>, AlgoError> {
+                let wire = topo.wire(wid)?;
                 let mut poly = Vec::new();
                 for oe in wire.edges() {
-                    let edge = topo.edge(oe.edge()).ok()?;
-                    let s3 = topo.vertex(edge.start()).ok()?.point();
-                    let e3 = topo.vertex(edge.end()).ok()?.point();
+                    let edge = topo.edge(oe.edge())?;
+                    let s3 = topo.vertex(edge.start())?.point();
+                    let e3 = topo.vertex(edge.end())?.point();
                     match edge.curve() {
                         EdgeCurve::Line => {
                             poly.push(frame.project(if oe.is_forward() { s3 } else { e3 }));
                         }
                         curve => {
-                            let (t0, t1) = curve.domain_with_endpoints(s3, e3);
+                            let (t0, t1) = super::helpers::authoritative_edge_domain(
+                                edge,
+                                oe.edge(),
+                                "face-extent boundary sampling",
+                            )?;
                             for i in 0..=16 {
                                 #[allow(clippy::cast_precision_loss)]
                                 let f = i as f64 / 16.0;
@@ -1172,18 +1176,19 @@ impl FaceExtent {
                         }
                     }
                 }
-                Some(poly)
+                Ok(poly)
             };
             let poly = wire_poly(face.outer_wire())?;
             if poly.len() < 3 {
-                return None;
+                return Ok(None);
             }
-            let holes: Vec<_> = face
-                .inner_wires()
-                .iter()
-                .filter_map(|&iw| wire_poly(iw))
-                .filter(|h| h.len() >= 3)
-                .collect();
+            let mut holes = Vec::new();
+            for &inner_wire in face.inner_wires() {
+                let hole = wire_poly(inner_wire)?;
+                if hole.len() >= 3 {
+                    holes.push(hole);
+                }
+            }
             // Margin keeps boundary-coincident points (the shared cap) inside;
             // scaled to the SMALLER in-plane extent so a thin band (a scoop
             // staircase tread is full-width but ~0.1 mm tall) keeps a tight
@@ -1196,12 +1201,12 @@ impl FaceExtent {
             );
             let extent = bb.max - bb.min;
             let smaller = extent.x().abs().min(extent.y().abs());
-            Some(Self::Plane {
+            Ok(Some(Self::Plane {
                 frame,
                 poly,
                 holes,
                 margin: (smaller * 0.01).max(tol.linear),
-            })
+            }))
         } else {
             // A whole, untrimmed torus has no `v_range` (its boundary is the
             // degenerate fundamental-polygon seam), yet it IS a real extent: the
@@ -1214,11 +1219,11 @@ impl FaceExtent {
                 Some(r) => r,
                 None => {
                     if matches!(surface, FaceSurface::Torus(_))
-                        && face_boundary_all_degenerate(topo, face_id, tol).unwrap_or(false)
+                        && face_boundary_all_degenerate(topo, face_id, tol)?
                     {
                         (0.0, std::f64::consts::TAU)
                     } else {
-                        return None;
+                        return Ok(None);
                     }
                 }
             };
@@ -1230,14 +1235,14 @@ impl FaceExtent {
             // near-tangent section curve "inside" the v-band but on the far
             // half of the cylinder is wrongly kept, wrapping the trimmed arc
             // onto the wrong side of the wedge.
-            let u_gap = face_circumferential_u_gap(topo, face_id, surface);
-            Some(Self::Analytic {
+            let u_gap = face_circumferential_u_gap(topo, face_id, surface)?;
+            Ok(Some(Self::Analytic {
                 surface: surface.clone(),
                 v0,
                 v1,
                 margin,
                 u_gap,
-            })
+            }))
         }
     }
 
@@ -1367,7 +1372,7 @@ fn face_circumferential_u_gap(
     topo: &Topology,
     face_id: FaceId,
     surface: &FaceSurface,
-) -> Option<(f64, f64)> {
+) -> Result<Option<(f64, f64)>, AlgoError> {
     // Sample densely so a FULL-revolution rim circle (one closed edge spanning
     // the whole period) leaves only a tiny per-step gap, well under the
     // `largest_u_gap` threshold — otherwise a 16-step pass (~0.39 rad/step)
@@ -1376,16 +1381,20 @@ fn face_circumferential_u_gap(
     // corner) still shows its large angular gap.
     const N_GAP: usize = 64;
     if !matches!(surface, FaceSurface::Cylinder(_) | FaceSurface::Cone(_)) {
-        return None;
+        return Ok(None);
     }
-    let face = topo.face(face_id).ok()?;
-    let wire = topo.wire(face.outer_wire()).ok()?;
+    let face = topo.face(face_id)?;
+    let wire = topo.wire(face.outer_wire())?;
     let mut u_samples = Vec::new();
     for oe in wire.edges() {
-        let edge = topo.edge(oe.edge()).ok()?;
-        let sp = topo.vertex(edge.start()).ok()?.point();
-        let ep = topo.vertex(edge.end()).ok()?.point();
-        let (t0, t1) = edge.curve().domain_with_endpoints(sp, ep);
+        let edge = topo.edge(oe.edge())?;
+        let sp = topo.vertex(edge.start())?.point();
+        let ep = topo.vertex(edge.end())?.point();
+        let (t0, t1) = super::helpers::authoritative_edge_domain(
+            edge,
+            oe.edge(),
+            "circumferential face-gap sampling",
+        )?;
         for i in 0..=N_GAP {
             #[allow(clippy::cast_precision_loss)]
             let f = i as f64 / N_GAP as f64;
@@ -1396,7 +1405,7 @@ fn face_circumferential_u_gap(
             }
         }
     }
-    crate::classifier::largest_u_gap(&u_samples)
+    Ok(crate::classifier::largest_u_gap(&u_samples))
 }
 
 /// Minimum distance from a 2D point to a closed polygon's edges.
@@ -1516,13 +1525,13 @@ fn restrict_curves_to_faces(
     raw_curves: Vec<RawCurve>,
     tol: Tolerance,
     junctions: &mut JunctionRegistry,
-) -> Vec<RawCurve> {
+) -> Result<Vec<RawCurve>, AlgoError> {
     let (Some(ext_a), Some(ext_b)) = (
-        FaceExtent::new(topo, fa, surf_a, v_range_a, tol),
-        FaceExtent::new(topo, fb, surf_b, v_range_b, tol),
+        FaceExtent::new(topo, fa, surf_a, v_range_a, tol)?,
+        FaceExtent::new(topo, fb, surf_b, v_range_b, tol)?,
     ) else {
         // Conservative: if either face's extent can't be built, don't restrict.
-        return raw_curves;
+        return Ok(raw_curves);
     };
 
     const N: usize = 24;
@@ -1732,7 +1741,7 @@ fn restrict_curves_to_faces(
         }
         out.push(raw);
     }
-    out
+    Ok(out)
 }
 
 /// Does this LINE section meet the two faces only along a measure-zero
@@ -2371,7 +2380,12 @@ fn snap_to_boundary_junction_band(
                 continue;
             };
             let (sp, ep) = (sv.point(), ev.point());
-            let (d0, d1) = edge.curve().domain_with_endpoints(sp, ep);
+            let (d0, d1) = super::helpers::authoritative_edge_domain(
+                edge,
+                oe.edge(),
+                "boundary-junction search",
+            )
+            .ok()?;
             let mut best_k = 0;
             let mut best_d = f64::MAX;
             for k in 0..=NS {
@@ -2446,7 +2460,9 @@ fn snap_to_boundary_junction_band(
             .and_then(|(u, v)| other_surf.evaluate(u, v))
             .map_or(f64::MAX, |s| (s - q).length())
     };
-    let (d0, d1) = edge.curve().domain_with_endpoints(sp, ep);
+    let (d0, d1) =
+        super::helpers::authoritative_edge_domain(edge, eid, "boundary-junction refinement")
+            .ok()?;
     let half = (d1 - d0).abs().max(1e-9) * 0.01;
     // Clamp the refine window to the edge's own span so the search never
     // evaluates (and snaps to) a point past the boundary arc's ends.
@@ -3363,7 +3379,8 @@ fn compute_face_bbox(topo: &Topology, face_id: FaceId, tol: Tolerance) -> Result
         let edge = topo.edge(eid)?;
         let start_pos = topo.vertex(edge.start())?.point();
         let end_pos = topo.vertex(edge.end())?.point();
-        let (t0, t1) = edge.curve().domain_with_endpoints(start_pos, end_pos);
+        let (t0, t1) =
+            super::helpers::authoritative_edge_domain(edge, eid, "face bounding-box sampling")?;
 
         let n: usize = 8;
         for i in 0..=n {
@@ -3383,7 +3400,7 @@ fn compute_face_bbox(topo: &Topology, face_id: FaceId, tol: Tolerance) -> Result
         // Bound to the hemisphere the face occupies (pole side from the boundary
         // winding) — the full-sphere box would let one hemisphere admit the
         // other's sections. Ambiguous winding falls back to the full sphere.
-        FaceSurface::Sphere(s) => Some(match sphere_region_axis(topo, face_id, s.center(), tol) {
+        FaceSurface::Sphere(s) => Some(match sphere_region_axis(topo, face_id, s.center(), tol)? {
             Some(axis) => s.aabb_region(axis),
             None => s.aabb(),
         }),
@@ -3420,23 +3437,24 @@ fn sphere_region_axis(
     face_id: FaceId,
     center: Point3,
     tol: Tolerance,
-) -> Option<Vec3> {
-    let face = topo.face(face_id).ok()?;
-    let wire = topo.wire(face.outer_wire()).ok()?;
+) -> Result<Option<Vec3>, AlgoError> {
+    let face = topo.face(face_id)?;
+    let wire = topo.wire(face.outer_wire())?;
     // Sample the outer wire into an oriented closed polyline. Endpoint-only
     // sampling fails for a boundary built from a single closed `Circle` edge
     // (start == end, so every chord is zero); sampling along each edge recovers
     // the loop shape so the winding below still yields the pole-side axis.
     let mut pts: Vec<Point3> = Vec::new();
     for oe in wire.edges() {
-        let Ok(edge) = topo.edge(oe.edge()) else {
-            continue;
-        };
-        let (Ok(sv), Ok(ev)) = (topo.vertex(edge.start()), topo.vertex(edge.end())) else {
-            continue;
-        };
+        let edge = topo.edge(oe.edge())?;
+        let sv = topo.vertex(edge.start())?;
+        let ev = topo.vertex(edge.end())?;
         let (sp, ep) = (sv.point(), ev.point());
-        let (t0, t1) = edge.curve().domain_with_endpoints(sp, ep);
+        let (t0, t1) = super::helpers::authoritative_edge_domain(
+            edge,
+            oe.edge(),
+            "sphere-region winding sampling",
+        )?;
         // Sample in the edge's natural direction (omit the endpoint — it is the
         // next edge's start), then flip for a reversed orientation.
         let n = 8;
@@ -3452,7 +3470,7 @@ fn sphere_region_axis(
         pts.append(&mut edge_pts);
     }
     if pts.len() < 3 {
-        return None;
+        return Ok(None);
     }
     // Summed (midpoint − center) × chord around the closed loop ≈ 2·(area
     // vector): its direction is the face's outward pole axis (negated for a
@@ -3477,9 +3495,9 @@ fn sphere_region_axis(
     }
     let len = axis.length();
     if scale < tol.linear * tol.linear || len < scale * tol.linear {
-        return None;
+        return Ok(None);
     }
-    Some(axis * (1.0 / len))
+    Ok(Some(axis * (1.0 / len)))
 }
 
 /// True when every edge of the face has zero spatial extent (a degenerate seam
@@ -3504,7 +3522,11 @@ fn face_boundary_all_degenerate(
         let edge = topo.edge(eid)?;
         let sp = topo.vertex(edge.start())?.point();
         let ep = topo.vertex(edge.end())?.point();
-        let (t0, t1) = edge.curve().domain_with_endpoints(sp, ep);
+        let (t0, t1) = super::helpers::authoritative_edge_domain(
+            edge,
+            eid,
+            "degenerate face-boundary sampling",
+        )?;
         for frac in [0.0, 0.25, 0.5, 0.75, 1.0] {
             let t = t0 + (t1 - t0) * frac;
             let p = edge.curve().evaluate_with_endpoints(t, sp, ep);
@@ -3531,16 +3553,21 @@ fn compute_face_bboxes(
 
 /// Compute the v-parameter range of a face by projecting boundary vertices.
 /// Returns `None` for planes (which have no UV parameterization) or if projection fails.
-fn face_v_range(topo: &Topology, face_id: FaceId, surface: &FaceSurface) -> Option<(f64, f64)> {
-    let face = topo.face(face_id).ok()?;
-    let wire = topo.wire(face.outer_wire()).ok()?;
+fn face_v_range(
+    topo: &Topology,
+    face_id: FaceId,
+    surface: &FaceSurface,
+) -> Result<Option<(f64, f64)>, AlgoError> {
+    let face = topo.face(face_id)?;
+    let wire = topo.wire(face.outer_wire())?;
     let mut v_min = f64::MAX;
     let mut v_max = f64::MIN;
     for oe in wire.edges() {
-        let edge = topo.edge(oe.edge()).ok()?;
-        let sp = topo.vertex(edge.start()).ok()?.point();
-        let ep = topo.vertex(edge.end()).ok()?.point();
-        let (t0, t1) = edge.curve().domain_with_endpoints(sp, ep);
+        let edge = topo.edge(oe.edge())?;
+        let sp = topo.vertex(edge.start())?.point();
+        let ep = topo.vertex(edge.end())?.point();
+        let (t0, t1) =
+            super::helpers::authoritative_edge_domain(edge, oe.edge(), "face v-range sampling")?;
         // Sample 5 points to capture v-extremes on curved/closed edges
         for frac in [0.0, 0.25, 0.5, 0.75, 1.0] {
             let t = t0 + (t1 - t0) * frac;
@@ -3552,9 +3579,9 @@ fn face_v_range(topo: &Topology, face_id: FaceId, surface: &FaceSurface) -> Opti
         }
     }
     if v_min < v_max {
-        Some((v_min, v_max))
+        Ok(Some((v_min, v_max)))
     } else {
-        None
+        Ok(None)
     }
 }
 
@@ -4601,9 +4628,9 @@ fn circle_exits_plane_boundary(
     plane_face: FaceId,
     circle: &remus_math::curves::Circle3D,
     tol: Tolerance,
-) -> bool {
+) -> Result<bool, AlgoError> {
     let Ok(face) = topo.face(plane_face) else {
-        return false;
+        return Ok(false);
     };
     let wires: Vec<remus_topology::wire::WireId> = std::iter::once(face.outer_wire())
         .chain(face.inner_wires().iter().copied())
@@ -4626,7 +4653,7 @@ fn circle_exits_plane_boundary(
                         let at_endpoint = (p - sp).length() < tol.linear * 10.0
                             || (p - ep).length() < tol.linear * 10.0;
                         if !at_endpoint {
-                            return true;
+                            return Ok(true);
                         }
                     }
                 }
@@ -4636,11 +4663,11 @@ fn circle_exits_plane_boundary(
                 // from the crossing set, and the closed section was never
                 // split (the parallel-boss coplanar cap crescent drop).
                 EdgeCurve::Circle(bc) => {
-                    for (p, _) in circle_arc_crossings(edge, sp, ep, bc, circle, tol) {
+                    for (p, _) in circle_arc_crossings(edge, oe.edge(), sp, ep, bc, circle, tol)? {
                         let at_endpoint = (p - sp).length() < tol.linear * 10.0
                             || (p - ep).length() < tol.linear * 10.0;
                         if !at_endpoint {
-                            return true;
+                            return Ok(true);
                         }
                     }
                 }
@@ -4648,7 +4675,7 @@ fn circle_exits_plane_boundary(
             }
         }
     }
-    false
+    Ok(false)
 }
 
 /// Crossings of a section `circle` with a boundary edge lying on circle `bc`,
@@ -4656,22 +4683,24 @@ fn circle_exits_plane_boundary(
 /// crossings). Returns `(point, t-on-section-circle)` pairs.
 fn circle_arc_crossings(
     edge: &remus_topology::edge::Edge,
+    edge_id: remus_topology::edge::EdgeId,
     sp: Point3,
     ep: Point3,
     bc: &remus_math::curves::Circle3D,
     circle: &remus_math::curves::Circle3D,
     tol: Tolerance,
-) -> Vec<(Point3, f64)> {
+) -> Result<Vec<(Point3, f64)>, AlgoError> {
     const NS: usize = 128;
     let full = (sp - ep).length() < tol.linear;
     let cand = circle.intersect_circle(bc, tol.linear);
     if cand.is_empty() || full {
-        return cand;
+        return Ok(cand);
     }
     // Filter to the edge's actual arc by proximity to its sampled polyline.
     // The band covers the sampling sagitta plus the fit weld.
     let mut samples: Vec<Point3> = Vec::new();
-    let (t0, t1) = edge.curve().domain_with_endpoints(sp, ep);
+    let (t0, t1) =
+        super::helpers::authoritative_edge_domain(edge, edge_id, "circle boundary-arc crossing")?;
     for i in 0..=NS {
         #[allow(clippy::cast_precision_loss)]
         let t = t0 + (t1 - t0) * (i as f64) / (NS as f64);
@@ -4685,7 +4714,8 @@ fn circle_arc_crossings(
         };
         (step * step / (8.0 * bc.radius().max(tol.linear))).mul_add(2.0, tol.linear * 100.0)
     };
-    cand.into_iter()
+    Ok(cand
+        .into_iter()
         .filter(|(p, _)| {
             samples.windows(2).any(|w| {
                 let d = w[1] - w[0];
@@ -4698,7 +4728,7 @@ fn circle_arc_crossings(
                 (*p - (w[0] + d * f)).length() <= band
             })
         })
-        .collect()
+        .collect())
 }
 
 fn closed_circle_boundary_crossings(
@@ -4707,7 +4737,7 @@ fn closed_circle_boundary_crossings(
     face_b: FaceId,
     circle: &remus_math::curves::Circle3D,
     tol: Tolerance,
-) -> Vec<(f64, Point3)> {
+) -> Result<Vec<(f64, Point3)>, AlgoError> {
     // Hits carry the boundary edge they came from when that edge is an ARC
     // (`Some(edge_id)`); line-edge hits carry `None`. Adjacent same-arc hit
     // pairs get a midpoint inserted below — the kept span between them would
@@ -4716,13 +4746,16 @@ fn closed_circle_boundary_crossings(
     // the lens region to a zero-area slit. The midpoint split is the
     // sanctioned splitter-side resolution (never make the shared merge
     // smarter).
-    let face_hits = |fid: FaceId| -> Vec<(f64, Point3, Option<remus_topology::edge::EdgeId>)> {
+    let face_hits = |fid: FaceId| -> Result<
+        Vec<(f64, Point3, Option<remus_topology::edge::EdgeId>)>,
+        AlgoError,
+    > {
         let mut hits: Vec<(f64, Point3, Option<remus_topology::edge::EdgeId>)> = Vec::new();
         let Ok(face) = topo.face(fid) else {
-            return hits;
+            return Ok(hits);
         };
         let Ok(wire) = topo.wire(face.outer_wire()) else {
-            return hits;
+            return Ok(hits);
         };
         for oe in wire.edges() {
             let Ok(edge) = topo.edge(oe.edge()) else {
@@ -4748,9 +4781,15 @@ fn closed_circle_boundary_crossings(
                 // desynchronize `emit_split_circle_arcs`' cyclic pairing and
                 // whole in-face spans vanish (the lite magnet-pad fuse).
                 EdgeCurve::Circle(bc) => {
-                    for (p, t) in
-                        circle_arc_crossings(edge, sv.point(), ev.point(), bc, circle, tol)
-                    {
+                    for (p, t) in circle_arc_crossings(
+                        edge,
+                        oe.edge(),
+                        sv.point(),
+                        ev.point(),
+                        bc,
+                        circle,
+                        tol,
+                    )? {
                         edge_hits.push((t, p, Some(oe.edge())));
                     }
                 }
@@ -4765,7 +4804,7 @@ fn closed_circle_boundary_crossings(
                 }
             }
         }
-        hits
+        Ok(hits)
     };
 
     let surface_of = |fid: FaceId| topo.face(fid).ok().map(|f| f.surface().clone());
@@ -4793,14 +4832,14 @@ fn closed_circle_boundary_crossings(
             // plane boundary, so the in-plane band case is unaffected (it
             // yields no plane-boundary hits).
             (true, false) => {
-                if circle_exits_plane_boundary(topo, face_a, circle, tol) {
+                if circle_exits_plane_boundary(topo, face_a, circle, tol)? {
                     vec![face_a, face_b]
                 } else {
                     vec![face_b]
                 }
             }
             (false, true) => {
-                if circle_exits_plane_boundary(topo, face_b, circle, tol) {
+                if circle_exits_plane_boundary(topo, face_b, circle, tol)? {
                     vec![face_a, face_b]
                 } else {
                     vec![face_a]
@@ -4839,7 +4878,7 @@ fn closed_circle_boundary_crossings(
                 continue;
             }
         }
-        let fh = face_hits(fid);
+        let fh = face_hits(fid)?;
         // The boundary is coincident with the section circle when its
         // segments are chords of an *inscribed* polygon: every vertex lands
         // on the circle, so the hits are the polygon's vertices, evenly
@@ -4900,7 +4939,7 @@ fn closed_circle_boundary_crossings(
         hits.len()
     );
 
-    hits.into_iter().map(|(t, p, _)| (t, p)).collect()
+    Ok(hits.into_iter().map(|(t, p, _)| (t, p)).collect())
 }
 
 /// Crossings of a section `circle` with a sphere face's seam (boundary) plane.
@@ -5085,9 +5124,9 @@ fn emit_split_circle_arcs(
     // its outer wire on the equator plane while the surface extends to
     // the pole) — so we union the wire AABB with the surface's AABB to
     // get a usable bounding region.
-    let face_aabb = |fid: FaceId| -> Option<Aabb3> {
-        let face = topo.face(fid).ok()?;
-        let wire = topo.wire(face.outer_wire()).ok()?;
+    let face_aabb = |fid: FaceId| -> Result<Option<Aabb3>, AlgoError> {
+        let face = topo.face(fid)?;
+        let wire = topo.wire(face.outer_wire())?;
         let mut min = Point3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);
         let mut max = Point3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
         let mut any = false;
@@ -5097,7 +5136,11 @@ fn emit_split_circle_arcs(
                     continue;
                 };
                 let (sp, ep) = (sv.point(), ev.point());
-                let (t0, t1) = edge.curve().domain_with_endpoints(sp, ep);
+                let (t0, t1) = super::helpers::authoritative_edge_domain(
+                    edge,
+                    oe.edge(),
+                    "split-circle face bounding box",
+                )?;
                 // Sample along the curve, not just endpoints: a cylinder/cone
                 // lateral face's circular edges are closed (start == end at the
                 // seam vertex), so endpoint-only bounds collapse to a line at
@@ -5116,7 +5159,7 @@ fn emit_split_circle_arcs(
             }
         }
         if !any {
-            return None;
+            return Ok(None);
         }
         // For analytic surfaces with finite extent, union the wire AABB
         // with the surface AABB. This expands a "degenerate-in-Z hemisphere
@@ -5135,26 +5178,26 @@ fn emit_split_circle_arcs(
                 max.z().max(c.z() + r),
             );
         }
-        Some(Aabb3 { min, max }.expanded(tol.linear * 10.0))
+        Ok(Some(Aabb3 { min, max }.expanded(tol.linear * 10.0)))
     };
-    let bbox_a = face_aabb(face_a);
-    let bbox_b = face_aabb(face_b);
+    let bbox_a = face_aabb(face_a)?;
+    let bbox_b = face_aabb(face_b)?;
 
     // A sphere face's wire+surface AABB covers the whole ball, so the AABB
     // filter alone cannot tell its hemisphere from its twin's. Derive the
     // hemisphere axis from the boundary wire orientation (region lies to
     // the left of the wire under the outward surface normal): the sum of
     // normal x edge-direction over the wire points into the face's region.
-    let sphere_side = |fid: FaceId| -> Option<(Point3, Vec3)> {
-        let face = topo.face(fid).ok()?;
+    let sphere_side = |fid: FaceId| -> Result<Option<(Point3, Vec3)>, AlgoError> {
+        let face = topo.face(fid)?;
         let FaceSurface::Sphere(s) = face.surface() else {
-            return None;
+            return Ok(None);
         };
         let center = s.center();
-        sphere_region_axis(topo, fid, center, tol).map(|axis| (center, axis))
+        Ok(sphere_region_axis(topo, fid, center, tol)?.map(|axis| (center, axis)))
     };
-    let side_a = sphere_side(face_a);
-    let side_b = sphere_side(face_b);
+    let side_a = sphere_side(face_a)?;
+    let side_b = sphere_side(face_b)?;
     let side_eps = tol.linear * 10.0;
     let in_both = |p: Point3| -> bool {
         let a_ok = bbox_a.as_ref().is_none_or(|b| b.contains_point(p));
@@ -5833,6 +5876,51 @@ mod tests {
         )
     }
 
+    #[test]
+    fn phase_ff_refuses_missing_boundary_authority_before_mutation() {
+        use remus_math::curves::Circle3D;
+        use remus_math::surfaces::SphericalSurface;
+        use remus_topology::face::Face;
+        use remus_topology::shell::Shell;
+        use remus_topology::solid::Solid;
+        use remus_topology::wire::{OrientedEdge, Wire};
+
+        let mut topo = Topology::new();
+        let plane_face = square_plane_face(&mut topo, 2.0);
+        let plane_shell = topo.add_shell(Shell::new(vec![plane_face]).unwrap());
+        let plane_solid = topo.add_solid(Solid::new(plane_shell, vec![]));
+
+        let circle =
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+        let seam = topo.add_vertex(Vertex::new(circle.evaluate(0.0), 1e-7));
+        let circle_edge = topo.add_edge(Edge::new(seam, seam, EdgeCurve::Circle(circle)));
+        let sphere_wire =
+            topo.add_wire(Wire::new(vec![OrientedEdge::new(circle_edge, true)], true).unwrap());
+        let sphere = SphericalSurface::new(Point3::new(0.0, 0.0, 0.0), 1.0).unwrap();
+        let sphere_face =
+            topo.add_face(Face::new(sphere_wire, vec![], FaceSurface::Sphere(sphere)));
+        let sphere_shell = topo.add_shell(Shell::new(vec![sphere_face]).unwrap());
+        let sphere_solid = topo.add_solid(Solid::new(sphere_shell, vec![]));
+
+        let mut arena = GfaArena::new();
+        let before = writer_state(&topo, &arena);
+        let error = perform(
+            &mut topo,
+            plane_solid,
+            sphere_solid,
+            Tolerance::default(),
+            &mut arena,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            AlgoError::IntersectionFailed(message)
+                if message.contains("face bounding-box sampling")
+                    && message.contains(&format!("{circle_edge:?}"))
+        ));
+        assert_eq!(writer_state(&topo, &arena), before);
+    }
+
     fn assert_range_close(actual: (f64, f64), expected: (f64, f64)) {
         assert!(
             (actual.0 - expected.0).abs() < 1e-12 && (actual.1 - expected.1).abs() < 1e-12,
@@ -6280,7 +6368,9 @@ mod tests {
         let v0 = topo.add_vertex(Vertex::new(Point3::new(6.0, 0.0, 0.0), 1e-7));
         let circle =
             Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 6.0).unwrap();
-        let edge = topo.add_edge(Edge::new(v0, v0, EdgeCurve::Circle(circle)));
+        let mut circle_edge = Edge::new(v0, v0, EdgeCurve::Circle(circle));
+        circle_edge.set_trim(Some((0.0, std::f64::consts::TAU)));
+        let edge = topo.add_edge(circle_edge);
         let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap());
         let sphere = SphericalSurface::new(Point3::new(0.0, 0.0, 0.0), 6.0).unwrap();
         let face = topo.add_face(Face::new(wire, vec![], FaceSurface::Sphere(sphere)));
@@ -6290,6 +6380,7 @@ mod tests {
             Point3::new(0.0, 0.0, 0.0),
             Tolerance::default(),
         )
+        .expect("sphere-region sampling should not fail")
         .expect("closed-circle boundary should yield a pole axis");
         // The equatorial circle's plane normal is ±z; sampling recovers it.
         assert!(axis.z().abs() > 0.99, "axis not aligned with z: {axis:?}");
@@ -6311,7 +6402,9 @@ mod tests {
         // (10,0,0), in the x-z plane, radius = minor radius 3.
         let circle =
             Circle3D::new(Point3::new(10.0, 0.0, 0.0), Vec3::new(0.0, 1.0, 0.0), 3.0).unwrap();
-        let edge = topo.add_edge(Edge::new(v0, v0, EdgeCurve::Circle(circle)));
+        let mut circle_edge = Edge::new(v0, v0, EdgeCurve::Circle(circle));
+        circle_edge.set_trim(Some((0.0, std::f64::consts::TAU)));
+        let edge = topo.add_edge(circle_edge);
         let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap());
         let torus = ToroidalSurface::new(Point3::new(0.0, 0.0, 0.0), 10.0, 3.0).unwrap();
         let face = topo.add_face(Face::new(wire, vec![], FaceSurface::Torus(torus)));
@@ -6569,7 +6662,9 @@ mod tests {
         ));
         let tol = Tolerance::default();
         let surface = topo.face(face).unwrap().surface().clone();
-        let ext = FaceExtent::new(&topo, face, &surface, None, tol).unwrap();
+        let ext = FaceExtent::new(&topo, face, &surface, None, tol)
+            .unwrap()
+            .unwrap();
 
         // Circular ellipse r=3 centered (5,-1,0) with u_axis pinned to +x
         // (a raw Circle3D picks its own reference axis, and closed Circles

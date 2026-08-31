@@ -26,10 +26,14 @@ pub mod phase_vv;
 #[cfg(test)]
 mod tests;
 
+use std::collections::BTreeSet;
+
 use remus_math::context::OperationContext;
 use remus_math::tolerance::Tolerance;
 use remus_topology::Topology;
+use remus_topology::edge::EdgeId;
 use remus_topology::solid::SolidId;
+use remus_topology::vertex::VertexId;
 
 use crate::ds::GfaArena;
 use crate::error::AlgoError;
@@ -137,19 +141,25 @@ impl<'a> PaveFiller<'a> {
 
     /// Initialize pave blocks for all edges of both solids.
     fn init_pave_blocks(&self, arena: &mut GfaArena) -> Result<(), AlgoError> {
+        let mut pending: Vec<(EdgeId, VertexId, f64, VertexId, f64)> = Vec::new();
+        let mut seen: BTreeSet<EdgeId> = arena.edge_pave_blocks.keys().copied().collect();
         for &solid in &[self.solid_a, self.solid_b] {
             let edges = remus_topology::explorer::solid_edges(self.topo, solid)?;
             for edge_id in edges {
                 // Skip if already initialized (shared edges between solids)
-                if arena.edge_pave_blocks.contains_key(&edge_id) {
+                if !seen.insert(edge_id) {
                     continue;
                 }
                 let edge = self.topo.edge(edge_id)?;
-                let start_pos = self.topo.vertex(edge.start())?.point();
-                let end_pos = self.topo.vertex(edge.end())?.point();
-                let (t0, t1) = edge.curve().domain_with_endpoints(start_pos, end_pos);
-                arena.init_edge_pave_block(edge_id, edge.start(), t0, edge.end(), t1);
+                self.topo.vertex(edge.start())?;
+                self.topo.vertex(edge.end())?;
+                let (t0, t1) =
+                    helpers::authoritative_edge_domain(edge, edge_id, "pave-block initialization")?;
+                pending.push((edge_id, edge.start(), t0, edge.end(), t1));
             }
+        }
+        for (edge_id, start, t0, end, t1) in pending {
+            arena.init_edge_pave_block(edge_id, start, t0, end, t1);
         }
         Ok(())
     }
@@ -347,17 +357,26 @@ fn init_pave_blocks_n(
     sources: &[SolidId],
     arena: &mut GfaArena,
 ) -> Result<(), AlgoError> {
+    let mut pending: Vec<(EdgeId, VertexId, f64, VertexId, f64)> = Vec::new();
+    let mut seen: BTreeSet<EdgeId> = arena.edge_pave_blocks.keys().copied().collect();
     for &solid in sources {
         for edge_id in remus_topology::explorer::solid_edges(topo, solid)? {
-            if arena.edge_pave_blocks.contains_key(&edge_id) {
+            if !seen.insert(edge_id) {
                 continue;
             }
             let edge = topo.edge(edge_id)?;
-            let start_pos = topo.vertex(edge.start())?.point();
-            let end_pos = topo.vertex(edge.end())?.point();
-            let (t0, t1) = edge.curve().domain_with_endpoints(start_pos, end_pos);
-            arena.init_edge_pave_block(edge_id, edge.start(), t0, edge.end(), t1);
+            topo.vertex(edge.start())?;
+            topo.vertex(edge.end())?;
+            let (t0, t1) = helpers::authoritative_edge_domain(
+                edge,
+                edge_id,
+                "N-way pave-block initialization",
+            )?;
+            pending.push((edge_id, edge.start(), t0, edge.end(), t1));
         }
+    }
+    for (edge_id, start, t0, end, t1) in pending {
+        arena.init_edge_pave_block(edge_id, start, t0, end, t1);
     }
     Ok(())
 }

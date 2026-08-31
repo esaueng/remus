@@ -58,6 +58,9 @@ pub fn perform(
     let edges_a = remus_topology::explorer::solid_edges(topo, solid_a)?;
     let edges_b = remus_topology::explorer::solid_edges(topo, solid_b)?;
 
+    super::helpers::validate_edge_domains(topo, &edges_a, "vertex-edge interference")?;
+    super::helpers::validate_edge_domains(topo, &edges_b, "vertex-edge interference")?;
+
     check_vertex_edge_pairs(topo, &verts_a, &edges_b, tol, arena)?;
     check_vertex_edge_pairs(topo, &verts_b, &edges_a, tol, arena)?;
 
@@ -109,11 +112,14 @@ fn check_vertex_edge_pairs(
 
             let start_pos = topo.vertex(edge.start())?.point();
             let end_pos = topo.vertex(edge.end())?.point();
-            let (t0, t1) = edge.curve().domain_with_endpoints(start_pos, end_pos);
+            let (t0, t1) =
+                super::helpers::authoritative_edge_domain(edge, eid, "vertex-edge interference")?;
 
             let param = project_point_on_edge(topo, eid, pos)?;
 
-            if param < t0 - 1e-10 || param > t1 + 1e-10 {
+            let domain_lo = t0.min(t1) - 1e-10;
+            let domain_hi = t0.max(t1) + 1e-10;
+            if param < domain_lo || param > domain_hi {
                 continue;
             }
 
@@ -128,11 +134,10 @@ fn check_vertex_edge_pairs(
                 if let Some(pb_ids) = arena.edge_pave_blocks.get(&eid) {
                     let pb_ids_copy: Vec<_> = pb_ids.clone();
                     for pb_id in pb_ids_copy {
-                        if let Some(pb) = arena.pave_blocks.get_mut(pb_id) {
-                            let (pb_start, pb_end) = pb.parameter_range();
-                            if param > pb_start + 1e-10 && param < pb_end - 1e-10 {
-                                pb.add_extra_pave(pave);
-                            }
+                        if let Some(pb) = arena.pave_blocks.get_mut(pb_id)
+                            && pb.contains_parameter_interior(param, 1e-10)
+                        {
+                            pb.add_extra_pave(pave);
                         }
                     }
                 }
@@ -165,7 +170,8 @@ fn project_point_on_edge(
     let edge = topo.edge(edge_id)?;
     let start_pos = topo.vertex(edge.start())?.point();
     let end_pos = topo.vertex(edge.end())?.point();
-    let (t0, t1) = edge.curve().domain_with_endpoints(start_pos, end_pos);
+    let (t0, t1) =
+        super::helpers::authoritative_edge_domain(edge, edge_id, "vertex-edge projection")?;
 
     let n_samples: usize = 32;
     let mut best_t = t0;
@@ -181,9 +187,11 @@ fn project_point_on_edge(
         }
     }
 
-    let dt = (t1 - t0) / n_samples as f64;
-    let mut lo = (best_t - dt).max(t0);
-    let mut hi = (best_t + dt).min(t1);
+    let dt = (t1 - t0).abs() / n_samples as f64;
+    let domain_lo = t0.min(t1);
+    let domain_hi = t0.max(t1);
+    let mut lo = (best_t - dt).max(domain_lo);
+    let mut hi = (best_t + dt).min(domain_hi);
 
     for _ in 0..20 {
         let m1 = lo + (hi - lo) / 3.0;
@@ -200,4 +208,60 @@ fn project_point_on_edge(
     }
 
     Ok(f64::midpoint(lo, hi))
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use remus_math::curves::Circle3D;
+    use remus_math::vec::Vec3;
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::vertex::Vertex;
+
+    use super::*;
+
+    #[test]
+    fn reversed_circle_accepts_and_records_an_interior_vertex() {
+        let circle = Circle3D::new_with_ref(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            2.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let (t0, t1) = (2.5, 0.5);
+        let mut topo = Topology::new();
+        let start = topo.add_vertex(Vertex::new(circle.evaluate(t0), 1e-7));
+        let end = topo.add_vertex(Vertex::new(circle.evaluate(t1), 1e-7));
+        let interior_t = 1.5;
+        let interior = topo.add_vertex(Vertex::new(circle.evaluate(interior_t), 1e-4));
+        let mut edge = Edge::new(start, end, EdgeCurve::Circle(circle));
+        edge.set_trim(Some((t0, t1)));
+        let edge_id = topo.add_edge(edge);
+
+        let projected =
+            project_point_on_edge(&topo, edge_id, topo.vertex(interior).unwrap().point()).unwrap();
+        assert!(
+            (projected - interior_t).abs() < 1e-5,
+            "projected parameter {projected}"
+        );
+
+        let mut arena = GfaArena::new();
+        arena.init_edge_pave_block(edge_id, start, t0, end, t1);
+        check_vertex_edge_pairs(
+            &topo,
+            &[interior],
+            &[edge_id],
+            Tolerance::default(),
+            &mut arena,
+        )
+        .unwrap();
+
+        assert_eq!(arena.interference.ve.len(), 1);
+        let pb_id = arena.edge_pave_blocks[&edge_id][0];
+        let pb = arena.pave_blocks.get(pb_id).unwrap();
+        assert_eq!(pb.extra_paves.len(), 1);
+        assert!((pb.extra_paves[0].parameter - interior_t).abs() < 1e-5);
+    }
 }
