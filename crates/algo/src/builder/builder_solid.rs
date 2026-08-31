@@ -2466,14 +2466,19 @@ fn split_arc_edges_at_collinear_vertices(
             if is_closed {
                 continue;
             }
-            let (t0, t1) = curve.domain_with_endpoints(sp, ep);
-            if t1 - t0 < 1e-12 {
+            let (t0, t1) = trim.ok_or_else(|| {
+                AlgoError::AssemblyFailed(format!(
+                    "arc refinement source edge {eid:?} lacks authoritative NURBS parameter range"
+                ))
+            })?;
+            let span = t1 - t0;
+            if span.abs() < 1e-12 {
                 continue;
             }
             let n_samples = 32_usize;
             let samples: Vec<Point3> = (0..=n_samples)
                 .map(|k| {
-                    let t = t0 + (t1 - t0) * (k as f64 / n_samples as f64);
+                    let t = span.mul_add(k as f64 / n_samples as f64, t0);
                     curve.evaluate_with_endpoints(t, sp, ep)
                 })
                 .collect();
@@ -2491,7 +2496,7 @@ fn split_arc_edges_at_collinear_vertices(
                     amax.z().max(q.z()),
                 );
             }
-            let mut cuts: Vec<(f64, VertexId)> = Vec::new();
+            let mut cuts: Vec<(f64, f64, VertexId)> = Vec::new();
             for ci in grid.box_candidates(amin, amax, snap * 2.0) {
                 let (vid, p) = verts[ci];
                 if (p - sp).length() < snap || (p - ep).length() < snap {
@@ -2506,37 +2511,39 @@ fn split_arc_edges_at_collinear_vertices(
                         best_k = k;
                     }
                 }
-                let mut lo = t0 + (t1 - t0) * (best_k.saturating_sub(1) as f64 / n_samples as f64);
-                let mut hi =
-                    t0 + (t1 - t0) * ((best_k + 1).min(n_samples) as f64 / n_samples as f64);
+                let mut lo = best_k.saturating_sub(1) as f64 / n_samples as f64;
+                let mut hi = (best_k + 1).min(n_samples) as f64 / n_samples as f64;
                 for _ in 0..40 {
                     let m1 = lo + (hi - lo) / 3.0;
                     let m2 = hi - (hi - lo) / 3.0;
-                    let d1 = (curve.evaluate_with_endpoints(m1, sp, ep) - p).length();
-                    let d2 = (curve.evaluate_with_endpoints(m2, sp, ep) - p).length();
+                    let d1 =
+                        (curve.evaluate_with_endpoints(span.mul_add(m1, t0), sp, ep) - p).length();
+                    let d2 =
+                        (curve.evaluate_with_endpoints(span.mul_add(m2, t0), sp, ep) - p).length();
                     if d1 < d2 {
                         hi = m2;
                     } else {
                         lo = m1;
                     }
                 }
-                let tm = 0.5 * (lo + hi);
-                if (curve.evaluate_with_endpoints(tm, sp, ep) - p).length() > snap {
+                let fraction = 0.5 * (lo + hi);
+                let parameter = span.mul_add(fraction, t0);
+                if (curve.evaluate_with_endpoints(parameter, sp, ep) - p).length() > snap {
                     continue;
                 }
-                cuts.push((tm, vid));
+                cuts.push((fraction, parameter, vid));
             }
             if cuts.is_empty() {
                 continue;
             }
             cuts.sort_by(|a, b| {
                 a.0.total_cmp(&b.0)
-                    .then_with(|| a.1.index().cmp(&b.1.index()))
+                    .then_with(|| a.2.index().cmp(&b.2.index()))
             });
-            cuts.dedup_by_key(|(_, vid)| *vid);
+            cuts.dedup_by_key(|(_, _, vid)| *vid);
             let mut chain: Vec<(f64, VertexId)> = Vec::with_capacity(cuts.len() + 2);
             chain.push((t0, sv));
-            chain.extend(cuts.iter().copied());
+            chain.extend(cuts.iter().map(|&(_, parameter, vid)| (parameter, vid)));
             chain.push((t1, ev));
             let mut subs = Vec::with_capacity(chain.len() - 1);
             for w in chain.windows(2) {
@@ -2586,7 +2593,11 @@ fn split_arc_edges_at_collinear_vertices(
             let seam = project_angle_on_curve(&curve, sp);
             (seam, seam + std::f64::consts::TAU, false)
         } else {
-            let (start, end) = curve.domain_with_endpoints(sp, ep);
+            let (start, end) = trim.ok_or_else(|| {
+                AlgoError::AssemblyFailed(format!(
+                    "arc refinement source edge {eid:?} lacks authoritative conic parameter range"
+                ))
+            })?;
             let raw = end - start;
             // `evaluate_with_endpoints` represents open conics by their
             // shorter endpoint arc, so a raw CCW span above PI is ambiguous.
@@ -3627,7 +3638,9 @@ mod tests {
             circle.evaluate(0.0),
             1e-7,
         ));
-        let full = topo.add_edge(Edge::new(seam, seam, EdgeCurve::Circle(circle.clone())));
+        let mut full_edge = Edge::new(seam, seam, EdgeCurve::Circle(circle.clone()));
+        full_edge.set_trim(Some((0.0, std::f64::consts::TAU)));
+        let full = topo.add_edge(full_edge);
         let wire_a = topo.add_wire(Wire::new(vec![OrientedEdge::new(full, true)], true).unwrap());
         let face_a = topo.add_face(Face::new(wire_a, vec![], plane.clone()));
 
@@ -3646,8 +3659,14 @@ mod tests {
             1e-7,
         ));
         let mut oes = Vec::new();
-        for (a, b) in [(v0, v1), (v1, v2), (v2, v0)] {
-            let e = topo.add_edge(Edge::new(a, b, EdgeCurve::Circle(circle.clone())));
+        for ((a, b), trim) in [(v0, v1), (v1, v2), (v2, v0)].into_iter().zip([
+            (0.0, thirds),
+            (thirds, 2.0 * thirds),
+            (2.0 * thirds, std::f64::consts::TAU),
+        ]) {
+            let mut arc = Edge::new(a, b, EdgeCurve::Circle(circle.clone()));
+            arc.set_trim(Some(trim));
+            let e = topo.add_edge(arc);
             oes.push(OrientedEdge::new(e, true));
         }
         let wire_b = topo.add_wire(Wire::new(oes, true).unwrap());
@@ -3693,7 +3712,9 @@ mod tests {
             circle.evaluate(0.0),
             1e-7,
         ));
-        let full = topo.add_edge(Edge::new(seam, seam, EdgeCurve::Circle(circle.clone())));
+        let mut full_edge = Edge::new(seam, seam, EdgeCurve::Circle(circle.clone()));
+        full_edge.set_trim(Some((0.0, std::f64::consts::TAU)));
+        let full = topo.add_edge(full_edge);
         let wire_a = topo.add_wire(Wire::new(vec![OrientedEdge::new(full, true)], true).unwrap());
         let face_a = topo.add_face(Face::new(wire_a, vec![], plane.clone()));
 
@@ -3752,7 +3773,9 @@ mod tests {
             circle.evaluate(pi),
             1e-7,
         ));
-        let full = topo.add_edge(Edge::new(seam, seam, EdgeCurve::Circle(circle.clone())));
+        let mut full_edge = Edge::new(seam, seam, EdgeCurve::Circle(circle.clone()));
+        full_edge.set_trim(Some((pi, pi + std::f64::consts::TAU)));
+        let full = topo.add_edge(full_edge);
         let wire_a = topo.add_wire(Wire::new(vec![OrientedEdge::new(full, true)], true).unwrap());
         let face_a = topo.add_face(Face::new(wire_a, vec![], plane.clone()));
 
@@ -3769,8 +3792,14 @@ mod tests {
             1e-7,
         ));
         let mut oes = Vec::new();
-        for (a, b) in [(vs, v2), (v2, v1), (v1, vs)] {
-            let e = topo.add_edge(Edge::new(a, b, EdgeCurve::Circle(circle.clone())));
+        for ((a, b), trim) in [(vs, v2), (v2, v1), (v1, vs)].into_iter().zip([
+            (pi, 1.5 * pi),
+            (1.5 * pi, 2.5 * pi),
+            (2.5 * pi, 3.0 * pi),
+        ]) {
+            let mut arc = Edge::new(a, b, EdgeCurve::Circle(circle.clone()));
+            arc.set_trim(Some(trim));
+            let e = topo.add_edge(arc);
             oes.push(OrientedEdge::new(e, true));
         }
         let wire_b = topo.add_wire(Wire::new(oes, true).unwrap());
@@ -3816,7 +3845,9 @@ mod tests {
             ellipse.evaluate(0.0),
             1e-7,
         ));
-        let full = topo.add_edge(Edge::new(seam, seam, EdgeCurve::Ellipse(ellipse.clone())));
+        let mut full_edge = Edge::new(seam, seam, EdgeCurve::Ellipse(ellipse.clone()));
+        full_edge.set_trim(Some((0.0, std::f64::consts::TAU)));
+        let full = topo.add_edge(full_edge);
         let wire_a = topo.add_wire(Wire::new(vec![OrientedEdge::new(full, true)], true).unwrap());
         let face_a = topo.add_face(Face::new(wire_a, vec![], plane.clone()));
 
@@ -3834,8 +3865,14 @@ mod tests {
             1e-7,
         ));
         let mut oes = Vec::new();
-        for (a, b) in [(v0, v1), (v1, v2), (v2, v0)] {
-            let e = topo.add_edge(Edge::new(a, b, EdgeCurve::Ellipse(ellipse.clone())));
+        for ((a, b), trim) in [(v0, v1), (v1, v2), (v2, v0)].into_iter().zip([
+            (0.0, thirds),
+            (thirds, 2.0 * thirds),
+            (2.0 * thirds, std::f64::consts::TAU),
+        ]) {
+            let mut arc = Edge::new(a, b, EdgeCurve::Ellipse(ellipse.clone()));
+            arc.set_trim(Some(trim));
+            let e = topo.add_edge(arc);
             oes.push(OrientedEdge::new(e, true));
         }
         let wire_b = topo.add_wire(Wire::new(oes, true).unwrap());

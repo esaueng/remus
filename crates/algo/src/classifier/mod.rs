@@ -418,7 +418,12 @@ fn sub_face_outer_vertices(
         if !matches!(e.curve(), remus_topology::edge::EdgeCurve::Line) {
             let sp = topo.vertex(e.start())?.point();
             let ep = topo.vertex(e.end())?.point();
-            let (t0, t1) = e.curve().domain_with_endpoints(sp, ep);
+            let (t0, t1) = e.strict_domain().map_err(|error| {
+                AlgoError::ClassificationFailed(format!(
+                    "sub-face {face_id:?} edge {:?} lacks authoritative parameter range: {error}",
+                    oe.edge()
+                ))
+            })?;
             for k in 1..CURVE_SAMPLES {
                 let t = f64::from(k).mul_add((t1 - t0) / f64::from(CURVE_SAMPLES), t0);
                 verts.push(e.curve().evaluate_with_endpoints(t, sp, ep));
