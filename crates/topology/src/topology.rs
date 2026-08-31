@@ -194,6 +194,13 @@ impl Topology {
     /// This is intended for external-handle runtimes such as the WASM kernel.
     /// Preserving each arena's high-water mark prevents a raw numeric handle
     /// from aliasing an unrelated entity created after a restore.
+    ///
+    /// This is the *checkpoint barrier* semantics: an entity retired after
+    /// the snapshot stays retired, because the retirement may already have
+    /// been reported to an external handle holder (e.g. a committed
+    /// `deleteSolid` call) and must never be silently undone. For a failed
+    /// transactional operation — whose retirements were never observed —
+    /// use [`Self::restore_for_rollback`], which undoes them.
     pub fn restore_preserving_handle_slots(&mut self, snapshot: &Self) {
         self.vertices.restore_preserving_slots(&snapshot.vertices);
         self.edges.restore_preserving_slots(&snapshot.edges);
@@ -237,6 +244,61 @@ impl Topology {
             .remove_for_retired_entities(&retired_edges, &retired_faces);
         self.attributes
             .remove_for_retired_entities(&retired_solids, &retired_faces);
+        // Retirement is sticky here, so the derivation map — restored from
+        // the snapshot — can reference loops that stayed retired, or be
+        // keyed by a face that stayed retired. Drop those entries so the
+        // map never dangles; a face whose derivation is lost this way
+        // simply has no derivation, which Stage 1 treats as "not yet
+        // derived" (wires remain authoritative).
+        let faces = &self.faces;
+        let loops = &self.loops;
+        let coedges = &self.coedges;
+        self.face_loops.retain(|face_id, loop_ids| {
+            faces.get(*face_id).is_some()
+                && loop_ids.iter().all(|loop_id| {
+                    loops.get(*loop_id).is_some_and(|boundary| {
+                        boundary
+                            .coedges()
+                            .iter()
+                            .all(|coedge_id| coedges.get(*coedge_id).is_some())
+                    })
+                })
+        });
+    }
+
+    /// Restore the exact pre-transaction state after a failed transactional
+    /// operation, undoing every mutation the operation staged — allocations
+    /// *and* retirements.
+    ///
+    /// This is the rollback half of the stage → validate → commit / roll
+    /// back contract ([`transaction`](crate::transaction)): the failed
+    /// operation was never observed by any caller, so its retirements are
+    /// undone along with its allocations, and live entity counts and
+    /// contents match the snapshot exactly. Handles the operation allocated
+    /// stay permanently invalid (arena slots are high-water preserved,
+    /// never reused).
+    ///
+    /// Use [`Self::restore_preserving_handle_slots`] for the checkpoint
+    /// barrier instead: there a retirement may already have been reported
+    /// to an external handle holder and must stay retired.
+    pub fn restore_for_rollback(&mut self, snapshot: &Self) {
+        self.vertices.restore_for_rollback(&snapshot.vertices);
+        self.edges.restore_for_rollback(&snapshot.edges);
+        self.wires.restore_for_rollback(&snapshot.wires);
+        self.faces.restore_for_rollback(&snapshot.faces);
+        self.shells.restore_for_rollback(&snapshot.shells);
+        self.solids.restore_for_rollback(&snapshot.solids);
+        self.compounds.restore_for_rollback(&snapshot.compounds);
+        self.compsolids.restore_for_rollback(&snapshot.compsolids);
+        self.loops.restore_for_rollback(&snapshot.loops);
+        self.coedges.restore_for_rollback(&snapshot.coedges);
+        self.face_loops.clone_from(&snapshot.face_loops);
+        self.attributes.clone_from(&snapshot.attributes);
+        self.pcurves.clone_from(&snapshot.pcurves);
+        // The journal rolls back with the model, exactly as in
+        // [`Self::restore_preserving_handle_slots`].
+        self.journal.restore_preserving_ids(&snapshot.journal);
+        self.mutation_ticks = snapshot.mutation_ticks;
     }
 
     /// Reserves capacity for the given number of additional entities in the

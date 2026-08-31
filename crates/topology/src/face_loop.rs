@@ -284,6 +284,45 @@ mod tests {
     }
 
     #[test]
+    fn restore_after_post_snapshot_rederivation_leaves_no_dangling_map() {
+        // Checkpoint barrier semantics: a derivation retired after the
+        // snapshot stays retired, and the restored derivation map must not
+        // reference it — the face simply has no derivation until one is
+        // rebuilt (wires remain authoritative in Stage 1).
+        let mut topo = Topology::new();
+        let (face, _) = triangle_face(&mut topo);
+        let retired = topo.build_face_loops(face).unwrap();
+        let retired_coedges = topo.face_loop(retired[0]).unwrap().coedges().to_vec();
+        let snapshot = topo.clone();
+
+        topo.build_face_loops(face).unwrap();
+        topo.restore_preserving_handle_slots(&snapshot);
+
+        assert!(matches!(
+            topo.face_loop(retired[0]),
+            Err(TopologyError::LoopNotFound(_))
+        ));
+        for coedge_id in &retired_coedges {
+            assert!(matches!(
+                topo.coedge(*coedge_id),
+                Err(TopologyError::CoedgeNotFound(_))
+            ));
+        }
+        assert!(
+            topo.loops_of_face(face).is_none(),
+            "the restored map must not reference the retired derivation"
+        );
+        assert_eq!(topo.num_loops(), 0);
+        assert_eq!(topo.num_coedges(), 0);
+        // An underived face validates vacuously, and a fresh derivation
+        // works — on new slots, never the retired ones.
+        validate_face_loops(&topo, face).unwrap();
+        let rebuilt = topo.build_face_loops(face).unwrap();
+        assert_ne!(rebuilt[0], retired[0]);
+        validate_face_loops(&topo, face).unwrap();
+    }
+
+    #[test]
     fn new_diagnostic_codes_are_pinned() {
         use remus_math::diagnostic::{FailureCategory, ToDiagnostic};
 

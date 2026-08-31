@@ -30,6 +30,14 @@
 * **wasm:** preserve the `quality_refused` / `exact_only_unattainable`
   diagnostic through `executeBatchV2` and expose `booleanWithQuality` through
   batch dispatch.
+* **topology:** split snapshot restoration into the two contracts its callers
+  actually hold. Transactional rollback (`run_transacted` / `run_validated`,
+  via the new `Topology::restore_for_rollback`) now undoes retirements staged
+  inside the failed operation — previously a rolled-back re-derivation or
+  `delete_solid` stayed retired, contradicting the transaction contract. The
+  checkpoint barrier (`restore_preserving_handle_slots`) keeps retirements
+  tombstoned and no longer restores the face-loop derivation map into
+  referencing retired loops or faces.
 
 ### Tests
 
@@ -39,6 +47,10 @@
 * **fuzz:** add bounded scheduled NURBS construction, evaluation, and
   surface-intersection fuzzing with independent plane-section oracles and a
   clustered-refit regression corpus.
+* **fuzz:** add bounded scheduled topology-mutation fuzzing — derivation,
+  rollback, checkpoint-restore, and deletion sequences over a bounded box
+  against exact-state, stale-handle, atomic-refusal, and closed-form volume
+  oracles, with a checkpoint re-derivation regression corpus.
 
 ## 2.130.0
 
