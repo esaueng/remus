@@ -2190,6 +2190,24 @@ fn build_section_edges(
                     Ok(v) => v.point(),
                     Err(_) => continue,
                 };
+                // Skip a degenerate curved section: a Circle/Ellipse PaveBlock
+                // fragment whose arc has collapsed to a point (3D chord below
+                // tolerance AND a near-zero parametric span). A coincident-edge
+                // fuse can split a rounded corner's arc so that one fragment
+                // carries the whole quarter-arc and its twin is a ~1e-7-long
+                // remnant; the remnant has no boundary to contribute, but
+                // threading it into the face wire makes the builder weave an
+                // out-and-back spur (the over-shared depth-wall edge of the
+                // 2×1/1×2 stacking-lip fuse). The Line path already rejects
+                // zero-length sections inside `clip_line_to_face_boundary`; this
+                // guards the curved path, which uses the raw endpoints unclipped.
+                // The span test preserves a genuine full circle (coincident
+                // endpoints but a ~2π span); the chord test uses the
+                // weld-scale band (100·tol) because the remnant's endpoints are
+                // the same near-coincident vertices the assembler later welds.
+                // Checked against `trim()` before `strict_domain()` so a
+                // trimless remnant is skipped rather than failing the
+                // authority requirement.
                 if !matches!(edge.curve(), EdgeCurve::Line)
                     && (raw_end - raw_start).length() < tol * 100.0
                     && edge
@@ -2255,30 +2273,6 @@ fn build_section_edges(
                 while work_i < work.len() {
                     let (start, end) = work[work_i];
                     work_i += 1;
-                    // Skip a degenerate curved section: a Circle/Ellipse PaveBlock
-                    // fragment whose arc has collapsed to a point (3D chord below
-                    // tolerance AND a near-zero parametric span). A coincident-edge
-                    // fuse can split a rounded corner's arc so that one fragment
-                    // carries the whole quarter-arc and its twin is a ~1e-7-long
-                    // remnant; the remnant has no boundary to contribute, but
-                    // threading it into the face wire makes the builder weave an
-                    // out-and-back spur (the over-shared depth-wall edge of the
-                    // 2×1/1×2 stacking-lip fuse). The Line path already rejects
-                    // zero-length sections inside `clip_line_to_face_boundary`; this
-                    // guards the curved path, which uses the raw endpoints unclipped.
-                    // The span test preserves a genuine full circle (coincident
-                    // endpoints but a ~2π span); the chord test uses the
-                    // weld-scale band (100·tol) because the remnant's endpoints are
-                    // the same near-coincident vertices the assembler later welds.
-                    if !matches!(edge.curve(), remus_topology::edge::EdgeCurve::Line)
-                        && (end - start).length() < tol * 100.0
-                    {
-                        let (t0, t1) = edge_domain;
-                        if (t1 - t0).abs() < DEGENERATE_ARC_SPAN {
-                            continue;
-                        }
-                    }
-
                     // Same boundary-re-trace rejection as the Curve arm above: a
                     // PaveBlock section whose interior lies entirely on one of this
                     // face's existing boundary edges contributes no interior split.
