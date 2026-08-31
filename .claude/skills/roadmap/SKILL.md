@@ -91,7 +91,7 @@ this file are now §B rows there; this file remains authoritative for
 TERMINAL/REFUTED history and the campaign lessons.
 
 - O1.1a gauntlet pipeline — CLOSED 2026-08-30 in PR #164: isolated bounded workers and all five stages are pinned under `tools/gauntlet`; manifests/fetching and CI remain O1.1b/c.
-- O1.1b corpus manifests + fetcher — BLOCKED 2026-08-31: the official NYU ABC STEP archives are temporarily download-restricted, preventing the verified 1,000-model manifest required by `docs/kernel-maturity/open-kernel-status.md`; do not substitute redistribution or unverified hashes.
+- O1.1b corpus manifests + fetcher — CLOSED 2026-08-31 in PR #166: three pinned tiers, deterministic sampling, and byte-verified content-addressed fetching live under `tools/gauntlet`; no corpus bytes are committed.
 - O1.3a fillet torture corpus — CLOSED 2026-08-30: built-or-typed dispositions and the support-width cliff are pinned by `crates/operations/tests/fillet_torture.rs` in PR #139.
 - K-S2 planar face-area slice — PARTIAL 2026-08-30: exact line/circle/parabola boundary moments (including holes) are production-routed and pinned in `crates/operations/src/measure/mod.rs`; ellipse/hyperbola/NURBS boundaries and curved-body volume remain.
 - P2.8 SSI Newton budget — CLOSED 2026-08-30 in PR #147: `WorkBudgets::newton_iterations` governs all coupled SSI refinements and cancellation is polled inside the loop; the subdivision slice is closed separately below and parameter-space budgets remain in `docs/kernel-maturity/p-class-status.md`.
