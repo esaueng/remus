@@ -137,8 +137,11 @@ does not itself promote or demote anything.
   and curve-surface qualification pending. NURBS SSI consumes caller-owned
   march/queue/segment/branch, coupled-Newton, and recursive seed-subdivision
   budgets, and is cooperatively cancellable through seed discovery, Newton
-  refinement, and marching via `OperationContext`; parameter-space budgets
-  remain incomplete. Conic curve cells (hyperbola, parabola) Unqualified;
+  refinement, and marching via `OperationContext`; its scheduled
+  `nurbs_surface` fuzzer validates bounded rational patch
+  construction/evaluation and plane-section output against an independent
+  plane oracle. Parameter-space budgets remain incomplete. Conic curve cells
+  (hyperbola, parabola) Unqualified;
   periodic seam parameter reporting and pole cells Unqualified.
 
 ### Blends (fillet, chamfer, blend resize/removal)
