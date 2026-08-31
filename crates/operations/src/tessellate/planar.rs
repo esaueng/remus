@@ -815,7 +815,7 @@ pub(super) fn tessellate_planar(
         let edge = topo.edge(oe.edge())?;
         match edge.curve() {
             EdgeCurve::Circle(circle) => {
-                let (t_start, t_end) = circle_param_range(topo, edge, circle)?;
+                let (t_start, t_end) = circle_param_range(edge)?;
                 let arc_range = (t_end - t_start).abs();
                 let n_samples = segments_for_chord_deviation_a(
                     circle.radius(),
@@ -835,9 +835,8 @@ pub(super) fn tessellate_planar(
                 );
             }
             EdgeCurve::Ellipse(ellipse) => {
-                let sp = topo.vertex(edge.start())?.point();
-                let ep = topo.vertex(edge.end())?.point();
-                let (t_start, t_end) = edge.domain_with_endpoints(sp, ep);
+                let (t_start, t_end) =
+                    crate::authoritative_edge_domain(edge, "planar ellipse tessellation")?;
                 let arc_range = t_end - t_start;
                 // Largest radius of curvature (a^2/b) governs uniform-parameter
                 // sampling density; matches the wall edge sampling so the cap
@@ -866,9 +865,8 @@ pub(super) fn tessellate_planar(
             // the two vertices. Density comes from the tightest osculating
             // circle on that span (see `open_conic_segments`), never a chord.
             EdgeCurve::Hyperbola(h) => {
-                let sp = topo.vertex(edge.start())?.point();
-                let ep = topo.vertex(edge.end())?.point();
-                let (t0, t1) = edge.domain_with_endpoints(sp, ep);
+                let (t0, t1) =
+                    crate::authoritative_edge_domain(edge, "planar hyperbola tessellation")?;
                 let n_samples = super::edge_sampling::open_conic_segments(
                     h.min_curvature_radius(t0, t1),
                     h.arc_length(t0, t1),
@@ -886,9 +884,8 @@ pub(super) fn tessellate_planar(
                 );
             }
             EdgeCurve::Parabola(p) => {
-                let sp = topo.vertex(edge.start())?.point();
-                let ep = topo.vertex(edge.end())?.point();
-                let (t0, t1) = edge.domain_with_endpoints(sp, ep);
+                let (t0, t1) =
+                    crate::authoritative_edge_domain(edge, "planar parabola tessellation")?;
                 let n_samples = super::edge_sampling::open_conic_segments(
                     p.min_curvature_radius(t0, t1),
                     p.arc_length(t0, t1),
@@ -906,9 +903,7 @@ pub(super) fn tessellate_planar(
                 );
             }
             EdgeCurve::NurbsCurve(nurbs) => {
-                let sp = topo.vertex(edge.start())?.point();
-                let ep = topo.vertex(edge.end())?.point();
-                let (u0, u1) = edge.domain_with_endpoints(sp, ep);
+                let (u0, u1) = crate::authoritative_edge_domain(edge, "planar NURBS tessellation")?;
                 let n_spans = nurbs
                     .control_points()
                     .len()
