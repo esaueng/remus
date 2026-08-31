@@ -91,6 +91,13 @@ test = false
 [[bin]]
 bench = false
 doc = false
+name = "nurbs_surface"
+path = "fuzz_targets/nurbs_surface.rs"
+test = false
+
+[[bin]]
+bench = false
+doc = false
 name = "wasm_batch"
 path = "fuzz_targets/wasm_batch.rs"
 test = false

@@ -67,6 +67,15 @@ boolean operation sequences, blend and offset inputs, WASM batch decoding,
 native serialization. Minimized corpus inputs are stored under version control
 when licensing permits.
 
+Current scheduled coverage includes the public import readers, structured
+boolean trees, modifiers, and `nurbs_surface`. The latter generates bounded
+rational surfaces and an independent horizontal NURBS plane, then requires
+finite evaluation/derivatives, typed constructor refusal for corrupted data,
+and SSI points, parameters, and fitted curves that satisfy both surfaces and
+the plane equation. `arena_reader` and `wasm_batch` currently compile in PR
+CI but are not scheduled; topology mutation, native serialization,
+curve-intersection, and offset-specific fuzzing remain outstanding.
+
 ## Corpus
 
 Licensed or generated corpora: primitive adversarial cases, imported STEP,
