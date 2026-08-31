@@ -73,6 +73,38 @@ fn all_edges(topo: &Topology, solid: SolidId) -> Vec<EdgeId> {
     out
 }
 
+/// The direct-edit probes below replace circle carriers by hand. Re-establish
+/// the exact branch those edited vertices define, mirroring the authority a
+/// real edit operation must store alongside `set_curve`.
+fn certify_edited_circle_domains(topo: &mut Topology, solid: SolidId) {
+    use std::f64::consts::TAU;
+
+    for edge_id in all_edges(topo, solid) {
+        let (start_id, end_id, circle) = {
+            let edge = topo.edge(edge_id).unwrap();
+            let EdgeCurve::Circle(circle) = edge.curve() else {
+                continue;
+            };
+            if edge.trim().is_some() {
+                continue;
+            }
+            (edge.start(), edge.end(), circle.clone())
+        };
+        let start = topo.vertex(start_id).unwrap().point();
+        let end = topo.vertex(end_id).unwrap().point();
+        let t0 = circle.project(start);
+        let range = if start_id == end_id {
+            (t0, t0 + TAU)
+        } else {
+            let span = (circle.project(end) - t0).rem_euclid(TAU);
+            assert!(span > 1e-12, "edited circle arc must have a nonzero span");
+            (t0, t0 + span)
+        };
+        topo.edge_mut(edge_id).unwrap().set_trim(Some(range));
+    }
+    assert!(assert_curved_edge_authority(topo, solid) > 0);
+}
+
 fn assert_curved_edge_authority(topo: &Topology, solid: SolidId) -> usize {
     let mut curved = 0;
     for edge_id in all_edges(topo, solid) {
@@ -1064,6 +1096,7 @@ fn e10_in_place_resize_open_plane_plane_band() {
         };
         topo.vertex_mut(vertex).unwrap().set_point(moved);
     }
+    certify_edited_circle_domains(&mut topo, resized);
 
     let report = remus_operations::validate::validate_solid(&topo, resized).unwrap();
     for issue in &report.issues {
@@ -1252,6 +1285,7 @@ fn e11_in_place_resize_trihedral_corner() {
     println!(
         "E11 retargeted {cylinders} cylinders, {spheres} sphere, {circle_count} circles, {moved} vertices"
     );
+    certify_edited_circle_domains(&mut topo, resized);
 
     let report = remus_operations::validate::validate_solid(&topo, resized).unwrap();
     for issue in &report.issues {
