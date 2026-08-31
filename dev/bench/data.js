@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788207363376,
+  "lastUpdate": 1788208765073,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -5669,6 +5669,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 42418700,
             "range": "± 122276",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "88bf58a540b6b2fd78de760eac3c9b667f590811",
+          "message": "wasm: bound moveFaces topology work to prevent resource exhaustion (#167)\n\n* fix(wasm): bound move faces topology work\n\n* fix(wasm): drop redundant pub(crate) on move-faces validator",
+          "timestamp": "2026-08-31T16:36:29-04:00",
+          "tree_id": "2fa7f4b3dc6fc3871efc91a9fb6e45ebc616d3d0",
+          "url": "https://github.com/esaueng/remus/commit/88bf58a540b6b2fd78de760eac3c9b667f590811"
+        },
+        "date": 1788208763755,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1404268,
+            "range": "± 1297",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1501918,
+            "range": "± 1796",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 17555,
+            "range": "± 524",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 1034572,
+            "range": "± 27275",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 42391866,
+            "range": "± 827310",
             "unit": "ns/iter"
           }
         ]
