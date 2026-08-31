@@ -631,6 +631,7 @@ fn find_edge_surface_crossings(
     grid: Option<&SurfaceSeedGrid>,
 ) -> Vec<(f64, Point3)> {
     let n = N_SAMPLES;
+    let parameter_epsilon = (t1 - t0).abs() / n as f64 * 2.0;
     let mut crossings = Vec::new();
     let mut prev_dist = f64::MAX;
     let mut prev_t = t0;
@@ -643,7 +644,7 @@ fn find_edge_surface_crossings(
         if i > 0 && dist < tol.linear {
             let is_dup = crossings
                 .iter()
-                .any(|&(ct, _): &(f64, Point3)| (t - ct).abs() < (t1 - t0) / (n as f64) * 2.0);
+                .any(|&(ct, _): &(f64, Point3)| (t - ct).abs() < parameter_epsilon);
             if !is_dup {
                 let refined =
                     refine_crossing(curve, start_pos, end_pos, prev_t, t, surface, tol, grid);
@@ -688,9 +689,9 @@ fn find_edge_surface_crossings(
                 let t_min = f64::midpoint(lo, hi);
                 let pt_min = curve.evaluate_with_endpoints(t_min, start_pos, end_pos);
                 if distance_to_surface(pt_min, surface, grid) < tol.linear {
-                    let is_dup = crossings.iter().any(|&(ct, _): &(f64, Point3)| {
-                        (t_min - ct).abs() < (t1 - t0) / (n as f64) * 2.0
-                    });
+                    let is_dup = crossings
+                        .iter()
+                        .any(|&(ct, _): &(f64, Point3)| (t_min - ct).abs() < parameter_epsilon);
                     if !is_dup {
                         let refined =
                             refine_crossing(curve, start_pos, end_pos, lo, hi, surface, tol, grid);
@@ -718,6 +719,7 @@ fn find_crossings_by_sampling(
     tol_linear: f64,
 ) -> Vec<(f64, Point3)> {
     let n = N_SAMPLES;
+    let parameter_epsilon = (t1 - t0).abs() / n as f64 * 2.0;
     let mut crossings = Vec::new();
 
     let mut samples: Vec<(f64, f64)> = Vec::with_capacity(n + 1);
@@ -774,9 +776,9 @@ fn find_crossings_by_sampling(
             let pt_min = curve.evaluate_with_endpoints(t_min, start_pos, end_pos);
             let d_min = signed_dist(pt_min).abs();
             if d_min < tol_linear {
-                let is_dup = crossings.iter().any(|&(ct, _): &(f64, Point3)| {
-                    (t_min - ct).abs() < (t1 - t0) / (n as f64) * 2.0
-                });
+                let is_dup = crossings
+                    .iter()
+                    .any(|&(ct, _): &(f64, Point3)| (t_min - ct).abs() < parameter_epsilon);
                 if !is_dup {
                     crossings.push((t_min, pt_min));
                 }
@@ -829,8 +831,8 @@ fn refine_crossing(
     _tol: Tolerance,
     grid: Option<&SurfaceSeedGrid>,
 ) -> (f64, Point3) {
-    let mut lo = t_lo;
-    let mut hi = t_hi;
+    let mut lo = t_lo.min(t_hi);
+    let mut hi = t_lo.max(t_hi);
 
     for _ in 0..30 {
         let m1 = lo + (hi - lo) / 3.0;
@@ -888,5 +890,22 @@ mod tests {
             (t - 0.5).abs() < 0.02,
             "tangent point should be near t=0.5, got {t}"
         );
+    }
+
+    #[test]
+    fn sampling_detects_tangent_touch_on_descending_domain() {
+        let curve = EdgeCurve::Line;
+        let start = Point3::new(0.0, 0.0, 0.0);
+        let end = Point3::new(1.0, 0.0, 0.0);
+        let signed_dist = |pt: Point3| -> f64 {
+            let t = pt.x();
+            (t - 0.5) * (t - 0.5)
+        };
+
+        let crossings =
+            find_crossings_by_sampling(&curve, start, end, 1.0, 0.0, &signed_dist, 1e-7);
+
+        assert!(!crossings.is_empty());
+        assert!((crossings[0].0 - 0.5).abs() < 0.02);
     }
 }
