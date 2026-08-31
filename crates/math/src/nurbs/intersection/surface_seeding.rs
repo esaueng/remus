@@ -57,10 +57,10 @@ pub fn intersect_nurbs_nurbs(
 
 /// Intersect two NURBS surfaces under an explicit [`OperationContext`].
 ///
-/// Identical to [`intersect_nurbs_nurbs`], but marching and coupled-Newton
-/// work budgets come from `context.budgets` instead of module constants.
-/// Seed discovery, Newton refinement, and marching also poll the context's
-/// cancellation token. The default context reproduces
+/// Identical to [`intersect_nurbs_nurbs`], but marching, seed-subdivision,
+/// and coupled-Newton work budgets come from `context.budgets` instead of
+/// module constants. Seed discovery, Newton refinement, and marching also
+/// poll the context's cancellation token. The default context reproduces
 /// [`intersect_nurbs_nurbs`] exactly.
 ///
 /// # Errors
@@ -315,7 +315,7 @@ pub(super) fn find_ssi_seeds_subdivision(
         .unwrap_or_default()
 }
 
-fn find_ssi_seeds_subdivision_with_context(
+pub(super) fn find_ssi_seeds_subdivision_with_context(
     s1: &NurbsSurface,
     s2: &NurbsSurface,
     tolerance: f64,
@@ -353,7 +353,7 @@ fn find_ssi_seeds_subdivision_with_context(
     // 100x: patch diagonal threshold for Newton seeding -- patches this small
     // are close enough to attempt direct refinement
     let diag_threshold = tolerance * 100.0;
-    let max_depth = 6;
+    let max_depth = context.budgets.subdivision_depth;
     let mut seeds: Vec<IntersectionPoint> = Vec::new();
 
     subdivide_for_seeds(
