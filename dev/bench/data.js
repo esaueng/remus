@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788149610423,
+  "lastUpdate": 1788150526330,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -5399,6 +5399,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 39264907,
             "range": "± 75951",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petertoday@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petertoday"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "85ddff15020419f717dfb4016599e02fbeec3a34",
+          "message": "feat(gauntlet): add isolated corpus pipeline skeleton (#164)\n\n* feat(gauntlet): add isolated corpus pipeline skeleton\n\n* docs(roadmap): link O1.1a disposition\n\n* fix(gauntlet): drain worker pipes while polling for exit\n\nA worker whose JSON row outgrew the OS pipe buffer blocked on write,\nnever exited, and was misreported as a wall-clock budget failure.\nRead stdout/stderr on background threads during the wait loop.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Codex Review <codex-review@localhost>\nCo-authored-by: Claude Fable 5 <noreply@anthropic.com>",
+          "timestamp": "2026-08-31T00:26:00-04:00",
+          "tree_id": "a03db5f1a1f7a252f5c3e36fbd89de0343868c8b",
+          "url": "https://github.com/esaueng/remus/commit/85ddff15020419f717dfb4016599e02fbeec3a34"
+        },
+        "date": 1788150525578,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1312688,
+            "range": "± 32481",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1399384,
+            "range": "± 1828",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 14475,
+            "range": "± 18",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 985865,
+            "range": "± 1204",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 39257717,
+            "range": "± 437111",
             "unit": "ns/iter"
           }
         ]
