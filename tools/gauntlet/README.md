@@ -81,7 +81,26 @@ cargo run -p remus-gauntlet -- manifest-archive \
 
 The cache is fail-closed: every reuse rehashes the object, corrupt or
 truncated sources are refused, archive member paths cannot escape the cache,
-and failed downloads leave no object behind. Scheduled corpus execution is
-the separate O1.1c roadmap item.
+and failed downloads leave no object behind.
+
+## Scheduled scoreboards
+
+`.github/workflows/gauntlet.yml` runs `smoke` every night and `abc-1k`
+weekly, with a manual tier selector for diagnostics. Each model has a 30
+second subprocess budget and at most two models execute concurrently. The
+workflow uploads only `scoreboard.json`, `scoreboard.md`, and the trend row;
+corpus bytes and per-model rows stay on the ephemeral runner.
+
+The append-only `results` branch stores historical and latest aggregate
+scoreboards plus `trends/<tier>.jsonl`. Each trend row pins the UTC date,
+kernel SHA, manifest SHA-256, integer stage counts, derived pass rates,
+failure taxonomy, and exact/approximate boolean counts. A missing results
+branch is the explicit first-run baseline. After that, any per-stage drop
+larger than 50 basis points (0.50 percentage points) fails the run. The
+regressed aggregate is still published, so the trend cannot hide a red run.
+
+The untrusted corpus job has read-only repository credentials. A separate
+main-only job receives the write token and publishes aggregate artifacts
+without checking out or executing repository code.
 
 [abc]: https://deep-geometry.github.io/abc-dataset/
