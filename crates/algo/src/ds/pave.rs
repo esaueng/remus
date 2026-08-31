@@ -38,7 +38,7 @@ pub struct PaveBlock {
     /// The pave at the end of this segment.
     pub end: Pave,
     /// Intersection points accumulated during PaveFiller phases.
-    /// Sorted by parameter before splitting.
+    /// Ordered along the source edge's directed domain before splitting.
     pub extra_paves: Vec<Pave>,
     /// The topology edge created from this block (populated in `MakeSplitEdges`).
     pub split_edge: Option<EdgeId>,
@@ -69,6 +69,19 @@ impl PaveBlock {
     #[must_use]
     pub fn parameter_range(&self) -> (f64, f64) {
         (self.start.parameter, self.end.parameter)
+    }
+
+    /// Returns whether `parameter` lies strictly inside this block's range.
+    ///
+    /// Pave blocks preserve the source edge's traversal, so a valid range can
+    /// be descending. `guard` excludes points within that distance of either
+    /// endpoint.
+    #[must_use]
+    pub fn contains_parameter_interior(&self, parameter: f64, guard: f64) -> bool {
+        let (start, end) = self.parameter_range();
+        let lo = start.min(end) + guard;
+        let hi = start.max(end) - guard;
+        parameter > lo && parameter < hi
     }
 }
 
