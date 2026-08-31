@@ -1,5 +1,7 @@
 //! Isolated, per-model robustness gauntlet.
 
+pub mod manifest;
+
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fs::{self, File};
