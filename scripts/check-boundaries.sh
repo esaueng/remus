@@ -55,6 +55,11 @@ check_deps() {
 
 echo "Checking crate boundary rules..."
 
+if grep -En 'path[[:space:]]*=[[:space:]]*"[^"]*tools/' crates/*/Cargo.toml; then
+  echo "VIOLATION: crates/* must not depend on tools/*"
+  FAIL=1
+fi
+
 check_deps "math"
 check_deps "topology"   "remus-math"
 check_deps "geometry"   "remus-math"
