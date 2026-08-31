@@ -385,7 +385,7 @@ fn wire_winding_sign(
             pts.push(if oe.is_forward() { sv } else { ev });
             continue;
         }
-        let (t0, t1) = edge.domain_with_endpoints(sv, ev);
+        let (t0, t1) = crate::authoritative_edge_domain(edge, "boolean wire-winding sampling")?;
         for i in 0..CURVE_SAMPLES {
             #[allow(clippy::cast_precision_loss)]
             let f = i as f64 / CURVE_SAMPLES as f64;
@@ -4742,7 +4742,7 @@ fn unify_coincident_boundary_edges(
             // support arc: it groups weld candidates, not a consumer of the
             // edge's exact result interval. The rebuilt edge below still
             // preserves that interval.
-            let (t0, t1) = curve.domain_with_endpoints(sp, ep);
+            let (t0, t1) = curve.reconstruct_domain_from_endpoints(sp, ep);
             let mid = curve.evaluate_with_endpoints((t0 + t1) * 0.5, sp, ep);
             let (cs_q, ce_q) = (q(topo.vertex(cs)?.point()), q(topo.vertex(ce)?.point()));
             let (lo, hi) = if cs_q <= ce_q {
