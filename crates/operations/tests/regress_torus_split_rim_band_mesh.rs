@@ -171,11 +171,15 @@ fn split_rim_edge(
 
     let parameter_chain: Vec<OrientedEdge> = (0..parts)
         .map(|part| {
-            let edge = topo.add_edge(Edge::new(
+            let t_start = t0 + TAU * part as f64 / parts as f64;
+            let t_end = t0 + TAU * (part + 1) as f64 / parts as f64;
+            let mut edge = Edge::new(
                 vertices[part],
                 vertices[part + 1],
                 EdgeCurve::Circle(circle.clone()),
-            ));
+            );
+            edge.set_trim(Some((t_start, t_end)));
+            let edge = topo.add_edge(edge);
             OrientedEdge::new(edge, true)
         })
         .collect();

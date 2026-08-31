@@ -41,6 +41,7 @@ pub fn solid_bounding_box(
     // fillet cylinder) without over-expanding to the surface's full extent.
     let solid_data = topo.solid(solid)?;
     let shell = topo.shell(solid_data.outer_shell())?;
+    crate::preflight_face_edge_domains(topo, shell.faces(), "solid bounding-box sampling")?;
     for &fid in shell.faces() {
         if let Ok(face) = topo.face(fid) {
             expand_aabb_for_face(topo, &mut aabb, fid, face.surface());
@@ -67,6 +68,7 @@ pub fn face_set_bounding_box(
     topo: &Topology,
     faces: &[FaceId],
 ) -> Result<Aabb3, crate::OperationsError> {
+    crate::preflight_face_edge_domains(topo, faces, "face-set bounding-box sampling")?;
     let mut vertex_ids = HashSet::new();
     for &fid in faces {
         let face = topo.face(fid)?;
@@ -318,7 +320,9 @@ fn face_boundary_samples(topo: &Topology, face_id: FaceId, per_edge: usize) -> V
                 continue;
             };
             let (p_start, p_end) = (sv.point(), ev.point());
-            let (t0, t1) = edge.domain_with_endpoints(p_start, p_end);
+            let Ok((t0, t1)) = edge.strict_domain() else {
+                continue;
+            };
             for i in 0..=per_edge {
                 #[allow(clippy::cast_precision_loss)]
                 let frac = (i as f64) / (per_edge as f64);
@@ -781,7 +785,9 @@ fn sample_face_wire_midpoints(
         };
         let p_start = sv.point();
         let p_end = ev.point();
-        let (t0, t1) = edge.domain_with_endpoints(p_start, p_end);
+        let Ok((t0, t1)) = edge.strict_domain() else {
+            continue;
+        };
         for &frac in &[0.25, 0.5, 0.75] {
             let t = t0 + (t1 - t0) * frac;
             let pt = edge.curve().evaluate_with_endpoints(t, p_start, p_end);

@@ -14,7 +14,7 @@ use remus_math::tolerance::Tolerance;
 pub const DEFAULT_DEFLECTION: f64 = 0.1;
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
-use remus_topology::edge::{Edge, EdgeCurve, EdgeDomainError, EdgeId};
+use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
 use remus_topology::face::{Face, FaceId, FaceSurface};
 use remus_topology::shell::Shell;
 use remus_topology::solid::{Solid, SolidId};
@@ -291,7 +291,7 @@ fn winding_sample_points(
             EdgeCurve::Line => &[0.0],
             _ => &[0.0, 0.25, 0.5, 0.75],
         };
-        let (d0, d1) = edge.domain_with_endpoints(p_start, p_end);
+        let (d0, d1) = crate::authoritative_edge_domain(edge, "extrude profile-winding sampling")?;
         for &f in fracs {
             let f = if oe.is_forward() { f } else { 1.0 - f };
             let t = d0 + (d1 - d0) * f;
@@ -325,39 +325,26 @@ fn validated_edge_tolerance(
     Ok(edge.effective_tolerance(start_tolerance.max(end_tolerance)))
 }
 
-/// Use stored authority when present. At this public raw-wire construction
-/// boundary only, a missing interval is established once from the vertices
-/// and immediately validated; malformed stored authority is never replaced.
-fn source_curve_domain(
-    edge: &Edge,
-    start: Point3,
-    end: Point3,
-    label: &str,
-) -> Result<(f64, f64), crate::OperationsError> {
-    match edge.strict_domain() {
-        Ok(range) => Ok(range),
-        Err(EdgeDomainError::Missing { .. }) => {
-            let range = edge.curve().reconstruct_domain_from_endpoints(start, end);
-            let mut probe = Edge::with_tolerance(
-                edge.start(),
-                edge.end(),
-                edge.curve().clone(),
-                edge.tolerance(),
-            );
-            probe.set_trim(Some(range));
-            probe
-                .strict_domain()
-                .map_err(|error| crate::OperationsError::InvalidInput {
-                    reason: format!(
-                        "{label} cannot establish raw-construction parameter authority: {error}"
-                    ),
-                })?;
-            Ok(range)
-        }
-        Err(error) => Err(crate::OperationsError::InvalidInput {
-            reason: format!("{label} has invalid stored parameter authority: {error}"),
-        }),
+/// Read authority after [`normalize_profile_wire_domains`] has established
+/// the public raw-wire compatibility boundary.
+fn source_curve_domain(edge: &Edge, label: &str) -> Result<(f64, f64), crate::OperationsError> {
+    crate::authoritative_edge_domain(edge, label)
+}
+
+fn normalize_profile_wire_domains(
+    topo: &mut Topology,
+    wire_id: WireId,
+) -> Result<(), crate::OperationsError> {
+    let edge_ids: Vec<EdgeId> = topo
+        .wire(wire_id)?
+        .edges()
+        .iter()
+        .map(OrientedEdge::edge)
+        .collect();
+    for edge_id in edge_ids {
+        crate::normalize_legacy_edge_domain(topo, edge_id, "extrude raw profile edge")?;
     }
+    Ok(())
 }
 
 fn reversed_curve_trim(curve: &EdgeCurve, trim: (f64, f64)) -> (f64, f64) {
@@ -484,12 +471,7 @@ fn extrude_wire_vertices_with(
         let source_trim = if matches!(bottom_curve, EdgeCurve::Line) {
             None
         } else {
-            Some(source_curve_domain(
-                bottom_edge,
-                topo.vertex(bottom_edge.start())?.point(),
-                topo.vertex(bottom_edge.end())?.point(),
-                "extrude source edge",
-            )?)
+            Some(source_curve_domain(bottom_edge, "extrude source edge")?)
         };
         let mut top_curve = translate_edge_curve(&bottom_curve, offset)?;
         // The top edge's stored vertices (top_verts[i], top_verts[next]) follow
@@ -575,15 +557,10 @@ fn side_face_surface(
     curve: &EdgeCurve,
     p0: Point3,
     p1: Point3,
-    // The edge's STORED start/end (its natural orientation), used to pick the
-    // arc span. `p0`/`p1` are wire-traversal order and may be swapped (reversed
-    // edge), which would select the complementary arc for ellipses/circles.
-    curve_endpoints: (Point3, Point3),
     trim: Option<(f64, f64)>,
     offset: Vec3,
     outer_is_cw: bool,
 ) -> Result<(FaceSurface, bool), crate::OperationsError> {
-    let (curve_start, curve_end) = curve_endpoints;
     match curve {
         EdgeCurve::Line => {
             let edge_dir = p1 - p0;
@@ -670,8 +647,10 @@ fn side_face_surface(
         // chord fallback — the side face meets the caps at the same
         // boundary the trimmed arc has.
         c @ (EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_)) => {
-            let (t_start, t_end) =
-                trim.unwrap_or_else(|| c.domain_with_endpoints(curve_start, curve_end));
+            let (t_start, t_end) = trim.ok_or_else(|| crate::OperationsError::InvalidInput {
+                reason: "extrude conic side construction requires an authoritative edge domain"
+                    .into(),
+            })?;
             let (lo, hi) = (t_start.min(t_end), t_start.max(t_end));
             let nc = open_conic_to_nurbs(c, lo, hi)?;
             let surface = ruled_nurbs_surface(&nc, offset)?;
@@ -686,8 +665,10 @@ fn side_face_surface(
             // the edge endpoints and build the rational-quadratic NURBS over
             // just that span (geometry's arc converter is exact at the arc
             // endpoints, so the side and planar cap share the boundary).
-            let (t_start, t_end) =
-                trim.unwrap_or_else(|| curve.domain_with_endpoints(curve_start, curve_end));
+            let (t_start, t_end) = trim.ok_or_else(|| crate::OperationsError::InvalidInput {
+                reason: "extrude ellipse side construction requires an authoritative edge domain"
+                    .into(),
+            })?;
             let nc =
                 remus_geometry::convert::ellipse_to_nurbs(ell, t_start, t_end).map_err(|e| {
                     crate::OperationsError::InvalidInput {
@@ -810,7 +791,7 @@ fn normalize_profile_wire_curves(
         let authority_tolerance = validated_edge_tolerance(topo, edge, "extrude profile edge")?;
         let s3 = topo.vertex(edge.start())?.point();
         let e3 = topo.vertex(edge.end())?.point();
-        let source_range = source_curve_domain(edge, s3, e3, "extrude profile NURBS")?;
+        let source_range = source_curve_domain(edge, "extrude profile NURBS")?;
         let (d0, d1) = nc.domain();
         let a3 = nc.evaluate(d0);
         let b3 = nc.evaluate(d1);
@@ -1058,8 +1039,10 @@ fn extrude_impl(
     let input_wire_id = face_data.outer_wire();
     let inner_wire_ids: Vec<WireId> = face_data.inner_wires().to_vec();
 
+    normalize_profile_wire_domains(topo, input_wire_id)?;
     normalize_profile_wire_curves(topo, input_wire_id, tol.linear)?;
     for &iw in &inner_wire_ids {
+        normalize_profile_wire_domains(topo, iw)?;
         normalize_profile_wire_curves(topo, iw, tol.linear)?;
     }
 
@@ -1201,14 +1184,12 @@ fn extrude_impl(
 
         let p0 = input_positions[i];
         let p1 = input_positions[next];
-        let (edge_curve, e_start, e_end, trim) = {
+        let (edge_curve, trim) = {
             let e = topo.edge(input_edge_ids[i])?;
-            (e.curve().clone(), e.start(), e.end(), e.trim())
+            (e.curve().clone(), e.trim())
         };
-        let cs = topo.vertex(e_start)?.point();
-        let ce = topo.vertex(e_end)?.point();
         let (surface, reversed) =
-            side_face_surface(&edge_curve, p0, p1, (cs, ce), trim, offset, outer_is_cw)?;
+            side_face_surface(&edge_curve, p0, p1, trim, offset, outer_is_cw)?;
 
         // A reversed face flips every edge's effective traversal, so the wire
         // must be built with reversed winding too, or the face traverses its
@@ -1265,12 +1246,10 @@ fn extrude_impl(
                 let e = topo.edge(iwd.edge_ids[i])?;
                 (e.curve().clone(), e.start(), e.end(), e.trim())
             };
-            let cs = topo.vertex(e_start)?.point();
-            let ce = topo.vertex(e_end)?.point();
             // Inner wires have flipped winding relative to outer
             let inner_is_cw = !is_cw;
             let (surface, reversed) =
-                side_face_surface(&edge_curve, p0, p1, (cs, ce), trim, offset, inner_is_cw)?;
+                side_face_surface(&edge_curve, p0, p1, trim, offset, inner_is_cw)?;
 
             // A full closed circle passed through unsplit becomes one exact
             // cylinder wall, but its start==end vertex makes `edge_dir` zero, so
