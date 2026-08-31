@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788205978821,
+  "lastUpdate": 1788206154591,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -5561,6 +5561,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 39655741,
             "range": "± 177264",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "fa4c76bfd2a1e1535273bd0592d6f554aa7acda8",
+          "message": "test(fuzz): qualify topology mutation contracts (K-S4) (#170)\n\n* fix(topology): undo in-transaction retirements on rollback\n\nSplit snapshot restoration into the two contracts its callers hold.\nTransactional rollback (run_transacted / run_validated) now uses the new\nTopology::restore_for_rollback, which undoes retirements staged inside\nthe failed operation: previously a rolled-back face-loop re-derivation\nor delete_solid stayed retired, contradicting the transaction contract's\nexact-state guarantee. The checkpoint barrier\n(restore_preserving_handle_slots) keeps retirements tombstoned — a\ncommitted deletion may already have been reported to an external handle\nholder — and no longer restores the face-loop derivation map into\nreferencing retired loops or faces.\n\n* test(fuzz): qualify topology mutation contracts\n\nAdd the K-S4 topology-mutation fuzz slice: a bounded, byte-driven\ncampaign over a box solid (census and dx*dy*dz known by construction)\ncovering face-loop derivation and re-derivation, validated rollback of\na deliberately broken wire, staged-allocation rollback, in-transaction\nre-derivation and deletion rollback, checkpoint restore, unreferenced\ndeletion, and typed referenced-deletion refusal.\n\nOracles after every mutation: comprehensive validation, the\nclosed-manifold census, closed-form volume, exact-state rollback,\ntombstoned checkpoint retirements with a never-dangling derivation\nmap, permanent stale-handle invalidation without slot reissue, atomic\nrefusal, and complete unshared-tree retirement with a guard box and\nunrelated compound surviving.\n\nThe campaign found the rollback/restore contract split fixed in the\nparent commit: its checkpoint-rederive-tombstone corpus seed crashes\non the pre-fix tree. Registered in fuzz/Cargo.toml and the scheduled\nFuzz Smoke workflow with a thirteen-entry minimized corpus.\n\n* docs(roadmap): record the K-S4 topology-mutation disposition (PR #170)",
+          "timestamp": "2026-08-31T15:50:46-04:00",
+          "tree_id": "35d745f2aebe5852e6f7ea7b5f8dfd4ff6ea72ff",
+          "url": "https://github.com/esaueng/remus/commit/fa4c76bfd2a1e1535273bd0592d6f554aa7acda8"
+        },
+        "date": 1788206153653,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1322535,
+            "range": "± 39051",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1412937,
+            "range": "± 45574",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 15033,
+            "range": "± 50",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 985054,
+            "range": "± 2425",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 39743189,
+            "range": "± 93168",
             "unit": "ns/iter"
           }
         ]
