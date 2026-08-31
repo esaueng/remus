@@ -32,26 +32,17 @@ fn sphere_outer_wire_constant_v(
     topo: &Topology,
     face_id: FaceId,
     sphere: &remus_math::surfaces::SphericalSurface,
-) -> bool {
-    let Ok(face) = topo.face(face_id) else {
-        return false;
-    };
-    let Ok(wire) = topo.wire(face.outer_wire()) else {
-        return false;
-    };
+) -> Result<bool, crate::OperationsError> {
+    let face = topo.face(face_id)?;
+    let wire = topo.wire(face.outer_wire())?;
     let mut v_min = f64::INFINITY;
     let mut v_max = f64::NEG_INFINITY;
     for oe in wire.edges() {
-        let Ok(edge) = topo.edge(oe.edge()) else {
-            return false;
-        };
-        let (Ok(sv), Ok(ev)) = (topo.vertex(edge.start()), topo.vertex(edge.end())) else {
-            return false;
-        };
+        let edge = topo.edge(oe.edge())?;
+        let (sv, ev) = (topo.vertex(edge.start())?, topo.vertex(edge.end())?);
         let (sp, ep) = (sv.point(), ev.point());
-        let Ok((t0, t1)) = edge.strict_domain() else {
-            return false;
-        };
+        let (t0, t1) =
+            crate::authoritative_edge_domain(edge, "sphere latitude-band classification")?;
         // Sample ALONG each edge, not just its start vertex: a great-circle arc
         // has both endpoints on the seam latitude yet bulges away from it, so
         // endpoint-only sampling would mis-read a scalloped collar floor as a
@@ -66,23 +57,25 @@ fn sphere_outer_wire_constant_v(
     // Latitude-flatness threshold sized to the linear-tolerance magnitude: a
     // real band's v-spread is ~fp-noise; a collar's is a large fraction of a
     // radian.
-    (v_max - v_min) <= 1e-7
+    Ok((v_max - v_min) <= 1e-7)
 }
 
 /// Whether the solid has at least one sphere face that is a scalloped collar
 /// (a bored quadric whose outer wire varies in `v`, e.g. a box ∩ sphere patch).
-fn solid_has_scalloped_sphere_collar(topo: &Topology, solid: SolidId) -> bool {
-    let Ok(faces) = remus_topology::explorer::solid_faces(topo, solid) else {
-        return false;
-    };
-    faces.iter().any(|&fid| {
-        topo.face(fid).is_ok_and(|f| match f.surface() {
-            FaceSurface::Sphere(s) => {
-                !f.inner_wires().is_empty() && !sphere_outer_wire_constant_v(topo, fid, s)
-            }
-            _ => false,
-        })
-    })
+fn solid_has_scalloped_sphere_collar(
+    topo: &Topology,
+    solid: SolidId,
+) -> Result<bool, crate::OperationsError> {
+    for fid in remus_topology::explorer::solid_faces(topo, solid)? {
+        let face = topo.face(fid)?;
+        if let FaceSurface::Sphere(sphere) = face.surface()
+            && !face.inner_wires().is_empty()
+            && !sphere_outer_wire_constant_v(topo, fid, sphere)?
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Whether the solid has a torus notch band (torus − box: a kept toroidal patch
@@ -286,12 +279,15 @@ fn quadric_wall_boundary_winds_period(topo: &Topology, fid: FaceId) -> bool {
     winding.abs() >= tau - 1e-3
 }
 
-fn analytic_faces_solid_volume(topo: &Topology, solid: SolidId) -> Option<f64> {
+fn analytic_faces_solid_volume(
+    topo: &Topology,
+    solid: SolidId,
+) -> Result<Option<f64>, crate::OperationsError> {
     use remus_topology::explorer::solid_faces;
 
-    let faces = solid_faces(topo, solid).ok()?;
+    let faces = solid_faces(topo, solid)?;
     if faces.is_empty() {
-        return None;
+        return Ok(None);
     }
 
     // The Steinmetz lens fuse — two mutually-trimmed equal cylinders, whose
@@ -300,7 +296,7 @@ fn analytic_faces_solid_volume(topo: &Topology, solid: SolidId) -> Option<f64> {
     // the lens, and a general holed-cylinder integrator was too broad to be
     // correct; the closed form is exact and needs no special integration.
     if solid_is_steinmetz_lens_fuse(topo, &faces) {
-        return steinmetz_lens_fuse_volume(topo, &faces);
+        return Ok(steinmetz_lens_fuse_volume(topo, &faces));
     }
 
     let mut has_bored_quadric = false;
@@ -309,7 +305,7 @@ fn analytic_faces_solid_volume(topo: &Topology, solid: SolidId) -> Option<f64> {
         if notched_quadric {
             has_bored_quadric = true;
         }
-        let face = topo.face(fid).ok()?;
+        let face = topo.face(fid)?;
         // A notched quadric with a marched NURBS rim that WINDS the period is
         // the wavy-band topology produced by circle-outside cone/box fuses.
         // Its analytic bounding rectangle over-counts the removed lobes; the
@@ -337,10 +333,10 @@ fn analytic_faces_solid_volume(topo: &Topology, solid: SolidId) -> Option<f64> {
                 })
             });
         if has_nurbs_rim {
-            return None;
+            return Ok(None);
         }
         match face.surface() {
-            FaceSurface::Nurbs(_) => return None,
+            FaceSurface::Nurbs(_) => return Ok(None),
             // Sphere only: the per-face integrator's hole-clipping is wired up
             // for spheres. A bored torus would pass `hole_vs = []` and
             // over-integrate, so defer it to tessellation until torus
@@ -351,8 +347,8 @@ fn analytic_faces_solid_volume(topo: &Topology, solid: SolidId) -> Option<f64> {
                 // (great-circle/seam arcs, e.g. a box ∩ sphere patch) is not
                 // that shape — its scalloped floor and lune bites would be
                 // mis-integrated, so defer the whole solid to tessellation.
-                if !sphere_outer_wire_constant_v(topo, fid, s) {
-                    return None;
+                if !sphere_outer_wire_constant_v(topo, fid, s)? {
+                    return Ok(None);
                 }
                 has_bored_quadric = true;
             }
@@ -368,22 +364,25 @@ fn analytic_faces_solid_volume(topo: &Topology, solid: SolidId) -> Option<f64> {
             // A torus's tube is periodic in BOTH parameters, so a hole that
             // wraps a period bounds no patch and has no "above" to count: the
             // integrator leaves it, and the solid is deferred to tessellation.
-            FaceSurface::Torus(_) if !face.inner_wires().is_empty() => return None,
+            FaceSurface::Torus(_) if !face.inner_wires().is_empty() => return Ok(None),
             _ => {}
         }
     }
     if !has_bored_quadric {
-        return None;
+        return Ok(None);
     }
 
     let gauss_order = remus_check::properties::PropertiesOptions::default().gauss_order;
     let mut total = 0.0;
     for &fid in &faces {
-        total += remus_check::properties::face_integrator::integrate_face(topo, fid, gauss_order)
-            .ok()?
-            .volume;
+        let Ok(properties) =
+            remus_check::properties::face_integrator::integrate_face(topo, fid, gauss_order)
+        else {
+            return Ok(None);
+        };
+        total += properties.volume;
     }
-    Some(total.abs())
+    Ok(Some(total.abs()))
 }
 
 /// Exact volume of a fully-analytic SURFACE-OF-REVOLUTION solid (cone / cylinder
@@ -1359,9 +1358,6 @@ pub fn solid_volume(
     solid: SolidId,
     deflection: f64,
 ) -> Result<f64, crate::OperationsError> {
-    let faces = remus_topology::explorer::solid_faces(topo, solid)?;
-    crate::preflight_face_edge_domains(topo, &faces, "solid-volume measurement")?;
-
     // Fast path: exact analytic formula for known primitives.
     if let Some(v) = try_analytic_solid_volume(topo, solid) {
         if std::env::var("BK_VOL_TRACE").is_ok() {
@@ -1376,7 +1372,7 @@ pub fn solid_volume(
     // undercount and the degenerate-UV annular-band over-count that the
     // tessellation paths below suffer on bored quadrics (e.g. a cylinder
     // drilled through a sphere).
-    if let Some(v) = analytic_faces_solid_volume(topo, solid) {
+    if let Some(v) = analytic_faces_solid_volume(topo, solid)? {
         if std::env::var("BK_VOL_TRACE").is_ok() {
             log::debug!("VOL_TRACE analytic_faces -> {v}");
         }
@@ -1409,7 +1405,7 @@ pub fn solid_volume(
     // its analytic integral is the hard u-dependent lune trim we defer. The
     // whole-solid mesh IS watertight, so take the divergence-theorem volume off
     // that closed mesh.
-    if solid_has_scalloped_sphere_collar(topo, solid) {
+    if solid_has_scalloped_sphere_collar(topo, solid)? {
         let mesh = tessellate::tessellate_solid(topo, solid, deflection)?;
         if !mesh.indices.is_empty() && mesh_boundary_edge_count(&mesh) == 0 {
             return Ok(signed_volume_from_mesh(&mesh));
@@ -1506,12 +1502,17 @@ pub fn solid_volume(
         let has_non_band_sphere = {
             let s = topo.solid(solid)?;
             let sh = topo.shell(s.outer_shell())?;
-            sh.faces().iter().any(|&fid| {
-                topo.face(fid).is_ok_and(|f| match f.surface() {
-                    FaceSurface::Sphere(sphere) => !sphere_outer_wire_constant_v(topo, fid, sphere),
-                    _ => false,
-                })
-            })
+            let mut found = false;
+            for &fid in sh.faces() {
+                let face = topo.face(fid)?;
+                if let FaceSurface::Sphere(sphere) = face.surface()
+                    && !sphere_outer_wire_constant_v(topo, fid, sphere)?
+                {
+                    found = true;
+                    break;
+                }
+            }
+            found
         };
         if has_nurbs || has_non_band_sphere {
             let mesh = tessellate::tessellate_solid(topo, solid, deflection)?;
@@ -3065,7 +3066,7 @@ mod regression_tests {
             "the holed tube must not hit the whole-solid analytic primitive path"
         );
         assert!(
-            analytic_faces_solid_volume(&topo, tube).is_none(),
+            analytic_faces_solid_volume(&topo, tube).unwrap().is_none(),
             "the holed tube must not hit the per-face analytic path (it ignores holes)"
         );
 

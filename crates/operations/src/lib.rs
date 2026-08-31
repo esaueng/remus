@@ -395,7 +395,7 @@ mod edge_domain_authority_tests {
     }
 
     #[test]
-    fn measurements_refuse_missing_curved_authority_without_mutation() {
+    fn bounding_box_refuses_missing_curved_authority_without_mutation() {
         let mut topo = Topology::new();
         let solid = crate::primitives::make_cylinder(&mut topo, 2.0, 3.0).unwrap();
         let rim = solid_edges(&topo, solid)
@@ -419,12 +419,10 @@ mod edge_domain_authority_tests {
 
         let bbox_error = crate::measure::solid_bounding_box(&topo, solid).unwrap_err();
         assert!(bbox_error.to_string().contains("authoritative edge domain"));
-        let volume_error = crate::measure::solid_volume(&topo, solid, 0.01).unwrap_err();
-        assert!(
-            volume_error
-                .to_string()
-                .contains("authoritative edge domain")
-        );
+        // The primitive closed form consumes no edge parameters, so it remains
+        // available; strict refusal is attached to actual edge-domain readers,
+        // not imposed as a blanket solid-validity check.
+        assert!(crate::measure::solid_volume(&topo, solid, 0.01).is_ok());
 
         assert_eq!(
             before,
