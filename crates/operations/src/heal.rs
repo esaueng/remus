@@ -1664,14 +1664,16 @@ fn unify_faces_with_history_impl(
         // Edge count is unreliable — a hole tessellated into many short edges
         // would be misclassified as the outer boundary.
         let outer_idx = if loops.len() > 1 {
-            loops
+            let loop_areas = loops
+                .iter()
+                .map(|edges| loop_area_3d(topo, edges))
+                .collect::<Result<Vec<_>, _>>()?;
+            loop_areas
                 .iter()
                 .enumerate()
-                .max_by(|(_, a), (_, b)| {
-                    let area_a = loop_area_3d(topo, a);
-                    let area_b = loop_area_3d(topo, b);
+                .max_by(|(_, area_a), (_, area_b)| {
                     area_a
-                        .partial_cmp(&area_b)
+                        .partial_cmp(area_b)
                         .unwrap_or(std::cmp::Ordering::Equal)
                 })
                 .map_or(0, |(i, _)| i)
@@ -1743,20 +1745,20 @@ fn unify_faces_with_history_impl(
 /// degenerates (< 3 distinct points) and reads as area 0, which breaks
 /// outer-loop selection for merged faces bounded by whole circles.
 ///
-/// Returns 0.0 if any topology lookup fails (defensive fallback).
-fn loop_area_3d(topo: &Topology, loop_edges: &[OrientedEdge]) -> f64 {
+fn loop_area_3d(
+    topo: &Topology,
+    loop_edges: &[OrientedEdge],
+) -> Result<f64, crate::OperationsError> {
     const SAMPLES_PER_EDGE: usize = 8;
     let mut positions: Vec<Point3> = Vec::with_capacity(loop_edges.len() * SAMPLES_PER_EDGE);
     for oe in loop_edges {
-        let edge = match topo.edge(oe.edge()) {
-            Ok(e) => e,
-            Err(_) => return 0.0,
-        };
-        let (sp, ep) = match (topo.vertex(edge.start()), topo.vertex(edge.end())) {
-            (Ok(s), Ok(e)) => (s.point(), e.point()),
-            _ => return 0.0,
-        };
-        let (t_min, t_max) = edge.domain_with_endpoints(sp, ep);
+        let edge = topo.edge(oe.edge())?;
+        let (sp, ep) = (
+            topo.vertex(edge.start())?.point(),
+            topo.vertex(edge.end())?.point(),
+        );
+        let (t_min, t_max) =
+            crate::authoritative_edge_domain(edge, "face-unification loop-area sampling")?;
         // Sample the edge from its oriented start, excluding the final
         // endpoint (the next edge in the loop supplies it).
         for i in 0..SAMPLES_PER_EDGE {
@@ -1767,10 +1769,10 @@ fn loop_area_3d(topo: &Topology, loop_edges: &[OrientedEdge]) -> f64 {
         }
     }
     if positions.len() < 3 {
-        return 0.0;
+        return Ok(0.0);
     }
     // Newell normal magnitude = 2× enclosed area.
-    crate::winding::newell_normal(&positions).length() * 0.5
+    Ok(crate::winding::newell_normal(&positions).length() * 0.5)
 }
 
 /// Quantized 3D position key for vertex matching in edge chaining.

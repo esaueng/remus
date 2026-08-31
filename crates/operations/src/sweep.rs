@@ -455,7 +455,7 @@ fn profile_outer_centroid(
         let edge = topo.edge(oe.edge())?;
         let start = topo.vertex(edge.start())?.point();
         let end = topo.vertex(edge.end())?.point();
-        let (t0, t1) = edge.domain_with_endpoints(start, end);
+        let (t0, t1) = crate::authoritative_edge_domain(edge, "sweep profile-centroid sampling")?;
         // Four samples per edge span a closed circle's full sweep.
         for k in 0..4 {
             let t = t0 + (t1 - t0) * (f64::from(k) / 4.0);
