@@ -36,6 +36,9 @@
 * **boolean:** qualify the historical tangent-boss operand-loss fix with a
   versioned WASM repro, closed-form ratio/scale oracles, and exact-or-disclosed
   fallback policy checks.
+* **fuzz:** add bounded scheduled NURBS construction, evaluation, and
+  surface-intersection fuzzing with independent plane-section oracles and a
+  clustered-refit regression corpus.
 
 ## 2.130.0
 
