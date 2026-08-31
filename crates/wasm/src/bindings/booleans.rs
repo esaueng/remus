@@ -106,13 +106,15 @@ impl BrepKernel {
     /// iterations of every NURBS surface-surface intersection inside the
     /// operation (a non-negative integer; `0` disables refinement). Omitted
     /// or `null` keeps the kernel default, reproducing prior behavior.
+    /// `subdivision_depth` likewise caps recursive SSI seed subdivision
+    /// (`0` disables recursive splitting; omitted or `null` keeps depth 6).
     ///
     /// # Errors
     ///
     /// Returns an error if a handle is invalid, the op string is unknown,
     /// `newton_iterations` is not a non-negative integer within the public
-    /// work budget, or (under `exact_only`) the exact pipeline cannot
-    /// produce the result.
+    /// work budget, `subdivision_depth` is invalid under the same rules, or
+    /// (under `exact_only`) the exact pipeline cannot produce the result.
     #[wasm_bindgen(js_name = "booleanWithQuality")]
     pub fn boolean_with_quality(
         &mut self,
@@ -121,9 +123,10 @@ impl BrepKernel {
         b: u32,
         exact_only: Option<bool>,
         newton_iterations: Option<f64>,
+        subdivision_depth: Option<f64>,
     ) -> Result<tsify::Ts<crate::types::BooleanQualityResult>, JsError> {
         Ok(self
-            .boolean_with_quality_impl(op, a, b, exact_only, newton_iterations)?
+            .boolean_with_quality_impl(op, a, b, exact_only, newton_iterations, subdivision_depth)?
             .into_ts()?)
     }
 }
@@ -137,14 +140,16 @@ impl BrepKernel {
         b: u32,
         exact_only: Option<bool>,
         newton_iterations: Option<f64>,
+        subdivision_depth: Option<f64>,
     ) -> Result<crate::types::BooleanQualityResult, JsError> {
         use remus_operations::boolean::{BooleanQuality, boolean_with_context};
 
         let boolean_op = parse_boolean_op(op)?;
         let newton_budget = parse_newton_budget(newton_iterations)?;
+        let subdivision_budget = parse_subdivision_budget(subdivision_depth)?;
         let a_id = self.resolve_solid(a)?;
         let b_id = self.resolve_solid(b)?;
-        let context = quality_context(exact_only == Some(true), newton_budget);
+        let context = quality_context(exact_only == Some(true), newton_budget, subdivision_budget);
         let outcome = boolean_with_context(self.topo_mut(), boolean_op, a_id, b_id, &context)?;
         let (quality, deflection) = match outcome.quality {
             BooleanQuality::Exact => ("exact".to_string(), None),
@@ -164,7 +169,8 @@ impl BrepKernel {
     /// Cancellation is typed (`operation_cancelled`) and transactional: no
     /// partial topology is retained. Result quality follows
     /// `booleanWithQuality`, including the optional exact-only policy and the
-    /// optional `newton_iterations` refinement cap.
+    /// optional Newton and subdivision caps.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn boolean_with_cancellation_typed(
         &mut self,
         op: &str,
@@ -173,8 +179,17 @@ impl BrepKernel {
         token: &OperationCancellationToken,
         exact_only: Option<bool>,
         newton_iterations: Option<f64>,
+        subdivision_depth: Option<f64>,
     ) -> Result<CancellableBooleanResult, JsError> {
-        match self.boolean_with_cancellation_impl(op, a, b, token, exact_only, newton_iterations) {
+        match self.boolean_with_cancellation_impl(
+            op,
+            a,
+            b,
+            token,
+            exact_only,
+            newton_iterations,
+            subdivision_depth,
+        ) {
             Ok(result) => Ok(CancellableBooleanResult {
                 status: CancellableOperationStatus::Completed,
                 code: None,
@@ -197,8 +212,9 @@ impl BrepKernel {
     /// Cancellation is typed (`operation_cancelled`) and transactional: no
     /// partial topology is retained. Result quality follows
     /// `booleanWithQuality`, including the optional exact-only policy and the
-    /// optional `newton_iterations` refinement cap.
+    /// optional Newton and subdivision caps.
     #[wasm_bindgen(js_name = "booleanWithCancellation")]
+    #[allow(clippy::too_many_arguments)]
     pub fn boolean_with_cancellation(
         &mut self,
         op: &str,
@@ -207,9 +223,18 @@ impl BrepKernel {
         token: &OperationCancellationToken,
         exact_only: Option<bool>,
         newton_iterations: Option<f64>,
+        subdivision_depth: Option<f64>,
     ) -> Result<tsify::Ts<CancellableBooleanResult>, JsError> {
         Ok(self
-            .boolean_with_cancellation_typed(op, a, b, token, exact_only, newton_iterations)?
+            .boolean_with_cancellation_typed(
+                op,
+                a,
+                b,
+                token,
+                exact_only,
+                newton_iterations,
+                subdivision_depth,
+            )?
             .into_ts()?)
     }
 
@@ -554,6 +579,7 @@ impl BrepKernel {
         Ok(solid_id_to_u32(result))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn boolean_with_cancellation_impl(
         &mut self,
         op: &str,
@@ -562,6 +588,7 @@ impl BrepKernel {
         token: &OperationCancellationToken,
         exact_only: Option<bool>,
         newton_iterations: Option<f64>,
+        subdivision_depth: Option<f64>,
     ) -> Result<BooleanQualityResult, WasmError> {
         let boolean_op = match op.to_ascii_lowercase().as_str() {
             "fuse" | "union" => remus_operations::boolean::BooleanOp::Fuse,
@@ -574,9 +601,10 @@ impl BrepKernel {
             }
         };
         let newton_budget = parse_newton_budget(newton_iterations)?;
+        let subdivision_budget = parse_subdivision_budget(subdivision_depth)?;
         let a_id = self.resolve_solid(a)?;
         let b_id = self.resolve_solid(b)?;
-        let context = quality_context(exact_only == Some(true), newton_budget)
+        let context = quality_context(exact_only == Some(true), newton_budget, subdivision_budget)
             .with_cancellation(token.inner.clone());
         let outcome = remus_operations::boolean::boolean_with_context(
             self.topo_mut(),
@@ -608,6 +636,15 @@ fn parse_newton_budget(newton_iterations: Option<f64>) -> Result<Option<usize>, 
         .transpose()
 }
 
+/// Parse and validate an optional JS SSI seed-subdivision depth cap.
+///
+/// `None` (JS `undefined`/`null`) keeps the kernel default budget.
+fn parse_subdivision_budget(subdivision_depth: Option<f64>) -> Result<Option<usize>, WasmError> {
+    subdivision_depth
+        .map(|value| crate::error::validate_iteration_budget(value, "subdivision_depth"))
+        .transpose()
+}
+
 /// Build the [`OperationContext`] for a quality-disclosing boolean from the
 /// validated JS-facing knobs.
 ///
@@ -621,7 +658,11 @@ fn parse_newton_budget(newton_iterations: Option<f64>) -> Result<Option<usize>, 
 /// because `bindings` is a private module; kept for the same reason as
 /// [`coincident_face_pairs_to_json`].
 #[allow(clippy::redundant_pub_crate)]
-pub(crate) fn quality_context(exact_only: bool, newton_budget: Option<usize>) -> OperationContext {
+pub(crate) fn quality_context(
+    exact_only: bool,
+    newton_budget: Option<usize>,
+    subdivision_budget: Option<usize>,
+) -> OperationContext {
     let mut context = if exact_only {
         OperationContext::new().with_fallback(FallbackPolicy::ExactOnly)
     } else {
@@ -629,6 +670,10 @@ pub(crate) fn quality_context(exact_only: bool, newton_budget: Option<usize>) ->
     };
     if let Some(cap) = newton_budget {
         let budgets = context.budgets.with_newton_iterations(cap);
+        context = context.with_budgets(budgets);
+    }
+    if let Some(cap) = subdivision_budget {
+        let budgets = context.budgets.with_subdivision_depth(cap);
         context = context.with_budgets(budgets);
     }
     context
@@ -712,7 +757,7 @@ mod tests {
         let token = OperationCancellationToken::new();
         token.cancel();
         let error = kernel
-            .boolean_with_cancellation_impl("fuse", a, b, &token, Some(true), None)
+            .boolean_with_cancellation_impl("fuse", a, b, &token, Some(true), None, None)
             .err()
             .unwrap();
 
@@ -742,7 +787,7 @@ mod tests {
         assert_eq!(structured["details"]["kernelCode"], "operation_cancelled");
 
         let public = kernel
-            .boolean_with_cancellation_typed("fuse", a, b, &token, Some(true), None)
+            .boolean_with_cancellation_typed("fuse", a, b, &token, Some(true), None, None)
             .unwrap();
         assert_eq!(public.status, CancellableOperationStatus::Cancelled);
         assert_eq!(public.code.as_deref(), Some("operation_cancelled"));
@@ -757,7 +802,7 @@ mod tests {
         let token = OperationCancellationToken::new();
 
         let public = kernel
-            .boolean_with_cancellation_typed("fuse", a, b, &token, Some(true), None)
+            .boolean_with_cancellation_typed("fuse", a, b, &token, Some(true), None, None)
             .unwrap();
 
         assert_eq!(public.status, CancellableOperationStatus::Completed);
@@ -1157,7 +1202,7 @@ mod tests {
         let a = k.make_box_solid(2.0, 2.0, 2.0).unwrap();
         let b = k.make_box_solid(1.0, 1.0, 1.0).unwrap();
         let out = k
-            .boolean_with_quality_impl("fuse", a, b, None, None)
+            .boolean_with_quality_impl("fuse", a, b, None, None, None)
             .unwrap();
         assert_eq!(out.quality, "exact");
         assert!(out.deflection.is_none());
@@ -1171,12 +1216,12 @@ mod tests {
         let a = k.make_box_solid(2.0, 2.0, 2.0).unwrap();
         let b = k.make_box_solid(1.0, 1.0, 1.0).unwrap();
         let out = k
-            .boolean_with_quality_impl("cut", a, b, Some(true), None)
+            .boolean_with_quality_impl("cut", a, b, Some(true), None, None)
             .unwrap();
         assert_eq!(out.quality, "exact");
     }
 
-    // ── newton_iterations budget plumbing ────────────────────────────
+    // ── SSI refinement budget plumbing ───────────────────────────────
     //
     // Authority chain: these tests prove the JS value reaches the
     // `OperationContext` unchanged; the math suite (`nurbs/intersection/
@@ -1205,19 +1250,33 @@ mod tests {
     }
 
     #[test]
+    fn parse_subdivision_budget_accepts_valid_and_rejects_invalid() {
+        assert_eq!(super::parse_subdivision_budget(None).unwrap(), None);
+        assert_eq!(super::parse_subdivision_budget(Some(0.0)).unwrap(), Some(0));
+        assert_eq!(super::parse_subdivision_budget(Some(6.0)).unwrap(), Some(6));
+        for bad in [-1.0, 1.5, f64::NAN, f64::INFINITY, 10_001.0] {
+            assert!(
+                super::parse_subdivision_budget(Some(bad)).is_err(),
+                "must reject {bad}"
+            );
+        }
+    }
+
+    #[test]
     fn quality_context_defaults_reproduce_legacy_context() {
-        let ctx = super::quality_context(false, None);
+        let ctx = super::quality_context(false, None, None);
         assert_eq!(ctx, remus_math::context::OperationContext::new());
     }
 
     #[test]
-    fn quality_context_applies_newton_budget_and_exact_only() {
+    fn quality_context_applies_ssi_budgets_and_exact_only() {
         use remus_math::context::{FallbackPolicy, WorkBudgets};
         let default_budgets = WorkBudgets::new();
 
-        let bounded = super::quality_context(false, Some(3));
+        let bounded = super::quality_context(false, Some(3), Some(4));
         assert_eq!(bounded.budgets.newton_iterations, 3);
-        // Only the Newton cap moves; sibling budgets stay at their defaults.
+        assert_eq!(bounded.budgets.subdivision_depth, 4);
+        // Only the two SSI caps move; sibling budgets stay at their defaults.
         assert_eq!(bounded.budgets.march_steps, default_budgets.march_steps);
         assert_eq!(bounded.budgets.queue_size, default_budgets.queue_size);
         assert_eq!(bounded.budgets.segments, default_budgets.segments);
@@ -1226,21 +1285,22 @@ mod tests {
             default_budgets.branches_per_direction
         );
 
-        let disabled = super::quality_context(true, Some(0));
+        let disabled = super::quality_context(true, Some(0), Some(0));
         assert_eq!(disabled.budgets.newton_iterations, 0);
+        assert_eq!(disabled.budgets.subdivision_depth, 0);
         assert_eq!(disabled.fallback, FallbackPolicy::ExactOnly);
     }
 
     #[test]
-    fn boolean_with_quality_accepts_explicit_newton_budget() {
+    fn boolean_with_quality_accepts_explicit_ssi_budgets() {
         let mut k = BrepKernel::new();
         let a = k.make_box_solid(2.0, 2.0, 2.0).unwrap();
         let b = k.make_box_solid(1.0, 1.0, 1.0).unwrap();
-        // Analytic operands never enter NURBS Newton refinement, so any cap
-        // (even 0) must leave the exact result untouched — bounding is
+        // Analytic operands never enter NURBS SSI, so either cap (even 0)
+        // must leave the exact result untouched — bounding is
         // additive, never a behavior change for exact-analytic paths.
         let out = k
-            .boolean_with_quality_impl("fuse", a, b, Some(true), Some(0.0))
+            .boolean_with_quality_impl("fuse", a, b, Some(true), Some(0.0), Some(0.0))
             .unwrap();
         assert_eq!(out.quality, "exact");
         let volume = k.volume(out.solid, 0.05).unwrap();
@@ -1254,7 +1314,7 @@ mod tests {
         let b = k.make_box_solid(1.0, 1.0, 1.0).unwrap();
         let token = super::OperationCancellationToken::new();
         let err = k
-            .boolean_with_cancellation_impl("fuse", a, b, &token, None, Some(-1.0))
+            .boolean_with_cancellation_impl("fuse", a, b, &token, None, Some(-1.0), None)
             .unwrap_err();
         assert!(
             err.to_string().contains("newton_iterations"),
@@ -1263,13 +1323,13 @@ mod tests {
     }
 
     #[test]
-    fn boolean_with_cancellation_impl_accepts_newton_budget() {
+    fn boolean_with_cancellation_impl_accepts_ssi_budgets() {
         let mut k = BrepKernel::new();
         let a = k.make_box_solid(2.0, 2.0, 2.0).unwrap();
         let b = k.make_box_solid(1.0, 1.0, 1.0).unwrap();
         let token = super::OperationCancellationToken::new();
         let out = k
-            .boolean_with_cancellation_impl("fuse", a, b, &token, Some(true), Some(5.0))
+            .boolean_with_cancellation_impl("fuse", a, b, &token, Some(true), Some(5.0), Some(3.0))
             .unwrap();
         assert_eq!(out.quality, "exact");
     }

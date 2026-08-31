@@ -131,8 +131,18 @@ question), v1-fillet API migration (product decision, owner's).
   `executeBatch` `booleanWithQuality` op, validated (non-negative integer
   within the public work budget) with contract tests on the default,
   bounded, and rejection paths. Default behavior remains the historical 20
-  iterations. Subdivision and parameter-space budgets remain queued under
-  P-Class 2.8.
+  iterations. Its then-remaining subdivision slice is closed immediately
+  below; parameter-space budgeting remains queued under P-Class 2.8.
+- **K-S3 SSI subdivision budget — done
+  ([PR #160](https://github.com/esaueng/remus/pull/160), 2026-08-30):**
+  `WorkBudgets::subdivision_depth` replaces the seed finder's hard-coded
+  recursion depth and is authoritative before every recursive Bezier-patch
+  split. The default depth 6 reproduces prior behavior; depth 0 performs no
+  recursive split. Direct `booleanWithQuality` / `booleanWithCancellation`
+  expose additive `subdivision_depth`, and batch `booleanWithQuality` exposes
+  `subdivisionDepth`, with shared validation and default/boundary/rejection
+  contract tests. Parameter-space budgeting and wider operation-family
+  adoption remain under P-Class 2.8.
 - **K-S1 pattern overlap — done (PR #142, 2026-08-30):** linear,
   circular, and grid patterns now refuse measured material overlap with the
   typed `pattern_instances_overlap` contract and full rollback across native,
