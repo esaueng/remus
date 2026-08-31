@@ -1,18 +1,23 @@
 //! Command-line entry point for the Remus robustness gauntlet.
 
+use std::collections::BTreeMap;
 use std::ffi::OsString;
+use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
+use remus_gauntlet::manifest::{
+    ArchiveManifestConfig, FetchConfig, fetch_manifest, generate_archive_manifest, write_manifest,
+};
 use remus_gauntlet::{
     GauntletError, PipelineConfig, RunConfig, arg_is, process_model, run_models_isolated,
     write_outputs,
 };
 use remus_io::ImportLimits;
 
-const USAGE: &str = "Usage:\n  remus-gauntlet run [--output DIR] [--timeout-ms N] [--deflection D] [--max-input-bytes N] [--max-model-entities N] MODEL.step...\n\nThe run command writes models.jsonl, scoreboard.json, and scoreboard.md.\n";
+const USAGE: &str = "Usage:\n  remus-gauntlet run [--output DIR] [--timeout-ms N] [--deflection D] [--max-input-bytes N] [--max-model-entities N] MODEL.step...\n  remus-gauntlet fetch MANIFEST.json --cache DIR [--sample N --seed S] [--source-file URL PATH]... [--output-list PATH]\n  remus-gauntlet manifest-archive --archive PATH --output PATH --name NAME --url URL --license-class CLASS --id-prefix PREFIX --sample N --seed S\n\nThe run command writes models.jsonl, scoreboard.json, and scoreboard.md. Fetch verifies every byte into a content-addressed cache.\n";
 
 fn main() -> ExitCode {
     match run() {
@@ -34,6 +39,10 @@ fn run() -> Result<(), GauntletError> {
     let rest: Vec<_> = args.collect();
     if arg_is(&command, "run") {
         run_parent(&rest)
+    } else if arg_is(&command, "fetch") {
+        run_fetch(&rest)
+    } else if arg_is(&command, "manifest-archive") {
+        run_manifest_archive(&rest)
     } else if arg_is(&command, "worker") {
         run_worker(&rest)
     } else if arg_is(&command, "--help") || arg_is(&command, "-h") {
@@ -47,6 +56,151 @@ fn run() -> Result<(), GauntletError> {
             command.to_string_lossy()
         )))
     }
+}
+
+fn run_fetch(args: &[OsString]) -> Result<(), GauntletError> {
+    let mut manifest = None;
+    let mut cache = None;
+    let mut sample = None;
+    let mut seed = 0_u64;
+    let mut source_files = BTreeMap::new();
+    let mut output_list = None;
+    let mut index = 0;
+    while index < args.len() {
+        let argument = &args[index];
+        if arg_is(argument, "--cache") {
+            cache = Some(PathBuf::from(next_value(args, &mut index, "--cache")?));
+        } else if arg_is(argument, "--sample") {
+            sample = Some(parse_usize(
+                next_value(args, &mut index, "--sample")?,
+                "sample",
+            )?);
+        } else if arg_is(argument, "--seed") {
+            seed = parse_u64(next_value(args, &mut index, "--seed")?, "seed")?;
+        } else if arg_is(argument, "--source-file") {
+            let url = parse_utf8(
+                next_value(args, &mut index, "--source-file URL")?,
+                "source URL",
+            )?
+            .to_owned();
+            let path = PathBuf::from(next_value(args, &mut index, "--source-file PATH")?);
+            if source_files.insert(url.clone(), path).is_some() {
+                return Err(GauntletError::message(format!(
+                    "duplicate --source-file URL {url}"
+                )));
+            }
+        } else if arg_is(argument, "--output-list") {
+            output_list = Some(PathBuf::from(next_value(
+                args,
+                &mut index,
+                "--output-list",
+            )?));
+        } else if argument.to_string_lossy().starts_with('-') {
+            return Err(GauntletError::message(format!(
+                "unknown fetch option {}",
+                argument.to_string_lossy()
+            )));
+        } else if manifest.replace(PathBuf::from(argument)).is_some() {
+            return Err(GauntletError::message(
+                "fetch accepts exactly one manifest path",
+            ));
+        }
+        index += 1;
+    }
+    let manifest =
+        manifest.ok_or_else(|| GauntletError::message("fetch requires MANIFEST.json"))?;
+    let cache = cache.ok_or_else(|| GauntletError::message("fetch requires --cache DIR"))?;
+    let fetched = fetch_manifest(
+        &manifest,
+        &FetchConfig {
+            cache_dir: cache,
+            sample,
+            seed,
+            source_files,
+        },
+    )?;
+    if let Some(path) = output_list {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|error| GauntletError::message(error.to_string()))?;
+        }
+        let mut output = String::new();
+        for model in &fetched {
+            output.push_str(&model.path.to_string_lossy());
+            output.push('\n');
+        }
+        fs::write(path, output).map_err(|error| GauntletError::message(error.to_string()))?;
+    } else {
+        let mut stdout = io::stdout().lock();
+        for model in fetched {
+            writeln!(stdout, "{}\t{}", model.id, model.path.display())
+                .map_err(|error| GauntletError::message(error.to_string()))?;
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_lines)]
+fn run_manifest_archive(args: &[OsString]) -> Result<(), GauntletError> {
+    let mut archive = None;
+    let mut output = None;
+    let mut name = None;
+    let mut url = None;
+    let mut license_class = None;
+    let mut id_prefix = None;
+    let mut sample = None;
+    let mut seed = None;
+    let mut index = 0;
+    while index < args.len() {
+        let argument = &args[index];
+        if arg_is(argument, "--archive") {
+            archive = Some(PathBuf::from(next_value(args, &mut index, "--archive")?));
+        } else if arg_is(argument, "--output") {
+            output = Some(PathBuf::from(next_value(args, &mut index, "--output")?));
+        } else if arg_is(argument, "--name") {
+            name = Some(parse_utf8(next_value(args, &mut index, "--name")?, "name")?.to_owned());
+        } else if arg_is(argument, "--url") {
+            url = Some(parse_utf8(next_value(args, &mut index, "--url")?, "URL")?.to_owned());
+        } else if arg_is(argument, "--license-class") {
+            license_class = Some(
+                parse_utf8(
+                    next_value(args, &mut index, "--license-class")?,
+                    "license class",
+                )?
+                .to_owned(),
+            );
+        } else if arg_is(argument, "--id-prefix") {
+            id_prefix = Some(
+                parse_utf8(next_value(args, &mut index, "--id-prefix")?, "id prefix")?.to_owned(),
+            );
+        } else if arg_is(argument, "--sample") {
+            sample = Some(parse_usize(
+                next_value(args, &mut index, "--sample")?,
+                "sample",
+            )?);
+        } else if arg_is(argument, "--seed") {
+            seed = Some(parse_u64(next_value(args, &mut index, "--seed")?, "seed")?);
+        } else {
+            return Err(GauntletError::message(format!(
+                "unknown manifest-archive option {}",
+                argument.to_string_lossy()
+            )));
+        }
+        index += 1;
+    }
+    let archive = archive.ok_or_else(|| GauntletError::message("missing --archive"))?;
+    let output = output.ok_or_else(|| GauntletError::message("missing --output"))?;
+    let config = ArchiveManifestConfig {
+        name: name.ok_or_else(|| GauntletError::message("missing --name"))?,
+        id_prefix: id_prefix.ok_or_else(|| GauntletError::message("missing --id-prefix"))?,
+        url: url.ok_or_else(|| GauntletError::message("missing --url"))?,
+        license_class: license_class
+            .ok_or_else(|| GauntletError::message("missing --license-class"))?,
+        sample: sample.ok_or_else(|| GauntletError::message("missing --sample"))?,
+        seed: seed.ok_or_else(|| GauntletError::message("missing --seed"))?,
+    };
+    let manifest = generate_archive_manifest(&archive, &config)?;
+    write_manifest(&output, &manifest)
 }
 
 fn run_parent(args: &[OsString]) -> Result<(), GauntletError> {
@@ -184,4 +338,10 @@ fn parse_f64(value: &OsString, name: &str) -> Result<f64, GauntletError> {
         .ok_or_else(|| GauntletError::message(format!("{name} must be UTF-8")))?
         .parse()
         .map_err(|_| GauntletError::message(format!("{name} must be a number")))
+}
+
+fn parse_utf8<'a>(value: &'a OsString, name: &str) -> Result<&'a str, GauntletError> {
+    value
+        .to_str()
+        .ok_or_else(|| GauntletError::message(format!("{name} must be UTF-8")))
 }
