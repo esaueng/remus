@@ -21,6 +21,7 @@ use remus_operations::sweep::sweep;
 use remus_operations::transform::transform_solid;
 use remus_topology::edge::EdgeCurve;
 
+use super::operations::validate_move_faces_topology_work;
 use crate::error::{
     StructuredWasmError, WasmError, validate_face_pair_count, validate_work_count,
     validate_work_product,
@@ -1189,6 +1190,8 @@ impl BrepKernel {
                     .into_iter()
                     .map(|face| self.resolve_face(face).map_err(StructuredWasmError::from))
                     .collect::<Result<Vec<_>, _>>()?;
+                validate_move_faces_topology_work(self.topo(), solid_id, &face_ids)
+                    .map_err(StructuredWasmError::from)?;
                 let result = move_faces(self.topo_mut(), solid_id, &face_ids, distance)
                     .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(result)))
