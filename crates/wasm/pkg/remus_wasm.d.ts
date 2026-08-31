@@ -636,9 +636,9 @@ export class BrepKernel {
      * Cancellation is typed (`operation_cancelled`) and transactional: no
      * partial topology is retained. Result quality follows
      * `booleanWithQuality`, including the optional exact-only policy and the
-     * optional `newton_iterations` refinement cap.
+     * optional Newton and subdivision caps.
      */
-    booleanWithCancellation(op: string, a: number, b: number, token: OperationCancellationToken, exact_only?: boolean | null, newton_iterations?: number | null): CancellableBooleanResult;
+    booleanWithCancellation(op: string, a: number, b: number, token: OperationCancellationToken, exact_only?: boolean | null, newton_iterations?: number | null, subdivision_depth?: number | null): CancellableBooleanResult;
     /**
      * Perform a boolean with disclosed result quality.
      *
@@ -654,15 +654,17 @@ export class BrepKernel {
      * iterations of every NURBS surface-surface intersection inside the
      * operation (a non-negative integer; `0` disables refinement). Omitted
      * or `null` keeps the kernel default, reproducing prior behavior.
+     * `subdivision_depth` likewise caps recursive SSI seed subdivision
+     * (`0` disables recursive splitting; omitted or `null` keeps depth 6).
      *
      * # Errors
      *
      * Returns an error if a handle is invalid, the op string is unknown,
      * `newton_iterations` is not a non-negative integer within the public
-     * work budget, or (under `exact_only`) the exact pipeline cannot
-     * produce the result.
+     * work budget, `subdivision_depth` is invalid under the same rules, or
+     * (under `exact_only`) the exact pipeline cannot produce the result.
      */
-    booleanWithQuality(op: string, a: number, b: number, exact_only?: boolean | null, newton_iterations?: number | null): BooleanQualityResult;
+    booleanWithQuality(op: string, a: number, b: number, exact_only?: boolean | null, newton_iterations?: number | null, subdivision_depth?: number | null): BooleanQualityResult;
     /**
      * Compute the axis-aligned bounding box of a solid.
      *
