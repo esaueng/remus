@@ -1,6 +1,7 @@
 //! Isolated, per-model robustness gauntlet.
 
 pub mod manifest;
+pub mod trend;
 
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
@@ -64,6 +65,8 @@ pub struct RunConfig {
     pub pipeline: PipelineConfig,
     /// Hard wall-clock budget for the worker process.
     pub model_timeout: Duration,
+    /// Maximum isolated model workers executed concurrently.
+    pub max_parallel_models: usize,
 }
 
 impl Default for RunConfig {
@@ -71,6 +74,7 @@ impl Default for RunConfig {
         Self {
             pipeline: PipelineConfig::default(),
             model_timeout: DEFAULT_MODEL_TIMEOUT,
+            max_parallel_models: 1,
         }
     }
 }
@@ -367,15 +371,57 @@ pub fn process_model(path: &Path, config: PipelineConfig) -> ModelResult {
 }
 
 /// Run models in isolated worker subprocesses with a hard per-model timeout.
+/// Results preserve input order even when more than one worker runs.
 #[must_use]
 pub fn run_models_isolated(
     executable: &Path,
     models: &[PathBuf],
     config: RunConfig,
 ) -> Vec<ModelResult> {
-    models
-        .iter()
-        .map(|model| run_isolated_model(executable, model, config))
+    if models.is_empty() {
+        return Vec::new();
+    }
+    let workers = config.max_parallel_models.max(1).min(models.len());
+    if workers == 1 {
+        return models
+            .iter()
+            .map(|model| run_isolated_model(executable, model, config))
+            .collect();
+    }
+
+    let mut ordered: Vec<Option<ModelResult>> =
+        std::iter::repeat_with(|| None).take(models.len()).collect();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::scope(|scope| {
+        for worker in 0..workers {
+            let sender = sender.clone();
+            scope.spawn(move || {
+                for index in (worker..models.len()).step_by(workers) {
+                    let result = run_isolated_model(executable, &models[index], config);
+                    if sender.send((index, result)).is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+        drop(sender);
+        for (index, result) in receiver {
+            ordered[index] = Some(result);
+        }
+    });
+    ordered
+        .into_iter()
+        .enumerate()
+        .map(|(index, result)| match result {
+            Some(result) => result,
+            None => isolated_failure(
+                &models[index],
+                Instant::now(),
+                FailureCategory::Internal,
+                "worker_result_missing",
+                "parallel worker returned no model result",
+            ),
+        })
         .collect()
 }
 
