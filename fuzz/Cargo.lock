@@ -356,6 +356,7 @@ dependencies = [
  "remus-operations",
  "remus-topology",
  "remus-wasm",
+ "serde_json",
 ]
 
 [[package]]
