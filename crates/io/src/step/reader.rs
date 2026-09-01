@@ -48,6 +48,104 @@ use remus_topology::wire::{OrientedEdge, Wire, WireId};
 use crate::IoError;
 use crate::limits::{ImportLimits, ensure_input_size, ensure_limit};
 
+const MAX_UNTRIMMED_NURBS_RECOVERY_CONTROL_POINTS: usize = 4_096;
+const MAX_UNTRIMMED_NURBS_RECOVERY_TOLERANCE_MM: f64 = 1.0e-4;
+const NURBS_DOMAIN_BISECTION_STEPS: usize = 96;
+
+/// A non-fatal, machine-actionable diagnostic produced during STEP import.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub enum StepImportDiagnostic {
+    /// A bare polynomial NURBS carrier had a uniquely provable sub-domain,
+    /// but its topological endpoints required bounded local healing.
+    UntrimmedNurbsDomainRecovered {
+        /// STEP `EDGE_CURVE` entity number.
+        edge_curve_entity: u64,
+        /// Authoritative parameter at the topological start vertex.
+        start_parameter: f64,
+        /// Authoritative parameter at the topological end vertex.
+        end_parameter: f64,
+        /// Largest measured endpoint-to-carrier residual, in millimetres.
+        endpoint_residual_mm: f64,
+        /// Tolerance stored on the imported edge, in millimetres.
+        stored_edge_tolerance_mm: f64,
+        /// Effective local recovery cap, in millimetres.
+        recovery_tolerance_cap_mm: f64,
+    },
+}
+
+impl StepImportDiagnostic {
+    /// STEP `EDGE_CURVE` entity associated with this diagnostic.
+    #[must_use]
+    pub const fn edge_curve_entity(&self) -> u64 {
+        match self {
+            Self::UntrimmedNurbsDomainRecovered {
+                edge_curve_entity, ..
+            } => *edge_curve_entity,
+        }
+    }
+}
+
+impl remus_math::diagnostic::ToDiagnostic for StepImportDiagnostic {
+    fn diagnostic(&self) -> remus_math::diagnostic::Diagnostic {
+        use remus_math::diagnostic::{Diagnostic, FailureCategory};
+
+        match self {
+            Self::UntrimmedNurbsDomainRecovered {
+                edge_curve_entity,
+                start_parameter,
+                end_parameter,
+                endpoint_residual_mm,
+                stored_edge_tolerance_mm,
+                recovery_tolerance_cap_mm,
+            } => Diagnostic::new(
+                FailureCategory::ToleranceViolation,
+                "step_untrimmed_nurbs_domain_recovered",
+                format!(
+                    "EDGE_CURVE #{edge_curve_entity} recovered a unique untrimmed NURBS domain \
+                     under a bounded edge-local tolerance"
+                ),
+            )
+            .with_detail(
+                "edgeCurveEntity",
+                usize::try_from(*edge_curve_entity).unwrap_or(usize::MAX),
+            )
+            .with_detail("startParameter", *start_parameter)
+            .with_detail("endParameter", *end_parameter)
+            .with_detail("endpointResidualMm", *endpoint_residual_mm)
+            .with_detail("storedEdgeToleranceMm", *stored_edge_tolerance_mm)
+            .with_detail("recoveryToleranceCapMm", *recovery_tolerance_cap_mm),
+        }
+    }
+}
+
+/// Topology handles and non-fatal diagnostics from a successful STEP import.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StepReadResult {
+    solids: Vec<SolidId>,
+    diagnostics: Vec<StepImportDiagnostic>,
+}
+
+impl StepReadResult {
+    /// Solid handles created by the import.
+    #[must_use]
+    pub fn solids(&self) -> &[SolidId] {
+        &self.solids
+    }
+
+    /// Non-fatal diagnostics emitted by bounded import adapters.
+    #[must_use]
+    pub fn diagnostics(&self) -> &[StepImportDiagnostic] {
+        &self.diagnostics
+    }
+
+    /// Consumes the report and returns the imported solid handles.
+    #[must_use]
+    pub fn into_solids(self) -> Vec<SolidId> {
+        self.solids
+    }
+}
+
 /// Read a STEP file and reconstruct topology.
 ///
 /// Returns the list of solid IDs created in the topology.
@@ -59,7 +157,16 @@ use crate::limits::{ImportLimits, ensure_input_size, ensure_limit};
 /// - Required entities are missing or malformed
 /// - Entity references cannot be resolved
 pub fn read_step(input: &str, topo: &mut Topology) -> Result<Vec<SolidId>, IoError> {
-    read_step_with_limits(input, topo, ImportLimits::default())
+    read_step_with_report(input, topo).map(StepReadResult::into_solids)
+}
+
+/// Read a STEP file and return both topology handles and bounded-healing diagnostics.
+///
+/// # Errors
+///
+/// Returns [`IoError`] when the STEP data is invalid or exceeds a resource limit.
+pub fn read_step_with_report(input: &str, topo: &mut Topology) -> Result<StepReadResult, IoError> {
+    read_step_with_limits_and_report(input, topo, ImportLimits::default())
 }
 
 /// Read a STEP file with explicit hostile-input resource limits.
@@ -72,6 +179,19 @@ pub fn read_step_with_limits(
     topo: &mut Topology,
     limits: ImportLimits,
 ) -> Result<Vec<SolidId>, IoError> {
+    read_step_with_limits_and_report(input, topo, limits).map(StepReadResult::into_solids)
+}
+
+/// Read a STEP file with explicit hostile-input limits and import diagnostics.
+///
+/// # Errors
+///
+/// Returns [`IoError`] when a limit is exceeded or the STEP data is invalid.
+pub fn read_step_with_limits_and_report(
+    input: &str,
+    topo: &mut Topology,
+    limits: ImportLimits,
+) -> Result<StepReadResult, IoError> {
     ensure_input_size(input.len(), limits)?;
     let entities = parse_step_entities(input, limits)?;
     // Solid B-Reps are the only thing this reader builds, so they are also
@@ -80,21 +200,28 @@ pub fn read_step_with_limits(
     // refusal below is conditioned on their presence.
     let has_solids = entities.values().any(is_solid_brep);
     let Some(units) = resolve_unit_scale(&entities, has_solids)? else {
-        return Ok(Vec::new());
+        return Ok(StepReadResult {
+            solids: Vec::new(),
+            diagnostics: Vec::new(),
+        });
     };
     // Building a STEP model allocates topology incrementally. Keep the import
     // transactional so an error in a later solid cannot expose geometry from
     // an otherwise rejected file to the caller.
     let snapshot = topo.clone();
-    let result = (|| {
-        let solids = {
+    let result: Result<StepReadResult, IoError> = (|| {
+        let (solids, diagnostics) = {
             let mut builder = StepBuilder::new(topo, &entities, units)?;
-            builder.build_all_solids()?
+            let solids = builder.build_all_solids()?;
+            (solids, builder.diagnostics)
         };
         for &solid_id in &solids {
             merge_split_rim_arcs(topo, solid_id, Tolerance::new())?;
         }
-        Ok(solids)
+        Ok(StepReadResult {
+            solids,
+            diagnostics,
+        })
     })();
     if result.is_err() {
         topo.restore_preserving_handle_slots(&snapshot);
@@ -767,6 +894,7 @@ struct StepBuilder<'a> {
     brep_tolerance_caps: HashMap<u64, f64>,
     vertex_cache: HashMap<u64, remus_topology::vertex::VertexId>,
     edge_cache: HashMap<u64, remus_topology::edge::EdgeId>,
+    diagnostics: Vec<StepImportDiagnostic>,
 }
 
 impl<'a> StepBuilder<'a> {
@@ -784,6 +912,7 @@ impl<'a> StepBuilder<'a> {
             brep_tolerance_caps,
             vertex_cache: HashMap::new(),
             edge_cache: HashMap::new(),
+            diagnostics: Vec::new(),
         })
     }
 
@@ -2734,7 +2863,7 @@ impl<'a> StepBuilder<'a> {
     /// projected onto a carrier. The resulting interval is checked before the
     /// edge enters topology so later readers never have to infer it again.
     fn import_edge_with_authority(
-        &self,
+        &mut self,
         ec_ref: u64,
         start_id: VertexId,
         end_id: VertexId,
@@ -2927,17 +3056,36 @@ impl<'a> StepBuilder<'a> {
                             .max(forward_residuals[0])
                             .max(forward_residuals[1]);
                         (domain_start, domain_end)
-                    } else if let (Some(t0), Some(t1)) = (
-                        Self::monotone_nurbs_parameter(nurbs, start),
-                        Self::monotone_nurbs_parameter(nurbs, end),
-                    ) {
+                    } else if let Some((t0, t1)) =
+                        Self::uniquely_witnessed_nurbs_domain(nurbs, start, end)?
+                    {
+                        let recovery_tolerance_cap =
+                            tolerance_cap.min(MAX_UNTRIMMED_NURBS_RECOVERY_TOLERANCE_MM);
+                        let mut endpoint_residual = 0.0_f64;
                         for (label, point, parameter) in [("start", start, t0), ("end", end, t1)] {
                             let residual = (nurbs.evaluate(parameter) - point).length();
-                            if !residual.is_finite() || residual > tolerance_cap {
-                                return Err(endpoint_error(label, residual));
+                            if !residual.is_finite() || residual > recovery_tolerance_cap {
+                                return Err(IoError::ParseError {
+                                    reason: format!(
+                                        "EDGE_CURVE #{ec_ref} {label} endpoint misses its \
+                                         uniquely witnessed NURBS carrier by {residual:.6e} mm \
+                                         (local recovery cap {recovery_tolerance_cap:.6e} mm)"
+                                    ),
+                                });
                             }
+                            endpoint_residual = endpoint_residual.max(residual);
                             measured_tolerance = measured_tolerance.max(residual);
                         }
+                        self.diagnostics.push(
+                            StepImportDiagnostic::UntrimmedNurbsDomainRecovered {
+                                edge_curve_entity: ec_ref,
+                                start_parameter: t0,
+                                end_parameter: t1,
+                                endpoint_residual_mm: endpoint_residual,
+                                stored_edge_tolerance_mm: measured_tolerance,
+                                recovery_tolerance_cap_mm: recovery_tolerance_cap,
+                            },
+                        );
                         (t0, t1)
                     } else {
                         return Err(IoError::ParseError {
@@ -2967,76 +3115,101 @@ impl<'a> StepBuilder<'a> {
         Ok(edge)
     }
 
-    /// Recover a unique NURBS parameter only when one polynomial control-point
-    /// coordinate is strictly monotone. In that case the coordinate itself is an
-    /// injective parameter witness, so bisection cannot select a different lobe
-    /// of a self-intersecting or folded curve.
-    fn monotone_nurbs_parameter(
+    /// Recover a unique NURBS sub-domain only when a scalar projection of its
+    /// polynomial control polygon is strictly monotone. The projected curve's
+    /// derivative is a non-negative degree-reduced B-spline combination of
+    /// positive adjacent control differences, so the projection is injective
+    /// over the entire carrier. Bisection therefore cannot select an alternate
+    /// lobe or crossing.
+    fn uniquely_witnessed_nurbs_domain(
         curve: &remus_math::nurbs::NurbsCurve,
-        point: Point3,
-    ) -> Option<f64> {
-        let first_weight = *curve.weights().first()?;
+        start: Point3,
+        end: Point3,
+    ) -> Result<Option<(f64, f64)>, IoError> {
+        let control_points = curve.control_points();
+        ensure_limit(
+            "control points per untrimmed NURBS domain recovery",
+            control_points.len(),
+            MAX_UNTRIMMED_NURBS_RECOVERY_CONTROL_POINTS,
+        )?;
+        if curve.degree() == 0 {
+            return Ok(None);
+        }
+
+        let Some(first_weight) = curve.weights().first().copied() else {
+            return Ok(None);
+        };
         if !first_weight.is_finite()
             || first_weight <= 0.0
+            // Bit identity is intentional: the injectivity proof is for a
+            // polynomial B-spline, and approximate equality cannot certify
+            // that rational weights cancel exactly.
             || curve
                 .weights()
                 .iter()
                 .any(|weight| weight.to_bits() != first_weight.to_bits())
         {
-            return None;
+            return Ok(None);
         }
 
-        let coordinates = [
-            (|point: Point3| point.x()) as fn(Point3) -> f64,
-            (|point: Point3| point.y()) as fn(Point3) -> f64,
-            (|point: Point3| point.z()) as fn(Point3) -> f64,
-        ];
-        let control_points = curve.control_points();
-        let coordinate = coordinates.into_iter().find(|coordinate| {
-            let increasing = control_points
-                .windows(2)
-                .all(|pair| coordinate(pair[1]) > coordinate(pair[0]));
-            let decreasing = control_points
-                .windows(2)
-                .all(|pair| coordinate(pair[1]) < coordinate(pair[0]));
-            increasing || decreasing
-        })?;
-
-        let (mut low, mut high) = curve.domain();
-        let mut low_value = coordinate(curve.evaluate(low));
-        let high_value = coordinate(curve.evaluate(high));
-        let target = coordinate(point);
-        if !low_value.is_finite() || !high_value.is_finite() || !target.is_finite() {
-            return None;
+        let (Some(first), Some(last)) = (control_points.first(), control_points.last()) else {
+            return Ok(None);
+        };
+        let Ok(witness) = (*last - *first).normalize() else {
+            return Ok(None);
+        };
+        let coordinate = |point: Point3| witness.dot(point - *first);
+        let projected_controls: Vec<f64> = control_points.iter().copied().map(coordinate).collect();
+        if projected_controls.iter().any(|value| !value.is_finite()) {
+            return Ok(None);
         }
-        let increasing = high_value > low_value;
-        if if increasing {
-            target < low_value || target > high_value
-        } else {
-            target > low_value || target < high_value
-        } {
-            return None;
+        let projection_scale = projected_controls
+            .iter()
+            .fold(1.0_f64, |scale, value| scale.max(value.abs()));
+        let separation_floor = 128.0 * f64::EPSILON * projection_scale;
+        if !projected_controls
+            .windows(2)
+            .all(|pair| pair[1] - pair[0] > separation_floor)
+        {
+            return Ok(None);
         }
 
-        for _ in 0..96 {
-            let middle = (low + high) * 0.5;
-            if middle.to_bits() == low.to_bits() || middle.to_bits() == high.to_bits() {
-                break;
-            }
-            let middle_value = coordinate(curve.evaluate(middle));
-            if !middle_value.is_finite() {
+        let parameter_for = |point: Point3| -> Option<f64> {
+            let (mut low, mut high) = curve.domain();
+            let mut low_value = coordinate(curve.evaluate(low));
+            let high_value = coordinate(curve.evaluate(high));
+            let target = coordinate(point);
+            if !low_value.is_finite()
+                || !high_value.is_finite()
+                || !target.is_finite()
+                || target < low_value
+                || target > high_value
+            {
                 return None;
             }
-            if (middle_value < target) == increasing {
-                low = middle;
-                low_value = middle_value;
-            } else {
-                high = middle;
+
+            for _ in 0..NURBS_DOMAIN_BISECTION_STEPS {
+                let middle = (low + high) * 0.5;
+                if middle.to_bits() == low.to_bits() || middle.to_bits() == high.to_bits() {
+                    break;
+                }
+                let middle_value = coordinate(curve.evaluate(middle));
+                if !middle_value.is_finite() {
+                    return None;
+                }
+                if middle_value < target {
+                    low = middle;
+                    low_value = middle_value;
+                } else {
+                    high = middle;
+                }
             }
-        }
-        let low_error = (low_value - target).abs();
-        let high_error = (coordinate(curve.evaluate(high)) - target).abs();
-        Some(if low_error <= high_error { low } else { high })
+            let low_error = (low_value - target).abs();
+            let high_error = (coordinate(curve.evaluate(high)) - target).abs();
+            Some(if low_error <= high_error { low } else { high })
+        };
+
+        Ok(parameter_for(start).zip(parameter_for(end)))
     }
 
     /// Recover a curve trim's declared anchors and, where available, exact
@@ -7819,6 +7992,87 @@ mod tests {
     }
 
     #[test]
+    fn scalar_witness_recovers_forward_and_reversed_non_axis_monotone_domains() {
+        let curve = remus_math::nurbs::NurbsCurve::new(
+            3,
+            vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+            vec![
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(2.0, -1.0, 0.0),
+                Point3::new(1.0, 2.0, 0.0),
+                Point3::new(3.0, 3.0, 0.0),
+            ],
+            vec![1.0; 4],
+        )
+        .unwrap();
+
+        for (start, end, expected) in [(0.1, 0.9, (0.1, 0.9)), (0.9, 0.1, (0.9, 0.1))] {
+            let recovered = StepBuilder::uniquely_witnessed_nurbs_domain(
+                &curve,
+                curve.evaluate(start),
+                curve.evaluate(end),
+            )
+            .unwrap()
+            .expect("strict scalar witness");
+            assert!((recovered.0 - expected.0).abs() < 1.0e-12);
+            assert!((recovered.1 - expected.1).abs() < 1.0e-12);
+        }
+    }
+
+    #[test]
+    fn rational_untrimmed_nurbs_is_not_admitted_by_the_polynomial_proof() {
+        let curve = remus_math::nurbs::NurbsCurve::new(
+            3,
+            vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+            vec![
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(1.0, 0.0, 0.0),
+                Point3::new(2.0, 0.0, 0.0),
+                Point3::new(3.0, 0.0, 0.0),
+            ],
+            vec![1.0, 1.0, 1.01, 1.0],
+        )
+        .unwrap();
+        let recovered = StepBuilder::uniquely_witnessed_nurbs_domain(
+            &curve,
+            curve.evaluate(0.1),
+            curve.evaluate(0.9),
+        )
+        .unwrap();
+        assert!(recovered.is_none());
+    }
+
+    #[test]
+    fn untrimmed_nurbs_domain_recovery_has_a_control_point_budget() {
+        let count = MAX_UNTRIMMED_NURBS_RECOVERY_CONTROL_POINTS + 1;
+        #[allow(clippy::cast_precision_loss)]
+        let control_points: Vec<_> = (0..count)
+            .map(|index| Point3::new(index as f64, 0.0, 0.0))
+            .collect();
+        #[allow(clippy::cast_precision_loss)]
+        let mut knots = vec![0.0, 0.0];
+        knots.extend((1..count - 1).map(|index| index as f64));
+        knots.extend([count.saturating_sub(1) as f64; 2]);
+        let curve =
+            remus_math::nurbs::NurbsCurve::new(1, knots, control_points, vec![1.0; count]).unwrap();
+
+        let error = StepBuilder::uniquely_witnessed_nurbs_domain(
+            &curve,
+            curve.evaluate(0.5),
+            curve.evaluate(1.5),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            IoError::LimitExceeded {
+                resource: "control points per untrimmed NURBS domain recovery",
+                limit: MAX_UNTRIMMED_NURBS_RECOVERY_CONTROL_POINTS,
+                actual,
+            } if actual == count
+        ));
+    }
+
+    #[test]
     fn imported_folded_nurbs_subspan_without_declared_parameters_is_refused() {
         let curve = remus_math::nurbs::NurbsCurve::new(
             1,
@@ -8249,7 +8503,7 @@ mod tests {
         let end_id = topo.add_vertex(Vertex::new(circle.evaluate(1.0), Tolerance::new().linear));
         let edge_count = topo.num_edges();
         let error = {
-            let builder = StepBuilder::new(&mut topo, &entities, units).unwrap();
+            let mut builder = StepBuilder::new(&mut topo, &entities, units).unwrap();
             builder
                 .import_edge_with_authority(77, start_id, end_id, EdgeCurve::Circle(circle), None)
                 .unwrap_err()
@@ -9046,7 +9300,7 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
             topo.add_vertex(Vertex::new(end, Tolerance::new().linear))
         };
         let edge = {
-            let builder = StepBuilder::new(&mut topo, &entities, units)?;
+            let mut builder = StepBuilder::new(&mut topo, &entities, units)?;
             builder.import_edge_with_authority(42, start_id, end_id, curve, None)?
         };
         let edge_id = topo.add_edge(edge);
