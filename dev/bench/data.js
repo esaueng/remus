@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788234351769,
+  "lastUpdate": 1788238995295,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -6047,6 +6047,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 37273163,
             "range": "± 277444",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "64d365b43fb9d0d9259ff469325d440e0544b373",
+          "message": "fix(io): import generic periodic STEP bands (#177)\n\n* fix(io): import generic periodic face bands\n\n* docs(roadmap): record first gauntlet triage class\n\n* docs(roadmap): link gauntlet triage PR\n\n---------\n\nCo-authored-by: Codex Review <codex-review@localhost>",
+          "timestamp": "2026-09-01T01:00:21-04:00",
+          "tree_id": "0588ae35f7dfe3e2df4db3d3c41619c08b176a61",
+          "url": "https://github.com/esaueng/remus/commit/64d365b43fb9d0d9259ff469325d440e0544b373"
+        },
+        "date": 1788238993354,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1330398,
+            "range": "± 5269",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1411933,
+            "range": "± 8302",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 15516,
+            "range": "± 946",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 994006,
+            "range": "± 2268",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 40267289,
+            "range": "± 432652",
             "unit": "ns/iter"
           }
         ]
