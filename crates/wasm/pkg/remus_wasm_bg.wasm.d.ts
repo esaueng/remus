@@ -169,6 +169,7 @@ export const brepkernel_importIndexedMesh: (a: number, b: number, c: number, d: 
 export const brepkernel_importObj: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number];
 export const brepkernel_importPly: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number];
 export const brepkernel_importStep: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
+export const brepkernel_importStepWithReport: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number];
 export const brepkernel_importStl: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number];
 export const brepkernel_inertiaTensor: (a: number, b: number) => [number, number, number, number];
 export const brepkernel_interpolatePoints: (a: number, b: number, c: number, d: number) => [number, number, number];
