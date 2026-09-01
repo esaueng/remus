@@ -50,7 +50,7 @@ pub fn offset_face(
     }
 
     if distance.abs() < tol.linear {
-        return copy_face(topo, face_id);
+        return crate::copy::copy_face(topo, face_id);
     }
 
     match surface {
@@ -812,94 +812,6 @@ fn offset_wire_by_fn(
             snapshot.curve,
             snapshot.edge_tolerance,
         ));
-        new_oriented.push(OrientedEdge::new(new_edge, snapshot.forward));
-    }
-
-    let new_wire = topo.add_wire(Wire::new(new_oriented, true)?);
-    Ok(new_wire)
-}
-
-/// Copy a face with new IDs.
-fn copy_face(topo: &mut Topology, face_id: FaceId) -> Result<FaceId, OperationsError> {
-    let face = topo.face(face_id)?;
-    let surface = face.surface().clone();
-    let outer_wire = face.outer_wire();
-    let inner_wires: Vec<_> = face.inner_wires().to_vec();
-
-    let new_outer = copy_wire(topo, outer_wire)?;
-    let mut new_inner = Vec::new();
-    for &iw in &inner_wires {
-        new_inner.push(copy_wire(topo, iw)?);
-    }
-
-    let new_face = topo.add_face(remus_topology::face::Face::new(
-        new_outer, new_inner, surface,
-    ));
-    Ok(new_face)
-}
-
-/// Copy a wire with new vertex and edge IDs.
-fn copy_wire(
-    topo: &mut Topology,
-    wire_id: remus_topology::wire::WireId,
-) -> Result<remus_topology::wire::WireId, OperationsError> {
-    use remus_topology::edge::Edge;
-    use remus_topology::edge::EdgeCurve;
-    use remus_topology::vertex::Vertex;
-    use remus_topology::wire::{OrientedEdge, Wire};
-
-    let wire = topo.wire(wire_id)?;
-    let edges = wire.edges().to_vec();
-
-    // Snapshot edge data before allocating (borrow checker).
-    let mut edge_snaps = Vec::new();
-    for oe in &edges {
-        let edge = topo.edge(oe.edge())?;
-        let start = topo.vertex(edge.start())?;
-        let end = topo.vertex(edge.end())?;
-        let trim = if matches!(edge.curve(), EdgeCurve::Line) {
-            None
-        } else {
-            Some(
-                edge.strict_domain()
-                    .map_err(|error| OperationsError::InvalidInput {
-                        reason: format!("offset_face copy lacks parameter authority: {error}"),
-                    })?,
-            )
-        };
-        edge_snaps.push(WireEdgeSnapshot {
-            start_id: edge.start(),
-            start: start.point(),
-            start_tolerance: start.tolerance(),
-            end_id: edge.end(),
-            end: end.point(),
-            end_tolerance: end.tolerance(),
-            edge_tolerance: edge.tolerance(),
-            curve: edge.curve().clone(),
-            trim,
-            forward: oe.is_forward(),
-        });
-    }
-
-    let mut new_oriented = Vec::new();
-    let mut vertex_map = std::collections::HashMap::new();
-    for snapshot in edge_snaps {
-        let new_start = *vertex_map
-            .entry(snapshot.start_id.index())
-            .or_insert_with(|| {
-                topo.add_vertex(Vertex::new(snapshot.start, snapshot.start_tolerance))
-            });
-        let new_end = *vertex_map
-            .entry(snapshot.end_id.index())
-            .or_insert_with(|| topo.add_vertex(Vertex::new(snapshot.end, snapshot.end_tolerance)));
-        let mut edge =
-            Edge::with_tolerance(new_start, new_end, snapshot.curve, snapshot.edge_tolerance);
-        edge.set_trim(snapshot.trim);
-        edge.strict_domain()
-            .map_err(|error| OperationsError::InvalidInput {
-                reason: format!("offset_face copy has invalid parameter authority: {error}"),
-            })?;
-        let new_edge = topo.add_edge(edge);
         new_oriented.push(OrientedEdge::new(new_edge, snapshot.forward));
     }
 

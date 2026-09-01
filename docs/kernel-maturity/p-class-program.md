@@ -147,6 +147,19 @@ regression pins exact rollback of the old boundary, pcurves, and old handles,
 plus retirement of handles allocated by the failed transaction. Wires remain
 authoritative until Issue 2.0e.
 
+Issue 2.0e completes that flip. Every valid `Topology::add_face` stores an
+outer-then-inner Loop sequence on the Face; each Loop stores ordered Coedge
+identities, and pcurves plus `(u, v)` periodic winding counts live on the
+Coedge. Wire fields and the historical `(edge, face, orientation)` map remain
+compatibility views kept coherent by topology-owned APIs. Direct coedge access
+is authoritative; the pair accessor still fails closed on seams. Arena schema
+v3 serializes the Loop/Coedge graph and embedded per-use data, verifies it
+against the wire facade before commit, and preserves v1/v2 by deriving
+authority on import.
+The acceptance fixture round-trips a cylinder seam's two independent pcurve
+branches and lifted winding count, while a tampered boundary rolls back
+without changing live topology. STEP loop-position binding remains 2.0f.
+
 ### 2.1 Honest-failure hygiene (S)
 
 `crates/algo/src/pave_filler/phase_ff.rs` ·

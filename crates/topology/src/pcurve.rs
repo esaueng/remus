@@ -4,15 +4,12 @@
 //! parameter space (u, v). `PCurves` are essential for exact boolean
 //! operations, surface trimming, and proper I/O with STEP/IGES formats.
 //!
-//! # Per-use storage (RFC 0002, Stage 2)
+//! # Per-use storage (RFC 0002, Stage 2 authority flip)
 //!
-//! Storage is keyed by `(edge, face, orientation)` — one entry per edge
-//! *use*. A periodic face's seam edge is used twice with opposite
-//! orientations, so both parameter-space branches are retained
-//! independently; the old `(edge, face)` key silently overwrote one branch
-//! with the other. A manifold face boundary cannot use one edge twice in
-//! the *same* direction, so orientation fully identifies the use, and —
-//! unlike a stored position index — it survives in-place wire edits.
+//! The p-curve itself lives on [`Coedge`](crate::coedge::Coedge). This module
+//! keeps only the compatibility index from `(edge, face, orientation)` to the
+//! authoritative coedge. A periodic face's seam therefore retains two
+//! independent branches without duplicating geometry in a registry.
 //!
 //! The registry itself is raw storage, internal to the crate. Public access
 //! goes through [`Topology`](crate::Topology): the oriented methods
@@ -26,6 +23,7 @@ use std::collections::{HashMap, HashSet};
 
 use remus_math::curves2d::Curve2D;
 
+use crate::coedge::CoedgeId;
 use crate::edge::EdgeId;
 use crate::face::FaceId;
 
@@ -105,11 +103,11 @@ impl PCurve {
     }
 }
 
-/// Raw per-use pcurve storage. Access goes through
-/// [`Topology`](crate::Topology)'s pcurve methods.
+/// Compatibility index from the historical per-use key to the authoritative
+/// coedge. Access goes through [`Topology`](crate::Topology)'s pcurve methods.
 #[derive(Debug, Default, Clone)]
 pub struct PCurveRegistry {
-    curves: HashMap<PCurveKey, PCurve>,
+    uses: HashMap<PCurveKey, CoedgeId>,
 }
 
 impl PCurveRegistry {
@@ -119,33 +117,32 @@ impl PCurveRegistry {
         Self::default()
     }
 
-    /// Sets the pcurve for one edge use.
-    pub(crate) fn set_use(&mut self, edge: EdgeId, face: FaceId, forward: bool, pcurve: PCurve) {
-        self.curves
-            .insert(PCurveKey::new(edge, face, forward), pcurve);
-    }
-
-    /// Gets the pcurve for one edge use, if present.
-    pub(crate) fn get_use(&self, edge: EdgeId, face: FaceId, forward: bool) -> Option<&PCurve> {
-        self.curves.get(&PCurveKey::new(edge, face, forward))
-    }
-
-    /// Removes the pcurve for one edge use.
-    pub(crate) fn remove_use(
+    /// Indexes one authoritative coedge use.
+    pub(crate) fn index_use(
         &mut self,
         edge: EdgeId,
         face: FaceId,
         forward: bool,
-    ) -> Option<PCurve> {
-        self.curves.remove(&PCurveKey::new(edge, face, forward))
+        coedge: CoedgeId,
+    ) {
+        self.uses
+            .insert(PCurveKey::new(edge, face, forward), coedge);
     }
 
-    /// The stored uses of `edge` on `face`: `(forward, pcurve)` per entry,
+    /// Resolves one indexed use.
+    pub(crate) fn get_use(&self, edge: EdgeId, face: FaceId, forward: bool) -> Option<CoedgeId> {
+        self.uses.get(&PCurveKey::new(edge, face, forward)).copied()
+    }
+
+    /// The indexed uses of `edge` on `face`: `(forward, coedge)` per entry,
     /// forward branch first. At most two entries.
-    pub(crate) fn uses_on_face(&self, edge: EdgeId, face: FaceId) -> Vec<(bool, &PCurve)> {
+    pub(crate) fn uses_on_face(&self, edge: EdgeId, face: FaceId) -> Vec<(bool, CoedgeId)> {
         [true, false]
             .into_iter()
-            .filter_map(|forward| self.get_use(edge, face, forward).map(|pc| (forward, pc)))
+            .filter_map(|forward| {
+                self.get_use(edge, face, forward)
+                    .map(|use_id| (forward, use_id))
+            })
             .collect()
     }
 
@@ -155,49 +152,48 @@ impl PCurveRegistry {
         retired_edges: &HashSet<EdgeId>,
         retired_faces: &HashSet<FaceId>,
     ) {
-        self.curves.retain(|key, _| {
+        self.uses.retain(|key, _| {
             !retired_edges.contains(&key.edge) && !retired_faces.contains(&key.face)
         });
     }
 
-    /// Retains only pcurves that still identify a live boundary use of one
-    /// face after a sanctioned boundary mutation.
-    pub(crate) fn retain_face_uses(&mut self, face: FaceId, live_uses: &HashSet<(EdgeId, bool)>) {
-        self.curves
-            .retain(|key, _| key.face != face || live_uses.contains(&(key.edge, key.forward)));
+    /// Removes every index entry for one face before its loops are replaced.
+    pub(crate) fn remove_face(&mut self, face: FaceId) {
+        self.uses.retain(|key, _| key.face != face);
     }
 
-    /// Returns the number of stored pcurve uses.
+    /// Returns the number of indexed coedge uses, including uses without a
+    /// stored pcurve.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.curves.len()
+        self.uses.len()
     }
 
-    /// Returns true if the registry is empty.
+    /// Returns true if the compatibility use index is empty.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.curves.is_empty()
+        self.uses.is_empty()
     }
 
     /// All stored uses for a given face.
-    pub(crate) fn uses_for_face(&self, face: FaceId) -> Vec<(EdgeId, bool, &PCurve)> {
+    pub(crate) fn uses_for_face(&self, face: FaceId) -> Vec<(EdgeId, bool, CoedgeId)> {
         let mut out: Vec<_> = self
-            .curves
+            .uses
             .iter()
             .filter(|(k, _)| k.face == face)
-            .map(|(k, v)| (k.edge, k.forward, v))
+            .map(|(k, v)| (k.edge, k.forward, *v))
             .collect();
         out.sort_by_key(|(e, forward, _)| (e.index(), !forward));
         out
     }
 
     /// All stored uses for a given edge.
-    pub(crate) fn uses_for_edge(&self, edge: EdgeId) -> Vec<(FaceId, bool, &PCurve)> {
+    pub(crate) fn uses_for_edge(&self, edge: EdgeId) -> Vec<(FaceId, bool, CoedgeId)> {
         let mut out: Vec<_> = self
-            .curves
+            .uses
             .iter()
             .filter(|(k, _)| k.edge == edge)
-            .map(|(k, v)| (k.face, k.forward, v))
+            .map(|(k, v)| (k.face, k.forward, *v))
             .collect();
         out.sort_by_key(|(f, forward, _)| (f.index(), !forward));
         out
@@ -398,12 +394,14 @@ mod seam_characterization {
     #[test]
     fn both_seam_branches_are_retained_independently() {
         // FLIPPED from "second_seam_pcurve_silently_replaces_the_first":
-        // per-use keys retain both parameter-space branches.
+        // coedge-hosted storage retains both parameter-space branches.
         const TAU: f64 = std::f64::consts::TAU;
         let (mut topo, seam, face_id) = make_cylinder_side_face_with_seam();
 
-        topo.set_pcurve_oriented(seam, face_id, true, branch_pcurve(0.0, true));
-        topo.set_pcurve_oriented(seam, face_id, false, branch_pcurve(TAU, false));
+        topo.set_pcurve_oriented(seam, face_id, true, branch_pcurve(0.0, true))
+            .unwrap();
+        topo.set_pcurve_oriented(seam, face_id, false, branch_pcurve(TAU, false))
+            .unwrap();
 
         assert_eq!(topo.num_pcurves(), 2, "both branches stored");
         let at_zero = topo.pcurve_oriented(seam, face_id, true).unwrap();
@@ -426,8 +424,10 @@ mod seam_characterization {
             Err(TopologyError::SeamPcurveAmbiguous { .. })
         ));
 
-        topo.set_pcurve_oriented(seam, face_id, true, branch_pcurve(0.0, true));
-        topo.set_pcurve_oriented(seam, face_id, false, branch_pcurve(TAU, false));
+        topo.set_pcurve_oriented(seam, face_id, true, branch_pcurve(0.0, true))
+            .unwrap();
+        topo.set_pcurve_oriented(seam, face_id, false, branch_pcurve(TAU, false))
+            .unwrap();
 
         assert!(matches!(
             topo.pcurve(seam, face_id),
@@ -449,8 +449,10 @@ mod seam_characterization {
         // consumers walking the edge's pcurves now see the whole seam.
         const TAU: f64 = std::f64::consts::TAU;
         let (mut topo, seam, face_id) = make_cylinder_side_face_with_seam();
-        topo.set_pcurve_oriented(seam, face_id, true, branch_pcurve(0.0, true));
-        topo.set_pcurve_oriented(seam, face_id, false, branch_pcurve(TAU, false));
+        topo.set_pcurve_oriented(seam, face_id, true, branch_pcurve(0.0, true))
+            .unwrap();
+        topo.set_pcurve_oriented(seam, face_id, false, branch_pcurve(TAU, false))
+            .unwrap();
 
         assert_eq!(topo.pcurves_for_edge(seam).len(), 2);
         assert_eq!(topo.pcurves_for_face(face_id).len(), 2);
@@ -458,16 +460,21 @@ mod seam_characterization {
 
     #[test]
     fn coedges_resolve_their_own_branch() {
-        // The derived per-use identities (Issue 6) and per-use pcurves
-        // (this change) meet: each seam coedge resolves exactly its branch.
+        // The authoritative use identity is also the pcurve storage identity;
+        // tuple access below is only a compatibility adapter.
         const TAU: f64 = std::f64::consts::TAU;
         let (mut topo, seam, face_id) = make_cylinder_side_face_with_seam();
-        topo.set_pcurve_oriented(seam, face_id, true, branch_pcurve(0.0, true));
-        topo.set_pcurve_oriented(seam, face_id, false, branch_pcurve(TAU, false));
-
-        topo.build_face_loops(face_id).unwrap();
         let uses = topo.coedges_of_edge(seam);
         assert_eq!(uses.len(), 2);
+        for &coedge_id in &uses {
+            let forward = topo.coedge(coedge_id).unwrap().is_forward();
+            let branch = if forward {
+                branch_pcurve(0.0, true)
+            } else {
+                branch_pcurve(TAU, false)
+            };
+            assert!(topo.set_coedge_pcurve(coedge_id, branch).unwrap().is_none());
+        }
         for coedge_id in uses {
             let forward = topo.coedge(coedge_id).unwrap().is_forward();
             let pc = topo.coedge_pcurve(coedge_id).unwrap().unwrap();
@@ -475,6 +482,14 @@ mod seam_characterization {
             assert!(
                 (pc.evaluate(0.0).x() - expected_u).abs() < 1e-12,
                 "each coedge use resolves its own parameter-space branch"
+            );
+            assert_eq!(
+                topo.pcurve_oriented(seam, face_id, forward)
+                    .unwrap()
+                    .evaluate(0.0)
+                    .x()
+                    .to_bits(),
+                expected_u.to_bits()
             );
         }
     }
