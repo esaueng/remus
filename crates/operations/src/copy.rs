@@ -73,6 +73,7 @@ fn snapshot_face_coedge_authority(
     topo: &Topology,
     face_id: FaceId,
 ) -> Result<Vec<CoedgeAuthoritySnap>, crate::OperationsError> {
+    remus_topology::validation::validate_face_loops(topo, face_id)?;
     let mut snapshots = Vec::new();
     for coedge_id in face_coedges(topo, face_id)? {
         let coedge = topo.coedge(coedge_id)?;
@@ -85,6 +86,38 @@ fn snapshot_face_coedge_authority(
         });
     }
     Ok(snapshots)
+}
+
+fn remapped_authority_face(
+    face_map: &HashMap<usize, FaceId>,
+    snapshot: &CoedgeAuthoritySnap,
+) -> Result<FaceId, crate::OperationsError> {
+    face_map
+        .get(&snapshot.face_index)
+        .copied()
+        .ok_or_else(|| remus_topology::TopologyError::NonManifold {
+            reason: format!(
+                "copy plan has no target face for authoritative source face index {}",
+                snapshot.face_index
+            ),
+        })
+        .map_err(Into::into)
+}
+
+fn remapped_authority_edge(
+    edge_map: &HashMap<usize, remus_topology::edge::EdgeId>,
+    snapshot: &CoedgeAuthoritySnap,
+) -> Result<remus_topology::edge::EdgeId, crate::OperationsError> {
+    edge_map
+        .get(&snapshot.edge_index)
+        .copied()
+        .ok_or_else(|| remus_topology::TopologyError::NonManifold {
+            reason: format!(
+                "copy plan has no target edge for authoritative source edge index {}",
+                snapshot.edge_index
+            ),
+        })
+        .map_err(Into::into)
 }
 
 fn restore_face_coedge_authority(
@@ -276,12 +309,9 @@ pub(crate) fn copy_solid_between(
         );
     }
     for snapshot in coedge_authority {
-        restore_face_coedge_authority(
-            destination,
-            face_map[&snapshot.face_index],
-            edge_map[&snapshot.edge_index],
-            snapshot,
-        )?;
+        let face = remapped_authority_face(&face_map, &snapshot)?;
+        let edge = remapped_authority_edge(&edge_map, &snapshot)?;
+        restore_face_coedge_authority(destination, face, edge, snapshot)?;
     }
     let outer = new_shells[0];
     let inner = new_shells[1..].to_vec();
@@ -494,12 +524,9 @@ pub fn copy_solid_with_face_map(
         new_shell_ids.push(topo.add_shell(new_shell));
     }
     for snapshot in coedge_authority_snaps {
-        restore_face_coedge_authority(
-            topo,
-            copied_face_ids[&snapshot.face_index],
-            edge_map[&snapshot.edge_index],
-            snapshot,
-        )?;
+        let face = remapped_authority_face(&copied_face_ids, &snapshot)?;
+        let edge = remapped_authority_edge(&edge_map, &snapshot)?;
+        restore_face_coedge_authority(topo, face, edge, snapshot)?;
     }
 
     let new_outer = new_shell_ids[0];
@@ -723,12 +750,9 @@ pub fn copy_and_transform_solid(
     }
 
     for snapshot in coedge_authority_snaps {
-        restore_face_coedge_authority(
-            topo,
-            copied_face_ids[&snapshot.face_index],
-            edge_map[&snapshot.edge_index],
-            snapshot,
-        )?;
+        let face = remapped_authority_face(&copied_face_ids, &snapshot)?;
+        let edge = remapped_authority_edge(&edge_map, &snapshot)?;
+        restore_face_coedge_authority(topo, face, edge, snapshot)?;
     }
 
     let new_outer = new_shell_ids[0];
@@ -952,7 +976,8 @@ pub fn copy_face(topo: &mut Topology, face_id: FaceId) -> Result<FaceId, crate::
     };
     let new_face_id = topo.add_face(new_face);
     for snapshot in coedge_authority {
-        restore_face_coedge_authority(topo, new_face_id, edge_map[&snapshot.edge_index], snapshot)?;
+        let edge = remapped_authority_edge(&edge_map, &snapshot)?;
+        restore_face_coedge_authority(topo, new_face_id, edge, snapshot)?;
     }
     Ok(new_face_id)
 }
