@@ -17,6 +17,7 @@ remus-math = {path = "../crates/math"}
 remus-operations = {path = "../crates/operations"}
 remus-topology = {path = "../crates/topology"}
 remus-wasm = {path = "../crates/wasm"}
+serde_json = "1"
 
 [[bin]]
 bench = false
@@ -100,6 +101,13 @@ bench = false
 doc = false
 name = "topology_mutation"
 path = "fuzz_targets/topology_mutation.rs"
+test = false
+
+[[bin]]
+bench = false
+doc = false
+name = "arena_roundtrip"
+path = "fuzz_targets/arena_roundtrip.rs"
 test = false
 
 [[bin]]
