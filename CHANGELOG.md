@@ -55,6 +55,12 @@
   rollback, checkpoint-restore, and deletion sequences over a bounded box
   against exact-state, stale-handle, atomic-refusal, and closed-form volume
   oracles, with a checkpoint re-derivation regression corpus.
+* **fuzz:** add bounded scheduled native-serialization fuzzing — arena
+  document round-trips with duplicate roots, shared-shell aliases,
+  repeated/aliased compound members, hostile tolerances, and attributes,
+  requiring per-position closed-form volumes, bit-exact state survival,
+  byte-identical re-serialization, and typed non-mutating refusal of
+  corrupted references.
 
 ## 2.130.0
 
