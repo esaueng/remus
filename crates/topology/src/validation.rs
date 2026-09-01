@@ -1094,7 +1094,9 @@ pub struct VertexBallReport {
 /// # Errors
 ///
 /// Returns a not-found error when the vertex or an incident edge's
-/// vertices are stale.
+/// vertices are stale. An incident edge without a valid authoritative
+/// parameter range reports [`f64::MAX`], so validation fails closed without
+/// changing this compatibility API's error type.
 pub fn check_vertex_ball(
     topo: &Topology,
     vertex_id: crate::vertex::VertexId,
@@ -1108,11 +1110,14 @@ pub fn check_vertex_ball(
         }
         let start = topo.vertex(edge.start())?.point();
         let end = topo.vertex(edge.end())?.point();
-        let (d0, d1) = edge.domain_with_endpoints(start, end);
-        let t_end = if at_start { d0 } else { d1 };
-        let on_curve = edge.curve().evaluate_with_endpoints(t_end, start, end);
-        let deviation = if t_end.is_finite() && on_curve.0.iter().all(|value| value.is_finite()) {
-            (on_curve - point).length()
+        let deviation = if let Ok((d0, d1)) = edge.strict_domain() {
+            let t_end = if at_start { d0 } else { d1 };
+            let on_curve = edge.curve().evaluate_with_endpoints(t_end, start, end);
+            if t_end.is_finite() && on_curve.0.iter().all(|value| value.is_finite()) {
+                (on_curve - point).length()
+            } else {
+                f64::MAX
+            }
         } else {
             f64::MAX
         };
@@ -2115,6 +2120,25 @@ mod tolerant_checks_tests {
         let reports = check_vertex_ball(&topo, v).unwrap();
         assert_eq!(reports.len(), 1);
         assert!(reports[0].deviation < 1e-12);
+    }
+
+    #[test]
+    fn vertex_ball_fails_closed_without_curved_parameter_authority() {
+        let mut topo = Topology::new();
+        let circle =
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+        let start = topo.add_vertex(Vertex::new(circle.evaluate(0.0), 1e-7));
+        let end = topo.add_vertex(Vertex::new(circle.evaluate(0.5), 1e-7));
+        let edge = topo.add_edge(Edge::new(start, end, EdgeCurve::Circle(circle)));
+
+        let reports = check_vertex_ball(&topo, start).unwrap();
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].edge, edge);
+        assert_eq!(reports[0].deviation, f64::MAX);
+        assert!(matches!(
+            validate_vertex_ball(&topo, start),
+            Err(TopologyError::VertexBallExceeded { deviation, .. }) if deviation == f64::MAX
+        ));
     }
 
     #[test]
