@@ -136,6 +136,17 @@ volume. Corrupting only the reverse branch must fail while the forward branch
 remains valid. The test does not synthesize pcurves after the boolean, and it
 does not treat a zero-pcurve result as coverage.
 
+Issue 2.0d closes the mutation prerequisite without advancing the physical
+authority flip. The immutable survey's 30 production `wire_mut`,
+`inner_wires_mut`, and `set_outer_wire` sites are migrated to
+`Topology::replace_boundary_wire` or `Topology::set_face_boundary_wires`, and
+the ratchet requires the direct-site count to stay at zero. Both sanctioned
+paths preflight the complete replacement, prune stale oriented pcurve uses,
+and re-derive an existing Loop/Coedge view in the same commit. A checkpoint
+regression pins exact rollback of the old boundary, pcurves, and old handles,
+plus retirement of handles allocated by the failed transaction. Wires remain
+authoritative until Issue 2.0e.
+
 ### 2.1 Honest-failure hygiene (S)
 
 `crates/algo/src/pave_filler/phase_ff.rs` ·

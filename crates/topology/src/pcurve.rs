@@ -160,6 +160,13 @@ impl PCurveRegistry {
         });
     }
 
+    /// Retains only pcurves that still identify a live boundary use of one
+    /// face after a sanctioned boundary mutation.
+    pub(crate) fn retain_face_uses(&mut self, face: FaceId, live_uses: &HashSet<(EdgeId, bool)>) {
+        self.curves
+            .retain(|key, _| key.face != face || live_uses.contains(&(key.edge, key.forward)));
+    }
+
     /// Returns the number of stored pcurve uses.
     #[must_use]
     pub fn len(&self) -> usize {

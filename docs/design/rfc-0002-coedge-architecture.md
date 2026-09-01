@@ -1,7 +1,8 @@
 # RFC 0002: Coedge architecture
 
-Status: accepted design; Stages 1–3 landed. The remaining boundary-authority
-flip is staged as P-Class Issue 2.0.
+Status: accepted design; Stages 1–3 and the topology-owned atomic mutation
+gate landed. The remaining boundary-authority flip is staged as P-Class
+Issue 2.0.
 Characterization anchors: `crates/topology/src/pcurve.rs`, module
 `seam_characterization` — the flipped tests pin the landed per-use behavior
 that the physical storage move must preserve.
@@ -101,10 +102,9 @@ authority and one derived view, and flips them once.
   face's loops (one coedge per `OrientedEdge` occurrence — a seam edge gets
   two coedges naturally), retiring any previous derivation. *Refined during
   implementation:* automatic derivation at face creation was dropped for
-  Stage 1 because faces are mutated in place throughout L2/L3
-  (`face_mut`, `set_outer_wire`), so eager derivation would guarantee stale
-  loops; automatic derivation joins the Stage 2 authority flip, where
-  mutation goes through the loop representation itself.
+  Stage 1 because faces were mutated in place throughout L2/L3. Issue 2.0d
+  later removed those production mutation paths behind the sanctioned gate
+  below; automatic derivation still joins the physical authority flip.
 - A consistency validator (`validate_face_loops`) asserts loop ↔ wire
   agreement; faces without a derivation pass vacuously, so it is safe in
   any validation pass today. Divergence is a bug, not a state.
@@ -115,10 +115,31 @@ Exit gate: every face constructed through public APIs has loops; the
 seam-characterization face has **two** coedges for its seam edge; no
 consumer behavior changes.
 
+### Stage 1 mutation gate — topology-owned and atomic (Issue 2.0d; landed)
+
+Wires remain the stored boundary authority until Issue 2.0e, but production
+code no longer mutates that authority through exposed `Wire`/`Face` storage.
+Two additive `Topology` methods are the sanctioned boundary:
+
+- `replace_boundary_wire` preflights the replacement and every owning face,
+  then replaces a shared/free wire, prunes pcurves for removed oriented uses,
+  and re-derives any existing Loop/Coedge views;
+- `set_face_boundary_wires` preflights the complete outer-plus-inner set and
+  commits the face references, pcurve pruning, and derived-view replacement
+  without exposing an intermediate boundary.
+
+Both methods refuse stale wires or edges before mutation. They compose with
+`run_transacted`: rollback restores the prior wire/face, pcurve registry, and
+exact old Loop/Coedge handles, while handles allocated by the rolled-back
+mutation remain retired under the arena high-water contract. The immutable
+survey measured 30 production `wire_mut`, `inner_wires_mut`, and
+`set_outer_wire` sites; the ratchet now requires zero. Test-only corruption
+fixtures and `FaceSpec` construction remain explicitly outside that gate.
+
 ### Stage 2 — per-use p-curves (Issue 7; landed) and the authority flip
 
-*Refined during implementation.* The boundary-mutation audit found ~25
-uncontrolled in-place wire/face mutation sites across five crates
+*Refined during implementation.* The boundary-mutation audit found exactly 30
+uncontrolled in-place wire/face mutation sites across four production crates
 (`wire_mut` rewrites, `inner_wires_mut`, `set_outer_wire`), so storing
 p-curves inside stored `Coedge`s — whose derivations go stale on any such
 mutation — would have required migrating every mutation site at once: the
@@ -142,10 +163,10 @@ What landed:
 - the arena format records the orientation additively (older documents
   resolve the use from the face's wires on load).
 
-The physical move of storage into `Coedge` and the boundary-sequence
-authority flip below remain future work, gated on sanctioned mutation
-(the transactional wrapper, backlog Issue 9) — at which point the stored
-coedge is the key and this registry becomes its index.
+The physical move of storage into `Coedge` and the boundary-sequence authority
+flip below remain future work. The sanctioned atomic mutation prerequisite is
+now landed; at the authority flip, the stored coedge becomes the key and this
+registry becomes its index.
 
 #### The remaining authority flip (original Stage 2 plan)
 
@@ -215,8 +236,9 @@ Queued:
 
 - Periodic winding counts on `Coedge` (multi-turn support) arrive with the
   physical p-curve storage move.
-- The transactional wrapper (Issue 9) supplies the sanctioned-mutation
-  boundary the remaining migration assumes.
+
+Landed prerequisite: Issue 2.0d supplies the topology-owned atomic mutation
+boundary and exact checkpoint rollback that the remaining migration assumes.
 
 The operations contribution in PR #122 to P-Class issue 2.0b closes seven of
 the ten measured missing-writer paths: `merge_result_vertices`, the sphere-cap
@@ -260,7 +282,7 @@ or fixed-inline-module heuristic.
 | Test/example readers | 25 | Test modules, test targets, and examples; retained as characterization coverage. |
 | Existing result-construction trim preservation | 12 sites / 10 logical paths | GFA pave splitting, builder rebuild/split/weld paths, and operations boolean assembly/shortcuts. These required identities are non-decreasing: deleting or locally rewriting one fails the ratchet. They are the positive baseline, not the missing-writer inventory. Carrier-only copy, transform, serialization, offset, and healing writes are separate. |
 | Missing trim authority | 12 direct constructions + 1 snapshot omission / 10 logical paths | Immutable measured anchors, not automated detection. Three phase-FF emitters, two mixed-assembly branches, the box-sphere arc builder, merge-result-vertices snapshot/rebuild, and primitive cylinder/cone rims. A separate manually reviewed remaining-path manifest is reduced only as fixes and their oracles land. |
-| Stored face-boundary mutation | 30 | Production `wire_mut`, `inner_wires_mut`, and `set_outer_wire` sites; test mutations and `FaceSpec` mutation are excluded. |
+| Stored face-boundary mutation | 30 → 0 required | Immutable production survey of `wire_mut`, `inner_wires_mut`, and `set_outer_wire`; all sites migrated to the two sanctioned `Topology` methods. Test mutations and `FaceSpec` mutation remain excluded. |
 
 RFC 0004 Stage 1 later added one production vertex-ball reader under the same
 identity ratchet, raising the checked ceiling from the immutable 131-site
@@ -380,9 +402,10 @@ Issue 2.0 lands in seven independently reviewable stages:
    readers to the authoritative contract, preserving reconstruction only in
    explicit import/healing adapters; make SameParameter/SameRange seam-safe
    and run them over boolean outputs.
-4. **2.0d — atomic boundary mutation:** add topology-owned sanctioned
-   boundary mutation, migrate all 30 direct mutation sites, and pin atomic
-   checkpoint rollback. This lands before any storage authority flip.
+4. **2.0d — atomic boundary mutation (landed):** topology-owned sanctioned
+   boundary mutation replaces all 30 direct production sites; the ratchet
+   requires zero and exact checkpoint rollback is pinned. This landed before
+   any storage authority flip.
 5. **2.0e — physical Loop/Coedge authority:** move boundary and p-curve
    authority into Loop/Coedge behind additive compatibility adapters, then
    flip the existing seam characterization tests.

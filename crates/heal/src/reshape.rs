@@ -455,9 +455,7 @@ impl ReShape {
                 .collect();
 
             if new_outer != old_outer || new_inner != old_inner {
-                let face = topo.face_mut(face_id)?;
-                face.set_outer_wire(new_outer);
-                *face.inner_wires_mut() = new_inner;
+                topo.set_face_boundary_wires(face_id, new_outer, new_inner)?;
             }
         }
         Ok(())
@@ -505,17 +503,18 @@ impl ReShape {
                     let new_wire = remus_topology::wire::Wire::new(new_edges, is_closed)?;
                     let new_wire_id = topo.add_wire(new_wire);
 
-                    let face_mut = topo.face_mut(fid)?;
-                    if face_mut.outer_wire() == wire_id {
-                        face_mut.set_outer_wire(new_wire_id);
+                    let face = topo.face(fid)?;
+                    let outer = if face.outer_wire() == wire_id {
+                        new_wire_id
                     } else {
-                        let iw = face_mut.inner_wires_mut();
-                        for w in iw.iter_mut() {
-                            if *w == wire_id {
-                                *w = new_wire_id;
-                            }
-                        }
-                    }
+                        face.outer_wire()
+                    };
+                    let inner = face
+                        .inner_wires()
+                        .iter()
+                        .map(|&wire| if wire == wire_id { new_wire_id } else { wire })
+                        .collect();
+                    topo.set_face_boundary_wires(fid, outer, inner)?;
                 }
             }
         }
