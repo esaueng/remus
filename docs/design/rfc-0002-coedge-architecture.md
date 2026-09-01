@@ -412,9 +412,15 @@ that support interval until per-use Coedge authority lands. The final reader
 continuation migrates the 27 tessellation readers and the later RFC 0004
 vertex-ball reader, moving the checked ratchet from 28 to zero. Tessellation
 now consumes stored lifted, major, reversed, and NURBS ranges directly; missing
-curved authority fails closed. This closes the reader portion of 2.0c, while
-non-vacuous SameParameter/SameRange validation over boolean outputs remains
-the outstanding 2.0c exit condition.
+curved authority fails closed. The closing 2.0c continuation preserves existing
+oriented pcurves through the deep-copy path used by exact boolean shortcuts and
+runs both strict validators over a real identity-intersection result in CI. The
+fixture requires six visited boundary uses, exactly two stored cylinder-seam
+branches, and exactly two proved uses; it also pins the analytic face census,
+closed-form volume, and reverse-branch-only failure. It does not reconstruct
+pcurves after the boolean or claim that general GFA assembly populates them.
+That storage migration remains staged under physical Coedge authority. These
+checks close 2.0c without making a vacuous zero-pcurve result look validated.
 
 Once Issue 2.0e lands, new code must not construct face boundaries from raw
 `OrientedEdge` lists. Enforcement:
