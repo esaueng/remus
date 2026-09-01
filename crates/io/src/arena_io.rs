@@ -2248,4 +2248,63 @@ mod tests {
             counts_before
         );
     }
+
+    #[test]
+    fn arbitrary_vertex_tolerances_round_trip_bit_exactly() {
+        // serde_json's default float path can round the last bit on parse;
+        // the `float_roundtrip` feature is load-bearing for the arena
+        // format's exact-replay contract. The first six values are measured
+        // to lose a bit without it (serde_json 1.0.151); the sweep keeps the
+        // test honest if the printer/parser changes.
+        let known_bad = [
+            2.321_710_310_996_591_2e-7,
+            1.360_502_408_555_352_7e-8,
+            1.621_364_684_473_496_4e-9,
+            1.021_981_500_474_656_4e-7,
+            9.454_133_714_726_404e-8,
+            1.037_389_917_956_039_5e-6,
+        ];
+        let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+        let mut splitmix = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let sweep = (0..64).map(|_| {
+            let mantissa = (splitmix() >> 11) as f64 / (1u64 << 53) as f64;
+            10f64.powf(-9.0 + mantissa * 6.0)
+        });
+        for tolerance in known_bad.into_iter().chain(sweep) {
+            let mut topo = Topology::new();
+            let solid = make_box(&mut topo, 1.0, 2.0, 3.0).unwrap();
+            let vertex = topo
+                .vertex_id_from_index(0)
+                .expect("box has a vertex 0");
+            topo.vertex_mut(vertex)
+                .unwrap()
+                .set_tolerance(tolerance)
+                .unwrap();
+
+            let bytes = serialize_solid(&topo, solid).unwrap();
+            let mut restored = Topology::new();
+            let restored_solid = deserialize_solid(&bytes, &mut restored).unwrap();
+            let restored_vertex = restored
+                .vertex_id_from_index(0)
+                .expect("restored box has a vertex 0");
+            let restored_tolerance = restored.vertex(restored_vertex).unwrap().tolerance();
+            assert_eq!(
+                restored_tolerance.to_bits(),
+                tolerance.to_bits(),
+                "vertex tolerance {tolerance:e} lost precision through the arena round-trip",
+            );
+            // And the re-serialization of the restored document is
+            // byte-identical, so chained replays cannot drift.
+            let restored_bytes = serialize_solid(&restored, restored_solid).unwrap();
+            assert_eq!(
+                restored_bytes, bytes,
+                "round-tripped document with tolerance {tolerance:e} is not byte-identical",
+            );
+        }
+    }
 }

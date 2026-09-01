@@ -38,6 +38,10 @@
   checkpoint barrier (`restore_preserving_handle_slots`) keeps retirements
   tombstoned and no longer restores the face-loop derivation map into
   referencing retired loops or faces.
+* **io:** enable serde_json's `float_roundtrip` feature workspace-wide so
+  arena documents replay arbitrary f64 values (vertex/edge tolerances, trim
+  parameters) bit-exactly; the default float path rounded the last bit on
+  parse for roughly one in five arbitrary doubles.
 
 ### Tests
 
