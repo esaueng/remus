@@ -2102,6 +2102,19 @@ export class BrepKernel {
      */
     importStep(data: Uint8Array, max_input_bytes?: number | null, max_entities?: number | null): Uint32Array;
     /**
+     * Import a STEP file and return solid handles plus bounded-healing diagnostics.
+     *
+     * The returned JavaScript string is JSON with shape
+     * `{ solids, diagnostics }`. Existing callers that only need handles can
+     * continue to use [`importStep`](Self::import_step).
+     *
+     * # Errors
+     *
+     * Returns an error if the STEP data is malformed or exceeds a resource
+     * limit.
+     */
+    importStepWithReport(data: Uint8Array, max_input_bytes?: number | null, max_entities?: number | null): any;
+    /**
      * Import an STL file (binary or ASCII) and return a solid handle.
      *
      * The mesh triangles are converted to planar B-Rep faces with
