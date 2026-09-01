@@ -244,10 +244,15 @@ does not itself promote or demote anything.
 - Ledger rows: "STEP" (guarded), "STL, 3MF, OBJ, PLY, glTF" (guarded),
   "IGES" (Experimental).
 - Qualified evidence: shared byte/entity import limits with regressions;
-  malformed-input panics fixed (see `docs/production-readiness/audit.md`).
+  malformed-input panics fixed (see `docs/production-readiness/audit.md`);
+  CAx-IF v4.6 product/per-solid volume, surface-area, and centroid declarations
+  round-trip against independent analytic oracles, with opt-in recomputation,
+  stable deviation diagnostics, and transactional malformed-property refusal
+  ([STEP conformance](../production-readiness/step-conformance.md)).
 - Known gaps: inner-shell export, attribute round trips
   (`docs/design/deferred-e3b-step-names-and-colors.md`), periodic seam and
-  p-curve round trips, deterministic entity ordering.
+  p-curve round trips, deterministic entity ordering, AP242 schema output,
+  and validation properties for independent non-solid geometry.
 
 ### Sketch (GCS)
 

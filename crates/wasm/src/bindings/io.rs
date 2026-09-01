@@ -17,10 +17,10 @@ use crate::kernel::BrepKernel;
 /// `max_input_bytes` bounds the encoded input size; `max_entities` bounds
 /// format-specific model records (vertices, faces, triangles, STEP entities).
 /// Absent values keep the production defaults (128 MiB / 2,000,000).
-fn import_limits_from(
+pub(super) fn import_limits_from(
     max_input_bytes: Option<f64>,
     max_entities: Option<f64>,
-) -> Result<remus_io::ImportLimits, JsError> {
+) -> Result<remus_io::ImportLimits, WasmError> {
     let mut limits = remus_io::ImportLimits::default();
     if let Some(b) = max_input_bytes {
         validate_positive(b, "maxInputBytes")?;
@@ -89,6 +89,33 @@ impl From<&remus_io::step::StepImportDiagnostic> for StepImportDiagnostic {
             details,
         }
     }
+}
+
+/// Parse optional JSON bounds for the STEP validation-property checker.
+fn step_validation_options_from_json(
+    options: Option<&str>,
+) -> Result<remus_io::step::StepValidationOptions, WasmError> {
+    match options {
+        None => Ok(remus_io::step::StepValidationOptions::default()),
+        Some(json) => serde_json::from_str(json).map_err(|error| WasmError::InvalidInput {
+            reason: format!("invalid STEP validation options JSON: {error}"),
+        }),
+    }
+}
+
+pub(super) fn step_validation_result_json(
+    result: remus_io::step::StepReadResult,
+) -> serde_json::Value {
+    let diagnostics = result
+        .diagnostics()
+        .iter()
+        .map(StepImportDiagnostic::from)
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "solids": result.solids().iter().copied().map(solid_id_to_u32).collect::<Vec<_>>(),
+        "diagnostics": diagnostics,
+        "validation": result.validation(),
+    })
 }
 
 #[wasm_bindgen]
@@ -490,8 +517,8 @@ impl BrepKernel {
     /// Export a solid to STEP AP203 with optional header metadata.
     ///
     /// `options` is an optional JSON string with `productName`, `fileName`,
-    /// and `timestamp` fields. Missing fields retain the defaults used by
-    /// [`exportStep`](Self::export_step).
+    /// `timestamp`, and `validationProperties` fields. Missing fields retain
+    /// the defaults used by [`exportStep`](Self::export_step).
     ///
     /// # Errors
     ///
@@ -619,6 +646,35 @@ impl BrepKernel {
         Ok(serde_json::to_string(&result)
             .map_err(|error| JsError::new(&error.to_string()))?
             .into())
+    }
+
+    /// Import STEP and opt in to CAx-IF geometric validation-property checks.
+    ///
+    /// Returns JSON with `solids`, bounded-healing `diagnostics`, and one
+    /// `validation` report per solid.
+    /// Deviations are diagnostics and do not discard valid imported geometry;
+    /// malformed declarations fail transactionally. `options` accepts the
+    /// camelCase fields of [`remus_io::step::StepValidationOptions`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed UTF-8, STEP, option JSON, validation
+    /// declarations, or hostile-input limit violations.
+    #[wasm_bindgen(js_name = "importStepWithValidation")]
+    pub fn import_step_with_validation(
+        &mut self,
+        data: &[u8],
+        options: Option<String>,
+        max_input_bytes: Option<f64>,
+        max_entities: Option<f64>,
+    ) -> Result<String, JsError> {
+        let limits = import_limits_from(max_input_bytes, max_entities)?;
+        let options = step_validation_options_from_json(options.as_deref())?;
+        let text = std::str::from_utf8(data)
+            .map_err(|e| JsError::new(&format!("STEP data is not valid UTF-8: {e}")))?;
+        let result =
+            remus_io::step::read_step_with_validation(text, self.topo_mut(), limits, options)?;
+        Ok(serde_json::to_string(&step_validation_result_json(result))?)
     }
 
     // ── IGES Import/Export ────────────────────────────────────────
@@ -752,6 +808,62 @@ mod tests {
         assert_eq!(options.product_name, "Custom part");
         assert_eq!(options.file_name, "part.step");
         assert_eq!(options.timestamp, "2024-01-01T00:00:00");
+        assert!(!options.validation_properties);
+    }
+
+    #[test]
+    fn step_validation_options_json_is_optional_and_supports_partial_overrides() {
+        assert_eq!(
+            step_validation_options_from_json(None).unwrap(),
+            remus_io::step::StepValidationOptions::default()
+        );
+        let options = step_validation_options_from_json(Some(
+            r#"{"volumeRelativeTolerance":0.001,"centroidAbsoluteTolerance":0.01}"#,
+        ))
+        .unwrap();
+        assert!((options.volume_relative - 0.001).abs() < f64::EPSILON);
+        assert!((options.surface_area_relative - 0.005).abs() < f64::EPSILON);
+        assert!((options.centroid_absolute - 0.01).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn direct_step_validation_binding_returns_typed_report() {
+        let mut source = BrepKernel::new();
+        let solid = source.make_box_solid(2.0, 3.0, 4.0).unwrap();
+        let step = source
+            .export_step_with_options(solid, Some(r#"{"validationProperties":true}"#.to_string()))
+            .unwrap();
+        assert!(String::from_utf8_lossy(&step).contains("geometric validation property"));
+
+        let mut imported = BrepKernel::new();
+        let json = imported
+            .import_step_with_validation(&step, None, None, None)
+            .unwrap();
+        let result: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(result["solids"].as_array().unwrap().len(), 1);
+        assert!(result["diagnostics"].as_array().unwrap().is_empty());
+        assert!(
+            (result["validation"][0]["declared"]["volume"]
+                .as_f64()
+                .unwrap()
+                - 24.0)
+                .abs()
+                < 1e-9
+        );
+        assert!(
+            (result["validation"][0]["recomputed"]["surfaceArea"]
+                .as_f64()
+                .unwrap()
+                - 52.0)
+                .abs()
+                < 1e-9
+        );
+        assert!(
+            result["validation"][0]["diagnostics"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

@@ -130,6 +130,10 @@ enum BatchOpKind {
 /// `Rc::make_mut` still materialises the pre-op state, so rollback stays exact.
 fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
     match op {
+        #[cfg(feature = "io")]
+        "exportStep" => Some(BatchOpKind::ReadOnly),
+        #[cfg(feature = "io")]
+        "importStepWithValidation" => Some(BatchOpKind::Mutating),
         "boundingBox"
         | "centerOfMass"
         | "chamfer2d"
@@ -701,6 +705,73 @@ impl BrepKernel {
         args: &serde_json::Value,
     ) -> Result<serde_json::Value, StructuredWasmError> {
         match op {
+            #[cfg(feature = "io")]
+            "exportStep" => {
+                let solid = get_u32(args, "solid")?;
+                let solid_id = self
+                    .resolve_solid(solid)
+                    .map_err(StructuredWasmError::from)?;
+                let options = match args.get("options") {
+                    None | Some(serde_json::Value::Null) => {
+                        remus_io::step::StepWriteOptions::default()
+                    }
+                    Some(value) => serde_json::from_value(value.clone()).map_err(|error| {
+                        StructuredWasmError::invalid_argument(
+                            format!("invalid STEP write options: {error}"),
+                            Some("options"),
+                        )
+                    })?,
+                };
+                let step =
+                    remus_io::step::write_step_with_options(&self.topo, &[solid_id], &options)
+                        .map_err(StructuredWasmError::from)?;
+                Ok(serde_json::Value::String(step))
+            }
+            #[cfg(feature = "io")]
+            "importStepWithValidation" => {
+                let data = args["data"].as_str().ok_or_else(|| {
+                    StructuredWasmError::invalid_argument(
+                        "missing or invalid 'data' STEP string",
+                        Some("data"),
+                    )
+                })?;
+                let options = match args.get("options") {
+                    None | Some(serde_json::Value::Null) => {
+                        remus_io::step::StepValidationOptions::default()
+                    }
+                    Some(value) => serde_json::from_value(value.clone()).map_err(|error| {
+                        StructuredWasmError::invalid_argument(
+                            format!("invalid STEP validation options: {error}"),
+                            Some("options"),
+                        )
+                    })?,
+                };
+                let optional_f64 =
+                    |name: &'static str| -> Result<Option<f64>, StructuredWasmError> {
+                        match args.get(name) {
+                            None | Some(serde_json::Value::Null) => Ok(None),
+                            Some(value) => value.as_f64().map(Some).ok_or_else(|| {
+                                StructuredWasmError::invalid_argument(
+                                    format!("'{name}' must be a number"),
+                                    Some(name),
+                                )
+                            }),
+                        }
+                    };
+                let limits = super::io::import_limits_from(
+                    optional_f64("maxInputBytes")?,
+                    optional_f64("maxEntities")?,
+                )
+                .map_err(StructuredWasmError::from)?;
+                let result = remus_io::step::read_step_with_validation(
+                    data,
+                    self.topo_mut(),
+                    limits,
+                    options,
+                )
+                .map_err(StructuredWasmError::from)?;
+                Ok(super::io::step_validation_result_json(result))
+            }
             "makeBox" => {
                 let w = get_f64(args, "width")?;
                 let h = get_f64(args, "height")?;
@@ -2440,6 +2511,55 @@ mod batch_contract_tests {
 
     fn parse(response: &str) -> serde_json::Value {
         serde_json::from_str(response).expect("batch response must be valid JSON")
+    }
+
+    #[cfg(feature = "io")]
+    #[test]
+    fn step_validation_capability_has_export_and_import_batch_companions() {
+        let mut exporting = BrepKernel::new();
+        let export = parse(&exporting.execute_batch_v2(
+            r#"[
+                {"op":"makeBox","args":{"width":2,"height":3,"depth":4}},
+                {"op":"exportStep","args":{"solid":0,"options":{"validationProperties":true}}}
+            ]"#,
+        ));
+        let step = export[1]["ok"].as_str().expect("STEP string");
+        assert!(step.contains("geometric validation property"));
+
+        let input = serde_json::to_string(&serde_json::json!([{
+            "op": "importStepWithValidation",
+            "args": { "data": step }
+        }]))
+        .expect("batch JSON");
+        let mut importing = BrepKernel::new();
+        let imported = parse(&importing.execute_batch_v2(&input));
+        assert_eq!(
+            imported[0]["ok"]["solids"]
+                .as_array()
+                .expect("solid handles")
+                .len(),
+            1
+        );
+        assert!(
+            imported[0]["ok"]["diagnostics"]
+                .as_array()
+                .expect("import diagnostics")
+                .is_empty()
+        );
+        assert!(
+            (imported[0]["ok"]["validation"][0]["declared"]["volume"]
+                .as_f64()
+                .expect("declared volume")
+                - 24.0)
+                .abs()
+                < 1e-9
+        );
+        assert!(
+            imported[0]["ok"]["validation"][0]["diagnostics"]
+                .as_array()
+                .expect("diagnostics array")
+                .is_empty()
+        );
     }
 
     #[test]
