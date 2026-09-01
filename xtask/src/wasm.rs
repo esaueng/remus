@@ -14,7 +14,7 @@ const MIN_METHOD_COUNT: usize = 170;
 
 /// Valid .wasm file size range (bytes).
 const MIN_WASM_SIZE: u64 = 500_000;
-const MAX_WASM_SIZE: u64 = 20_000_000;
+const MAX_WASM_SIZE: u64 = 8 * 1024 * 1024;
 
 fn project_root() -> Result<PathBuf> {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -98,17 +98,11 @@ pub fn check_tools() -> Result<()> {
         );
     }
 
-    if command_exists("wasm-opt") {
-        println!("  wasm-opt ok");
-    } else {
-        println!("  warning: wasm-opt not found, optimization will be skipped");
-    }
-
     Ok(())
 }
 
 /// Build WASM for both bundler and nodejs targets.
-pub fn build_both_targets(simd: bool, optimize: bool) -> Result<()> {
+pub fn build_both_targets(simd: bool) -> Result<()> {
     let wasm_crate = project_root()?.join("crates/wasm");
 
     let mut rustflags = String::from("-Dwarnings");
@@ -119,9 +113,6 @@ pub fn build_both_targets(simd: bool, optimize: bool) -> Result<()> {
     println!("\nBuilding WASM (bundler target)...");
     let mut bundler = Command::new("wasm-pack");
     bundler.args(["build", "--target", "bundler", "--release"]);
-    if !optimize {
-        bundler.arg("--no-opt");
-    }
     bundler
         .args(["--out-dir", "pkg"])
         .current_dir(&wasm_crate)
@@ -130,54 +121,19 @@ pub fn build_both_targets(simd: bool, optimize: bool) -> Result<()> {
 
     println!("\nBuilding WASM (nodejs target)...");
     let mut node = Command::new("wasm-pack");
-    node.args(["build", "--target", "nodejs", "--release"]);
-    if !optimize {
-        node.arg("--no-opt");
-    }
+    // Only the Node glue is merged into the distributable package; its WASM
+    // is discarded in favour of the optimized bundler binary above.
+    node.args([
+        "build",
+        "--target",
+        "nodejs",
+        "--release",
+        "--no-opt",
+    ]);
     node.args(["--out-dir", "pkg-node"])
         .current_dir(&wasm_crate)
         .env("RUSTFLAGS", &rustflags);
     run_cmd(&mut node).context("wasm-pack build (nodejs) failed")?;
-
-    Ok(())
-}
-
-/// Run wasm-opt on the bundler .wasm file. Skips if wasm-opt is not installed.
-pub fn run_wasm_opt() -> Result<()> {
-    if !command_exists("wasm-opt") {
-        println!("\nSkipping wasm-opt (not installed)");
-        return Ok(());
-    }
-
-    let wasm_file = pkg_dir()?.join("remus_wasm_bg.wasm");
-    if !wasm_file.exists() {
-        bail!("WASM file not found: {}", wasm_file.display());
-    }
-
-    let size_before = fs::metadata(&wasm_file)?.len();
-    println!(
-        "\nRunning wasm-opt (before: {:.1} KB)...",
-        size_before as f64 / 1024.0
-    );
-
-    let opt_file = wasm_file.with_extension("wasm.opt");
-    run_cmd(
-        Command::new("wasm-opt")
-            .args(["-O3"])
-            .arg(&wasm_file)
-            .args(["-o"])
-            .arg(&opt_file),
-    )
-    .context("wasm-opt failed")?;
-
-    fs::rename(&opt_file, &wasm_file).context("replacing wasm with optimized version")?;
-
-    let size_after = fs::metadata(&wasm_file)?.len();
-    let reduction = 100.0 * (1.0 - size_after as f64 / size_before as f64);
-    println!(
-        "  After: {:.1} KB ({reduction:.1}% reduction)",
-        size_after as f64 / 1024.0
-    );
 
     Ok(())
 }
@@ -337,14 +293,8 @@ fn validate_at(pkg: &Path) -> Result<()> {
     let wasm_path = pkg.join("remus_wasm_bg.wasm");
     if wasm_path.exists() {
         let size = fs::metadata(&wasm_path)?.len();
-        if size < MIN_WASM_SIZE {
-            errors.push(format!(
-                ".wasm too small: {size} bytes (min {MIN_WASM_SIZE})"
-            ));
-        } else if size > MAX_WASM_SIZE {
-            errors.push(format!(
-                ".wasm too large: {size} bytes (max {MAX_WASM_SIZE})"
-            ));
+        if let Some(error) = wasm_size_error(size) {
+            errors.push(error);
         } else {
             println!("  ok .wasm size: {:.1} KB", size as f64 / 1024.0);
         }
@@ -409,6 +359,20 @@ fn count_dts_methods(dts: &str) -> usize {
                 && trimmed.contains('(')
         })
         .count()
+}
+
+fn wasm_size_error(size: u64) -> Option<String> {
+    if size < MIN_WASM_SIZE {
+        Some(format!(
+            ".wasm too small: {size} bytes (min {MIN_WASM_SIZE})"
+        ))
+    } else if size > MAX_WASM_SIZE {
+        Some(format!(
+            ".wasm too large: {size} bytes (max {MAX_WASM_SIZE})"
+        ))
+    } else {
+        None
+    }
 }
 
 /// Validate package.json fields, pushing errors into the collector.
@@ -564,6 +528,44 @@ mod tests {
             cargo_toml.contains(&expected),
             "workspace dependency must contain {expected}"
         );
+    }
+
+    #[test]
+    fn wasm_size_budget_accepts_its_exact_boundaries() {
+        assert!(wasm_size_error(MIN_WASM_SIZE).is_none());
+        assert!(wasm_size_error(MAX_WASM_SIZE).is_none());
+    }
+
+    #[test]
+    fn wasm_size_budget_rejects_binaries_outside_its_bounds() {
+        assert!(
+            wasm_size_error(MIN_WASM_SIZE - 1)
+                .is_some_and(|error| error.contains("too small"))
+        );
+        assert!(
+            wasm_size_error(MAX_WASM_SIZE + 1)
+                .is_some_and(|error| error.contains("too large"))
+        );
+    }
+
+    #[test]
+    fn consumer_workflows_cannot_skip_wasm_optimization() {
+        let root = project_root().unwrap();
+        for relative in [
+            ".github/workflows/ci.yml",
+            ".github/workflows/publish.yml",
+            ".github/workflows/openzcad-wasm-release.yml",
+        ] {
+            let workflow = fs::read_to_string(root.join(relative)).unwrap();
+            assert!(
+                workflow.contains("cargo xtask wasm-build"),
+                "{relative} must use the validated package builder"
+            );
+            assert!(
+                !workflow.contains("wasm-build --skip-opt"),
+                "{relative} must not bypass distributable WASM optimization"
+            );
+        }
     }
 
     // -- patch_package_json tests -----------------------------------------
