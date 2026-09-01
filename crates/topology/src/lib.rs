@@ -36,7 +36,7 @@ pub mod vertex;
 pub mod wire;
 
 pub use arena::Arena;
-pub use coedge::{Coedge, CoedgeId};
+pub use coedge::{Coedge, CoedgeId, PeriodicWinding};
 pub use compound::CompoundId;
 pub use compsolid::CompSolidId;
 pub use edge::EdgeId;
@@ -114,10 +114,9 @@ pub enum TopologyError {
     #[error("coedge {0:?} not found")]
     CoedgeNotFound(coedge::CoedgeId),
 
-    /// A face's derived loops disagree with its authoritative wires
-    /// (RFC 0002, Stage 1 consistency invariant). Divergence is a kernel
-    /// bug, not a modeling failure.
-    #[error("derived loops of face {face:?} do not match its wires")]
+    /// A face's authoritative loops disagree with its compatibility wires.
+    /// Divergence is a kernel bug, not a modeling failure.
+    #[error("boundary loops of face {face:?} do not match its compatibility wires")]
     LoopWireMismatch {
         /// The face whose derivation is stale or wrong.
         face: face::FaceId,

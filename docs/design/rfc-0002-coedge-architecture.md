@@ -1,11 +1,12 @@
 # RFC 0002: Coedge architecture
 
-Status: accepted design; Stages 1–3 and the topology-owned atomic mutation
-gate landed. The remaining boundary-authority flip is staged as P-Class
-Issue 2.0.
+Status: accepted design; Stages 1–3 and the topology-owned atomic mutation gate
+are landed. P-Class Issue 2.0e implements the physical Loop/Coedge authority
+flip described here. STEP per-use mapping and the final
+integration/compatibility-facade zero gate remain Issues 2.0f and 2.0g.
 Characterization anchors: `crates/topology/src/pcurve.rs`, module
 `seam_characterization` — the flipped tests pin the landed per-use behavior
-that the physical storage move must preserve.
+preserved by the physical storage move.
 
 ## Problem
 
@@ -22,12 +23,13 @@ therefore could not carry per-use data:
   winding, or per-use tolerance on (needed by Issue 8's explicit trims and
   SameParameter validation).
 
-Stage 2 closed that data-loss defect with the mutation-robust
-`(edge, face, orientation)` key. The remaining problem is authority: wires
-are still stored face-boundary state, p-curves still live in the registry,
-and uncontrolled mutation can stale derived Loop/Coedge data. Seam-crossing
-capability remains Partial until Issue 2.0 completes the physical authority
-flip (`docs/kernel-maturity/capability-matrix.md`, cross-family limitation 1).
+Stage 2 first closed that data-loss defect with a mutation-robust
+`(edge, face, orientation)` key. Issue 2.0e implements the physical move:
+`Face` stores authoritative Loop handles, Loop order stores Coedge identities,
+and each p-curve lives on its Coedge. Wires and the old keyed registry now
+exist only as compatibility views kept coherent by topology-owned APIs. STEP
+still needs to bind its per-use p-curves by loop position in Issue 2.0f, so
+seam-crossing exchange capability remains Partial until that gate lands.
 
 ## Design
 
@@ -46,6 +48,8 @@ pub struct Coedge {
     /// own trim interval. `None` only where the surface type does not
     /// require a p-curve (planar faces may derive it).
     pcurve: Option<PCurve>,
+    /// Full-period lifts of this use's pcurve branch in surface u and v.
+    periodic_winding: PeriodicWinding,
 }
 pub type CoedgeId = Id<Coedge>;
 
@@ -68,25 +72,29 @@ Held invariants (validator-enforced, see below):
   exactly one loop, a loop to exactly one face.
 - Two coedges may reference the same `EdgeId`; a seam is exactly two uses on
   one face with opposite `forward` and different p-curve branches.
-- P-curve identity is the coedge. `PCurveKey {edge, face}` remains only
+- P-curve identity is the coedge. `PCurveKey {edge, face, forward}` remains only
   inside the compatibility layer.
 
-Deliberately **not** in this RFC: explicit 3D edge trim intervals and
-winding counts (Issue 8 adds them — the coedge is where they will live);
-radial edge lists for non-manifold bodies (Milestone 8); generational
+Explicit 3D edge trim intervals landed in Stage 3. Issue 2.0e adds integer
+`(u, v)` periodic winding counts to Coedge authority; current strict edge
+domains still refuse multi-turn 3D carriers, so consumers that create true
+multi-turn topology remain separately qualified. Deliberately **not** in this
+RFC: radial edge lists for non-manifold bodies (Milestone 8) and generational
 handles (separately versioned per `deferred-e6b`).
 
 ### Handle semantics
 
 `CoedgeId`/`LoopId` are ordinary arena `Id<T>`s with the existing append-only
-no-reuse tombstone contract. Retiring a face retires its loops and coedges;
-retiring an edge with live coedges is a validation error (the reverse index
-`edge → coedges` makes this checkable). Checkpoint restore treats the new
-arenas exactly like the existing ones (high-water retirement).
+no-reuse tombstone contract. Retiring a face through the topology-owned solid
+deletion path retires its loops and coedges. Strict access validates the live
+edge, loop, and owning face before reading or changing per-use authority.
+Checkpoint restore treats the new arenas exactly like the existing ones
+(high-water retirement).
 
 WASM exposure: coedges are not exposed as public numeric handles in the
 first release; JS callers keep face/wire/edge handles. Exposure (for
-per-use queries) is an additive binding decision after Issue 7.
+per-use queries) is an additive binding decision after the 2.0g integration
+gate.
 
 ## Migration
 
@@ -157,23 +165,26 @@ What landed:
   `remove_pcurve_oriented`) address a use exactly;
 - the `(edge, face)` accessors became the fail-closed adapter specified
   below (typed `seam_pcurve_ambiguous` when both branches exist);
-- `Topology::coedge_pcurve` resolves a derived coedge's own branch;
+- `Topology::coedge_pcurve` resolves a coedge's own branch;
 - the boolean assembly p-curve pass is per-use (seam-capable);
 - the seam characterization tests flipped as promised;
 - the arena format records the orientation additively (older documents
   resolve the use from the face's wires on load).
 
-The physical move of storage into `Coedge` and the boundary-sequence authority
-flip below remain future work. The sanctioned atomic mutation prerequisite is
-now landed; at the authority flip, the stored coedge becomes the key and this
-registry becomes its index.
+Issue 2.0e moves storage into `Coedge` and flips the boundary-sequence
+authority as specified below. The keyed registry becomes only an index to the
+stored coedge.
 
-#### The remaining authority flip (original Stage 2 plan)
+#### Physical authority flip (Issue 2.0e implementation)
 
-- Loops become authoritative. `Face` stores `outer_loop` + `inner_loops`;
-  the wire the face was built from becomes an input artifact, not state.
-- P-curves move into `Coedge.pcurve`. The `(edge, face)` registry API
-  becomes a compatibility adapter:
+- Loops are authoritative. `Face` stores its outer-then-inner Loop handles;
+  its wire fields are a compatibility facade kept coherent by sanctioned
+  topology APIs, not independent boundary state. Direct legacy facade
+  mutation can still diverge until 2.0g removes that escape hatch, and strict
+  validation refuses such divergence.
+- P-curves live in `Coedge.pcurve`. The old registry contains only a
+  compatibility index to those coedges, and `(edge, face)` access is an
+  adapter:
   - `get(edge, face)`: answers only when the face has exactly **one** use
     of that edge; two uses return a typed ambiguity error
     (`invalid_topology` / `seam_pcurve_ambiguous` in the diagnostic
@@ -181,14 +192,21 @@ registry becomes its index.
   - `set(edge, face)`: same rule; seam p-curves must be set per coedge.
   - This flips the characterization tests, which is the acceptance
     evidence for the stage.
-- Compatibility adapters for readers:
-  - `face_oriented_edges(topo, face) -> impl Iterator<Item = OrientedEdge>`
-    derived from the loop (cheap: each coedge yields `(edge, forward)`);
+- Compatibility adapters preserve the old tuple-addressed access pattern,
+  while oriented mutation now returns typed errors for missing uses:
+  - `Topology::face_oriented_edges(face) -> Result<Vec<OrientedEdge>,
+    TopologyError>` derived from the loop (each coedge yields
+    `(edge, forward)`);
   - `Face::outer_wire()` remains during the stage, backed by a wire
     materialized from the loop at mutation time, so `&[OrientedEdge]`
     slice-consumers keep compiling.
 - Free wires (sweep paths, profiles, wire bodies) are untouched: `Wire`
   remains the representation for wires that are not face boundaries.
+
+The arena schema is now version 3: Loop/Coedge arrays are serialized as the
+authority, including pcurves and winding counts. Version 1/2 documents derive
+that authority from wires during staged replay; a version 3 boundary that
+disagrees with its wire facade is rejected atomically.
 
 Exit gate: the seam face round-trips two independent p-curve branches;
 `solid_faces`-based consumers pass unchanged through the adapters; the GFA
@@ -232,13 +250,15 @@ What landed:
   `RepairBudgetExceeded` when the budget cannot be met — never silent,
   never committing a miss.
 
-Queued:
+Implemented with the physical move:
 
-- Periodic winding counts on `Coedge` (multi-turn support) arrive with the
-  physical p-curve storage move.
+- `PeriodicWinding {u, v}` lives on each Coedge, survives sanctioned boundary
+  rebuilds/checkpoint restore, and round-trips in arena v3. Multi-turn edge
+  construction remains typed-unsupported until a later capability explicitly
+  admits spans beyond the strict one-turn edge contract.
 
-Landed prerequisite: Issue 2.0d supplies the topology-owned atomic mutation
-boundary and exact checkpoint rollback that the remaining migration assumes.
+Landed prerequisite: Issue 2.0d supplied the topology-owned atomic mutation
+boundary and exact checkpoint rollback used by the physical migration.
 
 The operations contribution in PR #122 to P-Class issue 2.0b closes seven of
 the ten measured missing-writer paths: `merge_result_vertices`, the sphere-cap
@@ -406,9 +426,9 @@ Issue 2.0 lands in seven independently reviewable stages:
    boundary mutation replaces all 30 direct production sites; the ratchet
    requires zero and exact checkpoint rollback is pinned. This landed before
    any storage authority flip.
-5. **2.0e — physical Loop/Coedge authority:** move boundary and p-curve
-   authority into Loop/Coedge behind additive compatibility adapters, then
-   flip the existing seam characterization tests.
+5. **2.0e — physical Loop/Coedge authority:** boundary order and
+   p-curve/winding authority live in Loop/Coedge behind compatibility
+   adapters; the seam characterization and arena-v3 tests pin the flip.
 6. **2.0f — STEP per-use round-trip:** map loop-positioned STEP p-curves to
    distinct coedge uses and pin deterministic write/read/write behavior.
 7. **2.0g — integration and zero gate:** require zero production readers,
@@ -445,21 +465,22 @@ pcurves after the boolean or claim that general GFA assembly populates them.
 That storage migration remains staged under physical Coedge authority. These
 checks close 2.0c without making a vacuous zero-pcurve result look validated.
 
-Once Issue 2.0e lands, new code must not construct face boundaries from raw
-`OrientedEdge` lists. Enforcement:
+After Issue 2.0e, no valid live face can exist without authoritative loops:
+`Topology::add_face` promotes its complete wire specification in the same
+allocation operation, and validation refuses an unpromoted face. Enforcement:
 
-- `Wire::new` stays public (free wires are legitimate); the ratchet is on
-  the face constructors: the wire-taking `Face::new` becomes
-  `#[deprecated]` in favor of the loop-taking constructor, and CI treats
-  new deprecation warnings as errors (already implied by `-D warnings`).
+- `Wire::new` stays public (free wires are legitimate). `Face::new` remains a
+  pre-allocation compatibility specification because a Loop needs its owning
+  `FaceId`; inserting it through `Topology::add_face` is the atomic authority
+  boundary and immediately stores the resulting Loop handles on the Face.
 - The adapter module carries a tracking comment and a deletion gate: the
   facade is removed when `rg` finds no `outer_wire()` consumers outside
   `remus-topology` and the deprecation has been through one release.
 
 ## Serialization
 
-The arena/JSON BREP transfer format gains `loops` and `coedges` arrays under
-a schema-version bump. Compatibility:
+Arena/JSON BREP format version 3 carries `loops` and `coedges` arrays (with
+per-coedge pcurves and winding counts). Compatibility:
 
 - Old documents (no loops): loader derives loops from wires exactly as the
   Stage 1 builder does — every legacy file remains loadable forever.
@@ -486,15 +507,20 @@ STEP's model already matches this design: an `EDGE_LOOP` of
 
 ## Validation additions
 
-New structural checks (stable codes in the diagnostic registry):
+Structural checks with stable codes now in the diagnostic registry:
 
 | Check | Code | Category |
 | --- | --- | --- |
-| Coedge references retired edge/loop | `coedge_dangling_reference` | `invalid_topology` |
 | Loop not connected under orientations | `loop_not_connected` | `invalid_topology` |
-| Loop/wire divergence (Stage 1 only) | `loop_wire_mismatch` | `internal` |
-| Seam uses without distinct p-curve branches (Stage 2+) | `seam_branch_missing` | `invalid_topology` |
+| Loop/wire compatibility divergence | `loop_wire_mismatch` | `internal` |
 | `(edge, face)` p-curve access on a seam (Stage 2+) | `seam_pcurve_ambiguous` | `invalid_topology` |
+
+The 2.0g integration gate adds whole-model diagnostics for dangling coedge
+references and required seam branches. Today direct coedge access already
+fails through the existing typed entity-not-found diagnostics, while absence
+of a pcurve remains valid for planar uses and for capabilities that have not
+yet populated surface-boundary geometry; the kernel does not mislabel that
+absence as a seam defect.
 
 ## Consequences
 
