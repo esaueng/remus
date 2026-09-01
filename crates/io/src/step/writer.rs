@@ -15,12 +15,18 @@ use remus_topology::solid::SolidId;
 use remus_topology::vertex::VertexId;
 use remus_topology::wire::WireId;
 
+use super::reader::{
+    StepValidationProperties, aggregate_validation_properties, compute_validation_properties,
+};
 use crate::IoError;
+
+const CAX_IF_GVP_HEADER: &str =
+    "CAx-IF Rec.Pracs.---Geometric and Assembly Validation Properties---4.6---2023-04-21";
 
 /// Metadata written into the STEP header and product structure.
 ///
-/// Defaults preserve the historical remus export values so callers of
-/// [`write_step`] remain byte-compatible.
+/// Defaults preserve the historical remus export contract. CAx-IF geometric
+/// validation properties are an explicit opt-in.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct StepWriteOptions {
@@ -30,6 +36,8 @@ pub struct StepWriteOptions {
     pub file_name: String,
     /// Timestamp stored in the `FILE_NAME` header entity.
     pub timestamp: String,
+    /// Emit CAx-IF volume, surface-area, and centroid declarations.
+    pub validation_properties: bool,
 }
 
 impl Default for StepWriteOptions {
@@ -38,6 +46,7 @@ impl Default for StepWriteOptions {
             product_name: "remus_solid".to_string(),
             file_name: "output.stp".to_string(),
             timestamp: "2024-01-01T00:00:00".to_string(),
+            validation_properties: false,
         }
     }
 }
@@ -107,13 +116,18 @@ pub fn write_step_with_options(
 
     let mut ctx = StepWriteContext::new(options.clone());
 
-    let repr_context_id = ctx.write_geometric_context(uncertainty)?;
+    let geometric_context =
+        ctx.write_geometric_context(uncertainty, options.validation_properties)?;
     let product_ids = ctx.write_product_structure();
 
     let mut brep_ids = Vec::new();
+    let mut validation_values = Vec::new();
     for &solid_id in solids {
         let brep_id = ctx.write_solid(topo, solid_id)?;
         brep_ids.push(brep_id);
+        if options.validation_properties {
+            validation_values.push(compute_validation_properties(topo, solid_id)?);
+        }
     }
 
     let items: Vec<String> = brep_ids.iter().map(|id| format!("#{id}")).collect();
@@ -124,7 +138,7 @@ pub fn write_step_with_options(
         &format!(
             "'remus export', ({}), #{})",
             items.join(", "),
-            repr_context_id
+            geometric_context.representation
         ),
     );
 
@@ -141,6 +155,40 @@ pub fn write_step_with_options(
         "SHAPE_DEFINITION_REPRESENTATION",
         &format!("#{prod_def_shape_id}, #{shape_repr_id})"),
     );
+
+    if options.validation_properties {
+        let area_unit = geometric_context
+            .area_unit
+            .ok_or_else(|| IoError::InvalidTopology {
+                reason: "STEP validation area unit was not initialized".to_string(),
+            })?;
+        let volume_unit =
+            geometric_context
+                .volume_unit
+                .ok_or_else(|| IoError::InvalidTopology {
+                    reason: "STEP validation volume unit was not initialized".to_string(),
+                })?;
+        let aggregate = aggregate_validation_properties(&validation_values)?;
+        ctx.write_validation_property_values(
+            prod_def_shape_id,
+            "manufactured part shape",
+            aggregate,
+            geometric_context.representation,
+            area_unit,
+            volume_unit,
+        )?;
+        for ((index, &brep_id), &values) in brep_ids.iter().enumerate().zip(&validation_values) {
+            ctx.write_solid_validation_properties(
+                index,
+                brep_id,
+                prod_def_shape_id,
+                values,
+                geometric_context.representation,
+                area_unit,
+                volume_unit,
+            )?;
+        }
+    }
 
     Ok(ctx.finish())
 }
@@ -159,6 +207,13 @@ struct StepWriteContext {
 /// Product structure entity IDs.
 struct ProductIds {
     definition: u64,
+}
+
+#[derive(Clone, Copy)]
+struct GeometricContextIds {
+    representation: u64,
+    area_unit: Option<u64>,
+    volume_unit: Option<u64>,
 }
 
 impl StepWriteContext {
@@ -226,7 +281,11 @@ impl StepWriteContext {
     }
 
     /// Write geometric context (units, representation context).
-    fn write_geometric_context(&mut self, uncertainty_value: f64) -> Result<u64, IoError> {
+    fn write_geometric_context(
+        &mut self,
+        uncertainty_value: f64,
+        include_validation_units: bool,
+    ) -> Result<GeometricContextIds, IoError> {
         let len_unit = self.next_id();
         let _ = writeln!(
             self.entities,
@@ -244,6 +303,40 @@ impl StepWriteContext {
             self.entities,
             "#{solid_angle_unit} = ( NAMED_UNIT(*) SI_UNIT($,.STERADIAN.) SOLID_ANGLE_UNIT() );"
         );
+
+        let (area_unit, volume_unit) = if include_validation_units {
+            let area_element = self.next_id();
+            self.write_entity(
+                area_element,
+                "DERIVED_UNIT_ELEMENT",
+                &format!("#{len_unit}, 2.0)"),
+            );
+            let area = self.next_id();
+            self.write_entity(area, "AREA_UNIT", &format!("(#{area_element}))"));
+            let area_name = self.next_id();
+            self.write_entity(
+                area_name,
+                "NAME_ATTRIBUTE",
+                &format!("'SQUARE MILLIMETRE', #{area})"),
+            );
+            let volume_element = self.next_id();
+            self.write_entity(
+                volume_element,
+                "DERIVED_UNIT_ELEMENT",
+                &format!("#{len_unit}, 3.0)"),
+            );
+            let volume = self.next_id();
+            self.write_entity(volume, "VOLUME_UNIT", &format!("(#{volume_element}))"));
+            let volume_name = self.next_id();
+            self.write_entity(
+                volume_name,
+                "NAME_ATTRIBUTE",
+                &format!("'CUBIC MILLIMETRE', #{volume})"),
+            );
+            (Some(area), Some(volume))
+        } else {
+            (None, None)
+        };
 
         let uncertainty = self.next_id();
         let uncertainty_text = if uncertainty_value <= 1e-7 {
@@ -269,7 +362,127 @@ impl StepWriteContext {
              REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );"
         );
 
-        Ok(ctx)
+        Ok(GeometricContextIds {
+            representation: ctx,
+            area_unit,
+            volume_unit,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn write_solid_validation_properties(
+        &mut self,
+        solid_index: usize,
+        brep_id: u64,
+        product_definition_shape: u64,
+        values: StepValidationProperties,
+        representation_context: u64,
+        area_unit: u64,
+        volume_unit: u64,
+    ) -> Result<(), IoError> {
+        let shape_aspect = self.next_id();
+        self.write_entity(
+            shape_aspect,
+            "SHAPE_ASPECT",
+            &format!(
+                "'solid {solid_index}', 'solid #{brep_id}', #{product_definition_shape}, .F.)"
+            ),
+        );
+        let id_attribute = self.next_id();
+        self.write_entity(
+            id_attribute,
+            "ID_ATTRIBUTE",
+            &format!("'solid #{brep_id} for #{product_definition_shape}', #{shape_aspect})"),
+        );
+        let assignment = self.next_id();
+        self.write_entity(
+            assignment,
+            "PROPERTY_DEFINITION",
+            &format!("'', 'Shape for Validation Properties', #{shape_aspect})"),
+        );
+        let solid_representation = self.next_id();
+        self.write_entity(
+            solid_representation,
+            "SHAPE_REPRESENTATION",
+            &format!("'', (#{brep_id}), #{representation_context})"),
+        );
+        let assignment_link = self.next_id();
+        self.write_entity(
+            assignment_link,
+            "SHAPE_DEFINITION_REPRESENTATION",
+            &format!("#{assignment}, #{solid_representation})"),
+        );
+        self.write_validation_property_values(
+            shape_aspect,
+            &format!("solid #{brep_id}"),
+            values,
+            representation_context,
+            area_unit,
+            volume_unit,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn write_validation_property_values(
+        &mut self,
+        characterized_definition: u64,
+        description: &str,
+        values: StepValidationProperties,
+        representation_context: u64,
+        area_unit: u64,
+        volume_unit: u64,
+    ) -> Result<(), IoError> {
+        let volume = self.next_id();
+        self.write_entity(
+            volume,
+            "MEASURE_REPRESENTATION_ITEM",
+            &format!(
+                "'volume measure', VOLUME_MEASURE({}), #{volume_unit})",
+                fmt_authority_f64(values.volume)?
+            ),
+        );
+        let area = self.next_id();
+        self.write_entity(
+            area,
+            "MEASURE_REPRESENTATION_ITEM",
+            &format!(
+                "'surface area measure', AREA_MEASURE({}), #{area_unit})",
+                fmt_authority_f64(values.surface_area)?
+            ),
+        );
+        let center = self.next_id();
+        self.write_entity(
+            center,
+            "CARTESIAN_POINT",
+            &format!(
+                "'centre point', ({}, {}, {}))",
+                fmt_f64(values.centroid[0]),
+                fmt_f64(values.centroid[1]),
+                fmt_f64(values.centroid[2])
+            ),
+        );
+        let representation = self.next_id();
+        self.write_entity(
+            representation,
+            "REPRESENTATION",
+            &format!("'', (#{volume}, #{area}, #{center}), #{representation_context})"),
+        );
+        let property = self.next_id();
+        self.write_entity(
+            property,
+            "PROPERTY_DEFINITION",
+            &format!(
+                "'geometric validation property', {}, #{characterized_definition})",
+                step_string_literal(description)
+            ),
+        );
+        let link = self.next_id();
+        self.write_entity(
+            link,
+            "PROPERTY_DEFINITION_REPRESENTATION",
+            &format!("#{property}, #{representation})"),
+        );
+        Ok(())
     }
 
     /// Write product structure entities.
@@ -863,7 +1076,15 @@ impl StepWriteContext {
         let timestamp = step_string_literal(&self.options.timestamp);
         let _ = writeln!(out, "ISO-10303-21;");
         let _ = writeln!(out, "HEADER;");
-        let _ = writeln!(out, "FILE_DESCRIPTION(('remus STEP export'), '2;1');");
+        let description = if self.options.validation_properties {
+            format!(
+                "'remus STEP export', {}",
+                step_string_literal(CAX_IF_GVP_HEADER)
+            )
+        } else {
+            "'remus STEP export'".to_string()
+        };
+        let _ = writeln!(out, "FILE_DESCRIPTION(({description}), '2;1');");
         let _ = writeln!(
             out,
             "FILE_NAME({file_name}, {timestamp}, (''), (''), \
@@ -1097,7 +1318,15 @@ mod tests {
         let shell = write_topo.add_shell(Shell::new(vec![face]).unwrap());
         let solid = write_topo.add_solid(Solid::new(shell, vec![]));
 
-        let step = write_step(&write_topo, &[solid]).unwrap();
+        let step = write_step_with_options(
+            &write_topo,
+            &[solid],
+            &StepWriteOptions {
+                validation_properties: false,
+                ..StepWriteOptions::default()
+            },
+        )
+        .unwrap();
         assert!(step.contains("TRIMMED_CURVE("));
         let expected_sense = if expected_forward { ".T." } else { ".F." };
         assert!(step.contains(&format!("{expected_sense}, .PARAMETER.)")));
@@ -1177,7 +1406,15 @@ mod tests {
         assert!((stored.1 - range.1).abs() < 1e-8);
         let solid = doubled_edge_solid(&mut topo, edge);
 
-        let step = write_step(&topo, &[solid]).unwrap();
+        let step = write_step_with_options(
+            &topo,
+            &[solid],
+            &StepWriteOptions {
+                validation_properties: false,
+                ..StepWriteOptions::default()
+            },
+        )
+        .unwrap();
         let mut imported = Topology::new();
         let imported_solid = crate::step::reader::read_step(&step, &mut imported).unwrap()[0];
         let imported_edge = solid_edges(&imported, imported_solid).unwrap()[0];
@@ -1295,6 +1532,7 @@ mod tests {
             product_name: "Owner's bracket".to_string(),
             file_name: "owner's-bracket.step".to_string(),
             timestamp: "2026-08-03T12:34:56-04:00".to_string(),
+            ..StepWriteOptions::default()
         };
 
         let step = write_step_with_options(&topo, &[solid], &options).unwrap();

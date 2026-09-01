@@ -33,7 +33,7 @@ passes; rows can remain blocked on broader domain matrices.
 | Geometry | Curve-curve intersection | Stable | Evidence pending: termination/property matrix incomplete. |
 | Tessellation | Adaptive/CDT/analytic optimization | Stable | Evidence improved: any face failure aborts solid tessellation; malformed-face regression passes. Cross-drilled coarse/fine display meshes are non-empty, closed, and manifold across three bore ratios and scales 0.1/1/10; `meshQuality` now accepts the render angular tolerance, reports triangle count, and rejects empty meshes as non-watertight. Broader scale/performance evidence remains pending. |
 | Repair | Healing, sewing, validation | Stable | Blocked: permissive healing can mask invalid result semantics. |
-| I/O | STEP | Stable | Guarded: shared byte/entity limits are enforced and configurable. Inner-shell export and broader round-trip evidence remain pending. |
+| I/O | STEP | Stable | Guarded: shared byte/entity limits are enforced and configurable. CAx-IF v4.6 volume/area/centroid declarations now round-trip per solid with opt-in typed diagnostics and transactional malformed-property refusal. Inner-shell export, AP242, attributes, and broader corpus evidence remain pending. |
 | I/O | STL, 3MF, OBJ, PLY, glTF | Stable | Guarded: byte/entity limits are enforced; 3MF separately bounds uncompressed XML. Broader round-trip/integrity evidence remains pending. |
 | I/O | IGES | Experimental | Retained by decision (2026-08-21, stabilization plan C3 gate): STEP is the supported B-Rep exchange path; IGES stays a declared preview/lossy subset rather than growing toward Stable. |
 | Sketching | DogLeg solver | Stable | Evidence pending: nonconvergence budget and degeneracy matrix incomplete. |
