@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788229616367,
+  "lastUpdate": 1788231138947,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -5939,6 +5939,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 39237895,
             "range": "± 269020",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a17408a203d2fc14d5935abc2c26197aa83d81f7",
+          "message": "fix(wasm): enforce optimized consumer package (#174)\n\n* fix(wasm): enforce optimized consumer package\n\n* docs(roadmap): record K-W3 WASM budget disposition\n\n---------\n\nCo-authored-by: Codex Review <codex-review@localhost>",
+          "timestamp": "2026-08-31T22:49:24-04:00",
+          "tree_id": "371ed0b1fe44583e1a0c327d55eeab5a93ca4df7",
+          "url": "https://github.com/esaueng/remus/commit/a17408a203d2fc14d5935abc2c26197aa83d81f7"
+        },
+        "date": 1788231138265,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1406836,
+            "range": "± 31236",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1490271,
+            "range": "± 28385",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 16526,
+            "range": "± 73",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 1027794,
+            "range": "± 16508",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 41911397,
+            "range": "± 327590",
             "unit": "ns/iter"
           }
         ]
