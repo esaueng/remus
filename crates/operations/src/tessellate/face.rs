@@ -136,7 +136,7 @@ pub(super) fn tessellate_with_uvs_floor(
                 tessellate_analytic_with_boundary(topo, face_data, cyl, deflection, angular_tol)
             } else {
                 let v_range = compute_axial_range(topo, face_data, cyl.origin(), cyl.axis());
-                let u_range = compute_angular_range(topo, face_data, |p| cyl.project_point(p));
+                let u_range = compute_angular_range(topo, face_data, |p| cyl.project_point(p))?;
                 let nu = segments_for_chord_deviation_a(
                     cyl.radius(),
                     u_range.1 - u_range.0,
@@ -181,7 +181,7 @@ pub(super) fn tessellate_with_uvs_floor(
                 Ok(band)
             } else {
                 let v_range = compute_v_param_range(topo, face_data, |p| cone.project_point(p).1);
-                let u_range = compute_angular_range(topo, face_data, |p| cone.project_point(p));
+                let u_range = compute_angular_range(topo, face_data, |p| cone.project_point(p))?;
                 let max_radius = cone.radius_at(v_range.1.abs().max(v_range.0.abs()));
                 let nu = segments_for_chord_deviation_a(
                     max_radius.max(0.01),
@@ -209,7 +209,7 @@ pub(super) fn tessellate_with_uvs_floor(
             }
         }
         FaceSurface::Sphere(sphere) => {
-            let u_range = compute_angular_range(topo, face_data, |p| sphere.project_point(p));
+            let u_range = compute_angular_range(topo, face_data, |p| sphere.project_point(p))?;
             let v_range = compute_sphere_v_range(topo, face_data, sphere);
             let (defl_shrink, ang_shrink) = if curvature_floor {
                 (SPHERE_DIAG_LEGACY, SPHERE_DIAG_LEGACY)
@@ -269,8 +269,8 @@ pub(super) fn tessellate_with_uvs_floor(
             }
         }
         FaceSurface::Torus(torus) => {
-            let u_range = compute_angular_range(topo, face_data, |p| torus.project_point(p));
-            let v_range = compute_torus_v_range(topo, face_data, torus);
+            let u_range = compute_angular_range(topo, face_data, |p| torus.project_point(p))?;
+            let v_range = compute_torus_v_range(topo, face_data, torus)?;
             let nu = segments_for_chord_deviation_a(
                 torus.major_radius(),
                 u_range.1 - u_range.0,

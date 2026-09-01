@@ -101,7 +101,7 @@ pub fn collect_full_turn_rim_cycles_any(
             }
             let stored_start = topo.vertex(start)?.point();
             let stored_end = topo.vertex(end)?.point();
-            let (t0, t1) = edge.domain_with_endpoints(stored_start, stored_end);
+            let (t0, t1) = crate::authoritative_edge_domain(edge, "full-turn rim recognition")?;
             let midpoint =
                 edge.curve()
                     .evaluate_with_endpoints((t0 + t1) * 0.5, stored_start, stored_end);
@@ -155,8 +155,12 @@ mod tests {
             circle.evaluate(1.5 * std::f64::consts::PI),
             1e-7,
         ));
-        let major = topo.add_edge(Edge::new(start, split, EdgeCurve::Circle(circle.clone())));
-        let minor = topo.add_edge(Edge::new(split, start, EdgeCurve::Circle(circle.clone())));
+        let mut major_edge = Edge::new(start, split, EdgeCurve::Circle(circle.clone()));
+        major_edge.set_trim(Some((0.0, 1.5 * std::f64::consts::PI)));
+        let major = topo.add_edge(major_edge);
+        let mut minor_edge = Edge::new(split, start, EdgeCurve::Circle(circle.clone()));
+        minor_edge.set_trim(Some((1.5 * std::f64::consts::PI, std::f64::consts::TAU)));
+        let minor = topo.add_edge(minor_edge);
         let curved = [(major.index(), start, split), (minor.index(), split, start)];
 
         let cycles =
@@ -202,8 +206,12 @@ mod tests {
         let mut topo = Topology::new();
         let start = topo.add_vertex(Vertex::new(circle.evaluate(0.0), 1e-7));
         let split = topo.add_vertex(Vertex::new(circle.evaluate(std::f64::consts::PI), 1e-7));
-        let first = topo.add_edge(Edge::new(start, split, EdgeCurve::Circle(circle.clone())));
-        let second = topo.add_edge(Edge::new(split, start, EdgeCurve::Circle(circle)));
+        let mut first_edge = Edge::new(start, split, EdgeCurve::Circle(circle.clone()));
+        first_edge.set_trim(Some((0.0, std::f64::consts::PI)));
+        let first = topo.add_edge(first_edge);
+        let mut second_edge = Edge::new(split, start, EdgeCurve::Circle(circle));
+        second_edge.set_trim(Some((std::f64::consts::PI, std::f64::consts::TAU)));
+        let second = topo.add_edge(second_edge);
         let curved = [
             (first.index(), start, split),
             (second.index(), split, start),

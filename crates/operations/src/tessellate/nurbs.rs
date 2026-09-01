@@ -71,14 +71,12 @@ pub(super) fn compute_torus_v_range(
     topo: &Topology,
     face_data: &remus_topology::face::Face,
     torus: &remus_math::surfaces::ToroidalSurface,
-) -> (f64, f64) {
+) -> Result<(f64, f64), crate::OperationsError> {
     use remus_topology::edge::EdgeCurve;
     use std::f64::consts::{PI, TAU};
 
     let full_range = (0.0, TAU);
-    let Ok(wire) = topo.wire(face_data.outer_wire()) else {
-        return full_range;
-    };
+    let wire = topo.wire(face_data.outer_wire())?;
     let mut use_counts: DetHashMap<usize, usize> = DetHashMap::default();
     for oe in wire.edges() {
         *use_counts.entry(oe.edge().index()).or_default() += 1;
@@ -89,16 +87,14 @@ pub(super) fn compute_torus_v_range(
         if !seen.insert(oe.edge().index()) || use_counts.get(&oe.edge().index()) != Some(&1) {
             continue;
         }
-        let Ok(edge) = topo.edge(oe.edge()) else {
-            return full_range;
-        };
+        let edge = topo.edge(oe.edge())?;
         if matches!(edge.curve(), EdgeCurve::Circle(_)) {
             curved.push((oe.edge().index(), edge.start(), edge.end()));
         }
     }
     let project_u = |point| torus.project_point(point).0;
-    let Ok(Some(cycles)) = collect_full_turn_rim_cycles(topo, &curved, &project_u, 2) else {
-        return full_range;
+    let Some(cycles) = collect_full_turn_rim_cycles(topo, &curved, &project_u, 2)? else {
+        return Ok(full_range);
     };
 
     // Each accepted cycle must also remain at one constant tube angle between
@@ -110,15 +106,12 @@ pub(super) fn compute_torus_v_range(
         let mut samples = Vec::new();
         for edge_index in cycle.edge_indices {
             let Some(edge_id) = topo.edge_id_from_index(edge_index) else {
-                return full_range;
+                return Ok(full_range);
             };
-            let Ok(edge) = topo.edge(edge_id) else {
-                return full_range;
-            };
-            let (Ok(start), Ok(end)) = (topo.vertex(edge.start()), topo.vertex(edge.end())) else {
-                return full_range;
-            };
-            let (t0, t1) = edge.domain_with_endpoints(start.point(), end.point());
+            let edge = topo.edge(edge_id)?;
+            let start = topo.vertex(edge.start())?;
+            let end = topo.vertex(edge.end())?;
+            let (t0, t1) = crate::authoritative_edge_domain(edge, "torus rim sampling")?;
             for fraction in [0.0, 0.25, 0.5, 0.75] {
                 let point = edge.curve().evaluate_with_endpoints(
                     t0 + (t1 - t0) * fraction,
@@ -132,14 +125,14 @@ pub(super) fn compute_torus_v_range(
             (acc.0 + v.sin(), acc.1 + v.cos())
         });
         if sin_sum.hypot(cos_sum) <= 1e-12 {
-            return full_range;
+            return Ok(full_range);
         }
         let level = sin_sum.atan2(cos_sum).rem_euclid(TAU);
         if samples
             .iter()
             .any(|&v| ((v - level + PI).rem_euclid(TAU) - PI).abs() > 1e-6)
         {
-            return full_range;
+            return Ok(full_range);
         }
         circle_vs.push(level);
     }
@@ -150,10 +143,10 @@ pub(super) fn compute_torus_v_range(
     let (lo, hi) = if va <= vb { (va, vb) } else { (vb, va) };
     let forward_span = hi - lo; // arc lo -> hi without wrap
     if forward_span <= PI {
-        (lo, hi)
+        Ok((lo, hi))
     } else {
         // The wrapped arc hi -> lo + TAU is the shorter one.
-        (hi, lo + TAU)
+        Ok((hi, lo + TAU))
     }
 }
 
@@ -225,25 +218,22 @@ fn full_turn_anchor<F>(
     topo: &Topology,
     face_data: &remus_topology::face::Face,
     project: &F,
-) -> Option<f64>
+) -> Result<Option<f64>, crate::OperationsError>
 where
     F: Fn(Point3) -> (f64, f64),
 {
     use remus_topology::edge::EdgeCurve;
 
-    let wire = topo.wire(face_data.outer_wire()).ok()?;
+    let wire = topo.wire(face_data.outer_wire())?;
     for oe in wire.edges() {
-        let Ok(edge) = topo.edge(oe.edge()) else {
-            continue;
-        };
+        let edge = topo.edge(oe.edge())?;
         if edge.start() != edge.end()
             || !matches!(edge.curve(), EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_))
         {
             continue;
         }
-        if let Ok(sv) = topo.vertex(edge.start()) {
-            return Some(project(sv.point()).0);
-        }
+        let sv = topo.vertex(edge.start())?;
+        return Ok(Some(project(sv.point()).0));
     }
 
     let mut use_counts: DetHashMap<usize, usize> = DetHashMap::default();
@@ -256,27 +246,29 @@ where
         if !seen.insert(oe.edge().index()) || use_counts.get(&oe.edge().index()) != Some(&1) {
             continue;
         }
-        let Ok(edge) = topo.edge(oe.edge()) else {
-            continue;
-        };
+        let edge = topo.edge(oe.edge())?;
         if edge.start() != edge.end() && matches!(edge.curve(), EdgeCurve::Circle(_)) {
             curved.push((oe.edge().index(), edge.start(), edge.end()));
         }
     }
     let project_u = |point| project(point).0;
-    let cycles = collect_full_turn_rim_cycles_any(topo, &curved, &project_u)
-        .ok()
-        .flatten()?;
-    let anchor_edge_index = cycles
+    let Some(cycles) = collect_full_turn_rim_cycles_any(topo, &curved, &project_u)? else {
+        return Ok(None);
+    };
+    let Some(anchor_edge_index) = cycles
         .iter()
         .filter(|cycle| !cycle.has_closed_edge)
         .flat_map(|cycle| cycle.edge_indices.iter().copied())
-        .min()?;
-    let anchor_edge = topo
-        .edge(topo.edge_id_from_index(anchor_edge_index)?)
-        .ok()?;
-    let anchor = topo.vertex(anchor_edge.start()).ok()?;
-    Some(project(anchor.point()).0)
+        .min()
+    else {
+        return Ok(None);
+    };
+    let Some(anchor_edge_id) = topo.edge_id_from_index(anchor_edge_index) else {
+        return Ok(None);
+    };
+    let anchor_edge = topo.edge(anchor_edge_id)?;
+    let anchor = topo.vertex(anchor_edge.start())?;
+    Ok(Some(project(anchor.point()).0))
 }
 
 /// Compute the angular (u) range for an analytic face from its wire boundary.
@@ -291,16 +283,16 @@ pub(super) fn compute_angular_range<F>(
     topo: &Topology,
     face_data: &remus_topology::face::Face,
     project: F,
-) -> (f64, f64)
+) -> Result<(f64, f64), crate::OperationsError>
 where
     F: Fn(Point3) -> (f64, f64),
 {
     use remus_topology::edge::EdgeCurve;
     use std::f64::consts::TAU;
 
-    let full_turn = || {
-        let a = full_turn_anchor(topo, face_data, &project).unwrap_or(0.0);
-        (a, a + TAU)
+    let full_turn = || -> Result<(f64, f64), crate::OperationsError> {
+        let a = full_turn_anchor(topo, face_data, &project)?.unwrap_or(0.0);
+        Ok((a, a + TAU))
     };
 
     let mut angles: Vec<f64> = Vec::new();
@@ -317,26 +309,27 @@ where
 
                 // Sample edge midpoints to provide angular coverage
                 // between vertices.
-                if !edge.is_closed()
-                    && let (Ok(sv), Ok(ev)) = (topo.vertex(edge.start()), topo.vertex(edge.end()))
-                {
+                if !edge.is_closed() {
                     match edge.curve() {
                         EdgeCurve::Circle(circle) => {
-                            let (ts, te) = edge.domain_with_endpoints(sv.point(), ev.point());
+                            let (ts, te) =
+                                crate::authoritative_edge_domain(edge, "angular range circle")?;
                             let mid_t = f64::midpoint(ts, te);
                             let mid = circle.evaluate(mid_t);
                             let (u, _) = project(mid);
                             angles.push(u);
                         }
                         EdgeCurve::Ellipse(ellipse) => {
-                            let (ts, te) = edge.domain_with_endpoints(sv.point(), ev.point());
+                            let (ts, te) =
+                                crate::authoritative_edge_domain(edge, "angular range ellipse")?;
                             let mid_t = f64::midpoint(ts, te);
                             let mid = ellipse.evaluate(mid_t);
                             let (u, _) = project(mid);
                             angles.push(u);
                         }
                         EdgeCurve::NurbsCurve(nurbs) => {
-                            let (t0, t1) = edge.domain_with_endpoints(sv.point(), ev.point());
+                            let (t0, t1) =
+                                crate::authoritative_edge_domain(edge, "angular range NURBS")?;
                             let mid = nurbs.evaluate(f64::midpoint(t0, t1));
                             let (u, _) = project(mid);
                             angles.push(u);
@@ -345,12 +338,14 @@ where
                         // exact inverse for both, so no wrap correction is
                         // needed as for the periodic conics above.
                         EdgeCurve::Hyperbola(h) => {
-                            let (ts, te) = edge.domain_with_endpoints(sv.point(), ev.point());
+                            let (ts, te) =
+                                crate::authoritative_edge_domain(edge, "angular range hyperbola")?;
                             let (u, _) = project(h.evaluate(f64::midpoint(ts, te)));
                             angles.push(u);
                         }
                         EdgeCurve::Parabola(pb) => {
-                            let (ts, te) = edge.domain_with_endpoints(sv.point(), ev.point());
+                            let (ts, te) =
+                                crate::authoritative_edge_domain(edge, "angular range parabola")?;
                             let (u, _) = project(pb.evaluate(f64::midpoint(ts, te)));
                             angles.push(u);
                         }
@@ -403,9 +398,9 @@ where
     let u_end = angles[gap_start_idx];
 
     if u_end > u_start {
-        (u_start, u_end)
+        Ok((u_start, u_end))
     } else {
-        (u_start, u_end + TAU)
+        Ok((u_start, u_end + TAU))
     }
 }
 
@@ -990,8 +985,12 @@ mod tests {
         for _ in 0..CYCLE_COUNT {
             let start = topo.add_vertex(Vertex::new(circle.evaluate(seam_parameter), 1e-7));
             let split = topo.add_vertex(Vertex::new(circle.evaluate(seam_parameter + PI), 1e-7));
-            let first = topo.add_edge(Edge::new(start, split, EdgeCurve::Circle(circle.clone())));
-            let second = topo.add_edge(Edge::new(split, start, EdgeCurve::Circle(circle.clone())));
+            let mut first_edge = Edge::new(start, split, EdgeCurve::Circle(circle.clone()));
+            first_edge.set_trim(Some((seam_parameter, seam_parameter + PI)));
+            let first = topo.add_edge(first_edge);
+            let mut second_edge = Edge::new(split, start, EdgeCurve::Circle(circle.clone()));
+            second_edge.set_trim(Some((seam_parameter + PI, seam_parameter + TAU)));
+            let second = topo.add_edge(second_edge);
             expected_anchor.get_or_insert(start);
             oriented.push(OrientedEdge::new(first, true));
             oriented.push(OrientedEdge::new(second, true));
@@ -1011,7 +1010,9 @@ mod tests {
             projections.set(projections.get() + 1);
             (circle.project(point), 0.0)
         };
-        let anchor = full_turn_anchor(&topo, topo.face(face).unwrap(), &project).unwrap();
+        let anchor = full_turn_anchor(&topo, topo.face(face).unwrap(), &project)
+            .unwrap()
+            .unwrap();
         let expected = circle.project(topo.vertex(expected_anchor.unwrap()).unwrap().point());
         let offset = (anchor - expected).rem_euclid(TAU);
         assert!(offset.min(TAU - offset) < 1e-12);
