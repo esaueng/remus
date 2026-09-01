@@ -85,8 +85,10 @@ fn seam_pcurve(u: f64, v_start: f64, v_end: f64) -> PCurve {
 
 fn attach_exact_seam_pcurves(topo: &mut Topology, solid: SolidId) -> (EdgeId, FaceId) {
     let (edge, face, u, v_start, v_end) = cylinder_seam(topo, solid);
-    topo.set_pcurve_oriented(edge, face, true, seam_pcurve(u, v_start, v_end));
-    topo.set_pcurve_oriented(edge, face, false, seam_pcurve(u + TAU, v_end, v_start));
+    topo.set_pcurve_oriented(edge, face, true, seam_pcurve(u, v_start, v_end))
+        .unwrap();
+    topo.set_pcurve_oriented(edge, face, false, seam_pcurve(u + TAU, v_end, v_start))
+        .unwrap();
     (edge, face)
 }
 
@@ -162,7 +164,8 @@ fn boolean_output_runs_non_vacuous_oriented_same_parameter_and_same_range_contra
         result_face,
         false,
         seam_pcurve(u + TAU + 0.2, v_end, v_start),
-    );
+    )
+    .unwrap();
     validate_same_parameter_strict(&topo, result_seam, result_face, true, TOLERANCE, 32)
         .expect("forward seam branch remains valid");
     assert!(matches!(

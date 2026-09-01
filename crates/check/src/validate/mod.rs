@@ -431,8 +431,10 @@ mod tests {
     #[test]
     fn shell_validation_checks_both_seam_branches_by_orientation() {
         let (mut topo, seam, face, shell) = cylinder_seam_shell();
-        topo.set_pcurve_oriented(seam, face, true, seam_pcurve(0.0, true));
-        topo.set_pcurve_oriented(seam, face, false, seam_pcurve(TAU, false));
+        topo.set_pcurve_oriented(seam, face, true, seam_pcurve(0.0, true))
+            .unwrap();
+        topo.set_pcurve_oriented(seam, face, false, seam_pcurve(TAU, false))
+            .unwrap();
 
         let options = ValidateOptions::default();
         let report = validate_shell(&topo, shell, &options).unwrap();
@@ -445,7 +447,8 @@ mod tests {
             report.issues
         );
 
-        topo.set_pcurve_oriented(seam, face, false, seam_pcurve(TAU + 0.2, false));
+        topo.set_pcurve_oriented(seam, face, false, seam_pcurve(TAU + 0.2, false))
+            .unwrap();
         let report = validate_shell(&topo, shell, &options).unwrap();
         let seam_issues: Vec<_> = report
             .issues

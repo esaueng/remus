@@ -27,6 +27,7 @@ use remus_math::nurbs::curve::NurbsCurve;
 use remus_math::nurbs::surface::NurbsSurface;
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
+use remus_topology::coedge::{CoedgeId, PeriodicWinding};
 use remus_topology::edge::{EdgeCurve, EdgeId};
 use remus_topology::explorer::{solid_edges, solid_faces};
 use remus_topology::face::{FaceId, FaceSurface};
@@ -70,8 +71,9 @@ pub fn convert_solid_to_bspline(
 
     let converted = face_conversions.len() + edge_conversions.len();
     for conversion in face_conversions {
-        for (edge, forward) in conversion.pcurve_uses {
-            let _ = topo.remove_pcurve_oriented(edge, conversion.face, forward);
+        for coedge in conversion.coedges {
+            topo.remove_coedge_pcurve(coedge)?;
+            topo.set_coedge_periodic_winding(coedge, PeriodicWinding::ZERO)?;
         }
         topo.face_mut(conversion.face)?
             .set_surface(FaceSurface::Nurbs(conversion.surface));
@@ -88,7 +90,7 @@ pub fn convert_solid_to_bspline(
 struct FaceConversion {
     face: FaceId,
     surface: NurbsSurface,
-    pcurve_uses: Vec<(EdgeId, bool)>,
+    coedges: Vec<CoedgeId>,
 }
 
 fn plan_face_surface_conversion(
@@ -119,17 +121,17 @@ fn plan_face_surface_conversion(
         FaceSurface::Nurbs(_) => return Ok(None),
     };
 
-    // Capture per-use keys so the apply phase can remove both seam branches
-    // without the fallible `(edge, face)` ambiguity boundary.
-    let pcurve_uses = topo
-        .pcurves_for_face(fid)
-        .into_iter()
-        .map(|(edge, forward, _)| (edge, forward))
-        .collect();
+    // Capture every physical use, including uses that carry a periodic lift
+    // without a pcurve. Converting to a non-periodic NURBS parameterization
+    // invalidates both forms of analytic-surface authority.
+    let mut coedges = Vec::new();
+    for &loop_id in topo.face(fid)?.boundary_loops() {
+        coedges.extend(topo.face_loop(loop_id)?.coedges().iter().copied());
+    }
     Ok(Some(FaceConversion {
         face: fid,
         surface: nurbs,
-        pcurve_uses,
+        coedges,
     }))
 }
 
@@ -1302,8 +1304,14 @@ mod tests {
                 1.0,
             )
         };
-        topo.set_pcurve_oriented(seam, face, true, branch(0.0, 1.0));
-        topo.set_pcurve_oriented(seam, face, false, branch(TAU, -1.0));
+        topo.set_pcurve_oriented(seam, face, true, branch(0.0, 1.0))
+            .unwrap();
+        topo.set_pcurve_oriented(seam, face, false, branch(TAU, -1.0))
+            .unwrap();
+        for coedge in topo.coedges_of_edge(seam) {
+            topo.set_coedge_periodic_winding(coedge, PeriodicWinding::new(1, -2))
+                .unwrap();
+        }
         assert_eq!(topo.pcurves_for_face(face).len(), 2);
 
         assert_eq!(convert_solid_to_bspline(&mut topo, solid).unwrap(), 2);
@@ -1319,6 +1327,12 @@ mod tests {
         assert!(topo.pcurve_oriented(seam, face, true).is_none());
         assert!(topo.pcurve_oriented(seam, face, false).is_none());
         assert!(topo.pcurves_for_face(face).is_empty());
+        for coedge in topo.coedges_of_edge(seam) {
+            assert_eq!(
+                topo.coedge(coedge).unwrap().periodic_winding(),
+                PeriodicWinding::ZERO
+            );
+        }
     }
 
     #[test]

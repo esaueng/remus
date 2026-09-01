@@ -674,7 +674,7 @@ fn propagate_split(
         .map(|(fid, forward, _)| (fid, forward))
         .collect();
     for (fid, forward) in stale_uses {
-        topo.remove_pcurve_oriented(old_edge, fid, forward);
+        topo.remove_pcurve_oriented(old_edge, fid, forward)?;
     }
     Ok(())
 }
