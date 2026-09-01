@@ -357,12 +357,14 @@ fn normalize_hole_windings(
         }
     }
     for wid in flips {
-        let wire = topo.wire_mut(wid)?;
-        let edges = wire.edges_mut();
+        let wire = topo.wire(wid)?;
+        let mut edges = wire.edges().to_vec();
         edges.reverse();
-        for oe in edges.iter_mut() {
+        for oe in &mut edges {
             *oe = remus_topology::wire::OrientedEdge::new(oe.edge(), !oe.is_forward());
         }
+        let replacement = remus_topology::wire::Wire::new(edges, wire.is_closed())?;
+        topo.replace_boundary_wire(wid, replacement)?;
     }
     Ok(())
 }

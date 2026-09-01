@@ -1297,23 +1297,27 @@ fn replace_face_wire(
     old_wire: WireId,
     new_wire: WireId,
 ) -> Result<(), OperationsError> {
-    let face = topo.face_mut(face)?;
-    if face.outer_wire() == old_wire {
-        face.set_outer_wire(new_wire);
+    let face_data = topo.face(face)?;
+    if face_data.outer_wire() == old_wire {
+        let inner = face_data.inner_wires().to_vec();
+        topo.set_face_boundary_wires(face, new_wire, inner)?;
         return Ok(());
     }
-    let Some(slot) = face
+    let Some(slot) = face_data
         .inner_wires()
         .iter()
         .position(|candidate| *candidate == old_wire)
     else {
         return Err(reconstruction(format!(
             "face {} lost wire {}",
-            face.outer_wire().index(),
+            face_data.outer_wire().index(),
             old_wire.index()
         )));
     };
-    face.inner_wires_mut()[slot] = new_wire;
+    let outer = face_data.outer_wire();
+    let mut inner = face_data.inner_wires().to_vec();
+    inner[slot] = new_wire;
+    topo.set_face_boundary_wires(face, outer, inner)?;
     Ok(())
 }
 

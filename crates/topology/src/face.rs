@@ -282,6 +282,16 @@ impl Face {
         &mut self.inner_wires
     }
 
+    /// Replaces every boundary-wire reference in one operation.
+    ///
+    /// Public callers use [`Topology::set_face_boundary_wires`](crate::Topology::set_face_boundary_wires),
+    /// which validates the complete replacement and keeps derived loops and
+    /// pcurve uses coherent before calling this commit-only helper.
+    pub(crate) fn replace_boundary_wires(&mut self, outer_wire: WireId, inner_wires: Vec<WireId>) {
+        self.outer_wire = outer_wire;
+        self.inner_wires = inner_wires;
+    }
+
     /// Returns a reference to the surface geometry of this face.
     #[must_use]
     pub const fn surface(&self) -> &FaceSurface {
