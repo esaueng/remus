@@ -32,18 +32,21 @@ use std::collections::{HashMap, HashSet};
 
 use remus_math::aabb::Aabb2;
 use remus_math::curves::Circle3D;
+use remus_math::curves2d::{Circle2D, Curve2D, Ellipse2D, Line2D, NurbsCurve2D};
 use remus_math::frame::Frame3;
 use remus_math::predicates::point_in_polygon;
 use remus_math::tolerance::Tolerance;
-use remus_math::vec::{Point2, Point3, Vec3};
+use remus_math::vec::{Point2, Point3, Vec2, Vec3};
 use remus_operations::heal::merge_split_rim_arcs;
-use remus_topology::Topology;
+use remus_topology::coedge::CoedgeId;
 use remus_topology::edge::{Edge, EdgeCurve};
 use remus_topology::face::{Face, FaceSurface};
+use remus_topology::pcurve::PCurve;
 use remus_topology::shell::Shell;
 use remus_topology::solid::{Solid, SolidId};
 use remus_topology::vertex::{Vertex, VertexId};
 use remus_topology::wire::{OrientedEdge, Wire, WireId};
+use remus_topology::{PeriodicWinding, Topology};
 
 use crate::IoError;
 use crate::limits::{ImportLimits, ensure_input_size, ensure_limit};
@@ -786,6 +789,45 @@ struct FaceBoundCandidate {
     source_position: usize,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct PendingPcurveUse {
+    /// Absent only for exact seam edges synthesized while resolving a
+    /// period-winding band. Those edges have no source EDGE_CURVE or PCURVE.
+    edge_curve_ref: Option<u64>,
+    pcurve_ref: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PcurveTransform {
+    origin: Point2,
+    x_axis: Vec2,
+    y_axis: Vec2,
+}
+
+struct BuiltCurve2d {
+    curve: Curve2D,
+    range: Option<(f64, f64)>,
+    anchors: Option<(Point2, Point2)>,
+}
+
+impl PcurveTransform {
+    const fn diagonal(x_scale: f64, y_scale: f64) -> Self {
+        Self {
+            origin: Point2::new(0.0, 0.0),
+            x_axis: Vec2::new(x_scale, 0.0),
+            y_axis: Vec2::new(0.0, y_scale),
+        }
+    }
+
+    fn point(self, point: Point2) -> Point2 {
+        self.origin + self.x_axis * point.x() + self.y_axis * point.y()
+    }
+
+    fn vector(self, vector: Vec2) -> Vec2 {
+        self.x_axis * vector.x() + self.y_axis * vector.y()
+    }
+}
+
 #[derive(Debug)]
 struct FaceBoundLoop {
     candidate_index: usize,
@@ -1165,6 +1207,8 @@ impl<'a> StepBuilder<'a> {
         let surface = self.build_surface(surface_ref)?;
 
         let mut candidates = Vec::with_capacity(list_refs.len());
+        let mut pending_by_wire = HashMap::<WireId, Vec<PendingPcurveUse>>::new();
+        let mut pcurve_cursors = HashMap::<(u64, u64), usize>::new();
 
         for (source_position, &bound_ref) in list_refs.iter().enumerate() {
             let bound_entity = self.get_entity(bound_ref)?;
@@ -1201,7 +1245,13 @@ impl<'a> StepBuilder<'a> {
                 2,
                 "orientation",
             )?;
-            let wire = self.build_edge_loop(loop_ref, surface_reversed != bound_reversed)?;
+            let (wire, pending) = self.build_edge_loop(
+                loop_ref,
+                surface_ref,
+                surface_reversed != bound_reversed,
+                &mut pcurve_cursors,
+            )?;
+            pending_by_wire.insert(wire, pending);
             candidates.push(FaceBoundCandidate {
                 bound_ref,
                 wire,
@@ -1210,8 +1260,14 @@ impl<'a> StepBuilder<'a> {
             });
         }
 
-        let (outer, inner_wires) = self.resolve_face_bounds(face_ref, &surface, &candidates)?;
+        self.validate_pcurve_consumption(face_ref, surface_ref, &pcurve_cursors)?;
+
+        let (outer, inner_wires) =
+            self.resolve_face_bounds(face_ref, &surface, &candidates, &mut pending_by_wire)?;
         self.normalize_planar_inner_winding(face_ref, &surface, outer, &inner_wires, &candidates)?;
+        let boundary_wires: Vec<WireId> = std::iter::once(outer)
+            .chain(inner_wires.iter().copied())
+            .collect();
 
         let face_id = if face_reversed {
             self.topo
@@ -1226,6 +1282,13 @@ impl<'a> StepBuilder<'a> {
             };
             self.topo.set_face_attributes(face_id, attributes)?;
         }
+        self.bind_face_pcurves(
+            face_ref,
+            face_id,
+            surface_ref,
+            &boundary_wires,
+            &pending_by_wire,
+        )?;
         Ok(face_id)
     }
 
@@ -1346,6 +1409,7 @@ impl<'a> StepBuilder<'a> {
         face_ref: u64,
         surface: &FaceSurface,
         candidates: &[FaceBoundCandidate],
+        pending_by_wire: &mut HashMap<WireId, Vec<PendingPcurveUse>>,
     ) -> Result<(WireId, Vec<WireId>), IoError> {
         if candidates.is_empty() {
             return Err(IoError::ParseError {
@@ -1389,7 +1453,7 @@ impl<'a> StepBuilder<'a> {
                 self.resolve_generic_planar_bounds(face_ref, candidates, *normal, *d)
             }
             _ if periodic_uv_domain(surface).is_some() => {
-                self.resolve_generic_periodic_bounds(face_ref, candidates, surface)
+                self.resolve_generic_periodic_bounds(face_ref, candidates, surface, pending_by_wire)
             }
             _ => Err(IoError::ParseError {
                 reason: format!(
@@ -1552,6 +1616,7 @@ impl<'a> StepBuilder<'a> {
         face_ref: u64,
         candidates: &[FaceBoundCandidate],
         surface: &FaceSurface,
+        pending_by_wire: &mut HashMap<WireId, Vec<PendingPcurveUse>>,
     ) -> Result<(WireId, Vec<WireId>), IoError> {
         let domain = periodic_uv_domain(surface).ok_or_else(|| IoError::ParseError {
             reason: format!(
@@ -1677,6 +1742,7 @@ impl<'a> StepBuilder<'a> {
                 surface,
                 &winding_bounds,
                 domain,
+                pending_by_wire,
             );
         }
 
@@ -1757,6 +1823,7 @@ impl<'a> StepBuilder<'a> {
         surface: &FaceSurface,
         bounds: &[PeriodicWindingBound],
         domain: PeriodicUvDomain,
+        pending_by_wire: &mut HashMap<WireId, Vec<PendingPcurveUse>>,
     ) -> Result<(WireId, Vec<WireId>), IoError> {
         let reject = |reason: &str| IoError::ParseError {
             reason: format!(
@@ -1841,6 +1908,23 @@ impl<'a> StepBuilder<'a> {
 
         let lower_candidate = candidates[lower.candidate_index];
         let upper_candidate = candidates[upper.candidate_index];
+        let source_pending = |candidate: FaceBoundCandidate| {
+            let pending = pending_by_wire.get(&candidate.wire).ok_or_else(|| {
+                reject(&format!(
+                    "bound #{} lost its positional PCURVE metadata",
+                    candidate.bound_ref
+                ))
+            })?;
+            let [pending] = pending.as_slice() else {
+                return Err(reject(&format!(
+                    "bound #{} must have exactly one positional PCURVE entry",
+                    candidate.bound_ref
+                )));
+            };
+            Ok(*pending)
+        };
+        let lower_pending = source_pending(lower_candidate)?;
+        let upper_pending = source_pending(upper_candidate)?;
         let lower_oriented = self
             .topo
             .wire(lower_candidate.wire)
@@ -1937,7 +2021,16 @@ impl<'a> StepBuilder<'a> {
             true,
         )
         .map_err(|error| reject(&format!("cannot construct the analytic band wire: {error}")))?;
-        Ok((self.topo.add_wire(wire), Vec::new()))
+        let wire_id = self.topo.add_wire(wire);
+        let synthesized = PendingPcurveUse {
+            edge_curve_ref: None,
+            pcurve_ref: None,
+        };
+        pending_by_wire.insert(
+            wire_id,
+            vec![lower_pending, synthesized, upper_pending, synthesized],
+        );
+        Ok((wire_id, Vec::new()))
     }
 
     fn sample_periodic_bound(
@@ -2301,11 +2394,13 @@ impl<'a> StepBuilder<'a> {
                     "radius",
                 )?;
                 let radius = radius * self.units.length;
-                let (origin, axis, _ref_dir) = self.build_axis2_placement(axis_ref)?;
-                let cyl = remus_math::surfaces::CylindricalSurface::new(origin, axis, radius)
-                    .map_err(|e| IoError::ParseError {
-                        reason: format!("CYLINDRICAL_SURFACE #{surface_ref}: {e}"),
-                    })?;
+                let (origin, axis, ref_dir) = self.build_axis2_placement(axis_ref)?;
+                let cyl = remus_math::surfaces::CylindricalSurface::with_ref_dir(
+                    origin, axis, radius, ref_dir,
+                )
+                .map_err(|e| IoError::ParseError {
+                    reason: format!("CYLINDRICAL_SURFACE #{surface_ref}: {e}"),
+                })?;
                 Ok(FaceSurface::Cylinder(cyl))
             }
             "CONICAL_SURFACE" => {
@@ -2351,12 +2446,14 @@ impl<'a> StepBuilder<'a> {
                     "semi_angle",
                 )? * self.units.angle;
                 let half_angle = std::f64::consts::FRAC_PI_2 - semi_angle;
-                let (origin, axis, _ref_dir) = self.build_axis2_placement(axis_ref)?;
+                let (origin, axis, ref_dir) = self.build_axis2_placement(axis_ref)?;
                 let apex = cone_apex(origin, axis, base_radius, half_angle);
-                let cone = remus_math::surfaces::ConicalSurface::new(apex, axis, half_angle)
-                    .map_err(|e| IoError::ParseError {
-                        reason: format!("CONICAL_SURFACE #{surface_ref}: {e}"),
-                    })?;
+                let cone = remus_math::surfaces::ConicalSurface::with_ref_dir(
+                    apex, axis, half_angle, ref_dir,
+                )
+                .map_err(|e| IoError::ParseError {
+                    reason: format!("CONICAL_SURFACE #{surface_ref}: {e}"),
+                })?;
                 Ok(FaceSurface::Cone(cone))
             }
             "SPHERICAL_SURFACE" => {
@@ -2371,13 +2468,20 @@ impl<'a> StepBuilder<'a> {
                 let radius =
                     required_real_attribute("SPHERICAL_SURFACE", surface_ref, &slots, 2, "radius")?;
                 let radius = radius * self.units.length;
-                let (center, _axis, _ref_dir) = self.build_axis2_placement(axis_ref)?;
-                let sphere =
-                    remus_math::surfaces::SphericalSurface::new(center, radius).map_err(|e| {
-                        IoError::ParseError {
-                            reason: format!("SPHERICAL_SURFACE #{surface_ref}: {e}"),
-                        }
-                    })?;
+                let (center, axis, ref_dir) = self.build_axis2_placement(axis_ref)?;
+                // Preserve the historical compatibility behavior for an
+                // explicitly degenerate placement. It has no usable UV frame;
+                // any attached PCURVE still has to pass the endpoint oracle.
+                let sphere = if axis.length_squared().to_bits() == 0 {
+                    remus_math::surfaces::SphericalSurface::new(center, radius)
+                } else {
+                    remus_math::surfaces::SphericalSurface::with_frame(
+                        center, radius, axis, ref_dir,
+                    )
+                }
+                .map_err(|e| IoError::ParseError {
+                    reason: format!("SPHERICAL_SURFACE #{surface_ref}: {e}"),
+                })?;
                 Ok(FaceSurface::Sphere(sphere))
             }
             "TOROIDAL_SURFACE" => {
@@ -2759,8 +2863,10 @@ impl<'a> StepBuilder<'a> {
     fn build_edge_loop(
         &mut self,
         loop_ref: u64,
+        surface_ref: u64,
         reverse: bool,
-    ) -> Result<remus_topology::wire::WireId, IoError> {
+        pcurve_cursors: &mut HashMap<(u64, u64), usize>,
+    ) -> Result<(remus_topology::wire::WireId, Vec<PendingPcurveUse>), IoError> {
         let attrs = self.get_entity(loop_ref)?.attrs.clone();
         let slots = split_attr_slots(&attrs);
         let oe_refs = match slots.get(1) {
@@ -2779,26 +2885,47 @@ impl<'a> StepBuilder<'a> {
             }
         };
 
-        let mut oriented_edges = Vec::new();
+        let mut uses = Vec::new();
         for oe_ref in oe_refs {
-            let oe = self.build_oriented_edge(oe_ref)?;
-            oriented_edges.push(oe);
+            let (oriented, edge_curve_ref) = self.build_oriented_edge_with_ref(oe_ref)?;
+            let pcurve_ref =
+                self.select_pcurve_for_use(edge_curve_ref, surface_ref, pcurve_cursors)?;
+            uses.push((
+                oriented,
+                PendingPcurveUse {
+                    edge_curve_ref: Some(edge_curve_ref),
+                    pcurve_ref,
+                },
+            ));
         }
         if reverse {
-            oriented_edges.reverse();
-            for oe in &mut oriented_edges {
-                *oe = OrientedEdge::new(oe.edge(), !oe.is_forward());
+            uses.reverse();
+            for (oriented, _) in &mut uses {
+                *oriented = OrientedEdge::new(oriented.edge(), !oriented.is_forward());
             }
         }
+
+        let oriented_edges: Vec<OrientedEdge> =
+            uses.iter().map(|(oriented, _)| *oriented).collect();
+        let pending: Vec<PendingPcurveUse> = uses.into_iter().map(|(_, pending)| pending).collect();
 
         let wire = Wire::new(oriented_edges, true).map_err(|e| IoError::ParseError {
             reason: format!("failed to create wire from edge loop #{loop_ref}: {e}"),
         })?;
         let wire_id = self.topo.add_wire(wire);
-        Ok(wire_id)
+        Ok((wire_id, pending))
     }
 
+    #[cfg(test)]
     fn build_oriented_edge(&mut self, oe_ref: u64) -> Result<OrientedEdge, IoError> {
+        self.build_oriented_edge_with_ref(oe_ref)
+            .map(|(oriented, _)| oriented)
+    }
+
+    fn build_oriented_edge_with_ref(
+        &mut self,
+        oe_ref: u64,
+    ) -> Result<(OrientedEdge, u64), IoError> {
         let attrs = self.get_entity(oe_ref)?.attrs.clone();
         let slots = split_attr_slots(&attrs);
         let edge_curve_ref =
@@ -2807,7 +2934,659 @@ impl<'a> StepBuilder<'a> {
             required_logical_attribute("ORIENTED_EDGE", oe_ref, &slots, 4, "orientation")?;
 
         let edge_id = self.build_edge_curve(edge_curve_ref)?;
-        Ok(OrientedEdge::new(edge_id, forward))
+        Ok((OrientedEdge::new(edge_id, forward), edge_curve_ref))
+    }
+
+    fn select_pcurve_for_use(
+        &self,
+        edge_curve_ref: u64,
+        surface_ref: u64,
+        cursors: &mut HashMap<(u64, u64), usize>,
+    ) -> Result<Option<u64>, IoError> {
+        let candidates = self.matching_pcurve_refs(edge_curve_ref, surface_ref)?;
+        if candidates.is_empty() {
+            return Ok(None);
+        }
+        let cursor = cursors.entry((edge_curve_ref, surface_ref)).or_default();
+        let selected = candidates.get(*cursor).copied().ok_or_else(|| IoError::ParseError {
+            reason: format!(
+                "EDGE_CURVE #{edge_curve_ref} is used more times on surface #{surface_ref} than its {} matching PCURVE branches",
+                candidates.len()
+            ),
+        })?;
+        *cursor += 1;
+        Ok(Some(selected))
+    }
+
+    fn matching_pcurve_refs(
+        &self,
+        edge_curve_ref: u64,
+        surface_ref: u64,
+    ) -> Result<Vec<u64>, IoError> {
+        let edge_entity = self.get_entity(edge_curve_ref)?;
+        let edge_slots = split_attr_slots(&edge_entity.attrs);
+        let curve_ref = required_reference_attribute(
+            "EDGE_CURVE",
+            edge_curve_ref,
+            &edge_slots,
+            3,
+            "edge_geometry",
+        )?;
+        let mut candidates = Vec::new();
+        for associated_ref in self.associated_pcurve_refs(curve_ref, 0, &mut HashSet::new())? {
+            let entity = self.get_entity(associated_ref)?;
+            if entity.entity_type != "PCURVE" {
+                continue;
+            }
+            let slots = split_attr_slots(&entity.attrs);
+            let declared_surface =
+                required_reference_attribute("PCURVE", associated_ref, &slots, 1, "basis surface")?;
+            if declared_surface == surface_ref {
+                candidates.push(associated_ref);
+            }
+        }
+        Ok(candidates)
+    }
+
+    fn validate_pcurve_consumption(
+        &self,
+        face_ref: u64,
+        surface_ref: u64,
+        cursors: &HashMap<(u64, u64), usize>,
+    ) -> Result<(), IoError> {
+        for (&(edge_curve_ref, cursor_surface), &consumed) in cursors {
+            if cursor_surface != surface_ref {
+                return Err(IoError::ParseError {
+                    reason: format!(
+                        "ADVANCED_FACE #{face_ref} mixed PCURVE cursor surface #{cursor_surface} with owning surface #{surface_ref}"
+                    ),
+                });
+            }
+            let declared = self
+                .matching_pcurve_refs(edge_curve_ref, surface_ref)?
+                .len();
+            if consumed != declared {
+                return Err(IoError::ParseError {
+                    reason: format!(
+                        "ADVANCED_FACE #{face_ref} consumes {consumed} of {declared} PCURVE branches for EDGE_CURVE #{edge_curve_ref} on surface #{surface_ref}"
+                    ),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn associated_pcurve_refs(
+        &self,
+        curve_ref: u64,
+        depth: u32,
+        visited: &mut HashSet<u64>,
+    ) -> Result<Vec<u64>, IoError> {
+        if depth > MAX_CURVE_INDIRECTION || !visited.insert(curve_ref) {
+            return Err(IoError::ParseError {
+                reason: format!("cyclic curve wrapper chain involving #{curve_ref}"),
+            });
+        }
+        let entity = self.get_entity(curve_ref)?;
+        let result = match entity.entity_type.as_str() {
+            "SURFACE_CURVE" | "SEAM_CURVE" | "INTERSECTION_CURVE" => {
+                let slots = split_attr_slots(&entity.attrs);
+                match slots.get(2) {
+                    Some(AttrSlot::List(list)) => {
+                        exact_reference_list(list).map_err(|reason| IoError::ParseError {
+                            reason: format!(
+                                "{} #{curve_ref} has an invalid associated geometry list: {reason}",
+                                entity.entity_type
+                            ),
+                        })?
+                    }
+                    other => {
+                        return Err(IoError::ParseError {
+                            reason: format!(
+                                "{} #{curve_ref} needs an associated geometry list, got {}",
+                                entity.entity_type,
+                                describe_slot(other)
+                            ),
+                        });
+                    }
+                }
+            }
+            "TRIMMED_CURVE" => {
+                let slots = split_attr_slots(&entity.attrs);
+                let basis = required_reference_attribute(
+                    "TRIMMED_CURVE",
+                    curve_ref,
+                    &slots,
+                    1,
+                    "basis curve",
+                )?;
+                self.associated_pcurve_refs(basis, depth + 1, visited)?
+            }
+            _ => Vec::new(),
+        };
+        visited.remove(&curve_ref);
+        Ok(result)
+    }
+
+    fn bind_face_pcurves(
+        &mut self,
+        face_ref: u64,
+        face_id: remus_topology::face::FaceId,
+        surface_ref: u64,
+        boundary_wires: &[WireId],
+        pending_by_wire: &HashMap<WireId, Vec<PendingPcurveUse>>,
+    ) -> Result<(), IoError> {
+        let loops = self.topo.face(face_id)?.boundary_loops().to_vec();
+        if loops.len() != boundary_wires.len() {
+            return Err(IoError::ParseError {
+                reason: format!(
+                    "ADVANCED_FACE #{face_ref} materialized {} loops for {} boundary wires",
+                    loops.len(),
+                    boundary_wires.len()
+                ),
+            });
+        }
+        for (&loop_id, &wire_id) in loops.iter().zip(boundary_wires) {
+            let coedges = self.topo.face_loop(loop_id)?.coedges().to_vec();
+            let pending = pending_by_wire.get(&wire_id).ok_or_else(|| IoError::ParseError {
+                reason: format!(
+                    "ADVANCED_FACE #{face_ref} lost positional PCURVE metadata for wire {wire_id:?}"
+                ),
+            })?;
+            if coedges.len() != pending.len() {
+                return Err(IoError::ParseError {
+                    reason: format!(
+                        "ADVANCED_FACE #{face_ref} loop {loop_id:?} has {} coedges but {} PCURVE positions",
+                        coedges.len(),
+                        pending.len()
+                    ),
+                });
+            }
+            for (&coedge_id, pending_use) in coedges.iter().zip(pending) {
+                let coedge = self.topo.coedge(coedge_id)?;
+                let Some(edge_curve_ref) = pending_use.edge_curve_ref else {
+                    if pending_use.pcurve_ref.is_some() {
+                        return Err(IoError::ParseError {
+                            reason: format!(
+                                "ADVANCED_FACE #{face_ref} synthesized a PCURVE without a source EDGE_CURVE"
+                            ),
+                        });
+                    }
+                    continue;
+                };
+                let expected_edge =
+                    self.edge_cache
+                        .get(&edge_curve_ref)
+                        .copied()
+                        .ok_or_else(|| IoError::ParseError {
+                            reason: format!(
+                                "EDGE_CURVE #{} was not materialized before PCURVE binding",
+                                edge_curve_ref
+                            ),
+                        })?;
+                if coedge.edge() != expected_edge {
+                    return Err(IoError::ParseError {
+                        reason: format!(
+                            "ADVANCED_FACE #{face_ref} coedge order no longer matches EDGE_CURVE #{}",
+                            edge_curve_ref
+                        ),
+                    });
+                }
+                let Some(pcurve_ref) = pending_use.pcurve_ref else {
+                    continue;
+                };
+                let (pcurve, winding) =
+                    self.build_pcurve_for_use(pcurve_ref, surface_ref, face_id, coedge_id)?;
+                self.topo.set_coedge_pcurve(coedge_id, pcurve)?;
+                self.topo.set_coedge_periodic_winding(coedge_id, winding)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn build_pcurve_for_use(
+        &self,
+        pcurve_ref: u64,
+        surface_ref: u64,
+        face_id: remus_topology::face::FaceId,
+        coedge_id: CoedgeId,
+    ) -> Result<(PCurve, PeriodicWinding), IoError> {
+        let entity = self.get_entity(pcurve_ref)?;
+        let slots = split_attr_slots(&entity.attrs);
+        let declared_surface =
+            required_reference_attribute("PCURVE", pcurve_ref, &slots, 1, "basis surface")?;
+        if declared_surface != surface_ref {
+            return Err(IoError::ParseError {
+                reason: format!(
+                    "PCURVE #{pcurve_ref} names surface #{declared_surface}, not owning surface #{surface_ref}"
+                ),
+            });
+        }
+        let representation =
+            required_reference_attribute("PCURVE", pcurve_ref, &slots, 2, "representation")?;
+        let representation_entity = self.get_entity(representation)?;
+        if representation_entity.entity_type != "DEFINITIONAL_REPRESENTATION" {
+            return Err(IoError::UnsupportedEntity {
+                entity: format!(
+                    "{} (PCURVE #{pcurve_ref} representation #{representation})",
+                    representation_entity.entity_type
+                ),
+            });
+        }
+        let representation_slots = split_attr_slots(&representation_entity.attrs);
+        let item_refs = match representation_slots.get(1) {
+            Some(AttrSlot::List(list)) => {
+                exact_reference_list(list).map_err(|reason| IoError::ParseError {
+                    reason: format!(
+                        "DEFINITIONAL_REPRESENTATION #{representation} has invalid items: {reason}"
+                    ),
+                })?
+            }
+            other => {
+                return Err(IoError::ParseError {
+                    reason: format!(
+                        "DEFINITIONAL_REPRESENTATION #{representation} needs an item list, got {}",
+                        describe_slot(other)
+                    ),
+                });
+            }
+        };
+        if item_refs.len() != 1 {
+            return Err(IoError::ParseError {
+                reason: format!(
+                    "DEFINITIONAL_REPRESENTATION #{representation} must contain exactly one pcurve item, got {}",
+                    item_refs.len()
+                ),
+            });
+        }
+
+        let BuiltCurve2d {
+            curve: raw_curve,
+            range: raw_range,
+            anchors: raw_anchors,
+        } = self.build_curve2d_at(item_refs[0], 0)?;
+        let transform = self.pcurve_transform(surface_ref, face_id)?;
+        let (curve, parameter_scale, parameter_shift) =
+            transform_curve2d(raw_curve, transform, pcurve_ref)?;
+        let declared_range = raw_range.map(|(start, end)| {
+            (
+                start.mul_add(parameter_scale, parameter_shift),
+                end.mul_add(parameter_scale, parameter_shift),
+            )
+        });
+        let declared_anchors =
+            raw_anchors.map(|(start, end)| (transform.point(start), transform.point(end)));
+
+        let coedge = self.topo.coedge(coedge_id)?;
+        let edge = self.topo.edge(coedge.edge())?;
+        let (start_vertex, end_vertex) = if coedge.is_forward() {
+            (edge.start(), edge.end())
+        } else {
+            (edge.end(), edge.start())
+        };
+        let start_point = self.topo.vertex(start_vertex)?.point();
+        let end_point = self.topo.vertex(end_vertex)?.point();
+        let surface = self.topo.face(face_id)?.surface();
+        let principal_start = Self::surface_uv(surface, start_point)?;
+        let principal_end = Self::surface_uv(surface, end_point)?;
+        let (expected_start, expected_end) =
+            lift_pcurve_endpoint_branches(surface, &curve, principal_start, principal_end);
+        let range = match declared_range {
+            Some(range) => {
+                select_pcurve_range(&curve, range, expected_start, expected_end, pcurve_ref)?
+            }
+            None => derive_pcurve_range(
+                &curve,
+                edge,
+                coedge.is_forward(),
+                expected_start,
+                expected_end,
+                pcurve_ref,
+            )?,
+        };
+        let pcurve = PCurve::new(curve, range.0, range.1);
+        if let Some((declared_start, declared_end)) = declared_anchors {
+            let actual_start = pcurve.evaluate(pcurve.t_start());
+            let actual_end = pcurve.evaluate(pcurve.t_end());
+            let tolerance =
+                pcurve_uv_tolerance(&[declared_start, declared_end, actual_start, actual_end]);
+            if (actual_start - declared_start).length() > tolerance
+                || (actual_end - declared_end).length() > tolerance
+            {
+                return Err(IoError::ParseError {
+                    reason: format!(
+                        "PCURVE #{pcurve_ref} parameter range disagrees with its declared Cartesian trim anchors"
+                    ),
+                });
+            }
+        }
+        let winding = pcurve_winding(surface, &pcurve, principal_start, principal_end, pcurve_ref)?;
+        Ok((pcurve, winding))
+    }
+
+    fn surface_uv(surface: &FaceSurface, point: Point3) -> Result<Point2, IoError> {
+        match surface {
+            FaceSurface::Plane { normal, d } => {
+                let origin = Point3::new(normal.x() * d, normal.y() * d, normal.z() * d);
+                let frame =
+                    Frame3::from_normal_and_ref(origin, *normal, step_plane_ref_direction(*normal))
+                        .map_err(|error| IoError::ParseError {
+                            reason: format!("could not build canonical STEP plane frame: {error}"),
+                        })?;
+                let offset = point - frame.origin;
+                Ok(Point2::new(offset.dot(frame.x), offset.dot(frame.y)))
+            }
+            _ => surface
+                .project_point(point)
+                .map(|(u, v)| Point2::new(u, v))
+                .filter(|uv| uv.0.iter().all(|value| value.is_finite()))
+                .ok_or_else(|| IoError::ParseError {
+                    reason: format!(
+                        "could not project a PCURVE endpoint into the {} surface",
+                        surface.type_tag()
+                    ),
+                }),
+        }
+    }
+
+    fn pcurve_transform(
+        &self,
+        surface_ref: u64,
+        face_id: remus_topology::face::FaceId,
+    ) -> Result<PcurveTransform, IoError> {
+        let surface = self.topo.face(face_id)?.surface();
+        match surface {
+            FaceSurface::Plane { normal, d } => {
+                let entity = self.get_entity(surface_ref)?;
+                let slots = split_attr_slots(&entity.attrs);
+                let placement =
+                    required_reference_attribute("PLANE", surface_ref, &slots, 1, "position")?;
+                let (source_origin, source_normal, source_ref) =
+                    self.build_axis2_placement(placement)?;
+                let source = Frame3::from_normal_and_ref(source_origin, source_normal, source_ref)
+                    .map_err(|error| IoError::ParseError {
+                        reason: format!("PLANE #{surface_ref} has an invalid frame: {error}"),
+                    })?;
+                let target_origin = Point3::new(normal.x() * d, normal.y() * d, normal.z() * d);
+                let target = Frame3::from_normal_and_ref(
+                    target_origin,
+                    *normal,
+                    step_plane_ref_direction(*normal),
+                )
+                .map_err(|error| IoError::ParseError {
+                    reason: format!("PLANE #{surface_ref} has no canonical frame: {error}"),
+                })?;
+                let offset = source.origin - target.origin;
+                Ok(PcurveTransform {
+                    origin: Point2::new(offset.dot(target.x), offset.dot(target.y)),
+                    x_axis: Vec2::new(
+                        source.x.dot(target.x) * self.units.length,
+                        source.x.dot(target.y) * self.units.length,
+                    ),
+                    y_axis: Vec2::new(
+                        source.y.dot(target.x) * self.units.length,
+                        source.y.dot(target.y) * self.units.length,
+                    ),
+                })
+            }
+            FaceSurface::Cylinder(_) | FaceSurface::Cone(_) => Ok(PcurveTransform::diagonal(
+                self.units.angle,
+                self.units.length,
+            )),
+            FaceSurface::Sphere(_) | FaceSurface::Torus(_) => Ok(PcurveTransform::diagonal(
+                self.units.angle,
+                self.units.angle,
+            )),
+            FaceSurface::Nurbs(_) => Ok(PcurveTransform::diagonal(1.0, 1.0)),
+        }
+    }
+
+    fn build_curve2d_at(&self, curve_ref: u64, depth: u32) -> Result<BuiltCurve2d, IoError> {
+        if depth > MAX_CURVE_INDIRECTION {
+            return Err(IoError::ParseError {
+                reason: format!("2D curve chain at #{curve_ref} is cyclic or too deep"),
+            });
+        }
+        let entity = self.get_entity(curve_ref)?;
+        if entity.entity_type == "TRIMMED_CURVE" {
+            let slots = split_attr_slots(&entity.attrs);
+            let basis_ref =
+                required_reference_attribute("TRIMMED_CURVE", curve_ref, &slots, 1, "basis curve")?;
+            if self.get_entity(basis_ref)?.entity_type == "TRIMMED_CURVE" {
+                return Err(IoError::ParseError {
+                    reason: format!("2D TRIMMED_CURVE #{curve_ref} nests another trim"),
+                });
+            }
+            let (curve, parameter_scale, parameter_shift) = self.build_curve2d_basis(basis_ref)?;
+            let parsed = parse_trimmed_curve(curve_ref, &entity.attrs)?;
+            let mut parameters = match parsed.master {
+                TrimMaster::Cartesian => None,
+                TrimMaster::Parameter | TrimMaster::Unspecified => {
+                    parsed.trim_1.parameter.zip(parsed.trim_2.parameter)
+                }
+            };
+            let mut anchors = match (parsed.trim_1.point_ref, parsed.trim_2.point_ref) {
+                (Some(start), Some(end)) => Some((
+                    self.build_cartesian_point2(start)?,
+                    self.build_cartesian_point2(end)?,
+                )),
+                (None, None) => None,
+                _ => {
+                    return Err(IoError::ParseError {
+                        reason: format!(
+                            "2D TRIMMED_CURVE #{curve_ref} provides only one Cartesian trim anchor"
+                        ),
+                    });
+                }
+            };
+            let reversed = trimmed_curve_sense_is_reversed(curve_ref, &entity.attrs)?;
+            if reversed {
+                if let Some((first, second)) = &mut parameters {
+                    std::mem::swap(first, second);
+                }
+                if let Some((first, second)) = &mut anchors {
+                    std::mem::swap(first, second);
+                }
+            }
+            let range = parameters.map(|(first, second)| {
+                (
+                    first.mul_add(parameter_scale, parameter_shift),
+                    second.mul_add(parameter_scale, parameter_shift),
+                )
+            });
+            return Ok(BuiltCurve2d {
+                curve,
+                range,
+                anchors,
+            });
+        }
+        self.build_curve2d_basis(curve_ref)
+            .map(|(curve, _, _)| BuiltCurve2d {
+                curve,
+                range: None,
+                anchors: None,
+            })
+    }
+
+    fn build_curve2d_basis(&self, curve_ref: u64) -> Result<(Curve2D, f64, f64), IoError> {
+        let entity = self.get_entity(curve_ref)?;
+        let attrs = entity.attrs.clone();
+        match entity.entity_type.as_str() {
+            "LINE" => {
+                let slots = split_attr_slots(&attrs);
+                let origin_ref =
+                    required_reference_attribute("LINE", curve_ref, &slots, 1, "point")?;
+                let vector_ref =
+                    required_reference_attribute("LINE", curve_ref, &slots, 2, "direction")?;
+                let origin = self.build_cartesian_point2(origin_ref)?;
+                let vector_entity = self.get_entity(vector_ref)?;
+                let vector_slots = split_attr_slots(&vector_entity.attrs);
+                let direction_ref = required_reference_attribute(
+                    "VECTOR",
+                    vector_ref,
+                    &vector_slots,
+                    1,
+                    "orientation",
+                )?;
+                let magnitude =
+                    required_real_attribute("VECTOR", vector_ref, &vector_slots, 2, "magnitude")?;
+                if !magnitude.is_finite() || magnitude <= 0.0 {
+                    return Err(IoError::ParseError {
+                        reason: format!("VECTOR #{vector_ref} has invalid magnitude {magnitude}"),
+                    });
+                }
+                let direction = self.build_direction2(direction_ref)?;
+                let line = Line2D::new(origin, direction).map_err(|error| IoError::ParseError {
+                    reason: format!("2D LINE #{curve_ref}: {error}"),
+                })?;
+                Ok((Curve2D::Line(line), magnitude, 0.0))
+            }
+            "CIRCLE" => {
+                let slots = split_attr_slots(&attrs);
+                let placement =
+                    required_reference_attribute("CIRCLE", curve_ref, &slots, 1, "position")?;
+                let radius = required_real_attribute("CIRCLE", curve_ref, &slots, 2, "radius")?;
+                let (center, reference) = self.build_axis2_placement2(placement)?;
+                let circle =
+                    Circle2D::new(center, radius).map_err(|error| IoError::ParseError {
+                        reason: format!("2D CIRCLE #{curve_ref}: {error}"),
+                    })?;
+                Ok((
+                    Curve2D::Circle(circle),
+                    1.0,
+                    reference.y().atan2(reference.x()),
+                ))
+            }
+            "ELLIPSE" => {
+                let slots = split_attr_slots(&attrs);
+                let placement =
+                    required_reference_attribute("ELLIPSE", curve_ref, &slots, 1, "position")?;
+                let semi_major =
+                    required_real_attribute("ELLIPSE", curve_ref, &slots, 2, "semi_axis_1")?;
+                let semi_minor =
+                    required_real_attribute("ELLIPSE", curve_ref, &slots, 3, "semi_axis_2")?;
+                let (center, reference) = self.build_axis2_placement2(placement)?;
+                let ellipse = Ellipse2D::new(
+                    center,
+                    semi_major,
+                    semi_minor,
+                    reference.y().atan2(reference.x()),
+                )
+                .map_err(|error| IoError::ParseError {
+                    reason: format!("2D ELLIPSE #{curve_ref}: {error}"),
+                })?;
+                Ok((Curve2D::Ellipse(ellipse), 1.0, 0.0))
+            }
+            "B_SPLINE_CURVE_WITH_KNOTS" => self.build_bspline_curve2d(curve_ref, &attrs, false),
+            _ if entity.entity_type.is_empty() || attrs.contains("B_SPLINE_CURVE_WITH_KNOTS") => {
+                let rational =
+                    find_exact_composite_component(&attrs, "RATIONAL_B_SPLINE_CURVE").is_some();
+                let bspline_attrs = canonical_composite_bspline_attrs(&attrs, "B_SPLINE_CURVE")
+                    .or_else(|| {
+                        find_composite_bspline_attrs(&attrs, "B_SPLINE_CURVE").map(str::to_string)
+                    })
+                    .ok_or_else(|| IoError::UnsupportedEntity {
+                        entity: format!("composite 2D curve #{curve_ref}"),
+                    })?;
+                self.build_bspline_curve2d(curve_ref, &bspline_attrs, rational)
+            }
+            _ => Err(IoError::UnsupportedEntity {
+                entity: format!("{} (2D curve #{curve_ref})", entity.entity_type),
+            }),
+        }
+    }
+
+    fn build_bspline_curve2d(
+        &self,
+        curve_ref: u64,
+        attrs: &str,
+        rational: bool,
+    ) -> Result<(Curve2D, f64, f64), IoError> {
+        let (degree, cp_refs, multiplicities, knot_values) = parse_bspline_curve_attrs(attrs)
+            .ok_or_else(|| IoError::ParseError {
+                reason: format!("2D B_SPLINE_CURVE #{curve_ref} could not parse attributes"),
+            })?;
+        let control_points: Vec<Point2> = cp_refs
+            .iter()
+            .map(|&reference| self.build_cartesian_point2(reference))
+            .collect::<Result<_, _>>()?;
+        let knots = expand_knots(&multiplicities, &knot_values).ok_or(IoError::LimitExceeded {
+            resource: "STEP 2D B_SPLINE_CURVE knot count",
+            limit: MAX_EXPANDED_KNOTS,
+            actual: usize::MAX,
+        })?;
+        let weights = if rational {
+            extract_rational_curve_weights(attrs, control_points.len(), curve_ref)?
+        } else {
+            vec![1.0; control_points.len()]
+        };
+        let curve = NurbsCurve2D::new(degree, knots, control_points, weights).map_err(|error| {
+            IoError::ParseError {
+                reason: format!("2D B_SPLINE_CURVE #{curve_ref}: {error}"),
+            }
+        })?;
+        Ok((Curve2D::Nurbs(curve), 1.0, 0.0))
+    }
+
+    fn build_cartesian_point2(&self, point_ref: u64) -> Result<Point2, IoError> {
+        let entity = self.get_entity(point_ref)?;
+        let slots = split_attr_slots(&entity.attrs);
+        let coordinates =
+            exact_real_attribute_list("CARTESIAN_POINT", point_ref, &slots, 1, "coordinates")?;
+        if coordinates.len() != 2 {
+            return Err(IoError::ParseError {
+                reason: format!(
+                    "2D CARTESIAN_POINT #{point_ref} needs 2 coordinates, got {}",
+                    coordinates.len()
+                ),
+            });
+        }
+        Ok(Point2::new(coordinates[0], coordinates[1]))
+    }
+
+    fn build_direction2(&self, direction_ref: u64) -> Result<Vec2, IoError> {
+        let entity = self.get_entity(direction_ref)?;
+        let slots = split_attr_slots(&entity.attrs);
+        let coordinates =
+            exact_real_attribute_list("DIRECTION", direction_ref, &slots, 1, "direction_ratios")?;
+        if coordinates.len() != 2 {
+            return Err(IoError::ParseError {
+                reason: format!(
+                    "2D DIRECTION #{direction_ref} needs 2 components, got {}",
+                    coordinates.len()
+                ),
+            });
+        }
+        Vec2::new(coordinates[0], coordinates[1])
+            .normalize()
+            .map_err(|error| IoError::ParseError {
+                reason: format!("2D DIRECTION #{direction_ref}: {error}"),
+            })
+    }
+
+    fn build_axis2_placement2(&self, placement_ref: u64) -> Result<(Point2, Vec2), IoError> {
+        let entity = self.get_entity(placement_ref)?;
+        let slots = split_attr_slots(&entity.attrs);
+        let location = required_reference_attribute(
+            "AXIS2_PLACEMENT_2D",
+            placement_ref,
+            &slots,
+            1,
+            "location",
+        )?;
+        let reference = match slots.get(2) {
+            Some(AttrSlot::Ref(reference)) => self.build_direction2(*reference)?,
+            Some(AttrSlot::Omitted) | None => Vec2::new(1.0, 0.0),
+            other => {
+                return Err(IoError::ParseError {
+                    reason: format!(
+                        "AXIS2_PLACEMENT_2D #{placement_ref} has invalid ref_direction {}",
+                        describe_slot(other)
+                    ),
+                });
+            }
+        };
+        Ok((self.build_cartesian_point2(location)?, reference))
     }
 
     fn build_edge_curve(&mut self, ec_ref: u64) -> Result<remus_topology::edge::EdgeId, IoError> {
@@ -3421,9 +4200,9 @@ impl<'a> StepBuilder<'a> {
         match entity_type.as_str() {
             // SURFACE_CURVE('name', #curve_3d, (#pcurve_or_surface, ...), .PCURVE_S1.)
             // SEAM_CURVE and INTERSECTION_CURVE are subtypes with the same
-            // attribute layout. The first reference is the 3-D curve; the
-            // pcurve list is a redundant parametric representation that this
-            // reader does not model, so it is not consulted.
+            // attribute layout. Geometry resolution follows the 3-D basis;
+            // the face-loop importer binds the associated pcurves separately
+            // to their exact coedge positions.
             "SURFACE_CURVE" | "SEAM_CURVE" | "INTERSECTION_CURVE" => {
                 let slots = split_attr_slots(&attrs);
                 let basis =
@@ -4695,6 +5474,382 @@ const DEFAULT_PLACEMENT_AXIS: Vec3 = Vec3::new(0.0, 0.0, 1.0);
 /// turn about the axis. Substituting it would rotate the frame of every
 /// placement that omits its ref_direction, moving circle and ellipse phase,
 /// toroid seams and conic axes by 90 degrees.
+fn transform_curve2d(
+    curve: Curve2D,
+    transform: PcurveTransform,
+    pcurve_ref: u64,
+) -> Result<(Curve2D, f64, f64), IoError> {
+    let invalid = |reason: &str| IoError::ParseError {
+        reason: format!("PCURVE #{pcurve_ref} cannot be transformed exactly: {reason}"),
+    };
+    match curve {
+        Curve2D::Line(line) => {
+            let direction = transform.vector(line.direction());
+            let scale = direction.length();
+            if !scale.is_finite() || scale <= f64::EPSILON {
+                return Err(invalid("its line direction collapses"));
+            }
+            let line = Line2D::new(transform.point(line.origin()), direction)
+                .map_err(|_| invalid("its line direction is invalid"))?;
+            Ok((Curve2D::Line(line), scale, 0.0))
+        }
+        Curve2D::Circle(circle) => {
+            let center = transform.point(circle.center());
+            let axis_a = transform.vector(Vec2::new(circle.radius(), 0.0));
+            let axis_b = transform.vector(Vec2::new(0.0, circle.radius()));
+            transformed_ellipse(center, axis_a, axis_b, true, pcurve_ref)
+        }
+        Curve2D::Ellipse(ellipse) => {
+            let (sin_rotation, cos_rotation) = ellipse.rotation().sin_cos();
+            let axis_a = transform.vector(Vec2::new(
+                ellipse.semi_major() * cos_rotation,
+                ellipse.semi_major() * sin_rotation,
+            ));
+            let axis_b = transform.vector(Vec2::new(
+                -ellipse.semi_minor() * sin_rotation,
+                ellipse.semi_minor() * cos_rotation,
+            ));
+            transformed_ellipse(
+                transform.point(ellipse.center()),
+                axis_a,
+                axis_b,
+                false,
+                pcurve_ref,
+            )
+        }
+        Curve2D::Nurbs(nurbs) => {
+            let control_points = nurbs
+                .control_points()
+                .iter()
+                .map(|point| transform.point(*point))
+                .collect();
+            let transformed = NurbsCurve2D::new(
+                nurbs.degree(),
+                nurbs.knots().to_vec(),
+                control_points,
+                nurbs.weights().to_vec(),
+            )
+            .map_err(|error| invalid(&format!("NURBS reconstruction failed: {error}")))?;
+            Ok((Curve2D::Nurbs(transformed), 1.0, 0.0))
+        }
+    }
+}
+
+fn transformed_ellipse(
+    center: Point2,
+    axis_a: Vec2,
+    axis_b: Vec2,
+    prefer_circle: bool,
+    pcurve_ref: u64,
+) -> Result<(Curve2D, f64, f64), IoError> {
+    let length_a = axis_a.length();
+    let length_b = axis_b.length();
+    let scale = length_a.max(length_b).max(1.0);
+    let orthogonal = axis_a.dot(axis_b).abs() <= 128.0 * f64::EPSILON * scale * scale;
+    let determinant = axis_a.x().mul_add(axis_b.y(), -(axis_a.y() * axis_b.x()));
+    if !length_a.is_finite()
+        || !length_b.is_finite()
+        || length_a <= f64::EPSILON
+        || length_b <= f64::EPSILON
+        || !orthogonal
+        || determinant <= 0.0
+    {
+        return Err(IoError::ParseError {
+            reason: format!(
+                "PCURVE #{pcurve_ref} has a conic whose parameter-space unit transform is not an orientation-preserving orthogonal ellipse"
+            ),
+        });
+    }
+    let equal = (length_a - length_b).abs() <= 128.0 * f64::EPSILON * scale;
+    if prefer_circle && equal {
+        let circle = Circle2D::new(center, 0.5 * (length_a + length_b)).map_err(|error| {
+            IoError::ParseError {
+                reason: format!("PCURVE #{pcurve_ref} circle transform failed: {error}"),
+            }
+        })?;
+        return Ok((Curve2D::Circle(circle), 1.0, axis_a.y().atan2(axis_a.x())));
+    }
+    let (major, minor, shift) = if length_a >= length_b {
+        (axis_a, length_b, 0.0)
+    } else {
+        (axis_b, length_a, -std::f64::consts::FRAC_PI_2)
+    };
+    let ellipse = Ellipse2D::new(center, major.length(), minor, major.y().atan2(major.x()))
+        .map_err(|error| IoError::ParseError {
+            reason: format!("PCURVE #{pcurve_ref} ellipse transform failed: {error}"),
+        })?;
+    Ok((Curve2D::Ellipse(ellipse), 1.0, shift))
+}
+
+fn pcurve_uv_tolerance(points: &[Point2]) -> f64 {
+    let scale = points
+        .iter()
+        .flat_map(|point| point.0)
+        .fold(1.0_f64, |current, value| current.max(value.abs()));
+    Tolerance::new().linear + 128.0 * f64::EPSILON * scale
+}
+
+fn select_pcurve_range(
+    curve: &Curve2D,
+    range: (f64, f64),
+    expected_start: Point2,
+    expected_end: Point2,
+    pcurve_ref: u64,
+) -> Result<(f64, f64), IoError> {
+    let tolerance = pcurve_uv_tolerance(&[expected_start, expected_end]);
+    let direct = (curve.evaluate(range.0) - expected_start).length() <= tolerance
+        && (curve.evaluate(range.1) - expected_end).length() <= tolerance;
+    if direct {
+        return Ok(range);
+    }
+    let reversed = (curve.evaluate(range.1) - expected_start).length() <= tolerance
+        && (curve.evaluate(range.0) - expected_end).length() <= tolerance;
+    if reversed {
+        return Ok((range.1, range.0));
+    }
+    let actual_start = curve.evaluate(range.0);
+    let actual_end = curve.evaluate(range.1);
+    Err(IoError::ParseError {
+        reason: format!(
+            "PCURVE #{pcurve_ref} declared range ({}, {}) evaluates to ({}, {}) -> ({}, {}), not oriented endpoints ({}, {}) -> ({}, {})",
+            range.0,
+            range.1,
+            actual_start.x(),
+            actual_start.y(),
+            actual_end.x(),
+            actual_end.y(),
+            expected_start.x(),
+            expected_start.y(),
+            expected_end.x(),
+            expected_end.y()
+        ),
+    })
+}
+
+fn derive_pcurve_range(
+    curve: &Curve2D,
+    edge: &Edge,
+    forward: bool,
+    expected_start: Point2,
+    expected_end: Point2,
+    pcurve_ref: u64,
+) -> Result<(f64, f64), IoError> {
+    let edge_increases = if matches!(edge.curve(), EdgeCurve::Line) {
+        true
+    } else {
+        let (start, end) = edge.strict_domain().map_err(|error| IoError::ParseError {
+            reason: format!(
+                "PCURVE #{pcurve_ref} cannot derive orientation from its edge domain: {error}"
+            ),
+        })?;
+        end > start
+    };
+    let use_increases = edge_increases == forward;
+    let tolerance = pcurve_uv_tolerance(&[expected_start, expected_end]);
+    let periodic_range = |mut start: f64, mut end: f64| {
+        if (expected_start - expected_end).length() <= tolerance {
+            end = if use_increases {
+                start + std::f64::consts::TAU
+            } else {
+                start - std::f64::consts::TAU
+            };
+        } else if use_increases && end <= start {
+            end += std::f64::consts::TAU;
+        } else if !use_increases && end >= start {
+            start += std::f64::consts::TAU;
+        }
+        (start, end)
+    };
+    let range = match curve {
+        Curve2D::Line(line) => (line.project(expected_start), line.project(expected_end)),
+        Curve2D::Circle(circle) => {
+            periodic_range(circle.project(expected_start), circle.project(expected_end))
+        }
+        Curve2D::Ellipse(ellipse) => periodic_range(
+            project_ellipse2d(ellipse, expected_start),
+            project_ellipse2d(ellipse, expected_end),
+        ),
+        Curve2D::Nurbs(nurbs) => {
+            let domain = nurbs.domain();
+            if (expected_start - expected_end).length() <= tolerance
+                && (nurbs.evaluate(domain.0) - expected_start).length() <= tolerance
+                && (nurbs.evaluate(domain.1) - expected_end).length() <= tolerance
+            {
+                if use_increases {
+                    domain
+                } else {
+                    (domain.1, domain.0)
+                }
+            } else {
+                (
+                    project_nurbs2d(nurbs, expected_start, tolerance, pcurve_ref)?,
+                    project_nurbs2d(nurbs, expected_end, tolerance, pcurve_ref)?,
+                )
+            }
+        }
+    };
+    select_pcurve_range(curve, range, expected_start, expected_end, pcurve_ref)
+}
+
+fn project_nurbs2d(
+    curve: &NurbsCurve2D,
+    point: Point2,
+    tolerance: f64,
+    pcurve_ref: u64,
+) -> Result<f64, IoError> {
+    let control_points: Vec<Point3> = curve
+        .control_points()
+        .iter()
+        .map(|point| Point3::new(point.x(), point.y(), 0.0))
+        .collect();
+    let lifted = remus_math::nurbs::NurbsCurve::new(
+        curve.degree(),
+        curve.knots().to_vec(),
+        control_points,
+        curve.weights().to_vec(),
+    )
+    .map_err(|error| IoError::ParseError {
+        reason: format!("PCURVE #{pcurve_ref} NURBS projection setup failed: {error}"),
+    })?;
+    let projected = remus_math::nurbs::project_point_to_curve(
+        &lifted,
+        Point3::new(point.x(), point.y(), 0.0),
+        tolerance,
+    )
+    .map_err(|error| IoError::ParseError {
+        reason: format!("PCURVE #{pcurve_ref} endpoint projection failed: {error}"),
+    })?;
+    if !projected.distance.is_finite() || projected.distance > tolerance {
+        return Err(IoError::ParseError {
+            reason: format!(
+                "PCURVE #{pcurve_ref} NURBS misses its endpoint by {} (tolerance {tolerance})",
+                projected.distance
+            ),
+        });
+    }
+    Ok(projected.parameter)
+}
+
+fn project_ellipse2d(ellipse: &Ellipse2D, point: Point2) -> f64 {
+    let offset = point - ellipse.center();
+    let (sin_rotation, cos_rotation) = ellipse.rotation().sin_cos();
+    let local_x = offset.x().mul_add(cos_rotation, offset.y() * sin_rotation);
+    let local_y = (-offset.x()).mul_add(sin_rotation, offset.y() * cos_rotation);
+    (local_y / ellipse.semi_minor())
+        .atan2(local_x / ellipse.semi_major())
+        .rem_euclid(std::f64::consts::TAU)
+}
+
+fn lift_pcurve_endpoint_branches(
+    surface: &FaceSurface,
+    curve: &Curve2D,
+    mut start: Point2,
+    mut end: Point2,
+) -> (Point2, Point2) {
+    let reference = match curve {
+        Curve2D::Line(line) => line.origin(),
+        Curve2D::Circle(circle) => circle.center(),
+        Curve2D::Ellipse(ellipse) => ellipse.center(),
+        Curve2D::Nurbs(nurbs) => nurbs
+            .control_points()
+            .first()
+            .copied()
+            .unwrap_or(Point2::new(0.0, 0.0)),
+    };
+    let lift = |value: f64, target: f64| {
+        value + ((target - value) / std::f64::consts::TAU).round() * std::f64::consts::TAU
+    };
+    match surface {
+        FaceSurface::Cylinder(_) | FaceSurface::Cone(_) | FaceSurface::Sphere(_) => {
+            start = Point2::new(lift(start.x(), reference.x()), start.y());
+            end = Point2::new(lift(end.x(), reference.x()), end.y());
+        }
+        FaceSurface::Torus(_) => {
+            start = Point2::new(
+                lift(start.x(), reference.x()),
+                lift(start.y(), reference.y()),
+            );
+            end = Point2::new(lift(end.x(), reference.x()), lift(end.y(), reference.y()));
+        }
+        FaceSurface::Plane { .. } | FaceSurface::Nurbs(_) => {}
+    }
+    (start, end)
+}
+
+fn pcurve_winding(
+    surface: &FaceSurface,
+    pcurve: &PCurve,
+    principal_start: Point2,
+    principal_end: Point2,
+    pcurve_ref: u64,
+) -> Result<PeriodicWinding, IoError> {
+    let start = pcurve.evaluate(pcurve.t_start());
+    let end = pcurve.evaluate(pcurve.t_end());
+    let winding = |a: f64, b: f64, pa: f64, pb: f64, period: f64| -> Result<i32, IoError> {
+        let classify = |value: f64, principal: f64| -> Result<i32, IoError> {
+            const BRANCH_TOLERANCE: f64 = 1e-10;
+            let arithmetic_uncertainty =
+                8.0 * f64::EPSILON * value.abs().max(principal.abs()).max(period);
+            let turns = (value - principal) / period;
+            let nearest = turns.round();
+            if !turns.is_finite()
+                || arithmetic_uncertainty > BRANCH_TOLERANCE
+                || (turns - nearest).abs() * period > BRANCH_TOLERANCE
+                || nearest < f64::from(i32::MIN)
+                || nearest > f64::from(i32::MAX)
+            {
+                return Err(IoError::ParseError {
+                    reason: format!(
+                        "PCURVE #{pcurve_ref} coordinate {value} cannot be certified as an integral lift of principal coordinate {principal}"
+                    ),
+                });
+            }
+            #[allow(clippy::cast_possible_truncation)]
+            Ok(nearest as i32)
+        };
+        let first = classify(a, pa)?;
+        let second = classify(b, pb)?;
+        Ok(if first == second { first } else { 0 })
+    };
+    let (u, v) = match surface {
+        FaceSurface::Cylinder(_) | FaceSurface::Cone(_) | FaceSurface::Sphere(_) => (
+            winding(
+                start.x(),
+                end.x(),
+                principal_start.x(),
+                principal_end.x(),
+                std::f64::consts::TAU,
+            )?,
+            0,
+        ),
+        FaceSurface::Torus(_) => (
+            winding(
+                start.x(),
+                end.x(),
+                principal_start.x(),
+                principal_end.x(),
+                std::f64::consts::TAU,
+            )?,
+            winding(
+                start.y(),
+                end.y(),
+                principal_start.y(),
+                principal_end.y(),
+                std::f64::consts::TAU,
+            )?,
+        ),
+        FaceSurface::Plane { .. } | FaceSurface::Nurbs(_) => (0, 0),
+    };
+    Ok(PeriodicWinding::new(u, v))
+}
+
+fn step_plane_ref_direction(normal: Vec3) -> Vec3 {
+    let x = Vec3::new(1.0, 0.0, 0.0);
+    let y = Vec3::new(0.0, 1.0, 0.0);
+    let candidate = if normal.dot(x).abs() < 0.9 { x } else { y };
+    normal.cross(candidate).normalize().unwrap_or(x)
+}
+
 fn first_proj_axis(axis: Vec3) -> Vec3 {
     /// The standard's default `ref_direction` candidate, and the substitute
     /// it prescribes where the axis is parallel to that default.
@@ -8884,6 +10039,46 @@ mod tests {
         assert_eq!(floats.len(), 3);
         assert!((floats[0] - 1.0).abs() < 1e-10);
         assert!((floats[1] - (-0.5)).abs() < 1e-10);
+    }
+
+    #[test]
+    fn cylindrical_pcurve_transform_composes_angle_and_length_units() {
+        let raw = Curve2D::Line(Line2D::new(Point2::new(180.0, 2.0), Vec2::new(0.0, 1.0)).unwrap());
+        let (transformed, parameter_scale, parameter_shift) = transform_curve2d(
+            raw,
+            PcurveTransform::diagonal(std::f64::consts::PI / 180.0, 25.4),
+            77,
+        )
+        .unwrap();
+        let Curve2D::Line(line) = transformed else {
+            panic!("a diagonal unit transform must preserve a line");
+        };
+        let start = line.evaluate(parameter_shift);
+        let end = line.evaluate(3.0_f64.mul_add(parameter_scale, parameter_shift));
+        assert!((start - Point2::new(std::f64::consts::PI, 50.8)).length() < 1e-12);
+        assert!((end - Point2::new(std::f64::consts::PI, 127.0)).length() < 1e-12);
+        assert!((parameter_scale - 25.4).abs() < 1e-12);
+    }
+
+    #[test]
+    fn imported_huge_periodic_pcurve_anchor_is_refused() {
+        let cylinder = remus_math::surfaces::CylindricalSurface::new(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            1.0,
+        )
+        .unwrap();
+        let line = Line2D::new(Point2::new(1e15, 0.0), Vec2::new(0.0, 1.0)).unwrap();
+        let pcurve = PCurve::new(Curve2D::Line(line), 0.0, 1.0);
+        let error = pcurve_winding(
+            &FaceSurface::Cylinder(cylinder),
+            &pcurve,
+            Point2::new(0.0, 0.0),
+            Point2::new(0.0, 1.0),
+            77,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("integral lift"));
     }
 
     #[test]

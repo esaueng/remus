@@ -1,19 +1,23 @@
 //! OpenZCAD parity-corpus STEP solids must import as valid analytic B-Reps.
 
-#![allow(clippy::expect_used, clippy::panic)]
+#![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
 use std::collections::BTreeMap;
 
 use remus_io::step::reader::read_step;
 use remus_io::step::writer::write_step;
+use remus_math::curves2d::{Curve2D, Line2D};
 use remus_math::mat::Mat4;
+use remus_math::vec::{Point2, Vec2};
 use remus_operations::boolean::{BooleanOp, boolean};
 use remus_operations::measure::solid_volume;
 use remus_operations::primitives::make_cylinder;
 use remus_operations::transform::transform_solid;
 use remus_operations::validate::validate_solid;
+use remus_topology::PeriodicWinding;
 use remus_topology::Topology;
 use remus_topology::explorer::solid_faces;
+use remus_topology::pcurve::PCurve;
 use remus_topology::solid::SolidId;
 use remus_topology::validation::validate_shell_closed;
 
@@ -107,10 +111,214 @@ fn openzcad_bored_plate_remains_valid_after_a_second_drill() {
 
 #[test]
 fn openzcad_analytic_fillet_plate_imports_as_one_valid_analytic_solid() {
+    let (topo, solid) = import_one(FILLETED_PLATE);
+    assert_eq!(
+        topo.num_pcurves(),
+        48,
+        "fixture carries 48 positioned PCURVEs"
+    );
+    let first = write_step(&topo, &[solid]).expect("write pcurve-bearing STEP");
+    assert_eq!(first.matches("PCURVE(").count(), 48);
+    let (round_topo, round_solid) = import_one(&first);
+    assert_eq!(round_topo.num_pcurves(), 48);
+    let second = write_step(&round_topo, &[round_solid]).expect("write second STEP");
+    assert_eq!(second, first, "write/read/write must be deterministic");
+
     assert_valid_round_trip(
         FILLETED_PLATE,
         9_522.606_928_409_188,
         &[("cylinder", 4), ("plane", 6)],
+    );
+}
+
+#[test]
+fn step_pcurve_branch_count_and_endpoints_fail_closed() {
+    for (label, malformed) in [
+        (
+            "unused duplicate branch",
+            FILLETED_PLATE.replacen(
+                "#26 = SURFACE_CURVE('',#27,(#31,#43),.PCURVE_S1.);",
+                "#26 = SURFACE_CURVE('',#27,(#31,#31,#43),.PCURVE_S1.);",
+                1,
+            ),
+        ),
+        (
+            "off-edge pcurve",
+            FILLETED_PLATE.replacen(
+                "#39 = CARTESIAN_POINT('',(0.,0.));",
+                "#39 = CARTESIAN_POINT('',(1.,0.));",
+                1,
+            ),
+        ),
+    ] {
+        let mut topo = Topology::new();
+        let before = (
+            topo.num_vertices(),
+            topo.num_edges(),
+            topo.num_faces(),
+            topo.num_coedges(),
+            topo.num_pcurves(),
+        );
+        let error = read_step(&malformed, &mut topo)
+            .expect_err("malformed per-use authority must fail the whole import");
+        assert!(
+            error.to_string().contains("PCURVE"),
+            "{label} produced the wrong diagnostic: {error}"
+        );
+        assert_eq!(
+            (
+                topo.num_vertices(),
+                topo.num_edges(),
+                topo.num_faces(),
+                topo.num_coedges(),
+                topo.num_pcurves(),
+            ),
+            before,
+            "{label} left partial topology behind"
+        );
+    }
+}
+
+#[test]
+fn cylinder_seam_pcurves_round_trip_by_loop_position() {
+    let mut topo = Topology::new();
+    let solid = make_cylinder(&mut topo, 2.0, 5.0).expect("cylinder");
+    let face = solid_faces(&topo, solid)
+        .expect("faces")
+        .into_iter()
+        .find(|&face| {
+            matches!(
+                topo.face(face).unwrap().surface(),
+                remus_topology::face::FaceSurface::Cylinder(_)
+            )
+        })
+        .expect("lateral face");
+    let cylinder = match topo.face(face).unwrap().surface() {
+        remus_topology::face::FaceSurface::Cylinder(cylinder) => cylinder.clone(),
+        _ => unreachable!(),
+    };
+    let loop_id = topo.face(face).unwrap().outer_loop().expect("outer loop");
+    let coedges = topo.face_loop(loop_id).unwrap().coedges().to_vec();
+    let seam_edge = coedges
+        .iter()
+        .map(|&coedge| topo.coedge(coedge).unwrap().edge())
+        .find(|&edge| {
+            coedges
+                .iter()
+                .filter(|&&coedge| topo.coedge(coedge).unwrap().edge() == edge)
+                .count()
+                == 2
+        })
+        .expect("seam edge");
+    let seam_uses: Vec<_> = coedges
+        .into_iter()
+        .filter(|&coedge| topo.coedge(coedge).unwrap().edge() == seam_edge)
+        .collect();
+    assert_eq!(seam_uses.len(), 2);
+    let first_use = topo.coedge(seam_uses[0]).unwrap();
+    let first_edge = topo.edge(first_use.edge()).unwrap();
+    let first_vertex = if first_use.is_forward() {
+        first_edge.start()
+    } else {
+        first_edge.end()
+    };
+    let base_u = cylinder
+        .project_point(topo.vertex(first_vertex).unwrap().point())
+        .0;
+    for (index, coedge_id) in seam_uses.into_iter().enumerate() {
+        let coedge = topo.coedge(coedge_id).unwrap();
+        let edge = topo.edge(coedge.edge()).unwrap();
+        let (start, end) = if coedge.is_forward() {
+            (edge.start(), edge.end())
+        } else {
+            (edge.end(), edge.start())
+        };
+        let start = topo.vertex(start).unwrap().point();
+        let end = topo.vertex(end).unwrap().point();
+        let direction = (end.z() - start.z()).signum();
+        let u = base_u
+            + if index == 0 {
+                0.0
+            } else {
+                std::f64::consts::TAU
+            };
+        let line =
+            Line2D::new(Point2::new(u, start.z()), Vec2::new(0.0, direction)).expect("seam pcurve");
+        topo.set_coedge_pcurve(
+            coedge_id,
+            PCurve::new(Curve2D::Line(line), 0.0, (end.z() - start.z()).abs()),
+        )
+        .unwrap();
+        topo.set_coedge_periodic_winding(
+            coedge_id,
+            if index == 0 {
+                PeriodicWinding::ZERO
+            } else {
+                PeriodicWinding::new(1, 0)
+            },
+        )
+        .unwrap();
+    }
+
+    let first = write_step(&topo, &[solid]).expect("write seam STEP");
+    assert_eq!(first.matches("PCURVE(").count(), 2);
+    let (mut round_topo, round_solid) = import_one(&first);
+    assert_eq!(round_topo.num_pcurves(), 2);
+    let round_face = solid_faces(&round_topo, round_solid)
+        .unwrap()
+        .into_iter()
+        .find(|&face| {
+            matches!(
+                round_topo.face(face).unwrap().surface(),
+                remus_topology::face::FaceSurface::Cylinder(_)
+            )
+        })
+        .unwrap();
+    let mut branches: Vec<_> = round_topo
+        .face(round_face)
+        .unwrap()
+        .boundary_loops()
+        .iter()
+        .flat_map(|&loop_id| round_topo.face_loop(loop_id).unwrap().coedges())
+        .filter_map(|&coedge_id| {
+            round_topo.coedge_pcurve(coedge_id).unwrap().map(|pcurve| {
+                (
+                    pcurve.evaluate(pcurve.t_start()).x(),
+                    round_topo.coedge(coedge_id).unwrap().periodic_winding().u(),
+                )
+            })
+        })
+        .collect();
+    branches.sort_by(|left, right| left.0.total_cmp(&right.0));
+    assert_eq!(branches.len(), 2);
+    assert_eq!(branches[0].0.to_bits(), base_u.to_bits());
+    assert_eq!(branches[0].1, 0);
+    assert_eq!(
+        branches[1].0.to_bits(),
+        (base_u + std::f64::consts::TAU).to_bits()
+    );
+    assert_eq!(branches[1].1, 1);
+    let second = write_step(&round_topo, &[round_solid]).expect("write seam STEP again");
+    assert_eq!(second, first);
+
+    let lifted_use = round_topo
+        .face(round_face)
+        .unwrap()
+        .boundary_loops()
+        .iter()
+        .flat_map(|&loop_id| round_topo.face_loop(loop_id).unwrap().coedges())
+        .copied()
+        .find(|&coedge_id| round_topo.coedge(coedge_id).unwrap().periodic_winding().u() == 1)
+        .expect("lifted seam use");
+    round_topo
+        .set_coedge_periodic_winding(lifted_use, PeriodicWinding::ZERO)
+        .unwrap();
+    let error = write_step(&round_topo, &[round_solid])
+        .expect_err("inconsistent winding metadata must not be exported");
+    assert!(
+        error
+            .to_string()
+            .contains("disagrees with its pcurve branch")
     );
 }
 

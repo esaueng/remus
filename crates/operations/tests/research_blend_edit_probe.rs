@@ -1432,11 +1432,10 @@ fn e13_copy_solid_face_map_remaps_oriented_pcurves() {
     assert_ne!(copy, solid);
 }
 
-// E14: establish the representation baseline. STEP import and the two
-// production analytic fillet paths currently use exact 3D edge/surface
-// geometry without populating the central pcurve registry.
+// E14: production fillets still rely on exact 3D geometry alone, while STEP
+// import retains the file's positioned per-use pcurves.
 #[test]
-fn e14_current_analytic_blends_and_step_import_have_no_registry_pcurves() {
+fn e14_step_import_retains_per_use_pcurves() {
     let mut open_topo = Topology::new();
     let open_sharp = make_box(&mut open_topo, 40.0, 40.0, 10.0).unwrap();
     let open_edge = find_vertical_edge(&open_topo, open_sharp, 40.0, 40.0);
@@ -1457,7 +1456,7 @@ fn e14_current_analytic_blends_and_step_import_have_no_registry_pcurves() {
     let solids = remus_io::step::reader::read_step(step, &mut step_topo).unwrap();
     assert_eq!(solids.len(), 1);
     println!("E14 STEP import pcurves={}", step_topo.num_pcurves());
-    assert_eq!(step_topo.num_pcurves(), 0);
+    assert_eq!(step_topo.num_pcurves(), 48);
 }
 
 fn effective_normal(topo: &Topology, face: FaceId, point: Point3) -> Option<Vec3> {
