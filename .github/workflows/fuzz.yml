@@ -53,6 +53,7 @@ jobs:
           - modifier_ops
           - nurbs_surface
           - topology_mutation
+          - arena_roundtrip
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@c93f4f9c67595668add93d3d6895795ce52d8c2d # nightly
