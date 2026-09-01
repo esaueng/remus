@@ -1,0 +1,81 @@
+name: Gauntlet failure-class triage
+description: Reduce and disposition one class from the latest reproducible gauntlet scoreboard.
+title: "[gauntlet] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Start from the largest unresolved taxonomy class in the latest aggregate scoreboard. Pin every input and keep external corpus bytes out of Git unless the reduced fixture's license permits redistribution. Close the class only with an oracle-verified fix or a stable typed refusal, and record its before/after count.
+  - type: dropdown
+    id: tier
+    attributes:
+      label: Gauntlet tier
+      options:
+        - smoke
+        - abc-1k
+        - mambo
+    validations:
+      required: true
+  - type: input
+    id: kernel-sha
+    attributes:
+      label: Kernel commit SHA
+      placeholder: 40-character Git commit SHA
+    validations:
+      required: true
+  - type: input
+    id: manifest-sha
+    attributes:
+      label: Manifest SHA-256
+      placeholder: 64-character SHA-256 digest
+    validations:
+      required: true
+  - type: input
+    id: scoreboard
+    attributes:
+      label: Scoreboard artifact or results path
+      placeholder: Workflow run URL, artifact name, or results-branch path
+    validations:
+      required: true
+  - type: input
+    id: failure-class
+    attributes:
+      label: Failure taxonomy class and starting count
+      placeholder: invalid_input — 14 models
+    validations:
+      required: true
+  - type: textarea
+    id: representative
+    attributes:
+      label: Representative model
+      description: Record the manifest model ID, source URL, pinned object SHA-256, license class, and why it represents this failure class.
+    validations:
+      required: true
+  - type: textarea
+    id: reduction
+    attributes:
+      label: Reduction and in-repo fixture
+      description: Describe the minimization procedure and name the reduced fixture path, or explain why redistribution is not permitted.
+    validations:
+      required: true
+  - type: textarea
+    id: disposition
+    attributes:
+      label: Fix or typed-refusal disposition
+      description: State the expected successful geometry contract or the stable refusal type/code and transactional guarantee.
+    validations:
+      required: true
+  - type: textarea
+    id: oracle
+    attributes:
+      label: Independent oracle
+      description: Record the analytic, topological, round-trip, tessellation, or external-oracle checks that distinguish correctness from non-crash behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: Before/after evidence
+      description: Record the taxonomy class count before and after, the exact commands, and links to hosted evidence.
+    validations:
+      required: true

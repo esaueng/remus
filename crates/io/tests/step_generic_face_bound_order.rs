@@ -189,7 +189,7 @@ fn reorder_surface_face_bounds(
     let (face_id, outer_bound) = step
         .lines()
         .find_map(|line| {
-            if !line.contains("= ADVANCED_FACE(") {
+            if !line.contains("ADVANCED_FACE(") {
                 return None;
             }
             let list_start = line.find("(#")?;
@@ -249,6 +249,78 @@ fn reorder_surface_face_bounds(
     assert!(rewritten_face, "target ADVANCED_FACE was not rewritten");
     assert!(rewritten_outer, "target FACE_OUTER_BOUND was not rewritten");
     out
+}
+
+fn duplicate_first_surface_bound(step: &str, surface_type: &str) -> String {
+    let types = entity_types(step);
+    let face_id = step
+        .lines()
+        .find_map(|line| {
+            if !line.contains("ADVANCED_FACE(") {
+                return None;
+            }
+            let list_start = line.find("(#")?;
+            let list_end = line[list_start..].find(')')? + list_start;
+            let bounds = refs_in(&line[list_start..list_end]);
+            let all_refs = refs_in(line);
+            let surface = all_refs.iter().rev().find(|id| !bounds.contains(id))?;
+            (bounds.len() == 2 && types.get(surface) == Some(&surface_type))
+                .then(|| entity_id(line))?
+        })
+        .unwrap_or_else(|| panic!("fixture needs a two-bound {surface_type} face"));
+
+    step.lines()
+        .map(|source_line| {
+            let mut line = source_line.to_string();
+            if entity_id(&line) == Some(face_id) {
+                let list_start = line.find("(#").expect("bound list");
+                let list_end = line[list_start..].find(')').expect("bound list end") + list_start;
+                let first = refs_in(&line[list_start..list_end])[0];
+                line.replace_range(list_start..=list_end, &format!("(#{first}, #{first})"));
+            }
+            line
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n"
+}
+
+fn reverse_first_surface_bounds(step: &str, surface_type: &str) -> String {
+    let types = entity_types(step);
+    let face_id = step
+        .lines()
+        .find_map(|line| {
+            if !line.contains("ADVANCED_FACE(") {
+                return None;
+            }
+            let list_start = line.find("(#")?;
+            let list_end = line[list_start..].find(')')? + list_start;
+            let bounds = refs_in(&line[list_start..list_end]);
+            let all_refs = refs_in(line);
+            let surface = all_refs.iter().rev().find(|id| !bounds.contains(id))?;
+            (bounds.len() == 2 && types.get(surface) == Some(&surface_type))
+                .then(|| entity_id(line))?
+        })
+        .unwrap_or_else(|| panic!("fixture needs a two-bound {surface_type} face"));
+
+    step.lines()
+        .map(|source_line| {
+            let mut line = source_line.to_string();
+            if entity_id(&line) == Some(face_id) {
+                let list_start = line.find("(#").expect("bound list");
+                let list_end = line[list_start..].find(')').expect("bound list end") + list_start;
+                let mut bounds = refs_in(&line[list_start..list_end]);
+                bounds.reverse();
+                line.replace_range(
+                    list_start..=list_end,
+                    &format!("(#{}, #{})", bounds[0], bounds[1]),
+                );
+            }
+            line
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n"
 }
 
 /// Express every bound in the equivalent `.F.` form: reverse its EDGE_LOOP
@@ -548,6 +620,14 @@ struct Snapshot {
     mesh_signed_volume: f64,
 }
 
+#[derive(Debug)]
+struct BrepSnapshot {
+    counts: (usize, usize, usize, usize),
+    surface_types: BTreeMap<&'static str, usize>,
+    bounds: Aabb3,
+    volume: f64,
+}
+
 fn signed_mesh_volume(mesh: &TriangleMesh) -> f64 {
     let origin = Point3::new(0.0, 0.0, 0.0);
     mesh.indices
@@ -614,6 +694,52 @@ fn snapshot(topo: &Topology, solid: SolidId) -> Snapshot {
     }
 }
 
+fn brep_snapshot(topo: &Topology, solid: SolidId) -> BrepSnapshot {
+    let faces = solid_faces(topo, solid).expect("faces");
+    let shell_count = 1 + topo.solid(solid).expect("solid").inner_shells().len();
+    assert_eq!(shell_count, 1, "fixture must remain one closed shell");
+    let mut surface_types = BTreeMap::new();
+    let mut edge_uses: HashMap<EdgeId, usize> = HashMap::new();
+    for &face in &faces {
+        let face = topo.face(face).expect("face");
+        *surface_types.entry(face.surface().type_tag()).or_default() += 1;
+        for wire in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+            for edge in topo.wire(wire).expect("wire").edges() {
+                *edge_uses.entry(edge.edge()).or_default() += 1;
+            }
+        }
+    }
+    assert_eq!(
+        edge_uses.values().filter(|&&uses| uses == 1).count(),
+        0,
+        "B-Rep must have no open edges"
+    );
+    assert_eq!(
+        edge_uses.values().filter(|&&uses| uses > 2).count(),
+        0,
+        "B-Rep must have no non-manifold edges"
+    );
+
+    let strict = validate_solid(topo, solid).expect("strict validation");
+    assert!(
+        strict.is_valid(),
+        "strict validation errors: {:?}",
+        strict.issues
+    );
+
+    BrepSnapshot {
+        counts: (
+            shell_count,
+            faces.len(),
+            solid_edges(topo, solid).expect("edges").len(),
+            solid_vertices(topo, solid).expect("vertices").len(),
+        ),
+        surface_types,
+        bounds: solid_bounding_box(topo, solid).expect("bounds"),
+        volume: solid_volume(topo, solid, DEFLECTION).expect("volume"),
+    }
+}
+
 fn assert_close(actual: f64, expected: f64, label: &str) {
     let scale = actual.abs().max(expected.abs()).max(1.0);
     assert!(
@@ -657,6 +783,16 @@ fn assert_same_geometry(actual: &Snapshot, expected: &Snapshot, label: &str) {
         expected.mesh_signed_volume,
         &format!("{label}: signed mesh volume"),
     );
+}
+
+fn assert_same_brep(actual: &BrepSnapshot, expected: &BrepSnapshot, label: &str) {
+    assert_eq!(actual.counts, expected.counts, "{label}: topology counts");
+    assert_eq!(
+        actual.surface_types, expected.surface_types,
+        "{label}: face surface types"
+    );
+    assert_bounds_equal(actual.bounds, expected.bounds, &format!("{label}: B-Rep"));
+    assert_close(actual.volume, expected.volume, &format!("{label}: volume"));
 }
 
 #[test]
@@ -782,6 +918,88 @@ fn generic_cylindrical_bounds_are_order_independent_and_round_trip_exactly() {
             &format!("generic cylinder {position:?} round trip"),
         );
     }
+}
+
+#[test]
+fn mambo_b12_period_winding_torus_imports_watertight_and_round_trips_exactly() {
+    // MAMBO B12, Apache-2.0, pinned by the open-kernel gauntlet manifest at
+    // a84ccd2860ac51df55a88463e2ab16d89bc309791538dadb2eb21a90dbec281f.
+    let step = include_str!("data/mambo_b12_period_winding_torus.step");
+    let (topo, solid) = import_one_manifold(step);
+    let actual = brep_snapshot(&topo, solid);
+    let tessellated = snapshot(&topo, solid);
+    assert!(
+        (tessellated.mesh_signed_volume - actual.volume).abs() / actual.volume < 0.005,
+        "quarter-torus tessellation volume {} differs from exact volume {}",
+        tessellated.mesh_signed_volume,
+        actual.volume,
+    );
+    assert_eq!(actual.counts.1, 3, "quarter torus must keep three faces");
+    assert_eq!(actual.surface_types.get("torus"), Some(&1));
+    assert_eq!(actual.surface_types.get("plane"), Some(&2));
+    assert_close(
+        actual.volume,
+        1.25 * std::f64::consts::PI.powi(2),
+        "quarter-torus volume oracle",
+    );
+
+    let reversed = reverse_first_surface_bounds(step, "TOROIDAL_SURFACE");
+    let (reversed_topo, reversed_solid) = import_one_manifold(&reversed);
+    assert_same_brep(
+        &brep_snapshot(&reversed_topo, reversed_solid),
+        &actual,
+        "MAMBO B12 reversed bound order",
+    );
+
+    let round_trip = write_step(&topo, &[solid]).expect("round-trip export");
+    let (round_topo, round_solid) = import_one_manifold(&round_trip);
+    assert_same_brep(
+        &brep_snapshot(&round_topo, round_solid),
+        &actual,
+        "MAMBO B12 round trip",
+    );
+}
+
+#[test]
+fn ambiguous_period_winding_band_is_typed_and_transactional() {
+    let step = include_str!("data/mambo_b12_period_winding_torus.step");
+    let malformed = duplicate_first_surface_bound(step, "TOROIDAL_SURFACE");
+
+    let mut topo = Topology::new();
+    let sentinel = make_box(&mut topo, 2.0, 3.0, 4.0).expect("sentinel");
+    let before_counts = (
+        topo.num_vertices(),
+        topo.num_edges(),
+        topo.num_wires(),
+        topo.num_faces(),
+        topo.num_shells(),
+        topo.num_solids(),
+    );
+    let error = read_step(&malformed, &mut topo).expect_err("ambiguous band must fail closed");
+    assert!(matches!(&error, remus_io::IoError::ParseError { .. }));
+    assert!(
+        error
+            .to_string()
+            .contains("the two circles must wind the same periodic axis in opposite directions"),
+        "unexpected diagnostic: {error}"
+    );
+    assert_eq!(
+        (
+            topo.num_vertices(),
+            topo.num_edges(),
+            topo.num_wires(),
+            topo.num_faces(),
+            topo.num_shells(),
+            topo.num_solids(),
+        ),
+        before_counts,
+        "rejected import must restore every live topology arena"
+    );
+    assert_close(
+        solid_volume(&topo, sentinel, DEFLECTION).expect("sentinel volume"),
+        24.0,
+        "rejected import sentinel volume",
+    );
 }
 
 #[test]
