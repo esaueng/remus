@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Enforce RFC 0002 edge-domain authority migration inventories.
 
-Identities are pinned to an immutable baseline. Approved reader and direct
-boundary-mutation identities may disappear, but unknown identities fail even
-when the total count is unchanged. Required trim-preservation identities are
-non-decreasing and fixed missing-writer paths add weighted requirements.
+Identities are pinned to an immutable baseline. Approved reader identities may
+disappear, while Issue 2.0d requires every production direct boundary-mutation
+identity to disappear; unknown identities fail even when the total count is
+unchanged. Required trim-preservation identities are non-decreasing and fixed
+missing-writer paths add weighted requirements.
 """
 
 from __future__ import annotations
@@ -111,6 +112,7 @@ FIXED_PATH_WRITER_IDENTITIES: dict[str, tuple[str, ...]] = {
 
 DOMAIN_PATTERN = re.compile(r"domain_with_endpoints\s*\(")
 BOUNDARY_PATTERN = re.compile(r"\.(?:wire_mut|inner_wires_mut|set_outer_wire)\s*\(")
+REQUIRED_BOUNDARY_APIS = ("replace_boundary_wire", "set_face_boundary_wires")
 PRESERVATION_PATTERN = re.compile(r"\.set_trim\s*\(")
 FUNCTION_PATTERN = re.compile(
     r"^\s*(?:pub(?:\s*\([^)]*\))?\s+)?(?:async\s+)?"
@@ -317,6 +319,12 @@ def validate_static_configuration() -> bool:
     if not DOMAIN_PATTERN.search("fn domain_with_endpoints\n("):
         fail("whitespace-tolerant domain scanner self-test failed")
         valid = False
+    topology_source = (CRATES / "topology/src/topology.rs").read_text(encoding="utf-8")
+    for method in REQUIRED_BOUNDARY_APIS:
+        definition = re.compile(rf"\bpub\s+fn\s+{method}\s*\(")
+        if len(definition.findall(topology_source)) != 1:
+            fail(f"sanctioned topology boundary API is missing or duplicated: {method}")
+            valid = False
     return valid
 
 
@@ -359,6 +367,12 @@ def main() -> int:
     if unknown_boundary:
         fail("unknown direct boundary-mutation identities:")
         for record in unknown_boundary:
+            print(f"  {record}", file=sys.stderr)
+        failed = True
+    boundary_production = boundary.get("production", [])
+    if boundary_production:
+        fail("production direct boundary mutations remain after Issue 2.0d:")
+        for record in boundary_production:
             print(f"  {record}", file=sys.stderr)
         failed = True
 
@@ -431,7 +445,6 @@ def main() -> int:
     definitions = domain.get("definition", [])
     fallbacks = domain.get("internal_fallback", [])
     test_readers = domain.get("test_example", [])
-    boundary_production = boundary.get("production", [])
     boundary_excluded = boundary.get("excluded_baseline", [])
     preservation_present = sum(
         hashed in current_preservation for hashed in required_preservation
@@ -461,6 +474,7 @@ def main() -> int:
     print(
         "boundary-mutation identities: "
         f"production={len(boundary_production)}/{BASELINE_BOUNDARY_MUTATIONS} "
+        "required=0 "
         f"excluded_baseline={len(boundary_excluded)} "
         f"unknown={len(unknown_boundary)}"
     )

@@ -233,7 +233,7 @@ pub fn merge_split_rim_arcs(
             edges.push(OrientedEdge::new(new_edge, rewrite.forward));
             edges.extend(rewrite.remaining);
             let replacement = Wire::new(edges, true)?;
-            *topo.wire_mut(rewrite.wire)? = replacement;
+            topo.replace_boundary_wire(rewrite.wire, replacement)?;
         }
         merged += 1;
     }

@@ -371,13 +371,17 @@ fn heal_by_capping(
         .to_vec();
 
     for (pos, slots) in &plan.drop_inner {
-        let face = topo.face_mut(copy_faces[*pos])?;
+        let face_id = copy_faces[*pos];
+        let face = topo.face(face_id)?;
+        let outer = face.outer_wire();
+        let mut inner = face.inner_wires().to_vec();
         let mut slot = 0usize;
-        face.inner_wires_mut().retain(|_| {
+        inner.retain(|_| {
             let keep = !slots.contains(&slot);
             slot += 1;
             keep
         });
+        topo.set_face_boundary_wires(face_id, outer, inner)?;
     }
 
     let kept: Vec<FaceId> = kept_positions.iter().map(|&p| copy_faces[p]).collect();
