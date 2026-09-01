@@ -81,9 +81,17 @@ invalidation without slot reissue, atomic typed deletion refusal, and
 complete unshared-tree retirement, with validation, closed-manifold census,
 and closed-form volume oracles checked after every mutation. Its committed
 corpus carries the checkpoint re-derivation seed that exposed a dangling
-loop-derivation map after restore. `arena_reader` and `wasm_batch`
-currently compile in PR CI but are not scheduled; native serialization,
-curve-intersection, and offset-specific fuzzing remain outstanding.
+loop-derivation map after restore. The `arena_roundtrip` target round-trips
+bounded box/cylinder documents — duplicate roots, shared-shell aliases,
+repeated/aliased compound members, hostile tolerances, attributes — through
+the native arena format, requiring per-position validation, census, and
+closed-form volumes, bit-exact tolerance/trim/attribute survival,
+byte-identical re-serialization, and typed, non-mutating refusal of
+corrupted references. Its byte-identity oracle pinned the serde_json
+`float_roundtrip` feature as load-bearing for exact f64 replay.
+`arena_reader` and `wasm_batch` currently compile in PR CI but are not
+scheduled; curve-intersection and offset-specific fuzzing remain
+outstanding.
 
 ## Corpus
 
