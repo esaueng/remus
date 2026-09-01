@@ -78,7 +78,7 @@ jobs:
       # Keep the staging package on the same reproducible build path that the
       # standalone project will use after it adopts its final package name.
       - name: Build, merge, validate, and smoke-test WASM package
-        run: cargo xtask wasm-build --skip-opt
+        run: cargo xtask wasm-build
 
       # Point consumers of the committed directory at this repo. Deliberately
       # stable fields only — stamping the commit SHA here would make the diff

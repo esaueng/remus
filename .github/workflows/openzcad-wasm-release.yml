@@ -24,7 +24,7 @@ jobs:
           tool: wasm-pack
 
       - name: Build and validate WASM package
-        run: cargo xtask wasm-build --skip-opt
+        run: cargo xtask wasm-build
 
       - name: Stamp fork provenance
         working-directory: crates/wasm/pkg
