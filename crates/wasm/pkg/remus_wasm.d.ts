@@ -1281,8 +1281,8 @@ export class BrepKernel {
      * Export a solid to STEP AP203 with optional header metadata.
      *
      * `options` is an optional JSON string with `productName`, `fileName`,
-     * and `timestamp` fields. Missing fields retain the defaults used by
-     * [`exportStep`](Self::export_step).
+     * `timestamp`, and `validationProperties` fields. Missing fields retain
+     * the defaults used by [`exportStep`](Self::export_step).
      *
      * # Errors
      *
@@ -2114,6 +2114,21 @@ export class BrepKernel {
      * limit.
      */
     importStepWithReport(data: Uint8Array, max_input_bytes?: number | null, max_entities?: number | null): any;
+    /**
+     * Import STEP and opt in to CAx-IF geometric validation-property checks.
+     *
+     * Returns JSON with `solids`, bounded-healing `diagnostics`, and one
+     * `validation` report per solid.
+     * Deviations are diagnostics and do not discard valid imported geometry;
+     * malformed declarations fail transactionally. `options` accepts the
+     * camelCase fields of [`remus_io::step::StepValidationOptions`].
+     *
+     * # Errors
+     *
+     * Returns an error for malformed UTF-8, STEP, option JSON, validation
+     * declarations, or hostile-input limit violations.
+     */
+    importStepWithValidation(data: Uint8Array, options?: string | null, max_input_bytes?: number | null, max_entities?: number | null): string;
     /**
      * Import an STL file (binary or ASCII) and return a solid handle.
      *

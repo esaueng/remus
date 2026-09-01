@@ -37,6 +37,7 @@ use remus_math::predicates::point_in_polygon;
 use remus_math::tolerance::Tolerance;
 use remus_math::vec::{Point2, Point3, Vec3};
 use remus_operations::heal::merge_split_rim_arcs;
+use remus_operations::measure::{mass_properties, solid_bounding_box, solid_surface_area};
 use remus_topology::Topology;
 use remus_topology::edge::{Edge, EdgeCurve};
 use remus_topology::face::{Face, FaceSurface};
@@ -124,6 +125,7 @@ impl remus_math::diagnostic::ToDiagnostic for StepImportDiagnostic {
 pub struct StepReadResult {
     solids: Vec<SolidId>,
     diagnostics: Vec<StepImportDiagnostic>,
+    validation: Vec<StepValidationReport>,
 }
 
 impl StepReadResult {
@@ -137,6 +139,12 @@ impl StepReadResult {
     #[must_use]
     pub fn diagnostics(&self) -> &[StepImportDiagnostic] {
         &self.diagnostics
+    }
+
+    /// Per-solid CAx-IF validation-property comparisons, when requested.
+    #[must_use]
+    pub fn validation(&self) -> &[StepValidationReport] {
+        &self.validation
     }
 
     /// Consumes the report and returns the imported solid handles.
@@ -192,6 +200,36 @@ pub fn read_step_with_limits_and_report(
     topo: &mut Topology,
     limits: ImportLimits,
 ) -> Result<StepReadResult, IoError> {
+    read_step_impl(input, topo, limits, None)
+}
+
+/// Read a STEP file and compare embedded CAx-IF validation properties with
+/// properties independently recomputed from the imported topology.
+///
+/// Deviations do not reject an otherwise valid model; they are returned as
+/// stable diagnostics. Malformed declarations or invalid comparison bounds
+/// are typed errors and leave `topo` unchanged.
+///
+/// # Errors
+///
+/// Returns [`IoError`] when a limit is exceeded, STEP data or a validation
+/// declaration is malformed, topology construction fails, or a comparison
+/// bound is invalid.
+pub fn read_step_with_validation(
+    input: &str,
+    topo: &mut Topology,
+    limits: ImportLimits,
+    options: StepValidationOptions,
+) -> Result<StepReadResult, IoError> {
+    read_step_impl(input, topo, limits, Some(options.validate()?))
+}
+
+fn read_step_impl(
+    input: &str,
+    topo: &mut Topology,
+    limits: ImportLimits,
+    validation_options: Option<StepValidationOptions>,
+) -> Result<StepReadResult, IoError> {
     ensure_input_size(input.len(), limits)?;
     let entities = parse_step_entities(input, limits)?;
     // Solid B-Reps are the only thing this reader builds, so they are also
@@ -203,24 +241,43 @@ pub fn read_step_with_limits_and_report(
         return Ok(StepReadResult {
             solids: Vec::new(),
             diagnostics: Vec::new(),
+            validation: Vec::new(),
         });
     };
+    let declarations = validation_options
+        .map(|_| parse_validation_properties(&entities, units))
+        .transpose()?;
     // Building a STEP model allocates topology incrementally. Keep the import
     // transactional so an error in a later solid cannot expose geometry from
     // an otherwise rejected file to the caller.
     let snapshot = topo.clone();
     let result: Result<StepReadResult, IoError> = (|| {
-        let (solids, diagnostics) = {
+        let (built, diagnostics) = {
             let mut builder = StepBuilder::new(topo, &entities, units)?;
             let solids = builder.build_all_solids()?;
             (solids, builder.diagnostics)
         };
-        for &solid_id in &solids {
+        for &(_, solid_id) in &built {
             merge_split_rim_arcs(topo, solid_id, Tolerance::new())?;
         }
+        let mut validation = Vec::new();
+        if let (Some(options), Some(declarations)) = (validation_options, declarations.as_ref()) {
+            validation.reserve(built.len());
+            for (solid_index, &(brep_entity, solid_id)) in built.iter().enumerate() {
+                validation.push(compare_validation_properties(
+                    topo,
+                    solid_id,
+                    solid_index,
+                    brep_entity,
+                    declarations.get(&brep_entity).copied(),
+                    options,
+                )?);
+            }
+        }
         Ok(StepReadResult {
-            solids,
+            solids: built.iter().map(|&(_, solid)| solid).collect(),
             diagnostics,
+            validation,
         })
     })();
     if result.is_err() {
@@ -425,6 +482,10 @@ enum UnitKind {
     Length,
     /// A `PLANE_ANGLE_UNIT`.
     PlaneAngle,
+    /// An `AREA_UNIT`.
+    Area,
+    /// A `VOLUME_UNIT`.
+    Volume,
     /// Anything else (solid angle, mass, …) — not used by geometry here.
     Other,
 }
@@ -490,6 +551,10 @@ fn unit_kind(text: &str) -> UnitKind {
         // SOLID_ANGLE_UNIT deliberately does not match: it does not contain
         // the "PLANE_" prefix.
         UnitKind::PlaneAngle
+    } else if text.contains("AREA_UNIT") {
+        UnitKind::Area
+    } else if text.contains("VOLUME_UNIT") {
+        UnitKind::Volume
     } else {
         UnitKind::Other
     }
@@ -530,6 +595,10 @@ fn si_prefix_factor(token: &str) -> Option<f64> {
 ///   alongside `LENGTH_UNIT()` / `NAMED_UNIT(*)`;
 /// - `CONVERSION_BASED_UNIT('INCH', #m)` where `#m` is a
 ///   `LENGTH_MEASURE_WITH_UNIT(LENGTH_MEASURE(25.4), #si)`.
+///
+/// Validation properties also use the CAx-IF area/volume form:
+/// `AREA_UNIT((#element))` / `VOLUME_UNIT((#element))`, where the
+/// `DERIVED_UNIT_ELEMENT` raises a length unit to exponent 2 or 3.
 fn unit_si_factor(
     entities: &HashMap<u64, StepEntity>,
     unit_ref: u64,
@@ -547,6 +616,62 @@ fn unit_si_factor(
         reason: format!("unit entity #{unit_ref} not found"),
     })?;
     let text = entity_text(entity);
+
+    let kind = unit_kind(&text);
+    let derived = match kind {
+        UnitKind::Area => Some(("AREA_UNIT", 2)),
+        UnitKind::Volume => Some(("VOLUME_UNIT", 3)),
+        UnitKind::Length | UnitKind::PlaneAngle | UnitKind::Other => None,
+    };
+    if let Some((marker, expected_exponent)) = derived
+        && let Some(group) = balanced_group_after(&text, marker)
+        && !group.trim().is_empty()
+    {
+        let elements = exact_reference_list(group).map_err(|reason| IoError::ParseError {
+            reason: format!("{marker} #{unit_ref} has invalid elements: {reason}"),
+        })?;
+        let [element_ref] = elements.as_slice() else {
+            return Err(IoError::ParseError {
+                reason: format!(
+                    "{marker} #{unit_ref} must contain exactly one derived unit element"
+                ),
+            });
+        };
+        let element = entities
+            .get(element_ref)
+            .ok_or_else(|| IoError::ParseError {
+                reason: format!("derived unit element #{element_ref} not found"),
+            })?;
+        if element.entity_type != "DERIVED_UNIT_ELEMENT" {
+            return Err(IoError::ParseError {
+                reason: format!(
+                    "{marker} #{unit_ref} references #{element_ref}, which is not a DERIVED_UNIT_ELEMENT"
+                ),
+            });
+        }
+        let slots = split_attr_slots(&element.attrs);
+        let base_ref =
+            required_reference_attribute("DERIVED_UNIT_ELEMENT", *element_ref, &slots, 0, "unit")?;
+        let exponent =
+            required_real_attribute("DERIVED_UNIT_ELEMENT", *element_ref, &slots, 1, "exponent")?;
+        if (exponent - f64::from(expected_exponent)).abs() > f64::EPSILON {
+            return Err(IoError::ParseError {
+                reason: format!(
+                    "{marker} #{unit_ref} requires exponent {expected_exponent}, got {exponent}"
+                ),
+            });
+        }
+        let base = entities.get(&base_ref).ok_or_else(|| IoError::ParseError {
+            reason: format!("derived base unit #{base_ref} not found"),
+        })?;
+        if unit_kind(&entity_text(base)) != UnitKind::Length {
+            return Err(IoError::ParseError {
+                reason: format!("{marker} #{unit_ref} derives from non-length unit #{base_ref}"),
+            });
+        }
+        let (base_factor, base_name) = unit_si_factor(entities, base_ref, depth + 1)?;
+        return Ok((base_factor.powi(expected_exponent), base_name));
+    }
 
     if let Some(group) = balanced_group_after(&text, "CONVERSION_BASED_UNIT") {
         // CONVERSION_BASED_UNIT(<name>, #measure)
@@ -587,7 +712,7 @@ fn unit_si_factor(
         let mut parts = group.split(',');
         let prefix = parts.next().unwrap_or("").trim();
         let name = parts.next().unwrap_or("").trim();
-        let factor = si_prefix_factor(prefix).ok_or_else(|| IoError::ParseError {
+        let prefix_factor = si_prefix_factor(prefix).ok_or_else(|| IoError::ParseError {
             reason: format!("SI_UNIT #{unit_ref} has unrecognised prefix `{prefix}`"),
         })?;
         if name.is_empty() {
@@ -595,6 +720,11 @@ fn unit_si_factor(
                 reason: format!("SI_UNIT #{unit_ref} has no unit name"),
             });
         }
+        let factor = match unit_kind(&text) {
+            UnitKind::Area => prefix_factor.powi(2),
+            UnitKind::Volume => prefix_factor.powi(3),
+            UnitKind::Length | UnitKind::PlaneAngle | UnitKind::Other => prefix_factor,
+        };
         return Ok((factor, name.to_string()));
     }
 
@@ -661,7 +791,7 @@ fn resolve_unit_scale(
                 reason: format!("unit entity #{unit_ref} not found"),
             })?;
             let kind = unit_kind(&entity_text(unit_entity));
-            if kind == UnitKind::Other {
+            if matches!(kind, UnitKind::Area | UnitKind::Volume | UnitKind::Other) {
                 continue;
             }
             let (factor, base) = unit_si_factor(entities, unit_ref, 0)?;
@@ -669,7 +799,9 @@ fn resolve_unit_scale(
                 // SI base for length is the metre; remus works in mm.
                 UnitKind::Length => (".METRE.", factor * 1e3, &mut length, "length"),
                 UnitKind::PlaneAngle => (".RADIAN.", factor, &mut angle, "plane angle"),
-                UnitKind::Other => unreachable!("filtered above"),
+                UnitKind::Area | UnitKind::Volume | UnitKind::Other => {
+                    unreachable!("filtered above")
+                }
             };
             if base != expected_base {
                 return Err(IoError::ParseError {
@@ -730,6 +862,523 @@ fn resolve_unit_scale(
 /// Compare two unit conversion factors for practical equality.
 fn approx_same_factor(a: f64, b: f64) -> bool {
     (a - b).abs() <= 1e-12 * a.abs().max(b.abs()).max(1.0)
+}
+
+fn invalid_validation(code: &'static str, reason: impl Into<String>) -> IoError {
+    IoError::InvalidValidationProperties {
+        code,
+        reason: reason.into(),
+    }
+}
+
+/// Resolve every geometry-level CAx-IF validation-property declaration to the
+/// B-Rep it characterizes. Part-level declarations are intentionally left to
+/// future assembly import; a solid must have its own geometry assignment to
+/// count as declared for this per-solid checker.
+fn parse_validation_properties(
+    entities: &HashMap<u64, StepEntity>,
+    units: UnitScale,
+) -> Result<HashMap<u64, StepValidationProperties>, IoError> {
+    let mut assignment_ids: Vec<u64> = entities
+        .iter()
+        .filter(|(_, entity)| entity.entity_type == "PROPERTY_DEFINITION")
+        .filter_map(|(&id, entity)| {
+            let slots = split_attr_slots(&entity.attrs);
+            matches!(
+                slots.get(1),
+                Some(AttrSlot::Text(description))
+                    if description == "Shape for Validation Properties"
+            )
+            .then_some(id)
+        })
+        .collect();
+    assignment_ids.sort_unstable();
+
+    let mut shape_aspect_to_brep = HashMap::new();
+    for assignment_id in assignment_ids {
+        let assignment = entities.get(&assignment_id).ok_or_else(|| {
+            invalid_validation(
+                "step_validation_broken_assignment",
+                format!("PROPERTY_DEFINITION #{assignment_id} disappeared"),
+            )
+        })?;
+        let assignment_slots = split_attr_slots(&assignment.attrs);
+        let shape_aspect = required_validation_reference(
+            assignment_id,
+            &assignment_slots,
+            2,
+            "characterized_definition",
+        )?;
+        if entities
+            .get(&shape_aspect)
+            .is_none_or(|entity| entity.entity_type != "SHAPE_ASPECT")
+        {
+            return Err(invalid_validation(
+                "step_validation_broken_assignment",
+                format!(
+                    "validation geometry assignment #{assignment_id} targets non-SHAPE_ASPECT #{shape_aspect}"
+                ),
+            ));
+        }
+        let representation = unique_validation_link(
+            entities,
+            "SHAPE_DEFINITION_REPRESENTATION",
+            assignment_id,
+            "step_validation_broken_assignment",
+        )?;
+        let representation_entity = entities.get(&representation).ok_or_else(|| {
+            invalid_validation(
+                "step_validation_broken_assignment",
+                format!("validation SHAPE_REPRESENTATION #{representation} not found"),
+            )
+        })?;
+        if representation_entity.entity_type != "SHAPE_REPRESENTATION" {
+            return Err(invalid_validation(
+                "step_validation_broken_assignment",
+                format!(
+                    "validation assignment #{assignment_id} uses non-SHAPE_REPRESENTATION #{representation}"
+                ),
+            ));
+        }
+        let representation_slots = split_attr_slots(&representation_entity.attrs);
+        let item_refs =
+            required_validation_reference_list(representation, &representation_slots, 1, "items")?;
+        let breps: Vec<u64> = item_refs
+            .into_iter()
+            .filter(|item| entities.get(item).is_some_and(is_solid_brep))
+            .collect();
+        let [brep] = breps.as_slice() else {
+            return Err(invalid_validation(
+                "step_validation_ambiguous_geometry",
+                format!(
+                    "validation SHAPE_REPRESENTATION #{representation} must identify exactly one solid B-Rep, found {}",
+                    breps.len()
+                ),
+            ));
+        };
+        if let Some(previous) = shape_aspect_to_brep.insert(shape_aspect, *brep)
+            && previous != *brep
+        {
+            return Err(invalid_validation(
+                "step_validation_ambiguous_geometry",
+                format!(
+                    "SHAPE_ASPECT #{shape_aspect} identifies both B-Rep #{previous} and #{brep}"
+                ),
+            ));
+        }
+    }
+
+    let mut property_ids: Vec<u64> = entities
+        .iter()
+        .filter(|(_, entity)| entity.entity_type == "PROPERTY_DEFINITION")
+        .filter_map(|(&id, entity)| {
+            let slots = split_attr_slots(&entity.attrs);
+            matches!(
+                slots.first(),
+                Some(AttrSlot::Text(name))
+                    if name.eq_ignore_ascii_case("geometric validation property")
+            )
+            .then_some(id)
+        })
+        .collect();
+    property_ids.sort_unstable();
+
+    let mut partial_declarations: HashMap<u64, PartialValidationProperties> = HashMap::new();
+    for property_id in property_ids {
+        let property = entities.get(&property_id).ok_or_else(|| {
+            invalid_validation(
+                "step_validation_broken_property_chain",
+                format!("PROPERTY_DEFINITION #{property_id} disappeared"),
+            )
+        })?;
+        let property_slots = split_attr_slots(&property.attrs);
+        let target = required_validation_reference(
+            property_id,
+            &property_slots,
+            2,
+            "characterized_definition",
+        )?;
+        let Some(&brep) = shape_aspect_to_brep.get(&target) else {
+            // Product-level properties characterize PRODUCT_DEFINITION_SHAPE;
+            // they are valid but cannot be assigned to one imported solid.
+            continue;
+        };
+        let representation = unique_validation_link(
+            entities,
+            "PROPERTY_DEFINITION_REPRESENTATION",
+            property_id,
+            "step_validation_broken_property_chain",
+        )?;
+        let declaration = parse_validation_representation(entities, representation, units)?;
+        if !declaration.is_empty() {
+            partial_declarations
+                .entry(brep)
+                .or_default()
+                .merge(declaration, brep)?;
+        }
+    }
+    let mut declarations = HashMap::new();
+    for (brep, partial) in partial_declarations {
+        declarations.insert(brep, partial.complete(brep)?);
+    }
+    Ok(declarations)
+}
+
+#[derive(Default)]
+struct PartialValidationProperties {
+    volume: Option<f64>,
+    surface_area: Option<f64>,
+    centroid: Option<[f64; 3]>,
+}
+
+impl PartialValidationProperties {
+    const fn is_empty(&self) -> bool {
+        self.volume.is_none() && self.surface_area.is_none() && self.centroid.is_none()
+    }
+
+    fn merge(&mut self, other: Self, brep: u64) -> Result<(), IoError> {
+        merge_validation_slot(&mut self.volume, other.volume, brep, "volume")?;
+        merge_validation_slot(
+            &mut self.surface_area,
+            other.surface_area,
+            brep,
+            "surface area",
+        )?;
+        merge_validation_slot(&mut self.centroid, other.centroid, brep, "centroid")
+    }
+
+    fn complete(self, brep: u64) -> Result<StepValidationProperties, IoError> {
+        Ok(StepValidationProperties {
+            volume: self.volume.ok_or_else(|| {
+                invalid_validation(
+                    "step_validation_incomplete_declaration",
+                    format!("B-Rep #{brep} has no volume validation property"),
+                )
+            })?,
+            surface_area: self.surface_area.ok_or_else(|| {
+                invalid_validation(
+                    "step_validation_incomplete_declaration",
+                    format!("B-Rep #{brep} has no surface-area validation property"),
+                )
+            })?,
+            centroid: self.centroid.ok_or_else(|| {
+                invalid_validation(
+                    "step_validation_incomplete_declaration",
+                    format!("B-Rep #{brep} has no centroid validation property"),
+                )
+            })?,
+        })
+    }
+}
+
+fn merge_validation_slot<T>(
+    destination: &mut Option<T>,
+    source: Option<T>,
+    brep: u64,
+    label: &str,
+) -> Result<(), IoError> {
+    let Some(value) = source else {
+        return Ok(());
+    };
+    if destination.replace(value).is_some() {
+        return Err(invalid_validation(
+            "step_validation_duplicate_value",
+            format!("B-Rep #{brep} has more than one {label} validation property"),
+        ));
+    }
+    Ok(())
+}
+
+fn unique_validation_link(
+    entities: &HashMap<u64, StepEntity>,
+    link_type: &str,
+    definition: u64,
+    code: &'static str,
+) -> Result<u64, IoError> {
+    let mut links: Vec<(u64, u64)> = entities
+        .iter()
+        .filter(|(_, entity)| entity.entity_type == link_type)
+        .filter_map(|(&id, entity)| {
+            let slots = split_attr_slots(&entity.attrs);
+            (slots.first().and_then(AttrSlot::as_ref_id) == Some(definition))
+                .then(|| {
+                    slots
+                        .get(1)
+                        .and_then(AttrSlot::as_ref_id)
+                        .map(|target| (id, target))
+                })
+                .flatten()
+        })
+        .collect();
+    links.sort_unstable();
+    let [(_, target)] = links.as_slice() else {
+        return Err(invalid_validation(
+            code,
+            format!(
+                "{link_type} for definition #{definition} must occur exactly once, found {}",
+                links.len()
+            ),
+        ));
+    };
+    Ok(*target)
+}
+
+fn parse_validation_representation(
+    entities: &HashMap<u64, StepEntity>,
+    representation: u64,
+    units: UnitScale,
+) -> Result<PartialValidationProperties, IoError> {
+    let entity = entities.get(&representation).ok_or_else(|| {
+        invalid_validation(
+            "step_validation_broken_property_chain",
+            format!("validation REPRESENTATION #{representation} not found"),
+        )
+    })?;
+    if entity.entity_type != "REPRESENTATION" {
+        return Err(invalid_validation(
+            "step_validation_broken_property_chain",
+            format!("validation value #{representation} is not a REPRESENTATION"),
+        ));
+    }
+    let slots = split_attr_slots(&entity.attrs);
+    let item_refs = required_validation_reference_list(representation, &slots, 1, "items")?;
+    let mut volume = None;
+    let mut surface_area = None;
+    let mut centroid = None;
+
+    for item_ref in item_refs {
+        let item = entities.get(&item_ref).ok_or_else(|| {
+            invalid_validation(
+                "step_validation_broken_property_chain",
+                format!("validation item #{item_ref} not found"),
+            )
+        })?;
+        let item_slots = split_attr_slots(&item.attrs);
+        match item.entity_type.as_str() {
+            "MEASURE_REPRESENTATION_ITEM" => {
+                let name = match item_slots.first() {
+                    Some(AttrSlot::Text(name)) => name.as_str(),
+                    other => {
+                        return Err(invalid_validation(
+                            "step_validation_invalid_measure",
+                            format!(
+                                "MEASURE_REPRESENTATION_ITEM #{item_ref} needs a text name, got {}",
+                                describe_slot(other)
+                            ),
+                        ));
+                    }
+                };
+                let unit_ref = required_validation_reference(item_ref, &item_slots, 2, "unit")?;
+                match name {
+                    "volume measure" => {
+                        ensure_validation_measure_type(item_ref, &item_slots, "VOLUME_MEASURE")?;
+                        let raw = required_typed_measure_attribute(
+                            "MEASURE_REPRESENTATION_ITEM",
+                            item_ref,
+                            &item_slots,
+                            1,
+                            "value_component",
+                        )
+                        .map_err(|error| {
+                            invalid_validation("step_validation_invalid_measure", error.to_string())
+                        })?;
+                        let value =
+                            raw * validation_unit_scale(entities, unit_ref, UnitKind::Volume)?;
+                        set_validation_value(&mut volume, value, item_ref, "volume")?;
+                    }
+                    "surface area measure" => {
+                        ensure_validation_measure_type(item_ref, &item_slots, "AREA_MEASURE")?;
+                        let raw = required_typed_measure_attribute(
+                            "MEASURE_REPRESENTATION_ITEM",
+                            item_ref,
+                            &item_slots,
+                            1,
+                            "value_component",
+                        )
+                        .map_err(|error| {
+                            invalid_validation("step_validation_invalid_measure", error.to_string())
+                        })?;
+                        let value =
+                            raw * validation_unit_scale(entities, unit_ref, UnitKind::Area)?;
+                        set_validation_value(&mut surface_area, value, item_ref, "surface area")?;
+                    }
+                    _ => {}
+                }
+            }
+            "CARTESIAN_POINT" => {
+                if !matches!(item_slots.first(), Some(AttrSlot::Text(name)) if name == "centre point" || name == "center point")
+                {
+                    continue;
+                }
+                let coordinates = exact_real_attribute_list(
+                    "CARTESIAN_POINT",
+                    item_ref,
+                    &item_slots,
+                    1,
+                    "coordinates",
+                )
+                .map_err(|error| {
+                    invalid_validation("step_validation_invalid_centroid", error.to_string())
+                })?;
+                let [x, y, z] = coordinates.as_slice() else {
+                    return Err(invalid_validation(
+                        "step_validation_invalid_centroid",
+                        format!("centroid CARTESIAN_POINT #{item_ref} must have three coordinates"),
+                    ));
+                };
+                if centroid
+                    .replace([x * units.length, y * units.length, z * units.length])
+                    .is_some()
+                {
+                    return Err(invalid_validation(
+                        "step_validation_duplicate_value",
+                        format!("validation REPRESENTATION #{representation} repeats centroid"),
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if volume.is_some_and(|value| !value.is_finite() || value <= 0.0) {
+        return Err(invalid_validation(
+            "step_validation_invalid_measure",
+            format!("declared volume must be finite and positive, got {volume:?}"),
+        ));
+    }
+    if surface_area.is_some_and(|value| !value.is_finite() || value <= 0.0) {
+        return Err(invalid_validation(
+            "step_validation_invalid_measure",
+            format!("declared surface area must be finite and positive, got {surface_area:?}"),
+        ));
+    }
+    Ok(PartialValidationProperties {
+        volume,
+        surface_area,
+        centroid,
+    })
+}
+
+fn required_validation_reference(
+    entity_ref: u64,
+    slots: &[AttrSlot<'_>],
+    index: usize,
+    label: &str,
+) -> Result<u64, IoError> {
+    slots
+        .get(index)
+        .and_then(AttrSlot::as_ref_id)
+        .ok_or_else(|| {
+            invalid_validation(
+                "step_validation_broken_property_chain",
+                format!(
+                    "validation entity #{entity_ref} needs a reference for {label}, got {}",
+                    describe_slot(slots.get(index))
+                ),
+            )
+        })
+}
+
+fn required_validation_reference_list(
+    entity_ref: u64,
+    slots: &[AttrSlot<'_>],
+    index: usize,
+    label: &str,
+) -> Result<Vec<u64>, IoError> {
+    let Some(AttrSlot::List(list)) = slots.get(index) else {
+        return Err(invalid_validation(
+            "step_validation_broken_property_chain",
+            format!(
+                "validation entity #{entity_ref} needs a reference list for {label}, got {}",
+                describe_slot(slots.get(index))
+            ),
+        ));
+    };
+    exact_reference_list(list).map_err(|reason| {
+        invalid_validation(
+            "step_validation_broken_property_chain",
+            format!("validation entity #{entity_ref} has invalid {label}: {reason}"),
+        )
+    })
+}
+
+fn ensure_validation_measure_type(
+    item_ref: u64,
+    slots: &[AttrSlot<'_>],
+    expected: &str,
+) -> Result<(), IoError> {
+    let Some(AttrSlot::Other(raw)) = slots.get(1) else {
+        return Err(invalid_validation(
+            "step_validation_invalid_measure",
+            format!("validation measure #{item_ref} has no typed value"),
+        ));
+    };
+    if !raw
+        .trim_start()
+        .get(..expected.len())
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(expected))
+    {
+        return Err(invalid_validation(
+            "step_validation_invalid_measure",
+            format!("validation measure #{item_ref} must use {expected}"),
+        ));
+    }
+    Ok(())
+}
+
+fn validation_unit_scale(
+    entities: &HashMap<u64, StepEntity>,
+    unit_ref: u64,
+    expected: UnitKind,
+) -> Result<f64, IoError> {
+    let entity = entities.get(&unit_ref).ok_or_else(|| {
+        invalid_validation(
+            "step_validation_invalid_unit",
+            format!("validation unit #{unit_ref} not found"),
+        )
+    })?;
+    let actual = unit_kind(&entity_text(entity));
+    if actual != expected {
+        return Err(invalid_validation(
+            "step_validation_invalid_unit",
+            format!("validation unit #{unit_ref} has kind {actual:?}, expected {expected:?}"),
+        ));
+    }
+    let (factor, base) = unit_si_factor(entities, unit_ref, 0)
+        .map_err(|error| invalid_validation("step_validation_invalid_unit", error.to_string()))?;
+    if base != ".METRE." {
+        return Err(invalid_validation(
+            "step_validation_invalid_unit",
+            format!("validation unit #{unit_ref} resolves to {base}, expected .METRE."),
+        ));
+    }
+    let scale = match expected {
+        UnitKind::Area => factor * 1e6,
+        UnitKind::Volume => factor * 1e9,
+        UnitKind::Length | UnitKind::PlaneAngle | UnitKind::Other => unreachable!(),
+    };
+    if !scale.is_finite() || scale <= 0.0 {
+        return Err(invalid_validation(
+            "step_validation_invalid_unit",
+            format!("validation unit #{unit_ref} has invalid scale {scale}"),
+        ));
+    }
+    Ok(scale)
+}
+
+fn set_validation_value(
+    slot: &mut Option<f64>,
+    value: f64,
+    item_ref: u64,
+    label: &str,
+) -> Result<(), IoError> {
+    if slot.replace(value).is_some() {
+        return Err(invalid_validation(
+            "step_validation_duplicate_value",
+            format!("validation item #{item_ref} repeats {label}"),
+        ));
+    }
+    Ok(())
 }
 
 // ── Building ────────────────────────────────────────────────────────
@@ -916,7 +1565,7 @@ impl<'a> StepBuilder<'a> {
         })
     }
 
-    fn build_all_solids(&mut self) -> Result<Vec<SolidId>, IoError> {
+    fn build_all_solids(&mut self) -> Result<Vec<(u64, SolidId)>, IoError> {
         let mut brep_ids: Vec<u64> = self
             .entities
             .iter()
@@ -944,7 +1593,7 @@ impl<'a> StepBuilder<'a> {
             self.vertex_cache.clear();
             self.edge_cache.clear();
             let solid_id = self.build_solid(brep_id)?;
-            solid_ids.push(solid_id);
+            solid_ids.push((brep_id, solid_id));
         }
         Ok(solid_ids)
     }
@@ -12371,5 +13020,349 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
         let weights = extract_rational_curve_weights(attrs, 3, 1).unwrap();
         assert_eq!(weights.len(), 3);
         assert!((weights[1] - 0.707).abs() < 1e-10);
+    }
+}
+
+// CAx-IF geometric validation-property values and comparison contracts.
+
+/// Surface-area deflection used for STEP validation-property declarations.
+///
+/// Analytic faces are evaluated analytically by `remus-operations`; this only
+/// bounds the established tessellation fallback for unsupported trimmed NURBS
+/// area integrals.
+pub const VALIDATION_SURFACE_AREA_DEFLECTION: f64 = 1e-4;
+
+/// Bounds used by the opt-in STEP validation-property checker.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct StepValidationOptions {
+    /// Maximum relative volume deviation.
+    #[serde(rename = "volumeRelativeTolerance")]
+    pub volume_relative: f64,
+    /// Maximum relative surface-area deviation.
+    #[serde(rename = "surfaceAreaRelativeTolerance")]
+    pub surface_area_relative: f64,
+    /// Minimum absolute centroid tolerance, in millimetres.
+    #[serde(rename = "centroidAbsoluteTolerance")]
+    pub centroid_absolute: f64,
+    /// Scale-relative centroid tolerance, multiplied by the solid AABB diagonal.
+    #[serde(rename = "centroidRelativeTolerance")]
+    pub centroid_relative: f64,
+}
+
+impl Default for StepValidationOptions {
+    fn default() -> Self {
+        Self {
+            volume_relative: 0.005,
+            surface_area_relative: 0.005,
+            centroid_absolute: 0.02,
+            centroid_relative: 0.001,
+        }
+    }
+}
+
+impl StepValidationOptions {
+    pub(crate) fn validate(self) -> Result<Self, IoError> {
+        for (name, value) in [
+            ("volumeRelativeTolerance", self.volume_relative),
+            ("surfaceAreaRelativeTolerance", self.surface_area_relative),
+            ("centroidAbsoluteTolerance", self.centroid_absolute),
+            ("centroidRelativeTolerance", self.centroid_relative),
+        ] {
+            if !value.is_finite() || value < 0.0 {
+                return Err(IoError::InvalidValidationProperties {
+                    code: "step_validation_invalid_options",
+                    reason: format!("{name} must be finite and non-negative, got {value}"),
+                });
+            }
+        }
+        Ok(self)
+    }
+}
+
+/// The three CAx-IF validation properties applicable to solid geometry.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StepValidationProperties {
+    /// Enclosed volume in cubic millimetres.
+    pub volume: f64,
+    /// Boundary area, including void surfaces, in square millimetres.
+    pub surface_area: f64,
+    /// Volume centroid in millimetres.
+    pub centroid: [f64; 3],
+}
+
+/// Stable property discriminator used in validation diagnostics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StepValidationProperty {
+    /// Enclosed volume.
+    Volume,
+    /// Boundary surface area.
+    SurfaceArea,
+    /// Volume centroid.
+    Centroid,
+}
+
+/// Stable diagnostic code returned by the opt-in checker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StepValidationDiagnosticCode {
+    /// The solid has no complete geometric validation-property declaration.
+    #[serde(rename = "step_validation_properties_missing")]
+    PropertiesMissing,
+    /// Declared and recomputed volume differ beyond the requested bound.
+    #[serde(rename = "step_validation_volume_deviation")]
+    VolumeDeviation,
+    /// Declared and recomputed surface area differ beyond the requested bound.
+    #[serde(rename = "step_validation_surface_area_deviation")]
+    SurfaceAreaDeviation,
+    /// Declared and recomputed centroids differ beyond the requested bound.
+    #[serde(rename = "step_validation_centroid_deviation")]
+    CentroidDeviation,
+}
+
+impl StepValidationDiagnosticCode {
+    /// Kernel failure category carried on the wire.
+    #[must_use]
+    pub const fn category(self) -> &'static str {
+        match self {
+            Self::PropertiesMissing => "unsupported",
+            Self::VolumeDeviation | Self::SurfaceAreaDeviation | Self::CentroidDeviation => {
+                "tolerance_violation"
+            }
+        }
+    }
+}
+
+/// One machine-readable STEP validation-property finding.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StepValidationDiagnostic {
+    /// Stable diagnostic code.
+    pub code: StepValidationDiagnosticCode,
+    /// Kernel-wide failure category.
+    pub category: &'static str,
+    /// Property involved, absent for a missing declaration as a whole.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub property: Option<StepValidationProperty>,
+    /// Human-readable context; not a stable wire contract.
+    pub message: String,
+    /// Declared scalar value, or centroid-distance origin, when applicable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub declared: Option<f64>,
+    /// Recomputed scalar value, when applicable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recomputed: Option<f64>,
+    /// Absolute scalar or Euclidean centroid deviation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub absolute_deviation: Option<f64>,
+    /// Absolute deviation permitted by the configured bound.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allowed_deviation: Option<f64>,
+}
+
+/// Comparison report for one imported solid.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StepValidationReport {
+    /// Position in the returned solid list.
+    pub solid_index: usize,
+    /// STEP entity carrying the `MANIFOLD_SOLID_BREP` / `BREP_WITH_VOIDS`.
+    pub step_brep_entity: u64,
+    /// Embedded values, absent when the file made no complete declaration.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub declared: Option<StepValidationProperties>,
+    /// Values independently recomputed from the imported topology.
+    pub recomputed: StepValidationProperties,
+    /// Empty when all declared values are within bounds.
+    pub diagnostics: Vec<StepValidationDiagnostic>,
+}
+
+pub(crate) fn compute_validation_properties(
+    topo: &Topology,
+    solid: SolidId,
+) -> Result<StepValidationProperties, IoError> {
+    let mass = mass_properties(topo, solid)?;
+    let surface_area = solid_surface_area(topo, solid, VALIDATION_SURFACE_AREA_DEFLECTION)?;
+    let values = StepValidationProperties {
+        volume: mass.mass.abs(),
+        surface_area,
+        centroid: [mass.center.x(), mass.center.y(), mass.center.z()],
+    };
+    validate_computed_properties(values)?;
+    Ok(values)
+}
+
+pub(crate) fn aggregate_validation_properties(
+    values: &[StepValidationProperties],
+) -> Result<StepValidationProperties, IoError> {
+    let volume = values.iter().map(|value| value.volume).sum::<f64>();
+    let surface_area = values.iter().map(|value| value.surface_area).sum::<f64>();
+    if !volume.is_finite() || volume <= 0.0 {
+        return Err(IoError::InvalidTopology {
+            reason: format!("STEP validation-property aggregate has invalid volume {volume}"),
+        });
+    }
+    let mut weighted = [0.0; 3];
+    for value in values {
+        for (axis, coordinate) in weighted.iter_mut().zip(value.centroid) {
+            *axis += value.volume * coordinate;
+        }
+    }
+    let aggregate = StepValidationProperties {
+        volume,
+        surface_area,
+        centroid: weighted.map(|coordinate| coordinate / volume),
+    };
+    validate_computed_properties(aggregate)?;
+    Ok(aggregate)
+}
+
+fn validate_computed_properties(values: StepValidationProperties) -> Result<(), IoError> {
+    if !values.volume.is_finite() || values.volume <= 0.0 {
+        return Err(IoError::InvalidTopology {
+            reason: format!(
+                "cannot declare STEP validation properties for non-positive volume {}",
+                values.volume
+            ),
+        });
+    }
+    if !values.surface_area.is_finite() || values.surface_area <= 0.0 {
+        return Err(IoError::InvalidTopology {
+            reason: format!(
+                "cannot declare STEP validation properties for non-positive surface area {}",
+                values.surface_area
+            ),
+        });
+    }
+    if values
+        .centroid
+        .iter()
+        .any(|coordinate| !coordinate.is_finite())
+    {
+        return Err(IoError::InvalidTopology {
+            reason: "cannot declare STEP validation properties with a non-finite centroid"
+                .to_string(),
+        });
+    }
+    Ok(())
+}
+
+pub(crate) fn compare_validation_properties(
+    topo: &Topology,
+    solid: SolidId,
+    solid_index: usize,
+    brep_entity: u64,
+    declared: Option<StepValidationProperties>,
+    options: StepValidationOptions,
+) -> Result<StepValidationReport, IoError> {
+    let recomputed = compute_validation_properties(topo, solid)?;
+    let mut diagnostics = Vec::new();
+    let Some(declared_values) = declared else {
+        let code = StepValidationDiagnosticCode::PropertiesMissing;
+        diagnostics.push(StepValidationDiagnostic {
+            code,
+            category: code.category(),
+            property: None,
+            message: format!(
+                "solid {solid_index} (STEP B-Rep #{brep_entity}) has no complete geometric validation-property declaration"
+            ),
+            declared: None,
+            recomputed: None,
+            absolute_deviation: None,
+            allowed_deviation: None,
+        });
+        return Ok(StepValidationReport {
+            solid_index,
+            step_brep_entity: brep_entity,
+            declared: None,
+            recomputed,
+            diagnostics,
+        });
+    };
+
+    compare_scalar(
+        StepValidationProperty::Volume,
+        StepValidationDiagnosticCode::VolumeDeviation,
+        declared_values.volume,
+        recomputed.volume,
+        options.volume_relative,
+        &mut diagnostics,
+    );
+    compare_scalar(
+        StepValidationProperty::SurfaceArea,
+        StepValidationDiagnosticCode::SurfaceAreaDeviation,
+        declared_values.surface_area,
+        recomputed.surface_area,
+        options.surface_area_relative,
+        &mut diagnostics,
+    );
+
+    let declared_center = Point3::new(
+        declared_values.centroid[0],
+        declared_values.centroid[1],
+        declared_values.centroid[2],
+    );
+    let recomputed_center = Point3::new(
+        recomputed.centroid[0],
+        recomputed.centroid[1],
+        recomputed.centroid[2],
+    );
+    let distance = (declared_center - recomputed_center).length();
+    let bounds = solid_bounding_box(topo, solid)?;
+    let diagonal = (bounds.max - bounds.min).length();
+    let allowed = options
+        .centroid_absolute
+        .max(options.centroid_relative * diagonal);
+    if distance > allowed {
+        let code = StepValidationDiagnosticCode::CentroidDeviation;
+        diagnostics.push(StepValidationDiagnostic {
+            code,
+            category: code.category(),
+            property: Some(StepValidationProperty::Centroid),
+            message: format!(
+                "declared and recomputed STEP centroids differ by {distance}, exceeding {allowed} mm"
+            ),
+            declared: None,
+            recomputed: None,
+            absolute_deviation: Some(distance),
+            allowed_deviation: Some(allowed),
+        });
+    }
+
+    Ok(StepValidationReport {
+        solid_index,
+        step_brep_entity: brep_entity,
+        declared: Some(declared_values),
+        recomputed,
+        diagnostics,
+    })
+}
+
+fn compare_scalar(
+    property: StepValidationProperty,
+    code: StepValidationDiagnosticCode,
+    declared: f64,
+    recomputed: f64,
+    relative_tolerance: f64,
+    diagnostics: &mut Vec<StepValidationDiagnostic>,
+) {
+    let absolute_deviation = (declared - recomputed).abs();
+    let scale = declared.abs().max(recomputed.abs()).max(f64::MIN_POSITIVE);
+    let allowed_deviation = relative_tolerance * scale;
+    if absolute_deviation > allowed_deviation {
+        diagnostics.push(StepValidationDiagnostic {
+            code,
+            category: code.category(),
+            property: Some(property),
+            message: format!(
+                "declared {property:?} {declared} differs from recomputed {recomputed} by {absolute_deviation}, exceeding {allowed_deviation}"
+            ),
+            declared: Some(declared),
+            recomputed: Some(recomputed),
+            absolute_deviation: Some(absolute_deviation),
+            allowed_deviation: Some(allowed_deviation),
+        });
     }
 }

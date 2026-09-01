@@ -486,7 +486,107 @@ for (const operation of ['fillet', 'chamfer']) {
   console.log('ok - periodic STEP band import, round trip, and typed refusal');
 }
 
-// 14. The real Shapr3D hammer-holder contract from the connected-blend work.
+// 14. CAx-IF STEP validation properties through direct and batch bindings.
+{
+  const sourceKernel = new BrepKernel();
+  const sourceSolid = sourceKernel.makeBox(2, 3, 4);
+  const stepBytes = sourceKernel.exportStepWithOptions(
+    sourceSolid,
+    JSON.stringify({ validationProperties: true }),
+  );
+  const step = Buffer.from(stepBytes).toString('utf8');
+  assert.match(
+    step,
+    /CAx-IF Rec\.Pracs\.---Geometric and Assembly Validation Properties---4\.6---2023-04-21/,
+  );
+
+  const directKernel = new BrepKernel();
+  const direct = JSON.parse(
+    directKernel.importStepWithValidation(stepBytes, undefined, undefined, undefined),
+  );
+  assert.equal(direct.solids.length, 1);
+  assert.equal(direct.diagnostics.length, 0);
+  assert.equal(direct.validation.length, 1);
+  assert.equal(direct.validation[0].diagnostics.length, 0);
+  assert.ok(Math.abs(direct.validation[0].declared.volume - 24) < 1e-9);
+  assert.ok(Math.abs(direct.validation[0].recomputed.surfaceArea - 52) < 1e-9);
+
+  const volumeMarker = "'volume measure', VOLUME_MEASURE(";
+  const firstVolume = step.indexOf(volumeMarker);
+  const geometryVolume = step.indexOf(volumeMarker, firstVolume + volumeMarker.length);
+  assert.ok(geometryVolume >= 0, 'geometry-level volume property');
+  const volumeStart = geometryVolume + volumeMarker.length;
+  const volumeEnd = step.indexOf(')', volumeStart);
+  const deviating = `${step.slice(0, volumeStart)}2.4144E1${step.slice(volumeEnd)}`;
+  const deviation = JSON.parse(
+    new BrepKernel().importStepWithValidation(
+      Buffer.from(deviating),
+      undefined,
+      undefined,
+      undefined,
+    ),
+  );
+  assert.equal(
+    deviation.validation[0].diagnostics[0].code,
+    'step_validation_volume_deviation',
+  );
+  assert.equal(deviation.validation[0].diagnostics[0].category, 'tolerance_violation');
+
+  const areaMarker = "'surface area measure', AREA_MEASURE(";
+  const firstArea = step.indexOf(areaMarker);
+  const geometryArea = step.indexOf(areaMarker, firstArea + areaMarker.length);
+  assert.ok(geometryArea >= 0, 'geometry-level area property');
+  const malformed = `${step.slice(0, geometryArea)}'surface area measure', VOLUME_MEASURE(${step.slice(geometryArea + areaMarker.length)}`;
+  const refusalKernel = new BrepKernel();
+  const sentinel = refusalKernel.makeBox(1, 2, 3);
+  assert.throws(
+    () =>
+      refusalKernel.importStepWithValidation(
+        Buffer.from(malformed),
+        undefined,
+        undefined,
+        undefined,
+      ),
+    /step_validation_invalid_measure/,
+  );
+  assert.ok(Math.abs(refusalKernel.volume(sentinel, 0.01) - 6) < 1e-9);
+
+  const exportBatch = JSON.parse(
+    new BrepKernel().executeBatchV2(
+      JSON.stringify([
+        { op: 'makeBox', args: { width: 2, height: 3, depth: 4 } },
+        {
+          op: 'exportStep',
+          args: { solid: 0, options: { validationProperties: true } },
+        },
+      ]),
+    ),
+  );
+  assert.match(exportBatch[1].ok, /geometric validation property/);
+  const importBatch = JSON.parse(
+    new BrepKernel().executeBatchV2(
+      JSON.stringify([{ op: 'importStepWithValidation', args: { data: exportBatch[1].ok } }]),
+    ),
+  );
+  assert.equal(importBatch[0].ok.validation[0].diagnostics.length, 0);
+  assert.equal(importBatch[0].ok.diagnostics.length, 0);
+
+  const refusalBatch = JSON.parse(
+    new BrepKernel().executeBatchV2(
+      JSON.stringify([
+        { op: 'makeBox', args: { width: 1, height: 2, depth: 3 } },
+        { op: 'importStepWithValidation', args: { data: malformed } },
+        { op: 'volume', args: { solid: 0, deflection: 0.01 } },
+      ]),
+    ),
+  );
+  assert.equal(refusalBatch[1].error.code, 'invalid_argument');
+  assert.equal(refusalBatch[1].error.details.kernelCode, 'step_validation_invalid_measure');
+  assert.ok(Math.abs(refusalBatch[2].ok - 6) < 1e-9);
+  console.log('ok - CAx-IF STEP validation properties: direct, batch, diagnostics, rollback');
+}
+
+// 15. The real Shapr3D hammer-holder contract from the connected-blend work.
 // Its radius-3 regions border imported NURBS support geometry, so a nontrivial
 // resize is an exact refusal today. The public direct/batch query must agree,
 // and the refusal must not silently damage the imported body.
