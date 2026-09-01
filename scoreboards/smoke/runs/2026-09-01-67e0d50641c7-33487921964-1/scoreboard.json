@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "models": 50,
+  "passed": 29,
+  "failed": 21,
+  "stages": {
+    "boolean": {
+      "passed": 31,
+      "failed": 19
+    },
+    "read": {
+      "passed": 40,
+      "failed": 10
+    },
+    "round_trip": {
+      "passed": 29,
+      "failed": 21
+    },
+    "tessellate": {
+      "passed": 29,
+      "failed": 21
+    },
+    "validate": {
+      "passed": 38,
+      "failed": 12
+    }
+  },
+  "failure_categories": {
+    "invalid_input": 13,
+    "invalid_topology": 6,
+    "tolerance_violation": 2
+  },
+  "boolean_exact": 10,
+  "boolean_approximate": 21
+}
