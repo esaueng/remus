@@ -10,6 +10,8 @@
 
 ### Bug Fixes
 
+* Optimize the distributed browser binary and fail package validation above
+  the 8 MiB consumer budget.
 * Keep exact-only refusals in the `quality_refused` category with stable
   `details.kernelCode = "exact_only_unattainable"`.
 * `meshQuality` now reports `triangleCount`, returns `isWatertight: false` for
