@@ -15,7 +15,7 @@ that flips them; agents do not flip them autonomously.
 | O1.1a Gauntlet pipeline skeleton | A | Complete — isolated bounded workers run import, validation, disclosed probe boolean, manifold tessellation, and property-checked STEP round-trip; JSONL and aggregate JSON/Markdown outputs use stable taxonomy codes | [#164](https://github.com/esaueng/remus/pull/164) |
 | O1.1b Corpus manifests + fetcher | A | Complete — pinned 50-model smoke, 1,000-of-10,000 ABC, and 113-model MAMBO manifests; archive/member SHA-256 verification, content-addressed caching, deterministic sampling, and typed source refusals; no corpus bytes committed | [#166](https://github.com/esaueng/remus/pull/166) |
 | O1.1c Gauntlet CI wiring | A | Complete — nightly smoke and weekly abc-1k schedules publish reproducible aggregate scoreboards and append-only per-stage trends; a 0.50pp drop fails while still publishing the red aggregate | [#171](https://github.com/esaueng/remus/pull/171) |
-| O1.1d Triage loop (recurring) | A | Pending | — |
+| O1.1d Triage loop (recurring) | A | Partial — 1/5 required classes closed: generic period-winding `FACE_BOUND` bands now reconstruct exact analytic seams or refuse transactionally; pinned smoke manifest `779fcc7f…` at `a36bddac` moved `invalid_input` 14→10 and full passes 26/50→29/50 | This PR |
 | O1.2a Head-to-head protocol + runners | B | Pending | — |
 | O1.2b Head-to-head scenario set | B | Pending | — |
 | O1.2c Head-to-head results page | B | Pending | — |
