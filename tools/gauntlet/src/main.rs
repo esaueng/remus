@@ -11,13 +11,14 @@ use std::time::Duration;
 use remus_gauntlet::manifest::{
     ArchiveManifestConfig, FetchConfig, fetch_manifest, generate_archive_manifest, write_manifest,
 };
+use remus_gauntlet::trend::{build_trend_row, enforce_ratchet, load_latest_trend, write_trend_row};
 use remus_gauntlet::{
-    GauntletError, PipelineConfig, RunConfig, arg_is, process_model, run_models_isolated,
-    write_outputs,
+    GauntletError, PipelineConfig, RunConfig, Scoreboard, arg_is, process_model,
+    run_models_isolated, write_outputs,
 };
 use remus_io::ImportLimits;
 
-const USAGE: &str = "Usage:\n  remus-gauntlet run [--output DIR] [--timeout-ms N] [--deflection D] [--max-input-bytes N] [--max-model-entities N] MODEL.step...\n  remus-gauntlet fetch MANIFEST.json --cache DIR [--sample N --seed S] [--source-file URL PATH]... [--output-list PATH]\n  remus-gauntlet manifest-archive --archive PATH --output PATH --name NAME --url URL --license-class CLASS --id-prefix PREFIX --sample N --seed S\n\nThe run command writes models.jsonl, scoreboard.json, and scoreboard.md. Fetch verifies every byte into a content-addressed cache.\n";
+const USAGE: &str = "Usage:\n  remus-gauntlet run [--output DIR] [--timeout-ms N] [--jobs N] [--deflection D] [--max-input-bytes N] [--max-model-entities N] MODEL.step...\n  remus-gauntlet fetch MANIFEST.json --cache DIR [--sample N --seed S] [--source-file URL PATH]... [--output-list PATH]\n  remus-gauntlet manifest-archive --archive PATH --output PATH --name NAME --url URL --license-class CLASS --id-prefix PREFIX --sample N --seed S\n  remus-gauntlet trend --scoreboard PATH --history PATH --output-row PATH --tier NAME --date YYYY-MM-DD --sha HEX --manifest-sha256 HEX --max-drop-bps N\n\nThe run command writes models.jsonl, scoreboard.json, and scoreboard.md. Fetch verifies every byte into a content-addressed cache. Trend writes the current row before enforcing the declared per-stage ratchet.\n";
 
 fn main() -> ExitCode {
     match run() {
@@ -43,6 +44,8 @@ fn run() -> Result<(), GauntletError> {
         run_fetch(&rest)
     } else if arg_is(&command, "manifest-archive") {
         run_manifest_archive(&rest)
+    } else if arg_is(&command, "trend") {
+        run_trend(&rest)
     } else if arg_is(&command, "worker") {
         run_worker(&rest)
     } else if arg_is(&command, "--help") || arg_is(&command, "-h") {
@@ -218,6 +221,7 @@ fn run_parent(args: &[OsString]) -> Result<(), GauntletError> {
         RunConfig {
             pipeline: parsed.pipeline,
             model_timeout: parsed.timeout,
+            max_parallel_models: parsed.jobs,
         },
     );
     write_outputs(&parsed.output, &results)
@@ -242,6 +246,7 @@ fn run_worker(args: &[OsString]) -> Result<(), GauntletError> {
 struct ParsedArgs {
     output: PathBuf,
     timeout: Duration,
+    jobs: usize,
     pipeline: PipelineConfig,
     models: Vec<PathBuf>,
 }
@@ -249,6 +254,7 @@ struct ParsedArgs {
 fn parse_args(args: &[OsString], allow_parent_flags: bool) -> Result<ParsedArgs, GauntletError> {
     let mut output = PathBuf::from("gauntlet-results");
     let mut timeout_ms = 60_000_u64;
+    let mut jobs = 1_usize;
     let mut deflection = remus_gauntlet::DEFAULT_DEFLECTION;
     let mut limits = ImportLimits::default();
     let mut models = Vec::new();
@@ -271,6 +277,11 @@ fn parse_args(args: &[OsString], allow_parent_flags: bool) -> Result<ParsedArgs,
                 ));
             }
             timeout_ms = parse_u64(next_value(args, &mut index, "--timeout-ms")?, "timeout")?;
+        } else if arg_is(argument, "--jobs") {
+            if !allow_parent_flags {
+                return Err(GauntletError::message("worker does not accept --jobs"));
+            }
+            jobs = parse_usize(next_value(args, &mut index, "--jobs")?, "jobs")?;
         } else if arg_is(argument, "--deflection") {
             deflection = parse_f64(next_value(args, &mut index, "--deflection")?, "deflection")?;
         } else if arg_is(argument, "--max-input-bytes") {
@@ -298,15 +309,92 @@ fn parse_args(args: &[OsString], allow_parent_flags: bool) -> Result<ParsedArgs,
             "deflection must be finite and positive",
         ));
     }
+    if jobs == 0 {
+        return Err(GauntletError::message("jobs must be at least 1"));
+    }
     Ok(ParsedArgs {
         output,
         timeout: Duration::from_millis(timeout_ms),
+        jobs,
         pipeline: PipelineConfig {
             import_limits: limits,
             deflection,
         },
         models,
     })
+}
+
+#[allow(clippy::too_many_lines)]
+fn run_trend(args: &[OsString]) -> Result<(), GauntletError> {
+    let mut scoreboard = None;
+    let mut history = None;
+    let mut output_row = None;
+    let mut tier = None;
+    let mut date = None;
+    let mut sha = None;
+    let mut manifest_sha256 = None;
+    let mut max_drop_bps = None;
+    let mut index = 0;
+    while index < args.len() {
+        let argument = &args[index];
+        if arg_is(argument, "--scoreboard") {
+            scoreboard = Some(PathBuf::from(next_value(args, &mut index, "--scoreboard")?));
+        } else if arg_is(argument, "--history") {
+            history = Some(PathBuf::from(next_value(args, &mut index, "--history")?));
+        } else if arg_is(argument, "--output-row") {
+            output_row = Some(PathBuf::from(next_value(args, &mut index, "--output-row")?));
+        } else if arg_is(argument, "--tier") {
+            tier = Some(parse_utf8(next_value(args, &mut index, "--tier")?, "tier")?.to_owned());
+        } else if arg_is(argument, "--date") {
+            date = Some(parse_utf8(next_value(args, &mut index, "--date")?, "date")?.to_owned());
+        } else if arg_is(argument, "--sha") {
+            sha = Some(parse_utf8(next_value(args, &mut index, "--sha")?, "SHA")?.to_owned());
+        } else if arg_is(argument, "--manifest-sha256") {
+            manifest_sha256 = Some(
+                parse_utf8(
+                    next_value(args, &mut index, "--manifest-sha256")?,
+                    "manifest SHA-256",
+                )?
+                .to_owned(),
+            );
+        } else if arg_is(argument, "--max-drop-bps") {
+            max_drop_bps = Some(
+                u32::try_from(parse_u64(
+                    next_value(args, &mut index, "--max-drop-bps")?,
+                    "maximum drop basis points",
+                )?)
+                .map_err(|_| GauntletError::message("maximum drop basis points is too large"))?,
+            );
+        } else {
+            return Err(GauntletError::message(format!(
+                "unknown trend option {}",
+                argument.to_string_lossy()
+            )));
+        }
+        index += 1;
+    }
+
+    let scoreboard_path =
+        scoreboard.ok_or_else(|| GauntletError::message("missing --scoreboard"))?;
+    let history = history.ok_or_else(|| GauntletError::message("missing --history"))?;
+    let output_row = output_row.ok_or_else(|| GauntletError::message("missing --output-row"))?;
+    let tier = tier.ok_or_else(|| GauntletError::message("missing --tier"))?;
+    let date = date.ok_or_else(|| GauntletError::message("missing --date"))?;
+    let sha = sha.ok_or_else(|| GauntletError::message("missing --sha"))?;
+    let manifest_sha256 =
+        manifest_sha256.ok_or_else(|| GauntletError::message("missing --manifest-sha256"))?;
+    let max_drop_bps =
+        max_drop_bps.ok_or_else(|| GauntletError::message("missing --max-drop-bps"))?;
+    let bytes =
+        fs::read(scoreboard_path).map_err(|error| GauntletError::message(error.to_string()))?;
+    let scoreboard: Scoreboard = serde_json::from_slice(&bytes)
+        .map_err(|error| GauntletError::message(error.to_string()))?;
+    let row = build_trend_row(&scoreboard, &tier, &date, &sha, &manifest_sha256)?;
+    write_trend_row(&output_row, &row)?;
+    if let Some(previous) = load_latest_trend(&history, &tier)? {
+        enforce_ratchet(&previous, &row, max_drop_bps)?;
+    }
+    Ok(())
 }
 
 fn next_value<'a>(
