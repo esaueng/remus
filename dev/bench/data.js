@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788300411755,
+  "lastUpdate": 1788300603636,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -6155,6 +6155,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 42312141,
             "range": "± 97149",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "555efde1723c71bba81256b244dbb5b7891c9627",
+          "message": "feat(topology): make coedges authoritative (#179)\n\n* feat(topology): make coedges authoritative\n\n* docs(kernel): link coedge authority PR\n\n* fix(operations): refuse divergent copy authority\n\n---------\n\nCo-authored-by: Codex Review <codex-review@localhost>",
+          "timestamp": "2026-09-01T18:02:41-04:00",
+          "tree_id": "1aef3473129cec5d3f3f0b5250a2d642160db323",
+          "url": "https://github.com/esaueng/remus/commit/555efde1723c71bba81256b244dbb5b7891c9627"
+        },
+        "date": 1788300602202,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1471888,
+            "range": "± 25769",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1571947,
+            "range": "± 1511",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 27761,
+            "range": "± 32",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 1087756,
+            "range": "± 1409",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 45523123,
+            "range": "± 568669",
             "unit": "ns/iter"
           }
         ]
