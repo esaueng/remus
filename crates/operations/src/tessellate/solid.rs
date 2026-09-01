@@ -284,7 +284,8 @@ fn tessellate_solid_core(
                 FaceSurface::Cone(cone) => {
                     let v_range =
                         compute_v_param_range(topo, face_data, |p| cone.project_point(p).1);
-                    let u_range = compute_angular_range(topo, face_data, |p| cone.project_point(p));
+                    let u_range =
+                        compute_angular_range(topo, face_data, |p| cone.project_point(p))?;
                     let max_radius = cone.radius_at(v_range.1.abs().max(v_range.0.abs()));
                     segments_for_chord_deviation_a(
                         max_radius.max(0.01),
@@ -295,7 +296,7 @@ fn tessellate_solid_core(
                     )
                 }
                 FaceSurface::Cylinder(cyl) => {
-                    let u_range = compute_angular_range(topo, face_data, |p| cyl.project_point(p));
+                    let u_range = compute_angular_range(topo, face_data, |p| cyl.project_point(p))?;
                     segments_for_chord_deviation_a(
                         cyl.radius(),
                         u_range.1 - u_range.0,
@@ -327,7 +328,7 @@ fn tessellate_solid_core(
                     if let Some(pts) = edge_points.get(&edge_idx)
                         && pts.len() < expected_count
                     {
-                        let (t_start, t_end) = circle_param_range(topo, edge_data, circle)?;
+                        let (t_start, t_end) = circle_param_range(edge_data)?;
                         let mut new_pts = remus_geometry::sampling::sample_uniform(
                             circle,
                             t_start,
@@ -503,7 +504,8 @@ fn tessellate_solid_core(
             let start_pos = start_vtx.point();
             let end_pos = end_vtx.point();
 
-            let (t_min, t_max) = edge_data.domain_with_endpoints(start_pos, end_pos);
+            let (t_min, t_max) =
+                crate::authoritative_edge_domain(edge_data, "solid edge refinement")?;
             let is_closed = edge_data.start() == edge_data.end();
 
             let existing_gids_vec: Vec<u32> = edge_global_indices

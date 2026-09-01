@@ -62,8 +62,82 @@ fn planar_tessellation_rejects_excessive_circle_trim_sampling() {
         .set_trim(Some((0.0, 1.0e12)));
 
     let error = tessellate(&topo, face, 0.01).unwrap_err();
-    assert!(error.to_string().contains("edge sampling needs"));
-    assert!(error.to_string().contains("limit is 16384"));
+    assert!(error.to_string().contains("authoritative edge domain"));
+    assert!(error.to_string().contains("invalid"));
+}
+
+#[test]
+fn curved_sampling_uses_exact_wrapped_and_reversed_authority() {
+    use remus_math::curves::{Circle3D, Ellipse3D};
+
+    let mut topo = Topology::new();
+    let circle = Circle3D::new(Point3::new(2.0, -1.0, 3.0), Vec3::new(0.0, 0.0, 1.0), 4.0).unwrap();
+    let circle_range = (5.5, 5.5 + 1.5 * std::f64::consts::PI);
+    let c0 = topo.add_vertex(Vertex::new(circle.evaluate(circle_range.0), 1e-7));
+    let c1 = topo.add_vertex(Vertex::new(circle.evaluate(circle_range.1), 1e-7));
+    let mut circle_edge = Edge::new(c0, c1, EdgeCurve::Circle(circle.clone()));
+    circle_edge.set_trim(Some(circle_range));
+    let circle_edge = topo.add_edge(circle_edge);
+
+    assert_eq!(
+        edge_param_span(&topo, topo.edge(circle_edge).unwrap()).unwrap(),
+        circle_range
+    );
+    let circle_points =
+        super::edge_sampling::sample_edge(&topo, topo.edge(circle_edge).unwrap(), 0.01, 0.0, false)
+            .unwrap();
+    let circle_mid = circle.evaluate(f64::midpoint(circle_range.0, circle_range.1));
+    assert!(
+        circle_points
+            .iter()
+            .any(|point| (*point - circle_mid).length() < 0.1),
+        "wrapped major-arc sampling omitted its authoritative midpoint"
+    );
+
+    let ellipse = Ellipse3D::new(
+        Point3::new(-3.0, 4.0, 1.0),
+        Vec3::new(0.0, 1.0, 0.0),
+        5.0,
+        2.0,
+    )
+    .unwrap();
+    let ellipse_range = (4.0, 1.0);
+    let e0 = topo.add_vertex(Vertex::new(ellipse.evaluate(ellipse_range.0), 1e-7));
+    let e1 = topo.add_vertex(Vertex::new(ellipse.evaluate(ellipse_range.1), 1e-7));
+    let mut ellipse_edge = Edge::new(e0, e1, EdgeCurve::Ellipse(ellipse.clone()));
+    ellipse_edge.set_trim(Some(ellipse_range));
+    let ellipse_edge = topo.add_edge(ellipse_edge);
+    assert_eq!(
+        edge_param_span(&topo, topo.edge(ellipse_edge).unwrap()).unwrap(),
+        ellipse_range
+    );
+    let ellipse_points = super::edge_sampling::sample_edge(
+        &topo,
+        topo.edge(ellipse_edge).unwrap(),
+        0.01,
+        0.0,
+        false,
+    )
+    .unwrap();
+    let ellipse_mid = ellipse.evaluate(f64::midpoint(ellipse_range.0, ellipse_range.1));
+    assert!(
+        ellipse_points
+            .iter()
+            .any(|point| (*point - ellipse_mid).length() < 0.1),
+        "reversed ellipse sampling omitted its authoritative midpoint"
+    );
+
+    let missing_start = topo.add_vertex(Vertex::new(circle.evaluate(0.0), 1e-7));
+    let missing_end = topo.add_vertex(Vertex::new(circle.evaluate(0.5), 1e-7));
+    let missing = topo.add_edge(Edge::new(
+        missing_start,
+        missing_end,
+        EdgeCurve::Circle(circle),
+    ));
+    let error =
+        super::edge_sampling::sample_edge(&topo, topo.edge(missing).unwrap(), 0.01, 0.0, false)
+            .unwrap_err();
+    assert!(error.to_string().contains("authoritative edge domain"));
 }
 
 #[test]
@@ -2625,7 +2699,9 @@ fn a_closed_conic_edge_samples_from_its_own_seam_vertex() {
         };
         let mut topo = Topology::new();
         let vid = topo.add_vertex(Vertex::new(seam, 1e-7));
-        let eid = topo.add_edge(Edge::new(vid, vid, curve));
+        let mut edge = Edge::new(vid, vid, curve);
+        edge.set_trim(Some((quarter, quarter + std::f64::consts::TAU)));
+        let eid = topo.add_edge(edge);
         let edge = topo.edge(eid).unwrap();
 
         let pts = super::edge_sampling::sample_edge(&topo, edge, 0.01, 0.0, false).unwrap();
@@ -2679,7 +2755,9 @@ fn a_full_turn_analytic_range_is_anchored_on_the_rims_seam_vertex() {
         let circle = Circle3D::new(c, axis, radius).unwrap();
         let seam = cyl.evaluate(FRAC_PI_2, z);
         let v = topo.add_vertex(Vertex::new(seam, 1e-7));
-        let e = topo.add_edge(Edge::new(v, v, EdgeCurve::Circle(circle)));
+        let mut edge = Edge::new(v, v, EdgeCurve::Circle(circle));
+        edge.set_trim(Some((FRAC_PI_2, FRAC_PI_2 + TAU)));
+        let e = topo.add_edge(edge);
         (v, e)
     };
     let (v_lo, e_lo) = rim(0.0);
@@ -2704,7 +2782,8 @@ fn a_full_turn_analytic_range_is_anchored_on_the_rims_seam_vertex() {
     ));
     let face_data = topo.face(face).unwrap();
 
-    let (u0, u1) = super::nurbs::compute_angular_range(&topo, face_data, |p| cyl.project_point(p));
+    let (u0, u1) =
+        super::nurbs::compute_angular_range(&topo, face_data, |p| cyl.project_point(p)).unwrap();
 
     assert!(
         (u1 - u0 - TAU).abs() < 1e-12,
@@ -2749,11 +2828,15 @@ fn split_circle_rims_bound_the_torus_snap_range() {
         vertices.push(seam);
         let arcs = (0..parts)
             .map(|part| {
-                let edge = topo.add_edge(Edge::new(
+                let mut edge = Edge::new(
                     vertices[part],
                     vertices[part + 1],
                     EdgeCurve::Circle(circle.clone()),
-                ));
+                );
+                let t0 = seam_parameter + TAU * part as f64 / parts as f64;
+                let t1 = seam_parameter + TAU * (part + 1) as f64 / parts as f64;
+                edge.set_trim(Some((t0, t1)));
+                let edge = topo.add_edge(edge);
                 OrientedEdge::new(edge, true)
             })
             .collect();
@@ -2784,7 +2867,8 @@ fn split_circle_rims_bound_the_torus_snap_range() {
         FaceSurface::Torus(torus.clone()),
     ));
 
-    let (got0, got1) = super::nurbs::compute_torus_v_range(&topo, topo.face(face).unwrap(), &torus);
+    let (got0, got1) =
+        super::nurbs::compute_torus_v_range(&topo, topo.face(face).unwrap(), &torus).unwrap();
     assert!((got0 - v0).abs() < 1e-12, "lower v = {got0}");
     assert!((got1 - v1).abs() < 1e-12, "upper v = {got1}");
 
@@ -2798,7 +2882,8 @@ fn split_circle_rims_bound_the_torus_snap_range() {
         return;
     };
     assert_eq!(
-        super::nurbs::compute_torus_v_range(&topo, topo.face(whole_face).unwrap(), whole_surface),
+        super::nurbs::compute_torus_v_range(&topo, topo.face(whole_face).unwrap(), whole_surface)
+            .unwrap(),
         (0.0, TAU)
     );
 }
@@ -2820,8 +2905,12 @@ fn non_winding_circle_groups_do_not_bound_the_torus_snap_range() {
             Circle3D::new(center, Vec3::new(0.0, 0.0, 1.0), major + minor * v.cos()).unwrap();
         let start = topo.add_vertex(Vertex::new(circle.evaluate(0.0), 1e-7));
         let end = topo.add_vertex(Vertex::new(circle.evaluate(FRAC_PI_2), 1e-7));
-        let first = topo.add_edge(Edge::new(start, end, EdgeCurve::Circle(circle.clone())));
-        let second = topo.add_edge(Edge::new(start, end, EdgeCurve::Circle(circle)));
+        let mut first_edge = Edge::new(start, end, EdgeCurve::Circle(circle.clone()));
+        first_edge.set_trim(Some((0.0, FRAC_PI_2)));
+        let first = topo.add_edge(first_edge);
+        let mut second_edge = Edge::new(start, end, EdgeCurve::Circle(circle));
+        second_edge.set_trim(Some((0.0, FRAC_PI_2)));
+        let second = topo.add_edge(second_edge);
         (
             start,
             vec![
@@ -2856,7 +2945,7 @@ fn non_winding_circle_groups_do_not_bound_the_torus_snap_range() {
     ));
 
     assert_eq!(
-        super::nurbs::compute_torus_v_range(&topo, topo.face(face).unwrap(), &torus),
+        super::nurbs::compute_torus_v_range(&topo, topo.face(face).unwrap(), &torus).unwrap(),
         (0.0, TAU)
     );
 }
@@ -2885,11 +2974,15 @@ fn split_rim_anchor_is_independent_of_neighbor_wire_orientation() {
     vertices.push(first);
     let arcs: Vec<_> = (0..3)
         .map(|part| {
-            topo.add_edge(Edge::new(
+            let mut edge = Edge::new(
                 vertices[part],
                 vertices[part + 1],
                 EdgeCurve::Circle(circle.clone()),
-            ))
+            );
+            let t0 = FRAC_PI_2 + TAU * part as f64 / 3.0;
+            let t1 = FRAC_PI_2 + TAU * (part + 1) as f64 / 3.0;
+            edge.set_trim(Some((t0, t1)));
+            topo.add_edge(edge)
         })
         .collect();
     let forward = topo.add_wire(
@@ -2927,8 +3020,8 @@ fn split_rim_anchor_is_independent_of_neighbor_wire_orientation() {
             cylinder.project_point(point)
         })
     };
-    let (a0, a1) = range(face_a);
-    let (b0, b1) = range(face_b);
+    let (a0, a1) = range(face_a).unwrap();
+    let (b0, b1) = range(face_b).unwrap();
     assert!((a1 - a0 - TAU).abs() < 1e-12);
     assert!((b1 - b0 - TAU).abs() < 1e-12);
     let expected = cylinder
