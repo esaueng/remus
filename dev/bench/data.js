@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788222499775,
+  "lastUpdate": 1788229440744,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -5831,6 +5831,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 42197622,
             "range": "± 73576",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "570d67f81d24c237ea3ddef7bed042ea97673993",
+          "message": "test(fuzz): qualify native arena serialization round-trips (K-S4) (#173)\n\n* fix(io): round-trip arbitrary f64 tolerances bit-exactly\n\nEnable serde_json's float_roundtrip feature workspace-wide: the default\nfloat path rounds the last bit on parse for roughly one in five\narbitrary doubles, so arena documents could not replay vertex/edge\ntolerances or trim parameters exactly and chained serialize ->\ndeserialize -> serialize cycles drifted. Adds a regression test over six\nmeasured lossy values plus a deterministic tolerance sweep, asserting\nbit-exact tolerance survival and byte-identical re-serialization through\nthe arena format.\n\n* test(fuzz): qualify native arena serialization round-trips\n\nAdd the K-S4 native-serialization fuzz slice: a bounded, byte-driven\ncampaign that builds boxes and cylinders with known census and\nclosed-form volumes, duplicate roots, shared-shell aliases,\nrepeated/aliased compound members, precision-hostile tolerances, and\npublic attributes, then round-trips them through the arena document\nformat.\n\nOracles: per-position validation, closed-manifold census, and\nclosed-form volumes; bit-exact tolerance/trim/attribute survival;\nduplicate-root and member-alias identity preservation; byte-identical\nserialize -> deserialize -> serialize; and typed, non-mutating,\nleak-free refusal of corrupted root/member/wire/version references\nagainst a pre-populated destination topology.\n\nRegistered in fuzz/Cargo.toml and the scheduled Fuzz Smoke workflow\nwith a fourteen-entry named seed corpus. The byte-identity oracle rides\non the parent commit's float_roundtrip fix; the campaign also caught a\nharness-scope error (attributes on an uncaptured member legitimately\nabsent from the document), pinned by a named seed.\n\n* docs(roadmap): record the K-S4 native-serialization disposition (PR #173)\n\n* style(io): reformat the tolerance regression per rustfmt",
+          "timestamp": "2026-08-31T22:21:11-04:00",
+          "tree_id": "f0de2a7dbdb87294da5121f6c4f97e04d99250ca",
+          "url": "https://github.com/esaueng/remus/commit/570d67f81d24c237ea3ddef7bed042ea97673993"
+        },
+        "date": 1788229440047,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1323762,
+            "range": "± 1289",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1409299,
+            "range": "± 3747",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 15207,
+            "range": "± 9",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 987411,
+            "range": "± 1725",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 39649546,
+            "range": "± 91867",
             "unit": "ns/iter"
           }
         ]
