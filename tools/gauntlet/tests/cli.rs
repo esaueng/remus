@@ -8,7 +8,7 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use remus_gauntlet::manifest::{CorpusManifest, MANIFEST_SCHEMA, ModelEntry, write_manifest};
-use remus_gauntlet::{ModelResult, Scoreboard};
+use remus_gauntlet::{ModelResult, SCHEMA_VERSION, Scoreboard, StageSummary};
 use remus_operations::primitives::make_box;
 use remus_topology::Topology;
 use sha2::{Digest, Sha256};
@@ -47,7 +47,7 @@ fn run_isolates_models_and_writes_all_outputs() {
     fs::write(&bad, "not STEP").unwrap();
 
     let status = Command::new(env!("CARGO_BIN_EXE_remus-gauntlet"))
-        .args(["run", "--output"])
+        .args(["run", "--jobs", "2", "--output"])
         .arg(&output)
         .arg(&good)
         .arg(&bad)
@@ -61,6 +61,8 @@ fn run_isolates_models_and_writes_all_outputs() {
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
     assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].model, good.to_string_lossy());
+    assert_eq!(rows[1].model, bad.to_string_lossy());
     assert!(rows[0].passed, "{:#?}", rows[0]);
     assert!(!rows[1].passed);
 
@@ -71,6 +73,104 @@ fn run_isolates_models_and_writes_all_outputs() {
     assert_eq!(scoreboard.failed, 1);
     assert!(output.join("scoreboard.md").is_file());
 
+    fs::remove_dir_all(&root).unwrap();
+}
+
+fn scoreboard(passed: usize, models: usize) -> Scoreboard {
+    let mut stages = std::collections::BTreeMap::new();
+    for name in ["read", "validate", "boolean", "tessellate", "round_trip"] {
+        stages.insert(
+            name.to_owned(),
+            StageSummary {
+                passed,
+                failed: models - passed,
+            },
+        );
+    }
+    Scoreboard {
+        schema_version: SCHEMA_VERSION,
+        models,
+        passed,
+        failed: models - passed,
+        stages,
+        failure_categories: std::collections::BTreeMap::new(),
+        boolean_exact: passed,
+        boolean_approximate: 0,
+    }
+}
+
+#[test]
+fn trend_command_writes_first_run_and_refuses_regression() {
+    let root = temp_dir("trend");
+    fs::create_dir_all(&root).unwrap();
+    let scoreboard_path = root.join("scoreboard.json");
+    let history = root.join("history.jsonl");
+    let output_row = root.join("trend-row.json");
+    let sha = "0123456789abcdef0123456789abcdef01234567";
+    let manifest_sha = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    fs::write(
+        &scoreboard_path,
+        serde_json::to_vec(&scoreboard(50, 50)).unwrap(),
+    )
+    .unwrap();
+
+    let first = Command::new(env!("CARGO_BIN_EXE_remus-gauntlet"))
+        .args(["trend", "--scoreboard"])
+        .arg(&scoreboard_path)
+        .args(["--history"])
+        .arg(&history)
+        .args(["--output-row"])
+        .arg(&output_row)
+        .args([
+            "--tier",
+            "smoke",
+            "--date",
+            "2026-08-31",
+            "--sha",
+            sha,
+            "--manifest-sha256",
+            manifest_sha,
+            "--max-drop-bps",
+            "50",
+        ])
+        .status()
+        .unwrap();
+    assert!(first.success());
+    fs::copy(&output_row, &history).unwrap();
+
+    fs::write(
+        &scoreboard_path,
+        serde_json::to_vec(&scoreboard(49, 50)).unwrap(),
+    )
+    .unwrap();
+    let refused = Command::new(env!("CARGO_BIN_EXE_remus-gauntlet"))
+        .args(["trend", "--scoreboard"])
+        .arg(&scoreboard_path)
+        .args(["--history"])
+        .arg(&history)
+        .args(["--output-row"])
+        .arg(&output_row)
+        .args([
+            "--tier",
+            "smoke",
+            "--date",
+            "2026-09-01",
+            "--sha",
+            sha,
+            "--manifest-sha256",
+            manifest_sha,
+            "--max-drop-bps",
+            "50",
+        ])
+        .status()
+        .unwrap();
+    assert!(!refused.success());
+    assert!(
+        output_row.is_file(),
+        "regressed row must remain publishable"
+    );
+    let row: serde_json::Value = serde_json::from_slice(&fs::read(&output_row).unwrap()).unwrap();
+    assert_eq!(row["stages"]["read"]["pass_rate_percent"], 98.0);
     fs::remove_dir_all(&root).unwrap();
 }
 

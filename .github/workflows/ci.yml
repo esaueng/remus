@@ -86,6 +86,7 @@ jobs:
           check "Documentation module map" ./scripts/check-doc-module-map.py
           check "Product naming" ./scripts/check-remus-rename.sh
           check "Publish workflow contract" ./scripts/test-publish-credentials.sh
+          check "Gauntlet workflow contract" python3 scripts/test-gauntlet-workflow.py
           check "CI classifier tests" python3 scripts/test-classify-ci-changes.py
           check "Unused dependencies" cargo machete
           check "TOML format" taplo fmt --check
