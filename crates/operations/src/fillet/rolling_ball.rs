@@ -241,7 +241,26 @@ pub fn fillet_rolling_ball(
 }
 
 /// [`fillet_rolling_ball`] with construction-derived face provenance.
+///
+/// The call is transactional and fail-closed: any failure — including the
+/// post-assembly validation below — leaves the topology exactly as it was,
+/// and a requested edge that carries no blend is reported by name
+/// ([`remus_blend::BlendError::EdgesNotBlended`]) instead of disappearing
+/// from an otherwise plausible result.
 pub fn fillet_rolling_ball_with_origins(
+    topo: &mut Topology,
+    solid: SolidId,
+    edges: &[EdgeId],
+    radius: f64,
+) -> Result<(SolidId, BlendFaceOrigins), crate::OperationsError> {
+    remus_topology::transaction::run_transacted(topo, |t| {
+        fillet_rolling_ball_transacted(t, solid, edges, radius)
+    })
+}
+
+/// Transaction body of [`fillet_rolling_ball_with_origins`].
+#[allow(clippy::too_many_lines)]
+fn fillet_rolling_ball_transacted(
     topo: &mut Topology,
     solid: SolidId,
     edges: &[EdgeId],
@@ -2649,6 +2668,13 @@ pub fn fillet_rolling_ball_with_origins(
             });
         }
     }
+
+    // Fail closed on a plausible-but-wrong result even when this engine is
+    // called directly (not through `try_fillet`'s closed-shell gate): no new
+    // validation errors against the input baseline, and the volume change
+    // must be one a fillet of this radius can physically produce.
+    crate::blend_ops::validate_blend_solid_against_input(topo, "fillet", solid, solid_id)?;
+    crate::blend_ops::validate_blend_volume(topo, "fillet", solid, solid_id, edges, radius)?;
 
     let face_origins = if let Some(history) = unify_history {
         origins_from_face_specs(

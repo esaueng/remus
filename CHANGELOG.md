@@ -19,6 +19,37 @@
 
 ### Bug Fixes
 
+* **operations:** make every public fillet/chamfer mutation path fail closed.
+  `fillet_variable`, the deprecated flat-bevel `fillet`, and
+  `fillet_rolling_ball` are now individually transactional and validate the
+  assembled result against the input before returning it: a requested edge
+  that carries no blend is a typed `EdgesNotBlended` refusal naming it, a
+  result that regresses validation (including face-orientation consistency)
+  against the input baseline is refused, and the volume change must be one a
+  blend of the requested size can physically produce. The previously
+  reachable silent-wrongness outcomes are gone: an oversized variable fillet
+  no longer returns a volume-inflated solid as success (r=50 on a 10 mm box
+  reported 3242 mm³), a cylinder-edge selection no longer returns an invalid
+  canal-surface solid as `Ok`, and a selection naming another solid's edge no
+  longer returns a clone of the input with a fresh handle. The flat-bevel
+  `chamfer`'s already-validated refusals are now transactional as well, and
+  the journaled fillet/chamfer wrappers roll the blend back together with the
+  journal if recording fails. The sign-rule oracle's convexity classification
+  now retries at shrinking probes so an absurd radius (whose probe overshoots
+  the part) still classifies, and its noise floor tracks the measured volumes
+  instead of the request's size³ budget. Two results the old gates accepted
+  surface as honest typed refusals: the blend-adjacent second-pass fillet and
+  the gridfinity lip peak-rim fillet (both were closed, manifold, and
+  non-orientable), pending the walking-trimmer completion tracked as bridge
+  item B4.
+* **wasm:** surface the stable blend failure codes uniformly: batch `fillet`
+  now enforces the whole-selection rule identically to the direct binding,
+  and the `fillet`, `chamfer`, `filletVariable`, `filletV2`, `chamferV2`,
+  `chamferDistanceAngle`, and journaled blend operations attach the
+  `blend_failure_code` as the `kernelCode` detail on the structured
+  `executeBatchV2` contract and as the message prefix on the direct
+  `filletVariable`/`filletV2`/`chamferV2`/`chamferDistanceAngle` bindings
+  (previously bare messages).
 * **wasm:** optimize the committed browser package and enforce its 8 MiB
   consumer budget against the actual distributed artifact.
 * **measure:** integrate planar faces bounded by lines, circles, and parabolas
