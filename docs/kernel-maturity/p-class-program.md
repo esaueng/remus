@@ -128,6 +128,14 @@ the authority behind the existing characterization tests.
 > SameParameter/SameRange validators run over boolean outputs in CI;
 > reader-site count at zero (tracked by grep gate, not by hand).
 
+Issue 2.0c meets its part of that gate with an exact identity-intersection
+fixture whose copied cylinder result retains both oriented seam pcurves. CI
+requires six boundary uses visited, two pcurves stored, and two uses proved by
+both strict validators, alongside the analytic face census and closed-form
+volume. Corrupting only the reverse branch must fail while the forward branch
+remains valid. The test does not synthesize pcurves after the boolean, and it
+does not treat a zero-pcurve result as coverage.
+
 ### 2.1 Honest-failure hygiene (S)
 
 `crates/algo/src/pave_filler/phase_ff.rs` ·
