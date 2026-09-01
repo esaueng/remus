@@ -279,8 +279,7 @@ pub fn collapse_collinear_wire_vertices(
             let is_closed = topo.wire(wid)?.is_closed();
             match Wire::new(new_edges, is_closed) {
                 Ok(new_wire) => {
-                    let wire_mut = topo.wire_mut(wid)?;
-                    *wire_mut = new_wire;
+                    topo.replace_boundary_wire(wid, new_wire)?;
                 }
                 Err(e) => {
                     log::warn!(

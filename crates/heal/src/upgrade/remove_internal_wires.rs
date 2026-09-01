@@ -28,8 +28,8 @@ pub fn remove_internal_wires(topo: &mut Topology, solid_id: SolidId) -> Result<u
         let face = topo.face(fid)?;
         let n_inner = face.inner_wires().len();
         if n_inner > 0 {
-            let face_mut = topo.face_mut(fid)?;
-            face_mut.inner_wires_mut().clear();
+            let outer = face.outer_wire();
+            topo.set_face_boundary_wires(fid, outer, Vec::new())?;
             removed += n_inner;
         }
     }

@@ -92,10 +92,8 @@ pub fn split_self_intersecting_inner_wires(
             // standard pattern, e.g. `solid_faces` + `face.inner_wires()`)
             // will skip it. Direct arena scans should not act on
             // unreachable wires.
-            let face_mut = topo.face_mut(fid)?;
-            let iw = face_mut.inner_wires_mut();
-            iw.clear();
-            iw.extend(new_inner_wires);
+            let outer = topo.face(fid)?.outer_wire();
+            topo.set_face_boundary_wires(fid, outer, new_inner_wires)?;
         }
     }
 

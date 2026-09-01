@@ -309,17 +309,18 @@ pub fn remove_degenerate_edges(
             // faces via edge_map dedup in a single topology arena).
             let new_wire = remus_topology::wire::Wire::new(new_edges, wire.is_closed())?;
             let new_wire_id = topo.add_wire(new_wire);
-            let face = topo.face_mut(fid)?;
-            if face.outer_wire() == wire_id {
-                face.set_outer_wire(new_wire_id);
+            let face = topo.face(fid)?;
+            let outer = if face.outer_wire() == wire_id {
+                new_wire_id
             } else {
-                let iw = face.inner_wires().to_vec();
-                for (i, &iw_id) in iw.iter().enumerate() {
-                    if iw_id == wire_id {
-                        face.inner_wires_mut()[i] = new_wire_id;
-                    }
-                }
-            }
+                face.outer_wire()
+            };
+            let inner = face
+                .inner_wires()
+                .iter()
+                .map(|&wire| if wire == wire_id { new_wire_id } else { wire })
+                .collect();
+            topo.set_face_boundary_wires(fid, outer, inner)?;
         }
     }
 
@@ -383,17 +384,18 @@ pub fn remove_wire_spurs(
 
             let new_wire = Wire::new(oes, closed)?;
             let new_wid = topo.add_wire(new_wire);
-            let face = topo.face_mut(fid)?;
-            if face.outer_wire() == wid {
-                face.set_outer_wire(new_wid);
+            let face = topo.face(fid)?;
+            let outer = if face.outer_wire() == wid {
+                new_wid
             } else {
-                let inner = face.inner_wires().to_vec();
-                for (i, &iwid) in inner.iter().enumerate() {
-                    if iwid == wid {
-                        face.inner_wires_mut()[i] = new_wid;
-                    }
-                }
-            }
+                face.outer_wire()
+            };
+            let inner = face
+                .inner_wires()
+                .iter()
+                .map(|&wire| if wire == wid { new_wid } else { wire })
+                .collect();
+            topo.set_face_boundary_wires(fid, outer, inner)?;
             removed += n_removed;
         }
     }

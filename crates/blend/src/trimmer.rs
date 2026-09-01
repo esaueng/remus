@@ -660,7 +660,8 @@ fn propagate_split(
         updates.push((wid, new_edges, wire.is_closed()));
     }
     for (wid, edges, closed) in updates {
-        *topo.wire_mut(wid)? = Wire::new(edges, closed)?;
+        let replacement = Wire::new(edges, closed)?;
+        topo.replace_boundary_wire(wid, replacement)?;
     }
     // Drop registry pcurves keyed by the now-unreferenced edge so per-face
     // enumeration (pcurves_for_face) cannot pick up a stale full-span entry.

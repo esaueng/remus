@@ -965,11 +965,8 @@ fn excise_out_and_back_spurs(
                 continue;
             }
             let closed = oriented_edges_form_closed_loop(topo, &outer);
-            if let (Ok(new_wire), Ok(slot)) = (
-                remus_topology::wire::Wire::new(outer, closed),
-                topo.wire_mut(outer_wid),
-            ) {
-                *slot = new_wire;
+            if let Ok(new_wire) = remus_topology::wire::Wire::new(outer, closed) {
+                let _ = topo.replace_boundary_wire(outer_wid, new_wire);
             }
         }
         let mut kept_inners: Vec<WireId> = Vec::with_capacity(inner_wids.len());
@@ -989,17 +986,14 @@ fn excise_out_and_back_spurs(
                     continue;
                 }
                 let closed = oriented_edges_form_closed_loop(topo, &inner);
-                if let (Ok(new_wire), Ok(slot)) = (
-                    remus_topology::wire::Wire::new(inner, closed),
-                    topo.wire_mut(wid),
-                ) {
-                    *slot = new_wire;
+                if let Ok(new_wire) = remus_topology::wire::Wire::new(inner, closed) {
+                    let _ = topo.replace_boundary_wire(wid, new_wire);
                 }
             }
             kept_inners.push(wid);
         }
-        if inners_changed && let Ok(f) = topo.face_mut(fid) {
-            *f.inner_wires_mut() = kept_inners;
+        if inners_changed {
+            let _ = topo.set_face_boundary_wires(fid, outer_wid, kept_inners);
         }
     }
     for &fi in drop.iter().rev() {
@@ -1170,30 +1164,22 @@ fn normalize_face_wires(topo: &mut Topology, fid: FaceId) {
     // references stay valid and no arena entry is orphaned.
     if outer_changed {
         let closed = oriented_edges_form_closed_loop(topo, &outer_oes);
-        if let (Ok(new_outer), Ok(slot)) = (
-            remus_topology::wire::Wire::new(outer_oes, closed),
-            topo.wire_mut(outer_wid),
-        ) {
-            *slot = new_outer;
+        if let Ok(new_outer) = remus_topology::wire::Wire::new(outer_oes, closed) {
+            let _ = topo.replace_boundary_wire(outer_wid, new_outer);
         }
     }
 
     for (wid, oes) in normalized_inners {
         let closed = oriented_edges_form_closed_loop(topo, &oes);
-        if let (Ok(new_inner), Ok(slot)) = (
-            remus_topology::wire::Wire::new(oes, closed),
-            topo.wire_mut(wid),
-        ) {
-            *slot = new_inner;
+        if let Ok(new_inner) = remus_topology::wire::Wire::new(oes, closed) {
+            let _ = topo.replace_boundary_wire(wid, new_inner);
         }
     }
 
     // Only the inner-wire *list* changes when empties were dropped; the face
     // already points at the (in-place updated) outer and surviving wires.
-    if kept_inner_wids.len() != inner_wids.len()
-        && let Ok(f) = topo.face_mut(fid)
-    {
-        *f.inner_wires_mut() = kept_inner_wids;
+    if kept_inner_wids.len() != inner_wids.len() {
+        let _ = topo.set_face_boundary_wires(fid, outer_wid, kept_inner_wids);
     }
 }
 
