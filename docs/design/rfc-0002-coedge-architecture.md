@@ -262,6 +262,10 @@ or fixed-inline-module heuristic.
 | Missing trim authority | 12 direct constructions + 1 snapshot omission / 10 logical paths | Immutable measured anchors, not automated detection. Three phase-FF emitters, two mixed-assembly branches, the box-sphere arc builder, merge-result-vertices snapshot/rebuild, and primitive cylinder/cone rims. A separate manually reviewed remaining-path manifest is reduced only as fixes and their oracles land. |
 | Stored face-boundary mutation | 30 | Production `wire_mut`, `inner_wires_mut`, and `set_outer_wire` sites; test mutations and `FaceSpec` mutation are excluded. |
 
+RFC 0004 Stage 1 later added one production vertex-ball reader under the same
+identity ratchet, raising the checked ceiling from the immutable 131-site
+snapshot to 132 without changing that baseline inventory.
+
 The 131 production readers, grouped by source file with exact baseline line
 numbers, are:
 
@@ -404,10 +408,13 @@ removes all eight direct splitter support/complement readers, moving the
 ratchet from 36 to 28. Exact evaluation and child construction use carried
 native/traversal ranges; structural partition sampling stays behind one named
 endpoint-reconstruction adapter because weld-shifted fitted endpoints define
-that support interval until per-use Coedge authority lands. The remaining
-sites are 27 tessellation readers and one topology validation reader. This is
-progress evidence, not the 2.0c exit gate; SameParameter/SameRange
-boolean-output validation and the zero-reader gate remain open.
+that support interval until per-use Coedge authority lands. The final reader
+continuation migrates the 27 tessellation readers and the later RFC 0004
+vertex-ball reader, moving the checked ratchet from 28 to zero. Tessellation
+now consumes stored lifted, major, reversed, and NURBS ranges directly; missing
+curved authority fails closed. This closes the reader portion of 2.0c, while
+non-vacuous SameParameter/SameRange validation over boolean outputs remains
+the outstanding 2.0c exit condition.
 
 Once Issue 2.0e lands, new code must not construct face boundaries from raw
 `OrientedEdge` lists. Enforcement:
