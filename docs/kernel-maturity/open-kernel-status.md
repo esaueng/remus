@@ -21,7 +21,7 @@ that flips them; agents do not flip them autonomously.
 | O1.2c Head-to-head results page | B | Pending | — |
 | O1.3a Fillet torture corpus + runner | A | Complete — 10 named cases built-and-verified or transactionally refused with stable codes | [#139](https://github.com/esaueng/remus/pull/139) |
 | O1.3b Fillet torture publication | C | Pending | — |
-| O1.4a STEP validation properties | A | Pending | — |
+| O1.4a STEP validation properties | A | Blocked — implementation and local acceptance are complete on `codex/step-validation-properties`, but delivery is paused because [#178](https://github.com/esaueng/remus/pull/178) began touching the same STEP reader/WASM contract files after this item was claimed; resume after #178 lands, then reconcile and re-run exact-head CI | — |
 | O1.4b CAx-IF test-round manifest | B | Pending | — |
 | O2.1a RFC 0006 swept analytic surfaces | A | Pending | — |
 | O2.1b Revolution/extrusion math substrate | A | Pending | — |
