@@ -40,6 +40,10 @@
   checkpoint barrier (`restore_preserving_handle_slots`) keeps retirements
   tombstoned and no longer restores the face-loop derivation map into
   referencing retired loops or faces.
+* **io:** enable serde_json's `float_roundtrip` feature workspace-wide so
+  arena documents replay arbitrary f64 values (vertex/edge tolerances, trim
+  parameters) bit-exactly; the default float path rounded the last bit on
+  parse for roughly one in five arbitrary doubles.
 
 ### Tests
 
@@ -53,6 +57,12 @@
   rollback, checkpoint-restore, and deletion sequences over a bounded box
   against exact-state, stale-handle, atomic-refusal, and closed-form volume
   oracles, with a checkpoint re-derivation regression corpus.
+* **fuzz:** add bounded scheduled native-serialization fuzzing — arena
+  document round-trips with duplicate roots, shared-shell aliases,
+  repeated/aliased compound members, hostile tolerances, and attributes,
+  requiring per-position closed-form volumes, bit-exact state survival,
+  byte-identical re-serialization, and typed non-mutating refusal of
+  corrupted references.
 
 ## 2.130.0
 
