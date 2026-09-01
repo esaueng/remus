@@ -256,11 +256,19 @@ fn deep_copy_solid_with_maps(
     struct ShellSnap {
         faces: Vec<FaceSnap>,
     }
+    struct CoedgeAuthoritySnap {
+        face_index: usize,
+        edge_index: usize,
+        forward: bool,
+        pcurve: Option<remus_topology::pcurve::PCurve>,
+        winding: remus_topology::coedge::PeriodicWinding,
+    }
 
     let mut vertex_snaps: Vec<VertexSnap> = Vec::new();
     let mut edge_snaps: Vec<EdgeSnap> = Vec::new();
     let mut wire_snaps: Vec<WireSnap> = Vec::new();
     let mut shell_snaps: Vec<ShellSnap> = Vec::new();
+    let mut coedge_authority_snaps = Vec::new();
 
     let mut seen_vertices = std::collections::HashSet::new();
     let mut seen_edges = std::collections::HashSet::new();
@@ -272,6 +280,18 @@ fn deep_copy_solid_with_maps(
 
         for &face_id in shell.faces() {
             let face = source.face(face_id)?;
+            for &loop_id in face.boundary_loops() {
+                for &coedge_id in source.face_loop(loop_id)?.coedges() {
+                    let coedge = source.coedge(coedge_id)?;
+                    coedge_authority_snaps.push(CoedgeAuthoritySnap {
+                        face_index: face_id.index(),
+                        edge_index: coedge.edge().index(),
+                        forward: coedge.is_forward(),
+                        pcurve: coedge.pcurve().cloned(),
+                        winding: coedge.periodic_winding(),
+                    });
+                }
+            }
             let surface = face.surface().clone();
             let outer_wire_index = face.outer_wire().index();
             let inner_wire_indices: Vec<usize> =
@@ -392,6 +412,34 @@ fn deep_copy_solid_with_maps(
         new_shell_ids.push(target.add_shell(new_shell));
     }
 
+    for snapshot in coedge_authority_snaps {
+        let face = face_map[&snapshot.face_index];
+        let edge = edge_map[&snapshot.edge_index];
+        let mut matching = Vec::new();
+        for &loop_id in target.face(face)?.boundary_loops() {
+            for &coedge_id in target.face_loop(loop_id)?.coedges() {
+                let coedge = target.coedge(coedge_id)?;
+                if coedge.edge() == edge && coedge.is_forward() == snapshot.forward {
+                    matching.push(coedge_id);
+                }
+            }
+        }
+        let [coedge_id] = matching.as_slice() else {
+            return Err(AlgoError::AssemblyFailed(format!(
+                "copied face {face:?} does not contain exactly one {} use of edge {edge:?}",
+                if snapshot.forward {
+                    "forward"
+                } else {
+                    "reverse"
+                }
+            )));
+        };
+        target.set_coedge_periodic_winding(*coedge_id, snapshot.winding)?;
+        if let Some(pcurve) = snapshot.pcurve {
+            target.set_coedge_pcurve(*coedge_id, pcurve)?;
+        }
+    }
+
     let new_outer = *new_shell_ids
         .first()
         .ok_or_else(|| AlgoError::AssemblyFailed("solid has no shells to copy".into()))?;
@@ -417,6 +465,20 @@ fn deep_copy_solid_with_maps(
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
+
+    fn assert_face_authority(topo: &Topology, face: FaceId) {
+        let loop_id = topo.face(face).unwrap().outer_loop().unwrap();
+        let coedge = topo.face_loop(loop_id).unwrap().coedges()[0];
+        let authority = topo.coedge(coedge).unwrap();
+        assert_eq!(
+            authority.periodic_winding(),
+            remus_topology::coedge::PeriodicWinding::new(2, -3)
+        );
+        let pcurve = authority.pcurve().unwrap();
+        assert_eq!(pcurve.t_start().to_bits(), 4.0_f64.to_bits());
+        assert_eq!(pcurve.t_end().to_bits(), 5.0_f64.to_bits());
+        assert!((pcurve.evaluate(4.5) - remus_math::vec::Point2::new(6.5, 3.0)).length() < 1e-14);
+    }
 
     #[test]
     fn round_trip_preserves_box() {
@@ -448,6 +510,45 @@ mod tests {
             .unwrap()
             .len();
         assert_eq!(store_vertex_count, 6, "store solid_a should have 6 faces");
+    }
+
+    #[test]
+    fn round_trip_preserves_coedge_pcurve_and_periodic_winding() {
+        use remus_math::curves2d::{Curve2D, Line2D};
+        use remus_math::vec::{Point2, Vec2};
+        use remus_topology::coedge::PeriodicWinding;
+        use remus_topology::explorer::solid_faces;
+        use remus_topology::pcurve::PCurve;
+        use remus_topology::test_utils::make_unit_cube_manifold_at;
+
+        let mut source = Topology::default();
+        let solid = make_unit_cube_manifold_at(&mut source, 0.0, 0.0, 0.0);
+        let face = solid_faces(&source, solid).unwrap()[0];
+        let coedge = source
+            .face_loop(source.face(face).unwrap().outer_loop().unwrap())
+            .unwrap()
+            .coedges()[0];
+        source
+            .set_coedge_pcurve(
+                coedge,
+                PCurve::new(
+                    Curve2D::Line(Line2D::new(Point2::new(2.0, 3.0), Vec2::new(1.0, 0.0)).unwrap()),
+                    4.0,
+                    5.0,
+                ),
+            )
+            .unwrap();
+        source
+            .set_coedge_periodic_winding(coedge, PeriodicWinding::new(2, -3))
+            .unwrap();
+
+        let store = GfaShapeStore::new(&source, solid, solid).unwrap();
+        let copied_face = solid_faces(&store.topo, store.solid_a).unwrap()[0];
+        assert_face_authority(&store.topo, copied_face);
+
+        let mut target = Topology::default();
+        let exported = store.export_solid(&mut target, store.solid_a).unwrap();
+        assert_face_authority(&target, solid_faces(&target, exported).unwrap()[0]);
     }
 
     #[test]
