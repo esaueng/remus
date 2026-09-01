@@ -140,6 +140,14 @@ question), v1-fillet API migration (product decision, owner's).
 
 ## §D External roadmap dispositions
 
+- **K-W3 distributed WASM budget — partial
+  ([PR #174](https://github.com/esaueng/remus/pull/174), 2026-08-31):** every
+  consumer package workflow now deterministically optimizes the distributed
+  bundler binary, validation fails above the 8 MiB OpenZCAD ceiling, and the
+  PR size report compares committed distribution artifacts. Current `main`
+  falls from 8,773,687 to 7,724,098 bytes, leaving 664,510 bytes of headroom.
+  OpenZCAD cold-load timing on target hardware remains the product-side W3
+  follow-up.
 - **K-S2 exact measurement — partial (PR #151):** production `faceArea` and
   `surfaceArea` now reuse the exact planar boundary-moment integrator for
   line/circle/parabola wires, including circular holes, with scale,
