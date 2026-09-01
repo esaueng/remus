@@ -27,6 +27,21 @@ unshared tree — a guard box and an unrelated compound must survive. Its
 corpus includes a checkpoint re-derivation seed that previously left the
 loop-derivation map referencing retired loops.
 
+`arena_roundtrip` builds bounded boxes and cylinders (census and closed-form
+volumes known by construction) with duplicate roots, shared-shell aliases,
+repeated/aliased compound members, precision-hostile tolerances, and public
+attributes, then round-trips the document through the native arena format.
+Restored solids must validate, stay closed-manifold, and measure their
+closed-form volumes per root/member position; tolerances, trims, and
+attributes survive bit-exactly; and serialize → deserialize → serialize is
+byte-identical. Deliberately corrupted root/member/wire/version references
+must be refused with a typed error, leaving a pre-populated destination
+topology untouched and leaking no staged allocations. Its corpus includes a
+seed covering attributes on a deliberately uncaptured member (correctly
+absent from the document). The byte-identity oracle caught serde_json
+losing the last bit of arbitrary f64 tolerances without the
+`float_roundtrip` feature, which is now enabled workspace-wide.
+
 Run one target locally with nightly Rust and `cargo-fuzz`:
 
 ```bash
@@ -34,8 +49,8 @@ cargo +nightly fuzz run nurbs_surface -- -max_total_time=60 -rss_limit_mb=2048
 ```
 
 PR CI compiles every target. The scheduled `Fuzz Smoke` workflow runs the
-public model-reader, boolean-tree, modifier, NURBS-surface, and
-topology-mutation campaigns for two minutes each and retains crash
-artifacts. `arena_reader` and `wasm_batch` currently compile in PR CI but
-are not scheduled; native serialization, curve-intersection, and
-offset-specific campaigns remain separate S4 follow-ups.
+public model-reader, boolean-tree, modifier, NURBS-surface,
+topology-mutation, and arena-roundtrip campaigns for two minutes each and
+retains crash artifacts. `arena_reader` and `wasm_batch` currently compile
+in PR CI but are not scheduled; curve-intersection and offset-specific
+campaigns remain separate S4 follow-ups.
