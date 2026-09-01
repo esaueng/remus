@@ -31,7 +31,6 @@
 use std::collections::{HashMap, HashSet};
 
 use remus_math::aabb::Aabb2;
-use remus_math::diagnostic::{Diagnostic, FailureCategory, ToDiagnostic};
 use remus_math::frame::Frame3;
 use remus_math::predicates::point_in_polygon;
 use remus_math::tolerance::Tolerance;
@@ -86,8 +85,10 @@ impl StepImportDiagnostic {
     }
 }
 
-impl ToDiagnostic for StepImportDiagnostic {
-    fn diagnostic(&self) -> Diagnostic {
+impl remus_math::diagnostic::ToDiagnostic for StepImportDiagnostic {
+    fn diagnostic(&self) -> remus_math::diagnostic::Diagnostic {
+        use remus_math::diagnostic::{Diagnostic, FailureCategory};
+
         match self {
             Self::UntrimmedNurbsDomainRecovered {
                 edge_curve_entity,
