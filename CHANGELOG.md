@@ -19,6 +19,8 @@
 
 ### Bug Fixes
 
+* **wasm:** optimize the committed browser package and enforce its 8 MiB
+  consumer budget against the actual distributed artifact.
 * **measure:** integrate planar faces bounded by lines, circles, and parabolas
   exactly, including circular inner wires, instead of reporting a fixed
   256-segment polygon area.
