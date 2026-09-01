@@ -39,6 +39,15 @@ pub enum IoError {
         reason: String,
     },
 
+    /// A requested STEP validation-property check found a malformed contract.
+    #[error("invalid STEP validation properties ({code}): {reason}")]
+    InvalidValidationProperties {
+        /// Stable diagnostic code for the refusal.
+        code: &'static str,
+        /// Human-readable context; not a stable wire contract.
+        reason: String,
+    },
+
     /// An unsupported STEP entity was encountered.
     #[error("unsupported STEP entity: {entity}")]
     UnsupportedEntity {
