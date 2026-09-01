@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788231138947,
+  "lastUpdate": 1788234351769,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -5993,6 +5993,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 41911397,
             "range": "± 327590",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a36bddacb4fbc39165f08e85b2bff35b4c3381c3",
+          "message": "feat(topology): make boundary mutation atomic (#176)\n\n* feat(topology): make boundary mutation atomic\n\n* docs(p-class): link atomic boundary PR\n\n---------\n\nCo-authored-by: Codex Review <codex-review@localhost>",
+          "timestamp": "2026-08-31T23:42:48-04:00",
+          "tree_id": "442777af3e51533ad4b3620492afffbb4e05167d",
+          "url": "https://github.com/esaueng/remus/commit/a36bddacb4fbc39165f08e85b2bff35b4c3381c3"
+        },
+        "date": 1788234351098,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1253449,
+            "range": "± 10720",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1330617,
+            "range": "± 39921",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 14651,
+            "range": "± 141",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 912657,
+            "range": "± 6183",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 37273163,
+            "range": "± 277444",
             "unit": "ns/iter"
           }
         ]
