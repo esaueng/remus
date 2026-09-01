@@ -31,6 +31,7 @@
 use std::collections::{HashMap, HashSet};
 
 use remus_math::aabb::Aabb2;
+use remus_math::curves::Circle3D;
 use remus_math::frame::Frame3;
 use remus_math::predicates::point_in_polygon;
 use remus_math::tolerance::Tolerance;
@@ -797,6 +798,34 @@ struct FaceBoundLoop {
     seam_flexible_v: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PeriodicWindingAxis {
+    U,
+    V,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PeriodicWindingBound {
+    candidate_index: usize,
+    axis: PeriodicWindingAxis,
+    direction: i8,
+    constant_coordinate: f64,
+}
+
+#[derive(Debug)]
+enum SampledPeriodicBound {
+    Contractible {
+        polygon: Vec<Point2>,
+        seam_flexible_u: bool,
+        seam_flexible_v: bool,
+    },
+    AxisWinding {
+        axis: PeriodicWindingAxis,
+        direction: i8,
+        constant_coordinate: f64,
+    },
+}
+
 #[derive(Debug, Clone, Copy)]
 struct PeriodicUvDomain {
     u_period: Option<f64>,
@@ -1313,7 +1342,7 @@ impl<'a> StepBuilder<'a> {
     /// or a seam-aware periodic UV domain.  Non-periodic parametric surfaces
     /// still fail closed rather than falling back to aggregate order.
     fn resolve_face_bounds(
-        &self,
+        &mut self,
         face_ref: u64,
         surface: &FaceSurface,
         candidates: &[FaceBoundCandidate],
@@ -1519,7 +1548,7 @@ impl<'a> StepBuilder<'a> {
     }
 
     fn resolve_generic_periodic_bounds(
-        &self,
+        &mut self,
         face_ref: u64,
         candidates: &[FaceBoundCandidate],
         surface: &FaceSurface,
@@ -1534,16 +1563,37 @@ impl<'a> StepBuilder<'a> {
         let margin = FACE_BOUND_CLASSIFICATION_DEFLECTION + tol.linear;
         let (u_period, v_period) = domain.scaled_periods();
         let mut loops = Vec::with_capacity(candidates.len());
+        let mut winding_bounds = Vec::new();
         let mut sampled_points = 0;
 
         for (candidate_index, candidate) in candidates.iter().enumerate() {
-            let (polygon, seam_flexible_u, seam_flexible_v) = self.sample_periodic_bound(
+            let sampled = self.sample_periodic_bound(
                 face_ref,
                 *candidate,
                 surface,
                 domain,
                 &mut sampled_points,
             )?;
+            let (polygon, seam_flexible_u, seam_flexible_v) = match sampled {
+                SampledPeriodicBound::Contractible {
+                    polygon,
+                    seam_flexible_u,
+                    seam_flexible_v,
+                } => (polygon, seam_flexible_u, seam_flexible_v),
+                SampledPeriodicBound::AxisWinding {
+                    axis,
+                    direction,
+                    constant_coordinate,
+                } => {
+                    winding_bounds.push(PeriodicWindingBound {
+                        candidate_index,
+                        axis,
+                        direction,
+                        constant_coordinate,
+                    });
+                    continue;
+                }
+            };
             let bounds = Aabb2::try_from_points(polygon.iter().copied()).ok_or_else(|| {
                 IoError::ParseError {
                     reason: format!(
@@ -1609,6 +1659,25 @@ impl<'a> StepBuilder<'a> {
                 seam_flexible_u,
                 seam_flexible_v,
             });
+        }
+
+        if !winding_bounds.is_empty() {
+            if !loops.is_empty() {
+                return Err(IoError::ParseError {
+                    reason: format!(
+                        "ADVANCED_FACE #{face_ref} mixes contractible and period-winding generic \
+                         FACE_BOUND loops on its {} surface",
+                        surface.type_tag()
+                    ),
+                });
+            }
+            return self.resolve_periodic_winding_band(
+                face_ref,
+                candidates,
+                surface,
+                &winding_bounds,
+                domain,
+            );
         }
 
         let mut parents = vec![None; loops.len()];
@@ -1681,6 +1750,196 @@ impl<'a> StepBuilder<'a> {
         ))
     }
 
+    fn resolve_periodic_winding_band(
+        &mut self,
+        face_ref: u64,
+        candidates: &[FaceBoundCandidate],
+        surface: &FaceSurface,
+        bounds: &[PeriodicWindingBound],
+        domain: PeriodicUvDomain,
+    ) -> Result<(WireId, Vec<WireId>), IoError> {
+        let reject = |reason: &str| IoError::ParseError {
+            reason: format!(
+                "ADVANCED_FACE #{face_ref} period-winding generic FACE_BOUND loops on its {} \
+                 surface must form exactly one orientation-consistent analytic band: {reason}",
+                surface.type_tag()
+            ),
+        };
+
+        if !matches!(surface, FaceSurface::Cylinder(_) | FaceSurface::Torus(_)) {
+            return Err(reject(
+                "the carrier is not a supported analytic periodic surface",
+            ));
+        }
+        if bounds.len() != 2 || candidates.len() != 2 {
+            return Err(reject("exactly two winding bounds are required"));
+        }
+
+        for bound in bounds {
+            let candidate = candidates[bound.candidate_index];
+            let wire = self.topo.wire(candidate.wire).map_err(|error| {
+                reject(&format!(
+                    "bound #{} has no readable wire: {error}",
+                    candidate.bound_ref
+                ))
+            })?;
+            if !wire.is_closed() || wire.edges().len() != 1 {
+                return Err(reject(
+                    "each winding bound must be one closed analytic circle edge",
+                ));
+            }
+            let edge = self.topo.edge(wire.edges()[0].edge()).map_err(|error| {
+                reject(&format!(
+                    "bound #{} has no readable edge: {error}",
+                    candidate.bound_ref
+                ))
+            })?;
+            if edge.start() != edge.end() || !matches!(edge.curve(), EdgeCurve::Circle(_)) {
+                return Err(reject(
+                    "each winding bound must be one closed analytic circle edge",
+                ));
+            }
+        }
+
+        let [first, second] = bounds else {
+            return Err(reject("exactly two winding bounds are required"));
+        };
+        if first.axis != second.axis || first.direction == second.direction {
+            return Err(reject(
+                "the two circles must wind the same periodic axis in opposite directions",
+            ));
+        }
+
+        let (lower, upper) = if first
+            .constant_coordinate
+            .total_cmp(&second.constant_coordinate)
+            .is_lt()
+        {
+            (first, second)
+        } else {
+            (second, first)
+        };
+        let margin = FACE_BOUND_CLASSIFICATION_DEFLECTION + Tolerance::new().linear;
+        let separation = upper.constant_coordinate - lower.constant_coordinate;
+        let (orthogonal_period, expected_lower, expected_upper) = match lower.axis {
+            PeriodicWindingAxis::U => (domain.scaled_periods().1, 1, -1),
+            PeriodicWindingAxis::V => (domain.scaled_periods().0, -1, 1),
+        };
+        if !separation.is_finite()
+            || separation <= margin
+            || orthogonal_period.is_some_and(|period| separation >= period - margin)
+        {
+            return Err(reject(
+                "the two circles do not occupy distinct, non-coincident band limits",
+            ));
+        }
+        if lower.direction != expected_lower || upper.direction != expected_upper {
+            return Err(reject(
+                "the circle senses select an ambiguous complementary periodic region",
+            ));
+        }
+
+        let lower_candidate = candidates[lower.candidate_index];
+        let upper_candidate = candidates[upper.candidate_index];
+        let lower_oriented = self
+            .topo
+            .wire(lower_candidate.wire)
+            .map_err(|error| reject(&format!("lower bound wire is unreadable: {error}")))?
+            .edges()[0];
+        let upper_oriented = self
+            .topo
+            .wire(upper_candidate.wire)
+            .map_err(|error| reject(&format!("upper bound wire is unreadable: {error}")))?
+            .edges()[0];
+        let lower_edge = self
+            .topo
+            .edge(lower_oriented.edge())
+            .map_err(|error| reject(&format!("lower bound edge is unreadable: {error}")))?;
+        let upper_edge = self
+            .topo
+            .edge(upper_oriented.edge())
+            .map_err(|error| reject(&format!("upper bound edge is unreadable: {error}")))?;
+        let lower_vertex = lower_oriented.oriented_start(lower_edge);
+        let upper_vertex = upper_oriented.oriented_start(upper_edge);
+        let lower_point = self
+            .topo
+            .vertex(lower_vertex)
+            .map_err(|error| reject(&format!("lower seam vertex is unreadable: {error}")))?
+            .point();
+        let upper_point = self
+            .topo
+            .vertex(upper_vertex)
+            .map_err(|error| reject(&format!("upper seam vertex is unreadable: {error}")))?
+            .point();
+
+        let (lower_u, lower_v) = surface
+            .project_point(lower_point)
+            .ok_or_else(|| reject("the lower seam vertex cannot be projected onto the carrier"))?;
+        let (upper_u, upper_v) = surface
+            .project_point(upper_point)
+            .ok_or_else(|| reject("the upper seam vertex cannot be projected onto the carrier"))?;
+        let angular_close = |left: f64, right: f64, metric: f64| {
+            let delta = (left - right + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU)
+                - std::f64::consts::PI;
+            delta.abs() * metric <= FACE_BOUND_SURFACE_RESIDUAL + Tolerance::new().linear
+        };
+
+        let seam_curve = match (surface, lower.axis) {
+            (FaceSurface::Cylinder(cylinder), PeriodicWindingAxis::U) => {
+                if !angular_close(lower_u, upper_u, cylinder.radius()) {
+                    return Err(reject(
+                        "the two circle seam vertices do not share one cylinder generator",
+                    ));
+                }
+                EdgeCurve::Line
+            }
+            (FaceSurface::Torus(torus), PeriodicWindingAxis::V) => {
+                if !angular_close(lower_v, upper_v, torus.minor_radius()) {
+                    return Err(reject(
+                        "the two circle seam vertices do not share one torus tube angle",
+                    ));
+                }
+                let (sin_v, cos_v) = lower_v.sin_cos();
+                let center = torus.center() + torus.z_axis() * (torus.minor_radius() * sin_v);
+                let radius = torus.minor_radius().mul_add(cos_v, torus.major_radius());
+                let circle = Circle3D::new_with_ref(center, torus.z_axis(), radius, torus.x_axis())
+                    .map_err(|error| {
+                        reject(&format!("cannot construct an exact torus seam: {error}"))
+                    })?;
+                EdgeCurve::Circle(circle)
+            }
+            _ => {
+                return Err(reject(
+                    "the winding axis has no supported exact seam construction",
+                ));
+            }
+        };
+
+        let mut seam = Edge::new(lower_vertex, upper_vertex, seam_curve);
+        if let EdgeCurve::Circle(circle) = seam.curve() {
+            let start = circle.project(lower_point);
+            let span = (circle.project(upper_point) - start).rem_euclid(std::f64::consts::TAU);
+            if span <= Tolerance::new().angular
+                || span >= std::f64::consts::TAU - Tolerance::new().angular
+            {
+                return Err(reject("the exact seam has an empty or full-period span"));
+            }
+            seam.set_trim(Some((start, start + span)));
+        }
+        let seam_id = self.topo.add_edge(seam);
+        let wire = Wire::new(
+            vec![
+                lower_oriented,
+                OrientedEdge::new(seam_id, true),
+                upper_oriented,
+                OrientedEdge::new(seam_id, false),
+            ],
+            true,
+        )
+        .map_err(|error| reject(&format!("cannot construct the analytic band wire: {error}")))?;
+        Ok((self.topo.add_wire(wire), Vec::new()))
+    }
+
     fn sample_periodic_bound(
         &self,
         face_ref: u64,
@@ -1688,7 +1947,7 @@ impl<'a> StepBuilder<'a> {
         surface: &FaceSurface,
         domain: PeriodicUvDomain,
         sampled_points: &mut usize,
-    ) -> Result<(Vec<Point2>, bool, bool), IoError> {
+    ) -> Result<SampledPeriodicBound, IoError> {
         let wire = self
             .topo
             .wire(candidate.wire)
@@ -1781,9 +2040,22 @@ impl<'a> StepBuilder<'a> {
         }
 
         let (Some(first), Some(last)) = (points.first().copied(), points.last().copied()) else {
-            return Ok((points, seam_flexible_u, seam_flexible_v));
+            return Ok(SampledPeriodicBound::Contractible {
+                polygon: points,
+                seam_flexible_u,
+                seam_flexible_v,
+            });
         };
         if (last - first).length() > margin {
+            if let Some((axis, direction, constant_coordinate)) =
+                classify_axis_aligned_period_winding(&points, u_period, v_period, margin)
+            {
+                return Ok(SampledPeriodicBound::AxisWinding {
+                    axis,
+                    direction,
+                    constant_coordinate,
+                });
+            }
             return Err(IoError::ParseError {
                 reason: format!(
                     "ADVANCED_FACE #{face_ref} bound #{} does not close in the unwrapped {} UV \
@@ -1795,7 +2067,11 @@ impl<'a> StepBuilder<'a> {
         }
         points.pop();
         points.dedup_by(|left, right| (*left - *right).length() <= margin);
-        Ok((points, seam_flexible_u, seam_flexible_v))
+        Ok(SampledPeriodicBound::Contractible {
+            polygon: points,
+            seam_flexible_u,
+            seam_flexible_v,
+        })
     }
 
     fn project_periodic_bound_point(
@@ -4016,6 +4292,78 @@ fn unwrap_periodic_uv_path(
         points[index] = point;
     }
     Ok(())
+}
+
+fn classify_axis_aligned_period_winding(
+    points: &[Point2],
+    u_period: Option<f64>,
+    v_period: Option<f64>,
+    margin: f64,
+) -> Option<(PeriodicWindingAxis, i8, f64)> {
+    fn classify_axis(
+        points: &[Point2],
+        axis: PeriodicWindingAxis,
+        period: f64,
+        margin: f64,
+    ) -> Option<(PeriodicWindingAxis, i8, f64)> {
+        let component = |point: Point2| match axis {
+            PeriodicWindingAxis::U => point.x(),
+            PeriodicWindingAxis::V => point.y(),
+        };
+        let orthogonal = |point: Point2| match axis {
+            PeriodicWindingAxis::U => point.y(),
+            PeriodicWindingAxis::V => point.x(),
+        };
+        let (first, last) = (*points.first()?, *points.last()?);
+        let delta = component(last) - component(first);
+        if (delta.abs() - period).abs() > margin
+            || (orthogonal(last) - orthogonal(first)).abs() > margin
+        {
+            return None;
+        }
+        let direction = if delta.is_sign_positive() { 1 } else { -1 };
+        if points
+            .windows(2)
+            .any(|pair| f64::from(direction) * (component(pair[1]) - component(pair[0])) < -margin)
+        {
+            return None;
+        }
+
+        let (axis_min, axis_max, orthogonal_min, orthogonal_max) = points.iter().fold(
+            (
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+            ),
+            |(axis_min, axis_max, orthogonal_min, orthogonal_max), &point| {
+                let along = component(point);
+                let across = orthogonal(point);
+                (
+                    axis_min.min(along),
+                    axis_max.max(along),
+                    orthogonal_min.min(across),
+                    orthogonal_max.max(across),
+                )
+            },
+        );
+        if axis_max - axis_min < period - margin
+            || axis_max - axis_min > period + margin
+            || orthogonal_max - orthogonal_min > margin
+        {
+            return None;
+        }
+        Some((axis, direction, 0.5 * (orthogonal_min + orthogonal_max)))
+    }
+
+    let u =
+        u_period.and_then(|period| classify_axis(points, PeriodicWindingAxis::U, period, margin));
+    let v =
+        v_period.and_then(|period| classify_axis(points, PeriodicWindingAxis::V, period, margin));
+    match (u, v) {
+        (Some(winding), None) | (None, Some(winding)) => Some(winding),
+        (None, None) | (Some(_), Some(_)) => None,
+    }
 }
 
 /// Shift a whole already-unwrapped edge group onto the period copy whose first

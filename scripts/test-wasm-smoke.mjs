@@ -446,7 +446,47 @@ for (const operation of ['fillet', 'chamfer']) {
   console.log('ok - evolution decoder and degenerate-operation rejection');
 }
 
-// 13. The real Shapr3D hammer-holder contract from the connected-blend work.
+// 13. Generic periodic STEP bounds must import as an exact analytic band, and
+// an ambiguous band must fail transactionally through the shipped JS binding.
+{
+  const stepPath = resolve(
+    projectRoot,
+    'crates/io/tests/data/mambo_b12_period_winding_torus.step',
+  );
+  const step = readFileSync(stepPath);
+  const periodicKernel = new BrepKernel();
+  const imported = Array.from(periodicKernel.importStep(step));
+  assert.equal(imported.length, 1, 'MAMBO B12 STEP must contain one solid');
+  const solid = imported[0];
+  const exactVolume = 1.25 * Math.PI ** 2;
+  assert.ok(Math.abs(periodicKernel.volume(solid, 0.01) - exactVolume) < 1e-9);
+  const quality = JSON.parse(periodicKernel.meshQuality(solid, 0.01));
+  assert.equal(quality.boundaryEdges, 0);
+  assert.equal(quality.nonManifoldEdges, 0);
+  assert.equal(quality.isWatertight, true);
+
+  const roundTrip = periodicKernel.exportStep(solid);
+  const roundKernel = new BrepKernel();
+  const [roundSolid] = Array.from(roundKernel.importStep(roundTrip));
+  assert.ok(Math.abs(roundKernel.volume(roundSolid, 0.01) - exactVolume) < 1e-9);
+
+  const source = step.toString('utf8');
+  const malformed = source.replace(
+    "#46=ADVANCED_FACE('',(#50,#51),#52,.T.);",
+    "#46=ADVANCED_FACE('',(#50,#50),#52,.T.);",
+  );
+  assert.notEqual(malformed, source, 'periodic refusal fixture rewrite must apply');
+  const refusalKernel = new BrepKernel();
+  const sentinel = refusalKernel.makeBox(2, 3, 4);
+  assert.throws(
+    () => refusalKernel.importStep(Buffer.from(malformed)),
+    /the two circles must wind the same periodic axis in opposite directions/,
+  );
+  assert.ok(Math.abs(refusalKernel.volume(sentinel, 0.01) - 24) < 1e-9);
+  console.log('ok - periodic STEP band import, round trip, and typed refusal');
+}
+
+// 14. The real Shapr3D hammer-holder contract from the connected-blend work.
 // Its radius-3 regions border imported NURBS support geometry, so a nontrivial
 // resize is an exact refusal today. The public direct/batch query must agree,
 // and the refusal must not silently damage the imported body.
@@ -505,7 +545,7 @@ for (const operation of ['fillet', 'chamfer']) {
   console.log('ok - real Shapr3D connected-blend refusal is exact and transactional');
 }
 
-// 14. OpenZCAD mounting-bracket cylindrical-face resize and STEP round trip.
+// 15. OpenZCAD mounting-bracket cylindrical-face resize and STEP round trip.
 runOpenZcadCylindricalFaceResizeRegression({ BrepKernel, decodeEvolutionPayload });
 
 console.log('\nAll smoke tests passed');

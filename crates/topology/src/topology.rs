@@ -19,7 +19,7 @@ use crate::pcurve::{PCurve, PCurveRegistry};
 use crate::shell::{Shell, ShellId};
 use crate::solid::{Solid, SolidId};
 use crate::vertex::{Vertex, VertexId};
-use crate::wire::{Wire, WireId};
+use crate::wire::{OrientedEdge, Wire, WireId};
 use crate::{DeleteSolidError, TopologyError};
 
 /// Central context owning all topological entity arenas.
@@ -75,6 +75,12 @@ struct SolidEntities {
     wires: HashSet<WireId>,
     faces: HashSet<FaceId>,
     shells: HashSet<ShellId>,
+}
+
+#[derive(Clone)]
+struct BoundaryLoopSpec {
+    oriented_edges: Vec<OrientedEdge>,
+    closed: bool,
 }
 
 /// Generates an immutable arena accessor method on [`Topology`].
@@ -688,6 +694,171 @@ impl Topology {
         Id = CompSolidId
     );
 
+    fn boundary_loop_specs(
+        &self,
+        wire_ids: &[WireId],
+        replacement: Option<(WireId, &Wire)>,
+    ) -> Result<Vec<BoundaryLoopSpec>, TopologyError> {
+        let mut specs = Vec::with_capacity(wire_ids.len());
+        for &wire_id in wire_ids {
+            let wire = match replacement {
+                Some((replacement_id, replacement_wire)) if replacement_id == wire_id => {
+                    replacement_wire
+                }
+                _ => self.wire(wire_id)?,
+            };
+            for oriented in wire.edges() {
+                self.edge(oriented.edge())?;
+            }
+            specs.push(BoundaryLoopSpec {
+                oriented_edges: wire.edges().to_vec(),
+                closed: wire.is_closed(),
+            });
+        }
+        Ok(specs)
+    }
+
+    fn install_face_loop_specs(
+        &mut self,
+        face_id: FaceId,
+        specs: Vec<BoundaryLoopSpec>,
+    ) -> Vec<LoopId> {
+        if let Some(old_loops) = self.face_loops.remove(&face_id) {
+            for loop_id in old_loops {
+                if let Some(old_loop) = self.loops.get(loop_id) {
+                    for coedge_id in old_loop.coedges().to_vec() {
+                        self.coedges.retire(coedge_id);
+                    }
+                }
+                self.loops.retire(loop_id);
+            }
+        }
+
+        let mut new_loops = Vec::with_capacity(specs.len());
+        for spec in specs {
+            let loop_id = self
+                .loops
+                .alloc(Loop::new(face_id, Vec::new(), spec.closed));
+            let coedge_ids: Vec<CoedgeId> = spec
+                .oriented_edges
+                .iter()
+                .map(|oriented| {
+                    self.coedges
+                        .alloc(Coedge::new(oriented.edge(), oriented.is_forward(), loop_id))
+                })
+                .collect();
+            if let Some(loop_entity) = self.loops.get_mut(loop_id) {
+                *loop_entity = Loop::new(face_id, coedge_ids, spec.closed);
+            }
+            new_loops.push(loop_id);
+        }
+        self.face_loops.insert(face_id, new_loops.clone());
+        new_loops
+    }
+
+    fn retain_face_pcurves_for_specs(&mut self, face_id: FaceId, specs: &[BoundaryLoopSpec]) {
+        let live_uses: HashSet<(EdgeId, bool)> = specs
+            .iter()
+            .flat_map(|spec| {
+                spec.oriented_edges
+                    .iter()
+                    .map(|oriented| (oriented.edge(), oriented.is_forward()))
+            })
+            .collect();
+        self.pcurves.retain_face_uses(face_id, &live_uses);
+    }
+
+    /// Atomically replaces a stored wire used by one or more face boundaries.
+    ///
+    /// The complete replacement is validated before any state changes. Every
+    /// face that references `wire_id` keeps only pcurves for uses still present
+    /// in its boundary, and an existing derived Loop/Coedge view is rebuilt in
+    /// the same commit. A free wire can use this method too; with no owning
+    /// faces, only the wire itself changes.
+    ///
+    /// This is the sanctioned RFC 0002 Stage-1 mutation path. It composes with
+    /// [`transaction::run_transacted`](crate::transaction::run_transacted): an
+    /// enclosing failed operation restores the prior wire, pcurves, and exact
+    /// derived-loop handles while permanently retiring handles allocated by
+    /// the rolled-back mutation.
+    ///
+    /// # Errors
+    ///
+    /// Returns a not-found error when `wire_id` or any edge referenced by the
+    /// replacement is invalid. No topology state changes on error.
+    pub fn replace_boundary_wire(
+        &mut self,
+        wire_id: WireId,
+        replacement: Wire,
+    ) -> Result<(), TopologyError> {
+        self.wire(wire_id)?;
+
+        let mut affected = Vec::new();
+        for (face_id, face) in self.faces.iter() {
+            if face.outer_wire() != wire_id && !face.inner_wires().contains(&wire_id) {
+                continue;
+            }
+            let mut wire_ids = vec![face.outer_wire()];
+            wire_ids.extend(face.inner_wires().iter().copied());
+            let specs = self.boundary_loop_specs(&wire_ids, Some((wire_id, &replacement)))?;
+            affected.push((face_id, self.face_loops.contains_key(&face_id), specs));
+        }
+        if affected.is_empty() {
+            self.boundary_loop_specs(&[wire_id], Some((wire_id, &replacement)))?;
+        }
+
+        let stored = self
+            .wires
+            .get_mut(wire_id)
+            .ok_or(TopologyError::WireNotFound(wire_id))?;
+        *stored = replacement;
+        self.mutation_ticks = self.mutation_ticks.saturating_add(1);
+
+        for (face_id, had_derivation, specs) in affected {
+            self.retain_face_pcurves_for_specs(face_id, &specs);
+            if had_derivation {
+                let _ = self.install_face_loop_specs(face_id, specs);
+            }
+        }
+        Ok(())
+    }
+
+    /// Atomically replaces a face's complete outer/inner boundary-wire set.
+    ///
+    /// Every referenced wire and edge is validated before commit. Stale
+    /// pcurve uses are removed and an existing derived Loop/Coedge view is
+    /// rebuilt from the new outer-then-inner order without exposing an
+    /// intermediate torn boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns a not-found error when the face, a replacement wire, or any
+    /// referenced edge is invalid. No topology state changes on error.
+    pub fn set_face_boundary_wires(
+        &mut self,
+        face_id: FaceId,
+        outer_wire: WireId,
+        inner_wires: Vec<WireId>,
+    ) -> Result<(), TopologyError> {
+        self.face(face_id)?;
+        let mut wire_ids = vec![outer_wire];
+        wire_ids.extend(inner_wires.iter().copied());
+        let specs = self.boundary_loop_specs(&wire_ids, None)?;
+        let had_derivation = self.face_loops.contains_key(&face_id);
+
+        let face = self
+            .faces
+            .get_mut(face_id)
+            .ok_or(TopologyError::FaceNotFound(face_id))?;
+        face.replace_boundary_wires(outer_wire, inner_wires);
+        self.mutation_ticks = self.mutation_ticks.saturating_add(1);
+        self.retain_face_pcurves_for_specs(face_id, &specs);
+        if had_derivation {
+            let _ = self.install_face_loop_specs(face_id, specs);
+        }
+        Ok(())
+    }
+
     /// Derives (or re-derives) this face's boundary loops and coedges from
     /// its current wires (RFC 0002, Stage 1).
     ///
@@ -707,49 +878,11 @@ impl Topology {
     /// referenced edge is invalid. Nothing is retired or allocated on
     /// error.
     pub fn build_face_loops(&mut self, face_id: FaceId) -> Result<Vec<LoopId>, TopologyError> {
-        // Snapshot phase: read and validate everything before mutating.
         let face = self.face(face_id)?;
         let mut wire_ids = vec![face.outer_wire()];
         wire_ids.extend(face.inner_wires().iter().copied());
-        let mut wires = Vec::with_capacity(wire_ids.len());
-        for wire_id in wire_ids {
-            let wire = self.wire(wire_id)?;
-            for oriented in wire.edges() {
-                self.edge(oriented.edge())?;
-            }
-            wires.push((wire.edges().to_vec(), wire.is_closed()));
-        }
-
-        // Retire any previous derivation.
-        if let Some(old_loops) = self.face_loops.remove(&face_id) {
-            for loop_id in old_loops {
-                if let Some(old_loop) = self.loops.get(loop_id) {
-                    for coedge_id in old_loop.coedges().to_vec() {
-                        self.coedges.retire(coedge_id);
-                    }
-                }
-                self.loops.retire(loop_id);
-            }
-        }
-
-        // Allocation phase.
-        let mut new_loops = Vec::with_capacity(wires.len());
-        for (oriented_edges, closed) in wires {
-            let loop_id = self.loops.alloc(Loop::new(face_id, Vec::new(), closed));
-            let coedge_ids: Vec<CoedgeId> = oriented_edges
-                .iter()
-                .map(|oe| {
-                    self.coedges
-                        .alloc(Coedge::new(oe.edge(), oe.is_forward(), loop_id))
-                })
-                .collect();
-            if let Some(loop_entity) = self.loops.get_mut(loop_id) {
-                *loop_entity = Loop::new(face_id, coedge_ids, closed);
-            }
-            new_loops.push(loop_id);
-        }
-        self.face_loops.insert(face_id, new_loops.clone());
-        Ok(new_loops)
+        let specs = self.boundary_loop_specs(&wire_ids, None)?;
+        Ok(self.install_face_loop_specs(face_id, specs))
     }
 
     /// The loops previously derived for a face, in outer-then-inner order,
@@ -1190,6 +1323,165 @@ mod tests {
         ));
         let shell = topo.add_shell(Shell::new(vec![face]).unwrap());
         (topo.add_solid(Solid::new(shell, Vec::new())), face, e0)
+    }
+
+    fn wire_signature(topo: &Topology, wire: WireId) -> Vec<(EdgeId, bool)> {
+        topo.wire(wire)
+            .unwrap()
+            .edges()
+            .iter()
+            .map(|oriented| (oriented.edge(), oriented.is_forward()))
+            .collect()
+    }
+
+    fn test_pcurve(offset: f64) -> PCurve {
+        PCurve::new(
+            Curve2D::Line(Line2D::new(Point2::new(offset, 0.0), Vec2::new(1.0, 0.0)).unwrap()),
+            0.0,
+            1.0,
+        )
+    }
+
+    #[test]
+    fn sanctioned_wire_replacement_rederives_loops_and_prunes_stale_pcurves() {
+        let mut topo = Topology::new();
+        let (_, face, edge) = make_triangle_solid(&mut topo, 0.0);
+        let wire = topo.face(face).unwrap().outer_wire();
+        topo.set_pcurve_oriented(edge, face, true, test_pcurve(0.0));
+        topo.set_pcurve_oriented(edge, face, false, test_pcurve(10.0));
+        let retired_loops = topo.build_face_loops(face).unwrap();
+        let retired_coedges = topo.face_loop(retired_loops[0]).unwrap().coedges().to_vec();
+
+        let reversed: Vec<_> = topo
+            .wire(wire)
+            .unwrap()
+            .edges()
+            .iter()
+            .rev()
+            .map(|oriented| OrientedEdge::new(oriented.edge(), !oriented.is_forward()))
+            .collect();
+        topo.replace_boundary_wire(wire, Wire::new(reversed, true).unwrap())
+            .unwrap();
+
+        assert!(topo.pcurve_oriented(edge, face, true).is_none());
+        assert!(topo.pcurve_oriented(edge, face, false).is_some());
+        for retired in retired_loops {
+            assert!(topo.face_loop(retired).is_err());
+        }
+        for retired in retired_coedges {
+            assert!(topo.coedge(retired).is_err());
+        }
+        crate::validation::validate_face_loops(&topo, face).unwrap();
+        let loop_id = topo.loops_of_face(face).unwrap()[0];
+        let loop_ = topo.face_loop(loop_id).unwrap();
+        assert_eq!(loop_.coedges().len(), 3);
+        assert_eq!(
+            topo.coedge(loop_.coedges()[0]).unwrap().is_forward(),
+            topo.wire(wire).unwrap().edges()[0].is_forward()
+        );
+    }
+
+    #[test]
+    fn sanctioned_face_boundary_replacement_is_preflight_atomic() {
+        let mut topo = Topology::new();
+        let (_, face, edge) = make_triangle_solid(&mut topo, 0.0);
+        let original_wire = topo.face(face).unwrap().outer_wire();
+        topo.set_pcurve_oriented(edge, face, true, test_pcurve(0.0));
+        let original_loops = topo.build_face_loops(face).unwrap();
+        let counts = (topo.num_wires(), topo.num_loops(), topo.num_coedges());
+
+        let snapshot = topo.clone();
+        let stale_wire =
+            topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap());
+        topo.restore_for_rollback(&snapshot);
+        assert!(matches!(
+            topo.set_face_boundary_wires(face, stale_wire, Vec::new()),
+            Err(TopologyError::WireNotFound(id)) if id == stale_wire
+        ));
+
+        assert_eq!(topo.face(face).unwrap().outer_wire(), original_wire);
+        assert_eq!(topo.loops_of_face(face).unwrap(), original_loops.as_slice());
+        assert!(topo.pcurve_oriented(edge, face, true).is_some());
+        assert_eq!(
+            (topo.num_wires(), topo.num_loops(), topo.num_coedges()),
+            counts
+        );
+        crate::validation::validate_face_loops(&topo, face).unwrap();
+    }
+
+    #[test]
+    fn sanctioned_face_boundary_replacement_commits_one_coherent_loop_set() {
+        let mut topo = Topology::new();
+        let (_, face, _) = make_triangle_solid(&mut topo, 0.0);
+        let original_wire = topo.face(face).unwrap().outer_wire();
+        let old_loops = topo.build_face_loops(face).unwrap();
+        let (_, replacement_face, _) = make_triangle_solid(&mut topo, 10.0);
+        let replacement_wire = topo.face(replacement_face).unwrap().outer_wire();
+
+        topo.set_face_boundary_wires(face, replacement_wire, vec![original_wire])
+            .unwrap();
+
+        let boundary = topo.face(face).unwrap();
+        assert_eq!(boundary.outer_wire(), replacement_wire);
+        assert_eq!(boundary.inner_wires(), &[original_wire]);
+        for retired in old_loops {
+            assert!(topo.face_loop(retired).is_err());
+        }
+        let loops = topo.loops_of_face(face).unwrap();
+        assert_eq!(loops.len(), 2);
+        assert_eq!(topo.face_loop(loops[0]).unwrap().coedges().len(), 3);
+        assert_eq!(topo.face_loop(loops[1]).unwrap().coedges().len(), 3);
+        crate::validation::validate_face_loops(&topo, face).unwrap();
+    }
+
+    #[test]
+    fn enclosing_checkpoint_rolls_back_sanctioned_boundary_mutation_exactly() {
+        let mut topo = Topology::new();
+        let (_, face, edge) = make_triangle_solid(&mut topo, 0.0);
+        let wire = topo.face(face).unwrap().outer_wire();
+        topo.set_pcurve_oriented(edge, face, true, test_pcurve(0.0));
+        let original_signature = wire_signature(&topo, wire);
+        let original_loops = topo.build_face_loops(face).unwrap();
+        let original_coedges = topo
+            .face_loop(original_loops[0])
+            .unwrap()
+            .coedges()
+            .to_vec();
+        let counts = (topo.num_wires(), topo.num_loops(), topo.num_coedges());
+        let mut rolled_back_loops = Vec::new();
+
+        let error = crate::transaction::run_transacted(&mut topo, |topo| {
+            let reversed: Vec<_> = topo
+                .wire(wire)?
+                .edges()
+                .iter()
+                .rev()
+                .map(|oriented| OrientedEdge::new(oriented.edge(), !oriented.is_forward()))
+                .collect();
+            topo.replace_boundary_wire(wire, Wire::new(reversed, true)?)?;
+            rolled_back_loops = topo.loops_of_face(face).unwrap().to_vec();
+            Err::<(), _>(TopologyError::WireNotClosed)
+        })
+        .unwrap_err();
+        assert!(matches!(error, TopologyError::WireNotClosed));
+
+        assert_eq!(wire_signature(&topo, wire), original_signature);
+        assert_eq!(topo.loops_of_face(face).unwrap(), original_loops.as_slice());
+        for loop_id in &original_loops {
+            assert!(topo.face_loop(*loop_id).is_ok());
+        }
+        for coedge_id in original_coedges {
+            assert!(topo.coedge(coedge_id).is_ok());
+        }
+        for loop_id in rolled_back_loops {
+            assert!(topo.face_loop(loop_id).is_err());
+        }
+        assert!(topo.pcurve_oriented(edge, face, true).is_some());
+        assert_eq!(
+            (topo.num_wires(), topo.num_loops(), topo.num_coedges()),
+            counts
+        );
+        crate::validation::validate_face_loops(&topo, face).unwrap();
     }
 
     #[test]
