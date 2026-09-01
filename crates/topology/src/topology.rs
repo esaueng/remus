@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use crate::adjacency::AdjacencyIndex;
 use crate::arena::Arena;
 use crate::attributes::AttributeStore;
-use crate::coedge::{Coedge, CoedgeId};
+use crate::coedge::{Coedge, CoedgeId, PeriodicWinding};
 use crate::compound::{Compound, CompoundId};
 use crate::compsolid::{CompSolid, CompSolidId};
 use crate::edge::{Edge, EdgeId};
@@ -45,15 +45,13 @@ pub struct Topology {
     compounds: Arena<Compound>,
     /// All comp-solids in the model.
     compsolids: Arena<CompSolid>,
-    /// `PCurves`: 2D parametric curves mapping edges to face surface parameters.
+    /// Compatibility index from an oriented edge use to its authoritative
+    /// coedge-hosted pcurve.
     pcurves: PCurveRegistry,
-    /// All face-boundary loops (RFC 0002, Stage 1: derived from wires on
-    /// request, never authoritative).
+    /// All authoritative face-boundary loops (RFC 0002).
     loops: Arena<Loop>,
-    /// All coedge uses (RFC 0002).
+    /// All authoritative coedge uses, including per-use pcurves.
     coedges: Arena<Coedge>,
-    /// Loops derived for each face by [`Self::build_face_loops`].
-    face_loops: HashMap<FaceId, Vec<LoopId>>,
     /// Semantic names and display colors (Issue 14).
     attributes: AttributeStore,
     /// Append-only evolution journal (RFC 0003, Stage 1).
@@ -81,6 +79,12 @@ struct SolidEntities {
 struct BoundaryLoopSpec {
     oriented_edges: Vec<OrientedEdge>,
     closed: bool,
+}
+
+#[derive(Clone)]
+struct CarriedCoedgeAuthority {
+    pcurve: Option<PCurve>,
+    periodic_winding: PeriodicWinding,
 }
 
 /// Generates an immutable arena accessor method on [`Topology`].
@@ -208,6 +212,14 @@ impl Topology {
     /// transactional operation — whose retirements were never observed —
     /// use [`Self::restore_for_rollback`], which undoes them.
     pub fn restore_preserving_handle_slots(&mut self, snapshot: &Self) {
+        let mut snapshot_face_authority: HashMap<
+            FaceId,
+            HashMap<(EdgeId, bool), CarriedCoedgeAuthority>,
+        > = snapshot
+            .faces
+            .iter()
+            .map(|(face_id, _)| (face_id, snapshot.carried_face_authority(face_id)))
+            .collect();
         self.vertices.restore_preserving_slots(&snapshot.vertices);
         self.edges.restore_preserving_slots(&snapshot.edges);
         self.wires.restore_preserving_slots(&snapshot.wires);
@@ -219,7 +231,6 @@ impl Topology {
             .restore_preserving_slots(&snapshot.compsolids);
         self.loops.restore_preserving_slots(&snapshot.loops);
         self.coedges.restore_preserving_slots(&snapshot.coedges);
-        self.face_loops.clone_from(&snapshot.face_loops);
         self.attributes.clone_from(&snapshot.attributes);
         self.pcurves.clone_from(&snapshot.pcurves);
         // Journal entries recorded after the snapshot are truncated with the
@@ -250,26 +261,57 @@ impl Topology {
             .remove_for_retired_entities(&retired_edges, &retired_faces);
         self.attributes
             .remove_for_retired_entities(&retired_solids, &retired_faces);
-        // Retirement is sticky here, so the derivation map — restored from
-        // the snapshot — can reference loops that stayed retired, or be
-        // keyed by a face that stayed retired. Drop those entries so the
-        // map never dangles; a face whose derivation is lost this way
-        // simply has no derivation, which Stage 1 treats as "not yet
-        // derived" (wires remain authoritative).
-        let faces = &self.faces;
-        let loops = &self.loops;
-        let coedges = &self.coedges;
-        self.face_loops.retain(|face_id, loop_ids| {
-            faces.get(*face_id).is_some()
-                && loop_ids.iter().all(|loop_id| {
-                    loops.get(*loop_id).is_some_and(|boundary| {
+        // Retirement is sticky here, so restored faces can reference
+        // Loop/Coedge handles that stayed retired. Rebuild the compatibility
+        // index from surviving authority, then promote affected live faces
+        // onto fresh handles while carrying their snapshot pcurves.
+        self.pcurves = PCurveRegistry::new();
+        let mut indexed_uses = Vec::new();
+        let mut missing_faces = Vec::new();
+        for (face_id, face) in self.faces.iter() {
+            let authority_is_live = !face.boundary_loops().is_empty()
+                && face.boundary_loops().iter().all(|loop_id| {
+                    self.loops.get(*loop_id).is_some_and(|boundary| {
                         boundary
                             .coedges()
                             .iter()
-                            .all(|coedge_id| coedges.get(*coedge_id).is_some())
+                            .all(|coedge_id| self.coedges.get(*coedge_id).is_some())
                     })
-                })
-        });
+                });
+            if !authority_is_live {
+                missing_faces.push(face_id);
+                continue;
+            }
+            for &loop_id in face.boundary_loops() {
+                if let Some(boundary) = self.loops.get(loop_id) {
+                    for &coedge_id in boundary.coedges() {
+                        if let Some(coedge) = self.coedges.get(coedge_id) {
+                            indexed_uses.push((
+                                coedge.edge(),
+                                face_id,
+                                coedge.is_forward(),
+                                coedge_id,
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        for (edge, face, forward, coedge_id) in indexed_uses {
+            self.pcurves.index_use(edge, face, forward, coedge_id);
+        }
+        for face_id in missing_faces {
+            let Ok(face) = self.face(face_id) else {
+                continue;
+            };
+            let mut wire_ids = vec![face.outer_wire()];
+            wire_ids.extend(face.inner_wires().iter().copied());
+            let Ok(specs) = self.boundary_loop_specs(&wire_ids, None) else {
+                continue;
+            };
+            let carried = snapshot_face_authority.remove(&face_id).unwrap_or_default();
+            let _ = self.install_face_loop_specs_carrying(face_id, specs, carried, false);
+        }
     }
 
     /// Restore the exact pre-transaction state after a failed transactional
@@ -298,7 +340,6 @@ impl Topology {
         self.compsolids.restore_for_rollback(&snapshot.compsolids);
         self.loops.restore_for_rollback(&snapshot.loops);
         self.coedges.restore_for_rollback(&snapshot.coedges);
-        self.face_loops.clone_from(&snapshot.face_loops);
         self.attributes.clone_from(&snapshot.attributes);
         self.pcurves.clone_from(&snapshot.pcurves);
         // The journal rolls back with the model, exactly as in
@@ -644,15 +685,47 @@ impl Topology {
         Id = WireId
     );
 
-    arena_api!(
-        add = add_face,
-        arena = faces,
-        arena_fn = faces,
-        count = num_faces,
-        id_from_index = face_id_from_index,
-        T = Face,
-        Id = FaceId
-    );
+    /// Allocates a face and immediately promotes its valid wire boundary to
+    /// authoritative Loop/Coedge storage.
+    ///
+    /// The wire references remain as a compatibility facade synchronized by
+    /// topology-owned boundary mutation APIs.
+    /// Legacy callers may still construct an invalid face containing stale
+    /// handles; as before, allocation succeeds, but no authoritative loops
+    /// are installed and strict consumers return the corresponding not-found
+    /// error when they inspect the boundary.
+    pub fn add_face(&mut self, mut value: Face) -> FaceId {
+        let mut wire_ids = vec![value.outer_wire()];
+        wire_ids.extend(value.inner_wires().iter().copied());
+        let specs = self.boundary_loop_specs(&wire_ids, None);
+        // A cloned Face is a construction specification, not permission to
+        // share another face's owned Loop handles.
+        value.replace_boundary_loops(Vec::new());
+        self.mutation_ticks = self.mutation_ticks.saturating_add(1);
+        let face_id = self.faces.alloc(value);
+        if let Ok(specs) = specs {
+            let _ = self.install_face_loop_specs_carrying(face_id, specs, HashMap::new(), false);
+        }
+        face_id
+    }
+
+    /// Returns the face arena for iteration and queries.
+    #[must_use]
+    pub fn faces(&self) -> &Arena<Face> {
+        &self.faces
+    }
+
+    /// Returns the number of live faces.
+    #[must_use]
+    pub fn num_faces(&self) -> usize {
+        self.faces.len()
+    }
+
+    /// Reconstructs a live face ID from its arena index.
+    #[must_use]
+    pub fn face_id_from_index(&self, index: usize) -> Option<FaceId> {
+        self.faces.id_from_index(index)
+    }
 
     arena_api!(
         add = add_shell,
@@ -723,7 +796,52 @@ impl Topology {
         face_id: FaceId,
         specs: Vec<BoundaryLoopSpec>,
     ) -> Vec<LoopId> {
-        if let Some(old_loops) = self.face_loops.remove(&face_id) {
+        let carried_authority = self.carried_face_authority(face_id);
+        self.install_face_loop_specs_carrying(face_id, specs, carried_authority, true)
+    }
+
+    fn carried_face_authority(
+        &self,
+        face_id: FaceId,
+    ) -> HashMap<(EdgeId, bool), CarriedCoedgeAuthority> {
+        let mut carried = HashMap::new();
+        let Some(face) = self.faces.get(face_id) else {
+            return carried;
+        };
+        for &loop_id in face.boundary_loops() {
+            let Some(boundary_loop) = self.loops.get(loop_id) else {
+                continue;
+            };
+            for &coedge_id in boundary_loop.coedges() {
+                let Some(coedge) = self.coedges.get(coedge_id) else {
+                    continue;
+                };
+                carried.insert(
+                    (coedge.edge(), coedge.is_forward()),
+                    CarriedCoedgeAuthority {
+                        pcurve: coedge.pcurve().cloned(),
+                        periodic_winding: coedge.periodic_winding(),
+                    },
+                );
+            }
+        }
+        carried
+    }
+
+    fn install_face_loop_specs_carrying(
+        &mut self,
+        face_id: FaceId,
+        specs: Vec<BoundaryLoopSpec>,
+        mut carried_authority: HashMap<(EdgeId, bool), CarriedCoedgeAuthority>,
+        replace_existing: bool,
+    ) -> Vec<LoopId> {
+        if replace_existing {
+            self.pcurves.remove_face(face_id);
+            let old_loops = self
+                .faces
+                .get(face_id)
+                .map(|face| face.boundary_loops().to_vec())
+                .unwrap_or_default();
             for loop_id in old_loops {
                 if let Some(old_loop) = self.loops.get(loop_id) {
                     for coedge_id in old_loop.coedges().to_vec() {
@@ -743,8 +861,30 @@ impl Topology {
                 .oriented_edges
                 .iter()
                 .map(|oriented| {
-                    self.coedges
-                        .alloc(Coedge::new(oriented.edge(), oriented.is_forward(), loop_id))
+                    let carried = carried_authority
+                        .remove(&(oriented.edge(), oriented.is_forward()))
+                        .unwrap_or(CarriedCoedgeAuthority {
+                            pcurve: None,
+                            periodic_winding: PeriodicWinding::ZERO,
+                        });
+                    let coedge_id = self.coedges.alloc(Coedge::with_pcurve(
+                        oriented.edge(),
+                        oriented.is_forward(),
+                        loop_id,
+                        carried.pcurve,
+                    ));
+                    if carried.periodic_winding != PeriodicWinding::ZERO
+                        && let Some(coedge) = self.coedges.get_mut(coedge_id)
+                    {
+                        coedge.replace_periodic_winding(carried.periodic_winding);
+                    }
+                    self.pcurves.index_use(
+                        oriented.edge(),
+                        face_id,
+                        oriented.is_forward(),
+                        coedge_id,
+                    );
+                    coedge_id
                 })
                 .collect();
             if let Some(loop_entity) = self.loops.get_mut(loop_id) {
@@ -752,20 +892,10 @@ impl Topology {
             }
             new_loops.push(loop_id);
         }
-        self.face_loops.insert(face_id, new_loops.clone());
+        if let Some(face) = self.faces.get_mut(face_id) {
+            face.replace_boundary_loops(new_loops.clone());
+        }
         new_loops
-    }
-
-    fn retain_face_pcurves_for_specs(&mut self, face_id: FaceId, specs: &[BoundaryLoopSpec]) {
-        let live_uses: HashSet<(EdgeId, bool)> = specs
-            .iter()
-            .flat_map(|spec| {
-                spec.oriented_edges
-                    .iter()
-                    .map(|oriented| (oriented.edge(), oriented.is_forward()))
-            })
-            .collect();
-        self.pcurves.retain_face_uses(face_id, &live_uses);
     }
 
     /// Atomically replaces a stored wire used by one or more face boundaries.
@@ -801,7 +931,7 @@ impl Topology {
             let mut wire_ids = vec![face.outer_wire()];
             wire_ids.extend(face.inner_wires().iter().copied());
             let specs = self.boundary_loop_specs(&wire_ids, Some((wire_id, &replacement)))?;
-            affected.push((face_id, self.face_loops.contains_key(&face_id), specs));
+            affected.push((face_id, specs));
         }
         if affected.is_empty() {
             self.boundary_loop_specs(&[wire_id], Some((wire_id, &replacement)))?;
@@ -814,11 +944,8 @@ impl Topology {
         *stored = replacement;
         self.mutation_ticks = self.mutation_ticks.saturating_add(1);
 
-        for (face_id, had_derivation, specs) in affected {
-            self.retain_face_pcurves_for_specs(face_id, &specs);
-            if had_derivation {
-                let _ = self.install_face_loop_specs(face_id, specs);
-            }
+        for (face_id, specs) in affected {
+            let _ = self.install_face_loop_specs(face_id, specs);
         }
         Ok(())
     }
@@ -844,33 +971,22 @@ impl Topology {
         let mut wire_ids = vec![outer_wire];
         wire_ids.extend(inner_wires.iter().copied());
         let specs = self.boundary_loop_specs(&wire_ids, None)?;
-        let had_derivation = self.face_loops.contains_key(&face_id);
-
         let face = self
             .faces
             .get_mut(face_id)
             .ok_or(TopologyError::FaceNotFound(face_id))?;
         face.replace_boundary_wires(outer_wire, inner_wires);
         self.mutation_ticks = self.mutation_ticks.saturating_add(1);
-        self.retain_face_pcurves_for_specs(face_id, &specs);
-        if had_derivation {
-            let _ = self.install_face_loop_specs(face_id, specs);
-        }
+        let _ = self.install_face_loop_specs(face_id, specs);
         Ok(())
     }
 
-    /// Derives (or re-derives) this face's boundary loops and coedges from
-    /// its current wires (RFC 0002, Stage 1).
+    /// Returns this face's authoritative loops, deriving them once from the
+    /// compatibility wire facade only for a legacy underived face.
     ///
-    /// One loop is created per wire (outer first, then inner), with one
-    /// coedge per oriented-edge occurrence — a seam edge used twice by one
-    /// wire yields two coedges. A previous derivation for this face is
-    /// retired first; its loop and coedge handles become permanently
-    /// invalid (no slot reuse).
-    ///
-    /// Wires remain authoritative in Stage 1: this derivation is a view
-    /// with stable handles, checked against its source by
-    /// [`validate_face_loops`](crate::validation::validate_face_loops).
+    /// New faces receive loops during [`Self::add_face`], so normal calls are
+    /// read-only and preserve Loop/Coedge identity. The derivation fallback
+    /// exists for pre-flip serialized or manually assembled topology.
     ///
     /// # Errors
     ///
@@ -878,6 +994,14 @@ impl Topology {
     /// referenced edge is invalid. Nothing is retired or allocated on
     /// error.
     pub fn build_face_loops(&mut self, face_id: FaceId) -> Result<Vec<LoopId>, TopologyError> {
+        if let Some(loops) = self
+            .faces
+            .get(face_id)
+            .map(Face::boundary_loops)
+            .filter(|loops| !loops.is_empty())
+        {
+            return Ok(loops.to_vec());
+        }
         let face = self.face(face_id)?;
         let mut wire_ids = vec![face.outer_wire()];
         wire_ids.extend(face.inner_wires().iter().copied());
@@ -885,11 +1009,39 @@ impl Topology {
         Ok(self.install_face_loop_specs(face_id, specs))
     }
 
-    /// The loops previously derived for a face, in outer-then-inner order,
-    /// or `None` when [`Self::build_face_loops`] has not been called for it.
+    /// The authoritative loops for a face, in outer-then-inner order, or
+    /// `None` only for invalid/legacy topology not yet promoted.
     #[must_use]
     pub fn loops_of_face(&self, face_id: FaceId) -> Option<&[LoopId]> {
-        self.face_loops.get(&face_id).map(Vec::as_slice)
+        self.faces
+            .get(face_id)
+            .map(Face::boundary_loops)
+            .filter(|loops| !loops.is_empty())
+    }
+
+    /// Materializes a face's authoritative boundary uses as compatibility
+    /// oriented edges, in outer-then-inner loop order.
+    ///
+    /// New boundary-aware code should retain the coedge identities from
+    /// [`Self::loops_of_face`]. This adapter exists for algorithms whose
+    /// current input is an owned sequence of [`OrientedEdge`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed not-found error for a stale face, loop, or coedge.
+    pub fn face_oriented_edges(&self, face_id: FaceId) -> Result<Vec<OrientedEdge>, TopologyError> {
+        let face = self.face(face_id)?;
+        if face.boundary_loops().is_empty() {
+            return Err(TopologyError::LoopWireMismatch { face: face_id });
+        }
+        let mut oriented = Vec::new();
+        for &loop_id in face.boundary_loops() {
+            for &coedge_id in self.face_loop(loop_id)?.coedges() {
+                let coedge = self.coedge(coedge_id)?;
+                oriented.push(OrientedEdge::new(coedge.edge(), coedge.is_forward()));
+            }
+        }
+        Ok(oriented)
     }
 
     /// Every live coedge use of the given edge, across all derived loops.
@@ -973,15 +1125,18 @@ impl Topology {
         retiring.shells.retain(|id| !retained.shells.contains(id));
 
         for face_id in &retiring.faces {
-            if let Some(loop_ids) = self.face_loops.remove(face_id) {
-                for loop_id in loop_ids {
-                    if let Some(retired_loop) = self.loops.get(loop_id) {
-                        for coedge_id in retired_loop.coedges().to_vec() {
-                            self.coedges.retire(coedge_id);
-                        }
+            let loop_ids = self
+                .faces
+                .get(*face_id)
+                .map(|face| face.boundary_loops().to_vec())
+                .unwrap_or_default();
+            for loop_id in loop_ids {
+                if let Some(retired_loop) = self.loops.get(loop_id) {
+                    for coedge_id in retired_loop.coedges().to_vec() {
+                        self.coedges.retire(coedge_id);
                     }
-                    self.loops.retire(loop_id);
                 }
+                self.loops.retire(loop_id);
             }
         }
         self.pcurves
@@ -1090,46 +1245,75 @@ impl Topology {
     /// branches of a seam edge are addressed (RFC 0002, Stage 2).
     #[must_use]
     pub fn pcurve_oriented(&self, edge: EdgeId, face: FaceId, forward: bool) -> Option<&PCurve> {
-        self.pcurves.get_use(edge, face, forward)
+        self.pcurves
+            .get_use(edge, face, forward)
+            .and_then(|coedge_id| self.coedges.get(coedge_id))
+            .and_then(Coedge::pcurve)
     }
 
     /// Sets the pcurve of one edge use, addressed exactly by orientation.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed topology error when the edge, face, or oriented
+    /// boundary use is absent. Geometry is never stored outside a coedge.
     pub fn set_pcurve_oriented(
         &mut self,
         edge: EdgeId,
         face: FaceId,
         forward: bool,
         pcurve: PCurve,
-    ) {
-        self.mutation_ticks = self.mutation_ticks.saturating_add(1);
-        self.pcurves.set_use(edge, face, forward, pcurve);
+    ) -> Result<(), TopologyError> {
+        self.edge(edge)?;
+        self.face(face)?;
+        if self.loops_of_face(face).is_none() {
+            let _ = self.build_face_loops(face)?;
+        }
+        let coedge_id = self.pcurves.get_use(edge, face, forward).ok_or_else(|| {
+            TopologyError::NonManifold {
+                reason: format!(
+                    "face {face:?} has no {orientation} use of edge {edge:?}",
+                    orientation = if forward { "forward" } else { "reverse" }
+                ),
+            }
+        })?;
+        self.set_coedge_pcurve(coedge_id, pcurve).map(|_| ())
     }
 
     /// Removes the pcurve of one edge use.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed topology error when the edge, face, or indexed coedge
+    /// use is stale.
     pub fn remove_pcurve_oriented(
         &mut self,
         edge: EdgeId,
         face: FaceId,
         forward: bool,
-    ) -> Option<PCurve> {
-        self.mutation_ticks = self.mutation_ticks.saturating_add(1);
-        self.pcurves.remove_use(edge, face, forward)
+    ) -> Result<Option<PCurve>, TopologyError> {
+        self.edge(edge)?;
+        self.face(face)?;
+        let Some(coedge_id) = self.pcurves.get_use(edge, face, forward) else {
+            return Ok(None);
+        };
+        self.remove_coedge_pcurve(coedge_id)
     }
 
     /// The pcurve of `edge` on `face`, when that pair identifies at most
-    /// one stored use.
+    /// one boundary use.
     ///
     /// # Errors
     ///
     /// Returns [`TopologyError::SeamPcurveAmbiguous`] when both orientation
-    /// branches are stored (a seam edge): the pair no longer identifies a
+    /// branches exist (a seam edge): the pair no longer identifies a
     /// use, and answering with either branch would be arbitrary. Seam-aware
     /// callers address the use with [`Self::pcurve_oriented`].
     pub fn pcurve(&self, edge: EdgeId, face: FaceId) -> Result<Option<&PCurve>, TopologyError> {
         let uses = self.pcurves.uses_on_face(edge, face);
         match uses.as_slice() {
             [] => Ok(None),
-            [(_, pcurve)] => Ok(Some(pcurve)),
+            [(_, coedge_id)] => Ok(self.coedge(*coedge_id)?.pcurve()),
             _ => Err(TopologyError::SeamPcurveAmbiguous { edge, face }),
         }
     }
@@ -1139,23 +1323,20 @@ impl Topology {
     /// # Errors
     ///
     /// Returns [`TopologyError::SeamPcurveAmbiguous`] when both orientation
-    /// branches are stored; a bare boolean would hide the seam.
+    /// branches exist; a bare boolean would hide the seam.
     pub fn has_pcurve(&self, edge: EdgeId, face: FaceId) -> Result<bool, TopologyError> {
-        match self.pcurves.uses_on_face(edge, face).len() {
-            0 => Ok(false),
-            1 => Ok(true),
+        match self.pcurves.uses_on_face(edge, face).as_slice() {
+            [] => Ok(false),
+            [(_, coedge_id)] => Ok(self.coedge(*coedge_id)?.pcurve().is_some()),
             _ => Err(TopologyError::SeamPcurveAmbiguous { edge, face }),
         }
     }
 
     /// Sets the pcurve of `edge` on `face`, resolving which use it is.
     ///
-    /// Resolution: if the face's wires use the edge exactly once, the entry
-    /// is stored under that use's orientation and any stale opposite entry
-    /// is replaced (preserving the legacy single-slot overwrite semantics).
-    /// If the edge is not currently in the boundary (construction-order
-    /// tolerance), an existing single entry is overwritten in place, or a
-    /// new entry is stored under the forward orientation.
+    /// Resolution: if the face's authoritative loops use the edge exactly
+    /// once, the pcurve is stored on that coedge. Geometry is never retained
+    /// for an edge that is absent from the boundary.
     ///
     /// # Errors
     ///
@@ -1174,43 +1355,32 @@ impl Topology {
         let uses = self.face_edge_uses(edge, face)?;
         let forward = match uses.as_slice() {
             [forward] => *forward,
-            [] => match self.pcurves.uses_on_face(edge, face).as_slice() {
-                [] => true,
-                [(forward, _)] => *forward,
-                _ => return Err(TopologyError::SeamPcurveAmbiguous { edge, face }),
-            },
+            [] => {
+                return Err(TopologyError::NonManifold {
+                    reason: format!("edge {edge:?} is not used by face {face:?}"),
+                });
+            }
             _ => return Err(TopologyError::SeamPcurveAmbiguous { edge, face }),
         };
-        self.mutation_ticks = self.mutation_ticks.saturating_add(1);
-        self.pcurves.remove_use(edge, face, !forward);
-        self.pcurves.set_use(edge, face, forward, pcurve);
-        Ok(())
+        self.set_pcurve_oriented(edge, face, forward, pcurve)
     }
 
     /// Removes the pcurve of `edge` on `face`, when the pair identifies at
-    /// most one stored use.
+    /// most one boundary use.
     ///
     /// # Errors
     ///
     /// Returns [`TopologyError::SeamPcurveAmbiguous`] when both orientation
-    /// branches are stored.
+    /// branches exist.
     pub fn remove_pcurve(
         &mut self,
         edge: EdgeId,
         face: FaceId,
     ) -> Result<Option<PCurve>, TopologyError> {
-        let stored: Vec<bool> = self
-            .pcurves
-            .uses_on_face(edge, face)
-            .iter()
-            .map(|(forward, _)| *forward)
-            .collect();
+        let stored: Vec<bool> = self.face_edge_uses(edge, face)?;
         match stored.as_slice() {
             [] => Ok(None),
-            [forward] => {
-                self.mutation_ticks = self.mutation_ticks.saturating_add(1);
-                Ok(self.pcurves.remove_use(edge, face, *forward))
-            }
+            [forward] => self.remove_pcurve_oriented(edge, face, *forward),
             _ => Err(TopologyError::SeamPcurveAmbiguous { edge, face }),
         }
     }
@@ -1220,20 +1390,41 @@ impl Topology {
     /// two entries.
     #[must_use]
     pub fn pcurves_for_face(&self, face: FaceId) -> Vec<(EdgeId, bool, &PCurve)> {
-        self.pcurves.uses_for_face(face)
+        self.pcurves
+            .uses_for_face(face)
+            .into_iter()
+            .filter_map(|(edge, forward, coedge_id)| {
+                self.coedges
+                    .get(coedge_id)
+                    .and_then(Coedge::pcurve)
+                    .map(|pcurve| (edge, forward, pcurve))
+            })
+            .collect()
     }
 
     /// All stored pcurve uses for an edge: `(face, forward, pcurve)`, in
     /// deterministic order.
     #[must_use]
     pub fn pcurves_for_edge(&self, edge: EdgeId) -> Vec<(FaceId, bool, &PCurve)> {
-        self.pcurves.uses_for_edge(edge)
+        self.pcurves
+            .uses_for_edge(edge)
+            .into_iter()
+            .filter_map(|(face, forward, coedge_id)| {
+                self.coedges
+                    .get(coedge_id)
+                    .and_then(Coedge::pcurve)
+                    .map(|pcurve| (face, forward, pcurve))
+            })
+            .collect()
     }
 
     /// Number of stored pcurve uses.
     #[must_use]
     pub fn num_pcurves(&self) -> usize {
-        self.pcurves.len()
+        self.coedges
+            .iter()
+            .filter(|(_, coedge)| coedge.pcurve().is_some())
+            .count()
     }
 
     /// The pcurve of one derived coedge use, resolved through its owning
@@ -1243,25 +1434,100 @@ impl Topology {
     ///
     /// Returns a not-found error when the coedge or its loop is stale.
     pub fn coedge_pcurve(&self, coedge_id: CoedgeId) -> Result<Option<&PCurve>, TopologyError> {
-        let coedge = self.coedge(coedge_id)?;
-        let face = self.face_loop(coedge.parent_loop())?.face();
-        Ok(self
-            .pcurves
-            .get_use(coedge.edge(), face, coedge.is_forward()))
+        self.validate_coedge_authority(coedge_id)?;
+        Ok(self.coedge(coedge_id)?.pcurve())
     }
 
-    /// The orientations with which `face`'s wires use `edge`, in boundary
-    /// order (outer wire first).
+    /// Replaces the pcurve stored by one authoritative coedge use.
+    ///
+    /// This is the identity-preserving API for seams and repeated uses. The
+    /// `(edge, face, orientation)` methods remain compatibility adapters and
+    /// may refuse when that tuple does not identify one use.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TopologyError::CoedgeNotFound`] for a stale handle.
+    pub fn set_coedge_pcurve(
+        &mut self,
+        coedge_id: CoedgeId,
+        pcurve: PCurve,
+    ) -> Result<Option<PCurve>, TopologyError> {
+        self.validate_coedge_authority(coedge_id)?;
+        self.mutation_ticks = self.mutation_ticks.saturating_add(1);
+        Ok(self
+            .coedges
+            .get_mut(coedge_id)
+            .ok_or(TopologyError::CoedgeNotFound(coedge_id))?
+            .replace_pcurve(Some(pcurve)))
+    }
+
+    /// Removes and returns the pcurve stored by one authoritative coedge.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TopologyError::CoedgeNotFound`] for a stale handle.
+    pub fn remove_coedge_pcurve(
+        &mut self,
+        coedge_id: CoedgeId,
+    ) -> Result<Option<PCurve>, TopologyError> {
+        self.validate_coedge_authority(coedge_id)?;
+        self.mutation_ticks = self.mutation_ticks.saturating_add(1);
+        Ok(self
+            .coedges
+            .get_mut(coedge_id)
+            .ok_or(TopologyError::CoedgeNotFound(coedge_id))?
+            .replace_pcurve(None))
+    }
+
+    /// Replaces one authoritative coedge's periodic lift counts.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed topology error when the coedge or one of its owning
+    /// references is stale.
+    pub fn set_coedge_periodic_winding(
+        &mut self,
+        coedge_id: CoedgeId,
+        winding: PeriodicWinding,
+    ) -> Result<PeriodicWinding, TopologyError> {
+        self.validate_coedge_authority(coedge_id)?;
+        self.mutation_ticks = self.mutation_ticks.saturating_add(1);
+        Ok(self
+            .coedges
+            .get_mut(coedge_id)
+            .ok_or(TopologyError::CoedgeNotFound(coedge_id))?
+            .replace_periodic_winding(winding))
+    }
+
+    fn validate_coedge_authority(&self, coedge_id: CoedgeId) -> Result<(), TopologyError> {
+        let coedge = self.coedge(coedge_id)?;
+        self.edge(coedge.edge())?;
+        let parent = self.face_loop(coedge.parent_loop())?;
+        self.face(parent.face())?;
+        if !parent.coedges().contains(&coedge_id) {
+            return Err(TopologyError::NonManifold {
+                reason: format!(
+                    "coedge {coedge_id:?} names loop {:?}, but that loop does not own it",
+                    coedge.parent_loop()
+                ),
+            });
+        }
+        Ok(())
+    }
+
+    /// The orientations with which `face`'s authoritative loops use `edge`,
+    /// in boundary order (outer loop first).
     fn face_edge_uses(&self, edge: EdgeId, face: FaceId) -> Result<Vec<bool>, TopologyError> {
-        let face_data = self.face(face)?;
-        let mut wire_ids = vec![face_data.outer_wire()];
-        wire_ids.extend(face_data.inner_wires().iter().copied());
+        self.face(face)?;
         let mut uses = Vec::new();
-        for wire_id in wire_ids {
-            let wire = self.wire(wire_id)?;
-            for oriented in wire.edges() {
-                if oriented.edge() == edge {
-                    uses.push(oriented.is_forward());
+        let Some(loop_ids) = self.loops_of_face(face) else {
+            return Ok(uses);
+        };
+        for &loop_id in loop_ids {
+            for &coedge_id in self.face_loop(loop_id)?.coedges() {
+                let coedge = self.coedge(coedge_id)?;
+                if coedge.edge() == edge {
+                    uses.push(coedge.is_forward());
                 }
             }
         }
@@ -1347,8 +1613,12 @@ mod tests {
         let mut topo = Topology::new();
         let (_, face, edge) = make_triangle_solid(&mut topo, 0.0);
         let wire = topo.face(face).unwrap().outer_wire();
-        topo.set_pcurve_oriented(edge, face, true, test_pcurve(0.0));
-        topo.set_pcurve_oriented(edge, face, false, test_pcurve(10.0));
+        topo.set_pcurve_oriented(edge, face, true, test_pcurve(0.0))
+            .unwrap();
+        assert!(
+            topo.set_pcurve_oriented(edge, face, false, test_pcurve(10.0))
+                .is_err()
+        );
         let retired_loops = topo.build_face_loops(face).unwrap();
         let retired_coedges = topo.face_loop(retired_loops[0]).unwrap().coedges().to_vec();
 
@@ -1364,7 +1634,7 @@ mod tests {
             .unwrap();
 
         assert!(topo.pcurve_oriented(edge, face, true).is_none());
-        assert!(topo.pcurve_oriented(edge, face, false).is_some());
+        assert!(topo.pcurve_oriented(edge, face, false).is_none());
         for retired in retired_loops {
             assert!(topo.face_loop(retired).is_err());
         }
@@ -1382,11 +1652,40 @@ mod tests {
     }
 
     #[test]
+    fn sanctioned_wire_replacement_carries_coedge_winding_by_use_identity() {
+        let mut topo = Topology::new();
+        let (_, face, edge) = make_triangle_solid(&mut topo, 0.0);
+        let wire = topo.face(face).unwrap().outer_wire();
+        let old_coedge = topo
+            .coedges_of_edge(edge)
+            .into_iter()
+            .find(|&coedge| topo.coedge(coedge).unwrap().is_forward())
+            .unwrap();
+        topo.set_coedge_periodic_winding(old_coedge, PeriodicWinding::new(2, -1))
+            .unwrap();
+        let replacement = topo.wire(wire).unwrap().clone();
+
+        topo.replace_boundary_wire(wire, replacement).unwrap();
+
+        assert!(topo.coedge(old_coedge).is_err());
+        let new_coedge = topo
+            .coedges_of_edge(edge)
+            .into_iter()
+            .find(|&coedge| topo.coedge(coedge).unwrap().is_forward())
+            .unwrap();
+        assert_eq!(
+            topo.coedge(new_coedge).unwrap().periodic_winding(),
+            PeriodicWinding::new(2, -1)
+        );
+    }
+
+    #[test]
     fn sanctioned_face_boundary_replacement_is_preflight_atomic() {
         let mut topo = Topology::new();
         let (_, face, edge) = make_triangle_solid(&mut topo, 0.0);
         let original_wire = topo.face(face).unwrap().outer_wire();
-        topo.set_pcurve_oriented(edge, face, true, test_pcurve(0.0));
+        topo.set_pcurve_oriented(edge, face, true, test_pcurve(0.0))
+            .unwrap();
         let original_loops = topo.build_face_loops(face).unwrap();
         let counts = (topo.num_wires(), topo.num_loops(), topo.num_coedges());
 
@@ -1439,7 +1738,8 @@ mod tests {
         let mut topo = Topology::new();
         let (_, face, edge) = make_triangle_solid(&mut topo, 0.0);
         let wire = topo.face(face).unwrap().outer_wire();
-        topo.set_pcurve_oriented(edge, face, true, test_pcurve(0.0));
+        topo.set_pcurve_oriented(edge, face, true, test_pcurve(0.0))
+            .unwrap();
         let original_signature = wire_signature(&topo, wire);
         let original_loops = topo.build_face_loops(face).unwrap();
         let original_coedges = topo

@@ -2762,7 +2762,7 @@ pub(super) fn register_pcurves(
 
                 // Parameter range: [0, 1] for the pcurve.
                 let pc = PCurve::new(pcurve_2d, 0.0, 1.0);
-                topo.set_pcurve_oriented(eid, fid, oe.is_forward(), pc);
+                topo.set_pcurve_oriented(eid, fid, oe.is_forward(), pc)?;
             }
         }
     }

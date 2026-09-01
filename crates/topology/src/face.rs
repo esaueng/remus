@@ -15,6 +15,7 @@ use remus_math::traits::ParametricSurface;
 use remus_math::vec::{Point3, Vec3};
 
 use crate::arena;
+use crate::face_loop::LoopId;
 use crate::wire::WireId;
 
 /// Typed handle for a [`Face`] stored in an [`Arena`](crate::Arena).
@@ -210,14 +211,18 @@ impl FaceSurface {
 
 /// A topological face: a bounded region of a surface.
 ///
-/// A face has exactly one outer wire (boundary) and zero or more inner
-/// wires (holes/voids).
+/// A face has exactly one authoritative outer loop and zero or more inner
+/// loops. Boundary wires are a compatibility facade kept synchronized by
+/// topology-owned mutation APIs; strict validation refuses facade divergence.
 #[derive(Debug, Clone)]
 pub struct Face {
     /// The outer boundary wire of this face.
     outer_wire: WireId,
     /// Inner boundary wires representing holes in this face.
     inner_wires: Vec<WireId>,
+    /// Authoritative boundary loops in outer-then-inner order. Empty only
+    /// until a newly allocated face is promoted, or for invalid legacy input.
+    boundary_loops: Vec<LoopId>,
     /// The geometric surface underlying this face.
     surface: FaceSurface,
     /// Whether the face orientation is reversed relative to the surface normal.
@@ -236,6 +241,7 @@ impl Face {
         Self {
             outer_wire,
             inner_wires,
+            boundary_loops: Vec::new(),
             surface,
             reversed: false,
         }
@@ -255,6 +261,7 @@ impl Face {
         Self {
             outer_wire,
             inner_wires,
+            boundary_loops: Vec::new(),
             surface,
             reversed: true,
         }
@@ -277,6 +284,24 @@ impl Face {
         &self.inner_wires
     }
 
+    /// Returns the authoritative outer boundary loop, when installed.
+    #[must_use]
+    pub fn outer_loop(&self) -> Option<LoopId> {
+        self.boundary_loops.first().copied()
+    }
+
+    /// Returns the authoritative inner boundary loops.
+    #[must_use]
+    pub fn inner_loops(&self) -> &[LoopId] {
+        self.boundary_loops.get(1..).unwrap_or_default()
+    }
+
+    /// Returns every authoritative boundary loop in outer-then-inner order.
+    #[must_use]
+    pub fn boundary_loops(&self) -> &[LoopId] {
+        &self.boundary_loops
+    }
+
     /// Returns a mutable reference to the inner wires list.
     pub fn inner_wires_mut(&mut self) -> &mut Vec<WireId> {
         &mut self.inner_wires
@@ -290,6 +315,12 @@ impl Face {
     pub(crate) fn replace_boundary_wires(&mut self, outer_wire: WireId, inner_wires: Vec<WireId>) {
         self.outer_wire = outer_wire;
         self.inner_wires = inner_wires;
+    }
+
+    /// Replaces the authoritative boundary-loop handles after a validated
+    /// topology-owned boundary commit.
+    pub(crate) fn replace_boundary_loops(&mut self, loops: Vec<LoopId>) {
+        self.boundary_loops = loops;
     }
 
     /// Returns a reference to the surface geometry of this face.

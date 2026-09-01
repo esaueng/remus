@@ -1,9 +1,9 @@
 //! Loop — an ordered cycle of coedge uses bounding one face.
 //!
-//! See `docs/design/rfc-0002-coedge-architecture.md`. In Stage 1 loops are
-//! derived from a face's wires on request and wires remain authoritative;
-//! a loop that disagrees with its source wire is a validation error, never
-//! a tolerated state.
+//! See `docs/design/rfc-0002-coedge-architecture.md`. Loops are authoritative
+//! face boundaries. Topology-owned mutation keeps wires synchronized as a
+//! compatibility view; any disagreement is a validation error, never
+//! tolerated dual authority.
 
 use crate::arena;
 use crate::coedge::CoedgeId;
@@ -177,38 +177,59 @@ mod tests {
             assert_eq!(coedge.edge(), oriented.edge());
             assert_eq!(coedge.is_forward(), oriented.is_forward());
         }
+        assert_eq!(
+            topo.face_oriented_edges(face)
+                .unwrap()
+                .iter()
+                .map(|oriented| (oriented.edge(), oriented.is_forward()))
+                .collect::<Vec<_>>(),
+            wire_edges
+                .iter()
+                .map(|oriented| (oriented.edge(), oriented.is_forward()))
+                .collect::<Vec<_>>()
+        );
         validate_face_loops(&topo, face).unwrap();
         validate_loop_connected(&topo, loops[0]).unwrap();
     }
 
     #[test]
-    fn underived_face_passes_vacuously_and_reports_no_loops() {
+    fn valid_face_allocation_installs_authoritative_loops() {
         let mut topo = Topology::new();
         let (face, _) = triangle_face(&mut topo);
-        assert!(topo.loops_of_face(face).is_none());
+        let loops = topo.loops_of_face(face).unwrap();
+        assert_eq!(loops.len(), 1);
+        assert_eq!(topo.face_loop(loops[0]).unwrap().coedges().len(), 3);
         validate_face_loops(&topo, face).unwrap();
     }
 
     #[test]
-    fn rebuilding_retires_the_previous_derivation() {
-        // No slot reuse: the first derivation's handles become permanently
-        // invalid; live counts do not grow.
+    fn cloned_face_gets_fresh_owned_loop_handles() {
+        let mut topo = Topology::new();
+        let (source, _) = triangle_face(&mut topo);
+        let source_loop = topo.face(source).unwrap().outer_loop().unwrap();
+        let clone = topo.face(source).unwrap().clone();
+
+        let copied = topo.add_face(clone);
+
+        let copied_loop = topo.face(copied).unwrap().outer_loop().unwrap();
+        assert_ne!(copied_loop, source_loop);
+        assert_eq!(topo.face_loop(source_loop).unwrap().face(), source);
+        assert_eq!(topo.face_loop(copied_loop).unwrap().face(), copied);
+        validate_face_loops(&topo, source).unwrap();
+        validate_face_loops(&topo, copied).unwrap();
+    }
+
+    #[test]
+    fn compatibility_builder_preserves_authoritative_handles() {
         let mut topo = Topology::new();
         let (face, _) = triangle_face(&mut topo);
         let first = topo.build_face_loops(face).unwrap();
         let first_coedges = topo.face_loop(first[0]).unwrap().coedges().to_vec();
 
         let second = topo.build_face_loops(face).unwrap();
-        assert_ne!(first[0], second[0]);
-        assert!(matches!(
-            topo.face_loop(first[0]),
-            Err(TopologyError::LoopNotFound(_))
-        ));
-        for stale in first_coedges {
-            assert!(matches!(
-                topo.coedge(stale),
-                Err(TopologyError::CoedgeNotFound(_))
-            ));
+        assert_eq!(first, second);
+        for coedge_id in first_coedges {
+            assert!(topo.coedge(coedge_id).is_ok());
         }
         assert_eq!(topo.num_loops(), 1);
         assert_eq!(topo.num_coedges(), 3);
@@ -267,11 +288,10 @@ mod tests {
 
     #[test]
     fn restore_retires_post_snapshot_derivations() {
-        let mut topo = Topology::new();
+        let snapshot = Topology::new();
+        let mut topo = snapshot.clone();
         let (face, _) = triangle_face(&mut topo);
-        let snapshot = topo.clone();
-
-        let loops = topo.build_face_loops(face).unwrap();
+        let loops = topo.loops_of_face(face).unwrap().to_vec();
         topo.restore_preserving_handle_slots(&snapshot);
 
         assert!(topo.loops_of_face(face).is_none());
@@ -285,17 +305,25 @@ mod tests {
 
     #[test]
     fn restore_after_post_snapshot_rederivation_leaves_no_dangling_map() {
-        // Checkpoint barrier semantics: a derivation retired after the
-        // snapshot stays retired, and the restored derivation map must not
-        // reference it — the face simply has no derivation until one is
-        // rebuilt (wires remain authoritative in Stage 1).
+        // Checkpoint barrier semantics: authority handles retired after the
+        // snapshot stay retired, so the restored face is promoted onto fresh
+        // handles rather than left without a boundary.
         let mut topo = Topology::new();
-        let (face, _) = triangle_face(&mut topo);
-        let retired = topo.build_face_loops(face).unwrap();
+        let (face, wire) = triangle_face(&mut topo);
+        let retired = topo.loops_of_face(face).unwrap().to_vec();
         let retired_coedges = topo.face_loop(retired[0]).unwrap().coedges().to_vec();
         let snapshot = topo.clone();
 
-        topo.build_face_loops(face).unwrap();
+        let reversed: Vec<_> = topo
+            .wire(wire)
+            .unwrap()
+            .edges()
+            .iter()
+            .rev()
+            .map(|oriented| OrientedEdge::new(oriented.edge(), !oriented.is_forward()))
+            .collect();
+        topo.replace_boundary_wire(wire, Wire::new(reversed, true).unwrap())
+            .unwrap();
         topo.restore_preserving_handle_slots(&snapshot);
 
         assert!(matches!(
@@ -308,17 +336,10 @@ mod tests {
                 Err(TopologyError::CoedgeNotFound(_))
             ));
         }
-        assert!(
-            topo.loops_of_face(face).is_none(),
-            "the restored map must not reference the retired derivation"
-        );
-        assert_eq!(topo.num_loops(), 0);
-        assert_eq!(topo.num_coedges(), 0);
-        // An underived face validates vacuously, and a fresh derivation
-        // works — on new slots, never the retired ones.
-        validate_face_loops(&topo, face).unwrap();
-        let rebuilt = topo.build_face_loops(face).unwrap();
+        let rebuilt = topo.loops_of_face(face).unwrap();
         assert_ne!(rebuilt[0], retired[0]);
+        assert_eq!(topo.num_loops(), 1);
+        assert_eq!(topo.num_coedges(), 3);
         validate_face_loops(&topo, face).unwrap();
     }
 

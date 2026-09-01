@@ -2,9 +2,10 @@
 //!
 //! Captures every entity reachable from selected solid and compound roots —
 //! vertices (with exact `Point3` and tolerance), edges (curve + analytic
-//! params), wires, faces (surface + analytic params + reversed flag), shells,
-//! solids, compounds, and the pcurves on captured (edge, face) pairs — and
-//! replays them into a [`Topology`] with byte-identical f64 values.
+//! params), authoritative loops/coedges (including per-use pcurves), wires as
+//! their compatibility view, faces (surface + analytic params + reversed
+//! flag), shells, solids, and compounds — and replays them into a [`Topology`]
+//! with byte-identical f64 values.
 //!
 //! Unlike the geometry-exchange formats (STEP, IGES), this preserves the
 //! kernel's in-memory representation verbatim: no curve/surface re-derivation,
@@ -183,6 +184,43 @@ struct SerPCurve {
     forward: Option<bool>,
 }
 
+/// Pcurve geometry embedded in its authoritative coedge use (arena v3).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SerUsePCurve {
+    curve: Curve2D,
+    t_start: f64,
+    t_end: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SerCoedgeAuthority {
+    edge: usize,
+    forward: bool,
+    periodic_winding: [i32; 2],
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pcurve: Option<SerUsePCurve>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SerLoopAuthority {
+    coedges: Vec<usize>,
+    closed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SerFaceLoopAuthority {
+    outer_loop: usize,
+    inner_loops: Vec<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SerBoundaryAuthority {
+    loops: Vec<SerLoopAuthority>,
+    coedges: Vec<SerCoedgeAuthority>,
+    /// Parallel to the document's dense face table.
+    faces: Vec<SerFaceLoopAuthority>,
+}
+
 /// Frozen version 1 single-solid schema, retained for read compatibility.
 #[derive(Debug, Deserialize)]
 struct SerializedSolidV1 {
@@ -275,14 +313,11 @@ struct SerAttributes {
     faces: Vec<(usize, SerEntityAttributes)>,
 }
 
-/// Version 2 is additive: it retains v1 entity encodings and adds solid and
-/// compound root tables. Released versions are read forever. Existing fields
-/// and enum encodings must not change in place; incompatible additions require
-/// a new version and a dedicated read path, while the v1 schema stays frozen.
-/// The optional `journal` and `attributes` fields (RFC 0003, Stage 5) are
-/// additive within v2: absent in older documents and skipped when empty, so
-/// journal-less output stays byte-identical.
-const FORMAT_VERSION: u32 = 2;
+/// Version 3 moves boundary authority into Loop/Coedge records. Versions 1
+/// and 2 remain frozen read paths. Released versions are read forever;
+/// incompatible additions require a new version and dedicated parser.
+const FORMAT_VERSION: u32 = 3;
+const LEGACY_MULTI_ROOT_VERSION: u32 = 2;
 const LEGACY_SINGLE_SOLID_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -306,6 +341,26 @@ struct SerializedDocumentV2 {
     attributes: Option<SerAttributes>,
 }
 
+/// Version 3 moves face-boundary and pcurve authority into serialized
+/// Loop/Coedge records while retaining wire tables as the compatibility view.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SerializedDocumentV3 {
+    version: u32,
+    vertices: Vec<SerVertex>,
+    edges: Vec<SerEdge>,
+    wires: Vec<SerWire>,
+    faces: Vec<SerFace>,
+    shells: Vec<SerShell>,
+    solids: Vec<SerSolid>,
+    solid_roots: Vec<usize>,
+    compounds: Vec<SerCompound>,
+    boundary_authority: SerBoundaryAuthority,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    journal: Option<SerJournal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    attributes: Option<SerAttributes>,
+}
+
 #[derive(Debug, Deserialize)]
 struct VersionHeader {
     version: u32,
@@ -321,6 +376,7 @@ struct ParsedDocument {
     solid_roots: Vec<usize>,
     compounds: Vec<SerCompound>,
     pcurves: Vec<SerPCurve>,
+    boundary_authority: Option<SerBoundaryAuthority>,
     journal: Option<SerJournal>,
     attributes: Option<SerAttributes>,
 }
@@ -341,11 +397,16 @@ struct Builder<'a> {
     edges: Vec<SerEdge>,
     wires: Vec<SerWire>,
     faces: Vec<SerFace>,
+    loops: Vec<SerLoopAuthority>,
+    coedges: Vec<SerCoedgeAuthority>,
+    face_loop_authority: Vec<SerFaceLoopAuthority>,
     shells: Vec<SerShell>,
     vertex_map: HashMap<usize, usize>,
     edge_map: HashMap<usize, usize>,
     wire_map: HashMap<usize, usize>,
     face_map: HashMap<usize, usize>,
+    loop_map: HashMap<usize, usize>,
+    coedge_map: HashMap<usize, usize>,
     shell_map: HashMap<usize, usize>,
     solids: Vec<SerSolid>,
     solid_map: HashMap<usize, usize>,
@@ -359,11 +420,16 @@ impl<'a> Builder<'a> {
             edges: Vec::new(),
             wires: Vec::new(),
             faces: Vec::new(),
+            loops: Vec::new(),
+            coedges: Vec::new(),
+            face_loop_authority: Vec::new(),
             shells: Vec::new(),
             vertex_map: HashMap::new(),
             edge_map: HashMap::new(),
             wire_map: HashMap::new(),
             face_map: HashMap::new(),
+            loop_map: HashMap::new(),
+            coedge_map: HashMap::new(),
             shell_map: HashMap::new(),
             solids: Vec::new(),
             solid_map: HashMap::new(),
@@ -429,6 +495,11 @@ impl<'a> Builder<'a> {
         if let Some(&local) = self.face_map.get(&id.index()) {
             return Ok(local);
         }
+        remus_topology::validation::validate_face_loops(self.topo, id).map_err(|error| {
+            IoError::InvalidTopology {
+                reason: format!("face {id:?} has inconsistent boundary authority: {error}"),
+            }
+        })?;
         let f = self.topo.face(id)?;
         let outer_wire = self.intern_wire(f.outer_wire())?;
         let mut inner_wires = Vec::with_capacity(f.inner_wires().len());
@@ -445,6 +516,80 @@ impl<'a> Builder<'a> {
             reversed,
         });
         self.face_map.insert(id.index(), local);
+
+        let loop_ids = self
+            .topo
+            .loops_of_face(id)
+            .ok_or_else(|| IoError::InvalidTopology {
+                reason: format!("face {id:?} has no authoritative boundary loops"),
+            })?;
+        let expected = 1 + f.inner_wires().len();
+        if loop_ids.len() != expected {
+            return Err(IoError::InvalidTopology {
+                reason: format!(
+                    "face {id:?} has {} authoritative loops but {expected} wire boundaries",
+                    loop_ids.len()
+                ),
+            });
+        }
+        let mut serialized_loops = Vec::with_capacity(loop_ids.len());
+        for &loop_id in loop_ids {
+            serialized_loops.push(self.intern_loop(loop_id)?);
+        }
+        self.face_loop_authority.push(SerFaceLoopAuthority {
+            outer_loop: serialized_loops[0],
+            inner_loops: serialized_loops[1..].to_vec(),
+        });
+        Ok(local)
+    }
+
+    fn intern_loop(&mut self, id: remus_topology::face_loop::LoopId) -> Result<usize, IoError> {
+        if let Some(&local) = self.loop_map.get(&id.index()) {
+            return Ok(local);
+        }
+        let boundary_loop = self.topo.face_loop(id)?;
+        let coedge_ids = boundary_loop.coedges().to_vec();
+        let closed = boundary_loop.is_closed();
+        let mut coedges = Vec::with_capacity(coedge_ids.len());
+        for coedge in coedge_ids {
+            coedges.push(self.intern_coedge(coedge)?);
+        }
+        let local = self.loops.len();
+        self.loops.push(SerLoopAuthority { coedges, closed });
+        self.loop_map.insert(id.index(), local);
+        Ok(local)
+    }
+
+    fn intern_coedge(&mut self, id: remus_topology::coedge::CoedgeId) -> Result<usize, IoError> {
+        if let Some(&local) = self.coedge_map.get(&id.index()) {
+            return Ok(local);
+        }
+        let coedge = self.topo.coedge(id)?;
+        let edge = self.intern_edge(coedge.edge())?;
+        let pcurve = coedge
+            .pcurve()
+            .map(|pcurve| {
+                validate_arena_pcurve(
+                    pcurve.curve(),
+                    pcurve.t_start(),
+                    pcurve.t_end(),
+                    &format!("coedge {id:?} pcurve"),
+                )?;
+                Ok::<SerUsePCurve, IoError>(SerUsePCurve {
+                    curve: pcurve.curve().clone(),
+                    t_start: pcurve.t_start(),
+                    t_end: pcurve.t_end(),
+                })
+            })
+            .transpose()?;
+        let local = self.coedges.len();
+        self.coedges.push(SerCoedgeAuthority {
+            edge,
+            forward: coedge.is_forward(),
+            periodic_winding: [coedge.periodic_winding().u(), coedge.periodic_winding().v()],
+            pcurve,
+        });
+        self.coedge_map.insert(id.index(), local);
         Ok(local)
     }
 
@@ -483,32 +628,6 @@ impl<'a> Builder<'a> {
         self.solid_map.insert(id.index(), local);
         Ok(local)
     }
-
-    /// Collects all pcurves whose (edge, face) are both in the captured set.
-    fn collect_pcurves(&self) -> Vec<SerPCurve> {
-        let mut out = Vec::new();
-        for (&global_face, &local_face) in &self.face_map {
-            let Some(fid) = self.topo.face_id_from_index(global_face) else {
-                continue;
-            };
-            for (eid, forward, pc) in self.topo.pcurves_for_face(fid) {
-                if let Some(&local_edge) = self.edge_map.get(&eid.index()) {
-                    out.push(SerPCurve {
-                        edge: local_edge,
-                        face: local_face,
-                        curve: pc.curve().clone(),
-                        t_start: pc.t_start(),
-                        t_end: pc.t_end(),
-                        forward: Some(forward),
-                    });
-                }
-            }
-        }
-        // Deterministic order so the dump is reproducible across runs
-        // (HashMap iteration order is randomized per process).
-        out.sort_unstable_by_key(|p| (p.face, p.edge));
-        out
-    }
 }
 
 /// Serializes a solid's complete topology sub-arena to a byte buffer.
@@ -525,7 +644,7 @@ pub fn serialize_solid(topo: &Topology, solid_id: SolidId) -> Result<Vec<u8>, Io
     serialize_solids(topo, &[solid_id])
 }
 
-/// Serializes explicit solid roots into a version 2 arena document.
+/// Serializes explicit solid roots into a version 3 arena document.
 ///
 /// Shared topology is emitted once using dense local indices. Root order and
 /// duplicate roots are preserved. Use [`serialize_document`] when compound
@@ -539,7 +658,7 @@ pub fn serialize_solids(topo: &Topology, solid_ids: &[SolidId]) -> Result<Vec<u8
     serialize_document(topo, solid_ids, &[])
 }
 
-/// Serializes solid and compound roots into one version 2 arena document.
+/// Serializes solid and compound roots into one version 3 arena document.
 ///
 /// Every solid referenced by a selected compound is included in the dense
 /// solid table. Only `solid_ids` are returned as explicit solid roots after
@@ -572,10 +691,9 @@ pub fn serialize_document(
         compounds.push(SerCompound { solids: members });
     }
 
-    let pcurves = builder.collect_pcurves();
     let journal = serialize_journal(topo, &builder);
     let attributes = serialize_attributes(topo, &builder);
-    let dump = SerializedDocumentV2 {
+    let dump = SerializedDocumentV3 {
         version: FORMAT_VERSION,
         vertices: builder.vertices,
         edges: builder.edges,
@@ -585,7 +703,11 @@ pub fn serialize_document(
         solids: builder.solids,
         solid_roots,
         compounds,
-        pcurves,
+        boundary_authority: SerBoundaryAuthority {
+            loops: builder.loops,
+            coedges: builder.coedges,
+            faces: builder.face_loop_authority,
+        },
         journal,
         attributes,
     };
@@ -595,7 +717,7 @@ pub fn serialize_document(
     })
 }
 
-/// Reconstructs one solid from a version 1 or single-root version 2 document.
+/// Reconstructs one solid from a version 1, 2, or 3 single-root document.
 ///
 /// All entities are appended to `topo` as fresh ids. Floating-point values are
 /// restored byte-for-byte; analytic curves and surfaces are rebuilt by direct
@@ -742,11 +864,12 @@ fn parse_document(bytes: &[u8], limits: ImportLimits) -> Result<ParsedDocument, 
                 solid_roots: vec![0],
                 compounds: Vec::new(),
                 pcurves: dump.pcurves,
+                boundary_authority: None,
                 journal: None,
                 attributes: None,
             }
         }
-        FORMAT_VERSION => {
+        LEGACY_MULTI_ROOT_VERSION => {
             let dump: SerializedDocumentV2 =
                 serde_json::from_slice(bytes).map_err(|e| IoError::ParseError {
                     reason: format!("arena v2 deserialization failed: {e}"),
@@ -761,6 +884,27 @@ fn parse_document(bytes: &[u8], limits: ImportLimits) -> Result<ParsedDocument, 
                 solid_roots: dump.solid_roots,
                 compounds: dump.compounds,
                 pcurves: dump.pcurves,
+                boundary_authority: None,
+                journal: dump.journal,
+                attributes: dump.attributes,
+            }
+        }
+        FORMAT_VERSION => {
+            let dump: SerializedDocumentV3 =
+                serde_json::from_slice(bytes).map_err(|e| IoError::ParseError {
+                    reason: format!("arena v3 deserialization failed: {e}"),
+                })?;
+            ParsedDocument {
+                vertices: dump.vertices,
+                edges: dump.edges,
+                wires: dump.wires,
+                faces: dump.faces,
+                shells: dump.shells,
+                solids: dump.solids,
+                solid_roots: dump.solid_roots,
+                compounds: dump.compounds,
+                pcurves: Vec::new(),
+                boundary_authority: Some(dump.boundary_authority),
                 journal: dump.journal,
                 attributes: dump.attributes,
             }
@@ -768,7 +912,7 @@ fn parse_document(bytes: &[u8], limits: ImportLimits) -> Result<ParsedDocument, 
         version => {
             return Err(IoError::ParseError {
                 reason: format!(
-                    "unsupported arena dump version {version} (supported: {LEGACY_SINGLE_SOLID_VERSION}, {FORMAT_VERSION})"
+                    "unsupported arena dump version {version} (supported: {LEGACY_SINGLE_SOLID_VERSION}, {LEGACY_MULTI_ROOT_VERSION}, {FORMAT_VERSION})"
                 ),
             });
         }
@@ -778,6 +922,36 @@ fn parse_document(bytes: &[u8], limits: ImportLimits) -> Result<ParsedDocument, 
 }
 
 fn check_document_limits(document: &ParsedDocument, limits: ImportLimits) -> Result<(), IoError> {
+    let (loop_count, coedge_count, face_authority_count) = document
+        .boundary_authority
+        .as_ref()
+        .map_or((0, 0, 0), |authority| {
+            (
+                authority.loops.len(),
+                authority.coedges.len(),
+                authority.faces.len(),
+            )
+        });
+    let loop_coedge_refs = checked_reference_count(
+        "arena loop coedge references",
+        document.boundary_authority.iter().flat_map(|authority| {
+            authority
+                .loops
+                .iter()
+                .map(|boundary_loop| boundary_loop.coedges.len())
+        }),
+        limits.max_model_entities,
+    )?;
+    let face_loop_refs = checked_reference_count(
+        "arena face loop references",
+        document.boundary_authority.iter().flat_map(|authority| {
+            authority
+                .faces
+                .iter()
+                .map(|face| face.inner_loops.len().saturating_add(1))
+        }),
+        limits.max_model_entities,
+    )?;
     let inner_shell_refs = checked_reference_count(
         "arena inner shell references",
         document.solids.iter().map(|solid| solid.inner_shells.len()),
@@ -803,6 +977,11 @@ fn check_document_limits(document: &ParsedDocument, limits: ImportLimits) -> Res
         ("arena inner shell references", inner_shell_refs),
         ("arena compound solid references", compound_refs),
         ("arena pcurves", document.pcurves.len()),
+        ("arena loops", loop_count),
+        ("arena coedges", coedge_count),
+        ("arena face loop authority", face_authority_count),
+        ("arena loop coedge references", loop_coedge_refs),
+        ("arena face loop references", face_loop_refs),
     ] {
         ensure_limit(resource, actual, limits.max_model_entities)?;
     }
@@ -817,6 +996,8 @@ fn check_document_limits(document: &ParsedDocument, limits: ImportLimits) -> Res
             document.solids.len(),
             document.compounds.len(),
             document.pcurves.len(),
+            loop_count,
+            coedge_count,
         ],
         limits.max_model_entities,
     )?;
@@ -990,9 +1171,19 @@ fn replay_document_into(
         solid_roots,
         compounds,
         pcurves,
+        boundary_authority,
         journal,
         attributes,
     } = document;
+
+    for (index, pcurve) in pcurves.iter().enumerate() {
+        validate_arena_pcurve(
+            &pcurve.curve,
+            pcurve.t_start,
+            pcurve.t_end,
+            &format!("legacy pcurve {index}"),
+        )?;
+    }
 
     for (index, vertex) in vertices.iter().enumerate() {
         validate_arena_point(vertex.point, &format!("vertex {index}"))?;
@@ -1076,6 +1267,10 @@ fn replay_document_into(
         face_ids.push(topo.add_face(face));
     }
 
+    if let Some(authority) = boundary_authority {
+        replay_boundary_authority(authority, topo, &edge_ids, &face_ids)?;
+    }
+
     let mut shell_ids = Vec::with_capacity(shells.len());
     for s in shells {
         let mut faces = Vec::with_capacity(s.faces.len());
@@ -1099,14 +1294,14 @@ fn replay_document_into(
             .ok_or_else(|| index_err("face", pc.face))?;
         let pcurve = PCurve::new(pc.curve, pc.t_start, pc.t_end);
         match pc.forward {
-            Some(forward) => topo.set_pcurve_oriented(edge, face, forward, pcurve),
+            Some(forward) => topo.set_pcurve_oriented(edge, face, forward, pcurve)?,
             // Pre-orientation document: resolve the use from the wires.
             // Such files cannot hold two branches for one (edge, face), so
             // the resolved set cannot be ambiguous unless the file also has
             // a seam wire; attach to the forward branch in that case.
             None => {
                 if topo.set_pcurve(edge, face, pcurve.clone()).is_err() {
-                    topo.set_pcurve_oriented(edge, face, true, pcurve);
+                    topo.set_pcurve_oriented(edge, face, true, pcurve)?;
                 }
             }
         }
@@ -1181,6 +1376,222 @@ fn replay_document_into(
         solids: restored_solids,
         compounds: restored_compounds,
     })
+}
+
+fn replay_boundary_authority(
+    authority: SerBoundaryAuthority,
+    topo: &mut Topology,
+    edge_ids: &[EdgeId],
+    face_ids: &[remus_topology::face::FaceId],
+) -> Result<(), IoError> {
+    if authority.faces.len() != face_ids.len() {
+        return Err(IoError::ParseError {
+            reason: format!(
+                "arena v3 has {} face boundary records for {} faces",
+                authority.faces.len(),
+                face_ids.len()
+            ),
+        });
+    }
+
+    let mut restored_loops = vec![None; authority.loops.len()];
+    let mut restored_coedges = vec![None; authority.coedges.len()];
+    for (face_index, face_authority) in authority.faces.iter().enumerate() {
+        let face_id = face_ids[face_index];
+        let actual_loops = topo
+            .loops_of_face(face_id)
+            .ok_or_else(|| IoError::ParseError {
+                reason: format!("arena v3 face {face_index} has no restored boundary loops"),
+            })?
+            .to_vec();
+        let mut serialized_loops = Vec::with_capacity(1 + face_authority.inner_loops.len());
+        serialized_loops.push(face_authority.outer_loop);
+        serialized_loops.extend(face_authority.inner_loops.iter().copied());
+        if actual_loops.len() != serialized_loops.len() {
+            return Err(IoError::ParseError {
+                reason: format!(
+                    "arena v3 face {face_index} declares {} loops but its wire facade restores {}",
+                    serialized_loops.len(),
+                    actual_loops.len()
+                ),
+            });
+        }
+
+        for (serialized_loop_index, actual_loop_id) in
+            serialized_loops.into_iter().zip(actual_loops)
+        {
+            let serialized_loop = authority
+                .loops
+                .get(serialized_loop_index)
+                .ok_or_else(|| index_err("loop", serialized_loop_index))?;
+            if restored_loops[serialized_loop_index]
+                .replace(actual_loop_id)
+                .is_some()
+            {
+                return Err(IoError::ParseError {
+                    reason: format!(
+                        "arena v3 loop index {serialized_loop_index} is used by more than one face boundary"
+                    ),
+                });
+            }
+            let actual_loop = topo.face_loop(actual_loop_id)?;
+            if actual_loop.face() != face_id || actual_loop.is_closed() != serialized_loop.closed {
+                return Err(IoError::ParseError {
+                    reason: format!(
+                        "arena v3 loop index {serialized_loop_index} disagrees with its restored face or closure"
+                    ),
+                });
+            }
+            let actual_coedges = actual_loop.coedges().to_vec();
+            if actual_coedges.len() != serialized_loop.coedges.len() {
+                return Err(IoError::ParseError {
+                    reason: format!(
+                        "arena v3 loop index {serialized_loop_index} declares {} coedges but its wire facade restores {}",
+                        serialized_loop.coedges.len(),
+                        actual_coedges.len()
+                    ),
+                });
+            }
+
+            for (&serialized_coedge_index, actual_coedge_id) in
+                serialized_loop.coedges.iter().zip(actual_coedges)
+            {
+                let serialized_coedge = authority
+                    .coedges
+                    .get(serialized_coedge_index)
+                    .ok_or_else(|| index_err("coedge", serialized_coedge_index))?;
+                if restored_coedges[serialized_coedge_index]
+                    .replace(actual_coedge_id)
+                    .is_some()
+                {
+                    return Err(IoError::ParseError {
+                        reason: format!(
+                            "arena v3 coedge index {serialized_coedge_index} is used by more than one loop"
+                        ),
+                    });
+                }
+                let expected_edge = *edge_ids
+                    .get(serialized_coedge.edge)
+                    .ok_or_else(|| index_err("edge", serialized_coedge.edge))?;
+                let actual_coedge = topo.coedge(actual_coedge_id)?;
+                if actual_coedge.edge() != expected_edge
+                    || actual_coedge.is_forward() != serialized_coedge.forward
+                    || actual_coedge.parent_loop() != actual_loop_id
+                {
+                    return Err(IoError::ParseError {
+                        reason: format!(
+                            "arena v3 coedge index {serialized_coedge_index} disagrees with its restored wire use"
+                        ),
+                    });
+                }
+                topo.set_coedge_periodic_winding(
+                    actual_coedge_id,
+                    remus_topology::PeriodicWinding::new(
+                        serialized_coedge.periodic_winding[0],
+                        serialized_coedge.periodic_winding[1],
+                    ),
+                )?;
+                if let Some(pcurve) = &serialized_coedge.pcurve {
+                    validate_arena_pcurve(
+                        &pcurve.curve,
+                        pcurve.t_start,
+                        pcurve.t_end,
+                        &format!("arena v3 coedge index {serialized_coedge_index} pcurve"),
+                    )?;
+                    topo.set_coedge_pcurve(
+                        actual_coedge_id,
+                        PCurve::new(pcurve.curve.clone(), pcurve.t_start, pcurve.t_end),
+                    )?;
+                }
+            }
+        }
+    }
+
+    if let Some(index) = restored_loops.iter().position(Option::is_none) {
+        return Err(IoError::ParseError {
+            reason: format!("arena v3 loop index {index} is not owned by any face"),
+        });
+    }
+    if let Some(index) = restored_coedges.iter().position(Option::is_none) {
+        return Err(IoError::ParseError {
+            reason: format!("arena v3 coedge index {index} is not owned by any loop"),
+        });
+    }
+    Ok(())
+}
+
+fn validate_arena_pcurve(
+    curve: &Curve2D,
+    t_start: f64,
+    t_end: f64,
+    context: &str,
+) -> Result<(), IoError> {
+    let finite_point =
+        |point: remus_math::vec::Point2| point.0.iter().all(|value| value.is_finite());
+    let finite_vec = |vector: remus_math::vec::Vec2| vector.0.iter().all(|value| value.is_finite());
+    let valid_definition = match curve {
+        Curve2D::Line(line) => {
+            finite_point(line.origin())
+                && finite_vec(line.direction())
+                && line.direction().length_squared().is_finite()
+                && line.direction().length_squared() > 0.0
+        }
+        Curve2D::Circle(circle) => {
+            finite_point(circle.center()) && circle.radius().is_finite() && circle.radius() > 0.0
+        }
+        Curve2D::Ellipse(ellipse) => {
+            finite_point(ellipse.center())
+                && ellipse.semi_major().is_finite()
+                && ellipse.semi_major() > 0.0
+                && ellipse.semi_minor().is_finite()
+                && ellipse.semi_minor() > 0.0
+                && ellipse.semi_minor() <= ellipse.semi_major()
+                && ellipse.rotation().is_finite()
+        }
+        Curve2D::Nurbs(nurbs) => {
+            let control_points = nurbs.control_points();
+            let knots = nurbs.knots();
+            let weights = nurbs.weights();
+            !control_points.is_empty()
+                && nurbs.degree() < control_points.len()
+                && knots.len()
+                    == control_points
+                        .len()
+                        .saturating_add(nurbs.degree())
+                        .saturating_add(1)
+                && weights.len() == control_points.len()
+                && control_points.iter().copied().all(finite_point)
+                && knots.iter().all(|value| value.is_finite())
+                && knots.windows(2).all(|pair| pair[0] <= pair[1])
+                && weights
+                    .iter()
+                    .all(|value| value.is_finite() && *value > 0.0)
+                && {
+                    let domain = nurbs.domain();
+                    let lower = t_start.min(t_end);
+                    let upper = t_start.max(t_end);
+                    domain.0.is_finite()
+                        && domain.1.is_finite()
+                        && domain.0 < domain.1
+                        && lower >= domain.0
+                        && upper <= domain.1
+                }
+        }
+    };
+    if !t_start.is_finite() || !t_end.is_finite() || !valid_definition {
+        return Err(IoError::ParseError {
+            reason: format!("{context} has an invalid definition or parameter range"),
+        });
+    }
+    let midpoint = 0.5f64.mul_add(t_end - t_start, t_start);
+    if [t_start, midpoint, t_end].into_iter().any(|parameter| {
+        !finite_point(curve.evaluate(parameter)) || !finite_vec(curve.tangent(parameter))
+    }) {
+        return Err(IoError::ParseError {
+            reason: format!("{context} evaluates to non-finite geometry"),
+        });
+    }
+    Ok(())
 }
 
 /// Import-only compatibility boundary for arena documents written before
@@ -1582,6 +1993,8 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
+    use remus_math::curves2d::{Circle2D, Line2D};
+    use remus_math::vec::{Point2, Vec2};
     use remus_operations::primitives::{make_box, make_cylinder};
     use remus_topology::explorer::solid_faces;
 
@@ -1607,7 +2020,7 @@ mod tests {
             1
         };
         serde_json::to_vec(&SerializedDocumentV2 {
-            version: FORMAT_VERSION,
+            version: LEGACY_MULTI_ROOT_VERSION,
             vertices,
             edges: vec![SerEdge {
                 start: 0,
@@ -1654,6 +2067,33 @@ mod tests {
             *hist.entry(tag).or_insert(0) += 1;
         }
         hist
+    }
+
+    fn cylinder_seam(topo: &Topology, solid: SolidId) -> (remus_topology::face::FaceId, EdgeId) {
+        let face = solid_faces(topo, solid)
+            .unwrap()
+            .into_iter()
+            .find(|&face| matches!(topo.face(face).unwrap().surface(), FaceSurface::Cylinder(_)))
+            .unwrap();
+        let wire = topo.face(face).unwrap().outer_wire();
+        let mut counts = std::collections::HashMap::new();
+        for oriented in topo.wire(wire).unwrap().edges() {
+            *counts.entry(oriented.edge()).or_insert(0_usize) += 1;
+        }
+        let seam = counts
+            .into_iter()
+            .find_map(|(edge, count)| (count == 2).then_some(edge))
+            .unwrap();
+        (face, seam)
+    }
+
+    fn seam_branch(u: f64, reverse: bool) -> PCurve {
+        let direction = if reverse { -1.0 } else { 1.0 };
+        PCurve::new(
+            Curve2D::Line(Line2D::new(Point2::new(u, 0.0), Vec2::new(0.0, direction)).unwrap()),
+            0.25,
+            1.75,
+        )
     }
 
     #[test]
@@ -1721,6 +2161,199 @@ mod tests {
             assert_eq!(a.y().to_bits(), b.y().to_bits(), "y bits differ");
             assert_eq!(a.z().to_bits(), b.z().to_bits(), "z bits differ");
         }
+    }
+
+    #[test]
+    fn v3_roundtrip_preserves_loop_identity_and_two_seam_pcurve_branches() {
+        let mut source = Topology::new();
+        let solid = make_cylinder(&mut source, 1.0, 2.0).unwrap();
+        let (face, seam) = cylinder_seam(&source, solid);
+        source
+            .set_pcurve_oriented(seam, face, true, seam_branch(0.0, false))
+            .unwrap();
+        source
+            .set_pcurve_oriented(seam, face, false, seam_branch(std::f64::consts::TAU, true))
+            .unwrap();
+        let lifted_use = source
+            .coedges_of_edge(seam)
+            .into_iter()
+            .find(|&coedge| !source.coedge(coedge).unwrap().is_forward())
+            .unwrap();
+        source
+            .set_coedge_periodic_winding(lifted_use, remus_topology::PeriodicWinding::new(1, 0))
+            .unwrap();
+
+        let bytes = serialize_solid(&source, solid).unwrap();
+        let encoded: SerializedDocumentV3 = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(encoded.version, FORMAT_VERSION);
+        assert_eq!(
+            encoded
+                .boundary_authority
+                .coedges
+                .iter()
+                .filter(|coedge| coedge.pcurve.is_some())
+                .count(),
+            2
+        );
+
+        let mut restored_topology = Topology::new();
+        let restored = deserialize_solid(&bytes, &mut restored_topology).unwrap();
+        let (restored_face, restored_seam) = cylinder_seam(&restored_topology, restored);
+        let loops = restored_topology.loops_of_face(restored_face).unwrap();
+        assert_eq!(loops.len(), 1);
+        assert_eq!(
+            restored_topology.face(restored_face).unwrap().outer_loop(),
+            Some(loops[0])
+        );
+        let uses: Vec<_> = restored_topology
+            .face_loop(loops[0])
+            .unwrap()
+            .coedges()
+            .iter()
+            .filter_map(|&coedge_id| {
+                let coedge = restored_topology.coedge(coedge_id).unwrap();
+                (coedge.edge() == restored_seam).then_some((coedge_id, coedge.is_forward()))
+            })
+            .collect();
+        assert_eq!(uses.len(), 2);
+        for (coedge_id, forward) in uses {
+            let branch = restored_topology.coedge_pcurve(coedge_id).unwrap().unwrap();
+            assert_eq!(branch.t_start().to_bits(), 0.25_f64.to_bits());
+            assert_eq!(branch.t_end().to_bits(), 1.75_f64.to_bits());
+            let uv = branch.evaluate(1.0);
+            let expected_u = if forward { 0.0 } else { std::f64::consts::TAU };
+            assert_eq!(uv.x().to_bits(), expected_u.to_bits());
+            assert_eq!(
+                uv.y().to_bits(),
+                if forward { 1.0 } else { -1.0_f64 }.to_bits()
+            );
+            assert_eq!(
+                restored_topology
+                    .coedge(coedge_id)
+                    .unwrap()
+                    .periodic_winding(),
+                if forward {
+                    remus_topology::PeriodicWinding::ZERO
+                } else {
+                    remus_topology::PeriodicWinding::new(1, 0)
+                }
+            );
+        }
+        assert!(matches!(
+            restored_topology.pcurve(restored_seam, restored_face),
+            Err(remus_topology::TopologyError::SeamPcurveAmbiguous { .. })
+        ));
+    }
+
+    #[test]
+    fn v3_boundary_tamper_is_rejected_before_live_topology_mutation() {
+        let mut source = Topology::new();
+        let solid = make_cylinder(&mut source, 1.0, 2.0).unwrap();
+        let bytes = serialize_solid(&source, solid).unwrap();
+        let mut encoded: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let forward = encoded["boundary_authority"]["coedges"][0]["forward"]
+            .as_bool()
+            .unwrap();
+        encoded["boundary_authority"]["coedges"][0]["forward"] = (!forward).into();
+        let tampered = serde_json::to_vec(&encoded).unwrap();
+
+        let mut destination = Topology::new();
+        let sentinel = destination.add_empty_solid();
+        let counts = (
+            destination.num_vertices(),
+            destination.num_edges(),
+            destination.num_faces(),
+            destination.num_loops(),
+            destination.num_coedges(),
+            destination.num_solids(),
+        );
+        let error = deserialize_solid(&tampered, &mut destination).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("disagrees with its restored wire use")
+        );
+        assert!(destination.solid(sentinel).is_ok());
+        assert_eq!(
+            (
+                destination.num_vertices(),
+                destination.num_edges(),
+                destination.num_faces(),
+                destination.num_loops(),
+                destination.num_coedges(),
+                destination.num_solids(),
+            ),
+            counts
+        );
+    }
+
+    #[test]
+    fn v3_invalid_embedded_pcurve_is_rejected_before_live_topology_mutation() {
+        let mut source = Topology::new();
+        let solid = make_cylinder(&mut source, 1.0, 2.0).unwrap();
+        let (face, seam) = cylinder_seam(&source, solid);
+        source
+            .set_pcurve_oriented(seam, face, true, seam_branch(0.0, false))
+            .unwrap();
+        let bytes = serialize_solid(&source, solid).unwrap();
+        let mut encoded: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let pcurve = encoded["boundary_authority"]["coedges"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find_map(|coedge| coedge.get_mut("pcurve"))
+            .unwrap();
+        pcurve["curve"] = serde_json::json!({
+            "Circle": { "center": [0.0, 0.0], "radius": -1.0 }
+        });
+        let tampered = serde_json::to_vec(&encoded).unwrap();
+
+        let mut destination = Topology::new();
+        let sentinel = destination.add_empty_solid();
+        let counts = (
+            destination.num_vertices(),
+            destination.num_edges(),
+            destination.num_faces(),
+            destination.num_loops(),
+            destination.num_coedges(),
+            destination.num_solids(),
+        );
+        let error = deserialize_solid(&tampered, &mut destination).unwrap_err();
+
+        assert!(error.to_string().contains("invalid definition"));
+        assert!(destination.solid(sentinel).is_ok());
+        assert_eq!(
+            (
+                destination.num_vertices(),
+                destination.num_edges(),
+                destination.num_faces(),
+                destination.num_loops(),
+                destination.num_coedges(),
+                destination.num_solids(),
+            ),
+            counts
+        );
+    }
+
+    #[test]
+    fn v3_export_refuses_an_invalid_embedded_pcurve() {
+        let mut source = Topology::new();
+        let solid = make_cylinder(&mut source, 1.0, 2.0).unwrap();
+        let (face, seam) = cylinder_seam(&source, solid);
+        let poisoned = Circle2D::new(Point2::new(0.0, 0.0), f64::NAN).unwrap();
+        source
+            .set_pcurve_oriented(
+                seam,
+                face,
+                true,
+                PCurve::new(Curve2D::Circle(poisoned), 0.0, 1.0),
+            )
+            .unwrap();
+
+        let error = serialize_solid(&source, solid).unwrap_err();
+
+        assert!(error.to_string().contains("invalid definition"));
     }
 
     #[test]
@@ -2121,7 +2754,7 @@ mod tests {
     }
 
     #[test]
-    fn deserialize_solid_accepts_single_root_v2_document() {
+    fn deserialize_solid_accepts_single_root_v3_document() {
         let mut source = Topology::new();
         let solid = source.add_empty_solid();
         let bytes = serialize_solids(&source, &[solid]).unwrap();
@@ -2133,7 +2766,7 @@ mod tests {
     }
 
     #[test]
-    fn v2_multi_solid_roundtrip_preserves_root_order_and_duplicates() {
+    fn v3_multi_solid_roundtrip_preserves_root_order_and_duplicates() {
         let mut source = Topology::new();
         let first = make_box(&mut source, 1.0, 2.0, 3.0).unwrap();
         let second = make_cylinder(&mut source, 2.0, 4.0).unwrap();
@@ -2164,7 +2797,7 @@ mod tests {
     }
 
     #[test]
-    fn v2_roundtrip_preserves_topology_shared_by_distinct_solids() {
+    fn v3_roundtrip_preserves_topology_shared_by_distinct_solids() {
         let mut source = Topology::new();
         let first = make_box(&mut source, 1.0, 2.0, 3.0).unwrap();
         let shared_shell = source.solid(first).unwrap().outer_shell();
@@ -2184,18 +2817,10 @@ mod tests {
     }
 
     #[test]
-    fn v2_mixed_roots_match_golden_and_roundtrip() {
-        let mut source = Topology::new();
-        let direct = source.add_empty_solid();
-        let member = source.add_empty_solid();
-        let compound = source.add_compound(Compound::new(vec![member]));
-
-        let bytes = serialize_document(&source, &[direct], &[compound]).unwrap();
+    fn v2_mixed_roots_golden_remains_readable_and_rewrites_stably_as_v3() {
         let golden = include_str!("../tests/data/arena_v2_multi_compound.json").trim_end();
-        assert_eq!(std::str::from_utf8(&bytes).unwrap(), golden);
-
         let mut destination = Topology::new();
-        let restored = deserialize_document(&bytes, &mut destination).unwrap();
+        let restored = deserialize_document(golden.as_bytes(), &mut destination).unwrap();
         assert_eq!(restored.solids.len(), 1);
         assert_eq!(restored.compounds.len(), 1);
         assert!(destination.is_empty_solid(restored.solids[0]));
@@ -2204,9 +2829,18 @@ mod tests {
         assert!(destination.is_empty_solid(restored_compound.solids()[0]));
         assert_ne!(restored.solids[0], restored_compound.solids()[0]);
 
+        let v3 = serialize_document(&destination, &restored.solids, &restored.compounds).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<VersionHeader>(&v3)
+                .unwrap()
+                .version,
+            FORMAT_VERSION
+        );
+        let mut second_destination = Topology::new();
+        let second = deserialize_document(&v3, &mut second_destination).unwrap();
         let roundtrip =
-            serialize_document(&destination, &restored.solids, &restored.compounds).unwrap();
-        assert_eq!(roundtrip, bytes);
+            serialize_document(&second_destination, &second.solids, &second.compounds).unwrap();
+        assert_eq!(roundtrip, v3);
     }
 
     #[test]

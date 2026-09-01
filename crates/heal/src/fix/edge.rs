@@ -172,7 +172,7 @@ pub fn fix_same_parameter_on_face(
     let t_end = knots[knots.len() - degree - 1];
 
     let pcurve = PCurve::new(Curve2D::Nurbs(nurbs_2d), t_start, t_end);
-    topo.set_pcurve_oriented(edge_id, face_id, forward, pcurve);
+    topo.set_pcurve_oriented(edge_id, face_id, forward, pcurve)?;
 
     Ok(FixResult {
         status: Status::DONE3,
@@ -399,9 +399,11 @@ pub fn repair_pcurve_within_budget(
         // Roll back: a repair that misses its budget must not look like
         // success, and must not replace the caller's data.
         match original {
-            Some(pcurve) => topo.set_pcurve_oriented(edge_id, face_id, forward, pcurve),
+            Some(pcurve) => {
+                topo.set_pcurve_oriented(edge_id, face_id, forward, pcurve)?;
+            }
             None => {
-                let _ = topo.remove_pcurve_oriented(edge_id, face_id, forward);
+                topo.remove_pcurve_oriented(edge_id, face_id, forward)?;
             }
         }
         return Err(HealError::RepairBudgetExceeded {
