@@ -7,6 +7,7 @@ use std::collections::HashMap;
 
 use remus_math::vec::Point3;
 use remus_topology::Topology;
+use remus_topology::coedge::{CoedgeId, PeriodicWinding};
 use remus_topology::edge::{Edge, EdgeCurve};
 use remus_topology::face::{Face, FaceId, FaceSurface};
 use remus_topology::pcurve::PCurve;
@@ -49,34 +50,108 @@ struct ShellSnap {
     faces: Vec<FaceSnap>,
 }
 
-struct PcurveSnap {
+struct CoedgeAuthoritySnap {
     face_index: usize,
     edge_index: usize,
     forward: bool,
-    pcurve: PCurve,
+    pcurve: Option<PCurve>,
+    periodic_winding: PeriodicWinding,
 }
 
-fn snapshot_face_pcurves(
+fn face_coedges(topo: &Topology, face_id: FaceId) -> Result<Vec<CoedgeId>, crate::OperationsError> {
+    let loop_ids = topo
+        .loops_of_face(face_id)
+        .ok_or(remus_topology::TopologyError::LoopWireMismatch { face: face_id })?;
+    let mut uses = Vec::new();
+    for &loop_id in loop_ids {
+        uses.extend(topo.face_loop(loop_id)?.coedges().iter().copied());
+    }
+    Ok(uses)
+}
+
+fn snapshot_face_coedge_authority(
     topo: &Topology,
     face_id: FaceId,
-) -> Result<Vec<PcurveSnap>, crate::OperationsError> {
-    let face = topo.face(face_id)?;
+) -> Result<Vec<CoedgeAuthoritySnap>, crate::OperationsError> {
+    remus_topology::validation::validate_face_loops(topo, face_id)?;
     let mut snapshots = Vec::new();
-    for wire_id in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
-        for oriented in topo.wire(wire_id)?.edges() {
-            if let Some(pcurve) =
-                topo.pcurve_oriented(oriented.edge(), face_id, oriented.is_forward())
-            {
-                snapshots.push(PcurveSnap {
-                    face_index: face_id.index(),
-                    edge_index: oriented.edge().index(),
-                    forward: oriented.is_forward(),
-                    pcurve: pcurve.clone(),
-                });
-            }
-        }
+    for coedge_id in face_coedges(topo, face_id)? {
+        let coedge = topo.coedge(coedge_id)?;
+        snapshots.push(CoedgeAuthoritySnap {
+            face_index: face_id.index(),
+            edge_index: coedge.edge().index(),
+            forward: coedge.is_forward(),
+            pcurve: coedge.pcurve().cloned(),
+            periodic_winding: coedge.periodic_winding(),
+        });
     }
     Ok(snapshots)
+}
+
+fn remapped_authority_face(
+    face_map: &HashMap<usize, FaceId>,
+    snapshot: &CoedgeAuthoritySnap,
+) -> Result<FaceId, crate::OperationsError> {
+    face_map
+        .get(&snapshot.face_index)
+        .copied()
+        .ok_or_else(|| remus_topology::TopologyError::NonManifold {
+            reason: format!(
+                "copy plan has no target face for authoritative source face index {}",
+                snapshot.face_index
+            ),
+        })
+        .map_err(Into::into)
+}
+
+fn remapped_authority_edge(
+    edge_map: &HashMap<usize, remus_topology::edge::EdgeId>,
+    snapshot: &CoedgeAuthoritySnap,
+) -> Result<remus_topology::edge::EdgeId, crate::OperationsError> {
+    edge_map
+        .get(&snapshot.edge_index)
+        .copied()
+        .ok_or_else(|| remus_topology::TopologyError::NonManifold {
+            reason: format!(
+                "copy plan has no target edge for authoritative source edge index {}",
+                snapshot.edge_index
+            ),
+        })
+        .map_err(Into::into)
+}
+
+fn restore_face_coedge_authority(
+    topo: &mut Topology,
+    face: FaceId,
+    edge: remus_topology::edge::EdgeId,
+    snapshot: CoedgeAuthoritySnap,
+) -> Result<(), crate::OperationsError> {
+    let matching: Vec<_> = face_coedges(topo, face)?
+        .into_iter()
+        .filter(|&coedge_id| {
+            topo.coedge(coedge_id).is_ok_and(|coedge| {
+                coedge.edge() == edge && coedge.is_forward() == snapshot.forward
+            })
+        })
+        .collect();
+    let [coedge_id] = matching.as_slice() else {
+        return Err(remus_topology::TopologyError::NonManifold {
+            reason: format!(
+                "copied face {face:?} does not contain exactly one {} use of edge {edge:?}",
+                if snapshot.forward {
+                    "forward"
+                } else {
+                    "reverse"
+                }
+            ),
+        }
+        .into());
+    };
+    topo.set_coedge_periodic_winding(*coedge_id, snapshot.periodic_winding)?;
+    if let Some(pcurve) = snapshot.pcurve {
+        topo.set_coedge_pcurve(*coedge_id, pcurve)?;
+    }
+    Ok(())
 }
 
 /// Copy one solid between independent topology arenas.
@@ -98,7 +173,7 @@ pub(crate) fn copy_solid_between(
     let mut edges = Vec::new();
     let mut wires = Vec::new();
     let mut shells = Vec::new();
-    let mut pcurves = Vec::new();
+    let mut coedge_authority = Vec::new();
     let mut seen_vertices = std::collections::HashSet::new();
     let mut seen_edges = std::collections::HashSet::new();
     let mut seen_wires = std::collections::HashSet::new();
@@ -108,7 +183,7 @@ pub(crate) fn copy_solid_between(
         let mut faces = Vec::new();
         for &face_id in shell.faces() {
             let face = source.face(face_id)?;
-            pcurves.extend(snapshot_face_pcurves(source, face_id)?);
+            coedge_authority.extend(snapshot_face_coedge_authority(source, face_id)?);
             for wire_id in
                 std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
             {
@@ -233,13 +308,10 @@ pub(crate) fn copy_solid_between(
             destination.add_shell(Shell::new(new_faces).map_err(crate::OperationsError::Topology)?),
         );
     }
-    for snapshot in pcurves {
-        destination.set_pcurve_oriented(
-            edge_map[&snapshot.edge_index],
-            face_map[&snapshot.face_index],
-            snapshot.forward,
-            snapshot.pcurve,
-        );
+    for snapshot in coedge_authority {
+        let face = remapped_authority_face(&face_map, &snapshot)?;
+        let edge = remapped_authority_edge(&edge_map, &snapshot)?;
+        restore_face_coedge_authority(destination, face, edge, snapshot)?;
     }
     let outer = new_shells[0];
     let inner = new_shells[1..].to_vec();
@@ -296,7 +368,7 @@ pub fn copy_solid_with_face_map(
     let mut edge_snaps: Vec<EdgeSnap> = Vec::new();
     let mut wire_snaps: Vec<WireSnap> = Vec::new();
     let mut shell_snaps: Vec<ShellSnap> = Vec::new();
-    let mut pcurve_snaps = Vec::new();
+    let mut coedge_authority_snaps = Vec::new();
 
     let mut seen_vertices = std::collections::HashSet::new();
     let mut seen_edges = std::collections::HashSet::new();
@@ -308,7 +380,7 @@ pub fn copy_solid_with_face_map(
 
         for &face_id in shell.faces() {
             let face = topo.face(face_id)?;
-            pcurve_snaps.extend(snapshot_face_pcurves(topo, face_id)?);
+            coedge_authority_snaps.extend(snapshot_face_coedge_authority(topo, face_id)?);
             let surface = face.surface().clone();
             let outer_wire_index = face.outer_wire().index();
             let inner_wire_indices: Vec<usize> =
@@ -451,13 +523,10 @@ pub fn copy_solid_with_face_map(
         let new_shell = Shell::new(new_face_ids).map_err(crate::OperationsError::Topology)?;
         new_shell_ids.push(topo.add_shell(new_shell));
     }
-    for snapshot in pcurve_snaps {
-        topo.set_pcurve_oriented(
-            edge_map[&snapshot.edge_index],
-            copied_face_ids[&snapshot.face_index],
-            snapshot.forward,
-            snapshot.pcurve,
-        );
+    for snapshot in coedge_authority_snaps {
+        let face = remapped_authority_face(&copied_face_ids, &snapshot)?;
+        let edge = remapped_authority_edge(&edge_map, &snapshot)?;
+        restore_face_coedge_authority(topo, face, edge, snapshot)?;
     }
 
     let new_outer = new_shell_ids[0];
@@ -502,6 +571,7 @@ pub fn copy_and_transform_solid(
     let mut edge_snaps: Vec<EdgeSnap> = Vec::new();
     let mut wire_snaps: Vec<WireSnap> = Vec::new();
     let mut shell_snaps: Vec<ShellSnap> = Vec::new();
+    let mut coedge_authority_snaps = Vec::new();
 
     let mut seen_vertices = std::collections::HashSet::new();
     let mut seen_edges = std::collections::HashSet::new();
@@ -513,6 +583,7 @@ pub fn copy_and_transform_solid(
 
         for &face_id in shell.faces() {
             let face = topo.face(face_id)?;
+            coedge_authority_snaps.extend(snapshot_face_coedge_authority(topo, face_id)?);
             let surface = face.surface().clone();
             let outer_wire_index = face.outer_wire().index();
             let inner_wire_indices: Vec<usize> =
@@ -638,6 +709,7 @@ pub fn copy_and_transform_solid(
     }
 
     let mut new_shell_ids = Vec::new();
+    let mut copied_face_ids = HashMap::new();
     for ssnap in &shell_snaps {
         let mut new_face_ids = Vec::new();
         for fsnap in &ssnap.faces {
@@ -670,10 +742,17 @@ pub fn copy_and_transform_solid(
             if let Some(attributes) = fsnap.attributes.clone() {
                 topo.set_face_attributes(new_fid, attributes)?;
             }
+            copied_face_ids.insert(fsnap.old_index, new_fid);
             new_face_ids.push(new_fid);
         }
         let new_shell = Shell::new(new_face_ids).map_err(crate::OperationsError::Topology)?;
         new_shell_ids.push(topo.add_shell(new_shell));
+    }
+
+    for snapshot in coedge_authority_snaps {
+        let face = remapped_authority_face(&copied_face_ids, &snapshot)?;
+        let edge = remapped_authority_edge(&edge_map, &snapshot)?;
+        restore_face_coedge_authority(topo, face, edge, snapshot)?;
     }
 
     let new_outer = new_shell_ids[0];
@@ -781,6 +860,7 @@ pub fn copy_wire(topo: &mut Topology, wire_id: WireId) -> Result<WireId, crate::
 ///
 /// Returns an error if any topology lookup fails.
 pub fn copy_face(topo: &mut Topology, face_id: FaceId) -> Result<FaceId, crate::OperationsError> {
+    let coedge_authority = snapshot_face_coedge_authority(topo, face_id)?;
     let face = topo.face(face_id)?;
     let surface = face.surface().clone();
     let reversed = face.is_reversed();
@@ -894,7 +974,12 @@ pub fn copy_face(topo: &mut Topology, face_id: FaceId) -> Result<FaceId, crate::
     } else {
         Face::new(new_outer, new_inner, surface)
     };
-    Ok(topo.add_face(new_face))
+    let new_face_id = topo.add_face(new_face);
+    for snapshot in coedge_authority {
+        let edge = remapped_authority_edge(&edge_map, &snapshot)?;
+        restore_face_coedge_authority(topo, new_face_id, edge, snapshot)?;
+    }
+    Ok(new_face_id)
 }
 
 #[cfg(test)]
@@ -911,6 +996,27 @@ mod tests {
     use remus_topology::test_utils::make_unit_cube_manifold;
 
     use super::*;
+
+    fn assert_single_lifted_pcurve(topo: &Topology, face: FaceId) {
+        let pcurves = topo.pcurves_for_face(face);
+        assert_eq!(pcurves.len(), 1, "copied face must retain one pcurve");
+        let (edge, forward, pcurve) = &pcurves[0];
+        let coedge = face_coedges(topo, face)
+            .unwrap()
+            .into_iter()
+            .find(|&coedge_id| {
+                topo.coedge(coedge_id)
+                    .is_ok_and(|coedge| coedge.edge() == *edge && coedge.is_forward() == *forward)
+            })
+            .unwrap();
+        assert_eq!(
+            topo.coedge(coedge).unwrap().periodic_winding(),
+            PeriodicWinding::new(3, -2)
+        );
+        assert_eq!(pcurve.t_start().to_bits(), 4.0_f64.to_bits());
+        assert_eq!(pcurve.t_end().to_bits(), 5.0_f64.to_bits());
+        assert!((pcurve.evaluate(4.5) - Point2::new(6.5, 3.0)).length() < 1e-14);
+    }
 
     #[test]
     fn copy_creates_new_solid() {
@@ -984,7 +1090,7 @@ mod tests {
     }
 
     #[test]
-    fn copy_between_topologies_carries_oriented_pcurves() {
+    fn copy_between_topologies_carries_oriented_coedge_authority() {
         let mut source = Topology::new();
         let solid = make_unit_cube_manifold(&mut source);
         let face = remus_topology::explorer::solid_faces(&source, solid).unwrap()[0];
@@ -997,7 +1103,21 @@ mod tests {
             4.0,
             5.0,
         );
-        source.set_pcurve_oriented(oriented.edge(), face, oriented.is_forward(), pcurve);
+        source
+            .set_pcurve_oriented(oriented.edge(), face, oriented.is_forward(), pcurve)
+            .unwrap();
+        let source_coedge = face_coedges(&source, face)
+            .unwrap()
+            .into_iter()
+            .find(|&coedge_id| {
+                source.coedge(coedge_id).is_ok_and(|coedge| {
+                    coedge.edge() == oriented.edge() && coedge.is_forward() == oriented.is_forward()
+                })
+            })
+            .unwrap();
+        source
+            .set_coedge_periodic_winding(source_coedge, PeriodicWinding::new(3, -2))
+            .unwrap();
 
         let mut destination = Topology::new();
         let copied = copy_solid_between(&source, &mut destination, solid).unwrap();
@@ -1009,11 +1129,48 @@ mod tests {
         let copied_pcurve = destination
             .pcurve_oriented(copied_use.edge(), copied_face, copied_use.is_forward())
             .unwrap();
+        let copied_coedge = face_coedges(&destination, copied_face)
+            .unwrap()
+            .into_iter()
+            .find(|&coedge_id| {
+                destination.coedge(coedge_id).is_ok_and(|coedge| {
+                    coedge.edge() == copied_use.edge()
+                        && coedge.is_forward() == copied_use.is_forward()
+                })
+            })
+            .unwrap();
 
         assert_eq!(destination.num_pcurves(), 1);
+        assert_eq!(
+            destination
+                .coedge(copied_coedge)
+                .unwrap()
+                .periodic_winding(),
+            PeriodicWinding::new(3, -2)
+        );
         assert_eq!(copied_pcurve.t_start().to_bits(), 4.0_f64.to_bits());
         assert_eq!(copied_pcurve.t_end().to_bits(), 5.0_f64.to_bits());
         assert!((copied_pcurve.evaluate(4.5) - Point2::new(6.5, 3.0)).length() < 1e-14);
+
+        let copied_face_only = copy_face(&mut source, face).unwrap();
+        assert_single_lifted_pcurve(&source, copied_face_only);
+
+        let (_, face_map) = copy_solid_with_face_map(&mut source, solid).unwrap();
+        let copied_same_face = source.face_id_from_index(face_map[&face.index()]).unwrap();
+        assert_single_lifted_pcurve(&source, copied_same_face);
+
+        let transformed = copy_and_transform_solid(
+            &mut source,
+            solid,
+            &remus_math::mat::Mat4::translation(10.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let transformed_face = remus_topology::explorer::solid_faces(&source, transformed)
+            .unwrap()
+            .into_iter()
+            .find(|&candidate| !source.pcurves_for_face(candidate).is_empty())
+            .unwrap();
+        assert_single_lifted_pcurve(&source, transformed_face);
     }
 
     #[test]

@@ -16,7 +16,6 @@ use std::collections::{HashMap, HashSet};
 use remus_math::vec::Point3;
 use remus_topology::Topology;
 use remus_topology::edge::EdgeId;
-use remus_topology::face::FaceId;
 use remus_topology::pcurve::PCurve;
 use remus_topology::shell::ShellId;
 use remus_topology::vertex::VertexId;
@@ -110,7 +109,11 @@ pub fn sew_shell_report(
         return Ok(SewReport { sewn: 0, declined });
     }
 
-    apply_merges(topo, shell_id, &wire_ids, &plans)?;
+    let snapshot = topo.clone();
+    if let Err(error) = apply_merges(topo, shell_id, &wire_ids, &plans) {
+        topo.restore_for_rollback(&snapshot);
+        return Err(error);
+    }
 
     Ok(SewReport {
         sewn: plans.len(),
@@ -314,43 +317,48 @@ fn pcurve_keys_available(topo: &Topology, keep: EdgeId, drop: EdgeId, reversed: 
         })
 }
 
-/// Carry out the planned merges: pcurves, then wire uses, then vertices.
+/// Carry out the planned merges: snapshot per-use authority, rewrite wire
+/// uses, attach authority to the new coedges, then merge vertices.
 fn apply_merges(
     topo: &mut Topology,
     shell_id: ShellId,
     wire_ids: &[WireId],
     plans: &[Merge],
 ) -> Result<(), HealError> {
-    // 1. Move each dropped edge's pcurves onto the retained edge. A pcurve's
-    //    `[t_start, t_end]` tracks its edge's natural direction, so a
-    //    reversed merge swaps the bounds as well as the use's sense.
-    for merge in plans {
-        let uses: Vec<(FaceId, bool, PCurve)> = topo
-            .pcurves_for_edge(merge.drop)
-            .into_iter()
-            .map(|(face, forward, pcurve)| (face, forward, pcurve.clone()))
-            .collect();
-        for (face, forward, pcurve) in uses {
-            topo.remove_pcurve_oriented(merge.drop, face, forward);
-            let (pcurve, forward) = if merge.reversed {
-                (
-                    PCurve::new(pcurve.curve().clone(), pcurve.t_end(), pcurve.t_start()),
-                    !forward,
-                )
-            } else {
-                (pcurve, forward)
-            };
-            topo.set_pcurve_oriented(merge.keep, face, forward, pcurve);
-        }
-    }
-
-    // 2. Rewrite every wire use of a dropped edge onto its retained twin.
-    //    This — not rewriting the dropped edge's endpoints — is what makes
-    //    two faces share one edge.
-    let redirect: HashMap<EdgeId, (EdgeId, bool)> = plans
+    // Snapshot authority before replacing wires retires the dropped coedges.
+    // The retained edge is not yet a use of the dropped edge's face, so the
+    // authority cannot truthfully be attached until after that replacement.
+    let mut carried_authority = Vec::new();
+    let merge_by_drop: HashMap<_, _> = plans
         .iter()
         .map(|merge| (merge.drop, (merge.keep, merge.reversed)))
         .collect();
+    for &face in topo.shell(shell_id)?.faces() {
+        for &loop_id in topo.face(face)?.boundary_loops() {
+            for &coedge_id in topo.face_loop(loop_id)?.coedges() {
+                let coedge = topo.coedge(coedge_id)?;
+                let Some(&(keep, reversed)) = merge_by_drop.get(&coedge.edge()) else {
+                    continue;
+                };
+                let (pcurve, forward) = if reversed {
+                    (
+                        coedge.pcurve().map(|pcurve| {
+                            PCurve::new(pcurve.curve().clone(), pcurve.t_end(), pcurve.t_start())
+                        }),
+                        !coedge.is_forward(),
+                    )
+                } else {
+                    (coedge.pcurve().cloned(), coedge.is_forward())
+                };
+                carried_authority.push((keep, face, forward, pcurve, coedge.periodic_winding()));
+            }
+        }
+    }
+
+    // 1. Rewrite every wire use of a dropped edge onto its retained twin.
+    //    This — not rewriting the dropped edge's endpoints — is what makes
+    //    two faces share one edge.
+    let redirect = merge_by_drop;
     for &wire_id in wire_ids {
         let old: Vec<OrientedEdge> = topo.wire(wire_id)?.edges().to_vec();
         let mut changed = false;
@@ -368,6 +376,31 @@ fn apply_merges(
             let closed = topo.wire(wire_id)?.is_closed();
             let replacement = remus_topology::wire::Wire::new(new, closed)?;
             topo.replace_boundary_wire(wire_id, replacement)?;
+        }
+    }
+
+    // 2. The replacement above installed the retained edge's authoritative
+    // coedge on every affected face. Attach each carried branch and periodic
+    // lift to that exact use.
+    for (edge, face, forward, pcurve, winding) in carried_authority {
+        let mut matching = Vec::new();
+        for &loop_id in topo.face(face)?.boundary_loops() {
+            for &coedge_id in topo.face_loop(loop_id)?.coedges() {
+                let coedge = topo.coedge(coedge_id)?;
+                if coedge.edge() == edge && coedge.is_forward() == forward {
+                    matching.push(coedge_id);
+                }
+            }
+        }
+        let [coedge_id] = matching.as_slice() else {
+            return Err(HealError::UpgradeFailed(format!(
+                "sewn edge {edge:?} does not have exactly one {} use on face {face:?}",
+                if forward { "forward" } else { "reverse" }
+            )));
+        };
+        topo.set_coedge_periodic_winding(*coedge_id, winding)?;
+        if let Some(pcurve) = pcurve {
+            topo.set_coedge_pcurve(*coedge_id, pcurve)?;
         }
     }
 
@@ -473,7 +506,9 @@ mod tests {
     use super::*;
 
     use remus_math::curves::Circle3D;
-    use remus_math::vec::{Point3, Vec3};
+    use remus_math::curves2d::{Curve2D, Line2D};
+    use remus_math::vec::{Point2, Point3, Vec2, Vec3};
+    use remus_topology::coedge::PeriodicWinding;
     use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
     use remus_topology::face::{Face, FaceId, FaceSurface};
     use remus_topology::shell::Shell;
@@ -668,6 +703,62 @@ mod tests {
         remus_topology::validation::validate_shell_closed(shell, &topo)
             .expect("sewn cube shell must be a closed 2-manifold");
         assert_wires_chain(&topo, shell_id);
+    }
+
+    #[test]
+    fn sew_shell_moves_pcurves_only_after_the_new_coedges_exist() {
+        let mut topo = Topology::new();
+        let shell_id = disjoint_cube_shell(&mut topo);
+        let faces = topo.shell(shell_id).unwrap().faces().to_vec();
+        for (face_position, &face) in faces.iter().enumerate() {
+            let winding_u = i32::try_from(face_position).unwrap() + 1;
+            let wire = topo.face(face).unwrap().outer_wire();
+            for oriented in topo.wire(wire).unwrap().edges().to_vec() {
+                let offset = face.index() as f64;
+                topo.set_pcurve_oriented(
+                    oriented.edge(),
+                    face,
+                    oriented.is_forward(),
+                    PCurve::new(
+                        Curve2D::Line(
+                            Line2D::new(Point2::new(offset, 0.0), Vec2::new(1.0, 0.0)).unwrap(),
+                        ),
+                        0.0,
+                        1.0,
+                    ),
+                )
+                .unwrap();
+                let coedge = topo
+                    .coedges_of_edge(oriented.edge())
+                    .into_iter()
+                    .find(|&coedge_id| {
+                        let coedge = topo.coedge(coedge_id).unwrap();
+                        coedge.is_forward() == oriented.is_forward()
+                            && topo.face_loop(coedge.parent_loop()).unwrap().face() == face
+                    })
+                    .unwrap();
+                topo.set_coedge_periodic_winding(coedge, PeriodicWinding::new(winding_u, -1))
+                    .unwrap();
+            }
+        }
+        assert_eq!(topo.num_pcurves(), 24);
+
+        assert_eq!(sew_shell(&mut topo, shell_id, 1e-6).unwrap(), 12);
+
+        assert_eq!(topo.num_pcurves(), 24);
+        for (face_position, &face) in faces.iter().enumerate() {
+            let winding_u = i32::try_from(face_position).unwrap() + 1;
+            assert_eq!(topo.pcurves_for_face(face).len(), 4);
+            for loop_id in topo.loops_of_face(face).unwrap() {
+                for &coedge_id in topo.face_loop(*loop_id).unwrap().coedges() {
+                    assert_eq!(
+                        topo.coedge(coedge_id).unwrap().periodic_winding(),
+                        PeriodicWinding::new(winding_u, -1)
+                    );
+                }
+            }
+            remus_topology::validation::validate_face_loops(&topo, face).unwrap();
+        }
     }
 
     #[test]
