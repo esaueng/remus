@@ -3511,6 +3511,31 @@ class BrepKernel {
         return v2;
     }
     /**
+     * Import a STEP file and return solid handles plus bounded-healing diagnostics.
+     *
+     * The returned JavaScript string is JSON with shape
+     * `{ solids, diagnostics }`. Existing callers that only need handles can
+     * continue to use [`importStep`](Self::import_step).
+     *
+     * # Errors
+     *
+     * Returns an error if the STEP data is malformed or exceeds a resource
+     * limit.
+     * @param {Uint8Array} data
+     * @param {number | null} [max_input_bytes]
+     * @param {number | null} [max_entities]
+     * @returns {any}
+     */
+    importStepWithReport(data, max_input_bytes, max_entities) {
+        const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.brepkernel_importStepWithReport(this.__wbg_ptr, ptr0, len0, !isLikeNone(max_input_bytes), isLikeNone(max_input_bytes) ? 0 : max_input_bytes, !isLikeNone(max_entities), isLikeNone(max_entities) ? 0 : max_entities);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
      * Import an STL file (binary or ASCII) and return a solid handle.
      *
      * The mesh triangles are converted to planar B-Rep faces with
