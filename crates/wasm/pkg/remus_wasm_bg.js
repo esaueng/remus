@@ -1716,8 +1716,8 @@ export class BrepKernel {
      * Export a solid to STEP AP203 with optional header metadata.
      *
      * `options` is an optional JSON string with `productName`, `fileName`,
-     * and `timestamp` fields. Missing fields retain the defaults used by
-     * [`exportStep`](Self::export_step).
+     * `timestamp`, and `validationProperties` fields. Missing fields retain
+     * the defaults used by [`exportStep`](Self::export_step).
      *
      * # Errors
      *
@@ -3532,6 +3532,47 @@ export class BrepKernel {
             throw takeFromExternrefTable0(ret[1]);
         }
         return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Import STEP and opt in to CAx-IF geometric validation-property checks.
+     *
+     * Returns JSON with `solids`, bounded-healing `diagnostics`, and one
+     * `validation` report per solid.
+     * Deviations are diagnostics and do not discard valid imported geometry;
+     * malformed declarations fail transactionally. `options` accepts the
+     * camelCase fields of [`remus_io::step::StepValidationOptions`].
+     *
+     * # Errors
+     *
+     * Returns an error for malformed UTF-8, STEP, option JSON, validation
+     * declarations, or hostile-input limit violations.
+     * @param {Uint8Array} data
+     * @param {string | null} [options]
+     * @param {number | null} [max_input_bytes]
+     * @param {number | null} [max_entities]
+     * @returns {string}
+     */
+    importStepWithValidation(data, options, max_input_bytes, max_entities) {
+        let deferred4_0;
+        let deferred4_1;
+        try {
+            const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
+            const len0 = WASM_VECTOR_LEN;
+            var ptr1 = isLikeNone(options) ? 0 : passStringToWasm0(options, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            var len1 = WASM_VECTOR_LEN;
+            const ret = wasm.brepkernel_importStepWithValidation(this.__wbg_ptr, ptr0, len0, ptr1, len1, !isLikeNone(max_input_bytes), isLikeNone(max_input_bytes) ? 0 : max_input_bytes, !isLikeNone(max_entities), isLikeNone(max_entities) ? 0 : max_entities);
+            var ptr3 = ret[0];
+            var len3 = ret[1];
+            if (ret[3]) {
+                ptr3 = 0; len3 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred4_0 = ptr3;
+            deferred4_1 = len3;
+            return getStringFromWasm0(ptr3, len3);
+        } finally {
+            wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+        }
     }
     /**
      * Import an STL file (binary or ASCII) and return a solid handle.

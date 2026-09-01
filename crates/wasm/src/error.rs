@@ -438,6 +438,13 @@ impl From<remus_io::IoError> for StructuredWasmError {
                 actual,
             } => Self::resource_limit(message, resource, limit, actual),
             remus_io::IoError::ParseError { .. } => Self::invalid_argument(message, None),
+            remus_io::IoError::InvalidValidationProperties { code, .. } => {
+                let mut structured = Self::invalid_argument(message, None);
+                structured
+                    .details
+                    .insert("kernelCode".to_string(), Value::from(code));
+                structured
+            }
             remus_io::IoError::InvalidTopology { .. } => {
                 Self::new(WasmErrorCode::TopologyError, message)
             }

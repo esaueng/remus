@@ -1164,6 +1164,9 @@ fn io_diagnostic(error: &IoError) -> DiagnosticRecord {
             "step_parse_error",
             error.to_string(),
         ),
+        IoError::InvalidValidationProperties { code, .. } => {
+            DiagnosticRecord::error(FailureCategory::InvalidInput, *code, error.to_string())
+        }
         IoError::UnsupportedEntity { .. } => DiagnosticRecord::error(
             FailureCategory::Unsupported,
             "unsupported_step_entity",
@@ -1409,6 +1412,19 @@ mod tests {
             result.stages.read.diagnostics[0].code,
             "import_limit_exceeded"
         );
+    }
+
+    #[test]
+    fn invalid_validation_properties_preserve_their_stable_code() {
+        let error = IoError::InvalidValidationProperties {
+            code: "step_validation_invalid_unit",
+            reason: "volume measure references a length unit".into(),
+        };
+
+        let diagnostic = io_diagnostic(&error);
+
+        assert_eq!(diagnostic.category, "invalid_input");
+        assert_eq!(diagnostic.code, "step_validation_invalid_unit");
     }
 
     #[test]
