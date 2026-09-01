@@ -13,7 +13,7 @@ Issue 2.0's measured baseline is
 | 2.0a Measurement and semantic ratchet | Merged | [#120](https://github.com/esaueng/remus/pull/120) |
 | 2.0b Missing writers, invariants, oracles, and census | Complete — operations and phase-FF contributions | [#122](https://github.com/esaueng/remus/pull/122) + [#125](https://github.com/esaueng/remus/pull/125) |
 | 2.0c Reader migration and seam-safe validation | Complete — the staged reader migration is at zero (132 → 0), and CI strictly validates both oriented cylinder-seam pcurves on an exact boolean output with non-vacuous counts | [#154](https://github.com/esaueng/remus/pull/154) + [#159](https://github.com/esaueng/remus/pull/159) + [#162](https://github.com/esaueng/remus/pull/162) + [#165](https://github.com/esaueng/remus/pull/165) + [#169](https://github.com/esaueng/remus/pull/169) + [#172](https://github.com/esaueng/remus/pull/172) + [#175](https://github.com/esaueng/remus/pull/175) |
-| 2.0d Topology-owned atomic boundary mutation | Pending | — |
+| 2.0d Topology-owned atomic boundary mutation | Complete — all 30 measured production direct mutations are migrated behind two preflighted topology APIs; the ratchet requires zero and checkpoint rollback preserves boundary, pcurve, and derived-handle state | This PR |
 | 2.0e Physical Loop/Coedge p-curve authority | Pending | — |
 | 2.0f STEP per-use deterministic round-trip | Pending | — |
 | 2.0g Integration, zero gate, corpus, and docs | Pending | — |

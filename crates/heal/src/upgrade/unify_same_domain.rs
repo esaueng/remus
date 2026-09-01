@@ -301,8 +301,7 @@ pub fn unify_same_domain(
                     "unify_same_domain: reverting {total_edges_merged} collinear-edge merges — unpaired edges would rise {bad_after_faces} -> {bad_after_edges} (face merges kept)"
                 );
                 for (wid, original) in wire_snapshots {
-                    let wire_mut = topo.wire_mut(wid)?;
-                    *wire_mut = original;
+                    topo.replace_boundary_wire(wid, original)?;
                 }
                 total_edges_merged = 0;
             }
@@ -1069,8 +1068,7 @@ fn merge_collinear_edges(
     }
 
     let new_wire = Wire::new(new_edges, is_closed)?;
-    let wire_mut = topo.wire_mut(wire_id)?;
-    *wire_mut = new_wire;
+    topo.replace_boundary_wire(wire_id, new_wire)?;
 
     Ok(merged_count)
 }

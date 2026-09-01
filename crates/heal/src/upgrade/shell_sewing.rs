@@ -365,7 +365,9 @@ fn apply_merges(
             })
             .collect();
         if changed {
-            topo.wire_mut(wire_id)?.edges_mut().copy_from_slice(&new);
+            let closed = topo.wire(wire_id)?.is_closed();
+            let replacement = remus_topology::wire::Wire::new(new, closed)?;
+            topo.replace_boundary_wire(wire_id, replacement)?;
         }
     }
 
