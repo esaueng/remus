@@ -1388,10 +1388,9 @@ fn e12_convert_to_elementary_recovers_exact_nurbs_cylinder() {
     );
 }
 
-// E13: document the current copy gap. Direct editing needs an entity-map copy
-// that also remaps pcurves; copy_solid_with_face_map currently drops them.
+// E13: entity-map copies retain pcurves under the copied edge/face use.
 #[test]
-fn e13_copy_solid_face_map_does_not_copy_pcurves_yet() {
+fn e13_copy_solid_face_map_remaps_oriented_pcurves() {
     use remus_math::curves2d::{Curve2D, Line2D};
     use remus_math::vec::{Point2, Vec2};
     use remus_topology::pcurve::PCurve;
@@ -1399,11 +1398,11 @@ fn e13_copy_solid_face_map_does_not_copy_pcurves_yet() {
     let mut topo = Topology::new();
     let solid = make_box(&mut topo, 4.0, 4.0, 4.0).unwrap();
     let source_face = solid_faces(&topo, solid).unwrap()[0];
-    let source_edge = topo
+    let source_use = topo
         .wire(topo.face(source_face).unwrap().outer_wire())
         .unwrap()
-        .edges()[0]
-        .edge();
+        .edges()[0];
+    let source_edge = source_use.edge();
     topo.set_pcurve(
         source_edge,
         source_face,
@@ -1418,16 +1417,18 @@ fn e13_copy_solid_face_map_does_not_copy_pcurves_yet() {
         remus_operations::copy::copy_solid_with_face_map(&mut topo, solid).unwrap();
     let copied_face_index = face_map[&source_face.index()];
     let copied_face = topo.face_id_from_index(copied_face_index).unwrap();
-    let copied_edge = topo
+    let copied_use = topo
         .wire(topo.face(copied_face).unwrap().outer_wire())
         .unwrap()
-        .edges()[0]
-        .edge();
+        .edges()[0];
+    let copied_edge = copied_use.edge();
     assert!(topo.has_pcurve(source_edge, source_face).unwrap());
-    assert!(
-        !topo.has_pcurve(copied_edge, copied_face).unwrap(),
-        "update this probe when copy_solid_with_entity_maps remaps pcurves"
-    );
+    let copied_pcurve = topo
+        .pcurve_oriented(copied_edge, copied_face, copied_use.is_forward())
+        .expect("copied oriented pcurve");
+    assert_eq!(copied_pcurve.t_start().to_bits(), 0.0_f64.to_bits());
+    assert_eq!(copied_pcurve.t_end().to_bits(), 1.0_f64.to_bits());
+    assert!((copied_pcurve.evaluate(0.5) - Point2::new(0.5, 0.0)).length() < 1e-14);
     assert_ne!(copy, solid);
 }
 

@@ -9,6 +9,7 @@ use remus_math::vec::Point3;
 use remus_topology::Topology;
 use remus_topology::edge::{Edge, EdgeCurve};
 use remus_topology::face::{Face, FaceId, FaceSurface};
+use remus_topology::pcurve::PCurve;
 use remus_topology::shell::Shell;
 use remus_topology::solid::{Solid, SolidId};
 use remus_topology::vertex::{Vertex, VertexId};
@@ -48,10 +49,41 @@ struct ShellSnap {
     faces: Vec<FaceSnap>,
 }
 
+struct PcurveSnap {
+    face_index: usize,
+    edge_index: usize,
+    forward: bool,
+    pcurve: PCurve,
+}
+
+fn snapshot_face_pcurves(
+    topo: &Topology,
+    face_id: FaceId,
+) -> Result<Vec<PcurveSnap>, crate::OperationsError> {
+    let face = topo.face(face_id)?;
+    let mut snapshots = Vec::new();
+    for wire_id in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+        for oriented in topo.wire(wire_id)?.edges() {
+            if let Some(pcurve) =
+                topo.pcurve_oriented(oriented.edge(), face_id, oriented.is_forward())
+            {
+                snapshots.push(PcurveSnap {
+                    face_index: face_id.index(),
+                    edge_index: oriented.edge().index(),
+                    forward: oriented.is_forward(),
+                    pcurve: pcurve.clone(),
+                });
+            }
+        }
+    }
+    Ok(snapshots)
+}
+
 /// Copy one solid between independent topology arenas.
 ///
 /// This is used by speculative operations that run in a cloned topology: only
-/// the accepted result is materialized back into the caller's arena.
+/// the accepted result is materialized back into the caller's arena. Stored
+/// oriented pcurves on boundary uses are copied with their owning faces.
 pub(crate) fn copy_solid_between(
     source: &Topology,
     destination: &mut Topology,
@@ -66,6 +98,7 @@ pub(crate) fn copy_solid_between(
     let mut edges = Vec::new();
     let mut wires = Vec::new();
     let mut shells = Vec::new();
+    let mut pcurves = Vec::new();
     let mut seen_vertices = std::collections::HashSet::new();
     let mut seen_edges = std::collections::HashSet::new();
     let mut seen_wires = std::collections::HashSet::new();
@@ -75,6 +108,7 @@ pub(crate) fn copy_solid_between(
         let mut faces = Vec::new();
         for &face_id in shell.faces() {
             let face = source.face(face_id)?;
+            pcurves.extend(snapshot_face_pcurves(source, face_id)?);
             for wire_id in
                 std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
             {
@@ -173,6 +207,7 @@ pub(crate) fn copy_solid_between(
         );
     }
     let mut new_shells = Vec::new();
+    let mut face_map = HashMap::new();
     for shell in shells {
         let mut new_faces = Vec::new();
         for face in shell.faces {
@@ -191,10 +226,19 @@ pub(crate) fn copy_solid_between(
             if let Some(attributes) = face.attributes {
                 destination.set_face_attributes(new_face_id, attributes)?;
             }
+            face_map.insert(face.old_index, new_face_id);
             new_faces.push(new_face_id);
         }
         new_shells.push(
             destination.add_shell(Shell::new(new_faces).map_err(crate::OperationsError::Topology)?),
+        );
+    }
+    for snapshot in pcurves {
+        destination.set_pcurve_oriented(
+            edge_map[&snapshot.edge_index],
+            face_map[&snapshot.face_index],
+            snapshot.forward,
+            snapshot.pcurve,
         );
     }
     let outer = new_shells[0];
@@ -209,7 +253,8 @@ pub(crate) fn copy_solid_between(
 /// Create a deep copy of a solid and all its topology.
 ///
 /// Returns a new `SolidId` for the copy. The original solid is not modified.
-/// All vertices, edges, wires, faces, and shells are duplicated.
+/// All vertices, edges, wires, faces, shells, and oriented boundary pcurves are
+/// duplicated.
 ///
 /// # Errors
 ///
@@ -251,6 +296,7 @@ pub fn copy_solid_with_face_map(
     let mut edge_snaps: Vec<EdgeSnap> = Vec::new();
     let mut wire_snaps: Vec<WireSnap> = Vec::new();
     let mut shell_snaps: Vec<ShellSnap> = Vec::new();
+    let mut pcurve_snaps = Vec::new();
 
     let mut seen_vertices = std::collections::HashSet::new();
     let mut seen_edges = std::collections::HashSet::new();
@@ -262,6 +308,7 @@ pub fn copy_solid_with_face_map(
 
         for &face_id in shell.faces() {
             let face = topo.face(face_id)?;
+            pcurve_snaps.extend(snapshot_face_pcurves(topo, face_id)?);
             let surface = face.surface().clone();
             let outer_wire_index = face.outer_wire().index();
             let inner_wire_indices: Vec<usize> =
@@ -378,6 +425,7 @@ pub fn copy_solid_with_face_map(
 
     let mut new_shell_ids = Vec::new();
     let mut face_map: HashMap<usize, usize> = HashMap::new();
+    let mut copied_face_ids: HashMap<usize, FaceId> = HashMap::new();
     for ssnap in &shell_snaps {
         let mut new_face_ids = Vec::new();
         for fsnap in &ssnap.faces {
@@ -397,10 +445,19 @@ pub fn copy_solid_with_face_map(
                 topo.set_face_attributes(new_fid, attributes)?;
             }
             face_map.insert(fsnap.old_index, new_fid.index());
+            copied_face_ids.insert(fsnap.old_index, new_fid);
             new_face_ids.push(new_fid);
         }
         let new_shell = Shell::new(new_face_ids).map_err(crate::OperationsError::Topology)?;
         new_shell_ids.push(topo.add_shell(new_shell));
+    }
+    for snapshot in pcurve_snaps {
+        topo.set_pcurve_oriented(
+            edge_map[&snapshot.edge_index],
+            copied_face_ids[&snapshot.face_index],
+            snapshot.forward,
+            snapshot.pcurve,
+        );
     }
 
     let new_outer = new_shell_ids[0];
@@ -845,7 +902,12 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use remus_math::tolerance::Tolerance;
+    use remus_math::{
+        curves2d::{Curve2D, Line2D},
+        vec::{Point2, Vec2},
+    };
     use remus_topology::Topology;
+    use remus_topology::pcurve::PCurve;
     use remus_topology::test_utils::make_unit_cube_manifold;
 
     use super::*;
@@ -919,6 +981,39 @@ mod tests {
             .filter_map(|attributes| attributes.name.as_deref())
             .collect();
         assert_eq!(face_names, vec!["source face"]);
+    }
+
+    #[test]
+    fn copy_between_topologies_carries_oriented_pcurves() {
+        let mut source = Topology::new();
+        let solid = make_unit_cube_manifold(&mut source);
+        let face = remus_topology::explorer::solid_faces(&source, solid).unwrap()[0];
+        let oriented = source
+            .wire(source.face(face).unwrap().outer_wire())
+            .unwrap()
+            .edges()[0];
+        let pcurve = PCurve::new(
+            Curve2D::Line(Line2D::new(Point2::new(2.0, 3.0), Vec2::new(1.0, 0.0)).unwrap()),
+            4.0,
+            5.0,
+        );
+        source.set_pcurve_oriented(oriented.edge(), face, oriented.is_forward(), pcurve);
+
+        let mut destination = Topology::new();
+        let copied = copy_solid_between(&source, &mut destination, solid).unwrap();
+        let copied_face = remus_topology::explorer::solid_faces(&destination, copied).unwrap()[0];
+        let copied_use = destination
+            .wire(destination.face(copied_face).unwrap().outer_wire())
+            .unwrap()
+            .edges()[0];
+        let copied_pcurve = destination
+            .pcurve_oriented(copied_use.edge(), copied_face, copied_use.is_forward())
+            .unwrap();
+
+        assert_eq!(destination.num_pcurves(), 1);
+        assert_eq!(copied_pcurve.t_start().to_bits(), 4.0_f64.to_bits());
+        assert_eq!(copied_pcurve.t_end().to_bits(), 5.0_f64.to_bits());
+        assert!((copied_pcurve.evaluate(4.5) - Point2::new(6.5, 3.0)).length() < 1e-14);
     }
 
     #[test]
