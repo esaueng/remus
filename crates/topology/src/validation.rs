@@ -176,14 +176,13 @@ pub fn validate_shell_closed(shell: &Shell, topo: &Topology) -> Result<(), Topol
     Ok(())
 }
 
-/// Validates a face's derived loops against its authoritative wires
-/// (RFC 0002, Stage 1 consistency invariant).
+/// Validates a face's authoritative loops against its compatibility wires
+/// (RFC 0002 boundary-authority invariant).
 ///
-/// A face with no derivation (no [`Topology::build_face_loops`] call)
-/// passes vacuously. A face with a derivation must agree with its wires
-/// exactly: loop count and order (outer first, then inner), per-loop
-/// closure flag, and per-position edge identity and orientation. Loops are
-/// only ever written by the kernel, so any divergence is a kernel bug.
+/// Every valid face must have authoritative loops. Its compatibility wires
+/// must agree exactly: loop count and order (outer first, then inner),
+/// per-loop closure, and per-position edge identity and orientation. Loops
+/// are written only by the kernel, so absence or divergence is a kernel bug.
 ///
 /// # Errors
 ///
@@ -194,7 +193,7 @@ pub fn validate_face_loops(
     face_id: crate::face::FaceId,
 ) -> Result<(), TopologyError> {
     let Some(loop_ids) = topo.loops_of_face(face_id) else {
-        return Ok(());
+        return Err(TopologyError::LoopWireMismatch { face: face_id });
     };
     let face = topo.face(face_id)?;
     let mut wire_ids = vec![face.outer_wire()];
@@ -1612,7 +1611,8 @@ mod same_parameter_tests {
     #[test]
     fn periodic_rim_refuses_without_a_certified_same_parameter_bound() {
         let (mut topo, rim, face) = cylinder_with_rim();
-        topo.set_pcurve_oriented(rim, face, true, rim_pcurve(0.0));
+        topo.set_pcurve_oriented(rim, face, true, rim_pcurve(0.0))
+            .unwrap();
 
         let error = check_same_parameter_strict(&topo, rim, face, true, 32).unwrap_err();
         assert!(matches!(
@@ -1629,7 +1629,8 @@ mod same_parameter_tests {
     #[test]
     fn offset_pcurve_fails_with_typed_tolerance_violation() {
         let (mut topo, seam, face) = cylinder_seam();
-        topo.set_pcurve_oriented(seam, face, true, seam_pcurve(0.3, true));
+        topo.set_pcurve_oriented(seam, face, true, seam_pcurve(0.3, true))
+            .unwrap();
 
         let err = validate_same_parameter_strict(&topo, seam, face, true, 1e-7, 32).unwrap_err();
         let CurveUseValidationError::Topology(TopologyError::SameParameterExceeded {
@@ -1653,15 +1654,18 @@ mod same_parameter_tests {
     #[test]
     fn seam_branches_validate_independently_by_orientation() {
         let (mut topo, seam, face) = cylinder_seam();
-        topo.set_pcurve_oriented(seam, face, true, seam_pcurve(0.0, true));
-        topo.set_pcurve_oriented(seam, face, false, seam_pcurve(TAU, false));
+        topo.set_pcurve_oriented(seam, face, true, seam_pcurve(0.0, true))
+            .unwrap();
+        topo.set_pcurve_oriented(seam, face, false, seam_pcurve(TAU, false))
+            .unwrap();
 
         for forward in [true, false] {
             validate_same_parameter_strict(&topo, seam, face, forward, 1e-7, 32).unwrap();
             validate_same_range_strict(&topo, seam, face, forward, 1e-7).unwrap();
         }
 
-        topo.set_pcurve_oriented(seam, face, false, seam_pcurve(TAU + 0.2, false));
+        topo.set_pcurve_oriented(seam, face, false, seam_pcurve(TAU + 0.2, false))
+            .unwrap();
         validate_same_parameter_strict(&topo, seam, face, true, 1e-7, 32).unwrap();
         validate_same_range_strict(&topo, seam, face, true, 1e-7).unwrap();
         assert!(matches!(
@@ -1695,7 +1699,8 @@ mod same_parameter_tests {
         let seam = topo.add_edge(Edge::new(bottom, top, EdgeCurve::Line));
         let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(seam, true)], false).unwrap());
         let face = topo.add_face(Face::new(wire, vec![], FaceSurface::Cylinder(cylinder)));
-        topo.set_pcurve_oriented(seam, face, true, seam_pcurve(0.0, true));
+        topo.set_pcurve_oriented(seam, face, true, seam_pcurve(0.0, true))
+            .unwrap();
 
         let error = validate_same_parameter_strict(&topo, seam, face, true, 1e-7, 32).unwrap_err();
         assert!(matches!(
@@ -1725,7 +1730,8 @@ mod same_parameter_tests {
             face,
             true,
             PCurve::new(Curve2D::Line(cancellation_line), p0, p1),
-        );
+        )
+        .unwrap();
 
         let error = validate_same_parameter_strict(&topo, seam, face, true, 1e-7, 32).unwrap_err();
         assert!(matches!(
@@ -1765,7 +1771,8 @@ mod same_parameter_tests {
             face,
             true,
             PCurve::new(Curve2D::Line(almost_vertical), 0.0, 1.0),
-        );
+        )
+        .unwrap();
 
         let error = validate_same_parameter_strict(&topo, seam, face, true, 1e-7, 32).unwrap_err();
         assert!(matches!(
@@ -1787,7 +1794,8 @@ mod same_parameter_tests {
                 normal: Vec3::new(0.0, 0.0, 1.0),
                 d: 0.0,
             });
-        topo.set_pcurve_oriented(seam, face, true, seam_pcurve(0.0, true));
+        topo.set_pcurve_oriented(seam, face, true, seam_pcurve(0.0, true))
+            .unwrap();
 
         let parameter =
             validate_same_parameter_strict(&topo, seam, face, true, 1e-7, 32).unwrap_err();
@@ -1829,7 +1837,8 @@ mod same_parameter_tests {
             face,
             true,
             PCurve::new(Curve2D::Nurbs(bowed), 0.0, 1.0),
-        );
+        )
+        .unwrap();
 
         validate_same_range_strict(&topo, seam, face, true, 1e-7).unwrap();
         let error = validate_same_parameter_strict(&topo, seam, face, true, 1e-7, 32).unwrap_err();
@@ -1846,8 +1855,10 @@ mod same_parameter_tests {
     #[test]
     fn solid_pcurve_contract_summary_is_non_vacuous_and_oriented() {
         let (mut topo, seam, face) = cylinder_seam();
-        topo.set_pcurve_oriented(seam, face, true, seam_pcurve(0.0, true));
-        topo.set_pcurve_oriented(seam, face, false, seam_pcurve(TAU, false));
+        topo.set_pcurve_oriented(seam, face, true, seam_pcurve(0.0, true))
+            .unwrap();
+        topo.set_pcurve_oriented(seam, face, false, seam_pcurve(TAU, false))
+            .unwrap();
         let shell = topo.add_shell(Shell::new(vec![face]).unwrap());
         let solid = topo.add_solid(Solid::new(shell, vec![]));
 
@@ -1856,7 +1867,8 @@ mod same_parameter_tests {
         assert_eq!(summary.stored_pcurves, 2);
         assert_eq!(summary.validated_uses, 2);
 
-        topo.set_pcurve_oriented(seam, face, false, seam_pcurve(TAU + 0.2, false));
+        topo.set_pcurve_oriented(seam, face, false, seam_pcurve(TAU + 0.2, false))
+            .unwrap();
         assert!(matches!(
             validate_solid_pcurve_contracts(&topo, solid, 1e-7, 32),
             Err(CurveUseValidationError::Topology(
@@ -1909,7 +1921,8 @@ mod same_parameter_tests {
                 f64::NAN,
                 TAU,
             ),
-        );
+        )
+        .unwrap();
 
         let parameter =
             validate_same_parameter_strict(&topo, rim, face, true, 1e-7, 8).unwrap_err();
@@ -1942,7 +1955,8 @@ mod same_parameter_tests {
             face,
             true,
             PCurve::new(Curve2D::Nurbs(poisoned), 0.0, 1.0),
-        );
+        )
+        .unwrap();
         for error in [
             validate_same_parameter_strict(&topo, rim, face, true, 1e-7, 8).unwrap_err(),
             validate_same_range_strict(&topo, rim, face, true, 1e-7).unwrap_err(),
@@ -1959,7 +1973,8 @@ mod same_parameter_tests {
     fn same_parameter_refuses_missing_edge_domain() {
         let (mut topo, rim, face) = cylinder_with_rim();
         topo.edge_mut(rim).unwrap().set_trim(None);
-        topo.set_pcurve_oriented(rim, face, true, rim_pcurve(0.0));
+        topo.set_pcurve_oriented(rim, face, true, rim_pcurve(0.0))
+            .unwrap();
         let error = validate_same_parameter_strict(&topo, rim, face, true, 1e-7, 8).unwrap_err();
         assert!(matches!(
             error,
@@ -2240,7 +2255,8 @@ mod tolerant_checks_tests {
         // An exact pcurve (the seam's true image): the sampled deviation is
         // round-off only, far below the default bound.
         let (mut topo, seam, face) = cylinder_seam();
-        topo.set_pcurve_oriented(seam, face, true, seam_pcurve(0.0));
+        topo.set_pcurve_oriented(seam, face, true, seam_pcurve(0.0))
+            .unwrap();
 
         let report = check_edge_tube(&topo, seam, face, true, 32)
             .unwrap()
@@ -2257,7 +2273,8 @@ mod tolerant_checks_tests {
     #[test]
     fn edge_tube_violation_fires_beyond_the_effective_tolerance() {
         let (mut topo, seam, face) = cylinder_seam();
-        topo.set_pcurve_oriented(seam, face, true, seam_pcurve(0.3));
+        topo.set_pcurve_oriented(seam, face, true, seam_pcurve(0.3))
+            .unwrap();
         let deviation = 2.0 * (0.15_f64).sin();
 
         let report = check_edge_tube(&topo, seam, face, true, 32)
@@ -2285,7 +2302,8 @@ mod tolerant_checks_tests {
         // deviation clears the validator; a raise that still understates
         // the deviation is rejected by the validator, not papered over.
         let (mut topo, seam, face) = cylinder_seam();
-        topo.set_pcurve_oriented(seam, face, true, seam_pcurve(0.3));
+        topo.set_pcurve_oriented(seam, face, true, seam_pcurve(0.3))
+            .unwrap();
         let deviation = 2.0 * (0.15_f64).sin();
 
         assert!(validate_edge_tube(&topo, seam, face, true, 32).is_err());
@@ -2310,7 +2328,8 @@ mod tolerant_checks_tests {
         // No edge-declared tolerance: the effective bound is the wider
         // bounding ball, floored at the global linear tolerance.
         let (mut topo, seam, face) = cylinder_seam();
-        topo.set_pcurve_oriented(seam, face, true, seam_pcurve(0.3));
+        topo.set_pcurve_oriented(seam, face, true, seam_pcurve(0.3))
+            .unwrap();
 
         for vid in [
             topo.edge(seam).unwrap().start(),
@@ -2335,7 +2354,8 @@ mod tolerant_checks_tests {
         // never narrows the check below the global floor — but it also
         // cannot cover a deviation above the floor.
         let (mut topo, seam, face) = cylinder_seam();
-        topo.set_pcurve_oriented(seam, face, true, seam_pcurve(5e-8));
+        topo.set_pcurve_oriented(seam, face, true, seam_pcurve(5e-8))
+            .unwrap();
         topo.edge_mut(seam)
             .unwrap()
             .set_tolerance(Some(1e-8))
@@ -2351,7 +2371,8 @@ mod tolerant_checks_tests {
         validate_edge_tube(&topo, seam, face, true, 32).unwrap();
 
         // A deviation above the floor fires even against the widened bound.
-        topo.set_pcurve_oriented(seam, face, true, seam_pcurve(3e-7));
+        topo.set_pcurve_oriented(seam, face, true, seam_pcurve(3e-7))
+            .unwrap();
         assert!(validate_edge_tube(&topo, seam, face, true, 32).is_err());
     }
 
@@ -2362,7 +2383,8 @@ mod tolerant_checks_tests {
         // argument — a declared edge tolerance does not widen it. The
         // entity-derived bound is the new `validate_edge_tube`'s job.
         let (mut topo, seam, face) = cylinder_seam();
-        topo.set_pcurve_oriented(seam, face, true, seam_pcurve(0.3));
+        topo.set_pcurve_oriented(seam, face, true, seam_pcurve(0.3))
+            .unwrap();
         topo.edge_mut(seam)
             .unwrap()
             .set_tolerance(Some(0.5))
