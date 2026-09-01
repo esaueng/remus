@@ -44,6 +44,16 @@ its state. Before claiming anything: `gh pr list --state open` (R6).
   Native serialization, curve-intersection, and offset-specific campaigns
   remain S4 follow-ups; migrating ad-hoc snapshot/restore call sites off the
   checkpoint-barrier primitive is flagged for the W5 contract work.
+- **Remus K-S4 disposition — native-serialization fuzz slice:** done in PR
+  #173. Bounded box/cylinder documents with duplicate roots, shared-shell
+  aliases, repeated/aliased compound members, hostile tolerances, and
+  attributes now round-trip in the scheduled campaign against per-position
+  validation/census/closed-form volume oracles, bit-exact state survival,
+  byte-identical re-serialization, and typed non-mutating refusal of
+  corrupted references. The byte-identity oracle pinned serde_json's
+  `float_roundtrip` feature as load-bearing for exact f64 replay (fixed in
+  the same PR with a bit-exact tolerance regression). Curve-intersection and
+  offset-specific campaigns remain S4 follow-ups.
 
 ## §H Horizons
 
