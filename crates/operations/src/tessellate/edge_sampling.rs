@@ -97,16 +97,19 @@ pub(super) fn plane_axes(normal: Vec3) -> (Vec3, Vec3) {
 /// Display callers pass `false` (the chord count is exact for a constant-
 /// curvature circle); the boolean mesh-fallback passes `true` because its
 /// co-refinement robustness depends on the denser floored sampling.
+///
+/// # Errors
+///
+/// Returns an error when a curved edge lacks valid stored parameter authority.
 pub fn edge_sample_count(
-    topo: &Topology,
     edge: &remus_topology::edge::Edge,
     deflection: f64,
     angular_tol: f64,
     circle_floor: bool,
-) -> usize {
+) -> Result<usize, crate::OperationsError> {
     use remus_topology::edge::EdgeCurve;
 
-    match edge.curve() {
+    let count = match edge.curve() {
         EdgeCurve::Line => 2,
         EdgeCurve::Circle(c) => {
             let radius = c.radius();
@@ -114,35 +117,13 @@ pub fn edge_sample_count(
             // tessellate_analytic uses for the grid density. This ensures
             // edge sample points align with the analytic grid boundary,
             // allowing the snap path to achieve watertight stitching.
-            if let Ok((t_start, t_end)) = circle_param_range(topo, edge, c) {
-                let arc_range = (t_end - t_start).abs();
-                segments_for_chord_deviation_a(
-                    radius,
-                    arc_range,
-                    deflection,
-                    angular_tol,
-                    circle_floor,
-                ) + 1
-            } else {
-                segments_for_chord_deviation_a(
-                    radius,
-                    std::f64::consts::TAU,
-                    deflection,
-                    angular_tol,
-                    circle_floor,
-                ) + 1
-            }
+            let (t_start, t_end) = circle_param_range(edge)?;
+            let arc_range = (t_end - t_start).abs();
+            segments_for_chord_deviation_a(radius, arc_range, deflection, angular_tol, circle_floor)
+                + 1
         }
         EdgeCurve::Hyperbola(h) => {
-            let (Ok(sp), Ok(ep)) = (
-                topo.vertex(edge.start())
-                    .map(remus_topology::vertex::Vertex::point),
-                topo.vertex(edge.end())
-                    .map(remus_topology::vertex::Vertex::point),
-            ) else {
-                return 2;
-            };
-            let (t0, t1) = edge.domain_with_endpoints(sp, ep);
+            let (t0, t1) = crate::authoritative_edge_domain(edge, "edge sample count")?;
             open_conic_segments(
                 h.min_curvature_radius(t0, t1),
                 h.arc_length(t0, t1),
@@ -151,15 +132,7 @@ pub fn edge_sample_count(
             ) + 1
         }
         EdgeCurve::Parabola(p) => {
-            let (Ok(sp), Ok(ep)) = (
-                topo.vertex(edge.start())
-                    .map(remus_topology::vertex::Vertex::point),
-                topo.vertex(edge.end())
-                    .map(remus_topology::vertex::Vertex::point),
-            ) else {
-                return 2;
-            };
-            let (t0, t1) = edge.domain_with_endpoints(sp, ep);
+            let (t0, t1) = crate::authoritative_edge_domain(edge, "edge sample count")?;
             open_conic_segments(
                 p.min_curvature_radius(t0, t1),
                 p.arc_length(t0, t1),
@@ -177,17 +150,8 @@ pub fn edge_sample_count(
             let a = ellipse.semi_major();
             let b = ellipse.semi_minor();
             let max_curv_radius = a * a / b;
-            let arc_range = if let (Ok(sp), Ok(ep)) = (
-                topo.vertex(edge.start())
-                    .map(remus_topology::vertex::Vertex::point),
-                topo.vertex(edge.end())
-                    .map(remus_topology::vertex::Vertex::point),
-            ) {
-                let (ts, te) = edge.domain_with_endpoints(sp, ep);
-                (te - ts).abs()
-            } else {
-                std::f64::consts::TAU
-            };
+            let (ts, te) = crate::authoritative_edge_domain(edge, "edge sample count")?;
+            let arc_range = (te - ts).abs();
             segments_for_chord_deviation_a(
                 max_curv_radius,
                 arc_range,
@@ -203,10 +167,7 @@ pub fn edge_sample_count(
             // Endpoint-trimmed convention: a section edge can be a validated
             // sub-span of its stored curve; measuring the FULL knot domain
             // would size (and later sample) the whole parent curve.
-            let (u0, u1) = match (topo.vertex(edge.start()), topo.vertex(edge.end())) {
-                (Ok(sv), Ok(ev)) => edge.domain_with_endpoints(sv.point(), ev.point()),
-                _ => nurbs.domain(),
-            };
+            let (u0, u1) = crate::authoritative_edge_domain(edge, "edge sample count")?;
             let n_spans = nurbs
                 .control_points()
                 .len()
@@ -235,7 +196,8 @@ pub fn edge_sample_count(
                 sag_n.max(turn_n).clamp(8, 4096)
             }
         }
-    }
+    };
+    Ok(count)
 }
 
 /// Measure the maximum midpoint chord deviation across `n` segments of a NURBS curve.
@@ -293,78 +255,24 @@ pub(super) fn measure_max_segment_turn(
 
 /// Get the parameter range for a circle edge.
 ///
-/// A CLOSED circle edge still has a start vertex, and the polyline has to begin
-/// there: the boundary walk that consumes it enters through that vertex from the
-/// neighbouring edge. Starting at the curve's own parameter origin instead puts
-/// the seam vertex somewhere in the middle of the ring — usually not even on a
-/// sample — so the walk jumps by whatever angle separates the two, and on a
-/// periodic surface the jump unwraps into an extra turn. Hence `t_start` is the
-/// start vertex's parameter, not `0`; the range is a full `TAU` either way, so
-/// the sample count is unchanged.
+/// The stored interval is returned verbatim, including a lifted seam end,
+/// major arc, or reversed traversal. Closed-circle producers must therefore
+/// anchor their stored full turn at the topology seam vertex.
 ///
 /// # Errors
 ///
-/// Returns an error if vertex lookup fails.
+/// Returns an error if the circle lacks valid stored parameter authority.
 pub(super) fn circle_param_range(
-    topo: &Topology,
     edge: &remus_topology::edge::Edge,
-    circle: &remus_math::curves::Circle3D,
 ) -> Result<(f64, f64), crate::OperationsError> {
-    let sp = topo.vertex(edge.start())?.point();
-    let ep = topo.vertex(edge.end())?.point();
-    if let Some(trim) = edge.trim() {
-        Ok(trim)
-    } else if edge.is_closed() {
-        let start = circle.project(sp);
-        Ok((start, start + std::f64::consts::TAU))
-    } else {
-        Ok(edge.domain_with_endpoints(sp, ep))
-    }
+    crate::authoritative_edge_domain(edge, "circle sampling")
 }
 
-/// The shorter of the two arcs an untrimmed open circle edge's endpoints
-/// subtend: CCW when the forward span is at most a half turn, otherwise CW
-/// (returned with `t_end < t_start` so interpolation runs backward).
+/// The parameter span an edge actually covers on its stored curve.
 ///
-/// Only for edges WITHOUT a stored trim — a trim states the intended arc
-/// exactly, including intentional major arcs this heuristic would flip.
-///
-/// # Errors
-///
-/// Returns an error if vertex lookup fails.
-fn shorter_arc_range(
-    topo: &Topology,
-    edge: &remus_topology::edge::Edge,
-    circle: &remus_math::curves::Circle3D,
-) -> Result<(f64, f64), crate::OperationsError> {
-    let sp = topo.vertex(edge.start())?.point();
-    let ep = topo.vertex(edge.end())?.point();
-    let ts = circle.project(sp);
-    let te_raw = circle.project(ep);
-    let fwd_span = (te_raw - ts).rem_euclid(std::f64::consts::TAU);
-    if fwd_span <= std::f64::consts::PI {
-        Ok((ts, ts + fwd_span))
-    } else {
-        let rev_span = std::f64::consts::TAU - fwd_span;
-        Ok((ts, ts - rev_span))
-    }
-}
-
-/// Sample an edge curve to produce a list of 3D points (start to end).
-///
-/// The sampling density is driven by `deflection`. For a `Line`, only the
-/// two endpoints are returned. For curves, the point count is proportional
-/// to curvature. `circle_floor` is forwarded to `edge_sample_count`.
-///
-/// # Errors
-///
-/// Returns an error if vertex lookup fails for edge endpoints.
-/// The parameter span an edge actually covers on its stored curve — the
-/// span every sampler in this module walks: a stored trim verbatim, a
-/// closed edge as one full period anchored at its start vertex, and an
-/// open edge via `domain_with_endpoints` (which honours the
-/// endpoint-trimmed NURBS convention). Lines report `(0, length)` to match
-/// the query surface's parameterization of line edges.
+/// Curved edges report their stored
+/// authoritative interval verbatim. Lines report `(0, length)` to match the
+/// query surface's parameterization of line edges.
 ///
 /// This is the authoritative span for consumers that rebuild edge geometry
 /// outside the kernel (e.g. a 2D drawing export choosing between the two
@@ -373,34 +281,34 @@ fn shorter_arc_range(
 ///
 /// # Errors
 ///
-/// Returns an error if vertex lookup fails.
+/// Returns an error if vertex lookup fails for line endpoints or a curved edge
+/// lacks valid stored parameter authority.
 pub fn edge_param_span(
     topo: &Topology,
     edge: &remus_topology::edge::Edge,
 ) -> Result<(f64, f64), crate::OperationsError> {
     use remus_topology::edge::EdgeCurve;
 
-    let sp = topo.vertex(edge.start())?.point();
-    let ep = topo.vertex(edge.end())?.point();
     match edge.curve() {
-        EdgeCurve::Line => Ok((0.0, (ep - sp).length())),
-        EdgeCurve::Circle(circle) => circle_param_range(topo, edge, circle),
-        EdgeCurve::Ellipse(ellipse) => {
-            if let Some(trim) = edge.trim() {
-                Ok(trim)
-            } else if edge.is_closed() {
-                let start = ellipse.project(sp);
-                Ok((start, start + std::f64::consts::TAU))
-            } else {
-                Ok(edge.domain_with_endpoints(sp, ep))
-            }
+        EdgeCurve::Line => {
+            let sp = topo.vertex(edge.start())?.point();
+            let ep = topo.vertex(edge.end())?.point();
+            Ok((0.0, (ep - sp).length()))
         }
-        EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) | EdgeCurve::NurbsCurve(_) => {
-            Ok(edge.domain_with_endpoints(sp, ep))
-        }
+        EdgeCurve::Circle(_)
+        | EdgeCurve::Ellipse(_)
+        | EdgeCurve::Hyperbola(_)
+        | EdgeCurve::Parabola(_)
+        | EdgeCurve::NurbsCurve(_) => crate::authoritative_edge_domain(edge, "edge parameter span"),
     }
 }
 
+/// Sample an edge curve to produce a list of 3D points in stored start-to-end order.
+///
+/// # Errors
+///
+/// Returns an error if endpoint lookup fails, stored curved authority is
+/// missing or invalid, or the sampling budget is exceeded.
 pub(super) fn sample_edge(
     topo: &Topology,
     edge: &remus_topology::edge::Edge,
@@ -411,7 +319,7 @@ pub(super) fn sample_edge(
     use remus_geometry::sampling::sample_uniform;
     use remus_topology::edge::EdgeCurve;
 
-    let n = edge_sample_count(topo, edge, deflection, angular_tol, circle_floor);
+    let n = edge_sample_count(edge, deflection, angular_tol, circle_floor)?;
     enforce_edge_sample_limit(n)?;
 
     let mut points = match edge.curve() {
@@ -422,7 +330,7 @@ pub(super) fn sample_edge(
             ]
         }
         EdgeCurve::Circle(circle) => {
-            let (t_start, t_end) = circle_param_range(topo, edge, circle)?;
+            let (t_start, t_end) = circle_param_range(edge)?;
             sample_uniform(circle, t_start, t_end, n)
         }
         EdgeCurve::Ellipse(ellipse) => {
@@ -430,9 +338,7 @@ pub(super) fn sample_edge(
             sample_uniform(ellipse, t_start, t_end, n)
         }
         EdgeCurve::Hyperbola(h) => {
-            let sp = topo.vertex(edge.start())?.point();
-            let ep = topo.vertex(edge.end())?.point();
-            let (t0, t1) = edge.domain_with_endpoints(sp, ep);
+            let (t0, t1) = crate::authoritative_edge_domain(edge, "hyperbola sampling")?;
             (0..n)
                 .map(|i| {
                     #[allow(clippy::cast_precision_loss)]
@@ -442,9 +348,7 @@ pub(super) fn sample_edge(
                 .collect()
         }
         EdgeCurve::Parabola(p) => {
-            let sp = topo.vertex(edge.start())?.point();
-            let ep = topo.vertex(edge.end())?.point();
-            let (t0, t1) = edge.domain_with_endpoints(sp, ep);
+            let (t0, t1) = crate::authoritative_edge_domain(edge, "parabola sampling")?;
             (0..n)
                 .map(|i| {
                     #[allow(clippy::cast_precision_loss)]
@@ -459,8 +363,7 @@ pub(super) fn sample_edge(
             // sampling the full knot domain traces the whole parent section
             // curve and rips a crack along the un-shared part.
             let sp = topo.vertex(edge.start())?.point();
-            let ep = topo.vertex(edge.end())?.point();
-            let (t0, t1) = edge.domain_with_endpoints(sp, ep);
+            let (t0, t1) = crate::authoritative_edge_domain(edge, "NURBS sampling")?;
             let (u0, u1) = nurbs.domain();
             let is_subspan = (t0 - u0).abs() > 1e-12 || (t1 - u1).abs() > 1e-12;
             if !is_subspan && edge.is_closed() {
@@ -592,16 +495,7 @@ pub(super) fn sample_wire_positions(
         let edge = topo.edge(oe.edge())?;
         match edge.curve() {
             EdgeCurve::Circle(circle) => {
-                // An untrimmed open arc's span is ambiguous (the endpoints
-                // subtend two complementary arcs, and `circle_param_range`
-                // always picks the CCW one). Legacy models without stored
-                // trims relied on the shortest-arc heuristic here, so keep
-                // it for them; a stored trim is exact and wins.
-                let (t_start, t_end) = if edge.trim().is_some() || edge.is_closed() {
-                    circle_param_range(topo, edge, circle)?
-                } else {
-                    shorter_arc_range(topo, edge, circle)?
-                };
+                let (t_start, t_end) = circle_param_range(edge)?;
                 let arc_range = (t_end - t_start).abs();
                 let n_samples = segments_for_chord_deviation_a(
                     circle.radius(),
@@ -621,16 +515,8 @@ pub(super) fn sample_wire_positions(
                 );
             }
             EdgeCurve::Ellipse(ellipse) => {
-                let sp = topo.vertex(edge.start())?.point();
-                let ep = topo.vertex(edge.end())?.point();
-                let (t_start, t_end) = if let Some(trim) = edge.trim() {
-                    trim
-                } else if edge.is_closed() {
-                    let start = ellipse.project(sp);
-                    (start, start + std::f64::consts::TAU)
-                } else {
-                    edge.domain_with_endpoints(sp, ep)
-                };
+                let (t_start, t_end) =
+                    crate::authoritative_edge_domain(edge, "ellipse wire sampling")?;
                 let arc_range = t_end - t_start;
                 // Largest radius of curvature (a^2/b) governs uniform-parameter
                 // sampling density; see edge_sample_count for the rationale.
@@ -658,9 +544,7 @@ pub(super) fn sample_wire_positions(
             // the two vertices. Density comes from the tightest osculating
             // circle on that span (see `open_conic_segments`), never a chord.
             EdgeCurve::Hyperbola(h) => {
-                let sp = topo.vertex(edge.start())?.point();
-                let ep = topo.vertex(edge.end())?.point();
-                let (t0, t1) = edge.domain_with_endpoints(sp, ep);
+                let (t0, t1) = crate::authoritative_edge_domain(edge, "hyperbola wire sampling")?;
                 let n_samples = open_conic_segments(
                     h.min_curvature_radius(t0, t1),
                     h.arc_length(t0, t1),
@@ -678,9 +562,7 @@ pub(super) fn sample_wire_positions(
                 );
             }
             EdgeCurve::Parabola(p) => {
-                let sp = topo.vertex(edge.start())?.point();
-                let ep = topo.vertex(edge.end())?.point();
-                let (t0, t1) = edge.domain_with_endpoints(sp, ep);
+                let (t0, t1) = crate::authoritative_edge_domain(edge, "parabola wire sampling")?;
                 let n_samples = open_conic_segments(
                     p.min_curvature_radius(t0, t1),
                     p.arc_length(t0, t1),
@@ -700,9 +582,7 @@ pub(super) fn sample_wire_positions(
             EdgeCurve::NurbsCurve(nurbs) => {
                 // Endpoint-trimmed convention: sample only the edge's own
                 // sub-span of the stored curve (see `sample_edge`).
-                let sp = topo.vertex(edge.start())?.point();
-                let ep = topo.vertex(edge.end())?.point();
-                let (u0, u1) = edge.domain_with_endpoints(sp, ep);
+                let (u0, u1) = crate::authoritative_edge_domain(edge, "NURBS wire sampling")?;
                 let full = nurbs.domain();
                 let is_subspan = (u0 - full.0).abs() > 1e-12 || (u1 - full.1).abs() > 1e-12;
                 let n_spans = nurbs

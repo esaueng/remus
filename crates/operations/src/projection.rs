@@ -64,12 +64,11 @@ pub fn project_edges(
     for edge_id in edges {
         let edge = topo.edge(edge_id)?;
         let count = crate::tessellate::edge_sampling::edge_sample_count(
-            topo,
             edge,
             deflection,
             remus_math::chord::DEFAULT_ANGULAR_TOL,
             false,
-        );
+        )?;
         sample_points = sample_points.saturating_add(count);
         if sample_points > MAX_PROJECT_EDGE_SAMPLE_POINTS {
             return Err(crate::OperationsError::InvalidInput {
