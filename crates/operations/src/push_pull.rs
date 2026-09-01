@@ -1082,14 +1082,17 @@ fn repair_resized_cylinder_rim_orientation(
     }
 
     for repair in &repairs {
-        let wire = topo.wire_mut(repair.wire)?;
-        let Some(oriented) = wire.edges_mut().get_mut(repair.position) else {
+        let wire = topo.wire(repair.wire)?;
+        let mut edges = wire.edges().to_vec();
+        let Some(oriented) = edges.get_mut(repair.position) else {
             return Err(crate::OperationsError::InvalidInput {
                 reason: "cylindrical resize lost a rim during orientation repair".into(),
             });
         };
         *oriented =
             remus_topology::wire::OrientedEdge::new(oriented.edge(), !repair.stored_forward);
+        let replacement = remus_topology::wire::Wire::new(edges, wire.is_closed())?;
+        topo.replace_boundary_wire(repair.wire, replacement)?;
     }
 
     let remaining = remus_check::validate::shell::check_shell_orientation(topo, shell_id)?;
@@ -1175,12 +1178,15 @@ fn drop_stranded_inner_wires(
 
     let mut removed = 0;
     for (fid, drop_idx) in stranded {
-        let face = topo.face_mut(fid)?;
+        let face = topo.face(fid)?;
+        let outer = face.outer_wire();
+        let mut inner = face.inner_wires().to_vec();
         // Remove from the back so earlier indices stay valid.
         for &i in drop_idx.iter().rev() {
-            face.inner_wires_mut().remove(i);
+            inner.remove(i);
             removed += 1;
         }
+        topo.set_face_boundary_wires(fid, outer, inner)?;
     }
     Ok(removed)
 }

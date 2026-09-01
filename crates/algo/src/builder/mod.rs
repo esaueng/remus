@@ -978,6 +978,7 @@ fn orient_selected_fuse_analytic_holes(
             continue;
         }
         let inner_wires = face.inner_wires().to_vec();
+        let outer_wire = face.outer_wire();
         let mut replacements = Vec::with_capacity(inner_wires.len());
 
         for wire_id in inner_wires {
@@ -1000,10 +1001,8 @@ fn orient_selected_fuse_analytic_holes(
             replacements.push(topo.add_wire(wire));
         }
 
-        if !replacements.is_empty()
-            && let Ok(face) = topo.face_mut(selected_face.face_id)
-        {
-            *face.inner_wires_mut() = replacements;
+        if !replacements.is_empty() {
+            let _ = topo.set_face_boundary_wires(selected_face.face_id, outer_wire, replacements);
         }
     }
 }
