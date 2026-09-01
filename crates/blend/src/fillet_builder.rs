@@ -623,7 +623,8 @@ fn stitch_end(
                 new_edges.push(*oe);
             }
         }
-        *topo.wire_mut(wid)? = Wire::new(new_edges, true)?;
+        let replacement = Wire::new(new_edges, true)?;
+        topo.replace_boundary_wire(wid, replacement)?;
         return Ok(None);
     }
 
