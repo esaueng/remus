@@ -2278,9 +2278,7 @@ mod tests {
         for tolerance in known_bad.into_iter().chain(sweep) {
             let mut topo = Topology::new();
             let solid = make_box(&mut topo, 1.0, 2.0, 3.0).unwrap();
-            let vertex = topo
-                .vertex_id_from_index(0)
-                .expect("box has a vertex 0");
+            let vertex = topo.vertex_id_from_index(0).expect("box has a vertex 0");
             topo.vertex_mut(vertex)
                 .unwrap()
                 .set_tolerance(tolerance)
