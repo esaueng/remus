@@ -5,6 +5,8 @@
 
 use wasm_bindgen::prelude::*;
 
+use remus_math::diagnostic::{DetailValue, ToDiagnostic};
+
 use crate::error::{WasmError, validate_positive};
 use crate::handles::solid_id_to_u32;
 use crate::helpers::TOL;
@@ -46,6 +48,46 @@ fn step_write_options_from_json(
         Some(json) => serde_json::from_str(json).map_err(|error| WasmError::InvalidInput {
             reason: format!("invalid STEP write options JSON: {error}"),
         }),
+    }
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StepImportResult {
+    solids: Vec<u32>,
+    diagnostics: Vec<StepImportDiagnostic>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StepImportDiagnostic {
+    code: &'static str,
+    category: &'static str,
+    message: String,
+    details: serde_json::Map<String, serde_json::Value>,
+}
+
+impl From<&remus_io::step::StepImportDiagnostic> for StepImportDiagnostic {
+    fn from(source: &remus_io::step::StepImportDiagnostic) -> Self {
+        let diagnostic = source.diagnostic();
+        let details = diagnostic
+            .details()
+            .iter()
+            .map(|(key, value)| {
+                let value = match value {
+                    DetailValue::Int(value) => serde_json::Value::from(*value),
+                    DetailValue::Float(value) => serde_json::Value::from(*value),
+                    DetailValue::Text(value) => serde_json::Value::from(value.clone()),
+                };
+                ((*key).to_owned(), value)
+            })
+            .collect();
+        Self {
+            code: diagnostic.code(),
+            category: diagnostic.category().as_str(),
+            message: diagnostic.message().to_owned(),
+            details,
+        }
     }
 }
 
@@ -538,6 +580,45 @@ impl BrepKernel {
         let solid_ids =
             remus_io::step::reader::read_step_with_limits(text, self.topo_mut(), limits)?;
         Ok(solid_ids.iter().map(|id| solid_id_to_u32(*id)).collect())
+    }
+
+    /// Import a STEP file and return solid handles plus bounded-healing diagnostics.
+    ///
+    /// The returned JavaScript string is JSON with shape
+    /// `{ solids, diagnostics }`. Existing callers that only need handles can
+    /// continue to use [`importStep`](Self::import_step).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the STEP data is malformed or exceeds a resource
+    /// limit.
+    #[wasm_bindgen(js_name = "importStepWithReport")]
+    pub fn import_step_with_report(
+        &mut self,
+        data: &[u8],
+        max_input_bytes: Option<f64>,
+        max_entities: Option<f64>,
+    ) -> Result<JsValue, JsError> {
+        let limits = import_limits_from(max_input_bytes, max_entities)?;
+        let text = std::str::from_utf8(data)
+            .map_err(|error| JsError::new(&format!("STEP data is not valid UTF-8: {error}")))?;
+        let result =
+            remus_io::step::read_step_with_limits_and_report(text, self.topo_mut(), limits)?;
+        let result = StepImportResult {
+            solids: result
+                .solids()
+                .iter()
+                .map(|solid| solid_id_to_u32(*solid))
+                .collect(),
+            diagnostics: result
+                .diagnostics()
+                .iter()
+                .map(StepImportDiagnostic::from)
+                .collect(),
+        };
+        Ok(serde_json::to_string(&result)
+            .map_err(|error| JsError::new(&error.to_string()))?
+            .into())
     }
 
     // ── IGES Import/Export ────────────────────────────────────────

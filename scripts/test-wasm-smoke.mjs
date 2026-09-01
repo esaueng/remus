@@ -270,6 +270,33 @@ if (typeof kernel.importPly === 'function') {
   console.log('skip - importPly not available (io feature not enabled)');
 }
 
+// Successful STEP imports expose bounded, edge-local healing without changing
+// the legacy handles-only import contract.
+{
+  const reportKernel = new BrepKernel();
+  const step = readFileSync(
+    resolve(projectRoot, 'crates/io/tests/data/shapr_untrimmed_nurbs_domain.step'),
+  );
+  const report = JSON.parse(reportKernel.importStepWithReport(step));
+  assert.equal(report.solids.length, 1);
+  assert.equal(report.diagnostics.length, 2);
+  for (const diagnostic of report.diagnostics) {
+    assert.equal(diagnostic.code, 'step_untrimmed_nurbs_domain_recovered');
+    assert.equal(diagnostic.category, 'tolerance_violation');
+    assert.ok(diagnostic.details.edgeCurveEntity > 0);
+    assert.ok(Math.abs(diagnostic.details.startParameter - 0.1) < 1e-12);
+    assert.ok(Math.abs(diagnostic.details.endParameter - 0.9) < 1e-12);
+    assert.ok(diagnostic.details.endpointResidualMm > 1e-7);
+    assert.ok(diagnostic.details.endpointResidualMm <= 1e-6);
+    assert.equal(
+      diagnostic.details.storedEdgeToleranceMm,
+      diagnostic.details.endpointResidualMm,
+    );
+    assert.ok(Math.abs(diagnostic.details.recoveryToleranceCapMm - 1e-6) < 1e-18);
+  }
+  console.log('ok - STEP bounded-healing report');
+}
+
 // 9. Direct face editing: push/pull a planar face.
 {
   const block = kernel.makeBox(10, 10, 10);
