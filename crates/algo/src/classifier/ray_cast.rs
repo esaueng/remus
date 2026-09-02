@@ -1489,4 +1489,42 @@ mod tests {
             "point far from box should be Outside"
         );
     }
+
+    /// The cached vote path is the one the boolean classifier actually calls
+    /// per sub-face. Mutation testing found that a version returning zero
+    /// votes for every point went unnoticed, so pin the vote counts
+    /// themselves, not just the classification derived from them.
+    #[test]
+    fn cached_votes_match_uncached_and_count_the_inside() {
+        let mut topo = Topology::default();
+        let solid = make_box(&mut topo, [0.0, 0.0, 0.0], [2.0, 2.0, 2.0]);
+        let geoms = RayCastGeoms::new(&topo, solid).unwrap();
+
+        let inside = Point3::new(1.0, 1.0, 1.0);
+        let outside = Point3::new(5.0, 5.0, 5.0);
+
+        let inside_votes = ray_cast_inside_votes_cached(&geoms, inside).unwrap();
+        assert!(
+            inside_votes >= 2,
+            "the box centre must win at least two of three axis rays, got {inside_votes}"
+        );
+        assert_eq!(
+            inside_votes,
+            ray_cast_inside_votes(&topo, solid, inside).unwrap(),
+            "cached and uncached vote counts must agree"
+        );
+        assert_eq!(
+            ray_cast_inside_votes_cached(&geoms, outside).unwrap(),
+            0,
+            "a point far outside must win no rays"
+        );
+        assert_eq!(
+            classify_ray_cast_cached(&geoms, inside).unwrap(),
+            FaceClass::Inside
+        );
+        assert_eq!(
+            classify_ray_cast_cached(&geoms, outside).unwrap(),
+            FaceClass::Outside
+        );
+    }
 }
