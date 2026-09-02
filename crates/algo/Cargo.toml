@@ -21,9 +21,14 @@ thiserror.workspace = true
 perf-counters = []
 
 [dev-dependencies]
+criterion.workspace = true
 proptest.workspace = true
 remus-check.workspace = true
 remus-topology = {workspace = true, features = ["test-utils"]}
+
+[[bench]]
+harness = false
+name = "gfa_inner_loops"
 
 [lints]
 workspace = true

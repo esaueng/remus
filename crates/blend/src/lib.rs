@@ -22,6 +22,10 @@ pub(crate) mod stripe;
 pub(crate) mod trimmer;
 pub(crate) mod walker;
 
+#[cfg(feature = "bench-internals")]
+#[doc(hidden)]
+pub use walker::benchmark_plane_pair_walk;
+
 use remus_topology::edge::EdgeId;
 use remus_topology::face::FaceId;
 use remus_topology::solid::SolidId;
