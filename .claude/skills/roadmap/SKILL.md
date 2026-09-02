@@ -140,6 +140,7 @@ draft watertightness finding (2026-09-02, latent since at least 2026-08-30).
 
 ## Durable lessons (one line each; the story is in `campaign-history.md`)
 
+- **Performance baselines start from measured stack families, not a guessed loop list;** O3.1's 3% census and native-only Criterion map live in `docs/kernel-maturity/o31-inner-loop-baseline.md`.
 - **Exact rational conic twins do not preserve angle-linear parameter speed;** compare positions after projection plus tangent direction and curvature, and use a deterministic one-sided radial derivative at revolution poles (`crates/math/src/surfaces/swept/tests.rs`, PR #189).
 
 - **Not every scenario failure is a boolean fallback.** Tessellation density,
