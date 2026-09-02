@@ -8940,3 +8940,84 @@ fn merge_result_vertices_rebuilt_edges_carry_trim() {
         "referenced arc is the rebuilt edge, not the orphaned source"
     );
 }
+
+/// Issue #190: a radius-6 cylinder cut by a 6×1×6.5 slab tilted 30° about X
+/// and placed at (-4, -4, -4). The slab's inner face meets the wall in an
+/// ellipse arc whose bounding crossing on the slab's x = -4 edge lies 1.18
+/// below the wall's bottom rim; the exact-arc trimmer clipped only at the
+/// planar face's boundary and the wall's seams, so the arc overhung the wall,
+/// the wall never split, and GFA returned a 5-face shell with 4 free edges
+/// that the gate rejected into a 53-facet mesh fallback.
+///
+/// The removed sliver is `{x ∈ [-4, 2], z ≥ 0, y ≤ -5.155 - 0.577 z,
+/// x² + y² < 36}`; its volume integrates to 1.9818, so the result must
+/// measure 676.602. The mesh fallback measured 674.79.
+#[test]
+fn cut_cylinder_by_tilted_slab_stays_exact_and_closed() {
+    use std::f64::consts::FRAC_PI_6;
+
+    use remus_check::classify::{ClassifyOptions, PointClassification, classify_point};
+    use remus_math::mat::Mat4;
+    use remus_topology::explorer::solid_faces;
+
+    use crate::primitives::{make_box, make_cylinder};
+    use crate::tessellate::{boundary_edge_count, non_manifold_edge_count, tessellate_solid};
+    use crate::transform::transform_solid;
+
+    let mut topo = Topology::new();
+    let stock = make_cylinder(&mut topo, 6.0, 6.0).unwrap();
+    let tool = make_box(&mut topo, 6.0, 1.0, 6.5).unwrap();
+    let placement = Mat4::translation(-4.0, -4.0, -4.0) * Mat4::rotation_x(FRAC_PI_6);
+    transform_solid(&mut topo, tool, &placement).unwrap();
+
+    let result = boolean(&mut topo, BooleanOp::Cut, stock, tool).unwrap();
+
+    // Exact path: two cylinder wall pieces (the far end face still splits the
+    // wall along a generator) plus four planes — caps, slab face, end face.
+    let mut kinds: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+    for f in solid_faces(&topo, result).unwrap() {
+        *kinds
+            .entry(topo.face(f).unwrap().surface().type_tag())
+            .or_default() += 1;
+    }
+    assert_eq!(
+        kinds.get("cylinder").copied().unwrap_or(0),
+        2,
+        "census {kinds:?}"
+    );
+    assert_eq!(
+        kinds.get("plane").copied().unwrap_or(0),
+        4,
+        "census {kinds:?}"
+    );
+    assert_eq!(kinds.len(), 2, "census {kinds:?}");
+
+    check_result(&topo, result);
+    for deflection in [0.003, 0.1] {
+        let mesh = tessellate_solid(&topo, result, deflection).unwrap();
+        assert_eq!(boundary_edge_count(&mesh), 0, "deflection {deflection}");
+        assert_eq!(non_manifold_edge_count(&mesh), 0, "deflection {deflection}");
+    }
+
+    let sliver = 1.981_78;
+    assert_volume_near(
+        &topo,
+        result,
+        std::f64::consts::PI * 36.0 * 6.0 - sliver,
+        1e-4,
+    );
+
+    let opts = ClassifyOptions::default();
+    for (p, want) in [
+        (Point3::new(0.0, -5.7, 0.3), PointClassification::Outside),
+        (Point3::new(1.5, -5.6, 0.2), PointClassification::Outside),
+        (Point3::new(0.0, -5.0, 0.3), PointClassification::Inside),
+        (Point3::new(0.0, -5.9, 1.8), PointClassification::Inside),
+    ] {
+        assert_eq!(
+            classify_point(&topo, result, p, &opts).unwrap(),
+            want,
+            "{p:?}"
+        );
+    }
+}
