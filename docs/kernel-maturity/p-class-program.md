@@ -327,12 +327,13 @@ disclosed, not silent.
 
 — partial: boolean/NURBS-SSI cooperative cancellation is typed,
 transactional, and WASM-bound; the coupled SSI Newton loop now consumes the
-caller's iteration budget and cancellation token, and SSI seed subdivision
-consumes the caller's recursion-depth cap. Parameter-space budgets plus wider
-operation-family adoption remain
+caller's iteration budget and cancellation token, SSI seed subdivision
+consumes the caller's recursion-depth cap, and direct/batch WASM quality
+booleans expose the existing march, queue, segment, and branch-exploration
+caps. Parameter-space tolerance plus wider operation-family adoption remain
 ([PR #138](https://github.com/esaueng/remus/pull/138) +
 [PR #147](https://github.com/esaueng/remus/pull/147) +
-[PR #160](https://github.com/esaueng/remus/pull/160)).
+[PR #160](https://github.com/esaueng/remus/pull/160) + this change).
 
 `crates/math/src/context.rs` · `crates/algo/src/pave_filler/` ·
 `crates/math/src/nurbs/intersection/` · `crates/wasm/src/bindings/`

@@ -191,6 +191,15 @@ question), v1-fillet API migration (product decision, owner's).
   `subdivisionDepth`, with shared validation and default/boundary/rejection
   contract tests. Parameter-space budgeting and wider operation-family
   adoption remain under P-Class 2.8.
+- **K-S3 SSI marcher-budget WASM surface — done (2026-09-02, this
+  change):** the existing `march_steps`, `queue_size`, `segments`, and
+  `branches_per_direction` caps are additive optional arguments on direct
+  `booleanWithQuality` / `booleanWithCancellation` and matching camelCase
+  fields on batch `booleanWithQuality`. Shared bounded-integer validation,
+  legacy-default equivalence, generated-WASM smoke coverage, context-authority
+  tests, and a batch rejection/rollback volume oracle pin the contract.
+  Parameter-space tolerance and wider operation-family adoption remain under
+  P-Class 2.8, so that parent item stays partial.
 - **K-S1 pattern overlap — done (PR #142, 2026-08-30):** linear,
   circular, and grid patterns now refuse measured material overlap with the
   typed `pattern_instances_overlap` contract and full rollback across native,

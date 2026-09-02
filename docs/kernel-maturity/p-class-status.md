@@ -24,7 +24,7 @@ Issue 2.0's measured baseline is
 | 2.5 NURBS × NURBS booleans | Pending | — |
 | 2.6 Scale-relative band audit | Pending | — |
 | 2.7 Tangency and sliver contacts | Pending | — |
-| 2.8 OperationContext budgets and cancellation | Partial — boolean/SSI cancellation plus coupled SSI Newton and recursive seed-subdivision budgets complete; parameter-space budgets and wider adoption remain | [PR #138](https://github.com/esaueng/remus/pull/138) + [PR #147](https://github.com/esaueng/remus/pull/147) + [PR #160](https://github.com/esaueng/remus/pull/160) |
+| 2.8 OperationContext budgets and cancellation | Partial — boolean/SSI cancellation and all six SSI work budgets are direct/batch WASM-callable; parameter-space tolerance and wider adoption remain | [PR #138](https://github.com/esaueng/remus/pull/138) + [PR #147](https://github.com/esaueng/remus/pull/147) + [PR #160](https://github.com/esaueng/remus/pull/160) + this change |
 | 3.1 RFC 0004 | Pending | — |
 | 3.2 Topology substrate | In review — RFC 0004 Stage 1: validated setters, vertex-ball/edge-tube validators, context cap, journal recordability | — |
 | 3.3 Predicate plumbing | Pending | — |
