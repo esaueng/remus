@@ -2019,6 +2019,25 @@ pub(super) fn tessellate_nonplanar_cdt(
                 });
             }
 
+            // The seam's own corner vertices belong to the seam runs, so the
+            // non-seam interval ends at the last rim sample BEFORE the seam
+            // and a genuine seam sits up to one sample gap beyond it. A
+            // notched full-revolution wall (the slot cut of #195) put its seam
+            // 0.0123 rad past `u_max_bnd`; the old 1e-6 margin took that for
+            // the degenerate case, re-pinned the seam onto the rim sample's u,
+            // collapsed the sliver between them to a zero-width polygon edge,
+            // and left a triangle-sized hole at the seam/rim corner.
+            let sample_gap = boundary_uv
+                .windows(2)
+                .zip(boundary_3d.windows(2))
+                .filter(|(_, b)| {
+                    !seam_edge_indices.contains(&b[0].2.index())
+                        && !seam_edge_indices.contains(&b[1].2.index())
+                })
+                .map(|(w, _)| (w[1].0 - w[0].0).abs())
+                .fold(0.0_f64, f64::max);
+            let seam_margin = sample_gap + 1e-6;
+
             for run in &seam_runs {
                 // The periodic walk may already have placed a genuine seam
                 // inside the non-seam boundary's unwrapped u interval.  Keep
@@ -2027,7 +2046,7 @@ pub(super) fn tessellate_nonplanar_cdt(
                 // fallback was introduced to repair.
                 let already_unwrapped = run.indices.iter().all(|&i| {
                     let u = boundary_uv[i].0;
-                    u >= u_min_bnd - 1e-6 && u <= u_max_bnd + 1e-6
+                    u >= u_min_bnd - seam_margin && u <= u_max_bnd + seam_margin
                 });
                 if already_unwrapped {
                     continue;

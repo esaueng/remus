@@ -514,6 +514,33 @@ pub fn perform_with_context(
                             // calibrated for plane×plane sections, and running
                             // it on a banded pair's line disturbed the
                             // seam-anchored cylinder band splitting.
+                            //
+                            // The polygon is still consulted for one thing:
+                            // whether the band window overlaps the planar
+                            // face AT ALL. A generator whose overlap with the
+                            // plane face lies entirely outside the band (a
+                            // slab's end face reaching a cylinder only below
+                            // its bottom cap, #195) otherwise survives on the
+                            // AABB test alone and splits the wall along a
+                            // full-height line nothing touches. Drop-only:
+                            // endpoints are never moved by the polygon, so the
+                            // band-anchored splitting is untouched.
+                            let plane_face = if matches!(surf_a, FaceSurface::Plane { .. }) {
+                                fa
+                            } else {
+                                fb
+                            };
+                            let seg_len = (raw.p_end - raw.p_start).length();
+                            match clip_line_to_face(topo, plane_face, &raw) {
+                                FaceClip::Empty => return None,
+                                FaceClip::Range((a0, a1)) => {
+                                    let overlap = hi.min(a1) - lo.max(a0);
+                                    if overlap * seg_len <= tol.linear {
+                                        return None;
+                                    }
+                                }
+                                FaceClip::Indeterminate => {}
+                            }
                             if lo > 0.0 || hi < 1.0 {
                                 return trim_raw_line(&raw, lo, hi, tol);
                             }
