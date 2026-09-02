@@ -664,9 +664,21 @@ fn pcurve_tangent_at_endpoint(edge: &OrientedPCurveEdge, at_start: bool) -> (f64
         if knots.len() >= 2 {
             let t0_raw = knots[0];
             let tn_raw = knots[knots.len() - 1];
-            // For reverse edges, the pcurve's t0 corresponds to the edge's
-            // end and tn corresponds to the edge's start.
-            let (t_start, t_end) = if edge.forward {
+            // Which pcurve end is the oriented START is a property of the
+            // pcurve, not of the `forward` flag: a section's reverse copy
+            // shares its twin's pcurve (t0 at the copy's END), while a
+            // boundary edge traversed against its stored direction carries
+            // a pcurve fitted in the oriented direction (t0 at its START).
+            // Reading the flag alone evaluated a reversed boundary arc's
+            // tangent at the wrong end, and the traversal then hugged the
+            // rim past a section junction (the parallel-boss bottom cap).
+            // Decide by where the pcurve's ends actually land.
+            let p_t0 = nurbs.evaluate(t0_raw);
+            let p_tn = nurbs.evaluate(tn_raw);
+            let d = |a: Point2, b: Point2| (a.x() - b.x()).hypot(a.y() - b.y());
+            let t0_at_start = d(p_t0, edge.start_uv) + d(p_tn, edge.end_uv)
+                <= d(p_tn, edge.start_uv) + d(p_t0, edge.end_uv);
+            let (t_start, t_end) = if t0_at_start {
                 (t0_raw, tn_raw)
             } else {
                 (tn_raw, t0_raw)
