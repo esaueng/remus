@@ -496,13 +496,15 @@ non-solid cells remain Unqualified until Issues 4.2–4.7 land.
 `crates/topology/src/shell.rs` · `crates/check/src/validate/` ·
 `crates/operations/src/tessellate/` · `crates/io/src/step/`
 
-Partial, in review in [PR #209](https://github.com/esaueng/remus/pull/209):
-RFC 0005 Stage 1 adds the public solid/sheet/wire/general vocabulary,
-validated shell/wire tags, class-aware validation profiles, stable
-diagnostics, and backward-compatible arena-v3 tags. Standalone sheet roots,
-construction, body-level area/tessellation, STEP round-trip, and direct/batch
-WASM contracts remain required by this issue; no capability cell is promoted
-by the substrate alone.
+Partial, in review in [PR #209](https://github.com/esaueng/remus/pull/209) and
+[PR #210](https://github.com/esaueng/remus/pull/210): RFC 0005 Stage 1 adds
+the public solid/sheet/wire/general vocabulary, validated shell/wire tags,
+class-aware validation profiles, stable diagnostics, and backward-compatible
+arena-v3 tags. The operations tranche adds transactional face-set
+construction, body-level area and typed volume refusal, boundary-preserving
+tessellation, and direct/batch WASM contracts. Standalone arena-v4 sheet
+roots, bounding box, center-of-area, and STEP round-trip remain required; the
+Issue 4.2 exit gate and capability-cell promotions stay open.
 
 Open shells as bodies with their own validation profile (free boundary
 allowed and reported, orientation consistent), area properties, tessellation,

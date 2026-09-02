@@ -48,8 +48,10 @@ These families are classified across the full grid:
   degenerate.
 - **Body type** — solid, sheet, wire, compound, cavity-bearing solid, and
   later general body. RFC 0005's class/tagging/validation substrate is in
-  review in PR #209, but it does not provide body-level operation entry
-  points; sheet, wire, and general-body cells therefore remain Unqualified.
+  review in PR #209; sheet construction, area, typed volume refusal, and open
+  tessellation entry points are in review in PR #210. The witnesses below do
+  not yet cover the scale/parity and STEP exit matrices needed for a cell
+  promotion. Wire and general-body cells remain Unqualified.
 - **Scale** — at least three model scales relative to the configured
   tolerance (e.g. 1e-3, 1, 1e3 in the kernel's millimetre convention), with
   the tolerance scaled correspondingly.
@@ -242,7 +244,12 @@ does not itself promote or demote anything.
   parabolas; closed-form scale and circular-hole oracles cover native, direct
   WASM, and batch WASM paths. Ellipse, hyperbola, and NURBS planar boundaries,
   general curved-face area, exact curved-body volume, and the remaining
-  curved-cavity and scale cells remain incomplete.
+  curved-cavity and scale cells remain incomplete. In-review PR #210 adds a
+  unit-scale trimmed NURBS sheet-area witness through native/direct entry
+  points, a planar batch contract, and pinned `body_class_measure_mismatch`
+  failures for sheet volume and non-sheet area. Sheet
+  bounding box, center-of-area, and the broader geometry/scale matrix remain
+  Unqualified.
 
 ### Tessellation
 
@@ -250,14 +257,22 @@ does not itself promote or demote anything.
   qualified. Cross-drilled display tessellation is qualified at two relative
   deflections, three bore ratios, and scales 0.1 through 10; `meshQuality`
   accepts the render angular tolerance and cannot label an empty mesh
-  watertight. Broader scale/performance cells remain Unqualified.
+  watertight. In-review PR #210 adds deterministic open sheet tessellation for
+  a trimmed NURBS patch and pins that solid-only proximity welding cannot erase
+  an intentional triangular hole smaller than the requested deflection.
+  Broader sheet geometry/scale/parity and performance cells remain
+  Unqualified.
 
 ### Validation and healing
 
 - Ledger row: "Healing, sewing, validation" (blocked: permissive healing can
   mask invalid result semantics — the family's central Unsupported-untyped
   cell, addressed by the healing-disclosure rules in
-  [operation-contract.md](operation-contract.md)).
+  [operation-contract.md](operation-contract.md)). PR #209's in-review sheet
+  profile reports free boundaries as warnings while retaining manifold and
+  orientation errors; PR #210 validates transactionally before a constructed
+  sheet is committed and tests rollback for disconnected faces. This evidence
+  does not remove the family-wide healing blocker.
 
 ### I/O (STEP, IGES, mesh formats)
 
