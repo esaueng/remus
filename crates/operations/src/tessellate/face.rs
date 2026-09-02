@@ -56,7 +56,7 @@ pub(super) fn cylinder_has_non_standard_boundary(
                 }
                 EdgeCurve::Line => {}
                 EdgeCurve::Circle(_) | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => {
-                    all_line = false
+                    all_line = false;
                 }
             }
         }
