@@ -1306,7 +1306,9 @@ fn log_open_growth_shell(
             }) else {
                 continue;
             };
-            let (u, v) = f.surface().project_point(p).unwrap_or((0.0, 0.0));
+            let Some((u, v)) = f.surface().project_point(p) else {
+                continue;
+            };
             let mut n = f.surface().normal(u, v);
             if f.is_reversed() {
                 n = -n;

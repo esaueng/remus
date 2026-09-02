@@ -25,7 +25,7 @@ pub(super) fn split_boundary_edges_at_3d_points(
     frame: Option<&PlaneFrame>,
     surface: &FaceSurface,
     tol: f64,
-) -> Vec<OrientedPCurveEdge> {
+) -> Result<Vec<OrientedPCurveEdge>, crate::error::AlgoError> {
     let mut result = Vec::new();
     for edge in edges {
         let splits = match &edge.curve_3d {
@@ -120,7 +120,7 @@ pub(super) fn split_boundary_edges_at_3d_points(
                     edge.start_uv.y(),
                 )
             } else {
-                project_point_on_surface(split_3d, surface, &[], None)
+                project_point_on_surface(split_3d, surface, &[], None)?
             };
             let child_domain = edge.sub_traversal_domain_fraction(prev_t, t);
             let pcurve = compute_pcurve_on_surface_in_domain(
@@ -131,7 +131,7 @@ pub(super) fn split_boundary_edges_at_3d_points(
                 surface,
                 &[],
                 frame,
-            );
+            )?;
             result.push(OrientedPCurveEdge {
                 curve_3d: edge.curve_3d.clone(),
                 trim: edge.sub_trim_fraction(prev_t, t),
@@ -158,7 +158,7 @@ pub(super) fn split_boundary_edges_at_3d_points(
             surface,
             &[],
             frame,
-        );
+        )?;
         // The stored `end_uv` of a closed rim follows the CURVE's direction
         // (`sample_edge_to_uv` ignores orientation), so a reverse-traversed ring
         // would close a period on the wrong side of its own start.
@@ -183,7 +183,7 @@ pub(super) fn split_boundary_edges_at_3d_points(
             source_topo_edge: edge.source_topo_edge,
         });
     }
-    result
+    Ok(result)
 }
 
 /// Find split parameters on a line edge. Returns `(t, split_3d)` sorted by `t`.
@@ -853,7 +853,8 @@ mod tests {
         use std::f64::consts::TAU;
         let (surface, edge, splits) = closed_rim_edge(true);
         let start_u = edge.start_uv.x();
-        let pieces = split_boundary_edges_at_3d_points(vec![edge], &splits, None, &surface, 1e-7);
+        let pieces = split_boundary_edges_at_3d_points(vec![edge], &splits, None, &surface, 1e-7)
+            .expect("valid rim projections");
 
         assert_eq!(pieces.len(), 4, "3 splits must yield 4 rim pieces");
         // The pieces must chain end-to-end and cover the ring exactly once.
@@ -898,7 +899,8 @@ mod tests {
         use std::f64::consts::TAU;
         let (surface, edge, splits) = closed_rim_edge(false);
         let start_u = edge.start_uv.x();
-        let pieces = split_boundary_edges_at_3d_points(vec![edge], &splits, None, &surface, 1e-7);
+        let pieces = split_boundary_edges_at_3d_points(vec![edge], &splits, None, &surface, 1e-7)
+            .expect("valid reversed rim projections");
 
         assert_eq!(pieces.len(), 4, "3 splits must yield 4 rim pieces");
         let sweep = chain_sweep(&pieces, &surface, false);
