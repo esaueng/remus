@@ -2,8 +2,8 @@
 
 Status: accepted design; Stages 1–3 and the topology-owned atomic mutation gate
 are landed. P-Class Issue 2.0e implements the physical Loop/Coedge authority
-flip described here. STEP per-use mapping and the final
-integration/compatibility-facade zero gate remain Issues 2.0f and 2.0g.
+flip described here, and Issue 2.0f maps STEP pcurves to those physical uses.
+The final integration/compatibility-facade zero gate remains Issue 2.0g.
 Characterization anchors: `crates/topology/src/pcurve.rs`, module
 `seam_characterization` — the flipped tests pin the landed per-use behavior
 preserved by the physical storage move.
@@ -27,9 +27,9 @@ Stage 2 first closed that data-loss defect with a mutation-robust
 `(edge, face, orientation)` key. Issue 2.0e implements the physical move:
 `Face` stores authoritative Loop handles, Loop order stores Coedge identities,
 and each p-curve lives on its Coedge. Wires and the old keyed registry now
-exist only as compatibility views kept coherent by topology-owned APIs. STEP
-still needs to bind its per-use p-curves by loop position in Issue 2.0f, so
-seam-crossing exchange capability remains Partial until that gate lands.
+exist only as compatibility views kept coherent by topology-owned APIs. Issue
+2.0f binds STEP p-curves to exact coedge positions, including both uses of a
+periodic seam, and exports those uses deterministically.
 
 ## Design
 
@@ -430,7 +430,11 @@ Issue 2.0 lands in seven independently reviewable stages:
    p-curve/winding authority live in Loop/Coedge behind compatibility
    adapters; the seam characterization and arena-v3 tests pin the flip.
 6. **2.0f — STEP per-use round-trip:** map loop-positioned STEP p-curves to
-   distinct coedge uses and pin deterministic write/read/write behavior.
+   distinct coedge uses and pin deterministic write/read/write behavior. The
+   importer consumes every matching branch exactly once, retains analytic
+   surface frames and periodic winding, and rolls back the complete import on
+   malformed counts or endpoint mismatches. The writer emits one positioned
+   pcurve per coedge in loop order and refuses inconsistent winding metadata.
 7. **2.0g — integration and zero gate:** require zero production readers,
    run the boolean/corpus/WASM/rollback suites, remove obsolete facades, and
    update capability and stability evidence.
@@ -497,13 +501,14 @@ STEP's model already matches this design: an `EDGE_LOOP` of
 `ORIENTED_EDGE`s where a seam edge legitimately appears twice, and per-use
 2D geometry via `SURFACE_CURVE`/`PCURVE` associated geometry.
 
-- **Reader** (after Issue 2.0f): a repeated oriented edge in an edge loop maps
-  to two coedges; each `PCURVE` binds to its coedge by loop position, not by
-  `(edge, face)`. Today's reader collapses these — the RFC 0002 fixture
-  (write/read/write of the seam face) becomes an active I/O regression at
-  Issue 2.0f, not before.
-- **Writer**: emits one `ORIENTED_EDGE` per coedge and one per-use
-  `PCURVE`. Deterministic entity ordering follows loop order.
+- **Reader:** a repeated oriented edge in an edge loop maps to two coedges;
+  each `PCURVE` binds to its coedge by loop position, not by `(edge, face)`.
+  Matching branches must be consumed exactly once, and each stored 2D range
+  must evaluate through the owning surface to the oriented 3D endpoints.
+- **Writer:** emits one `ORIENTED_EDGE` per coedge and one parameter-trimmed
+  per-use `PCURVE`. Deterministic entity ordering follows face, loop, and
+  coedge order; write/read/write of the 48-pcurve analytic corpus and the two
+  lifted cylinder-seam branches is byte-identical.
 
 ## Validation additions
 

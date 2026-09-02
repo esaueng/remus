@@ -158,7 +158,20 @@ against the wire facade before commit, and preserves v1/v2 by deriving
 authority on import.
 The acceptance fixture round-trips a cylinder seam's two independent pcurve
 branches and lifted winding count, while a tampered boundary rolls back
-without changing live topology. STEP loop-position binding remains 2.0f.
+without changing live topology.
+
+Issue 2.0f closes the STEP exchange part of the authority flip. Import binds
+each `SURFACE_CURVE`/`PCURVE` branch to the exact Loop/Coedge position that
+uses its `EDGE_CURVE`; repeated seam uses therefore retain independent 2D
+ranges and periodic winding. Every matching branch must be consumed exactly
+once, and endpoint mismatch or malformed association rolls the whole import
+back. Export walks physical loops, emits parameter-trimmed per-use pcurves in
+deterministic order, and refuses pcurve/winding disagreement. The acceptance
+matrix pins two lifted cylinder-seam branches and the external 48-pcurve
+analytic fillet corpus through byte-identical write/read/write cycles. General
+SameParameter proofs for imported plane/conic combinations remain a typed
+capability boundary for the 2.0g integration tranche; those combinations are
+not treated as proved merely because their STEP pcurves were retained.
 
 ### 2.1 Honest-failure hygiene (S)
 
