@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788317421964,
+  "lastUpdate": 1788318891522,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -6695,6 +6695,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 42183905,
             "range": "± 386244",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "631b2563a2bd91fa48f1b8f9737f277efe91c28a",
+          "message": "feat(math): add exact swept surface substrate (#189)\n\n* feat(math): add exact swept surface substrate\n\n* docs(roadmap): link O2.1b delivery\n\n* docs: map the swept-surface math module\n\n---------\n\nCo-authored-by: Codex Review <codex-review@localhost>",
+          "timestamp": "2026-09-01T23:11:59-04:00",
+          "tree_id": "3f4898babe95cfbf975a5a6eeb4205ee18d04be4",
+          "url": "https://github.com/esaueng/remus/commit/631b2563a2bd91fa48f1b8f9737f277efe91c28a"
+        },
+        "date": 1788318890583,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1468985,
+            "range": "± 15588",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1567454,
+            "range": "± 2284",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 27658,
+            "range": "± 605",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 1086054,
+            "range": "± 2551",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 44418488,
+            "range": "± 74740",
             "unit": "ns/iter"
           }
         ]
