@@ -42,9 +42,10 @@ serialization — is machinery most kernels never grew. It makes milestone M6
 
 **Three pillars are missing**, and they are architectural, not features:
 per-entity tolerant modeling (M3), sheet/wire/cellular body taxonomy (M4),
-and general curved×curved boolean intersection (M2). The current honest
-statement of D2 is a pinned refusal: two offset unit spheres cannot be fused
-(`non_concentric_spheres_fuse_fails_closed_without_shortcut`).
+and general curved×curved boolean intersection (M2). Issue 2.2 closes the
+first general-position cell: two offset spheres now fuse, cut, and intersect
+through an exact radical-plane circle with analytic spherical result faces.
+General quadric and NURBS pairs remain the honest D2 boundary.
 
 **Ordering principle: architecture before generality, generality before
 polish.** Tolerant modeling and body taxonomy change data structures every
@@ -217,17 +218,28 @@ remain byte-identical.
 `crates/math/src/analytic_intersection.rs` ·
 `crates/algo/src/builder/face_splitter/` · `crates/check/src/classify/`
 
-Add `exact_sphere_sphere` (the section is a closed-form circle; only the
-coaxial shortcut exists today) and a sphere splitter arm that carves a sphere
-face along a non-equatorial circle. The zero-area/winding doctrine from the
-NURBS-classification stack transfers directly: a small circle on a sphere
-*splits* the surface rather than bounding it, and winding carries which half
-survives.
+`exact_sphere_sphere` supplies the closed-form section circle and the sphere
+splitter carves each source face along that non-equatorial circle. The
+zero-area/winding doctrine from the NURBS-classification stack transfers
+directly: a small circle on a sphere *splits* the surface rather than bounding
+it, and winding carries which half survives.
 
 > **Exit gate:** the pinned refusal
 > `non_concentric_spheres_fuse_fails_closed_without_shortcut` flips to an
 > exact-volume test (inclusion–exclusion oracle) for fuse, cut, and
 > intersect.
+
+Delivered: phase FF emits the exact radical-plane circle, the sphere splitter
+turns its seam-split arcs into two winding-correct patches, and classification
+uses the two analytic support-plane half-spaces rather than a chord polygon.
+The spherical patch tessellator uses a one-to-one stereographic chart with a
+constrained interior grid and verifies every boundary segment before emission.
+Offset equal-radius fuse/cut/intersect results retain four analytic sphere
+faces, validate as closed solids, classify material probes correctly, and
+match independent lens/inclusion–exclusion volumes and manifold meshes at
+three deflections. The lower-level radical-plane oracle separately covers
+unequal radii, and an oblique-center fixture prevents axis-aligned special
+cases from satisfying the gate.
 
 ### 2.3 Steinmetz ellipses (S)
 

@@ -2738,6 +2738,300 @@ fn fill_sphere_cap_web(
     true
 }
 
+/// Fill a spherical patch that lies wholly in one hemisphere by constrained
+/// triangulation in a stereographic equatorial chart.
+///
+/// Projection from the opposite pole is one-to-one on either closed
+/// hemisphere and conformal at the equator.  It therefore avoids both the
+/// longitude seam and the false boundary crossings that orthographic chords
+/// can create where two spherical arcs meet at a shallow angle.  Shared
+/// boundary vertices remain verbatim; only face-local interior points are
+/// reconstructed through the inverse chart.
+#[allow(clippy::too_many_arguments)]
+fn fill_sphere_hemisphere_patch(
+    sphere: &remus_math::surfaces::SphericalSurface,
+    boundary: &[u32],
+    deflection: f64,
+    angular_tol: f64,
+    merged: &mut TriangleMesh,
+    point_to_global: &mut DetHashMap<(i64, i64, i64), u32>,
+) -> Result<bool, crate::OperationsError> {
+    use remus_math::cdt::Cdt;
+    use remus_math::vec::Point2;
+
+    if boundary.len() < 3 || !sphere.radius().is_finite() || sphere.radius() <= 0.0 {
+        return Ok(false);
+    }
+
+    let center = sphere.center();
+    let radius = sphere.radius();
+    let surface_tol = radius.mul_add(1e-8, 1e-10);
+    let hemisphere_tol = radius * 1e-8;
+    let mut projected = Vec::with_capacity(boundary.len());
+    let mut projected_z = Vec::with_capacity(boundary.len());
+    let mut z_min = f64::INFINITY;
+    let mut z_max = f64::NEG_INFINITY;
+    for &gid in boundary {
+        let Some(&point) = merged.positions.get(gid as usize) else {
+            return Ok(false);
+        };
+        let offset = point - center;
+        if !offset.x().is_finite()
+            || !offset.y().is_finite()
+            || !offset.z().is_finite()
+            || (offset.length() - radius).abs() > surface_tol
+        {
+            return Ok(false);
+        }
+        let x = offset.dot(sphere.x_axis()) / radius;
+        let y = offset.dot(sphere.y_axis()) / radius;
+        let z = offset.dot(sphere.z_axis());
+        if !x.is_finite() || !y.is_finite() || !z.is_finite() {
+            return Ok(false);
+        }
+        projected.push(Point2::new(x, y));
+        projected_z.push(z / radius);
+        z_min = z_min.min(z);
+        z_max = z_max.max(z);
+    }
+
+    // Require a genuinely trimmed single-hemisphere patch.  A primitive
+    // latitude cap remains on its dedicated structured path, and a boundary
+    // crossing both hemispheres must use a different chart.
+    let hemisphere: f64 = if z_min >= -hemisphere_tol && z_max > hemisphere_tol {
+        1.0
+    } else if z_max <= hemisphere_tol && z_min < -hemisphere_tol {
+        -1.0
+    } else {
+        return Ok(false);
+    };
+
+    for (point, z) in projected.iter_mut().zip(projected_z) {
+        let denominator = hemisphere.mul_add(z, 1.0);
+        if !denominator.is_finite() || denominator <= 1e-12 {
+            return Ok(false);
+        }
+        *point = Point2::new(point.x() / denominator, point.y() / denominator);
+    }
+
+    let (x_min, x_max, y_min, y_max) = projected.iter().fold(
+        (
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        ),
+        |(x_lo, x_hi, y_lo, y_hi), point| {
+            (
+                x_lo.min(point.x()),
+                x_hi.max(point.x()),
+                y_lo.min(point.y()),
+                y_hi.max(point.y()),
+            )
+        },
+    );
+    if x_max - x_min <= 1e-12 || y_max - y_min <= 1e-12 {
+        return Ok(false);
+    }
+
+    let margin = 0.05;
+    let bounds = (
+        Point2::new(x_min - margin, y_min - margin),
+        Point2::new(x_max + margin, y_max + margin),
+    );
+    let mut cdt = Cdt::with_capacity(bounds, boundary.len());
+    let boundary_ids = cdt
+        .insert_points_hilbert(&projected)
+        .map_err(crate::OperationsError::Math)?;
+    if boundary_ids.windows(2).any(|pair| pair[0] == pair[1])
+        || boundary_ids.first() == boundary_ids.last()
+    {
+        return Ok(false);
+    }
+
+    let max_boundary_id = boundary_ids.iter().copied().max().unwrap_or(2);
+    let mut cdt_to_global = vec![None; max_boundary_id + 1];
+    for (&cdt_id, &global_id) in boundary_ids.iter().zip(boundary) {
+        if cdt_to_global[cdt_id].replace(global_id).is_some() {
+            return Ok(false);
+        }
+    }
+    let boundary_pairs: Vec<(usize, usize)> = (0..boundary_ids.len())
+        .map(|i| (boundary_ids[i], boundary_ids[(i + 1) % boundary_ids.len()]))
+        .collect();
+    for &(a, b) in &boundary_pairs {
+        cdt.insert_constraint(a, b)
+            .map_err(crate::OperationsError::Math)?;
+    }
+
+    let angular_segments =
+        segments_for_chord_deviation_a(radius, std::f64::consts::PI, deflection, angular_tol, true)
+            .max(2);
+    let n_x = angular_segments.saturating_mul(2);
+    let n_y = angular_segments.saturating_mul(2);
+    validate_interior_grid_size(n_x, n_y)?;
+
+    let polygon: Vec<(f64, f64)> = projected.iter().map(|p| (p.x(), p.y())).collect();
+    let on_boundary_chord = |point: Point2| {
+        projected.iter().enumerate().any(|(index, &start)| {
+            let end = projected[(index + 1) % projected.len()];
+            let chord = end - start;
+            let length_sq = chord.dot(chord);
+            if length_sq <= 1e-24 {
+                return (point - start).dot(point - start) <= 1e-24;
+            }
+            let fraction = ((point - start).dot(chord) / length_sq).clamp(0.0, 1.0);
+            let nearest = start + chord * fraction;
+            (point - nearest).dot(point - nearest) <= 1e-24
+        })
+    };
+    let mut interior = Vec::new();
+    for ix in 1..n_x {
+        let x = x_min + (x_max - x_min) * (ix as f64 / n_x as f64);
+        for iy in 1..n_y {
+            let y = y_min + (y_max - y_min) * (iy as f64 / n_y as f64);
+            if x.mul_add(x, y * y) >= 1.0 - 1e-12 {
+                continue;
+            }
+            let point = Point2::new(x, y);
+            // A point inserted exactly on a constraint makes the CDT split
+            // that boundary chord with a face-local vertex.  Adjacent faces
+            // use different hemisphere charts/grids, so the split is not
+            // shared and appears as a deflection-dependent crack.
+            if point_in_polygon_2d(&polygon, point) && !on_boundary_chord(point) {
+                interior.push(point);
+            }
+        }
+    }
+    if !interior.is_empty() {
+        let interior_ids = cdt
+            .insert_points_hilbert(&interior)
+            .map_err(crate::OperationsError::Math)?;
+        let max_interior_id = interior_ids.iter().copied().max().unwrap_or(0);
+        if cdt_to_global.len() <= max_interior_id {
+            cdt_to_global.resize(max_interior_id + 1, None);
+        }
+    }
+
+    cdt.remove_exterior(&boundary_pairs);
+    let cdt_vertices = cdt.vertices();
+    let mut global_ids = vec![0_u32; cdt_vertices.len()];
+    for i in 3..cdt_vertices.len() {
+        if let Some(global_id) = cdt_to_global.get(i).and_then(|entry| *entry) {
+            global_ids[i] = global_id;
+            continue;
+        }
+        let point = cdt_vertices[i];
+        let radial_sq = point.x().mul_add(point.x(), point.y() * point.y());
+        if !radial_sq.is_finite() || radial_sq >= 1.0 {
+            return Ok(false);
+        }
+        let denominator = 1.0 + radial_sq;
+        let x = 2.0 * point.x() / denominator;
+        let y = 2.0 * point.y() / denominator;
+        let z = hemisphere * (1.0 - radial_sq) / denominator;
+        let normal = sphere.x_axis() * x + sphere.y_axis() * y + sphere.z_axis() * z;
+        let point3 = center + normal * radius;
+        let key = point_merge_key(point3, MERGE_GRID);
+        global_ids[i] = *point_to_global.entry(key).or_insert_with(|| {
+            let id = merged.positions.len() as u32;
+            merged.positions.push(point3);
+            merged.normals.push(normal);
+            id
+        });
+    }
+
+    let mut triangles = Vec::new();
+    for (a, b, c) in cdt.triangles() {
+        let projected_centroid = Point2::new(
+            (cdt_vertices[a].x() + cdt_vertices[b].x() + cdt_vertices[c].x()) / 3.0,
+            (cdt_vertices[a].y() + cdt_vertices[b].y() + cdt_vertices[c].y()) / 3.0,
+        );
+        // `remove_exterior` can retain an ear across a concave run of
+        // boundary samples when constraints are nearly cocircular.  Such an
+        // ear is disconnected from the patch and becomes a one-sided mesh
+        // triangle.  The hemisphere chart is bijective, so the projected
+        // centroid is an exact final inside/outside guard.
+        if !point_in_polygon_2d(&polygon, projected_centroid) {
+            continue;
+        }
+        let mut triangle = [global_ids[a], global_ids[b], global_ids[c]];
+        if triangle[0] == triangle[1] || triangle[1] == triangle[2] || triangle[0] == triangle[2] {
+            continue;
+        }
+        let pa = merged.positions[triangle[0] as usize];
+        let pb = merged.positions[triangle[1] as usize];
+        let pc = merged.positions[triangle[2] as usize];
+        let geometric = (pb - pa).cross(pc - pa);
+        if geometric.length() <= 1e-20 {
+            continue;
+        }
+        let radial_sq = projected_centroid
+            .x()
+            .mul_add(projected_centroid.x(), projected_centroid.y().powi(2));
+        let denominator = 1.0 + radial_sq;
+        let projected_x = 2.0 * projected_centroid.x() / denominator;
+        let projected_y = 2.0 * projected_centroid.y() / denominator;
+        let projected_z = hemisphere * (1.0 - radial_sq) / denominator;
+        let outward = sphere.x_axis() * projected_x
+            + sphere.y_axis() * projected_y
+            + sphere.z_axis() * projected_z;
+        // Use the actual spherical normal in this hemisphere, not the flat
+        // triangle centroid.  An ear made solely from samples of a great-
+        // circle boundary lies in a plane through the sphere centre, where
+        // `geometric · (centroid - centre)` is identically zero and leaves
+        // adjacent hemisphere ears with arbitrary equal winding.
+        if geometric.dot(outward) < 0.0 {
+            triangle.swap(1, 2);
+        }
+        triangles.push(triangle);
+    }
+    if triangles.is_empty() {
+        return Ok(false);
+    }
+
+    let mut boundary_incidence: DetHashMap<(u32, u32), usize> = DetHashMap::default();
+    for triangle in &triangles {
+        for (a, b) in [
+            (triangle[0], triangle[1]),
+            (triangle[1], triangle[2]),
+            (triangle[2], triangle[0]),
+        ] {
+            let key = if a < b { (a, b) } else { (b, a) };
+            *boundary_incidence.entry(key).or_default() += 1;
+        }
+    }
+    for index in 0..boundary.len() {
+        let a = boundary[index];
+        let b = boundary[(index + 1) % boundary.len()];
+        let key = if a < b { (a, b) } else { (b, a) };
+        if boundary_incidence.get(&key) != Some(&1) {
+            return Ok(false);
+        }
+    }
+    let boundary_keys: DetHashSet<(u32, u32)> = (0..boundary.len())
+        .map(|index| {
+            let a = boundary[index];
+            let b = boundary[(index + 1) % boundary.len()];
+            if a < b { (a, b) } else { (b, a) }
+        })
+        .collect();
+    if boundary_incidence.iter().any(|(edge, &count)| {
+        if boundary_keys.contains(edge) {
+            count != 1
+        } else {
+            count != 2
+        }
+    }) {
+        return Ok(false);
+    }
+
+    for triangle in triangles {
+        merged.indices.extend_from_slice(&triangle);
+    }
+    Ok(true)
+}
+
 /// Collect a face's outer-wire boundary as an ordered open loop of global
 /// vertex ids, drawing samples from the shared edge pool when available and
 /// sampling the edge geometry directly otherwise. Consecutive duplicates and
@@ -2854,7 +3148,6 @@ pub(super) fn tessellate_sphere_cap_shared(
         merged,
         point_to_global,
     )?;
-
     if (allow_latitude_cap
         && fill_sphere_latitude_cap(
             sphere,
@@ -2873,6 +3166,14 @@ pub(super) fn tessellate_sphere_cap_shared(
             merged,
             point_to_global,
         )
+        || fill_sphere_hemisphere_patch(
+            sphere,
+            &boundary,
+            deflection,
+            angular_tol,
+            merged,
+            point_to_global,
+        )?
     {
         Ok(true)
     } else {

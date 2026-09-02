@@ -3930,6 +3930,43 @@ fn compute_raw_curves(
             }
         }
 
+        (FaceSurface::Sphere(s1), FaceSurface::Sphere(s2)) => {
+            // A proper sphere-sphere crossing is the exact circle in their
+            // radical plane.  Keep that carrier analytic so the sphere face
+            // splitter receives true small-circle arcs instead of a sampled
+            // NURBS approximation whose endpoints cannot partition the
+            // hemispheres consistently.
+            match analytic_intersection::exact_sphere_sphere(s1, s2)? {
+                Some(exacts) => {
+                    let mut results = Vec::new();
+                    for exact in exacts {
+                        if let analytic_intersection::ExactIntersectionCurve::Circle(circle) = exact
+                        {
+                            let bbox = circle_bbox(&circle);
+                            let domain = (0.0, std::f64::consts::TAU);
+                            let p_start = ParametricCurve::evaluate(&circle, domain.0);
+                            let p_end = ParametricCurve::evaluate(&circle, domain.1);
+                            results.push(RawCurve {
+                                curve: EdgeCurve::Circle(circle),
+                                bbox,
+                                t_range: domain,
+                                p_start,
+                                p_end,
+                            });
+                        }
+                    }
+                    Ok(results)
+                }
+                None => {
+                    if let (Some(aa), Some(ab)) = (surf_a.as_analytic(), surf_b.as_analytic()) {
+                        analytic_analytic_intersection(&aa, &ab, v_range_a, v_range_b)
+                    } else {
+                        Ok(Vec::new())
+                    }
+                }
+            }
+        }
+
         (FaceSurface::Sphere(sphere), FaceSurface::Cylinder(cyl))
         | (FaceSurface::Cylinder(cyl), FaceSurface::Sphere(sphere)) => {
             // A coaxial sphere and cylinder meet at one or two circles (the
