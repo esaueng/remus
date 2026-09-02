@@ -261,11 +261,15 @@ does not itself promote or demote anything.
   CAx-IF v4.6 product/per-solid volume, surface-area, and centroid declarations
   round-trip against independent analytic oracles, with opt-in recomputation,
   stable deviation diagnostics, and transactional malformed-property refusal
-  ([STEP conformance](../production-readiness/step-conformance.md)).
+  ([STEP conformance](../production-readiness/step-conformance.md)). Physical
+  Loop/Coedge authority round-trips both positioned periodic-seam branches and
+  winding counts. The external analytic fillet fixture retains all 48 pcurves
+  through byte-identical write/read/write, and malformed count/endpoint
+  authority rolls the import back.
 - Known gaps: inner-shell export, attribute round trips
-  (`docs/design/deferred-e3b-step-names-and-colors.md`), periodic seam and
-  p-curve round trips, deterministic entity ordering, AP242 schema output,
-  and validation properties for independent non-solid geometry.
+  (`docs/design/deferred-e3b-step-names-and-colors.md`), AP242 schema output,
+  general SameParameter proofs beyond the certified curve/surface matrix, and
+  validation properties for independent non-solid geometry.
 
 ### Sketch (GCS)
 
@@ -416,20 +420,20 @@ does not itself promote or demote anything.
 These are not cells of any one family; they bound what many families can
 claim, and they are the first implementation targets of the program:
 
-1. **No coedge/edge-use entity.** Face boundaries are ordered oriented-edge
-   lists (`crates/topology/src/wire.rs`); p-curves are keyed by
-   `(EdgeId, FaceId)` (`crates/topology/src/pcurve.rs`), so a seam edge used
-   twice on one periodic face cannot carry two p-curves — the registry's
-   second `set` silently overwrites the first (pinned by the
-   `seam_characterization` tests in that file). Every seam-crossing cell is
-   at best Partial until this lands. Design:
-   `docs/design/rfc-0002-coedge-architecture.md`.
-2. **No stored trim domains.** Edge domains are reconstructed from endpoint
-   projections at evaluation time (`crates/topology/src/edge.rs`,
-   `domain_with_endpoints`) with module-local match bands. SameParameter /
-   SameRange validation cannot be stated, let alone enforced.
-3. **Face-only, one-level evolution.** No vertex/edge events, no lineage
-   graph, no persistent references.
+1. **Per-use authority is landed, with a compatibility facade.** Physical
+   Loop/Coedge entities own boundary order, pcurves, and periodic winding;
+   whole-topology validation refuses dangling/reused ownership and partial
+   seams. Read-only Face/Wire access remains for compatibility until its
+   measured no-consumer and one-release deletion gate is met.
+2. **Stored trim domains are landed.** The 132-site production reader ratchet
+   is at zero and every measured result writer preserves explicit non-Line
+   ranges. Strict SameParameter/SameRange validation is exhaustive only for
+   its certified curve/surface combinations; unsupported combinations refuse
+   with stable capability diagnostics rather than reconstructing authority.
+3. **Evolution is construction-derived where declared, not yet per-use.**
+   Boolean vertex/edge/face events, a lineage journal, and persistent
+   references exist. Coedge-use evolution and complete records for every
+   modifier remain queued; those gaps stay disclosed rather than inferred.
 4. **Partial operation-context coverage.** Public booleans carry tolerance,
    fallback policy, NURBS marching, coupled-Newton, and recursive
    seed-subdivision budgets, and cooperative cancellation explicitly.
