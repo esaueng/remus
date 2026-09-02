@@ -363,7 +363,7 @@ filler simultaneously.
 
 ### 3.1 RFC 0004: per-entity tolerance semantics (M)
 
-`docs/design/rfc-0004-tolerant-modeling.md` (to be created)
+[`docs/design/rfc-0004-tolerant-modeling.md`](../design/rfc-0004-tolerant-modeling.md)
 
 The design decisions that must be made once, on paper: containment semantics
 (vertex ball ⊇ all incident edge ends; edge tube ⊇ its curve within
@@ -376,8 +376,12 @@ disclosure. Staged like RFC 0002 with characterization tests pinned per
 stage.
 
 > **Exit gate:** RFC merged with staged plan; characterization tests for
-> current single-tolerance behavior written and passing (they flip at stage
-> 3).
+> current single-tolerance behavior written and passing (they flip during
+> predicate plumbing).
+
+Delivered in [PR #126](https://github.com/esaueng/remus/pull/126): the RFC
+records containment, max-of-contributors authority, capped and journaled
+growth, additive serialization, predicate staging, and downstream disclosure.
 
 ### 3.2 Topology substrate (M)
 
@@ -392,6 +396,11 @@ validation checks, additive arena-format serialization, journal integration
 > **Exit gate:** round-trip byte-stability for legacy documents; validators
 > reject a tolerance smaller than the measured deviation it papers over.
 
+Delivered in [PR #148](https://github.com/esaueng/remus/pull/148): validated
+vertex/edge setters, ball/tube validators, the operation-context growth cap,
+journal recordability, and tolerance-bearing arena round-trip coverage landed
+without changing the legacy serialized form.
+
 ### 3.3 Predicate plumbing (M)
 
 `crates/geometry/src/extrema/` · `crates/algo/src/pave_filler/phase_vv.rs`,
@@ -405,6 +414,15 @@ floor; entity tolerance only widens.
 > **Exit gate:** a vertex pair separated by 10× global tolerance but within
 > their declared balls interferes in VV; all existing suites unchanged
 > (entity tolerances default to the floor).
+
+In review in [PR #208](https://github.com/esaueng/remus/pull/208): the existing
+10×-global VV ball witness is joined by declared-tube EE/VE, forced-overlap,
+and tolerance-aware pave-vertex lookup regressions. SameParameter and
+SameRange use the larger of the caller bound and effective edge tolerance;
+invalid or overflowing bands refuse with typed errors. Declared values
+contribute only their excess above the global floor, so the no-declaration
+foils and all 51 approximation-census rows remain unchanged. Result-tolerance
+growth and FF/builder assembly remain Issue 3.4.
 
 ### 3.4 GFA integration (L)
 
