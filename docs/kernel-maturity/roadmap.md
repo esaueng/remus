@@ -28,6 +28,18 @@ its state. Before claiming anything: `gh pr list --state open` (R6).
   non-vacuous WASM `meshQuality` contract. Follow-ups remain for the separate
   face-orientation inconsistency and the sub-millimeter fine-mesh boundary
   residue; neither is hidden by this disposition.
+- **External K-S1 disposition — fillet fail-closed migration: done (PR #181,
+  2026-09-01).** Every public fillet/chamfer mutation path — the WASM `fillet`
+  cascade, `filletVariable`, `filletV2`/`chamferV2`/`chamferDistanceAngle`,
+  the journaled wrappers, `executeBatch`/`executeBatchV2`, and the legacy v1
+  Rust engines — is transactional and postcondition-validated: no path returns
+  the input handle or a clone of it as success, exposes partially mutated
+  topology, or ships a geometrically invalid result; refusals carry the stable
+  `blend_failure_code` vocabulary on every surface. The versioned repro bundle
+  `fillet-variable-fail-closed` fails on the pre-fix kernel and passes after.
+  Two damaged-success cases the old closed-shell gate could not see (the
+  blend-adjacent second-pass fillet and the gridfinity lip peak-rim fillet)
+  are honest typed refusals now; un-refusing them is the B4 trimmer work.
 - **Remus K-S4 disposition — NURBS fuzz slice:** done in PR #163. Bounded
   rational-surface construction/evaluation and NURBS SSI now run in the
   scheduled fuzz campaign against an independent plane oracle; topology

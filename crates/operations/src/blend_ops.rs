@@ -208,7 +208,12 @@ pub(crate) fn edge_is_convex(
 /// breaks either rule is wrong even when it is a topologically valid closed
 /// solid — the failure mode a wrong-side trim produces, which the shell and
 /// Euler checks alone accept.
-fn validate_blend_volume(
+///
+/// `pub(crate)` so the legacy v1 engines (`fillet::fillet`,
+/// `fillet::fillet_variable`, `fillet::fillet_rolling_ball_with_origins`)
+/// apply the same oracle: they are public API and must be fail-closed even
+/// when called without the v2 dispatcher's guards.
+pub(crate) fn validate_blend_volume(
     topo: &Topology,
     operation: &'static str,
     input_solid: SolidId,
@@ -257,18 +262,34 @@ fn validate_blend_volume(
     let convexities: Vec<bool> = edges
         .iter()
         .filter_map(|&e| {
-            match crate::query::edge_concavity(topo, input_solid, e, size * 0.25).ok()? {
-                crate::query::EdgeConcavity::Convex => Some(true),
-                crate::query::EdgeConcavity::Concave => Some(false),
-                crate::query::EdgeConcavity::Tangent | crate::query::EdgeConcavity::Unknown => None,
+            // The classifier refuses to guess when the probe overshoots the
+            // local geometry (`probe > local_scale/4` → Unknown) — which is
+            // exactly what an absurd radius does (r=50 on a 10 mm edge). Retry
+            // at shrinking probes so an oversized blend still gets classified
+            // and the sign rule still fires; a genuinely ambiguous edge keeps
+            // its Unknown verdict and stays excluded, as before.
+            for probe in [size * 0.25, size * 0.25 / 64.0, size * 0.25 / 4096.0] {
+                match crate::query::edge_concavity(topo, input_solid, e, probe).ok()? {
+                    crate::query::EdgeConcavity::Convex => return Some(true),
+                    crate::query::EdgeConcavity::Concave => return Some(false),
+                    crate::query::EdgeConcavity::Tangent => return None,
+                    crate::query::EdgeConcavity::Unknown => {}
+                }
             }
+            None
         })
         .collect();
     if convexities.len() == edges.len() && !convexities.is_empty() {
         let all_convex = convexities.iter().all(|&c| c);
         let all_concave = convexities.iter().all(|&c| !c);
-        // Allow a hair of tessellation noise either way.
-        let noise = budget * 1e-3;
+        // Allow a hair of tessellation noise either way. The noise lives at the
+        // scale of the MEASUREMENT, not of the request: an absurd radius makes
+        // `budget` enormous (it grows as size³) and a budget-proportional band
+        // would hide exactly the blown-up result the rule exists to catch —
+        // measured: r = 50·edge on a 10⁴-scale box "added" 5.8·10¹³ mm³ under
+        // a 2.5·10¹⁴ noise floor. The volumes actually involved bound the
+        // tessellation error instead.
+        let noise = budget.min(before.abs() + after.abs()) * 1e-3;
         if all_convex && delta > noise {
             return Err(OperationsError::InvalidInput {
                 reason: format!(
@@ -327,9 +348,24 @@ fn validate_complete_blend(
             failed: result.failed.len(),
         });
     }
+    validate_blend_solid_against_input(topo, operation, input_solid, result.solid)
+}
+
+/// The baseline-regression half of [`validate_complete_blend`], for engines
+/// that do not produce a [`BlendResult`] (the legacy v1 fillet/chamfer
+/// functions): the result solid must not carry any Error-severity validation
+/// issue beyond what the input already had.
+///
+/// `pub(crate)` so every public blend entry point applies the same bar.
+pub(crate) fn validate_blend_solid_against_input(
+    topo: &Topology,
+    operation: &'static str,
+    input_solid: SolidId,
+    result_solid: SolidId,
+) -> Result<(), OperationsError> {
     let report = remus_check::validate::validate_solid(
         topo,
-        result.solid,
+        result_solid,
         &remus_check::validate::ValidateOptions::default(),
     )?;
     if report.is_valid() {
@@ -1140,17 +1176,21 @@ pub fn evolution_from_blend_origins(
 /// [`EvolutionMap::unresolved`]: crate::evolution::EvolutionMap::unresolved
 ///
 /// # Errors
-/// Returns whatever [`fillet_v2`] returns.
+/// Returns whatever [`fillet_v2`] returns. The blend and the evolution
+/// computation commit or roll back together: an evolution-construction
+/// failure never leaves the fillet half-applied behind an `Err`.
 pub fn fillet_with_evolution(
     topo: &mut Topology,
     solid: SolidId,
     edges: &[EdgeId],
     radius: f64,
 ) -> Result<(BlendResult, EvolutionMap), OperationsError> {
-    let input_signatures = crate::boolean::collect_face_signatures(topo, solid)?;
-    let result = fillet_v2(topo, solid, edges, radius)?;
-    let evo = evolution_for_blend(topo, &result, &input_signatures)?;
-    Ok((result, evo))
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let input_signatures = crate::boolean::collect_face_signatures(topo, solid)?;
+        let result = fillet_v2(topo, solid, edges, radius)?;
+        let evo = evolution_for_blend(topo, &result, &input_signatures)?;
+        Ok((result, evo))
+    })
 }
 
 /// Chamfer edges with two distances and report how each input face evolved.
@@ -1158,7 +1198,8 @@ pub fn fillet_with_evolution(
 /// Same provenance contract as [`fillet_with_evolution`].
 ///
 /// # Errors
-/// Returns whatever [`chamfer_v2`] returns.
+/// Returns whatever [`chamfer_v2`] returns. The chamfer and the evolution
+/// computation commit or roll back together, as in [`fillet_with_evolution`].
 pub fn chamfer_with_evolution(
     topo: &mut Topology,
     solid: SolidId,
@@ -1166,10 +1207,12 @@ pub fn chamfer_with_evolution(
     d1: f64,
     d2: f64,
 ) -> Result<(BlendResult, EvolutionMap), OperationsError> {
-    let input_signatures = crate::boolean::collect_face_signatures(topo, solid)?;
-    let result = chamfer_v2(topo, solid, edges, d1, d2)?;
-    let evo = evolution_for_blend(topo, &result, &input_signatures)?;
-    Ok((result, evo))
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let input_signatures = crate::boolean::collect_face_signatures(topo, solid)?;
+        let result = chamfer_v2(topo, solid, edges, d1, d2)?;
+        let evo = evolution_for_blend(topo, &result, &input_signatures)?;
+        Ok((result, evo))
+    })
 }
 
 #[cfg(test)]

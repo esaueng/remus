@@ -1415,11 +1415,16 @@ fn gridfinity_d3_shelled_box_with_lip() {
     assert!(fc < 200, "fused solid should have < 200 faces: got {fc}");
 }
 
-/// D5: Shelled box + FILLETED lip ring → fuse.
+/// D5: Shelled box + lip ring whose peak-rim fillet is REFUSED → fuse.
 ///
-/// Like D4 (rounded-rectangle body matching the tool), but with a fillet on the
-/// lip's peak rim before the fuse. Exercises the analytic boolean fusing a lip
-/// whose rounded corners carry a fillet-derived NURBS blend at the peak.
+/// Like D4 (rounded-rectangle body matching the tool), but attempts the tool's
+/// `TOP_FILLET` on the lip's peak rim before the fuse. The fillet is a typed
+/// refusal on this geometry (the walking trimmer cannot retrim the peak face —
+/// bridge item B4 — and the rolling-ball fallback's closed-but-non-orientable
+/// answer is no longer accepted as success). The test pins the fail-closed
+/// contract on the consumer's real geometry: the refusal names the blocker,
+/// the lip survives byte-for-byte, and the chain completes on the un-filleted
+/// lip with an analytic fuse.
 ///
 /// Earlier this test built the body with a sharp `makeBox` (the real tool uses
 /// a rounded-rect body, like D4) and filleted `edges[0]` — which happens to be
@@ -1528,26 +1533,71 @@ fn gridfinity_d5_box_with_filleted_lip() {
                 })
         })
         .expect("lip should have a peak rim edge near Z_PEAK");
+
+    // K-S1 fail-closed contract on this exact consumer geometry. The walking
+    // builder refuses the peak rim (`trimming failure`), and the rolling-ball
+    // fallback's answer — which this test historically accepted under the
+    // `lip_val <= 2` bar — carries 22 orientation-inconsistent shared edges
+    // (a closed, manifold, non-orientable shell: damaged goods that happened
+    // to fuse analytically afterwards). The chain now refuses by name instead
+    // of shipping that lip. The un-refused capability is the walking
+    // trimmer's, tracked as bridge item B4 (`docs/kernel-maturity/roadmap.md`).
+    //
+    // What must be true now: the refusal is typed, and the lip is untouched —
+    // identical counts, validity, and volume — so the chain can fall back to
+    // the un-filleted lip deliberately instead of never knowing.
+    let lip_id = k.resolve_solid(lip_handle).unwrap();
+    let pre_counts = k.get_entity_counts(lip_handle).unwrap();
+    let pre_valid = k.validate_solid(lip_handle).unwrap();
+    let pre_vol = {
+        let r = k.execute_batch(&format!(
+            r#"[{{"op": "volume", "args": {{"solid": {lip_handle}, "deflection": 0.05}}}}]"#
+        ));
+        ok_f64(&parse_batch(&r), 0)
+    };
+    let pre_faces = remus_topology::explorer::solid_faces(&k.topo, lip_id).unwrap();
+
     let r5c = k.execute_batch(&format!(
         r#"[{{"op": "fillet", "args": {{"solid": {lip_handle}, "radius": {TOP_FILLET}, "edges": [{peak_edge}]}}}}]"#
     ));
     let p5c = parse_batch(&r5c);
-    assert_ok(&p5c, 0);
-    let lip_final = p5c[0]["ok"].as_u64().unwrap() as u32;
+    let error = p5c[0]["error"]
+        .as_str()
+        .expect("the peak-rim fillet must be a typed refusal, not a damaged success");
+    assert!(
+        error.contains("trimming failure"),
+        "the refusal must name the failing configuration, got: {error}"
+    );
 
-    // The filleted lip must remain a watertight, genus-0 solid (the fillet's
-    // arc-runout closure plus arc-preserving reassembly keep it closed).
-    let lc = k.get_entity_counts(lip_final).unwrap();
-    let lip_val = k.validate_solid(lip_final).unwrap();
-    let lip_euler = (lc[2] as i64) - (lc[1] as i64) + (lc[0] as i64);
-    assert!(
-        lip_val <= 2,
-        "filleted lip should have <= 2 validation issues, got {lip_val}"
+    let post_counts = k.get_entity_counts(lip_handle).unwrap();
+    assert_eq!(
+        pre_counts, post_counts,
+        "a refused fillet must leave the lip's counts unchanged"
     );
-    assert!(
-        lip_euler >= 2,
-        "filleted lip Euler characteristic should be >= 2, got {lip_euler}"
+    assert_eq!(
+        pre_valid,
+        k.validate_solid(lip_handle).unwrap(),
+        "a refused fillet must leave the lip's validity unchanged"
     );
+    let post_vol = {
+        let r = k.execute_batch(&format!(
+            r#"[{{"op": "volume", "args": {{"solid": {lip_handle}, "deflection": 0.05}}}}]"#
+        ));
+        ok_f64(&parse_batch(&r), 0)
+    };
+    assert!(
+        (pre_vol - post_vol).abs() < 1e-6,
+        "a refused fillet must not move the lip's volume: {pre_vol} -> {post_vol}"
+    );
+    let post_faces = remus_topology::explorer::solid_faces(&k.topo, lip_id).unwrap();
+    assert_eq!(
+        pre_faces, post_faces,
+        "a refused fillet must not re-mint the lip's faces"
+    );
+
+    // The lip that survived is the un-filleted one; the rest of the chain runs
+    // on it exactly as D4's does.
+    let lip_final = lip_handle;
 
     // Step 4: translate lip onto the box top and fuse.
     let mat = translate_matrix(0.0, 0.0, WALL_HEIGHT);
@@ -1820,4 +1870,105 @@ fn rounded_shelled_body_classifies_cavity_outside() {
         remus_algo::FaceClass::Inside,
         "wall-material point must classify Inside, got {wall:?}"
     );
+}
+
+/// TEMPORARY K-S1 probe (not for merge): inspect what the rolling-ball engine
+/// produces for the d5 peak-rim fillet, with full validation detail.
+#[test]
+fn zz_probe_d5_rolling_ball_result_quality() {
+    let mut k = BrepKernel::new();
+
+    let outer_faces = make_outer_sections(&mut k);
+    let inner_faces = make_inner_sections(&mut k);
+    let outer_json = serde_json::to_string(&outer_faces).unwrap();
+    let r3 = k.execute_batch(&format!(
+        r#"[{{"op": "loft", "args": {{"faces": {outer_json}}}}}]"#
+    ));
+    let outer_solid = parse_batch(&r3)[0]["ok"].as_u64().unwrap() as u32;
+    let inner_json = serde_json::to_string(&inner_faces).unwrap();
+    let r4 = k.execute_batch(&format!(
+        r#"[{{"op": "loft", "args": {{"faces": {inner_json}}}}}]"#
+    ));
+    let inner_solid = parse_batch(&r4)[0]["ok"].as_u64().unwrap() as u32;
+    let r5 = k.execute_batch(&format!(
+        r#"[{{"op": "cut", "args": {{"solidA": {outer_solid}, "solidB": {inner_solid}}}}}]"#
+    ));
+    let lip_handle = parse_batch(&r5)[0]["ok"].as_u64().unwrap() as u32;
+
+    let lip_id = k.resolve_solid(lip_handle).unwrap();
+
+    // Baseline: what errors does the lip itself carry?
+    let base_report = remus_check::validate::validate_solid(
+        &k.topo,
+        lip_id,
+        &remus_check::validate::ValidateOptions::default(),
+    )
+    .unwrap();
+    eprintln!(
+        "LIP baseline: valid={} errors={}",
+        base_report.is_valid(),
+        base_report.error_count()
+    );
+    for i in &base_report.issues {
+        eprintln!("  base {:?} {}", i.severity, i.description);
+    }
+
+    // Find the peak rim edge exactly as the d5 test does.
+    let edges = remus_topology::explorer::solid_edges(&k.topo, lip_id).unwrap();
+    let peak = edges
+        .iter()
+        .copied()
+        .find(|&eid| {
+            let e = k.topo.edge(eid).unwrap();
+            let z0 = k.topo.vertex(e.start()).unwrap().point().z();
+            let z1 = k.topo.vertex(e.end()).unwrap().point().z();
+            z0.min(z1) >= Z_PEAK - 1.0 && z0.max(z1) >= Z_PEAK - 0.01
+        })
+        .expect("peak edge");
+
+    // Call the v2 engine and the rolling-ball engine directly, on clones.
+    let mut t2 = k.topo().clone();
+    match remus_operations::blend_ops::fillet_v2(&mut t2, lip_id, &[peak], TOP_FILLET) {
+        Ok(r) => {
+            let rep = remus_check::validate::validate_solid(
+                &t2,
+                r.solid,
+                &remus_check::validate::ValidateOptions::default(),
+            )
+            .unwrap();
+            eprintln!(
+                "V2: OK valid={} errors={}",
+                rep.is_valid(),
+                rep.error_count()
+            );
+            for i in &rep.issues {
+                eprintln!("  v2 {:?} {}", i.severity, i.description);
+            }
+        }
+        Err(e) => eprintln!("V2: ERR {e}"),
+    }
+
+    #[allow(deprecated)]
+    let mut t3 = k.topo().clone();
+    #[allow(deprecated)]
+    match remus_operations::fillet::fillet_rolling_ball(&mut t3, lip_id, &[peak], TOP_FILLET) {
+        Ok(s) => {
+            let rep = remus_check::validate::validate_solid(
+                &t3,
+                s,
+                &remus_check::validate::ValidateOptions::default(),
+            )
+            .unwrap();
+            let vol = remus_operations::measure::solid_volume(&t3, s, 0.05).unwrap();
+            eprintln!(
+                "RB: OK valid={} errors={} vol={vol:.3}",
+                rep.is_valid(),
+                rep.error_count()
+            );
+            for i in &rep.issues {
+                eprintln!("  rb {:?} {}", i.severity, i.description);
+            }
+        }
+        Err(e) => eprintln!("RB: ERR {e}"),
+    }
 }

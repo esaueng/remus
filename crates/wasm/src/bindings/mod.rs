@@ -27,6 +27,8 @@ pub mod tessellate;
 pub mod transforms;
 
 #[cfg(test)]
+mod fillet_fail_closed_tests;
+#[cfg(test)]
 mod gridfinity_tests;
 #[cfg(test)]
 mod holed_face_tests;
