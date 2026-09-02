@@ -277,9 +277,22 @@ fn tessellate_solid_core(
 
     // Synchronize circle edge samples with face grid density so a face's rim
     // points line up with its own analytic grid columns.
+    //
+    // Only faces that will be gridded take part. A cylinder wall with an
+    // inner wire is tessellated by `tessellate_cylinder_with_holes`, which
+    // walks its wires with `sample_edge` and never sees these resampled
+    // points, so densifying its circle edges here only pulls the neighbouring
+    // faces off the wall's own polyline: a boss's section arcs went from 7 to
+    // 64 points on the caps while the wall kept 7, and the fused shell
+    // tessellated open along the whole hole rim.
     {
         for &face_id in &all_faces {
             let face_data = topo.face(face_id)?;
+            if matches!(face_data.surface(), FaceSurface::Cylinder(_))
+                && !face_data.inner_wires().is_empty()
+            {
+                continue;
+            }
             let face_nu = match face_data.surface() {
                 FaceSurface::Cone(cone) => {
                     let v_range =

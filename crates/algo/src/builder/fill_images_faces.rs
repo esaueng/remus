@@ -3114,6 +3114,75 @@ fn arc_segment_crossings(
     hits.into_iter().filter(|(_, t)| on_arc(*t)).collect()
 }
 
+/// A curved boundary edge of the face being clipped: its curve, oriented
+/// start/end points, whether it is closed by vertex identity (a full rim),
+/// and its oriented trim.
+type BoundaryArc = (EdgeCurve, Point3, Point3, bool, Option<(f64, f64)>);
+
+/// Whether a section segment lies in a curved face, judged by the boundary
+/// arcs its EXTENSION meets.
+///
+/// A generator line on a cylinder or cone lateral that crosses no boundary
+/// edge is not outside the face: the FF phase trims such a line to the two
+/// faces' mutual band (a shorter parallel-axis boss on a shaft wall), which
+/// leaves the segment between the wall's rims with nothing to cross — or,
+/// when the boss stands flush on the shaft's base, starting ON one rim and
+/// ending in the interior. The planar clip classifies that case by its
+/// midpoint against the outline polygon; a curved face has no polygon, so
+/// extend the segment far enough to reach every boundary arc and read the
+/// rims it meets: an in-face segment sees the boundary on BOTH sides of
+/// itself (an endpoint resting on a rim counts as that side), an exterior
+/// one on at most one. Any true-arc crossing strictly INSIDE the segment
+/// means the caller's crossing scan should have split it, so that is never
+/// claimed as in-face.
+fn segment_between_boundary_arcs(
+    boundary_arcs: &[Option<BoundaryArc>],
+    line_start: Point3,
+    line_end: Point3,
+    tol: f64,
+) -> bool {
+    let line_dir = line_end - line_start;
+    let line_len2 = line_dir.length_squared();
+    if line_len2 <= tol * tol {
+        return false;
+    }
+    let line_len = line_len2.sqrt();
+    // Reach past every boundary circle: from the segment start to the far
+    // side of each circle, plus the segment itself.
+    let reach = boundary_arcs
+        .iter()
+        .flatten()
+        .filter_map(|(curve, _, _, _, _)| match curve {
+            EdgeCurve::Circle(c) => Some((c.center() - line_start).length() + c.radius()),
+            _ => None,
+        })
+        .fold(0.0_f64, f64::max)
+        + line_len;
+    if reach <= line_len {
+        return false;
+    }
+    let unit = line_dir * (1.0 / line_len);
+    let ext_start = line_start - unit * reach;
+    let ext_end = line_end + unit * reach;
+    let t_eps = tol / line_len;
+    let (mut before, mut after) = (false, false);
+    for (curve, asp, aep, closed, trim) in boundary_arcs.iter().flatten() {
+        for (p, _) in arc_segment_crossings(
+            curve, *asp, *aep, *closed, *trim, ext_start, ext_end, tol, None,
+        ) {
+            let t = (p - line_start).dot(line_dir) / line_len2;
+            if t <= t_eps {
+                before = true;
+            } else if t >= 1.0 - t_eps {
+                after = true;
+            } else {
+                return false;
+            }
+        }
+    }
+    before && after
+}
+
 /// Clip a 3D line segment to a face's boundary polygon.
 ///
 /// Collects the outer wire vertices as line segments, then finds where
@@ -3128,8 +3197,6 @@ fn clip_line_to_face_boundary(
     line_end: Point3,
     tol: f64,
 ) -> Option<Vec<(Point3, Point3)>> {
-    type BoundaryArc = (EdgeCurve, Point3, Point3, bool, Option<(f64, f64)>);
-
     let face = topo.face(face_id).ok()?;
     let wire = topo.wire(face.outer_wire()).ok()?;
 
@@ -3305,6 +3372,20 @@ fn clip_line_to_face_boundary(
         && face.inner_wires().is_empty()
         && matches!(face.surface(), FaceSurface::Plane { .. });
     if crossings.len() < 2 && !single_crossing_ok {
+        // A curved face's section that crosses the boundary at most at its
+        // own endpoints can still lie in the face — see
+        // `segment_between_boundary_arcs`. It is then a complete in-face
+        // interval on its own.
+        let t_eps = tol / line_len;
+        let only_endpoint_crossings = crossings
+            .iter()
+            .all(|t| t.abs() <= t_eps || (t - 1.0).abs() <= t_eps);
+        if only_endpoint_crossings
+            && !matches!(face.surface(), FaceSurface::Plane { .. })
+            && segment_between_boundary_arcs(&boundary_arcs, line_start, line_end, tol)
+        {
+            return Some(vec![(line_start, line_end)]);
+        }
         return None;
     }
 
