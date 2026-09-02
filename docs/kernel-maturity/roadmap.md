@@ -191,8 +191,8 @@ question), v1-fillet API migration (product decision, owner's).
   `subdivisionDepth`, with shared validation and default/boundary/rejection
   contract tests. Parameter-space budgeting and wider operation-family
   adoption remain under P-Class 2.8.
-- **K-S3 SSI marcher-budget WASM surface — done (2026-09-02, this
-  change):** the existing `march_steps`, `queue_size`, `segments`, and
+- **K-S3 SSI marcher-budget WASM surface — done ([PR #202](https://github.com/esaueng/remus/pull/202),
+  2026-09-02):** the existing `march_steps`, `queue_size`, `segments`, and
   `branches_per_direction` caps are additive optional arguments on direct
   `booleanWithQuality` / `booleanWithCancellation` and matching camelCase
   fields on batch `booleanWithQuality`. Shared bounded-integer validation,

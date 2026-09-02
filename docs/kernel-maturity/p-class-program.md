@@ -333,7 +333,8 @@ booleans expose the existing march, queue, segment, and branch-exploration
 caps. Parameter-space tolerance plus wider operation-family adoption remain
 ([PR #138](https://github.com/esaueng/remus/pull/138) +
 [PR #147](https://github.com/esaueng/remus/pull/147) +
-[PR #160](https://github.com/esaueng/remus/pull/160) + this change).
+[PR #160](https://github.com/esaueng/remus/pull/160) +
+[PR #202](https://github.com/esaueng/remus/pull/202)).
 
 `crates/math/src/context.rs` · `crates/algo/src/pave_filler/` ·
 `crates/math/src/nurbs/intersection/` · `crates/wasm/src/bindings/`
