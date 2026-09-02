@@ -1,9 +1,9 @@
 # RFC 0002: Coedge architecture
 
-Status: accepted design; Stages 1–3 and the topology-owned atomic mutation gate
-are landed. P-Class Issue 2.0e implements the physical Loop/Coedge authority
-flip described here, and Issue 2.0f maps STEP pcurves to those physical uses.
-The final integration/compatibility-facade zero gate remains Issue 2.0g.
+Status: accepted and implemented through P-Class Issue 2.0g. Stages 1–3,
+topology-owned atomic mutation, physical Loop/Coedge authority, deterministic
+STEP per-use exchange, and the integration/zero gate are landed or carried by
+the closing 2.0g change.
 Characterization anchors: `crates/topology/src/pcurve.rs`, module
 `seam_characterization` — the flipped tests pin the landed per-use behavior
 preserved by the physical storage move.
@@ -435,9 +435,14 @@ Issue 2.0 lands in seven independently reviewable stages:
    surface frames and periodic winding, and rolls back the complete import on
    malformed counts or endpoint mismatches. The writer emits one positioned
    pcurve per coedge in loop order and refuses inconsistent winding metadata.
-7. **2.0g — integration and zero gate:** require zero production readers,
-   run the boolean/corpus/WASM/rollback suites, remove obsolete facades, and
-   update capability and stability evidence.
+7. **2.0g — integration and zero gate:** require zero production parameter-
+   domain readers, run the boolean/corpus/WASM/rollback suites, add whole-
+   topology Loop/Coedge ownership and seam-completeness diagnostics, deprecate
+   obsolete direct wire-mutation facades, and update capability/stability
+   evidence. The read-only wire facade remains a compatibility view: the
+   measured repository still has 865 syntactic uses across 118 non-topology
+   source files, so its separate no-consumer plus one-release deletion gate is
+   not met and 2.0g does not disguise a breaking removal as cleanup.
 
 The first algorithm-reader continuation after the strict-domain foundation
 migrates 18 stored `Edge` and already-carried section-domain reads. The checked
@@ -480,6 +485,11 @@ allocation operation, and validation refuses an unpromoted face. Enforcement:
 - The adapter module carries a tracking comment and a deletion gate: the
   facade is removed when `rg` finds no `outer_wire()` consumers outside
   `remus-topology` and the deprecation has been through one release.
+- Direct `Face::set_outer_wire` and `Face::inner_wires_mut` are deprecated in
+  2.0g; the ratchet already requires zero production calls. Sanctioned callers
+  use `Topology::replace_boundary_wire` or
+  `Topology::set_face_boundary_wires`, which update physical authority in the
+  same commit.
 
 ## Serialization
 
@@ -519,13 +529,19 @@ Structural checks with stable codes now in the diagnostic registry:
 | Loop not connected under orientations | `loop_not_connected` | `invalid_topology` |
 | Loop/wire compatibility divergence | `loop_wire_mismatch` | `internal` |
 | `(edge, face)` p-curve access on a seam (Stage 2+) | `seam_pcurve_ambiguous` | `invalid_topology` |
+| Live Loop/Coedge with zero or several owners | `loop_ownership_invalid` / `coedge_ownership_invalid` | `invalid_topology` |
+| Duplicate oriented use or stale compatibility index | `boundary_use_ambiguous` / `coedge_index_mismatch` | `invalid_topology` / `internal` |
+| Only part of a repeated seam carries pcurves | `seam_pcurve_incomplete` | `invalid_topology` |
+| Periodic winding without a pcurve branch | `coedge_winding_without_pcurve` | `invalid_topology` |
 
-The 2.0g integration gate adds whole-model diagnostics for dangling coedge
-references and required seam branches. Today direct coedge access already
-fails through the existing typed entity-not-found diagnostics, while absence
-of a pcurve remains valid for planar uses and for capabilities that have not
-yet populated surface-boundary geometry; the kernel does not mislabel that
-absence as a seam defect.
+The 2.0g integration gate's `validate_boundary_authority` walks every live
+face, Loop, and Coedge. It proves synchronized compatibility wires, connected
+loops, exactly-one ownership, resolvable edges and index entries, and complete
+seam metadata. Direct stale references retain the existing typed entity-not-
+found diagnostics. A repeated seam with zero pcurves remains valid for planar
+uses and capabilities that have not populated surface-boundary geometry; once
+one branch is stored, every branch is required. The kernel therefore catches
+partial authority without mislabeling honest absence as proof or defect.
 
 ## Consequences
 
