@@ -1745,6 +1745,57 @@ pub fn exact_sphere_cylinder(
     Ok(Some(circles))
 }
 
+/// Exact transversal sphere-sphere intersection.
+///
+/// Two distinct spheres meet in the radical plane perpendicular to the line
+/// between their centres.  A proper crossing is therefore an exact circle;
+/// separated or strictly-contained spheres have no section.  Coincident and
+/// tangential configurations return `None` so callers can route those contact
+/// classes through their dedicated same-domain/tangency handling instead of
+/// pretending that a zero-radius circle is a section curve.
+///
+/// # Errors
+///
+/// Returns [`MathError`] if the radical-plane circle cannot be constructed.
+pub fn exact_sphere_sphere(
+    s1: &SphericalSurface,
+    s2: &SphericalSurface,
+) -> Result<Option<Vec<ExactIntersectionCurve>>, MathError> {
+    let c1 = s1.center();
+    let c2 = s2.center();
+    let r1 = s1.radius();
+    let r2 = s2.radius();
+    let delta = c2 - c1;
+    let distance = delta.length();
+    let scale = r1.max(r2).max(distance);
+    let linear_tol = scale * 1e-10;
+
+    if distance <= linear_tol {
+        return if (r1 - r2).abs() <= linear_tol {
+            Ok(None)
+        } else {
+            Ok(Some(Vec::new()))
+        };
+    }
+
+    let radius_sum = r1 + r2;
+    let radius_difference = (r1 - r2).abs();
+    if distance > radius_sum + linear_tol || distance < radius_difference - linear_tol {
+        return Ok(Some(Vec::new()));
+    }
+
+    let axis = delta.normalize()?;
+    let plane_offset = (distance * distance + (r1 - r2) * (r1 + r2)) / (2.0 * distance);
+    let circle_radius_sq = (r1 - plane_offset) * (r1 + plane_offset);
+    if circle_radius_sq <= linear_tol * scale {
+        return Ok(None);
+    }
+
+    let center = c1 + axis * plane_offset;
+    let circle = Circle3D::new(center, axis, circle_radius_sq.sqrt())?;
+    Ok(Some(vec![ExactIntersectionCurve::Circle(circle)]))
+}
+
 /// Algebraic sphere-cylinder intersection (NURBS form for the general bounded
 /// path). Delegates to [`exact_sphere_cylinder`] and samples each exact circle
 /// into an interpolated NURBS `IntersectionCurve`. phase FF prefers the exact
@@ -3328,6 +3379,60 @@ mod tests {
             exact_sphere_cylinder(&sphere, &cyl).unwrap().is_none(),
             "non-coaxial sphere/cylinder defers to the marcher"
         );
+    }
+
+    #[test]
+    fn exact_sphere_sphere_returns_radical_plane_circle() {
+        let s1 = SphericalSurface::new(Point3::new(-2.0, 1.0, 3.0), 5.0).unwrap();
+        let s2 = SphericalSurface::new(Point3::new(2.0, 4.0, 3.0), 4.0).unwrap();
+        let curves = exact_sphere_sphere(&s1, &s2)
+            .unwrap()
+            .expect("distinct transversal spheres have an exact arm");
+        assert_eq!(curves.len(), 1);
+        assert!(
+            matches!(&curves[0], ExactIntersectionCurve::Circle(_)),
+            "expected an exact circle"
+        );
+        let ExactIntersectionCurve::Circle(circle) = &curves[0] else {
+            return;
+        };
+
+        // d=5, r1=5, r2=4: radical plane is 17/5 from c1 along
+        // (4/5, 3/5, 0), and the section radius is 4*sqrt(21)/5.
+        assert!((circle.center().x() - 18.0 / 25.0).abs() < 1e-12);
+        assert!((circle.center().y() - 76.0 / 25.0).abs() < 1e-12);
+        assert!((circle.center().z() - 3.0).abs() < 1e-12);
+        assert!((circle.radius() - 4.0 * 21.0_f64.sqrt() / 5.0).abs() < 1e-12);
+        assert!(circle.normal().dot(Vec3::new(0.8, 0.6, 0.0)) > 1.0 - 1e-12);
+
+        for i in 0..8 {
+            let t = std::f64::consts::TAU * f64::from(i) / 8.0;
+            let point = circle.evaluate(t);
+            assert!(((point - s1.center()).length() - s1.radius()).abs() < 1e-10);
+            assert!(((point - s2.center()).length() - s2.radius()).abs() < 1e-10);
+        }
+    }
+
+    #[test]
+    fn exact_sphere_sphere_classifies_non_curve_cases() {
+        let unit = SphericalSurface::new(Point3::new(0.0, 0.0, 0.0), 1.0).unwrap();
+        let coincident = SphericalSurface::new(Point3::new(0.0, 0.0, 0.0), 1.0).unwrap();
+        let concentric_inner = SphericalSurface::new(Point3::new(0.0, 0.0, 0.0), 0.5).unwrap();
+        let separated = SphericalSurface::new(Point3::new(3.0, 0.0, 0.0), 1.0).unwrap();
+        let tangent = SphericalSurface::new(Point3::new(2.0, 0.0, 0.0), 1.0).unwrap();
+
+        assert!(exact_sphere_sphere(&unit, &coincident).unwrap().is_none());
+        assert!(
+            exact_sphere_sphere(&unit, &concentric_inner)
+                .unwrap()
+                .is_some_and(|curves| curves.is_empty())
+        );
+        assert!(
+            exact_sphere_sphere(&unit, &separated)
+                .unwrap()
+                .is_some_and(|curves| curves.is_empty())
+        );
+        assert!(exact_sphere_sphere(&unit, &tangent).unwrap().is_none());
     }
 
     // ── Steinmetz: equal-radius perpendicular cylinders ──────────────────
