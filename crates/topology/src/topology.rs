@@ -265,7 +265,11 @@ impl Topology {
                 body_class: body_class.as_str(),
             });
         }
-        self.wire_mut(wire)?.set_body_class(body_class);
+        let stored = self
+            .wires
+            .get_mut(wire)
+            .ok_or(TopologyError::WireNotFound(wire))?;
+        stored.set_body_class(body_class);
         Ok(())
     }
 
