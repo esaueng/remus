@@ -112,6 +112,7 @@ fn rewrite_wire(
     topo.add_wire(Wire::new(edges, old.is_closed()).unwrap())
 }
 
+#[allow(deprecated)]
 fn rewrite_solid_edge(
     topo: &mut Topology,
     solid: SolidId,

@@ -236,6 +236,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn wire_mutation_after_derivation_is_flagged_as_mismatch() {
         // Stage 1 invariant: wires are authoritative; a stale derivation is
         // a typed validation error, never a tolerated state.

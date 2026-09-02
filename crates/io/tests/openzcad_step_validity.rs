@@ -19,6 +19,7 @@ use remus_topology::Topology;
 use remus_topology::explorer::solid_faces;
 use remus_topology::pcurve::PCurve;
 use remus_topology::solid::SolidId;
+use remus_topology::validation::validate_boundary_authority;
 use remus_topology::validation::validate_shell_closed;
 
 const BORED_PLATE: &str = include_str!("data/openzcad_a_export_bored_plate.step");
@@ -117,10 +118,20 @@ fn openzcad_analytic_fillet_plate_imports_as_one_valid_analytic_solid() {
         48,
         "fixture carries 48 positioned PCURVEs"
     );
+    let imported_boundary =
+        validate_boundary_authority(&topo).expect("imported whole-topology authority");
+    assert_eq!(imported_boundary.faces, topo.num_faces());
+    assert_eq!(imported_boundary.loops, topo.num_loops());
+    assert_eq!(imported_boundary.coedges, topo.num_coedges());
     let first = write_step(&topo, &[solid]).expect("write pcurve-bearing STEP");
     assert_eq!(first.matches("PCURVE(").count(), 48);
     let (round_topo, round_solid) = import_one(&first);
     assert_eq!(round_topo.num_pcurves(), 48);
+    let round_boundary =
+        validate_boundary_authority(&round_topo).expect("round-trip whole-topology authority");
+    assert_eq!(round_boundary.faces, round_topo.num_faces());
+    assert_eq!(round_boundary.loops, round_topo.num_loops());
+    assert_eq!(round_boundary.coedges, round_topo.num_coedges());
     let second = write_step(&round_topo, &[round_solid]).expect("write second STEP");
     assert_eq!(second, first, "write/read/write must be deterministic");
 

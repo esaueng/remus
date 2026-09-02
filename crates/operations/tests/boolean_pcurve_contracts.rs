@@ -18,8 +18,8 @@ use remus_topology::face::{FaceId, FaceSurface};
 use remus_topology::pcurve::PCurve;
 use remus_topology::solid::SolidId;
 use remus_topology::validation::{
-    CurveUseValidationError, validate_same_parameter_strict, validate_same_range_strict,
-    validate_solid_pcurve_contracts,
+    CurveUseValidationError, validate_boundary_authority, validate_same_parameter_strict,
+    validate_same_range_strict, validate_solid_pcurve_contracts,
 };
 
 fn cylinder_seam(topo: &Topology, solid: SolidId) -> (EdgeId, FaceId, f64, f64, f64) {
@@ -121,6 +121,12 @@ fn boolean_output_runs_non_vacuous_oriented_same_parameter_and_same_range_contra
     assert_eq!(summary.boundary_uses, 6);
     assert_eq!(summary.stored_pcurves, 2, "gate must not pass vacuously");
     assert_eq!(summary.validated_uses, 2, "both seam branches are required");
+    let boundary = validate_boundary_authority(&topo).expect("whole-topology boundary authority");
+    assert_eq!(boundary.faces, topo.num_faces());
+    assert_eq!(boundary.loops, topo.num_loops());
+    assert_eq!(boundary.coedges, topo.num_coedges());
+    assert_eq!(boundary.seam_edges, 2, "input and result cylinder seams");
+    assert_eq!(boundary.stored_seam_branches, 4);
 
     let faces = solid_faces(&topo, result).expect("result faces");
     let plane_count = faces
