@@ -15,7 +15,16 @@ log.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+criterion.workspace = true
 remus-topology = {workspace = true, features = ["test-utils"]}
+
+[features]
+bench-internals = []
+
+[[bench]]
+harness = false
+name = "walker_steps"
+required-features = ["bench-internals"]
 
 [lints]
 workspace = true

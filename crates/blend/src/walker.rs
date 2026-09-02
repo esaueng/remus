@@ -18,6 +18,88 @@ use crate::blend_func::{BlendContext, BlendFunction, BlendParams};
 use crate::section::CircSection;
 use crate::spine::Spine;
 
+/// Run the stable perpendicular-plane walker fixture repeatedly.
+///
+/// This is exposed only by the `bench-internals` feature so the Criterion
+/// suite can measure actual continuation steps without making the walker's
+/// implementation types part of the normal public API.
+#[cfg(feature = "bench-internals")]
+#[doc(hidden)]
+pub fn benchmark_plane_pair_walk(repetitions: usize) -> Result<usize, BlendError> {
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::vertex::Vertex;
+
+    struct BenchPlane {
+        origin: Point3,
+        u_dir: Vec3,
+        v_dir: Vec3,
+        normal: Vec3,
+    }
+
+    impl ParametricSurface for BenchPlane {
+        fn evaluate(&self, u: f64, v: f64) -> Point3 {
+            self.origin + self.u_dir * u + self.v_dir * v
+        }
+
+        fn normal(&self, _u: f64, _v: f64) -> Vec3 {
+            self.normal
+        }
+
+        fn project_point(&self, point: Point3) -> (f64, f64) {
+            let displacement = point - self.origin;
+            (displacement.dot(self.u_dir), displacement.dot(self.v_dir))
+        }
+
+        fn partial_u(&self, _u: f64, _v: f64) -> Vec3 {
+            self.u_dir
+        }
+
+        fn partial_v(&self, _u: f64, _v: f64) -> Vec3 {
+            self.v_dir
+        }
+    }
+
+    let plane_xy = BenchPlane {
+        origin: Point3::new(0.0, 0.0, 0.0),
+        u_dir: Vec3::new(1.0, 0.0, 0.0),
+        v_dir: Vec3::new(0.0, 1.0, 0.0),
+        normal: Vec3::new(0.0, 0.0, 1.0),
+    };
+    let plane_yz = BenchPlane {
+        origin: Point3::new(0.0, 0.0, 0.0),
+        u_dir: Vec3::new(0.0, 1.0, 0.0),
+        v_dir: Vec3::new(0.0, 0.0, 1.0),
+        normal: Vec3::new(1.0, 0.0, 0.0),
+    };
+
+    let mut topology = Topology::new();
+    let start_vertex = topology.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
+    let end_vertex = topology.add_vertex(Vertex::new(Point3::new(0.0, 10.0, 0.0), 1e-7));
+    let edge = topology.add_edge(Edge::new(start_vertex, end_vertex, EdgeCurve::Line));
+    let spine = Spine::from_single_edge(&topology, edge)?;
+    let blend = crate::blend_func::ConstRadBlend { radius: 1.0 };
+    let walker = Walker::new(
+        &blend,
+        &plane_xy,
+        &plane_yz,
+        &spine,
+        &topology,
+        WalkerConfig::default(),
+    );
+    let start_params = walker.find_start(0.0)?;
+
+    let mut sections = 0_usize;
+    for _ in 0..repetitions {
+        sections = sections.saturating_add(
+            walker
+                .walk(start_params, 0.0, spine.length())?
+                .sections
+                .len(),
+        );
+    }
+    Ok(sections)
+}
+
 // ──────────────────────────── 4×4 linear solver ────────────────────────────
 
 /// Solve a 4×4 linear system `Ax = b` using Gaussian elimination with partial
