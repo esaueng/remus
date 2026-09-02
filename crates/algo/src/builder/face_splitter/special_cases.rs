@@ -256,16 +256,76 @@ fn split_noseam_by_arrangement(
         }]
     };
 
-    // Need at least two arcs to interleave; one arc is handled by the cap path.
-    if open_sections.len() < 2 {
-        return Ok(unsplit());
-    }
-
     // Reconstruct the seam as its exact circle and split it at the crossings,
     // so the seam arcs share endpoints EXACTLY with the open arcs.
     let Some(seam_arcs) = build_seam_arcs(surface, boundary_edges, open_sections, tol)? else {
         return Ok(unsplit());
     };
+
+    // A transverse sphere-sphere circle is split at the hemisphere seam into
+    // one open chain. Its two complementary seam arcs close exactly two
+    // patches, both of which must survive for the boolean classifier. The
+    // older box-sphere collar path below deliberately retains only the one
+    // winding region inside the box; applying that policy here discards half
+    // of every source sphere before classification.
+    if closed_sections.is_empty()
+        && seam_arcs.len() == 2
+        && let Some(chain) = chain_open_path(open_sections.to_vec(), tol * 100.0)
+    {
+        let chain_start = chain[0].start_3d;
+        let chain_end = chain[chain.len() - 1].end_3d;
+        let direct = |edge: &OrientedPCurveEdge, start: Point3, end: Point3| {
+            ((edge.start_3d - start).length() < tol && (edge.end_3d - end).length() < tol)
+                .then(|| edge.clone())
+        };
+        // `build_seam_arcs` follows the source face boundary.  Choose the
+        // complementary arc that already closes each chain direction instead
+        // of reversing an arbitrary indexed arc: reversing both seam arcs
+        // makes adjacent source hemispheres agree along their shared equator.
+        let first_seam = seam_arcs
+            .iter()
+            .find_map(|edge| direct(edge, chain_end, chain_start));
+        let second_seam = seam_arcs
+            .iter()
+            .find_map(|edge| direct(edge, chain_start, chain_end));
+        if let (Some(first_seam), Some(second_seam)) = (first_seam, second_seam) {
+            let mut first = chain.clone();
+            first.push(first_seam);
+            let mut second = reverse_loop(&chain);
+            second.push(second_seam);
+            let Some(parent_normal) = sphere_boundary_normal(boundary_edges) else {
+                return Ok(unsplit());
+            };
+            return Ok([first, second]
+                .into_iter()
+                .map(|region| {
+                    let region = if sphere_loop_projected_area(&region, parent_normal)
+                        .is_some_and(|area| area < 0.0)
+                    {
+                        reverse_loop(&region)
+                    } else {
+                        region
+                    };
+                    SplitSubFace {
+                        surface: surface.clone(),
+                        precomputed_interior: sphere_loop_interior(surface, &region),
+                        outer_wire: region,
+                        inner_wires: Vec::new(),
+                        reversed,
+                        parent: face_id,
+                        rank,
+                    }
+                })
+                .collect());
+        }
+    }
+
+    // The general collar arrangement below needs at least two disjoint arcs
+    // to interleave. A lone arc has already had the opportunity to take the
+    // exact two-patch route above.
+    if open_sections.len() < 2 {
+        return Ok(unsplit());
+    }
 
     // Half-edge soup: every seam arc and every open arc in both orientations,
     // so the angular traversal can bound a region from either side.
@@ -401,22 +461,15 @@ fn build_seam_arcs(
     if verts.len() < 3 {
         return Ok(None);
     }
-    let mut nrm = Vec3::new(0.0, 0.0, 0.0);
+    let Some(plane_n) = sphere_boundary_normal(boundary_edges) else {
+        return Ok(None);
+    };
     let mut cen = Vec3::new(0.0, 0.0, 0.0);
     let n = verts.len();
     for i in 0..n {
         let a = verts[i];
-        let b = verts[(i + 1) % n];
-        nrm += Vec3::new(
-            (a.y() - b.y()) * (a.z() + b.z()),
-            (a.z() - b.z()) * (a.x() + b.x()),
-            (a.x() - b.x()) * (a.y() + b.y()),
-        );
         cen += Vec3::new(a.x(), a.y(), a.z());
     }
-    let Ok(plane_n) = nrm.normalize() else {
-        return Ok(None);
-    };
     #[allow(clippy::cast_precision_loss)]
     let inv_n = 1.0 / n as f64;
     let plane_pt = Point3::new(cen.x() * inv_n, cen.y() * inv_n, cen.z() * inv_n);
@@ -434,9 +487,21 @@ fn build_seam_arcs(
         return Ok(None);
     };
 
-    // Crossing points = the open arcs' endpoints (they lie on the seam circle).
+    // Crossing points are the open chains' endpoints that actually lie on the
+    // seam circle. A single geometric section is deliberately subdivided into
+    // arcs shorter than PI by phase FF; its internal junctions lie on the
+    // sphere but not on this seam. Treating those junctions as seam crossings
+    // projects off-seam points onto arbitrary angles and corrupts the
+    // arrangement (the two-piece small circle from sphere×sphere is the
+    // minimal witness).
     let mut unique: Vec<Point3> = Vec::new();
     for p in open_sections.iter().flat_map(|a| [a.start_3d, a.end_3d]) {
+        let radial = p - seam_center;
+        let axial = radial.dot(plane_n).abs();
+        let radius_error = (radial.length() - seam_radius).abs();
+        if axial > tol * 100.0 || radius_error > tol * 100.0 {
+            continue;
+        }
         if !unique.iter().any(|q| (*q - p).length() < tol * 100.0) {
             unique.push(p);
         }
@@ -498,6 +563,70 @@ fn build_seam_arcs(
         return Ok(None);
     }
     Ok(Some(arcs))
+}
+
+/// Normal of the source hemisphere's equatorial boundary, following its wire
+/// traversal.  For a correctly oriented sphere face this points into the
+/// represented hemisphere and defines an orientation-preserving orthographic
+/// chart for every sub-patch of that face.
+fn sphere_boundary_normal(edges: &[OrientedPCurveEdge]) -> Option<remus_math::vec::Vec3> {
+    use remus_math::vec::Vec3;
+
+    if edges.len() < 3 {
+        return None;
+    }
+    let mut normal = Vec3::new(0.0, 0.0, 0.0);
+    for index in 0..edges.len() {
+        let a = edges[index].start_3d;
+        let b = edges[(index + 1) % edges.len()].start_3d;
+        normal += Vec3::new(
+            (a.y() - b.y()) * (a.z() + b.z()),
+            (a.z() - b.z()) * (a.x() + b.x()),
+            (a.x() - b.x()) * (a.y() + b.y()),
+        );
+    }
+    normal.normalize().ok()
+}
+
+/// Twice the signed area of a circle-bounded loop after orthographic
+/// projection onto a plane with `normal`.
+///
+/// The line integral is analytic, so the sign is independent of how phase FF
+/// subdivided the sphere/sphere circle.  A positive result is the sphere's
+/// outward boundary winding in the source hemisphere chart.
+fn sphere_loop_projected_area(
+    edges: &[OrientedPCurveEdge],
+    normal: remus_math::vec::Vec3,
+) -> Option<f64> {
+    use remus_math::vec::{Point3, Vec3};
+
+    let origin = Point3::new(0.0, 0.0, 0.0);
+    let mut integral = Vec3::new(0.0, 0.0, 0.0);
+    for edge in edges {
+        match &edge.curve_3d {
+            EdgeCurve::Circle(circle) => {
+                let (start, end) = edge.traversal_domain();
+                let zero_span =
+                    (end - start).abs() <= f64::EPSILON * start.abs().max(end.abs()).max(1.0);
+                if !start.is_finite() || !end.is_finite() || zero_span {
+                    return None;
+                }
+                let (start_sin, start_cos) = start.sin_cos();
+                let (end_sin, end_cos) = end.sin_cos();
+                let u = circle.u_axis() * circle.radius();
+                let v = circle.v_axis() * circle.radius();
+                let endpoint_delta = u * (end_cos - start_cos) + v * (end_sin - start_sin);
+                integral +=
+                    (circle.center() - origin).cross(endpoint_delta) + u.cross(v) * (end - start);
+            }
+            EdgeCurve::Line => {
+                integral += (edge.start_3d - origin).cross(edge.end_3d - origin);
+            }
+            _ => return None,
+        }
+    }
+    let area = integral.dot(normal);
+    area.is_finite().then_some(area)
 }
 
 /// Trace the faces of a planar half-edge arrangement in UV.
@@ -678,6 +807,101 @@ fn reverse_loop(loop_edges: &[OrientedPCurveEdge]) -> Vec<OrientedPCurveEdge> {
             source_topo_edge: None,
         })
         .collect()
+}
+
+/// Orient one transient edge from `start` to `end` without changing its
+/// carried curve interval.
+fn orient_edge_between(
+    edge: &OrientedPCurveEdge,
+    start: Point3,
+    end: Point3,
+    close_tol: f64,
+) -> Option<OrientedPCurveEdge> {
+    let direct =
+        (edge.start_3d - start).length() < close_tol && (edge.end_3d - end).length() < close_tol;
+    if direct {
+        return Some(edge.clone());
+    }
+    let reverse =
+        (edge.end_3d - start).length() < close_tol && (edge.start_3d - end).length() < close_tol;
+    reverse.then(|| OrientedPCurveEdge {
+        curve_3d: edge.curve_3d.clone(),
+        trim: edge.trim,
+        pcurve: edge.pcurve.clone(),
+        start_uv: edge.end_uv,
+        end_uv: edge.start_uv,
+        start_3d: edge.end_3d,
+        end_3d: edge.start_3d,
+        forward: !edge.forward,
+        source_edge_idx: edge.source_edge_idx,
+        pave_block_id: edge.pave_block_id,
+        source_topo_edge: None,
+    })
+}
+
+/// Chain an unbranched set of transient edges into one open path.
+fn chain_open_path(
+    mut pool: Vec<OrientedPCurveEdge>,
+    close_tol: f64,
+) -> Option<Vec<OrientedPCurveEdge>> {
+    if pool.is_empty() {
+        return None;
+    }
+
+    let mut vertices: Vec<(Point3, usize)> = Vec::new();
+    for edge in &pool {
+        for point in [edge.start_3d, edge.end_3d] {
+            if let Some((_, degree)) = vertices
+                .iter_mut()
+                .find(|(existing, _)| (*existing - point).length() < close_tol)
+            {
+                *degree += 1;
+            } else {
+                vertices.push((point, 1));
+            }
+        }
+    }
+    if vertices.iter().filter(|(_, degree)| *degree == 1).count() != 2
+        || vertices.iter().any(|(_, degree)| *degree > 2)
+    {
+        return None;
+    }
+    let start = vertices.iter().find(|(_, degree)| *degree == 1)?.0;
+    let first_index = pool.iter().position(|edge| {
+        (edge.start_3d - start).length() < close_tol || (edge.end_3d - start).length() < close_tol
+    })?;
+    let first = pool.remove(first_index);
+    let first_end = if (first.start_3d - start).length() < close_tol {
+        first.end_3d
+    } else {
+        first.start_3d
+    };
+    let mut chain = vec![orient_edge_between(&first, start, first_end, close_tol)?];
+
+    while !pool.is_empty() {
+        let current = chain.last()?.end_3d;
+        let candidates: Vec<_> = pool
+            .iter()
+            .enumerate()
+            .filter(|(_, edge)| {
+                (edge.start_3d - current).length() < close_tol
+                    || (edge.end_3d - current).length() < close_tol
+            })
+            .map(|(index, _)| index)
+            .collect();
+        if candidates.len() != 1 {
+            return None;
+        }
+        let next = pool.remove(candidates[0]);
+        let next_end = if (next.start_3d - current).length() < close_tol {
+            next.end_3d
+        } else {
+            next.start_3d
+        };
+        chain.push(orient_edge_between(&next, current, next_end, close_tol)?);
+    }
+
+    ((chain.last()?.end_3d - start).length() >= close_tol).then_some(chain)
 }
 
 /// A 3D interior sample on the in-solid collar patch, for classification.
