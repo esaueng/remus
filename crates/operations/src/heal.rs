@@ -1409,6 +1409,50 @@ fn unify_faces_with_history_impl(
         let group_set: HashSet<usize> = group_face_ids.iter().map(|f| f.index()).collect();
         let mut internal_edges: HashSet<usize> = HashSet::new();
 
+        // The seam meridian of a periodic group surface, as the `u` of a
+        // seam Line edge — one a face in the group uses twice — falling back
+        // to the surface frame's own `u = 0`. A boolean can split a lateral
+        // AT its seam: the two pieces then share the seam edge like any
+        // internal edge, but dropping it leaves the merged face with a
+        // seam that runs only part of the height and the far rim demoted to
+        // an inner wire; the shell still validates, and the periodic
+        // tessellator produces an open mesh from it (a boss standing on a
+        // shaft's base, at 90° and 180° round the shaft).
+        let seam_u_of = |p: Point3| -> Option<f64> {
+            let face = topo.face(group_face_ids[0]).ok()?;
+            match face.surface() {
+                FaceSurface::Cylinder(c) => Some(c.project_point(p).0),
+                FaceSurface::Cone(c) => Some(c.project_point(p).0),
+                _ => None,
+            }
+        };
+        let line_meridian = |edge_idx: usize| -> Option<f64> {
+            let eid = topo.edge_id_from_index(edge_idx)?;
+            let edge = topo.edge(eid).ok()?;
+            if !matches!(edge.curve(), EdgeCurve::Line) {
+                return None;
+            }
+            let s = topo.vertex(edge.start()).ok()?.point();
+            let e = topo.vertex(edge.end()).ok()?.point();
+            let (us, ue) = (seam_u_of(s)?, seam_u_of(e)?);
+            let du = (us - ue).rem_euclid(std::f64::consts::TAU);
+            (du.min(std::f64::consts::TAU - du) < 1e-6).then_some(us)
+        };
+        let seam_u: Option<f64> = edge_face_map
+            .iter()
+            .filter(|(_, faces)| {
+                faces.len() == 2 && faces[0] == faces[1] && group_set.contains(&faces[0].index())
+            })
+            .find_map(|(edge_idx, _)| line_meridian(*edge_idx))
+            .or_else(|| seam_u_of(Point3::new(0.0, 0.0, 0.0)).map(|_| 0.0));
+        let on_seam = |edge_idx: usize| -> bool {
+            let (Some(seam), Some(u)) = (seam_u, line_meridian(edge_idx)) else {
+                return false;
+            };
+            let du = (u - seam).rem_euclid(std::f64::consts::TAU);
+            du.min(std::f64::consts::TAU - du) < 1e-6
+        };
+
         for (edge_idx, faces) in &edge_face_map {
             // Two face-uses from the SAME face is a seam, not a shared edge:
             // `edge_to_face_map` records a seam twice because it appears twice
@@ -1420,6 +1464,7 @@ fn unify_faces_with_history_impl(
                 && faces[0] != faces[1]
                 && group_set.contains(&faces[0].index())
                 && group_set.contains(&faces[1].index())
+                && !on_seam(*edge_idx)
             {
                 internal_edges.insert(*edge_idx);
             }
@@ -1946,6 +1991,23 @@ fn order_edges_into_loops(
         start_map.entry(info.start_pos).or_default().push(i);
     }
 
+    // Edges the boundary uses in both directions: a periodic face's seam,
+    // which one loop must walk up and back down.
+    let mut orientations: HashMap<usize, (bool, bool)> = HashMap::new();
+    for info in &infos {
+        let slot = orientations.entry(info.oe.edge().index()).or_default();
+        if info.oe.is_forward() {
+            slot.0 = true;
+        } else {
+            slot.1 = true;
+        }
+    }
+    let doubled = |idx: usize| -> bool {
+        orientations
+            .get(&infos[idx].oe.edge().index())
+            .is_some_and(|&(f, r)| f && r)
+    };
+
     let mut used = vec![false; edges.len()];
     let mut loops: Vec<Vec<OrientedEdge>> = Vec::new();
 
@@ -1956,6 +2018,7 @@ fn order_edges_into_loops(
         used[start_idx] = true;
         let chain_start = infos[start_idx].start_pos;
         let mut current_end = infos[start_idx].end_pos;
+        let mut last_edge = infos[start_idx].oe.edge();
 
         let max_steps = edges.len();
         for _ in 1..=max_steps {
@@ -1966,19 +2029,29 @@ fn order_edges_into_loops(
                 Some(c) => c,
                 None => break, // broken chain
             };
-            let mut found = false;
-            for &idx in candidates {
-                if !used[idx] {
-                    used[idx] = true;
-                    chain.push(infos[idx].oe);
-                    current_end = infos[idx].end_pos;
-                    found = true;
-                    break;
-                }
-            }
-            if !found {
+            // At a vertex where a seam meets other edges, the walk must not
+            // double straight back along the edge it arrived on while
+            // another edge leaves — a merged wall whose seam a boolean had
+            // split at the notch's ceiling was walked up one seam piece and
+            // back down it, leaving the rest of the seam and the far rim as
+            // a bogus inner wire. And leaving a rim vertex, a seam is taken
+            // before the rim so the loop is `rim, seam up, rim, seam down`,
+            // the band shape `make_cylinder` builds.
+            let pick = candidates
+                .iter()
+                .copied()
+                .filter(|&idx| !used[idx])
+                .min_by_key(|&idx| {
+                    let u_turn = infos[idx].oe.edge() == last_edge;
+                    (u_turn, !doubled(idx))
+                });
+            let Some(idx) = pick else {
                 break; // dead end
-            }
+            };
+            used[idx] = true;
+            chain.push(infos[idx].oe);
+            current_end = infos[idx].end_pos;
+            last_edge = infos[idx].oe.edge();
         }
 
         // Only keep the chain if it forms a closed loop.

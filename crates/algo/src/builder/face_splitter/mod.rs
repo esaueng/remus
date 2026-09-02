@@ -3876,6 +3876,38 @@ fn split_cylinder_band_by_arrangement(
         }
         breaks.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         breaks.dedup_by(|a, b| (*a - *b).abs() <= cov);
+        // Keep every ring piece under a half turn. An open circle edge is
+        // read downstream as the SHORTER arc between its endpoints (the
+        // same convention the closed-section splitter honours), so a piece
+        // reconstructed the long way round — the ring severing a band
+        // outside a notch that straddles the seam spans 5.3 rad — flipped
+        // to its complement in exact integration and in tessellation: a
+        // closed, valid shell 35 % light (exact mass 28 550 against a
+        // 44 365 tessellation for a boss standing on the base with its axis
+        // in the seam plane).
+        // Only the rings the rescue draws itself are refined: the frame
+        // rims are the face's own boundary, shared with the cap across
+        // them, and a vertex minted here alone would leave that cap's rim
+        // un-split against it.
+        let interior_level = v > v_bottom + tol && v < v_top - tol;
+        let mut refined: Vec<f64> = Vec::with_capacity(breaks.len() * 2);
+        for w in breaks.windows(2) {
+            refined.push(w[0]);
+            if !interior_level {
+                continue;
+            }
+            let span = w[1] - w[0];
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let n = (span / (std::f64::consts::PI * 0.999)).ceil().max(1.0) as usize;
+            for k in 1..n {
+                #[allow(clippy::cast_precision_loss)]
+                refined.push(w[0] + span * k as f64 / n as f64);
+            }
+        }
+        if let Some(&last) = breaks.last() {
+            refined.push(last);
+        }
+        let breaks = refined;
         for w in breaks.windows(2) {
             let (ua, ub) = (w[0], w[1]);
             if ub - ua <= cov {
@@ -7001,6 +7033,16 @@ fn split_face_2d_impl(
     let use_structural_classification =
         (u_periodic || partial_band_chain_split) && !sections.is_empty();
 
+    // Whether a loop edge is one of the face's boundary edges (either way
+    // round), for the structural classification below.
+    let on_boundary = |e: &OrientedPCurveEdge| -> bool {
+        let close = tol.linear * 10.0;
+        all_edges[..n_boundary_edges].iter().any(|b| {
+            ((b.start_3d - e.start_3d).length() < close && (b.end_3d - e.end_3d).length() < close)
+                || ((b.start_3d - e.end_3d).length() < close
+                    && (b.end_3d - e.start_3d).length() < close)
+        })
+    };
     for wire_loop in loops {
         if use_structural_classification {
             // Structural: a loop containing both Line edges (seam) and
@@ -7011,7 +7053,18 @@ fn split_face_2d_impl(
             let has_nonline = wire_loop
                 .iter()
                 .any(|e| !matches!(e.curve_3d, EdgeCurve::Line));
-            if has_line && has_nonline {
+            // A region loop on a periodic lateral runs along boundary rims
+            // and up and down section verticals. Those verticals are
+            // straight rulings on a cylinder, which the Line test reads,
+            // but curved on a cone met by a cylinder (a boss flush on a
+            // chamfered base): the band beyond the seam then had no Line
+            // edge at all and was filed as a hole of the wedge under the
+            // boss. A loop that mixes boundary edges with section edges is
+            // a region either way; only a loop of sections alone encloses
+            // a hole.
+            let has_boundary = wire_loop.iter().any(&on_boundary);
+            let has_section = wire_loop.iter().any(|e| !on_boundary(e));
+            if (has_line && has_nonline) || (has_boundary && has_section) {
                 outers.push((wire_loop, 1.0)); // area placeholder
             } else {
                 holes.push(wire_loop);
