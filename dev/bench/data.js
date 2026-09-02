@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788327232379,
+  "lastUpdate": 1788328149728,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -6965,6 +6965,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 40295209,
             "range": "± 289832",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3c4f097a27945903ce8dde1c702c3937b1ab8945",
+          "message": "fix(algo): drop plane×band generator sections with no overlap on the plane face (#196)\n\nTwo layers behind #195, the spurious full-height wall split left after\n#192.\n\nPhase FF admitted a `Line` section between a planar face and a\ncylinder/cone on the inflated-AABB test alone and then applied only the\nband's v-window trim; the plane face's own outline was never consulted\nfor mixed pairs (the polygon clip is deliberately reserved for\nplane×plane, because re-anchoring a banded pair's line endpoints\ndisturbed the seam-anchored band splitting). The slab's far end face in\n#190 meets the wall's generator only at z ∈ [-3.2, -1.2], below the\nbottom cap, yet the generator survived and split the wall from z = 0 to\n6 along a line nothing touches, so the cut returned two cylinder faces.\n\nThe polygon is now consulted for one thing: whether the band window\noverlaps the plane face at all. `clip_line_to_face` gives the line's\nin-face fraction range (a hull range on non-convex outlines, so this\ncan only under-drop); when that range and the band window do not\noverlap by more than `tol.linear` of line length the section is\ndropped. Endpoints are never moved, so the band-anchored splitting is\nuntouched; partial overlaps behave exactly as before.\n\nWith the wall back to one face the notched full-revolution cylinder\nfalls through to the generic CDT mesher, which exposed a second defect\nin `tessellate_nonplanar_cdt`: the seam-run fix-up decided the seam was\n\"out of range\" whenever its u exceeded the non-seam boundary's u range\nby more than 1e-6. The seam's corner vertices belong to the seam run,\nso that range ends at the last rim sample BEFORE the seam — here 0.0123\nrad short of it — and the fix-up re-pinned the seam onto that sample's\nu, collapsing the sliver between them into a zero-width polygon edge.\nThe CDT emitted a degenerate triangle in its place and the mesh had a\ntriangle-sized hole at the seam/rim corner at every deflection but the\ncoarsest. The margin is now the largest u gap between consecutive\nnon-seam boundary samples: a genuine seam can overshoot by at most one\nsample, while the slit case the fix-up repairs sits a period away.\n\nThe #192 regression test now asserts one cylinder face and stays\nwatertight at deflections 0.003 and 0.1 through the CDT path.\n\nCloses #195.\n\nCo-authored-by: peter <peter@pop-os.tail7bd9a6.ts.net>\nCo-authored-by: Claude Fable 5.1 <noreply@anthropic.com>",
+          "timestamp": "2026-09-02T01:46:13-04:00",
+          "tree_id": "085f819443b6c69f3d457e2fc5b9bd79d68fa513",
+          "url": "https://github.com/esaueng/remus/commit/3c4f097a27945903ce8dde1c702c3937b1ab8945"
+        },
+        "date": 1788328148810,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1161241,
+            "range": "± 24593",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1257993,
+            "range": "± 26040",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 23918,
+            "range": "± 1323",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 872994,
+            "range": "± 27703",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 35232733,
+            "range": "± 797707",
             "unit": "ns/iter"
           }
         ]
