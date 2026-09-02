@@ -81,9 +81,17 @@ fn check_vertex_edge_pairs(
     // closest-point projection (32 samples + 20 ternary steps per pair).
     // Margin covers both the global linear tolerance and per-vertex tolerance,
     // which is added to `tol.linear` in the fine test below.
-    let mut edge_boxes: Vec<Option<Aabb3>> = Vec::with_capacity(edges.len());
+    let mut edge_data: Vec<(Option<Aabb3>, f64)> = Vec::with_capacity(edges.len());
     for &eid in edges {
-        edge_boxes.push(edge_aabb(topo, eid, tol.linear)?);
+        let tolerance_excess = super::helpers::edge_tolerance_excess(topo, eid, tol.linear)?;
+        edge_data.push((
+            edge_aabb(
+                topo,
+                eid,
+                super::helpers::tolerance_band(tol.linear, [tolerance_excess])?,
+            )?,
+            tolerance_excess,
+        ));
     }
 
     for &vid in vertices {
@@ -91,11 +99,13 @@ fn check_vertex_edge_pairs(
         let vertex = topo.vertex(resolved_vid)?;
         let pos = vertex.point();
         let vtol = vertex.tolerance();
+        let _ = super::helpers::vertex_tolerance_excess(topo, resolved_vid, tol.linear)?;
 
         for (edge_idx, &eid) in edges.iter().enumerate() {
             // Broad-phase reject: the vertex cannot lie on an edge whose
             // (tolerance-expanded by vtol) AABB does not contain it.
-            if let Some(ebox) = &edge_boxes[edge_idx]
+            let (edge_box, edge_tolerance_excess) = &edge_data[edge_idx];
+            if let Some(ebox) = edge_box
                 && !ebox.expanded(vtol).contains_point(pos)
             {
                 continue;
@@ -128,7 +138,8 @@ fn check_vertex_edge_pairs(
                 .evaluate_with_endpoints(param, start_pos, end_pos);
             let dist = (pos - edge_pt).length();
 
-            let combined_tol = vtol + tol.linear;
+            let combined_tol =
+                super::helpers::tolerance_band(tol.linear, [vtol, *edge_tolerance_excess])?;
             if dist <= combined_tol {
                 let pave = Pave::new(resolved_vid, param);
                 if let Some(pb_ids) = arena.edge_pave_blocks.get(&eid) {
@@ -263,5 +274,69 @@ mod tests {
         let pb = arena.pave_blocks.get(pb_id).unwrap();
         assert_eq!(pb.extra_paves.len(), 1);
         assert!((pb.extra_paves[0].parameter - interior_t).abs() < 1e-5);
+    }
+
+    #[test]
+    fn declared_edge_tube_widens_vertex_edge_incidence() {
+        let mut topo = Topology::new();
+        let start = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
+        let end = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
+        let tested = topo.add_vertex(Vertex::new(Point3::new(0.5, 5e-5, 0.0), 1e-7));
+        let edge = topo.add_edge(Edge::with_tolerance(
+            start,
+            end,
+            EdgeCurve::Line,
+            Some(1e-4),
+        ));
+        let mut arena = GfaArena::new();
+        arena.init_edge_pave_block(edge, start, 0.0, end, 1.0);
+
+        check_vertex_edge_pairs(&topo, &[tested], &[edge], Tolerance::default(), &mut arena)
+            .unwrap();
+
+        assert_eq!(arena.interference.ve.len(), 1);
+    }
+
+    #[test]
+    fn vertex_edge_incidence_stays_narrow_without_declared_tube_excess() {
+        let mut topo = Topology::new();
+        let start = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
+        let end = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
+        let tested = topo.add_vertex(Vertex::new(Point3::new(0.5, 5e-5, 0.0), 1e-7));
+        let edge = topo.add_edge(Edge::new(start, end, EdgeCurve::Line));
+        let mut arena = GfaArena::new();
+        arena.init_edge_pave_block(edge, start, 0.0, end, 1.0);
+
+        check_vertex_edge_pairs(&topo, &[tested], &[edge], Tolerance::default(), &mut arena)
+            .unwrap();
+
+        assert!(arena.interference.ve.is_empty());
+    }
+
+    #[test]
+    fn invalid_declared_edge_tolerance_is_refused() {
+        let mut topo = Topology::new();
+        let start = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
+        let end = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
+        let tested = topo.add_vertex(Vertex::new(Point3::new(0.5, 0.0, 0.0), 1e-7));
+        let edge = topo.add_edge(Edge::with_tolerance(
+            start,
+            end,
+            EdgeCurve::Line,
+            Some(f64::NAN),
+        ));
+        let mut arena = GfaArena::new();
+        arena.init_edge_pave_block(edge, start, 0.0, end, 1.0);
+
+        let err =
+            check_vertex_edge_pairs(&topo, &[tested], &[edge], Tolerance::default(), &mut arena)
+                .unwrap_err();
+        assert!(matches!(
+            err,
+            AlgoError::Topology(remus_topology::TopologyError::InvalidToleranceValue {
+                entity: "edge",
+                ..
+            })
+        ));
     }
 }
