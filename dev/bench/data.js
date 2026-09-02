@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788366190043,
+  "lastUpdate": 1788372133317,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -7441,6 +7441,216 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 83184,
             "range": "± 780",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "dea95a751a9620207cbea8cdd019e7abe996753f",
+          "message": "fix: split a cone band, a seam-straddling wall notch, and unify the merged wall (#200)\n\n* fix(algo): split a cone band and a seam-straddling wall notch exactly\n\nA boss standing flush on a chamfered base still left the exact path:\nits wall meets the lower chamfer cone in two rim-to-rim NURBS sections,\nand the cone band came back as one face with the far band as a hole.\nThe periodic-face loop classifier called a loop a region only when it\nmixed Line and non-Line edges — true for straight rulings on a cylinder,\nfalse for curved verticals on a cone — so the band beyond the seam, made\nof rim arcs and NURBS sections, was filed as a hole. A loop that mixes\nboundary edges with section edges is a region either way; only a loop\nof sections alone encloses a hole.\n\nWith the cone split, the shaft wall's notch (two generators from the\nbottom rim up to the boss's top arcs) still assembled into a closed,\nvalid shell 35 % light. The rectilinear arrangement rescue that handles\nthis notch severs the band with a ring at the notch level and emitted\nthe piece outside the notch as ONE arc of 5.3 rad; an open circle edge\nis read downstream as the shorter arc between its endpoints, so exact\nintegration and, on the chamfered shaft, tessellation both took its\ncomplement. The same edge was already making the plain flush\nplacements at 0° and 90° read 28 550 / 31 746 by exact mass against\n44 365 tessellated. The rescue now breaks every ring piece under a half\nturn, the convention the closed-section splitter already keeps.\n\nThe chamfered flush regression test is un-ignored and pinned against a\nclosed form (the disc–disc lens plus the numerically integrated part of\nthe chamfer ring the boss refills), and every volume in the file is now\nalso required to agree between exact mass properties and tessellation.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\nSigned-off-by: Peter <171875562+petergstfsn@users.noreply.github.com>\n(cherry picked from commit a028c285fbb4695be3b64efb00f4b794795178e8)\n\n* fix(operations): unify a wall a boolean split at its seam as one band\n\nA boss standing flush on a shaft's base cuts a notch into the shaft wall\nthat reaches the bottom rim. The fuse hands the wall back in three\npieces — two below the notch's ceiling, split from each other along the\nwall's seam, and the band above. `unify_faces` merges them, and it used\nto:\n\n- drop the seam edge below the ceiling as an internal shared edge (the\n  two lower pieces share it like any other), so the merged face kept a\n  seam running only part of the height; and\n- walk the remaining boundary up one seam piece and straight back down\n  it, leaving the rest of the seam and the top rim as a bogus inner wire.\n\nThat face validated at 90° and 180° round the shaft (the Euler check\ncaught it at 0°) and only the periodic tessellator objected, with an\nopen mesh of 72 boundary edges. OpenZCAD adopted the unified copy on\nvalidation alone and then refused the whole union as open.\n\nA shared edge on the group surface's seam meridian is now kept — the\nmerged face still has to be a strip cut along the seam — and the loop\nwalker never doubles back along the edge it arrived on while another\nedge leaves the vertex, taking a doubled seam edge first when leaving a\nrim vertex so the loop is the band shape `make_cylinder` builds. The\nmerged wall comes back as one face, valid, closed at three deflections,\nwith the exact volume unchanged.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\nSigned-off-by: Peter <171875562+petergstfsn@users.noreply.github.com>\n\n---------\n\nSigned-off-by: Peter <171875562+petergstfsn@users.noreply.github.com>\nCo-authored-by: Claude Fable 5.1 <noreply@anthropic.com>",
+          "timestamp": "2026-09-02T13:55:34-04:00",
+          "tree_id": "07a07daa4d4535716a51e901038ccd47af92f255",
+          "url": "https://github.com/esaueng/remus/commit/dea95a751a9620207cbea8cdd019e7abe996753f"
+        },
+        "date": 1788372132309,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1400095,
+            "range": "± 2040",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1494465,
+            "range": "± 9392",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 26485,
+            "range": "± 666",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 1055081,
+            "range": "± 3778",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 41664351,
+            "range": "± 331333",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 39,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 108,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 65,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 223,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 156,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 839,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 179,
+            "range": "± 9",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 355,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 221,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 535,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 723,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 3519,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 17,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 38,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 63,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 63,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 577561,
+            "range": "± 1875",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 11814776,
+            "range": "± 18885",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 172715,
+            "range": "± 428",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 673354,
+            "range": "± 9987",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 129126,
+            "range": "± 180",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 927615,
+            "range": "± 1682",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 10736973,
+            "range": "± 148007",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 765505,
+            "range": "± 1633",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 1325501,
+            "range": "± 2692",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 84610,
+            "range": "± 649",
             "unit": "ns/iter"
           }
         ]
