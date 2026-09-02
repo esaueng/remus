@@ -13,6 +13,7 @@ use remus_topology::edge::EdgeCurve;
 use remus_topology::face::FaceSurface;
 
 use super::plane_frame::PlaneFrame;
+use crate::error::AlgoError;
 
 /// Number of sample points for pcurve fitting on non-plane surfaces.
 const PCURVE_SAMPLES: usize = 16;
@@ -27,7 +28,11 @@ const PCURVE_SAMPLES: usize = 16;
 /// `wire_pts` is needed for plane faces to establish the `PlaneFrame` origin.
 ///
 /// Returns a `Curve2D` parameterized on \[0, 1\] from start to end.
-#[must_use]
+///
+/// # Errors
+///
+/// Returns [`AlgoError::PcurveProjectionFailed`] when any sampled 3D point
+/// cannot be projected to a finite UV coordinate.
 pub fn compute_pcurve_on_surface(
     curve_3d: &EdgeCurve,
     start: Point3,
@@ -35,7 +40,7 @@ pub fn compute_pcurve_on_surface(
     surface: &FaceSurface,
     wire_pts: &[Point3],
     frame: Option<&PlaneFrame>,
-) -> Curve2D {
+) -> Result<Curve2D, AlgoError> {
     let domain = reconstruct_structural_sampling_domain(curve_3d, start, end);
     compute_pcurve_on_surface_in_domain(curve_3d, start, end, domain, surface, wire_pts, frame)
 }
@@ -67,11 +72,9 @@ pub(super) fn reconstruct_structural_sampling_domain(
 
 /// Compute a pcurve over an explicit authoritative 3D-curve parameter range.
 ///
-/// Internal topology and face-splitter callers use this entry point. The
-/// source-compatible [`compute_pcurve_on_surface`] wrapper is retained only
-/// as the named raw-construction adapter for callers that do not yet carry a
-/// range.
-#[must_use]
+/// Internal topology and face-splitter callers use this entry point.
+/// [`compute_pcurve_on_surface`] remains the named raw-construction adapter
+/// for callers that do not yet carry a range.
 pub(super) fn compute_pcurve_on_surface_in_domain(
     curve_3d: &EdgeCurve,
     start: Point3,
@@ -80,7 +83,7 @@ pub(super) fn compute_pcurve_on_surface_in_domain(
     surface: &FaceSurface,
     wire_pts: &[Point3],
     frame: Option<&PlaneFrame>,
-) -> Curve2D {
+) -> Result<Curve2D, AlgoError> {
     if let FaceSurface::Plane { normal, .. } = surface {
         // For straight edges on planes, the pcurve is a Line2D.
         // For curved edges (Circle, Ellipse, NurbsCurve), fall through to the
@@ -93,10 +96,10 @@ pub(super) fn compute_pcurve_on_surface_in_domain(
                 owned = PlaneFrame::from_plane_face(*normal, wire_pts);
                 &owned
             };
-            let p0 = frame.project(start);
-            let p1 = frame.project(end);
+            let p0 = finite_uv(frame.project(start), surface, "plane_line_start")?;
+            let p1 = finite_uv(frame.project(end), surface, "plane_line_end")?;
             let dir = Vec2::new(p1.x() - p0.x(), p1.y() - p0.y());
-            return Curve2D::Line(make_line2d_safe(p0, dir));
+            return Ok(Curve2D::Line(make_line2d_safe(p0, dir)));
         }
         // Curved edge on plane: sample and project via PlaneFrame below.
     }
@@ -110,18 +113,12 @@ pub(super) fn compute_pcurve_on_surface_in_domain(
             owned = PlaneFrame::from_plane_face(*normal, wire_pts);
             &owned
         };
-        sample_edge_to_uv_via_frame(curve_3d, start, end, domain, f)
+        sample_edge_to_uv_via_frame(curve_3d, start, end, domain, surface, f)?
     } else {
-        sample_edge_to_uv(curve_3d, start, end, domain, surface)
+        sample_edge_to_uv(curve_3d, start, end, domain, surface)?
     };
     if uv_pts.len() < 2 {
-        // Degenerate: just project endpoints.
-        let (u0, v0) = surface.project_point(start).unwrap_or((0.0, 0.0));
-        let (u1, v1) = surface.project_point(end).unwrap_or((1.0, 0.0));
-        let p0 = Point2::new(u0, v0);
-        let p1 = Point2::new(u1, v1);
-        let dir = Vec2::new(p1.x() - p0.x(), p1.y() - p0.y());
-        return Curve2D::Line(make_line2d_safe(p0, dir));
+        return Err(projection_failure(surface, "insufficient_curve_samples"));
     }
 
     // Check collinearity -- if all points are (nearly) on a line in UV,
@@ -141,25 +138,32 @@ pub(super) fn compute_pcurve_on_surface_in_domain(
         // fit to preserve [0,1] parameterization.
         if len_sq >= 1e-12 {
             let dir = Vec2::new(dx, dy);
-            return Curve2D::Line(make_line2d_safe(p0, dir));
+            return Ok(Curve2D::Line(make_line2d_safe(p0, dir)));
         }
         // p0 ≈ pn: fall through to NURBS interpolation.
     }
 
     // Fit a NURBS curve through the UV sample points.
-    fit_nurbs2d_through_points(&uv_pts)
+    Ok(fit_nurbs2d_through_points(&uv_pts))
 }
 
 /// Project a 3D point onto a surface's parameter space.
 ///
-/// For planes, uses `PlaneFrame`. For analytic/NURBS, uses
-/// `ParametricSurface::project_point()`.
+/// For planes, uses `PlaneFrame`. Analytic surfaces use their closed-form
+/// inverse. NURBS surfaces use the fallible Newton projector directly so its
+/// convergence error cannot be replaced by the trait's compatibility
+/// midpoint.
+///
+/// # Errors
+///
+/// Returns [`AlgoError::PcurveProjectionFailed`] when the point or projected
+/// UV coordinate is non-finite, or when NURBS projection does not converge.
 pub fn project_point_on_surface(
     p: Point3,
     surface: &FaceSurface,
     wire_pts: &[Point3],
     frame: Option<&PlaneFrame>,
-) -> Point2 {
+) -> Result<Point2, AlgoError> {
     if let FaceSurface::Plane { normal, .. } = surface {
         let owned;
         let frame = if let Some(f) = frame {
@@ -168,10 +172,10 @@ pub fn project_point_on_surface(
             owned = PlaneFrame::from_plane_face(*normal, wire_pts);
             &owned
         };
-        return frame.project(p);
+        let projected = frame.project(p);
+        return finite_uv(projected, surface, "plane_frame");
     }
-    let (u, v) = surface.project_point(p).unwrap_or((0.0, 0.0));
-    Point2::new(u, v)
+    project_native_point_on_surface(p, surface, "point_projection")
 }
 
 /// Build a `PlaneFrame` for a plane face.
@@ -222,7 +226,7 @@ pub(super) fn sample_edge_to_uv(
     end: Point3,
     domain: (f64, f64),
     surface: &FaceSurface,
-) -> Vec<Point2> {
+) -> Result<Vec<Point2>, AlgoError> {
     let n = PCURVE_SAMPLES;
     let mut pts_3d = Vec::with_capacity(n + 1);
     for i in 0..=n {
@@ -232,19 +236,65 @@ pub(super) fn sample_edge_to_uv(
         pts_3d.push(p);
     }
 
-    let mut uv_pts: Vec<Point2> = pts_3d
-        .iter()
-        .map(|&p| {
-            let (u, v) = surface.project_point(p).unwrap_or((0.0, 0.0));
-            Point2::new(u, v)
-        })
-        .collect();
+    let mut uv_pts = Vec::with_capacity(pts_3d.len());
+    for p in pts_3d {
+        uv_pts.push(project_native_point_on_surface(p, surface, "curve_sample")?);
+    }
 
     // Unwrap periodicity.
     let (u_period, v_period) = surface_periods(surface);
     unwrap_periodic_params(&mut uv_pts, u_period, v_period);
 
-    uv_pts
+    Ok(uv_pts)
+}
+
+fn project_native_point_on_surface(
+    point: Point3,
+    surface: &FaceSurface,
+    stage: &'static str,
+) -> Result<Point2, AlgoError> {
+    if !point.x().is_finite() || !point.y().is_finite() || !point.z().is_finite() {
+        return Err(projection_failure(surface, stage));
+    }
+
+    let projected = match surface {
+        FaceSurface::Plane { .. } => return Err(projection_failure(surface, stage)),
+        FaceSurface::Nurbs(nurbs) => {
+            let projection =
+                remus_math::nurbs::projection::project_point_to_surface(nurbs, point, 1e-7)
+                    .map_err(|_| projection_failure(surface, stage))?;
+            Point2::new(projection.u, projection.v)
+        }
+        FaceSurface::Cylinder(_)
+        | FaceSurface::Cone(_)
+        | FaceSurface::Sphere(_)
+        | FaceSurface::Torus(_) => {
+            let (u, v) = surface
+                .project_point(point)
+                .ok_or_else(|| projection_failure(surface, stage))?;
+            Point2::new(u, v)
+        }
+    };
+    finite_uv(projected, surface, stage)
+}
+
+fn finite_uv(
+    point: Point2,
+    surface: &FaceSurface,
+    stage: &'static str,
+) -> Result<Point2, AlgoError> {
+    if point.x().is_finite() && point.y().is_finite() {
+        Ok(point)
+    } else {
+        Err(projection_failure(surface, stage))
+    }
+}
+
+const fn projection_failure(surface: &FaceSurface, stage: &'static str) -> AlgoError {
+    AlgoError::PcurveProjectionFailed {
+        surface: surface.type_tag(),
+        stage,
+    }
 }
 
 /// Evaluate a 3D edge curve at parameter t in [0, 1].
@@ -321,17 +371,18 @@ fn sample_edge_to_uv_via_frame(
     start: Point3,
     end: Point3,
     domain: (f64, f64),
+    surface: &FaceSurface,
     frame: &PlaneFrame,
-) -> Vec<Point2> {
+) -> Result<Vec<Point2>, AlgoError> {
     let n = PCURVE_SAMPLES;
     let mut uv_pts = Vec::with_capacity(n + 1);
     for i in 0..=n {
         #[allow(clippy::cast_precision_loss)]
         let t = i as f64 / n as f64;
         let p = evaluate_edge_at_t(curve_3d, start, end, domain, t);
-        uv_pts.push(frame.project(p));
+        uv_pts.push(finite_uv(frame.project(p), surface, "curve_sample")?);
     }
-    uv_pts
+    Ok(uv_pts)
 }
 
 /// Unwrap periodic UV parameters to remove seam jumps.
@@ -465,8 +516,98 @@ fn fit_nurbs2d_through_points(pts: &[Point2]) -> Curve2D {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
+    use remus_math::nurbs::surface::NurbsSurface;
     use remus_math::traits::ParametricCurve;
     use remus_math::vec::Vec3;
+
+    fn flat_nurbs_surface() -> FaceSurface {
+        FaceSurface::Nurbs(
+            NurbsSurface::new(
+                1,
+                1,
+                vec![0.0, 0.0, 1.0, 1.0],
+                vec![0.0, 0.0, 1.0, 1.0],
+                vec![
+                    vec![Point3::new(0.0, 0.0, 0.0), Point3::new(0.0, 1.0, 0.0)],
+                    vec![Point3::new(1.0, 0.0, 0.0), Point3::new(1.0, 1.0, 0.0)],
+                ],
+                vec![vec![1.0, 1.0], vec![1.0, 1.0]],
+            )
+            .expect("valid bilinear patch"),
+        )
+    }
+
+    #[test]
+    fn nurbs_projection_refuses_nonfinite_input_instead_of_using_midpoint() {
+        let surface = flat_nurbs_surface();
+        let error = project_point_on_surface(Point3::new(f64::NAN, 0.5, 0.0), &surface, &[], None)
+            .expect_err("non-finite geometry must not receive a synthetic UV");
+
+        assert!(matches!(
+            error,
+            AlgoError::PcurveProjectionFailed {
+                surface: "nurbs",
+                stage: "point_projection"
+            }
+        ));
+    }
+
+    #[test]
+    fn public_pcurve_builder_propagates_sample_projection_failure() {
+        let surface = flat_nurbs_surface();
+        let error = compute_pcurve_on_surface(
+            &EdgeCurve::Line,
+            Point3::new(0.0, 0.5, 0.0),
+            Point3::new(f64::INFINITY, 0.5, 0.0),
+            &surface,
+            &[],
+            None,
+        )
+        .expect_err("a failed curve sample must abort pcurve construction");
+
+        assert!(matches!(
+            error,
+            AlgoError::PcurveProjectionFailed {
+                surface: "nurbs",
+                stage: "curve_sample"
+            }
+        ));
+    }
+
+    #[test]
+    fn plane_line_projection_refuses_nonfinite_endpoint() {
+        let surface = FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: 0.0,
+        };
+        let error = compute_pcurve_on_surface(
+            &EdgeCurve::Line,
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(f64::INFINITY, 1.0, 0.0),
+            &surface,
+            &[],
+            None,
+        )
+        .expect_err("a plane pcurve must not retain a non-finite UV endpoint");
+
+        assert!(matches!(
+            error,
+            AlgoError::PcurveProjectionFailed {
+                surface: "plane",
+                stage: "plane_line_end"
+            }
+        ));
+    }
+
+    #[test]
+    fn finite_nurbs_projection_uses_the_actual_surface_foot() {
+        let surface = flat_nurbs_surface();
+        let uv = project_point_on_surface(Point3::new(0.25, 0.75, 2.0), &surface, &[], None)
+            .expect("flat NURBS projection converges");
+
+        assert!((uv.x() - 0.25).abs() < 1e-7);
+        assert!((uv.y() - 0.75).abs() < 1e-7);
+    }
 
     #[test]
     fn line_on_xy_plane_produces_line2d_with_roundtrip() {
@@ -483,7 +624,8 @@ mod tests {
         ];
 
         let pcurve =
-            compute_pcurve_on_surface(&EdgeCurve::Line, start, end, &surface, &wire_pts, None);
+            compute_pcurve_on_surface(&EdgeCurve::Line, start, end, &surface, &wire_pts, None)
+                .expect("plane line pcurve");
 
         let frame = PlaneFrame::from_plane_face(Vec3::new(0.0, 0.0, 1.0), &wire_pts);
         let expected_start = frame.project(start);
@@ -514,7 +656,8 @@ mod tests {
         ];
 
         let pcurve =
-            compute_pcurve_on_surface(&EdgeCurve::Line, start, end, &surface, &wire_pts, None);
+            compute_pcurve_on_surface(&EdgeCurve::Line, start, end, &surface, &wire_pts, None)
+                .expect("tilted plane line pcurve");
 
         let frame = PlaneFrame::from_plane_face(normal, &wire_pts);
         let expected_start = frame.project(start);
@@ -544,7 +687,8 @@ mod tests {
             Point3::new(0.0, 10.0, 0.0),
         ];
         let p = Point3::new(5.0, 3.0, 0.0);
-        let uv = project_point_on_surface(p, &surface, &wire_pts, None);
+        let uv = project_point_on_surface(p, &surface, &wire_pts, None)
+            .expect("point projects to plane");
 
         let frame = PlaneFrame::from_plane_face(Vec3::new(0.0, 0.0, 1.0), &wire_pts);
         let back = frame.evaluate(uv.x(), uv.y());
@@ -597,7 +741,8 @@ mod tests {
         let surface = FaceSurface::Cylinder(cyl);
         let start = Point3::new(1.0, 0.0, 0.0);
         let end = Point3::new(1.0, 0.0, 5.0);
-        let pcurve = compute_pcurve_on_surface(&EdgeCurve::Line, start, end, &surface, &[], None);
+        let pcurve = compute_pcurve_on_surface(&EdgeCurve::Line, start, end, &surface, &[], None)
+            .expect("cylinder ruling pcurve");
 
         assert!(
             matches!(pcurve, Curve2D::Line(_)),
@@ -624,7 +769,8 @@ mod tests {
         let start = Point3::new(1.0, 0.0, 3.0);
         let end = Point3::new(-1.0, 0.0, 3.0);
         let curve_3d = EdgeCurve::Circle(circle);
-        let pcurve = compute_pcurve_on_surface(&curve_3d, start, end, &surface, &[], None);
+        let pcurve = compute_pcurve_on_surface(&curve_3d, start, end, &surface, &[], None)
+            .expect("cylinder ring pcurve");
 
         assert!(
             matches!(pcurve, Curve2D::Line(_)),
@@ -790,7 +936,8 @@ mod tests {
             &surface,
             &wire_pts,
             Some(&frame),
-        );
+        )
+        .expect("stored curve domain projects through the plane frame");
         let expected_mid = circle.evaluate(f64::midpoint(domain.0, domain.1));
         let uv_mid = pcurve.evaluate(0.5);
         let actual_mid = frame.evaluate(uv_mid.x(), uv_mid.y());
