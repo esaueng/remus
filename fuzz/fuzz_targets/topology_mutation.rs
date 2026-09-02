@@ -4,11 +4,13 @@
 //! edges, eight vertices, volume `dx * dy * dz` known by construction — and
 //! then runs a short, byte-driven sequence of topology mutations over it:
 //!
-//! * face-loop/coedge derivation and re-derivation (`build_face_loops`),
+//! * authoritative face-loop/coedge identity (`build_face_loops` is
+//!   read-only on a derived face) and retirement through the sanctioned
+//!   wire replacement (`replace_boundary_wire`),
 //! * validated mutation rollback after a wire is deliberately broken
 //!   (`run_validated` + `validate_wire_closed`),
 //! * rollback of staged allocations (`run_transacted`),
-//! * rollback of an in-transaction re-derivation or solid deletion (the
+//! * rollback of an in-transaction wire replacement or solid deletion (the
 //!   full-undo half of the transaction contract),
 //! * checkpoint restoration preserving stale-handle safety
 //!   (`restore_preserving_handle_slots` — the tombstone barrier: window
@@ -52,7 +54,7 @@ use remus_topology::explorer;
 use remus_topology::transaction::{run_transacted, run_validated};
 use remus_topology::validation::{validate_face_loops, validate_wire_closed};
 use remus_topology::vertex::Vertex;
-use remus_topology::wire::OrientedEdge;
+use remus_topology::wire::{OrientedEdge, Wire};
 use remus_topology::{DeleteSolidError, LoopId, SolidId, Topology, TopologyError};
 
 /// Longest mutation sequence one input may request.
@@ -386,62 +388,101 @@ fn assert_loop_derivation(topo: &Topology, face_id: remus_topology::FaceId, loop
         .unwrap_or_else(|error| panic!("derivation failed its own checker: {error}"));
 }
 
-/// Derive (or re-derive) one face's loops. Any handles a previous
-/// derivation issued must be retired, must fail typed lookups, and must
-/// never be reissued to the replacement derivation.
+/// The authoritative loops of one live face. A face built through
+/// `add_face` always has them; a missing derivation is a broken contract.
+fn authoritative_loops(topo: &Topology, face_id: remus_topology::FaceId) -> Vec<LoopId> {
+    topo.loops_of_face(face_id)
+        .map(<[LoopId]>::to_vec)
+        .unwrap_or_else(|| panic!("live face {face_id:?} has no authoritative loops"))
+}
+
+/// The registered derivations of every face of `solid`, keyed by face slot.
+fn registered_derivations(topo: &Topology, solid: SolidId) -> BTreeMap<usize, Vec<LoopId>> {
+    explorer::solid_faces(topo, solid)
+        .unwrap_or_else(|error| panic!("live solid has no faces: {error}"))
+        .into_iter()
+        .map(|face_id| (face_id.index(), authoritative_loops(topo, face_id)))
+        .collect()
+}
+
+/// Replace a face's outer wire with an identical copy through the sanctioned
+/// mutation path. The boundary is unchanged; what changes is the derivation:
+/// the previous Loop/Coedge handles are retired and fresh ones issued.
+fn replace_outer_wire_in_place(
+    topo: &mut Topology,
+    face_id: remus_topology::FaceId,
+) -> Result<(), TopologyError> {
+    let wire_id = topo.face(face_id)?.outer_wire();
+    let replacement: Wire = topo.wire(wire_id)?.clone();
+    topo.replace_boundary_wire(wire_id, replacement)
+}
+
+/// Read one face's loops and retire them. `build_face_loops` on a derived
+/// face must be read-only — the same handles back, nothing allocated — and
+/// the sanctioned wire replacement is what retires a derivation: its handles
+/// must then fail typed lookups and never be reissued to the replacement.
 fn op_derive(topo: &mut Topology, solid: SolidId, pick: u8) {
     let faces = explorer::solid_faces(topo, solid)
         .unwrap_or_else(|error| panic!("live solid has no faces: {error}"));
     let face_id = faces[usize::from(pick) % faces.len()];
 
-    let mut retired_loops = Vec::new();
-    let mut retired_coedges = Vec::new();
-    if let Some(old_loops) = topo.loops_of_face(face_id) {
-        for &loop_id in old_loops {
-            retired_loops.push(loop_id);
-            let boundary = topo
-                .face_loop(loop_id)
-                .unwrap_or_else(|error| panic!("prior derivation is broken: {error}"));
-            retired_coedges.extend(boundary.coedges().iter().copied());
-        }
+    let prior_loops = authoritative_loops(topo, face_id);
+    let mut prior_coedges = Vec::new();
+    for &loop_id in &prior_loops {
+        let boundary = topo
+            .face_loop(loop_id)
+            .unwrap_or_else(|error| panic!("prior derivation is broken: {error}"));
+        prior_coedges.extend(boundary.coedges().iter().copied());
     }
 
-    let new_loops = topo
+    let counts_before = (topo.num_loops(), topo.num_coedges());
+    let same_loops = topo
         .build_face_loops(face_id)
         .unwrap_or_else(|error| panic!("box face derivation failed: {error}"));
+    assert_eq!(
+        same_loops, prior_loops,
+        "build_face_loops replaced the loops of an already-derived face"
+    );
+    assert_eq!(
+        (topo.num_loops(), topo.num_coedges()),
+        counts_before,
+        "build_face_loops allocated on an already-derived face"
+    );
+    assert_loop_derivation(topo, face_id, &same_loops);
+
+    replace_outer_wire_in_place(topo, face_id)
+        .unwrap_or_else(|error| panic!("sanctioned wire replacement failed: {error}"));
+    let new_loops = authoritative_loops(topo, face_id);
     assert_loop_derivation(topo, face_id, &new_loops);
 
-    if !retired_loops.is_empty() {
-        for loop_id in &retired_loops {
+    for loop_id in &prior_loops {
+        assert!(
+            topo.face_loop(*loop_id).is_err(),
+            "replaced loop handle {loop_id:?} still resolves",
+        );
+    }
+    for coedge_id in &prior_coedges {
+        assert!(
+            topo.coedge(*coedge_id).is_err(),
+            "replaced coedge handle {coedge_id:?} still resolves",
+        );
+    }
+    let retired_loop_slots: BTreeSet<usize> = prior_loops.iter().map(|id| id.index()).collect();
+    let retired_coedge_slots: BTreeSet<usize> =
+        prior_coedges.iter().map(|id| id.index()).collect();
+    for &loop_id in &new_loops {
+        assert!(
+            !retired_loop_slots.contains(&loop_id.index()),
+            "a retired loop slot was reissued to the new derivation",
+        );
+        let boundary = topo
+            .face_loop(loop_id)
+            .unwrap_or_else(|error| panic!("new loop lookup failed: {error}"));
+        for &coedge_id in boundary.coedges() {
             assert!(
-                topo.face_loop(*loop_id).is_err(),
-                "replaced loop handle {loop_id:?} still resolves",
+                !retired_coedge_slots.contains(&coedge_id.index()),
+                "a retired coedge slot was reissued to the new derivation",
             );
-        }
-        for coedge_id in &retired_coedges {
-            assert!(
-                topo.coedge(*coedge_id).is_err(),
-                "replaced coedge handle {coedge_id:?} still resolves",
-            );
-        }
-        let retired_loop_slots: BTreeSet<usize> =
-            retired_loops.iter().map(|id| id.index()).collect();
-        let retired_coedge_slots: BTreeSet<usize> =
-            retired_coedges.iter().map(|id| id.index()).collect();
-        for &loop_id in &new_loops {
-            assert!(
-                !retired_loop_slots.contains(&loop_id.index()),
-                "a retired loop slot was reissued to the new derivation",
-            );
-            let boundary = topo
-                .face_loop(loop_id)
-                .unwrap_or_else(|error| panic!("new loop lookup failed: {error}"));
-            for &coedge_id in boundary.coedges() {
-                assert!(
-                    !retired_coedge_slots.contains(&coedge_id.index()),
-                    "a retired coedge slot was reissued to the new derivation",
-                );
-            }
         }
     }
 }
@@ -594,16 +635,17 @@ fn op_snapshot_restore(
     let face_id = faces[usize::from(bytes.next()) % faces.len()];
 
     let pre = live_state(topo);
-    let prior = topo.loops_of_face(face_id).map(<[LoopId]>::to_vec);
+    let prior = authoritative_loops(topo, face_id);
     let snapshot = topo.clone();
 
     let junk = topo.add_vertex(Vertex::new(
         Point3::new(bytes.signed(), bytes.signed(), bytes.signed()),
         1e-7,
     ));
-    let window_loops = topo
-        .build_face_loops(face_id)
-        .unwrap_or_else(|error| panic!("in-window derivation failed: {error}"));
+    // The window retires the prior derivation and issues a fresh one.
+    replace_outer_wire_in_place(topo, face_id)
+        .unwrap_or_else(|error| panic!("in-window wire replacement failed: {error}"));
+    let window_loops = authoritative_loops(topo, face_id);
 
     topo.restore_preserving_handle_slots(&snapshot);
 
@@ -619,48 +661,42 @@ fn op_snapshot_restore(
         );
     }
 
-    match prior {
-        None => {
-            // Alloc-only window: the restore reproduces the exact
-            // pre-snapshot state.
-            assert_eq!(
-                live_state(topo),
-                pre,
-                "restore after an alloc-only window must reproduce the exact state"
-            );
-            assert!(
-                topo.loops_of_face(face_id).is_none(),
-                "restore kept a derivation created after the snapshot",
-            );
-        }
-        Some(old_loops) => {
-            // Retirement window: the previous derivation stays retired,
-            // the map must not reference it, and everything else is
-            // restored exactly.
-            for &loop_id in &old_loops {
-                assert!(
-                    topo.face_loop(loop_id).is_err(),
-                    "checkpoint restore revived a retired loop",
-                );
-            }
-            assert!(
-                topo.loops_of_face(face_id).is_none(),
-                "the restored derivation map references a retired derivation",
-            );
-            validate_face_loops(topo, face_id)
-                .unwrap_or_else(|error| panic!("underived face must validate vacuously: {error}"));
-            derived.remove(&face_id.index());
-
-            let mut expected = pre;
-            strip_derivation(&mut expected, face_id.index());
-            assert_eq!(
-                live_state(topo),
-                expected,
-                "restore after a retirement window must reproduce the exact \
-                 state minus the retired derivation"
-            );
-        }
+    // The window retirement sticks: the prior derivation stays retired, and
+    // the restored face is promoted onto fresh handles rather than left
+    // dangling on retired ones.
+    for &loop_id in &prior {
+        assert!(
+            topo.face_loop(loop_id).is_err(),
+            "checkpoint restore revived a retired loop",
+        );
     }
+    let restored = authoritative_loops(topo, face_id);
+    let stale_slots: BTreeSet<usize> = prior
+        .iter()
+        .chain(&window_loops)
+        .map(|id| id.index())
+        .collect();
+    for loop_id in &restored {
+        assert!(
+            !stale_slots.contains(&loop_id.index()),
+            "checkpoint restore reissued a retired loop slot",
+        );
+    }
+    assert_loop_derivation(topo, face_id, &restored);
+    validate_face_loops(topo, face_id)
+        .unwrap_or_else(|error| panic!("restored face failed the loop checker: {error}"));
+    derived.insert(face_id.index(), restored);
+
+    // Everything but that face's re-issued derivation is restored exactly.
+    let mut expected = pre;
+    strip_derivation(&mut expected, face_id.index());
+    let mut actual = live_state(topo);
+    strip_derivation(&mut actual, face_id.index());
+    assert_eq!(
+        actual, expected,
+        "restore after a retirement window must reproduce the exact state \
+         minus the re-issued derivation"
+    );
 
     let fresh = topo.add_vertex(Vertex::new(Point3::new(1.0, 1.0, 1.0), 1e-7));
     assert_ne!(
@@ -670,8 +706,8 @@ fn op_snapshot_restore(
     );
 }
 
-/// Re-derive inside a transaction that then fails. The rollback must undo
-/// the in-window retirement of the previous derivation — the failed
+/// Replace a wire inside a transaction that then fails. The rollback must
+/// undo the in-window retirement of the previous derivation — the failed
 /// transaction was never observed, so the original handles resolve again
 /// and the live state matches the pre-transaction state exactly.
 fn op_transacted_rederive_rollback(topo: &mut Topology, solid: SolidId, face_pick: u8) {
@@ -681,7 +717,7 @@ fn op_transacted_rederive_rollback(topo: &mut Topology, solid: SolidId, face_pic
 
     let pre = live_state(topo);
     let result = run_transacted(topo, |topo| {
-        topo.build_face_loops(face_id)?;
+        replace_outer_wire_in_place(topo, face_id)?;
         Err::<(), _>(TopologyError::Empty {
             entity: "fuzz injected failure",
         })
@@ -690,7 +726,7 @@ fn op_transacted_rederive_rollback(topo: &mut Topology, solid: SolidId, face_pic
     assert_eq!(
         live_state(topo),
         pre,
-        "rollback must undo an in-window re-derivation exactly"
+        "rollback must undo an in-window wire replacement exactly"
     );
 }
 
@@ -1029,7 +1065,7 @@ fuzz_target!(|data: &[u8]| {
     let solid = make_box(&mut topo, dx, dy, dz)
         .unwrap_or_else(|error| panic!("bounded box was rejected: {error}"));
 
-    let mut derived: BTreeMap<usize, Vec<LoopId>> = BTreeMap::new();
+    let mut derived = registered_derivations(&topo, solid);
     let mut reference: Option<(bool, usize)> = None;
     let mut alive = true;
     let op_count = 1 + usize::from(bytes.next()) % MAX_OPS;
@@ -1043,18 +1079,11 @@ fuzz_target!(|data: &[u8]| {
             0 | 1 => {
                 op_derive(&mut topo, solid, face_pick);
                 if bytes.next() & 1 == 0 {
-                    // Re-derive the same face immediately, so the
-                    // retirement oracle runs even in short sequences.
+                    // Replace the same face's wire again immediately, so
+                    // the retirement oracle sees a second generation.
                     op_derive(&mut topo, solid, face_pick);
                 }
-                derived.clear();
-                for &face_id in &explorer::solid_faces(&topo, solid)
-                    .unwrap_or_else(|error| panic!("live solid has no faces: {error}"))
-                {
-                    if let Some(loops) = topo.loops_of_face(face_id) {
-                        derived.insert(face_id.index(), loops.to_vec());
-                    }
-                }
+                derived = registered_derivations(&topo, solid);
             }
             2 => op_break_wire(&mut topo, solid, face_pick, bytes.next()),
             3 => op_staged_alloc(&mut topo, &mut bytes),
@@ -1073,24 +1102,18 @@ fuzz_target!(|data: &[u8]| {
                         guard_id,
                         guard_volume,
                         guard_deflection,
-                        &BTreeMap::new(),
+                        &registered_derivations(&topo, guard_id),
                     );
                 }
             }
             6 => op_delete_referenced(&mut topo, solid, true, &mut reference),
             7 => op_delete_referenced(&mut topo, solid, false, &mut reference),
             8 => {
-                // Derive first so the rolled-back re-derivation has a
-                // previous derivation to retire.
+                // Retire one generation first so the rolled-back
+                // replacement acts on a derivation that already has
+                // retired predecessors behind it.
                 op_derive(&mut topo, solid, face_pick);
-                derived.clear();
-                for &face_id in &explorer::solid_faces(&topo, solid)
-                    .unwrap_or_else(|error| panic!("live solid has no faces: {error}"))
-                {
-                    if let Some(loops) = topo.loops_of_face(face_id) {
-                        derived.insert(face_id.index(), loops.to_vec());
-                    }
-                }
+                derived = registered_derivations(&topo, solid);
                 op_transacted_rederive_rollback(&mut topo, solid, face_pick);
             }
             _ => op_transacted_delete_rollback(&mut topo, solid),
