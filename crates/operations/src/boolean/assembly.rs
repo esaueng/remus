@@ -2758,7 +2758,7 @@ pub(super) fn register_pcurves(
                 let curve_3d = edge.curve();
 
                 let pcurve_2d =
-                    compute_pcurve_on_surface(curve_3d, start, end, &surface, &wire_pts, None);
+                    compute_pcurve_on_surface(curve_3d, start, end, &surface, &wire_pts, None)?;
 
                 // Parameter range: [0, 1] for the pcurve.
                 let pc = PCurve::new(pcurve_2d, 0.0, 1.0);
