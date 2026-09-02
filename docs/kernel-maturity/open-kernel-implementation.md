@@ -260,7 +260,8 @@ curves (chord-tolerant polylines with exact crossing refinement), output =
 planar subdivision (vertices/edges/regions) with seam-unwrap for periodic
 domains and pole handling for spheres/cones. Decide the snapping model
 (snap-rounding vs. exact-predicate vertices) — `orient2d` from
-`math/src/predicates.rs` is the substrate either way.
+`math/src/predicates.rs` is the substrate either way. The accepted design
+is [uv-arrangement-splitter.md](../design/uv-arrangement-splitter.md).
 
 **b — Core arrangement (L).** The subdivision structure + insertion +
 region extraction, exhaustively property-tested *in isolation* (random
