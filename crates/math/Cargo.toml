@@ -14,7 +14,20 @@ serde = {workspace = true, optional = true}
 thiserror.workspace = true
 
 [dev-dependencies]
+criterion.workspace = true
 proptest.workspace = true
+
+[[bench]]
+harness = false
+name = "nurbs_inner_loops"
+
+[[bench]]
+harness = false
+name = "intersection_inner_loops"
+
+[[bench]]
+harness = false
+name = "cdt_insertion"
 
 [features]
 default = []
