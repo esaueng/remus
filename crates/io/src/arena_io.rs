@@ -2243,6 +2243,13 @@ mod tests {
             restored_topology.pcurve(restored_seam, restored_face),
             Err(remus_topology::TopologyError::SeamPcurveAmbiguous { .. })
         ));
+        let boundary =
+            remus_topology::validation::validate_boundary_authority(&restored_topology).unwrap();
+        assert_eq!(boundary.faces, restored_topology.num_faces());
+        assert_eq!(boundary.loops, restored_topology.num_loops());
+        assert_eq!(boundary.coedges, restored_topology.num_coedges());
+        assert_eq!(boundary.seam_edges, 1);
+        assert_eq!(boundary.stored_seam_branches, 2);
     }
 
     #[test]
