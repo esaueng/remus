@@ -8196,6 +8196,7 @@ mod fallback_policy_refusal {
     /// Overlapping boxes with one operand's face wire replaced by an open
     /// single-edge stub: the exact pipeline fails deterministically, which
     /// is the configuration the fallback tail exists for.
+    #[allow(deprecated)]
     fn corrupted_pair(topo: &mut Topology) -> (remus_topology::SolidId, remus_topology::SolidId) {
         let a = make_box(topo, 2.0, 2.0, 2.0).unwrap();
         let b = make_box(topo, 2.0, 2.0, 2.0).unwrap();
