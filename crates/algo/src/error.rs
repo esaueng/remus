@@ -62,6 +62,20 @@ pub enum AlgoError {
         /// `FaceSurface::type_tag()` of face B.
         b: &'static str,
     },
+
+    /// A 3D edge sample could not be projected into a face surface's UV
+    /// parameter space while constructing a pcurve.
+    ///
+    /// Substituting a synthetic UV point here changes the face partition and
+    /// can turn an intersecting pair into a plausible but wrong boolean.
+    /// Pcurve construction therefore refuses the operation by name.
+    #[error("pcurve UV projection failed on `{surface}` surface during `{stage}`")]
+    PcurveProjectionFailed {
+        /// `FaceSurface::type_tag()` of the target face.
+        surface: &'static str,
+        /// Stable projection stage identifying the failed boundary.
+        stage: &'static str,
+    },
 }
 
 impl remus_math::diagnostic::ToDiagnostic for AlgoError {
@@ -108,6 +122,13 @@ impl remus_math::diagnostic::ToDiagnostic for AlgoError {
             )
             .with_detail("surfaceA", *a)
             .with_detail("surfaceB", *b),
+            Self::PcurveProjectionFailed { surface, stage } => Diagnostic::new(
+                FailureCategory::Nonconvergence,
+                "pcurve_projection_failed",
+                self.to_string(),
+            )
+            .with_detail("surfaceType", *surface)
+            .with_detail("stage", *stage),
         }
     }
 }
@@ -144,6 +165,14 @@ mod diagnostic_registry_tests {
         .diagnostic();
         assert_eq!(d.category(), FailureCategory::Unsupported);
         assert_eq!(d.code(), "unsupported_surface_pair");
+
+        let d = AlgoError::PcurveProjectionFailed {
+            surface: "nurbs",
+            stage: "curve_sample",
+        }
+        .diagnostic();
+        assert_eq!(d.category(), FailureCategory::Nonconvergence);
+        assert_eq!(d.code(), "pcurve_projection_failed");
     }
 
     #[test]
