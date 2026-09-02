@@ -3968,6 +3968,92 @@ mod tests {
         );
     }
 
+    // ── build_seam_arcs ────────────────────────────────────────────────────
+
+    fn chord_edge(start: Point3, end: Point3) -> OrientedPCurveEdge {
+        OrientedPCurveEdge {
+            curve_3d: EdgeCurve::Line,
+            trim: None,
+            pcurve: dummy_pcurve(),
+            start_uv: Point2::new(0.0, 0.0),
+            end_uv: Point2::new(0.0, 0.0),
+            start_3d: start,
+            end_3d: end,
+            forward: true,
+            source_edge_idx: None,
+            pave_block_id: None,
+            source_topo_edge: None,
+        }
+    }
+
+    /// The sphere seam is rebuilt as its exact circle and split at the open
+    /// arcs' endpoints. Mutation testing found that returning an empty arc
+    /// list went unnoticed (the caller only checks for `None`), so pin the
+    /// arc count, the circle they lie on, and that they chain end to end.
+    #[test]
+    fn seam_arcs_are_the_exact_seam_circle_split_at_the_crossings() {
+        use remus_math::surfaces::SphericalSurface;
+
+        let surface =
+            FaceSurface::Sphere(SphericalSurface::new(Point3::new(0.0, 0.0, 0.0), 2.0).unwrap());
+        // Boundary polygon: a square inscribed in the equator (z = 0). Only the
+        // vertex positions matter to the seam-plane fit.
+        let px = Point3::new(2.0, 0.0, 0.0);
+        let py = Point3::new(0.0, 2.0, 0.0);
+        let nx = Point3::new(-2.0, 0.0, 0.0);
+        let ny = Point3::new(0.0, -2.0, 0.0);
+        let boundary = vec![
+            chord_edge(px, py),
+            chord_edge(py, nx),
+            chord_edge(nx, ny),
+            chord_edge(ny, px),
+        ];
+        // Two open arcs crossing the seam at the four axis points.
+        let open = vec![chord_edge(px, py), chord_edge(nx, ny)];
+
+        let arcs = super::build_seam_arcs(&surface, &boundary, &open, 1e-7)
+            .expect("four distinct crossings on the equator must yield seam arcs");
+
+        assert_eq!(
+            arcs.len(),
+            4,
+            "one seam arc between each consecutive crossing"
+        );
+        for (i, arc) in arcs.iter().enumerate() {
+            assert!(
+                matches!(arc.curve_3d, EdgeCurve::Circle(_)),
+                "seam arc {i} is not a circle: {:?}",
+                arc.curve_3d
+            );
+            let EdgeCurve::Circle(circle) = &arc.curve_3d else {
+                return;
+            };
+            assert!(
+                (circle.radius() - 2.0).abs() < 1e-9
+                    && (circle.center() - Point3::new(0.0, 0.0, 0.0)).length() < 1e-9,
+                "seam arc {i} must lie on the equator circle, got {circle:?}"
+            );
+            assert!(
+                ((arc.start_3d - Point3::new(0.0, 0.0, 0.0)).length() - 2.0).abs() < 1e-9
+                    && ((arc.end_3d - Point3::new(0.0, 0.0, 0.0)).length() - 2.0).abs() < 1e-9,
+                "seam arc {i} endpoints must sit on the sphere"
+            );
+            let next = &arcs[(i + 1) % arcs.len()];
+            assert!(
+                (arc.end_3d - next.start_3d).length() < 1e-9,
+                "seam arc {i} must end where the next one starts"
+            );
+            let (t0, t1) = arc
+                .trim
+                .expect("seam arcs carry an exact parameter interval");
+            assert!(
+                (t1 - t0 - std::f64::consts::FRAC_PI_2).abs() < 1e-9,
+                "four equally spaced crossings give quarter-turn arcs, got {}",
+                t1 - t0
+            );
+        }
+    }
+
     // ── try_split_disk_by_chords ───────────────────────────────────────────
 
     fn disk_test_frame() -> PlaneFrame {
