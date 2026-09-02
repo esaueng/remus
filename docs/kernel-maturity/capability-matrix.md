@@ -152,9 +152,22 @@ does not itself promote or demote anything.
   exact toroidal cylinder-cap rim assembler across `0 < f < r_c` with
   closed-form volume/area verification; typed `RadiusTooLarge` refusals;
   blind-hole floor rim deliberately capped at `r_c/2`.
+- Fail-closed contract (Qualified, every public entry point): direct WASM
+  bindings, `executeBatch`/`executeBatchV2`, journaled wrappers, and the
+  legacy v1 Rust APIs (`fillet`, `fillet_rolling_ball`, `fillet_variable`,
+  flat-bevel `chamfer`) are all transactional (a failed call leaves the
+  arena, journal, attributes, and input solid byte-identical), never answer
+  with the input handle or a silently reduced selection, validate the result
+  against the input baseline, and bound the volume change to what the
+  requested blend can physically produce. Refusals carry the stable
+  `blend_failure_code` vocabulary (prefixed message on direct bindings,
+  `kernelCode` detail on the structured batch contract). Repro bundle
+  `fillet-variable-fail-closed` plus the `regress_fillet_fail_closed` and
+  `fillet_fail_closed_tests` suites pin the contract from both sides across
+  a 1e-3/1/1e3 scale sweep.
 - Known gaps: closed-rim chamfers and curved assembly experimental and
-  fail-closed; variable radius, setbacks, multi-edge corners, G2 profiles,
-  overflow handling Unqualified or absent.
+  fail-closed; variable radius on curved domains, setbacks, multi-edge
+  corners, G2 profiles, overflow handling Unqualified or absent.
 
 ### Offset, shell, thicken
 

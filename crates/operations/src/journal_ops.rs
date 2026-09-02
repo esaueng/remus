@@ -320,6 +320,11 @@ pub struct JournaledBlend {
 /// set, so edge and vertex references across the fillet sever honestly
 /// while face claims carry.
 ///
+/// The whole call is transactional: if the blend fails, or the journal
+/// refuses the recorded draft, the topology AND the journal roll back to
+/// their pre-call state — a `fillet_journaled` error never leaves a
+/// half-journaled blend behind.
+///
 /// # Errors
 ///
 /// Returns [`OperationsError`] if the fillet or the recording fails.
@@ -329,10 +334,12 @@ pub fn fillet_journaled(
     edges: &[remus_topology::EdgeId],
     radius: f64,
 ) -> Result<JournaledBlend, OperationsError> {
-    let pending = begin_scoped(topo, "fillet", &[solid])?;
-    let (result, map) = crate::blend_ops::fillet_with_evolution(topo, solid, edges, radius)?;
-    let op = record_face_evolution(topo, pending, &map, &[result.solid])?;
-    Ok(JournaledBlend { result, op, map })
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let pending = begin_scoped(topo, "fillet", &[solid])?;
+        let (result, map) = crate::blend_ops::fillet_with_evolution(topo, solid, edges, radius)?;
+        let op = record_face_evolution(topo, pending, &map, &[result.solid])?;
+        Ok(JournaledBlend { result, op, map })
+    })
 }
 
 /// Runs a v2 chamfer and journals its face evolution as one entry
@@ -348,10 +355,12 @@ pub fn chamfer_journaled(
     d1: f64,
     d2: f64,
 ) -> Result<JournaledBlend, OperationsError> {
-    let pending = begin_scoped(topo, "chamfer", &[solid])?;
-    let (result, map) = crate::blend_ops::chamfer_with_evolution(topo, solid, edges, d1, d2)?;
-    let op = record_face_evolution(topo, pending, &map, &[result.solid])?;
-    Ok(JournaledBlend { result, op, map })
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let pending = begin_scoped(topo, "chamfer", &[solid])?;
+        let (result, map) = crate::blend_ops::chamfer_with_evolution(topo, solid, edges, d1, d2)?;
+        let op = record_face_evolution(topo, pending, &map, &[result.solid])?;
+        Ok(JournaledBlend { result, op, map })
+    })
 }
 
 /// A journaled pattern's result.

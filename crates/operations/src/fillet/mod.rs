@@ -78,6 +78,12 @@ pub fn fillet_rolling_ball_propagate_g1(
 /// Each target edge is replaced by a flat bevel face (chamfer-like
 /// approximation of a fillet arc).
 ///
+/// The call is transactional and fail-closed: a requested edge that cannot
+/// carry a bevel is reported by name ([`remus_blend::BlendError::EdgesNotBlended`]),
+/// the result is validated against the input before it is returned, and any
+/// failure leaves the topology exactly as it was. It never answers with the
+/// input handle or a quietly reduced subset of the selection.
+///
 /// # Errors
 ///
 /// Returns an error if:
@@ -85,12 +91,27 @@ pub fn fillet_rolling_ball_propagate_g1(
 /// - `edges` is empty
 /// - Any edge is not shared by exactly two faces
 /// - A target edge is adjacent to a non-planar face
+/// - The assembled result regresses validation against the input or moves an
+///   impossible amount of material
 #[deprecated(
     since = "0.8.0",
     note = "Use fillet_rolling_ball for true rounded fillets"
 )]
-#[allow(clippy::too_many_lines)]
 pub fn fillet(
+    topo: &mut Topology,
+    solid: SolidId,
+    edges: &[EdgeId],
+    radius: f64,
+) -> Result<SolidId, crate::OperationsError> {
+    remus_topology::transaction::run_transacted(topo, |t| {
+        fillet_transacted(t, solid, edges, radius)
+    })
+}
+
+/// Transaction body of [`fillet`]: builds the bevel, then proves the result
+/// against the input before committing.
+#[allow(clippy::too_many_lines)]
+fn fillet_transacted(
     topo: &mut Topology,
     solid: SolidId,
     edges: &[EdgeId],
@@ -183,18 +204,35 @@ pub fn fillet(
         );
     }
 
-    // Filter target edges: only keep manifold edges (shared by exactly 2 faces).
-    // Non-manifold edges (boundary/seam) are silently skipped rather than causing
-    // an error, so callers can pass "all edges" without pre-filtering.
+    // Every requested edge must be a manifold edge of this solid (shared by
+    // exactly two faces). Dropping the rest quietly would return a valid,
+    // plausibly-sized solid that simply lacks some of the blends it was asked
+    // for — indistinguishable from success to the caller. Name them instead.
+    let mut dropped: Vec<EdgeId> = Vec::new();
     let filtered_edges: Vec<EdgeId> = edges
         .iter()
         .copied()
         .filter(|edge_id| {
-            edge_to_faces
+            let manifold = edge_to_faces
                 .get(&edge_id.index())
-                .is_some_and(|faces| faces.len() == 2)
+                .is_some_and(|faces| faces.len() == 2);
+            if !manifold && !dropped.contains(edge_id) {
+                dropped.push(*edge_id);
+            }
+            manifold
         })
         .collect();
+
+    if !dropped.is_empty() {
+        return Err(crate::OperationsError::Blend(
+            remus_blend::BlendError::EdgesNotBlended {
+                edges: dropped,
+                reason: "not manifold edges of this solid (boundary, seam, or foreign edge); \
+                         the flat-bevel engine only blends edges shared by exactly two faces"
+                    .into(),
+            },
+        ));
+    }
 
     if filtered_edges.is_empty() {
         return Err(crate::OperationsError::InvalidInput {
@@ -386,7 +424,15 @@ pub fn fillet(
         });
     }
 
-    crate::boolean::assemble_solid_mixed(topo, &result_specs, tol)
+    let result = crate::boolean::assemble_solid_mixed(topo, &result_specs, tol)?;
+
+    // Fail closed on a plausible-but-wrong result: the bevel must not regress
+    // validation against the input, and a convex-edge bevel must REMOVE a
+    // bounded amount of material (an oversized radius used to "succeed" with
+    // the volume growing — e.g. r=50 on a 10 mm box returned 3833 mm³).
+    crate::blend_ops::validate_blend_solid_against_input(topo, "fillet", solid, result)?;
+    crate::blend_ops::validate_blend_volume(topo, "fillet", solid, result, edges, radius)?;
+    Ok(result)
 }
 
 /// Fillet edges with variable radius using canal surface generation.
@@ -403,11 +449,31 @@ pub fn fillet(
 /// For constant radius, use `FilletRadiusLaw::Constant(r)` or the
 /// simpler [`fillet_rolling_ball`] function.
 ///
+/// The call is transactional and fail-closed: every requested edge must carry
+/// a blend or the call fails with [`remus_blend::BlendError::EdgesNotBlended`]
+/// naming the ones it could not; the assembled result is validated against the
+/// input (no new validation errors, and the volume change must be one a blend
+/// of this size can physically produce) before it is returned; and any failure
+/// leaves the topology exactly as it was. It never answers with the input
+/// handle or a quietly reduced subset of the selection.
+///
 /// # Errors
 ///
 /// Returns errors similar to [`fillet_rolling_ball`].
-#[allow(clippy::too_many_lines)]
 pub fn fillet_variable(
+    topo: &mut Topology,
+    solid: SolidId,
+    edge_laws: &[(EdgeId, FilletRadiusLaw)],
+) -> Result<SolidId, crate::OperationsError> {
+    remus_topology::transaction::run_transacted(topo, |t| {
+        fillet_variable_transacted(t, solid, edge_laws)
+    })
+}
+
+/// Transaction body of [`fillet_variable`]: builds the canal surfaces, then
+/// proves coverage and result validity before committing.
+#[allow(clippy::too_many_lines)]
+fn fillet_variable_transacted(
     topo: &mut Topology,
     solid: SolidId,
     edge_laws: &[(EdgeId, FilletRadiusLaw)],
@@ -419,6 +485,17 @@ pub fn fillet_variable(
             reason: "no edges specified for fillet".into(),
         });
     }
+
+    // Collapse repeated edges, keeping the caller's order: a repeated seed
+    // would emit two coincident canal surfaces for one edge. First occurrence
+    // wins, matching the constant-radius engines.
+    let mut seen_edges = HashSet::with_capacity(edge_laws.len());
+    let edge_laws: Vec<(EdgeId, FilletRadiusLaw)> = edge_laws
+        .iter()
+        .filter(|(edge_id, _)| seen_edges.insert(*edge_id))
+        .cloned()
+        .collect();
+    let edge_laws = edge_laws.as_slice();
 
     for (_, law) in edge_laws {
         for t in [0.0, 0.25, 0.5, 0.75, 1.0] {
@@ -702,6 +779,9 @@ pub fn fillet_variable(
 
     let n_samples = 5; // Number of cross-sections along each edge
     let mut fillet_face_indices: Vec<usize> = Vec::new();
+    // Every requested edge must end up carrying a blend surface; the loop's
+    // early `continue`s are where a silent subset used to come from.
+    let mut blended_edges: HashSet<usize> = HashSet::new();
 
     for (edge_id, law) in edge_laws {
         let edge = topo.edge(*edge_id)?;
@@ -888,6 +968,28 @@ pub fn fillet_variable(
         if srf_mid_normal.dot(cs_ref.bisector) > 0.0 {
             fillet_face_indices.push(all_specs.len() - 1);
         }
+        blended_edges.insert(edge_id.index());
+    }
+
+    // Coverage check before assembly: a requested edge that every `continue`
+    // above skipped would otherwise vanish from the result without a word —
+    // the caller would get a closed, valid solid that simply lacks the blend
+    // it named (the silent no-op in disguise). Name those edges instead.
+    let missing: Vec<EdgeId> = edge_laws
+        .iter()
+        .map(|(edge_id, _)| *edge_id)
+        .filter(|edge_id| !blended_edges.contains(&edge_id.index()))
+        .collect();
+    if !missing.is_empty() {
+        return Err(crate::OperationsError::Blend(
+            remus_blend::BlendError::EdgesNotBlended {
+                edges: missing,
+                reason: "the variable-radius engine produced no blend surface for them \
+                         (foreign or non-manifold edge, unreadable surface normal, or a \
+                         dihedral too flat to round)"
+                    .into(),
+            },
+        ));
     }
 
     let solid_id = crate::boolean::assemble_solid_mixed(topo, &all_specs, tol)?;
@@ -903,5 +1005,17 @@ pub fn fillet_variable(
         }
     }
 
+    // Fail closed on a plausible-but-wrong result: no new validation errors
+    // against the input baseline, and the volume change must be one a blend
+    // of this size can physically produce — an oversized radius used to
+    // "succeed" here with the volume GROWING (r=50 on a 10 mm box returned
+    // 3242 mm³), and holed-plate selections returned invalid shells as Ok.
+    crate::blend_ops::validate_blend_solid_against_input(topo, "fillet", solid, solid_id)?;
+    let max_radius = edge_laws
+        .iter()
+        .flat_map(|(_, law)| [0.0, 0.25, 0.5, 0.75, 1.0].map(|t| law.evaluate(t)))
+        .fold(0.0_f64, f64::max);
+    let edges: Vec<EdgeId> = edge_laws.iter().map(|(edge_id, _)| *edge_id).collect();
+    crate::blend_ops::validate_blend_volume(topo, "fillet", solid, solid_id, &edges, max_radius)?;
     Ok(solid_id)
 }
