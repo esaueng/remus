@@ -23,7 +23,7 @@ that flips them; agents do not flip them autonomously.
 | O1.3b Fillet torture publication | C | Pending | — |
 | O1.4a STEP validation properties | A | Complete — opt-in CAx-IF validation properties round-trip aggregate and per-solid area, volume, centroid, and bounding boxes with derived units; malformed properties refuse transactionally with stable diagnostics, and direct/batch WASM contracts preserve import diagnostics | [#180](https://github.com/esaueng/remus/pull/180) |
 | O1.4b CAx-IF test-round manifest | B | Pending | — |
-| O2.1a RFC 0006 swept analytic surfaces | A | Pending | — |
+| O2.1a RFC 0006 swept analytic surfaces | A | Complete — the accepted design preserves STEP parameterization with self-contained math-layer profiles, checked projection, exact lowering/recognition, typed unsupported paths, staged R8 contracts, and a measured disposition for all 92 production `FaceSurface` wildcard matches | [#183](https://github.com/esaueng/remus/pull/183) |
 | O2.1b Revolution/extrusion math substrate | A | Pending | — |
 | O2.1c FaceSurface variants + site audit | B | Pending | — |
 | O2.1d Revolution/extrusion I/O wiring | B | Pending | — |
