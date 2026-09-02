@@ -32,7 +32,7 @@ Issue 2.0's measured baseline is
 | 3.5 Import and sew integration | Pending | — |
 | 3.6 Downstream disclosure | Pending | — |
 | 4.1 RFC 0005 | Merged — staged solid/sheet/wire/general-body semantics, side-of sheet classification, Compound-first cellular results, STEP mapping, and evolution contract | [#127](https://github.com/esaueng/remus/pull/127) |
-| 4.2 Sheet bodies first-class | Partial, in review — Stage 1 supplies body-class tags, validation, diagnostics, and additive arena-v3 fields; operations add transactional construction, area, bounding box, center-of-area, typed volume refusal, open tessellation, and direct/batch WASM; arena v4 adds standalone sheet roots with exact authority replay and frozen v3 writer bytes. STEP remains | [#209](https://github.com/esaueng/remus/pull/209) + [#210](https://github.com/esaueng/remus/pull/210) + [#211](https://github.com/esaueng/remus/pull/211) + [#212](https://github.com/esaueng/remus/pull/212) |
+| 4.2 Sheet bodies first-class | Implemented, in review — body-class validation, transactional construction, area/bounds/center, typed volume refusal, boundary-preserving tessellation, arena-v4 roots, and direct/batch WASM are joined by deterministic `SHELL_BASED_SURFACE_MODEL` exchange over open or closed shells; the trimmed-NURBS implementation exit witness is green, but the stack is not merged | [#209](https://github.com/esaueng/remus/pull/209) + [#210](https://github.com/esaueng/remus/pull/210) + [#211](https://github.com/esaueng/remus/pull/211) + [#212](https://github.com/esaueng/remus/pull/212) + [#213](https://github.com/esaueng/remus/pull/213) |
 | 4.3 Split solid by sheet | Pending | — |
 | 4.4 Trim sheet by solid / sheet × sheet | Pending | — |
 | 4.5 Imprint | Pending | — |

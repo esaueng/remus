@@ -49,9 +49,11 @@ These families are classified across the full grid:
 - **Body type** — solid, sheet, wire, compound, cavity-bearing solid, and
   later general body. RFC 0005's class/tagging/validation substrate is in
   review in PR #209; sheet construction, area, typed volume refusal, and open
-  tessellation entry points are in review in PR #210. The witnesses below do
-  not yet cover the scale/parity and STEP exit matrices needed for a cell
-  promotion. Wire and general-body cells remain Unqualified.
+  tessellation entry points are in review in PR #210, arena roots and spatial
+  properties in PRs #211–#212, and STEP surface-model exchange in PR #213.
+  Together they qualify the bounded unit-scale trimmed-NURBS sheet workflow;
+  sheet boolean cells, broader scale/type matrices, wire, and general-body
+  cells remain Unqualified.
 - **Scale** — at least three model scales relative to the configured
   tolerance (e.g. 1e-3, 1, 1e3 in the kernel's millimetre convention), with
   the tolerance scaled correspondingly.
@@ -247,9 +249,10 @@ does not itself promote or demote anything.
   curved-cavity and scale cells remain incomplete. In-review PR #210 adds a
   unit-scale trimmed NURBS sheet-area witness through native/direct entry
   points, a planar batch contract, and pinned `body_class_measure_mismatch`
-  failures for sheet volume and non-sheet area. Sheet
-  bounding box, center-of-area, and the broader geometry/scale matrix remain
-  Unqualified.
+  failures for sheet volume and non-sheet area. PR #212 adds body-class-checked
+  bounding box and center-of-area, including an offset-hole centroid oracle,
+  through direct and batch WASM. These bounded sheet cells are qualified in
+  review; the broader geometry/scale matrix remains Unqualified.
 
 ### Tessellation
 
@@ -260,8 +263,9 @@ does not itself promote or demote anything.
   watertight. In-review PR #210 adds deterministic open sheet tessellation for
   a trimmed NURBS patch and pins that solid-only proximity welding cannot erase
   an intentional triangular hole smaller than the requested deflection.
-  Broader sheet geometry/scale/parity and performance cells remain
-  Unqualified.
+  PR #213 carries that patch through native and direct/batch WASM STEP exchange.
+  The unit-scale patch workflow is qualified in review; broader sheet
+  geometry/scale/parity and performance cells remain Unqualified.
 
 ### Validation and healing
 
@@ -287,11 +291,15 @@ does not itself promote or demote anything.
   Loop/Coedge authority round-trips both positioned periodic-seam branches and
   winding counts. The external analytic fillet fixture retains all 48 pcurves
   through byte-identical write/read/write, and malformed count/endpoint
-  authority rolls the import back.
-- Known gaps: inner-shell export, attribute round trips
+  authority rolls the import back. PR #213 adds deterministic first-class
+  sheet exchange as `SHELL_BASED_SURFACE_MODEL` over open or closed shells,
+  including a trimmed bilinear NURBS patch through native, direct WASM, and
+  batch WASM paths; wrong-class and malformed imports fail transactionally.
+- Known gaps: attribute round trips
   (`docs/design/deferred-e3b-step-names-and-colors.md`), AP242 schema output,
   general SameParameter proofs beyond the certified curve/surface matrix, and
-  validation properties for independent non-solid geometry.
+  validation properties for independent non-solid geometry (currently a typed
+  writer refusal).
 
 ### Sketch (GCS)
 

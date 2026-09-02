@@ -466,9 +466,9 @@ analysis tolerance-statistics pass becomes the reporting backbone.
 
 Parasolid bodies are solid, sheet, wire, or general, and booleans work across
 them — trim a sheet by a solid, split a solid into cells, imprint edges
-without removing material. In Remus the sheet/wire/general axis of the
-capability matrix is all-Unqualified, and multi-region results hide behind a
-`TODO: use a Compound` in the shell assembler. This is how surface-modeling
+without removing material. At RFC acceptance the sheet/wire/general axis of
+the capability matrix was all-Unqualified, and multi-region results hide
+behind a `TODO: use a Compound` in the shell assembler. This is how surface-modeling
 workflows and principled multi-body results arrive.
 
 ### 4.1 RFC 0005: body classes & cellular results (M)
@@ -488,18 +488,20 @@ semantics for sheet operands (side-of, not in/out).
 Delivered in [PR #127](https://github.com/esaueng/remus/pull/127): the RFC
 maps the existing capability-matrix body axis to solid, sheet, wire, and
 general-body semantics; side-of sheet classification; Compound-first
-cellular results; STEP entities; and construction-derived evolution. All
-non-solid cells remain Unqualified until Issues 4.2–4.7 land.
+cellular results; STEP entities; and construction-derived evolution. Non-solid
+cells start Unqualified and are promoted only by the bounded evidence of
+Issues 4.2–4.7; Issue 4.2's bounded sheet workflow is now qualified in review.
 
 ### 4.2 Sheet bodies first-class (M)
 
 `crates/topology/src/shell.rs` · `crates/check/src/validate/` ·
 `crates/operations/src/tessellate/` · `crates/io/src/step/`
 
-Partial, in review in [PR #209](https://github.com/esaueng/remus/pull/209),
-[PR #210](https://github.com/esaueng/remus/pull/210), and
-[PR #211](https://github.com/esaueng/remus/pull/211), and
-[PR #212](https://github.com/esaueng/remus/pull/212): RFC 0005 Stage 1 adds the
+Implemented, in review in [PR #209](https://github.com/esaueng/remus/pull/209),
+[PR #210](https://github.com/esaueng/remus/pull/210),
+[PR #211](https://github.com/esaueng/remus/pull/211),
+[PR #212](https://github.com/esaueng/remus/pull/212), and
+[PR #213](https://github.com/esaueng/remus/pull/213): RFC 0005 Stage 1 adds the
 public solid/sheet/wire/general vocabulary, validated shell/wire tags,
 class-aware validation profiles, stable diagnostics, and backward-compatible
 arena-v3 tags. The operations tranches add transactional face-set
@@ -507,8 +509,11 @@ construction, body-level area, bounding box, center-of-area, typed volume
 refusal, boundary-preserving tessellation, and direct/batch WASM contracts.
 Arena v4 adds standalone sheet roots with exact trimmed-NURBS/coedge-pcurve
 replay, root order and duplicate preservation, typed transactional refusal,
-WASM parity, and frozen v3 writer bytes. STEP round-trip remains required; the
-Issue 4.2 exit gate and capability-cell promotions stay open.
+WASM parity, and frozen v3 writer bytes. STEP body-aware APIs now map tagged
+sheets to `SHELL_BASED_SURFACE_MODEL` over `OPEN_SHELL` or `CLOSED_SHELL`,
+preserve representation-scoped tolerance authority, keep solid roots distinct,
+and expose direct/batch WASM parity. The implementation exit witness is green;
+the issue remains in review until the stack merges.
 
 Open shells as bodies with their own validation profile (free boundary
 allowed and reported, orientation consistent), area properties, tessellation,

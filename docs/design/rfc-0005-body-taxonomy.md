@@ -4,17 +4,20 @@ Status: accepted in PR #127; implementation staged as the P-class program
 doc's Issues 4.2–4.7 (M4). The Stage 1 class, validation, and arena-tagging
 substrate is in review in PR #209; the Stage 2 operations/WASM tranche is in
 review in PR #210, and standalone arena-v4 sheet roots are in review in PR
-#211. Sheet bounding box and center-of-area are in review in PR #212. None
-completes Issue 4.2. This RFC re-declares the capability matrix's body-type axis —
+#211. Sheet bounding box and center-of-area are in review in PR #212; STEP
+surface-model exchange is in review in PR #213. Together they implement Issue
+4.2's exit gate, but the stack is not merged. This RFC re-declares the
+capability matrix's body-type axis —
 "solid, sheet, wire, compound, cavity-bearing solid, and later general body"
 (`docs/kernel-maturity/capability-matrix.md`) — against concrete semantics;
-every sheet/wire/general cell is Unqualified by default today.
+every sheet/wire/general cell starts Unqualified, with bounded Issue 4.2 sheet
+cells now qualified in review by the capability matrix.
 
 Characterization anchors: `crates/algo/src/builder/builder_solid.rs` fn
 `assemble` (single-solid convention, TODO below); `check_shell_closed`
-(`crates/check/src/validate/shell.rs` — an open shell is an unconditional
-validation error today); `crates/io/src/step/writer.rs`
-(`MANIFOLD_SOLID_BREP` only).
+(`crates/check/src/validate/shell.rs` — an open shell was an unconditional
+validation error before Stage 1); `crates/io/src/step/writer.rs`
+(the pre-Stage-2 `MANIFOLD_SOLID_BREP`-only baseline).
 
 ## Problem
 
@@ -181,11 +184,13 @@ Delivered for review in PR #209: the public body-class vocabulary and
 validated tags, class-aware solid/sheet/wire validation, stable diagnostics,
 and backward-compatible arena-v3 tags. PR #210 supplies the first sheet L3
 and WASM entry points. PR #211 adds versioned standalone sheet roots while
-freezing existing v3 writer bytes; wire roots remain a later tranche. STEP
-remains, so the Issue 4.2 exit gate is still open.
+freezing existing v3 writer bytes; wire roots remain a later tranche. PR #212
+adds spatial properties and PR #213 adds STEP surface-model exchange. The full
+Issue 4.2 implementation is in review and its exit witness is green; merge
+disposition remains open.
 
-Characterization: a test pins that an open shell errors on `ShellClosed`
-today; it flips to the sheet profile emitting the free-boundary warning.
+Characterization: the pre-Stage-1 test pinned that an open shell errored on
+`ShellClosed`; it flips to the sheet profile emitting the free-boundary warning.
 Exit gate: an open shell constructs as a sheet body and validates clean
 (warning only); an untagged shell passed where a solid is required refuses
 typed; legacy arena round-trip byte-stable.
@@ -201,21 +206,24 @@ over `OPEN_SHELL` (and `CLOSED_SHELL` when closed) both directions;
 construct/measure/mesh bindings with `executeBatch` companions and
 contract tests.
 
-Delivered in part for review in PR #210, PR #211, and PR #212: construction is
+Delivered for review in PR #210, PR #211, PR #212, and PR #213: construction is
 transactional and validation-gated; body dispatch exposes sheet area, bounding
 box, center-of-area, and typed volume refusal; the open-boundary tessellator
 omits solid-only proximity repairs so an intentional sub-deflection trim
 survives; direct and batch WASM expose the same contracts. Arena v4 preserves
 standalone sheet roots, trimmed NURBS authority, pcurves, root order, and
-duplicates without changing v3 bytes. STEP `SHELL_BASED_SURFACE_MODEL` remains
-before Stage 2 and Issue 4.2 close.
+duplicates without changing v3 bytes. STEP maps tagged sheets through
+`SHELL_BASED_SURFACE_MODEL` over `OPEN_SHELL` or `CLOSED_SHELL`, preserves the
+owning representation's tolerance cap, and leaves legacy solid-only entry
+points unchanged. CAx-IF volume validation remains explicitly solid-only.
 
 Characterization: before Stage 1, a NURBS patch could be neither exported nor
 validated as a body. PR #210 pins construct → validate → area → tessellate
 for a trimmed NURBS patch, deterministic open meshing, and transactional
-refusal of a disconnected face set. Exit gate (Issue 4.2): that patch also
-survives STEP round-trip; validation separates "open by design" from "should
-be closed".
+refusal of a disconnected face set. PR #213 completes the implementation exit
+witness: that patch survives deterministic STEP write → read → write through
+native, direct WASM, and batch WASM paths; open sheets retain a free-boundary
+warning while closed sheets import without one.
 
 ### Stage 3 — split solid by sheet
 
