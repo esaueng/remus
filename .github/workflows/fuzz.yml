@@ -70,3 +70,14 @@ jobs:
           echo "$RUNNER_TEMP/cargo-fuzz" >> "$GITHUB_PATH"
       - name: Run bounded smoke fuzzing
         run: cargo +nightly fuzz run ${{ matrix.target }} -- -max_total_time=120 -rss_limit_mb=2048
+      # libFuzzer writes the crashing input under fuzz/artifacts/<target>/;
+      # without this upload the only trace of a finding is the panic line in
+      # the log, and the input itself is lost with the runner.
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}/
+          if-no-files-found: ignore
+          retention-days: 30

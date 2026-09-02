@@ -10,7 +10,10 @@
 # the blend, offset and modifier code that produced every defect closed in this
 # batch. Those crates are added below.
 
-timeout = 120
+# No fixed `timeout`: it also caps the unmutated baseline run, and the five
+# examined packages' tests take longer than any per-mutant cap we would want
+# (the weekly job died on "baseline TIMEOUT" every run once operations was
+# added). The per-mutant timeout is derived from the measured baseline instead.
 
 examine_globs = [
   # Core numerics and the boolean algorithm.
