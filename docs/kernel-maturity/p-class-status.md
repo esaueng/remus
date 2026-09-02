@@ -32,7 +32,7 @@ Issue 2.0's measured baseline is
 | 3.5 Import and sew integration | Pending | — |
 | 3.6 Downstream disclosure | Pending | — |
 | 4.1 RFC 0005 | Merged — staged solid/sheet/wire/general-body semantics, side-of sheet classification, Compound-first cellular results, STEP mapping, and evolution contract | [#127](https://github.com/esaueng/remus/pull/127) |
-| 4.2 Sheet bodies first-class | Pending | — |
+| 4.2 Sheet bodies first-class | Partial, in review — RFC 0005 Stage 1 supplies body-class tags, class-aware validation, stable diagnostics, and additive arena-v3 fields; standalone sheet roots, construction, area/tessellation, STEP, and WASM remain | [#209](https://github.com/esaueng/remus/pull/209) |
 | 4.3 Split solid by sheet | Pending | — |
 | 4.4 Trim sheet by solid / sheet × sheet | Pending | — |
 | 4.5 Imprint | Pending | — |
