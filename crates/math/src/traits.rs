@@ -3,11 +3,15 @@
 //! These traits provide a common interface for evaluating both analytic
 //! geometry types (circles, cylinders, etc.) and NURBS representations.
 
+use crate::context::OperationContext;
 use crate::curves::{Circle3D, Ellipse3D};
 use crate::nurbs::curve::NurbsCurve;
 use crate::nurbs::projection::project_point_to_surface;
 use crate::nurbs::surface::NurbsSurface;
-use crate::surfaces::{ConicalSurface, CylindricalSurface, SphericalSurface, ToroidalSurface};
+use crate::surfaces::{
+    ConicalSurface, CylindricalSurface, SphericalSurface, SurfaceOfLinearExtrusion,
+    SurfaceOfRevolution, ToroidalSurface,
+};
 use crate::vec::{Point3, Vec3};
 
 /// Unified interface for parametric surface evaluation.
@@ -211,6 +215,72 @@ impl ParametricSurface for NurbsSurface {
     fn partial_v(&self, u: f64, v: f64) -> Vec3 {
         let d = self.derivatives(u, v, 1);
         d[0][1]
+    }
+}
+
+impl ParametricSurface for SurfaceOfRevolution {
+    fn evaluate(&self, u: f64, v: f64) -> Point3 {
+        self.evaluate_checked(u, v)
+            .unwrap_or_else(|_| Point3::new(f64::NAN, f64::NAN, f64::NAN))
+    }
+
+    fn normal(&self, u: f64, v: f64) -> Vec3 {
+        self.normal_checked(u, v)
+            .unwrap_or_else(|_| Vec3::new(f64::NAN, f64::NAN, f64::NAN))
+    }
+
+    fn project_point(&self, point: Point3) -> (f64, f64) {
+        self.project_point_checked(
+            point,
+            self.profile().compatibility_bounds(point),
+            &OperationContext::new(),
+        )
+        .map_or((f64::NAN, f64::NAN), |projection| {
+            (projection.u, projection.v)
+        })
+    }
+
+    fn partial_u(&self, u: f64, v: f64) -> Vec3 {
+        self.derivatives_checked(u, v)
+            .map_or_else(|_| Vec3::new(f64::NAN, f64::NAN, f64::NAN), |d| d.1)
+    }
+
+    fn partial_v(&self, u: f64, v: f64) -> Vec3 {
+        self.derivatives_checked(u, v)
+            .map_or_else(|_| Vec3::new(f64::NAN, f64::NAN, f64::NAN), |d| d.2)
+    }
+}
+
+impl ParametricSurface for SurfaceOfLinearExtrusion {
+    fn evaluate(&self, u: f64, v: f64) -> Point3 {
+        self.evaluate_checked(u, v)
+            .unwrap_or_else(|_| Point3::new(f64::NAN, f64::NAN, f64::NAN))
+    }
+
+    fn normal(&self, u: f64, v: f64) -> Vec3 {
+        self.normal_checked(u, v)
+            .unwrap_or_else(|_| Vec3::new(f64::NAN, f64::NAN, f64::NAN))
+    }
+
+    fn project_point(&self, point: Point3) -> (f64, f64) {
+        self.project_point_checked(
+            point,
+            self.profile().compatibility_bounds(point),
+            &OperationContext::new(),
+        )
+        .map_or((f64::NAN, f64::NAN), |projection| {
+            (projection.u, projection.v)
+        })
+    }
+
+    fn partial_u(&self, u: f64, v: f64) -> Vec3 {
+        self.derivatives_checked(u, v)
+            .map_or_else(|_| Vec3::new(f64::NAN, f64::NAN, f64::NAN), |d| d.1)
+    }
+
+    fn partial_v(&self, u: f64, v: f64) -> Vec3 {
+        self.derivatives_checked(u, v)
+            .map_or_else(|_| Vec3::new(f64::NAN, f64::NAN, f64::NAN), |d| d.2)
     }
 }
 
