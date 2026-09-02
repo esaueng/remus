@@ -274,6 +274,10 @@ impl Face {
     }
 
     /// Sets the outer boundary wire.
+    #[deprecated(
+        since = "0.1.0",
+        note = "use Topology::set_face_boundary_wires so Loop/Coedge authority stays synchronized"
+    )]
     pub fn set_outer_wire(&mut self, wire_id: WireId) {
         self.outer_wire = wire_id;
     }
@@ -303,6 +307,10 @@ impl Face {
     }
 
     /// Returns a mutable reference to the inner wires list.
+    #[deprecated(
+        since = "0.1.0",
+        note = "use Topology::set_face_boundary_wires so Loop/Coedge authority stays synchronized"
+    )]
     pub fn inner_wires_mut(&mut self) -> &mut Vec<WireId> {
         &mut self.inner_wires
     }
