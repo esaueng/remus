@@ -8,7 +8,7 @@ use wasm_bindgen::prelude::*;
 use remus_math::diagnostic::{DetailValue, ToDiagnostic};
 
 use crate::error::{WasmError, validate_positive};
-use crate::handles::solid_id_to_u32;
+use crate::handles::{shell_id_to_u32, solid_id_to_u32};
 use crate::helpers::TOL;
 use crate::kernel::BrepKernel;
 
@@ -719,7 +719,7 @@ impl BrepKernel {
 
     // ── Arena debug serialization ─────────────────────────────────
 
-    /// Serialize several solids into one version 2 arena document.
+    /// Serialize several solids into one version 3 arena document.
     ///
     /// Shared topology is encoded once with dense local indices. Input order
     /// and duplicate handles are preserved as document roots. This format
@@ -739,7 +739,7 @@ impl BrepKernel {
         )?)
     }
 
-    /// Reconstruct solid roots from a version 1 or version 2 arena document.
+    /// Reconstruct solid roots from a version 1, 2, 3, or 4 arena document.
     ///
     /// Every restored entity receives a fresh kernel handle. Documents with
     /// compound roots must be loaded through the native Rust document API.
@@ -763,7 +763,7 @@ impl BrepKernel {
     /// and replaying them in a native Rust harness to reproduce
     /// sub-ULP-sensitive boolean behavior.
     ///
-    /// This writer emits a single-root version 2 document. Returns a
+    /// This writer emits a single-root version 3 document. Returns a
     /// `Uint8Array` consumable by
     /// `remus_io::arena_io::deserialize_solid`.
     ///
@@ -777,7 +777,7 @@ impl BrepKernel {
         Ok(bytes)
     }
 
-    /// Reconstruct one solid from a version 1 or single-root version 2 buffer.
+    /// Reconstruct one solid from a version 1, 2, 3, or 4 single-root buffer.
     ///
     /// # Errors
     ///
@@ -786,6 +786,62 @@ impl BrepKernel {
     pub fn deserialize_solid(&mut self, data: &[u8]) -> Result<u32, JsError> {
         let solid_id = remus_io::arena_io::deserialize_solid(data, self.topo_mut())?;
         Ok(solid_id_to_u32(solid_id))
+    }
+
+    /// Serialize several first-class sheet bodies into a version 4 arena document.
+    ///
+    /// Shared topology is encoded once with dense local indices. Input order
+    /// and duplicate handles are preserved as document roots.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any shell handle is invalid, is not tagged as a
+    /// sheet, or serialization fails.
+    #[wasm_bindgen(js_name = "serializeSheets")]
+    pub fn serialize_sheets(&self, sheets: &[u32]) -> Result<Vec<u8>, JsError> {
+        let sheet_ids = sheets
+            .iter()
+            .map(|&handle| self.resolve_shell(handle))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(remus_io::arena_io::serialize_sheets(
+            &self.topo, &sheet_ids,
+        )?)
+    }
+
+    /// Reconstruct standalone sheet roots from a version 4 arena document.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the buffer is malformed, contains solid or compound
+    /// roots, or reconstruction fails.
+    #[wasm_bindgen(js_name = "deserializeSheets")]
+    pub fn deserialize_sheets(&mut self, data: &[u8]) -> Result<Vec<u32>, JsError> {
+        let sheet_ids = remus_io::arena_io::deserialize_sheets(data, self.topo_mut())?;
+        Ok(sheet_ids.into_iter().map(shell_id_to_u32).collect())
+    }
+
+    /// Serialize one first-class sheet body into a version 4 arena document.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the shell handle is invalid, is not tagged as a
+    /// sheet, or serialization fails.
+    #[wasm_bindgen(js_name = "serializeSheet")]
+    pub fn serialize_sheet(&self, sheet: u32) -> Result<Vec<u8>, JsError> {
+        let sheet_id = self.resolve_shell(sheet)?;
+        Ok(remus_io::arena_io::serialize_sheet(&self.topo, sheet_id)?)
+    }
+
+    /// Reconstruct one first-class sheet body from a version 4 arena document.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the buffer is malformed, does not contain exactly
+    /// one sheet root, or reconstruction fails.
+    #[wasm_bindgen(js_name = "deserializeSheet")]
+    pub fn deserialize_sheet(&mut self, data: &[u8]) -> Result<u32, JsError> {
+        let sheet_id = remus_io::arena_io::deserialize_sheet(data, self.topo_mut())?;
+        Ok(shell_id_to_u32(sheet_id))
     }
 }
 
@@ -1016,5 +1072,45 @@ mod tests {
         assert!(restored[0] > sentinel);
         assert!((destination.volume(restored[0], 0.1).unwrap() - 24.0).abs() < 1e-9);
         assert!((destination.volume(restored[1], 0.1).unwrap() - 6.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn sheet_arena_bindings_preserve_root_order_class_and_fresh_handles() {
+        let mut source = BrepKernel::new();
+        let face = remus_topology::builder::make_rectangle_face(source.topo_mut(), 1.5, 0.5, 1e-7)
+            .unwrap();
+        let sheet_id = remus_operations::sew::make_sheet_body(source.topo_mut(), &[face]).unwrap();
+        let sheet = shell_id_to_u32(sheet_id);
+        let bytes = source.serialize_sheets(&[sheet, sheet]).unwrap();
+
+        let mut destination = BrepKernel::new();
+        let sentinel = destination
+            .topo_mut()
+            .add_shell(remus_topology::shell::Shell::empty());
+        let restored = destination.deserialize_sheets(&bytes).unwrap();
+
+        assert_eq!(restored.len(), 2);
+        assert_eq!(restored[0], restored[1]);
+        assert!(restored[0] > shell_id_to_u32(sentinel));
+        assert_eq!(
+            destination
+                .topo()
+                .shell(destination.resolve_shell(restored[0]).unwrap())
+                .unwrap()
+                .body_class(),
+            remus_topology::BodyClass::Sheet
+        );
+
+        let single = source.serialize_sheet(sheet).unwrap();
+        let mut single_destination = BrepKernel::new();
+        let restored_single = single_destination.deserialize_sheet(&single).unwrap();
+        assert_eq!(
+            single_destination
+                .topo()
+                .shell(single_destination.resolve_shell(restored_single).unwrap())
+                .unwrap()
+                .body_class(),
+            remus_topology::BodyClass::Sheet
+        );
     }
 }
