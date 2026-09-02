@@ -13,19 +13,32 @@ re-evaluate on both input surfaces. Its corpus includes a clustered marching
 section that previously made a cubic refit leave the known plane.
 
 `topology_mutation` builds a bounded box (census and `dx * dy * dz` known by
-construction) and drives byte-selected topology mutations over it: face-loop
-derivation and re-derivation, validated rollback of a deliberately broken
-wire, rollback of staged allocations and of in-transaction
-re-derivations/deletions, checkpoint restore, unreferenced-solid deletion,
-and referenced-deletion refusal. The oracles are the mutation contracts:
-comprehensive validation and the closed-manifold census hold after every
-step, rollback reproduces the exact live state while checkpoint restore
-keeps window retirements tombstoned without dangling the derivation map,
-retired handles fail typed lookups forever and are never reissued, a refused
+construction) and drives byte-selected topology mutations over it:
+authoritative face-loop identity (`build_face_loops` is read-only on a
+derived face) and retirement through the sanctioned wire replacement,
+validated rollback of a deliberately broken wire, rollback of staged
+allocations and of in-transaction wire replacements/deletions, checkpoint
+restore, unreferenced-solid deletion, and referenced-deletion refusal. The
+oracles are the mutation contracts: comprehensive validation and the
+closed-manifold census hold after every step, rollback reproduces the exact
+live state while checkpoint restore keeps window retirements tombstoned and
+promotes the affected face onto fresh handles rather than dangling, retired
+handles fail typed lookups forever and are never reissued, a refused
 deletion leaves no partial mutation, and an accepted one retires exactly the
 unshared tree — a guard box and an unrelated compound must survive. Its
 corpus includes a checkpoint re-derivation seed that previously left the
-loop-derivation map referencing retired loops.
+loop-derivation map referencing retired loops, and the two seeds from the
+coedge-authority flip (PR #179): a re-derivation whose handles must now be
+preserved, and a guard-box sweep whose derivation census must count the
+loops `add_face` installs.
+
+`modifier_ops` builds a bored or bossed primitive and applies one fillet,
+chamfer, shell or draft, checking hole preservation, closed-manifold census,
+watertight tessellation, scale invariance and integrator agreement. Its
+corpus includes a draft seed whose 1° outward taper of a narrow facet slid
+the facet's corners past each other; the folded face passed validation and
+the volume sign check and only showed as four wrongly-wound half-edges in the
+fine tessellation, and is now refused by name.
 
 `arena_roundtrip` builds bounded boxes and cylinders (census and closed-form
 volumes known by construction) with duplicate roots, shared-shell aliases,
