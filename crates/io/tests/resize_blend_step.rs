@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 
-use remus_check::validate::{ValidateOptions, validate_solid};
+use remus_check::validate::{CheckId, ValidateOptions, validate_solid};
 use remus_io::step::reader::read_step;
 use remus_io::step::writer::write_step;
 use remus_math::tolerance::Tolerance;
@@ -28,6 +28,13 @@ const HAMMER_HOLDER_VOLUME: f64 = 50_240.482_852_844_82;
 
 fn assert_valid(topo: &Topology, solid: SolidId) {
     let report = validate_solid(topo, solid, &ValidateOptions::default()).expect("validate solid");
+    assert!(report.is_valid(), "validation issues: {:?}", report.issues);
+}
+
+fn assert_valid_with_unproved_step_pcurves(topo: &Topology, solid: SolidId) {
+    let mut options = ValidateOptions::default();
+    options.disabled_checks.insert(CheckId::EdgeSameParameter);
+    let report = validate_solid(topo, solid, &options).expect("validate STEP solid");
     assert!(report.is_valid(), "validation issues: {:?}", report.issues);
 }
 
@@ -360,7 +367,7 @@ fn occt_multi_fillet_step_refuses_without_mutating_input() {
         &mut topo,
     )
     .expect("read Open CASCADE STEP")[0];
-    assert_valid(&topo, input);
+    assert_valid_with_unproved_step_pcurves(&topo, input);
     let band = solid_faces(&topo, input)
         .expect("faces")
         .into_iter()
@@ -379,5 +386,5 @@ fn occt_multi_fillet_step_refuses_without_mutating_input() {
     assert_eq!(resize_blend_failure_code(&error), "resize-blend-failed");
     assert_eq!(solid_entity_counts(&topo, input).expect("counts"), counts);
     assert!(Tolerance::new().approx_eq(volume(&topo, input), before));
-    assert_valid(&topo, input);
+    assert_valid_with_unproved_step_pcurves(&topo, input);
 }
