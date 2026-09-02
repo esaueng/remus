@@ -29,7 +29,7 @@ that flips them; agents do not flip them autonomously.
 | O2.1d Revolution/extrusion I/O wiring | B | Pending | — |
 | O2.1e Revolution/extrusion boolean arms | B | Pending | — |
 | O2.2 Conic edges through booleans | B (M2 track) | Pending | — |
-| O2.3a Splitter inventory + design note | A | Pending | — |
+| O2.3a Splitter inventory + design note | A | Complete — all ten callable special-case entry points are mapped to their geometric gates and direct or foil fixtures; the accepted design defines an exact-refined deterministic DCEL with certified event identity, periodic seam/pole quotienting, typed failures, property gates, and a staged three-entry-point deletion floor; positive isolation gaps for sector splitting and boundary chaining are explicit | [#193](https://github.com/esaueng/remus/pull/193) |
 | O2.3b UV-arrangement core | B | Pending | — |
 | O2.3c Winding classification bridge | B | Pending | — |
 | O2.3d Special-case migration + ratchet | B | Pending | — |
