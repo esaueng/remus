@@ -288,6 +288,277 @@ pub fn validate_loop_connected(
     Ok(())
 }
 
+/// Coverage evidence from whole-topology Loop/Coedge validation.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BoundaryAuthoritySummary {
+    /// Live faces whose authoritative boundaries were checked.
+    pub faces: usize,
+    /// Live loops owned by those faces.
+    pub loops: usize,
+    /// Live coedges owned by those loops.
+    pub coedges: usize,
+    /// Edge/face pairs used twice as independently addressable seam branches.
+    pub seam_edges: usize,
+    /// Stored pcurve branches across complete seams.
+    pub stored_seam_branches: usize,
+}
+
+/// Failure while validating whole-topology Loop/Coedge authority.
+///
+/// This additive envelope keeps the public exhaustive [`TopologyError`] enum
+/// source-compatible while assigning stable diagnostics to ownership and seam
+/// completeness failures introduced by RFC 0002.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum BoundaryAuthorityError {
+    /// A referenced topology entity is stale or a local structural invariant failed.
+    #[error(transparent)]
+    Topology(#[from] TopologyError),
+    /// A live loop is unowned or reused by several faces.
+    #[error("loop {loop_id:?} has {owners} face owners (expected exactly one)")]
+    LoopOwnershipInvalid {
+        /// Invalid live loop.
+        loop_id: crate::face_loop::LoopId,
+        /// Number of owning faces found.
+        owners: usize,
+    },
+    /// A live coedge is unowned or reused by several loops.
+    #[error("coedge {coedge:?} has {owners} loop owners (expected exactly one)")]
+    CoedgeOwnershipInvalid {
+        /// Invalid live coedge.
+        coedge: crate::coedge::CoedgeId,
+        /// Number of owning faces or loops found.
+        owners: usize,
+    },
+    /// Two uses share one compatibility key and cannot be addressed independently.
+    #[error("edge {edge:?} on face {face:?} has duplicate {orientation} boundary uses")]
+    DuplicateOrientedUse {
+        /// Repeated edge.
+        edge: crate::edge::EdgeId,
+        /// Owning face.
+        face: crate::face::FaceId,
+        /// Stable orientation label.
+        orientation: &'static str,
+    },
+    /// The compatibility index does not resolve to the authoritative coedge.
+    #[error(
+        "{orientation} use of edge {edge:?} on face {face:?} is not indexed to coedge {coedge:?}"
+    )]
+    IndexMismatch {
+        /// Edge used by the coedge.
+        edge: crate::edge::EdgeId,
+        /// Owning face.
+        face: crate::face::FaceId,
+        /// Authoritative coedge.
+        coedge: crate::coedge::CoedgeId,
+        /// Stable orientation label.
+        orientation: &'static str,
+    },
+    /// One branch of a repeated seam has pcurve authority while another does not.
+    #[error(
+        "seam edge {edge:?} on face {face:?} stores {stored} of {uses} required pcurve branches"
+    )]
+    IncompleteSeamPcurves {
+        /// Repeated seam edge.
+        edge: crate::edge::EdgeId,
+        /// Owning face.
+        face: crate::face::FaceId,
+        /// Number of authoritative seam uses.
+        uses: usize,
+        /// Number of those uses carrying pcurves.
+        stored: usize,
+    },
+    /// Periodic lift metadata exists without a pcurve branch to lift.
+    #[error("coedge {coedge:?} carries periodic winding without a pcurve")]
+    WindingWithoutPcurve {
+        /// Invalid coedge use.
+        coedge: crate::coedge::CoedgeId,
+    },
+}
+
+impl remus_math::diagnostic::ToDiagnostic for BoundaryAuthorityError {
+    fn diagnostic(&self) -> remus_math::diagnostic::Diagnostic {
+        use remus_math::diagnostic::{Diagnostic, FailureCategory};
+
+        match self {
+            Self::Topology(error) => error.diagnostic(),
+            Self::LoopOwnershipInvalid { loop_id, owners } => Diagnostic::new(
+                FailureCategory::InvalidTopology,
+                "loop_ownership_invalid",
+                self.to_string(),
+            )
+            .with_detail("loop", loop_id.index())
+            .with_detail("owners", *owners),
+            Self::CoedgeOwnershipInvalid { coedge, owners } => Diagnostic::new(
+                FailureCategory::InvalidTopology,
+                "coedge_ownership_invalid",
+                self.to_string(),
+            )
+            .with_detail("coedge", coedge.index())
+            .with_detail("owners", *owners),
+            Self::DuplicateOrientedUse {
+                edge,
+                face,
+                orientation,
+            } => Diagnostic::new(
+                FailureCategory::InvalidTopology,
+                "boundary_use_ambiguous",
+                self.to_string(),
+            )
+            .with_detail("edge", edge.index())
+            .with_detail("face", face.index())
+            .with_detail("orientation", *orientation),
+            Self::IndexMismatch {
+                edge,
+                face,
+                coedge,
+                orientation,
+            } => Diagnostic::new(
+                FailureCategory::Internal,
+                "coedge_index_mismatch",
+                self.to_string(),
+            )
+            .with_detail("edge", edge.index())
+            .with_detail("face", face.index())
+            .with_detail("coedge", coedge.index())
+            .with_detail("orientation", *orientation),
+            Self::IncompleteSeamPcurves {
+                edge,
+                face,
+                uses,
+                stored,
+            } => Diagnostic::new(
+                FailureCategory::InvalidTopology,
+                "seam_pcurve_incomplete",
+                self.to_string(),
+            )
+            .with_detail("edge", edge.index())
+            .with_detail("face", face.index())
+            .with_detail("uses", *uses)
+            .with_detail("stored", *stored),
+            Self::WindingWithoutPcurve { coedge } => Diagnostic::new(
+                FailureCategory::InvalidTopology,
+                "coedge_winding_without_pcurve",
+                self.to_string(),
+            )
+            .with_detail("coedge", coedge.index()),
+        }
+    }
+}
+
+/// Validates every live Loop/Coedge authority record in a topology.
+///
+/// Every face must own a synchronized, connected loop set; every live loop
+/// and coedge must have exactly one matching owner; and the compatibility
+/// `(edge, face, orientation)` index must resolve each use back to its coedge.
+/// A repeated edge on one face is a seam: it must have one forward and one
+/// reverse use, and it may carry either zero pcurves (an honest unsupported
+/// capability) or both branches. A half-populated seam is invalid.
+///
+/// # Errors
+///
+/// Returns [`BoundaryAuthorityError`] for stale references, facade
+/// divergence, disconnected loops, invalid ownership, ambiguous oriented
+/// uses, stale compatibility indexing, incomplete seam branches, or winding
+/// metadata without a pcurve.
+pub fn validate_boundary_authority(
+    topo: &Topology,
+) -> Result<BoundaryAuthoritySummary, BoundaryAuthorityError> {
+    let mut summary = BoundaryAuthoritySummary::default();
+    let mut loop_owners = HashMap::new();
+    let mut coedge_owners = HashMap::new();
+
+    for (face_id, face) in topo.faces().iter() {
+        summary.faces += 1;
+        validate_face_loops(topo, face_id)?;
+        let mut face_uses: HashMap<crate::edge::EdgeId, Vec<_>> = HashMap::new();
+
+        for &loop_id in face.boundary_loops() {
+            *loop_owners.entry(loop_id).or_insert(0usize) += 1;
+            validate_loop_connected(topo, loop_id)?;
+            let boundary_loop = topo.face_loop(loop_id)?;
+            for &coedge_id in boundary_loop.coedges() {
+                *coedge_owners.entry(coedge_id).or_insert(0usize) += 1;
+                let coedge = topo.coedge(coedge_id)?;
+                topo.edge(coedge.edge())?;
+                if coedge.pcurve().is_none()
+                    && coedge.periodic_winding() != crate::coedge::PeriodicWinding::ZERO
+                {
+                    return Err(BoundaryAuthorityError::WindingWithoutPcurve { coedge: coedge_id });
+                }
+                face_uses.entry(coedge.edge()).or_default().push((
+                    coedge_id,
+                    coedge.is_forward(),
+                    coedge.pcurve().is_some(),
+                ));
+            }
+        }
+
+        for (edge, uses) in face_uses {
+            if uses.len() > 2 {
+                return Err(TopologyError::NonManifold {
+                    reason: format!(
+                        "edge {edge:?} is used {} times by face {face_id:?}",
+                        uses.len()
+                    ),
+                }
+                .into());
+            }
+            if uses.len() == 2 && uses[0].1 == uses[1].1 {
+                return Err(BoundaryAuthorityError::DuplicateOrientedUse {
+                    edge,
+                    face: face_id,
+                    orientation: orientation_label(uses[0].1),
+                });
+            }
+            for &(coedge, forward, _) in &uses {
+                if topo.indexed_coedge_use(edge, face_id, forward) != Some(coedge) {
+                    return Err(BoundaryAuthorityError::IndexMismatch {
+                        edge,
+                        face: face_id,
+                        coedge,
+                        orientation: orientation_label(forward),
+                    });
+                }
+            }
+            if uses.len() == 1 {
+                continue;
+            }
+            summary.seam_edges += 1;
+            let stored = uses.iter().filter(|(_, _, stored)| *stored).count();
+            if stored != 0 && stored != uses.len() {
+                return Err(BoundaryAuthorityError::IncompleteSeamPcurves {
+                    edge,
+                    face: face_id,
+                    uses: uses.len(),
+                    stored,
+                });
+            }
+            summary.stored_seam_branches += stored;
+        }
+    }
+
+    for loop_id in topo.live_loop_ids() {
+        let owners = loop_owners.get(&loop_id).copied().unwrap_or(0);
+        if owners != 1 {
+            return Err(BoundaryAuthorityError::LoopOwnershipInvalid { loop_id, owners });
+        }
+        summary.loops += 1;
+    }
+    for coedge_id in topo.live_coedge_ids() {
+        let owners = coedge_owners.get(&coedge_id).copied().unwrap_or(0);
+        if owners != 1 {
+            return Err(BoundaryAuthorityError::CoedgeOwnershipInvalid {
+                coedge: coedge_id,
+                owners,
+            });
+        }
+        summary.coedges += 1;
+    }
+
+    Ok(summary)
+}
+
 /// Result of a `SameParameter` deviation check.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SameParameterReport {
@@ -976,14 +1247,15 @@ pub fn validate_solid_pcurve_contracts(
     let mut summary = PcurveContractSummary::default();
     for face_id in crate::explorer::solid_faces(topo, solid)? {
         let face = topo.face(face_id)?;
-        for wire_id in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
-        {
-            for oriented in topo.wire(wire_id)?.edges() {
+        validate_face_loops(topo, face_id)?;
+        for &loop_id in face.boundary_loops() {
+            for &coedge_id in topo.face_loop(loop_id)?.coedges() {
+                let coedge = topo.coedge(coedge_id)?;
                 summary.boundary_uses += 1;
-                let edge_id = oriented.edge();
-                let forward = oriented.is_forward();
+                let edge_id = coedge.edge();
+                let forward = coedge.is_forward();
                 topo.edge(edge_id)?;
-                if topo.pcurve_oriented(edge_id, face_id, forward).is_none() {
+                if coedge.pcurve().is_none() {
                     continue;
                 }
                 summary.stored_pcurves += 1;
@@ -1326,6 +1598,41 @@ mod tests {
     }
 
     #[test]
+    fn whole_topology_boundary_gate_rejects_duplicate_oriented_uses() {
+        use remus_math::diagnostic::ToDiagnostic;
+
+        let mut topo = Topology::new();
+        let vertex = topo.add_vertex(crate::vertex::Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
+        let edge = topo.add_edge(Edge::new(vertex, vertex, EdgeCurve::Line));
+        let wire = topo.add_wire(
+            Wire::new(
+                vec![OrientedEdge::new(edge, true), OrientedEdge::new(edge, true)],
+                true,
+            )
+            .unwrap(),
+        );
+        let face = topo.add_face(Face::new(
+            wire,
+            Vec::new(),
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+
+        let error = validate_boundary_authority(&topo).unwrap_err();
+        assert!(matches!(
+            error,
+            BoundaryAuthorityError::DuplicateOrientedUse {
+                edge: found_edge,
+                face: found_face,
+                orientation: "forward",
+            } if found_edge == edge && found_face == face
+        ));
+        assert_eq!(error.diagnostic().code(), "boundary_use_ambiguous");
+    }
+
+    #[test]
     fn manifold_two_face_shell() {
         // Two triangular faces sharing one edge — each edge used at most 2 times.
         let mut topo = Topology::new();
@@ -1519,8 +1826,9 @@ mod same_parameter_tests {
     use crate::wire::{OrientedEdge, Wire};
 
     use super::{
-        CurveUseValidationError, check_same_parameter_strict, validate_same_parameter_strict,
-        validate_same_range_strict, validate_solid_pcurve_contracts,
+        BoundaryAuthorityError, CurveUseValidationError, check_same_parameter_strict,
+        validate_boundary_authority, validate_same_parameter_strict, validate_same_range_strict,
+        validate_solid_pcurve_contracts,
     };
 
     const TAU: f64 = std::f64::consts::TAU;
@@ -1680,6 +1988,58 @@ mod same_parameter_tests {
                 TopologyError::SameRangeExceeded { .. }
             ))
         ));
+    }
+
+    #[test]
+    fn whole_topology_boundary_gate_requires_all_or_no_seam_pcurves() {
+        use remus_math::diagnostic::ToDiagnostic;
+
+        let (mut topo, seam, face) = cylinder_seam();
+        let empty = validate_boundary_authority(&topo).unwrap();
+        assert_eq!(empty.faces, 1);
+        assert_eq!(empty.loops, 1);
+        assert_eq!(empty.coedges, 2);
+        assert_eq!(empty.seam_edges, 1);
+        assert_eq!(empty.stored_seam_branches, 0);
+
+        topo.set_pcurve_oriented(seam, face, true, seam_pcurve(0.0, true))
+            .unwrap();
+        let error = validate_boundary_authority(&topo).unwrap_err();
+        assert!(matches!(
+            error,
+            BoundaryAuthorityError::IncompleteSeamPcurves {
+                uses: 2,
+                stored: 1,
+                ..
+            }
+        ));
+        assert_eq!(error.diagnostic().code(), "seam_pcurve_incomplete");
+
+        topo.set_pcurve_oriented(seam, face, false, seam_pcurve(TAU, false))
+            .unwrap();
+        let complete = validate_boundary_authority(&topo).unwrap();
+        assert_eq!(complete.stored_seam_branches, 2);
+    }
+
+    #[test]
+    fn whole_topology_boundary_gate_rejects_winding_without_a_branch() {
+        use remus_math::diagnostic::ToDiagnostic;
+
+        let (mut topo, seam, _) = cylinder_seam();
+        let lifted = topo
+            .coedges_of_edge(seam)
+            .into_iter()
+            .find(|&coedge| !topo.coedge(coedge).unwrap().is_forward())
+            .unwrap();
+        topo.set_coedge_periodic_winding(lifted, crate::PeriodicWinding::new(1, 0))
+            .unwrap();
+
+        let error = validate_boundary_authority(&topo).unwrap_err();
+        assert!(matches!(
+            error,
+            BoundaryAuthorityError::WindingWithoutPcurve { coedge } if coedge == lifted
+        ));
+        assert_eq!(error.diagnostic().code(), "coedge_winding_without_pcurve");
     }
 
     #[test]
