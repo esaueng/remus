@@ -498,15 +498,16 @@ non-solid cells remain Unqualified until Issues 4.2–4.7 land.
 
 Partial, in review in [PR #209](https://github.com/esaueng/remus/pull/209),
 [PR #210](https://github.com/esaueng/remus/pull/210), and
-[PR #211](https://github.com/esaueng/remus/pull/211): RFC 0005 Stage 1 adds
-the public solid/sheet/wire/general vocabulary, validated shell/wire tags,
+[PR #211](https://github.com/esaueng/remus/pull/211), and
+[PR #212](https://github.com/esaueng/remus/pull/212): RFC 0005 Stage 1 adds the
+public solid/sheet/wire/general vocabulary, validated shell/wire tags,
 class-aware validation profiles, stable diagnostics, and backward-compatible
-arena-v3 tags. The operations tranche adds transactional face-set
-construction, body-level area and typed volume refusal, boundary-preserving
-tessellation, and direct/batch WASM contracts. Arena v4 adds standalone sheet
-roots with exact trimmed-NURBS/coedge-pcurve replay, root order and duplicate
-preservation, typed transactional refusal, WASM parity, and frozen v3 writer
-bytes. Bounding box, center-of-area, and STEP round-trip remain required; the
+arena-v3 tags. The operations tranches add transactional face-set
+construction, body-level area, bounding box, center-of-area, typed volume
+refusal, boundary-preserving tessellation, and direct/batch WASM contracts.
+Arena v4 adds standalone sheet roots with exact trimmed-NURBS/coedge-pcurve
+replay, root order and duplicate preservation, typed transactional refusal,
+WASM parity, and frozen v3 writer bytes. STEP round-trip remains required; the
 Issue 4.2 exit gate and capability-cell promotions stay open.
 
 Open shells as bodies with their own validation profile (free boundary

@@ -4,8 +4,8 @@ Status: accepted in PR #127; implementation staged as the P-class program
 doc's Issues 4.2–4.7 (M4). The Stage 1 class, validation, and arena-tagging
 substrate is in review in PR #209; the Stage 2 operations/WASM tranche is in
 review in PR #210, and standalone arena-v4 sheet roots are in review in PR
-#211. None completes Issue 4.2. This RFC re-declares the capability matrix's
-body-type axis —
+#211. Sheet bounding box and center-of-area are in review in PR #212. None
+completes Issue 4.2. This RFC re-declares the capability matrix's body-type axis —
 "solid, sheet, wire, compound, cavity-bearing solid, and later general body"
 (`docs/kernel-maturity/capability-matrix.md`) — against concrete semantics;
 every sheet/wire/general cell is Unqualified by default today.
@@ -201,14 +201,14 @@ over `OPEN_SHELL` (and `CLOSED_SHELL` when closed) both directions;
 construct/measure/mesh bindings with `executeBatch` companions and
 contract tests.
 
-Delivered in part for review in PR #210 and PR #211: construction is
-transactional and validation-gated; body dispatch exposes sheet area and typed
-volume refusal; the open-boundary tessellator omits solid-only proximity
-repairs so an intentional sub-deflection trim survives; direct and batch WASM
-expose the same contracts. Arena v4 now preserves standalone sheet roots,
-trimmed NURBS authority, pcurves, root order, and duplicates without changing
-v3 bytes. Bounding box, center-of-area, and STEP
-`SHELL_BASED_SURFACE_MODEL` remain before Stage 2 and Issue 4.2 close.
+Delivered in part for review in PR #210, PR #211, and PR #212: construction is
+transactional and validation-gated; body dispatch exposes sheet area, bounding
+box, center-of-area, and typed volume refusal; the open-boundary tessellator
+omits solid-only proximity repairs so an intentional sub-deflection trim
+survives; direct and batch WASM expose the same contracts. Arena v4 preserves
+standalone sheet roots, trimmed NURBS authority, pcurves, root order, and
+duplicates without changing v3 bytes. STEP `SHELL_BASED_SURFACE_MODEL` remains
+before Stage 2 and Issue 4.2 close.
 
 Characterization: before Stage 1, a NURBS patch could be neither exported nor
 validated as a body. PR #210 pins construct → validate → area → tessellate
