@@ -2081,6 +2081,64 @@ mod tests {
 
     use super::*;
 
+    /// The remove/rebuild path is the primary blend-aware planar move; its
+    /// caller silently falls back to the rigid translation path when it
+    /// returns `Ok(None)`, so mutation testing found that disabling it
+    /// outright went unnoticed by every test. Pin that it succeeds, on its
+    /// own, for the canonical filleted box.
+    #[test]
+    fn remove_rebuild_moves_a_planar_support_through_its_box_blend() {
+        use remus_topology::explorer::{solid_edges, solid_entity_counts, solid_faces};
+
+        let mut topo = Topology::new();
+        let sharp = crate::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+        let edge = solid_edges(&topo, sharp).unwrap()[0];
+        let solid = fillet_v2(&mut topo, sharp, &[edge], 1.0).unwrap().solid;
+        let band = solid_faces(&topo, solid)
+            .unwrap()
+            .into_iter()
+            .find(|&face| {
+                matches!(
+                    topo.face(face).unwrap().surface(),
+                    FaceSurface::Cylinder(cylinder)
+                        if Tolerance::new().approx_eq(cylinder.radius(), 1.0)
+                )
+            })
+            .unwrap();
+        // One of the band's two tangent supports — not an end cap, which
+        // shares an edge with the band but is not tangent to it and is
+        // therefore an ordinary planar move.
+        let support = describe_band(&topo, solid, band).unwrap().supports[0];
+        assert!(
+            matches!(
+                topo.face(support).unwrap().surface(),
+                FaceSurface::Plane { .. }
+            ),
+            "box blend supports are planar"
+        );
+        let source_counts = solid_entity_counts(&topo, solid).unwrap();
+        // Closed forms: a 10-cube minus one r=1 edge fillet, then the same
+        // fillet on an 11 × 10 × 10 block once the support has moved by 1.
+        let fillet_removed = (1.0 - std::f64::consts::FRAC_PI_4) * 10.0;
+        let source_volume = crate::measure::solid_volume(&topo, solid, 0.05).unwrap();
+        assert!(
+            (source_volume - (1000.0 - fillet_removed)).abs() < 1e-3 * 1000.0,
+            "fixture volume {source_volume} is not a 10-cube minus one edge fillet"
+        );
+
+        let moved = move_planar_faces_with_blends_remove_rebuild(&mut topo, solid, &[support], 1.0)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(solid_entity_counts(&topo, moved).unwrap(), source_counts);
+        let moved_volume = crate::measure::solid_volume(&topo, moved, 0.05).unwrap();
+        let expected = 1100.0 - fillet_removed;
+        assert!(
+            (moved_volume - expected).abs() < 1e-3 * expected,
+            "moving the support by 1 must lengthen the filleted block: {moved_volume} vs {expected}"
+        );
+    }
+
     #[test]
     fn recovered_closed_circle_has_certified_full_turn_authority() {
         let mut topo = Topology::new();
