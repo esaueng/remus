@@ -3,8 +3,9 @@
 Status: accepted in PR #127; implementation staged as the P-class program
 doc's Issues 4.2–4.7 (M4). The Stage 1 class, validation, and arena-tagging
 substrate is in review in PR #209; the Stage 2 operations/WASM tranche is in
-review in PR #210. Neither completes Issue 4.2. This RFC re-declares the
-capability matrix's body-type axis —
+review in PR #210, and standalone arena-v4 sheet roots are in review in PR
+#211. None completes Issue 4.2. This RFC re-declares the capability matrix's
+body-type axis —
 "solid, sheet, wire, compound, cavity-bearing solid, and later general body"
 (`docs/kernel-maturity/capability-matrix.md`) — against concrete semantics;
 every sheet/wire/general cell is Unqualified by default today.
@@ -178,9 +179,10 @@ serialization records whose absence loads as the default class.
 
 Delivered for review in PR #209: the public body-class vocabulary and
 validated tags, class-aware solid/sheet/wire validation, stable diagnostics,
-and backward-compatible arena-v3 tags. Standalone sheet/wire roots remain a
-later serialization tranche. PR #210 supplies the first sheet L3 and WASM
-entry points; STEP remains, so the Issue 4.2 exit gate is still open.
+and backward-compatible arena-v3 tags. PR #210 supplies the first sheet L3
+and WASM entry points. PR #211 adds versioned standalone sheet roots while
+freezing existing v3 writer bytes; wire roots remain a later tranche. STEP
+remains, so the Issue 4.2 exit gate is still open.
 
 Characterization: a test pins that an open shell errors on `ShellClosed`
 today; it flips to the sheet profile emitting the free-boundary warning.
@@ -199,12 +201,14 @@ over `OPEN_SHELL` (and `CLOSED_SHELL` when closed) both directions;
 construct/measure/mesh bindings with `executeBatch` companions and
 contract tests.
 
-Delivered in part for review in PR #210: construction is transactional and
-validation-gated; body dispatch exposes sheet area and typed volume refusal;
-the open-boundary tessellator omits solid-only proximity repairs so an
-intentional sub-deflection trim survives; direct and batch WASM expose the
-same contracts. Bounding box, center-of-area, standalone arena-v4 roots, and
-STEP `SHELL_BASED_SURFACE_MODEL` remain before Stage 2 and Issue 4.2 close.
+Delivered in part for review in PR #210 and PR #211: construction is
+transactional and validation-gated; body dispatch exposes sheet area and typed
+volume refusal; the open-boundary tessellator omits solid-only proximity
+repairs so an intentional sub-deflection trim survives; direct and batch WASM
+expose the same contracts. Arena v4 now preserves standalone sheet roots,
+trimmed NURBS authority, pcurves, root order, and duplicates without changing
+v3 bytes. Bounding box, center-of-area, and STEP
+`SHELL_BASED_SURFACE_MODEL` remain before Stage 2 and Issue 4.2 close.
 
 Characterization: before Stage 1, a NURBS patch could be neither exported nor
 validated as a body. PR #210 pins construct → validate → area → tessellate
