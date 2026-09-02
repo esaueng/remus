@@ -1973,7 +1973,9 @@ export class BrepKernel {
     /**
      * Fillet edges using the v2 walking-based blend engine.
      *
-     * Returns a new solid handle.
+     * Returns a new solid handle. The engine runs transactionally and the
+     * result is validated before commit; failures carry the stable
+     * machine-readable code prefix from `blend_failure_code`.
      *
      * # Errors
      *
@@ -2002,6 +2004,12 @@ export class BrepKernel {
      * When `law` is omitted and `startRadius` != `endRadius`, the law auto-detects as `"linear"`.
      *
      * Returns a new solid handle.
+     *
+     * The call is transactional and validated: every named edge must carry a
+     * blend, the result must validate against the input, and any failure
+     * leaves the topology untouched — the error message carries the stable
+     * machine-readable prefix from `blend_failure_code` (e.g.
+     * `edges-not-blended: …`).
      * @param {number} solid
      * @param {string} json
      * @returns {number}
