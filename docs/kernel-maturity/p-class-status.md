@@ -31,7 +31,7 @@ Issue 2.0's measured baseline is
 | 3.4 GFA integration | Pending | — |
 | 3.5 Import and sew integration | Pending | — |
 | 3.6 Downstream disclosure | Pending | — |
-| 4.1 RFC 0005 | Pending | — |
+| 4.1 RFC 0005 | Merged — staged solid/sheet/wire/general-body semantics, side-of sheet classification, Compound-first cellular results, STEP mapping, and evolution contract | [#127](https://github.com/esaueng/remus/pull/127) |
 | 4.2 Sheet bodies first-class | Pending | — |
 | 4.3 Split solid by sheet | Pending | — |
 | 4.4 Trim sheet by solid / sheet × sheet | Pending | — |

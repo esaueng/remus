@@ -473,7 +473,7 @@ workflows and principled multi-body results arrive.
 
 ### 4.1 RFC 0005: body classes & cellular results (M)
 
-`docs/design/rfc-0005-body-taxonomy.md` (to be created)
+[`docs/design/rfc-0005-body-taxonomy.md`](../design/rfc-0005-body-taxonomy.md)
 
 Sheet-body semantics (an open shell as a first-class operand: orientation,
 boundary wires, validation contract), wire bodies, and the cellular result
@@ -484,6 +484,12 @@ semantics for sheet operands (side-of, not in/out).
 
 > **Exit gate:** RFC merged; body-class axis of the capability matrix
 > re-declared against it.
+
+Delivered in [PR #127](https://github.com/esaueng/remus/pull/127): the RFC
+maps the existing capability-matrix body axis to solid, sheet, wire, and
+general-body semantics; side-of sheet classification; Compound-first
+cellular results; STEP entities; and construction-derived evolution. All
+non-solid cells remain Unqualified until Issues 4.2–4.7 land.
 
 ### 4.2 Sheet bodies first-class (M)
 
