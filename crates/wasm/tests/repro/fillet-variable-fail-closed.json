@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "name": "fillet-variable-fail-closed",
+  "description": "K-S1 silent-wrongness regression: a variable-radius fillet of r=50 on a 10 mm box must be a typed refusal (on pre-fix main it returned a new handle measuring 3242.011 mm^3 — success with the volume growing), the refusal must leave the input measuring exactly 1000 mm^3, and the same call at a supported radius must still produce a new solid removing the closed-form sliver ((1-pi/4)*r^2*L = 2.146 mm^3). The successful fillet lands on handle 2, not 1: the refused attempt's arena slots are retired permanently and never reissued to a later entity.",
+  "revision": "67e0d506",
+  "operations": [
+    {"op": "makeBox", "args": {"width": 10.0, "height": 10.0, "depth": 10.0}},
+    {"op": "filletVariable", "args": {"solid": 0, "specs": [{"edge": 0, "law": "constant", "radius": 50.0}]}},
+    {"op": "volume", "args": {"solid": 0, "deflection": 0.01}},
+    {"op": "filletVariable", "args": {"solid": 0, "specs": [{"edge": 0, "law": "constant", "radius": 1.0}]}},
+    {"op": "volume", "args": {"solid": 2, "deflection": 0.01}}
+  ],
+  "expect": [
+    {"ok": 0},
+    {"errorCode": "invalid_argument"},
+    {"okNear": 1000.0, "tol": 1e-6},
+    {"ok": 2},
+    {"okNear": 997.8541, "tol": 0.1}
+  ]
+}
