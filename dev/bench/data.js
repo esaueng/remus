@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788315222286,
+  "lastUpdate": 1788317421964,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -6641,6 +6641,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 42277870,
             "range": "± 346204",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petertoday@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petertoday"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e2a99870319e3ccaa3161aed960f8aa5c37ddf36",
+          "message": "feat(topology): close RFC 0002 integration gate (#188)\n\n* feat(topology): close RFC 0002 integration gate\n\n* docs(maturity): link RFC 0002 integration PR\n\n---------\n\nCo-authored-by: Codex Review <codex-review@localhost>",
+          "timestamp": "2026-09-01T22:47:35-04:00",
+          "tree_id": "8d5ec8a4ac22e5ce080168098ff1a35758d8e02a",
+          "url": "https://github.com/esaueng/remus/commit/e2a99870319e3ccaa3161aed960f8aa5c37ddf36"
+        },
+        "date": 1788317421226,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1395954,
+            "range": "± 11311",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1486458,
+            "range": "± 18036",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 26766,
+            "range": "± 33",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 1042191,
+            "range": "± 3539",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 42183905,
+            "range": "± 386244",
             "unit": "ns/iter"
           }
         ]
