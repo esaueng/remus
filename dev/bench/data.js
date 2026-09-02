@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788321031507,
+  "lastUpdate": 1788325023341,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -6803,6 +6803,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 43301432,
             "range": "± 536408",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "887420f2ada4e9929195c1b2b8ed54767fd17f42",
+          "message": "fix(algo): clip exact tread×cylinder arcs at the analytic face's rims (#192)\n\nA cylinder cut by a thin slab tilted 30° about X (#190) came back from the\npublic boolean as a 53-facet mesh fallback: GFA returned a 5-face shell\nwith four free edges, the gate rejected it, and callers saw `Ok` with a\nlog warning. The slot the slab should have cut into the wall was missing —\nthe two wall pieces summed to the full lateral area — and the four free\nedges were exactly the edges the missing ellipse arc had to close.\n\n`trim_ellipse_to_boundary_crossings` bounds a plane×cylinder section by\nthe planar face's boundary crossings with the UNBOUNDED cylinder and by\nthe analytic face's straight seam edges. The slab's x = -4 edge crosses\nthe infinite cylinder 1.18 below the wall's bottom rim, so the emitted\n\"exact\" arc started outside the wall face, and the wall never split. The\nanalytic face's rim edges (cap circles, or an oblique cap ellipse) now\ncontribute their exact crossings with the tread plane, so the arc stops\nat the rim where the cap's own section line begins.\n\nThe rim × plane crossing is the closed form `A cos t + B sin t = C`. Its\nparallel/coplanar guard is relative to the conic's size: a rim lying in\nthe tread plane (a bore drilled square through a rigidly rotated block)\ncarries ~1e-16 of rotation noise in A, B and C, and an absolute 1e-15\nguard turned C / r into a random ratio that invented two crossings per\ncap and broke the push_pull bore-resize test.\n\nA closed rim needs no parameter domain (both roots lie on it); an open\nrim arc is clipped to its stored trim through `Edge::strict_domain`, and\nan arc without that authority defers the whole pair to the generic path\nrather than reconstructing the span from endpoints (RFC 0002).\n\nThe cut now returns 2 cylinder + 4 plane faces, closed and watertight at\ntwo deflections, with volume 676.597 against 676.602 from an independent\nintegral of the removed sliver (the fallback had measured 674.79). Ray-cast\nclassification places the slot outside and the material above it inside.\nThe approximation census is unchanged before and after.\n\nNot addressed: the slab's far end face still splits the wall along a full\nheight generator whose real in-both window is below the cylinder, so the\nwall comes back as two cylinder faces instead of one. That is the\nmixed-pair line clip that phase FF deliberately leaves to the AABB test\n(a prior plane-polygon clip disturbed seam-anchored band splitting) and is\na separate, closure-neutral defect.\n\nRefs #190.\n\nCo-authored-by: peter <peter@pop-os.tail7bd9a6.ts.net>\nCo-authored-by: Claude Fable 5.1 <noreply@anthropic.com>",
+          "timestamp": "2026-09-02T00:54:05-04:00",
+          "tree_id": "dfd0071de1295f25944df37b28e77432468ebc51",
+          "url": "https://github.com/esaueng/remus/commit/887420f2ada4e9929195c1b2b8ed54767fd17f42"
+        },
+        "date": 1788325022053,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1391957,
+            "range": "± 27850",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1484888,
+            "range": "± 579",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 26665,
+            "range": "± 69",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 1040235,
+            "range": "± 3560",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 43151005,
+            "range": "± 1580590",
             "unit": "ns/iter"
           }
         ]
