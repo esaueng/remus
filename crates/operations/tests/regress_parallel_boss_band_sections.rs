@@ -28,7 +28,7 @@ use remus_math::context::{FallbackPolicy, OperationContext};
 use remus_math::mat::Mat4;
 use remus_operations::blend_ops::chamfer_v2;
 use remus_operations::boolean::{BooleanOp, BooleanQuality, boolean_with_context};
-use remus_operations::measure::solid_volume;
+use remus_operations::measure::{mass_properties, solid_volume};
 use remus_operations::primitives::make_cylinder;
 use remus_operations::transform::transform_solid;
 use remus_operations::validate::validate_solid;
@@ -97,7 +97,28 @@ fn exact_volume(op: BooleanOp, deg: f64, dist: f64, z: f64) -> f64 {
         curved >= 2,
         "{op:?} at {deg}°, d={dist}, z={z}: only {curved} cylindrical face(s) survived"
     );
-    solid_volume(&topo, outcome.solid, 1e-3).unwrap()
+    consistent_volume(
+        &topo,
+        outcome.solid,
+        &format!("{op:?} at {deg}°, d={dist}, z={z}"),
+    )
+}
+
+/// The solid's volume by exact integration over its faces, checked against
+/// its tessellated volume. A wall partitioned into overlapping or inverted
+/// pieces can still assemble into a closed shell whose tessellation reads
+/// right while the exact integral does not (a boss flush on the base with
+/// its axis in the seam plane read 28 550 exactly against 44 365
+/// tessellated), so both are required to agree before either is trusted.
+fn consistent_volume(topo: &Topology, solid: SolidId, what: &str) -> f64 {
+    let exact = mass_properties(topo, solid).unwrap().mass;
+    let tessellated = solid_volume(topo, solid, 1e-3).unwrap();
+    assert_close(
+        tessellated,
+        exact,
+        &format!("{what}: tessellated vs exact volume"),
+    );
+    tessellated
 }
 
 fn assert_close(actual: f64, expected: f64, what: &str) {
@@ -170,7 +191,7 @@ fn taller_parallel_boss_fuses_exactly() {
         let boss = PI * BOSS_R * BOSS_R * tall_h;
         let overlap = lens_area(SHAFT_R, BOSS_R, 15.0) * SHAFT_H;
         assert_close(
-            solid_volume(&topo, outcome.solid, 1e-3).unwrap(),
+            consistent_volume(&topo, outcome.solid, &format!("tall fuse at {deg}°")),
             shaft + boss - overlap,
             &format!("tall fuse at {deg}°"),
         );
@@ -234,7 +255,11 @@ fn chamfered_shaft_boss_fuse_volume(z: f64) -> Result<f64, remus_operations::Ope
         "chamfered fuse at z={z}: {:?}",
         report.issues
     );
-    Ok(solid_volume(&topo, outcome.solid, 1e-3).unwrap())
+    Ok(consistent_volume(
+        &topo,
+        outcome.solid,
+        &format!("chamfered fuse at z={z}"),
+    ))
 }
 
 /// The reported configuration: a shaft chamfered at both rims, with the boss
@@ -251,24 +276,46 @@ fn chamfered_shaft_with_parallel_boss_fuses_exactly() {
     );
 }
 
-/// The same boss standing flush on the chamfered base. Its wall now meets
-/// the lower chamfer cone in two rim-to-rim section curves, and the cone
-/// face comes back unsplit, so the fuse still leaves the exact path.
+/// Chamfer material the boss refills when it stands flush on the base: the
+/// part of the lower chamfer ring (`r ∈ [R − c, R]`, removed below
+/// `z = r − (R − c)`) that lies under the boss disc, integrated on a polar
+/// grid fine enough for 1e-7 relative accuracy.
+fn refilled_chamfer_volume(shaft_r: f64, chamfer: f64, boss_cx: f64, boss_r: f64) -> f64 {
+    let (nr, nt) = (400_usize, 4000_usize);
+    let r0 = shaft_r - chamfer;
+    let dr = chamfer / nr as f64;
+    let dt = std::f64::consts::TAU / nt as f64;
+    let mut sum = 0.0;
+    for i in 0..nr {
+        let r = (i as f64 + 0.5).mul_add(dr, r0);
+        let depth = r - r0;
+        for j in 0..nt {
+            let t = (j as f64 + 0.5) * dt;
+            let (x, y) = (r * t.cos(), r * t.sin());
+            if (x - boss_cx).hypot(y) <= boss_r {
+                sum += depth * r * dr * dt;
+            }
+        }
+    }
+    sum
+}
+
+/// The same boss standing flush on the chamfered base. Its wall meets the
+/// lower chamfer cone in two rim-to-rim NURBS sections; the cone band must
+/// split into the wedge under the boss and the rest, not into one face with
+/// the rest as a hole (the periodic-face loop classifier read "no Line edge"
+/// as "hole", because it only knew straight rulings as verticals).
 #[test]
-#[ignore = "open: a cone band cut rim-to-rim by two cylinder×cone sections is not split"]
 fn chamfered_shaft_with_flush_parallel_boss_fuses_exactly() {
-    let shaft = PI * SHAFT_R * SHAFT_R * SHAFT_H - 2.0 * rim_chamfer_volume(SHAFT_R, 1.0);
+    let chamfer = 1.0;
+    let shaft = PI * SHAFT_R * SHAFT_R * SHAFT_H - 2.0 * rim_chamfer_volume(SHAFT_R, chamfer);
     let boss = PI * BOSS_R * BOSS_R * BOSS_H;
     let lens = lens_area(SHAFT_R, BOSS_R, 15.0) * BOSS_H;
-    let volume = chamfered_shaft_boss_fuse_volume(0.0).unwrap();
-    // Flush on the base the boss refills part of the lower chamfer ring
-    // inside the lens, so the union lies between the plain overlap figure
-    // and that figure plus the whole ring.
-    let low = shaft + boss - lens;
-    let high = low + rim_chamfer_volume(SHAFT_R, 1.0);
-    assert!(
-        (low - 1e-6..=high + 1e-6).contains(&volume),
-        "chamfered flush fuse: {volume} outside [{low}, {high}]"
+    let refilled = refilled_chamfer_volume(SHAFT_R, chamfer, 15.0, BOSS_R);
+    assert_close(
+        chamfered_shaft_boss_fuse_volume(0.0).unwrap(),
+        shaft + boss - lens + refilled,
+        "chamfered flush fuse",
     );
 }
 
@@ -364,10 +411,23 @@ fn boss_on_wall_tessellates_closed() {
     use remus_operations::primitives::make_box;
     use remus_operations::tessellate::tessellate_solid_with_tolerance;
     let exact = OperationContext::new().with_fallback(FallbackPolicy::ExactOnly);
-    for (label, deg, box_tool) in [
-        ("cylinder boss on the seam side", 0.0_f64, false),
-        ("cylinder boss opposite the seam", 180.0, false),
-        ("box boss", 180.0, true),
+    for (label, deg, z, box_tool) in [
+        ("cylinder boss on the seam side", 0.0_f64, 20.0, false),
+        ("cylinder boss opposite the seam", 180.0, 20.0, false),
+        (
+            "cylinder boss flush on the base, seam side",
+            0.0,
+            0.0,
+            false,
+        ),
+        ("cylinder boss flush on the base, 90°", 90.0, 0.0, false),
+        (
+            "cylinder boss flush on the base, opposite the seam",
+            180.0,
+            0.0,
+            false,
+        ),
+        ("box boss", 180.0, 20.0, true),
     ] {
         let mut topo = Topology::new();
         let shaft = make_cylinder(&mut topo, SHAFT_R, SHAFT_H).unwrap();
@@ -381,7 +441,7 @@ fn boss_on_wall_tessellates_closed() {
             transform_solid(
                 &mut topo,
                 b,
-                &Mat4::translation(15.0 * a.cos(), 15.0 * a.sin(), 20.0),
+                &Mat4::translation(15.0 * a.cos(), 15.0 * a.sin(), z),
             )
             .unwrap();
             b
