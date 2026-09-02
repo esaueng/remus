@@ -444,6 +444,11 @@ mod tests {
         let body = BodyId::Shell(sheet);
         let area = crate::measure::body_surface_area(&topo, body, 0.05).unwrap();
         assert!((area - 1.0).abs() < 1e-10, "area={area}");
+        let bounds = crate::measure::sheet_bounding_box(&topo, sheet).unwrap();
+        assert_eq!(bounds.min, Point3::new(-0.5, -0.5, 0.0));
+        assert_eq!(bounds.max, Point3::new(0.5, 0.5, 0.0));
+        let center = crate::measure::sheet_center_of_area(&topo, sheet).unwrap();
+        assert!((center - Point3::new(0.0, 0.0, 0.0)).length() < 1e-12);
 
         let first = crate::tessellate::tessellate_body_with_tolerance(
             &topo,
@@ -522,5 +527,60 @@ mod tests {
             7,
             "the four outer and three inner edges must remain open"
         );
+    }
+
+    #[test]
+    fn sheet_center_of_area_subtracts_an_offset_trimmed_hole() {
+        let mut topo = Topology::new();
+        let face = remus_topology::builder::make_rectangle_face(&mut topo, 4.0, 4.0, 1e-7).unwrap();
+        let outer = topo.face(face).unwrap().outer_wire();
+        let hole = remus_topology::builder::make_polygon_wire(
+            &mut topo,
+            &[
+                Point3::new(0.5, -0.5, 0.0),
+                Point3::new(0.5, 0.5, 0.0),
+                Point3::new(1.5, 0.5, 0.0),
+                Point3::new(1.5, -0.5, 0.0),
+            ],
+            1e-7,
+        )
+        .unwrap();
+        topo.set_face_boundary_wires(face, outer, vec![hole])
+            .unwrap();
+        let sheet = make_sheet_body(&mut topo, &[face]).unwrap();
+
+        let center = crate::measure::sheet_center_of_area(&topo, sheet).unwrap();
+        assert!((center.x() + 1.0 / 15.0).abs() < 1e-12, "{center:?}");
+        assert!(center.y().abs() < 1e-12, "{center:?}");
+        assert!(center.z().abs() < 1e-12, "{center:?}");
+        let bounds = crate::measure::sheet_bounding_box(&topo, sheet).unwrap();
+        assert_eq!(bounds.min, Point3::new(-2.0, -2.0, 0.0));
+        assert_eq!(bounds.max, Point3::new(2.0, 2.0, 0.0));
+    }
+
+    #[test]
+    fn sheet_properties_refuse_a_solid_class_shell() {
+        let mut topo = Topology::new();
+        let shell = topo.add_shell(Shell::empty());
+
+        let bounds_error = crate::measure::sheet_bounding_box(&topo, shell).unwrap_err();
+        let center_error = crate::measure::sheet_center_of_area(&topo, shell).unwrap_err();
+
+        assert!(matches!(
+            bounds_error,
+            crate::OperationsError::BodyClassMeasureMismatch {
+                operation: "bounding box",
+                expected: "sheet",
+                actual: "solid",
+            }
+        ));
+        assert!(matches!(
+            center_error,
+            crate::OperationsError::BodyClassMeasureMismatch {
+                operation: "center of area",
+                expected: "sheet",
+                actual: "solid",
+            }
+        ));
     }
 }

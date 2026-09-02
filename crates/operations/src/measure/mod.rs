@@ -7,9 +7,11 @@ mod edge_length;
 pub(crate) mod helpers;
 mod volume;
 
-pub use area::{body_surface_area, face_area, sheet_surface_area, solid_surface_area};
+pub use area::{
+    body_surface_area, face_area, sheet_center_of_area, sheet_surface_area, solid_surface_area,
+};
 pub(crate) use bounding_box::face_set_bounding_box;
-pub use bounding_box::solid_bounding_box;
+pub use bounding_box::{sheet_bounding_box, solid_bounding_box};
 pub use edge_length::{edge_length, face_perimeter, wire_length};
 pub use volume::{
     mass_properties, oriented_solid_volume, solid_center_of_mass, solid_is_inverted, solid_volume,

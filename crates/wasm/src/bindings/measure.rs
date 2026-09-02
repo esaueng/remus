@@ -126,6 +126,31 @@ impl BrepKernel {
         )?)
     }
 
+    /// Compute the axis-aligned bounding box of a first-class sheet body.
+    ///
+    /// Returns `[min_x, min_y, min_z, max_x, max_y, max_z]`.
+    #[wasm_bindgen(js_name = "sheetBoundingBox")]
+    pub fn sheet_bounding_box(&self, sheet: u32) -> Result<Vec<f64>, JsError> {
+        let sheet_id = self.resolve_shell(sheet)?;
+        let aabb = measure::sheet_bounding_box(&self.topo, sheet_id)?;
+        Ok(vec![
+            aabb.min.x(),
+            aabb.min.y(),
+            aabb.min.z(),
+            aabb.max.x(),
+            aabb.max.y(),
+            aabb.max.z(),
+        ])
+    }
+
+    /// Compute the area-weighted center of a first-class sheet body.
+    #[wasm_bindgen(js_name = "sheetCenterOfArea")]
+    pub fn sheet_center_of_area(&self, sheet: u32) -> Result<Vec<f64>, JsError> {
+        let sheet_id = self.resolve_shell(sheet)?;
+        let center = measure::sheet_center_of_area(&self.topo, sheet_id)?;
+        Ok(vec![center.x(), center.y(), center.z()])
+    }
+
     /// Refuse volume measurement for a sheet with a stable typed diagnostic.
     #[wasm_bindgen(js_name = "sheetVolume")]
     pub fn sheet_volume(&self, sheet: u32, deflection: f64) -> Result<f64, JsError> {

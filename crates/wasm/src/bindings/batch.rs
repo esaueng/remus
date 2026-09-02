@@ -152,6 +152,8 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "solidEdges"
         | "solidToSolidDistance"
         | "sheetArea"
+        | "sheetBoundingBox"
+        | "sheetCenterOfArea"
         | "sheetVolume"
         | "surfaceArea"
         | "tessellateSheet"
@@ -1138,6 +1140,31 @@ impl BrepKernel {
                 )
                 .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(area))
+            }
+            "sheetBoundingBox" => {
+                let sheet = get_u32(args, "sheet")?;
+                let sheet_id = self
+                    .resolve_shell(sheet)
+                    .map_err(StructuredWasmError::from)?;
+                let aabb = measure::sheet_bounding_box(&self.topo, sheet_id)
+                    .map_err(StructuredWasmError::from)?;
+                Ok(serde_json::json!([
+                    aabb.min.x(),
+                    aabb.min.y(),
+                    aabb.min.z(),
+                    aabb.max.x(),
+                    aabb.max.y(),
+                    aabb.max.z()
+                ]))
+            }
+            "sheetCenterOfArea" => {
+                let sheet = get_u32(args, "sheet")?;
+                let sheet_id = self
+                    .resolve_shell(sheet)
+                    .map_err(StructuredWasmError::from)?;
+                let center = measure::sheet_center_of_area(&self.topo, sheet_id)
+                    .map_err(StructuredWasmError::from)?;
+                Ok(serde_json::json!([center.x(), center.y(), center.z()]))
             }
             "sheetVolume" => {
                 let sheet = get_u32(args, "sheet")?;
@@ -3342,10 +3369,14 @@ mod batch_contract_tests {
                 {"op":"makeBox","args":{"width":4.0,"height":2.0,"depth":1.0}},
                 {"op":"makeSheetBody","args":{"faces":[0]}},
                 {"op":"sheetArea","args":{"sheet":1,"deflection":0.05}},
+                {"op":"sheetBoundingBox","args":{"sheet":1}},
+                {"op":"sheetCenterOfArea","args":{"sheet":1}},
                 {"op":"validateSheetBody","args":{"sheet":1}},
                 {"op":"tessellateSheet","args":{"sheet":1,"deflection":0.05}},
                 {"op":"sheetVolume","args":{"sheet":1,"deflection":0.05}},
-                {"op":"sheetArea","args":{"sheet":0,"deflection":0.05}}
+                {"op":"sheetArea","args":{"sheet":0,"deflection":0.05}},
+                {"op":"sheetBoundingBox","args":{"sheet":0}},
+                {"op":"sheetCenterOfArea","args":{"sheet":0}}
             ]"#,
         ));
 
@@ -3353,26 +3384,42 @@ mod batch_contract_tests {
         assert_eq!(response[1]["ok"], 1);
         let area = response[2]["ok"].as_f64().expect("sheet area result");
         assert!((area - 8.0).abs() < 1e-10, "area={area}");
-        assert_eq!(response[3]["ok"]["errorCount"], 0);
+        assert_eq!(
+            response[3]["ok"],
+            serde_json::json!([0.0, 0.0, 0.0, 4.0, 2.0, 0.0])
+        );
+        let center = response[4]["ok"].as_array().expect("sheet center result");
+        for (actual, expected) in center.iter().zip([2.0, 1.0, 0.0]) {
+            assert!((actual.as_f64().expect("sheet center component") - expected).abs() < 1e-12);
+        }
+        assert_eq!(response[5]["ok"]["errorCount"], 0);
         assert!(
-            response[3]["ok"]["warningCount"]
+            response[5]["ok"]["warningCount"]
                 .as_u64()
                 .expect("sheet warning count")
                 > 0
         );
         assert!(
-            !response[4]["ok"]["indices"]
+            !response[6]["ok"]["indices"]
                 .as_array()
                 .expect("sheet mesh indices")
                 .is_empty()
         );
-        assert_eq!(response[5]["error"]["category"], "invalid_input");
+        assert_eq!(response[7]["error"]["category"], "invalid_input");
         assert_eq!(
-            response[5]["error"]["details"]["kernelCode"],
+            response[7]["error"]["details"]["kernelCode"],
             "body_class_measure_mismatch"
         );
         assert_eq!(
-            response[6]["error"]["details"]["kernelCode"],
+            response[8]["error"]["details"]["kernelCode"],
+            "body_class_measure_mismatch"
+        );
+        assert_eq!(
+            response[9]["error"]["details"]["kernelCode"],
+            "body_class_measure_mismatch"
+        );
+        assert_eq!(
+            response[10]["error"]["details"]["kernelCode"],
             "body_class_measure_mismatch"
         );
     }

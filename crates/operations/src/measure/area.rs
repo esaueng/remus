@@ -521,6 +521,55 @@ pub fn sheet_surface_area(
     Ok(total)
 }
 
+/// Compute the area-weighted center of a first-class sheet body.
+///
+/// The exact face geometry is integrated directly with bounded Gauss
+/// quadrature; this does not depend on a tessellation deflection.
+///
+/// # Errors
+///
+/// Returns a typed body-class mismatch for a shell that is not tagged as a
+/// sheet, or an error if integration fails or the sheet has zero area.
+pub fn sheet_center_of_area(
+    topo: &Topology,
+    sheet: ShellId,
+) -> Result<Point3, crate::OperationsError> {
+    let actual = topo.body_class_of(BodyId::Shell(sheet))?;
+    if actual != BodyClass::Sheet {
+        return Err(crate::OperationsError::BodyClassMeasureMismatch {
+            operation: "center of area",
+            expected: BodyClass::Sheet.as_str(),
+            actual: actual.as_str(),
+        });
+    }
+
+    let gauss_order = remus_check::properties::PropertiesOptions::default().gauss_order;
+    let mut area = 0.0;
+    let mut center_x = 0.0;
+    let mut center_y = 0.0;
+    let mut center_z = 0.0;
+    for &face in topo.shell(sheet)?.faces() {
+        let contribution =
+            remus_check::properties::face_integrator::integrate_face(topo, face, gauss_order)?;
+        area += contribution.area;
+        center_x += contribution.centroid_x;
+        center_y += contribution.centroid_y;
+        center_z += contribution.centroid_z;
+    }
+    if !area.is_finite() || area <= 0.0 {
+        return Err(crate::OperationsError::InvalidInput {
+            reason: "sheet has zero or non-finite area".to_owned(),
+        });
+    }
+    let center = Point3::new(center_x / area, center_y / area, center_z / area);
+    if !center.0.iter().all(|value| value.is_finite()) {
+        return Err(crate::OperationsError::InvalidInput {
+            reason: "sheet center of area is non-finite".to_owned(),
+        });
+    }
+    Ok(center)
+}
+
 /// Compute the area of any surface-bearing body.
 ///
 /// # Errors

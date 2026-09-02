@@ -1346,6 +1346,12 @@ mod tests {
 
         let area = kernel.sheet_area(sheet, 0.05).unwrap();
         assert!((area - 8.0).abs() < 1e-10, "area={area}");
+        assert_eq!(
+            kernel.sheet_bounding_box(sheet).unwrap(),
+            vec![-2.0, -1.0, 0.0, 2.0, 1.0, 0.0]
+        );
+        let center = kernel.sheet_center_of_area(sheet).unwrap();
+        assert!(center.iter().all(|component| component.abs() < 1e-12));
         let mesh = kernel.tessellate_sheet(sheet, 0.05, None).unwrap();
         assert!(mesh.triangle_count() > 0);
         let volume_error = kernel.sheet_volume_impl(sheet, 0.05).unwrap_err();
