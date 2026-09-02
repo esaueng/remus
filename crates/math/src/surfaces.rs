@@ -10,6 +10,13 @@ use crate::frame::Frame3;
 use crate::nurbs::surface::NurbsSurface;
 use crate::vec::{Point3, Vec3};
 
+mod swept;
+
+pub use swept::{
+    ProjectionConvergence, SurfaceOfLinearExtrusion, SurfaceOfRevolution, SweptCurve,
+    SweptCurveProjection, SweptProjection,
+};
+
 /// An infinite cylindrical surface.
 ///
 /// Parameterized as `P(u, v) = origin + radius*(cos(u)*x_axis + sin(u)*y_axis) + v*axis`

@@ -140,6 +140,8 @@ draft watertightness finding (2026-09-02, latent since at least 2026-08-30).
 
 ## Durable lessons (one line each; the story is in `campaign-history.md`)
 
+- **Exact rational conic twins do not preserve angle-linear parameter speed;** compare positions after projection plus tangent direction and curvature, and use a deterministic one-sided radial derivative at revolution poles (`crates/math/src/surfaces/swept/tests.rs`, PR #189).
+
 - **Not every scenario failure is a boolean fallback.** Tessellation density,
   shared-rim meshing, and face orientation produced whole failure families with
   zero mesh fallbacks; capture the actual boolean traffic and replay operands
