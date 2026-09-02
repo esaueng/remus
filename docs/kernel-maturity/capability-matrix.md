@@ -120,9 +120,12 @@ does not itself promote or demote anything.
   detector, not by itself qualification evidence for a cell.
 - Known Unsupported-untyped / Partial cells: exact plane/cylinder tangency is
   not generally qualified beyond those witnesses; sliver crossings (~1e-5 to
-  0.05 mm on r = 10) fall over to approximate; general torus pairs limited;
+  0.05 mm on r = 10) fall over to approximate. The torus/box notch family is
+  exact for Cut and Intersect: the complement result retains one torus and
+  four planes, validates without errors, and matches a mesh-volume oracle
+  within 1% through native and WASM exact-only paths. General torus pairs,
   seam-crossing, nested-shell, sheet-solid, and multi-body General Fuse cells
-  Unqualified.
+  remain Unqualified.
 
 ### Intersections (curve-curve, curve-surface, surface-surface)
 
