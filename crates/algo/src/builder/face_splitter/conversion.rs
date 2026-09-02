@@ -60,7 +60,7 @@ pub(super) fn boundary_edges_to_pcurve(
     surface: &FaceSurface,
     wire_pts: &[Point3],
     frame: Option<&PlaneFrame>,
-) -> Vec<OrientedPCurveEdge> {
+) -> Result<Vec<OrientedPCurveEdge>, crate::error::AlgoError> {
     boundary_edges_to_pcurve_with_images(
         topo,
         wire_id,
@@ -96,7 +96,7 @@ pub(super) fn boundary_edges_to_pcurve_with_images<S: std::hash::BuildHasher>(
     >,
     anchors: &[Point3],
     linear_tolerance: f64,
-) -> Vec<OrientedPCurveEdge> {
+) -> Result<Vec<OrientedPCurveEdge>, crate::error::AlgoError> {
     // Scale the reconciliation band with this face rather than treating
     // 0.003 model units as universally negligible. This preserves the
     // measured allowance on the reference-size fixture without consuming
@@ -105,7 +105,7 @@ pub(super) fn boundary_edges_to_pcurve_with_images<S: std::hash::BuildHasher>(
     let weld_band = linear_tolerance * 100.0;
     let wire = match topo.wire(wire_id) {
         Ok(w) => w,
-        Err(_) => return Vec::new(),
+        Err(_) => return Ok(Vec::new()),
     };
 
     let junction_near_anchor = |imgs: &[remus_topology::edge::EdgeId]| -> bool {
@@ -268,7 +268,7 @@ pub(super) fn boundary_edges_to_pcurve_with_images<S: std::hash::BuildHasher>(
             surface,
             wire_pts,
             frame,
-        );
+        )?;
 
         // For closed edges (start_3d approx end_3d, e.g. full circle), projecting
         // start and end to UV gives the same point. Use pcurve sampling to
@@ -276,20 +276,24 @@ pub(super) fn boundary_edges_to_pcurve_with_images<S: std::hash::BuildHasher>(
         let is_closed = (start_3d - end_3d).length() < 1e-10;
         let (start_uv, end_uv) = if is_closed && !matches!(surface, FaceSurface::Plane { .. }) {
             let uv_samples =
-                sample_edge_to_uv(edge.curve(), start_3d, end_3d, traversal_domain, surface);
-            let su = uv_samples
-                .first()
-                .copied()
-                .unwrap_or_else(|| project_point_on_surface(start_3d, surface, wire_pts, frame));
-            let eu = uv_samples
-                .last()
-                .copied()
-                .unwrap_or_else(|| project_point_on_surface(end_3d, surface, wire_pts, frame));
+                sample_edge_to_uv(edge.curve(), start_3d, end_3d, traversal_domain, surface)?;
+            let su = uv_samples.first().copied().ok_or_else(|| {
+                crate::error::AlgoError::PcurveProjectionFailed {
+                    surface: surface.type_tag(),
+                    stage: "boundary_start",
+                }
+            })?;
+            let eu = uv_samples.last().copied().ok_or_else(|| {
+                crate::error::AlgoError::PcurveProjectionFailed {
+                    surface: surface.type_tag(),
+                    stage: "boundary_end",
+                }
+            })?;
             (su, eu)
         } else {
             (
-                project_point_on_surface(start_3d, surface, wire_pts, frame),
-                project_point_on_surface(end_3d, surface, wire_pts, frame),
+                project_point_on_surface(start_3d, surface, wire_pts, frame)?,
+                project_point_on_surface(end_3d, surface, wire_pts, frame)?,
             )
         };
 
@@ -310,7 +314,7 @@ pub(super) fn boundary_edges_to_pcurve_with_images<S: std::hash::BuildHasher>(
     if frame.is_none() {
         resolve_seam_endpoint_uv(&mut result, surface);
     }
-    result
+    Ok(result)
 }
 
 /// Resolve the 0-vs-2π ambiguity of boundary endpoints that sit exactly ON
@@ -520,7 +524,7 @@ pub(super) fn uv_endpoints_from_pcurve(
     end_3d: Point3,
     surface: &FaceSurface,
     wire_pts: &[Point3],
-) -> (Point2, Point2) {
+) -> Result<(Point2, Point2), crate::error::AlgoError> {
     use remus_math::curves2d::Curve2D;
 
     match pcurve {
@@ -529,7 +533,7 @@ pub(super) fn uv_endpoints_from_pcurve(
             // 3D endpoint and computing the 2D distance along the line.
             let su = line.evaluate(0.0);
             let eu_proj = lift_projection_into_period(
-                project_point_on_surface(end_3d, surface, wire_pts, None),
+                project_point_on_surface(end_3d, surface, wire_pts, None)?,
                 su,
                 line.tangent(0.0),
                 surface,
@@ -544,9 +548,9 @@ pub(super) fn uv_endpoints_from_pcurve(
             if (eu.x() - eu_proj.x()).abs() > std::f64::consts::PI
                 || (eu.y() - eu_proj.y()).abs() > std::f64::consts::PI
             {
-                (su, eu_proj)
+                Ok((su, eu_proj))
             } else {
-                (su, eu)
+                Ok((su, eu))
             }
         }
         Curve2D::Nurbs(nurbs) => {
@@ -554,18 +558,18 @@ pub(super) fn uv_endpoints_from_pcurve(
             if knots.len() >= 2 {
                 let t0 = knots[0];
                 let tn = knots[knots.len() - 1];
-                (nurbs.evaluate(t0), nurbs.evaluate(tn))
+                Ok((nurbs.evaluate(t0), nurbs.evaluate(tn)))
             } else {
-                (
-                    project_point_on_surface(start_3d, surface, wire_pts, None),
-                    project_point_on_surface(end_3d, surface, wire_pts, None),
-                )
+                Ok((
+                    project_point_on_surface(start_3d, surface, wire_pts, None)?,
+                    project_point_on_surface(end_3d, surface, wire_pts, None)?,
+                ))
             }
         }
-        _ => (
-            project_point_on_surface(start_3d, surface, wire_pts, None),
-            project_point_on_surface(end_3d, surface, wire_pts, None),
-        ),
+        _ => Ok((
+            project_point_on_surface(start_3d, surface, wire_pts, None)?,
+            project_point_on_surface(end_3d, surface, wire_pts, None)?,
+        )),
     }
 }
 
