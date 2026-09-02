@@ -112,7 +112,7 @@ impl BrepKernel {
             .collect::<Result<Vec<_>, _>>()
             .map_err(StructuredWasmError::from)?;
         let journaled = journal_ops::fillet_journaled(self.topo_mut(), solid_id, &edge_ids, radius)
-            .map_err(StructuredWasmError::from)?;
+            .map_err(StructuredWasmError::blend_failure)?;
         Ok(Self::blend_json(&journaled))
     }
 
@@ -133,7 +133,7 @@ impl BrepKernel {
             .map_err(StructuredWasmError::from)?;
         let journaled =
             journal_ops::chamfer_journaled(self.topo_mut(), solid_id, &edge_ids, d1, d2)
-                .map_err(StructuredWasmError::from)?;
+                .map_err(StructuredWasmError::blend_failure)?;
         Ok(Self::blend_json(&journaled))
     }
 

@@ -31,7 +31,7 @@ use crate::handles::{
 };
 use crate::helpers::{
     TOL, classify_to_string, get_f64, get_f64_array, get_u32, get_u32_array,
-    get_u32_array_optional, panic_message, try_chamfer, try_fillet,
+    get_u32_array_optional, panic_message, try_chamfer,
 };
 use crate::kernel::BrepKernel;
 
@@ -1514,7 +1514,7 @@ impl BrepKernel {
                     try_chamfer(self.topo_mut(), solid_id, &edge_ids, dist)
                 }));
                 let result = match chamfer_result {
-                    Ok(inner) => inner.map_err(StructuredWasmError::from)?,
+                    Ok(inner) => inner.map_err(StructuredWasmError::blend_failure)?,
                     Err(panic_info) => {
                         self.poisoned = true;
                         return Err(StructuredWasmError::operation_failed(panic_message(
@@ -1534,11 +1534,20 @@ impl BrepKernel {
                     .iter()
                     .map(|&h| self.resolve_edge(h).map_err(StructuredWasmError::from))
                     .collect::<Result<Vec<_>, _>>()?;
+                // Same engine chain, whole-selection rule, and panic guard as
+                // the `fillet` binding: a selection whose only succeeding
+                // subset is the planar one is an `edges-not-blended` refusal
+                // here too, never a quietly reduced answer.
                 let fillet_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    try_fillet(self.topo_mut(), solid_id, &edge_ids, radius)
+                    crate::helpers::fillet_whole_selection(
+                        self.topo_mut(),
+                        solid_id,
+                        &edge_ids,
+                        radius,
+                    )
                 }));
                 let result = match fillet_result {
-                    Ok(inner) => inner.map_err(StructuredWasmError::from)?,
+                    Ok(inner) => inner.map_err(StructuredWasmError::blend_failure)?,
                     Err(panic_info) => {
                         self.poisoned = true;
                         return Err(StructuredWasmError::operation_failed(panic_message(
@@ -1596,7 +1605,7 @@ impl BrepKernel {
                     solid_id,
                     &edge_laws,
                 )
-                .map_err(StructuredWasmError::from)?;
+                .map_err(StructuredWasmError::blend_failure)?;
                 Ok(serde_json::json!(solid_id_to_u32(result)))
             }
             "filletV2" => {
@@ -1614,7 +1623,7 @@ impl BrepKernel {
                     &edge_ids,
                     radius,
                 )
-                .map_err(StructuredWasmError::from)?;
+                .map_err(StructuredWasmError::blend_failure)?;
                 Ok(serde_json::json!(solid_id_to_u32(result.solid)))
             }
             "chamferV2" => {
@@ -1634,7 +1643,7 @@ impl BrepKernel {
                     d1,
                     d2,
                 )
-                .map_err(StructuredWasmError::from)?;
+                .map_err(StructuredWasmError::blend_failure)?;
                 Ok(serde_json::json!(solid_id_to_u32(result.solid)))
             }
             "chamferDistanceAngle" => {
@@ -1657,7 +1666,7 @@ impl BrepKernel {
                     distance,
                     angle,
                 )
-                .map_err(StructuredWasmError::from)?;
+                .map_err(StructuredWasmError::blend_failure)?;
                 Ok(serde_json::json!(solid_id_to_u32(result.solid)))
             }
             "shell" => {
