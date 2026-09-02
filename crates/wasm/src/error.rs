@@ -126,6 +126,20 @@ impl StructuredWasmError {
         self
     }
 
+    /// Structured form of a blend-family operations error: keeps the generic
+    /// wire `code`/`message` mapping and attaches the stable machine-readable
+    /// failure code (`kernelCode` detail) that the direct `fillet`/`chamfer`
+    /// bindings prefix onto the message, so batch consumers can branch on the
+    /// cause without matching prose.
+    pub(crate) fn blend_failure(error: remus_operations::OperationsError) -> Self {
+        let code = remus_operations::blend_ops::blend_failure_code(&error);
+        let mut structured = Self::from(error);
+        structured
+            .details
+            .insert("kernelCode".to_string(), Value::from(code));
+        structured
+    }
+
     pub(crate) fn invalid_argument(message: impl Into<String>, argument: Option<&str>) -> Self {
         let mut error = Self::new(WasmErrorCode::InvalidArgument, message);
         if let Some(argument) = argument {

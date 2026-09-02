@@ -499,7 +499,8 @@ impl BrepKernel {
             .map(face_id_to_u32)
             .collect();
         let (result, origins) =
-            try_chamfer_with_origins(self.topo_mut(), solid_id, &edge_ids, distance)?;
+            try_chamfer_with_origins(self.topo_mut(), solid_id, &edge_ids, distance)
+                .map_err(|e| fillet_failure_js_error(&e))?;
         let evolution = wasm_blend_evolution(&self.topo, result, origins.as_ref())?;
         let result_faces: Vec<u32> = remus_topology::explorer::solid_faces(&self.topo, result)?
             .into_iter()
@@ -1535,6 +1536,12 @@ impl BrepKernel {
     /// When `law` is omitted and `startRadius` != `endRadius`, the law auto-detects as `"linear"`.
     ///
     /// Returns a new solid handle.
+    ///
+    /// The call is transactional and validated: every named edge must carry a
+    /// blend, the result must validate against the input, and any failure
+    /// leaves the topology untouched — the error message carries the stable
+    /// machine-readable prefix from `blend_failure_code` (e.g.
+    /// `edges-not-blended: …`).
     #[wasm_bindgen(js_name = "filletVariable")]
     pub fn fillet_variable(&mut self, solid: u32, json: &str) -> Result<u32, JsError> {
         let solid_id = self.resolve_solid(solid)?;
@@ -1582,7 +1589,8 @@ impl BrepKernel {
             edge_laws.push((edge_id, law));
         }
         let result =
-            remus_operations::fillet::fillet_variable(self.topo_mut(), solid_id, &edge_laws)?;
+            remus_operations::fillet::fillet_variable(self.topo_mut(), solid_id, &edge_laws)
+                .map_err(|e| fillet_failure_js_error(&e))?;
         Ok(solid_id_to_u32(result))
     }
 
@@ -2110,7 +2118,9 @@ impl BrepKernel {
 
     /// Fillet edges using the v2 walking-based blend engine.
     ///
-    /// Returns a new solid handle.
+    /// Returns a new solid handle. The engine runs transactionally and the
+    /// result is validated before commit; failures carry the stable
+    /// machine-readable code prefix from `blend_failure_code`.
     ///
     /// # Errors
     ///
@@ -2134,7 +2144,8 @@ impl BrepKernel {
             .map(|&h| self.resolve_edge(h))
             .collect::<Result<_, _>>()?;
         let result =
-            remus_operations::blend_ops::fillet_v2(self.topo_mut(), solid_id, &edge_ids, radius)?;
+            remus_operations::blend_ops::fillet_v2(self.topo_mut(), solid_id, &edge_ids, radius)
+                .map_err(|e| fillet_failure_js_error(&e))?;
         Ok(solid_id_to_u32(result.solid))
     }
 
@@ -2163,7 +2174,8 @@ impl BrepKernel {
             .map(|&h| self.resolve_edge(h))
             .collect::<Result<_, _>>()?;
         let result =
-            remus_operations::blend_ops::chamfer_v2(self.topo_mut(), solid_id, &edge_ids, d1, d2)?;
+            remus_operations::blend_ops::chamfer_v2(self.topo_mut(), solid_id, &edge_ids, d1, d2)
+                .map_err(|e| fillet_failure_js_error(&e))?;
         Ok(solid_id_to_u32(result.solid))
     }
 
@@ -2200,7 +2212,8 @@ impl BrepKernel {
             &edge_ids,
             distance,
             angle,
-        )?;
+        )
+        .map_err(|e| fillet_failure_js_error(&e))?;
         Ok(solid_id_to_u32(result.solid))
     }
 
@@ -2263,7 +2276,8 @@ impl BrepKernel {
             &edge_ids,
             distance,
             angle,
-        )?;
+        )
+        .map_err(|e| fillet_failure_js_error(&e))?;
         let evolution =
             wasm_blend_evolution(&self.topo, result.solid, result.face_origins.as_ref())?;
         let result_faces: Vec<u32> =

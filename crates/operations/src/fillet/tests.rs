@@ -951,11 +951,67 @@ fn fillet_on_boolean_result() {
         !planar_edges.is_empty(),
         "should have planar-planar edges to fillet"
     );
+
+    // The deprecated flat-bevel engine cannot rebuild this boolean-result
+    // topology: historically it returned `Ok` with a shell in two connected
+    // components and 90 free edges, and this test accepted it because it only
+    // asserted `is_ok()`. The fail-closed contract is: `Ok` requires a result
+    // that validates cleanly against the input, anything else must be a typed
+    // refusal. Today it refuses; pin that, and prove the production engine
+    // covers the scenario instead.
     let result = fillet(&mut topo, fused, &planar_edges, 1.0);
+    match result {
+        Ok(s) => {
+            let report = remus_check::validate::validate_solid(
+                &topo,
+                s,
+                &remus_check::validate::ValidateOptions::default(),
+            )
+            .unwrap();
+            assert!(
+                report.is_valid(),
+                "an accepted flat-bevel fillet must be valid: {:#?}",
+                report.issues
+            );
+        }
+        Err(error) => {
+            assert!(
+                !crate::blend_ops::blend_failure_code(&error).is_empty(),
+                "the refusal must carry a machine-readable code, got {error}"
+            );
+        }
+    }
+
+    // The same selection through the production engine succeeds, is valid,
+    // and removes the rounded slivers — (1−π/4)·r² per unit length per edge.
+    let expected_removed: f64 = planar_edges
+        .iter()
+        .map(|&e| {
+            let edge = topo.edge(e).unwrap();
+            let a = topo.vertex(edge.start()).unwrap().point();
+            let b = topo.vertex(edge.end()).unwrap().point();
+            (b - a).length()
+        })
+        .sum::<f64>()
+        * (1.0 - std::f64::consts::FRAC_PI_4);
+    let fused_volume = crate::measure::solid_volume(&topo, fused, 0.05).unwrap();
+    let v2 = crate::blend_ops::fillet_v2(&mut topo, fused, &planar_edges, 1.0)
+        .expect("the walking engine fillets a boolean result's planar edges");
+    let report = remus_check::validate::validate_solid(
+        &topo,
+        v2.solid,
+        &remus_check::validate::ValidateOptions::default(),
+    )
+    .unwrap();
     assert!(
-        result.is_ok(),
-        "fillet on planar edges of boolean result should succeed: {:?}",
-        result.err()
+        report.is_valid(),
+        "v2 result must be valid: {:#?}",
+        report.issues
+    );
+    let volume = crate::measure::solid_volume(&topo, v2.solid, 0.05).unwrap();
+    assert!(
+        (volume - (fused_volume - expected_removed)).abs() < expected_removed * 0.3,
+        "expected ≈{expected_removed:.2} mm³ removed from {fused_volume:.2}, got {volume:.2}"
     );
 }
 
@@ -1329,27 +1385,60 @@ fn fillet_rolling_ball_second_pass_on_blended_solid() {
         let s = topo.solid(result1).unwrap();
         topo.shell(s.outer_shell()).unwrap().faces().len()
     };
+    // Fail-closed contract: the engine must either return a result that is
+    // fully valid against its input or refuse with a typed error. On this
+    // target the walking builder also refuses (`TrimmingFailure`), and the
+    // rolling-ball's historical "success" carried 6 orientation-inconsistent
+    // shared edges — closed and manifold, but non-orientable. It is a typed
+    // refusal now; if the engine is ever repaired, the success branch's
+    // oracles must all hold.
     let result2 = fillet_rolling_ball(&mut topo, result1, &[target], 0.05);
-    assert!(
-        result2.is_ok(),
-        "second fillet on NURBS-containing solid must succeed: {:?}",
-        result2.err()
-    );
-    let result2 = result2.unwrap();
-
-    let vol = crate::measure::solid_volume(&topo, result2, 0.1).unwrap();
-    assert!(
-        vol > 0.5,
-        "doubly-filleted solid must have positive volume, got {vol}"
-    );
-    let faces_after = {
-        let s = topo.solid(result2).unwrap();
-        topo.shell(s.outer_shell()).unwrap().faces().len()
-    };
-    assert!(
-        faces_after > faces_before,
-        "the second fillet must add a blend face ({faces_before} -> {faces_after})"
-    );
+    match result2 {
+        Ok(result2) => {
+            let report = remus_check::validate::validate_solid(
+                &topo,
+                result2,
+                &remus_check::validate::ValidateOptions::default(),
+            )
+            .unwrap();
+            assert!(
+                report.is_valid(),
+                "an accepted second fillet must be valid: {:#?}",
+                report.issues
+            );
+            let vol = crate::measure::solid_volume(&topo, result2, 0.1).unwrap();
+            assert!(
+                vol > 0.5,
+                "doubly-filleted solid must have positive volume, got {vol}"
+            );
+            let faces_after = {
+                let s = topo.solid(result2).unwrap();
+                topo.shell(s.outer_shell()).unwrap().faces().len()
+            };
+            assert!(
+                faces_after > faces_before,
+                "the second fillet must add a blend face ({faces_before} -> {faces_after})"
+            );
+        }
+        Err(error) => {
+            assert!(
+                !crate::blend_ops::blend_failure_code(&error).is_empty(),
+                "the refusal must carry a machine-readable code, got {error}"
+            );
+            // A refused second pass must leave its input exactly as it was.
+            let report = remus_check::validate::validate_solid(
+                &topo,
+                result1,
+                &remus_check::validate::ValidateOptions::default(),
+            )
+            .unwrap();
+            assert!(
+                report.is_valid(),
+                "the input must still validate after a refused second fillet: {:#?}",
+                report.issues
+            );
+        }
+    }
 
     // And an edge the engine CANNOT round is now refused by name rather than
     // quietly left out of an otherwise successful rebuild.
@@ -1585,19 +1674,58 @@ fn fillet_edge_adjacent_to_blend_is_watertight() {
         .expect("a non-tangent edge bordering the blend face");
 
     // Second fillet on that blend-adjacent edge.
-    let result = fillet_rolling_ball(&mut topo, first, &[target], 0.5).unwrap();
-    let sh = topo
-        .shell(topo.solid(result).unwrap().outer_shell())
-        .unwrap();
-    validate_shell_manifold(sh, &topo).expect("second fillet must be manifold");
-    validate_shell_closed(sh, &topo)
-        .expect("second fillet on a blend-adjacent edge must be watertight");
+    //
+    // Fail-closed contract: the historical "success" here passed the manifold
+    // and closed-shell checks below while carrying 6 orientation-inconsistent
+    // shared edges — a non-orientable patch that only the full validation
+    // baseline catches. The engine now refuses it with a typed error. If the
+    // engine is ever repaired, every oracle in the success branch must hold.
+    let result = fillet_rolling_ball(&mut topo, first, &[target], 0.5);
+    match result {
+        Ok(result) => {
+            let report = remus_check::validate::validate_solid(
+                &topo,
+                result,
+                &remus_check::validate::ValidateOptions::default(),
+            )
+            .unwrap();
+            assert!(
+                report.is_valid(),
+                "an accepted blend-adjacent fillet must be fully valid: {:#?}",
+                report.issues
+            );
+            let sh = topo
+                .shell(topo.solid(result).unwrap().outer_shell())
+                .unwrap();
+            validate_shell_manifold(sh, &topo).expect("second fillet must be manifold");
+            validate_shell_closed(sh, &topo)
+                .expect("second fillet on a blend-adjacent edge must be watertight");
 
-    let vol2 = crate::measure::solid_volume(&topo, result, 0.05).unwrap();
-    // Concave end-cap edge → the fillet fills; volume stays sane (between the
-    // first fillet and the original box).
-    assert!(
-        vol2 > vol1 - 1e-6 && vol2 <= 1000.0 + 1e-6,
-        "filled fillet volume out of range: first={vol1}, second={vol2}"
-    );
+            let vol2 = crate::measure::solid_volume(&topo, result, 0.05).unwrap();
+            // Concave end-cap edge → the fillet fills; volume stays sane
+            // (between the first fillet and the original box).
+            assert!(
+                vol2 > vol1 - 1e-6 && vol2 <= 1000.0 + 1e-6,
+                "filled fillet volume out of range: first={vol1}, second={vol2}"
+            );
+        }
+        Err(error) => {
+            assert!(
+                !crate::blend_ops::blend_failure_code(&error).is_empty(),
+                "the refusal must carry a machine-readable code, got {error}"
+            );
+            // The refused second fillet must leave the once-filleted box
+            // exactly as it was: still closed, still the same volume.
+            let sh = topo
+                .shell(topo.solid(first).unwrap().outer_shell())
+                .unwrap();
+            validate_shell_closed(sh, &topo)
+                .expect("input must still be watertight after a refused second fillet");
+            let vol_after = crate::measure::solid_volume(&topo, first, 0.05).unwrap();
+            assert!(
+                (vol_after - vol1).abs() < 1e-9,
+                "input volume changed across a refused fillet: {vol1} -> {vol_after}"
+            );
+        }
+    }
 }

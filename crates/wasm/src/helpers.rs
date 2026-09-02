@@ -1268,7 +1268,11 @@ mod fillet_tests {
         // #834 via the consumer path: a single fillet creates a blend face
         // (an exact cylinder — a constant radius along a straight edge between
         // two planes is one); `try_fillet` on a non-tangent edge bordering it
-        // must round that into a valid watertight manifold, not skip it.
+        // must never SKIP it silently. Today no engine can round it validly
+        // (the walking trimmer refuses, and the rolling-ball's closed-but-
+        // non-orientable answer is no longer accepted), so the pinned contract
+        // is the typed refusal with the input untouched; if the trimmer is
+        // completed (bridge item B4), the success branch's oracles take over.
         let mut topo = Topology::new();
         let cube = remus_operations::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
         let edges = solid_edge_ids(&topo, cube);
@@ -1328,17 +1332,65 @@ mod fillet_tests {
             })
             .expect("a filletable edge bordering the blend face");
 
-        let result = try_fillet(&mut topo, first, &[target], 0.5).expect("second fillet");
-        assert_ne!(
-            result, first,
-            "the blend-adjacent edge should be filleted, not skipped"
-        );
-        let sh = topo
-            .shell(topo.solid(result).unwrap().outer_shell())
-            .unwrap();
-        validate_shell_manifold(sh, &topo).expect("second fillet must be manifold");
-        validate_shell_closed(sh, &topo)
-            .expect("second fillet on a blend-adjacent edge must be watertight");
+        // Fail-closed contract on the blend-adjacent second pass. The walking
+        // builder refuses this target (`TrimmingFailure`), and the rolling-ball
+        // fallback's historical answer — accepted here under the closed-shell
+        // gate — carried orientation-inconsistent shared edges (closed and
+        // manifold, but non-orientable: damaged goods). The chain must now
+        // either return a fully valid, genuinely changed solid or refuse with
+        // a typed error that leaves the input byte-identical. Pinning today's
+        // refusal; the un-refused capability is the walking trimmer's (bridge
+        // item B4, `docs/kernel-maturity/roadmap.md`).
+        let before_counts = remus_topology::explorer::solid_entity_counts(&topo, first).unwrap();
+        let before_volume = remus_operations::measure::solid_volume(&topo, first, 0.05).unwrap();
+        match try_fillet(&mut topo, first, &[target], 0.5) {
+            Ok(result) => {
+                assert_ne!(
+                    result, first,
+                    "the blend-adjacent edge should be filleted, not skipped"
+                );
+                let report = remus_check::validate::validate_solid(
+                    &topo,
+                    result,
+                    &remus_check::validate::ValidateOptions::default(),
+                )
+                .unwrap();
+                assert!(
+                    report.is_valid(),
+                    "an accepted second fillet must be fully valid: {:#?}",
+                    report.issues
+                );
+                let sh = topo
+                    .shell(topo.solid(result).unwrap().outer_shell())
+                    .unwrap();
+                validate_shell_manifold(sh, &topo).expect("second fillet must be manifold");
+                validate_shell_closed(sh, &topo)
+                    .expect("second fillet on a blend-adjacent edge must be watertight");
+            }
+            Err(error) => {
+                assert!(
+                    !remus_operations::blend_ops::blend_failure_code(&error).is_empty(),
+                    "the refusal must carry a machine-readable code, got {error}"
+                );
+                assert_eq!(
+                    remus_topology::explorer::solid_entity_counts(&topo, first).unwrap(),
+                    before_counts,
+                    "a refused second fillet must leave the input's counts unchanged"
+                );
+                let after_volume =
+                    remus_operations::measure::solid_volume(&topo, first, 0.05).unwrap();
+                assert!(
+                    (before_volume - after_volume).abs() < 1e-9,
+                    "a refused second fillet must not move the input volume: \
+                     {before_volume} -> {after_volume}"
+                );
+                let sh = topo
+                    .shell(topo.solid(first).unwrap().outer_shell())
+                    .unwrap();
+                validate_shell_closed(sh, &topo)
+                    .expect("input must stay watertight across a refused second fillet");
+            }
+        }
     }
 
     // The OpenZCAD plate (80 x 60 x 6 with a bored hole). Corner chains and
