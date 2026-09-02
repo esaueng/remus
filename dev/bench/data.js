@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788305396930,
+  "lastUpdate": 1788310093355,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -6263,6 +6263,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 34571698,
             "range": "± 187195",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "43a66249d9b0ea389fa53adc18376f0931249a34",
+          "message": "fix(operations): close the fillet silent-success paths (K-S1) (#181)\n\n* fix(operations): close the fillet silent-success paths (K-S1)\n\nEvery public fillet/chamfer mutation path is now transactional and\nfail-closed: fillet_variable, the deprecated flat-bevel fillet,\nfillet_rolling_ball, and the flat-bevel chamfer validate the assembled\nresult against the input baseline and the physical volume budget before\nreturning it, and any refusal restores the arena, journal, attributes,\nand input solid exactly.\n\nMeasured baseline defects this removes: filletVariable r=50 on a 10 mm\nbox returned Ok with a 3242 mm^3 solid (volume grew); the same call on a\ncylinder's edges returned an invalid solid as success; a selection\nnaming another solid's edge returned a clone of the input with a fresh\nhandle. The rolling-ball pyramid all-edges census row moves from an\naccepted free-edge/orientation-broken solid to a typed refusal.\n\nTwo results the old closed-shell gate accepted surface as typed\nrefusals (blend-adjacent second-pass fillet, gridfinity lip peak-rim\nfillet — both closed, manifold, and non-orientable); the un-refused\ncapability is the walking trimmer's (bridge item B4).\n\nWASM: batch fillet enforces the whole-selection rule identically to the\ndirect binding, and every blend-family batch op attaches the stable\nblend_failure_code as the kernelCode detail (message prefix on the\ndirect filletVariable/filletV2/chamferV2/chamferDistanceAngle bindings).\n\n* docs(kernel-maturity): record the K-S1 fillet fail-closed disposition\n\n* fix(operations): preserve the rolling-ball boundary identity under the wrap\n\nThe transaction wrap of fillet_rolling_ball_with_origins keeps the\noriginal function name (closure body instead of an extracted\n_transacted fn) so the reviewed boundary-mutation identity in\nscripts/check-edge-domain-authority.py is unchanged; context hashing is\nwhitespace-insensitive, so the reindented body maps onto the same\nexcluded-baseline identity.\n\nAlso add the new fillet fail-closed contract test module to the\nAGENTS.md Module Map (Repository Policy check).",
+          "timestamp": "2026-09-01T20:44:50-04:00",
+          "tree_id": "f56ad37b9b2249ef541eaf9a79625bc34799fb8e",
+          "url": "https://github.com/esaueng/remus/commit/43a66249d9b0ea389fa53adc18376f0931249a34"
+        },
+        "date": 1788310092091,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1400327,
+            "range": "± 5114",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1495147,
+            "range": "± 6974",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 26934,
+            "range": "± 48",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 1055105,
+            "range": "± 5024",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 42663228,
+            "range": "± 352896",
             "unit": "ns/iter"
           }
         ]
