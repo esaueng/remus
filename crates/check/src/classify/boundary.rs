@@ -11,6 +11,7 @@ use remus_math::predicates::point_in_polygon;
 use remus_math::traits::ParametricSurface;
 use remus_math::vec::{Point2, Point3, Vec3};
 use remus_topology::Topology;
+use remus_topology::edge::EdgeCurve;
 use remus_topology::face::{FaceId, FaceSurface};
 
 use crate::CheckError;
@@ -408,6 +409,111 @@ fn count_sphere_cap_crossings(
     Ok(Some(crossings))
 }
 
+/// Count crossings for a sphere patch bounded entirely by exact circle arcs.
+///
+/// Each supporting circle plane contributes one exact half-space constraint.
+/// The boundary traversal determines which side belongs to the face. This
+/// handles the two-plane spherical patches produced by a transversal
+/// sphere/sphere boolean without replacing their curved boundaries by an
+/// inscribed polygon.
+fn count_sphere_circle_patch_crossings(
+    topo: &Topology,
+    face_id: FaceId,
+    origin: Point3,
+    direction: Vec3,
+    roots: &SmallVec<[f64; 4]>,
+    sphere: &remus_math::surfaces::SphericalSurface,
+) -> Result<Option<u32>, CheckError> {
+    let face = topo.face(face_id)?;
+    if !face.inner_wires().is_empty() {
+        return Ok(None);
+    }
+    let wire = topo.wire(face.outer_wire())?;
+    if wire.edges().len() < 2 {
+        return Ok(None);
+    }
+
+    let mut constraints: Vec<(Point3, Vec3)> = Vec::with_capacity(wire.edges().len());
+    for oriented in wire.edges() {
+        let edge = topo.edge(oriented.edge())?;
+        let EdgeCurve::Circle(circle) = edge.curve() else {
+            return Ok(None);
+        };
+        let (t0, t1) = edge
+            .strict_domain()
+            .map_err(crate::error::edge_domain_validation)?;
+        let start = topo.vertex(edge.start())?.point();
+        let end = topo.vertex(edge.end())?.point();
+        let mid_t = (t1 - t0).mul_add(0.5, t0);
+        let midpoint = circle.evaluate(mid_t);
+        let sphere_residual = ((midpoint - sphere.center()).length() - sphere.radius()).abs();
+        let tolerance = edge.effective_tolerance(
+            topo.vertex(edge.start())?
+                .tolerance()
+                .max(topo.vertex(edge.end())?.tolerance()),
+        );
+        if !sphere_residual.is_finite() || sphere_residual > tolerance.max(1e-9) {
+            return Ok(None);
+        }
+
+        let mut tangent = edge.curve().tangent_with_endpoints(mid_t, start, end);
+        if t1 < t0 {
+            tangent = -tangent;
+        }
+        if !oriented.is_forward() {
+            tangent = -tangent;
+        }
+        let Ok(outward) = (midpoint - sphere.center()).normalize() else {
+            return Ok(None);
+        };
+        let plane_normal = circle.normal();
+        let side = outward.cross(tangent).dot(plane_normal);
+        if !side.is_finite() || side.abs() <= 1e-12 {
+            return Ok(None);
+        }
+        let half_normal = plane_normal * side.signum();
+        let mut duplicate = false;
+        for (plane_point, existing_normal) in &constraints {
+            let alignment = half_normal.dot(*existing_normal);
+            if alignment.abs() > 1.0 - 1e-9
+                && (circle.center() - *plane_point).dot(*existing_normal).abs()
+                    <= tolerance.max(1e-9)
+            {
+                if alignment < 0.0 {
+                    return Ok(None);
+                }
+                duplicate = true;
+                break;
+            }
+        }
+        if !duplicate {
+            constraints.push((circle.center(), half_normal));
+        }
+    }
+
+    // One support plane is the ordinary cap case handled above. Keep this
+    // dispatch deliberately narrow: the Issue 2.2 patch is bounded by exactly
+    // the primitive equator and the radical plane. Spherical polygons with
+    // three or more supports may be concave and need a winding-aware rule.
+    if constraints.len() != 2 || constraints[0].1.cross(constraints[1].1).length() <= 1e-9 {
+        return Ok(None);
+    }
+
+    let mut crossings = 0_u32;
+    for &t in roots {
+        if t <= RAY_T_MIN {
+            continue;
+        }
+        let hit = origin + direction * t;
+        if constraints.iter().all(|(plane_point, half_normal)| {
+            (hit - *plane_point).dot(*half_normal) >= -HALF_SPACE_EPS
+        }) {
+            crossings += 1;
+        }
+    }
+    Ok(Some(crossings))
+}
+
 /// Count crossings using 3D polygon containment (for faces with planar
 /// boundaries, e.g. sphere hemispheres where UV projection has pole
 /// singularities).
@@ -522,6 +628,10 @@ pub fn count_face_ray_crossings(
             let roots = ray_surface::ray_sphere(origin, direction, &sph);
             if let Some(count) =
                 count_sphere_cap_crossings(topo, face_id, origin, direction, &roots, &sph)?
+            {
+                Ok(count)
+            } else if let Some(count) =
+                count_sphere_circle_patch_crossings(topo, face_id, origin, direction, &roots, &sph)?
             {
                 Ok(count)
             } else {

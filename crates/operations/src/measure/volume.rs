@@ -885,7 +885,7 @@ fn try_analytic_solid_volume(topo: &Topology, solid: SolidId) -> Option<f64> {
     }
     let shell = topo.shell(solid_data.outer_shell()).ok()?;
 
-    let mut sphere_r: Option<f64> = None;
+    let mut sphere_params: Option<(Point3, f64)> = None;
     let mut cyl: Option<(Point3, Vec3, f64)> = None; // (origin, axis, radius)
     let mut cone_params: Option<(Point3, Vec3)> = None; // (apex, axis)
     let mut torus_params: Option<(f64, f64)> = None; // (major_r, minor_r)
@@ -911,10 +911,17 @@ fn try_analytic_solid_volume(topo: &Topology, solid: SolidId) -> Option<f64> {
             }
             FaceSurface::Sphere(s) => {
                 let r = s.radius();
-                match sphere_r {
-                    None => sphere_r = Some(r),
-                    // Multiple sphere faces must all share the same radius.
-                    Some(existing) if (r - existing).abs() > existing * 1e-6 => return None,
+                match sphere_params {
+                    None => sphere_params = Some((s.center(), r)),
+                    // Multiple faces form one primitive sphere only when both
+                    // its center and radius agree. A sphere-sphere boolean has
+                    // equal-radius faces from two different carriers.
+                    Some((center, existing))
+                        if (s.center() - center).length() > existing * 1e-6
+                            || (r - existing).abs() > existing * 1e-6 =>
+                    {
+                        return None;
+                    }
                     Some(_) => {}
                 }
             }
@@ -940,7 +947,7 @@ fn try_analytic_solid_volume(topo: &Topology, solid: SolidId) -> Option<f64> {
         }
     }
 
-    if let Some(r) = sphere_r
+    if let Some((center, r)) = sphere_params
         && cyl.is_none()
         && cone_params.is_none()
         && torus_params.is_none()
@@ -949,15 +956,6 @@ fn try_analytic_solid_volume(topo: &Topology, solid: SolidId) -> Option<f64> {
         // A non-uniform scale transforms vertices but leaves the sphere
         // surface radius unchanged, making the analytic formula wrong.
         let sphere_faces: Vec<_> = shell.faces().to_vec();
-        let center = if let Ok(f) = topo.face(sphere_faces[0]) {
-            if let FaceSurface::Sphere(s) = f.surface() {
-                s.center()
-            } else {
-                return None;
-            }
-        } else {
-            return None;
-        };
         let mut max_dist = 0.0_f64;
         let mut min_dist = f64::INFINITY;
         for &fid in &sphere_faces {
@@ -991,7 +989,7 @@ fn try_analytic_solid_volume(topo: &Topology, solid: SolidId) -> Option<f64> {
     if let Some((origin, axis, r)) = cyl
         && cone_params.is_none()
         && torus_params.is_none()
-        && sphere_r.is_none()
+        && sphere_params.is_none()
         && planes.len() == 2
     {
         let origin_vec = Vec3::new(origin.x(), origin.y(), origin.z());
@@ -1010,7 +1008,7 @@ fn try_analytic_solid_volume(topo: &Topology, solid: SolidId) -> Option<f64> {
     if let Some((apex, axis)) = cone_params
         && cyl.is_none()
         && torus_params.is_none()
-        && sphere_r.is_none()
+        && sphere_params.is_none()
     {
         let apex_vec = Vec3::new(apex.x(), apex.y(), apex.z());
 
@@ -1049,7 +1047,7 @@ fn try_analytic_solid_volume(topo: &Topology, solid: SolidId) -> Option<f64> {
     if let Some((r_major, r_minor)) = torus_params
         && cyl.is_none()
         && cone_params.is_none()
-        && sphere_r.is_none()
+        && sphere_params.is_none()
     {
         if planes.is_empty() {
             return Some(2.0 * PI * PI * r_major * r_minor * r_minor);
@@ -1428,6 +1426,34 @@ pub fn solid_volume(
         // Non-watertight mesh: fall through rather than return a leaky volume.
     }
 
+    // A sphere patch bounded by a non-latitude circle is not a rectangular
+    // `(u, v)` window. Direct per-face integration would fill that rectangle
+    // and measure the wrong region; the solid-level tessellator follows the
+    // shared trimmed boundary. This includes the caps of a sphere-sphere
+    // boolean as well as spherical triangle blend corners.
+    let has_non_band_sphere = {
+        let mut found = false;
+        for fid in remus_topology::explorer::solid_faces(topo, solid)? {
+            let face = topo.face(fid)?;
+            if let FaceSurface::Sphere(sphere) = face.surface()
+                && !sphere_outer_wire_constant_v(topo, fid, sphere)?
+            {
+                found = true;
+                break;
+            }
+        }
+        found
+    };
+    if has_non_band_sphere {
+        let mesh = tessellate::tessellate_solid(topo, solid, deflection)?;
+        if !mesh.indices.is_empty() && mesh_boundary_edge_count(&mesh) == 0 {
+            let volume = signed_volume_from_mesh(&mesh);
+            if volume > 1e-12 {
+                return Ok(volume);
+            }
+        }
+    }
+
     // Fast path: for solids made entirely of planar triangular faces
     // (e.g. mesh imports), compute volume directly from face geometry.
     // This avoids re-tessellation which has known WASM winding issues.
@@ -1499,21 +1525,6 @@ pub fn solid_volume(
         // whole-solid mesh above. Drill one hole and the same body routed here
         // instead, and its corner fillets read as removing half of what the
         // undrilled plate's removed.
-        let has_non_band_sphere = {
-            let s = topo.solid(solid)?;
-            let sh = topo.shell(s.outer_shell())?;
-            let mut found = false;
-            for &fid in sh.faces() {
-                let face = topo.face(fid)?;
-                if let FaceSurface::Sphere(sphere) = face.surface()
-                    && !sphere_outer_wire_constant_v(topo, fid, sphere)?
-                {
-                    found = true;
-                    break;
-                }
-            }
-            found
-        };
         if has_nurbs || has_non_band_sphere {
             let mesh = tessellate::tessellate_solid(topo, solid, deflection)?;
             if !mesh.indices.is_empty() && mesh_boundary_edge_count(&mesh) == 0 {

@@ -14,7 +14,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
-use remus_topology::edge::{EdgeCurve, EdgeId};
+use remus_topology::edge::{EdgeCurve, EdgeDomainError, EdgeId};
 use remus_topology::face::{Face, FaceId, FaceSurface};
 use remus_topology::shell::Shell;
 use remus_topology::solid::{Solid, SolidId};
@@ -295,16 +295,16 @@ fn perform_shapes_to_avoid(
 /// Uses flood-fill with dihedral angle selection at non-manifold edges.
 #[allow(clippy::too_many_lines)]
 fn perform_loops(topo: &Topology, faces: &[FaceId]) -> Result<Vec<Vec<FaceId>>, AlgoError> {
-    let edge_map = build_edge_face_map(topo, faces)?;
-    let edge_positions = build_edge_positions(topo, faces)?;
+    let edge_map = build_adjacency_edge_face_map(topo, faces)?;
+    let edge_positions = build_adjacency_edge_positions(topo, faces)?;
 
     let mut visited: HashSet<FaceId> = HashSet::new();
     let mut shells: Vec<Vec<FaceId>> = Vec::new();
 
     // Pre-compute face → edge keys for neighbor lookup
-    let face_edges: HashMap<FaceId, Vec<VPair>> = faces
+    let face_edges: HashMap<FaceId, Vec<EdgeAdjacencyKey>> = faces
         .iter()
-        .filter_map(|&fid| Some((fid, face_edge_keys(topo, fid).ok()?)))
+        .filter_map(|&fid| Some((fid, face_adjacency_keys(topo, fid).ok()?)))
         .collect();
 
     for &start_face in faces {
@@ -316,7 +316,7 @@ fn perform_loops(topo: &Topology, faces: &[FaceId]) -> Result<Vec<Vec<FaceId>>, 
         let mut queue = VecDeque::new();
 
         // Track edges already filled (2 faces) in this shell
-        let mut shell_edge_count: HashMap<VPair, u32> = HashMap::new();
+        let mut shell_edge_count: HashMap<EdgeAdjacencyKey, u32> = HashMap::new();
 
         visited.insert(start_face);
         shell.push(start_face);
@@ -753,9 +753,9 @@ fn perform_areas(topo: &Topology, shells: &[Vec<FaceId>]) -> (Vec<Vec<FaceId>>, 
 /// Whether a shell is closed: every quantized boundary edge is shared by an
 /// even number of the shell's own faces (a watertight, manifold lump).
 fn shell_is_closed(topo: &Topology, faces: &[FaceId]) -> bool {
-    let mut edge_counts: HashMap<VPair, u32> = HashMap::new();
+    let mut edge_counts: HashMap<EdgeAdjacencyKey, u32> = HashMap::new();
     for &fid in faces {
-        let Ok(keys) = face_edge_keys(topo, fid) else {
+        let Ok(keys) = face_adjacency_keys(topo, fid) else {
             return false;
         };
         for key in keys {
@@ -2860,6 +2860,46 @@ fn merge_duplicate_edges(topo: &mut Topology, face_ids: &mut [FaceId]) -> Result
 
         for &dup in &unique[1..] {
             let dup_edge = topo.edge(dup)?;
+            let canon_edge = topo.edge(canonical)?;
+            let both_analytic_conics = matches!(
+                (canon_edge.curve(), dup_edge.curve()),
+                (EdgeCurve::Circle(_), EdgeCurve::Circle(_))
+                    | (EdgeCurve::Ellipse(_), EdgeCurve::Ellipse(_))
+            );
+            if both_analytic_conics {
+                if !conics_share_support(canon_edge.curve(), dup_edge.curve(), tol) {
+                    continue;
+                }
+                let midpoint = |edge: &remus_topology::edge::Edge| {
+                    let (t0, t1) = match edge.strict_domain() {
+                        Ok(domain) => domain,
+                        // Compatibility-only transients that predate stored
+                        // authority retain the historical support+endpoint
+                        // merge. Every new sphere section carries a strict
+                        // range and therefore takes the branch check below.
+                        Err(EdgeDomainError::Missing { .. }) => return Ok(None),
+                        Err(error) => {
+                            return Err(AlgoError::AssemblyFailed(format!(
+                                "cannot merge curved edge with invalid range: {error}"
+                            )));
+                        }
+                    };
+                    let start = topo.vertex(edge.start())?.point();
+                    let end = topo.vertex(edge.end())?.point();
+                    Ok::<Option<Point3>, AlgoError>(Some(edge.curve().evaluate_with_endpoints(
+                        t0 + (t1 - t0) * 0.5,
+                        start,
+                        end,
+                    )))
+                };
+                let canon_midpoint = midpoint(canon_edge)?;
+                let dup_midpoint = midpoint(dup_edge)?;
+                if let (Some(canon_midpoint), Some(dup_midpoint)) = (canon_midpoint, dup_midpoint)
+                    && (canon_midpoint - dup_midpoint).length() > tol
+                {
+                    continue;
+                }
+            }
             let dup_qs = quantize_point(topo.vertex(dup_edge.start())?.point(), tol);
             let dup_qe = quantize_point(topo.vertex(dup_edge.end())?.point(), tol);
             // Detect reversed traversal. For open edges the vertex order tells;
@@ -2877,7 +2917,6 @@ fn merge_duplicate_edges(topo: &mut Topology, face_ids: &mut [FaceId]) -> Result
                 // (CCW-about-normal); tangent evaluation is unusable here
                 // because `domain_with_endpoints` anchors a closed curve to
                 // the CURVE's own start parameter, not the seam vertex.
-                let canon_edge = topo.edge(canonical)?;
                 match (canon_edge.curve(), dup_edge.curve()) {
                     (EdgeCurve::Circle(a), EdgeCurve::Circle(b)) => {
                         a.normal().dot(b.normal()) < 0.0
@@ -3156,6 +3195,29 @@ fn build_edge_face_map(
     Ok(map)
 }
 
+/// Geometry-aware edge key used while the builder is still coalescing copied
+/// input topology. Endpoint pairs alone conflate complementary arcs, while
+/// `EdgeId` alone misses coincident copies from different source faces. The
+/// carrier midpoint distinguishes the former without losing the latter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct EdgeAdjacencyKey {
+    endpoints: VPair,
+    midpoint: Option<QPos>,
+}
+
+fn build_adjacency_edge_face_map(
+    topo: &Topology,
+    faces: &[FaceId],
+) -> Result<HashMap<EdgeAdjacencyKey, Vec<FaceId>>, AlgoError> {
+    let mut map: HashMap<EdgeAdjacencyKey, Vec<FaceId>> = HashMap::new();
+    for &fid in faces {
+        for key in face_adjacency_keys(topo, fid)? {
+            map.entry(key).or_default().push(fid);
+        }
+    }
+    Ok(map)
+}
+
 /// Tolerance for position quantization (matches system linear tolerance).
 const MERGE_TOL: f64 = 1e-7;
 
@@ -3182,37 +3244,81 @@ fn face_edge_keys(topo: &Topology, fid: FaceId) -> Result<Vec<VPair>, AlgoError>
     Ok(keys)
 }
 
-/// Build edge position-pair → 3D positions map for `get_face_off`.
-fn build_edge_positions(
+fn edge_adjacency_key(
+    topo: &Topology,
+    edge_id: EdgeId,
+) -> Result<(EdgeAdjacencyKey, (Point3, Point3)), AlgoError> {
+    let edge = topo.edge(edge_id)?;
+    let start = topo.vertex(edge.start())?.point();
+    let end = topo.vertex(edge.end())?.point();
+    let q_start = quantize_point(start, MERGE_TOL);
+    let q_end = quantize_point(end, MERGE_TOL);
+    let endpoints = if q_start <= q_end {
+        (q_start, q_end)
+    } else {
+        (q_end, q_start)
+    };
+    let midpoint = if matches!(edge.curve(), EdgeCurve::Line) {
+        None
+    } else {
+        match edge.strict_domain() {
+            Ok((t0, t1)) => Some(edge.curve().evaluate_with_endpoints(
+                t0 + (t1 - t0) * 0.5,
+                start,
+                end,
+            )),
+            Err(EdgeDomainError::Missing { .. }) => None,
+            Err(error) => {
+                return Err(AlgoError::AssemblyFailed(format!(
+                    "cannot assemble curved edge with invalid range: {error}"
+                )));
+            }
+        }
+    };
+    if midpoint.is_some_and(|point| {
+        !point.x().is_finite() || !point.y().is_finite() || !point.z().is_finite()
+    }) {
+        return Err(AlgoError::AssemblyFailed(
+            "cannot assemble edge with a non-finite carrier midpoint".into(),
+        ));
+    }
+    Ok((
+        EdgeAdjacencyKey {
+            endpoints,
+            midpoint: midpoint.map(|point| quantize_point(point, MERGE_TOL)),
+        },
+        (start, end),
+    ))
+}
+
+/// Get geometry-aware edge identities used by all wires of one face.
+fn face_adjacency_keys(topo: &Topology, fid: FaceId) -> Result<Vec<EdgeAdjacencyKey>, AlgoError> {
+    let face = topo.face(fid)?;
+    let mut keys = Vec::new();
+    for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+        for oriented in topo.wire(wid)?.edges() {
+            keys.push(edge_adjacency_key(topo, oriented.edge())?.0);
+        }
+    }
+    Ok(keys)
+}
+
+/// Build geometry-aware edge-key to endpoint positions for dihedral selection.
+fn build_adjacency_edge_positions(
     topo: &Topology,
     faces: &[FaceId],
-) -> Result<HashMap<VPair, (Point3, Point3)>, AlgoError> {
-    let mut map: HashMap<VPair, (Point3, Point3)> = HashMap::new();
-
+) -> Result<HashMap<EdgeAdjacencyKey, (Point3, Point3)>, AlgoError> {
+    let mut map = HashMap::new();
     for &fid in faces {
         let face = topo.face(fid)?;
-        for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
-            let wire = topo.wire(wid)?;
-            for oe in wire.edges() {
-                let edge = topo.edge(oe.edge())?;
-                let sp = topo.vertex(edge.start())?.point();
-                let ep = topo.vertex(edge.end())?.point();
-                let qs = quantize_point(sp, MERGE_TOL);
-                let qe = quantize_point(ep, MERGE_TOL);
-                // Store points in the same canonical order as the key so
-                // get_face_off sees a consistent tangent direction.
-                let (key, ordered) = if qs <= qe {
-                    ((qs, qe), (sp, ep))
-                } else {
-                    ((qe, qs), (ep, sp))
-                };
-                if let std::collections::hash_map::Entry::Vacant(entry) = map.entry(key) {
-                    entry.insert(ordered);
-                }
+        for wire_id in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+        {
+            for oriented in topo.wire(wire_id)?.edges() {
+                let (key, positions) = edge_adjacency_key(topo, oriented.edge())?;
+                map.entry(key).or_insert(positions);
             }
         }
     }
-
     Ok(map)
 }
 
