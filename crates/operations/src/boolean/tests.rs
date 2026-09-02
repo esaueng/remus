@@ -8972,8 +8972,9 @@ fn cut_cylinder_by_tilted_slab_stays_exact_and_closed() {
 
     let result = boolean(&mut topo, BooleanOp::Cut, stock, tool).unwrap();
 
-    // Exact path: two cylinder wall pieces (the far end face still splits the
-    // wall along a generator) plus four planes — caps, slab face, end face.
+    // Exact path: one cylinder wall plus four planes — caps, slab face, end
+    // face. The slab's far end face (x = -4) meets the wall's generator only
+    // below the bottom cap, so it must not split the wall (#195).
     let mut kinds: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
     for f in solid_faces(&topo, result).unwrap() {
         *kinds
@@ -8982,7 +8983,7 @@ fn cut_cylinder_by_tilted_slab_stays_exact_and_closed() {
     }
     assert_eq!(
         kinds.get("cylinder").copied().unwrap_or(0),
-        2,
+        1,
         "census {kinds:?}"
     );
     assert_eq!(
