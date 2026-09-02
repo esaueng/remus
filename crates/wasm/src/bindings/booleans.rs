@@ -1208,6 +1208,11 @@ mod tests {
         assert!(out.deflection.is_none());
         let volume = k.volume(out.solid, 0.05).unwrap();
         assert!((volume - 8.0).abs() < 1e-6, "fused volume {volume}");
+        let boundary = remus_topology::validation::validate_boundary_authority(k.topo())
+            .expect("WASM-visible boolean preserves whole-topology authority");
+        assert_eq!(boundary.faces, k.topo().num_faces());
+        assert_eq!(boundary.loops, k.topo().num_loops());
+        assert_eq!(boundary.coedges, k.topo().num_coedges());
     }
 
     #[test]

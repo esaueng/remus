@@ -173,6 +173,21 @@ SameParameter proofs for imported plane/conic combinations remain a typed
 capability boundary for the 2.0g integration tranche; those combinations are
 not treated as proved merely because their STEP pcurves were retained.
 
+Issue 2.0g closes the integration tranche. The semantic ratchet requires zero
+of the 132 measured production endpoint-reconstruction readers, all 24 trim-
+writer preservation identities, zero of the 30 direct boundary mutations,
+and no unknown sites. `validate_boundary_authority` audits every live physical
+Loop/Coedge record for connected and synchronized boundaries, exactly-one
+ownership, resolvable compatibility indexing, and complete seam branches.
+The gate runs over the exact boolean seam fixture, arena-v3 round-trip and
+rollback tests, the external 48-pcurve STEP corpus, and a WASM-visible boolean
+path. General imported plane/conic SameParameter combinations remain typed
+`same_parameter_proof_unavailable`; corpus retention is not promoted into a
+false geometric proof. The unsafe direct Face wire mutators are deprecated.
+The read-only wire facade is retained because its separately specified
+consumer/release deletion gate is not met; removing it here would be a public
+API break, not Issue 2.0 completion.
+
 ### 2.1 Honest-failure hygiene (S)
 
 `crates/algo/src/pave_filler/phase_ff.rs` ·

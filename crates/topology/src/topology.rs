@@ -1069,6 +1069,23 @@ impl Topology {
         self.coedges.len()
     }
 
+    pub(crate) fn live_loop_ids(&self) -> impl Iterator<Item = LoopId> + '_ {
+        self.loops.iter().map(|(id, _)| id)
+    }
+
+    pub(crate) fn live_coedge_ids(&self) -> impl Iterator<Item = CoedgeId> + '_ {
+        self.coedges.iter().map(|(id, _)| id)
+    }
+
+    pub(crate) fn indexed_coedge_use(
+        &self,
+        edge: EdgeId,
+        face: FaceId,
+        forward: bool,
+    ) -> Option<CoedgeId> {
+        self.pcurves.get_use(edge, face, forward)
+    }
+
     /// Retires a solid and every entity in its topology tree that no other
     /// live solid references.
     ///
@@ -1558,6 +1575,7 @@ mod tests {
     use crate::pcurve::PCurve;
     use crate::shell::Shell;
     use crate::solid::Solid;
+    use crate::validation::{BoundaryAuthorityError, validate_boundary_authority};
     use crate::wire::{OrientedEdge, Wire};
 
     use super::*;
@@ -1606,6 +1624,77 @@ mod tests {
             0.0,
             1.0,
         )
+    }
+
+    #[test]
+    fn whole_topology_boundary_gate_rejects_an_unowned_live_coedge() {
+        use remus_math::diagnostic::ToDiagnostic;
+
+        let mut topo = Topology::new();
+        let (_, face, edge) = make_triangle_solid(&mut topo, 0.0);
+        let parent = topo.loops_of_face(face).unwrap()[0];
+        let orphan = topo.coedges.alloc(Coedge::new(edge, true, parent));
+
+        let error = validate_boundary_authority(&topo).unwrap_err();
+        assert!(matches!(
+            error,
+            BoundaryAuthorityError::CoedgeOwnershipInvalid {
+                coedge,
+                owners: 0,
+            } if coedge == orphan
+        ));
+        assert_eq!(error.diagnostic().code(), "coedge_ownership_invalid");
+    }
+
+    #[test]
+    fn whole_topology_boundary_gate_pins_loop_ownership_and_index_diagnostics() {
+        use remus_math::diagnostic::ToDiagnostic;
+
+        let mut topo = Topology::new();
+        let (_, face, _) = make_triangle_solid(&mut topo, 0.0);
+        let orphan = topo.loops.alloc(Loop::new(face, Vec::new(), true));
+        let error = validate_boundary_authority(&topo).unwrap_err();
+        assert!(matches!(
+            error,
+            BoundaryAuthorityError::LoopOwnershipInvalid {
+                loop_id,
+                owners: 0,
+            } if loop_id == orphan
+        ));
+        assert_eq!(error.diagnostic().code(), "loop_ownership_invalid");
+
+        let mut topo = Topology::new();
+        let (_, face, edge) = make_triangle_solid(&mut topo, 0.0);
+        let coedge = topo
+            .face_loop(topo.loops_of_face(face).unwrap()[0])
+            .unwrap()
+            .coedges()[0];
+        let orientation = if topo.coedge(coedge).unwrap().is_forward() {
+            "forward"
+        } else {
+            "reverse"
+        };
+        let mut corrupted_index = crate::pcurve::PCurveRegistry::new();
+        for (indexed_edge, forward, indexed_coedge) in topo.pcurves.uses_for_face(face) {
+            if indexed_coedge != coedge {
+                corrupted_index.index_use(indexed_edge, face, forward, indexed_coedge);
+            }
+        }
+        topo.pcurves = corrupted_index;
+        let error = validate_boundary_authority(&topo).unwrap_err();
+        assert!(matches!(
+            error,
+            BoundaryAuthorityError::IndexMismatch {
+                edge: found_edge,
+                face: found_face,
+                coedge: found_coedge,
+                orientation: found_orientation,
+            } if found_edge == edge
+                && found_face == face
+                && found_coedge == coedge
+                && found_orientation == orientation
+        ));
+        assert_eq!(error.diagnostic().code(), "coedge_index_mismatch");
     }
 
     #[test]
