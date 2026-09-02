@@ -117,8 +117,9 @@ impl Plane {
 /// inner wire, a drafted face lies on the parting plane, a relocated corner
 /// also lies on a curved face or on fewer than three distinct planes, a wire
 /// that must be rebuilt carries a curved edge, a relocated corner would leave
-/// its own face's plane or travel implausibly far, or the drafted shell fails
-/// validation.
+/// its own face's plane or travel implausibly far, the taper slides two
+/// corners of a rebuilt wire past each other (the face would fold over its
+/// neighbours), or the drafted shell fails validation.
 pub fn draft(
     topo: &mut Topology,
     solid: SolidId,
@@ -515,7 +516,7 @@ fn build_specs(
             // one. That is the whole difference from the version of this
             // function that silently filled every hole it touched.
             debug_assert!(face.inner_wires().is_empty());
-            let outer = substitute_wire(topo, face.outer_wire(), moved, tol)?;
+            let outer = substitute_wire(topo, face.outer_wire(), fid, moved, tol)?;
             if outer.len() < 3 {
                 return Err(unsupported(format!(
                     "the draft collapses face {} to {} corner(s)",
@@ -574,7 +575,7 @@ fn build_specs(
         }
 
         require_line_wire(topo, face.outer_wire(), fid)?;
-        let outer = substitute_wire(topo, face.outer_wire(), moved, tol)?;
+        let outer = substitute_wire(topo, face.outer_wire(), fid, moved, tol)?;
         if outer.len() < 3 {
             return Err(unsupported(format!(
                 "the draft collapses face {} to {} corner(s)",
@@ -650,18 +651,51 @@ fn require_line_wire(topo: &Topology, wire: WireId, fid: FaceId) -> Result<(), O
 
 /// Walk a wire's vertices, substituting relocated corners and dropping corners
 /// that collapsed onto their neighbour.
+///
+/// Every edge of the wire stays on its own support line (the intersection of
+/// the two face planes that meet along it), so the only way the rebuilt wire
+/// can degenerate is for an edge's two corners to slide past each other. That
+/// happens whenever the taper pushes a face outward by more than its width
+/// allows — on a convex body each corner moves toward the face's middle by
+/// `δ / tan(dihedral)`, which for a narrow facet between shallow neighbours
+/// exceeds the facet's own width — and the wire then winds against its normal.
+/// Assembling that gives a shell that passes validation and encloses positive
+/// volume while the folded face overlaps its neighbours, so a reversed edge
+/// is refused here by name.
 fn substitute_wire(
     topo: &Topology,
     wire: WireId,
+    fid: FaceId,
     moved: &BTreeMap<usize, Point3>,
     tol: Tolerance,
 ) -> Result<Vec<Point3>, OperationsError> {
+    let ids = wire_vertices(topo, wire)?;
+    let mut original = Vec::with_capacity(ids.len());
+    let mut relocated = Vec::with_capacity(ids.len());
+    for vid in &ids {
+        let p = topo.vertex(*vid)?.point();
+        original.push(p);
+        relocated.push(moved.get(&vid.index()).copied().unwrap_or(p));
+    }
+
+    for i in 0..ids.len() {
+        let j = (i + 1) % ids.len();
+        let before = original[j] - original[i];
+        let after = relocated[j] - relocated[i];
+        if after.length() > tol.linear && before.dot(after) < 0.0 {
+            return Err(unsupported(format!(
+                "the taper at this angle eliminates face {}: its corners {} and {} \
+                 slide past each other, so the face would fold over its neighbours \
+                 instead of tilting",
+                fid.index(),
+                ids[i].index(),
+                ids[j].index()
+            )));
+        }
+    }
+
     let mut points: Vec<Point3> = Vec::new();
-    for vid in wire_vertices(topo, wire)? {
-        let p = moved.get(&vid.index()).copied().map_or_else(
-            || topo.vertex(vid).map(remus_topology::vertex::Vertex::point),
-            Ok,
-        )?;
+    for p in relocated {
         if points
             .last()
             .is_none_or(|last| (*last - p).length() > tol.linear)
@@ -844,5 +878,153 @@ mod tests {
             matches!(err, OperationsError::Unsupported { operation, .. } if operation == "draft"),
             "expected a typed refusal, got {err:?}"
         );
+    }
+
+    /// Extrude a convex polygon with one deliberately narrow facet between two
+    /// shallow neighbours: chord 0.42 at ~54° on a radius-6 prism, with
+    /// dihedrals of 5.5° and 4° to the facets either side.
+    fn narrow_facet_prism(topo: &mut Topology) -> (SolidId, FaceId) {
+        let angles: [f64; 25] = [
+            0.0, 15.0, 30.0, 45.0, 52.0, 56.0, 60.0, 75.0, 90.0, 105.0, 120.0, 135.0, 150.0, 165.0,
+            180.0, 195.0, 210.0, 225.0, 240.0, 255.0, 270.0, 285.0, 300.0, 315.0, 330.0,
+        ];
+        let points: Vec<Point3> = angles
+            .iter()
+            .map(|a| {
+                let (s, c) = a.to_radians().sin_cos();
+                Point3::new(6.0 * c, 6.0 * s, 0.0)
+            })
+            .collect();
+        let base = remus_topology::builder::make_planar_face(topo, &points, tol_linear()).unwrap();
+        let prism = crate::extrude::extrude(topo, base, Vec3::new(0.0, 0.0, 1.0), 6.0).unwrap();
+        let (s, c) = 54.0_f64.to_radians().sin_cos();
+        let narrow = find_faces(topo, prism, Vec3::new(c, s, 0.0));
+        assert_eq!(
+            narrow.len(),
+            1,
+            "expected exactly one facet with normal at 54°"
+        );
+        (prism, narrow[0])
+    }
+
+    fn tol_linear() -> f64 {
+        Tolerance::new().linear
+    }
+
+    fn assert_watertight_at(topo: &Topology, solid: SolidId, deflection: f64) {
+        let mesh = crate::tessellate::tessellate_solid(topo, solid, deflection).unwrap();
+        let b = crate::tessellate::boundary_edge_count(&mesh);
+        let n = crate::tessellate::non_manifold_edge_count(&mesh);
+        assert!(
+            b == 0 && n == 0,
+            "tessellation at deflection {deflection} is not watertight: \
+             {b} boundary edge(s), {n} non-manifold edge(s)"
+        );
+    }
+
+    /// Pushing a narrow facet outward on a convex body slides each corner
+    /// toward the facet's middle by `δ / tan(dihedral)`; here that exceeds the
+    /// facet's width, the corners cross, and the face would wind against its
+    /// own normal. The draft must refuse rather than emit the folded face.
+    #[test]
+    fn draft_refuses_facet_whose_corners_cross() {
+        let mut topo = Topology::new();
+        let (prism, narrow) = narrow_facet_prism(&mut topo);
+
+        let err = draft(
+            &mut topo,
+            prism,
+            &[narrow],
+            Vec3::new(1.0, 0.0, 0.0),
+            Point3::new(0.0, 0.0, 3.0),
+            1.0_f64.to_radians(),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, OperationsError::Unsupported { operation, .. } if operation == "draft"),
+            "expected a typed refusal, got {err:?}"
+        );
+    }
+
+    /// The same facet under a taper small enough that no corner reaches a
+    /// neighbouring corner (0.25° about a neutral plane beyond the facet, so
+    /// it moves inward by ~0.011 and widens by ~0.16 against neighbours 0.42
+    /// wide) is a legitimate draft and must still succeed, proving the fold
+    /// guard does not over-refuse.
+    #[test]
+    fn draft_widening_narrow_facet_succeeds() {
+        let mut topo = Topology::new();
+        let (prism, narrow) = narrow_facet_prism(&mut topo);
+
+        let result = draft(
+            &mut topo,
+            prism,
+            &[narrow],
+            Vec3::new(1.0, 0.0, 0.0),
+            Point3::new(6.0, 0.0, 3.0),
+            0.25_f64.to_radians(),
+        )
+        .unwrap();
+        assert_watertight_at(&topo, result, 0.003);
+        assert_watertight_at(&topo, result, 0.1);
+    }
+
+    /// Fuzz finding (modifier_ops, corpus seed `draft-folded-facet`): a
+    /// radius-6 cylinder cut by a tilted box comes back as a faceted prism,
+    /// and a 1° outward taper of one of its facets crossed the corners. The
+    /// folded face passed validation and the volume sign check, and only
+    /// showed up as four wrongly-wound half-edges in the fine tessellation.
+    ///
+    /// Every facet of the body is drafted so the assertion does not depend on
+    /// the boolean's face numbering: each accepted draft must tessellate
+    /// watertight at the fuzz deflection and at a coarse one.
+    #[test]
+    fn draft_never_emits_folded_face_on_faceted_cylinder() {
+        use std::f64::consts::FRAC_PI_6;
+
+        use remus_math::mat::Mat4;
+        use remus_topology::explorer::solid_faces;
+
+        use crate::boolean::{BooleanOp, boolean};
+        use crate::primitives::{make_box, make_cylinder};
+        use crate::transform::transform_solid;
+
+        let mut base = Topology::new();
+        let stock = make_cylinder(&mut base, 6.0, 6.0).unwrap();
+        let tool = make_box(&mut base, 6.0, 1.0, 6.5).unwrap();
+        let placement = Mat4::translation(-4.0, -4.0, -4.0) * Mat4::rotation_x(FRAC_PI_6);
+        transform_solid(&mut base, tool, &placement).unwrap();
+        let body = boolean(&mut base, BooleanOp::Cut, stock, tool).unwrap();
+        let faces = solid_faces(&base, body).unwrap();
+        let center = crate::measure::solid_bounding_box(&base, body)
+            .unwrap()
+            .center();
+
+        let mut refused = 0;
+        for &fid in &faces {
+            let mut topo = base.clone();
+            match draft(
+                &mut topo,
+                body,
+                &[fid],
+                Vec3::new(1.0, 0.0, 0.0),
+                center,
+                1.0_f64.to_radians(),
+            ) {
+                Ok(result) => {
+                    assert_watertight_at(&topo, result, 0.002_878_027_577_040_323);
+                    assert_watertight_at(&topo, result, 0.1);
+                }
+                Err(OperationsError::Unsupported {
+                    operation: "draft", ..
+                }) => refused += 1,
+                Err(err) => assert!(
+                    matches!(err, OperationsError::InvalidInput { .. }),
+                    "face {}: unexpected error {err:?}",
+                    fid.index()
+                ),
+            }
+        }
+        assert!(refused > 0, "the fuzz facet is expected to be refused");
     }
 }
