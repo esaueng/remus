@@ -414,6 +414,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | NURBS curve/surface manipulation | `bindings/nurbs.rs` |
 | Batch execution & dispatch | `bindings/batch.rs` |
 | Gridfinity integration tests | `bindings/gridfinity_tests.rs` |
+| Fillet fail-closed contract tests | `bindings/fillet_fail_closed_tests.rs` |
 | Entity-evolution and journal bindings | `bindings/evolution.rs` |
 | Typed persistent GCS sketch bindings | `bindings/gcs_sketch.rs` |
 | Faces with inner (hole) wires — validation & construction | `holed_face.rs` |

@@ -88,6 +88,8 @@ fn has_directed_segment(spec: &FaceSpec, from: Point3, to: Point3, eps: f64) -> 
 /// move keep their inner wires while their outer wire is rebuilt. The result
 /// is checked with [`crate::validate::validate_solid`] and required to enclose
 /// a positive volume strictly smaller than the input's before it is returned.
+/// The whole call runs in a topology transaction: on any error the arena and
+/// the input solid are restored exactly, so a refused chamfer is a true no-op.
 ///
 /// # Errors
 ///
@@ -127,7 +129,9 @@ pub(crate) fn chamfer_with_origins(
             reason: "no edges specified for chamfer".into(),
         });
     }
-    chamfer_core(topo, solid, edges, ChamferDistances::Symmetric(distance))
+    remus_topology::transaction::run_transacted(topo, |t| {
+        chamfer_core(t, solid, edges, ChamferDistances::Symmetric(distance))
+    })
 }
 
 /// Asymmetric chamfer: `d1` on the first adjacent face, `d2` on the second.
@@ -173,7 +177,9 @@ pub(crate) fn chamfer_asymmetric_with_origins(
             reason: "no edges specified for chamfer".into(),
         });
     }
-    chamfer_core(topo, solid, edges, ChamferDistances::Asymmetric { d1, d2 })
+    remus_topology::transaction::run_transacted(topo, |t| {
+        chamfer_core(t, solid, edges, ChamferDistances::Asymmetric { d1, d2 })
+    })
 }
 
 /// How chamfer distances are assigned to edges.
@@ -220,6 +226,10 @@ impl ChamferDistances {
     }
 }
 
+/// Transaction body of the flat-bevel chamfer. The public entry points run it
+/// inside [`remus_topology::transaction::run_transacted`], so a refusal at any
+/// stage — including the closing validation gate — leaves the arena and the
+/// input solid exactly as they were instead of leaking the half-built result.
 #[allow(clippy::too_many_lines)]
 fn chamfer_core(
     topo: &mut Topology,
