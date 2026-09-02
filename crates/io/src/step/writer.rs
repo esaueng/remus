@@ -3,17 +3,21 @@
 //! Exports B-Rep solids to ISO 10303-21 (STEP Part 21) format.
 //! Supports planar faces with line edges and NURBS curves/surfaces.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
-use remus_math::vec::{Point3, Vec3};
+use remus_math::curves2d::{Curve2D, NurbsCurve2D};
+use remus_math::frame::Frame3;
+use remus_math::vec::{Point2, Point3, Vec2, Vec3};
 use remus_topology::Topology;
+use remus_topology::coedge::CoedgeId;
 use remus_topology::edge::{EdgeCurve, EdgeId};
-use remus_topology::explorer::{solid_edges, solid_vertices};
+use remus_topology::explorer::{solid_edges, solid_faces, solid_vertices};
 use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::face_loop::LoopId;
+use remus_topology::pcurve::PCurve;
 use remus_topology::solid::SolidId;
 use remus_topology::vertex::VertexId;
-use remus_topology::wire::WireId;
 
 use super::reader::{
     StepValidationProperties, aggregate_validation_properties, compute_validation_properties,
@@ -119,6 +123,7 @@ pub fn write_step_with_options(
     let geometric_context =
         ctx.write_geometric_context(uncertainty, options.validation_properties)?;
     let product_ids = ctx.write_product_structure();
+    ctx.prepare_boundary_authority(topo, solids)?;
 
     let mut brep_ids = Vec::new();
     let mut validation_values = Vec::new();
@@ -202,6 +207,10 @@ struct StepWriteContext {
     vertex_map: HashMap<u64, u64>,
     /// Edge index to STEP entity ID.
     edge_map: HashMap<u64, u64>,
+    /// Face index to its already-emitted STEP surface entity.
+    surface_map: HashMap<u64, u64>,
+    /// STEP PCURVE entities attached to each shared EDGE_CURVE.
+    edge_pcurve_map: HashMap<u64, Vec<u64>>,
 }
 
 /// Product structure entity IDs.
@@ -224,6 +233,8 @@ impl StepWriteContext {
             options,
             vertex_map: HashMap::new(),
             edge_map: HashMap::new(),
+            surface_map: HashMap::new(),
+            edge_pcurve_map: HashMap::new(),
         }
     }
 
@@ -276,6 +287,42 @@ impl StepWriteContext {
             id,
             "AXIS2_PLACEMENT_3D",
             &format!("'', #{origin_id}, #{axis_id}, #{ref_id})"),
+        );
+        id
+    }
+
+    fn write_point2(&mut self, point: Point2) -> u64 {
+        let id = self.next_id();
+        self.write_entity(
+            id,
+            "CARTESIAN_POINT",
+            &format!("'', ({}, {}))", fmt_f64(point.x()), fmt_f64(point.y())),
+        );
+        id
+    }
+
+    fn write_direction2(&mut self, direction: Vec2) -> u64 {
+        let id = self.next_id();
+        self.write_entity(
+            id,
+            "DIRECTION",
+            &format!(
+                "'', ({}, {}))",
+                fmt_f64(direction.x()),
+                fmt_f64(direction.y())
+            ),
+        );
+        id
+    }
+
+    fn write_axis2_placement2(&mut self, origin: Point2, ref_dir: Vec2) -> u64 {
+        let origin_id = self.write_point2(origin);
+        let ref_id = self.write_direction2(ref_dir);
+        let id = self.next_id();
+        self.write_entity(
+            id,
+            "AXIS2_PLACEMENT_2D",
+            &format!("'', #{origin_id}, #{ref_id})"),
         );
         id
     }
@@ -541,6 +588,282 @@ impl StepWriteContext {
         ProductIds { definition }
     }
 
+    /// Emit every exported face surface and per-use pcurve before topology.
+    ///
+    /// STEP attaches all face-specific `PCURVE`s to the one shared
+    /// `SURFACE_CURVE` referenced by an `EDGE_CURVE`.  A prepass is therefore
+    /// required: when the first face writes a shared edge, later faces must
+    /// already have contributed their pcurves.
+    fn prepare_boundary_authority(
+        &mut self,
+        topo: &Topology,
+        solids: &[SolidId],
+    ) -> Result<(), IoError> {
+        let mut faces = Vec::new();
+        let mut seen_faces = HashSet::new();
+        for &solid in solids {
+            for face in solid_faces(topo, solid)? {
+                if seen_faces.insert(face) {
+                    faces.push(face);
+                }
+            }
+        }
+
+        for &face_id in &faces {
+            let face = topo.face(face_id).map_err(topo_err)?;
+            let surface_id = self.write_face_surface(face.surface())?;
+            self.surface_map.insert(face_id.index() as u64, surface_id);
+        }
+
+        let mut seen_coedges = HashSet::<CoedgeId>::new();
+        for face_id in faces {
+            let face = topo.face(face_id).map_err(topo_err)?;
+            if face.boundary_loops().is_empty() {
+                return Err(IoError::InvalidTopology {
+                    reason: format!(
+                        "face {face_id:?} has no physical boundary loops for STEP export"
+                    ),
+                });
+            }
+            let surface_id = self.surface_map[&(face_id.index() as u64)];
+            for &loop_id in face.boundary_loops() {
+                for &coedge_id in topo.face_loop(loop_id).map_err(topo_err)?.coedges() {
+                    if !seen_coedges.insert(coedge_id) {
+                        continue;
+                    }
+                    let coedge = topo.coedge(coedge_id).map_err(topo_err)?;
+                    if let Some(pcurve) = coedge.pcurve() {
+                        Self::validate_pcurve_use(topo, face_id, coedge_id, pcurve)?;
+                        let pcurve_id = self.write_pcurve(surface_id, pcurve)?;
+                        self.edge_pcurve_map
+                            .entry(coedge.edge().index() as u64)
+                            .or_default()
+                            .push(pcurve_id);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_pcurve_use(
+        topo: &Topology,
+        face_id: FaceId,
+        coedge_id: CoedgeId,
+        pcurve: &PCurve,
+    ) -> Result<(), IoError> {
+        let coedge = topo.coedge(coedge_id).map_err(topo_err)?;
+        let edge = topo.edge(coedge.edge()).map_err(topo_err)?;
+        let start_vertex = topo.vertex(edge.start()).map_err(topo_err)?;
+        let end_vertex = topo.vertex(edge.end()).map_err(topo_err)?;
+        let (expected_start, expected_end) = if coedge.is_forward() {
+            (start_vertex.point(), end_vertex.point())
+        } else {
+            (end_vertex.point(), start_vertex.point())
+        };
+        let tolerance =
+            edge.effective_tolerance(start_vertex.tolerance().max(end_vertex.tolerance()));
+        let face = topo.face(face_id).map_err(topo_err)?;
+        let uv_start = pcurve.evaluate(pcurve.t_start());
+        let uv_end = pcurve.evaluate(pcurve.t_end());
+        if !pcurve.t_start().is_finite()
+            || !pcurve.t_end().is_finite()
+            || !uv_start.0.iter().all(|value| value.is_finite())
+            || !uv_end.0.iter().all(|value| value.is_finite())
+        {
+            return Err(IoError::InvalidTopology {
+                reason: format!("coedge {coedge_id:?} has a non-finite pcurve"),
+            });
+        }
+        let on_surface = |uv: Point2| -> Result<Point3, IoError> {
+            match face.surface() {
+                FaceSurface::Plane { normal, d } => {
+                    let origin = Point3::new(normal.x() * d, normal.y() * d, normal.z() * d);
+                    let frame = Frame3::from_normal_and_ref(
+                        origin,
+                        *normal,
+                        compute_ref_direction(*normal),
+                    )
+                    .map_err(|error| IoError::InvalidTopology {
+                        reason: format!("face {face_id:?} has no STEP plane frame: {error}"),
+                    })?;
+                    Ok(frame.origin + frame.x * uv.x() + frame.y * uv.y())
+                }
+                surface => {
+                    surface
+                        .evaluate(uv.x(), uv.y())
+                        .ok_or_else(|| IoError::InvalidTopology {
+                            reason: format!(
+                                "face {face_id:?} cannot evaluate its {} pcurve",
+                                surface.type_tag()
+                            ),
+                        })
+                }
+            }
+        };
+        for (label, uv, expected) in [
+            ("start", uv_start, expected_start),
+            ("end", uv_end, expected_end),
+        ] {
+            let evaluated = on_surface(uv)?;
+            let residual = (evaluated - expected).length();
+            if !residual.is_finite() || residual > tolerance {
+                return Err(IoError::InvalidTopology {
+                    reason: format!(
+                        "coedge {coedge_id:?} pcurve {label} misses its oriented vertex by {residual} (tolerance {tolerance})"
+                    ),
+                });
+            }
+        }
+
+        let expected_winding =
+            export_pcurve_winding(face.surface(), pcurve, expected_start, expected_end)?;
+        if coedge.periodic_winding() != expected_winding {
+            return Err(IoError::InvalidTopology {
+                reason: format!(
+                    "coedge {coedge_id:?} winding ({}, {}) disagrees with its pcurve branch ({}, {})",
+                    coedge.periodic_winding().u(),
+                    coedge.periodic_winding().v(),
+                    expected_winding.u(),
+                    expected_winding.v()
+                ),
+            });
+        }
+        Ok(())
+    }
+
+    fn write_pcurve(&mut self, surface_id: u64, pcurve: &PCurve) -> Result<u64, IoError> {
+        let basis = self.write_curve2d(pcurve.curve());
+        let (start, end, sense) = if pcurve.t_end() >= pcurve.t_start() {
+            (pcurve.t_start(), pcurve.t_end(), ".T.")
+        } else {
+            (pcurve.t_end(), pcurve.t_start(), ".F.")
+        };
+        if !start.is_finite() || !end.is_finite() || start.to_bits() == end.to_bits() {
+            return Err(IoError::InvalidTopology {
+                reason: format!("pcurve has invalid parameter range ({start}, {end})"),
+            });
+        }
+        let trimmed = self.next_id();
+        self.write_entity(
+            trimmed,
+            "TRIMMED_CURVE",
+            &format!(
+                "'', #{basis}, (PARAMETER_VALUE({})), (PARAMETER_VALUE({})), {sense}, .PARAMETER.)",
+                fmt_f64(start),
+                fmt_f64(end)
+            ),
+        );
+
+        let context = self.next_id();
+        let _ = writeln!(
+            self.entities,
+            "#{context} = ( GEOMETRIC_REPRESENTATION_CONTEXT(2) \
+             PARAMETRIC_REPRESENTATION_CONTEXT() \
+             REPRESENTATION_CONTEXT('2D SPACE','') );"
+        );
+        let representation = self.next_id();
+        self.write_entity(
+            representation,
+            "DEFINITIONAL_REPRESENTATION",
+            &format!("'', (#{trimmed}), #{context})"),
+        );
+        let id = self.next_id();
+        self.write_entity(
+            id,
+            "PCURVE",
+            &format!("'', #{surface_id}, #{representation})"),
+        );
+        Ok(id)
+    }
+
+    fn write_curve2d(&mut self, curve: &Curve2D) -> u64 {
+        match curve {
+            Curve2D::Line(line) => {
+                let origin = self.write_point2(line.origin());
+                let direction = self.write_direction2(line.direction());
+                let vector = self.next_id();
+                self.write_entity(vector, "VECTOR", &format!("'', #{direction}, 1."));
+                let id = self.next_id();
+                self.write_entity(id, "LINE", &format!("'', #{origin}, #{vector})"));
+                id
+            }
+            Curve2D::Circle(circle) => {
+                let axis = self.write_axis2_placement2(circle.center(), Vec2::new(1.0, 0.0));
+                let id = self.next_id();
+                self.write_entity(
+                    id,
+                    "CIRCLE",
+                    &format!("'', #{axis}, {})", fmt_f64(circle.radius())),
+                );
+                id
+            }
+            Curve2D::Ellipse(ellipse) => {
+                let (sin_rotation, cos_rotation) = ellipse.rotation().sin_cos();
+                let axis = self.write_axis2_placement2(
+                    ellipse.center(),
+                    Vec2::new(cos_rotation, sin_rotation),
+                );
+                let id = self.next_id();
+                self.write_entity(
+                    id,
+                    "ELLIPSE",
+                    &format!(
+                        "'', #{axis}, {}, {})",
+                        fmt_f64(ellipse.semi_major()),
+                        fmt_f64(ellipse.semi_minor())
+                    ),
+                );
+                id
+            }
+            Curve2D::Nurbs(nurbs) => self.write_nurbs_curve2d(nurbs),
+        }
+    }
+
+    fn write_nurbs_curve2d(&mut self, nurbs: &NurbsCurve2D) -> u64 {
+        let cp_ids: Vec<u64> = nurbs
+            .control_points()
+            .iter()
+            .map(|point| self.write_point2(*point))
+            .collect();
+        let cp_refs: Vec<String> = cp_ids.iter().map(|id| format!("#{id}")).collect();
+        let (multiplicities, knots) = compute_knot_multiplicities(nurbs.knots());
+        let multiplicities: Vec<String> = multiplicities.iter().map(ToString::to_string).collect();
+        let knots: Vec<String> = knots.iter().map(|value| fmt_f64(*value)).collect();
+        let id = self.next_id();
+        if nurbs.is_rational() {
+            let weights: Vec<String> = nurbs
+                .weights()
+                .iter()
+                .map(|&value| fmt_weight(value))
+                .collect();
+            let _ = writeln!(
+                self.entities,
+                "#{id} = ( BOUNDED_CURVE() \
+                 B_SPLINE_CURVE({}, ({}), .UNSPECIFIED., .F., .F.) \
+                 B_SPLINE_CURVE_WITH_KNOTS(({}), ({}), .UNSPECIFIED.) \
+                 CURVE() GEOMETRIC_REPRESENTATION_ITEM() \
+                 RATIONAL_B_SPLINE_CURVE(({})) REPRESENTATION_ITEM('') );",
+                nurbs.degree(),
+                cp_refs.join(", "),
+                multiplicities.join(", "),
+                knots.join(", "),
+                weights.join(", "),
+            );
+        } else {
+            let _ = writeln!(
+                self.entities,
+                "#{id} = B_SPLINE_CURVE_WITH_KNOTS('', {}, ({}), \
+                 .UNSPECIFIED., .F., .F., ({}), ({}), .UNSPECIFIED.);",
+                nurbs.degree(),
+                cp_refs.join(", "),
+                multiplicities.join(", "),
+                knots.join(", "),
+            );
+        }
+        id
+    }
+
     fn write_vertex(&mut self, topo: &Topology, vid: VertexId) -> Result<u64, IoError> {
         let key = vid.index() as u64;
         if let Some(&cached) = self.vertex_map.get(&key) {
@@ -709,6 +1032,19 @@ impl StepWriteContext {
             curve_id
         };
 
+        let curve_id = if let Some(pcurves) = self.edge_pcurve_map.get(&key).cloned() {
+            let references: Vec<String> = pcurves.iter().map(|id| format!("#{id}")).collect();
+            let surface_curve = self.next_id();
+            self.write_entity(
+                surface_curve,
+                "SURFACE_CURVE",
+                &format!("'', #{curve_id}, ({}), .CURVE_3D.)", references.join(", ")),
+            );
+            surface_curve
+        } else {
+            curve_id
+        };
+
         let edge_curve = self.next_id();
         self.write_entity(
             edge_curve,
@@ -769,21 +1105,22 @@ impl StepWriteContext {
     fn write_edge_loop(
         &mut self,
         topo: &Topology,
-        wire_id: WireId,
+        loop_id: LoopId,
         reverse: bool,
     ) -> Result<u64, IoError> {
-        let wire = topo.wire(wire_id).map_err(topo_err)?;
+        let boundary_loop = topo.face_loop(loop_id).map_err(topo_err)?;
         let mut oriented_edge_ids = Vec::new();
 
-        let oriented_edges: Box<dyn Iterator<Item = _>> = if reverse {
-            Box::new(wire.edges().iter().rev())
+        let coedges: Box<dyn Iterator<Item = &CoedgeId>> = if reverse {
+            Box::new(boundary_loop.coedges().iter().rev())
         } else {
-            Box::new(wire.edges().iter())
+            Box::new(boundary_loop.coedges().iter())
         };
-        for oriented in oriented_edges {
-            let edge_curve = self.write_edge_curve(topo, oriented.edge())?;
+        for &coedge_id in coedges {
+            let coedge = topo.coedge(coedge_id).map_err(topo_err)?;
+            let edge_curve = self.write_edge_curve(topo, coedge.edge())?;
             let oriented_edge = self.next_id();
-            let forward = oriented.is_forward() != reverse;
+            let forward = coedge.is_forward() != reverse;
             let orient = if forward { ".T." } else { ".F." };
             self.write_entity(
                 oriented_edge,
@@ -803,6 +1140,72 @@ impl StepWriteContext {
         Ok(loop_id)
     }
 
+    fn write_face_surface(&mut self, surface: &FaceSurface) -> Result<u64, IoError> {
+        let id = match surface {
+            FaceSurface::Plane { normal, d } => {
+                let origin = Point3::new(normal.x() * d, normal.y() * d, normal.z() * d);
+                let ref_dir = compute_ref_direction(*normal);
+                let axis = self.write_axis2_placement(origin, *normal, ref_dir);
+                let plane = self.next_id();
+                self.write_entity(plane, "PLANE", &format!("'', #{axis})"));
+                plane
+            }
+            FaceSurface::Nurbs(nurbs) => self.write_nurbs_surface(nurbs)?,
+            FaceSurface::Cylinder(cylinder) => {
+                let axis = self.write_axis2_placement(
+                    cylinder.origin(),
+                    cylinder.axis(),
+                    cylinder.x_axis(),
+                );
+                let cylinder_id = self.next_id();
+                self.write_entity(
+                    cylinder_id,
+                    "CYLINDRICAL_SURFACE",
+                    &format!("'', #{axis}, {})", fmt_f64(cylinder.radius())),
+                );
+                cylinder_id
+            }
+            FaceSurface::Cone(cone) => {
+                let axis = self.write_axis2_placement(cone.apex(), cone.axis(), cone.x_axis());
+                let cone_id = self.next_id();
+                let semi_angle = std::f64::consts::FRAC_PI_2 - cone.half_angle();
+                self.write_entity(
+                    cone_id,
+                    "CONICAL_SURFACE",
+                    &format!("'', #{axis}, 0.0E0, {})", fmt_f64(semi_angle)),
+                );
+                cone_id
+            }
+            FaceSurface::Sphere(sphere) => {
+                let axis =
+                    self.write_axis2_placement(sphere.center(), sphere.z_axis(), sphere.x_axis());
+                let sphere_id = self.next_id();
+                self.write_entity(
+                    sphere_id,
+                    "SPHERICAL_SURFACE",
+                    &format!("'', #{axis}, {})", fmt_f64(sphere.radius())),
+                );
+                sphere_id
+            }
+            FaceSurface::Torus(torus) => {
+                let axis =
+                    self.write_axis2_placement(torus.center(), torus.z_axis(), torus.x_axis());
+                let torus_id = self.next_id();
+                self.write_entity(
+                    torus_id,
+                    "TOROIDAL_SURFACE",
+                    &format!(
+                        "'', #{axis}, {}, {})",
+                        fmt_f64(torus.major_radius()),
+                        fmt_f64(torus.minor_radius())
+                    ),
+                );
+                torus_id
+            }
+        };
+        Ok(id)
+    }
+
     #[allow(clippy::too_many_lines)]
     fn write_face(&mut self, topo: &Topology, face_id: FaceId, flip: bool) -> Result<u64, IoError> {
         let face = topo.face(face_id).map_err(topo_err)?;
@@ -816,7 +1219,10 @@ impl StepWriteContext {
         let step_face_reversed = face.is_reversed() != flip;
         let reverse_bounds = step_face_reversed;
 
-        let outer_loop = self.write_edge_loop(topo, face.outer_wire(), reverse_bounds)?;
+        let outer_loop_id = face.outer_loop().ok_or_else(|| IoError::InvalidTopology {
+            reason: format!("face {face_id:?} has no authoritative outer loop"),
+        })?;
+        let outer_loop = self.write_edge_loop(topo, outer_loop_id, reverse_bounds)?;
         let outer_bound = self.next_id();
         self.write_entity(
             outer_bound,
@@ -825,8 +1231,8 @@ impl StepWriteContext {
         );
         bound_ids.push(outer_bound);
 
-        for &inner_wire in face.inner_wires() {
-            let inner_loop = self.write_edge_loop(topo, inner_wire, reverse_bounds)?;
+        for &inner_loop_id in face.inner_loops() {
+            let inner_loop = self.write_edge_loop(topo, inner_loop_id, reverse_bounds)?;
             let inner_bound = self.next_id();
             self.write_entity(
                 inner_bound,
@@ -836,71 +1242,12 @@ impl StepWriteContext {
             bound_ids.push(inner_bound);
         }
 
-        let surface_id = match face.surface() {
-            FaceSurface::Plane { normal, d } => {
-                let origin = Point3::new(normal.x() * d, normal.y() * d, normal.z() * d);
-                let ref_dir = compute_ref_direction(*normal);
-                let axis = self.write_axis2_placement(origin, *normal, ref_dir);
-                let plane = self.next_id();
-                self.write_entity(plane, "PLANE", &format!("'', #{axis})"));
-                plane
-            }
-            FaceSurface::Nurbs(nurbs) => self.write_nurbs_surface(nurbs)?,
-            FaceSurface::Cylinder(cyl) => {
-                let ref_dir = compute_ref_direction(cyl.axis());
-                let axis = self.write_axis2_placement(cyl.origin(), cyl.axis(), ref_dir);
-                let id = self.next_id();
-                self.write_entity(
-                    id,
-                    "CYLINDRICAL_SURFACE",
-                    &format!("'', #{axis}, {})", fmt_f64(cyl.radius())),
-                );
-                id
-            }
-            FaceSurface::Cone(cone) => {
-                let ref_dir = compute_ref_direction(cone.axis());
-                let axis = self.write_axis2_placement(cone.apex(), cone.axis(), ref_dir);
-                let id = self.next_id();
-                // ISO 10303-42's `semi_angle` is measured from the axis;
-                // remus's `half_angle` is measured from the radial plane.
-                // Emitting the latter unconverted made every cone we wrote
-                // read back at its complement in any other CAD system.
-                let semi_angle = std::f64::consts::FRAC_PI_2 - cone.half_angle();
-                self.write_entity(
-                    id,
-                    "CONICAL_SURFACE",
-                    &format!("'', #{axis}, 0.0E0, {})", fmt_f64(semi_angle)),
-                );
-                id
-            }
-            FaceSurface::Sphere(sphere) => {
-                let z = Vec3::new(0.0, 0.0, 1.0);
-                let ref_dir = compute_ref_direction(z);
-                let axis = self.write_axis2_placement(sphere.center(), z, ref_dir);
-                let id = self.next_id();
-                self.write_entity(
-                    id,
-                    "SPHERICAL_SURFACE",
-                    &format!("'', #{axis}, {})", fmt_f64(sphere.radius())),
-                );
-                id
-            }
-            FaceSurface::Torus(torus) => {
-                let ref_dir = compute_ref_direction(torus.z_axis());
-                let axis = self.write_axis2_placement(torus.center(), torus.z_axis(), ref_dir);
-                let id = self.next_id();
-                self.write_entity(
-                    id,
-                    "TOROIDAL_SURFACE",
-                    &format!(
-                        "'', #{axis}, {}, {})",
-                        fmt_f64(torus.major_radius()),
-                        fmt_f64(torus.minor_radius())
-                    ),
-                );
-                id
-            }
-        };
+        let surface_id = *self
+            .surface_map
+            .get(&(face_id.index() as u64))
+            .ok_or_else(|| IoError::InvalidTopology {
+                reason: format!("face {face_id:?} surface was not prepared for STEP export"),
+            })?;
 
         let bound_refs: Vec<String> = bound_ids.iter().map(|id| format!("#{id}")).collect();
         let face_orient = if step_face_reversed { ".F." } else { ".T." };
@@ -1152,6 +1499,87 @@ fn compute_ref_direction(normal: Vec3) -> Vec3 {
     ref_dir.normalize().unwrap_or(ax)
 }
 
+fn export_pcurve_winding(
+    surface: &FaceSurface,
+    pcurve: &PCurve,
+    start_point: Point3,
+    end_point: Point3,
+) -> Result<remus_topology::PeriodicWinding, IoError> {
+    let periods = match surface {
+        FaceSurface::Cylinder(_) | FaceSurface::Cone(_) | FaceSurface::Sphere(_) => {
+            (Some(std::f64::consts::TAU), None)
+        }
+        FaceSurface::Torus(_) => (Some(std::f64::consts::TAU), Some(std::f64::consts::TAU)),
+        FaceSurface::Plane { .. } | FaceSurface::Nurbs(_) => {
+            return Ok(remus_topology::PeriodicWinding::ZERO);
+        }
+    };
+    let principal_start =
+        surface
+            .project_point(start_point)
+            .ok_or_else(|| IoError::InvalidTopology {
+                reason: format!("cannot project pcurve start onto {}", surface.type_tag()),
+            })?;
+    let principal_end =
+        surface
+            .project_point(end_point)
+            .ok_or_else(|| IoError::InvalidTopology {
+                reason: format!("cannot project pcurve end onto {}", surface.type_tag()),
+            })?;
+    let uv_start = pcurve.evaluate(pcurve.t_start());
+    let uv_end = pcurve.evaluate(pcurve.t_end());
+    let axis_winding = |start: f64,
+                        end: f64,
+                        principal_start: f64,
+                        principal_end: f64,
+                        period: Option<f64>|
+     -> Result<i32, IoError> {
+        let Some(period) = period else {
+            return Ok(0);
+        };
+        let classify = |value: f64, principal: f64| -> Result<i32, IoError> {
+            const BRANCH_TOLERANCE: f64 = 1e-10;
+            let arithmetic_uncertainty =
+                8.0 * f64::EPSILON * value.abs().max(principal.abs()).max(period);
+            let turns = (value - principal) / period;
+            let nearest = turns.round();
+            if !turns.is_finite()
+                || arithmetic_uncertainty > BRANCH_TOLERANCE
+                || (turns - nearest).abs() * period > BRANCH_TOLERANCE
+                || nearest < f64::from(i32::MIN)
+                || nearest > f64::from(i32::MAX)
+            {
+                return Err(IoError::InvalidTopology {
+                    reason: format!(
+                        "pcurve periodic coordinate {value} cannot be certified as an integral lift of principal coordinate {principal}"
+                    ),
+                });
+            }
+            #[allow(clippy::cast_possible_truncation)]
+            Ok(nearest as i32)
+        };
+        let first = classify(start, principal_start)?;
+        let second = classify(end, principal_end)?;
+        Ok(if first == second { first } else { 0 })
+    };
+    Ok(remus_topology::PeriodicWinding::new(
+        axis_winding(
+            uv_start.x(),
+            uv_end.x(),
+            principal_start.0,
+            principal_end.0,
+            periods.0,
+        )?,
+        axis_winding(
+            uv_start.y(),
+            uv_end.y(),
+            principal_start.1,
+            principal_end.1,
+            periods.1,
+        )?,
+    ))
+}
+
 fn step_trim_parameters(curve: &EdgeCurve, range: (f64, f64)) -> Result<(f64, f64), IoError> {
     let parameters = match curve {
         // ISO 10303-42 parameterizes a parabola with a dimensionless `u`;
@@ -1259,9 +1687,10 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use remus_math::curves::{Circle3D, Ellipse3D, Hyperbola3D, Parabola3D};
+    use remus_math::curves2d::{Curve2D, Line2D};
     use remus_math::nurbs::NurbsCurve;
     use remus_math::surfaces::CylindricalSurface;
-    use remus_math::vec::Point3;
+    use remus_math::vec::{Point2, Point3, Vec2};
     use remus_topology::Topology;
     use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
     use remus_topology::face::{Face, FaceSurface};
@@ -1272,6 +1701,26 @@ mod tests {
     use remus_topology::wire::{OrientedEdge, Wire};
 
     use super::*;
+
+    #[test]
+    fn huge_periodic_pcurve_anchor_is_not_accepted_as_winding_zero() {
+        let cylinder = CylindricalSurface::new(
+            Point3::new(0.0, 0.0, 0.0),
+            remus_math::vec::Vec3::new(0.0, 0.0, 1.0),
+            1.0,
+        )
+        .unwrap();
+        let line = Line2D::new(Point2::new(1e15, 0.0), Vec2::new(0.0, 1.0)).unwrap();
+        let pcurve = PCurve::new(Curve2D::Line(line), 0.0, 1.0);
+        let error = export_pcurve_winding(
+            &FaceSurface::Cylinder(cylinder),
+            &pcurve,
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 1.0),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("integral lift"));
+    }
 
     fn assert_trimmed_curve_roundtrip(curve: EdgeCurve, range: (f64, f64), tolerance: f64) {
         let (_, _, expected_forward) = step_trim_literals(&curve, range).unwrap();
