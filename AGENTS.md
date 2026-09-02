@@ -81,6 +81,7 @@ Quick reference — find the right file for any task:
 | 3D curves (Line, Circle, Ellipse, Parabola, Hyperbola) | `curves.rs` |
 | 2D curves (Line2D, Circle2D, Ellipse2D) | `curves2d.rs` |
 | Analytic surfaces (Cylinder, Cone, Sphere, Torus) | `surfaces.rs` |
+| Exact swept-surface carriers (revolution, linear extrusion) | `surfaces/swept.rs` |
 | Surface-surface intersection | `nurbs/intersection/` (mod, surface_marching, surface_seeding, curve_surface, plane, line, chaining, tests) |
 | Analytic-analytic intersection | `analytic_intersection.rs` |
 | AABB / bounding boxes | `aabb.rs` |
