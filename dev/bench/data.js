@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788314818338,
+  "lastUpdate": 1788315222286,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -6587,6 +6587,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 44568308,
             "range": "± 371907",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f0d8678b026993c7db189711bc1f8f595787aac5",
+          "message": "fix(operations): refuse a draft whose corners slide past each other (#186)\n\nA draft that pushes a planar face outward on a convex body slides each of\nits corners toward the face's middle by δ / tan(dihedral). On a narrow\nfacet between shallow neighbours that exceeds the facet's width, the two\ncorners cross, and `draft` assembled a face whose outer wire winds against\nits normal. The folded face passed `validate_solid` and the volume sign\ncheck, and surfaced only as four wrongly-wound half-edges in a fine\ntessellation of the result (Fuzz Smoke, `modifier_ops`).\n\nEvery rebuilt edge stays on the intersection line of the two face planes\nthat meet along it, so corner crossing is the only way the rebuilt wire can\ndegenerate. `substitute_wire` now compares each edge's direction before and\nafter relocation and refuses with a typed `Unsupported` when one reverses.\nThe same guard covers a neighbour that the widening face would swallow.\n\nRegression tests pin a minimal prism with a 0.42-wide facet (refused\noutward, accepted at a small inward taper and watertight at two\ndeflections) and the fuzz case itself, drafting every facet of the cut\ncylinder and requiring each accepted result to tessellate watertight. The\n25-byte crash input is added as a corpus seed.\n\nCo-authored-by: peter <peter@pop-os.tail7bd9a6.ts.net>\nCo-authored-by: Claude Fable 5.1 <noreply@anthropic.com>",
+          "timestamp": "2026-09-01T22:10:44-04:00",
+          "tree_id": "219566529baf9e38b6fe8485668b966d791cf70a",
+          "url": "https://github.com/esaueng/remus/commit/f0d8678b026993c7db189711bc1f8f595787aac5"
+        },
+        "date": 1788315221001,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1398879,
+            "range": "± 2658",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1490939,
+            "range": "± 10268",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 26354,
+            "range": "± 205",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 1048425,
+            "range": "± 2062",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 42277870,
+            "range": "± 346204",
             "unit": "ns/iter"
           }
         ]
