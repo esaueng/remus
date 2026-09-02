@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788310093355,
+  "lastUpdate": 1788310278522,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -6317,6 +6317,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 42663228,
             "range": "± 352896",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petertoday@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petertoday"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4be7401a5a1be57149c7438ed8caa5454a6cdd1b",
+          "message": "feat(io): preserve per-use STEP pcurves (#182)\n\n* feat(io): preserve per-use STEP pcurves\n\n* docs(kernel): link STEP pcurve PR\n\n---------\n\nCo-authored-by: Codex Review <codex-review@localhost>",
+          "timestamp": "2026-09-01T20:44:59-04:00",
+          "tree_id": "49c506441fabcf60a899952397728981223a2148",
+          "url": "https://github.com/esaueng/remus/commit/4be7401a5a1be57149c7438ed8caa5454a6cdd1b"
+        },
+        "date": 1788310277835,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1472592,
+            "range": "± 2720",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1576227,
+            "range": "± 4578",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 27616,
+            "range": "± 56",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 1089775,
+            "range": "± 8572",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 46895018,
+            "range": "± 445450",
             "unit": "ns/iter"
           }
         ]
