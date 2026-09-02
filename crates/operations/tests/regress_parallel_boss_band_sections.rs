@@ -301,3 +301,102 @@ fn pocket_cut_from_wall_is_consistently_oriented() {
         );
     }
 }
+
+/// Open (single-use) and non-manifold or inconsistently wound edges of a
+/// triangle mesh after welding positions, the way a display or export
+/// consumer reads it.
+fn mesh_defects(mesh: &remus_operations::tessellate::TriangleMesh) -> (usize, usize) {
+    use std::collections::HashMap;
+    let key = |p: remus_math::vec::Point3| {
+        (
+            (p.x() * 1e6).round() as i64,
+            (p.y() * 1e6).round() as i64,
+            (p.z() * 1e6).round() as i64,
+        )
+    };
+    let mut ids: HashMap<(i64, i64, i64), usize> = HashMap::new();
+    let remap: Vec<usize> = mesh
+        .positions
+        .iter()
+        .map(|p| {
+            let next = ids.len();
+            *ids.entry(key(*p)).or_insert(next)
+        })
+        .collect();
+    let mut uses: HashMap<(usize, usize), (usize, usize)> = HashMap::new();
+    for tri in mesh.indices.chunks(3) {
+        let v = [
+            remap[tri[0] as usize],
+            remap[tri[1] as usize],
+            remap[tri[2] as usize],
+        ];
+        for k in 0..3 {
+            let (a, b) = (v[k], v[(k + 1) % 3]);
+            if a == b {
+                continue;
+            }
+            let entry = uses.entry((a.min(b), a.max(b))).or_insert((0, 0));
+            if a < b {
+                entry.0 += 1;
+            } else {
+                entry.1 += 1;
+            }
+        }
+    }
+    let open = uses.values().filter(|(f, b)| f + b == 1).count();
+    let bad = uses
+        .values()
+        .filter(|(f, b)| f + b > 2 || (f + b == 2 && f != b))
+        .count();
+    (open, bad)
+}
+
+/// The fused shell must also TESSELLATE closed — the shaft wall now carries
+/// the boss outline as an inner wire, and a wall with a hole tessellates
+/// through `tessellate_cylinder_with_holes`, which walks its wires with
+/// `sample_edge`. The solid tessellator's rim-densifying pre-pass used to
+/// resample that wall's section arcs to the grid column count (7 → 64
+/// points on the caps' side) while the wall kept its own 7, so every hole
+/// rim came out open. A box boss on the wall — exact long before the
+/// band-section fixes — showed the same.
+#[test]
+fn boss_on_wall_tessellates_closed() {
+    use remus_operations::primitives::make_box;
+    use remus_operations::tessellate::tessellate_solid_with_tolerance;
+    let exact = OperationContext::new().with_fallback(FallbackPolicy::ExactOnly);
+    for (label, deg, box_tool) in [
+        ("cylinder boss on the seam side", 0.0_f64, false),
+        ("cylinder boss opposite the seam", 180.0, false),
+        ("box boss", 180.0, true),
+    ] {
+        let mut topo = Topology::new();
+        let shaft = make_cylinder(&mut topo, SHAFT_R, SHAFT_H).unwrap();
+        let a = deg.to_radians();
+        let boss = if box_tool {
+            let b = make_box(&mut topo, 10.0, 10.0, BOSS_H).unwrap();
+            transform_solid(&mut topo, b, &Mat4::translation(-22.0, -5.0, 20.0)).unwrap();
+            b
+        } else {
+            let b = make_cylinder(&mut topo, BOSS_R, BOSS_H).unwrap();
+            transform_solid(
+                &mut topo,
+                b,
+                &Mat4::translation(15.0 * a.cos(), 15.0 * a.sin(), 20.0),
+            )
+            .unwrap();
+            b
+        };
+        let outcome = boolean_with_context(&mut topo, BooleanOp::Fuse, shaft, boss, &exact)
+            .unwrap_or_else(|e| panic!("{label}: {e}"));
+        for deflection in [0.1, 0.02, 0.005] {
+            let mesh =
+                tessellate_solid_with_tolerance(&topo, outcome.solid, deflection, 0.1).unwrap();
+            let (open, bad) = mesh_defects(&mesh);
+            assert_eq!(
+                (open, bad),
+                (0, 0),
+                "{label} at deflection {deflection}: {open} open, {bad} non-manifold edges"
+            );
+        }
+    }
+}
