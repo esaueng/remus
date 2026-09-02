@@ -118,6 +118,18 @@ pub(super) fn step_validation_result_json(
     })
 }
 
+pub(super) fn step_body_result_json(result: &remus_io::step::StepReadResult) -> serde_json::Value {
+    serde_json::json!({
+        "solids": result.solids().iter().copied().map(solid_id_to_u32).collect::<Vec<_>>(),
+        "sheets": result.sheets().iter().copied().map(shell_id_to_u32).collect::<Vec<_>>(),
+        "diagnostics": result
+            .diagnostics()
+            .iter()
+            .map(StepImportDiagnostic::from)
+            .collect::<Vec<_>>(),
+    })
+}
+
 #[wasm_bindgen]
 impl BrepKernel {
     // ── Export ─────────────────────────────────────────────────────
@@ -584,6 +596,29 @@ impl BrepKernel {
         Ok(step.into_bytes())
     }
 
+    /// Export one first-class sheet body as a STEP shell-based surface model.
+    ///
+    /// `options` accepts the same optional metadata JSON as
+    /// [`exportStepWithOptions`](Self::export_step_with_options). Validation
+    /// properties are refused because their current contract is solid-only.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the handle is invalid, does not name a sheet body,
+    /// the options JSON is malformed, or export fails.
+    #[wasm_bindgen(js_name = "exportStepSheet")]
+    pub fn export_step_sheet(
+        &self,
+        sheet: u32,
+        options: Option<String>,
+    ) -> Result<Vec<u8>, JsError> {
+        let sheet_id = self.resolve_shell(sheet)?;
+        let options = step_write_options_from_json(options.as_deref())?;
+        let step =
+            remus_io::step::write_step_bodies_with_options(&self.topo, &[], &[sheet_id], &options)?;
+        Ok(step.into_bytes())
+    }
+
     /// Import a STEP file and return solid handles.
     ///
     /// Returns handles for each solid found in the STEP file.
@@ -607,6 +642,30 @@ impl BrepKernel {
         let solid_ids =
             remus_io::step::reader::read_step_with_limits(text, self.topo_mut(), limits)?;
         Ok(solid_ids.iter().map(|id| solid_id_to_u32(*id)).collect())
+    }
+
+    /// Import every supported STEP body root.
+    ///
+    /// Returns JSON with distinct `solids`, `sheets`, and bounded-healing
+    /// `diagnostics` arrays so overlapping arena indices cannot blur handle
+    /// classes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the STEP data is malformed or exceeds a resource
+    /// limit.
+    #[wasm_bindgen(js_name = "importStepBodies")]
+    pub fn import_step_bodies(
+        &mut self,
+        data: &[u8],
+        max_input_bytes: Option<f64>,
+        max_entities: Option<f64>,
+    ) -> Result<String, JsError> {
+        let limits = import_limits_from(max_input_bytes, max_entities)?;
+        let text = std::str::from_utf8(data)
+            .map_err(|error| JsError::new(&format!("STEP data is not valid UTF-8: {error}")))?;
+        let result = remus_io::step::read_step_bodies_with_limits(text, self.topo_mut(), limits)?;
+        Ok(serde_json::to_string(&step_body_result_json(&result))?)
     }
 
     /// Import a STEP file and return solid handles plus bounded-healing diagnostics.
@@ -1112,5 +1171,66 @@ mod tests {
                 .body_class(),
             remus_topology::BodyClass::Sheet
         );
+    }
+
+    #[test]
+    fn sheet_step_bindings_preserve_distinct_body_class_and_open_boundary() {
+        let mut source = BrepKernel::new();
+        let face = remus_topology::builder::make_rectangle_face(source.topo_mut(), 2.0, 1.0, 1e-7)
+            .unwrap();
+        let surface = remus_math::nurbs::NurbsSurface::new(
+            1,
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![
+                vec![
+                    remus_math::vec::Point3::new(-1.0, -0.5, 0.0),
+                    remus_math::vec::Point3::new(1.0, -0.5, 0.0),
+                ],
+                vec![
+                    remus_math::vec::Point3::new(-1.0, 0.5, 0.0),
+                    remus_math::vec::Point3::new(1.0, 0.5, 0.0),
+                ],
+            ],
+            vec![vec![1.0, 1.0], vec![1.0, 1.0]],
+        )
+        .unwrap();
+        source
+            .topo_mut()
+            .face_mut(face)
+            .unwrap()
+            .set_surface(remus_topology::face::FaceSurface::Nurbs(surface));
+        let sheet_id = remus_operations::sew::make_sheet_body(source.topo_mut(), &[face]).unwrap();
+        let sheet = shell_id_to_u32(sheet_id);
+
+        let step = source.export_step_sheet(sheet, None).unwrap();
+        let text = String::from_utf8(step.clone()).unwrap();
+        assert!(text.contains("SHELL_BASED_SURFACE_MODEL("));
+        assert!(text.contains("OPEN_SHELL("));
+        assert!(text.contains("B_SPLINE_SURFACE_WITH_KNOTS("));
+
+        let mut destination = BrepKernel::new();
+        let json = destination.import_step_bodies(&step, None, None).unwrap();
+        let result: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(result["solids"].as_array().unwrap().is_empty());
+        let restored = result["sheets"][0].as_u64().unwrap() as u32;
+        assert_eq!(
+            destination
+                .topo()
+                .shell(destination.resolve_shell(restored).unwrap())
+                .unwrap()
+                .body_class(),
+            remus_topology::BodyClass::Sheet
+        );
+        let restored_id = destination.resolve_shell(restored).unwrap();
+        let report = remus_check::validate::validate_sheet_body(
+            destination.topo(),
+            restored_id,
+            &remus_check::validate::ValidateOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(report.error_count(), 0);
+        assert!(report.warning_count() > 0);
     }
 }

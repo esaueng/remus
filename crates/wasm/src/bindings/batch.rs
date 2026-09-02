@@ -132,9 +132,9 @@ enum BatchOpKind {
 fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
     match op {
         #[cfg(feature = "io")]
-        "exportStep" => Some(BatchOpKind::ReadOnly),
+        "exportStep" | "exportStepSheet" => Some(BatchOpKind::ReadOnly),
         #[cfg(feature = "io")]
-        "importStepWithValidation" => Some(BatchOpKind::Mutating),
+        "importStepBodies" | "importStepWithValidation" => Some(BatchOpKind::Mutating),
         "boundingBox"
         | "centerOfMass"
         | "chamfer2d"
@@ -734,6 +734,62 @@ impl BrepKernel {
                     remus_io::step::write_step_with_options(&self.topo, &[solid_id], &options)
                         .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::Value::String(step))
+            }
+            #[cfg(feature = "io")]
+            "exportStepSheet" => {
+                let sheet = get_u32(args, "sheet")?;
+                let sheet_id = self
+                    .resolve_shell(sheet)
+                    .map_err(StructuredWasmError::from)?;
+                let options = match args.get("options") {
+                    None | Some(serde_json::Value::Null) => {
+                        remus_io::step::StepWriteOptions::default()
+                    }
+                    Some(value) => serde_json::from_value(value.clone()).map_err(|error| {
+                        StructuredWasmError::invalid_argument(
+                            format!("invalid STEP write options: {error}"),
+                            Some("options"),
+                        )
+                    })?,
+                };
+                let step = remus_io::step::write_step_bodies_with_options(
+                    &self.topo,
+                    &[],
+                    &[sheet_id],
+                    &options,
+                )
+                .map_err(StructuredWasmError::from)?;
+                Ok(serde_json::Value::String(step))
+            }
+            #[cfg(feature = "io")]
+            "importStepBodies" => {
+                let data = args["data"].as_str().ok_or_else(|| {
+                    StructuredWasmError::invalid_argument(
+                        "missing or invalid 'data' STEP string",
+                        Some("data"),
+                    )
+                })?;
+                let optional_f64 =
+                    |name: &'static str| -> Result<Option<f64>, StructuredWasmError> {
+                        match args.get(name) {
+                            None | Some(serde_json::Value::Null) => Ok(None),
+                            Some(value) => value.as_f64().map(Some).ok_or_else(|| {
+                                StructuredWasmError::invalid_argument(
+                                    format!("'{name}' must be a number"),
+                                    Some(name),
+                                )
+                            }),
+                        }
+                    };
+                let limits = super::io::import_limits_from(
+                    optional_f64("maxInputBytes")?,
+                    optional_f64("maxEntities")?,
+                )
+                .map_err(StructuredWasmError::from)?;
+                let result =
+                    remus_io::step::read_step_bodies_with_limits(data, self.topo_mut(), limits)
+                        .map_err(StructuredWasmError::from)?;
+                Ok(super::io::step_body_result_json(&result))
             }
             #[cfg(feature = "io")]
             "importStepWithValidation" => {
@@ -2692,6 +2748,88 @@ mod batch_contract_tests {
             imported[0]["ok"]["validation"][0]["diagnostics"]
                 .as_array()
                 .expect("diagnostics array")
+                .is_empty()
+        );
+    }
+
+    #[cfg(feature = "io")]
+    #[test]
+    fn sheet_step_batch_companions_preserve_handle_class_and_refuse_solid_shells() {
+        let mut exporting = BrepKernel::new();
+        let face =
+            remus_topology::builder::make_rectangle_face(exporting.topo_mut(), 2.0, 1.0, TOL)
+                .expect("trimmed face");
+        let surface = NurbsSurface::new(
+            1,
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![
+                vec![Point3::new(-1.0, -0.5, 0.0), Point3::new(1.0, -0.5, 0.0)],
+                vec![Point3::new(-1.0, 0.5, 0.0), Point3::new(1.0, 0.5, 0.0)],
+            ],
+            vec![vec![1.0, 1.0], vec![1.0, 1.0]],
+        )
+        .expect("bilinear NURBS");
+        exporting
+            .topo_mut()
+            .face_mut(face)
+            .expect("face")
+            .set_surface(remus_topology::face::FaceSurface::Nurbs(surface));
+        let sheet = remus_operations::sew::make_sheet_body(exporting.topo_mut(), &[face])
+            .expect("sheet body");
+        let exported = parse(&exporting.execute_batch_v2(&format!(
+            r#"[{{"op":"exportStepSheet","args":{{"sheet":{}}}}}]"#,
+            shell_id_to_u32(sheet)
+        )));
+        let step = exported[0]["ok"].as_str().expect("sheet STEP string");
+        assert!(step.contains("SHELL_BASED_SURFACE_MODEL("));
+        assert!(step.contains("OPEN_SHELL("));
+        assert!(step.contains("B_SPLINE_SURFACE_WITH_KNOTS("));
+
+        let mut wrong_class = BrepKernel::new();
+        wrong_class
+            .make_box_solid(2.0, 1.0, 1.0)
+            .expect("solid fixture");
+        let rejected = parse(
+            &wrong_class.execute_batch_v2(r#"[{"op":"exportStepSheet","args":{"sheet":0}}]"#),
+        );
+        assert_eq!(
+            rejected[0]["error"]["details"]["kernelCode"],
+            "body_class_unresolved"
+        );
+        let message = rejected[0]["error"]["message"]
+            .as_str()
+            .expect("typed error message");
+        assert!(
+            message.contains("body class solid, expected sheet"),
+            "{message}"
+        );
+
+        let input = serde_json::to_string(&serde_json::json!([{
+            "op": "importStepBodies",
+            "args": { "data": step }
+        }]))
+        .expect("batch JSON");
+        let mut importing = BrepKernel::new();
+        let imported = parse(&importing.execute_batch_v2(&input));
+        assert!(
+            imported[0]["ok"]["solids"]
+                .as_array()
+                .expect("solid handle array")
+                .is_empty()
+        );
+        assert_eq!(
+            imported[0]["ok"]["sheets"]
+                .as_array()
+                .expect("sheet handle array")
+                .len(),
+            1
+        );
+        assert!(
+            imported[0]["ok"]["diagnostics"]
+                .as_array()
+                .expect("diagnostic array")
                 .is_empty()
         );
     }
