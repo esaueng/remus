@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788318891522,
+  "lastUpdate": 1788321031507,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -6749,6 +6749,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 44418488,
             "range": "± 74740",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "74dd0e9732e57f1b5f7f43b0177dac8668d207f9",
+          "message": "test: pin the three behaviors mutation testing found unguarded (#191)\n\nThe first end-to-end weekly mutation run (PR #184's follow-up comment)\nfound three replacements that no test in the mutated package noticed:\n\n- `ray_cast_inside_votes_cached` returning zero votes for every point: the\n  boolean classifier's per-sub-face path, previously covered only through\n  operations' integration tests, which cargo-mutants does not run for an\n  algo mutant. Pinned in `ray_cast.rs` on the vote counts themselves —\n  the box centre wins at least two of three rays, cached and uncached\n  agree, a far point wins none.\n- `build_seam_arcs` returning an empty arc list: its caller only checks\n  for `None`. Pinned in `special_cases.rs` with a sphere whose equator\n  square boundary and two crossing chords must yield four quarter-turn\n  arcs on the exact seam circle, chained end to end.\n- `move_planar_faces_with_blends_remove_rebuild` returning `Ok(None)`:\n  its caller silently falls back to the rigid translation path, so the\n  primary path could be disabled without a failure. Pinned in\n  `resize_blend.rs` by calling the path directly on a filleted box with\n  one of the band's tangent supports (an end cap shares an edge with the\n  band but is not tangent, and is an ordinary planar move) and checking\n  the closed-form volume of the lengthened block.\n\ncargo-mutants confirms all three mutants are caught with these tests.\n\nCo-authored-by: peter <peter@pop-os.tail7bd9a6.ts.net>\nCo-authored-by: Claude Fable 5.1 <noreply@anthropic.com>",
+          "timestamp": "2026-09-01T23:47:36-04:00",
+          "tree_id": "bab0fe2e56a3a3761c213f802bfd1932f061c04b",
+          "url": "https://github.com/esaueng/remus/commit/74dd0e9732e57f1b5f7f43b0177dac8668d207f9"
+        },
+        "date": 1788321030832,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1396466,
+            "range": "± 2521",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1486986,
+            "range": "± 65677",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 26744,
+            "range": "± 37",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 1041201,
+            "range": "± 2240",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 43301432,
+            "range": "± 536408",
             "unit": "ns/iter"
           }
         ]
