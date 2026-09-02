@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788310890769,
+  "lastUpdate": 1788311069674,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -6425,6 +6425,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 45288288,
             "range": "± 539863",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b510c16acdadeb3c23af78b56a684cd2e859e568",
+          "message": "fix(io): glTF byte-offset panic; ci(mutants): make the weekly run finish (#184)\n\n* fix(io): slice glTF JSON arrays on byte offsets\n\n`extract_json_array` walked the JSON with `chars().enumerate()` and used\nthe character count as a byte offset into the `&str` slice, so any\nmulti-byte character before the closing bracket landed off a char\nboundary and panicked. The scheduled `glb_reader` fuzz target has been\nred on this since 2026-08-16. Iterate with `char_indices()` instead and\npin it with a unit test on the helper and a reader-level test on\nnon-ASCII JSON ahead of the accessor and mesh arrays.\n\nThe Fuzz Smoke workflow now uploads `fuzz/artifacts/<target>/` when a\ntarget fails: the README already promised retained crash artifacts, but\nnothing collected them, so the crashing input died with the runner.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n* ci(mutants): scope the weekly run to the week's diff and let the baseline finish\n\nThe Sunday job has never produced a result: `--timeout=120` also capped\nthe unmutated baseline, whose test run over the five examined packages\nexceeds 120s, so cargo-mutants exited 4 (\"baseline TIMEOUT\") on every\nrun before testing a single mutant. And with ~54k mutants in scope the\njob could not have finished inside 180 minutes even with the baseline\nfixed. The summary step also read `mutants-output/*.txt` while\n`--output` creates `mutants-output/mutants.out/`, so it would always\nhave reported zeros.\n\nNow: drop the fixed timeout (per-mutant timeout derives from the\nmeasured baseline), restrict each run with `--in-diff` to the last seven\ndays of changes under `crates/` (3,328 mutants for the week ending\n2026-09-01), shuffle so a budget-cut run reports a random sample rather\nthan the same head of the list, run two jobs, and stop with `timeout`\nat 150 minutes so the incrementally written outcome files are still\npublished. Missed or timed-out mutants still fail the workflow; a\nbudget cut is a warning, not a failure.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: peter <peter@pop-os.tail7bd9a6.ts.net>\nCo-authored-by: Claude Fable 5.1 <noreply@anthropic.com>",
+          "timestamp": "2026-09-01T20:58:37-04:00",
+          "tree_id": "79eecc3b5b24960420ee95dd4b3fb80d2a991abb",
+          "url": "https://github.com/esaueng/remus/commit/b510c16acdadeb3c23af78b56a684cd2e859e568"
+        },
+        "date": 1788311068398,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1399842,
+            "range": "± 3101",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1490778,
+            "range": "± 4229",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 26881,
+            "range": "± 31",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 1044064,
+            "range": "± 1575",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 42920726,
+            "range": "± 137140",
             "unit": "ns/iter"
           }
         ]
