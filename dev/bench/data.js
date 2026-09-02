@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788313189609,
+  "lastUpdate": 1788314818338,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -6533,6 +6533,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 42284611,
             "range": "± 363828",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f10c77a269b64bee8247590dd85e1f1c55e671ee",
+          "message": "docs(roadmap): trim the skill to doctrine, move campaign history out (#187)\n\nThe roadmap skill had grown to 1,362 lines (19k words) against its own\none-line-per-entry rule: paragraph-long dig narratives, refuted theories,\nand tool-side scores for a harness retired on 2026-08-20, all loaded into\nany session that touches work selection.\n\nThe skill now carries only doctrine (263 lines): the maintenance rule, the\nnorth star, the queue pointer, the four chase filters, the TERMINAL list,\nthe current `#[ignore]` inventory summary, a new durable-lessons list (one\nline each, distilled from the DURABLE/LESSON notes in the narrative), the\nsubsystem traps, the acceptance bar, and the anti-patterns. The narrative\nmoved verbatim to `docs/kernel-maturity/campaign-history.md`, which nothing\nloads by default; `roadmap.md` lists it as a source. The one closed\n\"NO LONGER TERMINAL\" entry is reduced to a pointer so the name is not\nre-chased, and the pre-claim checklist now includes reading the last\nscheduled proof runs.\n\nCo-authored-by: peter <peter@pop-os.tail7bd9a6.ts.net>\nCo-authored-by: Claude Fable 5.1 <noreply@anthropic.com>",
+          "timestamp": "2026-09-01T22:04:06-04:00",
+          "tree_id": "e4c4708a909f7cbd466705eec1a041d89ae21503",
+          "url": "https://github.com/esaueng/remus/commit/f10c77a269b64bee8247590dd85e1f1c55e671ee"
+        },
+        "date": 1788314817465,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1470161,
+            "range": "± 4476",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1571413,
+            "range": "± 9167",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 27764,
+            "range": "± 589",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 1081510,
+            "range": "± 13059",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 44568308,
+            "range": "± 371907",
             "unit": "ns/iter"
           }
         ]
