@@ -32,6 +32,14 @@ coedge-authority flip (PR #179): a re-derivation whose handles must now be
 preserved, and a guard-box sweep whose derivation census must count the
 loops `add_face` installs.
 
+`modifier_ops` builds a bored or bossed primitive and applies one fillet,
+chamfer, shell or draft, checking hole preservation, closed-manifold census,
+watertight tessellation, scale invariance and integrator agreement. Its
+corpus includes a draft seed whose 1° outward taper of a narrow facet slid
+the facet's corners past each other; the folded face passed validation and
+the volume sign check and only showed as four wrongly-wound half-edges in the
+fine tessellation, and is now refused by name.
+
 `arena_roundtrip` builds bounded boxes and cylinders (census and closed-form
 volumes known by construction) with duplicate roots, shared-shell aliases,
 repeated/aliased compound members, precision-hostile tolerances, and public
