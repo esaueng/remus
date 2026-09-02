@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788311069674,
+  "lastUpdate": 1788313189609,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -6479,6 +6479,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 42920726,
             "range": "± 137140",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d521b749bdb217ba096dad6103b8b9b06a983ba4",
+          "message": "test(fuzz): follow the coedge-authority contract in topology_mutation (#185)\n\nPR #179 made face loops authoritative: `build_face_loops` is read-only on\na derived face and preserves Loop/Coedge identity, and retirement happens\nonly through the sanctioned wire replacement. The topology_mutation target\nstill asserted the pre-#179 retire-and-reissue contract for a plain\nre-derivation, so the first post-#179 campaign failed on \"replaced loop\nhandle Id(2) still resolves\"; it also swept the deletion guard box with an\nempty derivation map, which no longer matches the loops `add_face`\ninstalls.\n\nThe oracles now assert identity preservation for `build_face_loops`,\nexercise retirement and the checkpoint barrier through\n`replace_boundary_wire` (prior handles stay retired, window handles are\ntombstoned, the restored face is promoted onto fresh handles, everything\nelse restores exactly), roll back an in-window wire replacement, and seed\nthe derivation census from every live face. Both crash inputs are added\nas corpus seeds; a three-minute campaign runs clean.\n\nCo-authored-by: peter <peter@pop-os.tail7bd9a6.ts.net>\nCo-authored-by: Claude Fable 5.1 <noreply@anthropic.com>",
+          "timestamp": "2026-09-01T21:36:54-04:00",
+          "tree_id": "0de756ef89d21132157092a4fc0ec46dcebadc61",
+          "url": "https://github.com/esaueng/remus/commit/d521b749bdb217ba096dad6103b8b9b06a983ba4"
+        },
+        "date": 1788313188407,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1391628,
+            "range": "± 2736",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1483770,
+            "range": "± 9659",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 26688,
+            "range": "± 80",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 1038358,
+            "range": "± 1721",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 42284611,
+            "range": "± 363828",
             "unit": "ns/iter"
           }
         ]
