@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788325023341,
+  "lastUpdate": 1788326952006,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -6857,6 +6857,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 43151005,
             "range": "± 1580590",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1abc1d5a57a9900f9f6a4b51455da1ee5adfdcd8",
+          "message": "docs(kernel): design UV arrangement splitter (#193)\n\n* docs(kernel): design UV arrangement splitter\n\n* docs(roadmap): mark O2.3a complete\n\n---------\n\nCo-authored-by: Codex Review <codex-review@localhost>",
+          "timestamp": "2026-09-02T01:25:11-04:00",
+          "tree_id": "c5c4677e67942f76dae778cfef8d5fb07220383f",
+          "url": "https://github.com/esaueng/remus/commit/1abc1d5a57a9900f9f6a4b51455da1ee5adfdcd8"
+        },
+        "date": 1788326950960,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1405279,
+            "range": "± 28819",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1498238,
+            "range": "± 2820",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 26820,
+            "range": "± 949",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 1047889,
+            "range": "± 613",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 42441810,
+            "range": "± 182829",
             "unit": "ns/iter"
           }
         ]
