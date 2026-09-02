@@ -2994,6 +2994,36 @@ mod batch_contract_tests {
     }
 
     #[test]
+    fn batch_torus_box_intersect_is_exact() {
+        let mut kernel = BrepKernel::new();
+        let response = parse(&kernel.execute_batch_v2(
+            r#"[
+                {"op":"makeTorus","args":{"majorRadius":10,"minorRadius":3,"segments":32}},
+                {"op":"makeBox","args":{"width":8,"height":8,"depth":8}},
+                {"op":"transform","args":{"solid":1,"matrix":[1,0,0,6,0,1,0,-4,0,0,1,-4,0,0,0,1]}},
+                {"op":"booleanWithQuality","args":{"operation":"intersect","solidA":0,"solidB":1,"exactOnly":true}},
+                {"op":"volume","args":{"solid":2,"deflection":0.01}},
+                {"op":"validateSolid","args":{"solid":2}},
+                {"op":"getSolidFaces","args":{"solid":2}}
+            ]"#,
+        ));
+
+        assert_eq!(response[3]["ok"]["quality"], "exact", "{response}");
+        assert_eq!(response[3]["ok"]["solid"], 2, "{response}");
+        let volume = response[4]["ok"].as_f64().expect("numeric volume");
+        assert!(
+            (volume - 232.45).abs() / 232.45 < 0.01,
+            "torus-box intersection volume {volume}"
+        );
+        assert_eq!(response[5]["ok"], 0, "{response}");
+        assert_eq!(
+            response[6]["ok"].as_array().map(Vec::len),
+            Some(5),
+            "{response}"
+        );
+    }
+
+    #[test]
     fn batch_boolean_with_quality_rejects_invalid_newton_iterations() {
         for bad in ["-1", "2.5", r#""twenty""#, "10001", "true"] {
             let mut kernel = BrepKernel::new();
