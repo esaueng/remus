@@ -9,6 +9,7 @@ use super::super::split_types::{OrientedPCurveEdge, SectionEdge, SplitSubFace};
 use super::conversion::uv_endpoints_from_pcurve;
 use super::edge_splitting::split_boundary_edges_at_3d_points;
 use crate::ds::Rank;
+use crate::error::AlgoError;
 
 /// Split a face with no seam edges directly into cap + remainder sub-faces.
 ///
@@ -34,7 +35,7 @@ pub(super) fn split_noseam_face_direct(
     face_id: FaceId,
     wire_pts: &[Point3],
     tol: f64,
-) -> Vec<SplitSubFace> {
+) -> Result<Vec<SplitSubFace>, AlgoError> {
     let close_tol = tol * 100.0;
 
     // Helper: return the face unsplit (used in fallback paths).
@@ -65,15 +66,16 @@ pub(super) fn split_noseam_face_direct(
             Rank::A => section.start_uv_a.zip(section.end_uv_a),
             Rank::B => section.start_uv_b.zip(section.end_uv_b),
         };
-        let (start_uv, end_uv) = precomputed_uv.unwrap_or_else(|| {
-            uv_endpoints_from_pcurve(
+        let (start_uv, end_uv) = match precomputed_uv {
+            Some(uv) => uv,
+            None => uv_endpoints_from_pcurve(
                 pcurve_on_this_face,
                 section.start,
                 section.end,
                 surface,
                 wire_pts,
-            )
-        });
+            )?,
+        };
 
         let edge = OrientedPCurveEdge {
             curve_3d: section.curve_3d.clone(),
@@ -99,7 +101,7 @@ pub(super) fn split_noseam_face_direct(
     }
 
     if open_sections.is_empty() {
-        return unsplit();
+        return Ok(unsplit());
     }
 
     // Chain the arcs into a single closed loop, greedily matching endpoints
@@ -167,12 +169,12 @@ pub(super) fn split_noseam_face_direct(
             }
         }
         let Some(remainder) = chain_closed_loop(pool, close_tol) else {
-            return unsplit();
+            return Ok(unsplit());
         };
 
         let cap_interior = sphere_loop_interior(surface, &cap_edges);
         let remainder_interior = sphere_loop_interior(surface, &remainder);
-        return vec![
+        return Ok(vec![
             SplitSubFace {
                 surface: surface.clone(),
                 outer_wire: cap_edges,
@@ -191,12 +193,12 @@ pub(super) fn split_noseam_face_direct(
                 rank,
                 precomputed_interior: remainder_interior,
             },
-        ];
+        ]);
     }
 
     // Cap loop is interior to the boundary: cap + band-with-hole.
     let hole_edges: Vec<OrientedPCurveEdge> = cap_edges.iter().map(reverse_of).collect();
-    vec![
+    Ok(vec![
         SplitSubFace {
             surface: surface.clone(),
             outer_wire: cap_edges,
@@ -215,7 +217,7 @@ pub(super) fn split_noseam_face_direct(
             rank,
             precomputed_interior: None,
         },
-    ]
+    ])
 }
 
 /// Split a sphere face whose disjoint open arcs cannot chain alone into a
@@ -241,7 +243,7 @@ fn split_noseam_by_arrangement(
     reversed: bool,
     face_id: FaceId,
     tol: f64,
-) -> Vec<SplitSubFace> {
+) -> Result<Vec<SplitSubFace>, AlgoError> {
     let unsplit = || {
         vec![SplitSubFace {
             surface: surface.clone(),
@@ -256,13 +258,13 @@ fn split_noseam_by_arrangement(
 
     // Need at least two arcs to interleave; one arc is handled by the cap path.
     if open_sections.len() < 2 {
-        return unsplit();
+        return Ok(unsplit());
     }
 
     // Reconstruct the seam as its exact circle and split it at the crossings,
     // so the seam arcs share endpoints EXACTLY with the open arcs.
-    let Some(seam_arcs) = build_seam_arcs(surface, boundary_edges, open_sections, tol) else {
-        return unsplit();
+    let Some(seam_arcs) = build_seam_arcs(surface, boundary_edges, open_sections, tol)? else {
+        return Ok(unsplit());
     };
 
     // Half-edge soup: every seam arc and every open arc in both orientations,
@@ -349,7 +351,7 @@ fn split_noseam_by_arrangement(
     }
 
     let Some(region_idx) = best else {
-        return unsplit();
+        return Ok(unsplit());
     };
     let mut region = loops[region_idx].clone();
     if net_u(&region) * parent_net_u > 0.0 {
@@ -363,7 +365,7 @@ fn split_noseam_by_arrangement(
     let region_holes: Vec<Vec<OrientedPCurveEdge>> =
         hole_loops.iter().map(|hl| reverse_loop(hl)).collect();
 
-    vec![SplitSubFace {
+    Ok(vec![SplitSubFace {
         surface: surface.clone(),
         outer_wire: region,
         inner_wires: region_holes,
@@ -371,7 +373,7 @@ fn split_noseam_by_arrangement(
         parent: face_id,
         rank,
         precomputed_interior: Some(interior_3d),
-    }]
+    }])
 }
 
 /// Reconstruct a sphere face's seam (boundary) as its exact circle and split it
@@ -386,18 +388,18 @@ fn build_seam_arcs(
     boundary_edges: &[OrientedPCurveEdge],
     open_sections: &[OrientedPCurveEdge],
     tol: f64,
-) -> Option<Vec<OrientedPCurveEdge>> {
+) -> Result<Option<Vec<OrientedPCurveEdge>>, AlgoError> {
     use remus_math::curves::Circle3D;
     use remus_math::vec::Vec3;
 
     let FaceSurface::Sphere(sphere) = surface else {
-        return None;
+        return Ok(None);
     };
 
     // Seam-plane normal + a point on it, from the boundary polygon (Newell).
     let verts: Vec<Point3> = boundary_edges.iter().map(|e| e.start_3d).collect();
     if verts.len() < 3 {
-        return None;
+        return Ok(None);
     }
     let mut nrm = Vec3::new(0.0, 0.0, 0.0);
     let mut cen = Vec3::new(0.0, 0.0, 0.0);
@@ -412,7 +414,9 @@ fn build_seam_arcs(
         );
         cen += Vec3::new(a.x(), a.y(), a.z());
     }
-    let plane_n = nrm.normalize().ok()?;
+    let Ok(plane_n) = nrm.normalize() else {
+        return Ok(None);
+    };
     #[allow(clippy::cast_precision_loss)]
     let inv_n = 1.0 / n as f64;
     let plane_pt = Point3::new(cen.x() * inv_n, cen.y() * inv_n, cen.z() * inv_n);
@@ -422,11 +426,13 @@ fn build_seam_arcs(
     let h = (plane_pt - sphere.center()).dot(plane_n);
     let rr = sphere.radius() * sphere.radius() - h * h;
     if rr <= tol * tol {
-        return None;
+        return Ok(None);
     }
     let seam_radius = rr.sqrt();
     let seam_center = sphere.center() + plane_n * h;
-    let seam_circle = Circle3D::new(seam_center, plane_n, seam_radius).ok()?;
+    let Ok(seam_circle) = Circle3D::new(seam_center, plane_n, seam_radius) else {
+        return Ok(None);
+    };
 
     // Crossing points = the open arcs' endpoints (they lie on the seam circle).
     let mut unique: Vec<Point3> = Vec::new();
@@ -436,7 +442,7 @@ fn build_seam_arcs(
         }
     }
     if unique.len() < 2 {
-        return None;
+        return Ok(None);
     }
 
     // Sort crossings by angle on the seam circle, then build the arc between
@@ -469,11 +475,11 @@ fn build_seam_arcs(
             surface,
             &[],
             None,
-        );
+        )?;
         let start_uv =
-            super::super::pcurve_compute::project_point_on_surface(start_3d, surface, &[], None);
+            super::super::pcurve_compute::project_point_on_surface(start_3d, surface, &[], None)?;
         let end_uv =
-            super::super::pcurve_compute::project_point_on_surface(end_3d, surface, &[], None);
+            super::super::pcurve_compute::project_point_on_surface(end_3d, surface, &[], None)?;
         arcs.push(OrientedPCurveEdge {
             trim: Some((start_parameter, end_parameter)),
             curve_3d: curve,
@@ -489,9 +495,9 @@ fn build_seam_arcs(
         });
     }
     if arcs.len() < 2 {
-        return None;
+        return Ok(None);
     }
-    Some(arcs)
+    Ok(Some(arcs))
 }
 
 /// Trace the faces of a planar half-edge arrangement in UV.
@@ -1510,17 +1516,20 @@ fn torus_section_to_edge(
     section: &SectionEdge,
     surface: &FaceSurface,
     rank: Rank,
-) -> OrientedPCurveEdge {
+) -> Result<OrientedPCurveEdge, AlgoError> {
     let pcurve = match rank {
         Rank::A => &section.pcurve_a,
         Rank::B => &section.pcurve_b,
     };
-    let (start_uv, end_uv) = match rank {
+    let precomputed = match rank {
         Rank::A => section.start_uv_a.zip(section.end_uv_a),
         Rank::B => section.start_uv_b.zip(section.end_uv_b),
-    }
-    .unwrap_or_else(|| uv_endpoints_from_pcurve(pcurve, section.start, section.end, surface, &[]));
-    OrientedPCurveEdge {
+    };
+    let (start_uv, end_uv) = match precomputed {
+        Some(uv) => uv,
+        None => uv_endpoints_from_pcurve(pcurve, section.start, section.end, surface, &[])?,
+    };
+    Ok(OrientedPCurveEdge {
         curve_3d: section.curve_3d.clone(),
         trim: section.trim,
         pcurve: pcurve.clone(),
@@ -1532,7 +1541,7 @@ fn torus_section_to_edge(
         source_edge_idx: None,
         pave_block_id: section.pave_block_id,
         source_topo_edge: None,
-    }
+    })
 }
 
 /// Contained tracer for the `torus − box`-style cut: a box notch removes a
@@ -1556,19 +1565,19 @@ pub(super) fn split_torus_band_by_arrangement(
     reversed: bool,
     face_id: FaceId,
     tol: f64,
-) -> Option<Vec<SplitSubFace>> {
+) -> Result<Option<Vec<SplitSubFace>>, AlgoError> {
     use std::f64::consts::{PI, TAU};
     let FaceSurface::Torus(torus) = surface else {
-        return None;
+        return Ok(None);
     };
     // Open arcs only (closed sections would be the lobe-hole case, not a band).
     let open: Vec<OrientedPCurveEdge> = sections
         .iter()
         .filter(|s| (s.start - s.end).length() > tol)
         .map(|s| torus_section_to_edge(s, surface, rank))
-        .collect();
+        .collect::<Result<_, _>>()?;
     if open.len() < 2 {
-        return None;
+        return Ok(None);
     }
 
     // Stitch arcs into closed loops by chaining shared 3D endpoints. The FF
@@ -1625,7 +1634,7 @@ pub(super) fn split_torus_band_by_arrangement(
 
     // The kept band needs exactly two φ-wrapping boundary loops.
     if loops.len() != 2 {
-        return None;
+        return Ok(None);
     }
     // Each loop must wrap φ fully: net φ-traversal ≈ ±2π.
     let net_phi = |l: &[OrientedPCurveEdge]| -> f64 {
@@ -1655,7 +1664,7 @@ pub(super) fn split_torus_band_by_arrangement(
         .iter()
         .any(|l| (net_phi(l).abs() - TAU).abs() > winding_tol)
     {
-        return None;
+        return Ok(None);
     }
 
     // Snap each loop's internal junctions to the midpoint of the two meeting
@@ -1702,7 +1711,7 @@ pub(super) fn split_torus_band_by_arrangement(
     let interior = torus.evaluate(u_mid, 0.0);
     let inner_rev = reverse_loop(&loops[1]);
 
-    Some(vec![SplitSubFace {
+    Ok(Some(vec![SplitSubFace {
         surface: surface.clone(),
         outer_wire: outer,
         inner_wires: vec![inner_rev],
@@ -1710,7 +1719,7 @@ pub(super) fn split_torus_band_by_arrangement(
         parent: face_id,
         rank,
         precomputed_interior: Some(interior),
-    }])
+    }]))
 }
 
 /// Split a face when ALL section edges are interior (don't touch the boundary).
@@ -1738,7 +1747,7 @@ pub(super) fn split_face_with_internal_loops(
     face_id: FaceId,
     wire_pts: &[Point3],
     tol_3d: f64,
-) -> Vec<SplitSubFace> {
+) -> Result<Vec<SplitSubFace>, AlgoError> {
     // Convert each section edge to an OrientedPCurveEdge, preserving the
     // original EdgeCurve (NURBS, Circle, etc.) without polyline approximation.
     let mut forward_edges: Vec<OrientedPCurveEdge> = Vec::new();
@@ -1749,13 +1758,15 @@ pub(super) fn split_face_with_internal_loops(
             Rank::B => &section.pcurve_b,
         };
 
-        let (start_uv, end_uv) = match rank {
-            Rank::A => section.start_uv_a.zip(section.end_uv_a).unwrap_or_else(|| {
-                uv_endpoints_from_pcurve(pcurve_on_face, section.start, section.end, surface, &[])
-            }),
-            Rank::B => section.start_uv_b.zip(section.end_uv_b).unwrap_or_else(|| {
-                uv_endpoints_from_pcurve(pcurve_on_face, section.start, section.end, surface, &[])
-            }),
+        let precomputed = match rank {
+            Rank::A => section.start_uv_a.zip(section.end_uv_a),
+            Rank::B => section.start_uv_b.zip(section.end_uv_b),
+        };
+        let (start_uv, end_uv) = match precomputed {
+            Some(uv) => uv,
+            None => {
+                uv_endpoints_from_pcurve(pcurve_on_face, section.start, section.end, surface, &[])?
+            }
         };
 
         forward_edges.push(OrientedPCurveEdge {
@@ -2206,7 +2217,7 @@ pub(super) fn split_face_with_internal_loops(
     }
     result.push(remainder);
 
-    result
+    Ok(result)
 }
 
 /// True when an internal section loop and a pre-existing inner wire (both
@@ -2811,7 +2822,7 @@ pub(super) fn try_split_crossing_plane_face(
     face_id: FaceId,
     frame: &PlaneFrame,
     tol: &remus_math::tolerance::Tolerance,
-) -> Option<Vec<SplitSubFace>> {
+) -> Result<Option<Vec<SplitSubFace>>, AlgoError> {
     let cross_3d;
     let section_endpoints: Vec<Point3>;
 
@@ -2820,12 +2831,12 @@ pub(super) fn try_split_crossing_plane_face(
         let d0 = s0.end - s0.start;
         let d1 = s1.end - s1.start;
         if d0.length() < tol.linear || d1.length() < tol.linear {
-            return None;
+            return Ok(None);
         }
         let normal = d0.cross(d1);
         let ptol = d0.length() * d1.length() * tol.linear;
         if normal.x().abs() < ptol && normal.y().abs() < ptol && normal.z().abs() < ptol {
-            return None;
+            return Ok(None);
         }
         let d = s1.start - s0.start;
         let ax = normal.x().abs();
@@ -2835,19 +2846,19 @@ pub(super) fn try_split_crossing_plane_face(
         let t0 = if az >= ax && az >= ay {
             let det = d0.x().mul_add(d1.y(), -(d0.y() * d1.x()));
             if det.abs() < ptol {
-                return None;
+                return Ok(None);
             }
             d.x().mul_add(d1.y(), -(d.y() * d1.x())) / det
         } else if ay >= ax {
             let det = d0.x().mul_add(d1.z(), -(d0.z() * d1.x()));
             if det.abs() < ptol {
-                return None;
+                return Ok(None);
             }
             d.x().mul_add(d1.z(), -(d.z() * d1.x())) / det
         } else {
             let det = d0.y().mul_add(d1.z(), -(d0.z() * d1.y()));
             if det.abs() < ptol {
-                return None;
+                return Ok(None);
             }
             d.y().mul_add(d1.z(), -(d.z() * d1.y())) / det
         };
@@ -2855,7 +2866,7 @@ pub(super) fn try_split_crossing_plane_face(
         let t1 = (cross_3d - s1.start).dot(d1) / d1.dot(d1);
         // The infinite lines must meet within both segments (endpoints allowed).
         if !(-0.01..=1.01).contains(&t0) || !(-0.01..=1.01).contains(&t1) {
-            return None;
+            return Ok(None);
         }
         let mid = |t: f64| (0.01..=0.99).contains(&t);
         section_endpoints = if mid(t0) && mid(t1) {
@@ -2871,7 +2882,7 @@ pub(super) fn try_split_crossing_plane_face(
             vec![s1_far, s0.start, s0.end]
         } else {
             // L-junction (shared endpoint) or no interior crossing — no split.
-            return None;
+            return Ok(None);
         };
     } else if sections.len() == 4 {
         let all_pts: Vec<Point3> = sections.iter().flat_map(|s| [s.start, s.end]).collect();
@@ -2886,14 +2897,16 @@ pub(super) fn try_split_crossing_plane_face(
                 break;
             }
         }
-        let cp = common?;
+        let Some(cp) = common else {
+            return Ok(None);
+        };
         cross_3d = cp;
         section_endpoints = all_pts
             .into_iter()
             .filter(|&pt| (pt - cp).length() > tol.linear * 10.0)
             .collect();
         if section_endpoints.len() != 4 {
-            return None;
+            return Ok(None);
         }
         let dirs: Vec<_> = sections
             .iter()
@@ -2924,10 +2937,10 @@ pub(super) fn try_split_crossing_plane_face(
             }
         }
         if groups != 2 {
-            return None;
+            return Ok(None);
         }
     } else {
-        return None;
+        return Ok(None);
     }
 
     // Verify the crossing point is in the face INTERIOR (not on a boundary edge).
@@ -2947,7 +2960,7 @@ pub(super) fn try_split_crossing_plane_face(
         (cross_3d - closest).length() < tol.linear * 10.0
     });
     if on_boundary {
-        return None;
+        return Ok(None);
     }
 
     let split_boundary = split_boundary_edges_at_3d_points(
@@ -2956,7 +2969,7 @@ pub(super) fn try_split_crossing_plane_face(
         Some(frame),
         surface,
         tol.linear,
-    );
+    )?;
     let split_boundary = chain_boundary_edges(split_boundary, tol.linear);
     let find_idx = |pt: Point3| -> Option<usize> {
         split_boundary
@@ -2965,12 +2978,15 @@ pub(super) fn try_split_crossing_plane_face(
     };
     let mut section_indices = Vec::with_capacity(4);
     for &pt in &section_endpoints {
-        section_indices.push(find_idx(pt)?);
+        let Some(idx) = find_idx(pt) else {
+            return Ok(None);
+        };
+        section_indices.push(idx);
     }
     section_indices.sort_unstable();
     section_indices.dedup();
     if section_indices.len() != section_endpoints.len() || section_indices.len() < 3 {
-        return None;
+        return Ok(None);
     }
 
     let n = split_boundary.len();
@@ -3037,7 +3053,7 @@ pub(super) fn try_split_crossing_plane_face(
             precomputed_interior: Some(Point3::new(sum.x() / wn, sum.y() / wn, sum.z() / wn)),
         });
     }
-    Some(result)
+    Ok(Some(result))
 }
 
 /// Split a planar DISC face (outer boundary is a single closed circle) that is
@@ -3070,7 +3086,7 @@ pub(super) fn try_split_disk_by_chords(
     face_id: FaceId,
     frame: &PlaneFrame,
     tol: f64,
-) -> Option<Vec<SplitSubFace>> {
+) -> Result<Option<Vec<SplitSubFace>>, AlgoError> {
     use remus_math::curves::Circle3D;
     use remus_math::curves2d::{Curve2D, Line2D};
     use std::collections::{HashMap, HashSet};
@@ -3107,7 +3123,7 @@ pub(super) fn try_split_disk_by_chords(
     }
 
     if !matches!(surface, FaceSurface::Plane { .. }) {
-        return None;
+        return Ok(None);
     }
 
     // Gate 1: the whole outer boundary lies on ONE circle (a disc). Any Line /
@@ -3115,7 +3131,7 @@ pub(super) fn try_split_disk_by_chords(
     let mut circle: Option<Circle3D> = None;
     for e in boundary_edges {
         let EdgeCurve::Circle(c) = &e.curve_3d else {
-            return None;
+            return Ok(None);
         };
         match &circle {
             None => circle = Some(c.clone()),
@@ -3123,15 +3139,17 @@ pub(super) fn try_split_disk_by_chords(
                 if (c0.center() - c.center()).length() > tol * 100.0
                     || (c0.radius() - c.radius()).abs() > tol * 100.0
                 {
-                    return None;
+                    return Ok(None);
                 }
             }
         }
     }
-    let circle = circle?;
+    let Some(circle) = circle else {
+        return Ok(None);
+    };
     let r = circle.radius();
     if r <= tol {
-        return None;
+        return Ok(None);
     }
 
     // Gate 2: every section is a straight chord.
@@ -3140,7 +3158,7 @@ pub(super) fn try_split_disk_by_chords(
             .iter()
             .any(|s| !matches!(s.curve_3d, EdgeCurve::Line))
     {
-        return None;
+        return Ok(None);
     }
 
     // Frame-space circle: aligned so its parameter angle equals the UV angle
@@ -3152,9 +3170,13 @@ pub(super) fn try_split_disk_by_chords(
     let cu = frame.project(center3d);
     let ux = frame.u_axis();
     let vy = frame.v_axis();
-    let aligned = Circle3D::with_axes(center3d, ux.cross(vy), r, ux, vy).ok()?;
-    let aligned_rev =
-        Circle3D::with_axes(center3d, (vy * -1.0).cross(ux), r, ux, vy * -1.0).ok()?;
+    let Ok(aligned) = Circle3D::with_axes(center3d, ux.cross(vy), r, ux, vy) else {
+        return Ok(None);
+    };
+    let Ok(aligned_rev) = Circle3D::with_axes(center3d, (vy * -1.0).cross(ux), r, ux, vy * -1.0)
+    else {
+        return Ok(None);
+    };
 
     // Chords in UV; drop degenerate ones.
     let chords: Vec<(Point2, Point2)> = sections
@@ -3163,7 +3185,7 @@ pub(super) fn try_split_disk_by_chords(
         .filter(|(a, b)| (*a - *b).length() > tol)
         .collect();
     if chords.is_empty() {
-        return None;
+        return Ok(None);
     }
 
     let qs = 1.0 / tol.max(1e-12);
@@ -3281,7 +3303,7 @@ pub(super) fn try_split_disk_by_chords(
     nodes.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
     nodes.dedup_by(|a, b| (a.1 - b.1).abs() < 1e-9 || a.0 == b.0);
     if nodes.len() < 2 {
-        return None;
+        return Ok(None);
     }
 
     // A minor-arc gap whose two endpoints are ALSO joined directly by a chord
@@ -3355,7 +3377,7 @@ pub(super) fn try_split_disk_by_chords(
     }
 
     if subs.len() < 2 {
-        return None;
+        return Ok(None);
     }
 
     // Reject a dangling interior chord endpoint (degree < 2 at a non-circle
@@ -3373,7 +3395,7 @@ pub(super) fn try_split_disk_by_chords(
         *degree.entry(s.b).or_insert(0) += 1;
     }
     if degree.iter().any(|(k, &deg)| deg < 2 && !on_circle(*k)) {
-        return None;
+        return Ok(None);
     }
 
     // Directed half-edges: index 2k forward (a->b), 2k+1 reverse (b->a).
@@ -3488,7 +3510,7 @@ pub(super) fn try_split_disk_by_chords(
         }
     }
     if faces.len() < 2 {
-        return None;
+        return Ok(None);
     }
 
     // Sampled UV polygon of a traced face (arcs densified) for area + seed.
@@ -3517,15 +3539,17 @@ pub(super) fn try_split_disk_by_chords(
     };
     let face_area = |face: &[usize]| -> f64 { signed_area_2d(&face_poly(face)) };
 
-    let outer_idx = (0..faces.len()).max_by(|&a, &b| {
+    let Some(outer_idx) = (0..faces.len()).max_by(|&a, &b| {
         face_area(&faces[a])
             .abs()
             .partial_cmp(&face_area(&faces[b]).abs())
             .unwrap_or(std::cmp::Ordering::Equal)
-    })?;
+    }) else {
+        return Ok(None);
+    };
     let outer_area = face_area(&faces[outer_idx]).abs();
     if outer_area < tol * tol {
-        return None;
+        return Ok(None);
     }
 
     // A clean tiling: the interior faces' areas sum to the unbounded face's
@@ -3534,15 +3558,15 @@ pub(super) fn try_split_disk_by_chords(
         .filter(|&i| i != outer_idx && face_area(&faces[i]).abs() > tol * tol)
         .collect();
     if interior.is_empty() {
-        return None;
+        return Ok(None);
     }
     let interior_sum: f64 = interior.iter().map(|&i| face_area(&faces[i]).abs()).sum();
     if (interior_sum - outer_area).abs() > outer_area.mul_add(1e-4, tol * tol) {
-        return None;
+        return Ok(None);
     }
 
     // Reconstruct one directed half-edge as a true Line / trimmed-arc edge.
-    let mk_edge = |h: usize| -> Option<OrientedPCurveEdge> {
+    let mk_edge = |h: usize| -> Result<Option<OrientedPCurveEdge>, AlgoError> {
         let he = &halfs[h];
         let su = vpos[&he.from];
         let eu = vpos[&he.to];
@@ -3555,12 +3579,13 @@ pub(super) fn try_split_disk_by_chords(
                 } else {
                     Vec2::new(1.0, 0.0)
                 };
-                let pcurve = Curve2D::Line(
-                    Line2D::new(su, direction)
-                        .or_else(|_| Line2D::new(su, Vec2::new(1.0, 0.0)))
-                        .ok()?,
-                );
-                Some(OrientedPCurveEdge {
+                let Ok(line) =
+                    Line2D::new(su, direction).or_else(|_| Line2D::new(su, Vec2::new(1.0, 0.0)))
+                else {
+                    return Ok(None);
+                };
+                let pcurve = Curve2D::Line(line);
+                Ok(Some(OrientedPCurveEdge {
                     curve_3d: EdgeCurve::Line,
                     trim: None,
                     pcurve,
@@ -3572,7 +3597,7 @@ pub(super) fn try_split_disk_by_chords(
                     source_edge_idx: None,
                     pave_block_id: None,
                     source_topo_edge: None,
-                })
+                }))
             }
             HeKind::ArcCcw { lo, hi } | HeKind::ArcCw { lo, hi } => {
                 // ArcCcw traverses lo->hi (from=lo node), ArcCw hi->lo (from=hi
@@ -3601,8 +3626,8 @@ pub(super) fn try_split_disk_by_chords(
                     surface,
                     &[],
                     Some(frame),
-                );
-                Some(OrientedPCurveEdge {
+                )?;
+                Ok(Some(OrientedPCurveEdge {
                     trim: Some(trim),
                     curve_3d: curve,
                     pcurve,
@@ -3614,7 +3639,7 @@ pub(super) fn try_split_disk_by_chords(
                     source_edge_idx: None,
                     pave_block_id: None,
                     source_topo_edge: None,
-                })
+                }))
             }
         }
     };
@@ -3634,7 +3659,10 @@ pub(super) fn try_split_disk_by_chords(
         };
         let mut wire = Vec::with_capacity(ordered.len());
         for h in ordered {
-            wire.push(mk_edge(h)?);
+            let Some(edge) = mk_edge(h)? else {
+                return Ok(None);
+            };
+            wire.push(edge);
         }
         result.push(SplitSubFace {
             surface: surface.clone(),
@@ -3646,7 +3674,7 @@ pub(super) fn try_split_disk_by_chords(
             precomputed_interior: Some(frame.evaluate(seed.x(), seed.y())),
         });
     }
-    (!result.is_empty()).then_some(result)
+    Ok((!result.is_empty()).then_some(result))
 }
 
 #[cfg(test)]
@@ -4012,6 +4040,7 @@ mod tests {
         let open = vec![chord_edge(px, py), chord_edge(nx, ny)];
 
         let arcs = super::build_seam_arcs(&surface, &boundary, &open, 1e-7)
+            .expect("sphere seam projections must succeed")
             .expect("four distinct crossings on the equator must yield seam arcs");
 
         assert_eq!(
@@ -4117,6 +4146,7 @@ mod tests {
             &disk_test_frame(),
             1e-7,
         )
+        .expect("disc projection must succeed")
         .expect("disc + 2 corner chords must split into remnant regions");
 
         // The remnant + the removed corner wedge.
@@ -4175,6 +4205,7 @@ mod tests {
             &disk_test_frame(),
             1e-7,
         )
+        .expect("disc projection must succeed")
         .expect("disc + diameter must split into two halves");
 
         assert_eq!(regions.len(), 2);
@@ -4237,6 +4268,7 @@ mod tests {
             &disk_test_frame(),
             1e-7,
         )
+        .expect("disc projection must succeed")
         .expect("disc + chord must split into crescent + major remnant");
         assert_eq!(regions.len(), 2);
 
@@ -4319,6 +4351,7 @@ mod tests {
                 &disk_test_frame(),
                 1e-7,
             )
+            .expect("non-disc gate must not encounter a projection failure")
             .is_none()
         );
     }
@@ -4362,6 +4395,7 @@ mod tests {
                 &disk_test_frame(),
                 1e-7,
             )
+            .expect("circle-section gate must not encounter a projection failure")
             .is_none()
         );
     }

@@ -203,6 +203,15 @@ naming the gap" for every later issue.
 > byte-identical to baseline; no arm in phase FF can return empty sections
 > without a typed reason.
 
+Issue 2.1 is delivered in two source-ordered tranches. PR #129 replaced the
+unsupported phase-FF pair's empty result with
+`unsupported_surface_pair`. The follow-on makes pcurve construction and its
+face-splitter callers fallible, reports `pcurve_projection_failed`, and calls
+the NURBS projector directly so its convergence failure cannot be laundered
+into the compatibility midpoint. Plane-frame and analytic projections retain
+their established parameterization, and the normalized approximation census
+must remain byte-identical.
+
 ### 2.2 Sphere in general position (M)
 
 `crates/math/src/analytic_intersection.rs` ·
