@@ -33,7 +33,7 @@ that flips them; agents do not flip them autonomously.
 | O2.3b UV-arrangement core | B | Pending | — |
 | O2.3c Winding classification bridge | B | Pending | — |
 | O2.3d Special-case migration + ratchet | B | Pending | — |
-| O3.1 Inner-loop benches (math/algo/blend) | A | Complete — measured 64-cut and Gridfinity flamegraphs declare a 3% inclusive threshold; every qualifying stack family plus the prerequisite NURBS, SSI, Bézier clipping, CDT, GFA, and blend-walker loops now has a Criterion baseline wired into local comparison and hosted trend tracking | This PR |
+| O3.1 Inner-loop benches (math/algo/blend) | A | Complete — measured 64-cut and Gridfinity flamegraphs declare a 3% inclusive threshold; every qualifying stack family plus the prerequisite NURBS, SSI, Bézier clipping, CDT, GFA, and blend-walker loops now has a Criterion baseline wired into local comparison and hosted trend tracking | [#197](https://github.com/esaueng/remus/pull/197) |
 | O3.2 Journal-invalidated spatial cache | B | Pending | — |
 | O3.3 SIMD in NURBS evaluation | B (evidence-gated) | Pending | — |
 | O4.1a Facade crate + Model type | A | Pending | — |
