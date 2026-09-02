@@ -15,9 +15,10 @@ pub use wire::check_wire_self_intersection;
 
 use std::collections::{HashMap, HashSet};
 
-use remus_topology::Topology;
 use remus_topology::shell::ShellId;
 use remus_topology::solid::SolidId;
+use remus_topology::wire::WireId;
+use remus_topology::{BodyClass, Topology};
 
 use crate::CheckError;
 
@@ -73,9 +74,24 @@ pub fn validate_solid(
         .chain(solid_data.inner_shells().iter().copied())
         .collect();
     for &sid in &shells {
-        report
-            .issues
-            .extend(validate_shell_checks(topo, sid, options)?);
+        let actual = topo.shell(sid)?.body_class();
+        if actual == BodyClass::Solid {
+            report.issues.extend(validate_shell_checks(
+                topo,
+                sid,
+                options,
+                ShellValidationProfile::Solid,
+            )?);
+        } else if !options
+            .disabled_checks
+            .contains(&CheckId::BodyClassResolved)
+        {
+            report.issues.push(body_class_issue(
+                EntityRef::Shell(sid),
+                BodyClass::Solid,
+                actual,
+            ));
+        }
     }
 
     Ok(report)
@@ -94,10 +110,115 @@ pub fn validate_shell(
     options: &ValidateOptions,
 ) -> Result<ValidationReport, CheckError> {
     let mut report = ValidationReport::default();
+    let profile = match topo.shell(shell_id)?.body_class() {
+        BodyClass::Solid => ShellValidationProfile::Solid,
+        BodyClass::Sheet => ShellValidationProfile::Sheet,
+        actual => {
+            if !options
+                .disabled_checks
+                .contains(&CheckId::BodyClassResolved)
+            {
+                report.issues.push(body_class_issue(
+                    EntityRef::Shell(shell_id),
+                    BodyClass::Sheet,
+                    actual,
+                ));
+            }
+            return Ok(report);
+        }
+    };
     report
         .issues
-        .extend(validate_shell_checks(topo, shell_id, options)?);
+        .extend(validate_shell_checks(topo, shell_id, options, profile)?);
     Ok(report)
+}
+
+/// Validate a shell specifically as a first-class sheet body.
+///
+/// Free boundary edges are warnings; non-manifold use and inconsistent
+/// shared-edge orientation remain errors.
+///
+/// # Errors
+///
+/// Returns an error if topology lookups fail.
+pub fn validate_sheet_body(
+    topo: &Topology,
+    shell_id: ShellId,
+    options: &ValidateOptions,
+) -> Result<ValidationReport, CheckError> {
+    let mut report = ValidationReport::default();
+    let actual = topo.shell(shell_id)?.body_class();
+    if actual != BodyClass::Sheet {
+        if !options
+            .disabled_checks
+            .contains(&CheckId::BodyClassResolved)
+        {
+            report.issues.push(body_class_issue(
+                EntityRef::Shell(shell_id),
+                BodyClass::Sheet,
+                actual,
+            ));
+        }
+        return Ok(report);
+    }
+    report.issues.extend(validate_shell_checks(
+        topo,
+        shell_id,
+        options,
+        ShellValidationProfile::Sheet,
+    )?);
+    Ok(report)
+}
+
+/// Validate a first-class wire body.
+///
+/// # Errors
+///
+/// Returns an error if topology lookups fail.
+pub fn validate_wire_body(
+    topo: &Topology,
+    wire_id: WireId,
+    options: &ValidateOptions,
+) -> Result<ValidationReport, CheckError> {
+    let mut report = ValidationReport::default();
+    let actual = topo.wire(wire_id)?.body_class();
+    if actual != BodyClass::Wire {
+        if !options
+            .disabled_checks
+            .contains(&CheckId::BodyClassResolved)
+        {
+            report.issues.push(body_class_issue(
+                EntityRef::Wire(wire_id),
+                BodyClass::Wire,
+                actual,
+            ));
+        }
+        return Ok(report);
+    }
+    report
+        .issues
+        .extend(validate_wire_checks(topo, wire_id, options)?);
+    Ok(report)
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ShellValidationProfile {
+    Solid,
+    Sheet,
+}
+
+fn body_class_issue(entity: EntityRef, expected: BodyClass, actual: BodyClass) -> ValidationIssue {
+    ValidationIssue {
+        check: CheckId::BodyClassResolved,
+        severity: Severity::Error,
+        entity,
+        description: format!(
+            "body class unresolved: expected {}, found {}",
+            expected.as_str(),
+            actual.as_str()
+        ),
+        deviation: None,
+    }
 }
 
 /// Internal: run shell + wire checks on a shell.
@@ -105,6 +226,7 @@ fn validate_shell_checks(
     topo: &Topology,
     shell_id: ShellId,
     options: &ValidateOptions,
+    profile: ShellValidationProfile,
 ) -> Result<Vec<ValidationIssue>, CheckError> {
     let mut issues = Vec::new();
 
@@ -114,14 +236,31 @@ fn validate_shell_checks(
     if !options.disabled_checks.contains(&CheckId::ShellConnected) {
         issues.extend(shell::check_shell_connected(topo, shell_id)?);
     }
-    if !options.disabled_checks.contains(&CheckId::ShellClosed) {
-        issues.extend(shell::check_shell_closed(topo, shell_id)?);
-    }
-    if !options
-        .disabled_checks
-        .contains(&CheckId::ShellOrientationConsistent)
-    {
-        issues.extend(shell::check_shell_orientation(topo, shell_id)?);
+    match profile {
+        ShellValidationProfile::Solid => {
+            if !options.disabled_checks.contains(&CheckId::ShellClosed) {
+                issues.extend(shell::check_shell_closed(topo, shell_id)?);
+            }
+            if !options
+                .disabled_checks
+                .contains(&CheckId::ShellOrientationConsistent)
+            {
+                issues.extend(shell::check_shell_orientation(topo, shell_id)?);
+            }
+        }
+        ShellValidationProfile::Sheet => {
+            issues.extend(
+                shell::check_sheet_boundary(topo, shell_id)?
+                    .into_iter()
+                    .filter(|issue| !options.disabled_checks.contains(&issue.check)),
+            );
+            if !options
+                .disabled_checks
+                .contains(&CheckId::SheetOrientationConsistent)
+            {
+                issues.extend(shell::check_sheet_orientation(topo, shell_id)?);
+            }
+        }
     }
 
     let shell = topo.shell(shell_id)?;
@@ -307,6 +446,88 @@ fn validate_shell_checks(
     Ok(issues)
 }
 
+fn validate_wire_checks(
+    topo: &Topology,
+    wire_id: WireId,
+    options: &ValidateOptions,
+) -> Result<Vec<ValidationIssue>, CheckError> {
+    let mut issues = Vec::new();
+    if !options.disabled_checks.contains(&CheckId::WireEmpty) {
+        issues.extend(wire::check_wire_empty(topo, wire_id)?);
+    }
+    if !options.disabled_checks.contains(&CheckId::WireNotConnected) {
+        issues.extend(wire::check_wire_connected(topo, wire_id)?);
+    }
+    if !options.disabled_checks.contains(&CheckId::WireClosure3D) {
+        issues.extend(wire::check_wire_closure(topo, wire_id)?);
+    }
+    if !options
+        .disabled_checks
+        .contains(&CheckId::WireRedundantEdge)
+    {
+        issues.extend(wire::check_wire_redundant(topo, wire_id)?);
+    }
+    if !options
+        .disabled_checks
+        .contains(&CheckId::WireSelfIntersection)
+    {
+        issues.extend(wire::check_wire_self_intersection(
+            topo,
+            wire_id,
+            options.tolerance_scale * 1e-6,
+        )?);
+    }
+
+    let mut edges = HashSet::new();
+    let mut vertices = HashSet::new();
+    for oriented in topo.wire(wire_id)?.edges() {
+        let edge_id = oriented.edge();
+        if !edges.insert(edge_id) {
+            continue;
+        }
+        let edge_data = topo.edge(edge_id)?;
+        if !options.disabled_checks.contains(&CheckId::GeometryFinite) {
+            issues.extend(finite::check_edge_finite(topo, edge_id)?);
+            for vertex_id in [edge_data.start(), edge_data.end()] {
+                if vertices.insert(vertex_id) {
+                    issues.extend(finite::check_vertex_finite(topo, vertex_id)?);
+                }
+            }
+        }
+        if !options.disabled_checks.contains(&CheckId::EdgeRangeValid) {
+            issues.extend(edge::check_edge_range(
+                topo,
+                edge_id,
+                options.tolerance_scale * 1e-7,
+            )?);
+        }
+        if !options.disabled_checks.contains(&CheckId::EdgeDegenerate) {
+            issues.extend(edge::check_edge_degenerate(
+                topo,
+                edge_id,
+                options.tolerance_scale * 1e-7,
+            )?);
+        }
+        if !options.disabled_checks.contains(&CheckId::VertexOnCurve) {
+            issues.extend(vertex::check_vertex_on_curve(
+                topo,
+                edge_data.start(),
+                edge_id,
+                options.tolerance_scale * 1e-4,
+            )?);
+            if edge_data.start() != edge_data.end() {
+                issues.extend(vertex::check_vertex_on_curve(
+                    topo,
+                    edge_data.end(),
+                    edge_id,
+                    options.tolerance_scale * 1e-4,
+                )?);
+            }
+        }
+    }
+    Ok(issues)
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -319,14 +540,61 @@ mod tests {
     use remus_topology::face::{Face, FaceId, FaceSurface};
     use remus_topology::pcurve::PCurve;
     use remus_topology::shell::{Shell, ShellId};
-    use remus_topology::test_utils::make_unit_cube_manifold;
+    use remus_topology::solid::Solid;
+    use remus_topology::test_utils::{make_unit_cube_manifold, make_unit_square_face};
     use remus_topology::vertex::Vertex;
     use remus_topology::wire::{OrientedEdge, Wire};
-    use remus_topology::{Topology, TopologyError};
+    use remus_topology::{BodyClass, Topology, TopologyError};
 
     use remus_math::surfaces::CylindricalSurface;
 
     use super::*;
+
+    #[test]
+    fn open_shell_flips_from_solid_error_to_sheet_warning() {
+        let mut topo = Topology::new();
+        let face = make_unit_square_face(&mut topo);
+        let shell = topo.add_shell(Shell::new(vec![face]).unwrap());
+        let options = ValidateOptions::default();
+
+        let solid_profile = validate_shell(&topo, shell, &options).unwrap();
+        assert!(solid_profile.issues.iter().any(|issue| {
+            issue.check == CheckId::ShellClosed && issue.severity == Severity::Error
+        }));
+
+        topo.set_shell_body_class(shell, BodyClass::Sheet).unwrap();
+        let sheet_profile = validate_sheet_body(&topo, shell, &options).unwrap();
+        assert!(sheet_profile.is_valid(), "{:?}", sheet_profile.issues);
+        let free_boundary = sheet_profile
+            .issues
+            .iter()
+            .find(|issue| issue.check == CheckId::ShellFreeBoundary)
+            .unwrap();
+        assert_eq!(free_boundary.severity, Severity::Warning);
+        assert_eq!(free_boundary.deviation, Some(4.0));
+        assert!(
+            sheet_profile
+                .issues
+                .iter()
+                .all(|issue| issue.check != CheckId::ShellClosed)
+        );
+    }
+
+    #[test]
+    fn solid_validation_rejects_a_sheet_tagged_boundary() {
+        let mut topo = Topology::new();
+        let face = make_unit_square_face(&mut topo);
+        let shell = topo.add_shell(Shell::new(vec![face]).unwrap());
+        topo.set_shell_body_class(shell, BodyClass::Sheet).unwrap();
+        let solid = topo.add_solid(Solid::new(shell, Vec::new()));
+
+        let report = validate_solid(&topo, solid, &ValidateOptions::default()).unwrap();
+
+        assert!(report.issues.iter().any(|issue| {
+            issue.check == CheckId::BodyClassResolved && issue.severity == Severity::Error
+        }));
+        assert!(!report.is_valid());
+    }
 
     #[test]
     fn valid_box_no_issues() {

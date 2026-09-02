@@ -22,6 +22,48 @@ use crate::vertex::{Vertex, VertexId};
 use crate::wire::{OrientedEdge, Wire, WireId};
 use crate::{DeleteSolidError, TopologyError};
 
+/// Dimensional class of a topological body.
+///
+/// `General` reserves the future mixed-dimensional body model. No current
+/// topology root may be tagged as general.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BodyClass {
+    /// A volume bounded by closed shells.
+    #[default]
+    Solid,
+    /// An open or closed shell treated as a surface body.
+    Sheet,
+    /// An open or closed wire treated as a curve body.
+    Wire,
+    /// A future mixed-dimensional body.
+    General,
+}
+
+impl BodyClass {
+    /// Stable lower-case spelling used by diagnostics and serialization.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Solid => "solid",
+            Self::Sheet => "sheet",
+            Self::Wire => "wire",
+            Self::General => "general",
+        }
+    }
+}
+
+/// A body root backed by an existing topology entity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BodyId {
+    /// A solid root.
+    Solid(SolidId),
+    /// A shell root, whose stored tag distinguishes a sheet body from a
+    /// shell owned by a solid.
+    Shell(ShellId),
+    /// A wire root.
+    Wire(WireId),
+}
+
 /// Central context owning all topological entity arenas.
 ///
 /// Arena fields are private to enforce invariants through the public API.
@@ -167,6 +209,64 @@ impl Topology {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Returns the dimensional class of a body root.
+    ///
+    /// # Errors
+    ///
+    /// Returns a not-found error when the referenced root is not live.
+    pub fn body_class_of(&self, body: BodyId) -> Result<BodyClass, TopologyError> {
+        match body {
+            BodyId::Solid(id) => {
+                self.solid(id)?;
+                Ok(BodyClass::Solid)
+            }
+            BodyId::Shell(id) => Ok(self.shell(id)?.body_class()),
+            BodyId::Wire(id) => Ok(self.wire(id)?.body_class()),
+        }
+    }
+
+    /// Marks a shell as solid-owned or as a first-class sheet body.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TopologyError::InvalidBodyClass`] for wire or deferred
+    /// general-body tags, or a not-found error for an invalid handle.
+    pub fn set_shell_body_class(
+        &mut self,
+        shell: ShellId,
+        body_class: BodyClass,
+    ) -> Result<(), TopologyError> {
+        if !matches!(body_class, BodyClass::Solid | BodyClass::Sheet) {
+            return Err(TopologyError::InvalidBodyClass {
+                entity: "shell",
+                body_class: body_class.as_str(),
+            });
+        }
+        self.shell_mut(shell)?.set_body_class(body_class);
+        Ok(())
+    }
+
+    /// Restores or validates the wire-body class on a wire root.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TopologyError::InvalidBodyClass`] for any class not
+    /// representable by a wire, or a not-found error for an invalid handle.
+    pub fn set_wire_body_class(
+        &mut self,
+        wire: WireId,
+        body_class: BodyClass,
+    ) -> Result<(), TopologyError> {
+        if body_class != BodyClass::Wire {
+            return Err(TopologyError::InvalidBodyClass {
+                entity: "wire",
+                body_class: body_class.as_str(),
+            });
+        }
+        self.wire_mut(wire)?.set_body_class(body_class);
+        Ok(())
     }
 
     /// Total arena slots, including retired slots reserved to prevent stale
@@ -1624,6 +1724,50 @@ mod tests {
             0.0,
             1.0,
         )
+    }
+
+    #[test]
+    fn body_roots_report_default_and_explicit_classes() {
+        let mut topo = Topology::new();
+        let shell = topo.add_shell(Shell::empty());
+        let start = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
+        let end = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
+        let edge = topo.add_edge(Edge::new(start, end, EdgeCurve::Line));
+        let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], false).unwrap());
+
+        assert_eq!(
+            topo.body_class_of(BodyId::Shell(shell)).unwrap(),
+            BodyClass::Solid
+        );
+        assert_eq!(
+            topo.body_class_of(BodyId::Wire(wire)).unwrap(),
+            BodyClass::Wire
+        );
+
+        topo.set_shell_body_class(shell, BodyClass::Sheet).unwrap();
+        assert_eq!(
+            topo.body_class_of(BodyId::Shell(shell)).unwrap(),
+            BodyClass::Sheet
+        );
+    }
+
+    #[test]
+    fn incompatible_body_tags_fail_without_mutating_the_root() {
+        let mut topo = Topology::new();
+        let shell = topo.add_shell(Shell::empty());
+
+        let error = topo
+            .set_shell_body_class(shell, BodyClass::Wire)
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            TopologyError::InvalidBodyClass {
+                entity: "shell",
+                body_class: "wire"
+            }
+        ));
+        assert_eq!(topo.shell(shell).unwrap().body_class(), BodyClass::Solid);
     }
 
     #[test]

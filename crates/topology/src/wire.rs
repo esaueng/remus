@@ -3,6 +3,7 @@
 use crate::TopologyError;
 use crate::arena;
 use crate::edge::{Edge, EdgeId};
+use crate::topology::BodyClass;
 use crate::vertex::VertexId;
 
 /// Typed handle for a [`Wire`] stored in an [`Arena`](crate::Arena).
@@ -76,6 +77,8 @@ pub struct Wire {
     edges: Vec<OrientedEdge>,
     /// Whether this wire forms a closed loop.
     closed: bool,
+    /// Dimensional class stored on this wire.
+    body_class: BodyClass,
 }
 
 impl Wire {
@@ -93,7 +96,11 @@ impl Wire {
         if edges.is_empty() {
             return Err(TopologyError::Empty { entity: "wire" });
         }
-        Ok(Self { edges, closed })
+        Ok(Self {
+            edges,
+            closed,
+            body_class: BodyClass::Wire,
+        })
     }
 
     /// Returns the ordered edges of this wire.
@@ -114,5 +121,15 @@ impl Wire {
     #[must_use]
     pub const fn is_closed(&self) -> bool {
         self.closed
+    }
+
+    /// Returns the dimensional class stored on this wire.
+    #[must_use]
+    pub const fn body_class(&self) -> BodyClass {
+        self.body_class
+    }
+
+    pub(crate) fn set_body_class(&mut self, body_class: BodyClass) {
+        self.body_class = body_class;
     }
 }
