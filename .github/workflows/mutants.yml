@@ -17,10 +17,12 @@ jobs:
   mutants:
     name: Cargo Mutants
     runs-on: ubuntu-latest
-    # The examined surface grew from ~48k lines (the math subset plus algo) to
-    # ~122k when the blend, offset and operations crates were added, so the
-    # budget is raised by rather more than the 2.5x line ratio: those crates
-    # build and test more slowly per mutant than the numeric ones.
+    # The examined surface (math subset, algo, blend, offset, operations) holds
+    # ~54k mutants — far more than any weekly budget can test, so each run is
+    # scoped to the code that changed on main in the last seven days and is
+    # stopped by `timeout` before this limit so the incrementally written
+    # outcome files are still published. The 180-minute budget is the ceiling
+    # the results must fit under, not an estimate of the run.
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -30,43 +32,77 @@ jobs:
       - uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518 # v2.62.30
         with:
           tool: nextest,cargo-mutants@27.0.0
+      - name: Scope to the week's changes
+        run: |
+          since=$(git rev-list -1 --before="7 days ago" HEAD)
+          if [ -z "$since" ]; then
+            since=$(git rev-list --max-parents=0 HEAD | tail -1)
+          fi
+          git diff "$since" HEAD -- crates/ > week.diff
+          echo "Mutating changes since $since ($(git log -1 --format=%cs "$since")): $(wc -l < week.diff) diff lines"
       # The package list and mutants.toml's examine_globs INTERSECT: a glob for
       # a package not named here is silently inert. Adding the engine crates to
       # mutants.toml alone would have changed nothing.
-      - name: Run mutation testing on critical modules
+      #
+      # No fixed --timeout: it also capped the unmutated baseline, whose test
+      # run for these five packages exceeds 120s, so the job died on "baseline
+      # TIMEOUT" before testing a single mutant. cargo-mutants derives the
+      # per-mutant timeout from the measured baseline instead.
+      #
+      # A busy week still yields a few thousand mutants (3,328 for the week
+      # ending 2026-09-01), more than the budget tests, so the list is shuffled:
+      # a run cut off by `timeout` then reports a random sample rather than the
+      # same head of the path-sorted list every week.
+      #
+      # Exit codes 2 (missed) and 3 (timed-out mutants) are evaluated from the
+      # outcome files below so the summary is always written first; 124 is
+      # `timeout` reaching the budget, which leaves partial-but-valid results.
+      - name: Run mutation testing on the week's changes
         run: |
-          cargo mutants \
-            --test-tool=nextest \
-            --timeout=120 \
-            --package remus-math \
-            --package remus-algo \
-            --package remus-blend \
-            --package remus-offset \
-            --package remus-operations \
-            -e 'tests/**' \
-            -e 'benches/**' \
-            -e 'examples/**' \
-            --output=mutants-output
+          set +e
+          timeout --foreground --signal=INT --kill-after=2m 150m \
+            cargo mutants \
+              --test-tool=nextest \
+              --in-diff week.diff \
+              --shuffle \
+              --jobs 2 \
+              --package remus-math \
+              --package remus-algo \
+              --package remus-blend \
+              --package remus-offset \
+              --package remus-operations \
+              -e 'tests/**' \
+              -e 'benches/**' \
+              -e 'examples/**' \
+              --output=mutants-output
+          rc=$?
+          set -e
+          case "$rc" in
+            0|2|3) ;;
+            124) echo "::warning::Mutation budget (150 min) reached; results are partial" ;;
+            *) echo "::error::cargo mutants failed with exit code $rc (4 = baseline failed, 5/6 = bad --in-diff, 70 = internal)"; exit "$rc" ;;
+          esac
       - name: Publish mutation summary
         if: always()
         run: |
+          out=mutants-output/mutants.out
+          count() { if [ -f "$out/$1.txt" ]; then wc -l < "$out/$1.txt" | tr -d ' '; else echo 0; fi; }
           {
             echo "## Mutation testing"
             echo
             echo "| Outcome | Count |"
             echo "| --- | ---: |"
             for outcome in caught missed timeout unviable; do
-              file="mutants-output/${outcome}.txt"
-              if [ -f "$file" ]; then
-                count=$(wc -l < "$file" | tr -d ' ')
-              else
-                count=0
-              fi
-              echo "| ${outcome} | ${count} |"
+              echo "| ${outcome} | $(count "$outcome") |"
             done
             echo
-            echo "Missed and timed-out mutants fail the cargo-mutants step and must be reviewed in the attached report."
+            echo "Scope: mutants overlapping the last seven days of changes under \`crates/\`."
+            echo "Missed and timed-out mutants fail this workflow and must be reviewed in the attached report."
           } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$(count missed)" != 0 ] || [ "$(count timeout)" != 0 ]; then
+            echo "::error::$(count missed) missed and $(count timeout) timed-out mutants"
+            exit 1
+          fi
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

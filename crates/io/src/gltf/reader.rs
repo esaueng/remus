@@ -418,7 +418,6 @@ fn extract_attribute_accessor(text: &str, attr_name: &str) -> Option<usize> {
     digits.parse().ok()
 }
 
-/// Extract the content of a JSON array starting at `arr_offset` (the `[` char).
 /// Extract the text between the `[` at `arr_offset` and its matching `]`.
 ///
 /// Returns `None` when no matching closing bracket exists in the remainder
@@ -426,7 +425,9 @@ fn extract_attribute_accessor(text: &str, attr_name: &str) -> Option<usize> {
 /// of forming an inverted slice range and panicking.
 fn extract_json_array(json: &str, arr_offset: usize) -> Option<&str> {
     let mut depth = 0;
-    for (i, ch) in json[arr_offset..].chars().enumerate() {
+    // Byte offsets, not char counts: any multi-byte character before the
+    // closing bracket would otherwise slice off a char boundary and panic.
+    for (i, ch) in json[arr_offset..].char_indices() {
         match ch {
             '[' => depth += 1,
             ']' => {
@@ -831,6 +832,30 @@ mod tests {
     fn extract_json_array_unterminated_returns_none() {
         assert!(extract_json_array(r#"{"a":["#, 4).is_none());
         assert_eq!(extract_json_array(r"[1,2]", 0), Some("1,2"));
+    }
+
+    #[test]
+    fn extract_json_array_slices_on_byte_offsets_with_multibyte_chars() {
+        // Fuzz finding: a multi-byte character before the closing bracket
+        // made the char index land off a char boundary and panic.
+        assert_eq!(extract_json_array(r#"["é",1]"#, 0), Some(r#""é",1"#));
+        assert_eq!(
+            extract_json_array("[\"日本語\",[\"ü\"]]", 0),
+            Some("\"日本語\",[\"ü\"]")
+        );
+        assert_eq!(extract_json_array("[\u{1F600}]", 0), Some("\u{1F600}"));
+    }
+
+    #[test]
+    fn multibyte_json_text_before_arrays_is_error_not_panic() {
+        // Fuzz finding (glb_reader, crash on 2026-08-30): non-ASCII text ahead
+        // of an array used to panic in the array extractor; the reader must
+        // instead reject the (incomplete) mesh input with a typed error.
+        let json = r#"{"asset":{"version":"2.0","generator":"Übung ✓"},"accessors":[{"name":"é"}],"meshes":[{"name":"日本","primitives":[]}]}"#;
+        let bin = [0u8; 4];
+        let glb = build_glb_bytes(json, &bin);
+        let result = read_glb(&glb);
+        assert!(result.is_err(), "must reject without panicking: {result:?}");
     }
 
     #[test]
