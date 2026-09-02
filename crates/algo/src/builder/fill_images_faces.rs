@@ -394,7 +394,7 @@ pub fn fill_images_faces<S: BuildHasher, S2: BuildHasher>(
                     rank,
                     &pts,
                     tol.linear,
-                ),
+                )?,
                 Err(_) => sections,
             }
         };
@@ -430,7 +430,7 @@ pub fn fill_images_faces<S: BuildHasher, S2: BuildHasher>(
             info.as_ref(),
             edge_images,
             Some(&mut section_split_registry),
-        );
+        )?;
 
         if std::env::var("BK_SPLITW").is_ok_and(|v| v == format!("{}", face_id.index())) {
             if let Ok(face) = topo.face(face_id)
@@ -1656,7 +1656,7 @@ fn presplit_closed_winding_loops(
     rank: Rank,
     wire_pts: &[Point3],
     tol: f64,
-) -> Vec<crate::builder::split_types::SectionEdge> {
+) -> Result<Vec<crate::builder::split_types::SectionEdge>, AlgoError> {
     use remus_math::traits::ParametricCurve;
 
     let weld = tol * 100.0;
@@ -1707,7 +1707,7 @@ fn presplit_closed_winding_loops(
                 surface,
                 wire_pts,
                 None,
-            );
+            )?;
             let mut piece = s.clone();
             piece.curve_3d = curve_3d;
             piece.trim = Some((a0, a1));
@@ -1725,7 +1725,7 @@ fn presplit_closed_winding_loops(
             out.push(piece);
         }
     }
-    out
+    Ok(out)
 }
 
 /// Carve `curve` into the sub-curves between consecutive `bounds` (which must
@@ -2026,7 +2026,7 @@ fn build_section_edges(
                         for (es, ee) in
                             line_section_boundary_extensions(topo, face_id, start, end, tol)
                         {
-                            push_plain_line_section(&mut sections, face, es, ee);
+                            push_plain_line_section(&mut sections, face, &wire_pts, es, ee)?;
                         }
                     }
                     continue;
@@ -2101,7 +2101,7 @@ fn build_section_edges(
                     face.surface(),
                     &wire_pts,
                     None,
-                );
+                )?;
 
                 // For closed curves on periodic surfaces (e.g. circle on cylinder),
                 // the pcurve wraps around and evaluate(0) ≈ evaluate(1). We need
@@ -2175,9 +2175,6 @@ fn build_section_edges(
                 // Individual PaveBlock edge — use the old Line2D pcurve approach.
                 // This preserves the existing behavior for Line section edges
                 // that the face splitter already handles correctly.
-                use remus_math::curves2d::{Curve2D, Line2D};
-                use remus_math::vec::{Point2, Vec2};
-
                 let pb = match arena.pave_blocks.get(*pb_id) {
                     Some(pb) => pb,
                     None => continue,
@@ -2331,26 +2328,27 @@ fn build_section_edges(
                         continue;
                     }
 
-                    // Project start/end to UV using surface projection (original approach).
-                    let start_uv = face.surface().project_point(start);
-                    let end_uv = face.surface().project_point(end);
-                    let make_pcurve = |s: Option<(f64, f64)>, e: Option<(f64, f64)>| -> Curve2D {
-                        let s2 = s.map_or(Point2::new(0.0, 0.0), |(u, v)| Point2::new(u, v));
-                        let e2 = e.map_or(Point2::new(1.0, 0.0), |(u, v)| Point2::new(u, v));
-                        let dir = e2 - s2;
-                        let len = dir.length();
-                        let direction = if len > 1e-12 {
-                            Vec2::new(dir.x() / len, dir.y() / len)
-                        } else {
-                            Vec2::new(1.0, 0.0)
-                        };
-                        #[allow(clippy::expect_used)]
-                        let line = Line2D::new(s2, direction)
-                            .or_else(|_| Line2D::new(s2, Vec2::new(1.0, 0.0)))
-                            .expect("unit direction (1,0) is always valid");
-                        Curve2D::Line(line)
-                    };
-                    let pcurve = make_pcurve(start_uv, end_uv);
+                    let pcurve = super::pcurve_compute::compute_pcurve_on_surface_in_domain(
+                        &EdgeCurve::Line,
+                        start,
+                        end,
+                        (0.0, 1.0),
+                        face.surface(),
+                        &wire_pts,
+                        None,
+                    )?;
+                    let start_uv = super::pcurve_compute::project_point_on_surface(
+                        start,
+                        face.surface(),
+                        &wire_pts,
+                        None,
+                    )?;
+                    let end_uv = super::pcurve_compute::project_point_on_surface(
+                        end,
+                        face.surface(),
+                        &wire_pts,
+                        None,
+                    )?;
 
                     sections.push(SectionEdge {
                         curve_3d: edge.curve().clone(),
@@ -2359,10 +2357,10 @@ fn build_section_edges(
                         pcurve_b: pcurve,
                         start,
                         end,
-                        start_uv_a: start_uv.map(|(u, v)| Point2::new(u, v)),
-                        end_uv_a: end_uv.map(|(u, v)| Point2::new(u, v)),
-                        start_uv_b: start_uv.map(|(u, v)| Point2::new(u, v)),
-                        end_uv_b: end_uv.map(|(u, v)| Point2::new(u, v)),
+                        start_uv_a: Some(start_uv),
+                        end_uv_a: Some(end_uv),
+                        start_uv_b: Some(start_uv),
+                        end_uv_b: Some(end_uv),
                         target_face: None,
                         pave_block_id: Some(pb_id.index()),
                     });
@@ -2840,28 +2838,23 @@ fn line_section_boundary_extensions(
 fn push_plain_line_section(
     sections: &mut Vec<SectionEdge>,
     face: &remus_topology::face::Face,
+    wire_pts: &[Point3],
     start: Point3,
     end: Point3,
-) {
-    use remus_math::curves2d::{Curve2D, Line2D};
-    use remus_math::vec::{Point2, Vec2};
-
-    let start_uv = face.surface().project_point(start);
-    let end_uv = face.surface().project_point(end);
-    let s2 = start_uv.map_or(Point2::new(0.0, 0.0), |(u, v)| Point2::new(u, v));
-    let e2 = end_uv.map_or(Point2::new(1.0, 0.0), |(u, v)| Point2::new(u, v));
-    let d = e2 - s2;
-    let dl = d.length();
-    let direction = if dl > 1e-12 {
-        Vec2::new(d.x() / dl, d.y() / dl)
-    } else {
-        Vec2::new(1.0, 0.0)
-    };
-    let Ok(line) = Line2D::new(s2, direction).or_else(|_| Line2D::new(s2, Vec2::new(1.0, 0.0)))
-    else {
-        return;
-    };
-    let pcurve = Curve2D::Line(line);
+) -> Result<(), AlgoError> {
+    let pcurve = super::pcurve_compute::compute_pcurve_on_surface_in_domain(
+        &EdgeCurve::Line,
+        start,
+        end,
+        (0.0, 1.0),
+        face.surface(),
+        wire_pts,
+        None,
+    )?;
+    let start_uv =
+        super::pcurve_compute::project_point_on_surface(start, face.surface(), wire_pts, None)?;
+    let end_uv =
+        super::pcurve_compute::project_point_on_surface(end, face.surface(), wire_pts, None)?;
     sections.push(SectionEdge {
         curve_3d: remus_topology::edge::EdgeCurve::Line,
         trim: None,
@@ -2869,13 +2862,14 @@ fn push_plain_line_section(
         pcurve_b: pcurve,
         start,
         end,
-        start_uv_a: start_uv.map(|(u, v)| Point2::new(u, v)),
-        end_uv_a: end_uv.map(|(u, v)| Point2::new(u, v)),
-        start_uv_b: start_uv.map(|(u, v)| Point2::new(u, v)),
-        end_uv_b: end_uv.map(|(u, v)| Point2::new(u, v)),
+        start_uv_a: Some(start_uv),
+        end_uv_a: Some(end_uv),
+        start_uv_b: Some(start_uv),
+        end_uv_b: Some(end_uv),
         target_face: None,
         pave_block_id: None,
     });
+    Ok(())
 }
 
 /// Remove section edges that are subsets of longer collinear edges.
