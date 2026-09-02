@@ -2684,23 +2684,41 @@ fn trim_ellipse_to_boundary_crossings(
     // tread-boundary crossing that coincides with the seam but carries ~1e-6
     // of line-cylinder rounding (else the seam-boundary split, which uses the
     // kernel's 1e-7 tolerance, misses it and the chain end dangles).
+    //
+    // The analytic face's RIM edges (the cap circles of a cylinder or cone,
+    // or an oblique cap ellipse) bound the section just as its seams do: the
+    // tread's own boundary crossings are computed against the UNBOUNDED
+    // surface, so a tread that reaches past a rim yields a crossing beyond
+    // the face, and an arc bounded by it overhangs the face and never splits
+    // it. A rim × tread-plane crossing is exact (a conic in a plane), so it
+    // is collected here alongside the seam crossings.
     if let Ok(aface) = topo.face(analytic_face) {
         for oe in topo.wire(aface.outer_wire()).ok()?.edges() {
             let Ok(edge) = topo.edge(oe.edge()) else {
                 continue;
             };
-            if !matches!(edge.curve(), EdgeCurve::Line) {
-                continue;
-            }
             let Ok(sv) = topo.vertex(edge.start()) else {
                 continue;
             };
             let Ok(ev) = topo.vertex(edge.end()) else {
                 continue;
             };
-            if let Some(p) = line_segment_plane_crossing(sv.point(), ev.point(), *plane_n, *plane_d)
-            {
-                push_crossing(p, &mut crossings);
+            match edge.curve() {
+                EdgeCurve::Line => {
+                    if let Some(p) =
+                        line_segment_plane_crossing(sv.point(), ev.point(), *plane_n, *plane_d)
+                    {
+                        push_crossing(p, &mut crossings);
+                    }
+                }
+                EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_) => {
+                    // An open rim arc without parameter authority cannot be
+                    // clipped exactly; defer the whole pair to the generic path.
+                    for p in conic_edge_plane_crossings(edge, *plane_n, *plane_d)? {
+                        push_crossing(p, &mut crossings);
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -2785,6 +2803,82 @@ fn trim_ellipse_to_boundary_crossings(
     }
 
     if arcs.is_empty() { None } else { Some(arcs) }
+}
+
+/// Exact crossings of a circular or elliptical EDGE with the plane
+/// `normal·p = d`, restricted to the edge's own arc.
+///
+/// A conic `c + a·cos(t)·u + b·sin(t)·v` meets the plane where
+/// `A·cos(t) + B·sin(t) = C` with `A = a·(n·u)`, `B = b·(n·v)`,
+/// `C = d − n·c`, which has the closed-form roots
+/// `t = atan2(B, A) ± acos(C / √(A² + B²))`. A closed edge keeps both roots;
+/// an open arc keeps those inside its stored parameter domain
+/// ([`remus_topology::edge::Edge::strict_domain`] — the arc is never
+/// reconstructed from its endpoints), and `None` reports an open arc without
+/// that authority. A conic lying in the plane (or parallel to it) contributes
+/// nothing: the section is then along the rim itself and belongs to the
+/// edge-face phases.
+fn conic_edge_plane_crossings(
+    edge: &remus_topology::edge::Edge,
+    normal: Vec3,
+    d: f64,
+) -> Option<Vec<Point3>> {
+    let (center, u_scaled, v_scaled) = match edge.curve() {
+        EdgeCurve::Circle(c) => (c.center(), c.u_axis() * c.radius(), c.v_axis() * c.radius()),
+        EdgeCurve::Ellipse(e) => (
+            e.center(),
+            e.u_axis() * e.semi_major(),
+            e.v_axis() * e.semi_minor(),
+        ),
+        _ => return Some(Vec::new()),
+    };
+    let domain = if edge.is_closed() {
+        None
+    } else {
+        let (t0, t1) = edge.strict_domain().ok()?;
+        Some(if t0 <= t1 { (t0, t1) } else { (t1, t0) })
+    };
+    let a = normal.dot(u_scaled);
+    let b = normal.dot(v_scaled);
+    let c = d - (normal.x() * center.x() + normal.y() * center.y() + normal.z() * center.z());
+    // `r` is how far the conic departs from a plane parallel to the section
+    // plane. A rim coplanar with the tread (a cap of a bore drilled square
+    // through a block) has `a`, `b` and `c` all at rotation-noise level, so
+    // the test has to be relative to the conic's size: an absolute 1e-15
+    // let `c / r` come out as a random ratio and invented two crossings on
+    // every such cap.
+    let r = a.hypot(b);
+    if r <= 1e-9 * (u_scaled.length() + v_scaled.length()) {
+        return Some(Vec::new());
+    }
+    let ratio = c / r;
+    if ratio.abs() > 1.0 + 1e-9 {
+        return Some(Vec::new());
+    }
+    let phi = b.atan2(a);
+    let delta = ratio.clamp(-1.0, 1.0).acos();
+    let mut roots = vec![phi + delta];
+    if delta > 1e-9 {
+        roots.push(phi - delta);
+    }
+
+    let tau = std::f64::consts::TAU;
+    let hits = roots
+        .into_iter()
+        .filter(|&t| {
+            domain.is_none_or(|(t0, t1)| {
+                // Unwrap `t` into `[t0, t0 + τ)` before testing the arc; a
+                // root at the arc's start can round to just under `t0 + τ`.
+                let tt = t0 + (t - t0).rem_euclid(tau);
+                tt <= t1 + 1e-9 || tt >= t0 + tau - 1e-9
+            })
+        })
+        .map(|t| {
+            let (s, co) = t.sin_cos();
+            center + u_scaled * co + v_scaled * s
+        })
+        .collect();
+    Some(hits)
 }
 
 /// Crossing of a line SEGMENT `[sp, ep]` with the plane `normal·p = d`.
@@ -6903,5 +6997,140 @@ mod context_budget_tests {
             bounded.is_empty(),
             "a zero-iteration caller budget must prevent FF Newton refinement"
         );
+    }
+}
+
+#[cfg(test)]
+mod conic_crossing_tests {
+    #![allow(clippy::unwrap_used)]
+    use remus_math::curves::{Circle3D, Ellipse3D};
+    use remus_math::vec::{Point3, Vec3};
+    use remus_topology::Topology;
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::vertex::Vertex;
+
+    use super::conic_edge_plane_crossings;
+
+    fn closed_circle_edge(topo: &mut Topology, circle: Circle3D) -> Edge {
+        let v = topo.add_vertex(Vertex::new(circle.evaluate(0.0), 1e-7));
+        Edge::new(v, v, EdgeCurve::Circle(circle))
+    }
+
+    /// The cylinder rim of the #190 slab cut: a radius-6 circle at z = 0
+    /// against the slab's inner face `0.866 y + 0.5 z = -4.464`, which the
+    /// rim crosses at `y = -5.155`, `x = ±3.071`.
+    #[test]
+    fn closed_rim_crosses_tilted_plane_twice() {
+        let mut topo = Topology::new();
+        let circle = Circle3D::new_with_ref(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            6.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let edge = closed_circle_edge(&mut topo, circle);
+        let (c30, s30) = (30.0_f64.to_radians().cos(), 30.0_f64.to_radians().sin());
+        let normal = Vec3::new(0.0, c30, s30);
+        let d = c30 * (-4.0 + c30) + s30 * (-4.0 + s30);
+        // At z = 0 the plane is the line y = d / cos 30°; the rim meets it at
+        // x = ±√(36 − y²).
+        let y = d / c30;
+        let x = (36.0 - y * y).sqrt();
+
+        let mut hits = conic_edge_plane_crossings(&edge, normal, d).unwrap();
+        hits.sort_by(|a, b| a.x().total_cmp(&b.x()));
+        assert_eq!(hits.len(), 2);
+        for h in &hits {
+            assert!((h.x().hypot(h.y()) - 6.0).abs() < 1e-9, "on the rim: {h:?}");
+            assert!((normal.dot(*h - Point3::new(0.0, 0.0, 0.0)) - d).abs() < 1e-9);
+            assert!(h.z().abs() < 1e-12);
+            assert!((h.y() - y).abs() < 1e-9);
+        }
+        assert!((hits[0].x() + x).abs() < 1e-9);
+        assert!((hits[1].x() - x).abs() < 1e-9);
+    }
+
+    /// An open rim arc keeps only the crossings inside its own span.
+    #[test]
+    fn open_arc_keeps_only_in_span_crossings() {
+        let mut topo = Topology::new();
+        let circle = Circle3D::new_with_ref(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            6.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        // Quarter arc through the third quadrant only: t in [π, 3π/2].
+        let sp = circle.evaluate(std::f64::consts::PI);
+        let ep = circle.evaluate(1.5 * std::f64::consts::PI);
+        let vs = topo.add_vertex(Vertex::new(sp, 1e-7));
+        let ve = topo.add_vertex(Vertex::new(ep, 1e-7));
+        let mut edge = Edge::new(vs, ve, EdgeCurve::Circle(circle));
+        edge.set_trim(Some((std::f64::consts::PI, 1.5 * std::f64::consts::PI)));
+
+        // Plane y = -5.155 crosses the full circle at x = ±3.071; only the
+        // x < 0 root lies on this arc.
+        let hits = conic_edge_plane_crossings(&edge, Vec3::new(0.0, 1.0, 0.0), -5.155).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].x() < 0.0);
+    }
+
+    /// An open arc without a stored trim has no parameter authority; the
+    /// helper reports that rather than reconstructing the arc from endpoints.
+    #[test]
+    fn open_arc_without_trim_is_refused() {
+        let mut topo = Topology::new();
+        let circle = Circle3D::new_with_ref(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            6.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let vs = topo.add_vertex(Vertex::new(circle.evaluate(std::f64::consts::PI), 1e-7));
+        let ve = topo.add_vertex(Vertex::new(
+            circle.evaluate(1.5 * std::f64::consts::PI),
+            1e-7,
+        ));
+        let edge = Edge::new(vs, ve, EdgeCurve::Circle(circle));
+        assert!(conic_edge_plane_crossings(&edge, Vec3::new(0.0, 1.0, 0.0), -5.155).is_none());
+    }
+
+    /// A rim lying in the tread plane (a bore drilled square through a block)
+    /// is not a transversal crossing. With a rotated frame the plane normal
+    /// carries ~1e-16 of noise in the rim's plane, which an absolute 1e-15
+    /// parallel test let through as two invented crossings.
+    #[test]
+    fn coplanar_rim_with_rotation_noise_yields_nothing() {
+        let mut topo = Topology::new();
+        let circle =
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 5.0).unwrap();
+        let edge = closed_circle_edge(&mut topo, circle);
+        let normal = Vec3::new(3.0e-16, -2.0e-16, -1.0);
+        let hits = conic_edge_plane_crossings(&edge, normal, 4.0e-16).unwrap();
+        assert!(hits.is_empty(), "coplanar rim must not cross: {hits:?}");
+    }
+
+    #[test]
+    fn ellipse_rim_crosses_plane() {
+        let mut topo = Topology::new();
+        let ellipse = Ellipse3D::new(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            4.0,
+            2.0,
+        )
+        .unwrap();
+        let p = ellipse.evaluate(0.0);
+        let v = topo.add_vertex(Vertex::new(p, 1e-7));
+        let edge = Edge::new(v, v, EdgeCurve::Ellipse(ellipse.clone()));
+        let hits = conic_edge_plane_crossings(&edge, Vec3::new(1.0, 0.0, 0.0), 1.0).unwrap();
+        assert_eq!(hits.len(), 2);
+        for h in hits {
+            assert!((h.x() - 1.0).abs() < 1e-9);
+            assert!((ellipse.evaluate(ellipse.project(h)) - h).length() < 1e-9);
+        }
     }
 }
