@@ -114,7 +114,10 @@ does not itself promote or demote anything.
   retains four spherical faces, matches the independent spherical-lens and
   inclusion–exclusion volumes, classifies material probes, and tessellates
   closed and manifold across three deflections, including an oblique-center
-  witness. The CI-ratcheted
+  witness. A sphere centred in and protruding through all six faces of a box
+  now fuses through the exact-only path as 6 planar patches plus 10 spherical
+  caps; the result is closed/manifold and matches a separately constructed
+  exact intersection through inclusion–exclusion. The CI-ratcheted
   `approx_census` additionally exposes exact/fallback/error path and result
   face-count drift across its representative operation matrix; it is a drift
   detector, not by itself qualification evidence for a cell.
