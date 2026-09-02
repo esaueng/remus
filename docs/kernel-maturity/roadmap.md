@@ -10,9 +10,11 @@ record and the bridge backlog neither program owns:
 | [Open Kernel program](open-kernel-program.md) · [implementation plan](open-kernel-implementation.md) | Proof, adoption, interchange, ecosystem (O1–O7) | [open-kernel-status.md](open-kernel-status.md) |
 | [Stabilization plan](stabilization-plan.md) | Historical label promotions; residue absorbed below | its Dispositions section |
 | **Bridge backlog (§B below)** | Ready items covered by neither program | §B table, updated in-place |
+| [Campaign history](campaign-history.md) | Closed roots, refuted theories, and the digs behind them (not loaded by default) | read-only, append when a dig closes |
 
-The work-selection *doctrine* (chase filters, TERMINAL list, acceptance bar)
-remains `.claude/skills/roadmap/SKILL.md`; this page is the *queue*. Both
+The work-selection *doctrine* (chase filters, TERMINAL list, acceptance bar,
+durable lessons) remains `.claude/skills/roadmap/SKILL.md`; this page is
+the *queue*; the narrative behind closed rows is `campaign-history.md`. All
 are living documents: update the relevant row in the same PR that changes
 its state. Before claiming anything: `gh pr list --state open` (R6).
 
