@@ -3,7 +3,9 @@
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
 use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::shell::ShellId;
 use remus_topology::solid::SolidId;
+use remus_topology::{BodyClass, BodyId};
 
 use crate::tessellate;
 
@@ -490,4 +492,56 @@ pub fn solid_surface_area(
         total += face_area(topo, fid, deflection)?;
     }
     Ok(total)
+}
+
+/// Compute the total area of a first-class sheet body.
+///
+/// # Errors
+///
+/// Returns a typed body-class mismatch for a solid-owned shell, or an error
+/// if a topology lookup or face-area computation fails.
+pub fn sheet_surface_area(
+    topo: &Topology,
+    sheet: ShellId,
+    deflection: f64,
+) -> Result<f64, crate::OperationsError> {
+    let actual = topo.body_class_of(BodyId::Shell(sheet))?;
+    if actual != BodyClass::Sheet {
+        return Err(crate::OperationsError::BodyClassMeasureMismatch {
+            operation: "surface area",
+            expected: BodyClass::Sheet.as_str(),
+            actual: actual.as_str(),
+        });
+    }
+
+    let mut total = 0.0;
+    for &face in topo.shell(sheet)?.faces() {
+        total += face_area(topo, face, deflection)?;
+    }
+    Ok(total)
+}
+
+/// Compute the area of any surface-bearing body.
+///
+/// # Errors
+///
+/// Returns a typed mismatch for a wire body or a shell that is not tagged as
+/// a sheet, or propagates topology and face-area failures.
+pub fn body_surface_area(
+    topo: &Topology,
+    body: BodyId,
+    deflection: f64,
+) -> Result<f64, crate::OperationsError> {
+    match body {
+        BodyId::Solid(solid) => solid_surface_area(topo, solid, deflection),
+        BodyId::Shell(sheet) => sheet_surface_area(topo, sheet, deflection),
+        BodyId::Wire(wire) => {
+            let actual = topo.body_class_of(BodyId::Wire(wire))?;
+            Err(crate::OperationsError::BodyClassMeasureMismatch {
+                operation: "surface area",
+                expected: "solid or sheet",
+                actual: actual.as_str(),
+            })
+        }
+    }
 }

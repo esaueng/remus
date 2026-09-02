@@ -27,7 +27,8 @@ use crate::error::{
     validate_work_product,
 };
 use crate::handles::{
-    compound_id_to_u32, edge_id_to_u32, face_id_to_u32, solid_id_to_u32, wire_id_to_u32,
+    compound_id_to_u32, edge_id_to_u32, face_id_to_u32, shell_id_to_u32, solid_id_to_u32,
+    wire_id_to_u32,
 };
 use crate::helpers::{
     TOL, classify_to_string, get_f64, get_f64_array, get_u32, get_u32_array,
@@ -150,7 +151,11 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "projectEdges"
         | "solidEdges"
         | "solidToSolidDistance"
+        | "sheetArea"
+        | "sheetVolume"
         | "surfaceArea"
+        | "tessellateSheet"
+        | "validateSheetBody"
         | "validateSolid"
         | "resolveOperationOutput"
         | "journalSummary"
@@ -260,6 +265,7 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "makeWire"
         | "makePlanarFaceFromWire"
         | "makeFaceFromWires"
+        | "makeSheetBody"
         | "addHolesToFace" => Some(BatchOpKind::Mutating),
         _ => None,
     }
@@ -1118,6 +1124,88 @@ impl BrepKernel {
                 let a = measure::solid_surface_area(&self.topo, solid_id, deflection)
                     .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(a))
+            }
+            "sheetArea" => {
+                let sheet = get_u32(args, "sheet")?;
+                let deflection = get_deflection(args)?;
+                let sheet_id = self
+                    .resolve_shell(sheet)
+                    .map_err(StructuredWasmError::from)?;
+                let area = measure::body_surface_area(
+                    &self.topo,
+                    remus_topology::BodyId::Shell(sheet_id),
+                    deflection,
+                )
+                .map_err(StructuredWasmError::from)?;
+                Ok(serde_json::json!(area))
+            }
+            "sheetVolume" => {
+                let sheet = get_u32(args, "sheet")?;
+                let deflection = get_deflection(args)?;
+                let sheet_id = self
+                    .resolve_shell(sheet)
+                    .map_err(StructuredWasmError::from)?;
+                let volume = measure::body_volume(
+                    &self.topo,
+                    remus_topology::BodyId::Shell(sheet_id),
+                    deflection,
+                )
+                .map_err(StructuredWasmError::from)?;
+                Ok(serde_json::json!(volume))
+            }
+            "validateSheetBody" => {
+                let sheet = get_u32(args, "sheet")?;
+                let sheet_id = self
+                    .resolve_shell(sheet)
+                    .map_err(StructuredWasmError::from)?;
+                let report = remus_check::validate::validate_sheet_body(
+                    &self.topo,
+                    sheet_id,
+                    &remus_check::validate::ValidateOptions::default(),
+                )
+                .map_err(StructuredWasmError::from)?;
+                Ok(serde_json::json!({
+                    "errorCount": report.error_count(),
+                    "warningCount": report.warning_count(),
+                    "issues": report.issues.into_iter().map(|issue| serde_json::json!({
+                        "severity": match issue.severity {
+                            remus_check::validate::Severity::Info => "info",
+                            remus_check::validate::Severity::Error => "error",
+                            remus_check::validate::Severity::Warning => "warning",
+                        },
+                        "description": issue.description,
+                    })).collect::<Vec<_>>(),
+                }))
+            }
+            "tessellateSheet" => {
+                let sheet = get_u32(args, "sheet")?;
+                let deflection = get_deflection(args)?;
+                let angular_tolerance = get_angular_tolerance(args)?;
+                let sheet_id = self
+                    .resolve_shell(sheet)
+                    .map_err(StructuredWasmError::from)?;
+                let mesh = remus_operations::tessellate::tessellate_body_with_tolerance(
+                    &self.topo,
+                    remus_topology::BodyId::Shell(sheet_id),
+                    deflection,
+                    angular_tolerance,
+                )
+                .map_err(StructuredWasmError::from)?;
+                let positions = mesh
+                    .positions
+                    .iter()
+                    .flat_map(|point| [point.x(), point.y(), point.z()])
+                    .collect::<Vec<_>>();
+                let normals = mesh
+                    .normals
+                    .iter()
+                    .flat_map(|normal| [normal.x(), normal.y(), normal.z()])
+                    .collect::<Vec<_>>();
+                Ok(serde_json::json!({
+                    "positions": positions,
+                    "normals": normals,
+                    "indices": mesh.indices,
+                }))
             }
             "boundingBox" => {
                 let s = get_u32(args, "solid")?;
@@ -2426,6 +2514,16 @@ impl BrepKernel {
                     .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(fid))
             }
+            "makeSheetBody" => {
+                let handles = get_u32_array(args, "faces")?;
+                let faces = handles
+                    .iter()
+                    .map(|&handle| self.resolve_face(handle).map_err(StructuredWasmError::from))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let sheet = remus_operations::sew::make_sheet_body(self.topo_mut(), &faces)
+                    .map_err(StructuredWasmError::from)?;
+                Ok(serde_json::json!(shell_id_to_u32(sheet)))
+            }
             "addHolesToFace" => {
                 let face = get_u32(args, "face")?;
                 let holes = get_u32_array(args, "holeWires")?;
@@ -3234,6 +3332,49 @@ mod batch_contract_tests {
         let v2 = parse(&kernel.execute_batch_v2(&json));
         assert_eq!(v2[0]["error"]["code"], "batch_limit_exceeded");
         assert_eq!(v2[0]["error"]["details"]["resource"], "json_bytes");
+    }
+
+    #[test]
+    fn sheet_body_batch_contract_matches_direct_semantics() {
+        let mut kernel = BrepKernel::new();
+        let response = parse(&kernel.execute_batch_v2(
+            r#"[
+                {"op":"makeBox","args":{"width":4.0,"height":2.0,"depth":1.0}},
+                {"op":"makeSheetBody","args":{"faces":[0]}},
+                {"op":"sheetArea","args":{"sheet":1,"deflection":0.05}},
+                {"op":"validateSheetBody","args":{"sheet":1}},
+                {"op":"tessellateSheet","args":{"sheet":1,"deflection":0.05}},
+                {"op":"sheetVolume","args":{"sheet":1,"deflection":0.05}},
+                {"op":"sheetArea","args":{"sheet":0,"deflection":0.05}}
+            ]"#,
+        ));
+
+        assert_eq!(response[0]["ok"], 0);
+        assert_eq!(response[1]["ok"], 1);
+        let area = response[2]["ok"].as_f64().expect("sheet area result");
+        assert!((area - 8.0).abs() < 1e-10, "area={area}");
+        assert_eq!(response[3]["ok"]["errorCount"], 0);
+        assert!(
+            response[3]["ok"]["warningCount"]
+                .as_u64()
+                .expect("sheet warning count")
+                > 0
+        );
+        assert!(
+            !response[4]["ok"]["indices"]
+                .as_array()
+                .expect("sheet mesh indices")
+                .is_empty()
+        );
+        assert_eq!(response[5]["error"]["category"], "invalid_input");
+        assert_eq!(
+            response[5]["error"]["details"]["kernelCode"],
+            "body_class_measure_mismatch"
+        );
+        assert_eq!(
+            response[6]["error"]["details"]["kernelCode"],
+            "body_class_measure_mismatch"
+        );
     }
 }
 

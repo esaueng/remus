@@ -420,6 +420,62 @@ impl From<remus_operations::OperationsError> for StructuredWasmError {
                     .insert("threshold".to_string(), Value::from(threshold));
                 structured
             }
+            remus_operations::OperationsError::BodyClassMeasureMismatch {
+                operation,
+                expected,
+                actual,
+            } => {
+                let mut structured = Self::invalid_argument(message, None);
+                structured.details.insert(
+                    "kernelCode".to_string(),
+                    Value::from("body_class_measure_mismatch"),
+                );
+                structured
+                    .details
+                    .insert("operation".to_string(), Value::from(operation));
+                structured
+                    .details
+                    .insert("expected".to_string(), Value::from(expected));
+                structured
+                    .details
+                    .insert("actual".to_string(), Value::from(actual));
+                structured
+            }
+            remus_operations::OperationsError::BodyClassOperationUnsupported {
+                operation,
+                actual,
+            } => {
+                let mut structured = Self::operation_failed(message);
+                structured.category = FailureCategory::Unsupported.as_str();
+                structured.details.insert(
+                    "kernelCode".to_string(),
+                    Value::from("body_class_operand_unsupported"),
+                );
+                structured
+                    .details
+                    .insert("operation".to_string(), Value::from(operation));
+                structured
+                    .details
+                    .insert("actual".to_string(), Value::from(actual));
+                structured
+            }
+            remus_operations::OperationsError::BodyValidationFailed {
+                body_class,
+                error_count,
+            } => {
+                let mut structured = Self::new(WasmErrorCode::TopologyError, message);
+                structured.details.insert(
+                    "kernelCode".to_string(),
+                    Value::from("body_validation_failed"),
+                );
+                structured
+                    .details
+                    .insert("bodyClass".to_string(), Value::from(body_class));
+                structured
+                    .details
+                    .insert("errorCount".to_string(), Value::from(error_count));
+                structured
+            }
             _ => Self::operation_failed(message),
         }
     }

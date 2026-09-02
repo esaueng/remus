@@ -7,7 +7,7 @@ mod edge_length;
 pub(crate) mod helpers;
 mod volume;
 
-pub use area::{face_area, solid_surface_area};
+pub use area::{body_surface_area, face_area, sheet_surface_area, solid_surface_area};
 pub(crate) use bounding_box::face_set_bounding_box;
 pub use bounding_box::solid_bounding_box;
 pub use edge_length::{edge_length, face_perimeter, wire_length};
@@ -16,6 +16,39 @@ pub use volume::{
     solid_volume_from_faces,
 };
 pub(crate) use volume::{negligible_volume, shell_signed_volume};
+
+/// Compute volume through the body-level dispatch contract.
+///
+/// # Errors
+///
+/// Solid bodies delegate to [`solid_volume`]. Sheet and wire bodies refuse
+/// with [`crate::OperationsError::BodyClassMeasureMismatch`]; they never
+/// report a misleading zero volume.
+pub fn body_volume(
+    topo: &remus_topology::Topology,
+    body: remus_topology::BodyId,
+    deflection: f64,
+) -> Result<f64, crate::OperationsError> {
+    match body {
+        remus_topology::BodyId::Solid(solid) => solid_volume(topo, solid, deflection),
+        remus_topology::BodyId::Shell(shell) => {
+            let actual = topo.body_class_of(remus_topology::BodyId::Shell(shell))?;
+            Err(crate::OperationsError::BodyClassMeasureMismatch {
+                operation: "volume",
+                expected: remus_topology::BodyClass::Solid.as_str(),
+                actual: actual.as_str(),
+            })
+        }
+        remus_topology::BodyId::Wire(wire) => {
+            let actual = topo.body_class_of(remus_topology::BodyId::Wire(wire))?;
+            Err(crate::OperationsError::BodyClassMeasureMismatch {
+                operation: "volume",
+                expected: remus_topology::BodyClass::Solid.as_str(),
+                actual: actual.as_str(),
+            })
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {

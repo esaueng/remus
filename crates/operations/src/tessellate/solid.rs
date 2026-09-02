@@ -5,7 +5,9 @@ use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
 use remus_topology::edge::EdgeCurve;
 use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::shell::ShellId;
 use remus_topology::solid::SolidId;
+use remus_topology::{BodyClass, BodyId};
 
 use super::TriangleMesh;
 use super::edge_sampling::{circle_param_range, sample_edge, segments_for_chord_deviation_a};
@@ -138,6 +140,94 @@ pub fn tessellate_solid_with_tolerance(
         .map(|(mesh, _, _)| mesh)
 }
 
+/// Tessellate a first-class sheet body into a merged, boundary-preserving
+/// triangle mesh using the default angular tolerance.
+///
+/// Unlike solid tessellation, an open mesh boundary is expected and is not
+/// filled or reported as a failure.
+///
+/// # Errors
+///
+/// Returns an error if the shell is not tagged as a sheet body or any face
+/// tessellation fails.
+pub fn tessellate_sheet(
+    topo: &Topology,
+    sheet: ShellId,
+    deflection: f64,
+) -> Result<TriangleMesh, crate::OperationsError> {
+    tessellate_sheet_with_tolerance(
+        topo,
+        sheet,
+        deflection,
+        remus_math::chord::DEFAULT_ANGULAR_TOL,
+    )
+}
+
+/// Tessellate a first-class sheet body with explicit linear and angular
+/// tolerances.
+///
+/// # Errors
+///
+/// Returns an error if the shell is not tagged as a sheet body or any face
+/// tessellation fails.
+pub fn tessellate_sheet_with_tolerance(
+    topo: &Topology,
+    sheet: ShellId,
+    deflection: f64,
+    angular_tol: f64,
+) -> Result<TriangleMesh, crate::OperationsError> {
+    let actual = topo.body_class_of(BodyId::Shell(sheet))?;
+    if actual != BodyClass::Sheet {
+        return Err(crate::OperationsError::BodyClassOperationUnsupported {
+            operation: "sheet tessellation",
+            actual: actual.as_str(),
+        });
+    }
+    let faces = topo.shell(sheet)?.faces().to_vec();
+    tessellate_faces_core(
+        topo,
+        &faces,
+        deflection,
+        angular_tol,
+        MeshBoundaryMode::OpenSheet,
+        false,
+        false,
+    )
+    .map(|(mesh, _, _)| mesh)
+}
+
+/// Tessellate any currently supported body class.
+///
+/// Solid and sheet bodies are supported. Wire bodies refuse typed rather than
+/// producing an empty surface mesh.
+///
+/// # Errors
+///
+/// Returns a typed unsupported-body error for wire bodies, or propagates
+/// topology and tessellation failures.
+pub fn tessellate_body_with_tolerance(
+    topo: &Topology,
+    body: BodyId,
+    deflection: f64,
+    angular_tol: f64,
+) -> Result<TriangleMesh, crate::OperationsError> {
+    match body {
+        BodyId::Solid(solid) => {
+            tessellate_solid_with_tolerance(topo, solid, deflection, angular_tol)
+        }
+        BodyId::Shell(sheet) => {
+            tessellate_sheet_with_tolerance(topo, sheet, deflection, angular_tol)
+        }
+        BodyId::Wire(wire) => {
+            let actual = topo.body_class_of(BodyId::Wire(wire))?;
+            Err(crate::OperationsError::BodyClassOperationUnsupported {
+                operation: "body tessellation",
+                actual: actual.as_str(),
+            })
+        }
+    }
+}
+
 /// Watertight solid tessellation with per-face triangle grouping.
 ///
 /// Runs the same shared-edge-pool pipeline as [`tessellate_solid_with_tolerance`],
@@ -195,7 +285,7 @@ pub fn tessellate_solid_grouped_with_tolerance(
     Ok((mesh, face_offsets))
 }
 
-/// Core watertight tessellation pipeline.
+/// Boundary-sharing tessellation pipeline for a face set.
 ///
 /// When `track_faces` is set, also returns a parallel `tri -> face` array (one
 /// entry per triangle, holding the index of the owning face within
@@ -219,7 +309,34 @@ fn tessellate_solid_core(
     use remus_topology::explorer;
 
     let all_faces = explorer::solid_faces(topo, solid)?;
-    let edge_face_map = explorer::edge_to_face_map(topo, solid)?;
+    tessellate_faces_core(
+        topo,
+        &all_faces,
+        deflection,
+        angular_tol,
+        MeshBoundaryMode::ClosedSolid,
+        track_faces,
+        circle_floor,
+    )
+}
+
+#[derive(Clone, Copy)]
+enum MeshBoundaryMode {
+    ClosedSolid,
+    OpenSheet,
+}
+
+#[allow(clippy::too_many_lines, clippy::fn_params_excessive_bools)]
+fn tessellate_faces_core(
+    topo: &Topology,
+    all_faces: &[FaceId],
+    deflection: f64,
+    angular_tol: f64,
+    boundary_mode: MeshBoundaryMode,
+    track_faces: bool,
+    circle_floor: bool,
+) -> Result<(TriangleMesh, Option<Vec<u32>>, usize), crate::OperationsError> {
+    let edge_face_map = remus_topology::explorer::edge_to_face_map_for_faces(topo, all_faces)?;
 
     // The map is a std `HashMap`, so sort its keys into ID order before use —
     // keeping all downstream iteration deterministic regardless of
@@ -286,7 +403,7 @@ fn tessellate_solid_core(
     // 64 points on the caps while the wall kept 7, and the fused shell
     // tessellated open along the whole hole rim.
     {
-        for &face_id in &all_faces {
+        for &face_id in all_faces {
             let face_data = topo.face(face_id)?;
             if matches!(face_data.surface(), FaceSurface::Cylinder(_))
                 && !face_data.inner_wires().is_empty()
@@ -377,7 +494,7 @@ fn tessellate_solid_core(
         // seam meridians; growing that edge after every face would make each
         // later face rescan and clone all earlier insertions (quadratic work).
         let mut refinements: DetHashMap<usize, Vec<(usize, f64, Point3)>> = DetHashMap::default();
-        for &face_id in &all_faces {
+        for &face_id in all_faces {
             let face_data = topo.face(face_id)?;
             let FaceSurface::Cylinder(cyl) = face_data.surface() else {
                 continue;
@@ -518,7 +635,7 @@ fn tessellate_solid_core(
             let end_pos = end_vtx.point();
 
             let (t_min, t_max) =
-                crate::authoritative_edge_domain(edge_data, "solid edge refinement")?;
+                crate::authoritative_edge_domain(edge_data, "body edge refinement")?;
             let is_closed = edge_data.start() == edge_data.end();
 
             let existing_gids_vec: Vec<u32> = edge_global_indices
@@ -928,14 +1045,18 @@ fn tessellate_solid_core(
         }
     }
 
-    weld_boundary_vertices(&mut merged, deflection, tri_faces.as_mut());
+    if matches!(boundary_mode, MeshBoundaryMode::ClosedSolid) {
+        weld_boundary_vertices(&mut merged, deflection, tri_faces.as_mut());
+    }
 
     // Drop coincident/cancelling triangles left by booleans that
     // produced overlapping coplanar faces (issue #696). Keyed on quantized
     // positions so position-coincident triangles with distinct vertex IDs
     // are still caught.
     dedupe_coincident_triangles(&mut merged, tri_faces.as_mut());
-    fill_sub_deflection_triangular_gaps(&mut merged, deflection, tri_faces.as_mut());
+    if matches!(boundary_mode, MeshBoundaryMode::ClosedSolid) {
+        fill_sub_deflection_triangular_gaps(&mut merged, deflection, tri_faces.as_mut());
+    }
 
     Ok((merged, tri_faces, all_faces.len()))
 }

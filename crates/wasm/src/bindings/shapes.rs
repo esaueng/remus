@@ -13,7 +13,8 @@ use wasm_bindgen::prelude::*;
 
 use crate::error::{WasmError, validate_finite, validate_positive, validate_work_count};
 use crate::handles::{
-    edge_id_to_u32, face_id_to_u32, solid_id_to_u32, vertex_id_to_u32, wire_id_to_u32,
+    edge_id_to_u32, face_id_to_u32, shell_id_to_u32, solid_id_to_u32, vertex_id_to_u32,
+    wire_id_to_u32,
 };
 use crate::helpers::{TOL, parse_points};
 use crate::kernel::BrepKernel;
@@ -746,10 +747,24 @@ impl BrepKernel {
     /// Returns a solid handle (`u32`).
     #[wasm_bindgen(js_name = "solidFromShell")]
     pub fn solid_from_shell(&mut self, shell: u32) -> Result<u32, JsError> {
-        let shell_id = self.resolve_shell(shell)?;
-        let solid = remus_topology::solid::Solid::new(shell_id, vec![]);
-        let sid = self.topo_mut().add_solid(solid);
-        Ok(solid_id_to_u32(sid))
+        Ok(self.solid_from_shell_impl(shell)?)
+    }
+
+    /// Create and validate a first-class sheet body from face handles.
+    ///
+    /// Free boundary edges are retained and reported by `validateSheetBody`.
+    /// The call rolls back if the faces do not form a valid connected sheet.
+    ///
+    /// Returns a shell-backed sheet-body handle (`u32`).
+    #[wasm_bindgen(js_name = "makeSheetBody")]
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn make_sheet_body(&mut self, face_handles: Vec<u32>) -> Result<u32, JsError> {
+        let faces = face_handles
+            .iter()
+            .map(|&handle| self.resolve_face(handle))
+            .collect::<Result<Vec<_>, _>>()?;
+        let sheet = remus_operations::sew::make_sheet_body(self.topo_mut(), &faces)?;
+        Ok(shell_id_to_u32(sheet))
     }
 
     /// Create a compound from multiple solid handles.
@@ -881,6 +896,24 @@ impl BrepKernel {
 // so the real work lives here behind a `WasmError` and stays reachable from
 // native tests and from `executeBatch` dispatch.
 impl BrepKernel {
+    fn solid_from_shell_impl(&mut self, shell: u32) -> Result<u32, WasmError> {
+        let shell_id = self.resolve_shell(shell)?;
+        let actual = self
+            .topo
+            .body_class_of(remus_topology::BodyId::Shell(shell_id))?;
+        if actual != remus_topology::BodyClass::Solid {
+            return Err(remus_topology::TopologyError::BodyClassMismatch {
+                entity: "solid shell",
+                expected: remus_topology::BodyClass::Solid.as_str(),
+                actual: actual.as_str(),
+            }
+            .into());
+        }
+        let solid = remus_topology::solid::Solid::new(shell_id, vec![]);
+        let solid_id = self.topo_mut().add_solid(solid);
+        Ok(solid_id_to_u32(solid_id))
+    }
+
     /// Implementation behind `makeNurbsEdge`.
     ///
     /// # Errors
@@ -1280,6 +1313,62 @@ mod tests {
             matches!(face.surface(), FaceSurface::Plane { .. }),
             "expected a Plane surface"
         );
+    }
+
+    #[test]
+    fn sheet_body_direct_contract_constructs_measures_meshes_and_refuses_volume() {
+        let mut kernel = BrepKernel::new();
+        let face = kernel.make_rectangle(4.0, 2.0).unwrap();
+        let face_id = kernel.resolve_face(face).unwrap();
+        let surface = remus_math::nurbs::surface::NurbsSurface::new(
+            1,
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![
+                vec![Point3::new(-2.0, -1.0, 0.0), Point3::new(2.0, -1.0, 0.0)],
+                vec![Point3::new(-2.0, 1.0, 0.0), Point3::new(2.0, 1.0, 0.0)],
+            ],
+            vec![vec![1.0, 1.0], vec![1.0, 1.0]],
+        )
+        .unwrap();
+        kernel
+            .topo_mut()
+            .face_mut(face_id)
+            .unwrap()
+            .set_surface(FaceSurface::Nurbs(surface));
+        let sheet = kernel.make_sheet_body(vec![face]).unwrap();
+        let shell = kernel.resolve_shell(sheet).unwrap();
+        assert_eq!(
+            kernel.topo().shell(shell).unwrap().body_class(),
+            remus_topology::BodyClass::Sheet
+        );
+
+        let area = kernel.sheet_area(sheet, 0.05).unwrap();
+        assert!((area - 8.0).abs() < 1e-10, "area={area}");
+        let mesh = kernel.tessellate_sheet(sheet, 0.05, None).unwrap();
+        assert!(mesh.triangle_count() > 0);
+        let volume_error = kernel.sheet_volume_impl(sheet, 0.05).unwrap_err();
+        assert!(matches!(
+            volume_error,
+            WasmError::Operations(
+                remus_operations::OperationsError::BodyClassMeasureMismatch {
+                    operation: "volume",
+                    expected: "solid",
+                    actual: "sheet",
+                }
+            )
+        ));
+
+        let error = kernel.solid_from_shell_impl(sheet).unwrap_err();
+        assert!(matches!(
+            error,
+            WasmError::Topology(remus_topology::TopologyError::BodyClassMismatch {
+                entity: "solid shell",
+                expected: "solid",
+                actual: "sheet",
+            })
+        ));
     }
 
     #[test]
