@@ -44,17 +44,24 @@ pub(super) fn cylinder_has_non_standard_boundary(
 ) -> Result<bool, crate::OperationsError> {
     let wire = topo.wire(face_data.outer_wire())?;
     let mut has_nurbs = false;
+    let mut has_ellipse = false;
     let mut all_line = true;
     for oe in wire.edges() {
         if let Ok(e) = topo.edge(oe.edge()) {
             match e.curve() {
                 EdgeCurve::NurbsCurve(_) => has_nurbs = true,
+                EdgeCurve::Ellipse(_) => {
+                    has_ellipse = true;
+                    all_line = false;
+                }
                 EdgeCurve::Line => {}
-                _ => all_line = false,
+                EdgeCurve::Circle(_) | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => {
+                    all_line = false
+                }
             }
         }
     }
-    Ok(has_nurbs || (all_line && wire.edges().len() > 4))
+    Ok(has_nurbs || has_ellipse || (all_line && wire.edges().len() > 4))
 }
 
 /// Tessellate a face and return mesh with per-vertex UV coordinates.
