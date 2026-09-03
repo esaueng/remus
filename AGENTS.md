@@ -427,6 +427,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Persistent-naming bindings | `bindings/naming.rs` |
 | Holed-face integration tests | `bindings/holed_face_tests.rs` |
 | Qualified-operation integration tests | `bindings/qualify_ops_tests.rs` |
+| Direct/batch B6 primitive qualification | `bindings/qualify_primitives_tests.rs` |
 
 ### L5: facade (`crates/remus/src/`)
 | Task | File(s) |
