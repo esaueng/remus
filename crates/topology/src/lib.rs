@@ -44,7 +44,7 @@ pub use face::FaceId;
 pub use face_loop::{Loop, LoopId};
 pub use shell::ShellId;
 pub use solid::SolidId;
-pub use topology::Topology;
+pub use topology::{BodyClass, BodyId, Topology};
 pub use vertex::VertexId;
 pub use wire::{OrientedEdge, WireId};
 
@@ -162,6 +162,26 @@ pub enum TopologyError {
         entity: &'static str,
         /// The rejected value.
         value: f64,
+    },
+
+    /// A body class cannot be represented by the target topology entity.
+    #[error("{entity} cannot be tagged as a {body_class} body")]
+    InvalidBodyClass {
+        /// Topology entity kind receiving the tag.
+        entity: &'static str,
+        /// Stable body-class spelling.
+        body_class: &'static str,
+    },
+
+    /// A topology root is used through an incompatible body-class contract.
+    #[error("{entity} has body class {actual}, expected {expected}")]
+    BodyClassMismatch {
+        /// Topology entity kind carrying the incompatible tag.
+        entity: &'static str,
+        /// Stable expected class spelling.
+        expected: &'static str,
+        /// Stable stored class spelling.
+        actual: &'static str,
     },
 
     /// A vertex's tolerance ball fails the ball-containment invariant
@@ -401,6 +421,25 @@ impl remus_math::diagnostic::ToDiagnostic for TopologyError {
                     diagnostic
                 }
             }
+            Self::InvalidBodyClass { entity, body_class } => Diagnostic::new(
+                FailureCategory::InvalidTopology,
+                "body_class_unresolved",
+                message,
+            )
+            .with_detail("entity", *entity)
+            .with_detail("bodyClass", *body_class),
+            Self::BodyClassMismatch {
+                entity,
+                expected,
+                actual,
+            } => Diagnostic::new(
+                FailureCategory::InvalidTopology,
+                "body_class_unresolved",
+                message,
+            )
+            .with_detail("entity", *entity)
+            .with_detail("expected", *expected)
+            .with_detail("actual", *actual),
             Self::VertexBallExceeded {
                 vertex,
                 edge,
@@ -547,6 +586,23 @@ mod diagnostic_registry_tests {
 
         let d = TopologyError::NotPlanar.diagnostic();
         assert_eq!(d.code(), "wire_not_planar");
+
+        let d = TopologyError::InvalidBodyClass {
+            entity: "shell",
+            body_class: "wire",
+        }
+        .diagnostic();
+        assert_eq!(d.category(), FailureCategory::InvalidTopology);
+        assert_eq!(d.code(), "body_class_unresolved");
+
+        let d = TopologyError::BodyClassMismatch {
+            entity: "solid shell",
+            expected: "solid",
+            actual: "sheet",
+        }
+        .diagnostic();
+        assert_eq!(d.category(), FailureCategory::InvalidTopology);
+        assert_eq!(d.code(), "body_class_unresolved");
 
         let d = TopologyError::JournalDuplicateEvent { ordinal: 7 }.diagnostic();
         assert_eq!(d.category(), FailureCategory::InvalidInput);
