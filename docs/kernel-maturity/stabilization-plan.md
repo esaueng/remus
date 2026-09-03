@@ -305,7 +305,7 @@ Executed in one campaign; per the maintenance rule, each item's outcome:
   recognizer defects fixed: planar `FilletLike` false positives, all-planar
   pockets undetectable.
 - **B3 Evolution — done, promoted; B5 residual closed 2026-09-02 in PR
-  #TBD.** Draft/defeature/split/shell and default intersection-joint V2
+  #224.** Draft/defeature/split/shell and default intersection-joint V2
   offsets now record construction-derived face evolution with journaled
   wrappers. Direct edits remain the declared face-provenance gap; arc-joint
   and self-intersection-removal offsets need richer generated/replaced-face
