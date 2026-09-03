@@ -91,17 +91,44 @@ pub enum BlendError {
         vertex: VertexId,
     },
 
-    /// Multiple blend stripes meet at a vertex, which the walking engine's
-    /// watertight assembly does not support yet: the corner solver computes
-    /// exact vertex-blend geometry, but the stripes are not set back and the
-    /// corner faces do not share boundary edges with them, so the assembled
-    /// shell can never close. Callers fall back to another engine.
+    /// Multiple blend stripes meet in a configuration with no qualified,
+    /// consistently oriented vertex patch. This includes walking paths whose
+    /// stripes are not set back for assembly and planar N-way corners with
+    /// alternating material sides.
     #[error("unsupported vertex blend at {vertex:?}: {stripes} stripes meet")]
     UnsupportedVertexBlend {
         /// The vertex where multiple stripes meet.
         vertex: VertexId,
         /// How many stripes meet there.
         stripes: usize,
+    },
+
+    /// A declared endpoint setback does not reach the qualified corner-ball
+    /// station on its spine.
+    #[error(
+        "setback mismatch on edge {edge:?} at vertex {vertex:?}: declared={declared}, required={required}"
+    )]
+    SetbackMismatch {
+        /// The stripe whose endpoint station is inconsistent.
+        edge: EdgeId,
+        /// The corner vertex from which the setback is measured.
+        vertex: VertexId,
+        /// Caller-declared distance along the spine.
+        declared: f64,
+        /// Distance required by the qualified common tangent ball.
+        required: f64,
+    },
+
+    /// A non-zero declared setback reaches an endpoint topology for which no
+    /// qualified smooth corner patch exists.
+    #[error("unsupported setback corner at {vertex:?}: {stripes} stripes meet ({reason})")]
+    UnsupportedSetbackCorner {
+        /// The endpoint whose setback gap cannot be assembled.
+        vertex: VertexId,
+        /// Number of selected stripes meeting at the endpoint.
+        stripes: usize,
+        /// Stable-context explanation of the unsupported qualification axis.
+        reason: String,
     },
 
     /// Some of the edges the caller named were never blended.

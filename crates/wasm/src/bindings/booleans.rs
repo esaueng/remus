@@ -5,7 +5,7 @@
 use wasm_bindgen::prelude::*;
 
 use remus_math::context::{CancellationToken, FallbackPolicy, OperationContext};
-use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::boolean::{BooleanOp, boolean, boolean_compound_regions, boolean_regions};
 use remus_operations::compound_ops;
 
 use crate::error::{WasmError, validate_finite};
@@ -91,6 +91,47 @@ pub(crate) fn coincident_face_pairs_to_json(
 #[wasm_bindgen]
 impl BrepKernel {
     // ── Boolean operations ──────────────────────────────────────────
+
+    /// Perform an exact boolean whose disconnected volumetric regions remain
+    /// separate solids in a Compound.
+    ///
+    /// `op` accepts the same spellings as `booleanWithQuality`. The returned
+    /// handle can be expanded with `getCompoundSolids`. This path is exact-only
+    /// and fails closed if any region or its construction lineage is invalid.
+    /// Existing single-solid `fuse`, `cut`, and `intersect` remain compatible.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid handles, an unknown operation, or an
+    /// unqualified exact result.
+    #[wasm_bindgen(js_name = "booleanRegions")]
+    pub fn boolean_regions(&mut self, op: &str, a: u32, b: u32) -> Result<u32, JsError> {
+        let operation = parse_boolean_op(op)?;
+        let a = self.resolve_solid(a)?;
+        let b = self.resolve_solid(b)?;
+        let result = boolean_regions(self.topo_mut(), operation, a, b)?;
+        Ok(crate::handles::compound_id_to_u32(result.compound))
+    }
+
+    /// Perform a bounded exact boolean between two Compound operands.
+    ///
+    /// Disjoint fuse, pairwise exact intersect, and a single cut-tool
+    /// distributed over target members are qualified. Fuse requiring member
+    /// merges and multi-tool Cut fail closed until recursive lineage composition
+    /// is available.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid handles, overlapping input members, an
+    /// unknown operation, or an unqualified exact configuration.
+    #[wasm_bindgen(js_name = "booleanCompoundRegions")]
+    pub fn boolean_compound_regions(&mut self, op: &str, a: u32, b: u32) -> Result<u32, JsError> {
+        let operation = parse_boolean_op(op)?;
+        let a = self.resolve_compound(a)?;
+        let b = self.resolve_compound(b)?;
+        let result = boolean_compound_regions(self.topo_mut(), operation, a, b)?;
+        Ok(crate::handles::compound_id_to_u32(result.compound))
+    }
 
     /// Perform a boolean with disclosed result quality.
     ///
@@ -828,6 +869,103 @@ mod tests {
             r#"[{{"op": "fuse", "args": {{"solidA": {a}, "solidB": {b}}}}}]"#
         ));
         assert!(batch_has_ok(&r, 0), "fuse must return ok: {r}");
+    }
+
+    #[test]
+    fn boolean_regions_direct_and_batch_preserve_disjoint_fuse_members() {
+        let mut direct = BrepKernel::new();
+        let direct_a = direct.make_box_solid(2.0, 3.0, 4.0).unwrap();
+        let direct_b = direct.make_box_solid(5.0, 2.0, 1.0).unwrap();
+        let direct_b_id = direct.resolve_solid(direct_b).unwrap();
+        remus_operations::transform::transform_solid(
+            direct.topo_mut(),
+            direct_b_id,
+            &remus_math::mat::Mat4::translation(10.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let compound = direct.boolean_regions("fuse", direct_a, direct_b).unwrap();
+        let members = direct.get_compound_solids(compound).unwrap();
+        assert_eq!(members.len(), 2);
+        let mut direct_volumes = members
+            .iter()
+            .map(|&solid| direct.volume(solid, 0.01).unwrap())
+            .collect::<Vec<_>>();
+        direct_volumes.sort_by(f64::total_cmp);
+
+        let mut batch = BrepKernel::new();
+        let response = batch.execute_batch(
+            r#"[
+                {"op":"makeBox","args":{"width":2,"height":3,"depth":4}},
+                {"op":"makeBox","args":{"width":5,"height":2,"depth":1}},
+                {"op":"transform","args":{"solid":1,"matrix":[1,0,0,10, 0,1,0,0, 0,0,1,0, 0,0,0,1]}},
+                {"op":"booleanRegions","args":{"operation":"fuse","solidA":0,"solidB":1}}
+            ]"#,
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert!(
+            parsed[3]["ok"].is_number(),
+            "batch booleanRegions failed: {response}"
+        );
+        let compound = parsed[3]["ok"].as_u64().unwrap();
+        let members = batch.get_compound_solids(compound as u32).unwrap();
+        assert_eq!(members.len(), 2);
+        let mut batch_volumes = members
+            .iter()
+            .map(|&solid| batch.volume(solid, 0.01).unwrap())
+            .collect::<Vec<_>>();
+        batch_volumes.sort_by(f64::total_cmp);
+        assert_eq!(direct_volumes, vec![10.0, 24.0]);
+        assert_eq!(batch_volumes, direct_volumes);
+    }
+
+    #[test]
+    fn boolean_compound_regions_direct_and_batch_preserve_disjoint_members() {
+        let mut direct = BrepKernel::new();
+        let a = direct.make_box_solid(1.0, 2.0, 3.0).unwrap();
+        let b = direct.make_box_solid(2.0, 2.0, 2.0).unwrap();
+        let c = direct.make_box_solid(3.0, 2.0, 1.0).unwrap();
+        let b_id = direct.resolve_solid(b).unwrap();
+        remus_operations::transform::transform_solid(
+            direct.topo_mut(),
+            b_id,
+            &remus_math::mat::Mat4::translation(10.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let c_id = direct.resolve_solid(c).unwrap();
+        remus_operations::transform::transform_solid(
+            direct.topo_mut(),
+            c_id,
+            &remus_math::mat::Mat4::translation(20.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let compound_a = direct.make_compound(vec![a, b]).unwrap();
+        let compound_b = direct.make_compound(vec![c]).unwrap();
+        let result = direct
+            .boolean_compound_regions("fuse", compound_a, compound_b)
+            .unwrap();
+        let direct_members = direct.get_compound_solids(result).unwrap();
+        assert_eq!(direct_members, vec![a, b, c]);
+
+        let mut batch = BrepKernel::new();
+        let response = batch.execute_batch(
+            r#"[
+                {"op":"makeBox","args":{"width":1,"height":2,"depth":3}},
+                {"op":"makeBox","args":{"width":2,"height":2,"depth":2}},
+                {"op":"makeBox","args":{"width":3,"height":2,"depth":1}},
+                {"op":"transform","args":{"solid":1,"matrix":[1,0,0,10, 0,1,0,0, 0,0,1,0, 0,0,0,1]}},
+                {"op":"transform","args":{"solid":2,"matrix":[1,0,0,20, 0,1,0,0, 0,0,1,0, 0,0,0,1]}},
+                {"op":"makeCompound","args":{"solids":[0,1]}},
+                {"op":"makeCompound","args":{"solids":[2]}},
+                {"op":"booleanCompoundRegions","args":{"operation":"fuse","compoundA":0,"compoundB":1}}
+            ]"#,
+        );
+        assert!(
+            batch_has_ok(&response, 7),
+            "compound batch failed: {response}"
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&response).unwrap();
+        let result = parsed[7]["ok"].as_u64().unwrap() as u32;
+        assert_eq!(batch.get_compound_solids(result).unwrap(), vec![0, 1, 2]);
     }
 
     #[test]

@@ -389,6 +389,11 @@ impl From<remus_operations::OperationsError> for StructuredWasmError {
             remus_operations::OperationsError::Algo(remus_algo::error::AlgoError::Math(error)) => {
                 Self::from(error)
             }
+            remus_operations::OperationsError::Algo(error) => {
+                let mut structured = Self::from(error);
+                structured.message = message;
+                structured
+            }
             remus_operations::OperationsError::Check(error) => {
                 let mut structured = Self::from(error);
                 structured.message = message;
@@ -420,6 +425,62 @@ impl From<remus_operations::OperationsError> for StructuredWasmError {
                     .insert("threshold".to_string(), Value::from(threshold));
                 structured
             }
+            remus_operations::OperationsError::BodyClassMeasureMismatch {
+                operation,
+                expected,
+                actual,
+            } => {
+                let mut structured = Self::invalid_argument(message, None);
+                structured.details.insert(
+                    "kernelCode".to_string(),
+                    Value::from("body_class_measure_mismatch"),
+                );
+                structured
+                    .details
+                    .insert("operation".to_string(), Value::from(operation));
+                structured
+                    .details
+                    .insert("expected".to_string(), Value::from(expected));
+                structured
+                    .details
+                    .insert("actual".to_string(), Value::from(actual));
+                structured
+            }
+            remus_operations::OperationsError::BodyClassOperationUnsupported {
+                operation,
+                actual,
+            } => {
+                let mut structured = Self::operation_failed(message);
+                structured.category = FailureCategory::Unsupported.as_str();
+                structured.details.insert(
+                    "kernelCode".to_string(),
+                    Value::from("body_class_operand_unsupported"),
+                );
+                structured
+                    .details
+                    .insert("operation".to_string(), Value::from(operation));
+                structured
+                    .details
+                    .insert("actual".to_string(), Value::from(actual));
+                structured
+            }
+            remus_operations::OperationsError::BodyValidationFailed {
+                body_class,
+                error_count,
+            } => {
+                let mut structured = Self::new(WasmErrorCode::TopologyError, message);
+                structured.details.insert(
+                    "kernelCode".to_string(),
+                    Value::from("body_validation_failed"),
+                );
+                structured
+                    .details
+                    .insert("bodyClass".to_string(), Value::from(body_class));
+                structured
+                    .details
+                    .insert("errorCount".to_string(), Value::from(error_count));
+                structured
+            }
             _ => Self::operation_failed(message),
         }
     }
@@ -439,7 +500,13 @@ impl From<remus_heal::HealError> for StructuredWasmError {
 
 impl From<remus_algo::error::AlgoError> for StructuredWasmError {
     fn from(error: remus_algo::error::AlgoError) -> Self {
-        Self::operation_failed(error.to_string()).with_kernel_diagnostic(&error)
+        let diagnostic = error.diagnostic();
+        let mut structured = Self::operation_failed(error.to_string());
+        structured.category = diagnostic.category().as_str();
+        structured
+            .details
+            .insert("kernelCode".to_string(), Value::from(diagnostic.code()));
+        structured
     }
 }
 

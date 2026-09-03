@@ -18,6 +18,7 @@ pub use remus_topology::TopologyError;
 // Policy and the common geometry values passed through the facade.
 pub use remus_math::aabb::Aabb3;
 pub use remus_math::context::{CancellationToken, FallbackPolicy, OperationContext, WorkBudgets};
+pub use remus_math::mat::Mat4;
 pub use remus_math::nurbs::NurbsCurve;
 pub use remus_math::vec::{Point3, Vec3};
 
@@ -85,7 +86,7 @@ pub mod prelude {
         BooleanOutcome, BooleanQuality, CancellationToken, CheckError, CircleData, CircleId,
         Constraint, ConstraintId, Discriminator, DofAnalysis, EdgeId, EdgeLines, EntityKind,
         FaceId, FallbackPolicy, FixConfig, FixMode, FixResult, GProps, GcsSystem, HealError,
-        ImportLimits, IoError, Journal, JournaledBlend, JournaledBoolean, LineData, LineId,
+        ImportLimits, IoError, Journal, JournaledBlend, JournaledBoolean, LineData, LineId, Mat4,
         MathError, Model, NurbsCurve, OpId, OperationContext, OperationsError, OrientationCheck,
         PersistentRef, Point3, PointData, PointId, Provenance, Resolution, Severity, SketchError,
         SolidId, SolveClassification, SolveDiagnostics, SolveResult, StepImportDiagnostic,

@@ -53,3 +53,19 @@ pub fn assemble_solid_with_origins(
 ) -> Result<(SolidId, super::FaceProvenance), AlgoError> {
     super::builder_solid::build_solid_with_origins(topo, selected, cap_planes, lineage)
 }
+
+/// Assemble every disconnected growth region as its own solid and return
+/// provenance total over all regions.
+///
+/// # Errors
+///
+/// Returns `AlgoError::AssemblyFailed` if no region can be assembled or a
+/// cavity cannot be assigned to one region deterministically.
+pub fn assemble_solids_with_origins(
+    topo: &mut Topology,
+    selected: &[SelectedFace],
+    cap_planes: &[CapPlane],
+    lineage: &mut super::split_types::EdgeLineageLog,
+) -> Result<(Vec<SolidId>, super::FaceProvenance), AlgoError> {
+    super::builder_solid::build_solids_with_origins(topo, selected, cap_planes, lineage)
+}

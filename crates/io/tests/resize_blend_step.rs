@@ -302,7 +302,7 @@ fn shapr3d_hammer_holder_blend_refusal_preserves_exact_acceptance_contract() {
 }
 
 #[test]
-fn shapr3d_periodic_step_unfillets_exactly_and_refuses_unimplemented_resize() {
+fn shapr3d_periodic_step_resizes_and_unfillets_exactly() {
     let mut topo = Topology::new();
     let input = read_step(
         include_str!("data/shapr3d_walking_stick_foot.step"),
@@ -324,11 +324,19 @@ fn shapr3d_periodic_step_unfillets_exactly_and_refuses_unimplemented_resize() {
     let counts = solid_entity_counts(&topo, input).expect("counts");
     let before = volume(&topo, input);
 
-    let error = resize_blend(&mut topo, input, band, 4.0, 3.0).unwrap_err();
-    assert_eq!(
-        resize_blend_failure_code(&error),
-        "unsupported-support-pair"
-    );
+    let resized =
+        resize_blend(&mut topo, input, band, 4.0, 3.0).expect("resize Shapr3D cylinder-cone band");
+    assert_valid(&topo, resized.solid);
+    assert!(resized.evolution.origin.is_exact());
+    assert!(resized.evolution.deleted.contains(&band.index()));
+    let resized_band = blend_face(&topo, resized.solid, 3.0);
+    assert!(matches!(
+        topo.face(resized_band).expect("resized band").surface(),
+        FaceSurface::Torus(torus)
+            if Tolerance::new().approx_eq(torus.major_radius(), 19.5)
+                && topo.face(resized_band).expect("resized band").is_reversed()
+    ));
+    let resized_volume = volume(&topo, resized.solid);
     assert_eq!(solid_entity_counts(&topo, input).expect("counts"), counts);
     assert!(Tolerance::new().approx_eq(volume(&topo, input), before));
 
@@ -346,6 +354,12 @@ fn shapr3d_periodic_step_unfillets_exactly_and_refuses_unimplemented_resize() {
 
     let removed_counts = solid_entity_counts(&topo, removed.solid).expect("removed counts");
     let removed_volume = volume(&topo, removed.solid);
+    let old_effect = (before - removed_volume).abs();
+    let resized_effect = (resized_volume - removed_volume).abs();
+    assert!(
+        resized_effect < old_effect,
+        "shrinking the imported blend must reduce its volume effect: {resized_effect} vs {old_effect}"
+    );
     let step = write_step(&topo, &[removed.solid]).expect("write unfilleted Shapr3D STEP");
     let mut roundtrip_topo = Topology::new();
     let roundtrip = read_step(&step, &mut roundtrip_topo).expect("re-read unfilleted STEP")[0];

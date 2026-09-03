@@ -2,17 +2,21 @@
 
 Status: accepted in PR #127; implementation staged as the P-class program
 doc's Issues 4.2–4.7 (M4). The Stage 1 class, validation, and arena-tagging
-substrate is in review in PR #209; it does not complete Issue 4.2. This RFC
-re-declares the capability matrix's body-type axis —
+substrate merged in PR #209. The Stage 2 operations/WASM tranche was
+implemented in PR #210, standalone arena-v4 sheet roots in PR #211, sheet
+bounding box and center-of-area in PR #212, and STEP surface-model exchange in
+PR #213. Together they implement Issue 4.2's exit gate. This RFC re-declares
+the capability matrix's body-type axis —
 "solid, sheet, wire, compound, cavity-bearing solid, and later general body"
 (`docs/kernel-maturity/capability-matrix.md`) — against concrete semantics;
-every sheet/wire/general cell is Unqualified by default today.
+every sheet/wire/general cell starts Unqualified, with bounded Issue 4.2 sheet
+cells qualified by the capability matrix's cited witnesses.
 
 Characterization anchors: `crates/algo/src/builder/builder_solid.rs` fn
 `assemble` (single-solid convention, TODO below); `check_shell_closed`
-(`crates/check/src/validate/shell.rs` — an open shell is an unconditional
-validation error today); `crates/io/src/step/writer.rs`
-(`MANIFOLD_SOLID_BREP` only).
+(`crates/check/src/validate/shell.rs` — an open shell was an unconditional
+validation error before Stage 1); `crates/io/src/step/writer.rs`
+(the pre-Stage-2 `MANIFOLD_SOLID_BREP`-only baseline).
 
 ## Problem
 
@@ -104,8 +108,9 @@ box, center of area — yes; volume — a typed refusal
 ### Wire bodies
 
 A wire body is a `Wire` tagged `BodyClass::Wire`: measurable (length),
-transformable, usable as a sweep profile source. Stage 7 lands only the
-tagging, measurement dispatch, and serialization.
+transformable, usable as a sweep profile source. Stage 7 lands tagging,
+measurement dispatch, serialization, and a bounded validated closed-planar
+sweep profile path; open and non-planar profiles remain typed refusals.
 
 ### Cellular result model
 
@@ -175,21 +180,23 @@ free boundary as `Warning` via a new `ShellFreeBoundary` check id — and
 `validate_wire_body`); an additive `body_class` field on shell/wire
 serialization records whose absence loads as the default class.
 
-Delivered for review in PR #209: the public body-class vocabulary and
+Delivered in PR #209: the public body-class vocabulary and
 validated tags, class-aware solid/sheet/wire validation, stable diagnostics,
-and backward-compatible arena-v3 tags. Standalone sheet/wire roots and every
-L3/STEP/WASM entry point remain in later stages, so the Issue 4.2 exit gate is
-still open.
+and backward-compatible arena-v3 tags. PR #210 supplies the first sheet L3
+and WASM entry points. PR #211 adds versioned standalone sheet roots while
+freezing existing v3 writer bytes; wire roots remain a later tranche. PR #212
+adds spatial properties and PR #213 adds STEP surface-model exchange. Together
+they satisfy the full Issue 4.2 implementation exit witness.
 
-Characterization: a test pins that an open shell errors on `ShellClosed`
-today; it flips to the sheet profile emitting the free-boundary warning.
+Characterization: the pre-Stage-1 test pinned that an open shell errored on
+`ShellClosed`; it flips to the sheet profile emitting the free-boundary warning.
 Exit gate: an open shell constructs as a sheet body and validates clean
 (warning only); an untagged shell passed where a solid is required refuses
 typed; legacy arena round-trip byte-stable.
 
 ### Stage 2 — sheet bodies first-class
 
-Files: `crates/operations/src/sheet.rs` (new), `tessellate/`, `measure/`,
+Files: `crates/operations/src/sew.rs`, `tessellate/`, `measure/`,
 `crates/io/src/step/{writer,reader}.rs`, `crates/wasm/src/bindings/`.
 Sheet construction from faces with area properties; a body-level
 tessellation wrapper (open boundary expected, not an error); measurement
@@ -198,10 +205,24 @@ over `OPEN_SHELL` (and `CLOSED_SHELL` when closed) both directions;
 construct/measure/mesh bindings with `executeBatch` companions and
 contract tests.
 
-Characterization: a NURBS patch can today be neither exported nor
-validated as a body; tests pin both. Exit gate (Issue 4.2): a trimmed
-NURBS patch survives construct → validate → tessellate → STEP round-trip;
-validation separates "open by design" from "should be closed".
+Delivered for review in PR #210, PR #211, PR #212, and PR #213: construction is
+transactional and validation-gated; body dispatch exposes sheet area, bounding
+box, center-of-area, and typed volume refusal; the open-boundary tessellator
+omits solid-only proximity repairs so an intentional sub-deflection trim
+survives; direct and batch WASM expose the same contracts. Arena v4 preserves
+standalone sheet roots, trimmed NURBS authority, pcurves, root order, and
+duplicates without changing v3 bytes. STEP maps tagged sheets through
+`SHELL_BASED_SURFACE_MODEL` over `OPEN_SHELL` or `CLOSED_SHELL`, preserves the
+owning representation's tolerance cap, and leaves legacy solid-only entry
+points unchanged. CAx-IF volume validation remains explicitly solid-only.
+
+Characterization: before Stage 1, a NURBS patch could be neither exported nor
+validated as a body. PR #210 pins construct → validate → area → tessellate
+for a trimmed NURBS patch, deterministic open meshing, and transactional
+refusal of a disconnected face set. PR #213 completes the implementation exit
+witness: that patch survives deterministic STEP write → read → write through
+native, direct WASM, and batch WASM paths; open sheets retain a free-boundary
+warning while closed sheets import without one.
 
 ### Stage 3 — split solid by sheet
 
@@ -214,12 +235,15 @@ faces but never selects sheet faces for assembly. `split.rs` grows
 consumer of the cellular result model; `section.rs` keeps its
 wire-returning contract.
 
-Characterization: `split.rs` refuses anything but an exact plane today
-(split.rs:14-15) and returns exactly two solids; tests pin both, and this
-stage generalizes rather than flips them. Exit gate (Issue 4.3): a curved
-sheet splits a solid into N regions whose volumes sum exactly to the
-original (closed-form oracle); each region individually valid; determinism
-pinned across runs and native/WASM.
+Implementation: PR #214 adds the first bounded face-set arrangement. A
+single connected cylindrical sheet crosses a solid without acquiring a
+volumetric classification; only its inside patches close the two cells, with
+opposite orientations, and the result is an inside-then-outside Compound.
+Each cell validates, the inner volume matches the cylinder closed form, the
+sum reconstructs the box, and repeated native plus direct/batch WASM paths
+are deterministic. Other surfaces and multi-face sheets refuse with
+`unsupported_sheet_split`. `split.rs`'s existing exact-plane, two-solid API
+is unchanged, and `section.rs` remains wire-returning.
 
 ### Stage 4 — trim sheet by solid; sheet×sheet
 
@@ -231,10 +255,22 @@ classifiers via side-of semantics), `crates/operations/src/sew.rs`
 (`sew_faces` gains a sheet-body return for open results; closed results
 keep solids).
 
-Characterization: sheet operands refused typed since Stage 1 flip to
-qualified. Exit gate (Issue 4.4): a closed solid built purely from
-mutually-trimmed sheets + sew has the same volume as the same solid built
-by primitive booleans.
+Implementation: PRs #215 and #216 deliver the bounded planar Stage 4. The
+face-set arrangement splits a sheet without interpreting it as material,
+classifies only its patches, and assembles every selection as a new
+validation-gated Sheet. Solid trims have exact inside/outside area oracles.
+Sheet×sheet trims select positive or negative relative to the tool's effective
+normal: a strict mutual operation returns both divided sheets, while a one-way
+form composes when a finite target only imprints rather than divides the tool.
+Direct and batch WASM agree. Empty selections, same-domain overlap, a target
+that is not divided, and unqualified curved or multi-face inputs refuse
+transactionally with `unsupported_sheet_trim`.
+
+Characterization and exit gate: six outward-oriented planar carrier sheets
+are trimmed by their four adjacent sheets, leaving six exact square faces.
+`sew_faces` builds a valid six-face solid whose volume matches `make_box`
+exactly and whose repeated native result is deterministic. The direct/batch
+pair tests pin side selection and typed refusal at the public WASM boundary.
 
 ### Stage 5 — imprint
 
@@ -250,10 +286,20 @@ journal's own definition of a split,
 face resolves `BoundMany` over all pieces in journal order
 (`docs/design/rfc-0003-persistent-naming.md`, split resolution rule).
 
-Characterization: pre-imprint, a face ref resolves `Bound`. Exit gate
-(Issue 4.5): imprinted solid has identical volume; split faces claimed by
-Split events, zero unresolved; refs to pre-imprint faces resolve
-`BoundMany`.
+Implementation: PR #217 delivers the bounded transversal planar solid cell.
+The tool participates only in the split arrangement and every target patch is
+assembled into a new validation-gated solid. Face, edge, and vertex lineage is
+translated through the isolated GFA store: split faces become repeated
+`Modified` events, section edges are `Generated` from both participating
+faces, and the unchanged tool is explicitly `Preserved`. Aliased, non-dividing,
+same-domain, curved, and incomplete-lineage inputs refuse transactionally with
+`unsupported_imprint`.
+
+Characterization and exit gate: imprinting a rectangular tool loop onto a box
+face leaves the 1000-unit target volume unchanged and produces no `Deleted` or
+`Unresolved` event. A pre-imprint face reference resolves `Bound`, then
+`BoundMany` over every split piece with construction provenance. Repeated
+native results are deterministic, and direct and batch WASM agree.
 
 ### Stage 6 — multi-region boolean output
 
@@ -276,17 +322,39 @@ falls back; tests pin both paths, and flip to two valid solids. Exit gate
 (Issue 4.6): a cut that severs a body returns two valid solids with
 correct volumes and complete evolution; disjoint-operand fuse is exact.
 
+Implementation: PR #218 delivers the first Stage 6 tranche. BuilderSolid's
+primary final phase returns one `Solid` per growth shell in deterministic
+largest-volume-first order and assigns each closed hole shell to the smallest
+containing region; equal-sized ambiguity fails closed. The old `SolidId`
+surface is preserved by an explicit compatibility fold. The additive exact
+`boolean_regions` L3 API returns a Compound with total, non-unresolved
+construction evolution for each member; direct and batch WASM expose the same
+`booleanRegions` contract. The severing-box cut returns two valid 400-volume
+members and disjoint fuse returns exact 10- and 24-volume members. PR #219
+completes the Stage 6 exit with bounded Compound operands. Pairwise-disjoint
+fuse preserves existing member roots and records total identity lineage;
+intersect distributes exact GFA operations over member pairs; Cut distributes
+one tool member over every target member. Direct and batch WASM match the
+native contract. Intersecting-member fuse and multi-tool Cut refuse typed
+until recursive provenance composition is available. The legacy single-Solid
+and shell-folding helpers remain only as compatibility surfaces; new cellular
+callers use the Compound-returning APIs.
+
 ### Stage 7 — wire bodies (deferrable)
 
 Files: `crates/topology/src/topology.rs`, `measure/edge_length.rs`,
-`crates/operations/src/sweep.rs`, `crates/io/src/arena_io.rs`. Wire-body
-tagging; length as body-level measurement; a wire body accepted as a sweep
-profile source; wire-rooted arena records (today only solids serialize —
-`crates/io/src/arena_io.rs:524,538`).
+`crates/operations/src/sweep.rs`, `crates/io/src/arena_io.rs`, and
+`crates/wasm/src/bindings/`. Wire-body tagging; length as body-level
+measurement; a wire body accepted as a sweep profile source; wire-rooted arena
+records.
 
-Characterization: wires cannot be measured as bodies or sweep-profiles
-typed today. Exit gate (Issue 4.7): wire body round-trips arena IO; sweeps
-accept it as a profile.
+Implemented in [PR #222](https://github.com/esaueng/remus/pull/222): arena v5
+round-trips ordered standalone wire roots without changing released v3/v4
+writer bytes; `body_length` dispatches the existing exact length calculation;
+and `sweep_wire` copies a validated closed planar input into a private profile,
+then validation-gates the solid result. Direct and batch WASM match the native
+perimeter and prism-volume oracles. Open and non-planar wire profiles refuse
+typed and transactionally. The Issue 4.7 exit gate is complete in review.
 
 ## Serialization
 
@@ -295,9 +363,10 @@ records. The field is omitted for the default class, so old documents load to
 the default class and re-saving untouched default-class entities stays
 byte-identical. A sheet-tagged shell cannot be smuggled into a solid boundary:
 loading refuses transactionally. Standalone sheet and wire root records are a
-new root shape, not an additive tag; Stage 2 / Stage 7 must introduce those
-under arena schema v4 (or a separately versioned body document) and provide
-their dedicated parsers. Journal, attribute, and persistent-reference
+new root shape, not an additive tag: Stage 2 introduces sheet roots in arena
+v4, and Stage 7 introduces wire roots in arena v5, each with dedicated parsers
+while all earlier readers and released writers remain stable. Journal,
+attribute, and persistent-reference
 payloads remain per-entity — a sheet body's faces journal exactly like a
 solid's.
 
@@ -342,9 +411,11 @@ solid's.
 - **Does a sheet body have volume?** No — it has area. `volume` on a sheet
   or wire body refuses typed (`body_class_measure_mismatch`), never a
   misleading 0 or an invented signed volume.
-- **Can a compound be an operand of a boolean in v1?** No — callers flatten
-  first (`explode`, then per-piece operations or `fuse_n`); compound
-  operands are revisited with the cell complex.
+- **Can a compound be an operand of a boolean in v1?** Yes, within the bounded
+  pairwise-disjoint contract implemented by `boolean_compound_regions`: fuse
+  preserves members, intersect distributes over member pairs, and Cut accepts
+  one tool member. Intersecting-member fuse and multi-tool Cut refuse typed
+  until recursive lineage composition is qualified.
 - **Does Face carry a material-side flag, or is orientation enough?**
   Orientation is enough. `Face::reversed` already defines the effective
   normal (`crates/topology/src/face.rs:223-229`), the shell validator

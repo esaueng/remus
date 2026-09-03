@@ -17,9 +17,9 @@
 //! pipeline can hold for one operator and fall back for another on the same two
 //! solids; offset/fillet/chamfer run on
 //! every analytic primitive to show they stay exact (no probe fires). A final
-//! "remaining paths" section then constructs the inputs the primitive matrix
-//! cannot reach — a NURBS-faced loft, a torus, and a 4-valence pyramid apex — so
-//! that all seven approximation paths fire at least once.
+//! "remaining paths" section then constructs inputs the primitive matrix
+//! cannot reach — a NURBS-faced loft, a torus, and a 4-valence pyramid apex —
+//! retaining promoted exact rows alongside the approximation-path sentinels.
 
 #![allow(clippy::print_stdout, deprecated, missing_docs)]
 
@@ -33,7 +33,9 @@ use remus_operations::OperationsError;
 use remus_operations::blend_ops::{chamfer_v2, fillet_v2};
 use remus_operations::boolean::{BooleanOp, boolean};
 use remus_operations::chamfer::chamfer;
-use remus_operations::fillet::fillet_rolling_ball;
+use remus_operations::fillet::{
+    FilletEdgeSetback, FilletRadiusLaw, fillet_rolling_ball, fillet_variable_with_setbacks,
+};
 use remus_operations::loft::loft_smooth;
 use remus_operations::offset_face::offset_face;
 use remus_operations::offset_v2::{offset_solid_v2, shell_v2};
@@ -623,6 +625,70 @@ fn blend_matrix() -> Result<(), Box<dyn Error>> {
             }
         }
     }
+    // variable-radius three-edge corner with explicit setbacks
+    {
+        let mut topo = Topology::new();
+        let s = primitives::make_box(&mut topo, 10.0, 10.0, 10.0)?;
+        let origin = Point3::new(0.0, 0.0, 0.0);
+        let mut selected_count = 0;
+        let specs: Vec<_> = solid_edges(&topo, s)?
+            .into_iter()
+            .filter_map(|edge_id| {
+                let edge = topo.edge(edge_id).ok()?;
+                let start = topo.vertex(edge.start()).ok()?.point();
+                let end = topo.vertex(edge.end()).ok()?.point();
+                if (start - origin).length() < 1e-10 {
+                    selected_count += 1;
+                    Some((edge_id, true))
+                } else if (end - origin).length() < 1e-10 {
+                    selected_count += 1;
+                    Some((edge_id, false))
+                } else {
+                    None
+                }
+            })
+            .zip([1.2_f64, 1.4, 1.6])
+            .map(|((edge, origin_is_start), far_radius)| FilletEdgeSetback {
+                edge,
+                law: if origin_is_start {
+                    FilletRadiusLaw::SCurve {
+                        start: 1.0,
+                        end: far_radius,
+                    }
+                } else {
+                    FilletRadiusLaw::SCurve {
+                        start: far_radius,
+                        end: 1.0,
+                    }
+                },
+                start_setback: if origin_is_start { 1.0 } else { 0.0 },
+                end_setback: if origin_is_start { 0.0 } else { 1.0 },
+            })
+            .collect();
+        if selected_count != 3 {
+            return Err(
+                format!("setback census expected 3 origin edges, found {selected_count}").into(),
+            );
+        }
+        let _ = drain();
+        let t = Instant::now();
+        let res = fillet_variable_with_setbacks(&mut topo, s, &specs);
+        let ms = t.elapsed().as_secs_f64() * 1000.0;
+        let mut ev = drain();
+        match res {
+            Ok(r) => report(
+                "fillet-variable",
+                "box three-edge setbacks",
+                ms,
+                face_count(&topo, r),
+                &ev,
+            ),
+            Err(e) => {
+                ev.push(format!("err: {e}"));
+                report("fillet-variable", "box setbacks [ERR]", ms, 0, &ev);
+            }
+        }
+    }
     // chamfer
     {
         let mut topo = Topology::new();
@@ -840,8 +906,8 @@ fn remaining_paths() -> Result<(), Box<dyn Error>> {
         }
     }
 
-    // rolling-ball fillet on a square pyramid: the 4-valence apex yields a
-    // non-triangular corner → flat planar-blend fallback.
+    // Rolling-ball fillet on a square pyramid: the 4-valence apex is the
+    // promoted exact N-way vertex-blend census row.
     {
         let mut topo = Topology::new();
         let pyr = make_pyramid(&mut topo, 5.0, 8.0)?;

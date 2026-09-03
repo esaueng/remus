@@ -282,7 +282,8 @@ Refinements the serialization implementation added to the design above:
 
 1. **Journal** — append-only log + live index, populated first by the
    operations that already produce construction evolution (booleans via
-   Issue 12, v2 blends, patterns); barrier entries for the rest.
+   Issue 12, v2 blends, patterns, and default V2 offsets); barrier entries
+   for operations without evolution records.
    **Implemented** (`remus_topology::journal` +
    `remus_operations::journal_ops`); see the implementation notes below.
 2. **Resolver** — `PersistentRef` v1 with `OperationOutput` and
@@ -347,6 +348,12 @@ Refinements the implementation added to the design above:
   wraps `gfa::boolean_with_entity_evolution`; a mesh fallback has no
   construction records to journal, so a caller accepting approximate
   results journals that operation as a barrier instead.
+- **Default V2 offsets carry construction identity.** The intersection-joint
+  assembler returns the exact one-to-one source-face map; `offset_journaled`
+  records it transactionally as `Construction` evolution. Arc-joint and
+  self-intersection-removal variants may add or replace faces after that step,
+  so the face-map entry point refuses them until those generated/replaced-face
+  records exist.
 - **Not yet serialized.** The journal lives only in memory; the native
   format and repro bundles ignore it until Stage 5. Attribute-store writes
   do not count as mutations (they never change which entity an entity
