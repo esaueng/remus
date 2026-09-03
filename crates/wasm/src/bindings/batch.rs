@@ -1979,6 +1979,8 @@ impl BrepKernel {
             "shell" => {
                 let s = get_u32(args, "solid")?;
                 let thickness = get_f64(args, "thickness")?;
+                crate::error::validate_positive(thickness, "thickness")
+                    .map_err(StructuredWasmError::from)?;
                 let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
                 let face_handles: Vec<u32> = get_u32_array_optional(args, "faces")?;
                 let face_ids: Vec<_> = face_handles
