@@ -47,7 +47,9 @@ These families are classified across the full grid:
   coincident, near-coincident, seam-crossing, singular (pole/apex), sliver,
   degenerate.
 - **Body type** — solid, sheet, wire, compound, cavity-bearing solid, and
-  later general body.
+  later general body. RFC 0005's class/tagging/validation substrate is in
+  review in PR #209, but it does not provide body-level operation entry
+  points; sheet, wire, and general-body cells therefore remain Unqualified.
 - **Scale** — at least three model scales relative to the configured
   tolerance (e.g. 1e-3, 1, 1e3 in the kernel's millimetre convention), with
   the tolerance scaled correspondingly.
