@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788407258029,
+  "lastUpdate": 1788408712675,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -9331,6 +9331,216 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 75697,
             "range": "± 157",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c292b8766c42216868f2c054a45c52040d1adc1e",
+          "message": "fix: floor the blend oracle, disclose the mesh fallback, and close the fuzz red (#227)\n\n* test(fuzz): judge an honoured blend option at float resolution\n\n`modifier_ops`' option-honoured invariant divided the two volume readings by\nthe body and compared against VOL_FLOOR, a constant documented as an absolute\nfloor. A 0.05 fillet on one edge of a 1-unit box fused to an 800 u^3 torus\nmoves 4.1e-4 — a fully honoured request, and 5.2e-7 of the body — so the\ncampaign reported it as \"accepted and then ignored\". That was the only\nstanding red in the fuzz campaign; the kernel was right. Replaying the CI\nartifact natively (debug and release, in the harness's own sequential\nmutated-arena order) gives 802.819040545 against 802.819454494, matching the\nclosed form (1-pi/4)r^2 L.\n\nTwo different requests to the same deterministic tessellator at the same\ndeflection can only agree bit-for-bit when the option was dropped, so the\nthreshold is now float resolution. The message printed `va` twice, which is\nwhat made an honoured request read as an identical one; it reports both.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>\n\n* feat(boolean): warn when the mesh fallback replaces the exact path\n\nPlain `boolean()` — and the JS `fuse`/`cut`/`intersect` bindings over it —\nruns `AllowApproximate`, so a pair the exact engine cannot take comes back as\na mesh with its analytic surfaces gone. The only disclosure was a `log::debug!`\non the `remus_approx` target, below the level a consumer runs at: today\nbox-union-sphere returns 1192 all-planar faces and torus-intersect-box 312,\nand nothing in the return value says so.\n\nThe probe is now `warn`. Callers that need the fallback disclosed in the\nresult, or refused outright, still use `boolean_with_context`; this only\nstops the degradation being invisible to callers that did not. The census\nselects the probe by target rather than level, so its rows are unchanged.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>\n\n* fix(operations): floor the blend volume oracle, not just cap it\n\n`validate_blend_volume` bounded how much material a blend may move and fixed\nthe sign by convexity, but never asked whether it moved any. A result that\ncopies its input passes both: delta = 0 is inside every budget and on neither\nside of the noise band, and it is closed, manifold, correctly wound and free\nof new validation errors, so nothing else in the postcondition stack sees it\neither. After the fail-closed work the remaining guarantee against a no-op\nwas bookkeeping — `succeeded` and `EdgesNotBlended` — with no geometric\nwitness behind it.\n\nA blend of a known size on an edge of a known dihedral sweeps a known\ncross-section: r^2 (tan(phi/2) - phi/2) for a fillet, d1 d2 sin(phi) / 2 for\na chamfer. Summed over the edges whose dihedral `edge_normal_angle` can read,\nthat is a lower bound on the material the request must move, and a quarter of\nit is the floor — the margin absorbing setbacks where a neighbouring blend\neats into a strip and the curvature of non-planar supports. Edges whose\ndihedral cannot be read contribute nothing, which keeps the bound sound; the\nangle is clamped at 120 degrees so a knife edge still asks a finite minimum.\n\nThe size argument becomes a `BlendSize` so a variable-radius law is floored\nat its minimum radius while still being capped at its maximum, and a chamfer\nuses both setbacks rather than their larger. Every public fillet and chamfer\nentry point shares the oracle, v1 engines included.\n\nCensus unchanged row for row; the full workspace suite passes, including the\nblend torture and fail-closed fixtures.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>\n\n* ci: ratchet std hash collections out of the geometry crates\n\n`remus_math::det_hash` exists because `std`'s hasher is seeded per instance,\nso any construction whose output depends on map iteration order — vertex\nwelds, shell assembly, triangulation — is nondeterministic run to run. Its\nmodule docs say exactly that. Nothing enforced it: `DetHashMap`/`DetHashSet`\nappear in 12 files while 60 production files across algo, blend, check, heal,\noffset and operations still reach for `std::collections`, `builder_solid.rs`\n(shell assembly, vertex welding) among them.\n\nNo iteration-order leak is claimed here — the paths traced for this change\nwere sound — but nothing prevents the next one. The 60 files are listed as\ngrandfathered and explicitly unaudited; the check fails when a file joins\nthem, and fails stale when a listed file no longer needs to be there, so the\nlist can only shrink.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>\n\n* test: pin four mutants the scheduled mutation run found alive\n\nThe weekly cargo-mutants run has never been green. Four of its survivors are\none test each, and each names a real gap in what the suite asks:\n\n- `find_edge_surface_crossings` builds its duplicate window as span/n*2, and\n  survives span*n*2 — a window wider than the edge, which folds every\n  crossing after the first into the first — because no test ever asked this\n  function for two crossings on one edge. A line through a cylinder does.\n- `pb_strictly_inside_circle` survives both a sign flip and a strictness\n  flip: it was only ever reached through whole booleans, where the disc it\n  tests is one of many gates. Tested directly, inside and on the rim.\n- `is_uniform_scale` survives `&&` becoming `||` because no test supplied a\n  matrix that passes one leg and fails the other. A shear has unit column\n  norms and non-orthogonal columns; an anisotropic scale is the converse.\n\n`ccw_arc_trim`'s `!t0.is_finite()` is unkillable rather than untested: a\nnon-finite `t0` makes `delta` non-finite too, so the following test already\ncovers it. Folded in, with the reason recorded.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>\n\n* docs(roadmap): queue the parallel-boss face-orientation defect\n\nNoticed while regenerating the `#[ignore]` inventory for this session's\nreview, unrelated to the changes around it. Of the 13 ignored tests, twelve\nare fork-policy pins, print-only diagnostics, or a slow run;\n`regress_parallel_boss_band_sections.rs` is the one that pins a live engine\ndefect — cut and intersect pocket faces on a cylinder wall come back\ninconsistently oriented — and it has had no queue row since #198 landed it.\nThe roadmap skill's claim that the inventory holds no open engine defect is\ncorrected in the same change.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>\n\n* fix(ci): scan the det-hash ratchet with git grep, and widen its pattern\n\nTwo defects, both in the check added earlier on this branch, both of the kind\n`check-remus-rename.sh` already documents at length.\n\nIt scanned with `rg`. Ripgrep is not installed on the GitHub runner, so the\ncall exited 127, and the `|| true` guarding the pipeline turned that into an\nempty result set — which for a ratchet means every grandfathered entry reads\nas newly clean. The job failed on a tree it had never actually read. The same\nmasking is what once made the rename gate vacuously PASS; here it made this\none loudly fail, which is the better of two wrong answers but still wrong.\nThe scan now runs through `git grep`, and a status above 1 aborts the gate\ninstead of being read as a result.\n\nThe pattern anchored a trailing `\\b` after the closing brace of the\n`use std::collections::{HashMap, HashSet};` form. `}` before `;` is not a word\nboundary, so that form — the common one — never matched, and the manifest was\nbuilt 24 files short. Matching `std::collections::` followed before the\nsemicolon by either name covers the bare, braced, and inline-path forms; the\nmanifest goes from 60 entries to 84, all verified as genuine imports with no\nfalse positives.\n\nTested in both directions, since the whole lesson here is gates that cannot\nfail: a new std hash use in an unlisted file is caught, a stale manifest entry\nis caught, a clean tree passes, the run passes with `rg` absent from PATH, and\na broken `git` aborts with status 2 rather than vouching.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-03T00:05:07-04:00",
+          "tree_id": "83ac773fa6e5b0a3d4aef858b9411b0cd2fc3317",
+          "url": "https://github.com/esaueng/remus/commit/c292b8766c42216868f2c054a45c52040d1adc1e"
+        },
+        "date": 1788408711412,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1403432,
+            "range": "± 2016",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1498942,
+            "range": "± 2152",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 26652,
+            "range": "± 446",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 1052576,
+            "range": "± 1333",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 41700674,
+            "range": "± 238589",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 39,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 108,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 65,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 222,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 155,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 847,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 166,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 356,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 221,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 542,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 724,
+            "range": "± 29",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 3529,
+            "range": "± 285",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 17,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 37,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 63,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 62,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 571066,
+            "range": "± 2247",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 11909349,
+            "range": "± 14249",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 174334,
+            "range": "± 685",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 672989,
+            "range": "± 5875",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 128972,
+            "range": "± 151",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 927740,
+            "range": "± 1582",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 10700935,
+            "range": "± 19697",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 765898,
+            "range": "± 3173",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 1331466,
+            "range": "± 4186",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 83952,
+            "range": "± 988",
             "unit": "ns/iter"
           }
         ]
