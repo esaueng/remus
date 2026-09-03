@@ -69,9 +69,13 @@ These families are classified across the full grid:
   direct/batch WASM parity. PR #219 additionally qualifies pairwise-disjoint
   Compound operands for member-preserving fuse, pairwise exact intersect, and
   distributed single-tool cut, with total member lineage and direct/batch WASM
-  parity. Curved and same-domain imprint, intersecting Compound-member fuse,
-  multi-tool Compound cut, multi-face and other surface sheet cells, broader
-  scale/type matrices, wire, and general-body cells remain Unqualified.
+  parity. PR #222 qualifies the bounded first-class Wire cell: body-level
+  length, existing copy/transform, exact arena-v5 root replay, and validated
+  closed-planar profile sweep with native/direct/batch WASM parity; open and
+  non-planar sweep profiles are Unsupported-typed. Curved and same-domain
+  imprint, intersecting Compound-member fuse, multi-tool Compound cut,
+  multi-face and other surface sheet cells, broader wire geometry/scale
+  matrices, and general-body cells remain Unqualified.
 - **Scale** — at least three model scales relative to the configured
   tolerance (e.g. 1e-3, 1, 1e3 in the kernel's millimetre convention), with
   the tolerance scaled correspondingly.
@@ -235,9 +239,14 @@ does not itself promote or demote anything.
 
 - Ledger rows: "Extrude", "Revolve, sweep, loft, pipe", "Helical sweep"
   (Stable, blocked), "Non-planar profiles" (Beta).
+- In-review PR #222 adds a Partial Wire-profile cell: a validated closed
+  planar polygonal Wire produces a validation-gated solid without aliasing the
+  input, with exact prism-volume native/direct/batch WASM oracles. Open and
+  non-planar Wire profiles are Unsupported-typed and rollback exactly.
 - Known gaps: degenerate/cavity matrices, topology and nonconvergence
   budgets, termination/performance evidence incomplete; guide rails, laws,
-  periodic lofts, continuity options largely absent.
+  periodic lofts, continuity options, and broader wire curve/scale matrices
+  largely absent.
 
 ### Sectioning and splitting
 
@@ -277,7 +286,9 @@ does not itself promote or demote anything.
   failures for sheet volume and non-sheet area. PR #212 adds body-class-checked
   bounding box and center-of-area, including an offset-hole centroid oracle,
   through direct and batch WASM. These bounded sheet cells are qualified in
-  review; the broader geometry/scale matrix remains Unqualified.
+  review. PR #222 routes Wire length through the body-level measurement
+  contract and pins exact native/direct/batch perimeter agreement; the broader
+  geometry/scale matrix remains Unqualified.
 
 ### Tessellation
 
@@ -320,6 +331,10 @@ does not itself promote or demote anything.
   sheet exchange as `SHELL_BASED_SURFACE_MODEL` over open or closed shells,
   including a trimmed bilinear NURBS patch through native, direct WASM, and
   batch WASM paths; wrong-class and malformed imports fail transactionally.
+  PR #222 adds standalone Wire roots in arena v5 with exact reserialization,
+  ordered duplicate-root preservation, resource limits, transactional corrupt
+  input refusal, native/direct WASM parity, v1–v4 readers, and frozen v3/v4
+  writer bytes.
 - Known gaps: attribute round trips
   (`docs/design/deferred-e3b-step-names-and-colors.md`), AP242 schema output,
   general SameParameter proofs beyond the certified curve/surface matrix, and

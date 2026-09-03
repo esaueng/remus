@@ -109,8 +109,9 @@ box, center of area — yes; volume — a typed refusal
 ### Wire bodies
 
 A wire body is a `Wire` tagged `BodyClass::Wire`: measurable (length),
-transformable, usable as a sweep profile source. Stage 7 lands only the
-tagging, measurement dispatch, and serialization.
+transformable, usable as a sweep profile source. Stage 7 lands tagging,
+measurement dispatch, serialization, and a bounded validated closed-planar
+sweep profile path; open and non-planar profiles remain typed refusals.
 
 ### Cellular result model
 
@@ -344,14 +345,18 @@ callers use the Compound-returning APIs.
 ### Stage 7 — wire bodies (deferrable)
 
 Files: `crates/topology/src/topology.rs`, `measure/edge_length.rs`,
-`crates/operations/src/sweep.rs`, `crates/io/src/arena_io.rs`. Wire-body
-tagging; length as body-level measurement; a wire body accepted as a sweep
-profile source; wire-rooted arena records (today only solids serialize —
-`crates/io/src/arena_io.rs:524,538`).
+`crates/operations/src/sweep.rs`, `crates/io/src/arena_io.rs`, and
+`crates/wasm/src/bindings/`. Wire-body tagging; length as body-level
+measurement; a wire body accepted as a sweep profile source; wire-rooted arena
+records.
 
-Characterization: wires cannot be measured as bodies or sweep-profiles
-typed today. Exit gate (Issue 4.7): wire body round-trips arena IO; sweeps
-accept it as a profile.
+Implemented in [PR #222](https://github.com/esaueng/remus/pull/222): arena v5
+round-trips ordered standalone wire roots without changing released v3/v4
+writer bytes; `body_length` dispatches the existing exact length calculation;
+and `sweep_wire` copies a validated closed planar input into a private profile,
+then validation-gates the solid result. Direct and batch WASM match the native
+perimeter and prism-volume oracles. Open and non-planar wire profiles refuse
+typed and transactionally. The Issue 4.7 exit gate is complete in review.
 
 ## Serialization
 
@@ -360,9 +365,10 @@ records. The field is omitted for the default class, so old documents load to
 the default class and re-saving untouched default-class entities stays
 byte-identical. A sheet-tagged shell cannot be smuggled into a solid boundary:
 loading refuses transactionally. Standalone sheet and wire root records are a
-new root shape, not an additive tag; Stage 2 / Stage 7 must introduce those
-under arena schema v4 (or a separately versioned body document) and provide
-their dedicated parsers. Journal, attribute, and persistent-reference
+new root shape, not an additive tag: Stage 2 introduces sheet roots in arena
+v4, and Stage 7 introduces wire roots in arena v5, each with dedicated parsers
+while all earlier readers and released writers remain stable. Journal,
+attribute, and persistent-reference
 payloads remain per-entity — a sheet body's faces journal exactly like a
 solid's.
 
@@ -407,9 +413,11 @@ solid's.
 - **Does a sheet body have volume?** No — it has area. `volume` on a sheet
   or wire body refuses typed (`body_class_measure_mismatch`), never a
   misleading 0 or an invented signed volume.
-- **Can a compound be an operand of a boolean in v1?** No — callers flatten
-  first (`explode`, then per-piece operations or `fuse_n`); compound
-  operands are revisited with the cell complex.
+- **Can a compound be an operand of a boolean in v1?** Yes, within the bounded
+  pairwise-disjoint contract implemented by `boolean_compound_regions`: fuse
+  preserves members, intersect distributes over member pairs, and Cut accepts
+  one tool member. Intersecting-member fuse and multi-tool Cut refuse typed
+  until recursive lineage composition is qualified.
 - **Does Face carry a material-side flag, or is orientation enough?**
   Orientation is enough. `Face::reversed` already defines the effective
   normal (`crates/topology/src/face.rs:223-229`), the shell validator

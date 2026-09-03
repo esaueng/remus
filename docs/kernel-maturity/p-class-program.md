@@ -40,12 +40,13 @@ journal, persistent naming with typed resolution, attribute propagation,
 serialization — is machinery most kernels never grew. It makes milestone M6
 (direct modeling) unusually valuable here.
 
-**Three pillars are missing**, and they are architectural, not features:
-per-entity tolerant modeling (M3), sheet/wire/cellular body taxonomy (M4),
-and general curved×curved boolean intersection (M2). Issue 2.2 closes the
-first general-position cell: two offset spheres now fuse, cut, and intersect
-through an exact radical-plane circle with analytic spherical result faces.
-General quadric and NURBS pairs remain the honest D2 boundary.
+**The three architectural pillars are M2, M3, and M4.** The
+sheet/wire/cellular body taxonomy (M4) is now implemented in review through
+Issue 4.7; per-entity tolerant modeling (M3) and general curved×curved boolean
+intersection (M2) remain open. Issue 2.2 closes the first general-position
+cell: two offset spheres now fuse, cut, and intersect through an exact
+radical-plane circle with analytic spherical result faces. General quadric
+and NURBS pairs remain the honest D2 boundary.
 
 **Ordering principle: architecture before generality, generality before
 polish.** Tolerant modeling and body taxonomy change data structures every
@@ -504,6 +505,11 @@ lineage, and bounded Compound operands preserve or distribute those exact
 regions. The legacy single-Solid entry points remain as explicit compatibility
 surfaces; intersecting-member fuse and multi-tool Compound cut stay
 Unqualified until recursive lineage composition exists.
+Issue 4.7's bounded wire-body cell is implemented in review: body-level length,
+existing copy/transform semantics, additive arena-v5 wire roots, and validated
+closed-planar profile sweep all have native/direct/batch WASM evidence. Open
+and non-planar wire sweeps remain typed refusals. This completes the M4
+implementation sequence; the stacked PRs remain unmerged.
 
 ### 4.2 Sheet bodies first-class (M)
 
@@ -644,6 +650,17 @@ entry points remain for compatibility. The stated exit gate is complete.
 
 Wire bodies as measurable, transformable, sweepable first-class inputs.
 Mostly bookkeeping once 4.1 lands; defer freely.
+
+Implemented, in review in [PR #222](https://github.com/esaueng/remus/pull/222):
+`body_length` provides dimensional dispatch without weakening the existing
+wire measurement, and arena v5 adds ordered, duplicate-preserving standalone
+wire roots while retaining v1–v4 readers and frozen v3/v4 writers. The
+transactional `sweep_wire` path snapshots a validated closed planar wire into
+a private face, validates the resulting solid, and leaves the input root
+independent. Native and direct/batch WASM witnesses agree on exact rectangular
+perimeter and prism volume. Open and non-planar profiles fail closed without
+allocating live topology. The stated exit gate, and therefore the M4
+implementation sequence, is complete in review.
 
 > **Exit gate:** wire body round-trips arena IO; sweeps accept it as a
 > profile source.
