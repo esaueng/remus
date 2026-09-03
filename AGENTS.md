@@ -427,6 +427,11 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Holed-face integration tests | `bindings/holed_face_tests.rs` |
 | Qualified-operation integration tests | `bindings/qualify_ops_tests.rs` |
 
+### L5: facade (`crates/remus/src/`)
+| Task | File(s) |
+|------|---------|
+| Owned native modeling session and curated front-door API | `model.rs` |
+
 ## Ripple-Effect Checklists
 
 **These enums appear in `match` arms across many files. Adding a variant requires updating

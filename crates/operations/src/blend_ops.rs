@@ -1,9 +1,8 @@
 //! Thin wrappers around `remus-blend` for the operations API.
 
-use remus_blend::BlendResult;
 use remus_blend::chamfer_builder::ChamferBuilder;
 use remus_blend::fillet_builder::FilletBuilder;
-pub use remus_blend::{BlendError, BlendFaceOrigins};
+pub use remus_blend::{BlendError, BlendFaceOrigins, BlendResult};
 use remus_topology::Topology;
 use remus_topology::edge::{EdgeCurve, EdgeId};
 use remus_topology::face::FaceSurface;
@@ -317,12 +316,9 @@ pub(crate) fn validate_blend_volume(
 fn error_magnitudes(
     topo: &Topology,
     solid: SolidId,
+    options: &remus_check::validate::ValidateOptions,
 ) -> Result<std::collections::HashMap<remus_check::validate::CheckId, f64>, OperationsError> {
-    let report = remus_check::validate::validate_solid(
-        topo,
-        solid,
-        &remus_check::validate::ValidateOptions::default(),
-    )?;
+    let report = remus_check::validate::validate_solid(topo, solid, options)?;
     let mut map = std::collections::HashMap::new();
     for issue in &report.issues {
         if issue.severity == remus_check::validate::Severity::Error {
@@ -357,17 +353,47 @@ fn validate_complete_blend(
 /// issue beyond what the input already had.
 ///
 /// `pub(crate)` so every public blend entry point applies the same bar.
+/// Validation options for a blend postcondition, with the validator's
+/// tolerance scaled down to the part's own feature size.
+///
+/// The validator's default geometric tolerance is an absolute 1e-6, so on a
+/// part whose edges are shorter than a few microns its wire self-intersection
+/// check reads every pair of non-adjacent edges as touching: a 2 µm box with a
+/// 0.3 µm fillet came back "self-intersecting" at exactly the fillet chord
+/// (0.42 µm) although the geometry was right, and the fail-closed
+/// postcondition refused it. The scale follows the input's shortest edge
+/// (1 at 10 µm and above), and never drops below 1e-2 so a degenerate input
+/// edge cannot switch the check off.
+fn postcondition_options(
+    topo: &Topology,
+    input_solid: SolidId,
+) -> Result<remus_check::validate::ValidateOptions, OperationsError> {
+    let mut shortest = f64::INFINITY;
+    for edge in remus_topology::explorer::solid_edges(topo, input_solid)? {
+        let length = crate::measure::edge_length(topo, edge)?;
+        if length.is_finite() {
+            shortest = shortest.min(length);
+        }
+    }
+    let scale = if shortest.is_finite() {
+        (shortest / 1e-5).clamp(1e-2, 1.0)
+    } else {
+        1.0
+    };
+    Ok(remus_check::validate::ValidateOptions {
+        tolerance_scale: scale,
+        ..Default::default()
+    })
+}
+
 pub(crate) fn validate_blend_solid_against_input(
     topo: &Topology,
     operation: &'static str,
     input_solid: SolidId,
     result_solid: SolidId,
 ) -> Result<(), OperationsError> {
-    let report = remus_check::validate::validate_solid(
-        topo,
-        result_solid,
-        &remus_check::validate::ValidateOptions::default(),
-    )?;
+    let options = postcondition_options(topo, input_solid)?;
+    let report = remus_check::validate::validate_solid(topo, result_solid, &options)?;
     if report.is_valid() {
         return Ok(());
     }
@@ -380,7 +406,7 @@ pub(crate) fn validate_blend_solid_against_input(
         }
         map
     };
-    let before = error_magnitudes(topo, input_solid)?;
+    let before = error_magnitudes(topo, input_solid, &options)?;
     let regressed = after
         .iter()
         .any(|(check, &mag)| mag > before.get(check).copied().unwrap_or(0.0));
