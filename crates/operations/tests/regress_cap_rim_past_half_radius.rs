@@ -37,6 +37,7 @@ use remus_operations::primitives::make_cylinder;
 use remus_operations::tessellate::tessellate_solid_with_tolerance;
 use remus_topology::Topology;
 use remus_topology::edge::{EdgeCurve, EdgeId};
+use remus_topology::explorer::solid_faces;
 use remus_topology::face::FaceSurface;
 use remus_topology::solid::SolidId;
 
@@ -356,9 +357,9 @@ fn the_limit_of_the_blend_is_a_hemispherical_end() {
 
 /// `f ≥ r` is genuinely impossible — the rolling ball does not fit inside the
 /// cylinder — so it must be refused BY NAME, with the edge and the achievable
-/// maximum, not as a bare partial result. That is the same typed refusal the
-/// `2f < h` case already returns, and it is the difference between a caller
-/// being able to say "try a smaller radius" and not.
+/// support limit, not as a bare partial result. That is the same typed cliff
+/// refusal the `2f < h` case already returns, and it is the difference between
+/// a caller being able to say "try a smaller radius" and not.
 #[test]
 fn a_radius_past_the_cylinder_radius_is_refused_by_name() {
     let (r, h) = (2.0, 12.0);
@@ -376,18 +377,25 @@ fn a_radius_past_the_cylinder_radius_is_refused_by_name() {
             .unwrap_or_else(|| panic!("f = {f} must not produce a blend"));
         assert_eq!(
             blend_failure_code(&err),
-            "radius-too-large",
+            "cliff-encountered",
             "f = {f}: got {err}"
         );
         match &err {
-            OperationsError::Blend(BlendError::RadiusTooLarge { edge, max_radius }) => {
+            OperationsError::Blend(BlendError::CliffEncountered {
+                edge,
+                face,
+                requested_radius,
+                available_radius,
+            }) => {
                 assert_eq!(*edge, rim, "f = {f}: refusal must name the rim edge");
+                assert!(solid_faces(&topo, cyl).unwrap().contains(face));
+                assert!((requested_radius - f).abs() < 1e-9);
                 assert!(
-                    (max_radius - r).abs() < 1e-9,
-                    "f = {f}: achievable maximum should be r = {r}, got {max_radius}"
+                    *available_radius < r && r - *available_radius < 1e-6,
+                    "f = {f}: support limit should be immediately below r = {r}, got {available_radius}"
                 );
             }
-            other => panic!("f = {f}: expected RadiusTooLarge, got {other}"),
+            other => panic!("f = {f}: expected CliffEncountered, got {other}"),
         }
 
         // A refusal leaves the input alone.
@@ -409,7 +417,20 @@ fn the_height_limit_still_reports_itself_separately() {
     let err = fillet_v2(&mut topo, cyl, &[rim], h)
         .err()
         .expect("a fillet as deep as the cylinder is tall must be refused");
-    assert_eq!(blend_failure_code(&err), "radius-too-large", "got {err}");
+    assert_eq!(blend_failure_code(&err), "cliff-encountered", "got {err}");
+    let OperationsError::Blend(BlendError::CliffEncountered {
+        edge,
+        face,
+        requested_radius,
+        available_radius,
+    }) = err
+    else {
+        panic!("expected the wall cliff metadata");
+    };
+    assert_eq!(edge, rim);
+    assert!(solid_faces(&topo, cyl).unwrap().contains(&face));
+    assert!((requested_radius - h).abs() < 1e-9);
+    assert!((available_radius - h).abs() < 1e-9);
 }
 
 /// The rim rebuild swaps the wall's rim circle for the contact circle and

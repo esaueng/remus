@@ -77,6 +77,27 @@ pub enum BlendError {
         max_radius: f64,
     },
 
+    /// The blend reaches a boundary of one of its support faces.
+    ///
+    /// Remus currently applies a stop-at-cliff policy: qualified operation
+    /// wrappers refuse the whole request transactionally rather than
+    /// extrapolating a band beyond the support or silently reducing the
+    /// requested radius.
+    #[error(
+        "blend cliff on face {face:?} at edge {edge:?}: requested radius {requested_radius}, available radius {available_radius}"
+    )]
+    CliffEncountered {
+        /// The edge whose blend reaches the support boundary.
+        edge: EdgeId,
+        /// The support face that runs out of room.
+        face: FaceId,
+        /// Radius requested by the caller.
+        requested_radius: f64,
+        /// Local support-radius limit at the point where the cliff was
+        /// detected. The boundary itself may be exclusive.
+        available_radius: f64,
+    },
+
     /// Face trimming failed.
     #[error("trimming failure on face {face:?}")]
     TrimmingFailure {
