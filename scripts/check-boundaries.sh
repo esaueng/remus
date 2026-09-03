@@ -17,6 +17,7 @@ set -euo pipefail
 #   L3   (io)         — depends on math, topology, operations
 #   L4   (render)     — depends on math, topology, operations
 #   L4   (wasm)       — depends on all
+#   L5   (remus)      — native facade; depends on operations, io, check, heal, math, topology, sketch
 
 FAIL=0
 
@@ -36,8 +37,8 @@ check_deps() {
   local deps_section
   deps_section=$(sed -n '/^\[dependencies\]/,/^\[/p' "$cargo_toml" 2>/dev/null || true)
 
-  for dep in remus-math remus-topology remus-algo remus-blend remus-heal remus-check remus-geometry remus-offset remus-sketch remus-operations remus-io remus-render; do
-    if echo "$deps_section" | grep -q "${dep}"; then
+  for dep in remus remus-math remus-topology remus-algo remus-blend remus-heal remus-check remus-geometry remus-offset remus-sketch remus-operations remus-io remus-render; do
+    if echo "$deps_section" | grep -Eq "^${dep}[[:space:]]*="; then
       local is_allowed=false
       for a in "${allowed[@]}"; do
         if [ "$dep" = "$a" ]; then
@@ -73,6 +74,7 @@ check_deps "operations" "remus-math" "remus-topology" "remus-algo" "remus-blend"
 check_deps "io"         "remus-math" "remus-topology" "remus-operations"
 check_deps "render"     "remus-math" "remus-topology" "remus-operations"
 check_deps "wasm"       "remus-math" "remus-topology" "remus-algo" "remus-blend" "remus-heal" "remus-check" "remus-geometry" "remus-offset" "remus-sketch" "remus-operations" "remus-io"
+check_deps "remus"      "remus-operations" "remus-io" "remus-check" "remus-heal" "remus-math" "remus-topology" "remus-sketch"
 
 if [ $FAIL -ne 0 ]; then
   echo "❌ Boundary check failed."

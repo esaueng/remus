@@ -138,6 +138,31 @@ pub fn boolean_journaled(
     Ok(JournaledBoolean { solid, op })
 }
 
+/// Runs a journaled exact boolean using the operations-layer boolean enum.
+///
+/// This is the public-facade adapter for [`boolean_journaled`]. The journal
+/// implementation predates the operations-layer enum and retains its lower
+/// layer entry point for existing callers; new top-level consumers should not
+/// need a direct `remus-algo` dependency just to select an operation.
+///
+/// # Errors
+///
+/// Returns [`OperationsError`] under the same conditions as
+/// [`boolean_journaled`].
+pub fn boolean_journaled_with_operation(
+    topo: &mut Topology,
+    op: crate::boolean::BooleanOp,
+    solid_a: SolidId,
+    solid_b: SolidId,
+) -> Result<JournaledBoolean, OperationsError> {
+    let op = match op {
+        crate::boolean::BooleanOp::Fuse => BooleanOp::Fuse,
+        crate::boolean::BooleanOp::Cut => BooleanOp::Cut,
+        crate::boolean::BooleanOp::Intersect => BooleanOp::Intersect,
+    };
+    boolean_journaled(topo, op, solid_a, solid_b)
+}
+
 /// Converts an Issue-12 [`EntityEvolution`] into a journal draft.
 ///
 /// Event mapping, claim for claim:
