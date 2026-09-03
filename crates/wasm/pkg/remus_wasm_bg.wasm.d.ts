@@ -24,8 +24,8 @@ export const brepkernel_assemblyAddRoot: (a: number, b: number, c: number, d: nu
 export const brepkernel_assemblyBom: (a: number, b: number) => [number, number, number, number];
 export const brepkernel_assemblyFlatten: (a: number, b: number) => [number, number, number, number];
 export const brepkernel_assemblyNew: (a: number, b: number, c: number) => number;
-export const brepkernel_booleanWithCancellation: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => [number, number, number];
-export const brepkernel_booleanWithQuality: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number, number];
+export const brepkernel_booleanWithCancellation: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number, q: number, r: number, s: number) => [number, number, number];
+export const brepkernel_booleanWithQuality: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number, q: number, r: number) => [number, number, number];
 export const brepkernel_boundingBox: (a: number, b: number) => [number, number, number, number];
 export const brepkernel_captureSignatureRef: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
 export const brepkernel_centerOfMass: (a: number, b: number, c: number) => [number, number, number, number];

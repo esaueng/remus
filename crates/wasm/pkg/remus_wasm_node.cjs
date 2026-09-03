@@ -270,7 +270,10 @@ class BrepKernel {
      * Cancellation is typed (`operation_cancelled`) and transactional: no
      * partial topology is retained. Result quality follows
      * `booleanWithQuality`, including the optional exact-only policy and the
-     * optional Newton and subdivision caps.
+     * optional SSI work-budget caps. The final four additive arguments cap
+     * marching steps, pending branch seeds, traced segments, and branch
+     * points per direction; omitted or `null` values preserve their kernel
+     * defaults.
      * @param {string} op
      * @param {number} a
      * @param {number} b
@@ -278,13 +281,17 @@ class BrepKernel {
      * @param {boolean | null} [exact_only]
      * @param {number | null} [newton_iterations]
      * @param {number | null} [subdivision_depth]
+     * @param {number | null} [march_steps]
+     * @param {number | null} [queue_size]
+     * @param {number | null} [segments]
+     * @param {number | null} [branches_per_direction]
      * @returns {CancellableBooleanResult}
      */
-    booleanWithCancellation(op, a, b, token, exact_only, newton_iterations, subdivision_depth) {
+    booleanWithCancellation(op, a, b, token, exact_only, newton_iterations, subdivision_depth, march_steps, queue_size, segments, branches_per_direction) {
         const ptr0 = passStringToWasm0(op, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
         _assertClass(token, OperationCancellationToken);
-        const ret = wasm.brepkernel_booleanWithCancellation(this.__wbg_ptr, ptr0, len0, a, b, token.__wbg_ptr, isLikeNone(exact_only) ? 0xFFFFFF : exact_only ? 1 : 0, !isLikeNone(newton_iterations), isLikeNone(newton_iterations) ? 0 : newton_iterations, !isLikeNone(subdivision_depth), isLikeNone(subdivision_depth) ? 0 : subdivision_depth);
+        const ret = wasm.brepkernel_booleanWithCancellation(this.__wbg_ptr, ptr0, len0, a, b, token.__wbg_ptr, isLikeNone(exact_only) ? 0xFFFFFF : exact_only ? 1 : 0, !isLikeNone(newton_iterations), isLikeNone(newton_iterations) ? 0 : newton_iterations, !isLikeNone(subdivision_depth), isLikeNone(subdivision_depth) ? 0 : subdivision_depth, !isLikeNone(march_steps), isLikeNone(march_steps) ? 0 : march_steps, !isLikeNone(queue_size), isLikeNone(queue_size) ? 0 : queue_size, !isLikeNone(segments), isLikeNone(segments) ? 0 : segments, !isLikeNone(branches_per_direction), isLikeNone(branches_per_direction) ? 0 : branches_per_direction);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
@@ -307,25 +314,33 @@ class BrepKernel {
      * or `null` keeps the kernel default, reproducing prior behavior.
      * `subdivision_depth` likewise caps recursive SSI seed subdivision
      * (`0` disables recursive splitting; omitted or `null` keeps depth 6).
+     * The additive `march_steps`, `queue_size`, `segments`, and
+     * `branches_per_direction` arguments cap the remaining SSI marcher and
+     * branch-exploration work. Omitted or `null` values retain the historical
+     * defaults (200, 100, 50, and 10 respectively).
      *
      * # Errors
      *
      * Returns an error if a handle is invalid, the op string is unknown,
-     * `newton_iterations` is not a non-negative integer within the public
-     * work budget, `subdivision_depth` is invalid under the same rules, or
-     * (under `exact_only`) the exact pipeline cannot produce the result.
+     * any work-budget argument is not a non-negative integer within the
+     * public work budget, or (under `exact_only`) the exact pipeline cannot
+     * produce the result.
      * @param {string} op
      * @param {number} a
      * @param {number} b
      * @param {boolean | null} [exact_only]
      * @param {number | null} [newton_iterations]
      * @param {number | null} [subdivision_depth]
+     * @param {number | null} [march_steps]
+     * @param {number | null} [queue_size]
+     * @param {number | null} [segments]
+     * @param {number | null} [branches_per_direction]
      * @returns {BooleanQualityResult}
      */
-    booleanWithQuality(op, a, b, exact_only, newton_iterations, subdivision_depth) {
+    booleanWithQuality(op, a, b, exact_only, newton_iterations, subdivision_depth, march_steps, queue_size, segments, branches_per_direction) {
         const ptr0 = passStringToWasm0(op, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_booleanWithQuality(this.__wbg_ptr, ptr0, len0, a, b, isLikeNone(exact_only) ? 0xFFFFFF : exact_only ? 1 : 0, !isLikeNone(newton_iterations), isLikeNone(newton_iterations) ? 0 : newton_iterations, !isLikeNone(subdivision_depth), isLikeNone(subdivision_depth) ? 0 : subdivision_depth);
+        const ret = wasm.brepkernel_booleanWithQuality(this.__wbg_ptr, ptr0, len0, a, b, isLikeNone(exact_only) ? 0xFFFFFF : exact_only ? 1 : 0, !isLikeNone(newton_iterations), isLikeNone(newton_iterations) ? 0 : newton_iterations, !isLikeNone(subdivision_depth), isLikeNone(subdivision_depth) ? 0 : subdivision_depth, !isLikeNone(march_steps), isLikeNone(march_steps) ? 0 : march_steps, !isLikeNone(queue_size), isLikeNone(queue_size) ? 0 : queue_size, !isLikeNone(segments), isLikeNone(segments) ? 0 : segments, !isLikeNone(branches_per_direction), isLikeNone(branches_per_direction) ? 0 : branches_per_direction);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
