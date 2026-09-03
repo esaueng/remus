@@ -1410,14 +1410,19 @@ fn unify_faces_with_history_impl(
         let mut internal_edges: HashSet<usize> = HashSet::new();
 
         // The seam meridian of a periodic group surface, as the `u` of a
-        // seam Line edge — one a face in the group uses twice — falling back
-        // to the surface frame's own `u = 0`. A boolean can split a lateral
-        // AT its seam: the two pieces then share the seam edge like any
-        // internal edge, but dropping it leaves the merged face with a
-        // seam that runs only part of the height and the far rim demoted to
-        // an inner wire; the shell still validates, and the periodic
-        // tessellator produces an open mesh from it (a boss standing on a
-        // shaft's base, at 90° and 180° round the shaft).
+        // seam Line edge — one a face in the group uses twice. A boolean
+        // can split a lateral AT its seam: the two pieces then share the
+        // seam edge like any internal edge, but dropping it leaves the
+        // merged face with a seam that runs only part of the height and the
+        // far rim demoted to an inner wire; the shell still validates, and
+        // the periodic tessellator produces an open mesh from it (a boss
+        // standing on a shaft's base, at 90° and 180° round the shaft).
+        //
+        // Only a doubled seam line is evidence. Falling back to the surface
+        // frame's `u = 0` protected an ordinary section generator that
+        // happened to lie on that meridian — three overlapping cylinders in
+        // a row kept their lens generators, and every merged wall came back
+        // with a bogus inner wire and an open mesh.
         let seam_u_of = |p: Point3| -> Option<f64> {
             let face = topo.face(group_face_ids[0]).ok()?;
             match face.surface() {
@@ -1443,8 +1448,7 @@ fn unify_faces_with_history_impl(
             .filter(|(_, faces)| {
                 faces.len() == 2 && faces[0] == faces[1] && group_set.contains(&faces[0].index())
             })
-            .find_map(|(edge_idx, _)| line_meridian(*edge_idx))
-            .or_else(|| seam_u_of(Point3::new(0.0, 0.0, 0.0)).map(|_| 0.0));
+            .find_map(|(edge_idx, _)| line_meridian(*edge_idx));
         let on_seam = |edge_idx: usize| -> bool {
             let (Some(seam), Some(u)) = (seam_u, line_meridian(edge_idx)) else {
                 return false;
