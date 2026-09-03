@@ -895,6 +895,29 @@ one), and hold-line variants where one contact curve is prescribed. The
 styling tier — genuinely optional for mechanical CAD; keep behind the rest of
 M5.
 
+Implemented on this branch for one exact bounded cell. Each face set contains
+one convex, hole-free, straight-edged planar support; the two carrier planes
+are transversal, their faces share no `EdgeId`, and their bounded polygons
+overlap along a positive span of the carrier-intersection line. Face
+orientation selects the material-side blend quadrant. The operation produces
+a new validated first-class Sheet containing an exact cylindrical band; it
+does not trim or otherwise mutate either support. An optional hold line names
+one selected support and must match that support's complete analytic contact
+segment in either direction. Invalid numeric or hold data and every
+well-formed request outside the declared cell fail transactionally; the latter
+uses stable native/WASM code `unsupported-face-face-blend`.
+
+The exit witness uses two bounded perpendicular faces with disjoint edges and
+a 10-unit common span. Radius 1 produces contact lines at exactly one unit
+from the sharp carrier intersection and an exact quarter-cylinder sheet of
+area `5 pi`. Native tests independently integrate the tessellated area,
+validate the Sheet body, verify scale/translation behavior at
+`1e-3 / 1 / 1e3`, and pin support-overflow, malformed-polygon, multi-face-set,
+and hold-line refusals with unchanged topology. Direct and structured-batch
+WASM routes agree with and without the hold line. Multi-face sets, curved or
+holed supports, solid integration/re-limitation, and partial-contact hold
+curves remain Unqualified rather than falling back to an approximate band.
+
 > **Exit gate:** face-face blend between disjoint-edge faces builds with
 > prescribed radius; hold-line contact verified on the result.
 
