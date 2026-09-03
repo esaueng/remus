@@ -895,10 +895,11 @@ one), and hold-line variants where one contact curve is prescribed. The
 styling tier — genuinely optional for mechanical CAD; keep behind the rest of
 M5.
 
-Implemented on this branch for one exact bounded cell. Each face set contains
-one convex, hole-free, straight-edged planar support; the two carrier planes
-are transversal, their faces share no `EdgeId`, and their bounded polygons
-overlap along a positive span of the carrier-intersection line. Face
+Implemented, in review in [PR #236](https://github.com/esaueng/remus/pull/236),
+for one exact bounded cell. Each face set contains one convex, hole-free,
+straight-edged planar support; the two carrier planes are transversal, their
+faces share no `EdgeId`, and their bounded polygons overlap along a positive
+span of the carrier-intersection line. Face
 orientation selects the material-side blend quadrant. The operation produces
 a new validated first-class Sheet containing an exact cylindrical band; it
 does not trim or otherwise mutate either support. An optional hold line names
