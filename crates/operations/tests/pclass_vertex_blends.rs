@@ -10,6 +10,7 @@ use remus_math::vec::{Point3, Vec3};
 use remus_operations::blend_ops::{blend_failure_code, fillet_v2};
 use remus_operations::extrude::extrude;
 use remus_operations::heal::unify_faces;
+use remus_operations::measure::solid_volume;
 use remus_operations::primitives::{make_box, make_convex_hull};
 use remus_operations::query::effective_face_normal;
 use remus_operations::tessellate::tessellate_solid_with_tolerance;
@@ -43,7 +44,17 @@ fn assert_watertight(topo: &Topology, solid: SolidId) {
         remap[index] = *canonical.entry(key).or_insert(next);
     }
     let mut uses = HashMap::<(u32, u32), usize>::new();
+    let mut signed_six_volume = 0.0;
     for triangle in mesh.indices.chunks_exact(3) {
+        let points = [
+            mesh.positions[triangle[0] as usize],
+            mesh.positions[triangle[1] as usize],
+            mesh.positions[triangle[2] as usize],
+        ];
+        signed_six_volume += points[0].x()
+            * (points[1].y() * points[2].z() - points[1].z() * points[2].y())
+            - points[0].y() * (points[1].x() * points[2].z() - points[1].z() * points[2].x())
+            + points[0].z() * (points[1].x() * points[2].y() - points[1].y() * points[2].x());
         let vertices = [
             remap[triangle[0] as usize],
             remap[triangle[1] as usize],
@@ -59,6 +70,14 @@ fn assert_watertight(topo: &Topology, solid: SolidId) {
         }
     }
     assert_eq!(uses.values().filter(|&&count| count != 2).count(), 0);
+    let mesh_volume = (signed_six_volume / 6.0).abs();
+    let brep_volume = solid_volume(topo, solid, 0.005).unwrap();
+    let relative = (mesh_volume - brep_volume).abs() / brep_volume.abs().max(1.0);
+    assert!(
+        mesh_volume > 0.0 && brep_volume > 0.0 && relative < 0.03,
+        "mesh volume {mesh_volume} vs B-Rep {brep_volume} ({:.2}%)",
+        relative * 100.0
+    );
 }
 
 fn assert_sphere_stripe_g1(topo: &Topology, solid: SolidId, expected_seams: usize) {
