@@ -81,6 +81,12 @@
 
 ### Tests
 
+* **fuzz:** `modifier_ops`' option-honoured invariant compared two volumes
+  against a fraction of the whole body, so an honoured 0.05 fillet on a
+  1-unit edge fused to an 800 u³ torus (a 5e-7 relative change) read as
+  "accepted and ignored" — the campaign's only standing red was this
+  harness bug, not the kernel. It now compares at floating-point resolution
+  and reports both readings.
 * **boolean:** qualify the historical tangent-boss operand-loss fix with a
   versioned WASM repro, closed-form ratio/scale oracles, and exact-or-disclosed
   fallback policy checks.

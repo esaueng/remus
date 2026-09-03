@@ -135,14 +135,19 @@ diagnostics (`profile_intersect.rs` ×3, the two #696 dovetail probes, the four
 `diag_*tangency*` landscape probes — re-run those with `--ignored --nocapture`
 before re-opening the tangency row). Everything else that was once "deferred"
 is either a §B row in `roadmap.md`, a program-ledger issue, or a closed entry in
-`campaign-history.md`. Live scheduled red: the `modifier_ops` fuzz target's
-draft watertightness finding (2026-09-02, latent since at least 2026-08-30).
+The `modifier_ops` fuzz red of 2026-09-02 was the harness's own
+option-honoured floor misreading a correct 0.05 fillet on an 800 u³ body, not
+a kernel defect (fixed in `fuzz/fuzz_targets/invariants.rs`). Still open with
+a repro: `crates/operations/tests/regress_parallel_boss_band_sections.rs`
+(#198) pins cut/intersect pocket faces on a cylinder wall coming back
+inconsistently oriented — an engine defect with no §B row yet.
 
 ## Durable lessons (one line each; the story is in `campaign-history.md`)
 
 - **Performance baselines start from measured stack families, not a guessed loop list;** O3.1's 3% census and native-only Criterion map live in `docs/kernel-maturity/o31-inner-loop-baseline.md`.
 - **Exact rational conic twins do not preserve angle-linear parameter speed;** compare positions after projection plus tangent direction and curvature, and use a deterministic one-sided radial derivative at revolution poles (`crates/math/src/surfaces/swept/tests.rs`, PR #189).
 
+- **Replay a fuzz artifact natively and print BOTH measurements before believing its message;** an assertion that formats one reading twice reads exactly like a no-op that never happened (`modifier_ops`, 2026-09-02).
 - **Not every scenario failure is a boolean fallback.** Tessellation density,
   shared-rim meshing, and face orientation produced whole failure families with
   zero mesh fallbacks; capture the actual boolean traffic and replay operands
