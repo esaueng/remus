@@ -128,6 +128,16 @@ pub fn get_f64(args: &serde_json::Value, key: &str) -> Result<f64, StructuredWas
     })
 }
 
+/// Extract a required boolean value from a JSON object.
+pub fn get_bool(args: &serde_json::Value, key: &str) -> Result<bool, StructuredWasmError> {
+    args[key].as_bool().ok_or_else(|| {
+        StructuredWasmError::invalid_argument(
+            format!("missing or invalid '{key}' boolean"),
+            Some(key),
+        )
+    })
+}
+
 /// Extract a required array of `f64` from a JSON object.
 ///
 /// # Errors

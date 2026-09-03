@@ -95,8 +95,8 @@ FIXED_PATH_WRITER_IDENTITIES: dict[str, tuple[str, ...]] = {
     "phase_ff::perform_with_context": ("f2c1c0502a6555dd",),
     "phase_ff::emit_exact_arc": ("c4f42adb4b69bf8b",),
     "phase_ff::emit_split_circle_arcs": ("17f3591d66b9ff10",),
-    "boolean::assembly::SphereCapFace": ("b4495bb8cfd29eeb",),
-    "boolean::assembly::CylindricalFace": ("1ee00d4def91bbfd",),
+    "boolean::assembly::SphereCapFace": ("f5a635c7c8e59358",),
+    "boolean::assembly::CylindricalFace": ("deffee83a55bf7d9",),
     "boolean::box_sphere::build_arc_edge": ("e947102e0733a63b",),
     "boolean::merge_result_vertices::snapshot_and_rebuild": ("8fa4ac4bcd5a517f",),
     "primitives::make_cylinder::rims": (

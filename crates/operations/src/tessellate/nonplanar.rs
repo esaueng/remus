@@ -1771,6 +1771,181 @@ fn stitch_rings(
     }
 }
 
+/// Tessellate a periodic walking-blend NURBS band from its two shared contact
+/// loops. Its UV boundary is a rectangle whose two periodic sides collapse to
+/// closed 3D curves, a shape the planar CDT cannot represent without dropping
+/// most boundary constraints.
+pub(super) fn tessellate_nurbs_blend_band_shared(
+    topo: &Topology,
+    face_data: &remus_topology::face::Face,
+    deflection: f64,
+    angular_tol: f64,
+    edge_global_indices: &DetHashMap<usize, Vec<u32>>,
+    merged: &mut TriangleMesh,
+    point_to_global: &mut DetHashMap<(i64, i64, i64), u32>,
+) -> Result<bool, crate::OperationsError> {
+    let FaceSurface::Nurbs(surface) = face_data.surface() else {
+        return Ok(false);
+    };
+    if !face_data.inner_wires().is_empty() || !surface.is_periodic_v() {
+        return Ok(false);
+    }
+
+    let wire = topo.wire(face_data.outer_wire())?;
+    let mut counts: DetHashMap<usize, usize> = DetHashMap::default();
+    for edge_use in wire.edges() {
+        *counts.entry(edge_use.edge().index()).or_default() += 1;
+    }
+    let mut contacts = Vec::new();
+    let mut doubled_open = 0;
+    let mut seen: DetHashSet<usize> = DetHashSet::default();
+    for edge_use in wire.edges() {
+        if !seen.insert(edge_use.edge().index()) {
+            continue;
+        }
+        let edge = topo.edge(edge_use.edge())?;
+        match (
+            counts[&edge_use.edge().index()],
+            edge.is_closed(),
+            edge.curve(),
+        ) {
+            (1, true, EdgeCurve::NurbsCurve(_)) => contacts.push(edge_use.edge()),
+            (2, false, _) => doubled_open += 1,
+            _ => return Ok(false),
+        }
+    }
+    if contacts.len() != 2 || doubled_open != 1 {
+        return Ok(false);
+    }
+
+    let mut rims = Vec::with_capacity(2);
+    for contact in contacts {
+        let Some(pool) = edge_global_indices.get(&contact.index()) else {
+            return Ok(false);
+        };
+        let mut gids = pool.clone();
+        if gids.len() > 2
+            && (gids.first() == gids.last()
+                || (merged.positions[*gids.first().unwrap_or(&0) as usize]
+                    - merged.positions[*gids.last().unwrap_or(&0) as usize])
+                    .length()
+                    < 1e-10)
+        {
+            gids.pop();
+        }
+        let mut unique = DetHashSet::default();
+        gids.retain(|gid| unique.insert(*gid));
+        if gids.len() < 3 {
+            return Ok(false);
+        }
+
+        let probe = merged.positions[gids[0] as usize];
+        let Ok(projected) =
+            remus_math::nurbs::projection::project_point_to_surface(surface, probe, 1e-7)
+        else {
+            return Ok(false);
+        };
+        let count = gids.len();
+        let ring = gids
+            .into_iter()
+            .enumerate()
+            .map(|(index, gid)| {
+                #[allow(clippy::cast_precision_loss)]
+                let angle = TAU * index as f64 / count as f64;
+                (angle, gid)
+            })
+            .collect::<LatRing>();
+        rims.push((projected.u, ring));
+    }
+    rims.sort_by(|a, b| a.0.total_cmp(&b.0));
+
+    let (u0, u1) = surface.domain_u();
+    let (v0, v1) = surface.domain_v();
+    if (rims[0].0 - u0).abs() > 1e-4 || (rims[1].0 - u1).abs() > 1e-4 {
+        return Ok(false);
+    }
+    let n_cols = rims[0].1.len().max(rims[1].1.len()).max(8);
+
+    // Refine the rational cross-section until both chord sag and tangent turn
+    // satisfy the caller's tessellation policy. Sampling all ring stations
+    // avoids assuming a constant section radius on variable-radius blends.
+    let mut n_rows = 1_usize;
+    loop {
+        let mut acceptable = true;
+        for row in 0..n_rows {
+            #[allow(clippy::cast_precision_loss)]
+            let ua = u0 + (u1 - u0) * row as f64 / n_rows as f64;
+            #[allow(clippy::cast_precision_loss)]
+            let ub = u0 + (u1 - u0) * (row + 1) as f64 / n_rows as f64;
+            let um = f64::midpoint(ua, ub);
+            for column in 0..n_cols.min(64) {
+                #[allow(clippy::cast_precision_loss)]
+                let v = v0 + (v1 - v0) * column as f64 / n_cols.min(64) as f64;
+                let pa = surface.evaluate(ua, v);
+                let pb = surface.evaluate(ub, v);
+                let pm = surface.evaluate(um, v);
+                let chord_mid = pa + (pb - pa) * 0.5;
+                if (pm - chord_mid).length() > deflection {
+                    acceptable = false;
+                    break;
+                }
+                if angular_tol > 0.0 {
+                    let na = surface.normal(ua, v).unwrap_or(Vec3::new(0.0, 0.0, 1.0));
+                    let nb = surface.normal(ub, v).unwrap_or(Vec3::new(0.0, 0.0, 1.0));
+                    if na.dot(nb).clamp(-1.0, 1.0).acos() > angular_tol {
+                        acceptable = false;
+                        break;
+                    }
+                }
+            }
+            if !acceptable {
+                break;
+            }
+        }
+        if acceptable {
+            break;
+        }
+        n_rows = n_rows.saturating_mul(2);
+        if n_rows > 1024 || validate_interior_grid_size(n_rows, n_cols).is_err() {
+            return Ok(false);
+        }
+    }
+
+    let (s1, s2) = (surface.clone(), surface.clone());
+    let project = move |point: Point3| {
+        remus_math::nurbs::projection::project_point_to_surface(&s1, point, 1e-7).map_or_else(
+            |_| (f64::midpoint(u0, u1), f64::midpoint(v0, v1)),
+            |p| (p.u, p.v),
+        )
+    };
+    let normal = move |u: f64, v: f64| s2.normal(u, v).unwrap_or(Vec3::new(0.0, 0.0, 1.0));
+    let emit = make_band_emit(&project, &normal);
+    let mut previous = rims[0].1.clone();
+    for row in 1..n_rows {
+        #[allow(clippy::cast_precision_loss)]
+        let u = u0 + (u1 - u0) * row as f64 / n_rows as f64;
+        let mut ring = Vec::with_capacity(n_cols);
+        for column in 0..n_cols {
+            #[allow(clippy::cast_precision_loss)]
+            let fraction = column as f64 / n_cols as f64;
+            let v = v0 + (v1 - v0) * fraction;
+            let point = surface.evaluate(u, v);
+            let key = point_merge_key(point, MERGE_GRID);
+            let gid = *point_to_global.entry(key).or_insert_with(|| {
+                let index = merged.positions.len() as u32;
+                merged.positions.push(point);
+                merged.normals.push(normal(u, v));
+                index
+            });
+            ring.push((TAU * fraction, gid));
+        }
+        stitch_rings(merged, &previous, &ring, &emit);
+        previous = ring;
+    }
+    stitch_rings(merged, &previous, &rims[1].1, &emit);
+    Ok(true)
+}
+
 /// CDT-based tessellation for non-planar faces with exact boundary constraints.
 ///
 /// Projects shared edge points into (u,v) parameter space, generates interior
