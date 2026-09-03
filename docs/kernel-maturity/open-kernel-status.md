@@ -37,7 +37,7 @@ that flips them; agents do not flip them autonomously.
 | O3.2 Journal-invalidated spatial cache | B | Pending | — |
 | O3.3 SIMD in NURBS evaluation | B (evidence-gated) | Pending | — |
 | O4.1a Facade crate + Model type | A | Complete — the native `remus::Model` owns topology and operation policy with journal access; its curated prelude exposes quality-disclosed booleans, v2 blends, sweeps, measurement, tessellation, STEP, validation, and persistent references with flat typed errors; the runnable quickstart and transactional refusal tests pin the contract | [#201](https://github.com/esaueng/remus/pull/201) |
-| O4.1b Facade examples | A | Pending | — |
+| O4.1b Facade examples | A | Complete — packaged native workflows now cover constrained-sketch bracket construction through exact STEP, typed STEP recovery with validate/heal-or-tolerate handling and an exact containment boolean, and native replay of the committed cross-drilled WASM contract; analytic volume plus validation and welded watertight/manifold oracles pin every result | [#225](https://github.com/esaueng/remus/pull/225) |
 | O4.1c WASM delegation to facade | B | Pending | — |
 | O4.2a Publish dry-run readiness | B | Pending | — |
 | O4.2b Tag-driven release automation | B | Pending | — |
