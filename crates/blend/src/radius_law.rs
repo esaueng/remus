@@ -156,6 +156,12 @@ pub enum RadiusLaw {
         end: f64,
     },
     /// Custom law: boxed closure mapping `t in [0,1]` to radius.
+    ///
+    /// The callback must be deterministic and free of observable side effects:
+    /// validation and Newton evaluation may call it repeatedly at the same
+    /// parameter. Because arbitrary closure behavior cannot be proven between
+    /// samples, whole-domain qualification is available only to the standard
+    /// laws above.
     Custom(Box<dyn Fn(f64) -> f64 + Send + Sync>),
 }
 

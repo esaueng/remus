@@ -111,7 +111,10 @@ impl<'a> FilletBuilder<'a> {
         // early refusal, then the walker re-validates every station it actually
         // consumes. It is never replaced by a different law.
         let tol = remus_math::tolerance::Tolerance::new();
-        for law in &laws {
+        for (seeds, law) in seeds_by_law.iter().zip(&laws) {
+            if seeds.is_empty() {
+                continue;
+            }
             if law.exact_bounds().is_some() {
                 law.validate_at(0.0, tol.linear)?;
                 law.validate_at(1.0, tol.linear)?;
@@ -2055,6 +2058,19 @@ mod tests {
                 topo.num_solids(),
             )
         );
+    }
+
+    #[test]
+    fn fillet_builder_does_not_validate_an_unused_empty_edge_law() {
+        let mut topo = Topology::new();
+        let solid = make_unit_cube_manifold(&mut topo);
+        let edge = remus_topology::explorer::solid_edges(&topo, solid).unwrap()[0];
+
+        let mut builder = FilletBuilder::new(&mut topo, solid);
+        builder.add_edges_with_law(&[], RadiusLaw::Constant(f64::NAN));
+        builder.add_edges(&[edge], 0.1);
+        let result = builder.build().unwrap();
+        assert_eq!(result.succeeded, vec![edge]);
     }
 
     #[test]
