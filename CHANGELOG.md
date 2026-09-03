@@ -103,6 +103,15 @@
 
 ### Tests
 
+* pin four mutants the scheduled mutation run found alive:
+  `find_edge_surface_crossings`' duplicate window, which no test had asked
+  for two crossings on one edge (a line through a cylinder now does);
+  `pb_strictly_inside_circle`, reached only through whole booleans before,
+  now exercised against a disc directly for both its bound and its rim; and
+  `is_uniform_scale`, which needed a matrix that passes one of its two legs
+  and fails the other (a shear, and an anisotropic scale). `ccw_arc_trim`'s
+  redundant finiteness test — an unkillable mutant, since a non-finite `t0`
+  makes `delta` non-finite too — is folded into the test on `delta`.
 * **fuzz:** `modifier_ops`' option-honoured invariant compared two volumes
   against a fraction of the whole body, so an honoured 0.05 fillet on a
   1-unit edge fused to an 800 u³ torus (a 5e-7 relative change) read as
