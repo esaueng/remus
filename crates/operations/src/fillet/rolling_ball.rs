@@ -377,21 +377,6 @@ pub fn fillet_rolling_ball_with_origins(
             });
         }
 
-        // This legacy engine builds strips from distinct endpoint vertices.
-        // A closed edge has no such endpoints, so construction can either
-        // collapse a face or disconnect the result depending on rim orientation.
-        // Refuse both cases consistently so the dispatcher can use fillet_v2.
-        for &edge_id in &user_edges {
-            if topo.edge(edge_id)?.is_closed() {
-                return Err(crate::OperationsError::InvalidInput {
-                    reason: format!(
-                        "fillet would produce a degenerate face: closed single-edge spine {edge_id:?} \
-                         is not supported by the rolling-ball engine"
-                    ),
-                });
-            }
-        }
-
         // Phase 2a: G1 chain propagation — automatically expand the edge set to
         // include all G1-continuous neighbors sharing the same face pair.
         let filtered_edges = remus_blend::g1_chain::expand_g1_chain(topo, solid, &user_edges, tol)?;
@@ -527,6 +512,22 @@ pub fn fillet_rolling_ball_with_origins(
                         ),
                     });
                 }
+            }
+        }
+
+        // This legacy engine builds strips from distinct endpoint vertices.
+        // A closed edge has no such endpoints, so construction can either
+        // collapse a face or disconnect the result depending on rim orientation.
+        // Run radius preflight first to retain its more specific diagnostics,
+        // then refuse both construction cases so the dispatcher can use fillet_v2.
+        for &edge_id in &filtered_edges {
+            if topo.edge(edge_id)?.is_closed() {
+                return Err(crate::OperationsError::InvalidInput {
+                    reason: format!(
+                        "fillet would produce a degenerate face: closed single-edge spine {edge_id:?} \
+                         is not supported by the rolling-ball engine"
+                    ),
+                });
             }
         }
 
