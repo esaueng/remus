@@ -416,16 +416,16 @@ fn drilled_plate_accepts_a_second_fillet() {
     assert_hole_rims_exact(&topo, second.solid, &holes, "second fillet");
 }
 
-/// A radius large enough to reach a hole must be refused by radius, and the
+/// A radius large enough to reach a hole must stop at that cliff, and the
 /// input must come back untouched.
 ///
 /// The hole centre sits 4 mm from the edge with a 2.25 mm radius, so the rim
 /// clears the edge by 1.75 mm. At r = 2 the cap's rebuilt boundary would cross
 /// it. The failure is genuinely about the radius — r = 1 rounds the same edge
-/// fine — so it must report `RadiusTooLarge`, not a trimming failure and
+/// fine — so it must report `CliffEncountered`, not a trimming failure and
 /// certainly not a closed-but-self-intersecting solid.
 #[test]
-fn fillet_reaching_a_hole_is_refused_by_radius() {
+fn fillet_reaching_a_hole_is_refused_at_the_cliff() {
     let mut topo = Topology::new();
     let body = plate(&mut topo, &[(W / 2.0, 4.0)]);
     let edge = top_edge(&topo, body, true, 0.0);
@@ -437,8 +437,8 @@ fn fillet_reaching_a_hole_is_refused_by_radius() {
         .expect("a radius that reaches the hole must fail");
     assert_eq!(
         blend_ops::blend_failure_code(&err),
-        "radius-too-large",
-        "the cause is the radius, not the topology: {err}"
+        "cliff-encountered",
+        "the cause is the support boundary, not the topology: {err}"
     );
 
     let after = measure::solid_volume(&topo, body, VOLUME_DEFLECTION).unwrap();

@@ -612,7 +612,7 @@ fn sample_edge(
 /// loop still passes the closed-shell and Euler checks, so the result looks
 /// valid and meshes into a self-intersecting body. The cause is genuinely the
 /// radius — the same edge blends fine below the clearance — so this reports
-/// `RadiusTooLarge` with the clearance as the achievable maximum.
+/// `CliffEncountered` with the clearance as the achievable maximum.
 ///
 /// Only straight blended edges are considered: a closed rim edge IS an inner
 /// loop, and the analytic rim assemblers have their own clearance guard.
@@ -650,9 +650,11 @@ fn reject_blend_into_hole(
                     }
                 }
                 if clearance <= size {
-                    return Err(OperationsError::Blend(BlendError::RadiusTooLarge {
+                    return Err(OperationsError::Blend(BlendError::CliffEncountered {
                         edge: edge_id,
-                        max_radius: clearance,
+                        face: face_id,
+                        requested_radius: size,
+                        available_radius: clearance,
                     }));
                 }
             }
@@ -935,7 +937,11 @@ fn fillet_group(
         // fall-through starts from a clean arena.
         match transactional(topo, |t| planar_fillet_result(t, solid, edges, radius)) {
             Ok(result) => return Ok(result),
-            Err(error @ OperationsError::Blend(BlendError::RadiusTooLarge { .. })) => {
+            Err(
+                error @ OperationsError::Blend(
+                    BlendError::RadiusTooLarge { .. } | BlendError::CliffEncountered { .. },
+                ),
+            ) => {
                 return Err(error);
             }
             Err(e) => {
@@ -1087,9 +1093,14 @@ fn fillet_by_feature(
 
 /// Fillet edges with constant radius (v2 walking-based engine).
 ///
+/// The current overflow policy is **stop at cliff**. If a requested band
+/// reaches the outer or inner boundary of a support face, the whole operation
+/// is rolled back and returns [`BlendError::CliffEncountered`]. Remus does not
+/// yet roll the band onto the next support face.
+///
 /// # Errors
 /// Returns `OperationsError` if radius is non-positive, edges are empty,
-/// or the blend computation fails.
+/// the stop-at-cliff boundary is reached, or the blend computation fails.
 pub fn fillet_v2(
     topo: &mut Topology,
     solid: SolidId,
@@ -1149,6 +1160,7 @@ pub fn blend_failure_code(error: &OperationsError) -> &'static str {
             "unsupported-setback-corner"
         }
         OperationsError::Blend(BlendError::TrimmingFailure { .. }) => "trimming-failure",
+        OperationsError::Blend(BlendError::CliffEncountered { .. }) => "cliff-encountered",
         OperationsError::Blend(BlendError::RadiusTooLarge { .. }) => "radius-too-large",
         OperationsError::Blend(BlendError::CornerFailure { .. }) => "corner-failure",
         OperationsError::Blend(BlendError::EdgesNotBlended { .. }) => "edges-not-blended",

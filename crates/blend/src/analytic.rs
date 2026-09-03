@@ -740,7 +740,7 @@ fn plane_plane_chamfer(
 /// spindle, but the quarter-tube band cut from it never reaches the
 /// self-intersecting lobe. A radius at or past that bound, and the
 /// vertex-tolerance sliver below it where the remaining cap face would be
-/// smaller than a vertex, is refused as [`BlendError::RadiusTooLarge`]
+/// smaller than a vertex, is refused as [`BlendError::CliffEncountered`]
 /// rather than declined — no engine below can fit a ball that does not fit,
 /// and a caller handed a bare partial result cannot tell an impossible
 /// radius from an internal failure.
@@ -752,7 +752,7 @@ fn plane_plane_chamfer(
 /// # Errors
 ///
 /// Returns `BlendError` if topology lookups fail, or
-/// [`BlendError::RadiusTooLarge`] for an inward convex contact whose radius
+/// [`BlendError::CliffEncountered`] for an inward convex contact whose radius
 /// is at or past the cylinder radius.
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub fn plane_cylinder_fillet(
@@ -847,15 +847,9 @@ pub fn plane_cylinder_fillet(
     //    emitting one produces a body that passes every topological check and
     //    tessellates into degenerate triangles.
     //
-    //    Inward and CONCAVE (the flat bottom of a blind hole) shares all of
-    //    that geometry, and the argument above applies to it unchanged — but it
-    //    KEEPS the `r_c/2` bound, because the rim assembly is independently
-    //    wrong for it and the old bound is the only thing limiting how far the
-    //    wrongness reaches. An r = 3 blind hole rounded at r = 1 loses 7.93 of
-    //    volume where a concave blend must ADD 3.74, and the result passes the
-    //    closed-shell, Euler and blend-volume-budget checks. That defect
-    //    predates this bound and wants its own lane; widening here would only
-    //    hand it more radii to be wrong at.
+    //    Inward and CONCAVE (the flat bottom of a blind hole) shares that
+    //    geometry and the same open `r < r_c` bound. Its exact collar assembly
+    //    is independently pinned by the blind-hole-floor qualification tests.
     if radius <= tol_lin {
         return Ok(None);
     }
@@ -883,9 +877,11 @@ pub fn plane_cylinder_fillet(
         let Some(&edge) = spine.edges().first() else {
             return Ok(None);
         };
-        return Err(BlendError::RadiusTooLarge {
+        return Err(BlendError::CliffEncountered {
             edge,
-            max_radius: r_c,
+            face: face_plane,
+            requested_radius: radius,
+            available_radius: max_radius,
         });
     }
 
