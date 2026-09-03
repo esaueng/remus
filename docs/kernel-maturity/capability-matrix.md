@@ -116,15 +116,26 @@ does not itself promote or demote anything.
   retains four spherical faces, matches the independent spherical-lens and
   inclusion–exclusion volumes, classifies material probes, and tessellates
   closed and manifold across three deflections, including an oblique-center
-  witness. The CI-ratcheted
+  witness. A sphere centred in and protruding through all six faces of a box
+  now fuses through the exact-only path as 6 planar patches plus 10 spherical
+  caps; the result is closed/manifold and matches a separately constructed
+  exact intersection through inclusion–exclusion.
+  Equal-radius perpendicular cylinder×cylinder is also exact for all
+  three operators: intersection retains six cylinder patches bounded by eight
+  authoritative ellipse arcs, matches the independent `16r³/3` Steinmetz
+  oracle across radii and rigid motion, and tessellates closed and manifold at
+  three deflections. The CI-ratcheted
   `approx_census` additionally exposes exact/fallback/error path and result
   face-count drift across its representative operation matrix; it is a drift
   detector, not by itself qualification evidence for a cell.
 - Known Unsupported-untyped / Partial cells: exact plane/cylinder tangency is
   not generally qualified beyond those witnesses; sliver crossings (~1e-5 to
-  0.05 mm on r = 10) fall over to approximate; general torus pairs limited;
+  0.05 mm on r = 10) fall over to approximate. The torus/box notch family is
+  exact for Cut and Intersect: the complement result retains one torus and
+  four planes, validates without errors, and matches a mesh-volume oracle
+  within 1% through native and WASM exact-only paths. General torus pairs,
   seam-crossing, nested-shell, sheet-solid, and multi-body General Fuse cells
-  Unqualified.
+  remain Unqualified.
 
 ### Intersections (curve-curve, curve-surface, surface-surface)
 
@@ -138,14 +149,16 @@ does not itself promote or demote anything.
 - **Qualified cells** (closed-form classification incl. tangency and
   coincidence, scale-invariant): plane–plane, plane–sphere,
   plane–cylinder, sphere–sphere, parallel-axis cylinder–cylinder, coaxial
-  sphere–cylinder.
+  sphere–cylinder, and intersecting perpendicular equal-radius
+  cylinder–cylinder (two exact planar ellipse branches).
 - Known gaps: remaining surface pairs delegate to the legacy path and are
   wrapped as Unclassified/incomplete (declared, not silent); curve-curve
   and curve-surface qualification pending. NURBS SSI consumes caller-owned
   march/queue/segment/branch, coupled-Newton, and recursive seed-subdivision
-  budgets, and is cooperatively cancellable through seed discovery, Newton
-  refinement, and marching via `OperationContext`; its scheduled
-  `nurbs_surface` fuzzer validates bounded rational patch
+  budgets; all six are exposed by direct quality/cancellation and batch
+  quality WASM booleans. SSI is cooperatively cancellable through seed
+  discovery, Newton refinement, and marching via `OperationContext`; its
+  scheduled `nurbs_surface` fuzzer validates bounded rational patch
   construction/evaluation and plane-section output against an independent
   plane oracle. Parameter-space budgets remain incomplete. Conic curve cells
   (hyperbola, parabola) Unqualified;
@@ -441,9 +454,9 @@ claim, and they are the first implementation targets of the program:
    Boolean vertex/edge/face events, a lineage journal, and persistent
    references exist. Coedge-use evolution and complete records for every
    modifier remain queued; those gaps stay disclosed rather than inferred.
-4. **Partial operation-context coverage.** Public booleans carry tolerance,
-   fallback policy, NURBS marching, coupled-Newton, and recursive
-   seed-subdivision budgets, and cooperative cancellation explicitly.
+4. **Partial operation-context coverage.** Public booleans expose and carry
+   fallback policy, all six NURBS SSI work budgets, and cooperative
+   cancellation explicitly, alongside the context's tolerance.
    Generated-topology/memory budgets,
    parameter-space tolerance, determinism policy, and non-boolean operation
    families remain local or unmigrated.
