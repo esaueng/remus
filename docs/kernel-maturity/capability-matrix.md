@@ -191,7 +191,11 @@ does not itself promote or demote anything.
 - Known Qualified/Partial evidence: planar line-edge manifold builders;
   exact toroidal cylinder-cap rim assembler across `0 < f < r_c` with
   closed-form volume/area verification; typed `RadiusTooLarge` refusals;
-  blind-hole floor rim deliberately capped at `r_c/2`.
+  blind-hole floor rim deliberately capped at `r_c/2`; in-review PR #226
+  qualifies straight-edge perpendicular-plane variable-radius walking bands:
+  exact standard-law extrema, typed tolerance-collapse and caller-supplied
+  local-limit boundaries, an analytic ruled-surface plus closed-form linear
+  volume oracle, and sampled S-curve radius/incidence/tangency invariants.
 - Fail-closed contract (Qualified, every public entry point): direct WASM
   bindings, `executeBatch`/`executeBatchV2`, journaled wrappers, and the
   legacy v1 Rust APIs (`fillet`, `fillet_rolling_ball`, `fillet_variable`,
@@ -205,9 +209,12 @@ does not itself promote or demote anything.
   `fillet-variable-fail-closed` plus the `regress_fillet_fail_closed` and
   `fillet_fail_closed_tests` suites pin the contract from both sides across
   a 1e-3/1/1e3 scale sweep.
-- Known gaps: closed-rim chamfers and curved assembly experimental and
-  fail-closed; variable radius on curved domains, setbacks, multi-edge
-  corners, G2 profiles, overflow handling Unqualified or absent.
+- Known gaps: the qualified variable-radius cell is the walking band, not its
+  trimmed-solid assembly; opaque custom callbacks are preserved and checked at
+  every consumed station but cannot prove arbitrary between-sample behavior.
+  Closed-rim chamfers and curved assembly remain experimental and fail-closed;
+  variable radius on curved domains, setbacks, multi-edge corners, G2
+  profiles, and overflow handling are Unqualified or absent.
 
 ### Offset, shell, thicken
 

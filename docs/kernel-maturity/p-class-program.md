@@ -682,6 +682,24 @@ Unqualified. Qualify against oracles: a linear law on a straight edge has a
 closed-form band; S-curve verified by sampled-section invariants (radius at
 parameter, tangency to both supports).
 
+Implemented, in review in [PR #226](https://github.com/esaueng/remus/pull/226):
+standard constant, linear, and S-curve laws expose exact whole-domain extrema
+and refuse a tolerance-collapsed radius before topology work. A caller-supplied
+exclusive local limit is checked over the complete law domain and returns
+typed `RadiusTooLarge` at equality or above. The walker validates every
+station before Newton evaluation. Its straight-edge perpendicular-plane
+linear band lies on the analytic ruled quarter-circle surface and integrates
+to the closed-form removed volume; S-curve stations independently pin law
+radius, support incidence, and tangency. Opaque custom callbacks are no longer
+silently replaced by endpoint-linear interpolation: the builder preserves the
+function, preflights a deterministic domain grid, and the walker checks every
+consumed station. Because an arbitrary closure has no provable bound between
+samples, its whole-domain certification remains explicitly Unqualified.
+Likewise, turning the qualified walking band into a trimmed solid remains on
+the existing typed trimmer-refusal path; curved supports, corner assembly,
+setbacks, and overflow remain Issues 5.2–5.5 rather than being inferred from
+this component result.
+
 > **Exit gate:** variable-radius cells move to Qualified with closed-form +
 > invariant oracles; refusals typed at law-domain boundaries (radius → 0,
 > radius ≥ local limit).
