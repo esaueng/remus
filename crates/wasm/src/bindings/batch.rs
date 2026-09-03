@@ -31,7 +31,7 @@ use crate::handles::{
     wire_id_to_u32,
 };
 use crate::helpers::{
-    TOL, classify_to_string, get_f64, get_f64_array, get_u32, get_u32_array,
+    TOL, classify_to_string, get_bool, get_f64, get_f64_array, get_u32, get_u32_array,
     get_u32_array_optional, panic_message, try_chamfer,
 };
 use crate::kernel::BrepKernel;
@@ -254,6 +254,8 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "split"
         | "splitBySheet"
         | "trimSheetBySolid"
+        | "trimSheetBySheet"
+        | "mutualTrimSheets"
         | "sewFaces"
         | "thicken"
         | "pipe"
@@ -2372,15 +2374,7 @@ impl BrepKernel {
             "trimSheetBySolid" => {
                 let sheet = get_u32(args, "sheet")?;
                 let solid = get_u32(args, "solid")?;
-                let keep_inside = args
-                    .get("keepInside")
-                    .and_then(serde_json::Value::as_bool)
-                    .ok_or_else(|| {
-                        StructuredWasmError::invalid_argument(
-                            "missing or invalid 'keepInside' boolean",
-                            Some("keepInside"),
-                        )
-                    })?;
+                let keep_inside = get_bool(args, "keepInside")?;
                 let sheet_id = self
                     .resolve_shell(sheet)
                     .map_err(StructuredWasmError::from)?;
@@ -2400,6 +2394,64 @@ impl BrepKernel {
                 )
                 .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(shell_id_to_u32(result)))
+            }
+            "trimSheetBySheet" => {
+                let target = get_u32(args, "target")?;
+                let tool = get_u32(args, "tool")?;
+                let keep_positive = get_bool(args, "keepPositive")?;
+                let target_id = self
+                    .resolve_shell(target)
+                    .map_err(StructuredWasmError::from)?;
+                let tool_id = self
+                    .resolve_shell(tool)
+                    .map_err(StructuredWasmError::from)?;
+                let side = if keep_positive {
+                    remus_operations::boolean::SheetSide::Positive
+                } else {
+                    remus_operations::boolean::SheetSide::Negative
+                };
+                let result = remus_operations::boolean::trim_sheet_by_sheet(
+                    self.topo_mut(),
+                    target_id,
+                    tool_id,
+                    side,
+                )
+                .map_err(StructuredWasmError::from)?;
+                Ok(serde_json::json!(shell_id_to_u32(result)))
+            }
+            "mutualTrimSheets" => {
+                let sheet_a = get_u32(args, "sheetA")?;
+                let sheet_b = get_u32(args, "sheetB")?;
+                let keep_a_positive = get_bool(args, "keepAPositive")?;
+                let keep_b_positive = get_bool(args, "keepBPositive")?;
+                let sheet_a_id = self
+                    .resolve_shell(sheet_a)
+                    .map_err(StructuredWasmError::from)?;
+                let sheet_b_id = self
+                    .resolve_shell(sheet_b)
+                    .map_err(StructuredWasmError::from)?;
+                let side_a = if keep_a_positive {
+                    remus_operations::boolean::SheetSide::Positive
+                } else {
+                    remus_operations::boolean::SheetSide::Negative
+                };
+                let side_b = if keep_b_positive {
+                    remus_operations::boolean::SheetSide::Positive
+                } else {
+                    remus_operations::boolean::SheetSide::Negative
+                };
+                let result = remus_operations::boolean::mutual_trim_sheets(
+                    self.topo_mut(),
+                    sheet_a_id,
+                    sheet_b_id,
+                    side_a,
+                    side_b,
+                )
+                .map_err(StructuredWasmError::from)?;
+                Ok(serde_json::json!([
+                    shell_id_to_u32(result.sheet_a),
+                    shell_id_to_u32(result.sheet_b),
+                ]))
             }
             "sewFaces" => {
                 let face_handles: Vec<u32> = get_u32_array_optional(args, "faces")?;

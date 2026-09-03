@@ -307,6 +307,163 @@ fn trim_sheet_by_solid_impl(
     crate::ds::shape_store::deep_copy_sheet(&store_topo, topo, store_sheet)
 }
 
+/// Mutually trim two first-class planar sheets by their oriented sides.
+///
+/// Positive is the side each sheet's effective face normal points toward;
+/// negative is the opposite side. Both input sheets participate only as face
+/// sets, and both returned handles are new first-class sheets.
+///
+/// # Errors
+///
+/// Returns [`AlgoError::UnsupportedSheetTrim`] unless both operands are
+/// distinct, single-face planar sheets that split each other transversally.
+pub fn mutual_trim_sheets(
+    topo: &mut Topology,
+    sheet_a: ShellId,
+    sheet_b: ShellId,
+    keep_a_positive: bool,
+    keep_b_positive: bool,
+) -> Result<(ShellId, ShellId), AlgoError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        mutual_trim_sheets_impl(topo, sheet_a, sheet_b, keep_a_positive, keep_b_positive)
+    })
+}
+
+/// Trim one first-class planar sheet by one oriented side of another.
+///
+/// The tool sheet is used only to split and classify the target. It need not
+/// itself be divided by the finite target intersection.
+///
+/// # Errors
+///
+/// Returns [`AlgoError::UnsupportedSheetTrim`] unless both operands are
+/// distinct, single-face planar sheets and the tool splits the target.
+pub fn trim_sheet_by_sheet(
+    topo: &mut Topology,
+    target: ShellId,
+    tool: ShellId,
+    keep_positive: bool,
+) -> Result<ShellId, AlgoError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        trim_sheet_by_sheet_impl(topo, target, tool, keep_positive)
+    })
+}
+
+fn planar_sheet(
+    topo: &Topology,
+    sheet: ShellId,
+    label: &str,
+) -> Result<(remus_math::vec::Vec3, f64), AlgoError> {
+    let shell = topo.shell(sheet)?;
+    if shell.body_class() != BodyClass::Sheet {
+        return Err(AlgoError::UnsupportedSheetTrim {
+            reason: format!(
+                "{label} shell is tagged `{}` instead of `sheet`",
+                shell.body_class().as_str()
+            ),
+        });
+    }
+    let [face_id] = shell.faces() else {
+        return Err(AlgoError::UnsupportedSheetTrim {
+            reason: format!(
+                "qualified mutual trim requires one face per sheet; {label} has {}",
+                shell.faces().len()
+            ),
+        });
+    };
+    let face = topo.face(*face_id)?;
+    let FaceSurface::Plane { normal, d } = *face.surface() else {
+        return Err(AlgoError::UnsupportedSheetTrim {
+            reason: format!(
+                "qualified mutual trim requires planar sheets; {label} is `{}`",
+                face.surface().type_tag()
+            ),
+        });
+    };
+    let magnitude = normal.length();
+    if !magnitude.is_finite() || magnitude <= f64::EPSILON || !d.is_finite() {
+        return Err(AlgoError::UnsupportedSheetTrim {
+            reason: format!("{label} has an invalid supporting plane"),
+        });
+    }
+    let normal = normal * magnitude.recip();
+    let d = d / magnitude;
+    if face.is_reversed() {
+        Ok((-normal, -d))
+    } else {
+        Ok((normal, d))
+    }
+}
+
+fn mutual_trim_sheets_impl(
+    topo: &mut Topology,
+    sheet_a: ShellId,
+    sheet_b: ShellId,
+    keep_a_positive: bool,
+    keep_b_positive: bool,
+) -> Result<(ShellId, ShellId), AlgoError> {
+    if sheet_a == sheet_b {
+        return Err(AlgoError::UnsupportedSheetTrim {
+            reason: "mutual trim requires two distinct sheet handles".into(),
+        });
+    }
+    let (normal_a, d_a) = planar_sheet(topo, sheet_a, "sheet A")?;
+    let (normal_b, d_b) = planar_sheet(topo, sheet_b, "sheet B")?;
+
+    let mut store_topo = topo.clone();
+    let adapter_a = store_topo.add_solid(Solid::new(sheet_a, Vec::new()));
+    let adapter_b = store_topo.add_solid(Solid::new(sheet_b, Vec::new()));
+    reject_unsupported_curves(&store_topo, adapter_a)?;
+    reject_unsupported_curves(&store_topo, adapter_b)?;
+
+    let tol = Tolerance::default();
+    let mut arena = GfaArena::new();
+    pave_filler::run_pave_filler(&mut store_topo, adapter_a, adapter_b, tol, &mut arena)?;
+    let mut builder = Builder::with_tolerance(store_topo, arena, adapter_a, adapter_b, tol);
+    builder.perform_sheet_sheet_arrangement()?;
+    let (store_topo, store_a, store_b) = builder.build_planar_sheet_sheet_trim(
+        normal_a,
+        d_a,
+        normal_b,
+        d_b,
+        keep_a_positive,
+        keep_b_positive,
+    )?;
+    let result_a = crate::ds::shape_store::deep_copy_sheet(&store_topo, topo, store_a)?;
+    let result_b = crate::ds::shape_store::deep_copy_sheet(&store_topo, topo, store_b)?;
+    Ok((result_a, result_b))
+}
+
+fn trim_sheet_by_sheet_impl(
+    topo: &mut Topology,
+    target: ShellId,
+    tool: ShellId,
+    keep_positive: bool,
+) -> Result<ShellId, AlgoError> {
+    if target == tool {
+        return Err(AlgoError::UnsupportedSheetTrim {
+            reason: "sheet-by-sheet trim requires distinct target and tool handles".into(),
+        });
+    }
+    let _ = planar_sheet(topo, target, "target sheet")?;
+    let (normal_tool, d_tool) = planar_sheet(topo, tool, "tool sheet")?;
+
+    let mut store_topo = topo.clone();
+    let adapter_a = store_topo.add_solid(Solid::new(target, Vec::new()));
+    let adapter_b = store_topo.add_solid(Solid::new(tool, Vec::new()));
+    reject_unsupported_curves(&store_topo, adapter_a)?;
+    reject_unsupported_curves(&store_topo, adapter_b)?;
+
+    let tol = Tolerance::default();
+    let mut arena = GfaArena::new();
+    pave_filler::run_pave_filler(&mut store_topo, adapter_a, adapter_b, tol, &mut arena)?;
+    let mut builder = Builder::with_tolerance(store_topo, arena, adapter_a, adapter_b, tol);
+    builder.perform_sheet_sheet_arrangement()?;
+    let (store_topo, store_result) =
+        builder.build_planar_sheet_by_sheet_trim(normal_tool, d_tool, keep_positive)?;
+    crate::ds::shape_store::deep_copy_sheet(&store_topo, topo, store_result)
+}
+
 /// Fuse **N** solids into one via a single GFA arrangement.
 ///
 /// One pass over all operands instead of the sequential pairwise fuse's

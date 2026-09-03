@@ -1298,6 +1298,66 @@ impl BrepKernel {
         Ok(shell_id_to_u32(result))
     }
 
+    /// Trim one planar sheet by one oriented side of another planar sheet.
+    #[wasm_bindgen(js_name = "trimSheetBySheet")]
+    pub fn trim_sheet_by_sheet_body(
+        &mut self,
+        target: u32,
+        tool: u32,
+        keep_positive: bool,
+    ) -> Result<u32, JsError> {
+        let target_id = self.resolve_shell(target)?;
+        let tool_id = self.resolve_shell(tool)?;
+        let side = if keep_positive {
+            remus_operations::boolean::SheetSide::Positive
+        } else {
+            remus_operations::boolean::SheetSide::Negative
+        };
+        let result = remus_operations::boolean::trim_sheet_by_sheet(
+            self.topo_mut(),
+            target_id,
+            tool_id,
+            side,
+        )?;
+        Ok(shell_id_to_u32(result))
+    }
+
+    /// Mutually trim two transversal planar sheets by their oriented sides.
+    ///
+    /// Returns `[trimmedA, trimmedB]` in input order.
+    #[wasm_bindgen(js_name = "mutualTrimSheets")]
+    pub fn mutual_trim_sheets_body(
+        &mut self,
+        sheet_a: u32,
+        sheet_b: u32,
+        keep_a_positive: bool,
+        keep_b_positive: bool,
+    ) -> Result<Vec<u32>, JsError> {
+        let sheet_a_id = self.resolve_shell(sheet_a)?;
+        let sheet_b_id = self.resolve_shell(sheet_b)?;
+        let side_a = if keep_a_positive {
+            remus_operations::boolean::SheetSide::Positive
+        } else {
+            remus_operations::boolean::SheetSide::Negative
+        };
+        let side_b = if keep_b_positive {
+            remus_operations::boolean::SheetSide::Positive
+        } else {
+            remus_operations::boolean::SheetSide::Negative
+        };
+        let result = remus_operations::boolean::mutual_trim_sheets(
+            self.topo_mut(),
+            sheet_a_id,
+            sheet_b_id,
+            side_a,
+            side_b,
+        )?;
+        Ok(vec![
+            shell_id_to_u32(result.sheet_a),
+            shell_id_to_u32(result.sheet_b),
+        ])
+    }
+
     // ── Draft ─────────────────────────────────────────────────────
 
     /// Apply draft angle to faces of a solid.
@@ -2479,6 +2539,41 @@ mod tests {
         (solid_id_to_u32(blank), shell_id_to_u32(sheet))
     }
 
+    fn perpendicular_sheet_handles(k: &mut BrepKernel) -> (u32, u32) {
+        let make_sheet = |k: &mut BrepKernel, points: [Point3; 4], normal: Vec3, d: f64| {
+            let wire = make_polygon_wire(k.topo_mut(), &points, TOL).unwrap();
+            let face = k.topo_mut().add_face(Face::new(
+                wire,
+                Vec::new(),
+                FaceSurface::Plane { normal, d },
+            ));
+            shell_id_to_u32(remus_operations::sew::make_sheet_body(k.topo_mut(), &[face]).unwrap())
+        };
+        let horizontal = make_sheet(
+            k,
+            [
+                Point3::new(-2.0, -2.0, 0.0),
+                Point3::new(2.0, -2.0, 0.0),
+                Point3::new(2.0, 2.0, 0.0),
+                Point3::new(-2.0, 2.0, 0.0),
+            ],
+            Vec3::new(0.0, 0.0, 1.0),
+            0.0,
+        );
+        let vertical = make_sheet(
+            k,
+            [
+                Point3::new(0.0, -2.0, -2.0),
+                Point3::new(0.0, 2.0, -2.0),
+                Point3::new(0.0, 2.0, 2.0),
+                Point3::new(0.0, -2.0, 2.0),
+            ],
+            Vec3::new(1.0, 0.0, 0.0),
+            0.0,
+        );
+        (horizontal, vertical)
+    }
+
     #[test]
     fn direct_and_batch_split_by_sheet_return_valid_compounds() {
         let mut signatures = Vec::new();
@@ -2592,6 +2687,96 @@ mod tests {
                 "solid": solid_id_to_u32(blank),
                 "sheet": shell_id_to_u32(sheet),
                 "keepInside": true,
+            }
+        }]);
+        let output: Vec<serde_json::Value> =
+            serde_json::from_str(&kernel.execute_batch_v2(&input.to_string())).unwrap();
+        assert_eq!(
+            output[0]["error"]["details"]["kernelCode"],
+            "unsupported_sheet_trim"
+        );
+        assert_eq!(output[0]["error"]["category"], "unsupported");
+    }
+
+    #[test]
+    fn direct_and_batch_planar_sheet_trims_match() {
+        let mut signatures = Vec::new();
+        for batch in [false, true] {
+            let mut kernel = BrepKernel::new();
+            let (target, tool) = perpendicular_sheet_handles(&mut kernel);
+            let one_way = if batch {
+                dispatch(
+                    &mut kernel,
+                    "trimSheetBySheet",
+                    serde_json::json!({
+                        "target": target,
+                        "tool": tool,
+                        "keepPositive": true,
+                    }),
+                )["ok"]
+                    .as_u64()
+                    .unwrap() as u32
+            } else {
+                kernel.trim_sheet_by_sheet_body(target, tool, true).unwrap()
+            };
+            let one_way_id = kernel.resolve_shell(one_way).unwrap();
+            let one_way_area =
+                remus_operations::measure::sheet_surface_area(kernel.topo(), one_way_id, 1.0e-3)
+                    .unwrap();
+
+            let mut kernel = BrepKernel::new();
+            let (sheet_a, sheet_b) = perpendicular_sheet_handles(&mut kernel);
+            let mutual = if batch {
+                dispatch(
+                    &mut kernel,
+                    "mutualTrimSheets",
+                    serde_json::json!({
+                        "sheetA": sheet_a,
+                        "sheetB": sheet_b,
+                        "keepAPositive": true,
+                        "keepBPositive": false,
+                    }),
+                )["ok"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|value| value.as_u64().unwrap() as u32)
+                    .collect::<Vec<_>>()
+            } else {
+                kernel
+                    .mutual_trim_sheets_body(sheet_a, sheet_b, true, false)
+                    .unwrap()
+            };
+            let mutual_areas: Vec<i64> = mutual
+                .into_iter()
+                .map(|sheet| {
+                    let sheet_id = kernel.resolve_shell(sheet).unwrap();
+                    let area = remus_operations::measure::sheet_surface_area(
+                        kernel.topo(),
+                        sheet_id,
+                        1.0e-3,
+                    )
+                    .unwrap();
+                    (area * 1.0e9).round() as i64
+                })
+                .collect();
+            signatures.push(((one_way_area * 1.0e9).round() as i64, mutual_areas));
+        }
+        assert_eq!(signatures[0], (8_000_000_000, vec![8_000_000_000; 2]));
+        assert_eq!(signatures[0], signatures[1]);
+    }
+
+    #[test]
+    fn batch_v2_mutual_sheet_trim_preserves_typed_refusal() {
+        let mut kernel = BrepKernel::new();
+        let (sheet, _) = perpendicular_sheet_handles(&mut kernel);
+        let input = serde_json::json!([{
+            "op": "mutualTrimSheets",
+            "args": {
+                "sheetA": sheet,
+                "sheetB": sheet,
+                "keepAPositive": true,
+                "keepBPositive": false,
             }
         }]);
         let output: Vec<serde_json::Value> =

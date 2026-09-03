@@ -21,6 +21,24 @@ pub enum SheetTrimMode {
     KeepOutside,
 }
 
+/// Oriented side of a sheet retained by a sheet-by-sheet trim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SheetSide {
+    /// The side the tool sheet's effective face normal points toward.
+    Positive,
+    /// The side opposite the tool sheet's effective face normal.
+    Negative,
+}
+
+/// The two new sheets returned by a mutual trim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MutualSheetTrim {
+    /// Sheet A trimmed by the selected side of sheet B.
+    pub sheet_a: remus_topology::shell::ShellId,
+    /// Sheet B trimmed by the selected side of sheet A.
+    pub sheet_b: remus_topology::shell::ShellId,
+}
+
 /// Trim a first-class sheet body against a solid.
 ///
 /// The sheet participates as a GFA face set, not as a volume. Its split face
@@ -46,6 +64,84 @@ pub fn trim_sheet_by_solid(
             solid,
             mode == SheetTrimMode::KeepInside,
         )?;
+        let report = remus_check::validate::validate_sheet_body(
+            topo,
+            result,
+            &remus_check::validate::ValidateOptions::default(),
+        )?;
+        if !report.is_valid() {
+            return Err(crate::OperationsError::BodyValidationFailed {
+                body_class: remus_topology::BodyClass::Sheet.as_str(),
+                error_count: report.error_count(),
+            });
+        }
+        Ok(result)
+    })
+}
+
+/// Mutually trim two first-class sheets by their oriented material sides.
+///
+/// The currently qualified exact subset is a transversal pair of single-face
+/// planar sheets. Each input is split by the other, and both selected face
+/// sets are returned as new validation-gated Sheet bodies.
+///
+/// # Errors
+///
+/// Returns a typed unsupported error outside the qualified subset. Either
+/// invalid output rolls the whole two-result operation back.
+pub fn mutual_trim_sheets(
+    topo: &mut Topology,
+    sheet_a: remus_topology::shell::ShellId,
+    sheet_b: remus_topology::shell::ShellId,
+    keep_a: SheetSide,
+    keep_b: SheetSide,
+) -> Result<MutualSheetTrim, crate::OperationsError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let (result_a, result_b) = remus_algo::gfa::mutual_trim_sheets(
+            topo,
+            sheet_a,
+            sheet_b,
+            keep_a == SheetSide::Positive,
+            keep_b == SheetSide::Positive,
+        )?;
+        for result in [result_a, result_b] {
+            let report = remus_check::validate::validate_sheet_body(
+                topo,
+                result,
+                &remus_check::validate::ValidateOptions::default(),
+            )?;
+            if !report.is_valid() {
+                return Err(crate::OperationsError::BodyValidationFailed {
+                    body_class: remus_topology::BodyClass::Sheet.as_str(),
+                    error_count: report.error_count(),
+                });
+            }
+        }
+        Ok(MutualSheetTrim {
+            sheet_a: result_a,
+            sheet_b: result_b,
+        })
+    })
+}
+
+/// Trim one first-class sheet by an oriented side of another sheet.
+///
+/// Unlike [`mutual_trim_sheets`], only `target` must be divided by the finite
+/// intersection. This composes for boundary-by-boundary surface modeling.
+///
+/// # Errors
+///
+/// Returns a typed unsupported error outside the qualified single-planar-face
+/// subset. An invalid output is rolled back.
+pub fn trim_sheet_by_sheet(
+    topo: &mut Topology,
+    target: remus_topology::shell::ShellId,
+    tool: remus_topology::shell::ShellId,
+    keep: SheetSide,
+) -> Result<remus_topology::shell::ShellId, crate::OperationsError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let result =
+            remus_algo::gfa::trim_sheet_by_sheet(topo, target, tool, keep == SheetSide::Positive)?;
         let report = remus_check::validate::validate_sheet_body(
             topo,
             result,

@@ -34,7 +34,7 @@ use std::fmt::Write as _;
 use remus_math::tolerance::Tolerance;
 
 use remus_math::surfaces::CylindricalSurface;
-use remus_math::vec::Point3;
+use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
 use remus_topology::face::FaceId;
 use remus_topology::shell::{Shell, ShellId};
@@ -470,6 +470,146 @@ impl Builder {
         self.topo
             .set_shell_body_class(shell, remus_topology::BodyClass::Sheet)?;
         Ok((self.topo, shell))
+    }
+
+    /// Build the common arrangement for two sheet face sets.
+    ///
+    /// Neither rank is classified as a volume. The caller supplies the
+    /// oriented side-selection rule when materializing the two results.
+    pub(crate) fn perform_sheet_sheet_arrangement(&mut self) -> Result<(), AlgoError> {
+        self.build_face_ranks()?;
+        self.fill_images()
+    }
+
+    /// Select both sides of a transversal, single-plane sheet arrangement.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn build_planar_sheet_sheet_trim(
+        mut self,
+        normal_a: Vec3,
+        d_a: f64,
+        normal_b: Vec3,
+        d_b: f64,
+        keep_a_positive: bool,
+        keep_b_positive: bool,
+    ) -> Result<(Topology, ShellId, ShellId), AlgoError> {
+        if !self.sd_pairs.is_empty() {
+            return Err(AlgoError::UnsupportedSheetTrim {
+                reason: "coincident sheet patches have no qualified side-selection rule".into(),
+            });
+        }
+        let count_a = self
+            .sub_faces
+            .iter()
+            .filter(|sub_face| sub_face.rank == Rank::A)
+            .count();
+        let count_b = self
+            .sub_faces
+            .iter()
+            .filter(|sub_face| sub_face.rank == Rank::B)
+            .count();
+        if count_a < 2 || count_b < 2 {
+            return Err(AlgoError::UnsupportedSheetTrim {
+                reason: format!(
+                    "qualified mutual trim requires both sheets to split; got {count_a} and {count_b} patches"
+                ),
+            });
+        }
+
+        let mut faces_a = Vec::new();
+        let mut faces_b = Vec::new();
+        for sub_face in &self.sub_faces {
+            let point = match sub_face.interior_point {
+                Some(point) => point,
+                None => sample_face_interior(&self.topo, sub_face.face_id, self.tol)?,
+            };
+            let (normal, d, keep_positive, selected) = match sub_face.rank {
+                Rank::A => (normal_b, d_b, keep_a_positive, &mut faces_a),
+                Rank::B => (normal_a, d_a, keep_b_positive, &mut faces_b),
+            };
+            let signed = normal.dot(Vec3::new(point.x(), point.y(), point.z())) - d;
+            if signed.abs() <= self.tol.linear {
+                return Err(AlgoError::UnsupportedSheetTrim {
+                    reason: "sheet patch side is ambiguous within tolerance".into(),
+                });
+            }
+            if (keep_positive && signed > 0.0) || (!keep_positive && signed < 0.0) {
+                selected.push(sub_face.face_id);
+            }
+        }
+        if faces_a.is_empty() || faces_b.is_empty() {
+            return Err(AlgoError::UnsupportedSheetTrim {
+                reason: format!(
+                    "mutual side selection produced {} and {} faces",
+                    faces_a.len(),
+                    faces_b.len()
+                ),
+            });
+        }
+
+        let sheet_a = self.topo.add_shell(Shell::new(faces_a)?);
+        self.topo
+            .set_shell_body_class(sheet_a, remus_topology::BodyClass::Sheet)?;
+        let sheet_b = self.topo.add_shell(Shell::new(faces_b)?);
+        self.topo
+            .set_shell_body_class(sheet_b, remus_topology::BodyClass::Sheet)?;
+        Ok((self.topo, sheet_a, sheet_b))
+    }
+
+    /// Select rank A on one oriented side of a planar rank-B tool sheet.
+    pub(crate) fn build_planar_sheet_by_sheet_trim(
+        mut self,
+        normal_b: Vec3,
+        d_b: f64,
+        keep_a_positive: bool,
+    ) -> Result<(Topology, ShellId), AlgoError> {
+        if !self.sd_pairs.is_empty() {
+            return Err(AlgoError::UnsupportedSheetTrim {
+                reason: "coincident sheet patches have no qualified side-selection rule".into(),
+            });
+        }
+        let count_a = self
+            .sub_faces
+            .iter()
+            .filter(|sub_face| sub_face.rank == Rank::A)
+            .count();
+        if count_a < 2 {
+            return Err(AlgoError::UnsupportedSheetTrim {
+                reason: format!(
+                    "qualified sheet-by-sheet trim requires the target to split; got {count_a} patch"
+                ),
+            });
+        }
+
+        let mut faces = Vec::new();
+        for sub_face in self
+            .sub_faces
+            .iter()
+            .filter(|sub_face| sub_face.rank == Rank::A)
+        {
+            let point = match sub_face.interior_point {
+                Some(point) => point,
+                None => sample_face_interior(&self.topo, sub_face.face_id, self.tol)?,
+            };
+            let signed = normal_b.dot(Vec3::new(point.x(), point.y(), point.z())) - d_b;
+            if signed.abs() <= self.tol.linear {
+                return Err(AlgoError::UnsupportedSheetTrim {
+                    reason: "sheet patch side is ambiguous within tolerance".into(),
+                });
+            }
+            if (keep_a_positive && signed > 0.0) || (!keep_a_positive && signed < 0.0) {
+                faces.push(sub_face.face_id);
+            }
+        }
+        if faces.is_empty() {
+            return Err(AlgoError::UnsupportedSheetTrim {
+                reason: "sheet-by-sheet side selection produced no target faces".into(),
+            });
+        }
+
+        let sheet = self.topo.add_shell(Shell::new(faces)?);
+        self.topo
+            .set_shell_body_class(sheet, remus_topology::BodyClass::Sheet)?;
+        Ok((self.topo, sheet))
     }
 
     /// Assemble both cells of the currently qualified cylindrical-sheet
