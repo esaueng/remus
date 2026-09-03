@@ -42,7 +42,7 @@ Issue 2.0's measured baseline is
 | 5.2 Curved-support blends | Implemented, in review — constant-radius closed coaxial cylinder/cone, cylinder/sphere, cone/cone, and segmented orthogonal cylinder/cylinder cells assemble as validated watertight solids; cylinder/cone resize now reconstructs | [#228](https://github.com/esaueng/remus/pull/228) |
 | 5.3 General vertex blends | Implemented, in review — same-radius planar N-way corners use one qualified tangent ball and exact analytic sphere cap/fan with G1 seams; alternating material sides refuse transactionally | [#231](https://github.com/esaueng/remus/pull/231) |
 | 5.4 Setbacks | Implemented, in review — physical straight-spine setbacks crop variable S-curve bands to a stationary common-radius planar corner ball; the three-edge exit witness pins result stations, G1, topology, mesh/volume, census, and WASM parity, while incompatible declarations refuse transactionally | [#232](https://github.com/esaueng/remus/pull/232) |
-| 5.5 Overflow and cliff handling | Pending | — |
+| 5.5 Overflow and cliff handling | Implemented, in review — v2 fillets stop transactionally at planar support boundaries, inner-loop obstacles, closed-rim wall exhaustion, paired bands consuming one wall, and inward cap collapse with typed edge/face/requested/available metadata and stable native/WASM parity; actual rollover remains unqualified pending 6.1 | [#234](https://github.com/esaueng/remus/pull/234) |
 | 5.6 Face-face blends and hold lines | Pending | — |
 | 5.7 Offset self-intersection removal | Pending | — |
 | 6.1 Replace-surface re-limitation | Pending | — |
