@@ -778,7 +778,7 @@ pub enum VertexEvent {
 
 /// Construction-derived vertex/edge/face history of one GFA boolean, in
 /// caller-space indices.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EntityEvolution {
     /// Result-face provenance, as in [`boolean_with_face_origins`].
     pub faces: FaceOriginIndices,
@@ -786,6 +786,138 @@ pub struct EntityEvolution {
     pub edges: Vec<(usize, EdgeEvent)>,
     /// Result vertex index → its event. Total over the result's vertices.
     pub vertices: Vec<(usize, VertexEvent)>,
+}
+
+/// Store-local construction records that must be captured before the builder
+/// consumes the pave-filler arena.
+struct EntityLineage {
+    split_parent: std::collections::HashMap<usize, usize>,
+    pave_block_original: std::collections::HashMap<usize, usize>,
+    section_origins: std::collections::BTreeMap<usize, (usize, usize)>,
+}
+
+impl EntityLineage {
+    fn capture(arena: &GfaArena) -> Self {
+        let mut split_parent = std::collections::HashMap::new();
+        let mut pave_block_original = std::collections::HashMap::new();
+        for (pave_block_id, pave_block) in arena.pave_blocks.iter() {
+            pave_block_original.insert(pave_block_id.index(), pave_block.original_edge.index());
+            if let Some(split) = pave_block.split_edge {
+                split_parent.insert(split.index(), pave_block.original_edge.index());
+            }
+        }
+        for (_, common_block) in arena.common_blocks.iter() {
+            if let (Some(split), Some(&first_pave_block)) =
+                (common_block.split_edge, common_block.pave_blocks.first())
+                && let Some(pave_block) = arena.pave_blocks.get(first_pave_block)
+            {
+                split_parent.insert(split.index(), pave_block.original_edge.index());
+            }
+        }
+        Self {
+            split_parent,
+            pave_block_original,
+            section_origins: arena.section_edge_origins.clone(),
+        }
+    }
+}
+
+fn export_entity_evolution(
+    topo: &mut Topology,
+    store: &crate::ds::GfaShapeStore,
+    store_result: SolidId,
+    store_origins: crate::builder::FaceProvenance,
+    builder_lineage: &crate::builder::split_types::EdgeLineageLog,
+    lineage: &EntityLineage,
+) -> Result<(SolidId, EntityEvolution), AlgoError> {
+    let (result, export) = store.export_solid_with_entity_maps(topo, store_result)?;
+
+    let mut faces = Vec::with_capacity(store_origins.len());
+    for (store_out, store_src) in store_origins {
+        let caller_out = export
+            .faces
+            .get(&store_out.index())
+            .ok_or_else(|| {
+                AlgoError::AssemblyFailed(
+                    "result face missing from export map (provenance desync)".into(),
+                )
+            })?
+            .index();
+        let caller_src =
+            store_src.and_then(|source| store.input_face_to_caller.get(&source.index()).copied());
+        faces.push((caller_out, caller_src));
+    }
+
+    let resolve_edge = |store_index: usize| -> EdgeEvent {
+        let mut current = store_index;
+        let mut transformed = false;
+        for _ in 0..64 {
+            if let Some(&caller) = store.input_edge_to_caller.get(&current) {
+                return if transformed {
+                    EdgeEvent::Modified(caller)
+                } else {
+                    EdgeEvent::Preserved(caller)
+                };
+            }
+            if let Some(&(face_a, face_b)) = lineage.section_origins.get(&current) {
+                return EdgeEvent::Generated {
+                    face_a: store.input_face_to_caller.get(&face_a).copied(),
+                    face_b: store.input_face_to_caller.get(&face_b).copied(),
+                };
+            }
+            if let Some(&old) = builder_lineage.rewrites.get(&current) {
+                current = old;
+                transformed = true;
+                continue;
+            }
+            if let Some(&pave_block) = builder_lineage.to_pave_block.get(&current) {
+                if let Some(&original) = lineage.pave_block_original.get(&pave_block) {
+                    current = original;
+                    transformed = true;
+                    continue;
+                }
+                break;
+            }
+            if let Some(&parent) = lineage.split_parent.get(&current) {
+                current = parent;
+                transformed = true;
+                continue;
+            }
+            break;
+        }
+        EdgeEvent::Unresolved
+    };
+
+    let mut edges: Vec<(usize, EdgeEvent)> = export
+        .edges
+        .iter()
+        .map(|(&store_index, caller_edge)| (caller_edge.index(), resolve_edge(store_index)))
+        .collect();
+    edges.sort_by_key(|(index, _)| *index);
+
+    let mut vertices: Vec<(usize, VertexEvent)> = export
+        .vertices
+        .iter()
+        .map(|(&store_index, caller_vertex)| {
+            let event = store
+                .input_vertex_to_caller
+                .get(&store_index)
+                .map_or(VertexEvent::Created, |&caller| {
+                    VertexEvent::Preserved(caller)
+                });
+            (caller_vertex.index(), event)
+        })
+        .collect();
+    vertices.sort_by_key(|(index, _)| *index);
+
+    Ok((
+        result,
+        EntityEvolution {
+            faces,
+            edges,
+            vertices,
+        },
+    ))
 }
 
 /// Run a GFA boolean, returning construction-derived vertex, edge, and face
@@ -804,15 +936,12 @@ pub struct EntityEvolution {
 /// # Errors
 ///
 /// Returns [`AlgoError`] if any GFA stage fails.
-#[allow(clippy::too_many_lines)]
 pub fn boolean_with_entity_evolution(
     topo: &mut Topology,
     op: BooleanOp,
     solid_a: SolidId,
     solid_b: SolidId,
 ) -> Result<(SolidId, EntityEvolution), AlgoError> {
-    use std::collections::HashMap;
-
     reject_unsupported_curves(topo, solid_a)?;
     reject_unsupported_curves(topo, solid_b)?;
 
@@ -828,25 +957,7 @@ pub fn boolean_with_entity_evolution(
         &mut arena,
     )?;
 
-    // Snapshot construction lineage before the builder consumes the arena.
-    // split edge (store idx) → original edge (store idx), and pave block
-    // index → its original edge (the link wire-edge materialization records).
-    let mut split_parent: HashMap<usize, usize> = HashMap::new();
-    let mut pb_original: HashMap<usize, usize> = HashMap::new();
-    for (pb_id, pb) in arena.pave_blocks.iter() {
-        pb_original.insert(pb_id.index(), pb.original_edge.index());
-        if let Some(split) = pb.split_edge {
-            split_parent.insert(split.index(), pb.original_edge.index());
-        }
-    }
-    for (_, cb) in arena.common_blocks.iter() {
-        if let (Some(split), Some(&first_pb)) = (cb.split_edge, cb.pave_blocks.first())
-            && let Some(pb) = arena.pave_blocks.get(first_pb)
-        {
-            split_parent.insert(split.index(), pb.original_edge.index());
-        }
-    }
-    let section_origins = arena.section_edge_origins.clone();
+    let lineage = EntityLineage::capture(&arena);
 
     let mut builder = Builder::with_tolerance(
         std::mem::take(&mut store.topo),
@@ -860,105 +971,105 @@ pub fn boolean_with_entity_evolution(
     // The returned log includes both the perform-phase records and the
     // assembly-rebuild records (weld and collinear splits), so result
     // edges rebuilt during assembly chase back to their parents.
-    let (store_topo, store_result, store_origins, lineage) =
+    let (store_topo, store_result, store_origins, builder_lineage) =
         builder.build_result_with_origins(op)?;
     store.topo = store_topo;
 
-    let (result, export) = store.export_solid_with_entity_maps(topo, store_result)?;
+    export_entity_evolution(
+        topo,
+        &store,
+        store_result,
+        store_origins,
+        &builder_lineage,
+        &lineage,
+    )
+}
 
-    // Faces: translate exactly as boolean_with_face_origins does.
-    let mut faces = Vec::with_capacity(store_origins.len());
-    for (store_out, store_src) in store_origins {
-        let caller_out = export
-            .faces
-            .get(&store_out.index())
-            .ok_or_else(|| {
-                AlgoError::AssemblyFailed(
-                    "result face missing from export map (provenance desync)".into(),
-                )
-            })?
-            .index();
-        let caller_src =
-            store_src.and_then(|s| store.input_face_to_caller.get(&s.index()).copied());
-        faces.push((caller_out, caller_src));
-    }
-
-    // Resolve one store edge index through the construction records.
-    // Chases split chains (a split of a split, and splits OF section
-    // edges) with a hard bound so a malformed record cannot loop.
-    let resolve_edge = |store_idx: usize| -> EdgeEvent {
-        let mut current = store_idx;
-        let mut transformed = false;
-        for _ in 0..64 {
-            if let Some(&caller) = store.input_edge_to_caller.get(&current) {
-                return if transformed {
-                    EdgeEvent::Modified(caller)
-                } else {
-                    EdgeEvent::Preserved(caller)
-                };
-            }
-            if let Some(&(fa, fb)) = section_origins.get(&current) {
-                return EdgeEvent::Generated {
-                    face_a: store.input_face_to_caller.get(&fa).copied(),
-                    face_b: store.input_face_to_caller.get(&fb).copied(),
-                };
-            }
-            if let Some(&old) = lineage.rewrites.get(&current) {
-                current = old;
-                transformed = true;
-                continue;
-            }
-            if let Some(&pb) = lineage.to_pave_block.get(&current) {
-                if let Some(&original) = pb_original.get(&pb) {
-                    current = original;
-                    transformed = true;
-                    continue;
-                }
-                break;
-            }
-            if let Some(&parent) = split_parent.get(&current) {
-                current = parent;
-                transformed = true;
-                continue;
-            }
-            break;
+/// Split the target solid's faces wherever they intersect the tool while
+/// preserving every target patch and returning total construction lineage.
+///
+/// The tool participates only in the pave-filler arrangement. Its faces are
+/// never selected into the result and no target patch is classified or
+/// discarded. The currently qualified subset requires a real transversal
+/// split, no same-domain face overlap, and complete edge lineage.
+///
+/// # Errors
+///
+/// Returns [`AlgoError::UnsupportedImprint`] when the operands are identical,
+/// no target face is divided, a same-domain overlap is present, or any result
+/// edge lacks construction lineage. Other GFA errors are propagated.
+pub fn imprint_with_entity_evolution(
+    topo: &mut Topology,
+    target: SolidId,
+    tool: SolidId,
+) -> Result<(SolidId, EntityEvolution), AlgoError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        if target == tool {
+            return Err(AlgoError::UnsupportedImprint {
+                reason: "target and tool must be distinct solid handles".into(),
+            });
         }
-        EdgeEvent::Unresolved
-    };
+        for (label, solid) in [("target", target), ("tool", tool)] {
+            for face_id in remus_topology::explorer::solid_faces(topo, solid)? {
+                let surface = topo.face(face_id)?.surface();
+                if !surface.is_planar() {
+                    return Err(AlgoError::UnsupportedImprint {
+                        reason: format!(
+                            "{label} face {} has unqualified `{}` surface geometry",
+                            face_id.index(),
+                            surface.type_tag()
+                        ),
+                    });
+                }
+            }
+        }
+        reject_unsupported_curves(topo, target)?;
+        reject_unsupported_curves(topo, tool)?;
 
-    // The export edge map is store idx → caller edge: total over the
-    // result's edges by construction, so inverting it enumerates exactly
-    // the result's edge set.
-    let mut edges: Vec<(usize, EdgeEvent)> = export
-        .edges
-        .iter()
-        .map(|(&store_idx, caller_edge)| (caller_edge.index(), resolve_edge(store_idx)))
-        .collect();
-    edges.sort_by_key(|(idx, _)| *idx);
+        let tolerance = Tolerance::default();
+        let mut store = crate::ds::GfaShapeStore::new(topo, target, tool)?;
+        let mut arena = GfaArena::new();
+        pave_filler::run_pave_filler(
+            &mut store.topo,
+            store.solid_a,
+            store.solid_b,
+            tolerance,
+            &mut arena,
+        )?;
+        let lineage = EntityLineage::capture(&arena);
 
-    let mut vertices: Vec<(usize, VertexEvent)> = export
-        .vertices
-        .iter()
-        .map(|(&store_idx, caller_vertex)| {
-            let event = store
-                .input_vertex_to_caller
-                .get(&store_idx)
-                .map_or(VertexEvent::Created, |&caller| {
-                    VertexEvent::Preserved(caller)
-                });
-            (caller_vertex.index(), event)
-        })
-        .collect();
-    vertices.sort_by_key(|(idx, _)| *idx);
+        let mut builder = Builder::with_tolerance(
+            std::mem::take(&mut store.topo),
+            arena,
+            store.solid_a,
+            store.solid_b,
+            tolerance,
+        );
+        builder.perform_imprint_arrangement()?;
+        let (store_topo, store_result, store_origins, builder_lineage) =
+            builder.build_imprint_result_with_origins()?;
+        store.topo = store_topo;
 
-    Ok((
-        result,
-        EntityEvolution {
-            faces,
-            edges,
-            vertices,
-        },
-    ))
+        let (result, evolution) = export_entity_evolution(
+            topo,
+            &store,
+            store_result,
+            store_origins,
+            &builder_lineage,
+            &lineage,
+        )?;
+        if evolution.faces.iter().any(|(_, source)| source.is_none())
+            || evolution
+                .edges
+                .iter()
+                .any(|(_, event)| matches!(event, EdgeEvent::Unresolved))
+        {
+            return Err(AlgoError::UnsupportedImprint {
+                reason: "result construction lineage is incomplete".into(),
+            });
+        }
+        Ok((result, evolution))
+    })
 }
 
 #[cfg(test)]

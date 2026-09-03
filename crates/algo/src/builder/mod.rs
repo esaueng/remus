@@ -481,6 +481,62 @@ impl Builder {
         self.fill_images()
     }
 
+    /// Build the split arrangement for imprinting rank B onto rank A.
+    ///
+    /// Imprint has no volumetric selection step: every rank-A patch survives.
+    pub(crate) fn perform_imprint_arrangement(&mut self) -> Result<(), AlgoError> {
+        self.build_face_ranks()?;
+        self.fill_images()
+    }
+
+    /// Assemble every rank-A patch as a new solid and retain exact face and
+    /// edge construction lineage for journaling.
+    pub(crate) fn build_imprint_result_with_origins(
+        mut self,
+    ) -> Result<
+        (
+            Topology,
+            SolidId,
+            FaceProvenance,
+            split_types::EdgeLineageLog,
+        ),
+        AlgoError,
+    > {
+        if !self.sd_pairs.is_empty() || !self.sd_within_rank_dups.is_empty() {
+            return Err(AlgoError::UnsupportedImprint {
+                reason: "same-domain face overlap is outside the qualified imprint subset".into(),
+            });
+        }
+
+        let mut pieces_by_source: HashMap<FaceId, usize> = HashMap::new();
+        let selected: Vec<bop::SelectedFace> = self
+            .sub_faces
+            .iter()
+            .filter(|sub_face| sub_face.rank == Rank::A)
+            .map(|sub_face| {
+                *pieces_by_source.entry(sub_face.source_face).or_default() += 1;
+                bop::SelectedFace {
+                    face_id: sub_face.face_id,
+                    source_face: sub_face.source_face,
+                    reversed: false,
+                }
+            })
+            .collect();
+        if !pieces_by_source.values().any(|&count| count > 1) {
+            return Err(AlgoError::UnsupportedImprint {
+                reason: "the tool did not divide any target face".into(),
+            });
+        }
+
+        let (solid, origins) = assemble::assemble_solid_with_origins(
+            &mut self.topo,
+            &selected,
+            &[],
+            &mut self.edge_lineage,
+        )?;
+        Ok((self.topo, solid, origins, self.edge_lineage))
+    }
+
     /// Select both sides of a transversal, single-plane sheet arrangement.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn build_planar_sheet_sheet_trim(

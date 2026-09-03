@@ -92,6 +92,14 @@ pub enum AlgoError {
         /// Stable, actionable explanation of the refused configuration.
         reason: String,
     },
+
+    /// The imprint arrangement cannot produce a complete, exact split and
+    /// construction-lineage record for the supplied solids.
+    #[error("unsupported imprint: {reason}")]
+    UnsupportedImprint {
+        /// Stable, actionable explanation of the refused configuration.
+        reason: String,
+    },
 }
 
 impl remus_math::diagnostic::ToDiagnostic for AlgoError {
@@ -157,6 +165,12 @@ impl remus_math::diagnostic::ToDiagnostic for AlgoError {
                 self.to_string(),
             )
             .with_detail("reason", reason.as_str()),
+            Self::UnsupportedImprint { reason } => Diagnostic::new(
+                FailureCategory::Unsupported,
+                "unsupported_imprint",
+                self.to_string(),
+            )
+            .with_detail("reason", reason.as_str()),
         }
     }
 }
@@ -215,6 +229,13 @@ mod diagnostic_registry_tests {
         .diagnostic();
         assert_eq!(d.category(), FailureCategory::Unsupported);
         assert_eq!(d.code(), "unsupported_sheet_trim");
+
+        let d = AlgoError::UnsupportedImprint {
+            reason: "no target face was divided".into(),
+        }
+        .diagnostic();
+        assert_eq!(d.category(), FailureCategory::Unsupported);
+        assert_eq!(d.code(), "unsupported_imprint");
     }
 
     #[test]
