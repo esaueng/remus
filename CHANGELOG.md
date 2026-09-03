@@ -97,9 +97,13 @@
 
 * `scripts/check-det-hash.sh` ratchets `std::collections::HashMap`/`HashSet`
   in the geometry crates (algo, blend, check, heal, offset, operations):
-  the 60 production files that already use them are grandfathered in
-  `scripts/det-hash-grandfather.txt`, unaudited; no new file may join. New
-  order-sensitive code uses `remus_math::det_hash`.
+  the 84 production files that already use them are grandfathered in
+  `scripts/det-hash-grandfather.txt`, unaudited; no new file may join, and a
+  listed file that stops using them must leave the manifest, so the list only
+  shrinks. New order-sensitive code uses `remus_math::det_hash`. The scan runs
+  through `git grep` rather than `rg` (not installed on the runner) and treats
+  any exit status above 1 as the gate failing to run, per the rules
+  `check-remus-rename.sh` already paid for.
 
 ### Tests
 
