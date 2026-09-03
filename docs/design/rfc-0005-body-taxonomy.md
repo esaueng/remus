@@ -1,7 +1,9 @@
 # RFC 0005: Body taxonomy
 
-Status: draft; implementation staged as the P-class program doc's Issues
-4.1–4.7 (M4). This RFC re-declares the capability matrix's body-type axis —
+Status: accepted in PR #127; implementation staged as the P-class program
+doc's Issues 4.2–4.7 (M4). The Stage 1 class, validation, and arena-tagging
+substrate is in review in PR #209; it does not complete Issue 4.2. This RFC
+re-declares the capability matrix's body-type axis —
 "solid, sheet, wire, compound, cavity-bearing solid, and later general body"
 (`docs/kernel-maturity/capability-matrix.md`) — against concrete semantics;
 every sheet/wire/general cell is Unqualified by default today.
@@ -165,13 +167,19 @@ Every stage names its characterization tests; one authority at a time.
 
 ### Stage 1 — body-class enum, tagging, validation profiles
 
-Files: `crates/topology/src/body.rs` (new), `shell.rs`, `wire.rs`,
-`validation.rs`; `crates/check/src/validate/`; `crates/io/src/arena_io.rs`.
-Add the enum and tagging; per-class validation profiles (`validate_solid`
-unchanged; new `validate_sheet_body` — existing shell/wire checks, free
-boundary as `Warning` via a new `ShellFreeBoundary` check id — and
+Files: `crates/topology/src/topology.rs`, `shell.rs`, `wire.rs`, `lib.rs`;
+`crates/check/src/validate/`; `crates/io/src/arena_io.rs`. Add the enum and
+tagging; per-class validation profiles (`validate_solid` rejects a
+sheet-tagged boundary; new `validate_sheet_body` — existing shell/wire checks,
+free boundary as `Warning` via a new `ShellFreeBoundary` check id — and
 `validate_wire_body`); an additive `body_class` field on shell/wire
 serialization records whose absence loads as the default class.
+
+Delivered for review in PR #209: the public body-class vocabulary and
+validated tags, class-aware solid/sheet/wire validation, stable diagnostics,
+and backward-compatible arena-v3 tags. Standalone sheet/wire roots and every
+L3/STEP/WASM entry point remain in later stages, so the Issue 4.2 exit gate is
+still open.
 
 Characterization: a test pins that an open shell errors on `ShellClosed`
 today; it flips to the sheet profile emitting the free-boundary warning.
@@ -270,7 +278,7 @@ correct volumes and complete evolution; disjoint-operand fuse is exact.
 
 ### Stage 7 — wire bodies (deferrable)
 
-Files: `crates/topology/src/body.rs`, `measure/edge_length.rs`,
+Files: `crates/topology/src/topology.rs`, `measure/edge_length.rs`,
 `crates/operations/src/sweep.rs`, `crates/io/src/arena_io.rs`. Wire-body
 tagging; length as body-level measurement; a wire body accepted as a sweep
 profile source; wire-rooted arena records (today only solids serialize —
@@ -282,12 +290,16 @@ accept it as a profile.
 
 ## Serialization
 
-`body_class` is an additive optional field on shell and wire records under
-a schema-version bump. Old documents: field absent → default class;
-re-saving untouched entities stays byte-identical. New documents: sheet and
-wire bodies serialize from their own roots (Stage 2 / Stage 7). Journal,
-attribute, and persistent-reference payloads are per-entity — a sheet
-body's faces journal exactly like a solid's.
+Stage 1 adds `body_class` as an optional field on arena-v3 shell and wire
+records. The field is omitted for the default class, so old documents load to
+the default class and re-saving untouched default-class entities stays
+byte-identical. A sheet-tagged shell cannot be smuggled into a solid boundary:
+loading refuses transactionally. Standalone sheet and wire root records are a
+new root shape, not an additive tag; Stage 2 / Stage 7 must introduce those
+under arena schema v4 (or a separately versioned body document) and provide
+their dedicated parsers. Journal, attribute, and persistent-reference
+payloads remain per-entity — a sheet body's faces journal exactly like a
+solid's.
 
 ## STEP mapping
 

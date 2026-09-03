@@ -28,6 +28,7 @@ use remus_math::nurbs::curve::NurbsCurve;
 use remus_math::nurbs::surface::NurbsSurface;
 use remus_math::surfaces::{ConicalSurface, CylindricalSurface, SphericalSurface, ToroidalSurface};
 use remus_math::vec::{Point3, Vec3};
+use remus_topology::BodyClass;
 use remus_topology::compound::{Compound, CompoundId};
 use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
 use remus_topology::face::{Face, FaceSurface};
@@ -139,10 +140,43 @@ struct SerOrientedEdge {
     forward: bool,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum SerBodyClass {
+    Solid,
+    Sheet,
+    Wire,
+    General,
+}
+
+impl From<BodyClass> for SerBodyClass {
+    fn from(value: BodyClass) -> Self {
+        match value {
+            BodyClass::Solid => Self::Solid,
+            BodyClass::Sheet => Self::Sheet,
+            BodyClass::Wire => Self::Wire,
+            BodyClass::General => Self::General,
+        }
+    }
+}
+
+impl From<SerBodyClass> for BodyClass {
+    fn from(value: SerBodyClass) -> Self {
+        match value {
+            SerBodyClass::Solid => Self::Solid,
+            SerBodyClass::Sheet => Self::Sheet,
+            SerBodyClass::Wire => Self::Wire,
+            SerBodyClass::General => Self::General,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SerWire {
     edges: Vec<SerOrientedEdge>,
     closed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    body_class: Option<SerBodyClass>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -156,6 +190,8 @@ struct SerFace {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SerShell {
     faces: Vec<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    body_class: Option<SerBodyClass>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -486,7 +522,13 @@ impl<'a> Builder<'a> {
         }
         let closed = w.is_closed();
         let local = self.wires.len();
-        self.wires.push(SerWire { edges, closed });
+        let body_class =
+            (w.body_class() != BodyClass::Wire).then(|| SerBodyClass::from(w.body_class()));
+        self.wires.push(SerWire {
+            edges,
+            closed,
+            body_class,
+        });
         self.wire_map.insert(id.index(), local);
         Ok(local)
     }
@@ -603,7 +645,9 @@ impl<'a> Builder<'a> {
             faces.push(self.intern_face(fid)?);
         }
         let local = self.shells.len();
-        self.shells.push(SerShell { faces });
+        let body_class =
+            (s.body_class() != BodyClass::Solid).then(|| SerBodyClass::from(s.body_class()));
+        self.shells.push(SerShell { faces, body_class });
         self.shell_map.insert(id.index(), local);
         Ok(local)
     }
@@ -1245,7 +1289,10 @@ fn replay_document_into(
                 .ok_or_else(|| index_err("edge", oe.edge))?;
             oriented.push(OrientedEdge::new(edge, oe.forward));
         }
-        wire_ids.push(topo.add_wire(Wire::new(oriented, w.closed)?));
+        let body_class = w.body_class.map_or(BodyClass::Wire, BodyClass::from);
+        let wire = topo.add_wire(Wire::new(oriented, w.closed)?);
+        topo.set_wire_body_class(wire, body_class)?;
+        wire_ids.push(wire);
     }
 
     let mut face_ids = Vec::with_capacity(faces.len());
@@ -1277,12 +1324,15 @@ fn replay_document_into(
         for fid in s.faces {
             faces.push(*face_ids.get(fid).ok_or_else(|| index_err("face", fid))?);
         }
+        let body_class = s.body_class.map_or(BodyClass::Solid, BodyClass::from);
         let shell = if faces.is_empty() {
             Shell::empty()
         } else {
             Shell::new(faces)?
         };
-        shell_ids.push(topo.add_shell(shell));
+        let shell = topo.add_shell(shell);
+        topo.set_shell_body_class(shell, body_class)?;
+        shell_ids.push(shell);
     }
 
     for pc in pcurves {
@@ -1322,6 +1372,17 @@ fn replay_document_into(
                     .ok_or_else(|| index_err("shell", index))
             })
             .collect::<Result<Vec<_>, _>>()?;
+        for shell in std::iter::once(outer).chain(inner.iter().copied()) {
+            let actual = topo.shell(shell)?.body_class();
+            if actual != BodyClass::Solid {
+                return Err(remus_topology::TopologyError::BodyClassMismatch {
+                    entity: "solid shell",
+                    expected: BodyClass::Solid.as_str(),
+                    actual: actual.as_str(),
+                }
+                .into());
+            }
+        }
         solid_ids.push(topo.add_solid(Solid::new(outer, inner)));
     }
 
@@ -2031,7 +2092,10 @@ mod tests {
             }],
             wires: Vec::new(),
             faces: Vec::new(),
-            shells: vec![SerShell { faces: Vec::new() }],
+            shells: vec![SerShell {
+                faces: Vec::new(),
+                body_class: None,
+            }],
             solids: vec![SerSolid {
                 outer_shell: 0,
                 inner_shells: Vec::new(),
@@ -2102,6 +2166,10 @@ mod tests {
         let solid = make_box(&mut topo, 10.0, 20.0, 30.0).unwrap();
 
         let bytes = serialize_solid(&topo, solid).unwrap();
+        assert!(
+            !std::str::from_utf8(&bytes).unwrap().contains("body_class"),
+            "default class tags must remain absent for byte-stable legacy output"
+        );
         assert_eq!(
             serde_json::from_slice::<VersionHeader>(&bytes)
                 .unwrap()
@@ -2161,6 +2229,55 @@ mod tests {
             assert_eq!(a.y().to_bits(), b.y().to_bits(), "y bits differ");
             assert_eq!(a.z().to_bits(), b.z().to_bits(), "z bits differ");
         }
+    }
+
+    #[test]
+    fn additive_sheet_tag_loads_when_the_shell_is_not_a_solid_boundary() {
+        let mut source = Topology::new();
+        let solid = make_box(&mut source, 1.0, 1.0, 1.0).unwrap();
+        let bytes = serialize_solid(&source, solid).unwrap();
+        let mut document: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        document["shells"][0]["body_class"] = serde_json::Value::String("sheet".into());
+        document["solids"] = serde_json::Value::Array(Vec::new());
+        document["solid_roots"] = serde_json::Value::Array(Vec::new());
+        let tagged = serde_json::to_vec(&document).unwrap();
+
+        let mut destination = Topology::new();
+        let roots = deserialize_document(&tagged, &mut destination).unwrap();
+
+        assert!(roots.solids.is_empty());
+        assert_eq!(
+            destination
+                .shell(destination.shell_id_from_index(0).unwrap())
+                .unwrap()
+                .body_class(),
+            BodyClass::Sheet
+        );
+    }
+
+    #[test]
+    fn sheet_tagged_solid_boundary_refuses_transactionally() {
+        let mut source = Topology::new();
+        let solid = make_box(&mut source, 1.0, 1.0, 1.0).unwrap();
+        let bytes = serialize_solid(&source, solid).unwrap();
+        let mut document: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        document["shells"][0]["body_class"] = serde_json::Value::String("sheet".into());
+        let tagged = serde_json::to_vec(&document).unwrap();
+        let mut destination = Topology::new();
+        let sentinel = destination.add_empty_solid();
+
+        let error = deserialize_solid(&tagged, &mut destination).unwrap_err();
+
+        assert!(matches!(
+            error,
+            IoError::Topology(remus_topology::TopologyError::BodyClassMismatch {
+                entity: "solid shell",
+                expected: "solid",
+                actual: "sheet"
+            })
+        ));
+        assert_eq!(destination.num_solids(), 1);
+        assert!(destination.is_empty_solid(sentinel));
     }
 
     #[test]
