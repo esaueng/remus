@@ -23,9 +23,11 @@ const projectRoot = resolve(__dirname, '..');
 // The node entry uses CommonJS (exports.X = ...) and is renamed to .cjs
 // so Node treats it correctly even with "type": "module" in package.json.
 const require = createRequire(import.meta.url);
-const { BrepKernel, decodeEvolutionPayload } = require(
-  resolve(projectRoot, 'crates/wasm/pkg/remus_wasm_node.cjs'),
-);
+const {
+  BrepKernel,
+  OperationCancellationToken,
+  decodeEvolutionPayload,
+} = require(resolve(projectRoot, 'crates/wasm/pkg/remus_wasm_node.cjs'));
 
 const DEFLECTION = 0.1;
 
@@ -103,6 +105,65 @@ const workCountBatch = JSON.parse(
 assert.match(workCountBatch[0].error, /segments must be at most 10000/);
 assert.equal(typeof workCountBatch[1].ok, 'number');
 console.log('ok - oversized WASM work counts fail closed in direct and batch APIs');
+
+// All SSI work budgets are optional additions to the quality-disclosing
+// boolean contract. Analytic operands do not enter SSI, so zero budgets must
+// preserve the exact result while each malformed positional argument refuses
+// before touching the input topology.
+{
+  const budgetKernel = new BrepKernel();
+  const a = budgetKernel.makeBox(2, 2, 2);
+  const b = budgetKernel.makeBox(1, 1, 1);
+  const bounded = budgetKernel.booleanWithQuality(
+    'fuse',
+    a,
+    b,
+    true,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+  );
+  assert.equal(bounded.quality, 'exact');
+  assert.equal(budgetKernel.volume(bounded.solid, DEFLECTION), 8);
+  const cancellable = budgetKernel.booleanWithCancellation(
+    'fuse',
+    a,
+    b,
+    new OperationCancellationToken(),
+    true,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+  );
+  assert.equal(cancellable.status, 'completed');
+  assert.equal(cancellable.result.quality, 'exact');
+
+  const fieldIndexes = new Map([
+    ['newton_iterations', 4],
+    ['subdivision_depth', 5],
+    ['march_steps', 6],
+    ['queue_size', 7],
+    ['segments', 8],
+    ['branches_per_direction', 9],
+  ]);
+  for (const [field, index] of fieldIndexes) {
+    const args = ['fuse', a, b, true];
+    args[index] = -1;
+    assert.throws(
+      () => budgetKernel.booleanWithQuality(...args),
+      new RegExp(field),
+      `${field} must reject before geometry work`,
+    );
+    assert.equal(budgetKernel.volume(a, DEFLECTION), 8);
+  }
+  console.log('ok - direct SSI budget controls are additive and fail closed');
+}
 
 // Batch deflection validation must reject every value rejected by the matching
 // direct binding. JSON.stringify serializes NaN and Infinity as null, which the
