@@ -169,6 +169,7 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "getFaceMinRadius"
         | "getFaceVertexPositions"
         | "getOpposingPlanarFacePairs"
+        | "wireLength"
         | "volume" => Some(BatchOpKind::ReadOnly),
         // Serialized-reference ops: their dispatch arms in `naming.rs` are
         // `io`-gated because the reference codec is. Classifying them without
@@ -223,6 +224,7 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "extrude"
         | "revolve"
         | "sweep"
+        | "sweepWire"
         | "sweepWithOptions"
         | "helicalSweep"
         | "multiSectionSweep"
@@ -1256,6 +1258,14 @@ impl BrepKernel {
                     .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(v))
             }
+            "wireLength" => {
+                let wire = get_u32(args, "wire")?;
+                let wire_id = self.resolve_wire(wire).map_err(StructuredWasmError::from)?;
+                let length =
+                    measure::body_length(&self.topo, remus_topology::BodyId::Wire(wire_id))
+                        .map_err(StructuredWasmError::from)?;
+                Ok(serde_json::json!(length))
+            }
             "validateSolid" => {
                 let solid = get_u32(args, "solid")?;
                 let solid_id = self
@@ -1582,6 +1592,20 @@ impl BrepKernel {
                     .map_err(StructuredWasmError::from)?;
                 let solid =
                     sweep(self.topo_mut(), face_id, &curve).map_err(StructuredWasmError::from)?;
+                Ok(serde_json::json!(solid_id_to_u32(solid)))
+            }
+            "sweepWire" => {
+                let profile = get_u32(args, "profile")?;
+                let path_edge = get_u32(args, "pathEdge")?;
+                let wire_id = self
+                    .resolve_wire(profile)
+                    .map_err(StructuredWasmError::from)?;
+                let path_curve = self
+                    .extract_nurbs_curve(path_edge)
+                    .map_err(StructuredWasmError::from)?;
+                let solid =
+                    remus_operations::sweep::sweep_wire(self.topo_mut(), wire_id, &path_curve)
+                        .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(solid)))
             }
             "sweepWithOptions" => {

@@ -8,7 +8,7 @@ use wasm_bindgen::prelude::*;
 use remus_math::diagnostic::{DetailValue, ToDiagnostic};
 
 use crate::error::{WasmError, validate_positive};
-use crate::handles::{shell_id_to_u32, solid_id_to_u32};
+use crate::handles::{shell_id_to_u32, solid_id_to_u32, wire_id_to_u32};
 use crate::helpers::TOL;
 use crate::kernel::BrepKernel;
 
@@ -798,15 +798,16 @@ impl BrepKernel {
         )?)
     }
 
-    /// Reconstruct solid roots from a version 1, 2, 3, or 4 arena document.
+    /// Reconstruct solid roots from a version 1 through 5 arena document.
     ///
     /// Every restored entity receives a fresh kernel handle. Documents with
-    /// compound roots must be loaded through the native Rust document API.
+    /// Sheet, wire, and compound roots must be loaded through their dedicated
+    /// binding or the native Rust document API.
     ///
     /// # Errors
     ///
     /// Returns an error if the buffer is malformed, exceeds import limits,
-    /// contains compound roots, or reconstruction fails.
+    /// contains a non-solid root, or reconstruction fails.
     #[wasm_bindgen(js_name = "deserializeSolids")]
     pub fn deserialize_solids(&mut self, data: &[u8]) -> Result<Vec<u32>, JsError> {
         let solid_ids = remus_io::arena_io::deserialize_solids(data, self.topo_mut())?;
@@ -836,7 +837,7 @@ impl BrepKernel {
         Ok(bytes)
     }
 
-    /// Reconstruct one solid from a version 1, 2, 3, or 4 single-root buffer.
+    /// Reconstruct one solid from a version 1 through 5 single-root buffer.
     ///
     /// # Errors
     ///
@@ -867,12 +868,12 @@ impl BrepKernel {
         )?)
     }
 
-    /// Reconstruct standalone sheet roots from a version 4 arena document.
+    /// Reconstruct standalone sheet roots from a version 4 or 5 arena document.
     ///
     /// # Errors
     ///
-    /// Returns an error if the buffer is malformed, contains solid or compound
-    /// roots, or reconstruction fails.
+    /// Returns an error if the buffer is malformed, contains another root
+    /// class, or reconstruction fails.
     #[wasm_bindgen(js_name = "deserializeSheets")]
     pub fn deserialize_sheets(&mut self, data: &[u8]) -> Result<Vec<u32>, JsError> {
         let sheet_ids = remus_io::arena_io::deserialize_sheets(data, self.topo_mut())?;
@@ -891,7 +892,7 @@ impl BrepKernel {
         Ok(remus_io::arena_io::serialize_sheet(&self.topo, sheet_id)?)
     }
 
-    /// Reconstruct one first-class sheet body from a version 4 arena document.
+    /// Reconstruct one first-class sheet body from a version 4 or 5 arena document.
     ///
     /// # Errors
     ///
@@ -901,6 +902,60 @@ impl BrepKernel {
     pub fn deserialize_sheet(&mut self, data: &[u8]) -> Result<u32, JsError> {
         let sheet_id = remus_io::arena_io::deserialize_sheet(data, self.topo_mut())?;
         Ok(shell_id_to_u32(sheet_id))
+    }
+
+    /// Serialize first-class wire bodies into a version 5 arena document.
+    ///
+    /// Shared topology is encoded once. Root order and duplicate handles are
+    /// preserved.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any handle is invalid, is not tagged as a wire
+    /// body, or serialization fails.
+    #[wasm_bindgen(js_name = "serializeWires")]
+    pub fn serialize_wires(&self, wires: &[u32]) -> Result<Vec<u8>, JsError> {
+        let wire_ids = wires
+            .iter()
+            .map(|&handle| self.resolve_wire(handle))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(remus_io::arena_io::serialize_wires(&self.topo, &wire_ids)?)
+    }
+
+    /// Reconstruct standalone wire roots from a version 5 arena document.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the buffer is malformed, contains non-wire roots,
+    /// or reconstruction fails.
+    #[wasm_bindgen(js_name = "deserializeWires")]
+    pub fn deserialize_wires(&mut self, data: &[u8]) -> Result<Vec<u32>, JsError> {
+        let wire_ids = remus_io::arena_io::deserialize_wires(data, self.topo_mut())?;
+        Ok(wire_ids.into_iter().map(wire_id_to_u32).collect())
+    }
+
+    /// Serialize one first-class wire body into a version 5 arena document.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the handle is invalid, is not tagged as a wire
+    /// body, or serialization fails.
+    #[wasm_bindgen(js_name = "serializeWire")]
+    pub fn serialize_wire(&self, wire: u32) -> Result<Vec<u8>, JsError> {
+        let wire_id = self.resolve_wire(wire)?;
+        Ok(remus_io::arena_io::serialize_wire(&self.topo, wire_id)?)
+    }
+
+    /// Reconstruct one first-class wire body from a version 5 arena document.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the buffer is malformed, does not contain exactly
+    /// one wire root, or reconstruction fails.
+    #[wasm_bindgen(js_name = "deserializeWire")]
+    pub fn deserialize_wire(&mut self, data: &[u8]) -> Result<u32, JsError> {
+        let wire_id = remus_io::arena_io::deserialize_wire(data, self.topo_mut())?;
+        Ok(wire_id_to_u32(wire_id))
     }
 }
 
@@ -1170,6 +1225,59 @@ mod tests {
                 .unwrap()
                 .body_class(),
             remus_topology::BodyClass::Sheet
+        );
+    }
+
+    #[test]
+    fn wire_arena_bindings_preserve_root_order_class_and_fresh_handles() {
+        let mut source = BrepKernel::new();
+        let wire_id = remus_topology::builder::make_polygon_wire(
+            source.topo_mut(),
+            &[
+                remus_math::vec::Point3::new(0.0, 0.0, 0.0),
+                remus_math::vec::Point3::new(2.0, 0.0, 0.0),
+                remus_math::vec::Point3::new(2.0, 1.0, 0.0),
+                remus_math::vec::Point3::new(0.0, 1.0, 0.0),
+            ],
+            1e-7,
+        )
+        .unwrap();
+        let wire = wire_id_to_u32(wire_id);
+        let bytes = source.serialize_wires(&[wire, wire]).unwrap();
+
+        let mut destination = BrepKernel::new();
+        let sentinel = remus_topology::builder::make_regular_polygon_wire(
+            destination.topo_mut(),
+            0.25,
+            3,
+            1e-7,
+        )
+        .unwrap();
+        let restored = destination.deserialize_wires(&bytes).unwrap();
+
+        assert_eq!(restored.len(), 2);
+        assert_eq!(restored[0], restored[1]);
+        assert!(restored[0] > wire_id_to_u32(sentinel));
+        assert_eq!(
+            destination
+                .topo()
+                .wire(destination.resolve_wire(restored[0]).unwrap())
+                .unwrap()
+                .body_class(),
+            remus_topology::BodyClass::Wire
+        );
+        assert!((destination.wire_length(restored[0]).unwrap() - 6.0).abs() < 1e-9);
+
+        let single = source.serialize_wire(wire).unwrap();
+        let mut single_destination = BrepKernel::new();
+        let restored_single = single_destination.deserialize_wire(&single).unwrap();
+        assert_eq!(
+            single_destination
+                .topo()
+                .wire(single_destination.resolve_wire(restored_single).unwrap())
+                .unwrap()
+                .body_class(),
+            remus_topology::BodyClass::Wire
         );
     }
 

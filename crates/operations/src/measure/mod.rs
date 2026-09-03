@@ -12,7 +12,7 @@ pub use area::{
 };
 pub(crate) use bounding_box::face_set_bounding_box;
 pub use bounding_box::{sheet_bounding_box, solid_bounding_box};
-pub use edge_length::{edge_length, face_perimeter, wire_length};
+pub use edge_length::{body_length, edge_length, face_perimeter, wire_length};
 pub use volume::{
     mass_properties, oriented_solid_volume, solid_center_of_mass, solid_is_inverted, solid_volume,
     solid_volume_from_faces,
@@ -846,6 +846,32 @@ mod tests {
         let len = wire_length(&topo, face.outer_wire()).unwrap();
         // Perimeter = 2(3+5) = 16.0 exactly.
         assert_rel(len, 16.0, 1e-8, "3x5 rectangle perimeter");
+    }
+
+    #[test]
+    fn body_length_dispatches_wire_and_refuses_solid() {
+        use remus_topology::BodyId;
+        use remus_topology::builder::make_rectangle_face;
+
+        let mut topo = Topology::new();
+        let face = make_rectangle_face(&mut topo, 3.0, 5.0, 1e-7).unwrap();
+        let wire = topo.face(face).unwrap().outer_wire();
+        let solid = make_unit_cube_non_manifold(&mut topo);
+
+        assert_rel(
+            body_length(&topo, BodyId::Wire(wire)).unwrap(),
+            16.0,
+            1e-8,
+            "wire body length",
+        );
+        assert!(matches!(
+            body_length(&topo, BodyId::Solid(solid)),
+            Err(crate::OperationsError::BodyClassMeasureMismatch {
+                operation: "length",
+                expected: "wire",
+                actual: "solid",
+            })
+        ));
     }
 
     /// Boolean cut must reduce volume: cut(box, cylinder) < box volume.

@@ -73,6 +73,86 @@ fn make_square(topo: &mut Topology, size: f64) -> FaceId {
 }
 
 #[test]
+fn sweep_wire_preserves_the_profile_body_and_builds_a_valid_solid() {
+    let mut topo = Topology::new();
+    let profile = remus_topology::builder::make_polygon_wire(
+        &mut topo,
+        &[
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(2.0, 0.0, 0.0),
+            Point3::new(2.0, 3.0, 0.0),
+            Point3::new(0.0, 3.0, 0.0),
+        ],
+        1e-7,
+    )
+    .unwrap();
+    let path = straight_z_path(5.0);
+
+    let solid = sweep_wire(&mut topo, profile, &path).unwrap();
+
+    let volume = crate::measure::solid_volume(&topo, solid, 0.1).unwrap();
+    assert!(
+        (volume - 30.0).abs() < 1e-8,
+        "expected volume 30, got {volume}"
+    );
+    assert!((crate::measure::wire_length(&topo, profile).unwrap() - 10.0).abs() < 1e-9);
+    assert_eq!(topo.wire(profile).unwrap().body_class(), BodyClass::Wire);
+    let report = crate::validate::validate_solid(&topo, solid).unwrap();
+    assert_eq!(report.error_count(), 0, "{report:?}");
+}
+
+#[test]
+fn sweep_wire_refuses_open_profiles_without_mutating_topology() {
+    let mut topo = Topology::new();
+    let v0 = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
+    let v1 = topo.add_vertex(Vertex::new(Point3::new(2.0, 0.0, 0.0), 1e-7));
+    let edge = topo.add_edge(Edge::new(v0, v1, EdgeCurve::Line));
+    let profile = topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], false).unwrap());
+    let slots_before = topo.allocated_slot_count();
+
+    let error = sweep_wire(&mut topo, profile, &straight_z_path(5.0)).unwrap_err();
+
+    assert!(matches!(
+        error,
+        crate::OperationsError::Unsupported {
+            operation: "sweep_wire",
+            ..
+        }
+    ));
+    assert_eq!(topo.allocated_slot_count(), slots_before);
+    assert_eq!(topo.wire(profile).unwrap().body_class(), BodyClass::Wire);
+}
+
+#[test]
+fn sweep_wire_refuses_nonplanar_profiles_without_mutating_topology() {
+    let mut topo = Topology::new();
+    let profile = remus_topology::builder::make_polygon_wire(
+        &mut topo,
+        &[
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(2.0, 0.0, 0.0),
+            Point3::new(2.0, 2.0, 0.0),
+            Point3::new(0.0, 2.0, 1.0),
+        ],
+        1e-7,
+    )
+    .unwrap();
+    let slots_before = topo.allocated_slot_count();
+
+    let error = sweep_wire(&mut topo, profile, &straight_z_path(5.0)).unwrap_err();
+
+    assert!(matches!(
+        error,
+        crate::OperationsError::Unsupported {
+            operation: "sweep_wire",
+            ..
+        }
+    ));
+    assert_eq!(topo.allocated_slot_count(), slots_before);
+    assert_eq!(topo.wire(profile).unwrap().body_class(), BodyClass::Wire);
+}
+
+#[test]
 fn multi_section_sweep_line_spine_tapered_volume() {
     let mut topo = Topology::new();
     let big = make_square(&mut topo, 10.0);

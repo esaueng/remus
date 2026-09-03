@@ -1,6 +1,6 @@
-//! Exact serialization of solid, sheet, and compound topology sub-arenas.
+//! Exact serialization of solid, sheet, wire, and compound topology sub-arenas.
 //!
-//! Captures every entity reachable from selected solid, sheet, and compound roots —
+//! Captures every entity reachable from selected solid, sheet, wire, and compound roots —
 //! vertices (with exact `Point3` and tolerance), edges (curve + analytic
 //! params), authoritative loops/coedges (including per-use pcurves), wires as
 //! their compatibility view, faces (surface + analytic params + reversed
@@ -37,7 +37,7 @@ use remus_topology::shell::{Shell, ShellId};
 use remus_topology::solid::{Solid, SolidId};
 use remus_topology::topology::Topology;
 use remus_topology::vertex::Vertex;
-use remus_topology::wire::{OrientedEdge, Wire};
+use remus_topology::wire::{OrientedEdge, Wire, WireId};
 use serde::{Deserialize, Serialize};
 
 use crate::IoError;
@@ -350,10 +350,12 @@ struct SerAttributes {
 }
 
 /// Version 3 moves boundary authority into Loop/Coedge records. Version 4
-/// adds standalone sheet roots. Released versions are read forever;
+/// adds standalone sheet roots; version 5 adds standalone wire roots.
+/// Released versions are read forever;
 /// incompatible additions require a new version and dedicated parser.
 const FORMAT_VERSION: u32 = 3;
 const SHEET_ROOT_FORMAT_VERSION: u32 = 4;
+const WIRE_ROOT_FORMAT_VERSION: u32 = 5;
 const LEGACY_MULTI_ROOT_VERSION: u32 = 2;
 const LEGACY_SINGLE_SOLID_VERSION: u32 = 1;
 
@@ -418,6 +420,27 @@ struct SerializedDocumentV4 {
     attributes: Option<SerAttributes>,
 }
 
+/// Version 5 adds standalone wire roots that reference the dense wire table.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SerializedDocumentV5 {
+    version: u32,
+    vertices: Vec<SerVertex>,
+    edges: Vec<SerEdge>,
+    wires: Vec<SerWire>,
+    faces: Vec<SerFace>,
+    shells: Vec<SerShell>,
+    solids: Vec<SerSolid>,
+    solid_roots: Vec<usize>,
+    sheet_roots: Vec<usize>,
+    wire_roots: Vec<usize>,
+    compounds: Vec<SerCompound>,
+    boundary_authority: SerBoundaryAuthority,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    journal: Option<SerJournal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    attributes: Option<SerAttributes>,
+}
+
 #[derive(Debug, Deserialize)]
 struct VersionHeader {
     version: u32,
@@ -432,6 +455,7 @@ struct ParsedDocument {
     solids: Vec<SerSolid>,
     solid_roots: Vec<usize>,
     sheet_roots: Vec<usize>,
+    wire_roots: Vec<usize>,
     compounds: Vec<SerCompound>,
     pcurves: Vec<SerPCurve>,
     boundary_authority: Option<SerBoundaryAuthority>,
@@ -446,6 +470,8 @@ pub struct DeserializedDocument {
     pub solids: Vec<SolidId>,
     /// Explicit sheet roots, preserving document order and duplicates.
     pub sheets: Vec<ShellId>,
+    /// Explicit wire roots, preserving document order and duplicates.
+    pub wires: Vec<WireId>,
     /// Explicit compound roots, preserving document order.
     pub compounds: Vec<CompoundId>,
 }
@@ -808,6 +834,29 @@ pub fn serialize_sheets(topo: &Topology, sheet_ids: &[ShellId]) -> Result<Vec<u8
     serialize_body_document(topo, &[], sheet_ids, &[])
 }
 
+/// Serializes one standalone wire root into a version 5 arena document.
+///
+/// # Errors
+///
+/// Returns [`IoError`] if the wire is missing, has an invalid body class, any
+/// referenced entity is missing, or JSON serialization fails.
+pub fn serialize_wire(topo: &Topology, wire_id: WireId) -> Result<Vec<u8>, IoError> {
+    serialize_wires(topo, &[wire_id])
+}
+
+/// Serializes standalone wire roots into a version 5 arena document.
+///
+/// Shared topology is emitted once with dense local indices. Input order and
+/// duplicate roots are preserved.
+///
+/// # Errors
+///
+/// Returns [`IoError`] if a wire is missing, has an invalid body class, any
+/// referenced entity is missing, or JSON serialization fails.
+pub fn serialize_wires(topo: &Topology, wire_ids: &[WireId]) -> Result<Vec<u8>, IoError> {
+    serialize_body_document_with_wires(topo, &[], &[], wire_ids, &[])
+}
+
 /// Serializes solid, sheet, and compound roots into a version 4 arena document.
 ///
 /// Sheet roots reference the document's dense shell table directly. Existing
@@ -881,7 +930,97 @@ pub fn serialize_body_document(
     })
 }
 
-/// Reconstructs one solid from a version 1, 2, 3, or 4 single-root document.
+/// Serializes solid, sheet, wire, and compound roots into a version 5 arena
+/// document.
+///
+/// Wire roots reference the dense wire table directly. The version 3 and 4
+/// writers remain separate so their released byte representation stays frozen.
+///
+/// # Errors
+///
+/// Returns [`IoError`] if a root is missing, a sheet or wire root has the
+/// wrong body class, a referenced entity is missing, or JSON serialization
+/// fails.
+pub fn serialize_body_document_with_wires(
+    topo: &Topology,
+    solid_ids: &[SolidId],
+    sheet_ids: &[ShellId],
+    wire_ids: &[WireId],
+    compound_ids: &[CompoundId],
+) -> Result<Vec<u8>, IoError> {
+    let mut builder = Builder::new(topo);
+    let mut solid_roots = Vec::with_capacity(solid_ids.len());
+    for &solid in solid_ids {
+        solid_roots.push(builder.intern_solid(solid)?);
+    }
+
+    let mut sheet_roots = Vec::with_capacity(sheet_ids.len());
+    for &sheet in sheet_ids {
+        let actual = builder.topo.shell(sheet)?.body_class();
+        if actual != BodyClass::Sheet {
+            return Err(remus_topology::TopologyError::BodyClassMismatch {
+                entity: "sheet root",
+                expected: BodyClass::Sheet.as_str(),
+                actual: actual.as_str(),
+            }
+            .into());
+        }
+        sheet_roots.push(builder.intern_shell(sheet)?);
+    }
+
+    let mut wire_roots = Vec::with_capacity(wire_ids.len());
+    for &wire in wire_ids {
+        let actual = builder.topo.wire(wire)?.body_class();
+        if actual != BodyClass::Wire {
+            return Err(remus_topology::TopologyError::BodyClassMismatch {
+                entity: "wire root",
+                expected: BodyClass::Wire.as_str(),
+                actual: actual.as_str(),
+            }
+            .into());
+        }
+        wire_roots.push(builder.intern_wire(wire)?);
+    }
+
+    let mut compounds = Vec::with_capacity(compound_ids.len());
+    for &compound_id in compound_ids {
+        let member_ids = builder.topo.compound(compound_id)?.solids().to_vec();
+        let mut members = Vec::with_capacity(member_ids.len());
+        for solid in member_ids {
+            members.push(builder.intern_solid(solid)?);
+        }
+        compounds.push(SerCompound { solids: members });
+    }
+
+    let journal = serialize_journal(topo, &builder);
+    let attributes = serialize_attributes(topo, &builder);
+    let dump = SerializedDocumentV5 {
+        version: WIRE_ROOT_FORMAT_VERSION,
+        vertices: builder.vertices,
+        edges: builder.edges,
+        wires: builder.wires,
+        faces: builder.faces,
+        shells: builder.shells,
+        solids: builder.solids,
+        solid_roots,
+        sheet_roots,
+        wire_roots,
+        compounds,
+        boundary_authority: SerBoundaryAuthority {
+            loops: builder.loops,
+            coedges: builder.coedges,
+            faces: builder.face_loop_authority,
+        },
+        journal,
+        attributes,
+    };
+
+    serde_json::to_vec(&dump).map_err(|e| IoError::ParseError {
+        reason: format!("arena serialization failed: {e}"),
+    })
+}
+
+/// Reconstructs one solid from a version 1, 2, 3, 4, or 5 single-root document.
 ///
 /// All entities are appended to `topo` as fresh ids. Floating-point values are
 /// restored byte-for-byte; analytic curves and surfaces are rebuilt by direct
@@ -915,11 +1054,12 @@ pub fn deserialize_solid_with_limits(
     if document.solids.len() != 1
         || document.solid_roots.as_slice() != [0]
         || !document.sheet_roots.is_empty()
+        || !document.wire_roots.is_empty()
         || !document.compounds.is_empty()
     {
         return Err(IoError::ParseError {
             reason:
-                "single-solid deserialization requires exactly one solid root and no sheet or compound roots"
+                "single-solid deserialization requires exactly one solid root and no sheet, wire, or compound roots"
                     .to_owned(),
         });
     }
@@ -931,16 +1071,16 @@ pub fn deserialize_solid_with_limits(
         .ok_or_else(|| index_err("solid", 0))
 }
 
-/// Reconstructs explicit solid roots from a version 1, 2, 3, or 4 document.
+/// Reconstructs explicit solid roots from a version 1, 2, 3, 4, or 5 document.
 ///
-/// Version 1 input produces a one-element vector. Version 2 input must not
-/// contain sheet or compound roots; use [`deserialize_document`] for mixed
+/// Version 1 input produces a one-element vector. Input must not contain
+/// sheet, wire, or compound roots; use [`deserialize_document`] for mixed
 /// roots.
 /// Every entity receives a fresh topology id.
 ///
 /// # Errors
 ///
-/// Returns [`IoError`] if the document is malformed, contains sheet or
+/// Returns [`IoError`] if the document is malformed, contains sheet, wire, or
 /// compound roots, or reconstruction fails.
 pub fn deserialize_solids(bytes: &[u8], topo: &mut Topology) -> Result<Vec<SolidId>, IoError> {
     deserialize_solids_with_limits(bytes, topo, ImportLimits::default())
@@ -951,27 +1091,31 @@ pub fn deserialize_solids(bytes: &[u8], topo: &mut Topology) -> Result<Vec<Solid
 /// # Errors
 ///
 /// Returns [`IoError::LimitExceeded`] when the document exceeds a configured
-/// budget, or [`IoError::ParseError`] when it contains compound roots.
+/// budget, or [`IoError::ParseError`] when it contains a non-solid root.
 pub fn deserialize_solids_with_limits(
     bytes: &[u8],
     topo: &mut Topology,
     limits: ImportLimits,
 ) -> Result<Vec<SolidId>, IoError> {
     let document = parse_document(bytes, limits)?;
-    if !document.sheet_roots.is_empty() || !document.compounds.is_empty() {
+    if !document.sheet_roots.is_empty()
+        || !document.wire_roots.is_empty()
+        || !document.compounds.is_empty()
+    {
         return Err(IoError::ParseError {
-            reason: "solid-only deserialization does not accept sheet or compound roots".to_owned(),
+            reason: "solid-only deserialization does not accept sheet, wire, or compound roots"
+                .to_owned(),
         });
     }
     Ok(replay_document(document, topo)?.solids)
 }
 
-/// Reconstructs one standalone sheet root from a version 4 arena document.
+/// Reconstructs one standalone sheet root from a version 4 or 5 arena document.
 ///
 /// # Errors
 ///
 /// Returns [`IoError`] if the document is malformed, does not contain exactly
-/// one sheet root, contains solid or compound roots, or reconstruction fails.
+/// one sheet root, contains another root class, or reconstruction fails.
 pub fn deserialize_sheet(bytes: &[u8], topo: &mut Topology) -> Result<ShellId, IoError> {
     deserialize_sheet_with_limits(bytes, topo, ImportLimits::default())
 }
@@ -991,11 +1135,12 @@ pub fn deserialize_sheet_with_limits(
     let document = parse_document(bytes, limits)?;
     if document.sheet_roots.len() != 1
         || !document.solid_roots.is_empty()
+        || !document.wire_roots.is_empty()
         || !document.compounds.is_empty()
     {
         return Err(IoError::ParseError {
             reason:
-                "single-sheet deserialization requires exactly one sheet root and no solid or compound roots"
+                "single-sheet deserialization requires exactly one sheet root and no solid, wire, or compound roots"
                     .to_owned(),
         });
     }
@@ -1007,15 +1152,15 @@ pub fn deserialize_sheet_with_limits(
         .ok_or_else(|| index_err("shell", 0))
 }
 
-/// Reconstructs standalone sheet roots from a version 4 arena document.
+/// Reconstructs standalone sheet roots from a version 4 or 5 arena document.
 ///
-/// Root order and duplicates are preserved. Documents with solid or compound
-/// roots must be loaded through [`deserialize_document`].
+/// Root order and duplicates are preserved. Documents with another root class
+/// must be loaded through [`deserialize_document`].
 ///
 /// # Errors
 ///
-/// Returns [`IoError`] if the document is malformed, contains solid or
-/// compound roots, or reconstruction fails.
+/// Returns [`IoError`] if the document is malformed, contains another root
+/// class, or reconstruction fails.
 pub fn deserialize_sheets(bytes: &[u8], topo: &mut Topology) -> Result<Vec<ShellId>, IoError> {
     deserialize_sheets_with_limits(bytes, topo, ImportLimits::default())
 }
@@ -1025,26 +1170,108 @@ pub fn deserialize_sheets(bytes: &[u8], topo: &mut Topology) -> Result<Vec<Shell
 /// # Errors
 ///
 /// Returns [`IoError::LimitExceeded`] when the document exceeds a configured
-/// budget, or [`IoError::ParseError`] when it contains solid or compound
-/// roots.
+/// budget, or [`IoError::ParseError`] when it contains another root class.
 pub fn deserialize_sheets_with_limits(
     bytes: &[u8],
     topo: &mut Topology,
     limits: ImportLimits,
 ) -> Result<Vec<ShellId>, IoError> {
     let document = parse_document(bytes, limits)?;
-    if !document.solid_roots.is_empty() || !document.compounds.is_empty() {
+    if !document.solid_roots.is_empty()
+        || !document.wire_roots.is_empty()
+        || !document.compounds.is_empty()
+    {
         return Err(IoError::ParseError {
-            reason: "sheet-only deserialization does not accept solid or compound roots".to_owned(),
+            reason: "sheet-only deserialization does not accept solid, wire, or compound roots"
+                .to_owned(),
         });
     }
     Ok(replay_document(document, topo)?.sheets)
 }
 
-/// Reconstructs solid, sheet, and compound roots from a version 1, 2, 3, or 4
-/// arena document.
+/// Reconstructs one standalone wire root from a version 5 arena document.
 ///
-/// Version 1 input is represented as one solid root and no sheets or compounds.
+/// # Errors
+///
+/// Returns [`IoError`] if the document is malformed, does not contain exactly
+/// one wire root, contains another root class, or reconstruction fails.
+pub fn deserialize_wire(bytes: &[u8], topo: &mut Topology) -> Result<WireId, IoError> {
+    deserialize_wire_with_limits(bytes, topo, ImportLimits::default())
+}
+
+/// Reconstructs one standalone wire root with hostile-input resource limits.
+///
+/// # Errors
+///
+/// Returns [`IoError::LimitExceeded`] when the document exceeds a configured
+/// budget, or another [`IoError`] when the root contract or reconstruction
+/// fails.
+pub fn deserialize_wire_with_limits(
+    bytes: &[u8],
+    topo: &mut Topology,
+    limits: ImportLimits,
+) -> Result<WireId, IoError> {
+    let document = parse_document(bytes, limits)?;
+    if document.wire_roots.len() != 1
+        || !document.solid_roots.is_empty()
+        || !document.sheet_roots.is_empty()
+        || !document.compounds.is_empty()
+    {
+        return Err(IoError::ParseError {
+            reason:
+                "single-wire deserialization requires exactly one wire root and no solid, sheet, or compound roots"
+                    .to_owned(),
+        });
+    }
+    let restored = replay_document(document, topo)?;
+    restored
+        .wires
+        .into_iter()
+        .next()
+        .ok_or_else(|| index_err("wire", 0))
+}
+
+/// Reconstructs standalone wire roots from a version 5 arena document.
+///
+/// Root order and duplicates are preserved. Documents with another root class
+/// must be loaded through [`deserialize_document`].
+///
+/// # Errors
+///
+/// Returns [`IoError`] if the document is malformed, contains another root
+/// class, or reconstruction fails.
+pub fn deserialize_wires(bytes: &[u8], topo: &mut Topology) -> Result<Vec<WireId>, IoError> {
+    deserialize_wires_with_limits(bytes, topo, ImportLimits::default())
+}
+
+/// Reconstructs standalone wire roots with hostile-input resource limits.
+///
+/// # Errors
+///
+/// Returns [`IoError::LimitExceeded`] when the document exceeds a configured
+/// budget, or [`IoError::ParseError`] when it contains another root class.
+pub fn deserialize_wires_with_limits(
+    bytes: &[u8],
+    topo: &mut Topology,
+    limits: ImportLimits,
+) -> Result<Vec<WireId>, IoError> {
+    let document = parse_document(bytes, limits)?;
+    if !document.solid_roots.is_empty()
+        || !document.sheet_roots.is_empty()
+        || !document.compounds.is_empty()
+    {
+        return Err(IoError::ParseError {
+            reason: "wire-only deserialization does not accept solid, sheet, or compound roots"
+                .to_owned(),
+        });
+    }
+    Ok(replay_document(document, topo)?.wires)
+}
+
+/// Reconstructs solid, sheet, wire, and compound roots from a version 1, 2, 3,
+/// 4, or 5 arena document.
+///
+/// Version 1 input is represented as one solid root and no other root classes.
 /// All restored topology entities receive fresh ids.
 ///
 /// # Errors
@@ -1058,8 +1285,8 @@ pub fn deserialize_document(
     deserialize_document_with_limits(bytes, topo, ImportLimits::default())
 }
 
-/// Reconstructs solid, sheet, and compound roots with explicit hostile-input
-/// limits.
+/// Reconstructs solid, sheet, wire, and compound roots with explicit
+/// hostile-input limits.
 ///
 /// Limits are checked before any topology mutation. The encoded byte limit
 /// bounds allocations performed by JSON parsing; model-entity limits bound
@@ -1106,6 +1333,7 @@ fn parse_document(bytes: &[u8], limits: ImportLimits) -> Result<ParsedDocument, 
                 }],
                 solid_roots: vec![0],
                 sheet_roots: Vec::new(),
+                wire_roots: Vec::new(),
                 compounds: Vec::new(),
                 pcurves: dump.pcurves,
                 boundary_authority: None,
@@ -1127,6 +1355,7 @@ fn parse_document(bytes: &[u8], limits: ImportLimits) -> Result<ParsedDocument, 
                 solids: dump.solids,
                 solid_roots: dump.solid_roots,
                 sheet_roots: Vec::new(),
+                wire_roots: Vec::new(),
                 compounds: dump.compounds,
                 pcurves: dump.pcurves,
                 boundary_authority: None,
@@ -1148,6 +1377,7 @@ fn parse_document(bytes: &[u8], limits: ImportLimits) -> Result<ParsedDocument, 
                 solids: dump.solids,
                 solid_roots: dump.solid_roots,
                 sheet_roots: Vec::new(),
+                wire_roots: Vec::new(),
                 compounds: dump.compounds,
                 pcurves: Vec::new(),
                 boundary_authority: Some(dump.boundary_authority),
@@ -1169,6 +1399,29 @@ fn parse_document(bytes: &[u8], limits: ImportLimits) -> Result<ParsedDocument, 
                 solids: dump.solids,
                 solid_roots: dump.solid_roots,
                 sheet_roots: dump.sheet_roots,
+                wire_roots: Vec::new(),
+                compounds: dump.compounds,
+                pcurves: Vec::new(),
+                boundary_authority: Some(dump.boundary_authority),
+                journal: dump.journal,
+                attributes: dump.attributes,
+            }
+        }
+        WIRE_ROOT_FORMAT_VERSION => {
+            let dump: SerializedDocumentV5 =
+                serde_json::from_slice(bytes).map_err(|e| IoError::ParseError {
+                    reason: format!("arena v5 deserialization failed: {e}"),
+                })?;
+            ParsedDocument {
+                vertices: dump.vertices,
+                edges: dump.edges,
+                wires: dump.wires,
+                faces: dump.faces,
+                shells: dump.shells,
+                solids: dump.solids,
+                solid_roots: dump.solid_roots,
+                sheet_roots: dump.sheet_roots,
+                wire_roots: dump.wire_roots,
                 compounds: dump.compounds,
                 pcurves: Vec::new(),
                 boundary_authority: Some(dump.boundary_authority),
@@ -1179,7 +1432,7 @@ fn parse_document(bytes: &[u8], limits: ImportLimits) -> Result<ParsedDocument, 
         version => {
             return Err(IoError::ParseError {
                 reason: format!(
-                    "unsupported arena dump version {version} (supported: {LEGACY_SINGLE_SOLID_VERSION}, {LEGACY_MULTI_ROOT_VERSION}, {FORMAT_VERSION}, {SHEET_ROOT_FORMAT_VERSION})"
+                    "unsupported arena dump version {version} (supported: {LEGACY_SINGLE_SOLID_VERSION}, {LEGACY_MULTI_ROOT_VERSION}, {FORMAT_VERSION}, {SHEET_ROOT_FORMAT_VERSION}, {WIRE_ROOT_FORMAT_VERSION})"
                 ),
             });
         }
@@ -1241,6 +1494,7 @@ fn check_document_limits(document: &ParsedDocument, limits: ImportLimits) -> Res
         ("arena solids", document.solids.len()),
         ("arena solid roots", document.solid_roots.len()),
         ("arena sheet roots", document.sheet_roots.len()),
+        ("arena wire roots", document.wire_roots.len()),
         ("arena compounds", document.compounds.len()),
         ("arena inner shell references", inner_shell_refs),
         ("arena compound solid references", compound_refs),
@@ -1283,6 +1537,11 @@ fn check_document_limits(document: &ParsedDocument, limits: ImportLimits) -> Res
     for &index in &document.sheet_roots {
         if index >= document.shells.len() {
             return Err(index_err("shell", index));
+        }
+    }
+    for &index in &document.wire_roots {
+        if index >= document.wires.len() {
+            return Err(index_err("wire", index));
         }
     }
     for compound in &document.compounds {
@@ -1443,6 +1702,7 @@ fn replay_document_into(
         solids,
         solid_roots,
         sheet_roots,
+        wire_roots,
         compounds,
         pcurves,
         boundary_authority,
@@ -1524,6 +1784,27 @@ fn replay_document_into(
         topo.set_wire_body_class(wire, body_class)?;
         wire_ids.push(wire);
     }
+
+    let restored_wires = wire_roots
+        .into_iter()
+        .map(|index| {
+            let wire = wire_ids
+                .get(index)
+                .copied()
+                .ok_or_else(|| index_err("wire", index))?;
+            let actual = topo.wire(wire)?.body_class();
+            if actual != BodyClass::Wire {
+                return Err(IoError::from(
+                    remus_topology::TopologyError::BodyClassMismatch {
+                        entity: "wire root",
+                        expected: BodyClass::Wire.as_str(),
+                        actual: actual.as_str(),
+                    },
+                ));
+            }
+            Ok(wire)
+        })
+        .collect::<Result<Vec<_>, IoError>>()?;
 
     let mut face_ids = Vec::with_capacity(faces.len());
     for f in faces {
@@ -1687,6 +1968,7 @@ fn replay_document_into(
     Ok(DeserializedDocument {
         solids: restored_solids,
         sheets: restored_sheets,
+        wires: restored_wires,
         compounds: restored_compounds,
     })
 }
@@ -2643,6 +2925,7 @@ mod tests {
 
         assert_eq!(roots.solids.len(), 1);
         assert_eq!(roots.sheets.len(), 1);
+        assert!(roots.wires.is_empty());
         assert_eq!(roots.compounds.len(), 1);
         assert_eq!(
             destination.shell(roots.sheets[0]).unwrap().body_class(),
@@ -2652,6 +2935,146 @@ mod tests {
             destination.compound(roots.compounds[0]).unwrap().solids(),
             roots.solids.as_slice()
         );
+    }
+
+    #[test]
+    fn v5_wire_roundtrip_is_exact_and_preserves_duplicate_roots() {
+        let mut source = Topology::new();
+        let wire = remus_topology::builder::make_polygon_wire(
+            &mut source,
+            &[
+                Point3::new(-1.25, -0.75, 0.0),
+                Point3::new(1.25, -0.75, 0.0),
+                Point3::new(1.25, 0.75, 0.0),
+                Point3::new(-1.25, 0.75, 0.0),
+            ],
+            3.25e-8,
+        )
+        .unwrap();
+
+        let bytes = serialize_wires(&source, &[wire, wire]).unwrap();
+        let encoded: SerializedDocumentV5 = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(encoded.version, WIRE_ROOT_FORMAT_VERSION);
+        assert_eq!(encoded.wire_roots, vec![0, 0]);
+        assert_eq!(encoded.wires.len(), 1);
+        assert!(encoded.wires[0].body_class.is_none());
+
+        let mut destination = Topology::new();
+        let sentinel =
+            remus_topology::builder::make_regular_polygon_wire(&mut destination, 0.25, 3, 1e-7)
+                .unwrap();
+        let restored = deserialize_wires(&bytes, &mut destination).unwrap();
+        assert_eq!(restored.len(), 2);
+        assert_eq!(restored[0], restored[1]);
+        assert!(restored[0].index() > sentinel.index());
+        assert_eq!(
+            destination.wire(restored[0]).unwrap().body_class(),
+            BodyClass::Wire
+        );
+        let length = remus_operations::measure::wire_length(&destination, restored[0]).unwrap();
+        assert!((length - 8.0).abs() < 1e-12);
+
+        let rewritten = serialize_wires(&destination, &restored).unwrap();
+        assert_eq!(rewritten, bytes);
+    }
+
+    #[test]
+    fn v5_mixed_body_document_restores_wire_root_alongside_existing_classes() {
+        let mut source = Topology::new();
+        let solid = make_box(&mut source, 1.0, 2.0, 3.0).unwrap();
+        let sheet = trimmed_nurbs_sheet(&mut source);
+        let wire =
+            remus_topology::builder::make_regular_polygon_wire(&mut source, 2.0, 5, 1e-7).unwrap();
+        let compound = source.add_compound(Compound::new(vec![solid]));
+        let bytes =
+            serialize_body_document_with_wires(&source, &[solid], &[sheet], &[wire], &[compound])
+                .unwrap();
+
+        let mut destination = Topology::new();
+        let roots = deserialize_document(&bytes, &mut destination).unwrap();
+
+        assert_eq!(roots.solids.len(), 1);
+        assert_eq!(roots.sheets.len(), 1);
+        assert_eq!(roots.wires.len(), 1);
+        assert_eq!(roots.compounds.len(), 1);
+        assert_eq!(
+            destination.wire(roots.wires[0]).unwrap().body_class(),
+            BodyClass::Wire
+        );
+    }
+
+    #[test]
+    fn v5_invalid_wire_root_refuses_before_topology_mutation() {
+        let mut source = Topology::new();
+        let wire =
+            remus_topology::builder::make_regular_polygon_wire(&mut source, 1.0, 4, 1e-7).unwrap();
+        let bytes = serialize_wire(&source, wire).unwrap();
+        let mut document: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        document["wire_roots"][0] = serde_json::json!(usize::MAX);
+        let malformed = serde_json::to_vec(&document).unwrap();
+        let mut destination = Topology::new();
+        let sentinel = destination.add_empty_solid();
+
+        let error = deserialize_wire(&malformed, &mut destination).unwrap_err();
+
+        assert!(error.to_string().contains("out-of-range wire index"));
+        assert_eq!(destination.num_wires(), 0);
+        assert_eq!(destination.num_solids(), 1);
+        assert!(destination.is_empty_solid(sentinel));
+    }
+
+    #[test]
+    fn solid_only_loader_refuses_v5_wire_roots_without_mutation() {
+        let mut source = Topology::new();
+        let wire =
+            remus_topology::builder::make_regular_polygon_wire(&mut source, 1.0, 4, 1e-7).unwrap();
+        let bytes = serialize_wire(&source, wire).unwrap();
+        let mut destination = Topology::new();
+        let sentinel = destination.add_empty_solid();
+
+        let error = deserialize_solids(&bytes, &mut destination).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("does not accept sheet, wire, or compound roots")
+        );
+        assert_eq!(destination.num_wires(), 0);
+        assert_eq!(destination.num_solids(), 1);
+        assert!(destination.is_empty_solid(sentinel));
+    }
+
+    #[test]
+    fn v5_wire_root_count_obeys_import_limits_before_mutation() {
+        let mut source = Topology::new();
+        let edge = remus_topology::builder::make_circle_edge(
+            &mut source,
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            1.0,
+            1e-7,
+        )
+        .unwrap();
+        let wire = source.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap());
+        let bytes = serialize_wires(&source, &[wire, wire]).unwrap();
+        let limits = ImportLimits {
+            max_input_bytes: bytes.len(),
+            max_model_entities: 1,
+            ..ImportLimits::default()
+        };
+        let mut destination = Topology::new();
+
+        let error = deserialize_wires_with_limits(&bytes, &mut destination, limits).unwrap_err();
+
+        assert!(matches!(
+            error,
+            IoError::LimitExceeded {
+                resource: "arena wire roots",
+                actual: 2,
+                limit: 1,
+            }
+        ));
+        assert_eq!(destination.num_wires(), 0);
     }
 
     #[test]
@@ -2745,7 +3168,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("does not accept sheet or compound roots")
+                .contains("does not accept sheet, wire, or compound roots")
         );
         assert_eq!(destination.num_shells(), 1);
         assert_eq!(destination.num_solids(), 1);

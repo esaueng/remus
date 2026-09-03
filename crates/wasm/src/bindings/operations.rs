@@ -36,7 +36,7 @@ use remus_operations::offset_wire::JoinType;
 use remus_operations::push_pull::{move_faces, push_pull_face, resize_cylindrical_face};
 use remus_operations::resize_blend::{blend_region, resize_blend, resize_blend_failure_code};
 use remus_operations::revolve::revolve;
-use remus_operations::sweep::sweep;
+use remus_operations::sweep::{sweep, sweep_wire};
 
 pub fn validate_move_faces_topology_work(
     topo: &remus_topology::Topology,
@@ -966,6 +966,24 @@ impl BrepKernel {
 
         let solid_id = sweep(self.topo_mut(), face_id, &path_curve)?;
 
+        Ok(solid_id_to_u32(solid_id))
+    }
+
+    /// Sweep a closed planar first-class wire profile along an edge path.
+    ///
+    /// The input wire remains an independent body. Open and non-planar wire
+    /// profiles are refused until sheet-result sweep assembly is qualified.
+    /// Returns a solid handle (`u32`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if either handle is invalid, the profile is not a
+    /// qualified wire body, or the sweep operation fails.
+    #[wasm_bindgen(js_name = "sweepWire")]
+    pub fn sweep_wire(&mut self, profile: u32, path_edge: u32) -> Result<u32, JsError> {
+        let wire_id = self.resolve_wire(profile)?;
+        let path_curve = self.extract_nurbs_curve(path_edge)?;
+        let solid_id = sweep_wire(self.topo_mut(), wire_id, &path_curve)?;
         Ok(solid_id_to_u32(solid_id))
     }
 
@@ -3331,6 +3349,36 @@ mod tests {
         );
         let solid = batch_solid_handle(&out, "sweep with Line path");
         assert_batch_solid_geometry(&k, solid, "sweep with Line path");
+    }
+
+    #[test]
+    fn wire_sweep_has_direct_and_batch_measurement_parity() {
+        let mut direct = BrepKernel::new();
+        let direct_profile = square_wire(&mut direct);
+        let direct_path = direct
+            .make_line_edge(0.0, 0.0, 0.0, 0.0, 0.0, 12.0)
+            .unwrap();
+        let direct_solid = direct.sweep_wire(direct_profile, direct_path).unwrap();
+        assert!((direct.wire_length(direct_profile).unwrap() - 40.0).abs() < 1e-9);
+        assert!((direct.volume(direct_solid, 0.1).unwrap() - 1200.0).abs() < 1e-7);
+
+        let mut batch = BrepKernel::new();
+        let batch_profile = square_wire(&mut batch);
+        let batch_path = batch.make_line_edge(0.0, 0.0, 0.0, 0.0, 0.0, 12.0).unwrap();
+        let length = dispatch(
+            &mut batch,
+            "wireLength",
+            serde_json::json!({ "wire": batch_profile }),
+        );
+        assert!((length["ok"].as_f64().unwrap() - 40.0).abs() < 1e-9);
+        let swept = dispatch(
+            &mut batch,
+            "sweepWire",
+            serde_json::json!({ "profile": batch_profile, "pathEdge": batch_path }),
+        );
+        let batch_solid = batch_solid_handle(&swept, "sweepWire");
+        assert!((batch.volume(batch_solid, 0.1).unwrap() - 1200.0).abs() < 1e-7);
+        assert!((batch.wire_length(batch_profile).unwrap() - 40.0).abs() < 1e-9);
     }
 
     #[test]
