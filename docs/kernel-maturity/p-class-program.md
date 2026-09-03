@@ -498,10 +498,12 @@ review, including the trim-plus-sew exit witness; curved and multi-face sheet
 pairs remain unqualified.
 Issue 4.5's planar solid×solid imprint is implemented in review with exact
 construction lineage; curved and same-domain imprint cells remain unqualified.
-Issue 4.6's first cellular boolean tranche is implemented in review: exact
-two-solid operations can now return independently validated regions in a
-Compound with per-region construction lineage. Compound operands and removal
-of the legacy multi-region-solid compatibility paths remain open.
+Issue 4.6 is implemented in review: exact two-solid operations return
+independently validated regions in a Compound with per-region construction
+lineage, and bounded Compound operands preserve or distribute those exact
+regions. The legacy single-Solid entry points remain as explicit compatibility
+surfaces; intersecting-member fuse and multi-tool Compound cut stay
+Unqualified until recursive lineage composition exists.
 
 ### 4.2 Sheet bodies first-class (M)
 
@@ -616,18 +618,23 @@ regions, return them as a Compound with per-region provenance instead of the
 current single-solid convention. Also closes the "Fuse/Intersect over
 disjoint multi-component inputs are left to mesh" note.
 
-Partial, in review in [PR #218](https://github.com/esaueng/remus/pull/218):
-the BuilderSolid final phase now produces one `Solid` per disconnected growth
-shell, assigns closed cavity shells deterministically to the smallest
-containing region, and keeps the old single-solid result only through an
-explicit compatibility fold. The exact-only transactional `boolean_regions`
-API returns those solids in a Compound with total construction-derived
-face/edge/vertex evolution per member and rejects incomplete lineage. A
-10×10×10 box severed by a through-slab returns two valid 400-volume solids;
-disjoint boxes fuse as two exact regions, deterministically, through native
-and direct/batch WASM paths. Compound-as-operand fuse/cut/intersect and removal
-of the legacy shell-recombination helpers remain Issue 4.6b, so the issue is
-not yet complete.
+Implemented, in review in [PR #218](https://github.com/esaueng/remus/pull/218)
+and [PR #219](https://github.com/esaueng/remus/pull/219): the BuilderSolid final
+phase produces one `Solid` per disconnected growth shell, assigns closed
+cavity shells deterministically to the smallest containing region, and keeps
+the old single-solid result only through an explicit compatibility fold. The
+exact-only transactional `boolean_regions` API returns those solids in a
+Compound with total construction-derived face/edge/vertex evolution per
+member and rejects incomplete lineage. A 10×10×10 box severed by a
+through-slab returns two valid 400-volume solids; disjoint boxes fuse as two
+exact regions, deterministically, through native and direct/batch WASM paths.
+The `boolean_compound_regions` follow-up accepts pairwise-disjoint Compound
+members: fuse preserves exact member roots with identity lineage, intersect
+distributes exact GFA work over member pairs, and a single-member cut tool is
+distributed over every target member. Native and direct/batch WASM witnesses
+cover all three operations. Intersecting-member fuse and multi-tool cut fail
+closed until recursive lineage composition is qualified; legacy single-solid
+entry points remain for compatibility. The stated exit gate is complete.
 
 > **Exit gate:** a cut that severs a body returns two valid solids with
 > correct volumes and complete evolution; disjoint-operand fuse no longer

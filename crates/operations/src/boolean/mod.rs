@@ -222,27 +222,180 @@ pub fn boolean_regions(
         let regions = remus_algo::gfa::boolean_regions_with_entity_evolution(
             topo, algo_op, solid_a, solid_b,
         )?;
-        if regions.is_empty() {
-            return Err(crate::OperationsError::EmptyResult {
-                reason: format!("{op:?} produced no regions"),
+        finish_boolean_regions(topo, op, regions)
+    })
+}
+
+fn finish_boolean_regions(
+    topo: &mut Topology,
+    op: BooleanOp,
+    regions: Vec<remus_algo::gfa::BooleanRegion>,
+) -> Result<BooleanRegionsResult, crate::OperationsError> {
+    if regions.is_empty() {
+        return Err(crate::OperationsError::EmptyResult {
+            reason: format!("{op:?} produced no regions"),
+        });
+    }
+    for region in &regions {
+        validate_boolean_result(topo, region.solid)?;
+        if region
+            .evolution
+            .edges
+            .iter()
+            .any(|(_, event)| matches!(event, remus_algo::gfa::EdgeEvent::Unresolved))
+        {
+            return Err(crate::OperationsError::InvalidInput {
+                reason: "cellular boolean result has incomplete edge lineage".into(),
             });
         }
-        for region in &regions {
-            validate_boolean_result(topo, region.solid)?;
-            if region
-                .evolution
-                .edges
-                .iter()
-                .any(|(_, event)| matches!(event, remus_algo::gfa::EdgeEvent::Unresolved))
-            {
-                return Err(crate::OperationsError::InvalidInput {
-                    reason: "cellular boolean result has incomplete edge lineage".into(),
-                });
+    }
+    let solids = regions.iter().map(|region| region.solid).collect();
+    let compound = topo.add_compound(remus_topology::compound::Compound::new(solids));
+    Ok(BooleanRegionsResult { compound, regions })
+}
+
+fn identity_boolean_region(
+    topo: &Topology,
+    solid: SolidId,
+) -> Result<remus_algo::gfa::BooleanRegion, crate::OperationsError> {
+    let mut faces = remus_topology::explorer::solid_faces(topo, solid)?;
+    let mut edges = remus_topology::explorer::solid_edges(topo, solid)?;
+    let mut vertices = remus_topology::explorer::solid_vertices(topo, solid)?;
+    faces.sort_by_key(|id| id.index());
+    edges.sort_by_key(|id| id.index());
+    vertices.sort_by_key(|id| id.index());
+    Ok(remus_algo::gfa::BooleanRegion {
+        solid,
+        evolution: EntityEvolution {
+            faces: faces
+                .into_iter()
+                .map(|id| (id.index(), Some(id.index())))
+                .collect(),
+            edges: edges
+                .into_iter()
+                .map(|id| (id.index(), EdgeEvent::Preserved(id.index())))
+                .collect(),
+            vertices: vertices
+                .into_iter()
+                .map(|id| (id.index(), VertexEvent::Preserved(id.index())))
+                .collect(),
+        },
+    })
+}
+
+fn compound_member_solids(
+    topo: &Topology,
+    compound: remus_topology::compound::CompoundId,
+) -> Result<Vec<SolidId>, crate::OperationsError> {
+    let members = topo.compound(compound)?.solids().to_vec();
+    if members.is_empty() {
+        return Err(crate::OperationsError::InvalidInput {
+            reason: "cellular boolean operand compound is empty".into(),
+        });
+    }
+    let components = members
+        .iter()
+        .map(|&solid| remus_topology::explorer::solid_faces(topo, solid))
+        .collect::<Result<Vec<_>, _>>()?;
+    if members.len() >= 2 && !components_are_disjoint_pieces(topo, &components) {
+        return Err(crate::OperationsError::Unsupported {
+            operation: "boolean_compound_regions",
+            reason: "compound members must be pairwise disjoint".into(),
+        });
+    }
+    Ok(members)
+}
+
+/// Boolean two cellular operands without collapsing their member solids.
+///
+/// Qualified semantics are deliberately bounded:
+/// - `Fuse` accepts pairwise-disjoint members and preserves them as regions;
+/// - `Intersect` distributes exact GFA intersections over every member pair;
+/// - `Cut` distributes a single tool member over every target member.
+///
+/// No path uses a mesh fallback. Unsupported overlap or multi-tool lineage
+/// composition fails closed.
+///
+/// # Errors
+///
+/// Returns [`crate::OperationsError`] for invalid/overlapping compounds, an
+/// unqualified Cut, an empty result, or any failed exact region operation.
+pub fn boolean_compound_regions(
+    topo: &mut Topology,
+    op: BooleanOp,
+    compound_a: remus_topology::compound::CompoundId,
+    compound_b: remus_topology::compound::CompoundId,
+) -> Result<BooleanRegionsResult, crate::OperationsError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let members_a = compound_member_solids(topo, compound_a)?;
+        let members_b = compound_member_solids(topo, compound_b)?;
+        match op {
+            BooleanOp::Fuse => {
+                let all_members: Vec<SolidId> =
+                    members_a.iter().chain(&members_b).copied().collect();
+                let components = all_members
+                    .iter()
+                    .map(|&solid| remus_topology::explorer::solid_faces(topo, solid))
+                    .collect::<Result<Vec<_>, _>>()?;
+                if !components_are_disjoint_pieces(topo, &components) {
+                    return Err(crate::OperationsError::Unsupported {
+                        operation: "boolean_compound_regions",
+                        reason: "fusing intersecting Compound members requires recursive lineage composition"
+                            .into(),
+                    });
+                }
+                let regions = all_members
+                    .into_iter()
+                    .map(|solid| identity_boolean_region(topo, solid))
+                    .collect::<Result<Vec<_>, _>>()?;
+                finish_boolean_regions(topo, op, regions)
             }
+            BooleanOp::Intersect => {
+                let tolerance = remus_math::tolerance::Tolerance::new().linear;
+                let bounds_a = members_a
+                    .iter()
+                    .map(|&solid| crate::measure::solid_bounding_box(topo, solid))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let bounds_b = members_b
+                    .iter()
+                    .map(|&solid| crate::measure::solid_bounding_box(topo, solid))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let mut regions = Vec::new();
+                for (index_a, &solid_a) in members_a.iter().enumerate() {
+                    for (index_b, &solid_b) in members_b.iter().enumerate() {
+                        if !bounds_a[index_a]
+                            .expanded(tolerance)
+                            .intersects(bounds_b[index_b].expanded(tolerance))
+                        {
+                            continue;
+                        }
+                        regions.extend(remus_algo::gfa::boolean_regions_with_entity_evolution(
+                            topo,
+                            remus_algo::bop::BooleanOp::Intersect,
+                            solid_a,
+                            solid_b,
+                        )?);
+                    }
+                }
+                finish_boolean_regions(topo, op, regions)
+            }
+            BooleanOp::Cut if members_b.len() == 1 => {
+                let mut regions = Vec::new();
+                for solid_a in members_a {
+                    regions.extend(remus_algo::gfa::boolean_regions_with_entity_evolution(
+                        topo,
+                        remus_algo::bop::BooleanOp::Cut,
+                        solid_a,
+                        members_b[0],
+                    )?);
+                }
+                finish_boolean_regions(topo, op, regions)
+            }
+            BooleanOp::Cut => Err(crate::OperationsError::Unsupported {
+                operation: "boolean_compound_regions",
+                reason: "multi-tool Compound Cut requires recursive lineage composition".into(),
+            }),
         }
-        let solids = regions.iter().map(|region| region.solid).collect();
-        let compound = topo.add_compound(remus_topology::compound::Compound::new(solids));
-        Ok(BooleanRegionsResult { compound, regions })
     })
 }
 

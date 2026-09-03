@@ -66,9 +66,12 @@ These families are classified across the full grid:
   cellular-output cells: a severing cut returns two independently valid
   400-volume regions and a disjoint fuse returns two exact regions, both as a
   deterministic Compound with total per-member construction lineage and
-  direct/batch WASM parity. Curved and same-domain imprint, Compound operands,
-  multi-face and other surface sheet cells, broader scale/type matrices, wire,
-  and general-body cells remain Unqualified.
+  direct/batch WASM parity. PR #219 additionally qualifies pairwise-disjoint
+  Compound operands for member-preserving fuse, pairwise exact intersect, and
+  distributed single-tool cut, with total member lineage and direct/batch WASM
+  parity. Curved and same-domain imprint, intersecting Compound-member fuse,
+  multi-tool Compound cut, multi-face and other surface sheet cells, broader
+  scale/type matrices, wire, and general-body cells remain Unqualified.
 - **Scale** — at least three model scales relative to the configured
   tolerance (e.g. 1e-3, 1, 1e3 in the kernel's millimetre convention), with
   the tolerance scaled correspondingly.
@@ -138,15 +141,19 @@ does not itself promote or demote anything.
   witness. The additive exact cellular boolean path also preserves a severing
   planar cut as two valid 400-volume Compound members and disjoint planar fuse
   operands as two exact members, with deterministic per-region construction
-  lineage and native/direct/batch WASM parity. The CI-ratcheted
+  lineage and native/direct/batch WASM parity. Pairwise-disjoint Compound
+  operands are also qualified for member-preserving fuse, distributed exact
+  intersect, and distributed single-tool cut; overlapping-member fuse and
+  multi-tool cut refuse typed. The CI-ratcheted
   `approx_census` additionally exposes exact/fallback/error path and result
   face-count drift across its representative operation matrix; it is a drift
   detector, not by itself qualification evidence for a cell.
 - Known Unsupported-untyped / Partial cells: exact plane/cylinder tangency is
   not generally qualified beyond those witnesses; sliver crossings (~1e-5 to
   0.05 mm on r = 10) fall over to approximate; general torus pairs limited;
-  seam-crossing, nested-shell, sheet-solid, Compound-as-operand, and broader
-  multi-body General Fuse cells Unqualified.
+  seam-crossing, nested-shell, sheet-solid, intersecting Compound-member fuse,
+  multi-tool Compound cut, and broader multi-body General Fuse cells
+  Unqualified.
 
 ### Intersections (curve-curve, curve-surface, surface-surface)
 

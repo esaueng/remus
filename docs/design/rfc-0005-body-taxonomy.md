@@ -331,10 +331,15 @@ surface is preserved by an explicit compatibility fold. The additive exact
 `boolean_regions` L3 API returns a Compound with total, non-unresolved
 construction evolution for each member; direct and batch WASM expose the same
 `booleanRegions` contract. The severing-box cut returns two valid 400-volume
-members and disjoint fuse returns exact 10- and 24-volume members. Compound
-operands, migration of the legacy `cut_multi_region_input`/fuse folding
-helpers, and their recursive provenance composition remain Stage 6 follow-up
-work rather than being implied by this bounded two-solid tranche.
+members and disjoint fuse returns exact 10- and 24-volume members. PR #219
+completes the Stage 6 exit with bounded Compound operands. Pairwise-disjoint
+fuse preserves existing member roots and records total identity lineage;
+intersect distributes exact GFA operations over member pairs; Cut distributes
+one tool member over every target member. Direct and batch WASM match the
+native contract. Intersecting-member fuse and multi-tool Cut refuse typed
+until recursive provenance composition is available. The legacy single-Solid
+and shell-folding helpers remain only as compatibility surfaces; new cellular
+callers use the Compound-returning APIs.
 
 ### Stage 7 — wire bodies (deferrable)
 
