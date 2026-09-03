@@ -481,6 +481,178 @@ impl From<remus_operations::OperationsError> for StructuredWasmError {
                     .insert("errorCount".to_string(), Value::from(error_count));
                 structured
             }
+            remus_operations::OperationsError::HealingValidationFailed {
+                operations_errors,
+                check_errors,
+                healing,
+            } => {
+                let mut structured = Self::new(WasmErrorCode::TopologyError, message);
+                structured.category = FailureCategory::InvalidTopology.as_str();
+                structured.details.insert(
+                    "kernelCode".to_string(),
+                    Value::from("healing_validation_failed"),
+                );
+                structured.details.insert(
+                    "operationsErrorCount".to_string(),
+                    Value::from(operations_errors),
+                );
+                structured
+                    .details
+                    .insert("checkErrorCount".to_string(), Value::from(check_errors));
+                structured.details.insert(
+                    "repairs".to_string(),
+                    Value::Array(
+                        healing
+                            .changes()
+                            .into_iter()
+                            .map(|change| {
+                                serde_json::json!({
+                                    "kind": change.kind.code(),
+                                    "count": change.count,
+                                })
+                            })
+                            .collect(),
+                    ),
+                );
+                structured
+            }
+            remus_operations::OperationsError::HealingVerificationUnavailable {
+                validator,
+                healing,
+                ..
+            } => {
+                let mut structured = Self::operation_failed(message);
+                structured.details.insert(
+                    "kernelCode".to_string(),
+                    Value::from("healing_verification_unavailable"),
+                );
+                structured
+                    .details
+                    .insert("validator".to_string(), Value::from(validator));
+                structured.details.insert(
+                    "repairs".to_string(),
+                    Value::Array(
+                        healing
+                            .changes()
+                            .into_iter()
+                            .map(|change| {
+                                serde_json::json!({
+                                    "kind": change.kind.code(),
+                                    "count": change.count,
+                                })
+                            })
+                            .collect(),
+                    ),
+                );
+                structured
+            }
+            remus_operations::OperationsError::HealingRepairRefused {
+                refusal_count,
+                actions,
+                refusals,
+            } => {
+                let mut structured = Self::operation_failed(message);
+                structured.category = FailureCategory::Unsupported.as_str();
+                structured.details.insert(
+                    "kernelCode".to_string(),
+                    Value::from("healing_repair_refused"),
+                );
+                structured
+                    .details
+                    .insert("refusalCount".to_string(), Value::from(refusal_count));
+                structured.details.insert(
+                    "repairs".to_string(),
+                    Value::Array(
+                        actions
+                            .into_iter()
+                            .map(|action| {
+                                serde_json::json!({
+                                    "kind": action.kind.code(),
+                                    "count": action.count,
+                                })
+                            })
+                            .collect(),
+                    ),
+                );
+                structured.details.insert(
+                    "refusals".to_string(),
+                    Value::Array(
+                        refusals
+                            .into_iter()
+                            .map(|refusal| {
+                                serde_json::json!({
+                                    "kind": refusal.kind.code(),
+                                    "count": refusal.count,
+                                })
+                            })
+                            .collect(),
+                    ),
+                );
+                structured
+            }
+            remus_operations::OperationsError::ConfiguredHealingValidationFailed {
+                operations_errors,
+                check_errors,
+                actions,
+            } => {
+                let mut structured = Self::new(WasmErrorCode::TopologyError, message);
+                structured.category = FailureCategory::InvalidTopology.as_str();
+                structured.details.insert(
+                    "kernelCode".to_string(),
+                    Value::from("healing_validation_failed"),
+                );
+                structured.details.insert(
+                    "operationsErrorCount".to_string(),
+                    Value::from(operations_errors),
+                );
+                structured
+                    .details
+                    .insert("checkErrorCount".to_string(), Value::from(check_errors));
+                structured.details.insert(
+                    "repairs".to_string(),
+                    Value::Array(
+                        actions
+                            .into_iter()
+                            .map(|action| {
+                                serde_json::json!({
+                                    "kind": action.kind.code(),
+                                    "count": action.count,
+                                })
+                            })
+                            .collect(),
+                    ),
+                );
+                structured
+            }
+            remus_operations::OperationsError::ConfiguredHealingVerificationUnavailable {
+                validator,
+                actions,
+                ..
+            } => {
+                let mut structured = Self::operation_failed(message);
+                structured.details.insert(
+                    "kernelCode".to_string(),
+                    Value::from("healing_verification_unavailable"),
+                );
+                structured
+                    .details
+                    .insert("validator".to_string(), Value::from(validator));
+                structured.details.insert(
+                    "repairs".to_string(),
+                    Value::Array(
+                        actions
+                            .into_iter()
+                            .map(|action| {
+                                serde_json::json!({
+                                    "kind": action.kind.code(),
+                                    "count": action.count,
+                                })
+                            })
+                            .collect(),
+                    ),
+                );
+                structured
+            }
             _ => Self::operation_failed(message),
         }
     }

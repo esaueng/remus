@@ -172,10 +172,11 @@ fn fix_duplicate_faces(
 
     ctx.info(format!("removed {removed} duplicate face(s)"));
 
-    Ok(FixResult {
-        status: Status::DONE2,
-        actions_taken: removed,
-    })
+    Ok(FixResult::changed(
+        Status::DONE2,
+        super::RepairActionKind::DuplicateFaceRemoved,
+        removed,
+    ))
 }
 
 fn boundaries_coincide(a: &[Point3], b: &[Point3], tolerance: f64) -> bool {
@@ -320,10 +321,11 @@ fn merge_coincident_vertices(
 
     ctx.info(format!("merged {merged_count} coincident vertices"));
 
-    Ok(FixResult {
-        status: Status::DONE2,
-        actions_taken: merged_count,
-    })
+    Ok(FixResult::changed(
+        Status::DONE2,
+        super::RepairActionKind::CoincidentVertexMerged,
+        merged_count,
+    ))
 }
 
 #[cfg(test)]

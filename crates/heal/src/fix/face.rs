@@ -178,10 +178,11 @@ fn fix_wire_orientation(
         "Face {face_id:?}: flipped orientation (wire was CW, signed_area={signed_area:.4e})",
     ));
 
-    Ok(FixResult {
-        status: Status::DONE1,
-        actions_taken: 1,
-    })
+    Ok(FixResult::changed(
+        Status::DONE1,
+        super::RepairActionKind::FaceOrientationFixed,
+        1,
+    ))
 }
 
 /// Check if the face is too small and mark for removal.
@@ -203,10 +204,11 @@ fn fix_small_area(
     ));
     ctx.reshape.remove_face(face_id);
 
-    Ok(FixResult {
-        status: Status::DONE2,
-        actions_taken: 1,
-    })
+    Ok(FixResult::changed(
+        Status::DONE2,
+        super::RepairActionKind::SmallFaceRemoved,
+        1,
+    ))
 }
 
 /// Compute the normal of a polygon via Newell's method.
@@ -276,14 +278,15 @@ mod tests {
     fn default_config() -> FixConfig {
         // Disable face-level steps that aren't being exercised
         // (orientation, small-area, duplicate detection). Wire-level
-        // fixes still run with their `FixConfig::default()` values
-        // (Auto), since SameParameter operates AFTER wire fixing and
-        // we want the realistic flow.
+        // fixes still run with their `FixConfig::default()` values. This
+        // helper explicitly requests missing-pcurve construction; Auto mode
+        // only repairs a measured deviation and does not invent optional
+        // pcurves on an otherwise valid native face.
         FixConfig {
             fix_wire_orientation: FixMode::Off,
             fix_small_area: FixMode::Off,
             fix_duplicate_faces: FixMode::Off,
-            fix_same_parameter: FixMode::Auto,
+            fix_same_parameter: FixMode::On,
             ..FixConfig::default()
         }
     }

@@ -361,14 +361,18 @@ does not itself promote or demote anything.
 
 ### Validation and healing
 
-- Ledger row: "Healing, sewing, validation" (blocked: permissive healing can
-  mask invalid result semantics — the family's central Unsupported-untyped
-  cell, addressed by the healing-disclosure rules in
-  [operation-contract.md](operation-contract.md)). PR #209's in-review sheet
-  profile reports free boundaries as warnings while retaining manifold and
-  orientation errors; PR #210 validates transactionally before a constructed
-  sheet is committed and tests rollback for disconnected faces. This evidence
-  does not remove the family-wide healing blocker.
+- Ledger row: "Healing, sewing, validation" (Qualified for the public
+  verified-healing boundary). B1 closes the family's Unsupported-untyped cell:
+  each fixer reports counted machine-readable repair kinds, detection-only
+  paths are typed refusals rather than fake `DONE` actions, and L2 `OK` makes
+  no validity claim. Legacy recipe, configurable, pipeline, facade verified,
+  and additive detailed direct/batch WASM paths are transactional and require
+  both the operations and independent check validators before committing.
+  Refusals retain the attempted repair disclosure and restore topology. Raw L2
+  fixers remain explicitly `NotPerformed` for verification because the healing
+  crate cannot depend on its sibling check layer; callers must use the verified
+  operations boundary to claim validity. Native and WASM regressions cover
+  both verified success and invalid-result refusal.
 
 ### I/O (STEP, IGES, mesh formats)
 

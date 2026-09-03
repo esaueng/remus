@@ -716,6 +716,16 @@ pub struct SketchSolveResult {
     pub residual: f64,
 }
 
+/// One counted healing repair category.
+#[derive(Debug, serde::Serialize, Tsify)]
+#[serde(rename_all = "camelCase")]
+pub struct HealRepairDisclosure {
+    /// Stable machine-readable repair kind.
+    pub kind: String,
+    /// Number of repairs of this kind.
+    pub count: u32,
+}
+
 /// Per-step entry in a `HealPipelineResult`.
 #[derive(Debug, serde::Serialize, Tsify)]
 #[serde(rename_all = "camelCase")]
@@ -728,6 +738,8 @@ pub struct HealStepResult {
     pub done: bool,
     /// At least one fix could not be applied.
     pub failed: bool,
+    /// Exact non-empty repair categories applied by this step.
+    pub repairs: Vec<HealRepairDisclosure>,
 }
 
 /// Typed result for `fixShapeWithConfig`.
@@ -742,6 +754,10 @@ pub struct HealFixResult {
     pub done: bool,
     /// At least one fix could not be applied.
     pub failed: bool,
+    /// Exact non-empty repair categories applied.
+    pub repairs: Vec<HealRepairDisclosure>,
+    /// Both independent validators accepted the returned solid.
+    pub verified: bool,
 }
 
 /// Typed result for `runHealPipeline`.
@@ -752,6 +768,40 @@ pub struct HealPipelineResult {
     pub solid: u32,
     /// One entry per executed step, in order.
     pub steps: Vec<HealStepResult>,
+    /// Both independent validators accepted the returned solid.
+    pub verified: bool,
+}
+
+/// Typed result for `healSolidDetailed`.
+#[derive(Debug, serde::Serialize, Tsify)]
+#[serde(rename_all = "camelCase")]
+pub struct HealDetailedResult {
+    /// Handle of the healed solid.
+    pub solid: u32,
+    /// Exact non-empty repair categories applied.
+    pub repairs: Vec<HealRepairDisclosure>,
+    /// Total number of repairs applied.
+    pub total_repairs: u32,
+    /// Both independent validators accepted the returned solid.
+    pub verified: bool,
+}
+
+/// Typed result for `repairSolidDetailed`.
+#[derive(Debug, serde::Serialize, Tsify)]
+#[serde(rename_all = "camelCase")]
+pub struct RepairDetailedResult {
+    /// Handle of the repaired solid.
+    pub solid: u32,
+    /// Error count before repair.
+    pub errors_before: u32,
+    /// Exact non-empty repair categories applied.
+    pub repairs: Vec<HealRepairDisclosure>,
+    /// Total number of repairs applied.
+    pub total_repairs: u32,
+    /// Error count after repair; always zero on success.
+    pub errors_after: u32,
+    /// Both independent validators accepted the returned solid.
+    pub verified: bool,
 }
 
 /// Typed result for `gcsSolve`.
