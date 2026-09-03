@@ -458,10 +458,11 @@ fn an_impossible_feature_still_refuses_the_whole_selection() {
         .err()
         .expect("a rim that cannot be built must not come back as the perimeter alone");
     match error {
-        OperationsError::Blend(BlendError::RadiusTooLarge { edge, .. }) => {
+        OperationsError::Blend(BlendError::CliffEncountered { edge, face, .. }) => {
             assert_eq!(edge, rim[0], "the refusal must name the rim edge");
+            assert!(solid_faces(&topo, body).unwrap().contains(&face));
         }
-        other => panic!("expected the rim's radius refusal, got {other}"),
+        other => panic!("expected the rim's cliff refusal, got {other}"),
     }
 
     assert_eq!(

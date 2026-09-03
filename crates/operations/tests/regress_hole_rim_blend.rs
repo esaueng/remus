@@ -330,14 +330,14 @@ fn both_rims_of_one_bore_fillet_together() {
     );
 }
 
-/// A rim fillet deeper than the bore is long must be refused by radius.
+/// A rim fillet deeper than the bore is long must stop at the wall cliff.
 ///
 /// Every topological check passes for such a result — the shell closes, no edge
 /// is free, the mesh is watertight — because the contact circle simply hangs
 /// below the plate. Only the wall's own axial extent tells the truth, and the
 /// maximum it reports is exactly the plate thickness.
 #[test]
-fn rim_fillet_deeper_than_the_bore_is_refused_by_radius() {
+fn rim_fillet_deeper_than_the_bore_stops_at_the_wall_cliff() {
     let mut topo = Topology::new();
     // A wide hole so the plate boundary is nowhere near: thickness is the only
     // binding constraint.
@@ -357,12 +357,12 @@ fn rim_fillet_deeper_than_the_bore_is_refused_by_radius() {
         .expect("a fillet deeper than the plate must fail");
     assert_eq!(
         blend_ops::blend_failure_code(&err),
-        "radius-too-large",
-        "the cause is the radius, not the topology: {err}"
+        "cliff-encountered",
+        "the cause is the exhausted support, not the topology: {err}"
     );
     assert!(
-        err.to_string().contains(&format!("max={T}")),
-        "the reported maximum is the bore's length: {err}"
+        err.to_string().contains(&format!("available radius {T}")),
+        "the reported support limit is the bore's length: {err}"
     );
     let after = measure::solid_volume(&topo, body, VOLUME_DEFLECTION).unwrap();
     assert!(
@@ -388,12 +388,12 @@ fn paired_rim_fillets_cannot_both_consume_the_bore() {
         .expect("two 3.5 mm rim fillets do not fit in a 6 mm bore");
     assert_eq!(
         blend_ops::blend_failure_code(&err),
-        "radius-too-large",
+        "cliff-encountered",
         "{err}"
     );
     assert!(
-        err.to_string().contains("max=2.5"),
-        "the maximum is what the first fillet left: {err}"
+        err.to_string().contains("available radius 2.5"),
+        "the support limit is what the first fillet left: {err}"
     );
 
     // Half the thickness each is exactly what fits.
@@ -402,9 +402,9 @@ fn paired_rim_fillets_cannot_both_consume_the_bore() {
 }
 
 /// A rim fillet whose grown circle would reach the plate's own boundary must be
-/// refused by radius, reporting the clearance it had.
+/// refused at the cliff, reporting the clearance it had.
 #[test]
-fn rim_fillet_reaching_the_plate_boundary_is_refused_by_radius() {
+fn rim_fillet_reaching_the_plate_boundary_stops_at_the_cliff() {
     let mut topo = Topology::new();
     // A 20 mm hole in a 60 mm-deep plate: the nearest edge is 10 mm from the
     // rim. The plate is thick so the bore length is not the binding constraint.
@@ -422,12 +422,12 @@ fn rim_fillet_reaching_the_plate_boundary_is_refused_by_radius() {
         .expect("a rim fillet that reaches the plate edge must fail");
     assert_eq!(
         blend_ops::blend_failure_code(&err),
-        "radius-too-large",
+        "cliff-encountered",
         "{err}"
     );
     assert!(
-        err.to_string().contains("max=10"),
-        "the maximum is the exact distance to the plate edge: {err}"
+        err.to_string().contains("available radius 10"),
+        "the support limit is the exact distance to the plate edge: {err}"
     );
 }
 
