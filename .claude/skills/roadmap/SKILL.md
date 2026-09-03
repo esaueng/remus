@@ -126,12 +126,9 @@ that does not exist yet; without it, stop.
 
 ## Open items with a repro
 
-The `#[ignore]` inventory (regenerated 2026-09-03) holds two open engine defects:
-the WASM-only ellipsoid's transformed-sphere NURBS mesh is empty at unit/large
-scale and leaky at 1e-3 (`ellipsoid-tessellation-scale.json`,
-`qualify_primitives_tests.rs`), and `regress_parallel_boss_band_sections.rs`
-pins cut/intersect pocket faces on a cylinder wall coming back inconsistently
-oriented. The remaining ignores are
+The `#[ignore]` inventory (regenerated 2026-09-03) holds one open engine defect:
+`regress_parallel_boss_band_sections.rs` pins cut/intersect pocket faces on a
+cylinder wall coming back inconsistently oriented. The remaining ignores are
 two fork-policy pins blocked on the trim-contract reconciliation
 (`crates/operations/tests/regress_chamfer_obtuse_ridge.rs`,
 `regress_fillet_concave_notch.rs`, see PR #126), one ~2 min perf run

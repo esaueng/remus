@@ -1185,6 +1185,44 @@ fn anisotropic_scale_gives_sphere_the_true_ellipsoid_volume() {
 }
 
 #[test]
+fn anisotropic_sphere_scale_preserves_both_exact_hemispheres() {
+    let mut topo = Topology::new();
+    let solid = crate::primitives::make_sphere(&mut topo, 1.0, 16).unwrap();
+    transform_solid(&mut topo, solid, &Mat4::scale(1.5, 2.0, 2.5)).unwrap();
+
+    let mut v_domains = Vec::new();
+    for face_id in remus_topology::explorer::solid_faces(&topo, solid).unwrap() {
+        let FaceSurface::Nurbs(surface) = topo.face(face_id).unwrap().surface() else {
+            panic!("anisotropic sphere image must be NURBS");
+        };
+        assert!(surface.is_rational());
+        assert!(surface.is_periodic_u());
+        let (u_min, u_max) = surface.domain_u();
+        let (v_min, v_max) = surface.domain_v();
+        v_domains.push((v_min, v_max));
+        for u_fraction in [0.0_f64, 0.125, 0.5, 0.875] {
+            for v_fraction in [0.0_f64, 0.35, 0.8, 1.0] {
+                let point = surface.evaluate(
+                    u_fraction.mul_add(u_max - u_min, u_min),
+                    v_fraction.mul_add(v_max - v_min, v_min),
+                );
+                let implicit = (point.x() / 1.5).powi(2)
+                    + (point.y() / 2.0).powi(2)
+                    + (point.z() / 2.5).powi(2);
+                assert!(
+                    (implicit - 1.0).abs() < 1e-12,
+                    "transformed rational patch left the ellipsoid: {implicit}"
+                );
+            }
+        }
+    }
+    v_domains.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    assert_eq!(v_domains.len(), 2);
+    assert!(v_domains[0].0 < 0.0 && v_domains[0].1.abs() < 1e-12);
+    assert!(v_domains[1].0.abs() < 1e-12 && v_domains[1].1 > 0.0);
+}
+
+#[test]
 fn transformed_ellipse_reorders_axes_with_an_exact_parameter_map() {
     let source = remus_math::curves::Ellipse3D::with_axes(
         Point3::new(0.0, 0.0, 0.0),
