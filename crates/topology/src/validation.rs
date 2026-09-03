@@ -982,7 +982,8 @@ pub fn check_same_parameter_strict(
 /// # Errors
 ///
 /// Returns [`CurveUseValidationError`] when validation cannot be proved or
-/// the measured deviation exceeds `tolerance`.
+/// the measured deviation exceeds the larger of `tolerance` and the edge's
+/// effective entity tolerance.
 pub fn validate_same_parameter_strict(
     topo: &Topology,
     edge_id: crate::edge::EdgeId,
@@ -994,29 +995,32 @@ pub fn validate_same_parameter_strict(
     if !tolerance.is_finite() || tolerance.is_sign_negative() {
         return Err(CurveUseValidationError::InvalidTolerance { tolerance });
     }
+    let effective_tolerance = effective_edge_validation_tolerance(topo, edge_id, tolerance)?;
     if let Some(report) = check_same_parameter_strict(topo, edge_id, face_id, forward, samples)?
-        && report.max_deviation > tolerance
+        && report.max_deviation > effective_tolerance
     {
         return Err(TopologyError::SameParameterExceeded {
             edge: edge_id,
             face: face_id,
             max_deviation: report.max_deviation,
             at_parameter: report.at_parameter,
-            tolerance,
+            tolerance: effective_tolerance,
         }
         .into());
     }
     Ok(())
 }
 
-/// Enforces `SameParameter` within `tolerance`.
+/// Enforces `SameParameter` within the larger of `tolerance` and the edge's
+/// effective entity tolerance.
 ///
 /// Not-applicable configurations (no pcurve, planar face) pass vacuously.
 ///
 /// # Errors
 ///
 /// Returns [`TopologyError::SameParameterExceeded`] when the sampled
-/// deviation exceeds `tolerance`, or a not-found error for stale entities.
+/// deviation exceeds the effective bound, or a not-found error for stale
+/// entities.
 pub fn validate_same_parameter(
     topo: &Topology,
     edge_id: crate::edge::EdgeId,
@@ -1025,15 +1029,22 @@ pub fn validate_same_parameter(
     tolerance: f64,
     samples: usize,
 ) -> Result<(), TopologyError> {
+    if !tolerance.is_finite() || tolerance.is_sign_negative() {
+        return Err(TopologyError::InvalidToleranceValue {
+            entity: "same-parameter validation",
+            value: tolerance,
+        });
+    }
+    let effective_tolerance = effective_edge_validation_tolerance(topo, edge_id, tolerance)?;
     if let Some(report) = check_same_parameter(topo, edge_id, face_id, forward, samples)?
-        && report.max_deviation > tolerance
+        && report.max_deviation > effective_tolerance
     {
         return Err(TopologyError::SameParameterExceeded {
             edge: edge_id,
             face: face_id,
             max_deviation: report.max_deviation,
             at_parameter: report.at_parameter,
-            tolerance,
+            tolerance: effective_tolerance,
         });
     }
     Ok(())
@@ -1185,7 +1196,8 @@ pub fn check_same_range_strict(
 /// # Errors
 ///
 /// Returns [`CurveUseValidationError`] when validation cannot be proved or
-/// the measured deviation exceeds `tolerance`.
+/// the measured deviation exceeds the larger of `tolerance` and the edge's
+/// effective entity tolerance.
 pub fn validate_same_range_strict(
     topo: &Topology,
     edge_id: crate::edge::EdgeId,
@@ -1196,14 +1208,15 @@ pub fn validate_same_range_strict(
     if !tolerance.is_finite() || tolerance.is_sign_negative() {
         return Err(CurveUseValidationError::InvalidTolerance { tolerance });
     }
+    let effective_tolerance = effective_edge_validation_tolerance(topo, edge_id, tolerance)?;
     if let Some(max_deviation) = check_same_range_strict(topo, edge_id, face_id, forward)?
-        && max_deviation > tolerance
+        && max_deviation > effective_tolerance
     {
         return Err(TopologyError::SameRangeExceeded {
             edge: edge_id,
             face: face_id,
             max_deviation,
-            tolerance,
+            tolerance: effective_tolerance,
         }
         .into());
     }
@@ -1262,26 +1275,28 @@ pub fn validate_solid_pcurve_contracts(
                 let parameter =
                     check_same_parameter_strict(topo, edge_id, face_id, forward, samples)?;
                 let range = check_same_range_strict(topo, edge_id, face_id, forward)?;
+                let effective_tolerance =
+                    effective_edge_validation_tolerance(topo, edge_id, tolerance)?;
                 if let Some(report) = parameter
-                    && report.max_deviation > tolerance
+                    && report.max_deviation > effective_tolerance
                 {
                     return Err(TopologyError::SameParameterExceeded {
                         edge: edge_id,
                         face: face_id,
                         max_deviation: report.max_deviation,
                         at_parameter: report.at_parameter,
-                        tolerance,
+                        tolerance: effective_tolerance,
                     }
                     .into());
                 }
                 if let Some(max_deviation) = range
-                    && max_deviation > tolerance
+                    && max_deviation > effective_tolerance
                 {
                     return Err(TopologyError::SameRangeExceeded {
                         edge: edge_id,
                         face: face_id,
                         max_deviation,
-                        tolerance,
+                        tolerance: effective_tolerance,
                     }
                     .into());
                 }
@@ -1294,12 +1309,14 @@ pub fn validate_solid_pcurve_contracts(
     Ok(summary)
 }
 
-/// Enforces `SameRange` within `tolerance`.
+/// Enforces `SameRange` within the larger of `tolerance` and the edge's
+/// effective entity tolerance.
 ///
 /// # Errors
 ///
 /// Returns [`TopologyError::SameRangeExceeded`] when either endpoint
-/// deviation exceeds `tolerance`, or a not-found error for stale entities.
+/// deviation exceeds the effective bound, or a not-found error for stale
+/// entities.
 pub fn validate_same_range(
     topo: &Topology,
     edge_id: crate::edge::EdgeId,
@@ -1307,17 +1324,51 @@ pub fn validate_same_range(
     forward: bool,
     tolerance: f64,
 ) -> Result<(), TopologyError> {
+    if !tolerance.is_finite() || tolerance.is_sign_negative() {
+        return Err(TopologyError::InvalidToleranceValue {
+            entity: "same-range validation",
+            value: tolerance,
+        });
+    }
+    let effective_tolerance = effective_edge_validation_tolerance(topo, edge_id, tolerance)?;
     if let Some(max_deviation) = check_same_range(topo, edge_id, face_id, forward)?
-        && max_deviation > tolerance
+        && max_deviation > effective_tolerance
     {
         return Err(TopologyError::SameRangeExceeded {
             edge: edge_id,
             face: face_id,
             max_deviation,
-            tolerance,
+            tolerance: effective_tolerance,
         });
     }
     Ok(())
+}
+
+fn effective_edge_validation_tolerance(
+    topo: &Topology,
+    edge_id: crate::edge::EdgeId,
+    caller_tolerance: f64,
+) -> Result<f64, TopologyError> {
+    let edge = topo.edge(edge_id)?;
+    let start_tolerance = topo.vertex(edge.start())?.tolerance();
+    let end_tolerance = topo.vertex(edge.end())?.tolerance();
+    for value in [start_tolerance, end_tolerance] {
+        if !value.is_finite() || value.is_sign_negative() {
+            return Err(TopologyError::InvalidToleranceValue {
+                entity: "vertex",
+                value,
+            });
+        }
+    }
+    let vertex_tolerance = start_tolerance.max(end_tolerance);
+    let entity_tolerance = edge.effective_tolerance(vertex_tolerance);
+    if !entity_tolerance.is_finite() || entity_tolerance.is_sign_negative() {
+        return Err(TopologyError::InvalidToleranceValue {
+            entity: "edge",
+            value: entity_tolerance,
+        });
+    }
+    Ok(caller_tolerance.max(entity_tolerance))
 }
 
 // ── Entity-tolerance checks (RFC 0004, Stage 1) ─────────────────────────
@@ -2737,11 +2788,9 @@ mod tolerant_checks_tests {
     }
 
     #[test]
-    fn validate_same_parameter_bound_stays_caller_supplied() {
-        // CHARACTERIZATION (flips at RFC 0004 Stage 2): the existing
-        // SameParameter validator takes its bound purely from the caller's
-        // argument — a declared edge tolerance does not widen it. The
-        // entity-derived bound is the new `validate_edge_tube`'s job.
+    fn validate_same_parameter_bound_includes_entity_tolerance() {
+        // RFC 0004 Stage 2 flips the Stage 1 characterization: a declared
+        // edge tube widens the caller's SameParameter bound.
         let (mut topo, seam, face) = cylinder_seam();
         topo.set_pcurve_oriented(seam, face, true, seam_pcurve(0.3))
             .unwrap();
@@ -2750,14 +2799,17 @@ mod tolerant_checks_tests {
             .set_tolerance(Some(0.5))
             .unwrap();
 
-        assert!(
-            matches!(
-                validate_same_parameter(&topo, seam, face, true, 1e-7, 32),
-                Err(TopologyError::SameParameterExceeded { .. })
-            ),
-            "the caller-supplied bound alone governs validate_same_parameter today"
-        );
+        validate_same_parameter(&topo, seam, face, true, 1e-7, 32).unwrap();
+        super::validate_same_parameter_strict(&topo, seam, face, true, 1e-7, 32).unwrap();
+        super::validate_same_range(&topo, seam, face, true, 1e-7).unwrap();
+        super::validate_same_range_strict(&topo, seam, face, true, 1e-7).unwrap();
         validate_same_parameter(&topo, seam, face, true, 0.31, 32).unwrap();
+
+        topo.edge_mut(seam).unwrap().set_tolerance(None).unwrap();
+        assert!(matches!(
+            validate_same_parameter(&topo, seam, face, true, 1e-7, 32),
+            Err(TopologyError::SameParameterExceeded { .. })
+        ));
     }
 
     #[test]

@@ -1,8 +1,10 @@
 # RFC 0004: Tolerant modeling — per-entity tolerance semantics
 
 Status: draft; staged migration for program milestone M3 (issues 3.1–3.6).
+Stage 1 merged in [PR #148](https://github.com/esaueng/remus/pull/148);
+Stage 2 is in review in [PR #208](https://github.com/esaueng/remus/pull/208).
 Characterization anchors: `crates/algo/src/pave_filler/phase_ee.rs` (module
-tests pin the current global-only crossing band), `crates/heal/src/upgrade/
+tests pin declared-tube widening and its no-declaration foil), `crates/heal/src/upgrade/
 shell_sewing.rs` (module `sew_shell_preserves_trim_and_tolerance_of_retained_
 edges` pins weld-or-decline sewing), `crates/topology/src/edge.rs` (trim/tol-
 erance accessor tests). Each stage below names the tests that pin current
@@ -184,10 +186,16 @@ floor pad. File targets in `crates/algo/src/pave_filler/`:
 - `crates/geometry/src/extrema/`: **unchanged by design** — pure distances;
   their callers do the sum-of-radii comparison.
 
-Characterization tests: pin that VV merges a pair separated by up to
-`ball_a + ball_b + tol.linear` (true on main, `phase_vv.rs:54`) and that EE
-ignores declared edge tolerances today (`phase_ee.rs:354-363` — a crossing
-band pinned global-only); the EE/force-EE/helpers tests flip at this stage.
+Stage 1 characterization tests pinned that VV merges a pair separated by up
+to `ball_a + ball_b + tol.linear` and that EE ignored declared edge
+tolerances. The EE/force-EE/helpers tests flip at this stage.
+
+Delivery in [PR #208](https://github.com/esaueng/remus/pull/208) flips those
+Stage 2 pins: EE crossing/AABB, forced EE overlap, pave-vertex lookup, and VE
+incidence consume declared tolerance excess while no-declaration foils retain
+the old bands. SameParameter/SameRange also consume effective edge tolerance,
+as specified above. Invalid and overflowing tolerance bands refuse typed;
+the approximation census remains byte-for-byte at its 51 committed rows.
 The program doc 3.3 exit-gate fixture (vertex pair at 10× global, inside
 declared balls, interferes in VV) is written now as a *passing* pin, since
 VV already satisfies it.

@@ -43,10 +43,64 @@ pub(super) fn validate_edge_domains(
     Ok(())
 }
 
+/// Return the part of a vertex ball that widens an operation beyond its
+/// global linear floor.
+pub(super) fn vertex_tolerance_excess(
+    topo: &Topology,
+    vertex_id: VertexId,
+    floor: f64,
+) -> Result<f64, AlgoError> {
+    let value = topo.vertex(vertex_id)?.tolerance();
+    tolerance_excess(value, floor, "vertex")
+}
+
+/// Return the part of an edge tube that widens an operation beyond its
+/// global linear floor.
+pub(super) fn edge_tolerance_excess(
+    topo: &Topology,
+    edge_id: EdgeId,
+    floor: f64,
+) -> Result<f64, AlgoError> {
+    let edge = topo.edge(edge_id)?;
+    let start_tolerance = topo.vertex(edge.start())?.tolerance();
+    let end_tolerance = topo.vertex(edge.end())?.tolerance();
+    tolerance_excess(start_tolerance, floor, "vertex")?;
+    tolerance_excess(end_tolerance, floor, "vertex")?;
+    let vertex_tolerance = start_tolerance.max(end_tolerance);
+    tolerance_excess(edge.effective_tolerance(vertex_tolerance), floor, "edge")
+}
+
+/// Add tolerance contributions and reject a non-finite acceptance band.
+pub(super) fn tolerance_band(
+    floor: f64,
+    contributions: impl IntoIterator<Item = f64>,
+) -> Result<f64, AlgoError> {
+    let mut band = floor;
+    for contribution in contributions {
+        band += contribution;
+    }
+    if !band.is_finite() || band.is_sign_negative() {
+        return Err(remus_topology::TopologyError::InvalidToleranceValue {
+            entity: "predicate band",
+            value: band,
+        }
+        .into());
+    }
+    Ok(band)
+}
+
+fn tolerance_excess(value: f64, floor: f64, entity: &'static str) -> Result<f64, AlgoError> {
+    if !value.is_finite() || value.is_sign_negative() {
+        return Err(remus_topology::TopologyError::InvalidToleranceValue { entity, value }.into());
+    }
+    Ok((value - floor).max(0.0))
+}
+
 /// Find a vertex near the given point among all pave block vertices.
 ///
 /// Returns the resolved (same-domain canonical) vertex first encountered within
-/// `tol.linear` of `point`, scanning pave blocks in `edge_pave_blocks` order
+/// the operation floor or the candidate vertex's wider tolerance ball,
+/// scanning pave blocks in `edge_pave_blocks` order
 /// (ascending `EdgeId`, start-before-end). When the arena's spatial index is
 /// available (built after Phase VV) the lookup is O(1) and returns the exact
 /// same vertex; otherwise it falls back to the linear scan.
@@ -57,7 +111,7 @@ pub(super) fn find_nearby_pave_vertex(
     tol: Tolerance,
 ) -> Option<VertexId> {
     if let Some(index) = &arena.pave_vertex_index {
-        return index.find_within(point, tol.linear);
+        return index.find_with_entry_radius(point);
     }
     for pbs in arena.edge_pave_blocks.values() {
         for &pb_id in pbs {
@@ -66,7 +120,7 @@ pub(super) fn find_nearby_pave_vertex(
                     crate::perf::bump_pave_vertex_probe();
                     let resolved = arena.resolve_vertex(vid);
                     if let Ok(v) = topo.vertex(resolved)
-                        && (v.point() - point).length() <= tol.linear
+                        && (v.point() - point).length() <= v.tolerance().max(tol.linear)
                     {
                         return Some(resolved);
                     }

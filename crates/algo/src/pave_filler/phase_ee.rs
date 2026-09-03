@@ -37,8 +37,8 @@ pub fn perform(
     let edges_b = remus_topology::explorer::solid_edges(topo, solid_b)?;
 
     // Collect edge data up front to avoid repeated lookups
-    let data_a = collect_edge_data(topo, &edges_a)?;
-    let data_b = collect_edge_data(topo, &edges_b)?;
+    let data_a = collect_edge_data(topo, &edges_a, tol.linear)?;
+    let data_b = collect_edge_data(topo, &edges_b, tol.linear)?;
 
     for (idx_a, (&ea_id, ea_data)) in edges_a.iter().zip(data_a.iter()).enumerate() {
         for (idx_b, (&eb_id, eb_data)) in edges_b.iter().zip(data_b.iter()).enumerate() {
@@ -47,17 +47,23 @@ pub fn perform(
                 continue;
             }
 
+            let acceptance = super::helpers::tolerance_band(
+                tol.linear,
+                [ea_data.tolerance_excess, eb_data.tolerance_excess],
+            )?;
+
             if !aabbs_overlap(
                 &ea_data.bbox_min,
                 &ea_data.bbox_max,
                 &eb_data.bbox_min,
                 &eb_data.bbox_max,
-                tol.linear,
+                acceptance,
             ) {
                 continue;
             }
 
-            let crossings = find_edge_edge_crossings(topo, ea_id, ea_data, eb_id, eb_data, tol)?;
+            let crossings =
+                find_edge_edge_crossings(topo, ea_id, ea_data, eb_id, eb_data, tol, acceptance)?;
 
             for (t_a, t_b, point) in crossings {
                 let existing = find_nearby_pave_vertex(topo, arena, point, tol);
@@ -103,10 +109,16 @@ struct EdgeData {
     bbox_min: Point3,
     /// Axis-aligned bounding box maximum corner.
     bbox_max: Point3,
+    /// Edge-tube contribution above the operation's global floor.
+    tolerance_excess: f64,
 }
 
 /// Collect pre-computed data for a set of edges.
-fn collect_edge_data(topo: &Topology, edges: &[EdgeId]) -> Result<Vec<EdgeData>, AlgoError> {
+fn collect_edge_data(
+    topo: &Topology,
+    edges: &[EdgeId],
+    tolerance_floor: f64,
+) -> Result<Vec<EdgeData>, AlgoError> {
     let mut data = Vec::with_capacity(edges.len());
     for &eid in edges {
         let edge = topo.edge(eid)?;
@@ -140,6 +152,7 @@ fn collect_edge_data(topo: &Topology, edges: &[EdgeId]) -> Result<Vec<EdgeData>,
             t1,
             bbox_min: min,
             bbox_max: max,
+            tolerance_excess: super::helpers::edge_tolerance_excess(topo, eid, tolerance_floor)?,
         });
     }
     Ok(data)
@@ -167,12 +180,13 @@ fn find_edge_edge_crossings(
     eb_id: EdgeId,
     eb: &EdgeData,
     tol: Tolerance,
+    acceptance: f64,
 ) -> Result<Vec<(f64, f64, Point3)>, AlgoError> {
     let edge_a = topo.edge(ea_id)?;
     let edge_b = topo.edge(eb_id)?;
 
     if matches!(edge_a.curve(), EdgeCurve::Line) && matches!(edge_b.curve(), EdgeCurve::Line) {
-        return Ok(line_line_intersection(ea, eb, tol));
+        return Ok(line_line_intersection(ea, eb, tol, acceptance));
     }
 
     // Coincident circles (same center/axis/radius): the arcs overlap along
@@ -196,12 +210,16 @@ fn find_edge_edge_crossings(
     if let EdgeCurve::Circle(circle) = edge_b.curve()
         && matches!(edge_a.curve(), EdgeCurve::Line)
     {
-        return Ok(line_circle_intersection(ea, eb, circle, tol, false));
+        return Ok(line_circle_intersection(
+            ea, eb, circle, tol, acceptance, false,
+        ));
     }
     if let EdgeCurve::Circle(circle) = edge_a.curve()
         && matches!(edge_b.curve(), EdgeCurve::Line)
     {
-        return Ok(line_circle_intersection(eb, ea, circle, tol, true));
+        return Ok(line_circle_intersection(
+            eb, ea, circle, tol, acceptance, true,
+        ));
     }
 
     let n: usize = 32;
@@ -243,14 +261,14 @@ fn find_edge_edge_crossings(
             let seg_len_a = (pts_a[i + 1].pos - pts_a[i].pos).length();
             let seg_len_b = (pts_b[j + 1].pos - pts_b[j].pos).length();
 
-            if min_dist > seg_len_a + seg_len_b + tol.linear {
+            if min_dist > seg_len_a + seg_len_b + acceptance {
                 continue;
             }
 
             if let Some((t_a, t_b, pt)) = closest_segment_pair(
                 [&pts_a[i], &pts_a[i + 1]],
                 [&pts_b[j], &pts_b[j + 1]],
-                tol.linear,
+                acceptance,
             ) && domain_a.contains(&t_a)
                 && domain_b.contains(&t_b)
             {
@@ -280,10 +298,11 @@ fn line_circle_intersection(
     arc: &EdgeData,
     circle: &remus_math::curves::Circle3D,
     tol: Tolerance,
+    acceptance: f64,
     circle_is_a: bool,
 ) -> Vec<(f64, f64, Point3)> {
     let mut out = Vec::new();
-    for (pt, angle) in circle.intersect_segment(line.start_pos, line.end_pos, tol.linear) {
+    for (pt, angle) in circle.intersect_segment(line.start_pos, line.end_pos, acceptance) {
         // Validate the hit lies within the arc's angular domain. The arc
         // parameter runs t0..t1 (radians); the solver returns [0, TAU). Test
         // the angle and its ±TAU shifts so a hit near the seam still matches.
@@ -329,7 +348,12 @@ fn line_circle_intersection(
 ///
 /// Computes the closest approach between two line segments. If the
 /// segments are within tolerance at that point, returns the crossing.
-fn line_line_intersection(ea: &EdgeData, eb: &EdgeData, tol: Tolerance) -> Vec<(f64, f64, Point3)> {
+fn line_line_intersection(
+    ea: &EdgeData,
+    eb: &EdgeData,
+    tol: Tolerance,
+    acceptance: f64,
+) -> Vec<(f64, f64, Point3)> {
     let da = ea.end_pos - ea.start_pos;
     let db = eb.end_pos - eb.start_pos;
     let w = ea.start_pos - eb.start_pos;
@@ -361,7 +385,7 @@ fn line_line_intersection(ea: &EdgeData, eb: &EdgeData, tol: Tolerance) -> Vec<(
     let pt_b = eb.start_pos + db * t;
     let dist = (pt_a - pt_b).length();
 
-    if dist <= tol.linear {
+    if dist <= acceptance {
         let midpoint = Point3::new(
             f64::midpoint(pt_a.x(), pt_b.x()),
             f64::midpoint(pt_a.y(), pt_b.y()),
@@ -451,6 +475,7 @@ mod tests {
             t1: 1.0,
             bbox_min: start,
             bbox_max: end,
+            tolerance_excess: 0.0,
         }
     }
 
@@ -463,6 +488,7 @@ mod tests {
             t1,
             bbox_min: Point3::new(0.0, 0.0, 0.0),
             bbox_max: Point3::new(0.0, 0.0, 0.0),
+            tolerance_excess: 0.0,
         }
     }
 
@@ -479,7 +505,7 @@ mod tests {
         let arc = arc_data(0.0, std::f64::consts::TAU);
         let tol = Tolerance::default();
 
-        let mut hits = line_circle_intersection(&line, &arc, &circle, tol, false);
+        let mut hits = line_circle_intersection(&line, &arc, &circle, tol, tol.linear, false);
         hits.sort_by(|a, b| a.2.x().partial_cmp(&b.2.x()).unwrap());
         assert_eq!(hits.len(), 2, "line should cross full circle at 2 points");
         assert!((hits[0].2.x() - (-1.0)).abs() < 1e-6, "left hit at x=-1");
@@ -501,7 +527,7 @@ mod tests {
         let arc = arc_data(0.0, std::f64::consts::FRAC_PI_2);
         let tol = Tolerance::default();
 
-        let hits = line_circle_intersection(&line, &arc, &circle, tol, false);
+        let hits = line_circle_intersection(&line, &arc, &circle, tol, tol.linear, false);
         assert_eq!(hits.len(), 1, "only the in-domain crossing should survive");
         assert!((hits[0].2.x() - 1.0).abs() < 1e-6, "surviving hit at x=1");
     }
@@ -521,7 +547,7 @@ mod tests {
         let tol = Tolerance::default();
 
         // Line x=1 is tangent to the circle at (1,0,0), angle 0.
-        let hits = line_circle_intersection(&line, &arc, &circle, tol, true);
+        let hits = line_circle_intersection(&line, &arc, &circle, tol, tol.linear, true);
         assert!(!hits.is_empty(), "tangent line should touch the circle");
         // t_arc (first slot) ≈ 0 (angle at (1,0,0)); t_line (second slot) ≈ 0.5
         // (midpoint of the y-segment).
@@ -546,21 +572,14 @@ mod tests {
         let arc = arc_data(0.0, std::f64::consts::TAU);
         let tol = Tolerance::default();
 
-        let hits = line_circle_intersection(&line, &arc, &circle, tol, false);
+        let hits = line_circle_intersection(&line, &arc, &circle, tol, tol.linear, false);
         assert!(hits.is_empty(), "line far from circle should not intersect");
     }
 
-    /// CHARACTERIZATION (RFC 0004 Stage 1, flips at Stage 2): the crossing
-    /// acceptance band is the global linear tolerance alone — the
-    /// `dist <= tol.linear` gate in `line_line_intersection` and the
-    /// segment-pair equivalent — so declared edge tolerances (tube radii)
-    /// contribute nothing to it. Two line segments whose infinite lines
-    /// cross but whose closest approach is 5× the global tolerance produce
-    /// no crossing, even with declared tube radii 100× wider than the gap.
-    /// Stage 2 widens the band to `tube_a + tube_b + tol.linear` and this
-    /// pin flips.
+    /// RFC 0004 Stage 2: declared edge tubes widen the crossing band by only
+    /// their excess above the operation floor.
     #[test]
-    fn crossing_band_is_global_only_despite_declared_edge_tolerances() {
+    fn crossing_band_includes_declared_edge_tolerances() {
         let mut topo = Topology::new();
         let v0 = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
         let v1 = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
@@ -569,16 +588,40 @@ mod tests {
         let ea = topo.add_edge(Edge::with_tolerance(v0, v1, EdgeCurve::Line, Some(1e-4)));
         let eb = topo.add_edge(Edge::with_tolerance(v2, v3, EdgeCurve::Line, Some(1e-4)));
 
+        let mut ea_data = line_data(Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 0.0, 0.0));
+        let mut eb_data = line_data(Point3::new(0.5, -0.5, 5e-7), Point3::new(0.5, 0.5, 5e-7));
+        let tol = Tolerance::default();
+        ea_data.tolerance_excess =
+            crate::pave_filler::helpers::edge_tolerance_excess(&topo, ea, tol.linear).unwrap();
+        eb_data.tolerance_excess =
+            crate::pave_filler::helpers::edge_tolerance_excess(&topo, eb, tol.linear).unwrap();
+        let acceptance = tol.linear + ea_data.tolerance_excess + eb_data.tolerance_excess;
+
+        let crossings =
+            find_edge_edge_crossings(&topo, ea, &ea_data, eb, &eb_data, tol, acceptance).unwrap();
+        assert_eq!(
+            crossings.len(),
+            1,
+            "the declared tubes contain the 5×-global closest approach"
+        );
+    }
+
+    #[test]
+    fn crossing_band_does_not_widen_without_declared_excess() {
+        let mut topo = Topology::new();
+        let v0 = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
+        let v1 = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
+        let v2 = topo.add_vertex(Vertex::new(Point3::new(0.5, -0.5, 5e-7), 1e-7));
+        let v3 = topo.add_vertex(Vertex::new(Point3::new(0.5, 0.5, 5e-7), 1e-7));
+        let ea = topo.add_edge(Edge::new(v0, v1, EdgeCurve::Line));
+        let eb = topo.add_edge(Edge::new(v2, v3, EdgeCurve::Line));
         let ea_data = line_data(Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 0.0, 0.0));
         let eb_data = line_data(Point3::new(0.5, -0.5, 5e-7), Point3::new(0.5, 0.5, 5e-7));
         let tol = Tolerance::default();
 
-        let crossings = find_edge_edge_crossings(&topo, ea, &ea_data, eb, &eb_data, tol).unwrap();
-        assert!(
-            crossings.is_empty(),
-            "closest approach 5× global with declared tubes 100× wider must still \
-             produce no crossing while the band is global-only"
-        );
+        let crossings =
+            find_edge_edge_crossings(&topo, ea, &ea_data, eb, &eb_data, tol, tol.linear).unwrap();
+        assert!(crossings.is_empty());
     }
 
     #[test]
@@ -597,7 +640,8 @@ mod tests {
         let eb_data = line_data(Point3::new(0.5, -0.5, 5e-8), Point3::new(0.5, 0.5, 5e-8));
         let tol = Tolerance::default();
 
-        let crossings = find_edge_edge_crossings(&topo, ea, &ea_data, eb, &eb_data, tol).unwrap();
+        let crossings =
+            find_edge_edge_crossings(&topo, ea, &ea_data, eb, &eb_data, tol, tol.linear).unwrap();
         assert_eq!(
             crossings.len(),
             1,

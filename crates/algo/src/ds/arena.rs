@@ -73,18 +73,40 @@ impl GfaArena {
     /// same-domain mapping (set only by VV) no longer change. The build walks
     /// the blocks in `edge_pave_blocks` ascending-`EdgeId` order, start-before-
     /// end within each block, recording each vertex's position as `rank` so the
-    /// index reproduces the linear scan's first-match tie-break exactly.
-    pub fn build_pave_vertex_index(&mut self, topo: &remus_topology::Topology, cell: f64) {
-        let mut entries: Vec<(u32, VertexId, remus_math::vec::Point3)> = Vec::new();
+    /// index reproduces the linear scan's first-match tie-break exactly. Each
+    /// entry carries the larger of its declared vertex-ball radius and the
+    /// operation floor; invalid tolerance values are rejected before the index
+    /// becomes visible.
+    pub fn build_pave_vertex_index(
+        &mut self,
+        topo: &remus_topology::Topology,
+        floor: f64,
+    ) -> Result<(), remus_topology::TopologyError> {
+        if !floor.is_finite() || floor.is_sign_negative() {
+            return Err(remus_topology::TopologyError::InvalidToleranceValue {
+                entity: "predicate floor",
+                value: floor,
+            });
+        }
+        let mut entries: Vec<(u32, VertexId, remus_math::vec::Point3, f64)> = Vec::new();
+        let mut max_radius = floor;
         let mut rank: u32 = 0;
         for pbs in self.edge_pave_blocks.values() {
             for &pb_id in pbs {
                 if let Some(pb) = self.pave_blocks.get(pb_id) {
                     for vid in [pb.start.vertex, pb.end.vertex] {
                         let resolved = self.resolve_vertex(vid);
-                        if let Ok(v) = topo.vertex(resolved) {
-                            entries.push((rank, resolved, v.point()));
+                        let v = topo.vertex(resolved)?;
+                        let tolerance = v.tolerance();
+                        if !tolerance.is_finite() || tolerance.is_sign_negative() {
+                            return Err(remus_topology::TopologyError::InvalidToleranceValue {
+                                entity: "vertex",
+                                value: tolerance,
+                            });
                         }
+                        let radius = tolerance.max(floor);
+                        max_radius = max_radius.max(radius);
+                        entries.push((rank, resolved, v.point(), radius));
                         rank = rank.saturating_add(1);
                     }
                 }
@@ -94,9 +116,10 @@ impl GfaArena {
         // radius is capped at 1e-3. A larger cell keeps both lookups bounded to
         // the same 3x3x3 stencil rather than scanning every pave endpoint.
         self.pave_vertex_index = Some(super::PaveVertexIndex::build(
-            cell.max(1e-3),
+            max_radius.max(1e-3),
             entries.into_iter(),
         ));
+        Ok(())
     }
 
     /// Resolves a vertex to its same-domain canonical vertex.

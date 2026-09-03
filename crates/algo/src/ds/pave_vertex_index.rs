@@ -23,6 +23,7 @@ struct Entry {
     rank: u32,
     vertex: VertexId,
     pos: Point3,
+    radius: f64,
 }
 
 /// Uniform-grid spatial hash over resolved pave-block endpoint vertices.
@@ -34,15 +35,21 @@ pub struct PaveVertexIndex {
 }
 
 impl PaveVertexIndex {
-    /// Build the index from `(rank, resolved_vertex, position)` triples in
-    /// ascending scan order. `cell` is the snap tolerance (the cell size).
-    pub(crate) fn build(cell: f64, entries: impl Iterator<Item = (u32, VertexId, Point3)>) -> Self {
+    /// Build the index from `(rank, resolved_vertex, position, radius)` values
+    /// in ascending scan order. `cell` must cover every entry radius.
+    pub(crate) fn build(
+        cell: f64,
+        entries: impl Iterator<Item = (u32, VertexId, Point3, f64)>,
+    ) -> Self {
         let inv_cell = 1.0 / cell.max(f64::MIN_POSITIVE);
         let mut grid: HashMap<(i64, i64, i64), Vec<Entry>> = HashMap::new();
-        for (rank, vertex, pos) in entries {
-            grid.entry(cell_of(pos, inv_cell))
-                .or_default()
-                .push(Entry { rank, vertex, pos });
+        for (rank, vertex, pos, radius) in entries {
+            grid.entry(cell_of(pos, inv_cell)).or_default().push(Entry {
+                rank,
+                vertex,
+                pos,
+                radius,
+            });
         }
         Self {
             cell: cell.max(f64::MIN_POSITIVE),
@@ -54,6 +61,7 @@ impl PaveVertexIndex {
     /// Resolved pave vertex within `tol` of `point`, matching the linear scan's
     /// first-in-iteration-order tie-break; `None` if none is within `tol`.
     #[must_use]
+    #[cfg(test)]
     pub fn find_within(&self, point: Point3, tol: f64) -> Option<VertexId> {
         let (cx, cy, cz) = cell_of(point, self.inv_cell);
         let mut best: Option<(u32, VertexId)> = None;
@@ -75,6 +83,34 @@ impl PaveVertexIndex {
             }
         }
         best.map(|(_, v)| v)
+    }
+
+    /// Resolved pave vertex whose own tolerance radius contains `point`.
+    ///
+    /// The minimum-rank candidate wins, preserving the historical linear
+    /// scan's deterministic tie-break even when candidate radii differ.
+    #[must_use]
+    pub fn find_with_entry_radius(&self, point: Point3) -> Option<VertexId> {
+        let (cx, cy, cz) = cell_of(point, self.inv_cell);
+        let mut best: Option<(u32, VertexId)> = None;
+        for dx in -1..=1 {
+            for dy in -1..=1 {
+                for dz in -1..=1 {
+                    let Some(entries) = self.grid.get(&(cx + dx, cy + dy, cz + dz)) else {
+                        continue;
+                    };
+                    for entry in entries {
+                        crate::perf::bump_pave_vertex_probe();
+                        if (entry.pos - point).length() <= entry.radius
+                            && best.is_none_or(|(rank, _)| entry.rank < rank)
+                        {
+                            best = Some((entry.rank, entry.vertex));
+                        }
+                    }
+                }
+            }
+        }
+        best.map(|(_, vertex)| vertex)
     }
 
     /// Nearest accepted vertex within `radius`, unless accepted vertices occur
@@ -167,11 +203,23 @@ mod tests {
 
         // Rank order: v_a2 (rank 0) appears before v_a (rank 1) — the index must
         // return the LOWER rank among the within-tol coincident pair.
-        let entries = vec![(0u32, v_a2, p_a2), (1u32, v_a, p_a), (2u32, v_far, p_far)];
+        let entries = vec![
+            (0u32, v_a2, p_a2, tol),
+            (1u32, v_a, p_a, tol),
+            (2u32, v_far, p_far, tol),
+        ];
         let idx = PaveVertexIndex::build(tol, entries.clone().into_iter());
 
+        let fixed_entries: Vec<_> = entries
+            .iter()
+            .map(|&(rank, vertex, pos, _)| (rank, vertex, pos))
+            .collect();
+
         // Query exactly at p_a: both v_a and v_a2 are within tol; min rank = v_a2.
-        assert_eq!(idx.find_within(p_a, tol), linear_scan(&entries, p_a, tol));
+        assert_eq!(
+            idx.find_within(p_a, tol),
+            linear_scan(&fixed_entries, p_a, tol)
+        );
         assert_eq!(idx.find_within(p_a, tol), Some(v_a2));
 
         // A point near the far vertex but outside tol returns None.
@@ -179,7 +227,7 @@ mod tests {
         assert_eq!(idx.find_within(near_far, tol), None);
         assert_eq!(
             idx.find_within(near_far, tol),
-            linear_scan(&entries, near_far, tol)
+            linear_scan(&fixed_entries, near_far, tol)
         );
 
         // Exactly on the far vertex.
@@ -190,6 +238,29 @@ mod tests {
     fn empty_index_returns_none() {
         let idx = PaveVertexIndex::build(1e-7, std::iter::empty());
         assert_eq!(idx.find_within(Point3::new(0.0, 0.0, 0.0), 1e-7), None);
+    }
+
+    #[test]
+    fn entry_radii_widen_lookup_without_changing_rank_ties() {
+        let mut topo = Topology::new();
+        let p_low_rank = Point3::new(5e-6, 0.0, 0.0);
+        let p_high_rank = Point3::new(2e-6, 0.0, 0.0);
+        let low_rank = topo.add_vertex(Vertex::new(p_low_rank, 1e-5));
+        let high_rank = topo.add_vertex(Vertex::new(p_high_rank, 1e-5));
+        let index = PaveVertexIndex::build(
+            1e-5,
+            vec![
+                (0, low_rank, p_low_rank, 1e-5),
+                (1, high_rank, p_high_rank, 1e-5),
+            ]
+            .into_iter(),
+        );
+
+        assert_eq!(
+            index.find_with_entry_radius(Point3::new(0.0, 0.0, 0.0)),
+            Some(low_rank),
+            "the wider lookup still uses the first scan-order candidate"
+        );
     }
 
     #[test]
@@ -204,9 +275,9 @@ mod tests {
         let idx = PaveVertexIndex::build(
             1e-3,
             vec![
-                (0, v_near, near),
-                (1, v_distinct, distinct),
-                (2, v_far, far),
+                (0, v_near, near, 1e-3),
+                (1, v_distinct, distinct, 1e-3),
+                (2, v_far, far, 1e-3),
             ]
             .into_iter(),
         );
