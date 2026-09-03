@@ -4,6 +4,11 @@
 
 ### Features
 
+* **offset,operations,wasm:** retain the default V2 offset builder's exact
+  one-to-one source-face map, expose it as construction-derived evolution,
+  journal offsets transactionally, and add direct plus batch
+  `offsetJournaled` WASM contracts. Arc-joint and self-intersection-removal
+  variants refuse the face-map API rather than publishing stale provenance.
 * **context:** make the caller's NURBS SSI Newton-iteration budget authoritative
   across seed discovery and marching, with cooperative cancellation inside the
   refinement loop.

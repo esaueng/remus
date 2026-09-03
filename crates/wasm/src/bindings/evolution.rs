@@ -1,9 +1,9 @@
 //! Entity-evolution surfacing (Issue 12 → JS).
 //!
 //! Exposes the construction-derived vertex/edge/face history of GFA
-//! booleans, one-call journaled blends and patterns, and a read-only
-//! journal summary. Event encodings are stable JSON; `unresolved` is an
-//! honest event, never hidden.
+//! booleans, one-call journaled blends, offsets, and patterns, and a
+//! read-only journal summary. Event encodings are stable JSON; `unresolved`
+//! is an honest event, never hidden.
 
 #![allow(clippy::missing_errors_doc)]
 
@@ -177,6 +177,22 @@ impl BrepKernel {
         }))
     }
 
+    fn offset_journaled_json(
+        &mut self,
+        solid: u32,
+        distance: f64,
+    ) -> Result<serde_json::Value, StructuredWasmError> {
+        let solid_id = self
+            .resolve_solid(solid)
+            .map_err(StructuredWasmError::from)?;
+        let journaled = journal_ops::offset_journaled(self.topo_mut(), solid_id, distance)
+            .map_err(StructuredWasmError::from)?;
+        Ok(serde_json::json!({
+            "solid": crate::handles::solid_id_to_u32(journaled.solid),
+            "op": u32::try_from(journaled.op.value()).unwrap_or(u32::MAX),
+        }))
+    }
+
     fn journal_summary_json(&self) -> serde_json::Value {
         let entries: Vec<serde_json::Value> = self
             .topo()
@@ -257,6 +273,10 @@ impl BrepKernel {
                 let count = get_u32(args, "count")?;
                 self.linear_pattern_journaled_json(solid, [*dx, *dy, *dz], spacing, count)
             })(),
+            "offsetJournaled" => get_u32(args, "solid").and_then(|solid| {
+                get_f64(args, "distance")
+                    .and_then(|distance| self.offset_journaled_json(solid, distance))
+            }),
             "journalSummary" => Ok(self.journal_summary_json()),
             _ => return None,
         };
@@ -345,6 +365,16 @@ impl BrepKernel {
             validate_finite(value, name)?;
         }
         self.linear_pattern_journaled_json(solid, [dx, dy, dz], spacing, count)
+            .map(|v| v.to_string())
+            .map_err(structured_to_js)
+    }
+
+    /// V2 offset journaled as one construction-derived face-evolution entry
+    /// (kind `offset`). Returns JSON `{"solid", "op"}`.
+    #[wasm_bindgen(js_name = "offsetJournaled")]
+    pub fn offset_journaled_js(&mut self, solid: u32, distance: f64) -> Result<String, JsError> {
+        validate_finite(distance, "distance")?;
+        self.offset_journaled_json(solid, distance)
             .map(|v| v.to_string())
             .map_err(structured_to_js)
     }
@@ -535,6 +565,42 @@ mod evolution_contract_tests {
             "instance faces must inherit the original's name: {}",
             results[0]
         );
+    }
+
+    #[test]
+    fn offset_journaled_has_direct_and_batch_contract_parity() {
+        let mut direct = BrepKernel::new();
+        let source = direct.make_box_solid(2.0, 2.0, 2.0).unwrap();
+        let payload: serde_json::Value =
+            serde_json::from_str(&direct.offset_journaled_js(source, 0.5).unwrap()).unwrap();
+        let result = u32::try_from(payload["solid"].as_u64().unwrap()).unwrap();
+        assert!((direct.volume(result, 0.1).unwrap() - 27.0).abs() < 1e-9);
+        let summary: serde_json::Value = serde_json::from_str(&direct.journal_summary()).unwrap();
+        let entry = summary.as_array().unwrap().last().unwrap();
+        assert_eq!(entry["kind"], "offset");
+        assert_eq!(entry["type"], "evolution");
+        assert_eq!(entry["detail"]["origin"], "construction");
+        assert_eq!(entry["detail"]["events"], 6);
+
+        let mut batch = BrepKernel::new();
+        run(
+            &mut batch,
+            serde_json::json!([
+                {"op": "makeBox", "args": {"width": 2.0, "height": 2.0, "depth": 2.0}},
+            ]),
+        );
+        let results = run(
+            &mut batch,
+            serde_json::json!([
+                {"op": "offsetJournaled", "args": {"solid": 0, "distance": 0.5}},
+                {"op": "journalSummary", "args": {}},
+            ]),
+        );
+        assert_eq!(results[0], payload);
+        let batch_entry = results[1].as_array().unwrap().last().unwrap();
+        assert_eq!(batch_entry["kind"], "offset");
+        assert_eq!(batch_entry["type"], "evolution");
+        assert_eq!(batch_entry["detail"]["events"], 6);
     }
 
     #[test]

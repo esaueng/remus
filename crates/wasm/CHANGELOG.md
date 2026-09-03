@@ -4,6 +4,9 @@
 
 ### Features
 
+* Add `offsetJournaled` to the direct and `executeBatch` APIs, returning the
+  result solid and operation id while recording total construction-derived
+  face evolution instead of an offset barrier.
 * Add the `booleanWithQuality` `executeBatch`/`executeBatchV2` operation so
   batch callers can require exact output or receive explicit approximation
   provenance.

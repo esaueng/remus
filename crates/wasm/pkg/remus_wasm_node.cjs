@@ -5011,6 +5011,31 @@ class BrepKernel {
         return ret[0] >>> 0;
     }
     /**
+     * V2 offset journaled as one construction-derived face-evolution entry
+     * (kind `offset`). Returns JSON `{"solid", "op"}`.
+     * @param {number} solid
+     * @param {number} distance
+     * @returns {string}
+     */
+    offsetJournaled(solid, distance) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.brepkernel_offsetJournaled(this.__wbg_ptr, solid, distance);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
      * Offset a 2D polygon by a signed distance.
      *
      * `coords` is a flat array `[x,y, x,y, ...]` of 2D points.

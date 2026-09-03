@@ -410,6 +410,41 @@ for (const operation of ['fillet', 'chamfer']) {
   console.log(`ok - ${method}: typed, complete, exact-geometry parity`);
 }
 
+// Offset face identity is construction-derived and reaches both public WASM
+// routes as a real journal evolution entry, never a barrier.
+{
+  const directKernel = new BrepKernel();
+  const source = directKernel.makeBox(2, 2, 2);
+  const direct = JSON.parse(directKernel.offsetJournaled(source, 0.5));
+  assert.ok(Math.abs(directKernel.volume(direct.solid, DEFLECTION) - 27) < 1e-9);
+  const directEntry = JSON.parse(directKernel.journalSummary()).at(-1);
+  assert.deepEqual(
+    {
+      kind: directEntry.kind,
+      type: directEntry.type,
+      origin: directEntry.detail.origin,
+      events: directEntry.detail.events,
+    },
+    { kind: 'offset', type: 'evolution', origin: 'construction', events: 6 },
+  );
+
+  const batchKernel = new BrepKernel();
+  const batch = JSON.parse(
+    batchKernel.executeBatch(
+      JSON.stringify([
+        { op: 'makeBox', args: { width: 2, height: 2, depth: 2 } },
+        { op: 'offsetJournaled', args: { solid: 0, distance: 0.5 } },
+        { op: 'journalSummary', args: {} },
+      ]),
+    ),
+  );
+  assert.deepEqual(batch[1].ok, direct);
+  assert.equal(batch[2].ok.at(-1).kind, 'offset');
+  assert.equal(batch[2].ok.at(-1).type, 'evolution');
+  assert.equal(batch[2].ok.at(-1).detail.events, 6);
+  console.log('ok - offsetJournaled direct/batch construction evolution');
+}
+
 // A stored/transported payload is untrusted input: malformed versions,
 // incomplete coverage and contradictory result claims must fail closed.
 {

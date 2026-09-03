@@ -284,8 +284,12 @@ does not itself promote or demote anything.
 ### Evolution and naming
 
 - Ledger row: "Face provenance" (Beta). Construction-derived face provenance
-  covers booleans, walking/planar blend builders, and patterns; offset,
-  shell, draft, split, defeature, and direct edits produce none.
+  covers booleans, walking/planar blend builders, patterns, draft, split,
+  defeature, shell, and default intersection-joint V2 offsets. Direct edits
+  produce none. Arc-joint offsets and offsets followed by self-intersection
+  removal do not expose a face map: those variants may synthesize or replace
+  faces after the one-to-one offset construction and fail closed rather than
+  publishing stale provenance.
   **Edge and vertex history** (Issue 12): `gfa::boolean_with_entity_evolution`
   returns construction-derived edge events (Preserved / Modified via the
   splitter's source-edge chain and pave blocks / Generated via FF
@@ -348,23 +352,22 @@ does not itself promote or demote anything.
   **Evolution surfacing**: `operations::boolean::boolean_with_entity_evolution`
   (L3 surface of the Issue-12 entry point, re-exported event types);
   one-call journaled wrappers `journal_ops::{fillet_journaled,
-  chamfer_journaled, linear_pattern_journaled}` — the journal is now
-  populated by every construction-evolution producer (booleans, v2
-  blends, patterns) per the RFC 0003 Stage 1 goal; WASM
+  chamfer_journaled, linear_pattern_journaled, offset_journaled}` — the
+  journal is populated by the construction-evolution producers (booleans,
+  v2 blends, patterns, default V2 offsets) per the RFC 0003 Stage 1 goal; WASM
   `fuseWithEntityEvolution` (+cut/intersect) exposing the full
   vertex/edge/face event payload as stable JSON, `filletJournaled` /
-  `chamferJournaled` / `linearPatternJournaled`, and the read-only
-  `journalSummary`, all with executeBatch companions and contract
+  `chamferJournaled` / `linearPatternJournaled` / `offsetJournaled`, and the
+  read-only `journalSummary`, all with executeBatch companions and contract
   tests.
   **Assembly-rebuild lineage records**: every GFA result-assembly path
   that rebuilds edges records construction lineage — the perform-phase
   vertex-merge wire rebuild, welds, and the collinear line/arc splits —
   and `build_result_with_origins` returns the complete log. A cube
   fuse's edge history is total construction fact (pinned: zero
-  unresolved). Remaining evolution queue: real evolution for the
-  declared-gap operations (offset, shell, draft, split, defeature —
-  journaled as barriers until each grows records) and cap-synthesis
-  edges (absent from planar boolean fixtures).
+  unresolved). Remaining evolution queue: direct-edit face evolution, richer
+  provenance for arc-joint/self-intersection-removal offsets, and
+  cap-synthesis edges (absent from planar boolean fixtures).
 
 ### Draft
 

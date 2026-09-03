@@ -158,10 +158,10 @@ for the new paths. Effort: **L** (workstreams 1–3 are the bulk of the value).
 Owner code: `crates/operations/src/evolution.rs`, `journal_ops.rs`,
 `crates/topology/src/` journal + naming (RFC 0003 is fully surfaced already).
 
-The gap is coverage, not architecture: booleans, walking/planar blends, and
-patterns carry construction-derived provenance; **offset, shell, draft, split,
-defeature, and direct edits produce none** (they journal as explicit
-barriers). Plan:
+The gap was coverage, not architecture: booleans, walking/planar blends, and
+patterns carried construction-derived provenance while **offset, shell, draft,
+split, defeature, and direct edits produced none** (they journaled as explicit
+barriers). The plan was:
 
 1. Add construction-derived face records to the operations that structurally
    already know their mapping: **split** (each output face has exactly one
@@ -304,9 +304,12 @@ Executed in one campaign; per the maintenance rule, each item's outcome:
 - **A4 Feature recognition — done, promoted** for the declared set. Two
   recognizer defects fixed: planar `FilletLike` false positives, all-planar
   pockets undetectable.
-- **B3 Evolution — done, promoted.** Draft/defeature/split/shell now record
-  construction-derived face evolution with journaled wrappers; offset and
-  direct edits remain declared barriers.
+- **B3 Evolution — done, promoted; B5 residual closed 2026-09-02 in PR
+  #TBD.** Draft/defeature/split/shell and default intersection-joint V2
+  offsets now record construction-derived face evolution with journaled
+  wrappers. Direct edits remain the declared face-provenance gap; arc-joint
+  and self-intersection-removal offsets need richer generated/replaced-face
+  records before they can expose the same map.
 - **B2 Non-planar caps — workstreams 1 and 3 done, promoted** with declared
   bounds (Coons n-sided caps; partial-revolve polygonal caps). Workstream 2
   (holes) and 4 (miter) stay typed refusals.

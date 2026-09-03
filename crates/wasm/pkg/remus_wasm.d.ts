@@ -2771,6 +2771,11 @@ export class BrepKernel {
      */
     offsetFace(face: number, distance: number, samples: number): number;
     /**
+     * V2 offset journaled as one construction-derived face-evolution entry
+     * (kind `offset`). Returns JSON `{"solid", "op"}`.
+     */
+    offsetJournaled(solid: number, distance: number): string;
+    /**
      * Offset a 2D polygon by a signed distance.
      *
      * `coords` is a flat array `[x,y, x,y, ...]` of 2D points.

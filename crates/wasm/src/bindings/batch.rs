@@ -186,6 +186,7 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "filletJournaled"
         | "chamferJournaled"
         | "linearPatternJournaled"
+        | "offsetJournaled"
         | "makeCylinder"
         | "makeSphere"
         | "makeCone"
