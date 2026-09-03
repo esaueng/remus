@@ -22,6 +22,11 @@
 
 ### Bug Fixes
 
+* **boolean:** the mesh (co-refinement) fallback behind plain `boolean()` —
+  and the JS `fuse`/`cut`/`intersect` bindings — now logs at `warn` on the
+  `remus_approx` target instead of `debug`, so a caller that did not opt into
+  the quality-disclosing entry points still sees when analytic faces were
+  lost. Return values and the census probe are unchanged.
 * **operations:** make every public fillet/chamfer mutation path fail closed.
   `fillet_variable`, the deprecated flat-bevel `fillet`, and
   `fillet_rolling_ball` are now individually transactional and validate the
