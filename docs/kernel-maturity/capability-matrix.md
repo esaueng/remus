@@ -54,9 +54,11 @@ These families are classified across the full grid:
   Together they qualify the bounded unit-scale trimmed-NURBS sheet workflow.
   PR #214 additionally qualifies a crossing solid × single cylindrical-sheet
   cell: two deterministic valid regions in a Compound with a closed-form
-  volume oracle and native/direct/batch WASM parity. Multi-face and other
-  surface sheet cells, broader scale/type matrices, wire, and general-body
-  cells remain Unqualified.
+  volume oracle and native/direct/batch WASM parity. PR #215 qualifies the
+  planar solid × sheet keep-side cell: both exact inside and outside sheet
+  remainders validate and preserve deterministic WASM parity, while coincident
+  patches refuse typed. Sheet×sheet, multi-face and other surface sheet cells,
+  broader scale/type matrices, wire, and general-body cells remain Unqualified.
 - **Scale** — at least three model scales relative to the configured
   tolerance (e.g. 1e-3, 1, 1e3 in the kernel's millimetre convention), with
   the tolerance scaled correspondingly.

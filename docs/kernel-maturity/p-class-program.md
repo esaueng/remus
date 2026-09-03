@@ -493,6 +493,9 @@ cells start Unqualified and are promoted only by the bounded evidence of
 Issues 4.2–4.7; Issue 4.2's bounded sheet workflow is now qualified in review.
 Issue 4.3's first cellular result is also implemented in review for the
 qualified single-cylinder-sheet cell.
+Issue 4.4's first keep-side result is implemented in review for a planar
+sheet crossing a solid; mutual sheet×sheet trim and the sew exit witness
+remain open.
 
 ### 4.2 Sheet bodies first-class (M)
 
@@ -556,6 +559,16 @@ Keep-inside/keep-outside trims of a sheet against a solid, and mutual
 sheet×sheet trims — the surface-modeling loop that ends in `sew` producing a
 solid. Classification of sheet faces against the solid reuses the M2-hardened
 classifiers.
+
+Partial, in review in [PR #215](https://github.com/esaueng/remus/pull/215):
+the face-set GFA arrangement now classifies only the sheet's split patches
+against the real solid and returns a new validation-gated Sheet for either
+keep side. An oversized planar sheet through a box trims to the exact 100-area
+inside square or the connected 96-area outside remainder; repeated native
+runs and direct/batch WASM agree. Empty selections and coincident patches
+refuse transactionally with `unsupported_sheet_trim`. Mutual sheet×sheet trim
+and the closed trim-plus-sew witness remain Issue 4.4b, so the exit gate is not
+yet claimed.
 
 > **Exit gate:** build a closed solid purely from mutually-trimmed sheets +
 > sew; volume matches the same solid built by primitive booleans.

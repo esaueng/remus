@@ -256,6 +256,16 @@ classifiers via side-of semantics), `crates/operations/src/sew.rs`
 (`sew_faces` gains a sheet-body return for open results; closed results
 keep solids).
 
+Implementation: PR #215 lands the first half of Stage 4. The existing
+face-set arrangement splits a sheet without interpreting it as material,
+classifies only its patches against the real solid, and assembles either the
+inside or outside selection as a new validation-gated Sheet. A planar sheet
+crossing a box has exact area oracles for both selections (100 inside, 96
+outside) and deterministic direct/batch WASM parity. Empty selections and
+same-domain overlaps refuse transactionally with `unsupported_sheet_trim`.
+Mutual sheet×sheet trimming and the trim-plus-sew witness remain a separate
+Stage 4 tranche.
+
 Characterization: sheet operands refused typed since Stage 1 flip to
 qualified. Exit gate (Issue 4.4): a closed solid built purely from
 mutually-trimmed sheets + sew has the same volume as the same solid built
