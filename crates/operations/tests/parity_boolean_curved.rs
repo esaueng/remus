@@ -65,8 +65,8 @@ fn curved_boolean_corpus() {
         Case { name: "coaxial_cyl_common_vol", a: (Prim::Cyl(1.0,2.0), NONE), b: (Prim::Cyl(1.0,2.0), &[Xf::Translate(0.0,0.0,1.0)]), op: Op::Common, oracle: Oracle::Volume(PI), tol: CTOL, expect: Expect::Pass },
         // Unit sphere (centered) partially overlapping a unit cube at +octant.
         // Overlap is ⅛ of the ball (V=π/6); union V = ⁴⁄₃π + 1 − π/6.
-        Case { name: "sphere_box_partial_common_vol", a: (Prim::Sphere(1.0), NONE), b: (Prim::Box(1.0,1.0,1.0), NONE), op: Op::Common, oracle: Oracle::Volume(PI / 6.0), tol: CTOL, expect: Expect::Gap("sphere/box partial intersect: volume ~46% low") },
-        Case { name: "sphere_box_partial_fuse_vol",   a: (Prim::Sphere(1.0), NONE), b: (Prim::Box(1.0,1.0,1.0), NONE), op: Op::Fuse,   oracle: Oracle::Volume(4.0 / 3.0 * PI + 1.0 - PI / 6.0), tol: CTOL, expect: Expect::Gap("sphere/box partial fuse: volume ~2.2% low") },
+        Case { name: "sphere_box_partial_common_vol", a: (Prim::Sphere(1.0), NONE), b: (Prim::Box(1.0,1.0,1.0), NONE), op: Op::Common, oracle: Oracle::Volume(PI / 6.0), tol: CTOL, expect: Expect::Pass },
+        Case { name: "sphere_box_partial_fuse_vol",   a: (Prim::Sphere(1.0), NONE), b: (Prim::Box(1.0,1.0,1.0), NONE), op: Op::Fuse,   oracle: Oracle::Volume(4.0 / 3.0 * PI + 1.0 - PI / 6.0), tol: CTOL, expect: Expect::Pass },
     ];
 
     run_corpus(cases);
