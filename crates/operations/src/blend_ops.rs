@@ -198,6 +198,58 @@ pub(crate) fn edge_is_convex(
     })
 }
 
+/// The size a blend was asked for, as the volume oracle needs it.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum BlendSize {
+    /// Constant-radius fillet.
+    Fillet {
+        /// The requested radius.
+        radius: f64,
+    },
+    /// Variable-radius fillet: the law's extremes over the selection.
+    VariableFillet {
+        /// Smallest radius the law reaches.
+        min_radius: f64,
+        /// Largest radius the law reaches.
+        max_radius: f64,
+    },
+    /// Two-distance chamfer, `d1` along one face and `d2` along the other.
+    Chamfer {
+        /// Setback along the first face.
+        d1: f64,
+        /// Setback along the second face.
+        d2: f64,
+    },
+}
+
+impl BlendSize {
+    /// How far from an edge the blend can reach: the upper-bound scale.
+    const fn reach(self) -> f64 {
+        match self {
+            Self::Fillet { radius } => radius,
+            Self::VariableFillet { max_radius, .. } => max_radius,
+            Self::Chamfer { d1, d2 } => d1.max(d2),
+        }
+    }
+
+    /// A lower bound on the cross-section area the blend moves on an edge
+    /// whose outward normals meet at angle `phi` (0 = tangent, π/2 = a right
+    /// angle). Exact for planar faces below the clamp; a strict under-estimate
+    /// above it and everywhere the faces curve.
+    fn min_section_area(self, phi: f64) -> f64 {
+        // The fillet section grows without bound as the edge sharpens; clamp
+        // the angle so a knife edge asks for a finite, still-valid minimum.
+        let phi = phi.clamp(0.0, 2.0 * std::f64::consts::FRAC_PI_3);
+        match self {
+            Self::Fillet { radius } => radius * radius * ((0.5 * phi).tan() - 0.5 * phi),
+            Self::VariableFillet { min_radius, .. } => {
+                min_radius * min_radius * ((0.5 * phi).tan() - 0.5 * phi)
+            }
+            Self::Chamfer { d1, d2 } => 0.5 * d1 * d2 * phi.sin(),
+        }
+    }
+}
+
 /// Reject a blend whose volume change is geometrically impossible.
 ///
 /// A blend only moves material inside a tube of radius `size` around each
@@ -208,23 +260,36 @@ pub(crate) fn edge_is_convex(
 /// solid — the failure mode a wrong-side trim produces, which the shell and
 /// Euler checks alone accept.
 ///
+/// The same convexity that fixes the sign also fixes a floor: on edges whose
+/// dihedral is known, a blend of this size must move at least the material
+/// its own cross-section sweeps along them. A closed, well-wound result that
+/// left the input's volume untouched is a no-op wearing a fresh handle, and
+/// this is the only oracle that can see it. Δ is a difference between two
+/// measurements of nearly the same body, so the tessellation error the two
+/// share cancels and the floor stays meaningful on a small blend — the noise
+/// gate excuses only a blend too small for its own strip to register.
+///
 /// `pub(crate)` so the legacy v1 engines (`fillet::fillet`,
 /// `fillet::fillet_variable`, `fillet::fillet_rolling_ball_with_origins`)
 /// apply the same oracle: they are public API and must be fail-closed even
 /// when called without the v2 dispatcher's guards.
+#[allow(clippy::too_many_lines)]
 pub(crate) fn validate_blend_volume(
     topo: &Topology,
     operation: &'static str,
     input_solid: SolidId,
     result_solid: SolidId,
     edges: &[EdgeId],
-    size: f64,
+    size: BlendSize,
 ) -> Result<(), OperationsError> {
     let before = crate::measure::solid_volume(topo, input_solid, 0.1)?;
     let after = crate::measure::solid_volume(topo, result_solid, 0.1)?;
     let delta = after - before;
+    let reach = size.reach();
 
+    let adjacency = topo.build_adjacency(input_solid)?;
     let mut budget = 0.0;
+    let mut min_move = 0.0;
     for &edge in edges {
         let e = topo.edge(edge)?;
         let start = topo.vertex(e.start())?.point();
@@ -244,7 +309,16 @@ pub(crate) fn validate_blend_volume(
         } else {
             (end - start).length()
         };
-        budget += size * size * length + 2.0 * size * size * size;
+        budget += reach * reach * length + 2.0 * reach * reach * reach;
+
+        // An edge whose dihedral cannot be read contributes nothing to the
+        // floor, which keeps the floor a lower bound.
+        let faces = adjacency.faces_for_edge(edge);
+        if faces.len() == 2
+            && let Some(phi) = crate::query::edge_normal_angle(topo, edge, faces[0], faces[1])?
+        {
+            min_move += size.min_section_area(phi) * length;
+        }
     }
 
     if delta.abs() > budget {
@@ -267,7 +341,7 @@ pub(crate) fn validate_blend_volume(
             // at shrinking probes so an oversized blend still gets classified
             // and the sign rule still fires; a genuinely ambiguous edge keeps
             // its Unknown verdict and stays excluded, as before.
-            for probe in [size * 0.25, size * 0.25 / 64.0, size * 0.25 / 4096.0] {
+            for probe in [reach * 0.25, reach * 0.25 / 64.0, reach * 0.25 / 4096.0] {
                 match crate::query::edge_concavity(topo, input_solid, e, probe).ok()? {
                     crate::query::EdgeConcavity::Convex => return Some(true),
                     crate::query::EdgeConcavity::Concave => return Some(false),
@@ -303,6 +377,22 @@ pub(crate) fn validate_blend_volume(
                     "{operation} on concave edges removed {:.3} of material; \
                      rounding a concave edge must add it",
                     -delta
+                ),
+            });
+        }
+        // The floor. Its quarter is the margin for what the section formula
+        // cannot see: setbacks where a neighbouring blend eats into this
+        // edge's strip (the corner still removes material, just not on this
+        // edge's account) and the curvature of non-planar supports. The
+        // noise here is `budget`-scaled, so it tracks the request rather
+        // than the body: a fillet stays accountable on a large part.
+        if (all_convex || all_concave) && min_move > 4.0 * noise && delta.abs() < 0.25 * min_move {
+            return Err(OperationsError::InvalidInput {
+                reason: format!(
+                    "{operation} moved {:.3} of material where a blend of this size on these \
+                     edges must move at least {:.3} — the request was not applied",
+                    delta.abs(),
+                    0.25 * min_move
                 ),
             });
         }
@@ -576,7 +666,14 @@ fn planar_chamfer_result(
     // The fast path gets the same volume guard as the walking path. Closedness
     // and manifoldness alone do not prove a bevel is right: a setback that
     // overruns its face folds the polygon through itself and still validates.
-    validate_blend_volume(topo, "chamfer", solid, result_solid, edges, d1.max(d2))?;
+    validate_blend_volume(
+        topo,
+        "chamfer",
+        solid,
+        result_solid,
+        edges,
+        BlendSize::Chamfer { d1, d2 },
+    )?;
     Ok(result)
 }
 
@@ -614,7 +711,14 @@ fn planar_fillet_result(
     // it more since it learned to rebuild holed caps: a setback that crosses an
     // inner loop folds the cap through itself and still validates as a closed
     // 2-manifold. Only the volume rules catch that.
-    validate_blend_volume(topo, "fillet", solid, result_solid, edges, radius)?;
+    validate_blend_volume(
+        topo,
+        "fillet",
+        solid,
+        result_solid,
+        edges,
+        BlendSize::Fillet { radius },
+    )?;
     Ok(result)
 }
 
@@ -803,7 +907,14 @@ fn fillet_group(
         builder.add_edges(edges, radius);
         let result = builder.build()?;
         validate_complete_blend(t, "fillet", solid, &result)?;
-        validate_blend_volume(t, "fillet", solid, result.solid, edges, radius)?;
+        validate_blend_volume(
+            t,
+            "fillet",
+            solid,
+            result.solid,
+            edges,
+            BlendSize::Fillet { radius },
+        )?;
         Ok(result)
     }) {
         Ok(result) => return Ok(result),
@@ -831,7 +942,14 @@ fn fillet_group(
         builder.add_edges_with_law(edges, remus_blend::radius_law::RadiusLaw::Constant(radius));
         let result = builder.build()?;
         validate_complete_blend(t, "fillet", solid, &result)?;
-        validate_blend_volume(t, "fillet", solid, result.solid, edges, radius)?;
+        validate_blend_volume(
+            t,
+            "fillet",
+            solid,
+            result.solid,
+            edges,
+            BlendSize::Fillet { radius },
+        )?;
         Ok(result)
     })
 }
@@ -912,7 +1030,14 @@ fn fillet_by_feature(
     // compares the finished body with what the caller actually handed in, so
     // the volume budget covers every named edge at once.
     validate_complete_blend(topo, "fillet", solid, &result)?;
-    validate_blend_volume(topo, "fillet", solid, current, edges, radius)?;
+    validate_blend_volume(
+        topo,
+        "fillet",
+        solid,
+        current,
+        edges,
+        BlendSize::Fillet { radius },
+    )?;
     Ok(result)
 }
 
@@ -1022,7 +1147,14 @@ pub fn chamfer_v2(
         builder.add_edges_asymmetric(edges, d1, d2);
         let result = builder.build()?;
         validate_complete_blend(t, "chamfer", solid, &result)?;
-        validate_blend_volume(t, "chamfer", solid, result.solid, edges, d1.max(d2))?;
+        validate_blend_volume(
+            t,
+            "chamfer",
+            solid,
+            result.solid,
+            edges,
+            BlendSize::Chamfer { d1, d2 },
+        )?;
         Ok(result)
     })
 }
@@ -1069,7 +1201,14 @@ pub fn chamfer_distance_angle(
         builder.add_edges_distance_angle(edges, distance, angle);
         let result = builder.build()?;
         validate_complete_blend(t, "chamfer", solid, &result)?;
-        validate_blend_volume(t, "chamfer", solid, result.solid, edges, distance.max(d2))?;
+        validate_blend_volume(
+            t,
+            "chamfer",
+            solid,
+            result.solid,
+            edges,
+            BlendSize::Chamfer { d1: distance, d2 },
+        )?;
         Ok(result)
     })
 }
@@ -1244,6 +1383,52 @@ pub fn chamfer_with_evolution(
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
+
+    /// A result that is a copy of the input passes every shell, Euler, and
+    /// orientation check and both the volume budget and the sign rule (Δ = 0
+    /// is within budget and on neither side of the noise band). Only the
+    /// floor sees it.
+    #[test]
+    fn blend_volume_floor_refuses_a_no_op_result() {
+        use super::{BlendSize, validate_blend_volume};
+
+        let mut topo = remus_topology::Topology::new();
+        let solid = crate::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+        let copy = crate::copy::copy_solid(&mut topo, solid).unwrap();
+        let edges = remus_topology::explorer::solid_edges(&topo, solid).unwrap();
+        let selection = [edges[0], edges[1]];
+
+        for (name, size) in [
+            ("fillet", BlendSize::Fillet { radius: 1.0 }),
+            ("chamfer", BlendSize::Chamfer { d1: 1.0, d2: 1.0 }),
+            (
+                "fillet",
+                BlendSize::VariableFillet {
+                    min_radius: 0.8,
+                    max_radius: 1.5,
+                },
+            ),
+        ] {
+            let error = validate_blend_volume(&topo, name, solid, copy, &selection, size)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("must move at least"), "{size:?}: {error}");
+        }
+
+        // The noise band scales with the request, not the body, so on planar
+        // faces (measured exactly) even a hairline no-op is visible.
+        let error = validate_blend_volume(
+            &topo,
+            "fillet",
+            solid,
+            copy,
+            &selection,
+            BlendSize::Fillet { radius: 0.01 },
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("must move at least"), "{error}");
+    }
 
     use remus_math::vec::Point3;
     use remus_topology::edge::{Edge, EdgeCurve};

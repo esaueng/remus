@@ -867,6 +867,44 @@ mod tests {
     use remus_math::vec::Point3;
     use remus_topology::edge::EdgeCurve;
 
+    /// The duplicate window is two sample spacings. Mutation testing found
+    /// `span / n * 2` survives `span * n * 2` — a window wider than the whole
+    /// edge, which folds every crossing after the first into it — because no
+    /// test asked this function for two crossings on one edge.
+    #[test]
+    fn edge_surface_crossings_keep_both_crossings_of_a_through_line() {
+        use remus_math::surfaces::CylindricalSurface;
+
+        let cylinder =
+            CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0)
+                .unwrap();
+        let surface = FaceSurface::Cylinder(cylinder);
+        // t = 0.25 and t = 0.75 sit exactly on the wall and on the sample grid.
+        let start = Point3::new(-2.0, 0.0, 0.5);
+        let end = Point3::new(2.0, 0.0, 0.5);
+        let crossings = find_edge_surface_crossings(
+            &EdgeCurve::Line,
+            start,
+            end,
+            0.0,
+            1.0,
+            &surface,
+            Tolerance::default(),
+            None,
+        );
+        assert_eq!(
+            crossings.len(),
+            2,
+            "a line through a cylinder crosses its wall twice, got {crossings:?}"
+        );
+        let mut xs: Vec<f64> = crossings.iter().map(|(_, p)| p.x()).collect();
+        xs.sort_by(f64::total_cmp);
+        assert!(
+            (xs[0] + 1.0).abs() < 1e-3 && (xs[1] - 1.0).abs() < 1e-3,
+            "{xs:?}"
+        );
+    }
+
     #[test]
     fn sampling_detects_tangent_touch() {
         // Signed distance: parabola touching zero at t=0.5 (exact tangent)
