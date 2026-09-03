@@ -196,6 +196,17 @@ does not itself promote or demote anything.
   exact standard-law extrema, typed tolerance-collapse and caller-supplied
   local-limit boundaries, an analytic ruled-surface plus closed-form linear
   volume oracle, and sampled S-curve radius/incidence/tangency invariants.
+  In-review PR #228 qualifies constant-radius closed curved-support assembly
+  for coaxial cylinder/cone, cylinder/sphere, cone/cone, and the segmented
+  orthogonal cylinder/cylinder rim of a cross-drilled shaft. The analytic
+  cylinder/cone cell is recovered as an exact torus; other closed walks use a
+  periodic degree-1 NURBS band tessellated from shared contact-edge vertices.
+  The native matrix pins solid validation, zero free/non-manifold edges,
+  watertight welded meshes, and B-Rep/mesh volume agreement within 2%; direct
+  and batch WASM agree. The pre-existing closed-rim chamfer regression matrix
+  also remains green. Cylinder/cone `resize_blend` preserves either the
+  material-side branch or an exact torus carrier's proven external branch; the
+  imported Shapr3D radius-4 band now rebuilds exactly at radius 3.
 - Fail-closed contract (Qualified, every public entry point): direct WASM
   bindings, `executeBatch`/`executeBatchV2`, journaled wrappers, and the
   legacy v1 Rust APIs (`fillet`, `fillet_rolling_ball`, `fillet_variable`,
@@ -212,9 +223,10 @@ does not itself promote or demote anything.
 - Known gaps: the qualified variable-radius cell is the walking band, not its
   trimmed-solid assembly; opaque custom callbacks are preserved and checked at
   every consumed station but cannot prove arbitrary between-sample behavior.
-  Closed-rim chamfers and curved assembly remain experimental and fail-closed;
-  variable radius on curved domains, setbacks, multi-edge corners, G2
-  profiles, and overflow handling are Unqualified or absent.
+  Curved-support qualification is limited to the closed analytic cells above;
+  open and non-coaxial curved assembly, curved-support chamfers, variable
+  radius on curved domains, setbacks, multi-edge corners, G2 profiles, and
+  overflow handling remain Unqualified or absent and fail closed.
 
 ### Offset, shell, thicken
 

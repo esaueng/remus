@@ -201,11 +201,16 @@ pub(crate) fn edge_is_convex(
 
 /// Reject a blend whose volume change is geometrically impossible.
 ///
-/// A blend only moves material inside a radius-`size` tube around each edge the
-/// engine actually blends. A fillet seed expands across its complete G1 chain,
-/// so the bound covers that chain rather than only the caller-named segment.
-/// Each edge contributes the volume of a capsule,
-/// `π·size²·length + 4π·size³/3`; summing capsules is conservative even where
+/// A blend only moves material inside a bounded tube around each edge the
+/// engine actually blends. Its radius is not generally the requested fillet
+/// radius: at a shallow dihedral, the contact setback is larger. For effective
+/// outward-normal angle `theta`, the convex and concave centre offsets are
+/// bounded by `size / cos(theta/2)` and `size / sin(theta/2)`, respectively.
+/// The magnitude guard uses the larger because a local convexity classifier
+/// can itself be indeterminate. A fillet seed expands across its complete G1
+/// chain, so the bound covers that chain rather than only the caller-named
+/// segment. Each edge contributes the volume of a capsule at the
+/// angle-adjusted reach; summing capsules is conservative even where
 /// neighbouring capsules overlap. The sign is fixed by convexity: rounding a
 /// convex edge cuts material away, a concave one fills it in. A result that
 /// breaks either rule is wrong even when it is a topologically valid closed
@@ -244,11 +249,44 @@ pub(crate) fn validate_blend_volume(
         edges.to_vec()
     };
 
+    let adjacency = topo.build_adjacency(input_solid)?;
     let mut budget = 0.0;
     for &edge in &budget_edges {
         let length = crate::measure::edge_length(topo, edge)?;
-        budget += std::f64::consts::PI * size * size * length
-            + (4.0 / 3.0) * std::f64::consts::PI * size * size * size;
+        let edge_data = topo.edge(edge)?;
+        let start = topo.vertex(edge_data.start())?.point();
+        let end = topo.vertex(edge_data.end())?.point();
+        let (t0, t1) =
+            crate::authoritative_edge_domain(edge_data, "blend-volume angle-adjusted reach")?;
+        let mut faces = adjacency.faces_for_edge(edge).to_vec();
+        faces.sort_unstable_by_key(|face| face.index());
+        faces.dedup();
+        let mut reach = size;
+        if let [face_a, face_b] = faces.as_slice() {
+            for index in 0..=16 {
+                let parameter = (t1 - t0).mul_add(f64::from(index) / 16.0, t0);
+                let point = edge_data
+                    .curve()
+                    .evaluate_with_endpoints(parameter, start, end);
+                let Some(normal_a) = crate::query::effective_face_normal(topo, *face_a, point)
+                else {
+                    continue;
+                };
+                let Some(normal_b) = crate::query::effective_face_normal(topo, *face_b, point)
+                else {
+                    continue;
+                };
+                let angle = normal_a
+                    .cross(normal_b)
+                    .length()
+                    .atan2(normal_a.dot(normal_b));
+                let half_angle = angle * 0.5;
+                let denominator = half_angle.sin().min(half_angle.cos()).max(1.0e-6);
+                reach = reach.max(size / denominator);
+            }
+        }
+        budget += std::f64::consts::PI * reach * reach * length
+            + (4.0 / 3.0) * std::f64::consts::PI * reach * reach * reach;
     }
 
     if delta.abs() > budget {
@@ -282,7 +320,15 @@ pub(crate) fn validate_blend_volume(
             None
         })
         .collect();
-    if convexities.len() == edges.len() && !convexities.is_empty() {
+    // Point-in-solid convexity depends on a consistently oriented input shell.
+    // The blend postcondition deliberately permits repairing baseline defects,
+    // so do not turn an inherited orientation error into a confident sign
+    // verdict. The angle-adjusted magnitude bound still applies.
+    let input_is_validation_clean = error_magnitudes(topo, input_solid)?.is_empty();
+    if input_is_validation_clean
+        && convexities.len() == budget_edges.len()
+        && !convexities.is_empty()
+    {
         let all_convex = convexities.iter().all(|&c| c);
         let all_concave = convexities.iter().all(|&c| !c);
         // Allow a hair of tessellation noise either way. The noise lives at the

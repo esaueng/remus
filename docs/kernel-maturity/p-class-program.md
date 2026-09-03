@@ -715,6 +715,28 @@ experimental and unblocks the pinned `resize_blend` refusal (cylinder-wall ×
 cone-wall rim reconstruction). Contact curves on curved supports are exactly
 the geometry 2.4 taught the splitter to consume.
 
+Implemented, in review in [PR #228](https://github.com/esaueng/remus/pull/228):
+the ordinary constant-radius walker now uses the material side of every
+analytic support, recovers across periodic parameter seams, and closes a rim
+on its authoritative curve domain. Coaxial cylinder/cone shoulders are
+recognized back to exact toroidal bands; the other qualified closed walks use
+a degree-1 periodic NURBS band whose boundary curves are the shared support
+contacts. Assembly replaces
+either an outer-rim block or a complete inner rim, normalizes effective shell
+winding, and tessellates the periodic band from the same shared edge vertices.
+Native witnesses cover cylinder/cone, cylinder/sphere, cone/cone, and the
+segmented orthogonal cylinder/cylinder rim of a cross-drilled shaft. Every
+result passes solid validation, has zero free and non-manifold edges, produces
+a watertight welded mesh, and agrees with the B-Rep volume within 2%; direct and
+batch WASM routes agree on the cylinder/cone result. The existing closed-rim
+chamfer matrix remains green. `resize_blend` now removes the cylinder/cone band
+back to the exact sharp body (relative volume error below 1e-7) and rebuilds a
+smaller positive radius. The imported Shapr3D witness also preserves its
+carrier-proven external tangent branch when resizing radius 4 to 3, replacing
+the pinned `unsupported-support-pair` refusal. This qualifies only those closed
+analytic cells; open, non-coaxial, variable-radius curved assembly and other
+support pairs remain fail-closed.
+
 > **Exit gate:** fillet a cylinder-cone shoulder and a cross-drilled hole
 > rim: watertight, volume vs. mesh oracle, free-edge count zero; the
 > resize_blend `unsupported-support-pair` refusal flips to reconstruction.

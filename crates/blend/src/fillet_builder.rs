@@ -44,6 +44,8 @@ pub struct FilletBuilder<'a> {
     solid: SolidId,
     /// Edge sets to fillet, each with their radius/law.
     edge_sets: Vec<(Vec<EdgeId>, RadiusLaw)>,
+    /// Opposite common-tangent branch for a proven external reconstruction.
+    external_support_side: bool,
 }
 
 impl<'a> FilletBuilder<'a> {
@@ -54,7 +56,18 @@ impl<'a> FilletBuilder<'a> {
             topo,
             solid,
             edge_sets: Vec::new(),
+            external_support_side: false,
         }
+    }
+
+    /// Select the external common-tangent branch for analytic reconstruction.
+    ///
+    /// This is for rebuilding a recognized blend whose existing carrier
+    /// proves that branch. Ordinary fillet construction uses the material-side
+    /// default.
+    pub fn use_external_support_side(&mut self) -> &mut Self {
+        self.external_support_side = true;
+        self
     }
 
     /// Add edges to fillet with a constant radius.
@@ -93,6 +106,7 @@ impl<'a> FilletBuilder<'a> {
     /// [`BlendResult::failed`] rather than aborting the whole operation.
     #[allow(clippy::too_many_lines)]
     pub fn build(self) -> Result<BlendResult, BlendError> {
+        let external_support_side = self.external_support_side;
         // Keep each edge set beside its RadiusLaw via a shared index.
         let mut seeds_by_law: Vec<Vec<EdgeId>> = Vec::with_capacity(self.edge_sets.len());
         let mut laws: Vec<RadiusLaw> = Vec::with_capacity(self.edge_sets.len());
@@ -238,7 +252,13 @@ impl<'a> FilletBuilder<'a> {
                     continue;
                 }
             };
-            match compute_stripe_for_spine(topo, &adjacency, spine, &laws[*law_idx]) {
+            match compute_stripe_for_spine(
+                topo,
+                &adjacency,
+                spine,
+                &laws[*law_idx],
+                external_support_side,
+            ) {
                 Ok(sr) => {
                     touched_faces.insert(sr.stripe.face1);
                     touched_faces.insert(sr.stripe.face2);
@@ -2326,6 +2346,7 @@ fn compute_stripe_for_spine(
     adjacency: &remus_topology::adjacency::AdjacencyIndex,
     spine: Spine,
     law: &RadiusLaw,
+    external_support_side: bool,
 ) -> Result<StripeResult, BlendError> {
     // Every edge on a G1 chain shares one face pair (that is what makes it a
     // ridgeline), so the first edge speaks for the whole spine.
@@ -2360,21 +2381,32 @@ fn compute_stripe_for_spine(
     // Get radius at the spine midpoint for the analytic path.
     let radius = law.evaluate(0.5);
 
+    if external_support_side
+        && (!spine.is_closed()
+            || !matches!(law, RadiusLaw::Constant(_))
+            || !qualified_closed_curved_pair(&surf1, &surf2))
+    {
+        return Err(BlendError::InvalidInput {
+            reason: "external support side requires a constant-radius closed analytic pair"
+                .to_string(),
+        });
+    }
+
     // Try analytic fast path (only for constant radius).
     // The analytic fillet expects INWARD-pointing normals (toward material).
     // Compute inward normals from the surface normals and face reversal:
     // - Not reversed: outward = surface_normal → inward = -surface_normal
     // - Reversed: outward = -surface_normal → inward = surface_normal
-    // The closed cone/cone helper chooses its offset signs from stored face
-    // reversal alone. That is insufficient at a shoulder where both analytic
-    // cones are unreversed but their material wedges lie on opposite sides;
-    // the resulting torus can land outside the solid. Route this qualified
-    // pair through the orientation-aware walker below.
+    // A previously recognized external blend needs the opposite common-
+    // tangent branch, which the pair-specific analytic helpers cannot select.
+    // Cone/cone has the same ambiguity even for ordinary construction. Route
+    // those cases through the orientation-aware walker; exact cylinder/cone
+    // output is recovered only when the torus recognizer proves it.
     let cone_cone = matches!(
         (&surf1, &surf2),
         (FaceSurface::Cone(_), FaceSurface::Cone(_))
     );
-    if matches!(law, RadiusLaw::Constant(_)) && !cone_cone {
+    if matches!(law, RadiusLaw::Constant(_)) && !external_support_side && !cone_cone {
         let flipped1 = orient_plane_surface(&surf1);
         let flipped2 = orient_plane_surface(&surf2);
         let inward_surf1 = if face1_reversed { &surf1 } else { &flipped1 };
@@ -2412,9 +2444,15 @@ fn compute_stripe_for_spine(
     let flipped1 = FlippedNormalSurface::new(base1);
     let flipped2 = FlippedNormalSurface::new(base2);
     let ps1: &dyn remus_math::traits::ParametricSurface =
-        if face1_reversed { base1 } else { &flipped1 };
+        match (external_support_side, face1_reversed) {
+            (false, false) | (true, true) => &flipped1,
+            (false, true) | (true, false) => base1,
+        };
     let ps2: &dyn remus_math::traits::ParametricSurface =
-        if face2_reversed { base2 } else { &flipped2 };
+        match (external_support_side, face2_reversed) {
+            (false, false) | (true, true) => &flipped2,
+            (false, true) | (true, false) => base2,
+        };
 
     let mut config = WalkerConfig::default();
     if !surf1.is_planar() || !surf2.is_planar() {
@@ -2801,7 +2839,7 @@ mod tests {
         let spine = Spine::from_single_edge(&topo, edge).unwrap();
         let law = RadiusLaw::Custom(Box::new(|t| 0.1 + 0.05 * t * t));
 
-        let result = compute_stripe_for_spine(&topo, &adjacency, spine, &law).unwrap();
+        let result = compute_stripe_for_spine(&topo, &adjacency, spine, &law, false).unwrap();
         let interior = result
             .stripe
             .sections
