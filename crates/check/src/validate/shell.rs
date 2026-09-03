@@ -119,6 +119,26 @@ pub fn check_shell_orientation(
     topo: &Topology,
     shell_id: ShellId,
 ) -> Result<Vec<ValidationIssue>, CheckError> {
+    check_shell_orientation_with_id(topo, shell_id, CheckId::ShellOrientationConsistent)
+}
+
+/// Check orientation consistency for a first-class sheet body.
+///
+/// # Errors
+///
+/// Returns [`CheckError`] on a topology lookup failure.
+pub fn check_sheet_orientation(
+    topo: &Topology,
+    shell_id: ShellId,
+) -> Result<Vec<ValidationIssue>, CheckError> {
+    check_shell_orientation_with_id(topo, shell_id, CheckId::SheetOrientationConsistent)
+}
+
+fn check_shell_orientation_with_id(
+    topo: &Topology,
+    shell_id: ShellId,
+    check: CheckId,
+) -> Result<Vec<ValidationIssue>, CheckError> {
     let shell = topo.shell(shell_id)?;
 
     let mut edge_uses: HashMap<EdgeId, Vec<(usize, bool)>> = HashMap::new();
@@ -160,7 +180,7 @@ pub fn check_shell_orientation(
 
     if misoriented > 0 {
         return Ok(vec![ValidationIssue {
-            check: CheckId::ShellOrientationConsistent,
+            check,
             severity: Severity::Error,
             entity: EntityRef::Shell(shell_id),
             description: format!("{misoriented} shared edges have inconsistent face orientations"),
@@ -169,6 +189,49 @@ pub fn check_shell_orientation(
     }
 
     Ok(vec![])
+}
+
+/// Report free boundary edges on a sheet as a warning while continuing to
+/// reject non-manifold edge use.
+///
+/// # Errors
+///
+/// Returns [`CheckError`] on a topology lookup failure.
+pub fn check_sheet_boundary(
+    topo: &Topology,
+    shell_id: ShellId,
+) -> Result<Vec<ValidationIssue>, CheckError> {
+    let shell = topo.shell(shell_id)?;
+    let mut edge_count: HashMap<EdgeId, usize> = HashMap::new();
+
+    for &fid in shell.faces() {
+        for eid in face_edge_ids(topo, fid)? {
+            *edge_count.entry(eid).or_default() += 1;
+        }
+    }
+
+    let boundary = edge_count.values().filter(|&&count| count == 1).count();
+    let nonmanifold = edge_count.values().filter(|&&count| count > 2).count();
+    let mut issues = Vec::new();
+    if boundary > 0 {
+        issues.push(ValidationIssue {
+            check: CheckId::ShellFreeBoundary,
+            severity: Severity::Warning,
+            entity: EntityRef::Shell(shell_id),
+            description: format!("sheet has {boundary} free (boundary) edges"),
+            deviation: Some(boundary as f64),
+        });
+    }
+    if nonmanifold > 0 {
+        issues.push(ValidationIssue {
+            check: CheckId::ShellClosed,
+            severity: Severity::Error,
+            entity: EntityRef::Shell(shell_id),
+            description: format!("sheet has {nonmanifold} non-manifold edges (shared by >2 faces)"),
+            deviation: Some(nonmanifold as f64),
+        });
+    }
+    Ok(issues)
 }
 
 /// Check shell closure: every edge shared by exactly 2 faces.

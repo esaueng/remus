@@ -3,6 +3,7 @@
 use crate::TopologyError;
 use crate::arena;
 use crate::face::FaceId;
+use crate::topology::BodyClass;
 
 /// Typed handle for a [`Shell`] stored in an [`Arena`](crate::Arena).
 pub type ShellId = arena::Id<Shell>;
@@ -15,6 +16,8 @@ pub type ShellId = arena::Id<Shell>;
 pub struct Shell {
     /// The faces that make up this shell.
     faces: Vec<FaceId>,
+    /// Whether this shell belongs to a solid or is itself a sheet body.
+    body_class: BodyClass,
 }
 
 impl Shell {
@@ -27,7 +30,10 @@ impl Shell {
         if faces.is_empty() {
             return Err(TopologyError::Empty { entity: "shell" });
         }
-        Ok(Self { faces })
+        Ok(Self {
+            faces,
+            body_class: BodyClass::Solid,
+        })
     }
 
     /// Creates a faceless shell backing an empty-result sentinel.
@@ -40,7 +46,10 @@ impl Shell {
     /// volume — distinct from a malformed-input error.
     #[must_use]
     pub const fn empty() -> Self {
-        Self { faces: Vec::new() }
+        Self {
+            faces: Vec::new(),
+            body_class: BodyClass::Solid,
+        }
     }
 
     /// Returns `true` when this shell has no faces (the empty-result
@@ -62,5 +71,15 @@ impl Shell {
     /// The shell must always contain at least one face.
     pub fn faces_mut(&mut self) -> &mut [FaceId] {
         &mut self.faces
+    }
+
+    /// Returns the dimensional class stored on this shell.
+    #[must_use]
+    pub const fn body_class(&self) -> BodyClass {
+        self.body_class
+    }
+
+    pub(crate) fn set_body_class(&mut self, body_class: BodyClass) {
+        self.body_class = body_class;
     }
 }
