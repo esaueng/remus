@@ -23,8 +23,9 @@
 //!    offset face.
 //! 7. **Assemble** — build the final shell and solid from offset faces and
 //!    wire loops.
-//! 8. **Self-intersection removal** — detect and excise global
-//!    self-intersections if enabled.
+//! 8. **Self-intersection removal** — detect non-positive folded boundaries;
+//!    excision is qualified only for one construction-proven, fully collapsed
+//!    uniform-width, six-edge L-prism component.
 //!
 //! # Joints
 //!
@@ -69,6 +70,7 @@ pub(crate) mod self_int;
 pub use data::{JointType, OffsetOptions};
 pub use error::OffsetError;
 pub use move_faces::{MoveFacesResult, move_faces, move_faces_with_face_map};
+pub use self_int::{SelfIntersectionRemoval, remove_folded_uniform_l_prism_region};
 
 use remus_math::det_hash::{DetHashMap, DetHashSet};
 use remus_topology::Topology;
