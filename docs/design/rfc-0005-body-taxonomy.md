@@ -256,20 +256,22 @@ classifiers via side-of semantics), `crates/operations/src/sew.rs`
 (`sew_faces` gains a sheet-body return for open results; closed results
 keep solids).
 
-Implementation: PR #215 lands the first half of Stage 4. The existing
+Implementation: PRs #215 and #216 deliver the bounded planar Stage 4. The
 face-set arrangement splits a sheet without interpreting it as material,
-classifies only its patches against the real solid, and assembles either the
-inside or outside selection as a new validation-gated Sheet. A planar sheet
-crossing a box has exact area oracles for both selections (100 inside, 96
-outside) and deterministic direct/batch WASM parity. Empty selections and
-same-domain overlaps refuse transactionally with `unsupported_sheet_trim`.
-Mutual sheet×sheet trimming and the trim-plus-sew witness remain a separate
-Stage 4 tranche.
+classifies only its patches, and assembles every selection as a new
+validation-gated Sheet. Solid trims have exact inside/outside area oracles.
+Sheet×sheet trims select positive or negative relative to the tool's effective
+normal: a strict mutual operation returns both divided sheets, while a one-way
+form composes when a finite target only imprints rather than divides the tool.
+Direct and batch WASM agree. Empty selections, same-domain overlap, a target
+that is not divided, and unqualified curved or multi-face inputs refuse
+transactionally with `unsupported_sheet_trim`.
 
-Characterization: sheet operands refused typed since Stage 1 flip to
-qualified. Exit gate (Issue 4.4): a closed solid built purely from
-mutually-trimmed sheets + sew has the same volume as the same solid built
-by primitive booleans.
+Characterization and exit gate: six outward-oriented planar carrier sheets
+are trimmed by their four adjacent sheets, leaving six exact square faces.
+`sew_faces` builds a valid six-face solid whose volume matches `make_box`
+exactly and whose repeated native result is deterministic. The direct/batch
+pair tests pin side selection and typed refusal at the public WASM boundary.
 
 ### Stage 5 — imprint
 
