@@ -1016,7 +1016,7 @@ fn fillet_on_boolean_result() {
 }
 
 #[test]
-fn fillet_radius_too_large_rejected() {
+fn fillet_support_cliff_rejected() {
     let mut topo = Topology::new();
     let solid = crate::primitives::make_box(&mut topo, 2.0, 2.0, 2.0).unwrap();
     let edges = solid_edge_ids(&topo, solid);
@@ -1025,13 +1025,29 @@ fn fillet_radius_too_large_rejected() {
     assert!(result.is_err(), "should reject radius exceeding face size");
     assert!(
         matches!(
-            result,
+            &result,
             Err(crate::OperationsError::Blend(
-                remus_blend::BlendError::RadiusTooLarge { .. }
+                remus_blend::BlendError::CliffEncountered { .. }
             ))
         ),
-        "oversized radius should have a typed refusal"
+        "oversized radius should have a typed cliff refusal"
     );
+    if let Err(crate::OperationsError::Blend(remus_blend::BlendError::CliffEncountered {
+        edge,
+        face,
+        requested_radius,
+        available_radius,
+    })) = result
+    {
+        assert_eq!(edge, edges[0]);
+        assert!(
+            remus_topology::explorer::solid_faces(&topo, solid)
+                .unwrap()
+                .contains(&face)
+        );
+        assert!((requested_radius - 3.0).abs() < 1e-12);
+        assert!((available_radius - 2.0).abs() < 1e-12);
+    }
 }
 
 #[test]
