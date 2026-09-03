@@ -84,7 +84,7 @@ pub enum BlendError {
     /// extrapolating a band beyond the support or silently reducing the
     /// requested radius.
     #[error(
-        "blend cliff on face {face:?} at edge {edge:?}: requested radius {requested_radius}, available radius {available_radius}"
+        "blend cliff face {face:?} edge {edge:?}: requested {requested_radius}, available {available_radius}"
     )]
     CliffEncountered {
         /// The edge whose blend reaches the support boundary.
