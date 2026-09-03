@@ -93,6 +93,14 @@
   parameters) bit-exactly; the default float path rounded the last bit on
   parse for roughly one in five arbitrary doubles.
 
+### CI
+
+* `scripts/check-det-hash.sh` ratchets `std::collections::HashMap`/`HashSet`
+  in the geometry crates (algo, blend, check, heal, offset, operations):
+  the 60 production files that already use them are grandfathered in
+  `scripts/det-hash-grandfather.txt`, unaudited; no new file may join. New
+  order-sensitive code uses `remus_math::det_hash`.
+
 ### Tests
 
 * **fuzz:** `modifier_ops`' option-honoured invariant compared two volumes
