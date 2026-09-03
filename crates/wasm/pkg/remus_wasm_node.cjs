@@ -2158,7 +2158,9 @@ class BrepKernel {
      *
      * Returns a new solid handle. The engine runs transactionally and the
      * result is validated before commit; failures carry the stable
-     * machine-readable code prefix from `blend_failure_code`.
+     * machine-readable code prefix from `blend_failure_code`. The current
+     * overflow policy stops at a support-face cliff with
+     * `cliff-encountered`; rollover onto the next face is not yet supported.
      *
      * # Errors
      *

@@ -322,6 +322,39 @@ fn refusal_after_supported_side(
     }
 }
 
+fn cliff_after_supported_side(
+    topo: Topology,
+    input: SolidId,
+    edges: &[EdgeId],
+    supported_radius: f64,
+    refused_radius: f64,
+    expected_available: f64,
+    name: &str,
+) -> Observed {
+    let observed =
+        refusal_after_supported_side(topo, input, edges, supported_radius, refused_radius, name);
+    let Observed::TypedRefusal {
+        topo, input, error, ..
+    } = &observed
+    else {
+        panic!("{name}: cliff witness unexpectedly built");
+    };
+    let OperationsError::Blend(remus_operations::blend_ops::BlendError::CliffEncountered {
+        edge,
+        face,
+        requested_radius,
+        available_radius,
+    }) = error
+    else {
+        panic!("{name}: expected CliffEncountered, got {error}");
+    };
+    assert!(solid_edges(topo, *input).unwrap().contains(edge));
+    assert!(solid_faces(topo, *input).unwrap().contains(face));
+    assert!((requested_radius - refused_radius).abs() < TOL);
+    assert!((available_radius - expected_available).abs() < TOL);
+    observed
+}
+
 fn band_consumes_adjacent_face(name: &str) -> Observed {
     let mut topo = Topology::new();
     let input = make_box(&mut topo, 10.0, 10.0, 20.0).unwrap();
@@ -331,7 +364,7 @@ fn band_consumes_adjacent_face(name: &str) -> Observed {
         Point3::new(0.0, 0.0, 0.0),
         Point3::new(0.0, 0.0, 20.0),
     );
-    refusal_after_supported_side(topo, input, &[edge], 9.9, 10.0, name)
+    cliff_after_supported_side(topo, input, &[edge], 9.9, 10.0, 10.0, name)
 }
 
 fn band_meets_band(name: &str) -> Observed {
@@ -363,7 +396,7 @@ fn thin_wall(name: &str) -> Observed {
         .filter(|&edge_id| matches!(topo.edge(edge_id).unwrap().curve(), EdgeCurve::Circle(_)))
         .collect();
     assert_eq!(edges.len(), 2, "{name}: cylinder has two rims");
-    refusal_after_supported_side(topo, input, &edges, 0.9, 1.1, name)
+    cliff_after_supported_side(topo, input, &edges, 0.9, 1.1, 0.9, name)
 }
 
 fn box_vertex_pileup(name: &str) -> Observed {
@@ -722,7 +755,7 @@ fn fillet_the_fillet(name: &str) -> Observed {
 const CASES: &[TortureCase] = &[
     TortureCase {
         name: "band-consumes-adjacent-face",
-        expected: Expected::TypedRefusal("radius-too-large"),
+        expected: Expected::TypedRefusal("cliff-encountered"),
         run: band_consumes_adjacent_face,
     },
     TortureCase {
@@ -732,7 +765,7 @@ const CASES: &[TortureCase] = &[
     },
     TortureCase {
         name: "radius-at-least-support-width-thin-wall",
-        expected: Expected::TypedRefusal("radius-too-large"),
+        expected: Expected::TypedRefusal("cliff-encountered"),
         run: thin_wall,
     },
     TortureCase {

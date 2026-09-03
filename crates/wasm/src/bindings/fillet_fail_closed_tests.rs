@@ -8,7 +8,7 @@
 //! - the legacy `executeBatch` string contract, where the refusal is the
 //!   error message itself, and
 //! - the `executeBatchV2` structured contract, which must additionally carry
-//!   the stable `kernelCode` detail (`radius-too-large`, `edges-not-blended`,
+//!   the stable `kernelCode` detail (`cliff-encountered`, `edges-not-blended`,
 //!   …) that the direct `fillet` binding prefixes onto its messages.
 //!
 //! The direct `#[wasm_bindgen]` methods (`fillet`, `filletVariable`,
@@ -337,10 +337,10 @@ fn batch_variable_setback_rejects_a_present_nonnumeric_distance() {
     );
 }
 
-/// The walking engine's typed refusal (`radius-too-large`) reaches the
-/// structured batch contract unchanged, and the box survives.
+/// The native stop-at-cliff refusal reaches the structured batch contract
+/// unchanged, and the box survives.
 #[test]
-fn batch_fillet_v2_oversized_radius_names_the_cause() {
+fn batch_fillet_v2_support_cliff_names_the_cause() {
     let mut k = BrepKernel::new();
     let solid = make_box(&mut k, 10.0, 10.0, 10.0);
     let edges = edge_handles(&mut k, solid);
@@ -360,7 +360,7 @@ fn batch_fillet_v2_oversized_radius_names_the_cause() {
     );
     let error = &structured[0]["error"];
     assert_eq!(
-        error["details"]["kernelCode"], "radius-too-large",
+        error["details"]["kernelCode"], "cliff-encountered",
         "the structured refusal must name the cause: {error}"
     );
     let v = structured[1]["ok"].as_f64().unwrap();
