@@ -81,6 +81,7 @@ jobs:
           check "Apache lineage" ./scripts/check-apache-lineage.sh
           check "Rust format" cargo fmt --all -- --check
           check "Layer boundaries" ./scripts/check-boundaries.sh
+          check "Deterministic hashing ratchet" ./scripts/check-det-hash.sh
           check "Edge-domain authority" ./scripts/check-edge-domain-authority.py
           check "Documentation paths" ./scripts/check-doc-paths.sh
           check "Documentation module map" ./scripts/check-doc-module-map.py

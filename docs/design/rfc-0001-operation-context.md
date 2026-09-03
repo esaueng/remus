@@ -1,8 +1,8 @@
 # RFC 0001: OperationContext
 
-Status: accepted; surface-surface intersection budgets, the public boolean
-pipeline, and cooperative cancellation are integrated. This RFC governs how
-the context grows and how further paths migrate onto it.
+Status: accepted; surface-surface intersection budgets, their public WASM
+boolean controls, and cooperative cancellation are integrated. This RFC
+governs how the context grows and how further paths migrate onto it.
 
 ## Problem
 
@@ -72,8 +72,11 @@ only policy values move into the context; mathematical constants stay put:
   `MAX_QUEUE_SIZE` / `MAX_SEGMENTS` / `MAX_BRANCHES_PER_DIRECTION` deleted
   (their values live only in `WorkBudgets::new()`). Coupled Newton refinement
   and recursive Bezier seed subdivision likewise consume caller-owned caps;
-  their defaults preserve the historical 20 iterations and depth 6.
-  Differential and tiny-budget regression tests pin the authority chain.
+  their defaults preserve the historical 20 iterations and depth 6. All six
+  SSI budgets are JS-callable through direct quality/cancellation booleans and
+  batch quality booleans; omitted controls preserve the legacy defaults.
+  Differential, tiny-budget, generated-WASM, and batch rollback regressions
+  pin the authority chain.
 - `algo::gfa::boolean_with_context`: context entry point for the GFA
   pipeline. The caller's tolerance reaches pave filling, face splitting,
   classification, assembly, and validation; NURBS face-face intersection
@@ -92,10 +95,12 @@ only policy values move into the context; mathematical constants stay put:
 
 ## Migration queue (dependency order)
 
-1. ~~SSI coupled Newton and subdivision limits~~ — **landed** as
+1. ~~SSI work limits~~ — **landed** as
    `newton_iterations` and `subdivision_depth`, threaded through seed finding,
-   branch refinement, and marching. Other line/plane/curve-surface Newton
-   loops remain local until their owning operation adopts the context.
+   branch refinement, and marching, plus the marcher/queue/segment/branch caps;
+   every SSI cap is exposed through the WASM quality/cancellation contract.
+   Other line/plane/curve-surface Newton loops remain local until their owning
+   operation adopts the context.
 2. ~~Pave-filler propagation~~ — **landed**: NURBS face-face intersection
    receives the context's existing work budgets. Other iterative limits gain
    context fields only alongside a real consumer, per ground rule 3.
