@@ -788,9 +788,11 @@ pub fn fillet_rolling_ball_with_origins(
                     }
                     if radius >= min_adj && min_adj < f64::MAX {
                         return Err(crate::OperationsError::Blend(
-                            remus_blend::BlendError::RadiusTooLarge {
+                            remus_blend::BlendError::CliffEncountered {
                                 edge: edge_id,
-                                max_radius: min_adj,
+                                face: fid,
+                                requested_radius: radius,
+                                available_radius: min_adj,
                             },
                         ));
                     }

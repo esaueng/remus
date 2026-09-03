@@ -40,8 +40,9 @@ pub enum GeometricSpine {
 /// # Errors
 ///
 /// Returns [`crate::BlendError::InvalidInput`] for non-finite geometry, a
-/// non-positive radius, identical/coincident supports, or another malformed
-/// request. Other errors report topology or analytic construction failures.
+/// non-positive or support-limited radius, identical/coincident supports, or
+/// another malformed request. Other errors report topology or analytic
+/// construction failures.
 pub fn try_analytic_fillet_surface(
     topo: &Topology,
     face1: FaceId,
@@ -104,10 +105,21 @@ pub fn try_analytic_fillet_surface(
             Ok(Some(stripe.stripe.surface))
         }
         Ok(None) => Ok(None),
-        Err(crate::BlendError::RadiusTooLarge { max_radius, .. }) => Err(invalid_input(format!(
+        Err(error) => Err(map_query_error(error)),
+    }
+}
+
+fn map_query_error(error: crate::BlendError) -> crate::BlendError {
+    match error {
+        crate::BlendError::RadiusTooLarge { max_radius, .. } => invalid_input(format!(
             "radius exceeds the maximum {max_radius} for these supports"
-        ))),
-        Err(error) => Err(error),
+        )),
+        crate::BlendError::CliffEncountered {
+            available_radius, ..
+        } => invalid_input(format!(
+            "radius reaches a support cliff at the maximum {available_radius} for these supports"
+        )),
+        error => error,
     }
 }
 
@@ -484,6 +496,26 @@ mod tests {
         assert!(matches!(
             try_analytic_fillet_surface(&topo, face1, face1, &spine, 0.1),
             Err(crate::BlendError::InvalidInput { .. })
+        ));
+    }
+
+    #[test]
+    fn support_cliff_does_not_leak_a_scratch_spine_handle() {
+        let mut topo = Topology::new();
+        let solid = make_unit_cube_manifold(&mut topo);
+        let edge = solid_edges(&topo, solid).unwrap()[0];
+        let face = solid_faces(&topo, solid).unwrap()[0];
+        let error = map_query_error(crate::BlendError::CliffEncountered {
+            edge,
+            face,
+            requested_radius: 2.0,
+            available_radius: 1.0,
+        });
+
+        assert!(matches!(
+            error,
+            crate::BlendError::InvalidInput { reason }
+                if reason.contains("support cliff") && reason.contains('1')
         ));
     }
 

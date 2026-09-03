@@ -271,7 +271,11 @@ impl<'a> FilletBuilder<'a> {
                 // result, which reads exactly like an internal failure and
                 // leaves the caller no way to say "try a smaller radius".
                 // Same treatment the rim assembler's own bound already gets.
-                Err(e @ (BlendError::InvalidInput { .. } | BlendError::RadiusTooLarge { .. })) => {
+                Err(
+                    e @ (BlendError::InvalidInput { .. }
+                    | BlendError::RadiusTooLarge { .. }
+                    | BlendError::CliffEncountered { .. }),
+                ) => {
                     return Err(e);
                 }
                 Err(e) => {
@@ -325,7 +329,10 @@ impl<'a> FilletBuilder<'a> {
                     // not a reason to try another assembler: no engine below
                     // can fit a blend that does not fit. Report it and let the
                     // caller lower the radius.
-                    Err(e @ BlendError::RadiusTooLarge { .. }) => return Err(e),
+                    Err(
+                        e @ (BlendError::RadiusTooLarge { .. }
+                        | BlendError::CliffEncountered { .. }),
+                    ) => return Err(e),
                     Err(e) => {
                         log::warn!("closed-rim assembly failed: {e}, falling back to trim path");
                         regular_results.push(sr);
@@ -337,7 +344,10 @@ impl<'a> FilletBuilder<'a> {
                         blend_face_ids.push(band);
                         blend_face_origins.push((band, vec![sr.stripe.face1, sr.stripe.face2]));
                     }
-                    Err(e @ BlendError::RadiusTooLarge { .. }) => return Err(e),
+                    Err(
+                        e @ (BlendError::RadiusTooLarge { .. }
+                        | BlendError::CliffEncountered { .. }),
+                    ) => return Err(e),
                     Err(e) => {
                         log::warn!(
                             "closed curved-rim assembly failed: {e}, falling back to trim path"
@@ -351,7 +361,10 @@ impl<'a> FilletBuilder<'a> {
                         blend_face_ids.push(band);
                         blend_face_origins.push((band, vec![sr.stripe.face1, sr.stripe.face2]));
                     }
-                    Err(e @ BlendError::RadiusTooLarge { .. }) => return Err(e),
+                    Err(
+                        e @ (BlendError::RadiusTooLarge { .. }
+                        | BlendError::CliffEncountered { .. }),
+                    ) => return Err(e),
                     Err(e) => {
                         log::warn!(
                             "closed walking-rim assembly failed: {e}, falling back to trim path"
@@ -1154,9 +1167,10 @@ fn closed_quadric_rim_info(
 ///
 /// Returns [`BlendError`] if topology lookups or circle construction fail.
 fn closed_rim_info(topo: &Topology, stripe: &Stripe) -> Result<Option<ClosedRimInfo>, BlendError> {
-    if !matches!(stripe.surface, FaceSurface::Torus(_)) {
-        return Ok(None);
-    }
+    let requested_radius = match &stripe.surface {
+        FaceSurface::Torus(torus) => torus.minor_radius(),
+        _ => return Ok(None),
+    };
 
     // Spine must be a single closed circular edge.
     let edges = stripe.spine.edges();
@@ -1303,9 +1317,11 @@ fn closed_rim_info(topo: &Topology, stripe: &Stripe) -> Result<Option<ClosedRimI
             } else {
                 0.0
             };
-            return Err(BlendError::RadiusTooLarge {
+            return Err(BlendError::CliffEncountered {
                 edge: rim_edge,
-                max_radius: (radius * scale).max(0.0),
+                face: wall_face,
+                requested_radius: radius,
+                available_radius: (radius * scale).max(0.0),
             });
         }
     }
@@ -1351,9 +1367,11 @@ fn closed_rim_info(topo: &Topology, stripe: &Stripe) -> Result<Option<ClosedRimI
                 // The cause is genuinely the radius: the same rim rounds fine
                 // below the clearance, so say so with the achievable maximum
                 // rather than failing as a trimming problem.
-                return Err(BlendError::RadiusTooLarge {
+                return Err(BlendError::CliffEncountered {
                     edge: rim_edge,
-                    max_radius: (clearance - wall_radius).max(0.0),
+                    face: plane_face,
+                    requested_radius,
+                    available_radius: (clearance - wall_radius).max(0.0),
                 });
             }
             // The shrinking-disc direction keeps its established behaviour:
@@ -1444,9 +1462,11 @@ fn assemble_closed_rim(
             } else {
                 0.0
             };
-            return Err(BlendError::RadiusTooLarge {
+            return Err(BlendError::CliffEncountered {
                 edge: rim.rim_edge,
-                max_radius: (torus.minor_radius() * scale).max(0.0),
+                face: rim.wall_face,
+                requested_radius: torus.minor_radius(),
+                available_radius: (torus.minor_radius() * scale).max(0.0),
             });
         }
     }

@@ -435,12 +435,11 @@ fn plane_cylinder_fillet_rim_emits_torus_with_smaller_major() {
 /// the spindle's self-intersecting lobe lies entirely outside that quarter.
 /// What actually bounds the blend is the ball fitting inside the cylinder:
 /// `r < r_c`. At or past `r_c` no engine can do better, so the helper says
-/// `RadiusTooLarge` rather than returning `None` and letting the walker fail
+/// `CliffEncountered` rather than returning `None` and letting the walker fail
 /// with a bare partial result.
 ///
-/// The inward CONCAVE case — the flat bottom of a blind hole — keeps the
-/// `r_c/2` bound. See the note in `plane_cylinder_fillet`: its rim assembly is
-/// independently wrong, and that bound is the only thing limiting the reach.
+/// The inward CONCAVE case — the flat bottom of a blind hole — now shares the
+/// same bound and typed cliff after its exact collar assembly was qualified.
 #[test]
 fn plane_cylinder_fillet_inward_is_bounded_by_the_cylinder_radius() {
     use remus_math::curves::Circle3D;
@@ -519,11 +518,21 @@ fn plane_cylinder_fillet_inward_is_bounded_by_the_cylinder_radius() {
             panic!("r >= r_c must be refused by name, not accepted or declined");
         };
         match err {
-            BlendError::RadiusTooLarge { max_radius, .. } => assert!(
-                (max_radius - r_c).abs() < 1e-9,
-                "achievable maximum should be r_c = {r_c}, got {max_radius}"
-            ),
-            other => panic!("expected RadiusTooLarge, got {other:?}"),
+            BlendError::CliffEncountered {
+                edge,
+                face,
+                requested_radius,
+                available_radius,
+            } => {
+                assert_eq!(edge, spine.edges()[0]);
+                assert_eq!(face, fp);
+                assert!((requested_radius - radius).abs() < 1e-9);
+                assert!(
+                    available_radius < r_c && r_c - available_radius < 1e-6,
+                    "available radius should be the cap-collapse limit below {r_c}, got {available_radius}"
+                );
+            }
+            other => panic!("expected CliffEncountered, got {other:?}"),
         }
     }
 
@@ -546,7 +555,7 @@ fn plane_cylinder_fillet_inward_is_bounded_by_the_cylinder_radius() {
     for radius in [r_c, r_c * 1.5] {
         let outcome = plane_cylinder_fillet(n_p_inward, 0.0, &cyl, &spine, &topo, radius, fp, fc);
         assert!(
-            matches!(outcome, Err(BlendError::RadiusTooLarge { .. })),
+            matches!(outcome, Err(BlendError::CliffEncountered { .. })),
             "a blind-hole floor must refuse r = {radius} >= r_c by name"
         );
     }
