@@ -4,6 +4,9 @@
 
 ### Features
 
+* Add `offsetJournaled` to the direct and `executeBatch` APIs, returning the
+  result solid and operation id while recording total construction-derived
+  face evolution instead of an offset barrier.
 * Expose the NURBS SSI `marchSteps`, `queueSize`, `segments`, and
   `branchesPerDirection` work budgets through `booleanWithQuality`,
   `booleanWithCancellation`, and batch `booleanWithQuality`, alongside the

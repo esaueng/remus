@@ -3,6 +3,7 @@ use remus_io::ImportLimits;
 use remus_io::step::{StepReadResult, StepWriteOptions};
 use remus_math::aabb::Aabb3;
 use remus_math::context::OperationContext;
+use remus_math::mat::Mat4;
 use remus_math::nurbs::NurbsCurve;
 use remus_math::vec::{Point3, Vec3};
 use remus_operations::blend_ops::BlendResult;
@@ -14,7 +15,7 @@ use remus_topology::journal::Journal;
 use remus_topology::naming::{PersistentRef, Resolution};
 use remus_topology::{EdgeId, FaceId, SolidId, Topology};
 
-use crate::{GProps, HealError, IoError, OperationsError};
+use crate::{GProps, HealError, IoError, OperationsError, TopologyError};
 
 /// An owned native modeling session.
 ///
@@ -315,6 +316,42 @@ impl Model {
             first_distance,
             second_distance,
         )
+    }
+
+    /// Creates a planar profile face from an ordered boundary polygon.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TopologyError`] when the points do not define a valid planar
+    /// face. A refusal leaves the model unchanged.
+    pub fn make_planar_face(&mut self, points: &[Point3]) -> Result<FaceId, TopologyError> {
+        let tolerance = self.context.tolerance.linear;
+        remus_topology::transaction::run_transacted(&mut self.topology, |topology| {
+            let wire = remus_topology::builder::make_polygon_wire(topology, points, tolerance)?;
+            remus_topology::builder::make_planar_face_from_wire(topology, wire)
+        })
+    }
+
+    /// Applies a non-degenerate affine transform to a solid.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OperationsError`] for a missing solid, non-finite matrix, or
+    /// transform that collapses three-dimensional space. A refusal leaves the
+    /// model unchanged.
+    pub fn transform(&mut self, solid: SolidId, matrix: &Mat4) -> Result<(), OperationsError> {
+        remus_topology::transaction::run_transacted(&mut self.topology, |topology| {
+            remus_operations::transform::transform_solid(topology, solid, matrix)
+        })
+    }
+
+    /// Returns every unique edge belonging to a solid.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TopologyError`] if the solid or any referenced topology is missing.
+    pub fn solid_edges(&self, solid: SolidId) -> Result<Vec<EdgeId>, TopologyError> {
+        remus_topology::explorer::solid_edges(&self.topology, solid)
     }
 
     /// Extrudes a profile face.
@@ -620,6 +657,79 @@ mod tests {
                 .unwrap()
                 .starts_with("ISO-10303-21;")
         );
+    }
+
+    #[test]
+    fn planar_face_accepts_valid_input_and_refuses_degeneracy_transactionally() {
+        let mut model = Model::new();
+        let points = [
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(2.0, 0.0, 0.0),
+            Point3::new(0.0, 1.0, 0.0),
+        ];
+        let face = model.make_planar_face(&points).unwrap();
+
+        assert!(model.topology().face(face).is_ok());
+        let live_before = (
+            model.topology().num_vertices(),
+            model.topology().num_edges(),
+            model.topology().num_wires(),
+            model.topology().num_faces(),
+        );
+        let collinear = [
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(2.0, 0.0, 0.0),
+        ];
+        let error = model.make_planar_face(&collinear).unwrap_err();
+
+        assert!(matches!(error, TopologyError::NotPlanar));
+        assert_eq!(
+            (
+                model.topology().num_vertices(),
+                model.topology().num_edges(),
+                model.topology().num_wires(),
+                model.topology().num_faces(),
+            ),
+            live_before
+        );
+        assert!(model.topology().face(face).is_ok());
+    }
+
+    #[test]
+    fn transform_accepts_affine_input_and_refuses_collapse_transactionally() {
+        let mut model = Model::new();
+        let solid = model.make_box(2.0, 3.0, 4.0).unwrap();
+        model
+            .transform(solid, &Mat4::translation(5.0, -2.0, 7.0))
+            .unwrap();
+        let translated = model.bounding_box(solid).unwrap();
+
+        assert!((translated.min.x() - 5.0).abs() < 1.0e-12);
+        assert!((translated.min.y() + 2.0).abs() < 1.0e-12);
+        assert!((translated.min.z() - 7.0).abs() < 1.0e-12);
+
+        let error = model
+            .transform(solid, &Mat4::scale(0.0, 1.0, 1.0))
+            .unwrap_err();
+        let after_refusal = model.bounding_box(solid).unwrap();
+
+        assert!(matches!(error, OperationsError::InvalidInput { .. }));
+        assert_eq!(after_refusal, translated);
+        assert!(model.topology().solid(solid).is_ok());
+    }
+
+    #[test]
+    fn solid_edges_accepts_live_and_refuses_stale_handles() {
+        let mut model = Model::new();
+        let solid = model.make_box(2.0, 3.0, 4.0).unwrap();
+
+        assert_eq!(model.solid_edges(solid).unwrap().len(), 12);
+        model.topology_mut().delete_solid(solid).unwrap();
+        assert!(matches!(
+            model.solid_edges(solid),
+            Err(TopologyError::SolidNotFound(missing)) if missing == solid
+        ));
     }
 
     #[test]

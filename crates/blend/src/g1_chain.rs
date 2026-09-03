@@ -7,7 +7,6 @@
 use std::collections::{HashMap, HashSet};
 
 use remus_math::tolerance::Tolerance;
-use remus_math::traits::ParametricCurve;
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
 use remus_topology::edge::{EdgeCurve, EdgeId};
@@ -18,43 +17,15 @@ use remus_topology::solid::SolidId;
 ///
 /// Maps from the `[0, 1]` interval to the curve's native parameter range,
 /// accounting for circle/ellipse angle wrapping.
-fn sample_edge_tangent(curve: &EdgeCurve, p_start: Point3, p_end: Point3, t: f64) -> Vec3 {
-    match curve {
-        EdgeCurve::Line => p_end - p_start,
-        EdgeCurve::Circle(circle) => {
-            let ts = circle.project(p_start);
-            let mut te = circle.project(p_end);
-            if te <= ts {
-                te += std::f64::consts::TAU;
-            }
-            ParametricCurve::tangent(circle, ts + (te - ts) * t)
-        }
-        EdgeCurve::Ellipse(ellipse) => {
-            let ts = ellipse.project(p_start);
-            let mut te = ellipse.project(p_end);
-            if te <= ts {
-                te += std::f64::consts::TAU;
-            }
-            ParametricCurve::tangent(ellipse, ts + (te - ts) * t)
-        }
-        // Unbounded branches: `project` inverts the parameterization
-        // exactly and the sub-arc is the straight parameter interval, so
-        // there is no periodic wrap to fix up as for circle/ellipse.
-        EdgeCurve::Hyperbola(hyp) => {
-            let (ts, te) = (hyp.project(p_start), hyp.project(p_end));
-            hyp.tangent((te - ts).mul_add(t, ts))
-        }
-        EdgeCurve::Parabola(par) => {
-            let (ts, te) = (par.project(p_start), par.project(p_end));
-            par.tangent((te - ts).mul_add(t, ts))
-        }
-        EdgeCurve::NurbsCurve(nurbs) => {
-            let (u0, u1) = nurbs.domain();
-            let u = u0 + (u1 - u0) * t;
-            let d = nurbs.derivatives(u, 1);
-            d[1]
-        }
-    }
+fn sample_edge_tangent(
+    curve: &EdgeCurve,
+    p_start: Point3,
+    p_end: Point3,
+    domain: (f64, f64),
+    t: f64,
+) -> Vec3 {
+    let parameter = (domain.1 - domain.0).mul_add(t, domain.0);
+    curve.tangent_with_endpoints(parameter, p_start, p_end)
 }
 
 /// Expand a seed edge set by G1 (tangent-continuity) chain propagation.
@@ -130,16 +101,17 @@ pub fn expand_g1_chain(
         let cur_edge = topo.edge(current)?;
         let cur_start = topo.vertex(cur_edge.start())?.point();
         let cur_end = topo.vertex(cur_edge.end())?.point();
+        let cur_domain = cur_edge.strict_domain().map_err(crate::edge_domain_input)?;
 
         for &shared_vid in &[cur_edge.start(), cur_edge.end()] {
             // "Away from vertex" tangent for the current edge at this vertex.
             let t_cur = {
                 let t_raw = if shared_vid == cur_edge.start() {
                     // Forward tangent at start points away from vertex -- correct sign.
-                    sample_edge_tangent(cur_edge.curve(), cur_start, cur_end, 0.0)
+                    sample_edge_tangent(cur_edge.curve(), cur_start, cur_end, cur_domain, 0.0)
                 } else {
                     // Forward tangent at end points INTO vertex; negate for "away".
-                    -sample_edge_tangent(cur_edge.curve(), cur_start, cur_end, 1.0)
+                    -sample_edge_tangent(cur_edge.curve(), cur_start, cur_end, cur_domain, 1.0)
                 };
                 let len = t_raw.length();
                 if len < tol.linear {
@@ -175,11 +147,12 @@ pub fn expand_g1_chain(
                 let nb_edge = topo.edge(nb)?;
                 let nb_start = topo.vertex(nb_edge.start())?.point();
                 let nb_end = topo.vertex(nb_edge.end())?.point();
+                let nb_domain = nb_edge.strict_domain().map_err(crate::edge_domain_input)?;
                 let t_nb = {
                     let t_raw = if shared_vid == nb_edge.start() {
-                        sample_edge_tangent(nb_edge.curve(), nb_start, nb_end, 0.0)
+                        sample_edge_tangent(nb_edge.curve(), nb_start, nb_end, nb_domain, 0.0)
                     } else {
-                        -sample_edge_tangent(nb_edge.curve(), nb_start, nb_end, 1.0)
+                        -sample_edge_tangent(nb_edge.curve(), nb_start, nb_end, nb_domain, 1.0)
                     };
                     let len = t_raw.length();
                     if len < tol.linear {

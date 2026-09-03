@@ -47,9 +47,35 @@ These families are classified across the full grid:
   coincident, near-coincident, seam-crossing, singular (pole/apex), sliver,
   degenerate.
 - **Body type** — solid, sheet, wire, compound, cavity-bearing solid, and
-  later general body. RFC 0005's class/tagging/validation substrate is in
-  review in PR #209, but it does not provide body-level operation entry
-  points; sheet, wire, and general-body cells therefore remain Unqualified.
+  later general body. RFC 0005's class/tagging/validation substrate landed in
+  PR #209; sheet construction, area, typed volume refusal, and open
+  tessellation entry points were implemented in PR #210, arena roots and
+  spatial properties in PRs #211–#212, and STEP surface-model exchange in PR #213.
+  Together they qualify the bounded unit-scale trimmed-NURBS sheet workflow.
+  PR #214 additionally qualifies a crossing solid × single cylindrical-sheet
+  cell: two deterministic valid regions in a Compound with a closed-form
+  volume oracle and native/direct/batch WASM parity. PR #215 qualifies the
+  planar solid × sheet keep-side cell: both exact inside and outside sheet
+  remainders validate and preserve deterministic WASM parity, while coincident
+  patches refuse typed. PR #216 qualifies transversal single-planar-face
+  sheet×sheet side trims, including a six-sheet trim-and-sew solid with exact
+  primitive-volume parity. PR #217 qualifies a transversal planar solid×solid
+  imprint cell: every target patch survives in a validated solid with exact
+  volume, construction-derived split history, persistent-reference rebinding,
+  and native/direct/batch parity. PR #218 qualifies the two-solid planar
+  cellular-output cells: a severing cut returns two independently valid
+  400-volume regions and a disjoint fuse returns two exact regions, both as a
+  deterministic Compound with total per-member construction lineage and
+  direct/batch WASM parity. PR #219 additionally qualifies pairwise-disjoint
+  Compound operands for member-preserving fuse, pairwise exact intersect, and
+  distributed single-tool cut, with total member lineage and direct/batch WASM
+  parity. PR #222 qualifies the bounded first-class Wire cell: body-level
+  length, existing copy/transform, exact arena-v5 root replay, and validated
+  closed-planar profile sweep with native/direct/batch WASM parity; open and
+  non-planar sweep profiles are Unsupported-typed. Curved and same-domain
+  imprint, intersecting Compound-member fuse, multi-tool Compound cut,
+  multi-face and other surface sheet cells, broader wire geometry/scale
+  matrices, and general-body cells remain Unqualified.
 - **Scale** — at least three model scales relative to the configured
   tolerance (e.g. 1e-3, 1, 1e3 in the kernel's millimetre convention), with
   the tolerance scaled correspondingly.
@@ -124,7 +150,13 @@ does not itself promote or demote anything.
   three operators: intersection retains six cylinder patches bounded by eight
   authoritative ellipse arcs, matches the independent `16r³/3` Steinmetz
   oracle across radii and rigid motion, and tessellates closed and manifold at
-  three deflections. The CI-ratcheted
+  three deflections. The additive exact cellular boolean path also preserves a severing
+  planar cut as two valid 400-volume Compound members and disjoint planar fuse
+  operands as two exact members, with deterministic per-region construction
+  lineage and native/direct/batch WASM parity. Pairwise-disjoint Compound
+  operands are also qualified for member-preserving fuse, distributed exact
+  intersect, and distributed single-tool cut; overlapping-member fuse and
+  multi-tool cut refuse typed. The CI-ratcheted
   `approx_census` additionally exposes exact/fallback/error path and result
   face-count drift across its representative operation matrix; it is a drift
   detector, not by itself qualification evidence for a cell.
@@ -134,8 +166,9 @@ does not itself promote or demote anything.
   exact for Cut and Intersect: the complement result retains one torus and
   four planes, validates without errors, and matches a mesh-volume oracle
   within 1% through native and WASM exact-only paths. General torus pairs,
-  seam-crossing, nested-shell, sheet-solid, and multi-body General Fuse cells
-  remain Unqualified.
+  seam-crossing, nested-shell, sheet-solid, intersecting Compound-member fuse,
+  multi-tool Compound cut, and broader multi-body General Fuse cells remain
+  Unqualified.
 
 ### Intersections (curve-curve, curve-surface, surface-surface)
 
@@ -171,7 +204,37 @@ does not itself promote or demote anything.
 - Known Qualified/Partial evidence: planar line-edge manifold builders;
   exact toroidal cylinder-cap rim assembler across `0 < f < r_c` with
   closed-form volume/area verification; typed `RadiusTooLarge` refusals;
-  blind-hole floor rim deliberately capped at `r_c/2`.
+  blind-hole floor rim deliberately capped at `r_c/2`; in-review PR #226
+  qualifies straight-edge perpendicular-plane variable-radius walking bands:
+  exact standard-law extrema, typed tolerance-collapse and caller-supplied
+  local-limit boundaries, an analytic ruled-surface plus closed-form linear
+  volume oracle, and sampled S-curve radius/incidence/tangency invariants.
+  In-review PR #228 qualifies constant-radius closed curved-support assembly
+  for coaxial cylinder/cone, cylinder/sphere, cone/cone, and the segmented
+  orthogonal cylinder/cylinder rim of a cross-drilled shaft. The analytic
+  cylinder/cone cell is recovered as an exact torus; other closed walks use a
+  periodic degree-1 NURBS band tessellated from shared contact-edge vertices.
+  The native matrix pins solid validation, zero free/non-manifold edges,
+  watertight welded meshes, and B-Rep/mesh volume agreement within 2%; direct
+  and batch WASM agree. The pre-existing closed-rim chamfer regression matrix
+  also remains green. Cylinder/cone `resize_blend` preserves either the
+  material-side branch or an exact torus carrier's proven external branch; the
+  imported Shapr3D radius-4 band now rebuilds exactly at radius 3. In-review
+  PR #231 qualifies same-radius planar N-way vertex blends with one common
+  tangent ball and one connected material-side orientation. Three-contact
+  corners emit one analytic sphere cap; higher valence uses an analytic sphere
+  fan with shared internal edges and vertices. The all-edge box and four-edge
+  pyramid witnesses pin closed/manifold B-Reps, watertight welded meshes, and
+  every sphere/cylinder seam within angular tolerance; the four- and
+  five-stripe torture cases also compare B-Rep volume with an independent mesh
+  integral. Transverse planar runouts retain exact trimmed ellipse edges, and
+  direct/batch WASM agree on the all-edge box. PR #232 adds a bounded
+  variable-radius setback cell: straight spines at a planar 3+-way corner may
+  carry different S-curve laws when their declared active endpoints meet one
+  common stationary radius and tangent ball. A three-edge box witness pins the
+  exact sphere, all physical setback stations, angular-tolerance G1 seams,
+  closed/manifold B-Rep, watertight mesh, independent volume agreement, the
+  exact census row, and direct/batch WASM parity.
 - Fail-closed contract (Qualified, every public entry point): direct WASM
   bindings, `executeBatch`/`executeBatchV2`, journaled wrappers, and the
   legacy v1 Rust APIs (`fillet`, `fillet_rolling_ball`, `fillet_variable`,
@@ -185,9 +248,15 @@ does not itself promote or demote anything.
   `fillet-variable-fail-closed` plus the `regress_fillet_fail_closed` and
   `fillet_fail_closed_tests` suites pin the contract from both sides across
   a 1e-3/1/1e3 scale sweep.
-- Known gaps: closed-rim chamfers and curved assembly experimental and
-  fail-closed; variable radius on curved domains, setbacks, multi-edge
-  corners, G2 profiles, overflow handling Unqualified or absent.
+- Known gaps: the qualified variable-radius cell is the walking band, not its
+  trimmed-solid assembly; opaque custom callbacks are preserved and checked at
+  every consumed station but cannot prove arbitrary between-sample behavior.
+  Curved-support qualification is limited to the closed analytic cells above;
+  open and non-coaxial curved assembly, curved-support chamfers, variable
+  radius on curved domains, alternating-material-side vertex fans, nonplanar
+  corners, setbacks outside the stationary common-ball planar cell, general
+  mixed-radius junction surfaces, G2 profiles, and overflow handling remain
+  Unqualified or absent and fail closed.
 
 ### Offset, shell, thicken
 
@@ -219,9 +288,14 @@ does not itself promote or demote anything.
 
 - Ledger rows: "Extrude", "Revolve, sweep, loft, pipe", "Helical sweep"
   (Stable, blocked), "Non-planar profiles" (Beta).
+- In-review PR #222 adds a Partial Wire-profile cell: a validated closed
+  planar polygonal Wire produces a validation-gated solid without aliasing the
+  input, with exact prism-volume native/direct/batch WASM oracles. Open and
+  non-planar Wire profiles are Unsupported-typed and rollback exactly.
 - Known gaps: degenerate/cavity matrices, topology and nonconvergence
   budgets, termination/performance evidence incomplete; guide rails, laws,
-  periodic lofts, continuity options largely absent.
+  periodic lofts, continuity options, and broader wire curve/scale matrices
+  largely absent.
 
 ### Sectioning and splitting
 
@@ -255,7 +329,15 @@ does not itself promote or demote anything.
   parabolas; closed-form scale and circular-hole oracles cover native, direct
   WASM, and batch WASM paths. Ellipse, hyperbola, and NURBS planar boundaries,
   general curved-face area, exact curved-body volume, and the remaining
-  curved-cavity and scale cells remain incomplete.
+  curved-cavity and scale cells remain incomplete. In-review PR #210 adds a
+  unit-scale trimmed NURBS sheet-area witness through native/direct entry
+  points, a planar batch contract, and pinned `body_class_measure_mismatch`
+  failures for sheet volume and non-sheet area. PR #212 adds body-class-checked
+  bounding box and center-of-area, including an offset-hole centroid oracle,
+  through direct and batch WASM. These bounded sheet cells are qualified in
+  review. PR #222 routes Wire length through the body-level measurement
+  contract and pins exact native/direct/batch perimeter agreement; the broader
+  geometry/scale matrix remains Unqualified.
 
 ### Tessellation
 
@@ -263,14 +345,23 @@ does not itself promote or demote anything.
   qualified. Cross-drilled display tessellation is qualified at two relative
   deflections, three bore ratios, and scales 0.1 through 10; `meshQuality`
   accepts the render angular tolerance and cannot label an empty mesh
-  watertight. Broader scale/performance cells remain Unqualified.
+  watertight. In-review PR #210 adds deterministic open sheet tessellation for
+  a trimmed NURBS patch and pins that solid-only proximity welding cannot erase
+  an intentional triangular hole smaller than the requested deflection.
+  PR #213 carries that patch through native and direct/batch WASM STEP exchange.
+  The unit-scale patch workflow is qualified in review; broader sheet
+  geometry/scale/parity and performance cells remain Unqualified.
 
 ### Validation and healing
 
 - Ledger row: "Healing, sewing, validation" (blocked: permissive healing can
   mask invalid result semantics — the family's central Unsupported-untyped
   cell, addressed by the healing-disclosure rules in
-  [operation-contract.md](operation-contract.md)).
+  [operation-contract.md](operation-contract.md)). PR #209's in-review sheet
+  profile reports free boundaries as warnings while retaining manifold and
+  orientation errors; PR #210 validates transactionally before a constructed
+  sheet is committed and tests rollback for disconnected faces. This evidence
+  does not remove the family-wide healing blocker.
 
 ### I/O (STEP, IGES, mesh formats)
 
@@ -285,11 +376,19 @@ does not itself promote or demote anything.
   Loop/Coedge authority round-trips both positioned periodic-seam branches and
   winding counts. The external analytic fillet fixture retains all 48 pcurves
   through byte-identical write/read/write, and malformed count/endpoint
-  authority rolls the import back.
-- Known gaps: inner-shell export, attribute round trips
+  authority rolls the import back. PR #213 adds deterministic first-class
+  sheet exchange as `SHELL_BASED_SURFACE_MODEL` over open or closed shells,
+  including a trimmed bilinear NURBS patch through native, direct WASM, and
+  batch WASM paths; wrong-class and malformed imports fail transactionally.
+  PR #222 adds standalone Wire roots in arena v5 with exact reserialization,
+  ordered duplicate-root preservation, resource limits, transactional corrupt
+  input refusal, native/direct WASM parity, v1–v4 readers, and frozen v3/v4
+  writer bytes.
+- Known gaps: attribute round trips
   (`docs/design/deferred-e3b-step-names-and-colors.md`), AP242 schema output,
   general SameParameter proofs beyond the certified curve/surface matrix, and
-  validation properties for independent non-solid geometry.
+  validation properties for independent non-solid geometry (currently a typed
+  writer refusal).
 
 ### Sketch (GCS)
 
@@ -299,8 +398,12 @@ does not itself promote or demote anything.
 ### Evolution and naming
 
 - Ledger row: "Face provenance" (Beta). Construction-derived face provenance
-  covers booleans, walking/planar blend builders, and patterns; offset,
-  shell, draft, split, defeature, and direct edits produce none.
+  covers booleans, walking/planar blend builders, patterns, draft, split,
+  defeature, shell, and default intersection-joint V2 offsets. Direct edits
+  produce none. Arc-joint offsets and offsets followed by self-intersection
+  removal do not expose a face map: those variants may synthesize or replace
+  faces after the one-to-one offset construction and fail closed rather than
+  publishing stale provenance.
   **Edge and vertex history** (Issue 12): `gfa::boolean_with_entity_evolution`
   returns construction-derived edge events (Preserved / Modified via the
   splitter's source-edge chain and pave blocks / Generated via FF
@@ -362,24 +465,26 @@ does not itself promote or demote anything.
   exceptions. RFC 0003 is fully surfaced.
   **Evolution surfacing**: `operations::boolean::boolean_with_entity_evolution`
   (L3 surface of the Issue-12 entry point, re-exported event types);
+  `operations::boolean::boolean_regions` returns the same construction record
+  partitioned per independently valid Compound member and refuses any
+  `Unresolved` edge;
   one-call journaled wrappers `journal_ops::{fillet_journaled,
-  chamfer_journaled, linear_pattern_journaled}` — the journal is now
-  populated by every construction-evolution producer (booleans, v2
-  blends, patterns) per the RFC 0003 Stage 1 goal; WASM
+  chamfer_journaled, linear_pattern_journaled, offset_journaled}` — the
+  journal is populated by the construction-evolution producers (booleans,
+  v2 blends, patterns, default V2 offsets) per the RFC 0003 Stage 1 goal; WASM
   `fuseWithEntityEvolution` (+cut/intersect) exposing the full
   vertex/edge/face event payload as stable JSON, `filletJournaled` /
-  `chamferJournaled` / `linearPatternJournaled`, and the read-only
-  `journalSummary`, all with executeBatch companions and contract
+  `chamferJournaled` / `linearPatternJournaled` / `offsetJournaled`, and the
+  read-only `journalSummary`, all with executeBatch companions and contract
   tests.
   **Assembly-rebuild lineage records**: every GFA result-assembly path
   that rebuilds edges records construction lineage — the perform-phase
   vertex-merge wire rebuild, welds, and the collinear line/arc splits —
   and `build_result_with_origins` returns the complete log. A cube
   fuse's edge history is total construction fact (pinned: zero
-  unresolved). Remaining evolution queue: real evolution for the
-  declared-gap operations (offset, shell, draft, split, defeature —
-  journaled as barriers until each grows records) and cap-synthesis
-  edges (absent from planar boolean fixtures).
+  unresolved). Remaining evolution queue: direct-edit face evolution, richer
+  provenance for arc-joint/self-intersection-removal offsets, and
+  cap-synthesis edges (absent from planar boolean fixtures).
 
 ### Draft
 

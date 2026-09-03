@@ -63,6 +63,28 @@ pub fn build_solid_with_origins(
     cap_planes: &[CapPlane],
     lineage: &mut super::split_types::EdgeLineageLog,
 ) -> Result<(SolidId, FaceProvenance), AlgoError> {
+    let (regions, origins) = build_solids_with_origins(topo, selected, cap_planes, lineage)?;
+    let solid = fold_regions_for_compatibility(topo, &regions)?;
+    Ok((solid, origins))
+}
+
+/// Assemble every disconnected growth region as its own solid.
+///
+/// Unlike [`build_solid_with_origins`], this is the first-class cellular
+/// result path: it does not hide disconnected regions in one outer shell.
+/// The returned provenance is total over all returned solids.
+///
+/// # Errors
+///
+/// Returns [`AlgoError`] if selection, shell construction, or deterministic
+/// cavity assignment fails.
+#[allow(clippy::too_many_lines)]
+pub fn build_solids_with_origins(
+    topo: &mut Topology,
+    selected: &[SelectedFace],
+    cap_planes: &[CapPlane],
+    lineage: &mut super::split_types::EdgeLineageLog,
+) -> Result<(Vec<SolidId>, FaceProvenance), AlgoError> {
     if selected.is_empty() {
         return Err(AlgoError::AssemblyFailed("no faces selected".into()));
     }
@@ -204,12 +226,16 @@ pub fn build_solid_with_origins(
     }
 
     // Phase 4: Assemble
-    let solid_id = assemble(topo, growth, holes, &face_source)?;
-    let origins = remus_topology::explorer::solid_faces(topo, solid_id)?
-        .into_iter()
-        .map(|f| (f, face_source.get(&f).copied().flatten()))
-        .collect();
-    Ok((solid_id, origins))
+    let solids = assemble_regions(topo, growth, holes, &face_source)?;
+    let mut origins = Vec::new();
+    for &solid in &solids {
+        origins.extend(
+            remus_topology::explorer::solid_faces(topo, solid)?
+                .into_iter()
+                .map(|face| (face, face_source.get(&face).copied().flatten())),
+        );
+    }
+    Ok((solids, origins))
 }
 
 /// Retain entries of `items` for which `keep` is true, dropping the same
@@ -1455,12 +1481,61 @@ fn log_open_growth_shell(
     }
 }
 
-fn assemble(
+fn shell_bounds(topo: &Topology, faces: &[FaceId]) -> Result<([f64; 3], [f64; 3]), AlgoError> {
+    let mut min = [f64::INFINITY; 3];
+    let mut max = [f64::NEG_INFINITY; 3];
+    let mut any = false;
+    for &face_id in faces {
+        let face = topo.face(face_id)?;
+        for wire_id in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+        {
+            for oriented in topo.wire(wire_id)?.edges() {
+                let edge = topo.edge(oriented.edge())?;
+                for vertex_id in [edge.start(), edge.end()] {
+                    let point = topo.vertex(vertex_id)?.point();
+                    for (axis, coordinate) in
+                        [point.x(), point.y(), point.z()].into_iter().enumerate()
+                    {
+                        min[axis] = min[axis].min(coordinate);
+                        max[axis] = max[axis].max(coordinate);
+                    }
+                    any = true;
+                }
+            }
+        }
+    }
+    if !any {
+        return Err(AlgoError::AssemblyFailed(
+            "cannot bound an empty shell".into(),
+        ));
+    }
+    Ok((min, max))
+}
+
+fn bounds_enclose(outer: ([f64; 3], [f64; 3]), inner: ([f64; 3], [f64; 3])) -> bool {
+    (0..3).all(|axis| {
+        outer.0[axis] <= inner.0[axis] + MERGE_TOL && outer.1[axis] + MERGE_TOL >= inner.1[axis]
+    })
+}
+
+fn bounds_volume(bounds: ([f64; 3], [f64; 3])) -> f64 {
+    (0..3)
+        .map(|axis| (bounds.1[axis] - bounds.0[axis]).max(0.0))
+        .product()
+}
+
+/// Assemble each disconnected outward shell as one solid and attach every
+/// cavity shell to the smallest growth region whose bounds contain it.
+///
+/// Bounding-box containment is only used to assign an already-classified,
+/// closed hole shell. Ambiguous equal-sized containers fail closed rather than
+/// silently putting a cavity in an arbitrary region.
+fn assemble_regions(
     topo: &mut Topology,
     growth_shells: Vec<Vec<FaceId>>,
     hole_shells: Vec<Vec<FaceId>>,
     face_source: &HashMap<FaceId, Option<FaceId>>,
-) -> Result<SolidId, AlgoError> {
+) -> Result<Vec<SolidId>, AlgoError> {
     let all_faces: Vec<FaceId> = growth_shells
         .iter()
         .chain(hole_shells.iter())
@@ -1471,38 +1546,21 @@ fn assemble(
         normalize_face_wires(topo, fid);
     }
 
-    // The outer shell bounds the largest enclosed region. Selecting by face
-    // count instead lets a heavily fragmented but small growth shell (e.g. an
-    // overlap region split into many tiny faces) win over the shell that
-    // actually carries the bulk of the volume, demoting that bulk shell to an
-    // inner shell and collapsing the measured volume.
-    let outer_idx = growth_shells
+    // Largest-volume region first preserves the historical primary-solid order
+    // and gives callers a deterministic compatibility choice.
+    let mut growth_order: Vec<(usize, f64)> = growth_shells
         .iter()
         .enumerate()
         .map(|(i, s)| (i, signed_volume_of_shell(topo, s)))
-        .max_by(|a, b| a.1.total_cmp(&b.1))
-        .map(|(i, _)| i)
-        .unwrap_or(0);
+        .collect();
+    growth_order.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 
-    // Additional growth shells (disjoint outward-oriented regions, e.g. a cut
-    // that severs the solid into pieces, or a fuse that adds an interpenetrating
-    // lump) join the same outer shell so their positive volume adds correctly —
-    // inner shells are reserved for cavities (hole shells), and downstream
-    // multi-region handling walks only the outer shell. A non-outer growth shell
-    // joins only when it is closed in itself (watertight): a watertight,
-    // outward-oriented shell is a genuine solid lump regardless of whether its
-    // bounding box overlaps the outer shell's. A residual fragmentation sliver is
-    // open (its boundary edges are not all paired), so it fails this test and is
-    // dropped rather than polluting the assembled volume.
-    // TODO: use a `Compound` for true multi-region results.
-    let mut outer_faces = growth_shells[outer_idx].clone();
-    for (i, gs) in growth_shells.iter().enumerate() {
-        if i == outer_idx {
-            continue;
-        }
-        if shell_is_closed(topo, gs) {
-            outer_faces.extend_from_slice(gs);
-        } else if gs.len() >= 4 {
+    let mut region_faces = Vec::with_capacity(growth_shells.len());
+    for (position, &(index, _)) in growth_order.iter().enumerate() {
+        let faces = &growth_shells[index];
+        if position == 0 || shell_is_closed(topo, faces) {
+            region_faces.push(faces.clone());
+        } else if faces.len() >= 4 {
             // An OPEN growth shell of real size is not a fragmentation
             // sliver — it is a genuine solid lump whose selection left
             // unpaired junction edges. Silently discarding it deletes its
@@ -1512,28 +1570,30 @@ fn assemble(
             // boolean falls back to the volume-correct mesh path. Note the
             // OUTER shell is never subjected to this test, so which lump
             // dodges it historically depended on volume-ordering luck.
-            log_open_growth_shell(topo, gs, &all_faces, face_source);
+            log_open_growth_shell(topo, faces, &all_faces, face_source);
             return Err(AlgoError::AssemblyFailed(format!(
                 "open growth shell with {} faces would be dropped; aborting analytic assembly",
-                gs.len()
+                faces.len()
             )));
         } else {
             log::debug!(
                 "BuilderSolid: dropping open {}-face growth sliver",
-                gs.len()
+                faces.len()
             );
         }
     }
-    let outer_shell = Shell::new(outer_faces)
-        .map_err(|e| AlgoError::AssemblyFailed(format!("outer shell: {e}")))?;
-    let outer_id = topo.add_shell(outer_shell);
+
+    let region_bounds = region_faces
+        .iter()
+        .map(|faces| shell_bounds(topo, faces))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut assigned_holes: Vec<Vec<Vec<FaceId>>> = vec![Vec::new(); region_faces.len()];
 
     // Genuine hole shells (negative signed volume) become inner shells. Same
-    // closed-shell requirement as non-outer growth shells above: a cavity
+    // closed-shell requirement as growth regions above: a cavity
     // boundary must be watertight in itself. A residual selection fragment
     // (e.g. a lone coincident-wall duplicate face) is open, and keeping it
-    // as an "inner shell" over-shares its edges against the outer shell.
-    let mut inner_ids = Vec::new();
+    // as an "inner shell" over-shares its edges against a region shell.
     for hole in &hole_shells {
         if !shell_is_closed(topo, hole) {
             if hole.len() >= 4 {
@@ -1553,16 +1613,49 @@ fn assemble(
             );
             continue;
         }
-        if let Ok(inner_shell) = Shell::new(hole.clone()) {
-            inner_ids.push(topo.add_shell(inner_shell));
+        let hole_bounds = shell_bounds(topo, hole)?;
+        let mut candidates: Vec<(usize, f64)> = region_bounds
+            .iter()
+            .copied()
+            .enumerate()
+            .filter(|(_, bounds)| bounds_enclose(*bounds, hole_bounds))
+            .map(|(index, bounds)| (index, bounds_volume(bounds)))
+            .collect();
+        candidates.sort_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+        let Some(&(region, smallest_volume)) = candidates.first() else {
+            return Err(AlgoError::AssemblyFailed(
+                "closed hole shell is not contained by any growth region".into(),
+            ));
+        };
+        let equal_volume_tolerance = smallest_volume.abs().max(1.0) * f64::EPSILON * 16.0;
+        if candidates
+            .get(1)
+            .is_some_and(|(_, volume)| (*volume - smallest_volume).abs() <= equal_volume_tolerance)
+        {
+            return Err(AlgoError::AssemblyFailed(
+                "closed hole shell has ambiguous equal-sized growth containers".into(),
+            ));
         }
+        assigned_holes[region].push(hole.clone());
     }
 
-    let solid = Solid::new(outer_id, inner_ids);
-    let solid_id = topo.add_solid(solid);
+    let mut solids = Vec::with_capacity(region_faces.len());
+    for (faces, holes) in region_faces.into_iter().zip(assigned_holes) {
+        let outer_shell = Shell::new(faces)
+            .map_err(|error| AlgoError::AssemblyFailed(format!("outer shell: {error}")))?;
+        let outer = topo.add_shell(outer_shell);
+        let mut inner = Vec::with_capacity(holes.len());
+        for hole in holes {
+            let shell = Shell::new(hole)
+                .map_err(|error| AlgoError::AssemblyFailed(format!("inner shell: {error}")))?;
+            inner.push(topo.add_shell(shell));
+        }
+        solids.push(topo.add_solid(Solid::new(outer, inner)));
+    }
 
     log::debug!(
-        "BuilderSolid: assembled solid {solid_id:?} with {} faces",
+        "BuilderSolid: assembled {} region(s) with {} faces",
+        solids.len(),
         growth_shells
             .iter()
             .chain(hole_shells.iter())
@@ -1570,7 +1663,34 @@ fn assemble(
             .sum::<usize>()
     );
 
-    Ok(solid_id)
+    Ok(solids)
+}
+
+/// Preserve the pre-cellular single-solid ABI by explicitly folding region
+/// shells into one outer shell. New callers should keep the region vector and
+/// expose it as a Compound instead.
+fn fold_regions_for_compatibility(
+    topo: &mut Topology,
+    regions: &[SolidId],
+) -> Result<SolidId, AlgoError> {
+    let Some(&only) = regions.first() else {
+        return Err(AlgoError::AssemblyFailed("no regions assembled".into()));
+    };
+    if regions.len() == 1 {
+        return Ok(only);
+    }
+
+    let mut outer_faces = Vec::new();
+    let mut inner_shells = Vec::new();
+    for &region in regions {
+        let solid = topo.solid(region)?;
+        outer_faces.extend_from_slice(topo.shell(solid.outer_shell())?.faces());
+        inner_shells.extend_from_slice(solid.inner_shells());
+    }
+    let outer = Shell::new(outer_faces)
+        .map_err(|error| AlgoError::AssemblyFailed(format!("compatibility shell: {error}")))?;
+    let outer = topo.add_shell(outer);
+    Ok(topo.add_solid(Solid::new(outer, inner_shells)))
 }
 
 // ── Edge Merging ─────────────────────────────────────────────────────

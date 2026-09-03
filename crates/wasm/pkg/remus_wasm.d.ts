@@ -631,6 +631,35 @@ export class BrepKernel {
      */
     assemblyNew(name: string): number;
     /**
+     * Perform a bounded exact boolean between two Compound operands.
+     *
+     * Disjoint fuse, pairwise exact intersect, and a single cut-tool
+     * distributed over target members are qualified. Fuse requiring member
+     * merges and multi-tool Cut fail closed until recursive lineage composition
+     * is available.
+     *
+     * # Errors
+     *
+     * Returns an error for invalid handles, overlapping input members, an
+     * unknown operation, or an unqualified exact configuration.
+     */
+    booleanCompoundRegions(op: string, a: number, b: number): number;
+    /**
+     * Perform an exact boolean whose disconnected volumetric regions remain
+     * separate solids in a Compound.
+     *
+     * `op` accepts the same spellings as `booleanWithQuality`. The returned
+     * handle can be expanded with `getCompoundSolids`. This path is exact-only
+     * and fails closed if any region or its construction lineage is invalid.
+     * Existing single-solid `fuse`, `cut`, and `intersect` remain compatible.
+     *
+     * # Errors
+     *
+     * Returns an error for invalid handles, an unknown operation, or an
+     * unqualified exact result.
+     */
+    booleanRegions(op: string, a: number, b: number): number;
+    /**
      * Performs a boolean governed by a cooperative cancellation token.
      *
      * Cancellation is typed (`operation_cancelled`) and transactional: no
@@ -1030,7 +1059,25 @@ export class BrepKernel {
      */
     deleteSolid(solid: number): void;
     /**
-     * Reconstruct one solid from a version 1 or single-root version 2 buffer.
+     * Reconstruct one first-class sheet body from a version 4 or 5 arena document.
+     *
+     * # Errors
+     *
+     * Returns an error if the buffer is malformed, does not contain exactly
+     * one sheet root, or reconstruction fails.
+     */
+    deserializeSheet(data: Uint8Array): number;
+    /**
+     * Reconstruct standalone sheet roots from a version 4 or 5 arena document.
+     *
+     * # Errors
+     *
+     * Returns an error if the buffer is malformed, contains another root
+     * class, or reconstruction fails.
+     */
+    deserializeSheets(data: Uint8Array): Uint32Array;
+    /**
+     * Reconstruct one solid from a version 1 through 5 single-root buffer.
      *
      * # Errors
      *
@@ -1038,17 +1085,36 @@ export class BrepKernel {
      */
     deserializeSolid(data: Uint8Array): number;
     /**
-     * Reconstruct solid roots from a version 1 or version 2 arena document.
+     * Reconstruct solid roots from a version 1 through 5 arena document.
      *
      * Every restored entity receives a fresh kernel handle. Documents with
-     * compound roots must be loaded through the native Rust document API.
+     * Sheet, wire, and compound roots must be loaded through their dedicated
+     * binding or the native Rust document API.
      *
      * # Errors
      *
      * Returns an error if the buffer is malformed, exceeds import limits,
-     * contains compound roots, or reconstruction fails.
+     * contains a non-solid root, or reconstruction fails.
      */
     deserializeSolids(data: Uint8Array): Uint32Array;
+    /**
+     * Reconstruct one first-class wire body from a version 5 arena document.
+     *
+     * # Errors
+     *
+     * Returns an error if the buffer is malformed, does not contain exactly
+     * one wire root, or reconstruction fails.
+     */
+    deserializeWire(data: Uint8Array): number;
+    /**
+     * Reconstruct standalone wire roots from a version 5 arena document.
+     *
+     * # Errors
+     *
+     * Returns an error if the buffer is malformed, contains non-wire roots,
+     * or reconstruction fails.
+     */
+    deserializeWires(data: Uint8Array): Uint32Array;
     /**
      * Detect surface-level coincident face pairs between two solids
      * without performing a boolean operation.
@@ -1291,6 +1357,19 @@ export class BrepKernel {
      */
     exportStepMultiWithOptions(solids: Uint32Array, options?: string | null): Uint8Array;
     /**
+     * Export one first-class sheet body as a STEP shell-based surface model.
+     *
+     * `options` accepts the same optional metadata JSON as
+     * [`exportStepWithOptions`](Self::export_step_with_options). Validation
+     * properties are refused because their current contract is solid-only.
+     *
+     * # Errors
+     *
+     * Returns an error if the handle is invalid, does not name a sheet body,
+     * the options JSON is malformed, or export fails.
+     */
+    exportStepSheet(sheet: number, options?: string | null): Uint8Array;
+    /**
      * Export a solid to STEP AP203 with optional header metadata.
      *
      * `options` is an optional JSON string with `productName`, `fileName`,
@@ -1416,7 +1495,7 @@ export class BrepKernel {
     /**
      * Apply variable-radius fillets to edges.
      *
-     * `json` is a JSON string: `[{"edge": u32, "law": "constant"|"linear"|"scurve", "start": f64, "end": f64}]`
+     * `json` is a JSON string: `[{"edge": u32, "law": "constant"|"linear"|"scurve", "start": f64, "end": f64, "startSetback": f64, "endSetback": f64}]`
      *
      * Also accepts brepjs-style fields: `startRadius`/`endRadius` as aliases for `start`/`end`.
      * When `law` is omitted and `startRadius` != `endRadius`, the law auto-detects as `"linear"`.
@@ -2129,6 +2208,19 @@ export class BrepKernel {
      */
     importStep(data: Uint8Array, max_input_bytes?: number | null, max_entities?: number | null): Uint32Array;
     /**
+     * Import every supported STEP body root.
+     *
+     * Returns JSON with distinct `solids`, `sheets`, and bounded-healing
+     * `diagnostics` arrays so overlapping arena indices cannot blur handle
+     * classes.
+     *
+     * # Errors
+     *
+     * Returns an error if the STEP data is malformed or exceeds a resource
+     * limit.
+     */
+    importStepBodies(data: Uint8Array, max_input_bytes?: number | null, max_entities?: number | null): string;
+    /**
      * Import a STEP file and return solid handles plus bounded-healing diagnostics.
      *
      * The returned JavaScript string is JSON with shape
@@ -2170,6 +2262,12 @@ export class BrepKernel {
      * limit, or is empty.
      */
     importStl(data: Uint8Array, max_input_bytes?: number | null, max_entities?: number | null): number;
+    /**
+     * Imprints one solid's intersection edges onto another without removing
+     * material. Returns JSON `{"solid", "op"}` for the new target and its
+     * construction-derived journal entry.
+     */
+    imprint(target: number, tool: number): string;
     /**
      * Compute the uniform-density inertia tensor about the center of mass.
      *
@@ -2603,6 +2701,15 @@ export class BrepKernel {
      */
     makeRegularPolygonWire(radius: number, n_sides: number): number;
     /**
+     * Create and validate a first-class sheet body from face handles.
+     *
+     * Free boundary edges are retained and reported by `validateSheetBody`.
+     * The call rolls back if the faces do not form a valid connected sheet.
+     *
+     * Returns a shell-backed sheet-body handle (`u32`).
+     */
+    makeSheetBody(face_handles: Uint32Array): number;
+    /**
      * Create a solid from a set of faces by sewing them together.
      *
      * Alias for `sewFaces` with a default tolerance. This is the equivalent
@@ -2782,6 +2889,12 @@ export class BrepKernel {
      */
     multiSectionSweep(face_handles: Uint32Array, params: Float64Array, spine_degree: number, spine_knots: Float64Array, spine_control_points: Float64Array, spine_weights: Float64Array, ruled: boolean): number;
     /**
+     * Mutually trim two transversal planar sheets by their oriented sides.
+     *
+     * Returns `[trimmedA, trimmedB]` in input order.
+     */
+    mutualTrimSheets(sheet_a: number, sheet_b: number, keep_a_positive: boolean, keep_b_positive: boolean): Uint32Array;
+    /**
      * Create a new, empty kernel.
      */
     constructor();
@@ -2795,6 +2908,11 @@ export class BrepKernel {
      * Returns an error if the face handle is invalid or the operation fails.
      */
     offsetFace(face: number, distance: number, samples: number): number;
+    /**
+     * V2 offset journaled as one construction-derived face-evolution entry
+     * (kind `offset`). Returns JSON `{"solid", "op"}`.
+     */
+    offsetJournaled(solid: number, distance: number): string;
     /**
      * Offset a 2D polygon by a signed distance.
      *
@@ -3156,6 +3274,27 @@ export class BrepKernel {
      */
     section(solid: number, px: number, py: number, pz: number, nx: number, ny: number, nz: number): Uint32Array;
     /**
+     * Serialize one first-class sheet body into a version 4 arena document.
+     *
+     * # Errors
+     *
+     * Returns an error if the shell handle is invalid, is not tagged as a
+     * sheet, or serialization fails.
+     */
+    serializeSheet(sheet: number): Uint8Array;
+    /**
+     * Serialize several first-class sheet bodies into a version 4 arena document.
+     *
+     * Shared topology is encoded once with dense local indices. Input order
+     * and duplicate handles are preserved as document roots.
+     *
+     * # Errors
+     *
+     * Returns an error if any shell handle is invalid, is not tagged as a
+     * sheet, or serialization fails.
+     */
+    serializeSheets(sheets: Uint32Array): Uint8Array;
+    /**
      * Serialize a solid's complete in-memory topology sub-arena to bytes.
      *
      * Captures every vertex, edge, wire, face, shell reachable from the
@@ -3165,7 +3304,7 @@ export class BrepKernel {
      * and replaying them in a native Rust harness to reproduce
      * sub-ULP-sensitive boolean behavior.
      *
-     * This writer emits a single-root version 2 document. Returns a
+     * This writer emits a single-root version 3 document. Returns a
      * `Uint8Array` consumable by
      * `remus_io::arena_io::deserialize_solid`.
      *
@@ -3175,7 +3314,7 @@ export class BrepKernel {
      */
     serializeSolid(solid: number): Uint8Array;
     /**
-     * Serialize several solids into one version 2 arena document.
+     * Serialize several solids into one version 3 arena document.
      *
      * Shared topology is encoded once with dense local indices. Input order
      * and duplicate handles are preserved as document roots. This format
@@ -3186,6 +3325,27 @@ export class BrepKernel {
      * Returns an error if any solid handle is invalid or serialization fails.
      */
     serializeSolids(solids: Uint32Array): Uint8Array;
+    /**
+     * Serialize one first-class wire body into a version 5 arena document.
+     *
+     * # Errors
+     *
+     * Returns an error if the handle is invalid, is not tagged as a wire
+     * body, or serialization fails.
+     */
+    serializeWire(wire: number): Uint8Array;
+    /**
+     * Serialize first-class wire bodies into a version 5 arena document.
+     *
+     * Shared topology is encoded once. Root order and duplicate handles are
+     * preserved.
+     *
+     * # Errors
+     *
+     * Returns an error if any handle is invalid, is not tagged as a wire
+     * body, or serialization fails.
+     */
+    serializeWires(wires: Uint32Array): Uint8Array;
     /**
      * Sets (or clears, when `name` is null/empty) a face's semantic
      * name, preserving its other attributes.
@@ -3207,6 +3367,24 @@ export class BrepKernel {
      * Returns an array of edge handles.
      */
     sharedEdges(face_a: number, face_b: number): Uint32Array;
+    /**
+     * Compute the area of a first-class sheet body.
+     */
+    sheetArea(sheet: number, deflection: number): number;
+    /**
+     * Compute the axis-aligned bounding box of a first-class sheet body.
+     *
+     * Returns `[min_x, min_y, min_z, max_x, max_y, max_z]`.
+     */
+    sheetBoundingBox(sheet: number): Float64Array;
+    /**
+     * Compute the area-weighted center of a first-class sheet body.
+     */
+    sheetCenterOfArea(sheet: number): Float64Array;
+    /**
+     * Refuse volume measurement for a sheet with a stable typed diagnostic.
+     */
+    sheetVolume(sheet: number, deflection: number): number;
     /**
      * Hollow a solid with uniform wall thickness.
      *
@@ -3292,6 +3470,19 @@ export class BrepKernel {
      */
     split(solid: number, px: number, py: number, pz: number, nx: number, ny: number, nz: number): Uint32Array;
     /**
+     * Split a solid into cells using a first-class sheet body.
+     *
+     * Returns a compound handle whose solids are in deterministic cell order.
+     * The qualified exact subset is currently one cylindrical sheet face.
+     *
+     * # Errors
+     *
+     * Returns a typed unsupported error for other sheet configurations and
+     * rolls back if intersection, cell validation, or volume conservation
+     * fails.
+     */
+    splitBySheet(solid: number, sheet: number): number;
+    /**
      * Compute the total surface area of a solid.
      *
      * # Errors
@@ -3344,6 +3535,19 @@ export class BrepKernel {
      */
     sweepSmooth(face: number, path_degree: number, path_knots: Float64Array, path_control_points: Float64Array, path_weights: Float64Array): number;
     /**
+     * Sweep a closed planar first-class wire profile along an edge path.
+     *
+     * The input wire remains an independent body. Open and non-planar wire
+     * profiles are refused until sheet-result sweep assembly is qualified.
+     * Returns a solid handle (`u32`).
+     *
+     * # Errors
+     *
+     * Returns an error if either handle is invalid, the profile is not a
+     * qualified wire body, or the sweep operation fails.
+     */
+    sweepWire(profile: number, path_edge: number): number;
+    /**
      * Sweep a face along a NURBS path with advanced options.
      *
      * `contact_mode`: "rmf" (default), "fixed", or "constantNormal:x,y,z"
@@ -3370,6 +3574,12 @@ export class BrepKernel {
      * Returns an error if the face handle is invalid or tessellation fails.
      */
     tessellateFace(face: number, deflection: number, angular_tolerance?: number | null): JsMesh;
+    /**
+     * Tessellate a first-class sheet body into an open triangle mesh.
+     *
+     * Free boundary edges are expected and remain present in the result.
+     */
+    tessellateSheet(sheet: number, deflection: number, angular_tolerance?: number | null): JsMesh;
     /**
      * Tessellate all faces of a solid into a single merged triangle mesh.
      *
@@ -3484,6 +3694,22 @@ export class BrepKernel {
      */
     transformWire(wire: number, matrix: Float64Array): void;
     /**
+     * Trim one planar sheet by one oriented side of another planar sheet.
+     */
+    trimSheetBySheet(target: number, tool: number, keep_positive: boolean): number;
+    /**
+     * Trim a first-class sheet body by a solid and retain one classified side.
+     *
+     * `keep_inside = true` retains sheet patches inside the solid; `false`
+     * retains the outside remainder. Returns a new sheet-body shell handle.
+     *
+     * # Errors
+     *
+     * Returns a typed unsupported error for empty, coincident, or empty-result
+     * configurations, and rolls back if the retained sheet fails validation.
+     */
+    trimSheetBySolid(sheet: number, solid: number, keep_inside: boolean): number;
+    /**
      * Unify adjacent faces that lie on the same geometric surface.
      *
      * Merges co-surface face fragments (produced by boolean operations)
@@ -3497,6 +3723,13 @@ export class BrepKernel {
      * Returns a new face handle.
      */
     untrimFace(face: number, samples_per_curve: number, interior_samples: number): number;
+    /**
+     * Validate a first-class sheet body and return every diagnostic.
+     *
+     * The JSON payload is `{ errorCount, warningCount, issues }`. An open
+     * boundary contributes warnings, not errors.
+     */
+    validateSheetBody(sheet: number): any;
     /**
      * Validate a solid, returning the number of errors found.
      *
