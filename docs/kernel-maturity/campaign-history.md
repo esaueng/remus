@@ -50,6 +50,7 @@ received-below-expected as benign density difference, received-10x-above as a de
 These rows live in `p-class-status.md` / `open-kernel-status.md`; the lines
 are kept because each names the fixture that pins the close.
 
+- P2.4b torus complement selection — IN REVIEW 2026-09-02 in PR #207: the existing torus-notch arrangement emitted only the long complement, so Intersect could never select an exact face. The splitter now emits both periodic annuli by swapping their winding-correct outer/inner roles, and the tessellator derives the material side from signed tube-angle winding. Exact-only torus ∩ box retains one torus plus four planes, has zero strict-validator errors, and matches an independently co-refined mesh-volume oracle within 1%; the normalized census moves 312 planar fallback faces to five analytic faces, with batch/WASM parity.
 - O1.1a gauntlet pipeline — CLOSED 2026-08-30 in PR #164: isolated bounded workers and all five stages are pinned under `tools/gauntlet`; manifests/fetching and CI remain O1.1b/c.
 - O1.1b corpus manifests + fetcher — CLOSED 2026-08-31 in PR #166: three pinned tiers, deterministic sampling, and byte-verified content-addressed fetching live under `tools/gauntlet`; no corpus bytes are committed.
 - O1.1c gauntlet CI ratchet — CLOSED 2026-08-31 in PR #171: nightly smoke and weekly abc-1k runs publish aggregate-only scoreboards plus append-only per-stage trends; regressions beyond 0.50pp fail after preserving the red aggregate.

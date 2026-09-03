@@ -1849,14 +1849,14 @@ fn torus_section_to_edge(
     })
 }
 
-/// Contained tracer for the `torus − box`-style cut: a box notch removes a
-/// connected sector of the ring whose surface boundary, in the torus `(θ, φ)`
-/// parameter space, is TWO closed loops each WRAPPING the tube angle `φ` fully
-/// (one at each θ-band where the box walls cut the tube partially; the box
-/// swallows the whole tube cross-section in between). The kept toroidal surface
-/// is the annular `u`-band between those two loops — emitted as ONE band face
-/// (outer wire = one φ-loop, the other as an inner wire, like a cylinder band
-/// between two rims).
+/// Arrangement splitter for the `torus ± box` notch family: the box-bounded
+/// sector and its complement have a shared surface boundary which, in torus
+/// `(θ, φ)` parameter space, is TWO closed loops each wrapping the tube angle
+/// `φ` fully (one at each θ-band where the box walls cut the tube partially;
+/// the box swallows the whole tube cross-section in between). The two loops
+/// partition the torus into complementary annular `u`-bands. Emit both so the
+/// later operator-neutral classifier can retain the long band for Cut/Fuse and
+/// the short band for Intersect.
 ///
 /// Returns `None` (defer to the generic path) unless the in-box arcs stitch into
 /// exactly two φ-wrapping closed loops. Relies on the FF exact-crossing trim
@@ -1987,14 +1987,9 @@ pub(super) fn split_torus_band_by_arrangement(
         snap_loop(l);
     }
 
-    let outer = loops[0].clone();
-    // Interior sample on the KEPT band: the band spans the ring angle u the LONG
-    // way between the two boundary loops, which sit at roughly constant u (the
-    // box-wall cuts). Take each loop's mean u (wrap-safe via summed unit vectors)
-    // and the MIDPOINT of the long arc between them — NOT a hardcoded u = π,
-    // which is only correct when the notch is on the +x side (a mirrored or
-    // rotated cut puts the kept band's centre elsewhere). The band wraps the tube
-    // v fully at this interior u, so v = 0 is on it.
+    // The loops sit at roughly constant ring angle u. Their wrap-safe means
+    // identify the short box-bounded interval and the complementary long
+    // interval without assuming the notch is on +x.
     let loop_mean_u = |l: &[OrientedPCurveEdge]| -> f64 {
         let (mut sx, mut sy) = (0.0, 0.0);
         for e in l {
@@ -2006,25 +2001,44 @@ pub(super) fn split_torus_band_by_arrangement(
     };
     let u0 = loop_mean_u(&loops[0]);
     let u1 = loop_mean_u(&loops[1]);
-    // Long-arc midpoint between u0 and u1 (the short gap is the removed notch).
+    // Midpoints of both complementary arcs. The band wraps the tube fully at
+    // either interior u, so v = 0 is safely away from the boundary loops.
     let fwd = (u1 - u0).rem_euclid(TAU);
-    let u_mid = if fwd >= PI {
-        (u0 + fwd / 2.0).rem_euclid(TAU) // a->b the long way is increasing
+    let (u_long, u_short) = if fwd >= PI {
+        (
+            (u0 + fwd / 2.0).rem_euclid(TAU),
+            (u0 - (TAU - fwd) / 2.0).rem_euclid(TAU),
+        )
     } else {
-        (u0 - (TAU - fwd) / 2.0).rem_euclid(TAU) // long way is decreasing
+        (
+            (u0 - (TAU - fwd) / 2.0).rem_euclid(TAU),
+            (u0 + fwd / 2.0).rem_euclid(TAU),
+        )
     };
-    let interior = torus.evaluate(u_mid, 0.0);
-    let inner_rev = reverse_loop(&loops[1]);
 
-    Ok(Some(vec![SplitSubFace {
-        surface: surface.clone(),
-        outer_wire: outer,
-        inner_wires: vec![inner_rev],
-        reversed,
-        parent: face_id,
-        rank,
-        precomputed_interior: Some(interior),
-    }]))
+    // A periodic annulus has no planar nesting relation between these two
+    // separators. Keep their already-oriented traversals and swap only the
+    // stored outer/inner roles to distinguish the complementary u-bands.
+    Ok(Some(vec![
+        SplitSubFace {
+            surface: surface.clone(),
+            outer_wire: reverse_loop(&loops[1]),
+            inner_wires: vec![loops[0].clone()],
+            reversed,
+            parent: face_id,
+            rank,
+            precomputed_interior: Some(torus.evaluate(u_long, 0.0)),
+        },
+        SplitSubFace {
+            surface: surface.clone(),
+            outer_wire: loops[0].clone(),
+            inner_wires: vec![reverse_loop(&loops[1])],
+            reversed,
+            parent: face_id,
+            rank,
+            precomputed_interior: Some(torus.evaluate(u_short, 0.0)),
+        },
+    ]))
 }
 
 /// Split a face when ALL section edges are interior (don't touch the boundary).

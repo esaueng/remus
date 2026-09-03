@@ -915,12 +915,13 @@ pub(super) fn tessellate_torus_two_rim_band(
 /// with `u_angle ∈ [0, 2π)`. Sorted ascending by angle so two rings align by
 /// longitude during stitching.
 type LatRing = Vec<(f64, u32)>;
+type WindingRing = (LatRing, f64);
 
-fn has_single_period_winding(angles: &[f64]) -> bool {
+fn single_period_winding(angles: &[f64]) -> Option<f64> {
     use std::f64::consts::{PI, TAU};
 
     if angles.len() < 2 {
-        return false;
+        return None;
     }
     let unwrap_delta = |from: f64, to: f64| {
         let delta = to - from;
@@ -930,7 +931,12 @@ fn has_single_period_winding(angles: &[f64]) -> bool {
         .windows(2)
         .fold(0.0, |acc, pair| acc + unwrap_delta(pair[0], pair[1]))
         + unwrap_delta(angles[angles.len() - 1], angles[0]);
-    (winding.abs() - TAU).abs() <= 1.0e-6
+    ((winding.abs() - TAU).abs() <= 1.0e-6).then_some(winding)
+}
+
+#[cfg(test)]
+fn has_single_period_winding(angles: &[f64]) -> bool {
+    single_period_winding(angles).is_some()
 }
 
 /// Collect a torus face wire's boundary as a ring of `(tube-angle v, shared gid)`
@@ -945,7 +951,7 @@ fn collect_torus_phi_ring(
     torus: &remus_math::surfaces::ToroidalSurface,
     edge_global_indices: &DetHashMap<usize, Vec<u32>>,
     merged: &TriangleMesh,
-) -> Result<Option<Vec<(f64, u32)>>, crate::OperationsError> {
+) -> Result<Option<WindingRing>, crate::OperationsError> {
     let wire = topo.wire(wire_id)?;
     let mut gids: Vec<u32> = Vec::new();
     let mut phi_path = Vec::new();
@@ -966,9 +972,9 @@ fn collect_torus_phi_ring(
             phi_path.push(torus.project_point(point).1);
         }
     }
-    if !has_single_period_winding(&phi_path) {
+    let Some(winding) = single_period_winding(&phi_path) else {
         return Ok(None);
-    }
+    };
     let mut seen: DetHashSet<u32> = DetHashSet::default();
     let mut ring: Vec<(f64, u32)> = Vec::with_capacity(gids.len());
     for g in gids {
@@ -982,17 +988,20 @@ fn collect_torus_phi_ring(
         return Ok(None);
     }
     ring.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-    Ok(Some(ring))
+    Ok(Some((ring, winding)))
 }
 
-/// Tessellate the `torus − box`-style notch band: a kept toroidal patch that
+/// Tessellate a `torus ± box`-style notch band: a toroidal patch that
 /// WRAPS the tube angle `v` fully and is bounded by TWO `v`-wrapping seam-arc
 /// loops at the two ends of a ring-angle (`u`) span (the box notch's `±y` walls).
 /// The band is swept structurally along `u` from one boundary loop to the other
-/// the LONG way (through `u = π`, the 294° kept side), with full-`v` interior
-/// rings; both boundary loops use their SHARED wall vertices, so the band and the
-/// plane notch walls meet crack-free (watertight). Returns `false` (defer to the
-/// CDT path) for any torus face that is not this two-`v`-loop notch band.
+/// material side selected by the outer loop's winding and outer/inner role,
+/// with full-`v` interior rings. Swapping the already-oriented outer and inner
+/// loops therefore selects the complementary band. Both boundary loops use
+/// their SHARED wall vertices, so the band and the plane notch walls meet
+/// crack-free (watertight). Returns
+/// `false` (defer to the CDT path) for any torus face that is not this
+/// two-`v`-loop notch band.
 ///
 /// Distinct from [`tessellate_latitude_band_shared`]: there the two boundaries
 /// are constant-`v` latitude circles swept along `v`; here they wrap `v` and the
@@ -1019,7 +1028,7 @@ pub(super) fn tessellate_torus_notch_band(
     let surf_normal = move |u: f64, v: f64| t2.normal(u, v);
 
     // Both boundary loops wrap the tube (v) once, with their shared wall gids.
-    let Some(ring_a) = collect_torus_phi_ring(
+    let Some((ring_a, outer_winding)) = collect_torus_phi_ring(
         topo,
         face_data.outer_wire(),
         torus,
@@ -1029,7 +1038,7 @@ pub(super) fn tessellate_torus_notch_band(
     else {
         return Ok(false);
     };
-    let Some(ring_b) = collect_torus_phi_ring(
+    let Some((ring_b, _inner_winding)) = collect_torus_phi_ring(
         topo,
         face_data.inner_wires()[0],
         torus,
@@ -1040,13 +1049,11 @@ pub(super) fn tessellate_torus_notch_band(
         return Ok(false);
     };
 
-    // Ring-angle (u) of each loop: each loop sits at a u-BAND (the box wall's cut
-    // varies in u with the tube angle), one near u_a, the other near u_b, the
-    // kept band the LONG way between them. Take each loop's mean u (wrap-safe)
-    // plus its half-u-spread, so the interior rows start at each loop's KEPT-SIDE
-    // edge (mean ± spread toward the band midpoint), NOT its mean — otherwise the
-    // first/last interior row sits INSIDE the loop's u-band and the stitch folds
-    // back over the boundary strip, under-covering the band.
+    // Ring-angle (u) of each loop: each loop sits at a u-BAND where a box wall
+    // cuts the tube. The outer loop's v-winding selects its material side by
+    // the oriented-surface boundary rule: positive v runs keep increasing u;
+    // negative v runs keep decreasing u. Include each loop's half-u-spread so
+    // interior rows start at the kept-side edge, not inside the boundary strip.
     let mean_u = |ring: &[(f64, u32)]| -> f64 {
         let (mut sx, mut sy) = (0.0, 0.0);
         for &(_, g) in ring {
@@ -1071,17 +1078,13 @@ pub(super) fn tessellate_torus_notch_band(
     let spread_a = half_spread(&ring_a, u_a);
     let spread_b = half_spread(&ring_b, u_b);
 
-    // Sweep the LONG way from ring_a toward ring_b (through the kept far side).
-    let fwd_span = (u_b - u_a).rem_euclid(TAU); // a -> b increasing u
-    // The interior must lie on the long arc; start just past each loop's
-    // kept-side edge so no interior row overlaps a boundary loop's u-band.
-    let (u_start, u_end) = if fwd_span >= PI {
-        // a -> b the long way is INCREASING u: kept edge of a is u_a+spread_a,
-        // of b is u_b-spread_b (i.e. u_a+fwd_span-spread_b).
-        (u_a + spread_a, u_a + fwd_span - spread_b)
+    let increasing = outer_winding > 0.0;
+    let (u_start, u_end) = if increasing {
+        let span = (u_b - u_a).rem_euclid(TAU);
+        (u_a + spread_a, u_a + span - spread_b)
     } else {
-        // a -> b the long way is DECREASING u.
-        (u_a - spread_a, u_a - (TAU - fwd_span) + spread_b)
+        let span = (u_a - u_b).rem_euclid(TAU);
+        (u_a - spread_a, u_a - span + spread_b)
     };
     let span = (u_end - u_start).abs();
     if span < 1e-6 {
