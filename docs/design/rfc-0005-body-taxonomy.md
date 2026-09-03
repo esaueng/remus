@@ -287,10 +287,20 @@ journal's own definition of a split,
 face resolves `BoundMany` over all pieces in journal order
 (`docs/design/rfc-0003-persistent-naming.md`, split resolution rule).
 
-Characterization: pre-imprint, a face ref resolves `Bound`. Exit gate
-(Issue 4.5): imprinted solid has identical volume; split faces claimed by
-Split events, zero unresolved; refs to pre-imprint faces resolve
-`BoundMany`.
+Implementation: PR #217 delivers the bounded transversal planar solid cell.
+The tool participates only in the split arrangement and every target patch is
+assembled into a new validation-gated solid. Face, edge, and vertex lineage is
+translated through the isolated GFA store: split faces become repeated
+`Modified` events, section edges are `Generated` from both participating
+faces, and the unchanged tool is explicitly `Preserved`. Aliased, non-dividing,
+same-domain, curved, and incomplete-lineage inputs refuse transactionally with
+`unsupported_imprint`.
+
+Characterization and exit gate: imprinting a rectangular tool loop onto a box
+face leaves the 1000-unit target volume unchanged and produces no `Deleted` or
+`Unresolved` event. A pre-imprint face reference resolves `Bound`, then
+`BoundMany` over every split piece with construction provenance. Repeated
+native results are deterministic, and direct and batch WASM agree.
 
 ### Stage 6 — multi-region boolean output
 

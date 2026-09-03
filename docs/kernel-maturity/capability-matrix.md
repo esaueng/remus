@@ -59,8 +59,12 @@ These families are classified across the full grid:
   remainders validate and preserve deterministic WASM parity, while coincident
   patches refuse typed. PR #216 qualifies transversal single-planar-face
   sheet×sheet side trims, including a six-sheet trim-and-sew solid with exact
-  primitive-volume parity. Multi-face and other surface sheet cells, broader
-  scale/type matrices, wire, and general-body cells remain Unqualified.
+  primitive-volume parity. PR #217 qualifies a transversal planar solid×solid
+  imprint cell: every target patch survives in a validated solid with exact
+  volume, construction-derived split history, persistent-reference rebinding,
+  and native/direct/batch parity. Curved and same-domain imprint, multi-face
+  and other surface sheet cells, broader scale/type matrices, wire, and
+  general-body cells remain Unqualified.
 - **Scale** — at least three model scales relative to the configured
   tolerance (e.g. 1e-3, 1, 1e3 in the kernel's millimetre convention), with
   the tolerance scaled correspondingly.

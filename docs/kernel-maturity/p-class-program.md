@@ -496,6 +496,8 @@ qualified single-cylinder-sheet cell.
 Issue 4.4's planar solid×sheet and sheet×sheet implementation is complete in
 review, including the trim-plus-sew exit witness; curved and multi-face sheet
 pairs remain unqualified.
+Issue 4.5's planar solid×solid imprint is implemented in review with exact
+construction lineage; curved and same-domain imprint cells remain unqualified.
 
 ### 4.2 Sheet bodies first-class (M)
 
@@ -577,12 +579,25 @@ multi-face configurations fail closed with `unsupported_sheet_trim`.
 
 ### 4.5 Imprint (M)
 
-`crates/operations/` (new module) · `crates/algo/src/builder/`
+`crates/operations/src/imprint.rs` · `crates/algo/src/builder/`
 
 Imprint the intersection edges of one body onto another's faces without
 removing material — GFA's split phase without the classification/discard
 phase. The naming stack makes this shine: imprints journal as pure Split
 events, so persistent refs across an imprint are exact.
+
+Implemented, in review in [PR #217](https://github.com/esaueng/remus/pull/217):
+the tool participates only in pave filling and face partitioning; assembly
+retains every target patch in a new validation-gated solid. The bounded
+transversal planar witness imprints a rectangular loop into a box face while
+preserving the box's 1000-unit volume. Construction records journal every
+result face as `Modified`, section edges as `Generated` from both participating
+faces, original target edges as preserved or modified, and the untouched tool
+as `Preserved`; there are no `Deleted` or `Unresolved` events. A face reference
+is `Bound` before the operation and resolves `BoundMany` over its split pieces
+afterward. Repeated native runs and direct/batch WASM agree. Aliased, disjoint,
+same-domain, curved, or incomplete-lineage configurations fail closed with
+`unsupported_imprint` and roll back.
 
 > **Exit gate:** imprinted solid has identical volume, split faces claimed by
 > Split events, zero unresolved; refs to pre-imprint faces resolve BoundMany.
