@@ -11,6 +11,7 @@
 //! - **Two-edge** — 2 stripes meeting; a simple triangular fill.
 //! - **None** — 0-1 stripes; no corner needed.
 
+use remus_math::det_hash::DetHashMap;
 use remus_math::nurbs::surface::NurbsSurface;
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
@@ -487,10 +488,8 @@ fn finish_corner_results(
     topo: &mut Topology,
 ) -> Result<Vec<CornerResult>, BlendError> {
     let mut results = Vec::with_capacity(spherical_results.len());
-    let mut shared_vertices: std::collections::HashMap<(i64, i64, i64), VertexId> =
-        std::collections::HashMap::new();
-    let mut shared_edges: std::collections::HashMap<(usize, usize), EdgeId> =
-        std::collections::HashMap::new();
+    let mut shared_vertices: DetHashMap<(i64, i64, i64), VertexId> = DetHashMap::default();
+    let mut shared_edges: DetHashMap<(usize, usize), EdgeId> = DetHashMap::default();
     let point_key = |point: Point3| {
         #[allow(clippy::cast_possible_truncation)]
         (
@@ -754,7 +753,7 @@ mod tests {
         let results = finish_corner_results(spherical, &mut topo).unwrap();
         assert_eq!(results.len(), 4);
 
-        let mut edge_uses = std::collections::HashMap::<usize, Vec<bool>>::new();
+        let mut edge_uses = DetHashMap::<usize, Vec<bool>>::default();
         for result in &results {
             let face = topo.face(result.face_id).unwrap();
             let wire = topo.wire(face.outer_wire()).unwrap();
