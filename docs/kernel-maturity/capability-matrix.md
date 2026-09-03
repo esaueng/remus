@@ -47,10 +47,10 @@ These families are classified across the full grid:
   coincident, near-coincident, seam-crossing, singular (pole/apex), sliver,
   degenerate.
 - **Body type** — solid, sheet, wire, compound, cavity-bearing solid, and
-  later general body. RFC 0005's class/tagging/validation substrate is in
-  review in PR #209; sheet construction, area, typed volume refusal, and open
-  tessellation entry points are in review in PR #210, arena roots and spatial
-  properties in PRs #211–#212, and STEP surface-model exchange in PR #213.
+  later general body. RFC 0005's class/tagging/validation substrate landed in
+  PR #209; sheet construction, area, typed volume refusal, and open
+  tessellation entry points were implemented in PR #210, arena roots and
+  spatial properties in PRs #211–#212, and STEP surface-model exchange in PR #213.
   Together they qualify the bounded unit-scale trimmed-NURBS sheet workflow.
   PR #214 additionally qualifies a crossing solid × single cylindrical-sheet
   cell: two deterministic valid regions in a Compound with a closed-form
@@ -142,7 +142,15 @@ does not itself promote or demote anything.
   retains four spherical faces, matches the independent spherical-lens and
   inclusion–exclusion volumes, classifies material probes, and tessellates
   closed and manifold across three deflections, including an oblique-center
-  witness. The additive exact cellular boolean path also preserves a severing
+  witness. A sphere centred in and protruding through all six faces of a box
+  now fuses through the exact-only path as 6 planar patches plus 10 spherical
+  caps; the result is closed/manifold and matches a separately constructed
+  exact intersection through inclusion–exclusion.
+  Equal-radius perpendicular cylinder×cylinder is also exact for all
+  three operators: intersection retains six cylinder patches bounded by eight
+  authoritative ellipse arcs, matches the independent `16r³/3` Steinmetz
+  oracle across radii and rigid motion, and tessellates closed and manifold at
+  three deflections. The additive exact cellular boolean path also preserves a severing
   planar cut as two valid 400-volume Compound members and disjoint planar fuse
   operands as two exact members, with deterministic per-region construction
   lineage and native/direct/batch WASM parity. Pairwise-disjoint Compound
@@ -154,9 +162,12 @@ does not itself promote or demote anything.
   detector, not by itself qualification evidence for a cell.
 - Known Unsupported-untyped / Partial cells: exact plane/cylinder tangency is
   not generally qualified beyond those witnesses; sliver crossings (~1e-5 to
-  0.05 mm on r = 10) fall over to approximate; general torus pairs limited;
+  0.05 mm on r = 10) fall over to approximate. The torus/box notch family is
+  exact for Cut and Intersect: the complement result retains one torus and
+  four planes, validates without errors, and matches a mesh-volume oracle
+  within 1% through native and WASM exact-only paths. General torus pairs,
   seam-crossing, nested-shell, sheet-solid, intersecting Compound-member fuse,
-  multi-tool Compound cut, and broader multi-body General Fuse cells
+  multi-tool Compound cut, and broader multi-body General Fuse cells remain
   Unqualified.
 
 ### Intersections (curve-curve, curve-surface, surface-surface)
@@ -171,14 +182,16 @@ does not itself promote or demote anything.
 - **Qualified cells** (closed-form classification incl. tangency and
   coincidence, scale-invariant): plane–plane, plane–sphere,
   plane–cylinder, sphere–sphere, parallel-axis cylinder–cylinder, coaxial
-  sphere–cylinder.
+  sphere–cylinder, and intersecting perpendicular equal-radius
+  cylinder–cylinder (two exact planar ellipse branches).
 - Known gaps: remaining surface pairs delegate to the legacy path and are
   wrapped as Unclassified/incomplete (declared, not silent); curve-curve
   and curve-surface qualification pending. NURBS SSI consumes caller-owned
   march/queue/segment/branch, coupled-Newton, and recursive seed-subdivision
-  budgets, and is cooperatively cancellable through seed discovery, Newton
-  refinement, and marching via `OperationContext`; its scheduled
-  `nurbs_surface` fuzzer validates bounded rational patch
+  budgets; all six are exposed by direct quality/cancellation and batch
+  quality WASM booleans. SSI is cooperatively cancellable through seed
+  discovery, Newton refinement, and marching via `OperationContext`; its
+  scheduled `nurbs_surface` fuzzer validates bounded rational patch
   construction/evaluation and plane-section output against an independent
   plane oracle. Parameter-space budgets remain incomplete. Conic curve cells
   (hyperbola, parabola) Unqualified;
@@ -189,9 +202,9 @@ does not itself promote or demote anything.
 - Ledger rows: "Fillet, chamfer" (Stable/Experimental, guarded), "Resize/
   remove analytic blend band" (Experimental, guarded).
 - Known Qualified/Partial evidence: planar line-edge manifold builders;
-  exact toroidal cylinder-cap and blind-hole-floor rim assemblers across
-  `0 < f < r_c` with closed-form volume/area verification; typed
-  `RadiusTooLarge` non-boundary limits; in-review PR #226
+  exact toroidal cylinder-cap rim assembler across `0 < f < r_c` with
+  closed-form volume/area verification; typed `RadiusTooLarge` refusals;
+  blind-hole floor rim deliberately capped at `r_c/2`; in-review PR #226
   qualifies straight-edge perpendicular-plane variable-radius walking bands:
   exact standard-law extrema, typed tolerance-collapse and caller-supplied
   local-limit boundaries, an analytic ruled-surface plus closed-form linear
@@ -221,6 +234,7 @@ does not itself promote or demote anything.
   common stationary radius and tangent ball. A three-edge box witness pins the
   exact sphere, all physical setback stations, angular-tolerance G1 seams,
   closed/manifold B-Rep, watertight mesh, independent volume agreement, the
+  exact census row, and direct/batch WASM parity.
   exact census row, and direct/batch WASM parity. In-review PR #234 declares
   the v2 overflow policy to be stop-at-cliff: planar support boundaries, inner-loop
   obstacles, closed-rim wall exhaustion, and inward cap collapse return typed
@@ -248,6 +262,8 @@ does not itself promote or demote anything.
   open and non-coaxial curved assembly, curved-support chamfers, variable
   radius on curved domains, alternating-material-side vertex fans, nonplanar
   corners, setbacks outside the stationary common-ball planar cell, general
+  mixed-radius junction surfaces, G2 profiles, and overflow handling remain
+  Unqualified or absent and fail closed.
   mixed-radius junction surfaces, G2 profiles, and actual rollover onto a
   neighboring face remain Unqualified or absent and fail closed. Stop-at-cliff
   detection is Qualified; it does not imply rollover or re-limitation support.
@@ -392,8 +408,12 @@ does not itself promote or demote anything.
 ### Evolution and naming
 
 - Ledger row: "Face provenance" (Beta). Construction-derived face provenance
-  covers booleans, walking/planar blend builders, and patterns; offset,
-  shell, draft, split, defeature, and direct edits produce none.
+  covers booleans, walking/planar blend builders, patterns, draft, split,
+  defeature, shell, and default intersection-joint V2 offsets. Direct edits
+  produce none. Arc-joint offsets and offsets followed by self-intersection
+  removal do not expose a face map: those variants may synthesize or replace
+  faces after the one-to-one offset construction and fail closed rather than
+  publishing stale provenance.
   **Edge and vertex history** (Issue 12): `gfa::boolean_with_entity_evolution`
   returns construction-derived edge events (Preserved / Modified via the
   splitter's source-edge chain and pave blocks / Generated via FF
@@ -459,23 +479,22 @@ does not itself promote or demote anything.
   partitioned per independently valid Compound member and refuses any
   `Unresolved` edge;
   one-call journaled wrappers `journal_ops::{fillet_journaled,
-  chamfer_journaled, linear_pattern_journaled}` — the journal is now
-  populated by every construction-evolution producer (booleans, v2
-  blends, patterns) per the RFC 0003 Stage 1 goal; WASM
+  chamfer_journaled, linear_pattern_journaled, offset_journaled}` — the
+  journal is populated by the construction-evolution producers (booleans,
+  v2 blends, patterns, default V2 offsets) per the RFC 0003 Stage 1 goal; WASM
   `fuseWithEntityEvolution` (+cut/intersect) exposing the full
   vertex/edge/face event payload as stable JSON, `filletJournaled` /
-  `chamferJournaled` / `linearPatternJournaled`, and the read-only
-  `journalSummary`, all with executeBatch companions and contract
+  `chamferJournaled` / `linearPatternJournaled` / `offsetJournaled`, and the
+  read-only `journalSummary`, all with executeBatch companions and contract
   tests.
   **Assembly-rebuild lineage records**: every GFA result-assembly path
   that rebuilds edges records construction lineage — the perform-phase
   vertex-merge wire rebuild, welds, and the collinear line/arc splits —
   and `build_result_with_origins` returns the complete log. A cube
   fuse's edge history is total construction fact (pinned: zero
-  unresolved). Remaining evolution queue: real evolution for the
-  declared-gap operations (offset, shell, draft, split, defeature —
-  journaled as barriers until each grows records) and cap-synthesis
-  edges (absent from planar boolean fixtures).
+  unresolved). Remaining evolution queue: direct-edit face evolution, richer
+  provenance for arc-joint/self-intersection-removal offsets, and
+  cap-synthesis edges (absent from planar boolean fixtures).
 
 ### Draft
 
@@ -550,9 +569,9 @@ claim, and they are the first implementation targets of the program:
    Boolean vertex/edge/face events, a lineage journal, and persistent
    references exist. Coedge-use evolution and complete records for every
    modifier remain queued; those gaps stay disclosed rather than inferred.
-4. **Partial operation-context coverage.** Public booleans carry tolerance,
-   fallback policy, NURBS marching, coupled-Newton, and recursive
-   seed-subdivision budgets, and cooperative cancellation explicitly.
+4. **Partial operation-context coverage.** Public booleans expose and carry
+   fallback policy, all six NURBS SSI work budgets, and cooperative
+   cancellation explicitly, alongside the context's tolerance.
    Generated-topology/memory budgets,
    parameter-space tolerance, determinism policy, and non-boolean operation
    families remain local or unmigrated.

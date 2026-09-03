@@ -337,6 +337,9 @@ fn batch_variable_setback_rejects_a_present_nonnumeric_distance() {
     );
 }
 
+
+
+
 /// The native stop-at-cliff refusal reaches the structured batch contract
 /// unchanged, and the box survives.
 #[test]

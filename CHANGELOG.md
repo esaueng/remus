@@ -4,6 +4,14 @@
 
 ### Features
 
+* **offset,operations,wasm:** retain the default V2 offset builder's exact
+  one-to-one source-face map, expose it as construction-derived evolution,
+  journal offsets transactionally, and add direct plus batch
+  `offsetJournaled` WASM contracts. Arc-joint and self-intersection-removal
+  variants refuse the face-map API rather than publishing stale provenance.
+* **wasm:** expose all six NURBS SSI work budgets through the direct
+  quality/cancellation booleans and batch quality booleans, with shared bounded
+  integer validation and unchanged defaults.
 * **context:** make the caller's NURBS SSI Newton-iteration budget authoritative
   across seed discovery and marching, with cooperative cancellation inside the
   refinement loop.
@@ -19,6 +27,20 @@
 
 ### Bug Fixes
 
+* **operations:** the blend volume oracle now has a floor as well as a
+  ceiling. On a selection whose edges share one convexity and whose dihedrals
+  can be read, a fillet or chamfer must move at least a quarter of the
+  material its own cross-section sweeps along those edges (fillet
+  `r²·(tan(φ/2) − φ/2)`, chamfer `½·d₁·d₂·sin φ`, angle clamped at 120°) —
+  a closed, well-wound result that left the input's volume untouched was the
+  one silent no-op every other postcondition accepted. Variable-radius
+  fillets are floored at the law's minimum radius. Applies to every public
+  fillet/chamfer entry point, v1 engines included.
+* **boolean:** the mesh (co-refinement) fallback behind plain `boolean()` —
+  and the JS `fuse`/`cut`/`intersect` bindings — now logs at `warn` on the
+  `remus_approx` target instead of `debug`, so a caller that did not opt into
+  the quality-disclosing entry points still sees when analytic faces were
+  lost. Return values and the census probe are unchanged.
 * **operations:** make every public fillet/chamfer mutation path fail closed.
   `fillet_variable`, the deprecated flat-bevel `fillet`, and
   `fillet_rolling_ball` are now individually transactional and validate the
@@ -76,8 +98,29 @@
   parameters) bit-exactly; the default float path rounded the last bit on
   parse for roughly one in five arbitrary doubles.
 
+### CI
+
+* `scripts/check-det-hash.sh` ratchets `std::collections::HashMap`/`HashSet`
+  in the geometry crates (algo, blend, check, heal, offset, operations):
+  the 84 production files that already use them are grandfathered in
+  `scripts/det-hash-grandfather.txt`, unaudited; no new file may join, and a
+  listed file that stops using them must leave the manifest, so the list only
+  shrinks. New order-sensitive code uses `remus_math::det_hash`. The scan runs
+  through `git grep` rather than `rg` (not installed on the runner) and treats
+  any exit status above 1 as the gate failing to run, per the rules
+  `check-remus-rename.sh` already paid for.
+
 ### Tests
 
+* pin four mutants the scheduled mutation run found alive:
+  `find_edge_surface_crossings`' duplicate window, which no test had asked
+  for two crossings on one edge (a line through a cylinder now does);
+  `pb_strictly_inside_circle`, reached only through whole booleans before,
+  now exercised against a disc directly for both its bound and its rim; and
+  `is_uniform_scale`, which needed a matrix that passes one of its two legs
+  and fails the other (a shear, and an anisotropic scale). `ccw_arc_trim`'s
+  redundant finiteness test — an unkillable mutant, since a non-finite `t0`
+  makes `delta` non-finite too — is folded into the test on `delta`.
 * **boolean:** qualify the historical tangent-boss operand-loss fix with a
   versioned WASM repro, closed-form ratio/scale oracles, and exact-or-disclosed
   fallback policy checks.

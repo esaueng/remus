@@ -23,9 +23,11 @@ const projectRoot = resolve(__dirname, '..');
 // The node entry uses CommonJS (exports.X = ...) and is renamed to .cjs
 // so Node treats it correctly even with "type": "module" in package.json.
 const require = createRequire(import.meta.url);
-const { BrepKernel, decodeEvolutionPayload } = require(
-  resolve(projectRoot, 'crates/wasm/pkg/remus_wasm_node.cjs'),
-);
+const {
+  BrepKernel,
+  OperationCancellationToken,
+  decodeEvolutionPayload,
+} = require(resolve(projectRoot, 'crates/wasm/pkg/remus_wasm_node.cjs'));
 
 const DEFLECTION = 0.1;
 
@@ -103,6 +105,65 @@ const workCountBatch = JSON.parse(
 assert.match(workCountBatch[0].error, /segments must be at most 10000/);
 assert.equal(typeof workCountBatch[1].ok, 'number');
 console.log('ok - oversized WASM work counts fail closed in direct and batch APIs');
+
+// All SSI work budgets are optional additions to the quality-disclosing
+// boolean contract. Analytic operands do not enter SSI, so zero budgets must
+// preserve the exact result while each malformed positional argument refuses
+// before touching the input topology.
+{
+  const budgetKernel = new BrepKernel();
+  const a = budgetKernel.makeBox(2, 2, 2);
+  const b = budgetKernel.makeBox(1, 1, 1);
+  const bounded = budgetKernel.booleanWithQuality(
+    'fuse',
+    a,
+    b,
+    true,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+  );
+  assert.equal(bounded.quality, 'exact');
+  assert.equal(budgetKernel.volume(bounded.solid, DEFLECTION), 8);
+  const cancellable = budgetKernel.booleanWithCancellation(
+    'fuse',
+    a,
+    b,
+    new OperationCancellationToken(),
+    true,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+  );
+  assert.equal(cancellable.status, 'completed');
+  assert.equal(cancellable.result.quality, 'exact');
+
+  const fieldIndexes = new Map([
+    ['newton_iterations', 4],
+    ['subdivision_depth', 5],
+    ['march_steps', 6],
+    ['queue_size', 7],
+    ['segments', 8],
+    ['branches_per_direction', 9],
+  ]);
+  for (const [field, index] of fieldIndexes) {
+    const args = ['fuse', a, b, true];
+    args[index] = -1;
+    assert.throws(
+      () => budgetKernel.booleanWithQuality(...args),
+      new RegExp(field),
+      `${field} must reject before geometry work`,
+    );
+    assert.equal(budgetKernel.volume(a, DEFLECTION), 8);
+  }
+  console.log('ok - direct SSI budget controls are additive and fail closed');
+}
 
 // Batch deflection validation must reject every value rejected by the matching
 // direct binding. JSON.stringify serializes NaN and Infinity as null, which the
@@ -408,6 +469,41 @@ for (const operation of ['fillet', 'chamfer']) {
   const step = evolutionKernel.exportStep(payload.result.solid);
   assert.ok(step.length > 0, `${method}: STEP export`);
   console.log(`ok - ${method}: typed, complete, exact-geometry parity`);
+}
+
+// Offset face identity is construction-derived and reaches both public WASM
+// routes as a real journal evolution entry, never a barrier.
+{
+  const directKernel = new BrepKernel();
+  const source = directKernel.makeBox(2, 2, 2);
+  const direct = JSON.parse(directKernel.offsetJournaled(source, 0.5));
+  assert.ok(Math.abs(directKernel.volume(direct.solid, DEFLECTION) - 27) < 1e-9);
+  const directEntry = JSON.parse(directKernel.journalSummary()).at(-1);
+  assert.deepEqual(
+    {
+      kind: directEntry.kind,
+      type: directEntry.type,
+      origin: directEntry.detail.origin,
+      events: directEntry.detail.events,
+    },
+    { kind: 'offset', type: 'evolution', origin: 'construction', events: 6 },
+  );
+
+  const batchKernel = new BrepKernel();
+  const batch = JSON.parse(
+    batchKernel.executeBatch(
+      JSON.stringify([
+        { op: 'makeBox', args: { width: 2, height: 2, depth: 2 } },
+        { op: 'offsetJournaled', args: { solid: 0, distance: 0.5 } },
+        { op: 'journalSummary', args: {} },
+      ]),
+    ),
+  );
+  assert.deepEqual(batch[1].ok, direct);
+  assert.equal(batch[2].ok.at(-1).kind, 'offset');
+  assert.equal(batch[2].ok.at(-1).type, 'evolution');
+  assert.equal(batch[2].ok.at(-1).detail.events, 6);
+  console.log('ok - offsetJournaled direct/batch construction evolution');
 }
 
 // A stored/transported payload is untrusted input: malformed versions,

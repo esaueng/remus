@@ -14,12 +14,16 @@
 
 use remus_check::validate::{Severity, ValidateOptions, validate_solid};
 use remus_math::mat::Mat4;
-use remus_offset::{OffsetError, OffsetOptions, offset_solid, thick_solid};
+use remus_offset::{
+    OffsetError, OffsetOptions, offset_solid, offset_solid_with_face_map, thick_solid,
+};
 use remus_operations::boolean::{BooleanOp, boolean};
 use remus_operations::measure::{mass_properties, solid_volume};
 use remus_operations::primitives::make_box;
 use remus_operations::transform::transform_solid;
 use remus_topology::Topology;
+use remus_topology::explorer::solid_faces;
+use remus_topology::face::FaceId;
 use remus_topology::solid::SolidId;
 
 fn opts() -> OffsetOptions {
@@ -89,6 +93,44 @@ fn an_outward_offset_grows_the_body_and_shrinks_its_cavity() {
          wrong sign would read {wrong_sign}"
     );
     assert_watertight(&topo, result, 0.01);
+}
+
+#[test]
+fn cavity_offset_face_map_covers_both_shells_one_to_one() {
+    let mut topo = Topology::new();
+    let hollow = hollow_cube(&mut topo, 1.0);
+    let sources: std::collections::BTreeSet<_> = solid_faces(&topo, hollow)
+        .unwrap()
+        .into_iter()
+        .map(FaceId::index)
+        .collect();
+
+    let offset = offset_solid_with_face_map(&mut topo, hollow, 0.5, opts()).unwrap();
+    let results: std::collections::BTreeSet<_> = solid_faces(&topo, offset.solid)
+        .unwrap()
+        .into_iter()
+        .map(FaceId::index)
+        .collect();
+    assert_eq!(
+        offset
+            .face_map
+            .keys()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>(),
+        sources
+    );
+    assert_eq!(
+        offset
+            .face_map
+            .values()
+            .copied()
+            .map(FaceId::index)
+            .collect::<std::collections::BTreeSet<_>>(),
+        results
+    );
+    assert_eq!(offset.face_map.len(), 12, "outer and cavity faces map");
+    let volume = solid_volume(&topo, offset.solid, 0.01).unwrap();
+    assert!((volume - 342.0).abs() < 1e-9, "7^3 - 1^3: {volume}");
 }
 
 #[test]

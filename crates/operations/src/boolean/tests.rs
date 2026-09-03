@@ -1546,6 +1546,89 @@ fn cut_torus_by_box_notch_is_analytic_watertight() {
 }
 
 #[test]
+fn intersect_torus_by_box_notch_is_exact_and_matches_mesh_oracle() {
+    use remus_math::context::{FallbackPolicy, OperationContext};
+
+    let mut topo = Topology::new();
+    let tor = crate::primitives::make_torus(&mut topo, 10.0, 3.0, 32).unwrap();
+    let bx = crate::primitives::make_box(&mut topo, 8.0, 8.0, 8.0).unwrap();
+    crate::transform::transform_solid(
+        &mut topo,
+        bx,
+        &remus_math::mat::Mat4::translation(6.0, -4.0, -4.0),
+    )
+    .unwrap();
+
+    let tor_mesh = crate::tessellate::tessellate_solid_for_boolean(
+        &topo,
+        tor,
+        0.05,
+        remus_math::chord::DEFAULT_ANGULAR_TOL,
+    )
+    .unwrap();
+    let box_mesh = crate::tessellate::tessellate_solid_for_boolean(
+        &topo,
+        bx,
+        0.05,
+        remus_math::chord::DEFAULT_ANGULAR_TOL,
+    )
+    .unwrap();
+    let mesh_oracle = crate::mesh_boolean::mesh_boolean(
+        &tor_mesh,
+        &box_mesh,
+        BooleanOp::Intersect,
+        Tolerance::new().linear,
+    )
+    .unwrap();
+    assert_eq!(mesh_oracle.boundary_edge_count, 0);
+    assert_eq!(mesh_oracle.non_manifold_edge_count, 0);
+    let mesh_volume = mesh_oracle
+        .mesh
+        .indices
+        .chunks_exact(3)
+        .map(|tri| {
+            let a = mesh_oracle.mesh.positions[tri[0] as usize];
+            let b = mesh_oracle.mesh.positions[tri[1] as usize];
+            let c = mesh_oracle.mesh.positions[tri[2] as usize];
+            let origin = Point3::new(0.0, 0.0, 0.0);
+            (a - origin).dot((b - origin).cross(c - origin)) / 6.0
+        })
+        .sum::<f64>()
+        .abs();
+
+    let context = OperationContext::new().with_fallback(FallbackPolicy::ExactOnly);
+    let outcome = boolean_with_context(&mut topo, BooleanOp::Intersect, tor, bx, &context).unwrap();
+    assert_eq!(outcome.quality, BooleanQuality::Exact);
+
+    let face_ids = remus_topology::explorer::solid_faces(&topo, outcome.solid).unwrap();
+    let (mut planes, mut tori, mut others) = (0usize, 0usize, 0usize);
+    for &face_id in &face_ids {
+        match topo.face(face_id).unwrap().surface() {
+            FaceSurface::Plane { .. } => planes += 1,
+            FaceSurface::Torus(_) => tori += 1,
+            _ => others += 1,
+        }
+    }
+    assert_eq!(others, 0, "intersection must retain analytic surfaces");
+    assert_eq!(tori, 1, "expected one complementary torus band");
+    assert_eq!(planes, 4, "expected four planar box-wall patches");
+    assert_eq!(face_ids.len(), 5);
+
+    let adjacency = remus_topology::adjacency::AdjacencyIndex::build(&topo, outcome.solid).unwrap();
+    assert!(adjacency.is_manifold());
+    assert_eq!(adjacency.boundary_edges().len(), 0);
+
+    let validation = crate::validate::validate_solid(&topo, outcome.solid).unwrap();
+    assert!(validation.is_valid(), "{:#?}", validation.issues);
+
+    let brep_volume = crate::measure::solid_volume(&topo, outcome.solid, 0.01).unwrap();
+    assert!(
+        (brep_volume - mesh_volume).abs() / mesh_volume < 0.01,
+        "exact B-Rep volume {brep_volume:.6} should match mesh oracle {mesh_volume:.6}"
+    );
+}
+
+#[test]
 /// Fuse a 10³ box with a sphere of r=7.
 ///
 /// By inclusion-exclusion: V(A∪B) = V(A) + V(B) - V(A∩B).
@@ -1572,6 +1655,70 @@ fn fuse_box_sphere_succeeds() {
         vol < vol_box + vol_sphere,
         "fuse volume {vol:.1} should be < sum {:.1}",
         vol_box + vol_sphere
+    );
+}
+
+#[test]
+fn centered_box_sphere_fuse_is_exact_and_watertight() {
+    use remus_math::context::{FallbackPolicy, OperationContext};
+
+    let mut topo = Topology::new();
+    let bx = crate::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+    let sp = crate::primitives::make_sphere(&mut topo, 6.0, 24).unwrap();
+    crate::transform::transform_solid(
+        &mut topo,
+        sp,
+        &remus_math::mat::Mat4::translation(5.0, 5.0, 5.0),
+    )
+    .unwrap();
+    let exact = OperationContext::new().with_fallback(FallbackPolicy::ExactOnly);
+    let outcome = boolean_with_context(&mut topo, BooleanOp::Fuse, bx, sp, &exact).unwrap();
+    assert_eq!(outcome.quality, BooleanQuality::Exact);
+
+    let faces = remus_topology::explorer::solid_faces(&topo, outcome.solid).unwrap();
+    assert_eq!(faces.len(), 16, "expected 6 box patches + 10 sphere caps");
+    let (mut planes, mut spheres, mut others) = (0_usize, 0_usize, 0_usize);
+    for &face_id in &faces {
+        match topo.face(face_id).unwrap().surface() {
+            FaceSurface::Plane { .. } => planes += 1,
+            FaceSurface::Sphere(_) => spheres += 1,
+            _ => others += 1,
+        }
+    }
+    assert_eq!((planes, spheres, others), (6, 10, 0));
+
+    let adjacency = remus_topology::adjacency::AdjacencyIndex::build(&topo, outcome.solid).unwrap();
+    assert!(adjacency.is_manifold());
+    assert!(adjacency.boundary_edges().is_empty());
+    let report = crate::validate::validate_solid(&topo, outcome.solid).unwrap();
+    assert!(report.is_valid(), "validation issues: {:?}", report.issues);
+
+    // Independent inclusion-exclusion oracle: the centered box∩sphere
+    // shortcut is a separately constructed exact eight-face solid.
+    let mut oracle_topo = Topology::new();
+    let oracle_box = crate::primitives::make_box(&mut oracle_topo, 10.0, 10.0, 10.0).unwrap();
+    let oracle_sphere = crate::primitives::make_sphere(&mut oracle_topo, 6.0, 24).unwrap();
+    crate::transform::transform_solid(
+        &mut oracle_topo,
+        oracle_sphere,
+        &remus_math::mat::Mat4::translation(5.0, 5.0, 5.0),
+    )
+    .unwrap();
+    let common = boolean_with_context(
+        &mut oracle_topo,
+        BooleanOp::Intersect,
+        oracle_box,
+        oracle_sphere,
+        &exact,
+    )
+    .unwrap();
+    assert_eq!(common.quality, BooleanQuality::Exact);
+    let overlap = crate::measure::solid_volume(&oracle_topo, common.solid, 0.01).unwrap();
+    let expected = 1000.0 + 4.0 * std::f64::consts::PI * 216.0 / 3.0 - overlap;
+    let actual = crate::measure::solid_volume(&topo, outcome.solid, 0.01).unwrap();
+    assert!(
+        (actual - expected).abs() / expected < 2e-4,
+        "exact fuse volume {actual} differs from inclusion-exclusion {expected}"
     );
 }
 
@@ -1957,8 +2104,8 @@ fn fuse_perpendicular_cylinders_is_analytic_watertight() {
         }
     }
     assert_eq!(
-        cylinders, 2,
-        "expected two mutually-trimmed walls, got {cylinders}"
+        cylinders, 4,
+        "the exact ellipse seam splits both cylinders into two wall bands, got {cylinders}"
     );
     assert_eq!(planes, 4, "expected four end caps, got {planes}");
     assert!(

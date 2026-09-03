@@ -138,6 +138,31 @@ pub fn boolean_journaled(
     Ok(JournaledBoolean { solid, op })
 }
 
+/// Runs a journaled exact boolean using the operations-layer boolean enum.
+///
+/// This is the public-facade adapter for [`boolean_journaled`]. The journal
+/// implementation predates the operations-layer enum and retains its lower
+/// layer entry point for existing callers; new top-level consumers should not
+/// need a direct `remus-algo` dependency just to select an operation.
+///
+/// # Errors
+///
+/// Returns [`OperationsError`] under the same conditions as
+/// [`boolean_journaled`].
+pub fn boolean_journaled_with_operation(
+    topo: &mut Topology,
+    op: crate::boolean::BooleanOp,
+    solid_a: SolidId,
+    solid_b: SolidId,
+) -> Result<JournaledBoolean, OperationsError> {
+    let op = match op {
+        crate::boolean::BooleanOp::Fuse => BooleanOp::Fuse,
+        crate::boolean::BooleanOp::Cut => BooleanOp::Cut,
+        crate::boolean::BooleanOp::Intersect => BooleanOp::Intersect,
+    };
+    boolean_journaled(topo, op, solid_a, solid_b)
+}
+
 /// Converts an Issue-12 [`EntityEvolution`] into a journal draft.
 ///
 /// Event mapping, claim for claim:
@@ -407,6 +432,33 @@ pub struct JournaledSolidOp {
     pub map: EvolutionMap,
 }
 
+/// Runs an offset and journals its one-to-one, construction-derived face
+/// evolution as one entry (kind `offset`).
+///
+/// The whole call is transactional: a failed offset, postcondition, or
+/// journal recording restores both topology and history.
+///
+/// # Errors
+///
+/// Returns [`OperationsError`] if the offset or recording fails.
+pub fn offset_journaled(
+    topo: &mut Topology,
+    solid: SolidId,
+    distance: f64,
+) -> Result<JournaledSolidOp, OperationsError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let pending = begin_scoped(topo, "offset", &[solid])?;
+        let (result, map) =
+            crate::offset_v2::offset_solid_v2_with_evolution(topo, solid, distance)?;
+        let op = record_face_evolution(topo, pending, &map, &[result])?;
+        Ok(JournaledSolidOp {
+            solid: result,
+            op,
+            map,
+        })
+    })
+}
+
 /// Runs a draft and journals its construction-derived face evolution as
 /// one entry (kind `draft`).
 ///
@@ -537,10 +589,10 @@ pub fn split_journaled(
 /// Journals an explicit barrier over every entity of `solid`.
 ///
 /// This is the honest entry for an operation that produces no evolution
-/// records (offset and direct edits — the stability matrix's remaining
-/// declared gaps; draft, defeature, split, and shell journal real
-/// evolution via their `*_journaled` wrappers): the result solid's faces, edges, and vertices
-/// are all unresolved across it, and a resolver chasing a reference
+/// records (direct edits are the stability matrix's remaining declared gap;
+/// offset, draft, defeature, split, and shell journal real evolution via
+/// their `*_journaled` wrappers): the result solid's faces, edges, and
+/// vertices are all unresolved across it, and a resolver chasing a reference
 /// through this entry fails closed naming the operation. Coverage grows
 /// operation by operation by replacing barriers with real evolution.
 ///

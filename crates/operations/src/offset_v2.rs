@@ -6,6 +6,7 @@ use remus_topology::face::FaceId;
 use remus_topology::solid::SolidId;
 
 use crate::OperationsError;
+use crate::evolution::EvolutionMap;
 
 /// Map an `OffsetError` to the most appropriate `OperationsError` variant,
 /// preserving structured error information where possible.
@@ -108,6 +109,38 @@ pub fn offset_solid_v2(
     validate_offset_postcondition(topo, "offset", result)
 }
 
+/// Offset every face and return its construction-derived face evolution.
+///
+/// Each source face is carried to exactly one result face. The lower-level
+/// offset engine validates that this correspondence covers both the complete
+/// source and result face sets before exposing it.
+///
+/// # Errors
+///
+/// Returns an error if the offset fails, its result fails validation, or the
+/// construction cannot prove a total one-to-one face map.
+pub fn offset_solid_v2_with_evolution(
+    topo: &mut Topology,
+    solid: SolidId,
+    distance: f64,
+) -> Result<(SolidId, EvolutionMap), OperationsError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let result = remus_offset::offset_solid_with_face_map(
+            topo,
+            solid,
+            distance,
+            OffsetOptions::default(),
+        )
+        .map_err(map_offset_error)?;
+        let solid = validate_offset_postcondition(topo, "offset", result.solid)?;
+        let mut evolution = EvolutionMap::exact();
+        for (source, result_face) in result.face_map {
+            evolution.add_modified(source, result_face.index());
+        }
+        Ok((solid, evolution))
+    })
+}
+
 /// Shell (hollow solid) operation (V2 pipeline).
 ///
 /// # Errors
@@ -146,9 +179,12 @@ pub fn offset_solid_arc_v2(
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
+    #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
+    use remus_math::det_hash::DetHashMap;
     use remus_topology::Topology;
+    use remus_topology::explorer::solid_faces;
+    use remus_topology::face::FaceSurface;
 
     #[test]
     fn offset_v2_box() {
@@ -159,6 +195,72 @@ mod tests {
             .shell(topo.solid(result).unwrap().outer_shell())
             .unwrap();
         assert_eq!(shell.faces().len(), 6);
+    }
+
+    #[test]
+    fn offset_evolution_is_total_exact_and_geometrically_true() {
+        let mut topo = Topology::new();
+        let source = crate::primitives::make_box(&mut topo, 2.0, 2.0, 2.0).unwrap();
+        let source_faces = solid_faces(&topo, source).unwrap();
+        let source_planes = source_faces
+            .iter()
+            .map(|face| match topo.face(*face).unwrap().surface() {
+                FaceSurface::Plane { normal, d } => (
+                    face.index(),
+                    (*normal, *d, topo.face(*face).unwrap().is_reversed()),
+                ),
+                other => panic!("box face must be planar, got {}", other.type_tag()),
+            })
+            .collect::<DetHashMap<_, _>>();
+
+        let (result, evolution) = offset_solid_v2_with_evolution(&mut topo, source, 0.5).unwrap();
+
+        assert!(evolution.origin.is_exact());
+        assert!(evolution.generated.is_empty());
+        assert!(evolution.deleted.is_empty());
+        assert!(evolution.unresolved.is_empty());
+        assert_eq!(evolution.modified.len(), source_faces.len());
+
+        let result_faces = solid_faces(&topo, result).unwrap();
+        let claimed = evolution
+            .modified
+            .values()
+            .flatten()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(claimed.len(), result_faces.len());
+        assert!(
+            result_faces
+                .iter()
+                .all(|face| claimed.contains(&face.index()))
+        );
+
+        for (source_index, outputs) in &evolution.modified {
+            assert_eq!(outputs.len(), 1, "offset face identity must be one-to-one");
+            let (source_normal, source_d, source_reversed) = {
+                let (normal, d, reversed) = source_planes[source_index];
+                (normal, d, reversed)
+            };
+            let result_face = topo.face_id_from_index(outputs[0]).unwrap();
+            let result_face_data = topo.face(result_face).unwrap();
+            let FaceSurface::Plane {
+                normal: result_normal,
+                d: result_d,
+            } = result_face_data.surface()
+            else {
+                panic!("mapped box face must remain planar");
+            };
+            assert!((*result_normal - source_normal).length() < 1e-12);
+            assert_eq!(result_face_data.is_reversed(), source_reversed);
+            let signed_distance = if source_reversed { -0.5 } else { 0.5 };
+            assert!(
+                (*result_d - source_d - signed_distance).abs() < 1e-12,
+                "mapped face must lie exactly 0.5 model units outward"
+            );
+        }
+
+        let volume = crate::measure::mass_properties(&topo, result).unwrap().mass;
+        assert!((volume - 27.0).abs() < 1e-9, "3x3x3 volume: {volume}");
     }
 
     #[test]

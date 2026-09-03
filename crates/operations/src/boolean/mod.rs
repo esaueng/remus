@@ -510,6 +510,10 @@ pub fn boolean_transacted(
 ///
 /// Uses the GFA pipeline as the primary engine, with mesh boolean
 /// (co-refinement) as a fallback when GFA fails or produces invalid results.
+/// The fallback is not disclosed in the return value: it logs a `warn` on
+/// the `remus_approx` target. Callers that need to know, or to refuse it,
+/// use [`boolean_with_context`] with an explicit
+/// [`FallbackPolicy`](remus_math::context::FallbackPolicy).
 ///
 /// # Errors
 ///
@@ -1646,7 +1650,10 @@ fn run_mesh_fallback(
     tol: remus_math::tolerance::Tolerance,
     opts: &BooleanOptions,
 ) -> Result<SolidId, crate::OperationsError> {
-    log::debug!(
+    // `warn`, not `debug`: this is the one place a plain `boolean()` call can
+    // silently hand back a mesh, and every caller that did not opt into
+    // `boolean_with_context` has no other way to learn it happened.
+    log::warn!(
         target: "remus_approx",
         "boolean {op:?}: GFA unusable — using mesh (co-refinement) fallback; analytic surface types will be lost"
     );

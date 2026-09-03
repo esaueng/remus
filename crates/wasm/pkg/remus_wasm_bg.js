@@ -263,12 +263,68 @@ export class BrepKernel {
         return ret >>> 0;
     }
     /**
+     * Perform a bounded exact boolean between two Compound operands.
+     *
+     * Disjoint fuse, pairwise exact intersect, and a single cut-tool
+     * distributed over target members are qualified. Fuse requiring member
+     * merges and multi-tool Cut fail closed until recursive lineage composition
+     * is available.
+     *
+     * # Errors
+     *
+     * Returns an error for invalid handles, overlapping input members, an
+     * unknown operation, or an unqualified exact configuration.
+     * @param {string} op
+     * @param {number} a
+     * @param {number} b
+     * @returns {number}
+     */
+    booleanCompoundRegions(op, a, b) {
+        const ptr0 = passStringToWasm0(op, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.brepkernel_booleanCompoundRegions(this.__wbg_ptr, ptr0, len0, a, b);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Perform an exact boolean whose disconnected volumetric regions remain
+     * separate solids in a Compound.
+     *
+     * `op` accepts the same spellings as `booleanWithQuality`. The returned
+     * handle can be expanded with `getCompoundSolids`. This path is exact-only
+     * and fails closed if any region or its construction lineage is invalid.
+     * Existing single-solid `fuse`, `cut`, and `intersect` remain compatible.
+     *
+     * # Errors
+     *
+     * Returns an error for invalid handles, an unknown operation, or an
+     * unqualified exact result.
+     * @param {string} op
+     * @param {number} a
+     * @param {number} b
+     * @returns {number}
+     */
+    booleanRegions(op, a, b) {
+        const ptr0 = passStringToWasm0(op, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.brepkernel_booleanRegions(this.__wbg_ptr, ptr0, len0, a, b);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
      * Performs a boolean governed by a cooperative cancellation token.
      *
      * Cancellation is typed (`operation_cancelled`) and transactional: no
      * partial topology is retained. Result quality follows
      * `booleanWithQuality`, including the optional exact-only policy and the
-     * optional Newton and subdivision caps.
+     * optional SSI work-budget caps. The final four additive arguments cap
+     * marching steps, pending branch seeds, traced segments, and branch
+     * points per direction; omitted or `null` values preserve their kernel
+     * defaults.
      * @param {string} op
      * @param {number} a
      * @param {number} b
@@ -276,13 +332,17 @@ export class BrepKernel {
      * @param {boolean | null} [exact_only]
      * @param {number | null} [newton_iterations]
      * @param {number | null} [subdivision_depth]
+     * @param {number | null} [march_steps]
+     * @param {number | null} [queue_size]
+     * @param {number | null} [segments]
+     * @param {number | null} [branches_per_direction]
      * @returns {CancellableBooleanResult}
      */
-    booleanWithCancellation(op, a, b, token, exact_only, newton_iterations, subdivision_depth) {
+    booleanWithCancellation(op, a, b, token, exact_only, newton_iterations, subdivision_depth, march_steps, queue_size, segments, branches_per_direction) {
         const ptr0 = passStringToWasm0(op, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
         _assertClass(token, OperationCancellationToken);
-        const ret = wasm.brepkernel_booleanWithCancellation(this.__wbg_ptr, ptr0, len0, a, b, token.__wbg_ptr, isLikeNone(exact_only) ? 0xFFFFFF : exact_only ? 1 : 0, !isLikeNone(newton_iterations), isLikeNone(newton_iterations) ? 0 : newton_iterations, !isLikeNone(subdivision_depth), isLikeNone(subdivision_depth) ? 0 : subdivision_depth);
+        const ret = wasm.brepkernel_booleanWithCancellation(this.__wbg_ptr, ptr0, len0, a, b, token.__wbg_ptr, isLikeNone(exact_only) ? 0xFFFFFF : exact_only ? 1 : 0, !isLikeNone(newton_iterations), isLikeNone(newton_iterations) ? 0 : newton_iterations, !isLikeNone(subdivision_depth), isLikeNone(subdivision_depth) ? 0 : subdivision_depth, !isLikeNone(march_steps), isLikeNone(march_steps) ? 0 : march_steps, !isLikeNone(queue_size), isLikeNone(queue_size) ? 0 : queue_size, !isLikeNone(segments), isLikeNone(segments) ? 0 : segments, !isLikeNone(branches_per_direction), isLikeNone(branches_per_direction) ? 0 : branches_per_direction);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
@@ -305,25 +365,33 @@ export class BrepKernel {
      * or `null` keeps the kernel default, reproducing prior behavior.
      * `subdivision_depth` likewise caps recursive SSI seed subdivision
      * (`0` disables recursive splitting; omitted or `null` keeps depth 6).
+     * The additive `march_steps`, `queue_size`, `segments`, and
+     * `branches_per_direction` arguments cap the remaining SSI marcher and
+     * branch-exploration work. Omitted or `null` values retain the historical
+     * defaults (200, 100, 50, and 10 respectively).
      *
      * # Errors
      *
      * Returns an error if a handle is invalid, the op string is unknown,
-     * `newton_iterations` is not a non-negative integer within the public
-     * work budget, `subdivision_depth` is invalid under the same rules, or
-     * (under `exact_only`) the exact pipeline cannot produce the result.
+     * any work-budget argument is not a non-negative integer within the
+     * public work budget, or (under `exact_only`) the exact pipeline cannot
+     * produce the result.
      * @param {string} op
      * @param {number} a
      * @param {number} b
      * @param {boolean | null} [exact_only]
      * @param {number | null} [newton_iterations]
      * @param {number | null} [subdivision_depth]
+     * @param {number | null} [march_steps]
+     * @param {number | null} [queue_size]
+     * @param {number | null} [segments]
+     * @param {number | null} [branches_per_direction]
      * @returns {BooleanQualityResult}
      */
-    booleanWithQuality(op, a, b, exact_only, newton_iterations, subdivision_depth) {
+    booleanWithQuality(op, a, b, exact_only, newton_iterations, subdivision_depth, march_steps, queue_size, segments, branches_per_direction) {
         const ptr0 = passStringToWasm0(op, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_booleanWithQuality(this.__wbg_ptr, ptr0, len0, a, b, isLikeNone(exact_only) ? 0xFFFFFF : exact_only ? 1 : 0, !isLikeNone(newton_iterations), isLikeNone(newton_iterations) ? 0 : newton_iterations, !isLikeNone(subdivision_depth), isLikeNone(subdivision_depth) ? 0 : subdivision_depth);
+        const ret = wasm.brepkernel_booleanWithQuality(this.__wbg_ptr, ptr0, len0, a, b, isLikeNone(exact_only) ? 0xFFFFFF : exact_only ? 1 : 0, !isLikeNone(newton_iterations), isLikeNone(newton_iterations) ? 0 : newton_iterations, !isLikeNone(subdivision_depth), isLikeNone(subdivision_depth) ? 0 : subdivision_depth, !isLikeNone(march_steps), isLikeNone(march_steps) ? 0 : march_steps, !isLikeNone(queue_size), isLikeNone(queue_size) ? 0 : queue_size, !isLikeNone(segments), isLikeNone(segments) ? 0 : segments, !isLikeNone(branches_per_direction), isLikeNone(branches_per_direction) ? 0 : branches_per_direction);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
@@ -997,6 +1065,12 @@ export class BrepKernel {
      *
      * Returns a new solid handle (`u32`).
      *
+     * When the exact engine cannot handle the pair the kernel falls back to
+     * a mesh boolean and logs a `warn` on the `remus_approx` target (visible
+     * on the JS console through the log bridge); the returned handle then
+     * carries a mesh, not analytic faces. Use `booleanWithQuality` to have
+     * that disclosed in the result or refused outright.
+     *
      * # Errors
      *
      * Returns an error if either solid handle is invalid or the operation
@@ -1141,7 +1215,47 @@ export class BrepKernel {
         }
     }
     /**
-     * Reconstruct one solid from a version 1 or single-root version 2 buffer.
+     * Reconstruct one first-class sheet body from a version 4 or 5 arena document.
+     *
+     * # Errors
+     *
+     * Returns an error if the buffer is malformed, does not contain exactly
+     * one sheet root, or reconstruction fails.
+     * @param {Uint8Array} data
+     * @returns {number}
+     */
+    deserializeSheet(data) {
+        const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.brepkernel_deserializeSheet(this.__wbg_ptr, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Reconstruct standalone sheet roots from a version 4 or 5 arena document.
+     *
+     * # Errors
+     *
+     * Returns an error if the buffer is malformed, contains another root
+     * class, or reconstruction fails.
+     * @param {Uint8Array} data
+     * @returns {Uint32Array}
+     */
+    deserializeSheets(data) {
+        const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.brepkernel_deserializeSheets(this.__wbg_ptr, ptr0, len0);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v2 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v2;
+    }
+    /**
+     * Reconstruct one solid from a version 1 through 5 single-root buffer.
      *
      * # Errors
      *
@@ -1159,15 +1273,16 @@ export class BrepKernel {
         return ret[0] >>> 0;
     }
     /**
-     * Reconstruct solid roots from a version 1 or version 2 arena document.
+     * Reconstruct solid roots from a version 1 through 5 arena document.
      *
      * Every restored entity receives a fresh kernel handle. Documents with
-     * compound roots must be loaded through the native Rust document API.
+     * Sheet, wire, and compound roots must be loaded through their dedicated
+     * binding or the native Rust document API.
      *
      * # Errors
      *
      * Returns an error if the buffer is malformed, exceeds import limits,
-     * contains compound roots, or reconstruction fails.
+     * contains a non-solid root, or reconstruction fails.
      * @param {Uint8Array} data
      * @returns {Uint32Array}
      */
@@ -1175,6 +1290,46 @@ export class BrepKernel {
         const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.brepkernel_deserializeSolids(this.__wbg_ptr, ptr0, len0);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v2 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v2;
+    }
+    /**
+     * Reconstruct one first-class wire body from a version 5 arena document.
+     *
+     * # Errors
+     *
+     * Returns an error if the buffer is malformed, does not contain exactly
+     * one wire root, or reconstruction fails.
+     * @param {Uint8Array} data
+     * @returns {number}
+     */
+    deserializeWire(data) {
+        const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.brepkernel_deserializeWire(this.__wbg_ptr, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Reconstruct standalone wire roots from a version 5 arena document.
+     *
+     * # Errors
+     *
+     * Returns an error if the buffer is malformed, contains non-wire roots,
+     * or reconstruction fails.
+     * @param {Uint8Array} data
+     * @returns {Uint32Array}
+     */
+    deserializeWires(data) {
+        const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.brepkernel_deserializeWires(this.__wbg_ptr, ptr0, len0);
         if (ret[3]) {
             throw takeFromExternrefTable0(ret[2]);
         }
@@ -1713,6 +1868,32 @@ export class BrepKernel {
         return v3;
     }
     /**
+     * Export one first-class sheet body as a STEP shell-based surface model.
+     *
+     * `options` accepts the same optional metadata JSON as
+     * [`exportStepWithOptions`](Self::export_step_with_options). Validation
+     * properties are refused because their current contract is solid-only.
+     *
+     * # Errors
+     *
+     * Returns an error if the handle is invalid, does not name a sheet body,
+     * the options JSON is malformed, or export fails.
+     * @param {number} sheet
+     * @param {string | null} [options]
+     * @returns {Uint8Array}
+     */
+    exportStepSheet(sheet, options) {
+        var ptr0 = isLikeNone(options) ? 0 : passStringToWasm0(options, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len0 = WASM_VECTOR_LEN;
+        const ret = wasm.brepkernel_exportStepSheet(this.__wbg_ptr, sheet, ptr0, len0);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v2 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v2;
+    }
+    /**
      * Export a solid to STEP AP203 with optional header metadata.
      *
      * `options` is an optional JSON string with `productName`, `fileName`,
@@ -1998,7 +2179,7 @@ export class BrepKernel {
     /**
      * Apply variable-radius fillets to edges.
      *
-     * `json` is a JSON string: `[{"edge": u32, "law": "constant"|"linear"|"scurve", "start": f64, "end": f64}]`
+     * `json` is a JSON string: `[{"edge": u32, "law": "constant"|"linear"|"scurve", "start": f64, "end": f64, "startSetback": f64, "endSetback": f64}]`
      *
      * Also accepts brepjs-style fields: `startRadius`/`endRadius` as aliases for `start`/`end`.
      * When `law` is omitted and `startRadius` != `endRadius`, the law auto-detects as `"linear"`.
@@ -2133,6 +2314,12 @@ export class BrepKernel {
      * Fuse (union) two solids into one.
      *
      * Returns a new solid handle (`u32`).
+     *
+     * When the exact engine cannot handle the pair the kernel falls back to
+     * a mesh boolean and logs a `warn` on the `remus_approx` target (visible
+     * on the JS console through the log bridge); the returned handle then
+     * carries a mesh, not analytic faces. Use `booleanWithQuality` to have
+     * that disclosed in the result or refused outright.
      *
      * # Errors
      *
@@ -3517,6 +3704,42 @@ export class BrepKernel {
         return v2;
     }
     /**
+     * Import every supported STEP body root.
+     *
+     * Returns JSON with distinct `solids`, `sheets`, and bounded-healing
+     * `diagnostics` arrays so overlapping arena indices cannot blur handle
+     * classes.
+     *
+     * # Errors
+     *
+     * Returns an error if the STEP data is malformed or exceeds a resource
+     * limit.
+     * @param {Uint8Array} data
+     * @param {number | null} [max_input_bytes]
+     * @param {number | null} [max_entities]
+     * @returns {string}
+     */
+    importStepBodies(data, max_input_bytes, max_entities) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.brepkernel_importStepBodies(this.__wbg_ptr, ptr0, len0, !isLikeNone(max_input_bytes), isLikeNone(max_input_bytes) ? 0 : max_input_bytes, !isLikeNone(max_entities), isLikeNone(max_entities) ? 0 : max_entities);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
      * Import a STEP file and return solid handles plus bounded-healing diagnostics.
      *
      * The returned JavaScript string is JSON with shape
@@ -3609,6 +3832,32 @@ export class BrepKernel {
         return ret[0] >>> 0;
     }
     /**
+     * Imprints one solid's intersection edges onto another without removing
+     * material. Returns JSON `{"solid", "op"}` for the new target and its
+     * construction-derived journal entry.
+     * @param {number} target
+     * @param {number} tool
+     * @returns {string}
+     */
+    imprint(target, tool) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.brepkernel_imprint(this.__wbg_ptr, target, tool);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
      * Compute the uniform-density inertia tensor about the center of mass.
      *
      * Returns the symmetric 3x3 matrix in row-major order, expressed in the
@@ -3674,6 +3923,12 @@ export class BrepKernel {
      * Intersect two solids, keeping only their common volume.
      *
      * Returns a new solid handle (`u32`).
+     *
+     * When the exact engine cannot handle the pair the kernel falls back to
+     * a mesh boolean and logs a `warn` on the `remus_approx` target (visible
+     * on the JS console through the log bridge); the returned handle then
+     * carries a mesh, not analytic faces. Use `booleanWithQuality` to have
+     * that disclosed in the result or refused outright.
      *
      * # Errors
      *
@@ -4583,6 +4838,25 @@ export class BrepKernel {
         return ret[0] >>> 0;
     }
     /**
+     * Create and validate a first-class sheet body from face handles.
+     *
+     * Free boundary edges are retained and reported by `validateSheetBody`.
+     * The call rolls back if the faces do not form a valid connected sheet.
+     *
+     * Returns a shell-backed sheet-body handle (`u32`).
+     * @param {Uint32Array} face_handles
+     * @returns {number}
+     */
+    makeSheetBody(face_handles) {
+        const ptr0 = passArray32ToWasm0(face_handles, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.brepkernel_makeSheetBody(this.__wbg_ptr, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
      * Create a solid from a set of faces by sewing them together.
      *
      * Alias for `sewFaces` with a default tolerance. This is the equivalent
@@ -4980,6 +5254,25 @@ export class BrepKernel {
         return ret[0] >>> 0;
     }
     /**
+     * Mutually trim two transversal planar sheets by their oriented sides.
+     *
+     * Returns `[trimmedA, trimmedB]` in input order.
+     * @param {number} sheet_a
+     * @param {number} sheet_b
+     * @param {boolean} keep_a_positive
+     * @param {boolean} keep_b_positive
+     * @returns {Uint32Array}
+     */
+    mutualTrimSheets(sheet_a, sheet_b, keep_a_positive, keep_b_positive) {
+        const ret = wasm.brepkernel_mutualTrimSheets(this.__wbg_ptr, sheet_a, sheet_b, keep_a_positive, keep_b_positive);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
      * Create a new, empty kernel.
      */
     constructor() {
@@ -5007,6 +5300,31 @@ export class BrepKernel {
             throw takeFromExternrefTable0(ret[1]);
         }
         return ret[0] >>> 0;
+    }
+    /**
+     * V2 offset journaled as one construction-derived face-evolution entry
+     * (kind `offset`). Returns JSON `{"solid", "op"}`.
+     * @param {number} solid
+     * @param {number} distance
+     * @returns {string}
+     */
+    offsetJournaled(solid, distance) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.brepkernel_offsetJournaled(this.__wbg_ptr, solid, distance);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
     }
     /**
      * Offset a 2D polygon by a signed distance.
@@ -5818,6 +6136,49 @@ export class BrepKernel {
         return v1;
     }
     /**
+     * Serialize one first-class sheet body into a version 4 arena document.
+     *
+     * # Errors
+     *
+     * Returns an error if the shell handle is invalid, is not tagged as a
+     * sheet, or serialization fails.
+     * @param {number} sheet
+     * @returns {Uint8Array}
+     */
+    serializeSheet(sheet) {
+        const ret = wasm.brepkernel_serializeSheet(this.__wbg_ptr, sheet);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
+    }
+    /**
+     * Serialize several first-class sheet bodies into a version 4 arena document.
+     *
+     * Shared topology is encoded once with dense local indices. Input order
+     * and duplicate handles are preserved as document roots.
+     *
+     * # Errors
+     *
+     * Returns an error if any shell handle is invalid, is not tagged as a
+     * sheet, or serialization fails.
+     * @param {Uint32Array} sheets
+     * @returns {Uint8Array}
+     */
+    serializeSheets(sheets) {
+        const ptr0 = passArray32ToWasm0(sheets, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.brepkernel_serializeSheets(this.__wbg_ptr, ptr0, len0);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v2 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v2;
+    }
+    /**
      * Serialize a solid's complete in-memory topology sub-arena to bytes.
      *
      * Captures every vertex, edge, wire, face, shell reachable from the
@@ -5827,7 +6188,7 @@ export class BrepKernel {
      * and replaying them in a native Rust harness to reproduce
      * sub-ULP-sensitive boolean behavior.
      *
-     * This writer emits a single-root version 2 document. Returns a
+     * This writer emits a single-root version 3 document. Returns a
      * `Uint8Array` consumable by
      * `remus_io::arena_io::deserialize_solid`.
      *
@@ -5847,7 +6208,7 @@ export class BrepKernel {
         return v1;
     }
     /**
-     * Serialize several solids into one version 2 arena document.
+     * Serialize several solids into one version 3 arena document.
      *
      * Shared topology is encoded once with dense local indices. Input order
      * and duplicate handles are preserved as document roots. This format
@@ -5863,6 +6224,49 @@ export class BrepKernel {
         const ptr0 = passArray32ToWasm0(solids, wasm.__wbindgen_malloc);
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.brepkernel_serializeSolids(this.__wbg_ptr, ptr0, len0);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v2 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v2;
+    }
+    /**
+     * Serialize one first-class wire body into a version 5 arena document.
+     *
+     * # Errors
+     *
+     * Returns an error if the handle is invalid, is not tagged as a wire
+     * body, or serialization fails.
+     * @param {number} wire
+     * @returns {Uint8Array}
+     */
+    serializeWire(wire) {
+        const ret = wasm.brepkernel_serializeWire(this.__wbg_ptr, wire);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
+    }
+    /**
+     * Serialize first-class wire bodies into a version 5 arena document.
+     *
+     * Shared topology is encoded once. Root order and duplicate handles are
+     * preserved.
+     *
+     * # Errors
+     *
+     * Returns an error if any handle is invalid, is not tagged as a wire
+     * body, or serialization fails.
+     * @param {Uint32Array} wires
+     * @returns {Uint8Array}
+     */
+    serializeWires(wires) {
+        const ptr0 = passArray32ToWasm0(wires, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.brepkernel_serializeWires(this.__wbg_ptr, ptr0, len0);
         if (ret[3]) {
             throw takeFromExternrefTable0(ret[2]);
         }
@@ -5921,6 +6325,62 @@ export class BrepKernel {
         var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
         wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
         return v1;
+    }
+    /**
+     * Compute the area of a first-class sheet body.
+     * @param {number} sheet
+     * @param {number} deflection
+     * @returns {number}
+     */
+    sheetArea(sheet, deflection) {
+        const ret = wasm.brepkernel_sheetArea(this.__wbg_ptr, sheet, deflection);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0];
+    }
+    /**
+     * Compute the axis-aligned bounding box of a first-class sheet body.
+     *
+     * Returns `[min_x, min_y, min_z, max_x, max_y, max_z]`.
+     * @param {number} sheet
+     * @returns {Float64Array}
+     */
+    sheetBoundingBox(sheet) {
+        const ret = wasm.brepkernel_sheetBoundingBox(this.__wbg_ptr, sheet);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
+     * Compute the area-weighted center of a first-class sheet body.
+     * @param {number} sheet
+     * @returns {Float64Array}
+     */
+    sheetCenterOfArea(sheet) {
+        const ret = wasm.brepkernel_sheetCenterOfArea(this.__wbg_ptr, sheet);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
+     * Refuse volume measurement for a sheet with a stable typed diagnostic.
+     * @param {number} sheet
+     * @param {number} deflection
+     * @returns {number}
+     */
+    sheetVolume(sheet, deflection) {
+        const ret = wasm.brepkernel_sheetVolume(this.__wbg_ptr, sheet, deflection);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0];
     }
     /**
      * Hollow a solid with uniform wall thickness.
@@ -6139,6 +6599,28 @@ export class BrepKernel {
         return v1;
     }
     /**
+     * Split a solid into cells using a first-class sheet body.
+     *
+     * Returns a compound handle whose solids are in deterministic cell order.
+     * The qualified exact subset is currently one cylindrical sheet face.
+     *
+     * # Errors
+     *
+     * Returns a typed unsupported error for other sheet configurations and
+     * rolls back if intersection, cell validation, or volume conservation
+     * fails.
+     * @param {number} solid
+     * @param {number} sheet
+     * @returns {number}
+     */
+    splitBySheet(solid, sheet) {
+        const ret = wasm.brepkernel_splitBySheet(this.__wbg_ptr, solid, sheet);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
      * Compute the total surface area of a solid.
      *
      * # Errors
@@ -6247,6 +6729,28 @@ export class BrepKernel {
         return ret[0] >>> 0;
     }
     /**
+     * Sweep a closed planar first-class wire profile along an edge path.
+     *
+     * The input wire remains an independent body. Open and non-planar wire
+     * profiles are refused until sheet-result sweep assembly is qualified.
+     * Returns a solid handle (`u32`).
+     *
+     * # Errors
+     *
+     * Returns an error if either handle is invalid, the profile is not a
+     * qualified wire body, or the sweep operation fails.
+     * @param {number} profile
+     * @param {number} path_edge
+     * @returns {number}
+     */
+    sweepWire(profile, path_edge) {
+        const ret = wasm.brepkernel_sweepWire(this.__wbg_ptr, profile, path_edge);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
      * Sweep a face along a NURBS path with advanced options.
      *
      * `contact_mode`: "rmf" (default), "fixed", or "constantNormal:x,y,z"
@@ -6308,6 +6812,22 @@ export class BrepKernel {
      */
     tessellateFace(face, deflection, angular_tolerance) {
         const ret = wasm.brepkernel_tessellateFace(this.__wbg_ptr, face, deflection, !isLikeNone(angular_tolerance), isLikeNone(angular_tolerance) ? 0 : angular_tolerance);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return JsMesh.__wrap(ret[0]);
+    }
+    /**
+     * Tessellate a first-class sheet body into an open triangle mesh.
+     *
+     * Free boundary edges are expected and remain present in the result.
+     * @param {number} sheet
+     * @param {number} deflection
+     * @param {number | null} [angular_tolerance]
+     * @returns {JsMesh}
+     */
+    tessellateSheet(sheet, deflection, angular_tolerance) {
+        const ret = wasm.brepkernel_tessellateSheet(this.__wbg_ptr, sheet, deflection, !isLikeNone(angular_tolerance), isLikeNone(angular_tolerance) ? 0 : angular_tolerance);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
@@ -6519,6 +7039,42 @@ export class BrepKernel {
         }
     }
     /**
+     * Trim one planar sheet by one oriented side of another planar sheet.
+     * @param {number} target
+     * @param {number} tool
+     * @param {boolean} keep_positive
+     * @returns {number}
+     */
+    trimSheetBySheet(target, tool, keep_positive) {
+        const ret = wasm.brepkernel_trimSheetBySheet(this.__wbg_ptr, target, tool, keep_positive);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Trim a first-class sheet body by a solid and retain one classified side.
+     *
+     * `keep_inside = true` retains sheet patches inside the solid; `false`
+     * retains the outside remainder. Returns a new sheet-body shell handle.
+     *
+     * # Errors
+     *
+     * Returns a typed unsupported error for empty, coincident, or empty-result
+     * configurations, and rolls back if the retained sheet fails validation.
+     * @param {number} sheet
+     * @param {number} solid
+     * @param {boolean} keep_inside
+     * @returns {number}
+     */
+    trimSheetBySolid(sheet, solid, keep_inside) {
+        const ret = wasm.brepkernel_trimSheetBySolid(this.__wbg_ptr, sheet, solid, keep_inside);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
      * Unify adjacent faces that lie on the same geometric surface.
      *
      * Merges co-surface face fragments (produced by boolean operations)
@@ -6549,6 +7105,21 @@ export class BrepKernel {
             throw takeFromExternrefTable0(ret[1]);
         }
         return ret[0] >>> 0;
+    }
+    /**
+     * Validate a first-class sheet body and return every diagnostic.
+     *
+     * The JSON payload is `{ errorCount, warningCount, issues }`. An open
+     * boundary contributes warnings, not errors.
+     * @param {number} sheet
+     * @returns {any}
+     */
+    validateSheetBody(sheet) {
+        const ret = wasm.brepkernel_validateSheetBody(this.__wbg_ptr, sheet);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
     }
     /**
      * Validate a solid, returning the number of errors found.

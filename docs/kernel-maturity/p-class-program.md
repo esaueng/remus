@@ -249,11 +249,22 @@ cases from satisfying the gate.
 Equal-radius perpendicular cylinder×cylinder: the seam degenerates to two
 planar ellipses with no singularity — both types already exist, and the
 marcher currently 128-samples and interpolates what has a closed form. Add
-the degenerate equal-radius arm. The best-value exact chase on record; the
-union direction ships exact at 6 faces today.
+the degenerate equal-radius arm. The best-value exact chase on record.
 
 > **Exit gate:** cyl ∩ cyl = 16/3·r³ exact; the census fallback row (70
 > planar faces) becomes an exact analytic result.
+
+Delivered: phase FF consumes the existing closed-form cylinder×cylinder
+oracle and emits the two planar ellipses as eight authoritative quarter arcs,
+split at both shared pinch points and at each half-span midpoint. The periodic
+cylinder splitter promotes the seam-free arc loops into six winding-correct
+cylinder patches, while fuse and cut retain their exact surfaces as eight- and
+seven-face results. Intersection validates as a closed solid, exposes only
+analytic cylinder faces and line/ellipse edges, matches `16/3·r³` at radii 2,
+3, and 5 after rigid motion, and tessellates closed and manifold at three
+deflections. The batch/WASM exact-only path pins the same six-face result. The
+census now reports all three perpendicular-cylinder operators as exact; its
+intersection row moves from 70 planar fallback faces to six analytic faces.
 
 ### 2.4 Quadric × quadric transversal, NURBS seams (L)
 
@@ -262,18 +273,50 @@ union direction ships exact at 6 faces today.
 
 The general non-coaxial cases — sphere×cylinder, cone×sphere,
 torus×anything — have genuinely quartic section curves; NURBS seams are the
-*correct* exact-B-Rep answer. The work is downstream of the math: teach the
-face splitter to split quadric faces along `NurbsCurve` section edges (today
-the periodic splitters demand full closed circles anchored on seams), and
-give the classifier an analytic path for sphere/torus faces (today
-`ConvexAnalytic` bails to a ray-caster documented to mis-count on
-doubly-curved faces). Includes the missing torus tube-band splitter arm (the
-standing Beta caveat).
+*correct* exact-B-Rep answer. The math marcher and the first seam consumers
+already exist: winding NURBS chains can split cylinder/cone bands, sphere
+hemispheres have a seam arrangement, and a torus notch has a bounded
+arrangement arm. The remaining work is to make those consumers
+operator-neutral, extend them across general quadric section topology, and
+give mixed sphere/torus result solids an analytic classifier instead of the
+ray-cast path documented to mis-count on doubly-curved faces.
 
-> **Exit gate:** the three census fallback rows — box ∪ sphere (1192 planar
-> faces), cyl ∩ cyl (70), torus ∩ box (312) — become true B-Rep results with
-> analytic faces preserved, volumes verified against the mesh oracle within
-> deflection bound. The `sphere_box_partial_*` parity gaps close.
+Measured at `eca4fd4569f8e98e757b212782bd59d50b6d768e`, the 51-row census has
+exactly three boolean fallbacks: box ∪ sphere (1192 planar faces),
+perpendicular equal-radius cylinder ∩ cylinder (70), and torus ∩ box (312).
+Issue 2.3 owns the cylinder row. Issue 2.4 executes in independently
+reviewable stages:
+
+1. **2.4a — sphere multi-region arrangement.** Emit every bounded cell and
+   closed cap from a hemisphere seam arrangement, close box ∪ sphere as a
+   16-face analytic B-Rep, and promote the two stale `sphere_box_partial_*`
+   parity expectations.
+2. **2.4b — torus complement selection.** Reuse the shipped torus-notch
+   arrangement for the complementary Intersect region; close torus ∩ box with
+   toroidal faces retained and a mesh-volume oracle.
+3. **2.4c — general quartic seams and classification.** Exercise marched
+   `NurbsCurve` sections on sphere×cylinder, cone×sphere, and torus pairs;
+   extend the arrangement and mixed analytic classifier only where those
+   pinned witnesses require it.
+4. **2.4d — integration ratchet.** Merge the preceding heads, rerun the full
+   operator census and parity matrix, and reconcile the capability/stability
+   ledgers without weakening typed refusal or fallback disclosure.
+
+Stage 2.4b is in review in PR #207. The torus-notch arrangement emits both
+complementary annular `u`-bands with distinct interior witnesses and
+winding-correct outer/inner roles. Operator-neutral classification retains the
+long band for Cut and the short band for Intersect. The latter is a five-face
+analytic result (one torus and four planes), passes strict shell validation,
+and matches an independently co-refined mesh-volume oracle within 1%. Native
+and batch/WASM exact-only paths pin the same result, and the census row moves
+from 312 planar fallback faces to five analytic faces.
+
+> **Exit gate:** together with Issue 2.3, the three measured census fallback
+> rows become true B-Rep results with analytic faces preserved and volumes
+> verified against independent or mesh oracles within their stated bounds.
+> The `sphere_box_partial_*` parity gaps close, the three quartic witnesses
+> above run exact-or-typed-refusal without unbounded work, and every stage is
+> represented in the final integration census.
 
 ### 2.5 NURBS × NURBS booleans (L)
 
@@ -328,12 +371,14 @@ disclosed, not silent.
 
 — partial: boolean/NURBS-SSI cooperative cancellation is typed,
 transactional, and WASM-bound; the coupled SSI Newton loop now consumes the
-caller's iteration budget and cancellation token, and SSI seed subdivision
-consumes the caller's recursion-depth cap. Parameter-space budgets plus wider
-operation-family adoption remain
+caller's iteration budget and cancellation token, SSI seed subdivision
+consumes the caller's recursion-depth cap, and direct/batch WASM quality
+booleans expose the existing march, queue, segment, and branch-exploration
+caps. Parameter-space tolerance plus wider operation-family adoption remain
 ([PR #138](https://github.com/esaueng/remus/pull/138) +
 [PR #147](https://github.com/esaueng/remus/pull/147) +
-[PR #160](https://github.com/esaueng/remus/pull/160)).
+[PR #160](https://github.com/esaueng/remus/pull/160) +
+[PR #202](https://github.com/esaueng/remus/pull/202)).
 
 `crates/math/src/context.rs` · `crates/algo/src/pave_filler/` ·
 `crates/math/src/nurbs/intersection/` · `crates/wasm/src/bindings/`
@@ -491,32 +536,32 @@ maps the existing capability-matrix body axis to solid, sheet, wire, and
 general-body semantics; side-of sheet classification; Compound-first
 cellular results; STEP entities; and construction-derived evolution. Non-solid
 cells start Unqualified and are promoted only by the bounded evidence of
-Issues 4.2–4.7; Issue 4.2's bounded sheet workflow is now qualified in review.
-Issue 4.3's first cellular result is also implemented in review for the
+Issues 4.2–4.7; Issue 4.2's bounded sheet workflow is now qualified.
+Issue 4.3's first cellular result is implemented for the
 qualified single-cylinder-sheet cell.
-Issue 4.4's planar solid×sheet and sheet×sheet implementation is complete in
-review, including the trim-plus-sew exit witness; curved and multi-face sheet
+Issue 4.4's planar solid×sheet and sheet×sheet implementation is complete,
+including the trim-plus-sew exit witness; curved and multi-face sheet
 pairs remain unqualified.
-Issue 4.5's planar solid×solid imprint is implemented in review with exact
+Issue 4.5's planar solid×solid imprint is implemented with exact
 construction lineage; curved and same-domain imprint cells remain unqualified.
-Issue 4.6 is implemented in review: exact two-solid operations return
+Issue 4.6 is implemented: exact two-solid operations return
 independently validated regions in a Compound with per-region construction
 lineage, and bounded Compound operands preserve or distribute those exact
 regions. The legacy single-Solid entry points remain as explicit compatibility
 surfaces; intersecting-member fuse and multi-tool Compound cut stay
 Unqualified until recursive lineage composition exists.
-Issue 4.7's bounded wire-body cell is implemented in review: body-level length,
+Issue 4.7's bounded wire-body cell is implemented: body-level length,
 existing copy/transform semantics, additive arena-v5 wire roots, and validated
 closed-planar profile sweep all have native/direct/batch WASM evidence. Open
-and non-planar wire sweeps remain typed refusals. This completes the M4
-implementation sequence; the stacked PRs remain unmerged.
+and non-planar wire sweeps remain typed refusals. This completes the bounded M4
+implementation sequence.
 
 ### 4.2 Sheet bodies first-class (M)
 
 `crates/topology/src/shell.rs` · `crates/check/src/validate/` ·
 `crates/operations/src/tessellate/` · `crates/io/src/step/`
 
-Implemented, in review in [PR #209](https://github.com/esaueng/remus/pull/209),
+Implemented in [PR #209](https://github.com/esaueng/remus/pull/209),
 [PR #210](https://github.com/esaueng/remus/pull/210),
 [PR #211](https://github.com/esaueng/remus/pull/211),
 [PR #212](https://github.com/esaueng/remus/pull/212), and
@@ -531,8 +576,7 @@ replay, root order and duplicate preservation, typed transactional refusal,
 WASM parity, and frozen v3 writer bytes. STEP body-aware APIs now map tagged
 sheets to `SHELL_BASED_SURFACE_MODEL` over `OPEN_SHELL` or `CLOSED_SHELL`,
 preserve representation-scoped tolerance authority, keep solid roots distinct,
-and expose direct/batch WASM parity. The implementation exit witness is green;
-the issue remains in review until the stack merges.
+and expose direct/batch WASM parity. The implementation exit witness is green.
 
 Open shells as bodies with their own validation profile (free boundary
 allowed and reported, orientation consistent), area properties, tessellation,
@@ -695,10 +739,10 @@ silently replaced by endpoint-linear interpolation: the builder preserves the
 function, preflights a deterministic domain grid, and the walker checks every
 consumed station. Because an arbitrary closure has no provable bound between
 samples, its whole-domain certification remains explicitly Unqualified.
-Likewise, turning the qualified walking band into a trimmed solid remained on
-the existing typed trimmer-refusal path at this stage; curved supports, corner
-assembly, setbacks, and overflow were intentionally left to Issues 5.2–5.5
-rather than inferred from this component result.
+Likewise, turning the qualified walking band into a trimmed solid remains on
+the existing typed trimmer-refusal path; curved supports, corner assembly,
+setbacks, and overflow remain Issues 5.2–5.5 rather than being inferred from
+this component result.
 
 > **Exit gate:** variable-radius cells move to Qualified with closed-form +
 > invariant oracles; refusals typed at law-domain boundaries (radius → 0,

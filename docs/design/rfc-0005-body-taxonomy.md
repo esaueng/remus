@@ -2,16 +2,15 @@
 
 Status: accepted in PR #127; implementation staged as the P-class program
 doc's Issues 4.2–4.7 (M4). The Stage 1 class, validation, and arena-tagging
-substrate is in review in PR #209; the Stage 2 operations/WASM tranche is in
-review in PR #210, and standalone arena-v4 sheet roots are in review in PR
-#211. Sheet bounding box and center-of-area are in review in PR #212; STEP
-surface-model exchange is in review in PR #213. Together they implement Issue
-4.2's exit gate, but the stack is not merged. This RFC re-declares the
-capability matrix's body-type axis —
+substrate merged in PR #209. The Stage 2 operations/WASM tranche was
+implemented in PR #210, standalone arena-v4 sheet roots in PR #211, sheet
+bounding box and center-of-area in PR #212, and STEP surface-model exchange in
+PR #213. Together they implement Issue 4.2's exit gate. This RFC re-declares
+the capability matrix's body-type axis —
 "solid, sheet, wire, compound, cavity-bearing solid, and later general body"
 (`docs/kernel-maturity/capability-matrix.md`) — against concrete semantics;
 every sheet/wire/general cell starts Unqualified, with bounded Issue 4.2 sheet
-cells now qualified in review by the capability matrix.
+cells qualified by the capability matrix's cited witnesses.
 
 Characterization anchors: `crates/algo/src/builder/builder_solid.rs` fn
 `assemble` (single-solid convention, TODO below); `check_shell_closed`
@@ -181,14 +180,13 @@ free boundary as `Warning` via a new `ShellFreeBoundary` check id — and
 `validate_wire_body`); an additive `body_class` field on shell/wire
 serialization records whose absence loads as the default class.
 
-Delivered for review in PR #209: the public body-class vocabulary and
+Delivered in PR #209: the public body-class vocabulary and
 validated tags, class-aware solid/sheet/wire validation, stable diagnostics,
 and backward-compatible arena-v3 tags. PR #210 supplies the first sheet L3
 and WASM entry points. PR #211 adds versioned standalone sheet roots while
 freezing existing v3 writer bytes; wire roots remain a later tranche. PR #212
-adds spatial properties and PR #213 adds STEP surface-model exchange. The full
-Issue 4.2 implementation is in review and its exit witness is green; merge
-disposition remains open.
+adds spatial properties and PR #213 adds STEP surface-model exchange. Together
+they satisfy the full Issue 4.2 implementation exit witness.
 
 Characterization: the pre-Stage-1 test pinned that an open shell errored on
 `ShellClosed`; it flips to the sheet profile emitting the free-boundary warning.

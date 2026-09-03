@@ -133,7 +133,7 @@ P-Class 2.3 · conic boolean cells = O2.2 · offset self-intersection = 5.7
 | B2 | **Boolean scale residuals** — 1e-5 fails closed (100·tol weld bands); raw-GFA 1e6 silently 0.9467 vs 0.8400 (ExactOnly refuses; measure + pin). | `algo` bands | M | Feeds P-Class 2.6 directly; the 1e6 cell is a possible silent-wrong class. Geometry lane. | Open |
 | B3 | **Closed-rim chamfers** — cone-frustum band mirroring the validated toroidal fillet assembler; closed-form volume oracle. Stabilization C1.2. | `blend`, `operations/src/chamfer.rs` | M | Exact surfaces, cheap, passes chase filter 1; unblocks resize_blend cylinder/cone (C2). | Open |
 | B4 | **v2 walking-trimmer completion** — the four named gaps: keep-side hint, shared contact edges, end-cap notch trim, chamfer external-tangent branch. Stabilization C1.3. | `blend/src/trimmer.rs` | M | Critical path for v2 walker parity → legacy engine retirement (M5 precondition). | Open |
-| B5 | **Offset face provenance** — offset derives faces 1:1 and discards the mapping; journal real evolution instead of a barrier. | `offset`, `operations/src/offset_v2.rs` | S | The last declared-barrier operation nobody owns; closes the B3-residual from stabilization. | Open |
+| B5 | **Offset face provenance** — offset derives faces 1:1 and discards the mapping; journal real evolution instead of a barrier. | `offset`, `operations/src/offset_v2.rs` | S | The last declared-barrier operation nobody owns; closes the B3-residual from stabilization. | **Done (2026-09-02, PR #224):** default intersection-joint V2 offsets retain and validate the total 1:1 construction map; native and direct/batch WASM journal wrappers record it transactionally. Closed-form plane/volume, persistent-reference, rollback, and WASM parity oracles pin the claim. Arc-joint and self-intersection-removal variants explicitly refuse this map because later face synthesis/replacement needs richer provenance. |
 | B6 | **Evidence matrices, batched** — the "Stable-but-blocked" ledger rows that are pure test work: primitives invalid-input/scale/postconditions; plane-section cavity+degeneracy; measurement curved-cavity+scale; sweeps degenerate/cavity + nonconvergence budgets; convex hull/Minkowski degenerates. One qualify_*.rs per family, stabilization-plan pattern. | `operations/tests/` | M (S per family) | Flips ~8 Blocked ledger rows with zero new geometry; ideal bounded-session work. | Open |
 | B7 | **Pave-block attachment for marched FF curves on curved faces** — the named canonical fix for the cross-face boundary-desync family; three cheaper altitudes already failed. | `algo/pave_filler/make_blocks.rs`, `phase_ff.rs` | L | Deepest structural payoff in algo; root-causes a whole non-manifold family. Geometry lane, coordinate with M2; repro `replay_scplate.rs`. | Open |
 | B8 | **Reversed NURBS sub-span convention** — forward spans shipped; reversed validated sub-spans blocked on the same arrangement defect as B7. | `topology/src/edge.rs` | M | Completes the endpoint-trimmed contract 2.0 builds on. | Open (after/with B7) |
@@ -142,6 +142,7 @@ P-Class 2.3 · conic boolean cells = O2.2 · offset self-intersection = 5.7
 | B11 | **Small hygiene set** — `log::debug!` false-zero in `fill_images_faces.rs` (diagnostic-infra bug); deterministic STEP entity ordering; heal `fix_duplicate_faces` winding-blind comparison; plane×plane sampled in-both exact upgrade; `n_fine` clamp hazard note→guard. | various | S each | Cheap, each has already cost or will cost a debugging session. | Open |
 | B12 | **Holes on non-planar section caps** — annular Coons or cap-then-subtract vs extruded-annulus ground truth (stabilization B2.2). | `operations/src/cap.rs`, `fill_face.rs` | M | Largest remaining non-planar-cap value with clean ground truth. H3, with M7 cap work. | Open |
 | B13 | **STEP inner-shell (voids) export** — `BREP_WITH_VOIDS` reads; export of cavity solids incomplete. | `io/src/step/writer.rs` | S–M | Round-trip honesty for hollow parts; gauntlet round-trip stage will hit it. | Open |
+| B15 | **Cut/intersect pocket faces on a cylinder wall come back inconsistently oriented** — pinned but ignored since #198; the fix is engine-side, the repro is already in-tree. | `crates/operations/tests/regress_parallel_boss_band_sections.rs`, `algo` assembly | M | The only `#[ignore]` in the inventory that pins a live engine defect rather than a fork-policy or diagnostic case. Geometry lane. | Open |
 | B14 | **Render promotion track** — Experimental→Beta after a contract-stable release cycle (stabilization C4 residue); outside both programs. | `render` | S (time-gated) | Cleans the last stabilization row. | Open |
 
 **Explicitly not queued** (decided or terminal — do not re-open without
@@ -191,6 +192,15 @@ question), v1-fillet API migration (product decision, owner's).
   `subdivisionDepth`, with shared validation and default/boundary/rejection
   contract tests. Parameter-space budgeting and wider operation-family
   adoption remain under P-Class 2.8.
+- **K-S3 SSI marcher-budget WASM surface — done ([PR #202](https://github.com/esaueng/remus/pull/202),
+  2026-09-02):** the existing `march_steps`, `queue_size`, `segments`, and
+  `branches_per_direction` caps are additive optional arguments on direct
+  `booleanWithQuality` / `booleanWithCancellation` and matching camelCase
+  fields on batch `booleanWithQuality`. Shared bounded-integer validation,
+  legacy-default equivalence, generated-WASM smoke coverage, context-authority
+  tests, and a batch rejection/rollback volume oracle pin the contract.
+  Parameter-space tolerance and wider operation-family adoption remain under
+  P-Class 2.8, so that parent item stays partial.
 - **K-S1 pattern overlap — done (PR #142, 2026-08-30):** linear,
   circular, and grid patterns now refuse measured material overlap with the
   typed `pattern_instances_overlap` contract and full rollback across native,
