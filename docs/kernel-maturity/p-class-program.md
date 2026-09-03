@@ -862,7 +862,7 @@ or stop against it with a typed cliff verdict, rather than returning a generic
 failure or building beyond the support. Rollover is re-limitation against the
 neighbor's neighbor — shared machinery with 6.1, build once.
 
-Implemented, in review in [PR #235](https://github.com/esaueng/remus/pull/235),
+Merged in [PR #235](https://github.com/esaueng/remus/pull/235),
 under a declared **stop-at-cliff** policy. The v2 fillet path now distinguishes
 a support boundary from a generic radius limit:
 it returns transactional `CliffEncountered` with the source edge, exhausted
@@ -927,9 +927,36 @@ curves remain Unqualified rather than falling back to an approximate band.
 `crates/offset/src/self_int.rs` · `crates/operations/src/shell_op.rs`
 
 Filed under M5 because it unblocks real shelling: global self-intersection
-removal is a standing typed refusal, mandatory for thin-wall parts whose
-offset folds. The BOP-based approach in `self_int.rs` becomes viable once M2
-generality lands. Pull forward opportunistically.
+removal was a standing typed refusal, mandatory for thin-wall parts whose
+offset folds. The general BOP-based approach becomes viable once M2
+generality lands; the bounded exact cell below does not claim that broader
+coverage.
+
+**Implemented for the fully collapsed uniform-L-prism cell.** A closed shell
+of a hole-free, straight-edged, all-planar prism with one six-edge orthogonal
+L-profile and equal arm widths may contain one disconnected inner offset
+component whose concave cap winding has crossed
+through zero. The remover proves two matching inverted caps, one quadrilateral
+side per cap edge, independent closed/manifold topology, strict containment by
+one sound retained component, and exact equality with the construction-proven
+generated inner-face set before excising the whole empty region. It reports
+the removed faces so shell evolution cannot name vanished outputs.
+The entire shell operation is transactional.
+
+The retained component must independently prove that exact profile; this
+prevents a negative signed area from being mistaken for complete collapse on
+a more general concave section. The exit witness extrudes a `4 x 4 x 2`
+L-profile with one-unit arms. At wall `0.4`, its cavity survives with 16 result
+faces and exact volume `12.512`; at
+wall `0.6`, beyond the `0.5` local-collapse boundary, the eight-face folded
+cavity is removed and the retained L-prism validates at exact volume `14`.
+The result has two uses per B-Rep edge, a watertight position-welded mesh, and
+independent mesh volume `14`; both sides remain stable at model scales
+`1e-3 / 1 / 1e3` under translation. Direct, legacy-batch, and structured-batch
+WASM routes agree bit-for-bit. An open-top/connected fold refuses
+transactionally. Partial folds, multiple folded regions, holed or curved
+components, and general face-face self-intersection remain Unqualified rather
+than authorizing material deletion.
 
 > **Exit gate:** shell an L-bracket at a thickness that folds the inner
 > offset: folded region excised, result valid, volume vs. mesh oracle; the
