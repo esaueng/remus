@@ -114,7 +114,11 @@ does not itself promote or demote anything.
   retains four spherical faces, matches the independent spherical-lens and
   inclusion–exclusion volumes, classifies material probes, and tessellates
   closed and manifold across three deflections, including an oblique-center
-  witness. The CI-ratcheted
+  witness. Equal-radius perpendicular cylinder×cylinder is also exact for all
+  three operators: intersection retains six cylinder patches bounded by eight
+  authoritative ellipse arcs, matches the independent `16r³/3` Steinmetz
+  oracle across radii and rigid motion, and tessellates closed and manifold at
+  three deflections. The CI-ratcheted
   `approx_census` additionally exposes exact/fallback/error path and result
   face-count drift across its representative operation matrix; it is a drift
   detector, not by itself qualification evidence for a cell.
@@ -136,7 +140,8 @@ does not itself promote or demote anything.
 - **Qualified cells** (closed-form classification incl. tangency and
   coincidence, scale-invariant): plane–plane, plane–sphere,
   plane–cylinder, sphere–sphere, parallel-axis cylinder–cylinder, coaxial
-  sphere–cylinder.
+  sphere–cylinder, and intersecting perpendicular equal-radius
+  cylinder–cylinder (two exact planar ellipse branches).
 - Known gaps: remaining surface pairs delegate to the legacy path and are
   wrapped as Unclassified/incomplete (declared, not silent); curve-curve
   and curve-surface qualification pending. NURBS SSI consumes caller-owned

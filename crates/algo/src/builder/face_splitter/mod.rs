@@ -7108,6 +7108,73 @@ fn split_face_2d_impl(
         }
     }
 
+    // Periodic structural classification normally treats an arc-only loop as
+    // a hole because ordinary bands also carry their seam Lines.  A
+    // Steinmetz lens is the exception: its exact ellipse arcs close a genuine
+    // region wholly away from the seam.  Promote only loops that remain
+    // outside every seam-carrying band under every adjacent periodic
+    // translate.  A real bore outline is nested under one of those
+    // translates and therefore stays a hole.
+    if use_structural_classification && !outers.is_empty() && !holes.is_empty() {
+        let outer_uv: Vec<Vec<Point2>> = outers
+            .iter()
+            .map(|(wire, _)| sample_wire_loop_uv_periodic(wire, u_per_opt, v_per_opt))
+            .collect();
+        let u_shifts = u_per_opt.map_or_else(|| vec![0.0], |period| vec![-period, 0.0, period]);
+        let v_shifts = v_per_opt.map_or_else(|| vec![0.0], |period| vec![-period, 0.0, period]);
+        let mut promoted = Vec::new();
+
+        holes.retain(|hole| {
+            if !hole
+                .iter()
+                .all(|edge| matches!(edge.curve_3d, EdgeCurve::Ellipse(_)))
+            {
+                return true;
+            }
+            let points = sample_wire_loop_uv_periodic(hole, u_per_opt, v_per_opt);
+            if points.len() < 3 {
+                return true;
+            }
+            let mut perimeter: f64 = points.windows(2).map(|w| (w[1] - w[0]).length()).sum();
+            if let (Some(first), Some(last)) = (points.first(), points.last()) {
+                perimeter += (*last - *first).length();
+            }
+            if signed_area_2d(&points).abs() <= perimeter * tol.linear {
+                return true;
+            }
+
+            let nested_somewhere = outer_uv.iter().any(|outer| {
+                u_shifts.iter().any(|&du| {
+                    v_shifts.iter().any(|&dv| {
+                        let shifted: Vec<Point2> = points
+                            .iter()
+                            .map(|point| Point2::new(point.x() + du, point.y() + dv))
+                            .collect();
+                        loop_containment(&shifted, outer) != LoopContainment::Outside
+                    })
+                })
+            });
+            if nested_somewhere {
+                true
+            } else {
+                promoted.push(hole.clone());
+                false
+            }
+        });
+
+        for mut region in promoted {
+            if loop_eff_area(&region) < 0.0 {
+                region.reverse();
+                for edge in &mut region {
+                    std::mem::swap(&mut edge.start_uv, &mut edge.end_uv);
+                    std::mem::swap(&mut edge.start_3d, &mut edge.end_3d);
+                    edge.forward = !edge.forward;
+                }
+            }
+            outers.push((region, 1.0));
+        }
+    }
+
     // If all loops are CW (negative area), the winding is reversed. Promote
     // the LARGEST-area loop as the outer — promoting whichever loop the wire
     // builder happened to trace first is order-dependent: when a down-facing
