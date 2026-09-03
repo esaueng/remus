@@ -2040,8 +2040,8 @@ fn fuse_perpendicular_cylinders_is_analytic_watertight() {
         }
     }
     assert_eq!(
-        cylinders, 2,
-        "expected two mutually-trimmed walls, got {cylinders}"
+        cylinders, 4,
+        "the exact ellipse seam splits both cylinders into two wall bands, got {cylinders}"
     );
     assert_eq!(planes, 4, "expected four end caps, got {planes}");
     assert!(

@@ -2137,7 +2137,11 @@ pub(super) fn tessellate_nonplanar_cdt(
         validate_interior_grid_size(n_u, n_v)?;
 
         let boundary_uv_ref = &boundary_uv;
-        let interior_pts: Vec<Point2> = (1..n_u)
+        let has_ellipse_wire = wire.edges().iter().any(|oriented| {
+            topo.edge(oriented.edge())
+                .is_ok_and(|edge| matches!(edge.curve(), EdgeCurve::Ellipse(_)))
+        });
+        let mut interior_pts: Vec<Point2> = (1..n_u)
             .flat_map(|iu| {
                 (1..n_v).filter_map(move |iv| {
                     let u = u_min + du * (iu as f64 / n_u as f64);
@@ -2146,6 +2150,127 @@ pub(super) fn tessellate_nonplanar_cdt(
                 })
             })
             .collect();
+
+        if has_ellipse_wire {
+            // An ellipse boundary bends through both parameter directions while
+            // a cylinder/cone grid has only two rows in its straight ruling
+            // direction.  Densify only the v-band occupied by conic samples;
+            // otherwise boundary-only triangles span the lens valley with
+            // chords that cut through the solid.
+            let mut ellipse_by_edge: DetHashMap<usize, bool> = DetHashMap::default();
+            let mut ellipse_v_min = f64::INFINITY;
+            let mut ellipse_v_max = f64::NEG_INFINITY;
+            for (index, &(_, v)) in boundary_uv.iter().enumerate() {
+                let edge_id = boundary_3d[index].2;
+                let is_ellipse = *ellipse_by_edge.entry(edge_id.index()).or_insert_with(|| {
+                    topo.edge(edge_id)
+                        .is_ok_and(|edge| matches!(edge.curve(), EdgeCurve::Ellipse(_)))
+                });
+                if is_ellipse {
+                    ellipse_v_min = ellipse_v_min.min(v);
+                    ellipse_v_max = ellipse_v_max.max(v);
+                }
+            }
+
+            let dense_dv = dv / n_u as f64;
+            if ellipse_v_max > ellipse_v_min && dense_dv > 1.0e-15 {
+                let lo = (ellipse_v_min - dense_dv).max(v_min);
+                let hi = (ellipse_v_max + dense_dv).min(v_max);
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let rows = (((hi - lo) / dense_dv).ceil() as usize).max(1);
+                validate_interior_grid_size(n_u, rows)?;
+
+                let boundary_cdt: Vec<Point2> =
+                    boundary_uv_ref.iter().map(|&(u, v)| to_cdt(u, v)).collect();
+                let clearance = 0.4 * du / n_u as f64;
+                let clear_of_boundary = |point: Point2| {
+                    (0..boundary_cdt.len()).all(|index| {
+                        let a = boundary_cdt[index];
+                        let b = boundary_cdt[(index + 1) % boundary_cdt.len()];
+                        let ab = b - a;
+                        let length_squared = ab.dot(ab);
+                        let t = if length_squared > 1.0e-30 {
+                            ((point - a).dot(ab) / length_squared).clamp(0.0, 1.0)
+                        } else {
+                            0.0
+                        };
+                        let foot = Point2::new(a.x() + ab.x() * t, a.y() + ab.y() * t);
+                        (point - foot).length() > clearance
+                    })
+                };
+                for row in 0..=rows {
+                    let v = lo + (hi - lo) * (row as f64 / rows as f64);
+                    for column in 1..n_u {
+                        let u = u_min + du * (column as f64 / n_u as f64);
+                        let point = to_cdt(u, v);
+                        if point_in_polygon_2d(boundary_uv_ref, Point2::new(u, v))
+                            && clear_of_boundary(point)
+                        {
+                            interior_pts.push(point);
+                        }
+                    }
+                }
+            }
+
+            // Shared ellipse arcs give adjacent cylinder faces identical chord
+            // vertices.  Without a face-own interior point near each segment,
+            // both CDTs can emit the same opposite-winding boundary-only
+            // triangle, producing a non-manifold duplicate patch.
+            let orientation: f64 = (0..boundary_pts.len())
+                .map(|index| {
+                    let a = boundary_pts[index];
+                    let b = boundary_pts[(index + 1) % boundary_pts.len()];
+                    a.x().mul_add(b.y(), -(b.x() * a.y()))
+                })
+                .sum();
+            let mut ellipse_by_edge: DetHashMap<usize, bool> = DetHashMap::default();
+            for index in 0..boundary_pts.len() {
+                let next = (index + 1) % boundary_pts.len();
+                let is_ellipse =
+                    |sample_index: usize, memo: &mut DetHashMap<usize, bool>| -> bool {
+                        let edge_id = boundary_3d[sample_index].2;
+                        *memo.entry(edge_id.index()).or_insert_with(|| {
+                            topo.edge(edge_id)
+                                .is_ok_and(|edge| matches!(edge.curve(), EdgeCurve::Ellipse(_)))
+                        })
+                    };
+                if !is_ellipse(index, &mut ellipse_by_edge)
+                    || !is_ellipse(next, &mut ellipse_by_edge)
+                {
+                    continue;
+                }
+
+                let a = boundary_pts[index];
+                let b = boundary_pts[next];
+                let segment = b - a;
+                let length = segment.length();
+                if length < 1.0e-12 {
+                    continue;
+                }
+                let (normal_x, normal_y) = if orientation >= 0.0 {
+                    (-segment.y() / length, segment.x() / length)
+                } else {
+                    (segment.y() / length, -segment.x() / length)
+                };
+                let offset = (0.35 * length).min(du / n_u as f64);
+                let candidate = Point2::new(
+                    f64::midpoint(a.x(), b.x()) + normal_x * offset,
+                    f64::midpoint(a.y(), b.y()) + normal_y * offset,
+                );
+                let (u, v) = from_cdt(candidate);
+                if point_in_polygon_2d(boundary_uv_ref, Point2::new(u, v)) {
+                    interior_pts.push(candidate);
+                }
+            }
+        }
+
+        if interior_pts.len() > MAX_INTERIOR_GRID_POINTS {
+            return Err(crate::OperationsError::InvalidInput {
+                reason: format!(
+                    "non-planar face tessellation grid exceeds the {MAX_INTERIOR_GRID_POINTS}-point work limit"
+                ),
+            });
+        }
         if !interior_pts.is_empty() {
             let interior_cdt_ids = cdt
                 .insert_points_hilbert(&interior_pts)
