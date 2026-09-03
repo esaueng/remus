@@ -2064,14 +2064,14 @@ fn algebraic_torus_cylinder(
 ///
 /// The minor direction of both is the common perpendicular `a₁ × a₂`. The
 /// two ellipses touch at the antipodal pinch points `p0 ± r·(a₁ × a₂)` —
-/// the figure-eight seam — so each ellipse alone is closed but NOT simple;
-/// the integration stage must split the pinch.
+/// the figure-eight seam — so each ellipse alone is closed but NOT simple.
+/// Phase FF splits both carriers at the pinch points before weaving them.
 ///
 /// Returns `Some(vec![E₁, E₂])` for the gated case and `None` for every
 /// other configuration (parallel or oblique axes, unequal radii, skew axes
 /// whose lines do not cross), which defers to the sampled quadratic path in
-/// `algebraic_cylinder_cylinder`. Phase FF can call this directly and mint
-/// exact `EdgeCurve::Ellipse` section edges, as it already does for the
+/// `algebraic_cylinder_cylinder`. Phase FF calls this directly and mints exact
+/// `EdgeCurve::Ellipse` section edges, as it already does for the
 /// plane-analytic ellipse arm.
 ///
 /// # Errors
@@ -2272,12 +2272,10 @@ fn algebraic_cylinder_cylinder(
         // Cylinder 2 reaches every angle of cylinder 1 (equal radii, or an
         // axis separation small enough that the sweep never leaves it): the two
         // algebraic branches are each a closed loop over the full period.
-        // NOTE (issue 2.3): the exact Steinmetz arm `exact_cylinder_cylinder`
-        // below is proven and tested but deliberately NOT wired here yet —
-        // its figure-eight seam must be split at the pinch points before the
-        // boolean weave can consume it (the cross-drilled-bore corpus
-        // regresses on the unsplit emission). The wiring lands with the
-        // phase-FF integration stage.
+        // Phase FF intercepts the exact equal-radius perpendicular case via
+        // `exact_cylinder_cylinder` and splits its figure-eight seam at the
+        // pinch points before weaving. This sampled branch remains the generic
+        // path for every other all-angle cylinder pair.
         let mut curve_plus: Vec<Point3> = Vec::with_capacity(n_samples + 1);
         let mut curve_minus: Vec<Point3> = Vec::with_capacity(n_samples + 1);
         for (i, roots) in samples.iter().enumerate() {
