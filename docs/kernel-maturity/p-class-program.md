@@ -491,6 +491,8 @@ general-body semantics; side-of sheet classification; Compound-first
 cellular results; STEP entities; and construction-derived evolution. Non-solid
 cells start Unqualified and are promoted only by the bounded evidence of
 Issues 4.2–4.7; Issue 4.2's bounded sheet workflow is now qualified in review.
+Issue 4.3's first cellular result is also implemented in review for the
+qualified single-cylinder-sheet cell.
 
 ### 4.2 Sheet bodies first-class (M)
 
@@ -531,6 +533,16 @@ and STEP round-trip (`SHELL_BASED_SURFACE_MODEL`).
 Generalize split-by-plane to split-by-sheet-body: the sheet's faces act as
 the tool's face set in GFA without a bounding solid. First consumer of the
 cellular result model.
+
+Implemented, in review in [PR #214](https://github.com/esaueng/remus/pull/214):
+the isolated GFA arrangement uses the sheet only for pave filling, target-face
+partitioning, and oppositely oriented cell closure—never as a volumetric
+boolean operand. `split_by_sheet` returns a Compound after validating every
+cell and proving volume conservation. The bounded exit witness is one
+connected cylindrical face crossing a box: two deterministic native/direct
+WASM/batch cells, each valid, with the inner closed-form cylinder volume and
+the cell sum equal to the box. Other surface families and multi-face sheets
+refuse with `unsupported_sheet_split`; expanding those cells remains open.
 
 > **Exit gate:** a curved sheet splits a solid into N regions whose volumes
 > sum exactly to the original; each region individually valid; determinism

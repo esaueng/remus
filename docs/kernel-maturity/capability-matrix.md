@@ -51,8 +51,11 @@ These families are classified across the full grid:
   review in PR #209; sheet construction, area, typed volume refusal, and open
   tessellation entry points are in review in PR #210, arena roots and spatial
   properties in PRs #211–#212, and STEP surface-model exchange in PR #213.
-  Together they qualify the bounded unit-scale trimmed-NURBS sheet workflow;
-  sheet boolean cells, broader scale/type matrices, wire, and general-body
+  Together they qualify the bounded unit-scale trimmed-NURBS sheet workflow.
+  PR #214 additionally qualifies a crossing solid × single cylindrical-sheet
+  cell: two deterministic valid regions in a Compound with a closed-form
+  volume oracle and native/direct/batch WASM parity. Multi-face and other
+  surface sheet cells, broader scale/type matrices, wire, and general-body
   cells remain Unqualified.
 - **Scale** — at least three model scales relative to the configured
   tolerance (e.g. 1e-3, 1, 1e3 in the kernel's millimetre convention), with

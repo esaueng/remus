@@ -236,12 +236,15 @@ faces but never selects sheet faces for assembly. `split.rs` grows
 consumer of the cellular result model; `section.rs` keeps its
 wire-returning contract.
 
-Characterization: `split.rs` refuses anything but an exact plane today
-(split.rs:14-15) and returns exactly two solids; tests pin both, and this
-stage generalizes rather than flips them. Exit gate (Issue 4.3): a curved
-sheet splits a solid into N regions whose volumes sum exactly to the
-original (closed-form oracle); each region individually valid; determinism
-pinned across runs and native/WASM.
+Implementation: PR #214 adds the first bounded face-set arrangement. A
+single connected cylindrical sheet crosses a solid without acquiring a
+volumetric classification; only its inside patches close the two cells, with
+opposite orientations, and the result is an inside-then-outside Compound.
+Each cell validates, the inner volume matches the cylinder closed form, the
+sum reconstructs the box, and repeated native plus direct/batch WASM paths
+are deterministic. Other surfaces and multi-face sheets refuse with
+`unsupported_sheet_split`. `split.rs`'s existing exact-plane, two-solid API
+is unchanged, and `section.rs` remains wire-returning.
 
 ### Stage 4 — trim sheet by solid; sheet×sheet
 
