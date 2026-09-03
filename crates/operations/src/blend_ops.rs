@@ -201,9 +201,12 @@ pub(crate) fn edge_is_convex(
 
 /// Reject a blend whose volume change is geometrically impossible.
 ///
-/// A blend only moves material inside a tube of radius `size` around each
-/// blended edge, so `|Δvolume|` is bounded by `size²·length` per edge plus
-/// `2·size³` of end effects. And the sign is fixed by convexity: rounding a
+/// A blend only moves material inside a radius-`size` tube around each edge the
+/// engine actually blends. A fillet seed expands across its complete G1 chain,
+/// so the bound covers that chain rather than only the caller-named segment.
+/// Each edge contributes the volume of a capsule,
+/// `π·size²·length + 4π·size³/3`; summing capsules is conservative even where
+/// neighbouring capsules overlap. The sign is fixed by convexity: rounding a
 /// convex edge cuts material away, a concave one fills it in. A result that
 /// breaks either rule is wrong even when it is a topologically valid closed
 /// solid — the failure mode a wrong-side trim produces, which the shell and
@@ -225,27 +228,27 @@ pub(crate) fn validate_blend_volume(
     let after = crate::measure::solid_volume(topo, result_solid, 0.1)?;
     let delta = after - before;
 
-    let mut budget = 0.0;
-    for &edge in edges {
-        let e = topo.edge(edge)?;
-        let start = topo.vertex(e.start())?.point();
-        let end = topo.vertex(e.end())?.point();
-        let length = if e.start() == e.end() {
-            // Closed edge: use the curve's own extent.
-            let (t0, t1) = crate::authoritative_edge_domain(e, "blend-volume validation")?;
-            let mut len = 0.0;
-            let mut prev = e.curve().evaluate_with_endpoints(t0, start, end);
-            for i in 1..=32 {
-                let t = t0 + (t1 - t0) * f64::from(i) / 32.0;
-                let p = e.curve().evaluate_with_endpoints(t, start, end);
-                len += (p - prev).length();
-                prev = p;
+    let budget_edges = if operation == "fillet" {
+        let tol = remus_math::tolerance::Tolerance::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut expanded = Vec::new();
+        for chain in remus_blend::g1_chain::g1_chains(topo, input_solid, edges, tol)? {
+            for edge in chain {
+                if seen.insert(edge) {
+                    expanded.push(edge);
+                }
             }
-            len
-        } else {
-            (end - start).length()
-        };
-        budget += size * size * length + 2.0 * size * size * size;
+        }
+        expanded
+    } else {
+        edges.to_vec()
+    };
+
+    let mut budget = 0.0;
+    for &edge in &budget_edges {
+        let length = crate::measure::edge_length(topo, edge)?;
+        budget += std::f64::consts::PI * size * size * length
+            + (4.0 / 3.0) * std::f64::consts::PI * size * size * size;
     }
 
     if delta.abs() > budget {
@@ -259,7 +262,7 @@ pub(crate) fn validate_blend_volume(
 
     // Sign rule, applied only when every blended edge shares one convexity
     // (a mixed set can legitimately net out either way).
-    let convexities: Vec<bool> = edges
+    let convexities: Vec<bool> = budget_edges
         .iter()
         .filter_map(|&e| {
             // The classifier refuses to guess when the probe overshoots the

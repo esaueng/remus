@@ -7,7 +7,9 @@
 use std::collections::{HashMap, HashSet};
 
 use remus_math::curves::Circle3D;
-use remus_math::vec::{Point3, Vec3};
+use remus_math::curves2d::{Curve2D, NurbsCurve2D};
+use remus_math::surfaces::ToroidalSurface;
+use remus_math::vec::{Point2, Point3, Vec3};
 use remus_topology::Topology;
 use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
 use remus_topology::face::{Face, FaceId, FaceSurface};
@@ -20,8 +22,7 @@ use crate::analytic;
 use crate::blend_func::{BorrowedEvolRadBlend, ConstRadBlend};
 use crate::builder_utils::{
     FlippedNormalSurface, add_certified_curve_edge, project_onto_axis, radial_distance,
-    refuse_non_line_rim_neighbors, sample_nurbs_endpoints, surface_ref_or_adapter,
-    wire_axial_range, wire_radial_extremum,
+    refuse_non_line_rim_neighbors, surface_ref_or_adapter, wire_axial_range, wire_radial_extremum,
 };
 use crate::corner;
 use crate::g1_chain;
@@ -29,7 +30,9 @@ use crate::radius_law::RadiusLaw;
 use crate::spine::Spine;
 use crate::stripe::{Stripe, StripeResult};
 use crate::trimmer;
-use crate::walker::{Walker, WalkerConfig, approximate_blend_surface};
+use crate::walker::{
+    Walker, WalkerConfig, approximate_blend_surface, approximate_blend_surface_linear_v,
+};
 use crate::{BlendError, BlendFaceOrigins, BlendResult};
 
 /// Builder for fillet (rounding) operations on solid edges.
@@ -308,6 +311,34 @@ impl<'a> FilletBuilder<'a> {
                         regular_results.push(sr);
                     }
                 }
+            } else if let Some(rim) = closed_quadric_rim_info(topo, &sr.stripe)? {
+                match assemble_closed_quadric_rim(topo, &sr.stripe, &rim, &mut face_replacements) {
+                    Ok(band) => {
+                        blend_face_ids.push(band);
+                        blend_face_origins.push((band, vec![sr.stripe.face1, sr.stripe.face2]));
+                    }
+                    Err(e @ BlendError::RadiusTooLarge { .. }) => return Err(e),
+                    Err(e) => {
+                        log::warn!(
+                            "closed curved-rim assembly failed: {e}, falling back to trim path"
+                        );
+                        regular_results.push(sr);
+                    }
+                }
+            } else if closed_walking_rim_info(topo, &sr.stripe)? {
+                match assemble_closed_walking_rim(topo, &sr.stripe, &mut face_replacements) {
+                    Ok(band) => {
+                        blend_face_ids.push(band);
+                        blend_face_origins.push((band, vec![sr.stripe.face1, sr.stripe.face2]));
+                    }
+                    Err(e @ BlendError::RadiusTooLarge { .. }) => return Err(e),
+                    Err(e) => {
+                        log::warn!(
+                            "closed walking-rim assembly failed: {e}, falling back to trim path"
+                        );
+                        regular_results.push(sr);
+                    }
+                }
             } else {
                 regular_results.push(sr);
             }
@@ -333,9 +364,6 @@ impl<'a> FilletBuilder<'a> {
             let stripe = &sr.stripe;
             stripe_contact_edges.push((None, None));
 
-            let contact1_pts = sample_nurbs_endpoints(&stripe.contact1);
-            let contact2_pts = sample_nurbs_endpoints(&stripe.contact2);
-
             // Keep the side of the contact line AWAY from the spine edge: the
             // strip between the contact line and the old edge is what the
             // blend face replaces. The side is resolved inside the trimmer,
@@ -353,7 +381,7 @@ impl<'a> FilletBuilder<'a> {
             let trim1 = trimmer::trim_face_general(
                 topo,
                 current_face1,
-                &contact1_pts,
+                &stripe.contact1,
                 keep,
                 stripe.spine.edges(),
             );
@@ -378,7 +406,7 @@ impl<'a> FilletBuilder<'a> {
             let trim2 = trimmer::trim_face_general(
                 topo,
                 current_face2,
-                &contact2_pts,
+                &stripe.contact2,
                 keep,
                 stripe.spine.edges(),
             );
@@ -1008,6 +1036,92 @@ struct ClosedRimInfo {
     wall_circle: Circle3D,
 }
 
+/// A closed circular ridge shared directly by two curved analytic supports.
+///
+/// Both neighbours are periodic walls, so each contact circle replaces the
+/// original rim in one wall; the blend band then shares those two circles.
+struct ClosedQuadricRimInfo {
+    faces: [FaceId; 2],
+    rim_edge: EdgeId,
+    contacts: [Circle3D; 2],
+}
+
+fn qualified_closed_curved_pair(first: &FaceSurface, second: &FaceSurface) -> bool {
+    match first {
+        FaceSurface::Cylinder(_) => matches!(
+            second,
+            FaceSurface::Cylinder(_) | FaceSurface::Cone(_) | FaceSurface::Sphere(_)
+        ),
+        FaceSurface::Cone(_) => {
+            matches!(second, FaceSurface::Cylinder(_) | FaceSurface::Cone(_))
+        }
+        FaceSurface::Sphere(_) => matches!(second, FaceSurface::Cylinder(_)),
+        FaceSurface::Plane { .. } | FaceSurface::Torus(_) | FaceSurface::Nurbs(_) => false,
+    }
+}
+
+fn closed_quadric_rim_info(
+    topo: &Topology,
+    stripe: &Stripe,
+) -> Result<Option<ClosedQuadricRimInfo>, BlendError> {
+    if !matches!(stripe.surface, FaceSurface::Torus(_))
+        || !stripe.spine.is_closed()
+        || stripe.spine.edges().len() != 1
+    {
+        return Ok(None);
+    }
+    let rim_edge = stripe.spine.edges()[0];
+    let edge = topo.edge(rim_edge)?;
+    let EdgeCurve::Circle(rim) = edge.curve() else {
+        return Ok(None);
+    };
+    let pair = (
+        topo.face(stripe.face1)?.surface(),
+        topo.face(stripe.face2)?.surface(),
+    );
+    if !edge.is_closed() || !qualified_closed_curved_pair(pair.0, pair.1) {
+        return Ok(None);
+    }
+    let Some(section) = stripe.sections.first() else {
+        return Ok(None);
+    };
+    let axis = rim.normal().normalize()?;
+    let make_contact = |point: Point3| -> Result<Circle3D, BlendError> {
+        let center = project_onto_axis(point, rim.center(), axis);
+        let radial = point - center;
+        let radius = radial.length();
+        if radius <= remus_math::tolerance::Tolerance::new().linear {
+            return Err(BlendError::TrimmingFailure { face: stripe.face1 });
+        }
+        Ok(Circle3D::new_with_ref(
+            center,
+            rim.normal(),
+            radius,
+            radial,
+        )?)
+    };
+    let contacts = [make_contact(section.p1)?, make_contact(section.p2)?];
+    let tolerance = 20.0
+        * remus_math::tolerance::Tolerance::new().linear
+        * contacts[0].radius().max(contacts[1].radius()).max(1.0);
+    if stripe.sections.iter().any(|candidate| {
+        [candidate.p1, candidate.p2]
+            .into_iter()
+            .zip(&contacts)
+            .any(|(point, circle)| {
+                let projected = circle.evaluate(circle.project(point));
+                (projected - point).length() > tolerance
+            })
+    }) {
+        return Ok(None);
+    }
+    Ok(Some(ClosedQuadricRimInfo {
+        faces: [stripe.face1, stripe.face2],
+        rim_edge,
+        contacts,
+    }))
+}
+
 /// Detect a full-revolution rim-fillet stripe and recover its annular geometry.
 ///
 /// Returns `Some` when the blend surface is a torus, the spine is a single
@@ -1540,6 +1654,540 @@ fn assemble_closed_rim(
     Ok(band_face_id)
 }
 
+/// Replace one closed rim of a periodic cylinder/cone support with a contact
+/// circle and retarget the two uses of its seam to the new circle vertex.
+fn rebuild_periodic_rim_support(
+    topo: &mut Topology,
+    face_id: FaceId,
+    rim_edge: EdgeId,
+    contact_edge: EdgeId,
+    contact_vertex: VertexId,
+) -> Result<(FaceId, bool, bool), BlendError> {
+    let face = topo.face(face_id)?;
+    if !matches!(
+        face.surface(),
+        FaceSurface::Cylinder(_) | FaceSurface::Cone(_)
+    ) {
+        return Err(BlendError::TrimmingFailure { face: face_id });
+    }
+    let surface = face.surface().clone();
+    let reversed = face.is_reversed();
+    let inner_wires = face.inner_wires().to_vec();
+    let wire_id = face.outer_wire();
+    let oriented = topo.wire(wire_id)?.edges().to_vec();
+    let old_vertex = topo.edge(rim_edge)?.start();
+    refuse_non_line_rim_neighbors(topo, &oriented, rim_edge, old_vertex, face_id)?;
+
+    let mut rebuilt = HashMap::new();
+    let mut new_edges = Vec::with_capacity(oriented.len());
+    let mut contact_forward = None;
+    for use_ in oriented {
+        if use_.edge() == rim_edge {
+            contact_forward = Some(use_.is_forward());
+            new_edges.push(OrientedEdge::new(contact_edge, use_.is_forward()));
+            continue;
+        }
+        let edge = topo.edge(use_.edge())?;
+        let touches_rim = edge.start() == old_vertex || edge.end() == old_vertex;
+        if !touches_rim {
+            new_edges.push(use_);
+            continue;
+        }
+        let replacement = if let Some(existing) = rebuilt.get(&use_.edge()) {
+            *existing
+        } else {
+            let start = if edge.start() == old_vertex {
+                contact_vertex
+            } else {
+                edge.start()
+            };
+            let end = if edge.end() == old_vertex {
+                contact_vertex
+            } else {
+                edge.end()
+            };
+            let replacement = topo.add_edge(Edge::new(start, end, EdgeCurve::Line));
+            rebuilt.insert(use_.edge(), replacement);
+            replacement
+        };
+        new_edges.push(OrientedEdge::new(replacement, use_.is_forward()));
+    }
+    let contact_forward = contact_forward.ok_or(BlendError::TrimmingFailure { face: face_id })?;
+    let wire = topo.add_wire(Wire::new(new_edges, true)?);
+    let mut face = Face::new(wire, inner_wires, surface);
+    face.set_reversed(reversed);
+    Ok((topo.add_face(face), contact_forward, reversed))
+}
+
+/// Assemble a closed curved-support shoulder whose analytic solver proved an
+/// exact toroidal surface of revolution.
+fn assemble_closed_quadric_rim(
+    topo: &mut Topology,
+    stripe: &Stripe,
+    rim: &ClosedQuadricRimInfo,
+    face_replacements: &mut HashMap<FaceId, FaceId>,
+) -> Result<FaceId, BlendError> {
+    const TOL: f64 = 1e-7;
+    let FaceSurface::Torus(torus) = &stripe.surface else {
+        return Err(BlendError::TrimmingFailure { face: rim.faces[0] });
+    };
+    let section = stripe
+        .sections
+        .first()
+        .ok_or(BlendError::TrimmingFailure { face: rim.faces[0] })?;
+
+    let points = [rim.contacts[0].evaluate(0.0), rim.contacts[1].evaluate(0.0)];
+    let vertices = [
+        topo.add_vertex(Vertex::new(points[0], TOL)),
+        topo.add_vertex(Vertex::new(points[1], TOL)),
+    ];
+    let contacts = [
+        add_certified_curve_edge(
+            topo,
+            vertices[0],
+            vertices[0],
+            EdgeCurve::Circle(rim.contacts[0].clone()),
+            (0.0, std::f64::consts::TAU),
+        )?,
+        add_certified_curve_edge(
+            topo,
+            vertices[1],
+            vertices[1],
+            EdgeCurve::Circle(rim.contacts[1].clone()),
+            (0.0, std::f64::consts::TAU),
+        )?,
+    ];
+
+    let mut rebuilt_faces = [rim.faces[0], rim.faces[1]];
+    let mut support_forward = [false; 2];
+    let mut support_reversed = [false; 2];
+    let spine_start = stripe.spine.evaluate(topo, 0.0)?;
+    for index in 0..2 {
+        let current = face_replacements
+            .get(&rim.faces[index])
+            .copied()
+            .unwrap_or(rim.faces[index]);
+        let (face, forward, reversed) =
+            if matches!(topo.face(current)?.surface(), FaceSurface::Sphere(_)) {
+                let (face, forward, reversed, _) = rebuild_closed_walking_support(
+                    topo,
+                    current,
+                    &[rim.rim_edge],
+                    contacts[index],
+                    vertices[index],
+                    spine_start,
+                )?;
+                (face, forward, reversed)
+            } else {
+                rebuild_periodic_rim_support(
+                    topo,
+                    current,
+                    rim.rim_edge,
+                    contacts[index],
+                    vertices[index],
+                )?
+            };
+        rebuilt_faces[index] = face;
+        support_forward[index] = forward;
+        support_reversed[index] = reversed;
+        face_replacements.insert(rim.faces[index], face);
+    }
+
+    // One exact minor-circle arc closes the periodic band seam. Its duplicate
+    // reverse use is the second parameter-space branch of that seam.
+    let from_center = points[0] - section.center;
+    let to_center = points[1] - section.center;
+    let seam_normal = from_center.cross(to_center).normalize()?;
+    let seam_circle =
+        Circle3D::new_with_ref(section.center, seam_normal, section.radius, from_center)?;
+    let seam_end = seam_circle
+        .project(points[1])
+        .rem_euclid(std::f64::consts::TAU);
+    if seam_end <= remus_math::tolerance::Tolerance::new().angular {
+        return Err(BlendError::TrimmingFailure { face: rim.faces[0] });
+    }
+    let seam = add_certified_curve_edge(
+        topo,
+        vertices[0],
+        vertices[1],
+        EdgeCurve::Circle(seam_circle),
+        (0.0, seam_end),
+    )?;
+
+    // Match the first support's outward normal at tangency. This works for
+    // both convex and concave orientations and avoids a pair-specific winding
+    // table.
+    let support = topo.face(rebuilt_faces[0])?;
+    let (su, sv) = support
+        .surface()
+        .project_point(points[0])
+        .ok_or(BlendError::TrimmingFailure { face: rim.faces[0] })?;
+    let mut support_normal = support.surface().normal(su, sv);
+    if support.is_reversed() {
+        support_normal = -support_normal;
+    }
+    let (tu, tv) = torus.project_point(points[0]);
+    let band_reversed = torus.normal(tu, tv).dot(support_normal) < 0.0;
+    let band_forward = [0, 1].map(|index| {
+        let support_effective = support_forward[index] != support_reversed[index];
+        support_effective == band_reversed
+    });
+    let wire = topo.add_wire(Wire::new(
+        vec![
+            OrientedEdge::new(contacts[0], band_forward[0]),
+            OrientedEdge::new(seam, true),
+            OrientedEdge::new(contacts[1], band_forward[1]),
+            OrientedEdge::new(seam, false),
+        ],
+        true,
+    )?);
+    let mut band = Face::new(wire, Vec::new(), stripe.surface.clone());
+    band.set_reversed(band_reversed);
+    Ok(topo.add_face(band))
+}
+
+fn closed_walking_rim_info(topo: &Topology, stripe: &Stripe) -> Result<bool, BlendError> {
+    if !stripe.spine.is_closed()
+        || stripe.spine.edges().is_empty()
+        || !matches!(stripe.surface, FaceSurface::Nurbs(_))
+    {
+        return Ok(false);
+    }
+    if !qualified_closed_curved_pair(
+        topo.face(stripe.face1)?.surface(),
+        topo.face(stripe.face2)?.surface(),
+    ) {
+        return Ok(false);
+    }
+    let tolerance = 50.0 * remus_math::tolerance::Tolerance::new().linear;
+    for contact in [&stripe.contact1, &stripe.contact2] {
+        let (t0, t1) = contact.domain();
+        if (contact.evaluate(t1) - contact.evaluate(t0)).length() > tolerance {
+            return Ok(false);
+        }
+    }
+    let carries = |face_id: FaceId, edge_id: EdgeId| -> Result<bool, BlendError> {
+        let face = topo.face(face_id)?;
+        for wire in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+            if topo
+                .wire(wire)?
+                .edges()
+                .iter()
+                .any(|use_| use_.edge() == edge_id)
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    };
+    for edge in stripe.spine.edges() {
+        if !carries(stripe.face1, *edge)? || !carries(stripe.face2, *edge)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Replace one closed multi-edge rim in a face by a single closed contact
+/// curve. The rim may be a complete inner wire (the stock cylinder side of a
+/// drilled opening) or one contiguous block of a periodic outer wire (the
+/// bore wall side).
+fn rebuild_closed_walking_support(
+    topo: &mut Topology,
+    face_id: FaceId,
+    rim_edges: &[EdgeId],
+    contact_edge: EdgeId,
+    contact_vertex: VertexId,
+    spine_start: Point3,
+) -> Result<(FaceId, bool, bool, bool), BlendError> {
+    let face = topo.face(face_id)?;
+    let surface = face.surface().clone();
+    let reversed = face.is_reversed();
+    let outer = face.outer_wire();
+    let inner = face.inner_wires().to_vec();
+    let target = std::iter::once(outer)
+        .chain(inner.iter().copied())
+        .find(|wire| {
+            topo.wire(*wire).is_ok_and(|candidate| {
+                rim_edges
+                    .iter()
+                    .all(|rim| candidate.edges().iter().any(|use_| use_.edge() == *rim))
+            })
+        })
+        .ok_or(BlendError::TrimmingFailure { face: face_id })?;
+    let uses = topo.wire(target)?.edges().to_vec();
+    let rim_set: HashSet<EdgeId> = rim_edges.iter().copied().collect();
+    let rim_count = uses
+        .iter()
+        .filter(|use_| rim_set.contains(&use_.edge()))
+        .count();
+    if rim_count != rim_edges.len() {
+        return Err(BlendError::TrimmingFailure { face: face_id });
+    }
+    let transitions = (0..uses.len())
+        .filter(|index| {
+            rim_set.contains(&uses[*index].edge())
+                != rim_set.contains(&uses[(*index + 1) % uses.len()].edge())
+        })
+        .count();
+    if uses.len() != rim_edges.len() && transitions != 2 {
+        return Err(BlendError::TrimmingFailure { face: face_id });
+    }
+
+    let first_spine = topo.edge(rim_edges[0])?;
+    let spine_forward = (topo.vertex(first_spine.start())?.point() - spine_start).length()
+        <= (topo.vertex(first_spine.end())?.point() - spine_start).length();
+    let source_use = uses
+        .iter()
+        .find(|use_| use_.edge() == rim_edges[0])
+        .ok_or(BlendError::TrimmingFailure { face: face_id })?;
+    let contact_forward = source_use.is_forward() == spine_forward;
+
+    let mut rim_vertices = HashSet::new();
+    for rim in rim_edges {
+        let edge = topo.edge(*rim)?;
+        rim_vertices.insert(edge.start());
+        rim_vertices.insert(edge.end());
+    }
+    let mut replacements = HashMap::new();
+    let mut inserted = false;
+    let mut rebuilt_uses = Vec::with_capacity(uses.len() - rim_edges.len() + 1);
+    for use_ in uses {
+        if rim_set.contains(&use_.edge()) {
+            if !inserted {
+                rebuilt_uses.push(OrientedEdge::new(contact_edge, contact_forward));
+                inserted = true;
+            }
+            continue;
+        }
+        let edge = topo.edge(use_.edge())?;
+        let touches_start = rim_vertices.contains(&edge.start());
+        let touches_end = rim_vertices.contains(&edge.end());
+        if !touches_start && !touches_end {
+            rebuilt_uses.push(use_);
+            continue;
+        }
+        if !matches!(edge.curve(), EdgeCurve::Line) {
+            return Err(BlendError::TrimmingFailure { face: face_id });
+        }
+        let edge_start = edge.start();
+        let edge_end = edge.end();
+        let replacement = if let Some(existing) = replacements.get(&use_.edge()) {
+            *existing
+        } else {
+            let replacement = topo.add_edge(Edge::new(
+                if touches_start {
+                    contact_vertex
+                } else {
+                    edge_start
+                },
+                if touches_end {
+                    contact_vertex
+                } else {
+                    edge_end
+                },
+                EdgeCurve::Line,
+            ));
+            replacements.insert(use_.edge(), replacement);
+            replacement
+        };
+        rebuilt_uses.push(OrientedEdge::new(replacement, use_.is_forward()));
+    }
+    let rebuilt_wire = topo.add_wire(Wire::new(rebuilt_uses, true)?);
+    let (new_outer, new_inner) = if target == outer {
+        (rebuilt_wire, inner)
+    } else {
+        (
+            outer,
+            inner
+                .into_iter()
+                .map(|wire| if wire == target { rebuilt_wire } else { wire })
+                .collect(),
+        )
+    };
+    let mut face = Face::new(new_outer, new_inner, surface);
+    face.set_reversed(reversed);
+    let face = topo.add_face(face);
+    Ok((face, contact_forward, reversed, target == outer))
+}
+
+fn face_effective_edge_uses(
+    topo: &Topology,
+    face_id: FaceId,
+) -> Result<HashMap<EdgeId, bool>, BlendError> {
+    let face = topo.face(face_id)?;
+    let mut uses = HashMap::new();
+    let mut repeated = HashSet::new();
+    for wire in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+        for edge_use in topo.wire(wire)?.edges() {
+            let effective = edge_use.is_forward() != face.is_reversed();
+            if uses.insert(edge_use.edge(), effective).is_some() {
+                repeated.insert(edge_use.edge());
+            }
+        }
+    }
+    uses.retain(|edge, _| !repeated.contains(edge));
+    Ok(uses)
+}
+
+fn reverse_face_outer_wire(topo: &mut Topology, face_id: FaceId) -> Result<FaceId, BlendError> {
+    let face = topo.face(face_id)?;
+    let surface = face.surface().clone();
+    let reversed = face.is_reversed();
+    let inner = face.inner_wires().to_vec();
+    let uses = topo.wire(face.outer_wire())?.edges().to_vec();
+    let uses = uses
+        .into_iter()
+        .rev()
+        .map(|edge_use| OrientedEdge::new(edge_use.edge(), !edge_use.is_forward()))
+        .collect();
+    let outer = topo.add_wire(Wire::new(uses, true)?);
+    let mut face = Face::new(outer, inner, surface);
+    face.set_reversed(reversed);
+    Ok(topo.add_face(face))
+}
+
+fn assemble_closed_walking_rim(
+    topo: &mut Topology,
+    stripe: &Stripe,
+    face_replacements: &mut HashMap<FaceId, FaceId>,
+) -> Result<FaceId, BlendError> {
+    let section = stripe
+        .sections
+        .first()
+        .ok_or(BlendError::TrimmingFailure { face: stripe.face1 })?;
+    let curves = [&stripe.contact1, &stripe.contact2];
+    let faces = [stripe.face1, stripe.face2];
+    let mut vertices = Vec::with_capacity(2);
+    let mut contact_edges = Vec::with_capacity(2);
+    for curve in curves {
+        let domain = curve.domain();
+        let start = curve.evaluate(domain.0);
+        let closure = (curve.evaluate(domain.1) - start).length();
+        let vertex = topo.add_vertex(Vertex::new(start, closure.max(1e-7)));
+        let edge = add_certified_curve_edge(
+            topo,
+            vertex,
+            vertex,
+            EdgeCurve::NurbsCurve(curve.clone()),
+            domain,
+        )?;
+        vertices.push(vertex);
+        contact_edges.push(edge);
+    }
+    let spine_start = stripe.spine.evaluate(topo, 0.0)?;
+    let mut support_forward = [false; 2];
+    let mut support_reversed = [false; 2];
+    let mut target_is_outer = [false; 2];
+    let mut rebuilt_faces = faces;
+    for index in 0..2 {
+        let current = face_replacements
+            .get(&faces[index])
+            .copied()
+            .unwrap_or(faces[index]);
+        let (face, forward, reversed, outer) = rebuild_closed_walking_support(
+            topo,
+            current,
+            stripe.spine.edges(),
+            contact_edges[index],
+            vertices[index],
+            spine_start,
+        )?;
+        rebuilt_faces[index] = face;
+        support_forward[index] = forward;
+        support_reversed[index] = reversed;
+        target_is_outer[index] = outer;
+        face_replacements.insert(faces[index], face);
+    }
+
+    let uses0 = face_effective_edge_uses(topo, rebuilt_faces[0])?;
+    let uses1 = face_effective_edge_uses(topo, rebuilt_faces[1])?;
+    let common: Vec<EdgeId> = uses0
+        .keys()
+        .filter(|edge| uses1.contains_key(edge))
+        .copied()
+        .collect();
+    if !common.is_empty() && common.iter().all(|edge| uses0.get(edge) == uses1.get(edge)) {
+        let Some(index) = target_is_outer.iter().position(|outer| *outer) else {
+            return Err(BlendError::TrimmingFailure { face: faces[0] });
+        };
+        let face = reverse_face_outer_wire(topo, rebuilt_faces[index])?;
+        support_forward[index] = !support_forward[index];
+        face_replacements.insert(faces[index], face);
+    }
+
+    let points = [
+        topo.vertex(vertices[0])?.point(),
+        topo.vertex(vertices[1])?.point(),
+    ];
+    let from_center = points[0] - section.center;
+    let to_center = points[1] - section.center;
+    let seam_normal = from_center.cross(to_center).normalize()?;
+    let seam_circle =
+        Circle3D::new_with_ref(section.center, seam_normal, section.radius, from_center)?;
+    let seam_end = seam_circle
+        .project(points[1])
+        .rem_euclid(std::f64::consts::TAU);
+    let seam = add_certified_curve_edge(
+        topo,
+        vertices[0],
+        vertices[1],
+        EdgeCurve::Circle(seam_circle),
+        (0.0, seam_end),
+    )?;
+
+    let band_surface = match &stripe.surface {
+        FaceSurface::Nurbs(surface) => FaceSurface::Nurbs(reverse_nurbs_surface_u(surface)?),
+        other => other.clone(),
+    };
+    let desired_normal = -from_center.normalize()?;
+    let surface_normal = band_surface.normal(0.0, 0.0);
+    let band_reversed = surface_normal.dot(desired_normal) < 0.0;
+    let band_forward = [0, 1].map(|index| {
+        let support_effective = support_forward[index] != support_reversed[index];
+        support_effective == band_reversed
+    });
+    let wire = topo.add_wire(Wire::new(
+        vec![
+            OrientedEdge::new(contact_edges[0], band_forward[0]),
+            OrientedEdge::new(seam, true),
+            OrientedEdge::new(contact_edges[1], band_forward[1]),
+            OrientedEdge::new(seam, false),
+        ],
+        true,
+    )?);
+    let mut face = Face::new(wire, Vec::new(), band_surface);
+    face.set_reversed(band_reversed);
+    let face = topo.add_face(face);
+
+    Ok(face)
+}
+
+fn reverse_nurbs_surface_u(
+    surface: &remus_math::nurbs::surface::NurbsSurface,
+) -> Result<remus_math::nurbs::surface::NurbsSurface, BlendError> {
+    let mut control_points = surface.control_points().to_vec();
+    control_points.reverse();
+    let mut weights = surface.weights().to_vec();
+    weights.reverse();
+    let first = surface.knots_u()[0];
+    let last = *surface.knots_u().last().unwrap_or(&first);
+    let knots_u = surface
+        .knots_u()
+        .iter()
+        .rev()
+        .map(|knot| first + last - knot)
+        .collect();
+    Ok(remus_math::nurbs::surface::NurbsSurface::new(
+        surface.degree_u(),
+        surface.degree_v(),
+        knots_u,
+        surface.knots_v().to_vec(),
+        control_points,
+        weights,
+    )?)
+}
+
 /// Decide whether a rim-fillet torus band must carry `reversed` so its outward
 /// normal points away from the solid.
 ///
@@ -1577,6 +2225,93 @@ fn torus_band_needs_reversal(
     // If the geometric normal's axial part opposes the outward axial direction,
     // the band must be reversed.
     n.dot(outward_axial) < 0.0
+}
+
+/// Upgrade a completed constant-radius walk around a coaxial cylinder/cone
+/// rim to its exact surface of revolution.
+///
+/// The nonlinear solve remains authoritative for the two contact locations.
+/// Recognition only replaces the sampled tensor-product surface when every
+/// section proves the same rolling-ball radius and circular centre locus.
+fn recognize_closed_cylinder_cone_torus(
+    surface1: &FaceSurface,
+    surface2: &FaceSurface,
+    spine: &Spine,
+    topo: &Topology,
+    sections: &[crate::section::CircSection],
+    radius: f64,
+) -> Result<Option<ToroidalSurface>, BlendError> {
+    let is_cylinder_cone = matches!(
+        (surface1, surface2),
+        (FaceSurface::Cylinder(_), FaceSurface::Cone(_))
+            | (FaceSurface::Cone(_), FaceSurface::Cylinder(_))
+    );
+    if !is_cylinder_cone || !spine.is_closed() || spine.edges().len() != 1 || sections.len() < 3 {
+        return Ok(None);
+    }
+    let edge = topo.edge(spine.edges()[0])?;
+    let EdgeCurve::Circle(rim) = edge.curve() else {
+        return Ok(None);
+    };
+    let axis = rim.normal().normalize()?;
+    let axis_origin = rim.center();
+
+    let (origin1, axis1) = match surface1 {
+        FaceSurface::Cylinder(surface) => (surface.origin(), surface.axis()),
+        FaceSurface::Cone(surface) => (surface.apex(), surface.axis()),
+        _ => return Ok(None),
+    };
+    let (origin2, axis2) = match surface2 {
+        FaceSurface::Cylinder(surface) => (surface.origin(), surface.axis()),
+        FaceSurface::Cone(surface) => (surface.apex(), surface.axis()),
+        _ => return Ok(None),
+    };
+    let axis1 = axis1.normalize()?;
+    let axis2 = axis2.normalize()?;
+    let tolerance = remus_math::tolerance::Tolerance::new();
+    if axis1.dot(axis2).abs() < 1.0 - tolerance.angular
+        || axis.dot(axis1).abs() < 1.0 - tolerance.angular
+    {
+        return Ok(None);
+    }
+    for origin in [origin1, origin2] {
+        let offset = origin - axis_origin;
+        if (offset - axis * offset.dot(axis)).length() > tolerance.linear {
+            return Ok(None);
+        }
+    }
+
+    let first = &sections[0];
+    if !radius.is_finite() || radius <= tolerance.linear {
+        return Ok(None);
+    }
+    let center = project_onto_axis(first.center, axis_origin, axis);
+    let reference = first.center - center;
+    let major_radius = reference.length();
+    if major_radius <= tolerance.linear {
+        return Ok(None);
+    }
+    let scale = major_radius.max(radius).max(1.0);
+    let recognition_tolerance = 20.0 * tolerance.linear * scale;
+    if sections.iter().any(|section| {
+        (section.radius - radius).abs() > recognition_tolerance
+            || ((section.center - center).dot(axis)).abs() > recognition_tolerance
+            || ((section.center - center).length() - major_radius).abs() > recognition_tolerance
+    }) {
+        return Ok(None);
+    }
+
+    let torus =
+        ToroidalSurface::with_axis_and_ref_dir(center, major_radius, radius, axis, reference)?;
+    for section in sections {
+        for point in [section.p1, section.p2] {
+            let (u, v) = torus.project_point(point);
+            if (torus.evaluate(u, v) - point).length() > recognition_tolerance {
+                return Ok(None);
+            }
+        }
+    }
+    Ok(Some(torus))
 }
 
 /// Compute a stripe for a single edge using the adjacency index.
@@ -1630,7 +2365,16 @@ fn compute_stripe_for_spine(
     // Compute inward normals from the surface normals and face reversal:
     // - Not reversed: outward = surface_normal → inward = -surface_normal
     // - Reversed: outward = -surface_normal → inward = surface_normal
-    if matches!(law, RadiusLaw::Constant(_)) {
+    // The closed cone/cone helper chooses its offset signs from stored face
+    // reversal alone. That is insufficient at a shoulder where both analytic
+    // cones are unreversed but their material wedges lie on opposite sides;
+    // the resulting torus can land outside the solid. Route this qualified
+    // pair through the orientation-aware walker below.
+    let cone_cone = matches!(
+        (&surf1, &surf2),
+        (FaceSurface::Cone(_), FaceSurface::Cone(_))
+    );
+    if matches!(law, RadiusLaw::Constant(_)) && !cone_cone {
         let flipped1 = orient_plane_surface(&surf1);
         let flipped2 = orient_plane_surface(&surf2);
         let inward_surf1 = if face1_reversed { &surf1 } else { &flipped1 };
@@ -1656,28 +2400,30 @@ fn compute_stripe_for_spine(
         if matches!(law, RadiusLaw::Constant(_)) { "constant" } else { "variable" }
     );
 
-    // Build ParametricSurface references via PlaneAdapter for planes.
-    // When a face is reversed, the outward normal is flipped. For PlaneAdapter,
-    // we negate the normal. For analytic/NURBS surfaces the ParametricSurface
-    // impl already returns the geometric normal; the walker uses the sign
-    // convention from the face orientation.
-    let oriented_surf1 = if face1_reversed {
-        orient_plane_surface(&surf1)
-    } else {
-        surf1
-    };
-    let oriented_surf2 = if face2_reversed {
-        orient_plane_surface(&surf2)
-    } else {
-        surf2
-    };
+    // The rolling-ball constraints place the centre on each surface's
+    // +normal side, so present inward normals for every surface type. A face's
+    // intrinsic normal is inward exactly when that face is reversed; otherwise
+    // wrap it. The old path only negated planes and silently sent curved faces
+    // to the external common-tangent branch.
     let mut adapter1 = None;
     let mut adapter2 = None;
+    let base1 = surface_ref_or_adapter(&surf1, &mut adapter1);
+    let base2 = surface_ref_or_adapter(&surf2, &mut adapter2);
+    let flipped1 = FlippedNormalSurface::new(base1);
+    let flipped2 = FlippedNormalSurface::new(base2);
+    let ps1: &dyn remus_math::traits::ParametricSurface =
+        if face1_reversed { base1 } else { &flipped1 };
+    let ps2: &dyn remus_math::traits::ParametricSurface =
+        if face2_reversed { base2 } else { &flipped2 };
 
-    let ps1 = surface_ref_or_adapter(&oriented_surf1, &mut adapter1);
-    let ps2 = surface_ref_or_adapter(&oriented_surf2, &mut adapter2);
-
-    let config = WalkerConfig::default();
+    let mut config = WalkerConfig::default();
+    if !surf1.is_planar() || !surf2.is_planar() {
+        // Quadric projection and finite-differenced normal derivatives carry
+        // a few ulps more noise than the plane pair. Stay within the topology
+        // weld band while avoiding a continuation collapse at residuals only
+        // infinitesimally above the default Newton gate.
+        config.tol_3d = 5.0 * remus_math::tolerance::Tolerance::new().linear;
+    }
 
     let walk_result = if let RadiusLaw::Constant(r) = law {
         let blend = ConstRadBlend { radius: *r };
@@ -1691,14 +2437,29 @@ fn compute_stripe_for_spine(
         walker.walk(start, 0.0, spine.length())?
     };
 
-    let blend_surface = approximate_blend_surface(&walk_result.sections)?;
-    let blend_face_surface = remus_topology::face::FaceSurface::Nurbs(blend_surface);
+    let blend_face_surface = if let Some(torus) = recognize_closed_cylinder_cone_torus(
+        &surf1,
+        &surf2,
+        &spine,
+        topo,
+        &walk_result.sections,
+        radius,
+    )? {
+        FaceSurface::Torus(torus)
+    } else {
+        let surface = if spine.is_closed() {
+            approximate_blend_surface_linear_v(&walk_result.sections)?
+        } else {
+            approximate_blend_surface(&walk_result.sections)?
+        };
+        FaceSurface::Nurbs(surface)
+    };
 
     let contact1 = sections_to_contact_curve(&walk_result.sections, |s| s.p1)?;
     let contact2 = sections_to_contact_curve(&walk_result.sections, |s| s.p2)?;
 
-    let pcurve1 = build_pcurve_from_contact(ps1, &contact1)?;
-    let pcurve2 = build_pcurve_from_contact(ps2, &contact2)?;
+    let pcurve1 = build_pcurve_from_contact(ps1, &surf1, &contact1)?;
+    let pcurve2 = build_pcurve_from_contact(ps2, &surf2, &contact2)?;
 
     let stripe = Stripe {
         spine,
@@ -1869,23 +2630,55 @@ fn sections_to_contact_curve(
     Ok(curve)
 }
 
-/// Build a PCurve (2D UV line) by projecting 3D contact endpoints onto a surface.
+/// Build a PCurve by projecting every contact control point onto the support.
+///
+/// Angular coordinates are unwrapped before constructing the UV NURBS. This
+/// preserves a closed contact's full turn instead of collapsing its coincident
+/// endpoints into a zero-length line at the parameter seam.
 fn build_pcurve_from_contact(
     surf: &dyn remus_math::traits::ParametricSurface,
+    face_surface: &FaceSurface,
     contact: &remus_math::nurbs::curve::NurbsCurve,
 ) -> Result<remus_math::curves2d::Curve2D, BlendError> {
-    let (t0, t1) = contact.domain();
-    let p_start = contact.evaluate(t0);
-    let p_end = contact.evaluate(t1);
+    let (u_period, v_period) = match face_surface {
+        FaceSurface::Cylinder(_) | FaceSurface::Cone(_) | FaceSurface::Sphere(_) => {
+            (Some(std::f64::consts::TAU), None)
+        }
+        FaceSurface::Torus(_) => (Some(std::f64::consts::TAU), Some(std::f64::consts::TAU)),
+        FaceSurface::Nurbs(surface) => {
+            let u_period = surface
+                .is_periodic_u()
+                .then(|| surface.domain_u().1 - surface.domain_u().0);
+            let v_period = surface
+                .is_periodic_v()
+                .then(|| surface.domain_v().1 - surface.domain_v().0);
+            (u_period, v_period)
+        }
+        FaceSurface::Plane { .. } => (None, None),
+    };
+    let mut points: Vec<Point2> = Vec::with_capacity(contact.control_points().len());
+    for point in contact.control_points() {
+        let (mut u, mut v) = surf.project_point(*point);
+        if let Some(previous) = points.last() {
+            if let Some(period) = u_period {
+                u = unwrap_periodic(u, previous.x(), period);
+            }
+            if let Some(period) = v_period {
+                v = unwrap_periodic(v, previous.y(), period);
+            }
+        }
+        points.push(Point2::new(u, v));
+    }
+    Ok(Curve2D::Nurbs(NurbsCurve2D::new(
+        contact.degree(),
+        contact.knots().to_vec(),
+        points,
+        contact.weights().to_vec(),
+    )?))
+}
 
-    let (u0, v0) = surf.project_point(p_start);
-    let (u1, v1) = surf.project_point(p_end);
-
-    let origin = remus_math::vec::Point2::new(u0, v0);
-    let dir = remus_math::vec::Vec2::new(u1 - u0, v1 - v0);
-
-    let line = remus_math::curves2d::Line2D::new(origin, dir)?;
-    Ok(remus_math::curves2d::Curve2D::Line(line))
+fn unwrap_periodic(value: f64, previous: f64, period: f64) -> f64 {
+    value - period * ((value - previous) / period).round()
 }
 
 #[cfg(test)]

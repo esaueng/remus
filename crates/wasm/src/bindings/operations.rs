@@ -2834,6 +2834,42 @@ mod tests {
         );
     }
 
+    fn cylinder_cone_shoulder_handles(k: &mut BrepKernel) -> (u32, u32) {
+        let cylinder = remus_operations::primitives::make_cylinder(k.topo_mut(), 3.0, 5.0).unwrap();
+        let cone = remus_operations::primitives::make_cone(k.topo_mut(), 3.0, 1.0, 4.0).unwrap();
+        remus_operations::transform::transform_solid(
+            k.topo_mut(),
+            cone,
+            &Mat4::translation(0.0, 0.0, 5.0),
+        )
+        .unwrap();
+        let solid = remus_operations::boolean::boolean(
+            k.topo_mut(),
+            remus_operations::boolean::BooleanOp::Fuse,
+            cylinder,
+            cone,
+        )
+        .unwrap();
+        let adjacency = k.topo().build_adjacency(solid).unwrap();
+        let shoulder = remus_topology::explorer::solid_edges(k.topo(), solid)
+            .unwrap()
+            .into_iter()
+            .find(|edge| {
+                let faces = adjacency.faces_for_edge(*edge);
+                faces.len() == 2
+                    && matches!(
+                        (
+                            k.topo().face(faces[0]).unwrap().surface(),
+                            k.topo().face(faces[1]).unwrap().surface(),
+                        ),
+                        (FaceSurface::Cylinder(_), FaceSurface::Cone(_))
+                            | (FaceSurface::Cone(_), FaceSurface::Cylinder(_))
+                    )
+            })
+            .expect("fused body must retain its cylinder-cone shoulder");
+        (solid_id_to_u32(solid), edge_id_to_u32(shoulder))
+    }
+
     fn wire_perimeter(k: &BrepKernel, wire_handle: u32) -> f64 {
         let wid = k.resolve_wire(wire_handle).unwrap();
         remus_operations::measure::wire_length(&k.topo, wid).unwrap()
@@ -2969,6 +3005,41 @@ mod tests {
         assert!(
             volume < 1000.0,
             "convex fillet must remove material, got {volume}"
+        );
+    }
+
+    #[test]
+    fn cylinder_cone_fillet_matches_direct_and_batch_wasm_routes() {
+        let mut direct = BrepKernel::new();
+        let (solid, shoulder) = cylinder_cone_shoulder_handles(&mut direct);
+        let direct_result = direct.fillet_v2(solid, vec![shoulder], 0.25).unwrap();
+        assert_batch_solid_geometry(&direct, direct_result, "direct cylinder-cone fillet");
+        let direct_volume = remus_operations::measure::solid_volume(
+            direct.topo(),
+            direct.resolve_solid(direct_result).unwrap(),
+            0.01,
+        )
+        .unwrap();
+
+        let mut batch = BrepKernel::new();
+        let (solid, shoulder) = cylinder_cone_shoulder_handles(&mut batch);
+        let response = dispatch(
+            &mut batch,
+            "filletV2",
+            serde_json::json!({ "solid": solid, "edges": [shoulder], "radius": 0.25 }),
+        );
+        let batch_result = batch_solid_handle(&response, "batch cylinder-cone fillet");
+        assert_batch_solid_geometry(&batch, batch_result, "batch cylinder-cone fillet");
+        let batch_volume = remus_operations::measure::solid_volume(
+            batch.topo(),
+            batch.resolve_solid(batch_result).unwrap(),
+            0.01,
+        )
+        .unwrap();
+
+        assert!(
+            (direct_volume - batch_volume).abs() / direct_volume < 1.0e-9,
+            "direct and batch paths diverged: {direct_volume} vs {batch_volume}"
         );
     }
 

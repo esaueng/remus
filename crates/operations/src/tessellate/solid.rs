@@ -16,8 +16,9 @@ use super::mesh_ops::{
 };
 use super::nonplanar::{
     tessellate_cone_apex_fan_shared, tessellate_latitude_band_shared, tessellate_nonplanar_cdt,
-    tessellate_nonplanar_snap, tessellate_revolution_band_shared, tessellate_sphere_cap_shared,
-    tessellate_torus_notch_band, tessellate_torus_two_rim_band,
+    tessellate_nonplanar_snap, tessellate_nurbs_blend_band_shared,
+    tessellate_revolution_band_shared, tessellate_sphere_cap_shared, tessellate_torus_notch_band,
+    tessellate_torus_two_rim_band,
 };
 use super::nurbs::{compute_angular_range, compute_v_param_range};
 use super::planar::{
@@ -1191,19 +1192,17 @@ pub(super) fn tessellate_face_with_shared_edges(
             )?;
         }
     } else if matches!(face_data.surface(), FaceSurface::Nurbs(_)) {
-        let cdt_ok = tessellate_nonplanar_cdt(
+        let handled = tessellate_nurbs_blend_band_shared(
             topo,
-            face_id,
             face_data,
             deflection,
             angular_tol,
-            circle_floor,
             edge_global_indices,
             merged,
             point_to_global,
-        );
-        if cdt_ok.is_err() {
-            tessellate_nonplanar_snap(
+        )?;
+        if !handled {
+            let cdt_ok = tessellate_nonplanar_cdt(
                 topo,
                 face_id,
                 face_data,
@@ -1213,7 +1212,20 @@ pub(super) fn tessellate_face_with_shared_edges(
                 edge_global_indices,
                 merged,
                 point_to_global,
-            )?;
+            );
+            if cdt_ok.is_err() {
+                tessellate_nonplanar_snap(
+                    topo,
+                    face_id,
+                    face_data,
+                    deflection,
+                    angular_tol,
+                    circle_floor,
+                    edge_global_indices,
+                    merged,
+                    point_to_global,
+                )?;
+            }
         }
     } else if matches!(
         face_data.surface(),

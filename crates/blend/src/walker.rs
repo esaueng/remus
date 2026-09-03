@@ -389,9 +389,17 @@ impl<'a, F: BlendFunction> Walker<'a, F> {
             // Clamp step to not overshoot the end.
             let clamped_step = step.min((s_end - s).abs());
             let s_next = s + direction * clamped_step;
+            let closes_loop =
+                self.spine.is_closed() && (s_next - s_end).abs() <= self.config.min_step;
 
             // Predictor: linear extrapolation from last two solutions.
-            let predicted = if let Some(prev) = prev_params {
+            let predicted = if closes_loop {
+                // The geometric station is exactly the start again. Reusing
+                // its solved parameters prevents periodic surfaces from
+                // converging onto a nearby lifted branch and leaving a small
+                // but topologically fatal gap in the closed contact curves.
+                start_params
+            } else if let Some(prev) = prev_params {
                 let ds_old = s - prev_s;
                 if ds_old.abs() > f64::EPSILON {
                     let ds_new = s_next - s;
@@ -409,18 +417,38 @@ impl<'a, F: BlendFunction> Walker<'a, F> {
                 params
             };
 
-            // Corrector: Newton at the new spine station.
+            // Corrector: Newton at the new spine station. Periodic analytic
+            // supports can cross a parameter seam between adjacent stations;
+            // the extrapolated parameters then name the wrong lifted branch
+            // even though projecting the new guide point gives a valid local
+            // seed. Retry that independent seed before shrinking the geometric
+            // step toward zero.
             let ctx_next = self.make_context(s_next)?;
             self.func.validate_context(&ctx_next)?;
-            if let Some(converged) = self.newton_solve(predicted, &ctx_next) {
+            let converged = self.newton_solve(predicted, &ctx_next).or_else(|| {
+                let (u1, v1) = self.surf1.project_point(ctx_next.guide_point);
+                let (u2, v2) = self.surf2.project_point(ctx_next.guide_point);
+                self.newton_solve(BlendParams { u1, v1, u2, v2 }, &ctx_next)
+            });
+            if let Some(converged) = converged {
                 prev_params = Some(params);
                 prev_s = s;
                 params = converged;
                 s = s_next;
 
-                let sec = self
+                let mut sec = self
                     .func
                     .section(self.surf1, self.surf2, &params, &ctx_next);
+                if closes_loop
+                    && sections.first().is_some_and(|first| {
+                        (first.radius - sec.radius).abs() <= self.config.tol_3d
+                    })
+                {
+                    let station = sec.t;
+                    sec = sections[0].clone();
+                    sec.t = station;
+                    params = start_params;
+                }
                 sections.push(sec);
 
                 step = (step * 1.5).min(self.config.max_step_fraction * span);
@@ -457,6 +485,24 @@ impl<'a, F: BlendFunction> Walker<'a, F> {
 /// Returns [`BlendError::Math`] if the NURBS surface construction fails
 /// (e.g., too few sections).
 pub fn approximate_blend_surface(sections: &[CircSection]) -> Result<NurbsSurface, BlendError> {
+    approximate_blend_surface_with_v_degree(sections, 3)
+}
+
+/// Build a section-interpolating walking surface for a segmented closed rim.
+///
+/// The contact edges for these rims are degree-1 NURBS through the same
+/// stations. Keeping the surface degree linear in V makes both surface
+/// boundaries exactly those stored contact curves.
+pub fn approximate_blend_surface_linear_v(
+    sections: &[CircSection],
+) -> Result<NurbsSurface, BlendError> {
+    approximate_blend_surface_with_v_degree(sections, 1)
+}
+
+fn approximate_blend_surface_with_v_degree(
+    sections: &[CircSection],
+    max_v_degree: usize,
+) -> Result<NurbsSurface, BlendError> {
     let n = sections.len();
     if n < 2 {
         return Err(BlendError::Math(remus_math::MathError::EmptyInput));
@@ -467,7 +513,7 @@ pub fn approximate_blend_surface(sections: &[CircSection]) -> Result<NurbsSurfac
     let knots_u = vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
 
     // V direction: degree = min(n-1, 3).
-    let degree_v = (n - 1).min(3);
+    let degree_v = (n - 1).min(max_v_degree);
     let knots_v = build_uniform_knots(n, degree_v);
 
     // Build the control-point grid indexed `[row_u][col_v]`: U is the rational

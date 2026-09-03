@@ -208,7 +208,7 @@ fn resize_blend_impl(
     }
 
     let input_volume = crate::measure::solid_volume(topo, solid, 0.05)?;
-    let sharp = remove_blend_region(topo, solid, &band, new_radius)?;
+    let sharp = remove_blend_region(topo, solid, &band)?;
 
     validate_exact_result(topo, sharp.solid, "sharp support reconstruction")?;
     let sharp_volume = crate::measure::solid_volume(topo, sharp.solid, 0.05)?;
@@ -241,7 +241,6 @@ fn remove_blend_region(
     topo: &mut Topology,
     solid: SolidId,
     band: &BandDescription,
-    rebuild_radius: f64,
 ) -> Result<SharpResult, OperationsError> {
     let support_types: Vec<&'static str> = band
         .supports
@@ -255,18 +254,7 @@ fn remove_blend_region(
         ["plane", "cylinder"] | ["cylinder", "plane"] => {
             heal_plane_cylinder_band(topo, solid, band)
         }
-        ["cylinder", "cone"] | ["cone", "cylinder"] => {
-            if !Tolerance::new().approx_eq(rebuild_radius, 0.0) {
-                // The sharp circle is exact, but the closed-rim assembler
-                // cannot reconstruct this support pair at positive radius.
-                return Err(ResizeBlendError::UnsupportedSupportPair {
-                    first: support_types[0],
-                    second: support_types[1],
-                }
-                .into());
-            }
-            heal_cylinder_cone_band(topo, solid, band)
-        }
+        ["cylinder", "cone"] | ["cone", "cylinder"] => heal_cylinder_cone_band(topo, solid, band),
         [first, second] => Err(ResizeBlendError::UnsupportedSupportPair { first, second }.into()),
         _ => Err(reconstruction(format!(
             "blend region has unsupported support surfaces {support_types:?}; expected all planes or one supported analytic pair"
@@ -535,7 +523,7 @@ fn move_planar_faces_with_blends_remove_rebuild(
     while let Some(seed) = adjacent_blend_seed(topo, current_solid, &selected_faces)? {
         let band = describe_band(topo, current_solid, seed)?;
         let stage_volume = crate::measure::solid_volume(topo, current_solid, 0.05)?;
-        let sharp = remove_blend_region(topo, current_solid, &band, band.radius)?;
+        let sharp = remove_blend_region(topo, current_solid, &band)?;
         validate_exact_result(topo, sharp.solid, "sharp support reconstruction")?;
         let sharp_volume = crate::measure::solid_volume(topo, sharp.solid, 0.05)?;
         validate_volume_progress(stage_volume, sharp_volume, sharp_volume, band.radius, 0.0)?;
@@ -1884,7 +1872,9 @@ fn heal_cylinder_cone_band(
     if cone_slope.abs() <= Tolerance::new().angular {
         return Err(reconstruction("cone support has no radial slope"));
     }
-    let sharp_height = sample_height.signum() * cylinder_surface.radius() / cone_slope;
+    // `ConicalSurface::half_angle` is measured from the radial plane, so its
+    // tangent is axial/radial (not radial/axial).
+    let sharp_height = sample_height.signum() * cylinder_surface.radius() * cone_slope;
     let center = cone_surface.apex() + axis * sharp_height;
 
     let (_, cylinder_wire) = contact_wire(topo, cylinder, &cylinder_contacts)?;
