@@ -56,6 +56,7 @@ zip = {version = "8", default-features = false, features = ["deflate"]}
 # A caret requirement lets that resolve to a newer crates.io release of the same
 # crate name, which drops this workspace's own API and fails the verify build.
 # Keep the `=`; scripts/pin-sibling-versions.sh restores it after version bumps.
+remus = {path = "crates/remus", version = "=0.1.0"}
 remus-algo = {path = "crates/algo", version = "=0.1.0"}
 remus-blend = {path = "crates/blend", version = "=0.1.0"}
 remus-check = {path = "crates/check", version = "=0.1.0"}

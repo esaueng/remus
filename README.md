@@ -17,23 +17,26 @@ Exact B-Rep solid modeling kernel for Rust and WebAssembly.
 One exact-geometry engine, from Rust and from JavaScript. Cut a solid, measure it, export it.
 
 ```rust
-use remus_operations::primitives::{make_box, make_cylinder};
-use remus_operations::boolean::{boolean, BooleanOp};
-use remus_operations::measure::solid_volume;
-use remus_io::step::write_step;
-use remus_topology::Topology;
+use remus::prelude::*;
 
-let mut topo = Topology::new();
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+let mut model = Model::new();
 
 // Primitives are anchored at the origin, so this cylinder rounds off the
-// block's corner. Use `transform_solid` to place it somewhere else.
-let block = make_box(&mut topo, 30.0, 20.0, 10.0)?;
-let cutter = make_cylinder(&mut topo, 5.0, 15.0)?;
-let notched = boolean(&mut topo, BooleanOp::Cut, block, cutter)?;
+// block's corner. Transform it first to place the cut elsewhere.
+let block = model.make_box(30.0, 20.0, 10.0)?;
+let cutter = model.make_cylinder(5.0, 15.0)?;
+let notched = model.cut(block, cutter)?;
 
-// Measure and export
-let vol = solid_volume(&topo, notched, 0.1)?;
-let step = write_step(&topo, &[notched])?;
+// Every policy-aware boolean discloses whether its result stayed exact.
+assert_eq!(notched.quality, BooleanQuality::Exact);
+let volume = model.volume(notched.solid, 0.1)?;
+let step = model.write_step(&[notched.solid])?;
+
+assert!(volume > 0.0);
+assert!(step.starts_with("ISO-10303-21;"));
+# Ok(())
+# }
 ```
 
 ```js
@@ -210,6 +213,7 @@ and CI enforces the boundaries with `scripts/check-boundaries.sh`.
 | L3    | `remus-io`         | Import and export: STEP, IGES, STL, 3MF, OBJ, PLY, glTF                                             |
 | L4    | `remus-wasm`       | JavaScript API via wasm-bindgen, with batch execution, checkpoint/restore, and reproduction bundles |
 | L4    | `remus-render`     | Offscreen wgpu rendering to a color image plus a face-id buffer. Optional, nothing depends on it    |
+| L5    | `remus`            | Native Rust facade: owned model session, explicit operation policy, curated modeling and I/O API  |
 
 The layer DAG is a program invariant: preserving it is a constraint on every
 change, and a violation fails both the pre-push hook and CI.
@@ -301,10 +305,7 @@ Until packages exist, build from source.
 
 ```toml
 [dependencies]
-remus-math = { git = "https://github.com/esaueng/remus" }
-remus-topology = { git = "https://github.com/esaueng/remus" }
-remus-operations = { git = "https://github.com/esaueng/remus" }
-remus-io = { git = "https://github.com/esaueng/remus" }        # optional
+remus = { git = "https://github.com/esaueng/remus" }
 ```
 
 Pin a revision (`rev = "..."`) for anything you intend to reproduce: nothing

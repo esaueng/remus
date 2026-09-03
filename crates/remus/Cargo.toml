@@ -1,0 +1,20 @@
+[package]
+description = "Native Rust facade for the Remus exact B-Rep modeling kernel"
+edition.workspace = true
+license.workspace = true
+name = "remus"
+repository.workspace = true
+rust-version.workspace = true
+version = "0.1.0"
+
+[dependencies]
+remus-check.workspace = true
+remus-heal.workspace = true
+remus-io.workspace = true
+remus-math.workspace = true
+remus-operations.workspace = true
+remus-sketch.workspace = true
+remus-topology.workspace = true
+
+[lints]
+workspace = true
