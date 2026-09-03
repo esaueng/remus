@@ -20,26 +20,18 @@ pub struct AssembleResult {
     pub(crate) face_map: HashMap<usize, FaceId>,
 }
 
-/// Assemble the final offset solid from trimmed offset faces, joint
-/// faces, and wire loops.
-///
-/// For each non-excluded offset face that has reconstructed wire loops,
-/// a new [`Face`] is created with the offset surface and wires.
+/// Assemble the final offset solid from trimmed faces and wire loops while
+/// retaining the exact source-to-result face map.
 ///
 /// The source solid's shell partition is preserved: faces built from the
 /// outer shell's sources become the result's outer shell, and each cavity's
-/// sources become one inner shell of the result. Joint faces (Phase 6) and
-/// the walls of a thick solid belong to the outer shell.
+/// sources become one inner shell of the result. Joint faces and the walls of
+/// a thick solid belong to the outer shell.
 ///
 /// # Errors
 ///
-/// Returns [`OffsetError::AssemblyFailed`] if no faces could be
-/// assembled or the shell construction fails.
-pub fn assemble_solid(topo: &mut Topology, data: &OffsetData) -> Result<SolidId, OffsetError> {
-    Ok(assemble_solid_with_face_map(topo, data)?.solid)
-}
-
-/// [`assemble_solid`] with the exact source-to-result face map retained.
+/// Returns [`OffsetError::AssemblyFailed`] if no faces could be assembled or
+/// the shell construction fails.
 pub fn assemble_solid_with_face_map(
     topo: &mut Topology,
     data: &OffsetData,
@@ -443,7 +435,7 @@ mod tests {
         crate::inter3d::intersect_faces_3d(topo, solid, &mut data).unwrap();
         crate::inter2d::intersect_pcurves_2d(topo, solid, &mut data).unwrap();
         crate::loops::build_wire_loops(topo, &mut data).unwrap();
-        assemble_solid(topo, &data).unwrap()
+        assemble_solid_with_face_map(topo, &data).unwrap().solid
     }
 
     #[test]
@@ -504,7 +496,7 @@ mod tests {
         crate::inter3d::intersect_faces_3d(topo, solid, &mut data).unwrap();
         crate::inter2d::intersect_pcurves_2d(topo, solid, &mut data).unwrap();
         crate::loops::build_wire_loops(topo, &mut data).unwrap();
-        assemble_solid(topo, &data).unwrap()
+        assemble_solid_with_face_map(topo, &data).unwrap().solid
     }
 
     /// Thick solid with excluded face.

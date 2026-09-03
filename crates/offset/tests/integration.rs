@@ -1,7 +1,9 @@
 //! Integration tests for the offset pipeline.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use remus_offset::{OffsetOptions, offset_solid};
+use remus_offset::{
+    JointType, OffsetError, OffsetOptions, offset_solid, offset_solid_with_face_map,
+};
 use remus_operations::measure::solid_volume;
 use remus_operations::primitives::{make_box, make_cylinder, make_sphere, make_torus};
 use remus_topology::Topology;
@@ -22,6 +24,45 @@ fn offset_box_outward_face_count() {
         .shell(topo.solid(result).unwrap().outer_shell())
         .unwrap();
     assert_eq!(shell.faces().len(), 6, "offset box should have 6 faces");
+}
+
+#[test]
+fn face_map_refuses_non_one_to_one_options_without_mutation() {
+    for options in [
+        OffsetOptions {
+            joint: JointType::Arc,
+            ..Default::default()
+        },
+        OffsetOptions {
+            remove_self_intersections: true,
+            ..Default::default()
+        },
+    ] {
+        let mut topo = Topology::new();
+        let solid = make_box(&mut topo, 2.0, 2.0, 2.0).unwrap();
+        let counts = (
+            topo.num_vertices(),
+            topo.num_edges(),
+            topo.num_wires(),
+            topo.num_faces(),
+            topo.num_shells(),
+            topo.num_solids(),
+        );
+        let error = offset_solid_with_face_map(&mut topo, solid, 0.5, options).unwrap_err();
+        assert!(matches!(error, OffsetError::InvalidInput { .. }));
+        assert_eq!(
+            (
+                topo.num_vertices(),
+                topo.num_edges(),
+                topo.num_wires(),
+                topo.num_faces(),
+                topo.num_shells(),
+                topo.num_solids(),
+            ),
+            counts
+        );
+        assert!(topo.solid(solid).is_ok());
+    }
 }
 
 #[test]
