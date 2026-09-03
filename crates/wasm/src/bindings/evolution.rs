@@ -1,9 +1,9 @@
 //! Entity-evolution surfacing (Issue 12 → JS).
 //!
 //! Exposes the construction-derived vertex/edge/face history of GFA
-//! booleans, one-call journaled blends and patterns, and a read-only
-//! journal summary. Event encodings are stable JSON; `unresolved` is an
-//! honest event, never hidden.
+//! booleans, one-call journaled blends, offsets, and patterns, and a
+//! read-only journal summary. Event encodings are stable JSON; `unresolved`
+//! is an honest event, never hidden.
 
 #![allow(clippy::missing_errors_doc)]
 
@@ -177,6 +177,41 @@ impl BrepKernel {
         }))
     }
 
+    fn imprint_json(
+        &mut self,
+        target: u32,
+        tool: u32,
+    ) -> Result<serde_json::Value, StructuredWasmError> {
+        let target_id = self
+            .resolve_solid(target)
+            .map_err(StructuredWasmError::from)?;
+        let tool_id = self
+            .resolve_solid(tool)
+            .map_err(StructuredWasmError::from)?;
+        let result = remus_operations::imprint::imprint(self.topo_mut(), target_id, tool_id)
+            .map_err(StructuredWasmError::from)?;
+        Ok(serde_json::json!({
+            "solid": crate::handles::solid_id_to_u32(result.solid),
+            "op": u32::try_from(result.op.value()).unwrap_or(u32::MAX),
+        }))
+    }
+
+    fn offset_journaled_json(
+        &mut self,
+        solid: u32,
+        distance: f64,
+    ) -> Result<serde_json::Value, StructuredWasmError> {
+        let solid_id = self
+            .resolve_solid(solid)
+            .map_err(StructuredWasmError::from)?;
+        let journaled = journal_ops::offset_journaled(self.topo_mut(), solid_id, distance)
+            .map_err(StructuredWasmError::from)?;
+        Ok(serde_json::json!({
+            "solid": crate::handles::solid_id_to_u32(journaled.solid),
+            "op": u32::try_from(journaled.op.value()).unwrap_or(u32::MAX),
+        }))
+    }
+
     fn journal_summary_json(&self) -> serde_json::Value {
         let entries: Vec<serde_json::Value> = self
             .topo()
@@ -257,6 +292,13 @@ impl BrepKernel {
                 let count = get_u32(args, "count")?;
                 self.linear_pattern_journaled_json(solid, [*dx, *dy, *dz], spacing, count)
             })(),
+            "imprint" => get_u32(args, "target").and_then(|target| {
+                get_u32(args, "tool").and_then(|tool| self.imprint_json(target, tool))
+            }),
+            "offsetJournaled" => get_u32(args, "solid").and_then(|solid| {
+                get_f64(args, "distance")
+                    .and_then(|distance| self.offset_journaled_json(solid, distance))
+            }),
             "journalSummary" => Ok(self.journal_summary_json()),
             _ => return None,
         };
@@ -345,6 +387,26 @@ impl BrepKernel {
             validate_finite(value, name)?;
         }
         self.linear_pattern_journaled_json(solid, [dx, dy, dz], spacing, count)
+            .map(|v| v.to_string())
+            .map_err(structured_to_js)
+    }
+
+    /// Imprints one solid's intersection edges onto another without removing
+    /// material. Returns JSON `{"solid", "op"}` for the new target and its
+    /// construction-derived journal entry.
+    #[wasm_bindgen(js_name = "imprint")]
+    pub fn imprint_js(&mut self, target: u32, tool: u32) -> Result<String, JsError> {
+        self.imprint_json(target, tool)
+            .map(|value| value.to_string())
+            .map_err(structured_to_js)
+    }
+
+    /// V2 offset journaled as one construction-derived face-evolution entry
+    /// (kind `offset`). Returns JSON `{"solid", "op"}`.
+    #[wasm_bindgen(js_name = "offsetJournaled")]
+    pub fn offset_journaled_js(&mut self, solid: u32, distance: f64) -> Result<String, JsError> {
+        validate_finite(distance, "distance")?;
+        self.offset_journaled_json(solid, distance)
             .map(|v| v.to_string())
             .map_err(structured_to_js)
     }
@@ -538,6 +600,42 @@ mod evolution_contract_tests {
     }
 
     #[test]
+    fn offset_journaled_has_direct_and_batch_contract_parity() {
+        let mut direct = BrepKernel::new();
+        let source = direct.make_box_solid(2.0, 2.0, 2.0).unwrap();
+        let payload: serde_json::Value =
+            serde_json::from_str(&direct.offset_journaled_js(source, 0.5).unwrap()).unwrap();
+        let result = u32::try_from(payload["solid"].as_u64().unwrap()).unwrap();
+        assert!((direct.volume(result, 0.1).unwrap() - 27.0).abs() < 1e-9);
+        let summary: serde_json::Value = serde_json::from_str(&direct.journal_summary()).unwrap();
+        let entry = summary.as_array().unwrap().last().unwrap();
+        assert_eq!(entry["kind"], "offset");
+        assert_eq!(entry["type"], "evolution");
+        assert_eq!(entry["detail"]["origin"], "construction");
+        assert_eq!(entry["detail"]["events"], 6);
+
+        let mut batch = BrepKernel::new();
+        run(
+            &mut batch,
+            serde_json::json!([
+                {"op": "makeBox", "args": {"width": 2.0, "height": 2.0, "depth": 2.0}},
+            ]),
+        );
+        let results = run(
+            &mut batch,
+            serde_json::json!([
+                {"op": "offsetJournaled", "args": {"solid": 0, "distance": 0.5}},
+                {"op": "journalSummary", "args": {}},
+            ]),
+        );
+        assert_eq!(results[0], payload);
+        let batch_entry = results[1].as_array().unwrap().last().unwrap();
+        assert_eq!(batch_entry["kind"], "offset");
+        assert_eq!(batch_entry["type"], "evolution");
+        assert_eq!(batch_entry["detail"]["events"], 6);
+    }
+
+    #[test]
     fn chamfer_journaled_severs_edge_refs_like_any_faces_only_entry() {
         let mut kernel = BrepKernel::new();
         let results = run(
@@ -575,5 +673,85 @@ mod evolution_contract_tests {
         );
         assert_eq!(results[1]["status"], "unresolvedAcrossOperation");
         assert_eq!(results[1]["operationKind"], "chamfer");
+    }
+
+    fn imprint_handles(kernel: &mut BrepKernel) -> (u32, u32) {
+        let target = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
+        let tool = kernel.make_box_solid(6.0, 6.0, 6.0).unwrap();
+        kernel
+            .transform_solid_binding(
+                tool,
+                vec![
+                    1.0, 0.0, 0.0, 2.0, 0.0, 1.0, 0.0, -3.0, 0.0, 0.0, 1.0, 2.0, 0.0, 0.0, 0.0, 1.0,
+                ],
+            )
+            .unwrap();
+        (target, tool)
+    }
+
+    #[test]
+    fn direct_and_batch_imprint_match_and_surface_the_journal_entry() {
+        let mut signatures = Vec::new();
+        for batch in [false, true] {
+            let mut kernel = BrepKernel::new();
+            let (target, tool) = imprint_handles(&mut kernel);
+            let payload = if batch {
+                run(
+                    &mut kernel,
+                    serde_json::json!([{
+                        "op": "imprint",
+                        "args": {"target": target, "tool": tool},
+                    }]),
+                )[0]
+                .clone()
+            } else {
+                serde_json::from_str(&kernel.imprint_js(target, tool).unwrap()).unwrap()
+            };
+            let solid = payload["solid"].as_u64().unwrap() as u32;
+            let op = payload["op"].as_u64().unwrap();
+            let volume = kernel.volume(solid, 0.01).unwrap();
+            let faces = kernel.get_solid_faces(solid).unwrap();
+            assert!((volume - 1000.0).abs() < 1.0e-9);
+            assert!(faces.len() > 6);
+
+            let summary = run(
+                &mut kernel,
+                serde_json::json!([{"op": "journalSummary", "args": {}}]),
+            );
+            let entry = summary[0]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|entry| entry["op"].as_u64() == Some(op))
+                .unwrap();
+            assert_eq!(entry["kind"], "imprint");
+            assert_eq!(entry["type"], "evolution");
+            assert_eq!(entry["detail"]["origin"], "construction");
+            signatures.push(((volume * 1.0e9).round() as i64, faces.len()));
+        }
+        assert_eq!(signatures[0], signatures[1]);
+    }
+
+    #[test]
+    fn batch_v2_imprint_preserves_typed_atomic_refusal() {
+        let mut kernel = BrepKernel::new();
+        let target = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
+        let counts_before = kernel.topo().allocated_slot_count();
+        let response: Vec<serde_json::Value> = serde_json::from_str(
+            &kernel.execute_batch_v2(
+                &serde_json::json!([{
+                    "op": "imprint",
+                    "args": {"target": target, "tool": target},
+                }])
+                .to_string(),
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            response[0]["error"]["details"]["kernelCode"],
+            "unsupported_imprint"
+        );
+        assert_eq!(response[0]["error"]["category"], "unsupported");
+        assert_eq!(kernel.topo().allocated_slot_count(), counts_before);
     }
 }

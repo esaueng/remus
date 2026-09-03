@@ -26,3 +26,15 @@ assert!(step.starts_with("ISO-10303-21;"));
 # Ok(())
 # }
 ```
+
+Runnable workflows live in `examples/`:
+
+- `bracket` solves a constrained sketch, extrudes and fillets it, verifies the
+  analytic volume and mesh, then writes STEP.
+- `import_repair` handles typed STEP recovery diagnostics, validates or heals,
+  then proves an exact boolean containment result.
+- `browser_parity` replays the native equivalent of the committed WASM
+  cross-drilled-shaft contract fixture.
+
+Run one with `cargo run -p remus --example bracket` or pin all three with
+`cargo test -p remus --examples`.

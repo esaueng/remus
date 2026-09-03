@@ -8,7 +8,7 @@ use wasm_bindgen::prelude::*;
 use remus_math::diagnostic::{DetailValue, ToDiagnostic};
 
 use crate::error::{WasmError, validate_positive};
-use crate::handles::solid_id_to_u32;
+use crate::handles::{shell_id_to_u32, solid_id_to_u32, wire_id_to_u32};
 use crate::helpers::TOL;
 use crate::kernel::BrepKernel;
 
@@ -115,6 +115,18 @@ pub(super) fn step_validation_result_json(
         "solids": result.solids().iter().copied().map(solid_id_to_u32).collect::<Vec<_>>(),
         "diagnostics": diagnostics,
         "validation": result.validation(),
+    })
+}
+
+pub(super) fn step_body_result_json(result: &remus_io::step::StepReadResult) -> serde_json::Value {
+    serde_json::json!({
+        "solids": result.solids().iter().copied().map(solid_id_to_u32).collect::<Vec<_>>(),
+        "sheets": result.sheets().iter().copied().map(shell_id_to_u32).collect::<Vec<_>>(),
+        "diagnostics": result
+            .diagnostics()
+            .iter()
+            .map(StepImportDiagnostic::from)
+            .collect::<Vec<_>>(),
     })
 }
 
@@ -584,6 +596,29 @@ impl BrepKernel {
         Ok(step.into_bytes())
     }
 
+    /// Export one first-class sheet body as a STEP shell-based surface model.
+    ///
+    /// `options` accepts the same optional metadata JSON as
+    /// [`exportStepWithOptions`](Self::export_step_with_options). Validation
+    /// properties are refused because their current contract is solid-only.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the handle is invalid, does not name a sheet body,
+    /// the options JSON is malformed, or export fails.
+    #[wasm_bindgen(js_name = "exportStepSheet")]
+    pub fn export_step_sheet(
+        &self,
+        sheet: u32,
+        options: Option<String>,
+    ) -> Result<Vec<u8>, JsError> {
+        let sheet_id = self.resolve_shell(sheet)?;
+        let options = step_write_options_from_json(options.as_deref())?;
+        let step =
+            remus_io::step::write_step_bodies_with_options(&self.topo, &[], &[sheet_id], &options)?;
+        Ok(step.into_bytes())
+    }
+
     /// Import a STEP file and return solid handles.
     ///
     /// Returns handles for each solid found in the STEP file.
@@ -607,6 +642,30 @@ impl BrepKernel {
         let solid_ids =
             remus_io::step::reader::read_step_with_limits(text, self.topo_mut(), limits)?;
         Ok(solid_ids.iter().map(|id| solid_id_to_u32(*id)).collect())
+    }
+
+    /// Import every supported STEP body root.
+    ///
+    /// Returns JSON with distinct `solids`, `sheets`, and bounded-healing
+    /// `diagnostics` arrays so overlapping arena indices cannot blur handle
+    /// classes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the STEP data is malformed or exceeds a resource
+    /// limit.
+    #[wasm_bindgen(js_name = "importStepBodies")]
+    pub fn import_step_bodies(
+        &mut self,
+        data: &[u8],
+        max_input_bytes: Option<f64>,
+        max_entities: Option<f64>,
+    ) -> Result<String, JsError> {
+        let limits = import_limits_from(max_input_bytes, max_entities)?;
+        let text = std::str::from_utf8(data)
+            .map_err(|error| JsError::new(&format!("STEP data is not valid UTF-8: {error}")))?;
+        let result = remus_io::step::read_step_bodies_with_limits(text, self.topo_mut(), limits)?;
+        Ok(serde_json::to_string(&step_body_result_json(&result))?)
     }
 
     /// Import a STEP file and return solid handles plus bounded-healing diagnostics.
@@ -719,7 +778,7 @@ impl BrepKernel {
 
     // ── Arena debug serialization ─────────────────────────────────
 
-    /// Serialize several solids into one version 2 arena document.
+    /// Serialize several solids into one version 3 arena document.
     ///
     /// Shared topology is encoded once with dense local indices. Input order
     /// and duplicate handles are preserved as document roots. This format
@@ -739,15 +798,16 @@ impl BrepKernel {
         )?)
     }
 
-    /// Reconstruct solid roots from a version 1 or version 2 arena document.
+    /// Reconstruct solid roots from a version 1 through 5 arena document.
     ///
     /// Every restored entity receives a fresh kernel handle. Documents with
-    /// compound roots must be loaded through the native Rust document API.
+    /// Sheet, wire, and compound roots must be loaded through their dedicated
+    /// binding or the native Rust document API.
     ///
     /// # Errors
     ///
     /// Returns an error if the buffer is malformed, exceeds import limits,
-    /// contains compound roots, or reconstruction fails.
+    /// contains a non-solid root, or reconstruction fails.
     #[wasm_bindgen(js_name = "deserializeSolids")]
     pub fn deserialize_solids(&mut self, data: &[u8]) -> Result<Vec<u32>, JsError> {
         let solid_ids = remus_io::arena_io::deserialize_solids(data, self.topo_mut())?;
@@ -763,7 +823,7 @@ impl BrepKernel {
     /// and replaying them in a native Rust harness to reproduce
     /// sub-ULP-sensitive boolean behavior.
     ///
-    /// This writer emits a single-root version 2 document. Returns a
+    /// This writer emits a single-root version 3 document. Returns a
     /// `Uint8Array` consumable by
     /// `remus_io::arena_io::deserialize_solid`.
     ///
@@ -777,7 +837,7 @@ impl BrepKernel {
         Ok(bytes)
     }
 
-    /// Reconstruct one solid from a version 1 or single-root version 2 buffer.
+    /// Reconstruct one solid from a version 1 through 5 single-root buffer.
     ///
     /// # Errors
     ///
@@ -786,6 +846,116 @@ impl BrepKernel {
     pub fn deserialize_solid(&mut self, data: &[u8]) -> Result<u32, JsError> {
         let solid_id = remus_io::arena_io::deserialize_solid(data, self.topo_mut())?;
         Ok(solid_id_to_u32(solid_id))
+    }
+
+    /// Serialize several first-class sheet bodies into a version 4 arena document.
+    ///
+    /// Shared topology is encoded once with dense local indices. Input order
+    /// and duplicate handles are preserved as document roots.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any shell handle is invalid, is not tagged as a
+    /// sheet, or serialization fails.
+    #[wasm_bindgen(js_name = "serializeSheets")]
+    pub fn serialize_sheets(&self, sheets: &[u32]) -> Result<Vec<u8>, JsError> {
+        let sheet_ids = sheets
+            .iter()
+            .map(|&handle| self.resolve_shell(handle))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(remus_io::arena_io::serialize_sheets(
+            &self.topo, &sheet_ids,
+        )?)
+    }
+
+    /// Reconstruct standalone sheet roots from a version 4 or 5 arena document.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the buffer is malformed, contains another root
+    /// class, or reconstruction fails.
+    #[wasm_bindgen(js_name = "deserializeSheets")]
+    pub fn deserialize_sheets(&mut self, data: &[u8]) -> Result<Vec<u32>, JsError> {
+        let sheet_ids = remus_io::arena_io::deserialize_sheets(data, self.topo_mut())?;
+        Ok(sheet_ids.into_iter().map(shell_id_to_u32).collect())
+    }
+
+    /// Serialize one first-class sheet body into a version 4 arena document.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the shell handle is invalid, is not tagged as a
+    /// sheet, or serialization fails.
+    #[wasm_bindgen(js_name = "serializeSheet")]
+    pub fn serialize_sheet(&self, sheet: u32) -> Result<Vec<u8>, JsError> {
+        let sheet_id = self.resolve_shell(sheet)?;
+        Ok(remus_io::arena_io::serialize_sheet(&self.topo, sheet_id)?)
+    }
+
+    /// Reconstruct one first-class sheet body from a version 4 or 5 arena document.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the buffer is malformed, does not contain exactly
+    /// one sheet root, or reconstruction fails.
+    #[wasm_bindgen(js_name = "deserializeSheet")]
+    pub fn deserialize_sheet(&mut self, data: &[u8]) -> Result<u32, JsError> {
+        let sheet_id = remus_io::arena_io::deserialize_sheet(data, self.topo_mut())?;
+        Ok(shell_id_to_u32(sheet_id))
+    }
+
+    /// Serialize first-class wire bodies into a version 5 arena document.
+    ///
+    /// Shared topology is encoded once. Root order and duplicate handles are
+    /// preserved.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any handle is invalid, is not tagged as a wire
+    /// body, or serialization fails.
+    #[wasm_bindgen(js_name = "serializeWires")]
+    pub fn serialize_wires(&self, wires: &[u32]) -> Result<Vec<u8>, JsError> {
+        let wire_ids = wires
+            .iter()
+            .map(|&handle| self.resolve_wire(handle))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(remus_io::arena_io::serialize_wires(&self.topo, &wire_ids)?)
+    }
+
+    /// Reconstruct standalone wire roots from a version 5 arena document.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the buffer is malformed, contains non-wire roots,
+    /// or reconstruction fails.
+    #[wasm_bindgen(js_name = "deserializeWires")]
+    pub fn deserialize_wires(&mut self, data: &[u8]) -> Result<Vec<u32>, JsError> {
+        let wire_ids = remus_io::arena_io::deserialize_wires(data, self.topo_mut())?;
+        Ok(wire_ids.into_iter().map(wire_id_to_u32).collect())
+    }
+
+    /// Serialize one first-class wire body into a version 5 arena document.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the handle is invalid, is not tagged as a wire
+    /// body, or serialization fails.
+    #[wasm_bindgen(js_name = "serializeWire")]
+    pub fn serialize_wire(&self, wire: u32) -> Result<Vec<u8>, JsError> {
+        let wire_id = self.resolve_wire(wire)?;
+        Ok(remus_io::arena_io::serialize_wire(&self.topo, wire_id)?)
+    }
+
+    /// Reconstruct one first-class wire body from a version 5 arena document.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the buffer is malformed, does not contain exactly
+    /// one wire root, or reconstruction fails.
+    #[wasm_bindgen(js_name = "deserializeWire")]
+    pub fn deserialize_wire(&mut self, data: &[u8]) -> Result<u32, JsError> {
+        let wire_id = remus_io::arena_io::deserialize_wire(data, self.topo_mut())?;
+        Ok(wire_id_to_u32(wire_id))
     }
 }
 
@@ -1016,5 +1186,159 @@ mod tests {
         assert!(restored[0] > sentinel);
         assert!((destination.volume(restored[0], 0.1).unwrap() - 24.0).abs() < 1e-9);
         assert!((destination.volume(restored[1], 0.1).unwrap() - 6.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn sheet_arena_bindings_preserve_root_order_class_and_fresh_handles() {
+        let mut source = BrepKernel::new();
+        let face = remus_topology::builder::make_rectangle_face(source.topo_mut(), 1.5, 0.5, 1e-7)
+            .unwrap();
+        let sheet_id = remus_operations::sew::make_sheet_body(source.topo_mut(), &[face]).unwrap();
+        let sheet = shell_id_to_u32(sheet_id);
+        let bytes = source.serialize_sheets(&[sheet, sheet]).unwrap();
+
+        let mut destination = BrepKernel::new();
+        let sentinel = destination
+            .topo_mut()
+            .add_shell(remus_topology::shell::Shell::empty());
+        let restored = destination.deserialize_sheets(&bytes).unwrap();
+
+        assert_eq!(restored.len(), 2);
+        assert_eq!(restored[0], restored[1]);
+        assert!(restored[0] > shell_id_to_u32(sentinel));
+        assert_eq!(
+            destination
+                .topo()
+                .shell(destination.resolve_shell(restored[0]).unwrap())
+                .unwrap()
+                .body_class(),
+            remus_topology::BodyClass::Sheet
+        );
+
+        let single = source.serialize_sheet(sheet).unwrap();
+        let mut single_destination = BrepKernel::new();
+        let restored_single = single_destination.deserialize_sheet(&single).unwrap();
+        assert_eq!(
+            single_destination
+                .topo()
+                .shell(single_destination.resolve_shell(restored_single).unwrap())
+                .unwrap()
+                .body_class(),
+            remus_topology::BodyClass::Sheet
+        );
+    }
+
+    #[test]
+    fn wire_arena_bindings_preserve_root_order_class_and_fresh_handles() {
+        let mut source = BrepKernel::new();
+        let wire_id = remus_topology::builder::make_polygon_wire(
+            source.topo_mut(),
+            &[
+                remus_math::vec::Point3::new(0.0, 0.0, 0.0),
+                remus_math::vec::Point3::new(2.0, 0.0, 0.0),
+                remus_math::vec::Point3::new(2.0, 1.0, 0.0),
+                remus_math::vec::Point3::new(0.0, 1.0, 0.0),
+            ],
+            1e-7,
+        )
+        .unwrap();
+        let wire = wire_id_to_u32(wire_id);
+        let bytes = source.serialize_wires(&[wire, wire]).unwrap();
+
+        let mut destination = BrepKernel::new();
+        let sentinel = remus_topology::builder::make_regular_polygon_wire(
+            destination.topo_mut(),
+            0.25,
+            3,
+            1e-7,
+        )
+        .unwrap();
+        let restored = destination.deserialize_wires(&bytes).unwrap();
+
+        assert_eq!(restored.len(), 2);
+        assert_eq!(restored[0], restored[1]);
+        assert!(restored[0] > wire_id_to_u32(sentinel));
+        assert_eq!(
+            destination
+                .topo()
+                .wire(destination.resolve_wire(restored[0]).unwrap())
+                .unwrap()
+                .body_class(),
+            remus_topology::BodyClass::Wire
+        );
+        assert!((destination.wire_length(restored[0]).unwrap() - 6.0).abs() < 1e-9);
+
+        let single = source.serialize_wire(wire).unwrap();
+        let mut single_destination = BrepKernel::new();
+        let restored_single = single_destination.deserialize_wire(&single).unwrap();
+        assert_eq!(
+            single_destination
+                .topo()
+                .wire(single_destination.resolve_wire(restored_single).unwrap())
+                .unwrap()
+                .body_class(),
+            remus_topology::BodyClass::Wire
+        );
+    }
+
+    #[test]
+    fn sheet_step_bindings_preserve_distinct_body_class_and_open_boundary() {
+        let mut source = BrepKernel::new();
+        let face = remus_topology::builder::make_rectangle_face(source.topo_mut(), 2.0, 1.0, 1e-7)
+            .unwrap();
+        let surface = remus_math::nurbs::NurbsSurface::new(
+            1,
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![
+                vec![
+                    remus_math::vec::Point3::new(-1.0, -0.5, 0.0),
+                    remus_math::vec::Point3::new(1.0, -0.5, 0.0),
+                ],
+                vec![
+                    remus_math::vec::Point3::new(-1.0, 0.5, 0.0),
+                    remus_math::vec::Point3::new(1.0, 0.5, 0.0),
+                ],
+            ],
+            vec![vec![1.0, 1.0], vec![1.0, 1.0]],
+        )
+        .unwrap();
+        source
+            .topo_mut()
+            .face_mut(face)
+            .unwrap()
+            .set_surface(remus_topology::face::FaceSurface::Nurbs(surface));
+        let sheet_id = remus_operations::sew::make_sheet_body(source.topo_mut(), &[face]).unwrap();
+        let sheet = shell_id_to_u32(sheet_id);
+
+        let step = source.export_step_sheet(sheet, None).unwrap();
+        let text = String::from_utf8(step.clone()).unwrap();
+        assert!(text.contains("SHELL_BASED_SURFACE_MODEL("));
+        assert!(text.contains("OPEN_SHELL("));
+        assert!(text.contains("B_SPLINE_SURFACE_WITH_KNOTS("));
+
+        let mut destination = BrepKernel::new();
+        let json = destination.import_step_bodies(&step, None, None).unwrap();
+        let result: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(result["solids"].as_array().unwrap().is_empty());
+        let restored = result["sheets"][0].as_u64().unwrap() as u32;
+        assert_eq!(
+            destination
+                .topo()
+                .shell(destination.resolve_shell(restored).unwrap())
+                .unwrap()
+                .body_class(),
+            remus_topology::BodyClass::Sheet
+        );
+        let restored_id = destination.resolve_shell(restored).unwrap();
+        let report = remus_check::validate::validate_sheet_body(
+            destination.topo(),
+            restored_id,
+            &remus_check::validate::ValidateOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(report.error_count(), 0);
+        assert!(report.warning_count() > 0);
     }
 }

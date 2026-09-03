@@ -148,9 +148,25 @@ pub fn edge_to_face_map(
     topo: &Topology,
     solid: SolidId,
 ) -> Result<BTreeMap<usize, SmallVec<[FaceId; 2]>>, TopologyError> {
+    edge_to_face_map_for_faces(topo, &solid_faces(topo, solid)?)
+}
+
+/// Build a map from edge index to the supplied faces that reference it.
+///
+/// Unlike [`edge_to_face_map`], this accepts an arbitrary face set, including
+/// an open sheet body. Repeated seam uses are retained for the same reason as
+/// the solid-specific wrapper.
+///
+/// # Errors
+///
+/// Returns an error if any face, wire, or edge lookup fails.
+pub fn edge_to_face_map_for_faces(
+    topo: &Topology,
+    faces: &[FaceId],
+) -> Result<BTreeMap<usize, SmallVec<[FaceId; 2]>>, TopologyError> {
     let mut map: BTreeMap<usize, SmallVec<[FaceId; 2]>> = BTreeMap::new();
 
-    for face_id in solid_faces(topo, solid)? {
+    for &face_id in faces {
         // Iterate wire edges directly (without deduplication) so that seam
         // edges — which appear twice in the same face's wire with opposite
         // orientations — are counted twice.  This matches the BRep convention

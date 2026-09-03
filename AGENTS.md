@@ -330,6 +330,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Shell (hollow solid) | `shell_op.rs` |
 | Draft (taper faces) | `draft.rs` |
 | Section / Split | `section.rs`, `split.rs` |
+| Exact solid-face imprint with journal history | `imprint.rs` |
 | Transform, Mirror, Copy | `transform.rs`, `mirror.rs`, `copy.rs` |
 | Measure (bbox, area, volume, CoM) | `measure/` (mod, volume, area, bounding_box, edge_length, helpers) |
 | Distance queries | `distance.rs` |

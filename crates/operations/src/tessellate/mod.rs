@@ -43,6 +43,7 @@ pub use mesh_ops::{
     sample_solid_edges, sample_solid_edges_filtered, welded_mesh_quality,
 };
 pub use solid::{
+    tessellate_body_with_tolerance, tessellate_sheet, tessellate_sheet_with_tolerance,
     tessellate_solid, tessellate_solid_for_boolean, tessellate_solid_grouped_with_tolerance,
     tessellate_solid_with_tolerance,
 };

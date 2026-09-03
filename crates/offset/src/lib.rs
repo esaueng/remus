@@ -70,11 +70,27 @@ pub use data::{JointType, OffsetOptions};
 pub use error::OffsetError;
 pub use move_faces::{MoveFacesResult, move_faces, move_faces_with_face_map};
 
+use remus_math::det_hash::{DetHashMap, DetHashSet};
 use remus_topology::Topology;
+use remus_topology::explorer::solid_faces;
 use remus_topology::face::FaceId;
 use remus_topology::solid::SolidId;
 
 use crate::data::OffsetData;
+
+/// A solid offset and its construction-derived source-face correspondence.
+#[derive(Debug)]
+pub struct OffsetResult {
+    /// Offset solid.
+    pub solid: SolidId,
+    /// Source face index to the one result face derived from it.
+    pub face_map: DetHashMap<usize, FaceId>,
+}
+
+struct ThickSolidResult {
+    solid: SolidId,
+    face_map: Option<DetHashMap<usize, FaceId>>,
+}
 
 /// Offset all faces of a solid by the given signed distance.
 ///
@@ -91,6 +107,50 @@ pub fn offset_solid(
     options: OffsetOptions,
 ) -> Result<SolidId, OffsetError> {
     thick_solid(topo, solid, distance, &[], options)
+}
+
+/// Offset every face while retaining the exact source-to-result face map.
+///
+/// The default intersection-joint construction derives exactly one result
+/// face from every source face. Arc joints and self-intersection removal can
+/// synthesize or replace faces after that construction, so this entry point
+/// refuses those options instead of returning stale or incomplete provenance.
+///
+/// # Errors
+///
+/// Returns the same errors as [`offset_solid`], or
+/// [`OffsetError::InvalidInput`] when the requested options do not preserve
+/// the one-to-one face contract. Any failure rolls the topology back.
+pub fn offset_solid_with_face_map(
+    topo: &mut Topology,
+    solid: SolidId,
+    distance: f64,
+    options: OffsetOptions,
+) -> Result<OffsetResult, OffsetError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        if options.joint != JointType::Intersection {
+            return Err(OffsetError::InvalidInput {
+                reason: "face provenance is only available for intersection-joint offsets".into(),
+            });
+        }
+        if options.remove_self_intersections {
+            return Err(OffsetError::InvalidInput {
+                reason: "face provenance is unavailable when self-intersection removal may replace faces"
+                    .into(),
+            });
+        }
+
+        let source_faces = solid_faces(topo, solid)?;
+        let result = thick_solid_impl(topo, solid, distance, &[], options)?;
+        let face_map = result.face_map.ok_or_else(|| OffsetError::AssemblyFailed {
+            reason: "offset assembly did not retain source-face provenance".into(),
+        })?;
+        validate_face_map(topo, &source_faces, result.solid, &face_map)?;
+        Ok(OffsetResult {
+            solid: result.solid,
+            face_map,
+        })
+    })
 }
 
 /// Offset a solid while excluding specific faces, producing a thick
@@ -111,6 +171,17 @@ pub fn thick_solid(
     exclude: &[FaceId],
     options: OffsetOptions,
 ) -> Result<SolidId, OffsetError> {
+    Ok(thick_solid_impl(topo, solid, distance, exclude, options)?.solid)
+}
+
+#[allow(clippy::too_many_lines)]
+fn thick_solid_impl(
+    topo: &mut Topology,
+    solid: SolidId,
+    distance: f64,
+    exclude: &[FaceId],
+    options: OffsetOptions,
+) -> Result<ThickSolidResult, OffsetError> {
     if !distance.is_finite() || distance.abs() < options.tolerance.linear {
         return Err(OffsetError::InvalidInput {
             reason: "offset distance must be non-zero and finite".into(),
@@ -144,7 +215,10 @@ pub fn thick_solid(
         // into the phases below.
         let result = arc_joint::build_arc_offset(topo, solid, distance, &data)?;
         validate_offset_result(topo, result)?;
-        return Ok(result);
+        return Ok(ThickSolidResult {
+            solid: result,
+            face_map: None,
+        });
     }
 
     offset::build_offset_faces(topo, solid, &mut data)?;
@@ -157,12 +231,14 @@ pub fn thick_solid(
 
     loops::build_wire_loops(topo, &mut data)?;
 
-    let result = assemble::assemble_solid(topo, &data)?;
+    let assembled = assemble::assemble_solid_with_face_map(topo, &data)?;
+    let mut face_map = Some(assembled.face_map.into_iter().collect());
 
     let result = if data.options.remove_self_intersections {
-        self_int::remove_self_intersections(topo, result)?
+        face_map = None;
+        self_int::remove_self_intersections(topo, assembled.solid)?
     } else {
-        result
+        assembled.solid
     };
     validate_offset_result(topo, result)?;
     if has_cavities {
@@ -172,7 +248,40 @@ pub fn thick_solid(
         let clearance = linear_tol.max(scale * 1e-9);
         cavity::check_cavity_extents(topo, result, clearance, cavity::Stage::Result)?;
     }
-    Ok(result)
+    Ok(ThickSolidResult {
+        solid: result,
+        face_map,
+    })
+}
+
+fn validate_face_map(
+    topo: &Topology,
+    source_faces: &[FaceId],
+    result: SolidId,
+    face_map: &DetHashMap<usize, FaceId>,
+) -> Result<(), OffsetError> {
+    let source_indices: DetHashSet<usize> =
+        source_faces.iter().copied().map(FaceId::index).collect();
+    let result_faces = solid_faces(topo, result)?;
+    let result_indices: DetHashSet<usize> =
+        result_faces.iter().copied().map(FaceId::index).collect();
+    let mapped_indices: DetHashSet<usize> = face_map.values().copied().map(FaceId::index).collect();
+    if face_map.len() != source_indices.len()
+        || face_map.keys().copied().collect::<DetHashSet<_>>() != source_indices
+        || mapped_indices.len() != face_map.len()
+        || mapped_indices != result_indices
+    {
+        return Err(OffsetError::AssemblyFailed {
+            reason: format!(
+                "offset face provenance is not one-to-one ({} source faces, {} map entries, {} distinct mapped faces, {} result faces)",
+                source_indices.len(),
+                face_map.len(),
+                mapped_indices.len(),
+                result_indices.len()
+            ),
+        });
+    }
+    Ok(())
 }
 
 /// Every shell of the result must be a closed 2-manifold — the outer skin

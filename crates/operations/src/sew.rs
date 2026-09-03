@@ -7,13 +7,58 @@ use std::collections::HashMap;
 
 use remus_math::tolerance::Tolerance;
 use remus_math::vec::Point3;
+use remus_topology::BodyClass;
 use remus_topology::Topology;
 use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
 use remus_topology::face::{Face, FaceId, FaceSurface};
-use remus_topology::shell::Shell;
+use remus_topology::shell::{Shell, ShellId};
 use remus_topology::solid::{Solid, SolidId};
 use remus_topology::vertex::{Vertex, VertexId};
 use remus_topology::wire::{OrientedEdge, Wire};
+
+/// Construct a first-class sheet body from an edge-connected face set.
+///
+/// Free boundary edges are expected and remain reportable warnings. The
+/// constructor commits only when the sheet validation profile finds no
+/// error-severity topology defects.
+///
+/// # Errors
+///
+/// Returns an error if the face set is empty, references missing topology, or
+/// fails the sheet-body validation postcondition. Failed construction rolls
+/// back without leaving a shell allocation behind.
+pub fn make_sheet_body(
+    topo: &mut Topology,
+    faces: &[FaceId],
+) -> Result<ShellId, crate::OperationsError> {
+    remus_topology::transaction::run_validated(
+        topo,
+        |topo| -> Result<_, crate::OperationsError> {
+            for &face in faces {
+                topo.face(face)?;
+            }
+            let shell = Shell::new(faces.to_vec())?;
+            let shell_id = topo.add_shell(shell);
+            topo.set_shell_body_class(shell_id, BodyClass::Sheet)?;
+            Ok(shell_id)
+        },
+        |topo, shell_id| {
+            let report = remus_check::validate::validate_sheet_body(
+                topo,
+                *shell_id,
+                &remus_check::validate::ValidateOptions::default(),
+            )?;
+            if report.is_valid() {
+                Ok(())
+            } else {
+                Err(crate::OperationsError::BodyValidationFailed {
+                    body_class: BodyClass::Sheet.as_str(),
+                    error_count: report.error_count(),
+                })
+            }
+        },
+    )
+}
 
 /// Sew a set of loose faces into a solid.
 ///
@@ -144,12 +189,13 @@ struct FaceSnapshot {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
+    use remus_math::nurbs::surface::NurbsSurface;
     use remus_math::vec::{Point3, Vec3};
-    use remus_topology::Topology;
     use remus_topology::edge::{Edge, EdgeCurve};
     use remus_topology::face::{Face, FaceSurface};
     use remus_topology::vertex::Vertex;
     use remus_topology::wire::{OrientedEdge, Wire};
+    use remus_topology::{BodyClass, BodyId, Topology};
 
     use super::*;
 
@@ -360,5 +406,181 @@ mod tests {
             0.0,
         );
         assert!(sew_faces(&mut topo, &[f], 1e-6).is_err());
+    }
+
+    #[test]
+    fn trimmed_nurbs_sheet_validates_measures_and_tessellates() {
+        let mut topo = Topology::new();
+        let face = remus_topology::builder::make_rectangle_face(&mut topo, 1.0, 1.0, 1e-7).unwrap();
+        let surface = NurbsSurface::new(
+            1,
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![
+                vec![Point3::new(-0.5, -0.5, 0.0), Point3::new(0.5, -0.5, 0.0)],
+                vec![Point3::new(-0.5, 0.5, 0.0), Point3::new(0.5, 0.5, 0.0)],
+            ],
+            vec![vec![1.0, 1.0], vec![1.0, 1.0]],
+        )
+        .unwrap();
+        topo.face_mut(face)
+            .unwrap()
+            .set_surface(FaceSurface::Nurbs(surface));
+
+        let sheet = make_sheet_body(&mut topo, &[face]).unwrap();
+        assert_eq!(topo.shell(sheet).unwrap().body_class(), BodyClass::Sheet);
+
+        let report = remus_check::validate::validate_sheet_body(
+            &topo,
+            sheet,
+            &remus_check::validate::ValidateOptions::default(),
+        )
+        .unwrap();
+        assert!(report.is_valid(), "{:#?}", report.issues);
+        assert_eq!(report.error_count(), 0);
+        assert!(report.warning_count() > 0, "free boundary must be reported");
+
+        let body = BodyId::Shell(sheet);
+        let area = crate::measure::body_surface_area(&topo, body, 0.05).unwrap();
+        assert!((area - 1.0).abs() < 1e-10, "area={area}");
+        let bounds = crate::measure::sheet_bounding_box(&topo, sheet).unwrap();
+        assert_eq!(bounds.min, Point3::new(-0.5, -0.5, 0.0));
+        assert_eq!(bounds.max, Point3::new(0.5, 0.5, 0.0));
+        let center = crate::measure::sheet_center_of_area(&topo, sheet).unwrap();
+        assert!((center - Point3::new(0.0, 0.0, 0.0)).length() < 1e-12);
+
+        let first = crate::tessellate::tessellate_body_with_tolerance(
+            &topo,
+            body,
+            0.05,
+            remus_math::chord::DEFAULT_ANGULAR_TOL,
+        )
+        .unwrap();
+        let second = crate::tessellate::tessellate_body_with_tolerance(
+            &topo,
+            body,
+            0.05,
+            remus_math::chord::DEFAULT_ANGULAR_TOL,
+        )
+        .unwrap();
+        assert!(!first.indices.is_empty());
+        assert!(crate::tessellate::boundary_edge_count(&first) > 0);
+        assert_eq!(crate::tessellate::non_manifold_edge_count(&first), 0);
+        assert_eq!(first.positions, second.positions);
+        assert_eq!(first.normals, second.normals);
+        assert_eq!(first.indices, second.indices);
+
+        let error = crate::measure::body_volume(&topo, body, 0.05).unwrap_err();
+        assert!(matches!(
+            error,
+            crate::OperationsError::BodyClassMeasureMismatch {
+                operation: "volume",
+                expected: "solid",
+                actual: "sheet",
+            }
+        ));
+    }
+
+    #[test]
+    fn disconnected_sheet_construction_rolls_back() {
+        let mut topo = Topology::new();
+        let first =
+            remus_topology::builder::make_rectangle_face(&mut topo, 1.0, 1.0, 1e-7).unwrap();
+        let second =
+            remus_topology::builder::make_rectangle_face(&mut topo, 1.0, 1.0, 1e-7).unwrap();
+        let shells_before = topo.num_shells();
+
+        let error = make_sheet_body(&mut topo, &[first, second]).unwrap_err();
+        assert!(matches!(
+            error,
+            crate::OperationsError::BodyValidationFailed {
+                body_class: "sheet",
+                ..
+            }
+        ));
+        assert_eq!(topo.num_shells(), shells_before);
+    }
+
+    #[test]
+    fn sheet_tessellation_preserves_sub_deflection_triangular_hole() {
+        let mut topo = Topology::new();
+        let face = remus_topology::builder::make_rectangle_face(&mut topo, 2.0, 2.0, 1e-7).unwrap();
+        let outer = topo.face(face).unwrap().outer_wire();
+        let hole = remus_topology::builder::make_polygon_wire(
+            &mut topo,
+            &[
+                Point3::new(-0.02, -0.02, 0.0),
+                Point3::new(0.0, 0.02, 0.0),
+                Point3::new(0.02, -0.02, 0.0),
+            ],
+            1e-7,
+        )
+        .unwrap();
+        topo.set_face_boundary_wires(face, outer, vec![hole])
+            .unwrap();
+        let sheet = make_sheet_body(&mut topo, &[face]).unwrap();
+
+        let mesh = crate::tessellate::tessellate_sheet(&topo, sheet, 0.05).unwrap();
+        assert_eq!(
+            crate::tessellate::boundary_edge_count(&mesh),
+            7,
+            "the four outer and three inner edges must remain open"
+        );
+    }
+
+    #[test]
+    fn sheet_center_of_area_subtracts_an_offset_trimmed_hole() {
+        let mut topo = Topology::new();
+        let face = remus_topology::builder::make_rectangle_face(&mut topo, 4.0, 4.0, 1e-7).unwrap();
+        let outer = topo.face(face).unwrap().outer_wire();
+        let hole = remus_topology::builder::make_polygon_wire(
+            &mut topo,
+            &[
+                Point3::new(0.5, -0.5, 0.0),
+                Point3::new(0.5, 0.5, 0.0),
+                Point3::new(1.5, 0.5, 0.0),
+                Point3::new(1.5, -0.5, 0.0),
+            ],
+            1e-7,
+        )
+        .unwrap();
+        topo.set_face_boundary_wires(face, outer, vec![hole])
+            .unwrap();
+        let sheet = make_sheet_body(&mut topo, &[face]).unwrap();
+
+        let center = crate::measure::sheet_center_of_area(&topo, sheet).unwrap();
+        assert!((center.x() + 1.0 / 15.0).abs() < 1e-12, "{center:?}");
+        assert!(center.y().abs() < 1e-12, "{center:?}");
+        assert!(center.z().abs() < 1e-12, "{center:?}");
+        let bounds = crate::measure::sheet_bounding_box(&topo, sheet).unwrap();
+        assert_eq!(bounds.min, Point3::new(-2.0, -2.0, 0.0));
+        assert_eq!(bounds.max, Point3::new(2.0, 2.0, 0.0));
+    }
+
+    #[test]
+    fn sheet_properties_refuse_a_solid_class_shell() {
+        let mut topo = Topology::new();
+        let shell = topo.add_shell(Shell::empty());
+
+        let bounds_error = crate::measure::sheet_bounding_box(&topo, shell).unwrap_err();
+        let center_error = crate::measure::sheet_center_of_area(&topo, shell).unwrap_err();
+
+        assert!(matches!(
+            bounds_error,
+            crate::OperationsError::BodyClassMeasureMismatch {
+                operation: "bounding box",
+                expected: "sheet",
+                actual: "solid",
+            }
+        ));
+        assert!(matches!(
+            center_error,
+            crate::OperationsError::BodyClassMeasureMismatch {
+                operation: "center of area",
+                expected: "sheet",
+                actual: "solid",
+            }
+        ));
     }
 }
