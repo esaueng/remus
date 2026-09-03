@@ -965,6 +965,12 @@ export class BrepKernel {
      *
      * Returns a new solid handle (`u32`).
      *
+     * When the exact engine cannot handle the pair the kernel falls back to
+     * a mesh boolean and logs a `warn` on the `remus_approx` target (visible
+     * on the JS console through the log bridge); the returned handle then
+     * carries a mesh, not analytic faces. Use `booleanWithQuality` to have
+     * that disclosed in the result or refused outright.
+     *
      * # Errors
      *
      * Returns an error if either solid handle is invalid or the operation
@@ -1493,6 +1499,12 @@ export class BrepKernel {
      * Fuse (union) two solids into one.
      *
      * Returns a new solid handle (`u32`).
+     *
+     * When the exact engine cannot handle the pair the kernel falls back to
+     * a mesh boolean and logs a `warn` on the `remus_approx` target (visible
+     * on the JS console through the log bridge); the returned handle then
+     * carries a mesh, not analytic faces. Use `booleanWithQuality` to have
+     * that disclosed in the result or refused outright.
      *
      * # Errors
      *
@@ -2189,6 +2201,12 @@ export class BrepKernel {
      * Intersect two solids, keeping only their common volume.
      *
      * Returns a new solid handle (`u32`).
+     *
+     * When the exact engine cannot handle the pair the kernel falls back to
+     * a mesh boolean and logs a `warn` on the `remus_approx` target (visible
+     * on the JS console through the log bridge); the returned handle then
+     * carries a mesh, not analytic faces. Use `booleanWithQuality` to have
+     * that disclosed in the result or refused outright.
      *
      * # Errors
      *
