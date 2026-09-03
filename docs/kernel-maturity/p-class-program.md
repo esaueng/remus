@@ -932,7 +932,8 @@ offset folds. The general BOP-based approach becomes viable once M2
 generality lands; the bounded exact cell below does not claim that broader
 coverage.
 
-**Implemented for the fully collapsed uniform-L-prism cell.** A closed shell
+**Implemented, in review in [PR #237](https://github.com/esaueng/remus/pull/237),
+for the fully collapsed uniform-L-prism cell.** A closed shell
 of a hole-free, straight-edged, all-planar prism with one six-edge orthogonal
 L-profile and equal arm widths may contain one disconnected inner offset
 component whose concave cap winding has crossed
