@@ -42,8 +42,14 @@ pub enum CheckId {
     ShellConnected,
     /// Shell has free edges (not shared by exactly 2 faces).
     ShellClosed,
+    /// A sheet body has free boundary edges (reported, not invalid).
+    ShellFreeBoundary,
     /// Adjacent faces use shared edge in same direction (orientation inconsistent).
     ShellOrientationConsistent,
+    /// Adjacent sheet faces use a shared edge in the same direction.
+    SheetOrientationConsistent,
+    /// A root's stored body class is incompatible with its use.
+    BodyClassResolved,
     /// Euler characteristic V-E+F != 2 for genus-0 solid.
     SolidEulerCharacteristic,
     /// Same face ID appears in multiple shells.

@@ -323,6 +323,8 @@ impl From<remus_topology::TopologyError> for StructuredWasmError {
             }
             remus_topology::TopologyError::Empty { entity } => (*entity, None),
             remus_topology::TopologyError::InvalidToleranceValue { entity, .. } => (*entity, None),
+            remus_topology::TopologyError::InvalidBodyClass { entity, .. }
+            | remus_topology::TopologyError::BodyClassMismatch { entity, .. } => (*entity, None),
             remus_topology::TopologyError::VertexBallExceeded { vertex, .. } => {
                 ("vertex", Some(vertex.index()))
             }
