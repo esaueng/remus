@@ -393,47 +393,91 @@ fn split_noseam_by_arrangement(
         false
     };
 
-    // The collar's outer wire is the unique non-sliver loop encircling the
-    // sphere once in longitude. Orient it to oppose the parent boundary's
-    // winding (so the collar, not the discarded lunes, is its interior).
-    let parent_net_u = net_u(boundary_edges);
-    let mut best: Option<usize> = None;
-    for (i, l) in loops.iter().enumerate() {
-        if l.len() < 3 || loop_is_sliver(l) {
-            continue;
-        }
-        if net_u(l).abs() < std::f64::consts::PI {
-            continue;
-        }
-        if best.is_none_or(|b| l.len() > loops[b].len()) {
-            best = Some(i);
-        }
-    }
-
-    let Some(region_idx) = best else {
+    // The DCEL returns every bounded cell plus the exterior face. In the
+    // source hemisphere's orientation-preserving orthographic chart, bounded
+    // cells carry negative projected area while the exterior face carries the
+    // positive sum of their areas. Keep every bounded cell so this splitter is
+    // operator-neutral: classification decides whether a boolean wants the
+    // central collar or the outer caps. The tracer walks bounded cells in the
+    // opposite sense from the source sphere boundary, so reverse each emitted
+    // face below to preserve the parent face's outward orientation.
+    let Some(parent_normal) = sphere_boundary_normal(boundary_edges) else {
         return Ok(unsplit());
     };
-    let mut region = loops[region_idx].clone();
-    if net_u(&region) * parent_net_u > 0.0 {
-        region = reverse_loop(&region);
+    let area_tol = match surface {
+        FaceSurface::Sphere(sphere) => (tol * sphere.radius()).max(tol * tol),
+        _ => tol * tol,
+    };
+    let bounded: Vec<(usize, Vec<OrientedPCurveEdge>)> = loops
+        .into_iter()
+        .enumerate()
+        .filter(|(_, region)| {
+            region.len() >= 3
+                && !loop_is_sliver(region)
+                && sphere_loop_projected_area(region, parent_normal)
+                    .is_some_and(|area| area < -area_tol)
+        })
+        .collect();
+    if bounded.is_empty() {
+        return Ok(unsplit());
     }
 
-    // 3D interior sample for classification (a point on the collar surface).
-    let interior_3d = patch_interior_point(surface, &hole_loops, open_sections);
+    // The collar is the longest bounded loop that winds the longitude. Closed
+    // latitude sections live inside this cell: attach their reversed loops as
+    // holes, then also emit their complementary spherical cap cells below.
+    let collar_idx = bounded
+        .iter()
+        .filter(|(_, region)| net_u(region).abs() >= std::f64::consts::PI)
+        .max_by_key(|(_, region)| region.len())
+        .map(|(index, _)| *index);
+    if !hole_loops.is_empty() && collar_idx.is_none() {
+        return Ok(unsplit());
+    }
 
-    // Each latitude cap on this hemisphere is an inner hole of the collar.
     let region_holes: Vec<Vec<OrientedPCurveEdge>> =
-        hole_loops.iter().map(|hl| reverse_loop(hl)).collect();
+        hole_loops.iter().map(|hole| reverse_loop(hole)).collect();
+    let collar_interior = patch_interior_point(surface, &hole_loops, open_sections);
+    let mut result = Vec::with_capacity(bounded.len() + hole_loops.len());
+    for (index, region) in bounded {
+        let is_collar = Some(index) == collar_idx;
+        result.push(SplitSubFace {
+            surface: surface.clone(),
+            precomputed_interior: if is_collar {
+                Some(collar_interior)
+            } else {
+                sphere_loop_interior(surface, &region)
+            },
+            outer_wire: reverse_loop(&region),
+            inner_wires: if is_collar {
+                region_holes.clone()
+            } else {
+                Vec::new()
+            },
+            reversed,
+            parent: face_id,
+            rank,
+        });
+    }
 
-    Ok(vec![SplitSubFace {
-        surface: surface.clone(),
-        outer_wire: region,
-        inner_wires: region_holes,
-        reversed,
-        parent: face_id,
-        rank,
-        precomputed_interior: Some(interior_3d),
-    }])
+    for cap in hole_loops {
+        let Some(interior) = sphere_closed_loop_interior(surface, &cap) else {
+            return Ok(unsplit());
+        };
+        result.push(SplitSubFace {
+            surface: surface.clone(),
+            // Closed sections come directly from the face-face intersector,
+            // not the bounded-cell tracer, and already have the parent
+            // sphere's boundary sense.
+            outer_wire: cap,
+            inner_wires: Vec::new(),
+            reversed,
+            parent: face_id,
+            rank,
+            precomputed_interior: Some(interior),
+        });
+    }
+
+    Ok(result)
 }
 
 /// Reconstruct a sphere face's seam (boundary) as its exact circle and split it
@@ -1054,6 +1098,43 @@ fn sphere_loop_interior(surface: &FaceSurface, edges: &[OrientedPCurveEdge]) -> 
     }
     let d = dir.normalize().ok()?;
     Some(center + d * s.radius())
+}
+
+/// Interior point of a contractible closed loop on a sphere.
+///
+/// Averaging samples around the loop cancels its in-plane component and leaves
+/// the direction of the spherical cap it bounds. Projecting that direction
+/// back onto the sphere avoids using the section circle's Euclidean centre,
+/// which lies inside the solid and can sit on the opposing face's boundary.
+fn sphere_closed_loop_interior(
+    surface: &FaceSurface,
+    edges: &[OrientedPCurveEdge],
+) -> Option<Point3> {
+    use remus_math::vec::Vec3;
+
+    let FaceSurface::Sphere(sphere) = surface else {
+        return None;
+    };
+    if edges.is_empty() {
+        return None;
+    }
+
+    let mut direction = Vec3::new(0.0, 0.0, 0.0);
+    for edge in edges {
+        for sample in 0..32 {
+            let fraction = (f64::from(sample) + 0.5) / 32.0;
+            let point = super::super::pcurve_compute::evaluate_edge_at_t(
+                &edge.curve_3d,
+                edge.start_3d,
+                edge.end_3d,
+                edge.traversal_domain(),
+                fraction,
+            );
+            direction += (point - sphere.center()).normalize().ok()?;
+        }
+    }
+    let direction = direction.normalize().ok()?;
+    Some(sphere.center() + direction * sphere.radius())
 }
 
 // ---------------------------------------------------------------------------
@@ -1768,14 +1849,14 @@ fn torus_section_to_edge(
     })
 }
 
-/// Contained tracer for the `torus − box`-style cut: a box notch removes a
-/// connected sector of the ring whose surface boundary, in the torus `(θ, φ)`
-/// parameter space, is TWO closed loops each WRAPPING the tube angle `φ` fully
-/// (one at each θ-band where the box walls cut the tube partially; the box
-/// swallows the whole tube cross-section in between). The kept toroidal surface
-/// is the annular `u`-band between those two loops — emitted as ONE band face
-/// (outer wire = one φ-loop, the other as an inner wire, like a cylinder band
-/// between two rims).
+/// Arrangement splitter for the `torus ± box` notch family: the box-bounded
+/// sector and its complement have a shared surface boundary which, in torus
+/// `(θ, φ)` parameter space, is TWO closed loops each wrapping the tube angle
+/// `φ` fully (one at each θ-band where the box walls cut the tube partially;
+/// the box swallows the whole tube cross-section in between). The two loops
+/// partition the torus into complementary annular `u`-bands. Emit both so the
+/// later operator-neutral classifier can retain the long band for Cut/Fuse and
+/// the short band for Intersect.
 ///
 /// Returns `None` (defer to the generic path) unless the in-box arcs stitch into
 /// exactly two φ-wrapping closed loops. Relies on the FF exact-crossing trim
@@ -1906,14 +1987,9 @@ pub(super) fn split_torus_band_by_arrangement(
         snap_loop(l);
     }
 
-    let outer = loops[0].clone();
-    // Interior sample on the KEPT band: the band spans the ring angle u the LONG
-    // way between the two boundary loops, which sit at roughly constant u (the
-    // box-wall cuts). Take each loop's mean u (wrap-safe via summed unit vectors)
-    // and the MIDPOINT of the long arc between them — NOT a hardcoded u = π,
-    // which is only correct when the notch is on the +x side (a mirrored or
-    // rotated cut puts the kept band's centre elsewhere). The band wraps the tube
-    // v fully at this interior u, so v = 0 is on it.
+    // The loops sit at roughly constant ring angle u. Their wrap-safe means
+    // identify the short box-bounded interval and the complementary long
+    // interval without assuming the notch is on +x.
     let loop_mean_u = |l: &[OrientedPCurveEdge]| -> f64 {
         let (mut sx, mut sy) = (0.0, 0.0);
         for e in l {
@@ -1925,25 +2001,44 @@ pub(super) fn split_torus_band_by_arrangement(
     };
     let u0 = loop_mean_u(&loops[0]);
     let u1 = loop_mean_u(&loops[1]);
-    // Long-arc midpoint between u0 and u1 (the short gap is the removed notch).
+    // Midpoints of both complementary arcs. The band wraps the tube fully at
+    // either interior u, so v = 0 is safely away from the boundary loops.
     let fwd = (u1 - u0).rem_euclid(TAU);
-    let u_mid = if fwd >= PI {
-        (u0 + fwd / 2.0).rem_euclid(TAU) // a->b the long way is increasing
+    let (u_long, u_short) = if fwd >= PI {
+        (
+            (u0 + fwd / 2.0).rem_euclid(TAU),
+            (u0 - (TAU - fwd) / 2.0).rem_euclid(TAU),
+        )
     } else {
-        (u0 - (TAU - fwd) / 2.0).rem_euclid(TAU) // long way is decreasing
+        (
+            (u0 - (TAU - fwd) / 2.0).rem_euclid(TAU),
+            (u0 + fwd / 2.0).rem_euclid(TAU),
+        )
     };
-    let interior = torus.evaluate(u_mid, 0.0);
-    let inner_rev = reverse_loop(&loops[1]);
 
-    Ok(Some(vec![SplitSubFace {
-        surface: surface.clone(),
-        outer_wire: outer,
-        inner_wires: vec![inner_rev],
-        reversed,
-        parent: face_id,
-        rank,
-        precomputed_interior: Some(interior),
-    }]))
+    // A periodic annulus has no planar nesting relation between these two
+    // separators. Keep their already-oriented traversals and swap only the
+    // stored outer/inner roles to distinguish the complementary u-bands.
+    Ok(Some(vec![
+        SplitSubFace {
+            surface: surface.clone(),
+            outer_wire: reverse_loop(&loops[1]),
+            inner_wires: vec![loops[0].clone()],
+            reversed,
+            parent: face_id,
+            rank,
+            precomputed_interior: Some(torus.evaluate(u_long, 0.0)),
+        },
+        SplitSubFace {
+            surface: surface.clone(),
+            outer_wire: loops[0].clone(),
+            inner_wires: vec![reverse_loop(&loops[1])],
+            reversed,
+            parent: face_id,
+            rank,
+            precomputed_interior: Some(torus.evaluate(u_short, 0.0)),
+        },
+    ]))
 }
 
 /// Split a face when ALL section edges are interior (don't touch the boundary).

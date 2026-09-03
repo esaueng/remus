@@ -142,6 +142,7 @@ P-Class 2.3 · conic boolean cells = O2.2 · offset self-intersection = 5.7
 | B11 | **Small hygiene set** — `log::debug!` false-zero in `fill_images_faces.rs` (diagnostic-infra bug); deterministic STEP entity ordering; heal `fix_duplicate_faces` winding-blind comparison; plane×plane sampled in-both exact upgrade; `n_fine` clamp hazard note→guard. | various | S each | Cheap, each has already cost or will cost a debugging session. | Open |
 | B12 | **Holes on non-planar section caps** — annular Coons or cap-then-subtract vs extruded-annulus ground truth (stabilization B2.2). | `operations/src/cap.rs`, `fill_face.rs` | M | Largest remaining non-planar-cap value with clean ground truth. H3, with M7 cap work. | Open |
 | B13 | **STEP inner-shell (voids) export** — `BREP_WITH_VOIDS` reads; export of cavity solids incomplete. | `io/src/step/writer.rs` | S–M | Round-trip honesty for hollow parts; gauntlet round-trip stage will hit it. | Open |
+| B15 | **Cut/intersect pocket faces on a cylinder wall come back inconsistently oriented** — pinned but ignored since #198; the fix is engine-side, the repro is already in-tree. | `crates/operations/tests/regress_parallel_boss_band_sections.rs`, `algo` assembly | M | The only `#[ignore]` in the inventory that pins a live engine defect rather than a fork-policy or diagnostic case. Geometry lane. | Open |
 | B14 | **Render promotion track** — Experimental→Beta after a contract-stable release cycle (stabilization C4 residue); outside both programs. | `render` | S (time-gated) | Cleans the last stabilization row. | Open |
 
 **Explicitly not queued** (decided or terminal — do not re-open without
@@ -191,6 +192,15 @@ question), v1-fillet API migration (product decision, owner's).
   `subdivisionDepth`, with shared validation and default/boundary/rejection
   contract tests. Parameter-space budgeting and wider operation-family
   adoption remain under P-Class 2.8.
+- **K-S3 SSI marcher-budget WASM surface — done ([PR #202](https://github.com/esaueng/remus/pull/202),
+  2026-09-02):** the existing `march_steps`, `queue_size`, `segments`, and
+  `branches_per_direction` caps are additive optional arguments on direct
+  `booleanWithQuality` / `booleanWithCancellation` and matching camelCase
+  fields on batch `booleanWithQuality`. Shared bounded-integer validation,
+  legacy-default equivalence, generated-WASM smoke coverage, context-authority
+  tests, and a batch rejection/rollback volume oracle pin the contract.
+  Parameter-space tolerance and wider operation-family adoption remain under
+  P-Class 2.8, so that parent item stays partial.
 - **K-S1 pattern overlap — done (PR #142, 2026-08-30):** linear,
   circular, and grid patterns now refuse measured material overlap with the
   typed `pattern_instances_overlap` contract and full rollback across native,
