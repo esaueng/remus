@@ -16,8 +16,8 @@ use libfuzzer_sys::fuzz_target;
 mod invariants;
 mod shapegen;
 
-use remus_topology::Topology;
 use invariants as inv;
+use remus_topology::Topology;
 use shapegen::{Node, Refusal};
 
 /// Cap on result complexity for the expensive root battery. A mesh fallback
