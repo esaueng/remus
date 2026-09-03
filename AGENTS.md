@@ -679,6 +679,7 @@ cargo clippy --all-targets -- -D warnings  # Lint
 cargo fmt --all                            # Format
 cargo build -p remus-wasm --target wasm32-unknown-unknown  # WASM
 ./scripts/check-boundaries.sh              # Verify layer deps
+./scripts/check-det-hash.sh                # No new std HashMap/HashSet in geometry crates
 ./scripts/check-doc-paths.sh               # Verify doc file paths still resolve
 ```
 
