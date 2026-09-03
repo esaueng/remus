@@ -7,7 +7,7 @@ use wasm_bindgen::prelude::*;
 use remus_math::vec::Point3;
 use remus_operations::measure;
 
-use crate::error::{validate_finite, validate_positive};
+use crate::error::{WasmError, validate_finite, validate_positive};
 use crate::kernel::BrepKernel;
 
 fn detailed_validation_result(
@@ -24,6 +24,33 @@ fn detailed_validation_result(
             severity: match issue.severity {
                 remus_operations::validate::Severity::Error => "error".into(),
                 remus_operations::validate::Severity::Warning => "warning".into(),
+            },
+            description: issue.description,
+        })
+        .collect();
+
+    crate::types::ValidationReportResult {
+        error_count,
+        warning_count,
+        issues,
+    }
+}
+
+fn detailed_sheet_validation_result(
+    report: remus_check::validate::ValidationReport,
+) -> crate::types::ValidationReportResult {
+    #[allow(clippy::cast_possible_truncation)]
+    let error_count = report.error_count() as u32;
+    #[allow(clippy::cast_possible_truncation)]
+    let warning_count = report.warning_count() as u32;
+    let issues = report
+        .issues
+        .into_iter()
+        .map(|issue| crate::types::ValidationIssueResult {
+            severity: match issue.severity {
+                remus_check::validate::Severity::Info => "info".into(),
+                remus_check::validate::Severity::Error => "error".into(),
+                remus_check::validate::Severity::Warning => "warning".into(),
             },
             description: issue.description,
         })
@@ -85,6 +112,68 @@ impl BrepKernel {
         Ok(measure::solid_surface_area(
             &self.topo, solid_id, deflection,
         )?)
+    }
+
+    /// Compute the area of a first-class sheet body.
+    #[wasm_bindgen(js_name = "sheetArea")]
+    pub fn sheet_area(&self, sheet: u32, deflection: f64) -> Result<f64, JsError> {
+        validate_positive(deflection, "deflection")?;
+        let sheet_id = self.resolve_shell(sheet)?;
+        Ok(measure::body_surface_area(
+            &self.topo,
+            remus_topology::BodyId::Shell(sheet_id),
+            deflection,
+        )?)
+    }
+
+    /// Compute the axis-aligned bounding box of a first-class sheet body.
+    ///
+    /// Returns `[min_x, min_y, min_z, max_x, max_y, max_z]`.
+    #[wasm_bindgen(js_name = "sheetBoundingBox")]
+    pub fn sheet_bounding_box(&self, sheet: u32) -> Result<Vec<f64>, JsError> {
+        let sheet_id = self.resolve_shell(sheet)?;
+        let aabb = measure::sheet_bounding_box(&self.topo, sheet_id)?;
+        Ok(vec![
+            aabb.min.x(),
+            aabb.min.y(),
+            aabb.min.z(),
+            aabb.max.x(),
+            aabb.max.y(),
+            aabb.max.z(),
+        ])
+    }
+
+    /// Compute the area-weighted center of a first-class sheet body.
+    #[wasm_bindgen(js_name = "sheetCenterOfArea")]
+    pub fn sheet_center_of_area(&self, sheet: u32) -> Result<Vec<f64>, JsError> {
+        let sheet_id = self.resolve_shell(sheet)?;
+        let center = measure::sheet_center_of_area(&self.topo, sheet_id)?;
+        Ok(vec![center.x(), center.y(), center.z()])
+    }
+
+    /// Refuse volume measurement for a sheet with a stable typed diagnostic.
+    #[wasm_bindgen(js_name = "sheetVolume")]
+    pub fn sheet_volume(&self, sheet: u32, deflection: f64) -> Result<f64, JsError> {
+        validate_positive(deflection, "deflection")?;
+        Ok(self.sheet_volume_impl(sheet, deflection)?)
+    }
+
+    /// Validate a first-class sheet body and return every diagnostic.
+    ///
+    /// The JSON payload is `{ errorCount, warningCount, issues }`. An open
+    /// boundary contributes warnings, not errors.
+    #[wasm_bindgen(js_name = "validateSheetBody")]
+    pub fn validate_sheet_body(&self, sheet: u32) -> Result<JsValue, JsError> {
+        let sheet_id = self.resolve_shell(sheet)?;
+        let report = remus_check::validate::validate_sheet_body(
+            &self.topo,
+            sheet_id,
+            &remus_check::validate::ValidateOptions::default(),
+        )?;
+        let result = detailed_sheet_validation_result(report);
+        Ok(serde_json::to_string(&result)
+            .map_err(|error| JsError::new(&error.to_string()))?
+            .into())
     }
 
     /// Compute the area of a single face.
@@ -502,6 +591,17 @@ impl BrepKernel {
             result.point_b.y(),
             result.point_b.z(),
         ])
+    }
+}
+
+impl BrepKernel {
+    pub(crate) fn sheet_volume_impl(&self, sheet: u32, deflection: f64) -> Result<f64, WasmError> {
+        let sheet_id = self.resolve_shell(sheet)?;
+        Ok(measure::body_volume(
+            &self.topo,
+            remus_topology::BodyId::Shell(sheet_id),
+            deflection,
+        )?)
     }
 }
 

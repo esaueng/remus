@@ -76,6 +76,30 @@ pub enum AlgoError {
         /// Stable projection stage identifying the failed boundary.
         stage: &'static str,
     },
+
+    /// The sheet-split arrangement cannot represent the supplied sheet
+    /// exactly in its currently qualified subset.
+    #[error("unsupported sheet split: {reason}")]
+    UnsupportedSheetSplit {
+        /// Stable, actionable explanation of the refused configuration.
+        reason: String,
+    },
+
+    /// The sheet-by-solid trimming arrangement cannot represent the supplied
+    /// configuration exactly in its currently qualified subset.
+    #[error("unsupported sheet trim: {reason}")]
+    UnsupportedSheetTrim {
+        /// Stable, actionable explanation of the refused configuration.
+        reason: String,
+    },
+
+    /// The imprint arrangement cannot produce a complete, exact split and
+    /// construction-lineage record for the supplied solids.
+    #[error("unsupported imprint: {reason}")]
+    UnsupportedImprint {
+        /// Stable, actionable explanation of the refused configuration.
+        reason: String,
+    },
 }
 
 impl remus_math::diagnostic::ToDiagnostic for AlgoError {
@@ -129,6 +153,24 @@ impl remus_math::diagnostic::ToDiagnostic for AlgoError {
             )
             .with_detail("surfaceType", *surface)
             .with_detail("stage", *stage),
+            Self::UnsupportedSheetSplit { reason } => Diagnostic::new(
+                FailureCategory::Unsupported,
+                "unsupported_sheet_split",
+                self.to_string(),
+            )
+            .with_detail("reason", reason.as_str()),
+            Self::UnsupportedSheetTrim { reason } => Diagnostic::new(
+                FailureCategory::Unsupported,
+                "unsupported_sheet_trim",
+                self.to_string(),
+            )
+            .with_detail("reason", reason.as_str()),
+            Self::UnsupportedImprint { reason } => Diagnostic::new(
+                FailureCategory::Unsupported,
+                "unsupported_imprint",
+                self.to_string(),
+            )
+            .with_detail("reason", reason.as_str()),
         }
     }
 }
@@ -173,6 +215,27 @@ mod diagnostic_registry_tests {
         .diagnostic();
         assert_eq!(d.category(), FailureCategory::Nonconvergence);
         assert_eq!(d.code(), "pcurve_projection_failed");
+
+        let d = AlgoError::UnsupportedSheetSplit {
+            reason: "sheet must contain one cylindrical face".into(),
+        }
+        .diagnostic();
+        assert_eq!(d.category(), FailureCategory::Unsupported);
+        assert_eq!(d.code(), "unsupported_sheet_split");
+
+        let d = AlgoError::UnsupportedSheetTrim {
+            reason: "coincident sheet boundary".into(),
+        }
+        .diagnostic();
+        assert_eq!(d.category(), FailureCategory::Unsupported);
+        assert_eq!(d.code(), "unsupported_sheet_trim");
+
+        let d = AlgoError::UnsupportedImprint {
+            reason: "no target face was divided".into(),
+        }
+        .diagnostic();
+        assert_eq!(d.category(), FailureCategory::Unsupported);
+        assert_eq!(d.code(), "unsupported_imprint");
     }
 
     #[test]

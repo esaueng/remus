@@ -33,9 +33,11 @@ use std::fmt::Write as _;
 
 use remus_math::tolerance::Tolerance;
 
-use remus_math::vec::Point3;
+use remus_math::surfaces::CylindricalSurface;
+use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
 use remus_topology::face::FaceId;
+use remus_topology::shell::{Shell, ShellId};
 use remus_topology::solid::SolidId;
 
 use crate::bop::{self, BooleanOp};
@@ -389,6 +391,368 @@ impl Builder {
         Ok(())
     }
 
+    /// Build the common GFA arrangement for a solid (rank A) cut by a sheet
+    /// carried through the rank-B traversal adapter.
+    ///
+    /// Unlike a boolean, an open sheet has no volumetric inside. Target
+    /// sub-faces therefore remain unclassified here; only sheet pieces are
+    /// classified against the real solid so assembly can retain the patches
+    /// that lie inside it.
+    pub(crate) fn perform_sheet_arrangement(&mut self) -> Result<(), AlgoError> {
+        self.build_face_ranks()?;
+        self.fill_images()?;
+
+        let target_geoms = classifier::RayCastGeoms::new(&self.topo, self.solid_a).ok();
+        for sf in &mut self.sub_faces {
+            if sf.rank != Rank::B {
+                continue;
+            }
+            let point = match sf.interior_point {
+                Some(point) => point,
+                None => sample_face_interior(&self.topo, sf.face_id, self.tol)?,
+            };
+            sf.classification = classifier::classify_point_cached_with_tolerance(
+                &self.topo,
+                self.solid_a,
+                target_geoms.as_ref(),
+                point,
+                self.tol,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Materialize the rank-B side of a sheet-by-solid arrangement as a
+    /// first-class open shell. The sheet pieces are selected directly from
+    /// their classification against the real rank-A solid; no boolean truth
+    /// table or volumetric interpretation of the sheet is involved.
+    pub(crate) fn build_sheet_trim(
+        mut self,
+        keep_inside: bool,
+    ) -> Result<(Topology, ShellId), AlgoError> {
+        if !self.sd_pairs.is_empty() {
+            return Err(AlgoError::UnsupportedSheetTrim {
+                reason: "coincident sheet/solid patches have no qualified keep-side rule".into(),
+            });
+        }
+        let wanted = if keep_inside {
+            FaceClass::Inside
+        } else {
+            FaceClass::Outside
+        };
+        let faces: Vec<FaceId> = self
+            .sub_faces
+            .iter()
+            .filter(|sf| sf.rank == Rank::B && sf.classification == wanted)
+            .map(|sf| sf.face_id)
+            .collect();
+        if faces.is_empty() {
+            return Err(AlgoError::UnsupportedSheetTrim {
+                reason: format!(
+                    "keep-{} selection produced no sheet faces",
+                    if keep_inside { "inside" } else { "outside" }
+                ),
+            });
+        }
+        if self.sub_faces.iter().any(|sf| {
+            sf.rank == Rank::B
+                && matches!(
+                    sf.classification,
+                    FaceClass::On | FaceClass::CoplanarSame | FaceClass::CoplanarOpposite
+                )
+        }) {
+            return Err(AlgoError::UnsupportedSheetTrim {
+                reason: "coincident sheet/solid patches have no qualified keep-side rule".into(),
+            });
+        }
+
+        let shell = self.topo.add_shell(Shell::new(faces)?);
+        self.topo
+            .set_shell_body_class(shell, remus_topology::BodyClass::Sheet)?;
+        Ok((self.topo, shell))
+    }
+
+    /// Build the common arrangement for two sheet face sets.
+    ///
+    /// Neither rank is classified as a volume. The caller supplies the
+    /// oriented side-selection rule when materializing the two results.
+    pub(crate) fn perform_sheet_sheet_arrangement(&mut self) -> Result<(), AlgoError> {
+        self.build_face_ranks()?;
+        self.fill_images()
+    }
+
+    /// Build the split arrangement for imprinting rank B onto rank A.
+    ///
+    /// Imprint has no volumetric selection step: every rank-A patch survives.
+    pub(crate) fn perform_imprint_arrangement(&mut self) -> Result<(), AlgoError> {
+        self.build_face_ranks()?;
+        self.fill_images()
+    }
+
+    /// Assemble every rank-A patch as a new solid and retain exact face and
+    /// edge construction lineage for journaling.
+    pub(crate) fn build_imprint_result_with_origins(
+        mut self,
+    ) -> Result<
+        (
+            Topology,
+            SolidId,
+            FaceProvenance,
+            split_types::EdgeLineageLog,
+        ),
+        AlgoError,
+    > {
+        if !self.sd_pairs.is_empty() || !self.sd_within_rank_dups.is_empty() {
+            return Err(AlgoError::UnsupportedImprint {
+                reason: "same-domain face overlap is outside the qualified imprint subset".into(),
+            });
+        }
+
+        let mut pieces_by_source: HashMap<FaceId, usize> = HashMap::new();
+        let selected: Vec<bop::SelectedFace> = self
+            .sub_faces
+            .iter()
+            .filter(|sub_face| sub_face.rank == Rank::A)
+            .map(|sub_face| {
+                *pieces_by_source.entry(sub_face.source_face).or_default() += 1;
+                bop::SelectedFace {
+                    face_id: sub_face.face_id,
+                    source_face: sub_face.source_face,
+                    reversed: false,
+                }
+            })
+            .collect();
+        if !pieces_by_source.values().any(|&count| count > 1) {
+            return Err(AlgoError::UnsupportedImprint {
+                reason: "the tool did not divide any target face".into(),
+            });
+        }
+
+        let (solid, origins) = assemble::assemble_solid_with_origins(
+            &mut self.topo,
+            &selected,
+            &[],
+            &mut self.edge_lineage,
+        )?;
+        Ok((self.topo, solid, origins, self.edge_lineage))
+    }
+
+    /// Select both sides of a transversal, single-plane sheet arrangement.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn build_planar_sheet_sheet_trim(
+        mut self,
+        normal_a: Vec3,
+        d_a: f64,
+        normal_b: Vec3,
+        d_b: f64,
+        keep_a_positive: bool,
+        keep_b_positive: bool,
+    ) -> Result<(Topology, ShellId, ShellId), AlgoError> {
+        if !self.sd_pairs.is_empty() {
+            return Err(AlgoError::UnsupportedSheetTrim {
+                reason: "coincident sheet patches have no qualified side-selection rule".into(),
+            });
+        }
+        let count_a = self
+            .sub_faces
+            .iter()
+            .filter(|sub_face| sub_face.rank == Rank::A)
+            .count();
+        let count_b = self
+            .sub_faces
+            .iter()
+            .filter(|sub_face| sub_face.rank == Rank::B)
+            .count();
+        if count_a < 2 || count_b < 2 {
+            return Err(AlgoError::UnsupportedSheetTrim {
+                reason: format!(
+                    "qualified mutual trim requires both sheets to split; got {count_a} and {count_b} patches"
+                ),
+            });
+        }
+
+        let mut faces_a = Vec::new();
+        let mut faces_b = Vec::new();
+        for sub_face in &self.sub_faces {
+            let point = match sub_face.interior_point {
+                Some(point) => point,
+                None => sample_face_interior(&self.topo, sub_face.face_id, self.tol)?,
+            };
+            let (normal, d, keep_positive, selected) = match sub_face.rank {
+                Rank::A => (normal_b, d_b, keep_a_positive, &mut faces_a),
+                Rank::B => (normal_a, d_a, keep_b_positive, &mut faces_b),
+            };
+            let signed = normal.dot(Vec3::new(point.x(), point.y(), point.z())) - d;
+            if signed.abs() <= self.tol.linear {
+                return Err(AlgoError::UnsupportedSheetTrim {
+                    reason: "sheet patch side is ambiguous within tolerance".into(),
+                });
+            }
+            if (keep_positive && signed > 0.0) || (!keep_positive && signed < 0.0) {
+                selected.push(sub_face.face_id);
+            }
+        }
+        if faces_a.is_empty() || faces_b.is_empty() {
+            return Err(AlgoError::UnsupportedSheetTrim {
+                reason: format!(
+                    "mutual side selection produced {} and {} faces",
+                    faces_a.len(),
+                    faces_b.len()
+                ),
+            });
+        }
+
+        let sheet_a = self.topo.add_shell(Shell::new(faces_a)?);
+        self.topo
+            .set_shell_body_class(sheet_a, remus_topology::BodyClass::Sheet)?;
+        let sheet_b = self.topo.add_shell(Shell::new(faces_b)?);
+        self.topo
+            .set_shell_body_class(sheet_b, remus_topology::BodyClass::Sheet)?;
+        Ok((self.topo, sheet_a, sheet_b))
+    }
+
+    /// Select rank A on one oriented side of a planar rank-B tool sheet.
+    pub(crate) fn build_planar_sheet_by_sheet_trim(
+        mut self,
+        normal_b: Vec3,
+        d_b: f64,
+        keep_a_positive: bool,
+    ) -> Result<(Topology, ShellId), AlgoError> {
+        if !self.sd_pairs.is_empty() {
+            return Err(AlgoError::UnsupportedSheetTrim {
+                reason: "coincident sheet patches have no qualified side-selection rule".into(),
+            });
+        }
+        let count_a = self
+            .sub_faces
+            .iter()
+            .filter(|sub_face| sub_face.rank == Rank::A)
+            .count();
+        if count_a < 2 {
+            return Err(AlgoError::UnsupportedSheetTrim {
+                reason: format!(
+                    "qualified sheet-by-sheet trim requires the target to split; got {count_a} patch"
+                ),
+            });
+        }
+
+        let mut faces = Vec::new();
+        for sub_face in self
+            .sub_faces
+            .iter()
+            .filter(|sub_face| sub_face.rank == Rank::A)
+        {
+            let point = match sub_face.interior_point {
+                Some(point) => point,
+                None => sample_face_interior(&self.topo, sub_face.face_id, self.tol)?,
+            };
+            let signed = normal_b.dot(Vec3::new(point.x(), point.y(), point.z())) - d_b;
+            if signed.abs() <= self.tol.linear {
+                return Err(AlgoError::UnsupportedSheetTrim {
+                    reason: "sheet patch side is ambiguous within tolerance".into(),
+                });
+            }
+            if (keep_a_positive && signed > 0.0) || (!keep_a_positive && signed < 0.0) {
+                faces.push(sub_face.face_id);
+            }
+        }
+        if faces.is_empty() {
+            return Err(AlgoError::UnsupportedSheetTrim {
+                reason: "sheet-by-sheet side selection produced no target faces".into(),
+            });
+        }
+
+        let sheet = self.topo.add_shell(Shell::new(faces)?);
+        self.topo
+            .set_shell_body_class(sheet, remus_topology::BodyClass::Sheet)?;
+        Ok((self.topo, sheet))
+    }
+
+    /// Assemble both cells of the currently qualified cylindrical-sheet
+    /// arrangement. Rank-B faces are used only as separators; they are never
+    /// selected as ordinary boolean result faces.
+    pub(crate) fn build_cylindrical_sheet_regions(
+        mut self,
+        cylinder: &CylindricalSurface,
+    ) -> Result<(Topology, Vec<SolidId>), AlgoError> {
+        let separator: Vec<SubFace> = self
+            .sub_faces
+            .iter()
+            .filter(|sf| sf.rank == Rank::B && sf.classification == FaceClass::Inside)
+            .cloned()
+            .collect();
+        if separator.is_empty() {
+            return Err(AlgoError::UnsupportedSheetSplit {
+                reason: "sheet does not contribute a face patch inside the solid".into(),
+            });
+        }
+
+        let mut negative = Vec::new();
+        let mut positive = Vec::new();
+        for sf in self.sub_faces.iter().filter(|sf| sf.rank == Rank::A) {
+            let point = match sf.interior_point {
+                Some(point) => point,
+                None => sample_face_interior(&self.topo, sf.face_id, self.tol)?,
+            };
+            let delta = point - cylinder.origin();
+            let radial = delta - cylinder.axis() * cylinder.axis().dot(delta);
+            let signed = radial.length() - cylinder.radius();
+            if signed.abs() <= self.tol.linear {
+                return Err(AlgoError::UnsupportedSheetSplit {
+                    reason: format!(
+                        "target sub-face {:?} has no stable side-of-sheet classification",
+                        sf.face_id
+                    ),
+                });
+            }
+            if signed.is_sign_negative() {
+                negative.push(sf.clone());
+            } else {
+                positive.push(sf.clone());
+            }
+        }
+        if negative.is_empty() || positive.is_empty() {
+            return Err(AlgoError::UnsupportedSheetSplit {
+                reason: "sheet does not separate the solid into two non-empty cells".into(),
+            });
+        }
+
+        let mut regions = Vec::with_capacity(2);
+        for (target, positive_side) in [(negative, false), (positive, true)] {
+            let mut selected: Vec<bop::SelectedFace> = target
+                .into_iter()
+                .map(|sf| bop::SelectedFace {
+                    face_id: sf.face_id,
+                    source_face: sf.source_face,
+                    reversed: false,
+                })
+                .collect();
+            for sf in &separator {
+                let stored_reversed = self.topo.face(sf.face_id)?.is_reversed();
+                selected.push(bop::SelectedFace {
+                    face_id: sf.face_id,
+                    source_face: sf.source_face,
+                    // The cylinder carrier normal points from the negative
+                    // radial side to the positive side. It is outward for the
+                    // inner cell and inward for the outer cell.
+                    reversed: if positive_side {
+                        !stored_reversed
+                    } else {
+                        stored_reversed
+                    },
+                });
+            }
+            regions.push(assemble::assemble_solid(
+                &mut self.topo,
+                &selected,
+                &[],
+                &mut self.edge_lineage,
+            )?);
+        }
+
+        Ok((self.topo, regions))
+    }
+
     /// Select faces for the given boolean operation and assemble them
     /// into a solid.
     ///
@@ -456,6 +820,46 @@ impl Builder {
             &mut self.edge_lineage,
         )?;
         Ok((self.topo, solid_id, origins, self.edge_lineage))
+    }
+
+    /// Select faces for a boolean and keep each disconnected growth region as
+    /// a separate solid, with provenance total over all returned regions.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AlgoError`] if selection, assembly, or deterministic cavity
+    /// assignment fails.
+    pub fn build_result_regions_with_origins(
+        mut self,
+        op: BooleanOp,
+    ) -> Result<
+        (
+            Topology,
+            Vec<SolidId>,
+            FaceProvenance,
+            split_types::EdgeLineageLog,
+        ),
+        AlgoError,
+    > {
+        let selected = bop::select_faces(
+            &self.sub_faces,
+            op,
+            &self.sd_pairs,
+            &self.sd_within_rank_dups,
+        );
+        if op == BooleanOp::Fuse {
+            orient_selected_fuse_analytic_holes(&mut self.topo, &self.sub_faces, &selected);
+        }
+        log_subfaces_in_box(&self.topo, &self.sub_faces, &selected)?;
+        log_source_face_partition(&self.topo, &self.sub_faces, &selected);
+        let cap_planes = self.partial_overlap_cap_planes(&selected);
+        let (solids, origins) = assemble::assemble_solids_with_origins(
+            &mut self.topo,
+            &selected,
+            &cap_planes,
+            &mut self.edge_lineage,
+        )?;
+        Ok((self.topo, solids, origins, self.edge_lineage))
     }
 
     /// Candidate cap planes for partial coplanar same-domain overlaps.

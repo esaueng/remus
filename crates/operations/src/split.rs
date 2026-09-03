@@ -29,6 +29,7 @@ use remus_math::curves::Circle3D;
 use remus_math::tolerance::Tolerance;
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
+use remus_topology::compound::{Compound, CompoundId};
 use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
 use remus_topology::face::{Face, FaceId, FaceSurface};
 use remus_topology::solid::SolidId;
@@ -199,6 +200,72 @@ pub fn split(
     plane_normal: Vec3,
 ) -> Result<SplitResult, OperationsError> {
     Ok(split_with_evolution(topo, solid, plane_point, plane_normal)?.0)
+}
+
+/// Split a solid into volumetric cells using a first-class sheet body.
+///
+/// This is distinct from [`split`]: the tool is an existing sheet shell, its
+/// faces participate in the GFA arrangement without acquiring a volumetric
+/// meaning, and the result is a compound because a cellular split can contain
+/// more than two regions. The currently qualified exact subset is a connected,
+/// single-face cylindrical sheet and therefore returns two cells in stable
+/// inside-then-outside order.
+///
+/// # Errors
+///
+/// Refuses non-sheet roots and sheet geometries outside the qualified subset.
+/// Every result cell must validate, enclose positive volume, and the cell
+/// volumes must sum to the input volume. Any failure rolls the entire operation
+/// back.
+pub fn split_by_sheet(
+    topo: &mut Topology,
+    solid: SolidId,
+    sheet: remus_topology::shell::ShellId,
+) -> Result<CompoundId, OperationsError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let input_volume = crate::measure::solid_volume(topo, solid, VOLUME_DEFLECTION)?;
+        let regions = remus_algo::gfa::split_by_sheet(topo, solid, sheet)?;
+        if regions.len() < 2 {
+            return Err(unsupported(format!(
+                "sheet arrangement produced {} region(s); at least two are required",
+                regions.len()
+            )));
+        }
+
+        let mut sum = 0.0;
+        for (index, &region) in regions.iter().enumerate() {
+            let report = crate::validate::validate_solid(topo, region)?;
+            if !report.is_valid() {
+                let detail: Vec<&str> = report
+                    .issues
+                    .iter()
+                    .filter(|issue| issue.severity == crate::validate::Severity::Error)
+                    .map(|issue| issue.description.as_str())
+                    .collect();
+                return Err(unsupported(format!(
+                    "sheet-split region {index} failed validation ({})",
+                    detail.join("; ")
+                )));
+            }
+            let volume = crate::measure::solid_volume(topo, region, VOLUME_DEFLECTION)?;
+            if !volume.is_finite() || volume <= 0.0 {
+                return Err(unsupported(format!(
+                    "sheet-split region {index} encloses no volume ({volume})"
+                )));
+            }
+            sum += volume;
+        }
+
+        let slack = (input_volume.abs() * VOLUME_SUM_RELATIVE_SLACK).max(Tolerance::new().linear);
+        if (sum - input_volume).abs() > slack {
+            return Err(unsupported(format!(
+                "sheet-split regions enclose {sum} but the body encloses {input_volume}; \
+                 the split did not conserve the model"
+            )));
+        }
+
+        Ok(topo.add_compound(Compound::new(regions)))
+    })
 }
 
 /// [`split`] with construction-derived face evolution for both halves.
