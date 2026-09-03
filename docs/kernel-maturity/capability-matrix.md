@@ -215,7 +215,7 @@ does not itself promote or demote anything.
   every sphere/cylinder seam within angular tolerance; the four- and
   five-stripe torture cases also compare B-Rep volume with an independent mesh
   integral. Transverse planar runouts retain exact trimmed ellipse edges, and
-  direct/batch WASM agree on the all-edge box. This PR adds a bounded
+  direct/batch WASM agree on the all-edge box. PR #232 adds a bounded
   variable-radius setback cell: straight spines at a planar 3+-way corner may
   carry different S-curve laws when their declared active endpoints meet one
   common stationary radius and tangent ball. A three-edge box witness pins the

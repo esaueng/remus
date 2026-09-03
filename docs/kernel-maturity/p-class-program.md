@@ -782,7 +782,7 @@ Per-edge setback distances pulling the corner patch away from the vertex
 along each spine — required for the corner topologies mixed-radius chains
 produce.
 
-Implemented in this PR for a qualified smooth subset: `FilletEdgeSetback`
+Implemented in PR #232 for a qualified smooth subset: `FilletEdgeSetback`
 adds physical start/end distances to each straight spine, and the radius law
 is normalized over the remaining active stripe. At a planar three-or-more-way
 corner, every incident selected stripe must declare a positive setback, reach
