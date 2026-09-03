@@ -2679,7 +2679,14 @@ pub fn fillet_rolling_ball_with_origins(
         // validation errors against the input baseline, and the volume change
         // must be one a fillet of this radius can physically produce.
         crate::blend_ops::validate_blend_solid_against_input(topo, "fillet", solid, solid_id)?;
-        crate::blend_ops::validate_blend_volume(topo, "fillet", solid, solid_id, edges, radius)?;
+        crate::blend_ops::validate_blend_volume(
+            topo,
+            "fillet",
+            solid,
+            solid_id,
+            edges,
+            crate::blend_ops::BlendSize::Fillet { radius },
+        )?;
 
         let face_origins = if let Some(history) = unify_history {
             origins_from_face_specs(

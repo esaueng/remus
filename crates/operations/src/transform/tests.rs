@@ -1341,3 +1341,21 @@ fn large_parabola_refuses_near_anisotropy_outside_roundoff() {
         })
     ));
 }
+
+/// Mutation testing found `norms_equal && orthogonal` survives `||`: no test
+/// exercised a matrix that passes one leg and fails the other. Pin both.
+#[test]
+fn is_uniform_scale_needs_equal_norms_and_orthogonal_columns() {
+    assert!(is_uniform_scale(&Mat4::identity()));
+    assert!(is_uniform_scale(&Mat4::scale(2.0, 2.0, 2.0)));
+    assert!(is_uniform_scale(&Mat4::rotation_z(0.7)));
+
+    // Orthogonal columns, unequal norms: an anisotropic scale.
+    assert!(!is_uniform_scale(&Mat4::scale(1.0, 2.0, 1.0)));
+
+    // Equal (unit) column norms, non-orthogonal columns: a shear.
+    let mut shear = Mat4::identity();
+    shear.0[0][1] = 0.6;
+    shear.0[1][1] = 0.8;
+    assert!(!is_uniform_scale(&shear));
+}

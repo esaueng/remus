@@ -4471,6 +4471,38 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use remus_math::curves::{Circle3D, Ellipse3D, Hyperbola3D, Parabola3D};
+
+    /// Mutation testing found `radius - SEAM_ON_CIRCLE_TOL` survives
+    /// `radius / SEAM_ON_CIRCLE_TOL` (a disc a million times too wide): the
+    /// helper was only ever reached through full booleans. Pin it directly.
+    #[test]
+    fn pb_strictly_inside_circle_reads_the_midpoint_against_the_disc() {
+        use crate::ds::{Pave, PaveBlock};
+        use remus_topology::edge::Edge;
+        use remus_topology::vertex::Vertex;
+
+        let circle =
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+        let mut topo = Topology::new();
+        let mut arena = GfaArena::new();
+        let mut block = |a: Point3, b: Point3| {
+            let va = topo.add_vertex(Vertex::new(a, 1e-7));
+            let vb = topo.add_vertex(Vertex::new(b, 1e-7));
+            let mut edge = Edge::new(va, vb, EdgeCurve::Line);
+            edge.set_trim(Some((0.0, 1.0)));
+            let e = topo.add_edge(edge);
+            arena
+                .pave_blocks
+                .alloc(PaveBlock::new(e, Pave::new(va, 0.0), Pave::new(vb, 1.0)))
+        };
+        let outside = block(Point3::new(2.0, 0.0, 0.0), Point3::new(4.0, 0.0, 0.0));
+        let inside = block(Point3::new(-0.2, 0.0, 0.0), Point3::new(0.2, 0.0, 0.0));
+        let on_rim = block(Point3::new(0.0, -1.0, 0.0), Point3::new(2.0, -1.0, 0.0));
+
+        assert!(!pb_strictly_inside_circle(&topo, &arena, outside, &circle).unwrap());
+        assert!(pb_strictly_inside_circle(&topo, &arena, inside, &circle).unwrap());
+        assert!(!pb_strictly_inside_circle(&topo, &arena, on_rim, &circle).unwrap());
+    }
     use remus_math::curves2d::{Curve2D, Line2D};
     use remus_math::nurbs::fitting::interpolate;
     use remus_math::traits::ParametricCurve;
