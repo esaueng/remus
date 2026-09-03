@@ -4,6 +4,10 @@
 
 ### Features
 
+* Expose the NURBS SSI `marchSteps`, `queueSize`, `segments`, and
+  `branchesPerDirection` work budgets through `booleanWithQuality`,
+  `booleanWithCancellation`, and batch `booleanWithQuality`, alongside the
+  existing Newton and subdivision caps.
 * Add the `booleanWithQuality` `executeBatch`/`executeBatchV2` operation so
   batch callers can require exact output or receive explicit approximation
   provenance.

@@ -4,6 +4,9 @@
 
 ### Features
 
+* **wasm:** expose all six NURBS SSI work budgets through the direct
+  quality/cancellation booleans and batch quality booleans, with shared bounded
+  integer validation and unchanged defaults.
 * **context:** make the caller's NURBS SSI Newton-iteration budget authoritative
   across seed discovery and marching, with cooperative cancellation inside the
   refinement loop.
