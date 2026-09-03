@@ -202,9 +202,9 @@ does not itself promote or demote anything.
 - Ledger rows: "Fillet, chamfer" (Stable/Experimental, guarded), "Resize/
   remove analytic blend band" (Experimental, guarded).
 - Known Qualified/Partial evidence: planar line-edge manifold builders;
-  exact toroidal cylinder-cap rim assembler across `0 < f < r_c` with
-  closed-form volume/area verification; typed `RadiusTooLarge` refusals;
-  blind-hole floor rim deliberately capped at `r_c/2`; in-review PR #226
+  exact toroidal cylinder-cap and blind-hole-floor rim assemblers across
+  `0 < f < r_c` with closed-form volume/area verification; typed
+  `RadiusTooLarge` non-boundary limits; in-review PR #226
   qualifies straight-edge perpendicular-plane variable-radius walking bands:
   exact standard-law extrema, typed tolerance-collapse and caller-supplied
   local-limit boundaries, an analytic ruled-surface plus closed-form linear
@@ -234,7 +234,13 @@ does not itself promote or demote anything.
   common stationary radius and tangent ball. A three-edge box witness pins the
   exact sphere, all physical setback stations, angular-tolerance G1 seams,
   closed/manifold B-Rep, watertight mesh, independent volume agreement, the
-  exact census row, and direct/batch WASM parity.
+  exact census row, and direct/batch WASM parity. Issue 5.5 declares the v2
+  overflow policy to be stop-at-cliff: planar support boundaries, inner-loop
+  obstacles, closed-rim wall exhaustion, and inward cap collapse return typed
+  `CliffEncountered` with edge/face/requested/available metadata. Exact-width
+  box and two-rim thin-wall witnesses pin the supported and refused sides,
+  transactionality, mesh/B-Rep integrity, volume agreement, and structured
+  WASM `cliff-encountered` parity.
 - Fail-closed contract (Qualified, every public entry point): direct WASM
   bindings, `executeBatch`/`executeBatchV2`, journaled wrappers, and the
   legacy v1 Rust APIs (`fillet`, `fillet_rolling_ball`, `fillet_variable`,
@@ -255,8 +261,9 @@ does not itself promote or demote anything.
   open and non-coaxial curved assembly, curved-support chamfers, variable
   radius on curved domains, alternating-material-side vertex fans, nonplanar
   corners, setbacks outside the stationary common-ball planar cell, general
-  mixed-radius junction surfaces, G2 profiles, and overflow handling remain
-  Unqualified or absent and fail closed.
+  mixed-radius junction surfaces, G2 profiles, and actual rollover onto a
+  neighboring face remain Unqualified or absent and fail closed. Stop-at-cliff
+  detection is Qualified; it does not imply rollover or re-limitation support.
 
 ### Offset, shell, thicken
 

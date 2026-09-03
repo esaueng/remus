@@ -739,10 +739,10 @@ silently replaced by endpoint-linear interpolation: the builder preserves the
 function, preflights a deterministic domain grid, and the walker checks every
 consumed station. Because an arbitrary closure has no provable bound between
 samples, its whole-domain certification remains explicitly Unqualified.
-Likewise, turning the qualified walking band into a trimmed solid remains on
-the existing typed trimmer-refusal path; curved supports, corner assembly,
-setbacks, and overflow remain Issues 5.2–5.5 rather than being inferred from
-this component result.
+Likewise, turning the qualified walking band into a trimmed solid remained on
+the existing typed trimmer-refusal path at this stage; curved supports, corner
+assembly, setbacks, and overflow were intentionally left to Issues 5.2–5.5
+rather than inferred from this component result.
 
 > **Exit gate:** variable-radius cells move to Qualified with closed-form +
 > invariant oracles; refusals typed at law-domain boundaries (radius → 0,
@@ -858,8 +858,30 @@ general non-spherical mixed-radius junctions remain unqualified.
 `crates/blend/src/trimmer.rs` · `crates/blend/src/walker.rs`
 
 A blend wider than its support face must roll over the next edge (overflow)
-or stop against it (cliff) instead of refusing. This is re-limitation against
-the neighbor's neighbor — shared machinery with 6.1, build once.
+or stop against it with a typed cliff verdict, rather than returning a generic
+failure or building beyond the support. Rollover is re-limitation against the
+neighbor's neighbor — shared machinery with 6.1, build once.
+
+Implemented in this change under a declared **stop-at-cliff** policy. The v2
+fillet path now distinguishes a support boundary from a generic radius limit:
+it returns transactional `CliffEncountered` with the source edge, exhausted
+support face, requested radius, and locally available radius. The stable WASM
+code is `cliff-encountered`. Detection covers planar outer boundaries,
+planar inner-loop obstacles, the axial extent left on closed cylinder/cone
+rims (including two bands consuming one wall), and the disappearing-cap limit
+of an inward plane/cylinder rim. The typed verdict is propagated through
+engine selection instead of being swallowed by a fallback, and `resize_blend`
+retains its existing public `radius-too-large` compatibility mapping.
+
+The exit witnesses pin both sides. A radius-9.9 blend on a 10 mm planar
+support builds as a closed/manifold B-Rep with a watertight mesh and independent
+mesh/B-Rep volume agreement; radius 10 stops at the exact face boundary. Both
+rims of an 8-by-2 cylinder build at radius 0.9, while radius 1.1 reports the
+second wall cliff with 0.9 of local support remaining. Both refusals preserve
+the original topology and volume, and the structured batch route reports the
+same stable code. Actual rollover onto a neighboring face remains
+Unqualified; it is deferred to the general re-limitation machinery in 6.1
+rather than approximated here.
 
 > **Exit gate:** fillet radius exceeding a thin wall's width produces the
 > overflowed topology or a typed cliff refusal per declared policy — never a
