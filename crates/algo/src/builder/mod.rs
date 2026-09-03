@@ -822,6 +822,46 @@ impl Builder {
         Ok((self.topo, solid_id, origins, self.edge_lineage))
     }
 
+    /// Select faces for a boolean and keep each disconnected growth region as
+    /// a separate solid, with provenance total over all returned regions.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AlgoError`] if selection, assembly, or deterministic cavity
+    /// assignment fails.
+    pub fn build_result_regions_with_origins(
+        mut self,
+        op: BooleanOp,
+    ) -> Result<
+        (
+            Topology,
+            Vec<SolidId>,
+            FaceProvenance,
+            split_types::EdgeLineageLog,
+        ),
+        AlgoError,
+    > {
+        let selected = bop::select_faces(
+            &self.sub_faces,
+            op,
+            &self.sd_pairs,
+            &self.sd_within_rank_dups,
+        );
+        if op == BooleanOp::Fuse {
+            orient_selected_fuse_analytic_holes(&mut self.topo, &self.sub_faces, &selected);
+        }
+        log_subfaces_in_box(&self.topo, &self.sub_faces, &selected)?;
+        log_source_face_partition(&self.topo, &self.sub_faces, &selected);
+        let cap_planes = self.partial_overlap_cap_planes(&selected);
+        let (solids, origins) = assemble::assemble_solids_with_origins(
+            &mut self.topo,
+            &selected,
+            &cap_planes,
+            &mut self.edge_lineage,
+        )?;
+        Ok((self.topo, solids, origins, self.edge_lineage))
+    }
+
     /// Candidate cap planes for partial coplanar same-domain overlaps.
     ///
     /// For each planar `geometric_overlap` SD pair whose two faces were BOTH

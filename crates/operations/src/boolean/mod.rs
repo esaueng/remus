@@ -12,6 +12,16 @@ use assembly::{validate_boolean_result, validate_boolean_result_with_tolerance};
 pub use remus_algo::gfa::{EdgeEvent, EntityEvolution, VertexEvent};
 pub use types::{BooleanOp, BooleanOptions, FaceSpec};
 
+/// Exact cellular boolean output: a Compound plus per-region construction
+/// history in the same stable order as the Compound's solid list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BooleanRegionsResult {
+    /// Compound containing one independently valid solid per result region.
+    pub compound: remus_topology::compound::CompoundId,
+    /// Per-region provenance, ordered like `compound.solids()`.
+    pub regions: Vec<remus_algo::gfa::BooleanRegion>,
+}
+
 /// Which side of a solid a sheet trim retains.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SheetTrimMode {
@@ -184,6 +194,56 @@ pub fn boolean_with_entity_evolution(
     Ok(remus_algo::gfa::boolean_with_entity_evolution(
         topo, algo_op, solid_a, solid_b,
     )?)
+}
+
+/// Run an exact boolean and preserve disconnected result regions as a
+/// Compound instead of folding them into one compatibility `Solid`.
+///
+/// Each member is independently validation-gated and carries total
+/// construction-derived face, edge, and vertex evolution. Incomplete edge
+/// lineage fails closed; this API never routes to the mesh fallback.
+///
+/// # Errors
+///
+/// Returns [`crate::OperationsError`] if GFA, region validation, or lineage
+/// qualification fails. All mutations roll back on failure.
+pub fn boolean_regions(
+    topo: &mut Topology,
+    op: BooleanOp,
+    solid_a: SolidId,
+    solid_b: SolidId,
+) -> Result<BooleanRegionsResult, crate::OperationsError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let algo_op = match op {
+            BooleanOp::Fuse => remus_algo::bop::BooleanOp::Fuse,
+            BooleanOp::Cut => remus_algo::bop::BooleanOp::Cut,
+            BooleanOp::Intersect => remus_algo::bop::BooleanOp::Intersect,
+        };
+        let regions = remus_algo::gfa::boolean_regions_with_entity_evolution(
+            topo, algo_op, solid_a, solid_b,
+        )?;
+        if regions.is_empty() {
+            return Err(crate::OperationsError::EmptyResult {
+                reason: format!("{op:?} produced no regions"),
+            });
+        }
+        for region in &regions {
+            validate_boolean_result(topo, region.solid)?;
+            if region
+                .evolution
+                .edges
+                .iter()
+                .any(|(_, event)| matches!(event, remus_algo::gfa::EdgeEvent::Unresolved))
+            {
+                return Err(crate::OperationsError::InvalidInput {
+                    reason: "cellular boolean result has incomplete edge lineage".into(),
+                });
+            }
+        }
+        let solids = regions.iter().map(|region| region.solid).collect();
+        let compound = topo.add_compound(remus_topology::compound::Compound::new(solids));
+        Ok(BooleanRegionsResult { compound, regions })
+    })
 }
 
 /// Minimum distance used when healing coincident result boundaries, in mm.

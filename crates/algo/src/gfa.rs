@@ -7,7 +7,7 @@ use remus_math::context::OperationContext;
 use remus_math::tolerance::Tolerance;
 use remus_topology::BodyClass;
 use remus_topology::Topology;
-use remus_topology::face::FaceSurface;
+use remus_topology::face::{FaceId, FaceSurface};
 use remus_topology::shell::ShellId;
 use remus_topology::solid::Solid;
 use remus_topology::solid::SolidId;
@@ -788,6 +788,16 @@ pub struct EntityEvolution {
     pub vertices: Vec<(usize, VertexEvent)>,
 }
 
+/// One disconnected boolean result region and its construction-derived
+/// entity evolution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BooleanRegion {
+    /// The independently valid result solid.
+    pub solid: SolidId,
+    /// Provenance total over this region's faces, edges, and vertices.
+    pub evolution: EntityEvolution,
+}
+
 /// Store-local construction records that must be captured before the builder
 /// consumes the pave-filler arena.
 struct EntityLineage {
@@ -983,6 +993,68 @@ pub fn boolean_with_entity_evolution(
         &builder_lineage,
         &lineage,
     )
+}
+
+/// Run a GFA boolean and return each disconnected result region separately.
+///
+/// This is the cellular counterpart to [`boolean_with_entity_evolution`].
+/// The builder never folds disconnected growth shells into one `Solid`, and
+/// each returned region carries its own total construction history.
+///
+/// # Errors
+///
+/// Returns [`AlgoError`] if any GFA stage, region assembly, or export fails.
+pub fn boolean_regions_with_entity_evolution(
+    topo: &mut Topology,
+    op: BooleanOp,
+    solid_a: SolidId,
+    solid_b: SolidId,
+) -> Result<Vec<BooleanRegion>, AlgoError> {
+    reject_unsupported_curves(topo, solid_a)?;
+    reject_unsupported_curves(topo, solid_b)?;
+
+    let tolerance = Tolerance::default();
+    let mut store = crate::ds::GfaShapeStore::new(topo, solid_a, solid_b)?;
+    let mut arena = GfaArena::new();
+    pave_filler::run_pave_filler(
+        &mut store.topo,
+        store.solid_a,
+        store.solid_b,
+        tolerance,
+        &mut arena,
+    )?;
+    let lineage = EntityLineage::capture(&arena);
+    let mut builder = Builder::with_tolerance(
+        std::mem::take(&mut store.topo),
+        arena,
+        store.solid_a,
+        store.solid_b,
+        tolerance,
+    );
+    builder.perform()?;
+    let (store_topo, store_regions, store_origins, builder_lineage) =
+        builder.build_result_regions_with_origins(op)?;
+    store.topo = store_topo;
+
+    let origins_by_face: std::collections::HashMap<FaceId, Option<FaceId>> =
+        store_origins.into_iter().collect();
+    let mut regions = Vec::with_capacity(store_regions.len());
+    for store_region in store_regions {
+        let region_origins = remus_topology::explorer::solid_faces(&store.topo, store_region)?
+            .into_iter()
+            .map(|face| (face, origins_by_face.get(&face).copied().flatten()))
+            .collect();
+        let (solid, evolution) = export_entity_evolution(
+            topo,
+            &store,
+            store_region,
+            region_origins,
+            &builder_lineage,
+            &lineage,
+        )?;
+        regions.push(BooleanRegion { solid, evolution });
+    }
+    Ok(regions)
 }
 
 /// Split the target solid's faces wherever they intersect the tool while

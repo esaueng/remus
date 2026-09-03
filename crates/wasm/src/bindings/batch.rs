@@ -202,6 +202,7 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "fuse"
         | "cut"
         | "intersect"
+        | "booleanRegions"
         | "booleanWithQuality"
         | "fuseWithOptions"
         | "cutWithOptions"
@@ -930,6 +931,39 @@ impl BrepKernel {
                 let result = boolean(self.topo_mut(), BooleanOp::Intersect, a_id, b_id)
                     .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(result)))
+            }
+            "booleanRegions" => {
+                let a = get_u32(args, "solidA")?;
+                let b = get_u32(args, "solidB")?;
+                let operation = args["operation"].as_str().ok_or_else(|| {
+                    StructuredWasmError::invalid_argument(
+                        "missing or invalid 'operation' string",
+                        Some("operation"),
+                    )
+                })?;
+                let bool_op = match operation {
+                    "fuse" | "union" => BooleanOp::Fuse,
+                    "cut" | "difference" => BooleanOp::Cut,
+                    "intersect" | "intersection" => BooleanOp::Intersect,
+                    _ => {
+                        return Err(StructuredWasmError::invalid_argument(
+                            format!("unknown boolean op: {operation}"),
+                            Some("operation"),
+                        ));
+                    }
+                };
+                let a_id = self.resolve_solid(a).map_err(StructuredWasmError::from)?;
+                let b_id = self.resolve_solid(b).map_err(StructuredWasmError::from)?;
+                let result = remus_operations::boolean::boolean_regions(
+                    self.topo_mut(),
+                    bool_op,
+                    a_id,
+                    b_id,
+                )
+                .map_err(StructuredWasmError::from)?;
+                Ok(serde_json::json!(crate::handles::compound_id_to_u32(
+                    result.compound
+                )))
             }
             "booleanWithQuality" => {
                 use remus_operations::boolean::{BooleanQuality, boolean_with_context};
