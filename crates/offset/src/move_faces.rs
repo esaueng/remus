@@ -149,9 +149,16 @@ fn replace_surface_impl(
     crate::inter3d::intersect_faces_3d(topo, solid, &mut data)?;
     data.offset_faces = all_surfaces;
     crate::inter2d::intersect_pcurves_2d(topo, solid, &mut data)?;
-    restore_exact_plane_cylinder_edges(topo, &mut data)?;
-    validate_rebuilt_edges(topo, &source_edge_faces, &selected, &data)?;
-    build_topology_preserving_wires(topo, solid, &source_edge_faces, &mut data)?;
+    restore_exact_plane_cylinder_edges::<true>(topo, Vec3::new(0.0, 0.0, 0.0), 0.0, &mut data)?;
+    validate_rebuilt_edges::<true, _>(topo, &source_edge_faces, &selected, &data)?;
+    build_topology_preserving_wires::<true, _>(
+        topo,
+        solid,
+        Vec3::new(0.0, 0.0, 0.0),
+        0.0,
+        &source_edge_faces,
+        &mut data,
+    )?;
     validate_rebuilt_wires(topo, &source_wire_shapes, &data)?;
 
     let result = crate::assemble::assemble_solid_with_face_map(topo, &data)?;
@@ -241,9 +248,16 @@ fn move_faces_impl(
     crate::inter3d::intersect_faces_3d(topo, solid, &mut data)?;
     data.offset_faces = all_surfaces;
     crate::inter2d::intersect_pcurves_2d(topo, solid, &mut data)?;
-    restore_exact_plane_cylinder_edges(topo, &mut data)?;
-    validate_rebuilt_edges(topo, &source_edge_faces, &selected, &data)?;
-    build_topology_preserving_wires(topo, solid, &source_edge_faces, &mut data)?;
+    restore_exact_plane_cylinder_edges::<false>(topo, reference_normal, distance, &mut data)?;
+    validate_rebuilt_edges::<false, _>(topo, &source_edge_faces, &selected, &data)?;
+    build_topology_preserving_wires::<false, _>(
+        topo,
+        solid,
+        reference_normal,
+        distance,
+        &source_edge_faces,
+        &mut data,
+    )?;
     validate_rebuilt_wires(topo, &source_wire_shapes, &data)?;
 
     let result = crate::assemble::assemble_solid_with_face_map(topo, &data)?;
@@ -273,8 +287,10 @@ fn move_neighborhood<V: std::ops::Deref<Target = [FaceId]>>(
     relevant
 }
 
-fn restore_exact_plane_cylinder_edges(
+fn restore_exact_plane_cylinder_edges<const REPLACEMENT: bool>(
     topo: &mut Topology,
+    move_normal: Vec3,
+    distance: f64,
     data: &mut OffsetData,
 ) -> Result<(), OffsetError> {
     for index in 0..data.intersections.len() {
@@ -300,12 +316,20 @@ fn restore_exact_plane_cylinder_edges(
             }
             _ => continue,
         };
-        if let Some(edge) = exact_plane_cylinder_edge(
+        let shift = if REPLACEMENT {
+            Vec3::new(0.0, 0.0, 0.0)
+        } else if face_a.distance != 0.0 || face_b.distance != 0.0 {
+            move_normal * distance
+        } else {
+            Vec3::new(0.0, 0.0, 0.0)
+        };
+        if let Some(edge) = exact_plane_cylinder_edge::<REPLACEMENT>(
             topo,
             intersection.original_edge,
             normal,
             plane_d,
             &cylinder,
+            shift,
             data.options.tolerance.linear,
         )? {
             data.intersections[index].new_edges = vec![edge];
@@ -314,12 +338,13 @@ fn restore_exact_plane_cylinder_edges(
     Ok(())
 }
 
-fn exact_plane_cylinder_edge(
+fn exact_plane_cylinder_edge<const REPLACEMENT: bool>(
     topo: &mut Topology,
     source_edge: EdgeId,
     normal: Vec3,
     plane_d: f64,
     cylinder: &CylindricalSurface,
+    shift: Vec3,
     tolerance: f64,
 ) -> Result<Option<EdgeId>, OffsetError> {
     let source = topo.edge(source_edge)?;
@@ -344,7 +369,7 @@ fn exact_plane_cylinder_edge(
             normal,
             plane_d,
             cylinder,
-            Vec3::new(0.0, 0.0, 0.0),
+            shift,
             tolerance,
         );
     }
@@ -369,12 +394,12 @@ fn exact_plane_cylinder_edge(
                 source_ellipse.v_axis(),
             )?)
         }
-        (EdgeCurve::Circle(_), [ExactIntersectionCurve::Ellipse(ellipse)]) => {
+        (EdgeCurve::Circle(_), [ExactIntersectionCurve::Ellipse(ellipse)]) if REPLACEMENT => {
             EdgeCurve::Ellipse(ellipse.clone())
         }
         _ => return Ok(None),
     };
-    if source_curve.type_tag() != curve.type_tag() {
+    if REPLACEMENT && source_curve.type_tag() != curve.type_tag() {
         return Ok(Some(add_reparameterized_curve_edge(
             topo,
             source_edge,
@@ -395,7 +420,7 @@ fn exact_plane_cylinder_edge(
         &source_curve,
         source_range,
         curve,
-        Vec3::new(0.0, 0.0, 0.0),
+        shift,
         tolerance,
     )?))
 }
@@ -690,9 +715,14 @@ fn distance_to_line(point: Point3, origin: Point3, direction: Vec3) -> f64 {
 }
 
 #[allow(clippy::too_many_lines)]
-fn build_topology_preserving_wires<V: std::ops::Deref<Target = [FaceId]>>(
+fn build_topology_preserving_wires<
+    const REPLACEMENT: bool,
+    V: std::ops::Deref<Target = [FaceId]>,
+>(
     topo: &mut Topology,
     solid: SolidId,
+    move_normal: Vec3,
+    distance: f64,
     source_edge_faces: &std::collections::BTreeMap<usize, V>,
     data: &mut OffsetData,
 ) -> Result<(), OffsetError> {
@@ -743,15 +773,19 @@ fn build_topology_preserving_wires<V: std::ops::Deref<Target = [FaceId]>>(
     for source_vertex in source_vertices {
         let source = topo.vertex(source_vertex)?;
         let point = if selected_vertices.contains(&source_vertex.index()) {
-            let predicted = project_to_changed_surface(
-                source.point(),
-                incident_edges
-                    .get(&source_vertex.index())
-                    .map_or(&[][..], Vec::as_slice),
-                source_edge_faces,
-                data,
-            )?;
-            rebuild_vertex_point(
+            let predicted = if REPLACEMENT {
+                project_to_changed_surface(
+                    source.point(),
+                    incident_edges
+                        .get(&source_vertex.index())
+                        .map_or(&[][..], Vec::as_slice),
+                    source_edge_faces,
+                    data,
+                )?
+            } else {
+                source.point() + move_normal * distance
+            };
+            rebuild_vertex_point::<REPLACEMENT, _>(
                 topo,
                 source_vertex,
                 predicted,
@@ -794,7 +828,7 @@ fn build_topology_preserving_wires<V: std::ops::Deref<Target = [FaceId]>>(
             |replacement| Ok(topo.edge(replacement)?.curve().clone()),
         )?;
         let mut rebuilt = Edge::with_tolerance(start, end, curve, source.tolerance());
-        rebuilt.set_trim(if let Some(replacement) = replacement {
+        rebuilt.set_trim(if REPLACEMENT && let Some(replacement) = replacement {
             topo.edge(replacement)?.trim()
         } else {
             source.trim()
@@ -881,7 +915,7 @@ fn project_point_to_surface(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn rebuild_vertex_point<V: std::ops::Deref<Target = [FaceId]>>(
+fn rebuild_vertex_point<const REPLACEMENT: bool, V: std::ops::Deref<Target = [FaceId]>>(
     topo: &Topology,
     source_vertex: VertexId,
     predicted: Point3,
@@ -894,6 +928,9 @@ fn rebuild_vertex_point<V: std::ops::Deref<Target = [FaceId]>>(
         .iter()
         .filter_map(|edge| {
             preliminary.get(&edge.index()).copied().or_else(|| {
+                if !REPLACEMENT {
+                    return Some(*edge);
+                }
                 let faces = source_edge_faces.get(&edge.index())?;
                 let selected_self_seam = faces.iter().all(|face| {
                     data.offset_faces
@@ -1286,7 +1323,7 @@ fn validate_replacement_clearance<V: std::ops::Deref<Target = [FaceId]>>(
     }
 
     for (&edge_index, faces) in edge_faces {
-        if faces.iter().any(|face| *face == selected) {
+        if faces.contains(&selected) {
             continue;
         }
         let edge_id =
@@ -1533,7 +1570,7 @@ fn validate_source_edges<V: std::ops::Deref<Target = [FaceId]>>(
     Ok(())
 }
 
-fn validate_rebuilt_edges<V: std::ops::Deref<Target = [FaceId]>>(
+fn validate_rebuilt_edges<const ALLOW_CONIC_CHANGE: bool, V: std::ops::Deref<Target = [FaceId]>>(
     topo: &Topology,
     source_edge_faces: &std::collections::BTreeMap<usize, V>,
     selected: &HashSet<usize>,
@@ -1579,7 +1616,7 @@ fn validate_rebuilt_edges<V: std::ops::Deref<Target = [FaceId]>>(
             (source_curve, replacement_curve),
             (EdgeCurve::Circle(_), EdgeCurve::Ellipse(_))
         );
-        if source_kind != replacement_kind && !qualified_conic_change {
+        if source_kind != replacement_kind && !(ALLOW_CONIC_CHANGE && qualified_conic_change) {
             return Err(OffsetError::TopologyChange {
                 face: faces.first().copied(),
                 edge: Some(edge),
