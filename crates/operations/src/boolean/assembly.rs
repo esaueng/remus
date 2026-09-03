@@ -62,7 +62,9 @@ pub(crate) fn ccw_arc_trim(
     let t0 = circle.project(start);
     let delta = (circle.project(end) - t0).rem_euclid(std::f64::consts::TAU);
     let chord = 2.0 * circle.radius() * (0.5 * delta.min(std::f64::consts::TAU - delta)).sin();
-    if !t0.is_finite() || !delta.is_finite() || chord <= tol.linear {
+    // A non-finite `t0` makes `delta` non-finite too, so `delta` alone covers
+    // both (a separate `t0` test was an unkillable mutant).
+    if !delta.is_finite() || chord <= tol.linear {
         return Err(crate::OperationsError::Unsupported {
             operation: "assemble_solid_mixed",
             reason: "open circle arc is degenerate within linear tolerance".into(),
