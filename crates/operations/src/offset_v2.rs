@@ -181,6 +181,7 @@ pub fn offset_solid_arc_v2(
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
+    use remus_math::det_hash::DetHashMap;
     use remus_topology::Topology;
     use remus_topology::explorer::solid_faces;
     use remus_topology::face::FaceSurface;
@@ -210,7 +211,7 @@ mod tests {
                 ),
                 other => panic!("box face must be planar, got {}", other.type_tag()),
             })
-            .collect::<std::collections::HashMap<_, _>>();
+            .collect::<DetHashMap<_, _>>();
 
         let (result, evolution) = offset_solid_v2_with_evolution(&mut topo, source, 0.5).unwrap();
 

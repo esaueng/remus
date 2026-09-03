@@ -70,8 +70,7 @@ pub use data::{JointType, OffsetOptions};
 pub use error::OffsetError;
 pub use move_faces::{MoveFacesResult, move_faces, move_faces_with_face_map};
 
-use std::collections::{HashMap, HashSet};
-
+use remus_math::det_hash::{DetHashMap, DetHashSet};
 use remus_topology::Topology;
 use remus_topology::explorer::solid_faces;
 use remus_topology::face::FaceId;
@@ -85,12 +84,12 @@ pub struct OffsetResult {
     /// Offset solid.
     pub solid: SolidId,
     /// Source face index to the one result face derived from it.
-    pub face_map: HashMap<usize, FaceId>,
+    pub face_map: DetHashMap<usize, FaceId>,
 }
 
 struct ThickSolidResult {
     solid: SolidId,
-    face_map: Option<HashMap<usize, FaceId>>,
+    face_map: Option<DetHashMap<usize, FaceId>>,
 }
 
 /// Offset all faces of a solid by the given signed distance.
@@ -233,7 +232,7 @@ fn thick_solid_impl(
     loops::build_wire_loops(topo, &mut data)?;
 
     let assembled = assemble::assemble_solid_with_face_map(topo, &data)?;
-    let mut face_map = Some(assembled.face_map);
+    let mut face_map = Some(assembled.face_map.into_iter().collect());
 
     let result = if data.options.remove_self_intersections {
         face_map = None;
@@ -259,14 +258,16 @@ fn validate_face_map(
     topo: &Topology,
     source_faces: &[FaceId],
     result: SolidId,
-    face_map: &HashMap<usize, FaceId>,
+    face_map: &DetHashMap<usize, FaceId>,
 ) -> Result<(), OffsetError> {
-    let source_indices: HashSet<usize> = source_faces.iter().copied().map(FaceId::index).collect();
+    let source_indices: DetHashSet<usize> =
+        source_faces.iter().copied().map(FaceId::index).collect();
     let result_faces = solid_faces(topo, result)?;
-    let result_indices: HashSet<usize> = result_faces.iter().copied().map(FaceId::index).collect();
-    let mapped_indices: HashSet<usize> = face_map.values().copied().map(FaceId::index).collect();
+    let result_indices: DetHashSet<usize> =
+        result_faces.iter().copied().map(FaceId::index).collect();
+    let mapped_indices: DetHashSet<usize> = face_map.values().copied().map(FaceId::index).collect();
     if face_map.len() != source_indices.len()
-        || face_map.keys().copied().collect::<HashSet<_>>() != source_indices
+        || face_map.keys().copied().collect::<DetHashSet<_>>() != source_indices
         || mapped_indices.len() != face_map.len()
         || mapped_indices != result_indices
     {
