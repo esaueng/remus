@@ -4007,6 +4007,66 @@ fn compute_raw_curves(
         }
 
         (FaceSurface::Cylinder(c1), FaceSurface::Cylinder(c2))
+            if c1.axis().dot(c2.axis()).abs() <= 1.0e-9
+                && (c1.radius() - c2.radius()).abs() <= 1.0e-9 * c1.radius().max(c2.radius()) =>
+        {
+            // Equal-radius cylinders with intersecting perpendicular axes
+            // meet in two planar ellipses.  Split both at their shared pinch
+            // points and again at each half-span midpoint: whole ellipses
+            // cannot be woven through the two shared vertices, while two
+            // half-ellipses would still have identical endpoint pairs and be
+            // co-endpoint-deduplicated downstream.
+            match analytic_intersection::exact_cylinder_cylinder(c1, c2)? {
+                Some(exacts) => {
+                    let common_perpendicular = c1.axis().cross(c2.axis()).normalize()?;
+                    let mut results = Vec::new();
+                    for exact in exacts {
+                        let analytic_intersection::ExactIntersectionCurve::Ellipse(ellipse) = exact
+                        else {
+                            continue;
+                        };
+                        let center = ellipse.center();
+                        let pinch = [
+                            center + common_perpendicular * c1.radius(),
+                            center - common_perpendicular * c1.radius(),
+                        ];
+                        let t0 = ellipse.project(pinch[0]);
+                        let mut t2 = ellipse.project(pinch[1]);
+                        if t2 <= t0 {
+                            t2 += std::f64::consts::TAU;
+                        }
+                        let t1 = f64::midpoint(t0, t2);
+                        let t4 = t0 + std::f64::consts::TAU;
+                        let t3 = f64::midpoint(t2, t4);
+                        for (start, end) in [(t0, t1), (t1, t2), (t2, t3), (t3, t4)] {
+                            let p_start = ParametricCurve::evaluate(&ellipse, start);
+                            let p_end = ParametricCurve::evaluate(&ellipse, end);
+                            let bbox = Aabb3::from_points((0..=16).map(|index| {
+                                let t = start + (end - start) * f64::from(index) / 16.0;
+                                ParametricCurve::evaluate(&ellipse, t)
+                            }));
+                            results.push(RawCurve {
+                                curve: EdgeCurve::Ellipse(ellipse.clone()),
+                                bbox,
+                                t_range: (start, end),
+                                p_start,
+                                p_end,
+                            });
+                        }
+                    }
+                    Ok(results)
+                }
+                None => {
+                    if let (Some(aa), Some(ab)) = (surf_a.as_analytic(), surf_b.as_analytic()) {
+                        analytic_analytic_intersection(&aa, &ab, v_range_a, v_range_b)
+                    } else {
+                        Ok(Vec::new())
+                    }
+                }
+            }
+        }
+
+        (FaceSurface::Cylinder(c1), FaceSurface::Cylinder(c2))
             if c1.axis().dot(c2.axis()).abs() > 1.0 - 1e-10 =>
         {
             // Parallel-axis cylinders meet in 0 or 2 straight generator lines.

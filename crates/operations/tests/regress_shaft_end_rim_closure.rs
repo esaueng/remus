@@ -327,9 +327,9 @@ fn the_body_is_the_cross_drilled_shaft_it_claims_to_be() {
         "expected the closed form {expected:.6}, got {v:.6}"
     );
 
-    // And the wall really is a holed cylindrical face — the shape that gets
-    // declined by the structured band path and lands on the snap path this
-    // fix is about. Without an inner wire the body would never exercise it.
+    // The exact ellipse seam splits the equal-radius wall into seam-free
+    // bands. Unequal-radius fixtures in this file retain the holed-wall snap
+    // coverage; this assertion pins the canonical exact-seam topology.
     let holed = remus_topology::explorer::solid_faces(&topo, solid)
         .unwrap()
         .into_iter()
@@ -340,9 +340,8 @@ fn the_body_is_the_cross_drilled_shaft_it_claims_to_be() {
         })
         .count();
     assert_eq!(
-        holed, 1,
-        "the shaft wall is not a holed cylindrical face; this body does not \
-         reach the snap path at all"
+        holed, 0,
+        "the exact-seam equal-radius cross-drill leaves no holed shaft wall"
     );
 
     // The hole-aware cylindrical path must retain the bore openings and share

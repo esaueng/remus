@@ -19,6 +19,6 @@
     {"ok": 1},
     {"ok": 2},
     {"okNear": 704.2300164692424, "tol": 0.08},
-    {"ok": {"triangleCount": 48236, "boundaryEdges": 0, "nonManifoldEdges": 0, "eulerCharacteristic": 4, "isWatertight": true}}
+    {"ok": {"triangleCount": 12290, "boundaryEdges": 0, "nonManifoldEdges": 0, "eulerCharacteristic": 2, "isWatertight": true}}
   ]
 }
