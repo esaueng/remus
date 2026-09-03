@@ -206,7 +206,16 @@ does not itself promote or demote anything.
   and batch WASM agree. The pre-existing closed-rim chamfer regression matrix
   also remains green. Cylinder/cone `resize_blend` preserves either the
   material-side branch or an exact torus carrier's proven external branch; the
-  imported Shapr3D radius-4 band now rebuilds exactly at radius 3.
+  imported Shapr3D radius-4 band now rebuilds exactly at radius 3. In-review
+  PR #231 qualifies same-radius planar N-way vertex blends with one common
+  tangent ball and one connected material-side orientation. Three-contact
+  corners emit one analytic sphere cap; higher valence uses an analytic sphere
+  fan with shared internal edges and vertices. The all-edge box and four-edge
+  pyramid witnesses pin closed/manifold B-Reps, watertight welded meshes, and
+  every sphere/cylinder seam within angular tolerance; the four- and
+  five-stripe torture cases also compare B-Rep volume with an independent mesh
+  integral. Transverse planar runouts retain exact trimmed ellipse edges, and
+  direct/batch WASM agree on the all-edge box.
 - Fail-closed contract (Qualified, every public entry point): direct WASM
   bindings, `executeBatch`/`executeBatchV2`, journaled wrappers, and the
   legacy v1 Rust APIs (`fillet`, `fillet_rolling_ball`, `fillet_variable`,
@@ -225,8 +234,9 @@ does not itself promote or demote anything.
   every consumed station but cannot prove arbitrary between-sample behavior.
   Curved-support qualification is limited to the closed analytic cells above;
   open and non-coaxial curved assembly, curved-support chamfers, variable
-  radius on curved domains, setbacks, multi-edge corners, G2 profiles, and
-  overflow handling remain Unqualified or absent and fail closed.
+  radius on curved domains, alternating-material-side vertex fans, nonplanar
+  or variable-radius corners, setbacks, G2 profiles, and overflow handling
+  remain Unqualified or absent and fail closed.
 
 ### Offset, shell, thicken
 

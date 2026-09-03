@@ -749,6 +749,29 @@ Generalize the spherical-triangle corner patch to N incident stripes with
 mixed convexity — the setback-free corner solver Parasolid calls a vertex
 blend.
 
+Implemented, in review in [PR #231](https://github.com/esaueng/remus/pull/231):
+constant-radius planar vertex blends now solve a common tangent ball from the
+best-conditioned face-plane triple and qualify every remaining incident face.
+Each stripe ends at the exact projection of that ball centre onto its spine;
+the corner is one analytic sphere cap for three contacts or a shared-edge
+sphere fan for arbitrary N. Convex and concave corner orientation propagates
+through the fan. The production planar path also keeps arbitrary-dihedral
+stripes as exact cylinders and records transverse support-plane runouts as
+strictly trimmed ellipses. Native exit witnesses cover an all-edge box (eight
+caps and 24 G1 stripe/corner seams) and a four-stripe pyramid apex (one cap,
+four G1 seams, and four trimmed ellipse runouts); the deterministic torture
+corpus additionally promotes its four- and five-stripe pyramid cases. Every
+built witness has closed, manifold B-Rep and welded-mesh topology, and the
+torture gate compares B-Rep volume with an independent mesh integral. Direct
+and batch WASM routes agree on the all-edge box, and the approximation census
+promotes its pyramid row from failed planar fallback to exact analytic output.
+The qualified domain is same-radius, planar, common-ball geometry with one
+connected material-side orientation. Uniform convex and uniform concave
+corners are supported; alternating convex/concave material sides return typed
+`unsupported-vertex-blend` transactionally because one connected analytic
+sphere fan cannot reverse its effective normal between wedges. Nonplanar and
+variable-radius corners remain for Issues 5.4 and later.
+
 > **Exit gate:** all-edges-filleted box (3-stripe corners) and 4-stripe
 > pyramid apex close watertight; G1 across every stripe-corner boundary
 > within angular tolerance.
