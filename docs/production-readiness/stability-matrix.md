@@ -49,6 +49,15 @@ passes; rows can remain blocked on broader domain matrices.
 | Evolution | Face provenance (booleans, blends, patterns, draft, defeature, split, shell) | Stable (declared coverage) | Retained; scope widened, label unchanged. Exact construction-derived provenance covers booleans (GFA face origins), walking and planar fillet/chamfer builders, and patterns. The planar builders carry each face specification through assembly; rolling fillets also carry it through production same-surface unification. The versioned WASM blend payload enumerates complete source/result handle domains, makes deletions and uncertainty explicit, and rejects duplicate, contradictory, phantom, or incomplete claims. Stable fillet/chamfer claims are never inferred from proximity, traversal order, or approximate geometry. The older scale-relative geometric matcher remains available to other Rust evolution routes and marks ambiguous output `unresolved`. Promoted 2026-08-21: draft, defeature, split, and shell now record construction-derived face evolution (`qualify_evolution_coverage.rs` pins total attribution — every result face claimed exactly once) and journal real entries via `*_journaled` wrappers. Declared remainder: offset and direct edits journal as explicit barriers; fallback blend engines without construction records report explicit unavailable provenance; edge/vertex provenance beyond the boolean path remains the P1 roadmap item. |
 | Defeaturing | Planar face removal | Stable (declared domain) | Promoted 2026-08-21: cap strategy (through-hole, blind pocket, boss, cylindrical bore wall) and extend strategy (chamfer removal) qualified with exact restored volumes across 1e-3/1/1e3 scale; typed refusals for cavity solids, curved kept faces, over-removal; deterministic; WASM batch covered (`qualify_defeature.rs`). |
 
+Issue 5.4 adds one bounded in-review modifier cell without broadening the
+overall label: optional `startSetback`/`endSetback` distances on straight
+spines may close a planar 3+-way variable S-curve junction when every active
+endpoint has one common stationary radius and tangent ball. Its exact sphere
+cap, G1 seams, physical result stations, closed/manifold B-Rep, watertight
+mesh, independent volume agreement, exact census row, direct/batch WASM
+parity, and transactional mismatch refusal are pinned. Other setback and
+general mixed-radius corner topologies remain Experimental and fail closed.
+
 The evidence required to lift any blocked stable row is the full gate set in
 the audit request: documented domain/error/fallback behavior, negative and
 boundary regressions, bounded iteration, validated watertight output, native

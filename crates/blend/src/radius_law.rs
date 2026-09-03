@@ -39,6 +39,17 @@ impl StandardRadiusLaw {
         }
     }
 
+    /// Derivative with respect to the normalized law parameter.
+    #[must_use]
+    pub fn derivative(&self, t: f64) -> f64 {
+        let t = t.clamp(0.0, 1.0);
+        match self {
+            Self::Constant(_) => 0.0,
+            Self::Linear { start, end } => end - start,
+            Self::SCurve { start, end } => (end - start) * 6.0 * t * (1.0 - t),
+        }
+    }
+
     /// Exact minimum and maximum over the normalized law domain `[0, 1]`.
     ///
     /// All standard laws are monotone between their endpoint values, so no
@@ -307,6 +318,28 @@ mod tests {
         };
         assert!((law.evaluate(-1.0) - 1.0).abs() < f64::EPSILON);
         assert!((law.evaluate(2.0) - 3.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn standard_law_derivatives_name_stationary_endpoints() {
+        let scurve = StandardRadiusLaw::SCurve {
+            start: 1.0,
+            end: 3.0,
+        };
+        assert!(scurve.derivative(0.0).abs() < f64::EPSILON);
+        assert!((scurve.derivative(0.5) - 3.0).abs() < f64::EPSILON);
+        assert!(scurve.derivative(1.0).abs() < f64::EPSILON);
+        assert!(StandardRadiusLaw::Constant(2.0).derivative(0.5).abs() < f64::EPSILON);
+        assert!(
+            (StandardRadiusLaw::Linear {
+                start: 1.0,
+                end: 3.0,
+            }
+            .derivative(0.5)
+                - 2.0)
+                .abs()
+                < f64::EPSILON
+        );
     }
 
     #[test]

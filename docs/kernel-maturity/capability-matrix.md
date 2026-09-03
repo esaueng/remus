@@ -228,7 +228,13 @@ does not itself promote or demote anything.
   every sphere/cylinder seam within angular tolerance; the four- and
   five-stripe torture cases also compare B-Rep volume with an independent mesh
   integral. Transverse planar runouts retain exact trimmed ellipse edges, and
-  direct/batch WASM agree on the all-edge box.
+  direct/batch WASM agree on the all-edge box. PR #232 adds a bounded
+  variable-radius setback cell: straight spines at a planar 3+-way corner may
+  carry different S-curve laws when their declared active endpoints meet one
+  common stationary radius and tangent ball. A three-edge box witness pins the
+  exact sphere, all physical setback stations, angular-tolerance G1 seams,
+  closed/manifold B-Rep, watertight mesh, independent volume agreement, the
+  exact census row, and direct/batch WASM parity.
 - Fail-closed contract (Qualified, every public entry point): direct WASM
   bindings, `executeBatch`/`executeBatchV2`, journaled wrappers, and the
   legacy v1 Rust APIs (`fillet`, `fillet_rolling_ball`, `fillet_variable`,
@@ -248,8 +254,9 @@ does not itself promote or demote anything.
   Curved-support qualification is limited to the closed analytic cells above;
   open and non-coaxial curved assembly, curved-support chamfers, variable
   radius on curved domains, alternating-material-side vertex fans, nonplanar
-  or variable-radius corners, setbacks, G2 profiles, and overflow handling
-  remain Unqualified or absent and fail closed.
+  corners, setbacks outside the stationary common-ball planar cell, general
+  mixed-radius junction surfaces, G2 profiles, and overflow handling remain
+  Unqualified or absent and fail closed.
 
 ### Offset, shell, thicken
 

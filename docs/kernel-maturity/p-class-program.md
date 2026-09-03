@@ -826,6 +826,30 @@ Per-edge setback distances pulling the corner patch away from the vertex
 along each spine — required for the corner topologies mixed-radius chains
 produce.
 
+Implemented in PR #232 for a qualified smooth subset: `FilletEdgeSetback`
+adds physical start/end distances to each straight spine, and the radius law
+is normalized over the remaining active stripe. At a planar three-or-more-way
+corner, every incident selected stripe must declare a positive setback, reach
+one common radius with zero endpoint slope, and admit one consistently
+oriented tangent ball. The variable band then uses an exact cubic-Hermite
+tensor-product representation at planar supports and closes against one exact
+sphere cap; varying S-curve laws may carry different radii away from the
+corner while remaining G1 at the common ball.
+
+The 10 mm box witness selects the three origin edges with 1 mm setbacks and
+three different S-curve laws. It pins the radius-1 sphere at `(1,1,1)`, all
+three result-spine stations at exactly 1 mm, every sphere/band seam within the
+kernel angular tolerance, closed/manifold B-Rep topology, a watertight welded
+mesh, and B-Rep/independent-mesh volume agreement. Direct and batch WASM use
+the same parser for optional `startSetback`/`endSetback` fields and produce the
+same volume and mesh quality. A distance inconsistent with the tangent ball
+returns transactional `setback-mismatch`; partial declarations, nonplanar or
+curved spines, incompatible radii/material sides, and a varying linear law
+whose endpoint slope would make the seam merely G0 return
+`unsupported-setback-corner` or a typed input refusal. The approximation
+census carries the exact 10-face result. Curved-spine arc-length inversion and
+general non-spherical mixed-radius junctions remain unqualified.
+
 > **Exit gate:** mixed-radius three-edge corner with declared setbacks
 > builds; setback distances verified on the result spines.
 

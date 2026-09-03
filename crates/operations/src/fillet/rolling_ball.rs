@@ -309,7 +309,7 @@ fn solve_planar_corner_ball(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn exact_planar_corner_ball(
+pub(super) fn exact_planar_corner_ball(
     topo: &Topology,
     vertex_index: usize,
     incident_edges: &[EdgeId],
@@ -3258,7 +3258,7 @@ fn corner_is_concave(
 /// (obliquely meeting faces — the offset centre is not a tangent-ball centre
 /// there) or the geometry is degenerate; the caller then falls back to the
 /// rational approximation.
-fn build_sphere_cap(
+pub(super) fn build_sphere_cap(
     points: &[Point3],
     sphere_center: Point3,
     is_concave: bool,
