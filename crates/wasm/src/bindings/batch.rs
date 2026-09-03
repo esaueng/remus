@@ -21,7 +21,7 @@ use remus_operations::sweep::sweep;
 use remus_operations::transform::transform_solid;
 use remus_topology::edge::EdgeCurve;
 
-use super::operations::validate_move_faces_topology_work;
+use super::operations::{parse_variable_fillet_specs, validate_move_faces_topology_work};
 use crate::error::{
     StructuredWasmError, WasmError, validate_face_pair_count, validate_work_count,
     validate_work_product,
@@ -1851,46 +1851,12 @@ impl BrepKernel {
                 let specs = args["specs"]
                     .as_array()
                     .ok_or_else(|| "missing 'specs' array".to_string())?;
-                let mut edge_laws = Vec::with_capacity(specs.len());
-                for spec in specs {
-                    let edge_handle = spec["edge"]
-                        .as_u64()
-                        .ok_or_else(|| "missing 'edge' in fillet spec".to_string())?
-                        as u32;
-                    let edge_id = self
-                        .resolve_edge(edge_handle)
-                        .map_err(StructuredWasmError::from)?;
-                    let start_val = spec["start"]
-                        .as_f64()
-                        .or_else(|| spec["startRadius"].as_f64());
-                    let end_val = spec["end"].as_f64().or_else(|| spec["endRadius"].as_f64());
-                    let law_str =
-                        spec["law"]
-                            .as_str()
-                            .unwrap_or_else(|| match (start_val, end_val) {
-                                (Some(sv), Some(ev)) if (sv - ev).abs() > f64::EPSILON => "linear",
-                                _ => "constant",
-                            });
-                    let law = match law_str {
-                        "linear" => remus_operations::fillet::FilletRadiusLaw::Linear {
-                            start: start_val.unwrap_or(1.0),
-                            end: end_val.unwrap_or(1.0),
-                        },
-                        "scurve" => remus_operations::fillet::FilletRadiusLaw::SCurve {
-                            start: start_val.unwrap_or(1.0),
-                            end: end_val.unwrap_or(1.0),
-                        },
-                        _ => {
-                            let r = spec["radius"].as_f64().or(start_val).unwrap_or(1.0);
-                            remus_operations::fillet::FilletRadiusLaw::Constant(r)
-                        }
-                    };
-                    edge_laws.push((edge_id, law));
-                }
-                let result = remus_operations::fillet::fillet_variable(
+                let edge_specs =
+                    parse_variable_fillet_specs(self, specs).map_err(StructuredWasmError::from)?;
+                let result = remus_operations::fillet::fillet_variable_with_setbacks(
                     self.topo_mut(),
                     solid_id,
-                    &edge_laws,
+                    &edge_specs,
                 )
                 .map_err(StructuredWasmError::blend_failure)?;
                 Ok(serde_json::json!(solid_id_to_u32(result)))

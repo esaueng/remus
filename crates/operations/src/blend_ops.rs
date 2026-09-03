@@ -998,6 +998,10 @@ pub fn blend_failure_code(error: &OperationsError) -> &'static str {
         OperationsError::Blend(BlendError::UnsupportedVertexBlend { .. }) => {
             "unsupported-vertex-blend"
         }
+        OperationsError::Blend(BlendError::SetbackMismatch { .. }) => "setback-mismatch",
+        OperationsError::Blend(BlendError::UnsupportedSetbackCorner { .. }) => {
+            "unsupported-setback-corner"
+        }
         OperationsError::Blend(BlendError::TrimmingFailure { .. }) => "trimming-failure",
         OperationsError::Blend(BlendError::RadiusTooLarge { .. }) => "radius-too-large",
         OperationsError::Blend(BlendError::CornerFailure { .. }) => "corner-failure",

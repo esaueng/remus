@@ -45,6 +45,7 @@ revolve	half-disc (arc→Torus)	faces=2	exact analytic	surfaces=plane=1 cyl=0 co
 revolve	circle 120° (trimmed Torus)	faces=3	exact analytic	surfaces=plane=2 cyl=0 cone=0 sphere=0 torus=1 NURBS=0
 fillet-rb	box all edges	faces=26	exact analytic
 fillet-v2	box all edges	faces=26	exact analytic
+fillet-variable	box three-edge setbacks	faces=10	exact analytic
 chamfer	box all edges	faces=26	exact analytic
 fillet-v2	torus (walker) [ERR]	faces=0	FALLBACK x1: err: blend: unsupported vertex blend at Id(_): 2 stripes meet
 chamfer-v2	torus [ERR]	faces=0	FALLBACK x3: chamfer: analytic path unavailable for torus+torus — v1 has no walker fallback, returning UnsupportedSurface | err: chamfer produced a partial result: 0 succeeded, 2 failed

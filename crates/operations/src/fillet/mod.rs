@@ -40,10 +40,11 @@ pub(crate) use rolling_ball::fillet_rolling_ball_with_origins;
 
 use std::collections::{HashMap, HashSet};
 
+use remus_math::frame::Frame3;
 use remus_math::tolerance::Tolerance;
-use remus_math::vec::Point3;
+use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
-use remus_topology::edge::EdgeId;
+use remus_topology::edge::{EdgeCurve, EdgeId};
 use remus_topology::face::FaceSurface;
 use remus_topology::solid::SolidId;
 
@@ -51,6 +52,23 @@ use crate::boolean::FaceSpec;
 use crate::dot_normal_point;
 
 use helpers::{FacePolygon, FilletEdgeData, extract_inner_wire_positions, record_fillet_point};
+
+/// Variable-radius law and explicit endpoint setbacks for one fillet spine.
+///
+/// Setbacks are physical distances measured from the stored start/end vertex
+/// along the original edge. The radius law is normalized over the remaining
+/// active stripe, so its `start` and `end` values remain the built endpoints.
+#[derive(Debug, Clone)]
+pub struct FilletEdgeSetback {
+    /// Edge carrying the variable-radius stripe.
+    pub edge: EdgeId,
+    /// Radius law over the normalized active stripe domain.
+    pub law: FilletRadiusLaw,
+    /// Distance from the edge's stored start vertex to the stripe start.
+    pub start_setback: f64,
+    /// Distance from the edge's stored end vertex to the stripe end.
+    pub end_setback: f64,
+}
 
 /// Fillet `seed_edges` and all G1-continuous edges connected to them.
 ///
@@ -466,7 +484,41 @@ pub fn fillet_variable(
     edge_laws: &[(EdgeId, FilletRadiusLaw)],
 ) -> Result<SolidId, crate::OperationsError> {
     remus_topology::transaction::run_transacted(topo, |t| {
-        fillet_variable_transacted(t, solid, edge_laws)
+        fillet_variable_transacted(t, solid, edge_laws, &HashMap::new())
+    })
+}
+
+/// Fillet variable-radius edges over explicitly setback spine intervals.
+///
+/// A non-zero setback is currently qualified at a planar vertex where three
+/// or more selected stripes meet one consistently oriented tangent ball. The
+/// laws may differ away from the corner, but their radii must agree and have
+/// zero slope at the declared stations. This preserves exact G1
+/// stripe-to-corner seams; incompatible distances return a typed
+/// [`remus_blend::BlendError::SetbackMismatch`] instead of emitting a merely
+/// positional patch.
+///
+/// # Errors
+///
+/// Returns an error for malformed distances, unsupported endpoint topology,
+/// incompatible corner stations, or the same construction/postcondition
+/// failures as [`fillet_variable`]. The call is transactional.
+pub fn fillet_variable_with_setbacks(
+    topo: &mut Topology,
+    solid: SolidId,
+    specs: &[FilletEdgeSetback],
+) -> Result<SolidId, crate::OperationsError> {
+    let mut seen = HashSet::with_capacity(specs.len());
+    let mut edge_laws = Vec::with_capacity(specs.len());
+    let mut setbacks = HashMap::with_capacity(specs.len());
+    for spec in specs {
+        if seen.insert(spec.edge) {
+            edge_laws.push((spec.edge, spec.law.clone()));
+            setbacks.insert(spec.edge.index(), (spec.start_setback, spec.end_setback));
+        }
+    }
+    remus_topology::transaction::run_transacted(topo, |t| {
+        fillet_variable_transacted(t, solid, &edge_laws, &setbacks)
     })
 }
 
@@ -477,6 +529,7 @@ fn fillet_variable_transacted(
     topo: &mut Topology,
     solid: SolidId,
     edge_laws: &[(EdgeId, FilletRadiusLaw)],
+    requested_setbacks: &HashMap<usize, (f64, f64)>,
 ) -> Result<SolidId, crate::OperationsError> {
     let tol = Tolerance::new();
 
@@ -498,12 +551,72 @@ fn fillet_variable_transacted(
     let edge_laws = edge_laws.as_slice();
 
     for (_, law) in edge_laws {
-        for t in [0.0, 0.25, 0.5, 0.75, 1.0] {
-            if law.evaluate(t) <= tol.linear {
-                return Err(crate::OperationsError::InvalidInput {
-                    reason: "fillet radius must be positive at all points".into(),
-                });
-            }
+        law.validated_bounds(tol.linear)?;
+    }
+
+    // Convert physical endpoint setbacks into the original edge parameter
+    // domain. The first qualified cell is deliberately exact: straight
+    // spines only, where distance and parameter are affine. Curved-spine arc
+    // length inversion remains outside this issue rather than being sampled.
+    let mut active_intervals: HashMap<usize, (f64, f64)> = HashMap::with_capacity(edge_laws.len());
+    let mut declared_endpoint_setbacks: HashMap<(usize, usize), f64> = HashMap::new();
+    for (edge_id, _) in edge_laws {
+        let edge = topo.edge(*edge_id)?;
+        let (mut start_setback, mut end_setback) = requested_setbacks
+            .get(&edge_id.index())
+            .copied()
+            .unwrap_or((0.0, 0.0));
+        if !start_setback.is_finite()
+            || !end_setback.is_finite()
+            || start_setback < 0.0
+            || end_setback < 0.0
+        {
+            return Err(crate::OperationsError::InvalidInput {
+                reason: format!(
+                    "fillet setbacks for edge {edge_id:?} must be finite and non-negative"
+                ),
+            });
+        }
+        if start_setback <= tol.linear {
+            start_setback = 0.0;
+        }
+        if end_setback <= tol.linear {
+            end_setback = 0.0;
+        }
+        let start = topo.vertex(edge.start())?.point();
+        let end = topo.vertex(edge.end())?.point();
+        let edge_length = (end - start).length();
+        if edge_length <= tol.linear {
+            return Err(crate::OperationsError::InvalidInput {
+                reason: format!("fillet edge {edge_id:?} is tolerance-collapsed"),
+            });
+        }
+        if (start_setback > tol.linear || end_setback > tol.linear)
+            && !matches!(edge.curve(), remus_topology::edge::EdgeCurve::Line)
+        {
+            return Err(crate::OperationsError::InvalidInput {
+                reason: format!(
+                    "explicit fillet setbacks currently require a straight spine; edge {edge_id:?} is curved"
+                ),
+            });
+        }
+        if start_setback + end_setback >= edge_length - tol.linear {
+            return Err(crate::OperationsError::InvalidInput {
+                reason: format!(
+                    "fillet setbacks on edge {edge_id:?} consume its full length: {start_setback} + {end_setback} >= {edge_length}"
+                ),
+            });
+        }
+        active_intervals.insert(
+            edge_id.index(),
+            (start_setback / edge_length, 1.0 - end_setback / edge_length),
+        );
+        if start_setback > tol.linear {
+            declared_endpoint_setbacks
+                .insert((edge_id.index(), edge.start().index()), start_setback);
+        }
+        if end_setback > tol.linear {
+            declared_endpoint_setbacks.insert((edge_id.index(), edge.end().index()), end_setback);
         }
     }
 
@@ -587,17 +700,220 @@ fn fillet_variable_transacted(
         .map(|(eid, law)| (eid.index(), law))
         .collect();
 
+    let mut vertex_fillet_edges: HashMap<usize, Vec<EdgeId>> = HashMap::new();
+    for (edge_id, _) in edge_laws {
+        let edge = topo.edge(*edge_id)?;
+        vertex_fillet_edges
+            .entry(edge.start().index())
+            .or_default()
+            .push(*edge_id);
+        vertex_fillet_edges
+            .entry(edge.end().index())
+            .or_default()
+            .push(*edge_id);
+    }
+
+    // Qualify every endpoint gap introduced by a declared setback. A smooth
+    // three-way variable corner exists in this tranche when all cropped
+    // stripes reach the same radius with zero endpoint slope and the signed
+    // support planes admit one tangent ball. The ball then fixes each spine
+    // station uniquely; caller distances are checked against those
+    // projections instead of trusted.
+    let mut qualified_setback_corners: HashMap<
+        usize,
+        (remus_topology::vertex::VertexId, Point3, f64, bool),
+    > = HashMap::new();
+    let mut selected_vertex_indices: Vec<_> = vertex_fillet_edges.keys().copied().collect();
+    selected_vertex_indices.sort_unstable();
+    for vertex_index in selected_vertex_indices {
+        let incident_edges = &vertex_fillet_edges[&vertex_index];
+        let declared_count = incident_edges
+            .iter()
+            .filter(|edge_id| {
+                declared_endpoint_setbacks.contains_key(&(edge_id.index(), vertex_index))
+            })
+            .count();
+        if declared_count == 0 {
+            continue;
+        }
+        let vertex_id = incident_edges
+            .iter()
+            .find_map(|edge_id| {
+                let edge = topo.edge(*edge_id).ok()?;
+                [edge.start(), edge.end()]
+                    .into_iter()
+                    .find(|vertex| vertex.index() == vertex_index)
+            })
+            .ok_or_else(|| crate::OperationsError::InvalidInput {
+                reason: format!("setback endpoint {vertex_index} is not on its selected edges"),
+            })?;
+        if incident_edges.len() < 3 || declared_count != incident_edges.len() {
+            return Err(crate::OperationsError::Blend(
+                remus_blend::BlendError::UnsupportedSetbackCorner {
+                    vertex: vertex_id,
+                    stripes: incident_edges.len(),
+                    reason: "every incident selected stripe must declare a positive setback at a 3+-way corner"
+                        .into(),
+                },
+            ));
+        }
+
+        let mut radii = Vec::with_capacity(incident_edges.len());
+        let mut planar_edge_sides = HashMap::with_capacity(incident_edges.len());
+        for edge_id in incident_edges {
+            let edge = topo.edge(*edge_id)?;
+            let law_t = if edge.start().index() == vertex_index {
+                0.0
+            } else {
+                1.0
+            };
+            let law = edge_law_map[&edge_id.index()];
+            let radius = law.evaluate(law_t);
+            radii.push((*edge_id, radius));
+            let slope_tol = tol.linear.max(radius.abs() * 1.0e-10);
+            if law.derivative(law_t).abs() > slope_tol {
+                return Err(crate::OperationsError::Blend(
+                    remus_blend::BlendError::UnsupportedSetbackCorner {
+                        vertex: vertex_id,
+                        stripes: incident_edges.len(),
+                        reason: format!(
+                            "edge {edge_id:?} radius law must have zero slope at the setback station for a G1 corner seam"
+                        ),
+                    },
+                ));
+            }
+
+            let faces = edge_to_faces.get(&edge_id.index()).ok_or_else(|| {
+                crate::OperationsError::Blend(remus_blend::BlendError::UnsupportedSetbackCorner {
+                    vertex: vertex_id,
+                    stripes: incident_edges.len(),
+                    reason: format!("edge {edge_id:?} has no support-face pair"),
+                })
+            })?;
+            let supports_are_planar = if faces.len() == 2 {
+                let mut planar = true;
+                for face_id in faces {
+                    if topo.face(*face_id)?.effective_plane_normal().is_none() {
+                        planar = false;
+                        break;
+                    }
+                }
+                planar
+            } else {
+                false
+            };
+            if !supports_are_planar {
+                return Err(crate::OperationsError::Blend(
+                    remus_blend::BlendError::UnsupportedSetbackCorner {
+                        vertex: vertex_id,
+                        stripes: incident_edges.len(),
+                        reason:
+                            "the qualified setback corner requires two planar supports per stripe"
+                                .into(),
+                    },
+                ));
+            }
+            let start = topo.vertex(edge.start())?.point();
+            let end = topo.vertex(edge.end())?.point();
+            let probe = radius
+                .min((end - start).length() * 0.1)
+                .max(tol.linear * 10.0);
+            let side = match crate::query::edge_concavity_from_faces(
+                topo, solid, *edge_id, faces[0], faces[1], probe,
+            )? {
+                crate::query::EdgeConcavity::Convex => -1.0,
+                crate::query::EdgeConcavity::Concave => 1.0,
+                crate::query::EdgeConcavity::Tangent | crate::query::EdgeConcavity::Unknown => {
+                    return Err(crate::OperationsError::Blend(
+                        remus_blend::BlendError::UnsupportedSetbackCorner {
+                            vertex: vertex_id,
+                            stripes: incident_edges.len(),
+                            reason: format!(
+                                "edge {edge_id:?} has no qualified material-side orientation"
+                            ),
+                        },
+                    ));
+                }
+            };
+            planar_edge_sides.insert(edge_id.index(), side);
+        }
+
+        let common_radius = radii[0].1;
+        let radius_tol = tol.linear.max(common_radius.abs() * 1.0e-8);
+        if radii
+            .iter()
+            .any(|(_, radius)| (*radius - common_radius).abs() > radius_tol)
+        {
+            return Err(crate::OperationsError::Blend(
+                remus_blend::BlendError::UnsupportedSetbackCorner {
+                    vertex: vertex_id,
+                    stripes: incident_edges.len(),
+                    reason: "incident radius laws do not reach one common corner radius at the declared stations"
+                        .into(),
+                },
+            ));
+        }
+        let Some(center) = rolling_ball::exact_planar_corner_ball(
+            topo,
+            vertex_index,
+            incident_edges,
+            &edge_to_faces,
+            &planar_edge_sides,
+            common_radius,
+            tol,
+        ) else {
+            return Err(crate::OperationsError::Blend(
+                remus_blend::BlendError::UnsupportedSetbackCorner {
+                    vertex: vertex_id,
+                    stripes: incident_edges.len(),
+                    reason:
+                        "signed support planes do not admit one consistently oriented tangent ball"
+                            .into(),
+                },
+            ));
+        };
+
+        let vertex = topo.vertex(vertex_id)?.point();
+        for (edge_id, _) in &radii {
+            let edge = topo.edge(*edge_id)?;
+            let other = if edge.start() == vertex_id {
+                topo.vertex(edge.end())?.point()
+            } else {
+                topo.vertex(edge.start())?.point()
+            };
+            let away = (other - vertex).normalize()?;
+            let required = (center - vertex).dot(away);
+            let declared = declared_endpoint_setbacks[&(edge_id.index(), vertex_index)];
+            let setback_tol = tol.linear.max(required.abs() * 1.0e-8);
+            if required <= tol.linear || (declared - required).abs() > setback_tol {
+                return Err(crate::OperationsError::Blend(
+                    remus_blend::BlendError::SetbackMismatch {
+                        edge: *edge_id,
+                        vertex: vertex_id,
+                        declared,
+                        required,
+                    },
+                ));
+            }
+        }
+        let is_concave = planar_edge_sides.values().all(|side| *side > 0.0);
+        qualified_setback_corners
+            .insert(vertex_index, (vertex_id, center, common_radius, is_concave));
+    }
+
     // Shared contact map: the SAME inward contact point used both to trim the
     // adjacent faces and to anchor the blend boundary, keyed by
     // (vertex_index, edge_index, face_index). Computing it once guarantees the
     // trimmed face boundary and the blend boundary coincide (watertight shell).
-    // Per-end radius: the edge's start vertex uses R(0), the end uses R(1).
+    // Geometry uses the active (possibly setback) station; the normalized law
+    // still uses 0/1 at the built stripe endpoints.
     let fillet_contact_map: HashMap<(usize, usize, usize), Point3> = {
         let mut map = HashMap::new();
         for (edge_id, law) in edge_laws {
             let edge = topo.edge(*edge_id)?;
             let p_start = topo.vertex(edge.start())?.point();
             let p_end = topo.vertex(edge.end())?.point();
+            let (t_start, t_end) = active_intervals[&edge_id.index()];
 
             let Some(face_list) = edge_to_faces.get(&edge_id.index()) else {
                 continue;
@@ -616,15 +932,18 @@ fn fillet_variable_transacted(
             };
 
             let edge_curve = edge.curve().clone();
-            if geometry::sample_edge_tangent(&edge_curve, p_start, p_end, 0.0).length() < tol.linear
+            if geometry::sample_edge_tangent(&edge_curve, p_start, p_end, t_start).length()
+                < tol.linear
             {
                 continue;
             }
 
-            for &(t, vid) in &[(0.0_f64, edge.start()), (1.0_f64, edge.end())] {
-                let r = law.evaluate(t);
-                let p = geometry::sample_edge_point(&edge_curve, p_start, p_end, t);
-                let tan = geometry::sample_edge_tangent(&edge_curve, p_start, p_end, t);
+            for &(geometry_t, law_t, vid) in
+                &[(t_start, 0.0, edge.start()), (t_end, 1.0, edge.end())]
+            {
+                let r = law.evaluate(law_t);
+                let p = geometry::sample_edge_point(&edge_curve, p_start, p_end, geometry_t);
+                let tan = geometry::sample_edge_tangent(&edge_curve, p_start, p_end, geometry_t);
                 let Ok(local_dir) = tan.normalize() else {
                     continue;
                 };
@@ -634,6 +953,25 @@ fn fillet_variable_transacted(
                 ) else {
                     continue;
                 };
+                if let Some(&(_, center, _, _)) = qualified_setback_corners.get(&vid.index()) {
+                    let project_to_plane = |surface: &FaceSurface| -> Option<Point3> {
+                        let FaceSurface::Plane { normal, d } = surface else {
+                            return None;
+                        };
+                        let denominator = normal.dot(*normal);
+                        (denominator > tol.linear * tol.linear).then(|| {
+                            center
+                                - *normal * ((dot_normal_point(*normal, center) - *d) / denominator)
+                        })
+                    };
+                    if let (Some(contact1), Some(contact2)) =
+                        (project_to_plane(surf1), project_to_plane(surf2))
+                    {
+                        map.insert((vid.index(), edge_id.index(), f1.index()), contact1);
+                        map.insert((vid.index(), edge_id.index(), f2.index()), contact2);
+                        continue;
+                    }
+                }
                 let cs = geometry::cross_section_dirs(local_dir, n1, n2, local_dir, local_dir);
                 map.insert((vid.index(), edge_id.index(), f1.index()), p + cs.ld1 * r);
                 map.insert((vid.index(), edge_id.index(), f2.index()), p + cs.ld2 * r);
@@ -778,7 +1116,6 @@ fn fillet_variable_transacted(
     }
 
     let n_samples = 5; // Number of cross-sections along each edge
-    let mut fillet_face_indices: Vec<usize> = Vec::new();
     // Every requested edge must end up carrying a blend surface; the loop's
     // early `continue`s are where a silent subset used to come from.
     let mut blended_edges: HashSet<usize> = HashSet::new();
@@ -787,6 +1124,8 @@ fn fillet_variable_transacted(
         let edge = topo.edge(*edge_id)?;
         let p_start = topo.vertex(edge.start())?.point();
         let p_end = topo.vertex(edge.end())?.point();
+        let (t_start, t_end) = active_intervals[&edge_id.index()];
+        let active_start = geometry::sample_edge_point(edge.curve(), p_start, p_end, t_start);
 
         let Some(face_list) = edge_to_faces.get(&edge_id.index()) else {
             continue;
@@ -805,16 +1144,16 @@ fn fillet_variable_transacted(
             continue;
         };
 
-        let Some(n1_start) = face_surface_normal_at(surf1, p_start) else {
+        let Some(n1_start) = face_surface_normal_at(surf1, active_start) else {
             continue;
         };
-        let Some(n2_start) = face_surface_normal_at(surf2, p_start) else {
+        let Some(n2_start) = face_surface_normal_at(surf2, active_start) else {
             continue;
         };
 
         let edge_curve = edge.curve().clone();
 
-        let edge_tan = geometry::sample_edge_tangent(&edge_curve, p_start, p_end, 0.0);
+        let edge_tan = geometry::sample_edge_tangent(&edge_curve, p_start, p_end, t_start);
         if edge_tan.length() < tol.linear {
             continue;
         }
@@ -844,10 +1183,11 @@ fn fillet_variable_transacted(
 
         #[allow(clippy::cast_precision_loss)]
         for s in 0..n_v {
-            let t = s as f64 / (n_v - 1).max(1) as f64;
-            let r = law.evaluate(t);
-            let p = geometry::sample_edge_point(&edge_curve, p_start, p_end, t);
-            let tan = geometry::sample_edge_tangent(&edge_curve, p_start, p_end, t);
+            let fraction = s as f64 / (n_v - 1).max(1) as f64;
+            let geometry_t = (t_end - t_start).mul_add(fraction, t_start);
+            let r = law.evaluate(fraction);
+            let p = geometry::sample_edge_point(&edge_curve, p_start, p_end, geometry_t);
+            let tan = geometry::sample_edge_tangent(&edge_curve, p_start, p_end, geometry_t);
             let local_dir = tan.normalize().unwrap_or(edge_dir);
 
             let ln1 = face_surface_normal_at(surf1, p).unwrap_or(n1_start);
@@ -892,54 +1232,79 @@ fn fillet_variable_transacted(
         }
 
         // Build a rational NURBS surface with exact circular arc cross-sections.
-        // u-direction: degree 2, 3 CPs with weights [1, cos(α/2), 1]
-        // v-direction: interpolated through sampled stations along the edge
-        let degree_v = (n_v - 1).min(3);
-
-        // Interpolate each of the 3 u-rows independently in v.
+        // On a straight spine between planar supports, every row is an exact
+        // cubic Hermite curve: this preserves the zero endpoint derivative of
+        // an S-curve law, which is what makes a setback sphere seam truly G1.
+        // The general curved-support path retains sampled interpolation.
         let row_contact1: Vec<Point3> = (0..n_v).map(|i| grid[i][0]).collect();
         let row_mid: Vec<Point3> = (0..n_v).map(|i| grid[i][1]).collect();
         let row_contact2: Vec<Point3> = (0..n_v).map(|i| grid[i][2]).collect();
-
-        let crv0 = remus_math::nurbs::fitting::interpolate(&row_contact1, degree_v)
-            .map_err(crate::OperationsError::Math)?;
-        let crv1 = remus_math::nurbs::fitting::interpolate(&row_mid, degree_v)
-            .map_err(crate::OperationsError::Math)?;
-        let crv2 = remus_math::nurbs::fitting::interpolate(&row_contact2, degree_v)
-            .map_err(crate::OperationsError::Math)?;
-
-        // All three curves share the same knot vector and degree since they
-        // interpolate the same number of points with the same degree.
-        let knots_v = crv0.knots().to_vec();
-        let n_cp_v = crv0.control_points().len();
-
-        // Per-station arc weights: interpolate sample_weights to match n_cp_v.
-        #[allow(clippy::cast_precision_loss)]
-        let mid_weights: Vec<f64> = if n_cp_v == sample_weights.len() {
-            sample_weights.clone()
-        } else {
-            (0..n_cp_v)
-                .map(|i| {
-                    let t = i as f64 / (n_cp_v - 1).max(1) as f64;
-                    let idx_f = t * (sample_weights.len() - 1).max(1) as f64;
-                    let lo = (idx_f.floor() as usize).min(sample_weights.len() - 1);
-                    let hi = (lo + 1).min(sample_weights.len() - 1);
-                    let frac = idx_f - lo as f64;
-                    sample_weights[lo] * (1.0 - frac) + sample_weights[hi] * frac
-                })
-                .collect()
-        };
+        let (degree_v, knots_v, control_points, mid_weights) =
+            if both_planar && matches!(edge_curve, EdgeCurve::Line) {
+                let active_vector = (p_end - p_start) * (t_end - t_start);
+                let start_slope = law.derivative(0.0);
+                let end_slope = law.derivative(1.0);
+                let controls = |start: Point3, end: Point3, direction: Vec3| {
+                    vec![
+                        start,
+                        start + (active_vector + direction * start_slope) * (1.0 / 3.0),
+                        end - (active_vector + direction * end_slope) * (1.0 / 3.0),
+                        end,
+                    ]
+                };
+                (
+                    3,
+                    vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+                    vec![
+                        controls(row_contact1[0], row_contact1[n_v - 1], d1_ref),
+                        controls(row_mid[0], row_mid[n_v - 1], Vec3::new(0.0, 0.0, 0.0)),
+                        controls(row_contact2[0], row_contact2[n_v - 1], d2_ref),
+                    ],
+                    vec![sample_weights[0]; 4],
+                )
+            } else {
+                let degree = (n_v - 1).min(3);
+                let crv0 = remus_math::nurbs::fitting::interpolate(&row_contact1, degree)
+                    .map_err(crate::OperationsError::Math)?;
+                let crv1 = remus_math::nurbs::fitting::interpolate(&row_mid, degree)
+                    .map_err(crate::OperationsError::Math)?;
+                let crv2 = remus_math::nurbs::fitting::interpolate(&row_contact2, degree)
+                    .map_err(crate::OperationsError::Math)?;
+                let n_cp = crv0.control_points().len();
+                #[allow(clippy::cast_precision_loss)]
+                let weights = if n_cp == sample_weights.len() {
+                    sample_weights.clone()
+                } else {
+                    (0..n_cp)
+                        .map(|i| {
+                            let t = i as f64 / (n_cp - 1).max(1) as f64;
+                            let idx_f = t * (sample_weights.len() - 1).max(1) as f64;
+                            let lo = (idx_f.floor() as usize).min(sample_weights.len() - 1);
+                            let hi = (lo + 1).min(sample_weights.len() - 1);
+                            let frac = idx_f - lo as f64;
+                            sample_weights[lo] * (1.0 - frac) + sample_weights[hi] * frac
+                        })
+                        .collect()
+                };
+                (
+                    crv0.degree(),
+                    crv0.knots().to_vec(),
+                    vec![
+                        crv0.control_points().to_vec(),
+                        crv1.control_points().to_vec(),
+                        crv2.control_points().to_vec(),
+                    ],
+                    weights,
+                )
+            };
+        let n_cp_v = control_points[0].len();
 
         let surface = remus_math::nurbs::surface::NurbsSurface::new(
-            2,                                  // degree_u (circular arc)
-            crv0.degree(),                      // degree_v
+            2, // degree_u (circular arc)
+            degree_v,
             vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0], // knots_u
             knots_v,
-            vec![
-                crv0.control_points().to_vec(),
-                crv1.control_points().to_vec(),
-                crv2.control_points().to_vec(),
-            ],
+            control_points,
             vec![vec![1.0; n_cp_v], mid_weights, vec![1.0; n_cp_v]],
         )
         .map_err(crate::OperationsError::Math)?;
@@ -949,26 +1314,88 @@ fn fillet_variable_transacted(
         let c1e = grid[n_v - 1][0];
         let c2e = grid[n_v - 1][2];
 
+        // Reverse the stored surface when its parametric mid-normal points
+        // into the dihedral. Keeping the decision on the spec is stable even
+        // when analytic cap specs are assembled ahead of ordinary surfaces.
+        let srf_mid_normal = surface.normal(0.5, 0.5).unwrap_or(cs_ref.bisector);
+        let reversed = srf_mid_normal.dot(cs_ref.bisector) > 0.0;
         all_specs.push(FaceSpec::Surface {
             vertices: vec![c1s, c2s, c2e, c1e],
             surface: FaceSurface::Nurbs(surface),
-            reversed: false,
+            reversed,
             inner_wires: vec![],
         });
-
-        // Mark for reversal if the surface mid-normal points into the dihedral
-        // (toward the solid) rather than outward.
-        let srf_mid_normal = match &all_specs[all_specs.len() - 1] {
-            FaceSpec::Surface {
-                surface: FaceSurface::Nurbs(srf),
-                ..
-            } => srf.normal(0.5, 0.5).unwrap_or(cs_ref.bisector),
-            _ => cs_ref.bisector,
-        };
-        if srf_mid_normal.dot(cs_ref.bisector) > 0.0 {
-            fillet_face_indices.push(all_specs.len() - 1);
-        }
         blended_edges.insert(edge_id.index());
+    }
+
+    // Close each qualified setback junction with the exact common tangent
+    // ball. Contacts are deduplicated because each support face contributes
+    // the same tangency point through two incident stripes, then ordered
+    // counter-clockwise about the cap's outward radial direction.
+    let mut corner_indices: Vec<_> = qualified_setback_corners.keys().copied().collect();
+    corner_indices.sort_unstable();
+    for vertex_index in corner_indices {
+        let (vertex, center, radius, is_concave) = qualified_setback_corners[&vertex_index];
+        let mut contacts = Vec::new();
+        let contact_tol = tol.linear.max(radius * 1.0e-9);
+        for (&(contact_vertex, _, _), &point) in &fillet_contact_map {
+            if contact_vertex == vertex_index
+                && !contacts
+                    .iter()
+                    .any(|known: &Point3| (*known - point).length() <= contact_tol)
+            {
+                contacts.push(point);
+            }
+        }
+        let incident_count = vertex_fillet_edges[&vertex_index].len();
+        if contacts.len() < 3 {
+            return Err(crate::OperationsError::Blend(
+                remus_blend::BlendError::UnsupportedSetbackCorner {
+                    vertex,
+                    stripes: incident_count,
+                    reason: format!(
+                        "the common tangent ball produced only {} distinct contacts",
+                        contacts.len()
+                    ),
+                },
+            ));
+        }
+
+        let radial_sum = contacts
+            .iter()
+            .map(|point| *point - center)
+            .fold(Vec3::new(0.0, 0.0, 0.0), |sum, radial| sum + radial);
+        let cap_normal = radial_sum.normalize().map_err(|_| {
+            crate::OperationsError::Blend(remus_blend::BlendError::UnsupportedSetbackCorner {
+                vertex,
+                stripes: incident_count,
+                reason: "the common tangent ball contacts have no stable cap direction".into(),
+            })
+        })?;
+        let frame = Frame3::from_normal(center, cap_normal).map_err(|_| {
+            crate::OperationsError::InvalidInput {
+                reason: format!("setback cap at vertex {vertex_index} has no stable frame"),
+            }
+        })?;
+        contacts.sort_by(|a, b| {
+            let radial_a = *a - center;
+            let radial_b = *b - center;
+            let angle_a = radial_a.dot(frame.y).atan2(radial_a.dot(frame.x));
+            let angle_b = radial_b.dot(frame.y).atan2(radial_b.dot(frame.x));
+            angle_a
+                .partial_cmp(&angle_b)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        let cap = rolling_ball::build_sphere_cap(&contacts, center, is_concave).ok_or_else(|| {
+            crate::OperationsError::Unsupported {
+                operation: "fillet_variable_with_setbacks",
+                reason: format!(
+                    "qualified tangent ball at vertex {vertex_index} did not produce an exact spherical cap"
+                ),
+            }
+        })?;
+        all_specs.push(cap);
     }
 
     // Coverage check before assembly: a requested edge that every `continue`
@@ -994,17 +1421,6 @@ fn fillet_variable_transacted(
 
     let solid_id = crate::boolean::assemble_solid_mixed(topo, &all_specs, tol)?;
 
-    if !fillet_face_indices.is_empty() {
-        let solid_data = topo.solid(solid_id)?;
-        let shell = topo.shell(solid_data.outer_shell())?;
-        let face_ids: Vec<_> = shell.faces().to_vec();
-        for &fi in &fillet_face_indices {
-            if fi < face_ids.len() {
-                topo.face_mut(face_ids[fi])?.set_reversed(true);
-            }
-        }
-    }
-
     // Fail closed on a plausible-but-wrong result: no new validation errors
     // against the input baseline, and the volume change must be one a blend
     // of this size can physically produce — an oversized radius used to
@@ -1013,7 +1429,7 @@ fn fillet_variable_transacted(
     crate::blend_ops::validate_blend_solid_against_input(topo, "fillet", solid, solid_id)?;
     let max_radius = edge_laws
         .iter()
-        .flat_map(|(_, law)| [0.0, 0.25, 0.5, 0.75, 1.0].map(|t| law.evaluate(t)))
+        .map(|(_, law)| law.bounds().1)
         .fold(0.0_f64, f64::max);
     let edges: Vec<EdgeId> = edge_laws.iter().map(|(edge_id, _)| *edge_id).collect();
     crate::blend_ops::validate_blend_volume(topo, "fillet", solid, solid_id, &edges, max_radius)?;
