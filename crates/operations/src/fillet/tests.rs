@@ -1167,30 +1167,35 @@ fn fillet_plane_cylinder_edge() {
                         }
                     }
                 }
-                break; // Just need one edge for the test
             }
         }
     }
 
-    assert!(
-        !plane_cyl_edges.is_empty(),
-        "cylinder should have plane-cylinder edges"
+    plane_cyl_edges.sort_unstable_by_key(|edge| edge.index());
+    plane_cyl_edges.dedup_by_key(|edge| edge.index());
+
+    assert_eq!(
+        plane_cyl_edges.len(),
+        2,
+        "cylinder should have two plane-cylinder rim edges"
     );
 
     // Filleting the closed rim circle must be REJECTED (not return a degenerate
     // solid). The rejection lets the dispatcher fall through to the walking
     // engine, which rounds the rim into an exact quarter-torus (gh #967).
-    let result = fillet_rolling_ball(&mut topo, solid, &plane_cyl_edges[..1], 0.3);
-    assert!(
-        result.is_err(),
-        "rolling-ball fillet of a closed cylinder-rim edge must be rejected as \
-         degenerate, not return a silently-broken solid"
-    );
-    let msg = format!("{}", result.err().unwrap());
-    assert!(
-        msg.contains("degenerate"),
-        "expected a degenerate-face rejection, got: {msg}"
-    );
+    for edge in plane_cyl_edges {
+        let result = fillet_rolling_ball(&mut topo, solid, &[edge], 0.3);
+        assert!(
+            result.is_err(),
+            "rolling-ball fillet of closed cylinder-rim edge {edge:?} must be rejected as \
+             degenerate, not return a silently-broken solid"
+        );
+        let msg = format!("{}", result.err().unwrap());
+        assert!(
+            msg.contains("degenerate"),
+            "expected a degenerate-face rejection for {edge:?}, got: {msg}"
+        );
+    }
 }
 
 #[test]

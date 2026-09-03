@@ -224,6 +224,7 @@ fn record_strip_contacts(
 /// - `radius` is non-positive
 /// - `edges` is empty
 /// - Any edge is not shared by exactly two faces
+/// - Any selected edge is a closed single-edge spine
 /// - Adjacent fillet strips overlap (on planar or curved faces)
 /// - Fillet radius exceeds surface curvature of an adjacent face
 #[allow(clippy::too_many_lines)]
@@ -374,6 +375,21 @@ pub fn fillet_rolling_ball_with_origins(
             return Err(crate::OperationsError::InvalidInput {
                 reason: "no manifold edges to fillet (all edges are boundary or missing)".into(),
             });
+        }
+
+        // This legacy engine builds strips from distinct endpoint vertices.
+        // A closed edge has no such endpoints, so construction can either
+        // collapse a face or disconnect the result depending on rim orientation.
+        // Refuse both cases consistently so the dispatcher can use fillet_v2.
+        for &edge_id in &user_edges {
+            if topo.edge(edge_id)?.is_closed() {
+                return Err(crate::OperationsError::InvalidInput {
+                    reason: format!(
+                        "fillet would produce a degenerate face: closed single-edge spine {edge_id:?} \
+                         is not supported by the rolling-ball engine"
+                    ),
+                });
+            }
         }
 
         // Phase 2a: G1 chain propagation — automatically expand the edge set to
