@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788414788258,
+  "lastUpdate": 1788424041432,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -9961,6 +9961,216 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 84045,
             "range": "± 380",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "216db1a3f00718e263eb24d97764bbf1d8099466",
+          "message": "feat: reconcile body and blend qualification queue (#233)\n\n* feat(algo): honor entity tolerance in pave predicates\n\n* docs(program): record P-Class predicate plumbing\n\n* docs(program): reconcile RFC 0005 history\n\n* feat(topology): add body-class validation substrate\n\n* docs(program): record body-class substrate\n\n* fix(topology): keep body tags outside boundary audit\n\n* feat(operations): add first-class sheet body queries\n\n* docs(p-class): record sheet operations tranche\n\n* feat(io): add standalone sheet arena roots\n\n* docs(p-class): record sheet arena roots tranche\n\n* feat(operations): add sheet spatial properties\n\n* docs(p-class): record sheet properties tranche\n\n* feat(io): add first-class STEP sheet bodies\n\n* docs(p-class): record STEP sheet exchange\n\n* feat(operations): split solids with cylindrical sheets\n\n* docs(p-class): record cylindrical sheet split\n\n* feat(operations): trim sheets by solids\n\n* docs(p-class): record sheet-solid trim tranche\n\n* feat(operations): trim planar sheet pairs\n\n* docs(p-class): close planar sheet trim gate\n\n* feat(operations): imprint solid face intersections\n\n* docs(p-class): record planar imprint qualification\n\n* feat(boolean): return exact multi-region compounds\n\n* docs(p-class): record cellular boolean tranche\n\n* feat(offset): journal exact face provenance\n\n* feat(boolean): support exact compound operands\n\n* docs(p-class): close cellular boolean milestone\n\n* docs(agents): map imprint module\n\n* feat(bodies): qualify wire roots and sweeps\n\n* docs(p-class): close wire body milestone\n\n* feat(remus): add facade workflow examples\n\n* docs(roadmap): record B5 disposition\n\n* docs(roadmap): close facade examples item\n\n* feat(blend): qualify variable radius walking\n\n* docs(p-class): qualify variable radius walking\n\n* fix(blend): ignore unused radius laws\n\n* feat(blend): qualify curved support rims\n\n* test(blend): qualify imported curved resize\n\n* fix(operations): reject closed legacy blend spines\n\n* fix(operations): preserve blend preflight diagnostics\n\n* fix(offset): make provenance maps deterministic\n\n* feat(blend): qualify n-way vertex corners\n\n* test(blend): cross-check vertex blend volumes\n\n* docs(program): record Issue 5.3 qualification\n\n* chore(wasm): refresh reconciled package\n\n* feat(blend): add qualified fillet setbacks\n\n* docs: link P-Class 5.4 pull request\n\n* chore(wasm): refresh setback bindings\n\n* fix(blend): use deterministic corner maps\n\n---------\n\nCo-authored-by: Codex Review <codex-review@localhost>",
+          "timestamp": "2026-09-03T04:20:12-04:00",
+          "tree_id": "d94345d77bb996aafbe0a126204a4cc9de516286",
+          "url": "https://github.com/esaueng/remus/commit/216db1a3f00718e263eb24d97764bbf1d8099466"
+        },
+        "date": 1788424040183,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1413176,
+            "range": "± 17227",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1506531,
+            "range": "± 28299",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 25885,
+            "range": "± 409",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 1050923,
+            "range": "± 14684",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 42322229,
+            "range": "± 498551",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 34,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 102,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 61,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 221,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 155,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 845,
+            "range": "± 14",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 165,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 334,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 212,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 504,
+            "range": "± 11",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 760,
+            "range": "± 13",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 3415,
+            "range": "± 62",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 19,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 35,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 62,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 64,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 548891,
+            "range": "± 7293",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 11700170,
+            "range": "± 114043",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 168919,
+            "range": "± 4737",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 641290,
+            "range": "± 7228",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 133014,
+            "range": "± 1526",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 939465,
+            "range": "± 12637",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 11287259,
+            "range": "± 180987",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 783832,
+            "range": "± 9078",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 1357451,
+            "range": "± 10523",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 104129,
+            "range": "± 1673",
             "unit": "ns/iter"
           }
         ]
