@@ -272,18 +272,41 @@ intersection row moves from 70 planar fallback faces to six analytic faces.
 
 The general non-coaxial cases — sphere×cylinder, cone×sphere,
 torus×anything — have genuinely quartic section curves; NURBS seams are the
-*correct* exact-B-Rep answer. The work is downstream of the math: teach the
-face splitter to split quadric faces along `NurbsCurve` section edges (today
-the periodic splitters demand full closed circles anchored on seams), and
-give the classifier an analytic path for sphere/torus faces (today
-`ConvexAnalytic` bails to a ray-caster documented to mis-count on
-doubly-curved faces). Includes the missing torus tube-band splitter arm (the
-standing Beta caveat).
+*correct* exact-B-Rep answer. The math marcher and the first seam consumers
+already exist: winding NURBS chains can split cylinder/cone bands, sphere
+hemispheres have a seam arrangement, and a torus notch has a bounded
+arrangement arm. The remaining work is to make those consumers
+operator-neutral, extend them across general quadric section topology, and
+give mixed sphere/torus result solids an analytic classifier instead of the
+ray-cast path documented to mis-count on doubly-curved faces.
 
-> **Exit gate:** the three census fallback rows — box ∪ sphere (1192 planar
-> faces), cyl ∩ cyl (70), torus ∩ box (312) — become true B-Rep results with
-> analytic faces preserved, volumes verified against the mesh oracle within
-> deflection bound. The `sphere_box_partial_*` parity gaps close.
+Measured at `eca4fd4569f8e98e757b212782bd59d50b6d768e`, the 51-row census has
+exactly three boolean fallbacks: box ∪ sphere (1192 planar faces),
+perpendicular equal-radius cylinder ∩ cylinder (70), and torus ∩ box (312).
+Issue 2.3 owns the cylinder row. Issue 2.4 executes in independently
+reviewable stages:
+
+1. **2.4a — sphere multi-region arrangement.** Emit every bounded cell and
+   closed cap from a hemisphere seam arrangement, close box ∪ sphere as a
+   16-face analytic B-Rep, and promote the two stale `sphere_box_partial_*`
+   parity expectations.
+2. **2.4b — torus complement selection.** Reuse the shipped torus-notch
+   arrangement for the complementary Intersect region; close torus ∩ box with
+   toroidal faces retained and a mesh-volume oracle.
+3. **2.4c — general quartic seams and classification.** Exercise marched
+   `NurbsCurve` sections on sphere×cylinder, cone×sphere, and torus pairs;
+   extend the arrangement and mixed analytic classifier only where those
+   pinned witnesses require it.
+4. **2.4d — integration ratchet.** Merge the preceding heads, rerun the full
+   operator census and parity matrix, and reconcile the capability/stability
+   ledgers without weakening typed refusal or fallback disclosure.
+
+> **Exit gate:** together with Issue 2.3, the three measured census fallback
+> rows become true B-Rep results with analytic faces preserved and volumes
+> verified against independent or mesh oracles within their stated bounds.
+> The `sphere_box_partial_*` parity gaps close, the three quartic witnesses
+> above run exact-or-typed-refusal without unbounded work, and every stage is
+> represented in the final integration census.
 
 ### 2.5 NURBS × NURBS booleans (L)
 
