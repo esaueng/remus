@@ -862,7 +862,7 @@ or stop against it with a typed cliff verdict, rather than returning a generic
 failure or building beyond the support. Rollover is re-limitation against the
 neighbor's neighbor — shared machinery with 6.1, build once.
 
-Implemented, in review in [PR #234](https://github.com/esaueng/remus/pull/234),
+Implemented, in review in [PR #235](https://github.com/esaueng/remus/pull/235),
 under a declared **stop-at-cliff** policy. The v2 fillet path now distinguishes
 a support boundary from a generic radius limit:
 it returns transactional `CliffEncountered` with the source edge, exhausted
