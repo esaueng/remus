@@ -1,7 +1,7 @@
 #![no_main]
 
-use remus_wasm::kernel::BrepKernel;
 use libfuzzer_sys::fuzz_target;
+use remus_wasm::kernel::BrepKernel;
 
 fuzz_target!(|data: &[u8]| {
     if let Ok(input) = std::str::from_utf8(data) {

@@ -1,7 +1,7 @@
 #![no_main]
 
-use remus_topology::Topology;
 use libfuzzer_sys::fuzz_target;
+use remus_topology::Topology;
 
 mod common;
 
