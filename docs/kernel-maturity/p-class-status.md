@@ -25,13 +25,13 @@ Issue 2.0's measured baseline is
 | 2.6 Scale-relative band audit | Pending | — |
 | 2.7 Tangency and sliver contacts | Pending | — |
 | 2.8 OperationContext budgets and cancellation | Partial — boolean/SSI cancellation and all six SSI work budgets are direct/batch WASM-callable; parameter-space tolerance and wider adoption remain | [PR #138](https://github.com/esaueng/remus/pull/138) + [PR #147](https://github.com/esaueng/remus/pull/147) + [PR #160](https://github.com/esaueng/remus/pull/160) + [PR #202](https://github.com/esaueng/remus/pull/202) |
-| 3.1 RFC 0004 | Pending | — |
-| 3.2 Topology substrate | In review — RFC 0004 Stage 1: validated setters, vertex-ball/edge-tube validators, context cap, journal recordability | — |
-| 3.3 Predicate plumbing | Pending | — |
+| 3.1 RFC 0004 | Merged — staged per-entity tolerance semantics, authority, growth, serialization, and disclosure contract | [#126](https://github.com/esaueng/remus/pull/126) |
+| 3.2 Topology substrate | Merged — RFC 0004 Stage 1: validated setters, vertex-ball/edge-tube validators, context cap, journal recordability, and byte-stable legacy arena round-trip | [#148](https://github.com/esaueng/remus/pull/148) |
+| 3.3 Predicate plumbing | In review — EE crossing/AABB, forced EE overlap, pave-vertex lookup, VE incidence, and SameParameter/SameRange validation honor declared entity tolerance while default bands and the 51-row approximation census remain unchanged | [#208](https://github.com/esaueng/remus/pull/208) |
 | 3.4 GFA integration | Pending | — |
 | 3.5 Import and sew integration | Pending | — |
 | 3.6 Downstream disclosure | Pending | — |
-| 4.1 RFC 0005 | Pending | — |
+| 4.1 RFC 0005 | Merged — staged solid/sheet/wire/general-body semantics, side-of sheet classification, Compound-first cellular results, STEP mapping, and evolution contract | [#127](https://github.com/esaueng/remus/pull/127) |
 | 4.2 Sheet bodies first-class | Pending | — |
 | 4.3 Split solid by sheet | Pending | — |
 | 4.4 Trim sheet by solid / sheet × sheet | Pending | — |

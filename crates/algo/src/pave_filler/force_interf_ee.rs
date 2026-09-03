@@ -14,6 +14,16 @@ use remus_topology::edge::{EdgeCurve, EdgeId};
 use crate::ds::{GfaArena, PaveBlockId};
 use crate::error::AlgoError;
 
+#[derive(Debug, Clone, Copy)]
+struct LeafData {
+    pave_block: PaveBlockId,
+    edge: EdgeId,
+    start: remus_math::vec::Point3,
+    end: remus_math::vec::Point3,
+    start_excess: f64,
+    end_excess: f64,
+}
+
 /// Detect overlapping leaf PaveBlocks and group them into CommonBlocks.
 ///
 /// Two leaf PaveBlocks from different original edges overlap if:
@@ -32,12 +42,8 @@ pub fn perform(topo: &Topology, tol: Tolerance, arena: &mut GfaArena) -> Result<
         .map(|(&eid, pbs)| (eid, arena.collect_leaf_pave_blocks(pbs)))
         .collect();
 
-    let mut leaf_data: Vec<(
-        PaveBlockId,
-        EdgeId,
-        remus_math::vec::Point3,
-        remus_math::vec::Point3,
-    )> = Vec::new();
+    let mut leaf_data = Vec::new();
+    let mut max_excess = 0.0_f64;
 
     for (orig_edge, leaf_pbs) in &all_edge_pbs {
         for &pb_id in leaf_pbs {
@@ -49,7 +55,22 @@ pub fn perform(topo: &Topology, tol: Tolerance, arena: &mut GfaArena) -> Result<
             let ev = arena.resolve_vertex(pb.end.vertex);
             let start_pos = topo.vertex(sv)?.point();
             let end_pos = topo.vertex(ev)?.point();
-            leaf_data.push((pb_id, *orig_edge, start_pos, end_pos));
+            let edge_excess = super::helpers::edge_tolerance_excess(topo, *orig_edge, tol.linear)?;
+            let start_excess = edge_excess.max(super::helpers::vertex_tolerance_excess(
+                topo, sv, tol.linear,
+            )?);
+            let end_excess = edge_excess.max(super::helpers::vertex_tolerance_excess(
+                topo, ev, tol.linear,
+            )?);
+            max_excess = max_excess.max(start_excess).max(end_excess);
+            leaf_data.push(LeafData {
+                pave_block: pb_id,
+                edge: *orig_edge,
+                start: start_pos,
+                end: end_pos,
+                start_excess,
+                end_excess,
+            });
         }
     }
 
@@ -62,12 +83,17 @@ pub fn perform(topo: &Topology, tol: Tolerance, arena: &mut GfaArena) -> Result<
     let mut overlap_map: HashMap<PaveBlockId, Vec<PaveBlockId>> = HashMap::new();
     let n = leaf_data.len();
 
-    // Cell size large enough that two endpoints within `tol.linear` of each
-    // other never straddle the gap between non-adjacent cells once we probe
-    // the immediate neighborhood. Quantizing the midpoint gives one key per
-    // block; matching blocks have midpoints within `tol.linear`, so probing
-    // the 3×3×3 neighbor cells of a block's midpoint covers every true match.
-    let cell = (tol.linear * 4.0).max(f64::MIN_POSITIVE);
+    // Cell size covers the largest possible pair band, so matching block
+    // midpoints cannot fall beyond the immediate 3x3x3 neighborhood.
+    let max_pair_band = super::helpers::tolerance_band(tol.linear, [max_excess, max_excess])?;
+    let cell = (max_pair_band * 4.0).max(f64::MIN_POSITIVE);
+    if !cell.is_finite() {
+        return Err(remus_topology::TopologyError::InvalidToleranceValue {
+            entity: "predicate band",
+            value: cell,
+        }
+        .into());
+    }
     let key = |p: remus_math::vec::Point3| -> (i64, i64, i64) {
         (
             (p.x() / cell).floor() as i64,
@@ -85,9 +111,9 @@ pub fn perform(topo: &Topology, tol: Tolerance, arena: &mut GfaArena) -> Result<
 
     // Bucket each leaf block by its midpoint cell.
     let mut buckets: HashMap<(i64, i64, i64), Vec<usize>> = HashMap::new();
-    for (i, (_, _, start, end)) in leaf_data.iter().enumerate() {
+    for (i, leaf) in leaf_data.iter().enumerate() {
         buckets
-            .entry(key(midpoint(*start, *end)))
+            .entry(key(midpoint(leaf.start, leaf.end)))
             .or_default()
             .push(i);
     }
@@ -97,8 +123,8 @@ pub fn perform(topo: &Topology, tol: Tolerance, arena: &mut GfaArena) -> Result<
     // visited once via `j > i`), and run the exact same fwd/rev endpoint +
     // curve-compatibility test as the naive scan.
     for i in 0..n {
-        let (pb_i, edge_i, start_i, end_i) = leaf_data[i];
-        let mid_i = midpoint(start_i, end_i);
+        let leaf_i = leaf_data[i];
+        let mid_i = midpoint(leaf_i.start, leaf_i.end);
         let (kx, ky, kz) = key(mid_i);
         for dx in -1..=1 {
             for dy in -1..=1 {
@@ -110,33 +136,56 @@ pub fn perform(topo: &Topology, tol: Tolerance, arena: &mut GfaArena) -> Result<
                         if j <= i {
                             continue;
                         }
-                        let (pb_j, edge_j, start_j, end_j) = leaf_data[j];
+                        let leaf_j = leaf_data[j];
 
-                        if edge_i == edge_j {
+                        if leaf_i.edge == leaf_j.edge {
                             continue;
                         }
-                        if arena.pb_to_cb.contains_key(&pb_i)
-                            && arena.pb_to_cb.get(&pb_i) == arena.pb_to_cb.get(&pb_j)
+                        if arena.pb_to_cb.contains_key(&leaf_i.pave_block)
+                            && arena.pb_to_cb.get(&leaf_i.pave_block)
+                                == arena.pb_to_cb.get(&leaf_j.pave_block)
                         {
                             continue;
                         }
 
-                        let fwd_match = (start_i - start_j).length() < tol.linear
-                            && (end_i - end_j).length() < tol.linear;
-                        let rev_match = (start_i - end_j).length() < tol.linear
-                            && (end_i - start_j).length() < tol.linear;
+                        let fwd_start_band = super::helpers::tolerance_band(
+                            tol.linear,
+                            [leaf_i.start_excess, leaf_j.start_excess],
+                        )?;
+                        let fwd_end_band = super::helpers::tolerance_band(
+                            tol.linear,
+                            [leaf_i.end_excess, leaf_j.end_excess],
+                        )?;
+                        let rev_start_band = super::helpers::tolerance_band(
+                            tol.linear,
+                            [leaf_i.start_excess, leaf_j.end_excess],
+                        )?;
+                        let rev_end_band = super::helpers::tolerance_band(
+                            tol.linear,
+                            [leaf_i.end_excess, leaf_j.start_excess],
+                        )?;
+                        let fwd_match = (leaf_i.start - leaf_j.start).length() <= fwd_start_band
+                            && (leaf_i.end - leaf_j.end).length() <= fwd_end_band;
+                        let rev_match = (leaf_i.start - leaf_j.end).length() <= rev_start_band
+                            && (leaf_i.end - leaf_j.start).length() <= rev_end_band;
                         if !fwd_match && !rev_match {
                             continue;
                         }
 
-                        let curve_i = topo.edge(edge_i)?.curve();
-                        let curve_j = topo.edge(edge_j)?.curve();
+                        let curve_i = topo.edge(leaf_i.edge)?.curve();
+                        let curve_j = topo.edge(leaf_j.edge)?.curve();
                         if !curves_compatible(curve_i, curve_j, tol) {
                             continue;
                         }
 
-                        overlap_map.entry(pb_i).or_default().push(pb_j);
-                        overlap_map.entry(pb_j).or_default().push(pb_i);
+                        overlap_map
+                            .entry(leaf_i.pave_block)
+                            .or_default()
+                            .push(leaf_j.pave_block);
+                        overlap_map
+                            .entry(leaf_j.pave_block)
+                            .or_default()
+                            .push(leaf_i.pave_block);
                     }
                 }
             }
@@ -146,7 +195,8 @@ pub fn perform(topo: &Topology, tol: Tolerance, arena: &mut GfaArena) -> Result<
     // Build transitive closure and create CommonBlocks
     let mut visited: HashSet<PaveBlockId> = HashSet::new();
 
-    for &(pb_id, _, _, _) in &leaf_data {
+    for leaf in &leaf_data {
+        let pb_id = leaf.pave_block;
         if visited.contains(&pb_id) || !overlap_map.contains_key(&pb_id) {
             continue;
         }
@@ -231,5 +281,61 @@ fn curves_compatible(a: &EdgeCurve, b: &EdgeCurve, tol: Tolerance) -> bool {
             | EdgeCurve::NurbsCurve(_),
             _,
         ) => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use remus_math::vec::Point3;
+    use remus_topology::edge::Edge;
+    use remus_topology::vertex::Vertex;
+
+    use super::*;
+
+    fn parallel_blocks(gap: f64, edge_tolerance: Option<f64>) -> (Topology, GfaArena) {
+        let mut topo = Topology::new();
+        let a0 = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
+        let a1 = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
+        let b0 = topo.add_vertex(Vertex::new(Point3::new(0.0, gap, 0.0), 1e-7));
+        let b1 = topo.add_vertex(Vertex::new(Point3::new(1.0, gap, 0.0), 1e-7));
+        let edge_a = topo.add_edge(Edge::with_tolerance(
+            a0,
+            a1,
+            EdgeCurve::Line,
+            edge_tolerance,
+        ));
+        let edge_b = topo.add_edge(Edge::with_tolerance(
+            b0,
+            b1,
+            EdgeCurve::Line,
+            edge_tolerance,
+        ));
+        let mut arena = GfaArena::new();
+        arena.init_edge_pave_block(edge_a, a0, 0.0, a1, 1.0);
+        arena.init_edge_pave_block(edge_b, b0, 0.0, b1, 1.0);
+        (topo, arena)
+    }
+
+    #[test]
+    fn declared_tubes_group_nearby_compatible_blocks() {
+        let (topo, mut arena) = parallel_blocks(5e-7, Some(1e-4));
+        perform(&topo, Tolerance::default(), &mut arena).unwrap();
+        assert_eq!(arena.common_blocks.iter().count(), 1);
+    }
+
+    #[test]
+    fn compatible_blocks_outside_default_tolerance_stay_separate() {
+        let (topo, mut arena) = parallel_blocks(5e-7, None);
+        perform(&topo, Tolerance::default(), &mut arena).unwrap();
+        assert_eq!(arena.common_blocks.iter().count(), 0);
+    }
+
+    #[test]
+    fn declared_tubes_do_not_group_blocks_beyond_their_combined_band() {
+        let (topo, mut arena) = parallel_blocks(3e-4, Some(1e-4));
+        perform(&topo, Tolerance::default(), &mut arena).unwrap();
+        assert_eq!(arena.common_blocks.iter().count(), 0);
     }
 }

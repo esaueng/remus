@@ -458,6 +458,12 @@ claim, and they are the first implementation targets of the program:
    Generated-topology/memory budgets,
    parameter-space tolerance, determinism policy, and non-boolean operation
    families remain local or unmigrated.
+5. **Per-entity tolerance is predicate-partial, not yet result-qualified.**
+   Vertex balls and edge tubes are validated, serialized, journal-recordable,
+   and consumed by VV/VE/EE pave predicates plus SameParameter/SameRange
+   validation. FF/EF acceptance, result-tolerance growth, builder assembly,
+   import/sew integration, and downstream statistics remain open in P3.4–3.6;
+   imperfect-body booleans therefore remain unqualified.
 
 ## Maintenance rules
 
