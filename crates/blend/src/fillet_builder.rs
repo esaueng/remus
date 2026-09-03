@@ -17,7 +17,7 @@ use remus_topology::vertex::{Vertex, VertexId};
 use remus_topology::wire::{OrientedEdge, Wire, WireId};
 
 use crate::analytic;
-use crate::blend_func::{ConstRadBlend, EvolRadBlend};
+use crate::blend_func::{BorrowedEvolRadBlend, ConstRadBlend};
 use crate::builder_utils::{
     FlippedNormalSurface, add_certified_curve_edge, project_onto_axis, radial_distance,
     refuse_non_line_rim_neighbors, sample_nurbs_endpoints, surface_ref_or_adapter,
@@ -104,6 +104,24 @@ impl<'a> FilletBuilder<'a> {
             }));
         }
 
+        // Prove every standard law over its complete normalized domain before
+        // the builder can allocate or trim topology. Linear and S-curve laws
+        // are monotone, so their endpoint extrema are exact. An opaque custom
+        // callback has no analytic bound; sample it deterministically here for
+        // early refusal, then the walker re-validates every station it actually
+        // consumes. It is never replaced by a different law.
+        let tol = remus_math::tolerance::Tolerance::new();
+        for law in &laws {
+            if law.exact_bounds().is_some() {
+                law.validate_at(0.0, tol.linear)?;
+                law.validate_at(1.0, tol.linear)?;
+            } else {
+                for i in 0..=256 {
+                    law.validate_at(f64::from(i) / 256.0, tol.linear)?;
+                }
+            }
+        }
+
         let topo = self.topo;
 
         let adjacency = topo.build_adjacency(self.solid)?;
@@ -128,7 +146,6 @@ impl<'a> FilletBuilder<'a> {
         // there is no cap face to close against. Expanding to the chain gives
         // the stripe real ends. This matches the v1 rolling-ball engine, which
         // has always called `expand_g1_chain`.
-        let tol = remus_math::tolerance::Tolerance::new();
         let mut chain_work: Vec<(Vec<EdgeId>, usize)> = Vec::new();
         for (law_idx, seeds) in seeds_by_law.iter().enumerate() {
             if seeds.is_empty() {
@@ -228,7 +245,9 @@ impl<'a> FilletBuilder<'a> {
                 // result, which reads exactly like an internal failure and
                 // leaves the caller no way to say "try a smaller radius".
                 // Same treatment the rim assembler's own bound already gets.
-                Err(e @ BlendError::RadiusTooLarge { .. }) => return Err(e),
+                Err(e @ (BlendError::InvalidInput { .. } | BlendError::RadiusTooLarge { .. })) => {
+                    return Err(e);
+                }
                 Err(e) => {
                     if let Some(edge) = report_edge {
                         failed.push((edge, e));
@@ -1663,9 +1682,7 @@ fn compute_stripe_for_spine(
         let start = walker.find_start(0.0)?;
         walker.walk(start, 0.0, spine.length())?
     } else {
-        let evol = EvolRadBlend {
-            law: mirror_law(law),
-        };
+        let evol = BorrowedEvolRadBlend { law };
         let walker = Walker::new(&evol, ps1, ps2, &spine, topo, config);
         let start = walker.find_start(0.0)?;
         walker.walk(start, 0.0, spine.length())?
@@ -1825,34 +1842,6 @@ fn orient_plane_surface(
     }
 }
 
-/// Mirror a `RadiusLaw` into a new instance with the same behavior.
-///
-/// This is needed because `RadiusLaw::Custom` contains a `Box<dyn Fn>`
-/// which is not `Clone`. For non-custom laws, we reconstruct the same
-/// variant. For custom laws, we evaluate at a fixed set of points and
-/// create a linear interpolation.
-fn mirror_law(law: &RadiusLaw) -> RadiusLaw {
-    match law {
-        RadiusLaw::Constant(r) => RadiusLaw::Constant(*r),
-        RadiusLaw::Linear { start, end } => RadiusLaw::Linear {
-            start: *start,
-            end: *end,
-        },
-        RadiusLaw::SCurve { start, end } => RadiusLaw::SCurve {
-            start: *start,
-            end: *end,
-        },
-        RadiusLaw::Custom(_) => {
-            // Sample the custom law at endpoints and build a linear
-            // approximation. This is a v1 simplification; a proper
-            // implementation would share the closure via Arc.
-            let r0 = law.evaluate(0.0);
-            let r1 = law.evaluate(1.0);
-            RadiusLaw::Linear { start: r0, end: r1 }
-        }
-    }
-}
-
 /// Build a degree-1 NURBS curve from section contact points.
 fn sections_to_contact_curve(
     sections: &[crate::section::CircSection],
@@ -2004,6 +1993,67 @@ mod tests {
         assert!(
             found_cylinder,
             "fillet should produce a cylindrical blend surface"
+        );
+    }
+
+    #[test]
+    fn stripe_walk_preserves_custom_law_instead_of_linearizing_endpoints() {
+        let mut topo = Topology::new();
+        let solid = make_unit_cube_manifold(&mut topo);
+        let adjacency = AdjacencyIndex::build(&topo, solid).unwrap();
+        let edge = remus_topology::explorer::solid_edges(&topo, solid).unwrap()[0];
+        let spine = Spine::from_single_edge(&topo, edge).unwrap();
+        let law = RadiusLaw::Custom(Box::new(|t| 0.1 + 0.05 * t * t));
+
+        let result = compute_stripe_for_spine(&topo, &adjacency, spine, &law).unwrap();
+        let interior = result
+            .stripe
+            .sections
+            .iter()
+            .find(|section| section.t > 0.05 && section.t < 0.95)
+            .unwrap();
+        let expected = law.evaluate(interior.t);
+        let endpoint_linear = 0.1 + 0.05 * interior.t;
+        assert!((interior.radius - expected).abs() < 1e-9);
+        assert!((interior.radius - endpoint_linear).abs() > 1e-4);
+    }
+
+    #[test]
+    fn fillet_builder_refuses_invalid_law_before_topology_allocation() {
+        let mut topo = Topology::new();
+        let solid = make_unit_cube_manifold(&mut topo);
+        let edge = remus_topology::explorer::solid_edges(&topo, solid).unwrap()[0];
+        let before = (
+            topo.num_vertices(),
+            topo.num_edges(),
+            topo.num_wires(),
+            topo.num_faces(),
+            topo.num_shells(),
+            topo.num_solids(),
+        );
+
+        let mut builder = FilletBuilder::new(&mut topo, solid);
+        builder.add_edges_with_law(
+            &[edge],
+            RadiusLaw::SCurve {
+                start: 0.1,
+                end: 0.0,
+            },
+        );
+        assert!(matches!(
+            builder.build(),
+            Err(BlendError::InvalidInput { .. })
+        ));
+        assert_eq!(
+            before,
+            (
+                topo.num_vertices(),
+                topo.num_edges(),
+                topo.num_wires(),
+                topo.num_faces(),
+                topo.num_shells(),
+                topo.num_solids(),
+            )
         );
     }
 

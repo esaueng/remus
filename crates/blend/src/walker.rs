@@ -303,6 +303,7 @@ impl<'a, F: BlendFunction> Walker<'a, F> {
     /// to converge.
     pub fn find_start(&self, s0: f64) -> Result<BlendParams, BlendError> {
         let ctx = self.make_context(s0)?;
+        self.func.validate_context(&ctx)?;
 
         // Initial guess: project guide point onto both surfaces.
         let (u1, v1) = self.surf1.project_point(ctx.guide_point);
@@ -328,6 +329,7 @@ impl<'a, F: BlendFunction> Walker<'a, F> {
         guess: Option<BlendParams>,
     ) -> Option<(BlendParams, CircSection)> {
         let ctx = self.make_context(s).ok()?;
+        self.func.validate_context(&ctx).ok()?;
         let initial = guess.unwrap_or_else(|| {
             let (u1, v1) = self.surf1.project_point(ctx.guide_point);
             let (u2, v2) = self.surf2.project_point(ctx.guide_point);
@@ -363,6 +365,7 @@ impl<'a, F: BlendFunction> Walker<'a, F> {
         let mut step_count = 0_usize;
 
         let ctx0 = self.make_context(s)?;
+        self.func.validate_context(&ctx0)?;
         let sec0 = self.func.section(self.surf1, self.surf2, &params, &ctx0);
         sections.push(sec0);
 
@@ -408,6 +411,7 @@ impl<'a, F: BlendFunction> Walker<'a, F> {
 
             // Corrector: Newton at the new spine station.
             let ctx_next = self.make_context(s_next)?;
+            self.func.validate_context(&ctx_next)?;
             if let Some(converged) = self.newton_solve(predicted, &ctx_next) {
                 prev_params = Some(params);
                 prev_s = s;
@@ -564,7 +568,8 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
-    use crate::blend_func::ConstRadBlend;
+    use crate::blend_func::{ConstRadBlend, EvolRadBlend};
+    use crate::radius_law::RadiusLaw;
     use remus_math::traits::ParametricSurface;
     use remus_math::vec::{Point3, Vec3};
     use remus_topology::Topology;
@@ -757,6 +762,186 @@ mod tests {
         let last_y = result.sections.last().unwrap().p1.y();
         assert!(first_y < 1.0, "first section y = {first_y}");
         assert!(last_y > 9.0, "last section y = {last_y}");
+    }
+
+    fn assert_plane_pair_section_invariants(
+        section: &CircSection,
+        law: &RadiusLaw,
+        edge_length: f64,
+    ) {
+        let expected_radius = law.evaluate(section.t);
+        assert!(
+            (section.radius - expected_radius).abs() < 1e-9,
+            "t={}: section radius {} != law radius {expected_radius}",
+            section.t,
+            section.radius
+        );
+        assert!(
+            section.p1.z().abs() < 1e-9,
+            "first contact left z=0 support: {:?}",
+            section.p1
+        );
+        assert!(
+            section.p2.x().abs() < 1e-9,
+            "second contact left x=0 support: {:?}",
+            section.p2
+        );
+        assert!((section.p1.y() - section.t * edge_length).abs() < 1e-8);
+        assert!((section.p2.y() - section.t * edge_length).abs() < 1e-8);
+
+        let radial1 = section.center - section.p1;
+        let radial2 = section.center - section.p2;
+        assert!((radial1.length() - expected_radius).abs() < 1e-9);
+        assert!((radial2.length() - expected_radius).abs() < 1e-9);
+        assert!(
+            radial1.normalize().unwrap().dot(Vec3::new(0.0, 0.0, 1.0)) > 1.0 - 1e-10,
+            "blend is not tangent to the first support at t={}",
+            section.t
+        );
+        assert!(
+            radial2.normalize().unwrap().dot(Vec3::new(1.0, 0.0, 0.0)) > 1.0 - 1e-10,
+            "blend is not tangent to the second support at t={}",
+            section.t
+        );
+    }
+
+    #[test]
+    fn linear_law_straight_edge_matches_closed_form_band_volume() {
+        let (p1, p2) = make_perpendicular_planes();
+        let mut topo = Topology::new();
+        let edge_length = 10.0;
+        let eid = make_line_edge(
+            &mut topo,
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(0.0, edge_length, 0.0),
+        );
+        let spine = Spine::from_single_edge(&topo, eid).unwrap();
+        let law = RadiusLaw::Linear {
+            start: 0.5,
+            end: 1.5,
+        };
+        let blend = EvolRadBlend {
+            law: RadiusLaw::Linear {
+                start: 0.5,
+                end: 1.5,
+            },
+        };
+        let walker = Walker::new(&blend, &p1, &p2, &spine, &topo, WalkerConfig::default());
+        let start = walker.find_start(0.0).unwrap();
+        let result = walker.walk(start, 0.0, edge_length).unwrap();
+
+        for section in &result.sections {
+            assert_plane_pair_section_invariants(section, &law, edge_length);
+        }
+
+        // The fitted surface itself is the exact ruled quarter-circle band:
+        // at every point, its Y coordinate fixes the linear-law station and
+        // its XZ distance from that station's rolling-ball center is r(Y).
+        let surface = approximate_blend_surface(&result.sections).unwrap();
+        for u_step in 0..=16 {
+            for v_step in 0..=16 {
+                let u = f64::from(u_step) / 16.0;
+                let v = f64::from(v_step) / 16.0;
+                let point = surface.evaluate(u, v);
+                let t = point.y() / edge_length;
+                let radius = law.evaluate(t);
+                let radial_distance =
+                    ((point.x() - radius).powi(2) + (point.z() - radius).powi(2)).sqrt();
+                assert!(
+                    (radial_distance - radius).abs() < 1e-9,
+                    "U={u} V={v}: point {point:?} is not on the closed-form variable-radius band"
+                );
+            }
+        }
+
+        // A convex right-angle fillet removes A(r)=(1-pi/4)r^2 from every
+        // section. Radius is linear between every pair of walker stations, so
+        // integrating each interval is exact, independent of adaptive steps.
+        let area_factor = 1.0 - std::f64::consts::FRAC_PI_4;
+        let integrated = result
+            .sections
+            .windows(2)
+            .map(|pair| {
+                let dt = pair[1].t - pair[0].t;
+                let r0 = pair[0].radius;
+                let r1 = pair[1].radius;
+                edge_length * dt * (r0 * r0 + r0 * r1 + r1 * r1) / 3.0
+            })
+            .sum::<f64>()
+            * area_factor;
+        let expected =
+            area_factor * edge_length * (0.5_f64.powi(2) + 0.5 * 1.5 + 1.5_f64.powi(2)) / 3.0;
+        assert!((integrated - expected).abs() < 1e-10);
+    }
+
+    #[test]
+    fn scurve_law_sections_preserve_radius_and_support_tangency() {
+        let (p1, p2) = make_perpendicular_planes();
+        let mut topo = Topology::new();
+        let edge_length = 10.0;
+        let eid = make_line_edge(
+            &mut topo,
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(0.0, edge_length, 0.0),
+        );
+        let spine = Spine::from_single_edge(&topo, eid).unwrap();
+        let law = RadiusLaw::SCurve {
+            start: 0.5,
+            end: 1.5,
+        };
+        let blend = EvolRadBlend {
+            law: RadiusLaw::SCurve {
+                start: 0.5,
+                end: 1.5,
+            },
+        };
+        let walker = Walker::new(&blend, &p1, &p2, &spine, &topo, WalkerConfig::default());
+        let start = walker.find_start(0.0).unwrap();
+        let result = walker.walk(start, 0.0, edge_length).unwrap();
+
+        assert!(result.sections.len() >= 5);
+        for section in &result.sections {
+            assert_plane_pair_section_invariants(section, &law, edge_length);
+        }
+    }
+
+    #[test]
+    fn custom_law_is_evaluated_at_each_station_and_refuses_a_collapsed_section() {
+        let (p1, p2) = make_perpendicular_planes();
+        let mut topo = Topology::new();
+        let edge_length = 10.0;
+        let eid = make_line_edge(
+            &mut topo,
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(0.0, edge_length, 0.0),
+        );
+        let spine = Spine::from_single_edge(&topo, eid).unwrap();
+        let blend = EvolRadBlend {
+            law: RadiusLaw::Custom(Box::new(|t| 1.0 + t * t)),
+        };
+        let walker = Walker::new(&blend, &p1, &p2, &spine, &topo, WalkerConfig::default());
+        let start = walker.find_start(0.0).unwrap();
+        let result = walker.walk(start, 0.0, edge_length).unwrap();
+        let interior = result
+            .sections
+            .iter()
+            .find(|section| section.t > 0.05 && section.t < 0.95)
+            .unwrap();
+        assert!((interior.radius - (1.0 + interior.t * interior.t)).abs() < 1e-9);
+        assert!(
+            (interior.radius - (1.0 + interior.t)).abs() > 1e-3,
+            "custom quadratic law was reduced to endpoint-linear interpolation"
+        );
+
+        let invalid = EvolRadBlend {
+            law: RadiusLaw::Custom(Box::new(|t| if t < 0.05 { 1.0 } else { 0.0 })),
+        };
+        let walker = Walker::new(&invalid, &p1, &p2, &spine, &topo, WalkerConfig::default());
+        let start = walker.find_start(0.0).unwrap();
+        assert!(matches!(
+            walker.walk(start, 0.0, edge_length),
+            Err(BlendError::InvalidInput { .. })
+        ));
     }
 
     #[test]

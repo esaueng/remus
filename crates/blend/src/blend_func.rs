@@ -51,6 +51,21 @@ pub struct BlendContext {
 /// Each implementation provides the residual vector, analytic Jacobian,
 /// and cross-section extraction for a particular blend type.
 pub trait BlendFunction {
+    /// Validate law-dependent state at one spine station before Newton uses it.
+    ///
+    /// Constant-radius and chamfer functions have no station-dependent input,
+    /// so their default validation is a no-op. Variable-radius functions use
+    /// this hook to refuse non-finite or collapsed sections with a typed error
+    /// instead of feeding NaNs into the solver.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::BlendError`] when the function is undefined at this
+    /// station.
+    fn validate_context(&self, _ctx: &BlendContext) -> Result<(), crate::BlendError> {
+        Ok(())
+    }
+
     /// Evaluate the 4-component constraint residual.
     ///
     /// Returns `[f1, f2, f3, f4]` where:
@@ -342,6 +357,12 @@ pub struct EvolRadBlend {
 }
 
 impl BlendFunction for EvolRadBlend {
+    fn validate_context(&self, ctx: &BlendContext) -> Result<(), crate::BlendError> {
+        self.law
+            .validate_at(ctx.t, remus_math::tolerance::Tolerance::new().linear)
+            .map(|_| ())
+    }
+
     fn value(
         &self,
         surf1: &dyn ParametricSurface,
@@ -373,6 +394,55 @@ impl BlendFunction for EvolRadBlend {
     ) -> CircSection {
         let r = self.law.evaluate(ctx.t);
         ConstRadBlend::section_with_radius(r, surf1, surf2, params, ctx)
+    }
+}
+
+/// Variable-radius function that borrows its law without changing it.
+///
+/// The public owning [`EvolRadBlend`] remains available for standalone use.
+/// The fillet builder uses this borrowed form so an opaque custom callback is
+/// evaluated at every walker station instead of being silently replaced by a
+/// straight interpolation between its endpoints.
+#[derive(Debug)]
+pub struct BorrowedEvolRadBlend<'a> {
+    pub law: &'a RadiusLaw,
+}
+
+impl BlendFunction for BorrowedEvolRadBlend<'_> {
+    fn validate_context(&self, ctx: &BlendContext) -> Result<(), crate::BlendError> {
+        self.law
+            .validate_at(ctx.t, remus_math::tolerance::Tolerance::new().linear)
+            .map(|_| ())
+    }
+
+    fn value(
+        &self,
+        surf1: &dyn ParametricSurface,
+        surf2: &dyn ParametricSurface,
+        params: &BlendParams,
+        ctx: &BlendContext,
+    ) -> [f64; 4] {
+        ConstRadBlend::value_with_radius(self.law.evaluate(ctx.t), surf1, surf2, params, ctx)
+    }
+
+    fn jacobian(
+        &self,
+        surf1: &dyn ParametricSurface,
+        surf2: &dyn ParametricSurface,
+        params: &BlendParams,
+        ctx: &BlendContext,
+    ) -> [[f64; 4]; 4] {
+        ConstRadBlend::jacobian_with_radius(self.law.evaluate(ctx.t), surf1, surf2, params, ctx)
+    }
+
+    fn section(
+        &self,
+        surf1: &dyn ParametricSurface,
+        surf2: &dyn ParametricSurface,
+        params: &BlendParams,
+        ctx: &BlendContext,
+    ) -> CircSection {
+        ConstRadBlend::section_with_radius(self.law.evaluate(ctx.t), surf1, surf2, params, ctx)
     }
 }
 
