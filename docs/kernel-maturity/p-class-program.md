@@ -248,11 +248,22 @@ cases from satisfying the gate.
 Equal-radius perpendicular cylinder×cylinder: the seam degenerates to two
 planar ellipses with no singularity — both types already exist, and the
 marcher currently 128-samples and interpolates what has a closed form. Add
-the degenerate equal-radius arm. The best-value exact chase on record; the
-union direction ships exact at 6 faces today.
+the degenerate equal-radius arm. The best-value exact chase on record.
 
 > **Exit gate:** cyl ∩ cyl = 16/3·r³ exact; the census fallback row (70
 > planar faces) becomes an exact analytic result.
+
+Delivered: phase FF consumes the existing closed-form cylinder×cylinder
+oracle and emits the two planar ellipses as eight authoritative quarter arcs,
+split at both shared pinch points and at each half-span midpoint. The periodic
+cylinder splitter promotes the seam-free arc loops into six winding-correct
+cylinder patches, while fuse and cut retain their exact surfaces as eight- and
+seven-face results. Intersection validates as a closed solid, exposes only
+analytic cylinder faces and line/ellipse edges, matches `16/3·r³` at radii 2,
+3, and 5 after rigid motion, and tessellates closed and manifold at three
+deflections. The batch/WASM exact-only path pins the same six-face result. The
+census now reports all three perpendicular-cylinder operators as exact; its
+intersection row moves from 70 planar fallback faces to six analytic faces.
 
 ### 2.4 Quadric × quadric transversal, NURBS seams (L)
 
@@ -327,12 +338,14 @@ disclosed, not silent.
 
 — partial: boolean/NURBS-SSI cooperative cancellation is typed,
 transactional, and WASM-bound; the coupled SSI Newton loop now consumes the
-caller's iteration budget and cancellation token, and SSI seed subdivision
-consumes the caller's recursion-depth cap. Parameter-space budgets plus wider
-operation-family adoption remain
+caller's iteration budget and cancellation token, SSI seed subdivision
+consumes the caller's recursion-depth cap, and direct/batch WASM quality
+booleans expose the existing march, queue, segment, and branch-exploration
+caps. Parameter-space tolerance plus wider operation-family adoption remain
 ([PR #138](https://github.com/esaueng/remus/pull/138) +
 [PR #147](https://github.com/esaueng/remus/pull/147) +
-[PR #160](https://github.com/esaueng/remus/pull/160)).
+[PR #160](https://github.com/esaueng/remus/pull/160) +
+[PR #202](https://github.com/esaueng/remus/pull/202)).
 
 `crates/math/src/context.rs` · `crates/algo/src/pave_filler/` ·
 `crates/math/src/nurbs/intersection/` · `crates/wasm/src/bindings/`
