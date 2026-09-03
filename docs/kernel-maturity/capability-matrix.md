@@ -221,8 +221,8 @@ does not itself promote or demote anything.
   common stationary radius and tangent ball. A three-edge box witness pins the
   exact sphere, all physical setback stations, angular-tolerance G1 seams,
   closed/manifold B-Rep, watertight mesh, independent volume agreement, the
-  exact census row, and direct/batch WASM parity. Issue 5.5 declares the v2
-  overflow policy to be stop-at-cliff: planar support boundaries, inner-loop
+  exact census row, and direct/batch WASM parity. In-review PR #234 declares
+  the v2 overflow policy to be stop-at-cliff: planar support boundaries, inner-loop
   obstacles, closed-rim wall exhaustion, and inward cap collapse return typed
   `CliffEncountered` with edge/face/requested/available metadata. Exact-width
   box and two-rim thin-wall witnesses pin the supported and refused sides,
