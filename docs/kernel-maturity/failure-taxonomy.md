@@ -38,7 +38,7 @@ stable coarse level; codes within them are the stable fine level.
 | --- | --- | --- |
 | `invalid_input` | The request is malformed independent of geometry difficulty: non-finite values, out-of-range arguments, bad handles, empty topology. | `invalid_argument`, `invalid_handle`, `invalid_json`, `missing_operation`, `unknown_operation` |
 | `invalid_topology` | Referenced topology exists but is inconsistent or fails validation preconditions. | `topology_error` |
-| `unsupported` | The operation is well-formed but the capability cell is declared unsupported. Always cites the cell (family + configuration). | `unsupported_configuration`, existing typed refusals such as `RadiusTooLarge`, unsupported-support-pair |
+| `unsupported` | The operation is well-formed but the capability cell is declared unsupported. Always cites the cell (family + configuration). | `unsupported_configuration`, existing typed refusals such as `RadiusTooLarge`, `cliff-encountered`, unsupported-support-pair |
 | `nonconvergence` | An iterative algorithm exhausted its declared budget without certifying an answer. Never presented as an empty success. | `iteration_budget_exhausted`, `no_convergence` |
 | `resource_limit` | A byte/entity/work/memory budget was exceeded (import limits, batch caps, topology growth caps). | `resource_limit_exceeded`, `batch_limit_exceeded` |
 | `tolerance_violation` | A result was produced but failed its own tolerance contract (SameParameter/SameRange deviation, validation deviation beyond limit) and the policy forbids repair. | `same_parameter_exceeded`, `validation_deviation` |

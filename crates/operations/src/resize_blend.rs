@@ -295,9 +295,10 @@ fn rebuild_blend_edges(
     }
     match fillet_v2(topo, solid, edges, new_radius) {
         Ok(result) => Ok(result),
-        Err(OperationsError::Blend(remus_blend::BlendError::RadiusTooLarge { .. })) => {
-            Err(ResizeBlendError::RadiusTooLarge { radius: new_radius }.into())
-        }
+        Err(OperationsError::Blend(
+            remus_blend::BlendError::RadiusTooLarge { .. }
+            | remus_blend::BlendError::CliffEncountered { .. },
+        )) => Err(ResizeBlendError::RadiusTooLarge { radius: new_radius }.into()),
         Err(OperationsError::Blend(remus_blend::BlendError::TrimmingFailure { .. }))
             if new_radius > old_radius =>
         {

@@ -12,7 +12,7 @@
 //! across the whole widened radius range `0 < r < r_c` — including
 //! `r > r_c/2`, where the carrier torus is a horn or spindle but the
 //! quarter-tube collar cut from it is sound. `r ≥ r_c` is refused as a
-//! typed `RadiusTooLarge`, both sides of the bound tested.
+//! typed `CliffEncountered`, both sides of the bound tested.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -101,12 +101,10 @@ fn radius_bound_both_sides() {
     let (holed, rim, _) = blind_hole_block(&mut topo);
     match remus_operations::blend_ops::fillet_v2(&mut topo, holed, &[rim], RC) {
         Ok(_) => panic!("r = r_c must be refused: the rolling ball does not fit"),
-        Err(err) => {
-            let msg = format!("{err:?}");
-            assert!(
-                msg.contains("RadiusTooLarge") || msg.contains("radius"),
-                "expected a typed radius refusal at r = r_c, got {err:?}"
-            );
-        }
+        Err(err) => assert_eq!(
+            remus_operations::blend_ops::blend_failure_code(&err),
+            "cliff-encountered",
+            "expected a typed cap cliff at r = r_c, got {err:?}"
+        ),
     }
 }

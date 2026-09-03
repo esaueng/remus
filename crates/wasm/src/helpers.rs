@@ -1465,11 +1465,11 @@ mod fillet_tests {
         assert!(
             matches!(
                 too_large,
-                remus_operations::OperationsError::Blend(BlendError::RadiusTooLarge { .. })
+                remus_operations::OperationsError::Blend(BlendError::CliffEncountered { .. })
             ),
-            "expected RadiusTooLarge, got: {too_large}"
+            "expected CliffEncountered, got: {too_large}"
         );
-        assert_eq!(blend_failure_code(&too_large), "radius-too-large");
+        assert_eq!(blend_failure_code(&too_large), "cliff-encountered");
 
         let after =
             remus_topology::explorer::solid_entity_counts(&topo, solid).expect("counts after");
