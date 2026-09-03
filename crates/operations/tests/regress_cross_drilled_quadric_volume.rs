@@ -2,8 +2,8 @@
 //!
 //! `solid_volume` and `mass_properties` both reach
 //! `remus_check::properties::face_integrator::integrate_face` for an
-//! all-analytic body. On the quadric path that integrator had two defects, and
-//! a bore drilled through the side of a shaft meets both at once:
+//! all-analytic body. This fixture historically exposed two quadric-path
+//! defects at once:
 //!
 //! 1. A face's inner wires were never subtracted from a curved face, so the
 //!    two rims the bore opens in the shaft wall stayed material.
@@ -19,7 +19,10 @@
 //! half: 72 mm³ of rim kept as material by (1), and 72 mm³ of bore wall lost
 //! by (2). `solid_volume` did not even reach the integrator, because
 //! `analytic_faces_solid_volume` deferred any holed cylinder wall to
-//! tessellation for precisely this reason.
+//! tessellation for precisely this reason. The exact Steinmetz seam now splits
+//! the walls into ellipse-bounded patches instead of inner-wire lobes; the same
+//! closed-form oracle remains the guard against losing or double-counting the
+//! bore during that representation change.
 //!
 //! An equal-radius bore is used because that is the cross-drill the boolean
 //! keeps analytic: the two cylinders then meet in a pair of PLANE ellipses.
@@ -44,10 +47,8 @@ use remus_topology::solid::SolidId;
 const R: f64 = 3.0;
 const H: f64 = 30.0;
 
-/// The bore's rims and lobes are trimmed by chord polylines of their true
-/// ellipses, so the body is exact only to that chording — 4.7e-5 relative
-/// here. It is a bound on the outline, not on the quadrature: the defects it
-/// replaces were 2.0e-1.
+/// The analytic surface integral retains a small numerical quadrature budget;
+/// the historical topology defects were three orders of magnitude larger.
 const REL: f64 = 1e-4;
 
 /// A shaft of radius `R` and height `H` with an equal-radius bore drilled
@@ -106,40 +107,39 @@ fn cross_drilled_shaft_measures_its_closed_form() {
     }
 }
 
-/// The body is built from faces that carry both defects, so a green volume is
-/// not on its own evidence that the integrator handled them.
+/// Pin the topology produced by the exact Steinmetz seam.  Each cylinder wall
+/// is split into seam-free bands bounded by shared ellipse arcs, rather than
+/// the legacy one-holed-wall plus two single-closed-edge lobes.
 #[test]
-fn the_shaft_really_has_a_holed_wall_and_closed_edge_bore_lobes() {
+fn the_shaft_splits_into_wall_bands_and_bore_lens_patches() {
     let (topo, solid) = cross_drilled_shaft();
     let faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
 
+    let mut cylinder_faces = 0;
     let mut holed_walls = 0;
-    let mut closed_edge_lobes = 0;
+    let mut planes = 0;
     for &fid in &faces {
         let face = topo.face(fid).unwrap();
-        if !matches!(face.surface(), FaceSurface::Cylinder(_)) {
-            continue;
-        }
-        if !face.inner_wires().is_empty() {
-            holed_walls += 1;
-        }
-        let outer = topo.wire(face.outer_wire()).unwrap();
-        let single_closed = outer.edges().len() == 1
-            && topo
-                .edge(outer.edges()[0].edge())
-                .is_ok_and(|e| e.start() == e.end());
-        if single_closed {
-            closed_edge_lobes += 1;
+        match face.surface() {
+            FaceSurface::Cylinder(_) => {
+                cylinder_faces += 1;
+                if !face.inner_wires().is_empty() {
+                    holed_walls += 1;
+                }
+            }
+            FaceSurface::Plane { .. } => planes += 1,
+            other => panic!("unexpected non-analytic face {other:?}"),
         }
     }
 
+    assert_eq!(planes, 2, "the shaft retains its two planar caps");
     assert_eq!(
-        holed_walls, 1,
-        "the shaft wall must carry the two bore rims as inner wires"
+        holed_walls, 0,
+        "the exact seam leaves no holed cylinder wall"
     );
     assert_eq!(
-        closed_edge_lobes, 2,
-        "the bore wall must arrive as two lobes, each bounded by one closed edge"
+        cylinder_faces, 5,
+        "two shaft-wall bands plus three bore lens patches"
     );
 }
 
@@ -151,10 +151,9 @@ fn cross_drilled_shaft_measurement_is_not_a_setting() {
     let (topo, solid) = cross_drilled_shaft();
     let reference = mass_properties(&topo, solid).unwrap().mass;
 
-    // Looser than the all-planar bodies' 1e-9: the u-quadrature is split at
-    // every vertex of a 128-segment outline, so which abscissae land where
-    // shifts with the order. It is four orders of magnitude below the
-    // chording, and three below what the defects cost.
+    // Looser than the all-planar bodies' 1e-9 because trimmed-quadric
+    // integration still depends on numerical quadrature. This remains three
+    // orders of magnitude below what the historical defects cost.
     let invariance = 1e-6;
 
     for order in [4_usize, 5, 6, 8, 10, 12, 16] {
@@ -180,9 +179,10 @@ fn cross_drilled_shaft_measurement_is_not_a_setting() {
     }
 }
 
-/// The same lens, kept rather than removed. The two walls of a perpendicular
-/// cylinder fuse each carry the lens rims as holes, so defect 1 alone put the
-/// body 144 mm³ heavy: 1130.973355 against a true 986.973355.
+/// The same lens, kept rather than removed. The legacy holed-wall
+/// representation put this body 144 mm³ heavy when its rims were ignored:
+/// 1130.973355 against a true 986.973355. The exact-seam representation must
+/// preserve that corrected material accounting.
 ///
 /// `solid_volume` recognises this body and answers from a closed form, so the
 /// integrator is exercised through `mass_properties`, which has no such path.
