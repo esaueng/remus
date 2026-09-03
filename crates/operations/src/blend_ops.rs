@@ -1,9 +1,8 @@
 //! Thin wrappers around `remus-blend` for the operations API.
 
-use remus_blend::BlendResult;
 use remus_blend::chamfer_builder::ChamferBuilder;
 use remus_blend::fillet_builder::FilletBuilder;
-pub use remus_blend::{BlendError, BlendFaceOrigins};
+pub use remus_blend::{BlendError, BlendFaceOrigins, BlendResult};
 use remus_topology::Topology;
 use remus_topology::edge::{EdgeCurve, EdgeId};
 use remus_topology::face::FaceSurface;
