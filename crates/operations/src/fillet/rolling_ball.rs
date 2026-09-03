@@ -10,7 +10,7 @@ use remus_math::surfaces::CylindricalSurface;
 use remus_math::tolerance::Tolerance;
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
-use remus_topology::edge::EdgeId;
+use remus_topology::edge::{EdgeCurve, EdgeId};
 use remus_topology::face::{FaceId, FaceSurface};
 use remus_topology::solid::SolidId;
 
@@ -175,6 +175,211 @@ fn rolling_ball_cylinder(
     Some(cylinder)
 }
 
+/// Exact rolling-ball section between two oriented planes.
+///
+/// `side` is `-1` for a convex edge (the ball centre is inside both outward
+/// face half-spaces) and `+1` for a concave edge. The returned contacts are
+/// the orthogonal projections of the centre onto the two planes, so their
+/// distance from the sharp edge is correct for any dihedral angle.
+fn planar_rolling_ball_section(
+    point_on_edge: Point3,
+    normal1: Vec3,
+    normal2: Vec3,
+    side: f64,
+    radius: f64,
+    tol: Tolerance,
+) -> Option<(Point3, Point3, Point3)> {
+    let n1 = normal1.normalize().ok()?;
+    let n2 = normal2.normalize().ok()?;
+    let dot = n1.dot(n2).clamp(-1.0, 1.0);
+    let denominator = 1.0 - dot * dot;
+    if denominator <= tol.angular * tol.angular {
+        return None;
+    }
+
+    let signed_radius = side * radius;
+    let a = (signed_radius - dot * signed_radius) / denominator;
+    let b = (signed_radius - dot * signed_radius) / denominator;
+    let center = point_on_edge + n1 * a + n2 * b;
+    let contact1 = center - n1 * signed_radius;
+    let contact2 = center - n2 * signed_radius;
+    Some((center, contact1, contact2))
+}
+
+fn intersect_contact_line_with_plane(
+    contact: Point3,
+    edge_delta: Vec3,
+    plane: (Vec3, f64),
+    tol: Tolerance,
+) -> Option<(Point3, f64)> {
+    let denominator = plane.0.dot(edge_delta);
+    if denominator.abs() <= tol.angular * edge_delta.length() {
+        return None;
+    }
+    let parameter_delta = (plane.1 - dot_normal_point(plane.0, contact)) / denominator;
+    Some((contact + edge_delta * parameter_delta, parameter_delta))
+}
+
+fn cylinder_plane_ellipse(
+    cylinder: &CylindricalSurface,
+    plane: (Vec3, f64),
+    start: Point3,
+    end: Point3,
+    tol: Tolerance,
+) -> Option<(EdgeCurve, (f64, f64))> {
+    let normal = plane.0.normalize().ok()?;
+    let axial_cosine = normal.dot(cylinder.axis()).abs();
+    if axial_cosine <= tol.angular || 1.0 - axial_cosine <= tol.angular {
+        return None;
+    }
+    let axis_parameter =
+        (plane.1 - dot_normal_point(normal, cylinder.origin())) / normal.dot(cylinder.axis());
+    let center = cylinder.origin() + cylinder.axis() * axis_parameter;
+    let major_direction = cylinder.axis() - normal * cylinder.axis().dot(normal);
+    let mut ellipse = remus_math::curves::Ellipse3D::new_with_ref(
+        center,
+        normal,
+        cylinder.radius() / axial_cosine,
+        cylinder.radius(),
+        major_direction,
+    )
+    .ok()?;
+    let directed_trim = |ellipse: &remus_math::curves::Ellipse3D| {
+        let t0 = ellipse.project(start);
+        let delta = (ellipse.project(end) - t0).rem_euclid(std::f64::consts::TAU);
+        (t0, t0 + delta, delta)
+    };
+    let (mut t0, mut t1, delta) = directed_trim(&ellipse);
+    if delta > std::f64::consts::PI {
+        ellipse = ellipse.reversed();
+        (t0, t1, _) = directed_trim(&ellipse);
+    }
+    if (ellipse.evaluate(t0) - start).length() > tol.linear
+        || (ellipse.evaluate(t1) - end).length() > tol.linear
+    {
+        return None;
+    }
+    Some((EdgeCurve::Ellipse(ellipse), (t0, t1)))
+}
+
+/// Solve one radius-`R` ball tangent to every oriented plane at an N-way
+/// vertex. The best-conditioned three constraints determine the centre; all
+/// remaining planes then qualify it. This admits ordinary three-face corners
+/// and conical N-face apexes without an orthogonality assumption.
+fn solve_planar_corner_ball(
+    vertex: Point3,
+    constraints: &[(Vec3, f64)],
+    radius: f64,
+    tol: Tolerance,
+) -> Option<Point3> {
+    if constraints.len() < 3 {
+        return None;
+    }
+
+    let mut best: Option<(usize, usize, usize, f64)> = None;
+    for i in 0..constraints.len() - 2 {
+        for j in i + 1..constraints.len() - 1 {
+            for k in j + 1..constraints.len() {
+                let det = constraints[i]
+                    .0
+                    .dot(constraints[j].0.cross(constraints[k].0));
+                if best.is_none_or(|(_, _, _, best_det)| det.abs() > best_det.abs()) {
+                    best = Some((i, j, k, det));
+                }
+            }
+        }
+    }
+    let (i, j, k, det) = best?;
+    if det.abs() <= tol.angular {
+        return None;
+    }
+
+    let (ni, si) = constraints[i];
+    let (nj, sj) = constraints[j];
+    let (nk, sk) = constraints[k];
+    let offset = (nj.cross(nk) * (si * radius)
+        + nk.cross(ni) * (sj * radius)
+        + ni.cross(nj) * (sk * radius))
+        * (1.0 / det);
+    let qualification_tol = tol.linear.max(radius * 1.0e-8);
+    constraints
+        .iter()
+        .all(|(normal, side)| (normal.dot(offset) - side * radius).abs() <= qualification_tol)
+        .then_some(vertex + offset)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn exact_planar_corner_ball(
+    topo: &Topology,
+    vertex_index: usize,
+    incident_edges: &[EdgeId],
+    edge_to_faces: &HashMap<usize, Vec<FaceId>>,
+    planar_edge_sides: &HashMap<usize, f64>,
+    radius: f64,
+    tol: Tolerance,
+) -> Option<Point3> {
+    if incident_edges.len() < 3 {
+        return None;
+    }
+    let vertex_id = incident_edges.iter().find_map(|edge_id| {
+        let edge = topo.edge(*edge_id).ok()?;
+        [edge.start(), edge.end()]
+            .into_iter()
+            .find(|vertex| vertex.index() == vertex_index)
+    })?;
+    let vertex = topo.vertex(vertex_id).ok()?.point();
+
+    let mut constraints: Vec<(usize, Vec3, f64)> = Vec::new();
+    for &edge_id in incident_edges {
+        let edge = topo.edge(edge_id).ok()?;
+        if !matches!(edge.curve(), EdgeCurve::Line) {
+            return None;
+        }
+        let side = *planar_edge_sides.get(&edge_id.index())?;
+        let faces = edge_to_faces.get(&edge_id.index())?;
+        if faces.len() != 2 {
+            return None;
+        }
+        for &face_id in faces {
+            let normal = topo
+                .face(face_id)
+                .ok()?
+                .effective_plane_normal()?
+                .normalize()
+                .ok()?;
+            if let Some((_, existing_normal, existing_side)) = constraints
+                .iter()
+                .find(|(index, _, _)| *index == face_id.index())
+            {
+                if (*existing_side - side).abs() > tol.angular
+                    || existing_normal.dot(normal) < 1.0 - tol.angular
+                {
+                    return None;
+                }
+            } else {
+                constraints.push((face_id.index(), normal, side));
+            }
+        }
+    }
+
+    let common_side = constraints.first()?.2;
+    if constraints
+        .iter()
+        .any(|(_, _, side)| (*side - common_side).abs() > tol.angular)
+    {
+        // One connected analytic sphere cap has one material-side
+        // orientation. Alternating convex/concave stripes need a general
+        // setback patch rather than a sphere fan with flipped normals.
+        return None;
+    }
+
+    let plane_constraints: Vec<(Vec3, f64)> = constraints
+        .into_iter()
+        .map(|(_, normal, side)| (normal, side))
+        .collect();
+    solve_planar_corner_ball(vertex, &plane_constraints, radius, tol)
+}
+
 /// Record a finished stripe's four contact points against the vertices at its
 /// two ends, so the vertex-blend pass can see which stripes meet there.
 ///
@@ -283,6 +488,7 @@ pub fn fillet_rolling_ball_with_origins(
         let mut face_polygons: HashMap<usize, FacePolygon> = HashMap::new();
         let mut face_surfaces: HashMap<usize, FaceSurface> = HashMap::new();
         let mut face_reversed: HashMap<usize, bool> = HashMap::new();
+        let mut vertex_faces: HashMap<usize, Vec<FaceId>> = HashMap::new();
 
         for &face_id in &shell_face_ids {
             let face = topo.face(face_id)?;
@@ -300,6 +506,7 @@ pub fn fillet_rolling_ball_with_origins(
                 vertex_ids.push(vid);
                 positions.push(topo.vertex(vid)?.point());
                 wire_edge_ids.push(oe.edge());
+                vertex_faces.entry(vid.index()).or_default().push(face_id);
 
                 edge_to_faces
                     .entry(oe.edge().index())
@@ -321,6 +528,7 @@ pub fn fillet_rolling_ball_with_origins(
                     let edge = topo.edge(oe.edge())?;
                     let vid = oe.oriented_start(edge);
                     iw_positions.push(topo.vertex(vid)?.point());
+                    vertex_faces.entry(vid.index()).or_default().push(face_id);
                 }
                 if !iw_positions.is_empty() {
                     face_inner_wires.push(iw_positions);
@@ -402,6 +610,144 @@ pub fn fillet_rolling_ball_with_origins(
                 .or_default()
                 .push(edge_id);
         }
+
+        // Qualify the material side of every straight two-plane stripe once.
+        // The exact section and N-way corner solvers below use the same signed
+        // plane constraints, so a stripe endpoint and its corner ball cannot
+        // disagree about which side of a support face contains the result.
+        let mut planar_edge_sides: HashMap<usize, f64> = HashMap::new();
+        for &edge_id in &filtered_edges {
+            let edge = topo.edge(edge_id)?;
+            if !matches!(edge.curve(), EdgeCurve::Line) {
+                continue;
+            }
+            let Some(faces) = edge_to_faces.get(&edge_id.index()) else {
+                continue;
+            };
+            if faces.len() != 2
+                || topo.face(faces[0])?.effective_plane_normal().is_none()
+                || topo.face(faces[1])?.effective_plane_normal().is_none()
+            {
+                continue;
+            }
+            let start = topo.vertex(edge.start())?.point();
+            let end = topo.vertex(edge.end())?.point();
+            let edge_len = (end - start).length();
+            let probe = radius.min(edge_len * 0.1).max(tol.linear * 10.0);
+            let side = match crate::query::edge_concavity_from_faces(
+                topo, solid, edge_id, faces[0], faces[1], probe,
+            )? {
+                crate::query::EdgeConcavity::Convex => -1.0,
+                crate::query::EdgeConcavity::Concave => 1.0,
+                crate::query::EdgeConcavity::Tangent | crate::query::EdgeConcavity::Unknown => {
+                    continue;
+                }
+            };
+            planar_edge_sides.insert(edge_id.index(), side);
+        }
+
+        // A qualified N-way vertex has one ball tangent to every incident
+        // planar face. Store it before computing setbacks: projecting this
+        // centre onto each sharp edge gives the exact station where that edge's
+        // rolling-ball centreline reaches the common corner ball.
+        let exact_corner_balls: HashMap<usize, Point3> = vertex_fillet_edges
+            .iter()
+            .filter_map(|(&vertex_index, incident_edges)| {
+                exact_planar_corner_ball(
+                    topo,
+                    vertex_index,
+                    incident_edges,
+                    &edge_to_faces,
+                    &planar_edge_sides,
+                    radius,
+                    tol,
+                )
+                .map(|center| (vertex_index, center))
+            })
+            .collect();
+
+        // A wholly planar N-way junction that did not qualify above must not
+        // drift into the legacy normal-sum corner heuristic. That estimate is
+        // only exact for an orthogonal, consistently oriented corner and can
+        // otherwise return a plausible closed solid with the wrong material
+        // side. Keep alternating sides and inconsistent plane systems typed.
+        for (&vertex_index, incident_edges) in &vertex_fillet_edges {
+            if incident_edges.len() < 3 || exact_corner_balls.contains_key(&vertex_index) {
+                continue;
+            }
+            let wholly_planar = incident_edges.iter().all(|edge_id| {
+                topo.edge(*edge_id).is_ok_and(|edge| {
+                    matches!(edge.curve(), EdgeCurve::Line)
+                        && edge_to_faces.get(&edge_id.index()).is_some_and(|faces| {
+                            faces.len() == 2
+                                && faces.iter().all(|face_id| {
+                                    topo.face(*face_id)
+                                        .is_ok_and(|face| face.effective_plane_normal().is_some())
+                                })
+                        })
+                })
+            });
+            if wholly_planar {
+                let vertex = incident_edges.iter().find_map(|edge_id| {
+                    let edge = topo.edge(*edge_id).ok()?;
+                    [edge.start(), edge.end()]
+                        .into_iter()
+                        .find(|candidate| candidate.index() == vertex_index)
+                });
+                if let Some(vertex) = vertex {
+                    return Err(crate::OperationsError::Blend(
+                        remus_blend::BlendError::UnsupportedVertexBlend {
+                            vertex,
+                            stripes: incident_edges.len(),
+                        },
+                    ));
+                }
+            }
+        }
+
+        // A lone planar stripe can terminate exactly on a transverse plane.
+        // Its two support contacts generally reach that plane at different
+        // axial parameters, making the end boundary an ellipse rather than a
+        // circular section. Remember the unique transverse plane now; the
+        // contact pre-pass and analytic boundary construction consume it.
+        let planar_runout_planes: HashMap<(usize, usize), (Vec3, f64)> = vertex_fillet_edges
+            .iter()
+            .filter(|(_, incident)| incident.len() == 1)
+            .filter_map(|(&vertex_index, incident)| {
+                let edge_id = incident[0];
+                planar_edge_sides.get(&edge_id.index())?;
+                let adjacent = edge_to_faces.get(&edge_id.index())?;
+                let candidates = vertex_faces.get(&vertex_index)?;
+                let mut plane: Option<(Vec3, f64)> = None;
+                for &face_id in candidates {
+                    if adjacent.contains(&face_id) {
+                        continue;
+                    }
+                    let FaceSurface::Plane { normal, d } = topo.face(face_id).ok()?.surface()
+                    else {
+                        return None;
+                    };
+                    let length = normal.length();
+                    if length <= tol.linear {
+                        return None;
+                    }
+                    let mut candidate = (*normal * (1.0 / length), *d / length);
+                    if let Some((existing_normal, existing_d)) = plane {
+                        if existing_normal.dot(candidate.0) < 0.0 {
+                            candidate = (-candidate.0, -candidate.1);
+                        }
+                        if existing_normal.dot(candidate.0) < 1.0 - tol.angular
+                            || (existing_d - candidate.1).abs() > tol.linear
+                        {
+                            return None;
+                        }
+                    } else {
+                        plane = Some(candidate);
+                    }
+                }
+                plane.map(|plane| ((edge_id.index(), vertex_index), plane))
+            })
+            .collect();
 
         // Phase 2b: Validate that the fillet radius fits within adjacent face geometry.
         // For each target edge on each adjacent face, the shortest non-target edge
@@ -771,7 +1117,7 @@ pub fn fillet_rolling_ball_with_origins(
         // than letting full-length strips interpenetrate and over-remove material.
         //
         // Key: (edge_index, vertex_index) → setback distance along the edge.
-        let setback_map: HashMap<(usize, usize), f64> = {
+        let mut setback_map: HashMap<(usize, usize), f64> = {
             let mut map = HashMap::new();
             for &edge_id in &filtered_edges {
                 let edge = topo.edge(edge_id)?;
@@ -833,6 +1179,55 @@ pub fn fillet_rolling_ball_with_origins(
             }
             map
         };
+
+        // Replace angle heuristics at qualified N-way corners with the exact
+        // common-ball station. This is identical to R at an orthogonal box
+        // corner and differs materially at an oblique pyramid apex.
+        for (&vertex_index, &center) in &exact_corner_balls {
+            let Some(incident_edges) = vertex_fillet_edges.get(&vertex_index) else {
+                continue;
+            };
+            for &edge_id in incident_edges {
+                let edge = topo.edge(edge_id)?;
+                let start = topo.vertex(edge.start())?.point();
+                let end = topo.vertex(edge.end())?.point();
+                let (vertex, away) = if edge.start().index() == vertex_index {
+                    (start, end - start)
+                } else {
+                    (end, start - end)
+                };
+                let Ok(away) = away.normalize() else {
+                    continue;
+                };
+                let setback = (center - vertex).dot(away);
+                if setback > tol.linear {
+                    setback_map.insert((edge_id.index(), vertex_index), setback);
+                }
+            }
+        }
+
+        for &edge_id in &filtered_edges {
+            let edge = topo.edge(edge_id)?;
+            let start = topo.vertex(edge.start())?.point();
+            let end = topo.vertex(edge.end())?.point();
+            let edge_len = (end - start).length();
+            let start_setback = setback_map
+                .get(&(edge_id.index(), edge.start().index()))
+                .copied()
+                .unwrap_or(0.0);
+            let end_setback = setback_map
+                .get(&(edge_id.index(), edge.end().index()))
+                .copied()
+                .unwrap_or(0.0);
+            if start_setback + end_setback >= edge_len - tol.linear {
+                return Err(crate::OperationsError::InvalidInput {
+                    reason: format!(
+                        "adjacent fillet strips overlap: exact corner setbacks \
+                         ({start_setback:.6} + {end_setback:.6}) reach edge length {edge_len:.6}"
+                    ),
+                });
+            }
+        }
 
         // Convert a setback distance into a normalised edge parameter for a line
         // edge of given length.  For curved edges the strip is still sampled in
@@ -1021,16 +1416,46 @@ pub fn fillet_rolling_ball_with_origins(
                         None => continue,
                     };
 
-                    // Cross-product directions — same sign convention as Phase 4.
-                    let c1 = local_dir.cross(ln1);
-                    let c2 = local_dir.cross(ln2);
-                    let ld1 = if c1.dot(ln2) < 0.0 { c1 } else { -c1 };
-                    let ld2 = if c2.dot(ln1) < 0.0 { c2 } else { -c2 };
-                    let ld1 = ld1.normalize().unwrap_or(c1);
-                    let ld2 = ld2.normalize().unwrap_or(c2);
-
-                    let contact1 = p + ld1 * radius;
-                    let contact2 = p + ld2 * radius;
+                    let exact_planar = planar_edge_sides.get(&edge_id.index()).and_then(|&side| {
+                        let normal1 = topo.face(f1).ok()?.effective_plane_normal()?;
+                        let normal2 = topo.face(f2).ok()?.effective_plane_normal()?;
+                        planar_rolling_ball_section(p, normal1, normal2, side, radius, tol)
+                    });
+                    let (mut contact1, mut contact2) =
+                        if let Some((_, contact1, contact2)) = exact_planar {
+                            (contact1, contact2)
+                        } else {
+                            // Curved or unqualified planar fallback — same sign
+                            // convention as Phase 4.
+                            let c1 = local_dir.cross(ln1);
+                            let c2 = local_dir.cross(ln2);
+                            let ld1 = if c1.dot(ln2) < 0.0 { c1 } else { -c1 };
+                            let ld2 = if c2.dot(ln1) < 0.0 { c2 } else { -c2 };
+                            let ld1 = ld1.normalize().unwrap_or(c1);
+                            let ld2 = ld2.normalize().unwrap_or(c2);
+                            (p + ld1 * radius, p + ld2 * radius)
+                        };
+                    if let Some(&plane) = planar_runout_planes.get(&(edge_id.index(), vid.index()))
+                        && let (Some((runout1, delta1)), Some((runout2, delta2))) = (
+                            intersect_contact_line_with_plane(
+                                contact1,
+                                p_end - p_start,
+                                plane,
+                                tol,
+                            ),
+                            intersect_contact_line_with_plane(
+                                contact2,
+                                p_end - p_start,
+                                plane,
+                                tol,
+                            ),
+                        )
+                        && (0.0..=1.0).contains(&(t + delta1))
+                        && (0.0..=1.0).contains(&(t + delta2))
+                    {
+                        contact1 = runout1;
+                        contact2 = runout2;
+                    }
 
                     // At G1 junctions, keep the first edge's contacts.
                     if g1_chain_vertices.contains(&vid.index()) {
@@ -1686,6 +2111,7 @@ pub fn fillet_rolling_ball_with_origins(
         // for a complete one.
         let mut blended_edges: HashSet<usize> = HashSet::new();
         let mut vertex_contacts: HashMap<usize, Vec<(usize, Point3)>> = HashMap::new();
+        let mut analytic_boundary_curves: Vec<crate::boolean::BoundaryCurveOverride> = Vec::new();
         // For G1 chain junctions, store the contact points computed by the first
         // edge so the second edge can reuse them exactly.
         let mut g1_contact_cache: HashMap<usize, (Point3, Point3)> = HashMap::new();
@@ -1819,25 +2245,39 @@ pub fn fillet_rolling_ball_with_origins(
                     let ln1 = face_surface_normal_at(surf1, p).unwrap_or(n1_start);
                     let ln2 = face_surface_normal_at(surf2, p).unwrap_or(n2_start);
 
-                    // Recompute cross-section directions at this sample
-                    let c1 = local_dir.cross(ln1);
-                    let c2 = local_dir.cross(ln2);
-                    // ld1 points from the edge toward the contact point on face 1,
-                    // inside the dihedral angle (toward the material). This is
-                    // OPPOSITE to face 2's outward normal.
-                    let ld1 = if c1.dot(ln2) < 0.0 { c1 } else { -c1 };
-                    let ld2 = if c2.dot(ln1) < 0.0 { c2 } else { -c2 };
-                    let ld1 = ld1.normalize().unwrap_or(d1_ref);
-                    let ld2 = ld2.normalize().unwrap_or(d2_ref);
-
-                    let bisector = (ld1 + ld2).normalize().unwrap_or(d1_ref);
+                    let exact_planar = planar_edge_sides.get(&edge_id.index()).and_then(|&side| {
+                        let normal1 = topo.face(f1).ok()?.effective_plane_normal()?;
+                        let normal2 = topo.face(f2).ok()?.effective_plane_normal()?;
+                        planar_rolling_ball_section(p, normal1, normal2, side, radius, tol)
+                    });
+                    let (contact1, contact2, bisector) =
+                        if let Some((center, contact1, contact2)) = exact_planar {
+                            (
+                                contact1,
+                                contact2,
+                                (center - p).normalize().unwrap_or(d1_ref),
+                            )
+                        } else {
+                            // Curved or unqualified planar fallback.
+                            let c1 = local_dir.cross(ln1);
+                            let c2 = local_dir.cross(ln2);
+                            // ld1 points from the edge toward the contact point on
+                            // face 1, inside the dihedral angle (toward material).
+                            let ld1 = if c1.dot(ln2) < 0.0 { c1 } else { -c1 };
+                            let ld2 = if c2.dot(ln1) < 0.0 { c2 } else { -c2 };
+                            let ld1 = ld1.normalize().unwrap_or(d1_ref);
+                            let ld2 = ld2.normalize().unwrap_or(d2_ref);
+                            (
+                                p + ld1 * radius,
+                                p + ld2 * radius,
+                                (ld1 + ld2).normalize().unwrap_or(d1_ref),
+                            )
+                        };
 
                     if s == 0 {
                         bisector_ref = bisector;
                     }
 
-                    let contact1 = p + ld1 * radius;
-                    let contact2 = p + ld2 * radius;
                     // Rational-quadratic arc middle control point: the intersection
                     // of the face-tangents at the two contacts, which for a
                     // rolling-ball fillet is the original sharp-edge point `p` (the
@@ -1848,6 +2288,21 @@ pub fn fillet_rolling_ball_with_origins(
                     let mid_cp = p;
 
                     grid.push([contact1, mid_cp, contact2]);
+                }
+            }
+
+            // A transverse planar runout cuts the cylinder obliquely. Reuse the
+            // pre-pass contacts that were intersected with that plane; the edge
+            // between them is recorded as an analytic ellipse below.
+            for (row, vertex) in [(0, edge.start()), (n_v - 1, edge.end())] {
+                if planar_runout_planes.contains_key(&(edge_id.index(), vertex.index()))
+                    && let (Some(&contact1), Some(&contact2)) = (
+                        fillet_contact_map.get(&(vertex.index(), edge_id.index(), f1.index())),
+                        fillet_contact_map.get(&(vertex.index(), edge_id.index(), f2.index())),
+                    )
+                {
+                    grid[row][0] = contact1;
+                    grid[row][2] = contact2;
                 }
             }
 
@@ -1898,6 +2353,23 @@ pub fn fillet_rolling_ball_with_origins(
                     tol,
                 )
             {
+                for (vertex, start, end) in [
+                    (edge.start(), contact1_start, contact2_start),
+                    (edge.end(), contact1_end, contact2_end),
+                ] {
+                    if let Some(&plane) =
+                        planar_runout_planes.get(&(edge_id.index(), vertex.index()))
+                        && let Some((curve, trim)) =
+                            cylinder_plane_ellipse(&cylinder, plane, start, end, tol)
+                    {
+                        analytic_boundary_curves.push(crate::boolean::BoundaryCurveOverride {
+                            start,
+                            end,
+                            curve,
+                            trim,
+                        });
+                    }
+                }
                 // `grid[0][1]` is the original sharp-edge point, which sits on the
                 // far side of the axis from the material — so the radial direction
                 // through it is the stripe's own outward direction, and is
@@ -2039,7 +2511,7 @@ pub fn fillet_rolling_ball_with_origins(
         // Two fillet strips that share a face will have contact points on that face that
         // are at the same position (both offset R from the vertex along the face).
         // We deduplicate by face, giving exactly N unique contact points for N fillet edges.
-        // For 3+ edges these points form a polygon closed by an eighth-sphere triangle;
+        // For 3+ edges these points form a polygon closed by an analytic sphere cap;
         // for exactly 2 edges they form a four-sided patch that also picks up the
         // preserved point on the unfilleted edge (see the fillet_count == 2 branch).
         for (&vi, contacts) in &vertex_contacts {
@@ -2115,12 +2587,14 @@ pub fn fillet_rolling_ball_with_origins(
                 .unwrap_or(&[]);
             let is_concave = corner_is_concave(topo, vi, fillet_edges, normal_sum)?;
             let offset_sign = if is_concave { 1.0 } else { -1.0 };
-            let sphere_center = original_vertex.map(|v_pos| {
-                Point3::new(
-                    v_pos.x() + offset_sign * radius * normal_sum.x(),
-                    v_pos.y() + offset_sign * radius * normal_sum.y(),
-                    v_pos.z() + offset_sign * radius * normal_sum.z(),
-                )
+            let sphere_center = exact_corner_balls.get(&vi).copied().or_else(|| {
+                original_vertex.map(|v_pos| {
+                    Point3::new(
+                        v_pos.x() + offset_sign * radius * normal_sum.x(),
+                        v_pos.y() + offset_sign * radius * normal_sum.y(),
+                        v_pos.z() + offset_sign * radius * normal_sum.z(),
+                    )
+                })
             });
 
             let centroid = {
@@ -2276,24 +2750,17 @@ pub fn fillet_rolling_ball_with_origins(
 
             let ordered_points: Vec<Point3> = indexed_points.into_iter().map(|(_, p)| p).collect();
 
-            // Build a spherical cap NURBS patch instead of a flat triangle.
+            // Build an analytic spherical cap instead of a flat polygon.
             // The fillet sphere at a vertex corner is tangent to each adjacent
             // face.  Its center is the corner ball centre computed above: the
             // original vertex offset inward by R along each contact face's normal.
-            if ordered_points.len() == 3
-                && let Some(sphere_center) = sphere_center
-            {
-                // Exact corner ball: when the three contacts are equidistant from
-                // the centre (always the case for mutually orthogonal faces, i.e.
-                // every box-like corner), the cap lies on that sphere exactly, so
-                // emit it as an analytic sphere face. The boundary arcs are shared
-                // circles of the same sphere, so seams stay watertight and G1. The
-                // rational apex patch below stays only as the fallback for oblique
-                // corners: it sags several percent of R mid-patch and folds at its
-                // degenerate corner, which shades as a pinched blob on every
-                // filleted box corner.
-                if let Some(spec) =
-                    build_three_edge_sphere_cap(&ordered_points, sphere_center, is_concave)
+            if let Some(sphere_center) = sphere_center {
+                // Three-face legacy corners may still use the established
+                // equidistance qualification. Four or more faces require the
+                // explicit all-plane solve above; a normal-sum estimate can happen
+                // to be equidistant while carrying the wrong radius.
+                if (ordered_points.len() == 3 || exact_corner_balls.contains_key(&vi))
+                    && let Some(spec) = build_sphere_cap(&ordered_points, sphere_center, is_concave)
                 {
                     push_face_spec(
                         &mut all_specs,
@@ -2304,113 +2771,115 @@ pub fn fillet_rolling_ball_with_origins(
                     continue;
                 }
 
-                let p0 = ordered_points[0];
-                let p1 = ordered_points[1];
-                let p2 = ordered_points[2];
+                if ordered_points.len() == 3 {
+                    let p0 = ordered_points[0];
+                    let p1 = ordered_points[1];
+                    let p2 = ordered_points[2];
 
-                // Helper: compute the tangent-intersection control point and
-                // weight for a rational quadratic Bézier circular arc from a to b
-                // on the sphere.  The middle CP sits at distance r/cos(θ/2) from
-                // center (the tangent intersection), and the weight is cos(θ/2).
-                let arc_mid_and_weight = |a: Point3, b: Point3| -> Option<(Point3, f64)> {
-                    let va = (a - sphere_center).normalize().ok()?;
-                    let vb = (b - sphere_center).normalize().ok()?;
-                    let r_actual = (a - sphere_center).length();
-                    let sum = va + vb;
-                    let len = sum.length();
-                    if len < 1e-15 {
-                        return None;
+                    // Helper: compute the tangent-intersection control point and
+                    // weight for a rational quadratic Bézier circular arc from a to b
+                    // on the sphere.  The middle CP sits at distance r/cos(θ/2) from
+                    // center (the tangent intersection), and the weight is cos(θ/2).
+                    let arc_mid_and_weight = |a: Point3, b: Point3| -> Option<(Point3, f64)> {
+                        let va = (a - sphere_center).normalize().ok()?;
+                        let vb = (b - sphere_center).normalize().ok()?;
+                        let r_actual = (a - sphere_center).length();
+                        let sum = va + vb;
+                        let len = sum.length();
+                        if len < 1e-15 {
+                            return None;
+                        }
+                        let dir = Vec3::new(sum.x() / len, sum.y() / len, sum.z() / len);
+                        let cos_half = len / 2.0; // cos(θ/2) for unit vectors
+                        let r_ctrl = r_actual / cos_half;
+                        let cp = Point3::new(
+                            sphere_center.x() + dir.x() * r_ctrl,
+                            sphere_center.y() + dir.y() * r_ctrl,
+                            sphere_center.z() + dir.z() * r_ctrl,
+                        );
+                        Some((cp, cos_half))
+                    };
+
+                    // Compute per-edge arc midpoints and weights.
+                    if let (Some((m01, w01)), Some((m12, w12)), Some((m20, w20))) = (
+                        arc_mid_and_weight(p0, p1),
+                        arc_mid_and_weight(p1, p2),
+                        arc_mid_and_weight(p2, p0),
+                    ) {
+                        // Interior control point: a single degree-(2,2) rational
+                        // patch over a wide spherical triangle sags inward at its
+                        // centre if the interior control point sits on the sphere.
+                        // Place it instead at the intersection of the three corner
+                        // tangent planes (the apex of the tangent cone), pushed out
+                        // along the average radial direction.  For an orthogonal
+                        // (box) corner this lands at center + r·Σdir (overshoot √3),
+                        // and the rational blend then tracks the sphere within a few
+                        // percent of R — inside the corner-blend deviation budget.
+                        let r_actual = (p0 - sphere_center).length();
+                        let dir0 = (p0 - sphere_center) * (1.0 / r_actual);
+                        let dir1 = (p1 - sphere_center) * (1.0 / r_actual);
+                        let dir2 = (p2 - sphere_center) * (1.0 / r_actual);
+                        let radial_sum = dir0 + dir1 + dir2;
+                        let apex = Point3::new(
+                            sphere_center.x() + radial_sum.x() * r_actual,
+                            sphere_center.y() + radial_sum.y() * r_actual,
+                            sphere_center.z() + radial_sum.z() * r_actual,
+                        );
+
+                        // Apex weight: the product of the three edge weights yields
+                        // the rational triangle that hugs the sphere most closely.
+                        let w_apex = w01 * w12 * w20;
+
+                        // Degree (2,2) rational patch with a degenerate column.
+                        let cap_surface = NurbsSurface::new(
+                            2,
+                            2,
+                            vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+                            vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+                            vec![vec![p0, m20, p2], vec![m01, apex, p2], vec![p1, m12, p2]],
+                            vec![
+                                vec![1.0, w20, 1.0],
+                                vec![w01, w_apex, 1.0],
+                                vec![1.0, w12, 1.0],
+                            ],
+                        )
+                        .map_err(crate::OperationsError::Math)?;
+
+                        // The cap's outward normal must point away from the sphere
+                        // centre (for a convex corner) so the tessellated patch faces
+                        // outward.  Evaluating the natural normal at an interior
+                        // station and comparing against the radial direction gives a
+                        // robust reversal flag that is stored on the spec (so it is
+                        // not lost when assembly reorders/merges faces).
+                        let cap_mid = cap_surface.evaluate(0.5, 0.5);
+                        let radial = (cap_mid - sphere_center)
+                            .normalize()
+                            .unwrap_or(blend_normal);
+                        let outward = if is_concave { -radial } else { radial };
+                        let cap_norm = cap_surface.normal(0.5, 0.5).unwrap_or(outward);
+                        let cap_reversed = cap_norm.dot(outward) < 0.0;
+
+                        // This corner is geometrically a spherical triangle, but it is
+                        // NOT emitted as `FaceSurface::Sphere`: a sphere face bounded by
+                        // a triangular wire measures its own area over the wrong extent
+                        // (9.42 = 3pi per corner instead of the octant's pi/2), which
+                        // drops a filleted 10-cube from 975.59 to 973.70. Until sphere
+                        // faces carry a correct trimmed extent, the rational patch above
+                        // is the accurate representation even though it only tracks the
+                        // sphere to within a few percent.
+                        push_face_spec(
+                            &mut all_specs,
+                            &mut all_spec_origins,
+                            FaceSpec::Surface {
+                                vertices: ordered_points,
+                                surface: FaceSurface::Nurbs(cap_surface),
+                                reversed: cap_reversed,
+                                inner_wires: vec![],
+                            },
+                            corner_origin.clone(),
+                        );
+                        continue;
                     }
-                    let dir = Vec3::new(sum.x() / len, sum.y() / len, sum.z() / len);
-                    let cos_half = len / 2.0; // cos(θ/2) for unit vectors
-                    let r_ctrl = r_actual / cos_half;
-                    let cp = Point3::new(
-                        sphere_center.x() + dir.x() * r_ctrl,
-                        sphere_center.y() + dir.y() * r_ctrl,
-                        sphere_center.z() + dir.z() * r_ctrl,
-                    );
-                    Some((cp, cos_half))
-                };
-
-                // Compute per-edge arc midpoints and weights.
-                if let (Some((m01, w01)), Some((m12, w12)), Some((m20, w20))) = (
-                    arc_mid_and_weight(p0, p1),
-                    arc_mid_and_weight(p1, p2),
-                    arc_mid_and_weight(p2, p0),
-                ) {
-                    // Interior control point: a single degree-(2,2) rational
-                    // patch over a wide spherical triangle sags inward at its
-                    // centre if the interior control point sits on the sphere.
-                    // Place it instead at the intersection of the three corner
-                    // tangent planes (the apex of the tangent cone), pushed out
-                    // along the average radial direction.  For an orthogonal
-                    // (box) corner this lands at center + r·Σdir (overshoot √3),
-                    // and the rational blend then tracks the sphere within a few
-                    // percent of R — inside the corner-blend deviation budget.
-                    let r_actual = (p0 - sphere_center).length();
-                    let dir0 = (p0 - sphere_center) * (1.0 / r_actual);
-                    let dir1 = (p1 - sphere_center) * (1.0 / r_actual);
-                    let dir2 = (p2 - sphere_center) * (1.0 / r_actual);
-                    let radial_sum = dir0 + dir1 + dir2;
-                    let apex = Point3::new(
-                        sphere_center.x() + radial_sum.x() * r_actual,
-                        sphere_center.y() + radial_sum.y() * r_actual,
-                        sphere_center.z() + radial_sum.z() * r_actual,
-                    );
-
-                    // Apex weight: the product of the three edge weights yields
-                    // the rational triangle that hugs the sphere most closely.
-                    let w_apex = w01 * w12 * w20;
-
-                    // Degree (2,2) rational patch with a degenerate column.
-                    let cap_surface = NurbsSurface::new(
-                        2,
-                        2,
-                        vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
-                        vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
-                        vec![vec![p0, m20, p2], vec![m01, apex, p2], vec![p1, m12, p2]],
-                        vec![
-                            vec![1.0, w20, 1.0],
-                            vec![w01, w_apex, 1.0],
-                            vec![1.0, w12, 1.0],
-                        ],
-                    )
-                    .map_err(crate::OperationsError::Math)?;
-
-                    // The cap's outward normal must point away from the sphere
-                    // centre (for a convex corner) so the tessellated patch faces
-                    // outward.  Evaluating the natural normal at an interior
-                    // station and comparing against the radial direction gives a
-                    // robust reversal flag that is stored on the spec (so it is
-                    // not lost when assembly reorders/merges faces).
-                    let cap_mid = cap_surface.evaluate(0.5, 0.5);
-                    let radial = (cap_mid - sphere_center)
-                        .normalize()
-                        .unwrap_or(blend_normal);
-                    let outward = if is_concave { -radial } else { radial };
-                    let cap_norm = cap_surface.normal(0.5, 0.5).unwrap_or(outward);
-                    let cap_reversed = cap_norm.dot(outward) < 0.0;
-
-                    // This corner is geometrically a spherical triangle, but it is
-                    // NOT emitted as `FaceSurface::Sphere`: a sphere face bounded by
-                    // a triangular wire measures its own area over the wrong extent
-                    // (9.42 = 3pi per corner instead of the octant's pi/2), which
-                    // drops a filleted 10-cube from 975.59 to 973.70. Until sphere
-                    // faces carry a correct trimmed extent, the rational patch above
-                    // is the accurate representation even though it only tracks the
-                    // sphere to within a few percent.
-                    push_face_spec(
-                        &mut all_specs,
-                        &mut all_spec_origins,
-                        FaceSpec::Surface {
-                            vertices: ordered_points,
-                            surface: FaceSurface::Nurbs(cap_surface),
-                            reversed: cap_reversed,
-                            inner_wires: vec![],
-                        },
-                        corner_origin.clone(),
-                    );
-                    continue;
                 }
             }
 
@@ -2645,7 +3114,12 @@ pub fn fillet_rolling_ball_with_origins(
         // Phase 6: Assemble the solid using mixed-surface assembly.  Each fillet
         // strip and corner-patch spec already carries the `reversed` flag needed
         // for an outward-facing normal, so no post-assembly fix-up is required.
-        let assembly = crate::boolean::assemble_solid_mixed_with_history(topo, &all_specs, tol)?;
+        let assembly = crate::boolean::assemble_solid_mixed_with_history_and_curves(
+            topo,
+            &all_specs,
+            &analytic_boundary_curves,
+            tol,
+        )?;
         let solid_id = assembly.solid;
 
         // Merge co-surface faces that the fillet may have split. This keeps the
@@ -2759,11 +3233,11 @@ fn corner_is_concave(
 /// Build the corner patch where exactly two filleted edges meet at a vertex
 /// (sharing one face).
 ///
-/// Build the 3-edge vertex-blend cap as an exact spherical face.
+/// Build an N-way vertex-blend cap as one exact spherical face.
 ///
-/// The cap's three corners are the strip-end contact points; its boundary arcs
+/// The cap's corners are the strip-end contact points; its boundary arcs
 /// (minted by the adjacent `CylindricalFace` specs and shared through the
-/// assembly edge map) are circles of the corner ball. When all three contacts
+/// assembly edge map) are circles of the corner ball. When all contacts
 /// are equidistant from `sphere_center` the interior is exactly the ball
 /// surface, so the face carries `FaceSurface::Sphere` and tessellates with
 /// exact positions and normals.
@@ -2773,35 +3247,41 @@ fn corner_is_concave(
 /// the `u`-seam to its antipode, so UV projection of the boundary is
 /// continuous for any patch smaller than a hemisphere.
 ///
-/// Returns `None` when the contacts are not equidistant from `sphere_center`
+/// Returns `None` when fewer than three contacts are supplied or they are not equidistant from `sphere_center`
 /// (obliquely meeting faces — the offset centre is not a tangent-ball centre
 /// there) or the geometry is degenerate; the caller then falls back to the
 /// rational approximation.
-fn build_three_edge_sphere_cap(
+fn build_sphere_cap(
     points: &[Point3],
     sphere_center: Point3,
     is_concave: bool,
 ) -> Option<FaceSpec> {
-    let &[p0, p1, p2] = points else {
+    if points.len() < 3 {
         return Option::None;
-    };
+    }
 
-    let d0 = p0 - sphere_center;
-    let d1 = p1 - sphere_center;
-    let d2 = p2 - sphere_center;
-    let r0 = d0.length();
-    let r1 = d1.length();
-    let r2 = d2.length();
-    let r = (r0 + r1 + r2) / 3.0;
+    let directions: Vec<Vec3> = points.iter().map(|point| *point - sphere_center).collect();
+    let r = directions
+        .iter()
+        .map(|direction| direction.length())
+        .sum::<f64>()
+        / points.len() as f64;
     if r < 1e-12 {
         return Option::None;
     }
     let radius_tol = r * 1e-6;
-    if (r0 - r).abs() > radius_tol || (r1 - r).abs() > radius_tol || (r2 - r).abs() > radius_tol {
+    if directions
+        .iter()
+        .any(|direction| (direction.length() - r).abs() > radius_tol)
+    {
         return Option::None;
     }
 
-    let mean_dir = ((d0 + d1 + d2) * (1.0 / 3.0)).normalize().ok()?;
+    let mean = directions
+        .iter()
+        .copied()
+        .fold(Vec3::new(0.0, 0.0, 0.0), |sum, direction| sum + direction);
+    let mean_dir = mean.normalize().ok()?;
     // Any direction perpendicular to the patch centre serves as the polar
     // axis; Frame3 supplies one. The seam reference then points at the
     // antipode of the patch.
@@ -2892,7 +3372,7 @@ fn build_two_edge_corner_exact(
     } else {
         vec![near1, near2, far]
     };
-    let cap = build_three_edge_sphere_cap(&cap_points, sphere_center, is_concave)?;
+    let cap = build_sphere_cap(&cap_points, sphere_center, is_concave)?;
 
     // The ledge, wound counter-clockwise about its outward normal.
     let ledge_vertices = if (near1 - p).cross(near2 - p).dot(ledge_normal) >= 0.0 {

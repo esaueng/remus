@@ -3044,6 +3044,47 @@ mod tests {
     }
 
     #[test]
+    fn all_edge_box_vertex_blend_matches_direct_and_batch_wasm_routes() {
+        let run = |batch_route: bool| {
+            let mut kernel = BrepKernel::new();
+            let solid = kernel.make_box_solid(12.0, 10.0, 8.0).unwrap();
+            let edges = kernel.get_solid_edges(solid).unwrap();
+            assert_eq!(edges.len(), 12);
+            let result = if batch_route {
+                let response = dispatch(
+                    &mut kernel,
+                    "filletV2",
+                    serde_json::json!({ "solid": solid, "edges": edges, "radius": 0.5 }),
+                );
+                batch_solid_handle(&response, "batch all-edge box fillet")
+            } else {
+                kernel.fillet_v2(solid, edges, 0.5).unwrap()
+            };
+            assert_batch_solid_geometry(&kernel, result, "all-edge box fillet");
+            let result_id = kernel.resolve_solid(result).unwrap();
+            let faces = remus_topology::explorer::solid_faces(kernel.topo(), result_id).unwrap();
+            assert_eq!(
+                faces
+                    .iter()
+                    .filter(|&&face| matches!(
+                        kernel.topo().face(face).unwrap().surface(),
+                        FaceSurface::Sphere(_)
+                    ))
+                    .count(),
+                8
+            );
+            remus_operations::measure::solid_volume(kernel.topo(), result_id, 0.01).unwrap()
+        };
+
+        let direct_volume = run(false);
+        let batch_volume = run(true);
+        assert!(
+            (direct_volume - batch_volume).abs() / direct_volume < 1.0e-9,
+            "direct and batch paths diverged: {direct_volume} vs {batch_volume}"
+        );
+    }
+
+    #[test]
     fn resize_blend_bindings_preserve_v1_evolution_contract() {
         let mut kernel = BrepKernel::new();
         let sharp = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();

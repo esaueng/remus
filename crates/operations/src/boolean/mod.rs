@@ -7,7 +7,10 @@
 pub mod assembly;
 mod classify;
 mod types;
-pub(crate) use assembly::{assemble_solid_mixed, assemble_solid_mixed_with_history};
+pub(crate) use assembly::{
+    BoundaryCurveOverride, assemble_solid_mixed, assemble_solid_mixed_with_history,
+    assemble_solid_mixed_with_history_and_curves,
+};
 use assembly::{validate_boolean_result, validate_boolean_result_with_tolerance};
 pub use remus_algo::gfa::{EdgeEvent, EntityEvolution, VertexEvent};
 pub use types::{BooleanOp, BooleanOptions, FaceSpec};

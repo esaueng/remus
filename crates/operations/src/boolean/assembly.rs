@@ -84,6 +84,7 @@ pub(crate) fn ccw_arc_trim(
 fn cylindrical_boundary_spans(
     cylinder: &remus_math::surfaces::CylindricalSurface,
     verts: &[Point3],
+    boundary_curves: &[BoundaryCurveOverride],
     tol: Tolerance,
 ) -> Result<Vec<Option<f64>>, crate::OperationsError> {
     let params: Vec<_> = verts
@@ -101,7 +102,13 @@ fn cylindrical_boundary_spans(
         }
         let chord = 2.0 * cylinder.radius() * (0.5 * du.abs()).sin();
         let v_diff = (params[j].1 - params[i].1).abs();
-        if chord > tol.linear && v_diff <= tol.linear {
+        let has_override = boundary_curves.iter().any(|candidate| {
+            ((candidate.start - verts[i]).length() <= tol.linear
+                && (candidate.end - verts[j]).length() <= tol.linear)
+                || ((candidate.start - verts[j]).length() <= tol.linear
+                    && (candidate.end - verts[i]).length() <= tol.linear)
+        });
+        if chord > tol.linear && (v_diff <= tol.linear || has_override) {
             short.push(Some(du));
         } else if chord <= tol.linear {
             // Axial edges have a non-zero v span. Consecutive duplicate
@@ -452,6 +459,16 @@ pub(crate) struct MixedAssemblyResult {
     pub(crate) faces_by_spec: Vec<Option<FaceId>>,
 }
 
+/// Analytic geometry for a positional face-spec boundary that would otherwise
+/// be assembled as a straight chord. The endpoints are undirected for sharing;
+/// `start`/`end` and `trim` define the stored curve orientation.
+pub(crate) struct BoundaryCurveOverride {
+    pub(crate) start: Point3,
+    pub(crate) end: Point3,
+    pub(crate) curve: EdgeCurve,
+    pub(crate) trim: (f64, f64),
+}
+
 /// Assemble a solid from a set of face specifications with mixed surface types.
 ///
 /// Like [`assemble_solid`], but supports faces with NURBS, analytic, or any
@@ -474,6 +491,18 @@ pub(crate) fn assemble_solid_mixed(
 pub(crate) fn assemble_solid_mixed_with_history(
     topo: &mut Topology,
     face_specs: &[FaceSpec],
+    tol: Tolerance,
+) -> Result<MixedAssemblyResult, crate::OperationsError> {
+    assemble_solid_mixed_with_history_and_curves(topo, face_specs, &[], tol)
+}
+
+/// [`assemble_solid_mixed_with_history`] with analytic overrides for selected
+/// positional boundaries.
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) fn assemble_solid_mixed_with_history_and_curves(
+    topo: &mut Topology,
+    face_specs: &[FaceSpec],
+    boundary_curves: &[BoundaryCurveOverride],
     tol: Tolerance,
 ) -> Result<MixedAssemblyResult, crate::OperationsError> {
     // Pre-allocate topology arenas based on expected output size.
@@ -700,7 +729,8 @@ pub(crate) fn assemble_solid_mixed_with_history(
                 // The positive UV wire winding selects the minor or major
                 // periodic branch for every constant-v boundary. Face
                 // reversal changes only the effective normal, not this wire.
-                let boundary_spans = cylindrical_boundary_spans(cylinder, verts, tol)?;
+                let boundary_spans =
+                    cylindrical_boundary_spans(cylinder, verts, boundary_curves, tol)?;
 
                 let vert_ids: Vec<VertexId> = verts
                     .iter()
@@ -731,8 +761,26 @@ pub(crate) fn assemble_solid_mixed_with_history(
                     } else {
                         let start = vert_ids[i];
                         let end = vert_ids[j];
+                        let override_curve = boundary_curves.iter().find(|candidate| {
+                            ((candidate.start - verts[i]).length() <= tol.linear
+                                && (candidate.end - verts[j]).length() <= tol.linear)
+                                || ((candidate.start - verts[j]).length() <= tol.linear
+                                    && (candidate.end - verts[i]).length() <= tol.linear)
+                        });
 
-                        let minted = if let Some(du) = boundary_spans[i] {
+                        let minted = if let Some(candidate) = override_curve {
+                            let forward = (candidate.start - verts[i]).length() <= tol.linear;
+                            let (curve_start, curve_end) =
+                                if forward { (start, end) } else { (end, start) };
+                            let mut edge = Edge::with_tolerance(
+                                curve_start,
+                                curve_end,
+                                candidate.curve.clone(),
+                                None,
+                            );
+                            edge.set_trim(Some(candidate.trim));
+                            topo.add_edge(edge)
+                        } else if let Some(du) = boundary_spans[i] {
                             let (_, v1) = cylinder.project_point(verts[i]);
                             let (_, v2) = cylinder.project_point(verts[j]);
                             // A stored Circle arc runs CCW start→end around its
