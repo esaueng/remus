@@ -301,6 +301,15 @@ reviewable stages:
    operator census and parity matrix, and reconcile the capability/stability
    ledgers without weakening typed refusal or fallback disclosure.
 
+Stage 2.4b is in review in PR #207. The torus-notch arrangement emits both
+complementary annular `u`-bands with distinct interior witnesses and
+winding-correct outer/inner roles. Operator-neutral classification retains the
+long band for Cut and the short band for Intersect. The latter is a five-face
+analytic result (one torus and four planes), passes strict shell validation,
+and matches an independently co-refined mesh-volume oracle within 1%. Native
+and batch/WASM exact-only paths pin the same result, and the census row moves
+from 312 planar fallback faces to five analytic faces.
+
 > **Exit gate:** together with Issue 2.3, the three measured census fallback
 > rows become true B-Rep results with analytic faces preserved and volumes
 > verified against independent or mesh oracles within their stated bounds.
