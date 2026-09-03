@@ -62,9 +62,13 @@ These families are classified across the full grid:
   primitive-volume parity. PR #217 qualifies a transversal planar solid×solid
   imprint cell: every target patch survives in a validated solid with exact
   volume, construction-derived split history, persistent-reference rebinding,
-  and native/direct/batch parity. Curved and same-domain imprint, multi-face
-  and other surface sheet cells, broader scale/type matrices, wire, and
-  general-body cells remain Unqualified.
+  and native/direct/batch parity. PR #218 qualifies the two-solid planar
+  cellular-output cells: a severing cut returns two independently valid
+  400-volume regions and a disjoint fuse returns two exact regions, both as a
+  deterministic Compound with total per-member construction lineage and
+  direct/batch WASM parity. Curved and same-domain imprint, Compound operands,
+  multi-face and other surface sheet cells, broader scale/type matrices, wire,
+  and general-body cells remain Unqualified.
 - **Scale** — at least three model scales relative to the configured
   tolerance (e.g. 1e-3, 1, 1e3 in the kernel's millimetre convention), with
   the tolerance scaled correspondingly.
@@ -131,15 +135,18 @@ does not itself promote or demote anything.
   retains four spherical faces, matches the independent spherical-lens and
   inclusion–exclusion volumes, classifies material probes, and tessellates
   closed and manifold across three deflections, including an oblique-center
-  witness. The CI-ratcheted
+  witness. The additive exact cellular boolean path also preserves a severing
+  planar cut as two valid 400-volume Compound members and disjoint planar fuse
+  operands as two exact members, with deterministic per-region construction
+  lineage and native/direct/batch WASM parity. The CI-ratcheted
   `approx_census` additionally exposes exact/fallback/error path and result
   face-count drift across its representative operation matrix; it is a drift
   detector, not by itself qualification evidence for a cell.
 - Known Unsupported-untyped / Partial cells: exact plane/cylinder tangency is
   not generally qualified beyond those witnesses; sliver crossings (~1e-5 to
   0.05 mm on r = 10) fall over to approximate; general torus pairs limited;
-  seam-crossing, nested-shell, sheet-solid, and multi-body General Fuse cells
-  Unqualified.
+  seam-crossing, nested-shell, sheet-solid, Compound-as-operand, and broader
+  multi-body General Fuse cells Unqualified.
 
 ### Intersections (curve-curve, curve-surface, surface-surface)
 
@@ -383,6 +390,9 @@ does not itself promote or demote anything.
   exceptions. RFC 0003 is fully surfaced.
   **Evolution surfacing**: `operations::boolean::boolean_with_entity_evolution`
   (L3 surface of the Issue-12 entry point, re-exported event types);
+  `operations::boolean::boolean_regions` returns the same construction record
+  partitioned per independently valid Compound member and refuses any
+  `Unresolved` edge;
   one-call journaled wrappers `journal_ops::{fillet_journaled,
   chamfer_journaled, linear_pattern_journaled}` — the journal is now
   populated by every construction-evolution producer (booleans, v2

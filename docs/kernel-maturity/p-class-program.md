@@ -498,6 +498,10 @@ review, including the trim-plus-sew exit witness; curved and multi-face sheet
 pairs remain unqualified.
 Issue 4.5's planar solid×solid imprint is implemented in review with exact
 construction lineage; curved and same-domain imprint cells remain unqualified.
+Issue 4.6's first cellular boolean tranche is implemented in review: exact
+two-solid operations can now return independently validated regions in a
+Compound with per-region construction lineage. Compound operands and removal
+of the legacy multi-region-solid compatibility paths remain open.
 
 ### 4.2 Sheet bodies first-class (M)
 
@@ -611,6 +615,19 @@ Retire the `TODO`: when a boolean genuinely produces multiple disjoint
 regions, return them as a Compound with per-region provenance instead of the
 current single-solid convention. Also closes the "Fuse/Intersect over
 disjoint multi-component inputs are left to mesh" note.
+
+Partial, in review in [PR #218](https://github.com/esaueng/remus/pull/218):
+the BuilderSolid final phase now produces one `Solid` per disconnected growth
+shell, assigns closed cavity shells deterministically to the smallest
+containing region, and keeps the old single-solid result only through an
+explicit compatibility fold. The exact-only transactional `boolean_regions`
+API returns those solids in a Compound with total construction-derived
+face/edge/vertex evolution per member and rejects incomplete lineage. A
+10×10×10 box severed by a through-slab returns two valid 400-volume solids;
+disjoint boxes fuse as two exact regions, deterministically, through native
+and direct/batch WASM paths. Compound-as-operand fuse/cut/intersect and removal
+of the legacy shell-recombination helpers remain Issue 4.6b, so the issue is
+not yet complete.
 
 > **Exit gate:** a cut that severs a body returns two valid solids with
 > correct volumes and complete evolution; disjoint-operand fuse no longer

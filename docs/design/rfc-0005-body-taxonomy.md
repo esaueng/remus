@@ -323,6 +323,19 @@ falls back; tests pin both paths, and flip to two valid solids. Exit gate
 (Issue 4.6): a cut that severs a body returns two valid solids with
 correct volumes and complete evolution; disjoint-operand fuse is exact.
 
+Implementation: PR #218 delivers the first Stage 6 tranche. BuilderSolid's
+primary final phase returns one `Solid` per growth shell in deterministic
+largest-volume-first order and assigns each closed hole shell to the smallest
+containing region; equal-sized ambiguity fails closed. The old `SolidId`
+surface is preserved by an explicit compatibility fold. The additive exact
+`boolean_regions` L3 API returns a Compound with total, non-unresolved
+construction evolution for each member; direct and batch WASM expose the same
+`booleanRegions` contract. The severing-box cut returns two valid 400-volume
+members and disjoint fuse returns exact 10- and 24-volume members. Compound
+operands, migration of the legacy `cut_multi_region_input`/fuse folding
+helpers, and their recursive provenance composition remain Stage 6 follow-up
+work rather than being implied by this bounded two-solid tranche.
+
 ### Stage 7 — wire bodies (deferrable)
 
 Files: `crates/topology/src/topology.rs`, `measure/edge_length.rs`,
