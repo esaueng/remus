@@ -468,8 +468,7 @@ fn op_derive(topo: &mut Topology, solid: SolidId, pick: u8) {
         );
     }
     let retired_loop_slots: BTreeSet<usize> = prior_loops.iter().map(|id| id.index()).collect();
-    let retired_coedge_slots: BTreeSet<usize> =
-        prior_coedges.iter().map(|id| id.index()).collect();
+    let retired_coedge_slots: BTreeSet<usize> = prior_coedges.iter().map(|id| id.index()).collect();
     for &loop_id in &new_loops {
         assert!(
             !retired_loop_slots.contains(&loop_id.index()),
