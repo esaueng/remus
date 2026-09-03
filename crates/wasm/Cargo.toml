@@ -12,6 +12,9 @@ version = "2.130.0"
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ["-Oz", "--enable-simd"]
+
 [features]
 default = ["io"]
 io = ["dep:remus-io"]
