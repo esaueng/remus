@@ -40,12 +40,6 @@ pub const VOL_SLACK: f64 = 1e-2;
 /// Absolute floor, so near-zero volumes do not divide the relative test.
 pub const VOL_FLOOR: f64 = 1e-6;
 
-/// Relative resolution below which two volume readings of the same body at the
-/// same deflection count as the same reading (`f64` carries ~1e-16; the
-/// tessellated sum accumulates a few orders more). See
-/// [`assert_option_honoured`].
-pub const OPTION_FLOOR: f64 = 1e-12;
-
 /// Topological census of a solid, cheap enough to run at every tree node.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Census {
@@ -818,27 +812,43 @@ pub fn assert_complete(what: &str, requested: usize, succeeded: usize, is_partia
 /// implementation that ignores the option produces the same solid twice and is
 /// caught; one that honours it cannot fail this.
 ///
+/// What is compared is the volume each setting *changed*, `before - after`,
+/// not the resulting volumes themselves. A fillet of r = 0.05 on a unit box
+/// edge removes ~5e-4; the same body fused with a disjoint torus of volume
+/// ~800 does not make that fillet any less real, but it did push the
+/// result-to-result difference under a body-relative floor and raised a false
+/// alarm. Scaling by the change keeps the judgement local to the option.
+///
 /// Both operations *refusing* is a pass, and so is one refusing where the other
 /// did not — that is the option changing the outcome.
 ///
 /// # Panics
 ///
-/// Panics when two different requests produced indistinguishable results.
-pub fn assert_option_honoured(what: &str, setting_a: &str, setting_b: &str, va: f64, vb: f64) {
-    if !va.is_finite() || !vb.is_finite() {
+/// Panics when two different requests produced indistinguishable results:
+/// neither setting changed the volume, or both changed it by the same amount.
+pub fn assert_option_honoured(
+    what: &str,
+    setting_a: &str,
+    setting_b: &str,
+    before: f64,
+    va: f64,
+    vb: f64,
+) {
+    if !before.is_finite() || !va.is_finite() || !vb.is_finite() {
         return;
     }
-    // "Indistinguishable" means the two measurements agree to floating-point
-    // rounding, not to some fraction of the body. A 0.05 fillet on one edge of
-    // a 1-unit box fused to an 800 u³ torus moves 4e-4 (5e-7 of the body) and
-    // is a fully honoured request; a coarser relative band (VOL_FLOOR was used
-    // here once) reads it as ignored. Both volumes come from the same
-    // deterministic tessellator at the same deflection, so an ignored option
-    // reproduces the volume bit-for-bit and this floor still catches it.
-    let scale = va.abs().max(vb.abs()).max(VOL_FLOOR);
+    let da = before - va;
+    let db = before - vb;
+    let scale = da.abs().max(db.abs());
     assert!(
-        (va - vb).abs() / scale > OPTION_FLOOR,
-        "{what}: {setting_a} and {setting_b} are different requests but produced \
-         volumes {va:.12} and {vb:.12}. The option was accepted and then ignored.",
+        scale > VOL_FLOOR,
+        "{what}: {setting_a} and {setting_b} both left the volume at {before:.9} \
+         (changes {da:.3e} and {db:.3e}). The option was accepted and then ignored.",
+    );
+    assert!(
+        (da - db).abs() / scale > VOL_SLACK,
+        "{what}: {setting_a} and {setting_b} are different requests but both \
+         changed the volume by {da:.3e} (before {before:.9}, after {va:.9} and \
+         {vb:.9}). The option was accepted and then ignored.",
     );
 }

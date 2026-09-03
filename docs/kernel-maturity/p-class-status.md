@@ -20,7 +20,7 @@ Issue 2.0's measured baseline is
 | 2.1 Honest-failure hygiene | Merged — unsupported phase-FF pairs and every pcurve UV-projection fallback fail with pinned diagnostics instead of substituting empty sections, zero UV, or a NURBS midpoint | [#129](https://github.com/esaueng/remus/pull/129) + [#194](https://github.com/esaueng/remus/pull/194) |
 | 2.2 Sphere in general position | Merged — transversal equal-radius sphere×sphere fuse, cut, and intersect retain analytic sphere patches and pass closed-form volume, classification, manifold-mesh, and WASM exact-path gates | [#199](https://github.com/esaueng/remus/pull/199) |
 | 2.3 Steinmetz ellipses | In review — perpendicular equal-radius cylinder×cylinder intersection retains six analytic cylinder patches on eight authoritative ellipse arcs, matches `16/3·r³`, and passes native, manifold-mesh, census, and WASM exact-only gates | [#205](https://github.com/esaueng/remus/pull/205) |
-| 2.4 Quadric × quadric transversal | Pending | — |
+| 2.4 Quadric × quadric transversal | In review — staged independently: 2.4a emits every bounded sphere seam-arrangement cell for exact box ∪ sphere; 2.4b emits and tessellates the complementary torus-notch band for exact torus ∩ box; general quartic seams and integration remain | [#206](https://github.com/esaueng/remus/pull/206) + [#207](https://github.com/esaueng/remus/pull/207) |
 | 2.5 NURBS × NURBS booleans | Pending | — |
 | 2.6 Scale-relative band audit | Pending | — |
 | 2.7 Tangency and sliver contacts | Pending | — |
