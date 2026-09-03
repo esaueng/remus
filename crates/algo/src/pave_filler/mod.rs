@@ -114,7 +114,7 @@ impl<'a> PaveFiller<'a> {
         // `edge_pave_blocks` is fixed at init — so the pave-vertex coincidence
         // index is stable for the remaining phases. Build it once here instead
         // of linear-scanning every pave block per intersection endpoint.
-        arena.build_pave_vertex_index(self.topo, tol.linear);
+        arena.build_pave_vertex_index(self.topo, tol.linear)?;
         self.context.check_cancelled()?;
         phase_ve::perform(self.topo, self.solid_a, self.solid_b, tol, arena)?;
         self.context.check_cancelled()?;
@@ -306,7 +306,7 @@ pub fn run_pave_filler_n_with_context(
     // pave blocks are fixed at init, so the coincidence index is stable for the
     // remaining phases — build it once, after every pair's VV (mirrors the
     // two-solid `PaveFiller::perform`).
-    arena.build_pave_vertex_index(topo, tol.linear);
+    arena.build_pave_vertex_index(topo, tol.linear)?;
     for &(i, j) in &pairs {
         context.check_cancelled()?;
         phase_ve::perform(topo, sources[i], sources[j], tol, arena)?;
