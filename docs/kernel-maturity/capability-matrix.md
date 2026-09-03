@@ -128,9 +128,12 @@ does not itself promote or demote anything.
   detector, not by itself qualification evidence for a cell.
 - Known Unsupported-untyped / Partial cells: exact plane/cylinder tangency is
   not generally qualified beyond those witnesses; sliver crossings (~1e-5 to
-  0.05 mm on r = 10) fall over to approximate; general torus pairs limited;
+  0.05 mm on r = 10) fall over to approximate. The torus/box notch family is
+  exact for Cut and Intersect: the complement result retains one torus and
+  four planes, validates without errors, and matches a mesh-volume oracle
+  within 1% through native and WASM exact-only paths. General torus pairs,
   seam-crossing, nested-shell, sheet-solid, and multi-body General Fuse cells
-  Unqualified.
+  remain Unqualified.
 
 ### Intersections (curve-curve, curve-surface, surface-surface)
 
@@ -458,6 +461,12 @@ claim, and they are the first implementation targets of the program:
    Generated-topology/memory budgets,
    parameter-space tolerance, determinism policy, and non-boolean operation
    families remain local or unmigrated.
+5. **Per-entity tolerance is predicate-partial, not yet result-qualified.**
+   Vertex balls and edge tubes are validated, serialized, journal-recordable,
+   and consumed by VV/VE/EE pave predicates plus SameParameter/SameRange
+   validation. FF/EF acceptance, result-tolerance growth, builder assembly,
+   import/sew integration, and downstream statistics remain open in P3.4–3.6;
+   imperfect-body booleans therefore remain unqualified.
 
 ## Maintenance rules
 
