@@ -395,6 +395,7 @@ fn pyramid_pileup<const N: usize>(name: &str) -> Observed {
     let apex = Point3::new(0.0, 0.0, 9.0);
     points.push(apex);
     let input = make_convex_hull(&mut topo, &points).unwrap();
+    remus_operations::heal::unify_faces(&mut topo, input).unwrap();
     let edges: Vec<_> = solid_edges(&topo, input)
         .unwrap()
         .into_iter()
@@ -741,12 +742,12 @@ const CASES: &[TortureCase] = &[
     },
     TortureCase {
         name: "four-edge-vertex-pileup",
-        expected: Expected::TypedRefusal("unsupported-vertex-blend"),
+        expected: Expected::Built,
         run: four_edge_pileup,
     },
     TortureCase {
         name: "five-edge-vertex-pileup",
-        expected: Expected::TypedRefusal("unsupported-vertex-blend"),
+        expected: Expected::Built,
         run: five_edge_pileup,
     },
     TortureCase {

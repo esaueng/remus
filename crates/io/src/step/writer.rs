@@ -12,12 +12,15 @@ use remus_math::vec::{Point2, Point3, Vec2, Vec3};
 use remus_topology::Topology;
 use remus_topology::coedge::CoedgeId;
 use remus_topology::edge::{EdgeCurve, EdgeId};
-use remus_topology::explorer::{solid_edges, solid_faces, solid_vertices};
+use remus_topology::explorer::{
+    face_edges, face_vertices, solid_edges, solid_faces, solid_vertices,
+};
 use remus_topology::face::{FaceId, FaceSurface};
 use remus_topology::face_loop::LoopId;
 use remus_topology::pcurve::PCurve;
 use remus_topology::solid::SolidId;
 use remus_topology::vertex::VertexId;
+use remus_topology::{BodyClass, BodyId};
 
 use super::reader::{
     StepValidationProperties, aggregate_validation_properties, compute_validation_properties,
@@ -85,9 +88,63 @@ pub fn write_step_with_options(
     solids: &[SolidId],
     options: &StepWriteOptions,
 ) -> Result<String, IoError> {
-    if solids.is_empty() {
+    write_step_bodies_with_options(topo, solids, &[], options)
+}
+
+/// Write first-class sheet bodies to STEP as shell-based surface models.
+///
+/// # Errors
+///
+/// Returns an error if `sheets` is empty, a handle is not tagged as a sheet,
+/// topology lookup fails, or an unsupported geometry type is encountered.
+pub fn write_step_sheets(
+    topo: &Topology,
+    sheets: &[remus_topology::shell::ShellId],
+) -> Result<String, IoError> {
+    write_step_bodies(topo, &[], sheets)
+}
+
+/// Write solid and sheet body roots into one STEP file.
+///
+/// # Errors
+///
+/// Returns an error if both root lists are empty, a sheet handle has the wrong
+/// body class, topology lookup fails, or an unsupported geometry type is
+/// encountered.
+pub fn write_step_bodies(
+    topo: &Topology,
+    solids: &[SolidId],
+    sheets: &[remus_topology::shell::ShellId],
+) -> Result<String, IoError> {
+    write_step_bodies_with_options(topo, solids, sheets, &StepWriteOptions::default())
+}
+
+/// Write solid and sheet body roots with caller-supplied metadata.
+///
+/// CAx-IF validation properties currently describe solid volume and are
+/// refused for documents containing sheets rather than being emitted with
+/// misleading non-solid semantics.
+///
+/// # Errors
+///
+/// Returns an error if both root lists are empty, a sheet handle has the wrong
+/// body class, validation properties are requested for a sheet document,
+/// topology lookup fails, or an unsupported geometry type is encountered.
+#[allow(clippy::too_many_lines)]
+pub fn write_step_bodies_with_options(
+    topo: &Topology,
+    solids: &[SolidId],
+    sheets: &[remus_topology::shell::ShellId],
+    options: &StepWriteOptions,
+) -> Result<String, IoError> {
+    if solids.is_empty() && sheets.is_empty() {
         return Err(IoError::InvalidTopology {
-            reason: "no solids to export".to_string(),
+            reason: "no bodies to export".to_string(),
+        });
+    }
+    if options.validation_properties && !sheets.is_empty() {
+        return Err(IoError::InvalidTopology {
+            reason: "STEP validation properties are not defined for sheet bodies".to_string(),
         });
     }
 
@@ -117,13 +174,49 @@ pub fn write_step_with_options(
             }
         }
     }
+    for &sheet_id in sheets {
+        let actual = topo.body_class_of(BodyId::Shell(sheet_id))?;
+        if actual != BodyClass::Sheet {
+            return Err(remus_topology::TopologyError::BodyClassMismatch {
+                entity: "STEP sheet root",
+                expected: BodyClass::Sheet.as_str(),
+                actual: actual.as_str(),
+            }
+            .into());
+        }
+        for &face_id in topo.shell(sheet_id)?.faces() {
+            for vertex_id in face_vertices(topo, face_id)? {
+                let vertex_tolerance = topo.vertex(vertex_id)?.tolerance();
+                if !vertex_tolerance.is_finite() || vertex_tolerance < 0.0 {
+                    return Err(IoError::InvalidTopology {
+                        reason: format!(
+                            "exported vertex {vertex_id:?} has invalid tolerance {vertex_tolerance}"
+                        ),
+                    });
+                }
+                uncertainty = uncertainty.max(vertex_tolerance);
+            }
+            for edge_id in face_edges(topo, face_id)? {
+                if let Some(edge_tolerance) = topo.edge(edge_id)?.tolerance() {
+                    if !edge_tolerance.is_finite() || edge_tolerance < 0.0 {
+                        return Err(IoError::InvalidTopology {
+                            reason: format!(
+                                "exported edge {edge_id:?} has invalid tolerance {edge_tolerance}"
+                            ),
+                        });
+                    }
+                    uncertainty = uncertainty.max(edge_tolerance);
+                }
+            }
+        }
+    }
 
     let mut ctx = StepWriteContext::new(options.clone());
 
     let geometric_context =
         ctx.write_geometric_context(uncertainty, options.validation_properties)?;
     let product_ids = ctx.write_product_structure();
-    ctx.prepare_boundary_authority(topo, solids)?;
+    ctx.prepare_boundary_authority(topo, solids, sheets)?;
 
     let mut brep_ids = Vec::new();
     let mut validation_values = Vec::new();
@@ -135,11 +228,25 @@ pub fn write_step_with_options(
         }
     }
 
-    let items: Vec<String> = brep_ids.iter().map(|id| format!("#{id}")).collect();
+    let mut sheet_model_ids = Vec::with_capacity(sheets.len());
+    for &sheet_id in sheets {
+        sheet_model_ids.push(ctx.write_sheet(topo, sheet_id)?);
+    }
+
+    let items: Vec<String> = brep_ids
+        .iter()
+        .chain(&sheet_model_ids)
+        .map(|id| format!("#{id}"))
+        .collect();
     let shape_repr_id = ctx.next_id();
+    let representation_type = if sheets.is_empty() {
+        "ADVANCED_BREP_SHAPE_REPRESENTATION"
+    } else {
+        "SHAPE_REPRESENTATION"
+    };
     ctx.write_entity(
         shape_repr_id,
-        "ADVANCED_BREP_SHAPE_REPRESENTATION",
+        representation_type,
         &format!(
             "'remus export', ({}), #{})",
             items.join(", "),
@@ -598,11 +705,19 @@ impl StepWriteContext {
         &mut self,
         topo: &Topology,
         solids: &[SolidId],
+        sheets: &[remus_topology::shell::ShellId],
     ) -> Result<(), IoError> {
         let mut faces = Vec::new();
         let mut seen_faces = HashSet::new();
         for &solid in solids {
             for face in solid_faces(topo, solid)? {
+                if seen_faces.insert(face) {
+                    faces.push(face);
+                }
+            }
+        }
+        for &sheet in sheets {
+            for &face in topo.shell(sheet).map_err(topo_err)?.faces() {
                 if seen_faces.insert(face) {
                     faces.push(face);
                 }
@@ -1392,11 +1507,53 @@ impl StepWriteContext {
         Ok(brep)
     }
 
+    /// Write one first-class sheet root as a shell-based surface model.
+    fn write_sheet(
+        &mut self,
+        topo: &Topology,
+        sheet_id: remus_topology::shell::ShellId,
+    ) -> Result<u64, IoError> {
+        let actual = topo.body_class_of(BodyId::Shell(sheet_id))?;
+        if actual != BodyClass::Sheet {
+            return Err(remus_topology::TopologyError::BodyClassMismatch {
+                entity: "STEP sheet root",
+                expected: BodyClass::Sheet.as_str(),
+                actual: actual.as_str(),
+            }
+            .into());
+        }
+        let shell = topo.shell(sheet_id)?;
+        remus_topology::validation::validate_shell_manifold(shell, topo)?;
+        let shell_type = if remus_topology::validation::validate_shell_closed(shell, topo).is_ok() {
+            "CLOSED_SHELL"
+        } else {
+            "OPEN_SHELL"
+        };
+        let shell_ref = self.write_shell_as(topo, sheet_id, false, shell_type)?;
+        let model = self.next_id();
+        self.write_entity(
+            model,
+            "SHELL_BASED_SURFACE_MODEL",
+            &format!("'', (#{shell_ref}))"),
+        );
+        Ok(model)
+    }
+
     fn write_shell(
         &mut self,
         topo: &Topology,
         shell_id: remus_topology::shell::ShellId,
         flip: bool,
+    ) -> Result<u64, IoError> {
+        self.write_shell_as(topo, shell_id, flip, "CLOSED_SHELL")
+    }
+
+    fn write_shell_as(
+        &mut self,
+        topo: &Topology,
+        shell_id: remus_topology::shell::ShellId,
+        flip: bool,
+        shell_type: &'static str,
     ) -> Result<u64, IoError> {
         let shell = topo.shell(shell_id).map_err(topo_err)?;
         let mut face_step_ids = Vec::new();
@@ -1407,14 +1564,14 @@ impl StepWriteContext {
         }
 
         let refs: Vec<String> = face_step_ids.iter().map(|id| format!("#{id}")).collect();
-        let closed_shell = self.next_id();
+        let shell_entity = self.next_id();
         self.write_entity(
-            closed_shell,
-            "CLOSED_SHELL",
+            shell_entity,
+            shell_type,
             &format!("'', ({}))", refs.join(", ")),
         );
 
-        Ok(closed_shell)
+        Ok(shell_entity)
     }
 
     fn finish(self) -> String {

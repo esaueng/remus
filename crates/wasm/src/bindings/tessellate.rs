@@ -76,6 +76,28 @@ impl BrepKernel {
         Ok(merged.into())
     }
 
+    /// Tessellate a first-class sheet body into an open triangle mesh.
+    ///
+    /// Free boundary edges are expected and remain present in the result.
+    #[wasm_bindgen(js_name = "tessellateSheet")]
+    pub fn tessellate_sheet(
+        &self,
+        sheet: u32,
+        deflection: f64,
+        angular_tolerance: Option<f64>,
+    ) -> Result<JsMesh, JsError> {
+        validate_positive(deflection, "deflection")?;
+        let angular_tol = resolve_angular_tol(angular_tolerance)?;
+        let sheet_id = self.resolve_shell(sheet)?;
+        let mesh = tessellate::tessellate_body_with_tolerance(
+            &self.topo,
+            remus_topology::BodyId::Shell(sheet_id),
+            deflection,
+            angular_tol,
+        )?;
+        Ok(mesh.into())
+    }
+
     /// Tessellate a solid with per-face triangle grouping.
     ///
     /// Returns a JSON string containing `{ positions, normals, indices, faceOffsets }`.

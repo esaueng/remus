@@ -3,9 +3,9 @@
 //! Spherical triangle corner patches for vertex blends.
 //!
 //! At vertices where 3+ fillet stripes meet, a gap appears that needs
-//! filling with a smooth surface patch. This module builds exact rational
-//! NURBS patches bounded by great-circle arcs on the rolling-ball sphere,
-//! producing watertight corners with no overlap by construction.
+//! filling with a smooth surface patch. This module builds exact analytic
+//! sphere patches bounded by rational great-circle arcs, producing watertight
+//! corners with no overlap by construction.
 
 use remus_math::nurbs::curve::NurbsCurve;
 use remus_math::vec::{Point3, Vec3};
@@ -45,6 +45,8 @@ pub struct SphericalCornerResult {
     pub surface: FaceSurface,
     /// The 3 boundary arcs (great-circle arcs on the sphere).
     pub boundary_curves: Vec<NurbsCurve>,
+    /// Whether the sphere's outward radial normal faces into the result.
+    pub reversed: bool,
 }
 
 /// Compute the sphere center and actual sphere radius from vertex
@@ -176,6 +178,7 @@ pub fn build_spherical_corner(
         data.contact_points[1],
         data.contact_points[2],
         data.vertex_id,
+        !data.is_convex,
     )
 }
 
@@ -222,7 +225,8 @@ pub fn build_n_edge_corner(
         let qi = data.contact_points[i];
         let qj = data.contact_points[j];
 
-        let result = build_triangle_on_sphere(center, r, qi, qj, centroid, data.vertex_id)?;
+        let result =
+            build_triangle_on_sphere(center, r, qi, qj, centroid, data.vertex_id, !data.is_convex)?;
         results.push(result);
     }
 
@@ -243,6 +247,7 @@ fn build_triangle_on_sphere(
     q2: Point3,
     q3: Point3,
     vertex_id: VertexId,
+    reversed: bool,
 ) -> Result<SphericalCornerResult, BlendError> {
     let r = radius;
 
@@ -270,6 +275,7 @@ fn build_triangle_on_sphere(
     Ok(SphericalCornerResult {
         surface: FaceSurface::Sphere(sphere),
         boundary_curves: vec![arc_q1q2, arc_q2q3, arc_q3q1],
+        reversed,
     })
 }
 
@@ -317,6 +323,27 @@ mod tests {
             is_convex: true,
             vertex_id,
             ball: Option::None,
+        }
+    }
+
+    fn four_way_corner_data(vertex_id: VertexId, is_convex: bool) -> VertexContactData {
+        let center = Point3::new(0.0, 0.0, 0.0);
+        let z = 0.6;
+        let radial = 0.8;
+        let contacts = vec![
+            Point3::new(radial, 0.0, z),
+            Point3::new(0.0, radial, z),
+            Point3::new(-radial, 0.0, z),
+            Point3::new(0.0, -radial, z),
+        ];
+        VertexContactData {
+            vertex_pos: Point3::new(0.0, 0.0, 2.0),
+            face_normals: contacts.iter().map(|point| *point - center).collect(),
+            contact_points: contacts,
+            radius: 1.0,
+            is_convex,
+            vertex_id,
+            ball: Some((center, 1.0)),
         }
     }
 
@@ -438,5 +465,40 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn four_way_corner_is_exact_shared_sphere_fan() {
+        let (_topo, vid) = make_vertex_id();
+        let results = build_n_edge_corner(&four_way_corner_data(vid, true)).unwrap();
+        assert_eq!(results.len(), 4);
+        for (index, result) in results.iter().enumerate() {
+            let FaceSurface::Sphere(sphere) = &result.surface else {
+                panic!("patch {index} is not analytic sphere");
+            };
+            assert!((sphere.radius() - 1.0).abs() < 1e-12);
+            assert!(!result.reversed);
+            for curve in &result.boundary_curves {
+                for sample in 0..=8 {
+                    let point = curve.evaluate(f64::from(sample) / 8.0);
+                    assert!(((point - sphere.center()).length() - 1.0).abs() < 1e-10);
+                }
+            }
+
+            let next = &results[(index + 1) % results.len()];
+            let spoke_end = result.boundary_curves[1].evaluate(1.0);
+            let reverse_spoke_start = next.boundary_curves[2].evaluate(0.0);
+            let spoke_start = result.boundary_curves[1].evaluate(0.0);
+            let reverse_spoke_end = next.boundary_curves[2].evaluate(1.0);
+            assert!((spoke_end - reverse_spoke_start).length() < 1e-10);
+            assert!((spoke_start - reverse_spoke_end).length() < 1e-10);
+        }
+    }
+
+    #[test]
+    fn concave_corner_reverses_every_sphere_patch() {
+        let (_topo, vid) = make_vertex_id();
+        let results = build_n_edge_corner(&four_way_corner_data(vid, false)).unwrap();
+        assert!(results.iter().all(|result| result.reversed));
     }
 }

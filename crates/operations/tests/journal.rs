@@ -9,14 +9,16 @@
 
 use remus_algo::bop::BooleanOp;
 use remus_operations::journal_ops::{
-    begin_scoped, boolean_journaled, record_barrier_over_solid, record_face_evolution,
+    begin_scoped, boolean_journaled, offset_journaled, record_barrier_over_solid,
+    record_face_evolution,
 };
 use remus_operations::primitives::make_box;
 use remus_topology::Topology;
 use remus_topology::explorer::{solid_edges, solid_faces, solid_vertices};
 use remus_topology::journal::{
-    EntityEvent, EntityKey, EntryPayload, RecordedOrigin, UNJOURNALED_MUTATIONS,
+    EntityEvent, EntityKey, EntityKind, EntryPayload, RecordedOrigin, UNJOURNALED_MUTATIONS,
 };
+use remus_topology::naming::{PersistentRef, Provenance, Resolution, resolve};
 
 fn two_overlapping_boxes(
     topo: &mut Topology,
@@ -115,6 +117,89 @@ fn journaled_boolean_is_deterministic() {
         entry_1, entry_2,
         "identical history must journal identically"
     );
+}
+
+#[test]
+fn journaled_offsets_carry_face_references_through_exact_evolution() {
+    let mut topo = Topology::new();
+    let source = make_box(&mut topo, 2.0, 2.0, 2.0).unwrap();
+
+    let first = offset_journaled(&mut topo, source, 0.5).unwrap();
+    assert!(first.map.origin.is_exact());
+    assert_eq!(first.map.modified.len(), 6);
+    let first_entry = topo.journal().entries().last().unwrap();
+    let EntryPayload::Evolution { origin, events, .. } = first_entry.payload() else {
+        panic!("an offset must journal evolution, not a barrier");
+    };
+    assert_eq!(*origin, RecordedOrigin::Construction);
+    assert_eq!(events.len(), 6, "one exact event per source face");
+
+    let reference = PersistentRef::operation_output(first.op, EntityKind::Face, 0);
+    let Resolution::Bound {
+        entity: first_face,
+        provenance: Provenance::Construction,
+    } = resolve(&topo, &reference)
+    else {
+        panic!("the first offset output must resolve exactly");
+    };
+    assert!(
+        solid_faces(&topo, first.solid)
+            .unwrap()
+            .iter()
+            .any(|face| face.index() == first_face.index)
+    );
+
+    let second = offset_journaled(&mut topo, first.solid, 0.5).unwrap();
+    let Resolution::Bound {
+        entity: second_face,
+        provenance: Provenance::Construction,
+    } = resolve(&topo, &reference)
+    else {
+        panic!("the face reference must follow the second offset exactly");
+    };
+    assert!(
+        solid_faces(&topo, second.solid)
+            .unwrap()
+            .iter()
+            .any(|face| face.index() == second_face.index)
+    );
+    assert_ne!(first_face, second_face);
+}
+
+#[test]
+fn failed_journaled_offset_rolls_back_topology_and_history() {
+    let mut topo = Topology::new();
+    let source = make_box(&mut topo, 2.0, 2.0, 2.0).unwrap();
+    let counts = (
+        topo.num_vertices(),
+        topo.num_edges(),
+        topo.num_wires(),
+        topo.num_faces(),
+        topo.num_shells(),
+        topo.num_solids(),
+        topo.num_loops(),
+        topo.num_coedges(),
+    );
+    let journal_len = topo.journal().entries().len();
+
+    let error = offset_journaled(&mut topo, source, -1.5).unwrap_err();
+    assert!(error.to_string().contains("collapsed"), "{error}");
+    assert_eq!(
+        (
+            topo.num_vertices(),
+            topo.num_edges(),
+            topo.num_wires(),
+            topo.num_faces(),
+            topo.num_shells(),
+            topo.num_solids(),
+            topo.num_loops(),
+            topo.num_coedges(),
+        ),
+        counts,
+        "a failed offset must leave no live topology"
+    );
+    assert_eq!(topo.journal().entries().len(), journal_len);
+    assert!(topo.solid(source).is_ok(), "the input handle remains live");
 }
 
 #[test]

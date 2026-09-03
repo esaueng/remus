@@ -7,13 +7,13 @@
 
 use std::collections::HashMap;
 
-use remus_topology::Topology;
 use remus_topology::edge::{Edge, EdgeId};
 use remus_topology::face::{Face, FaceId};
-use remus_topology::shell::Shell;
+use remus_topology::shell::{Shell, ShellId};
 use remus_topology::solid::{Solid, SolidId};
 use remus_topology::vertex::{Vertex, VertexId};
 use remus_topology::wire::{OrientedEdge, Wire, WireId};
+use remus_topology::{BodyClass, Topology};
 
 use crate::error::AlgoError;
 
@@ -203,7 +203,7 @@ pub struct DeepCopyMaps {
     pub vertices: HashMap<usize, remus_topology::VertexId>,
 }
 
-fn deep_copy_solid(
+pub fn deep_copy_solid(
     source: &Topology,
     target: &mut Topology,
     solid_id: SolidId,
@@ -212,21 +212,63 @@ fn deep_copy_solid(
     Ok((solid, maps.faces))
 }
 
+/// Deep-copy a first-class sheet shell between topology arenas.
+///
+/// # Errors
+///
+/// Returns [`AlgoError`] if `sheet_id` is not tagged as a sheet or any of its
+/// topology cannot be copied exactly.
+pub fn deep_copy_sheet(
+    source: &Topology,
+    target: &mut Topology,
+    sheet_id: ShellId,
+) -> Result<ShellId, AlgoError> {
+    let source_shell = source.shell(sheet_id)?;
+    if source_shell.body_class() != BodyClass::Sheet {
+        return Err(AlgoError::UnsupportedSheetTrim {
+            reason: format!(
+                "result shell is tagged `{}` instead of `sheet`",
+                source_shell.body_class().as_str()
+            ),
+        });
+    }
+    let (shells, _) = deep_copy_shells_with_maps(source, target, &[sheet_id])?;
+    let [copied] = shells.as_slice() else {
+        return Err(AlgoError::AssemblyFailed(
+            "sheet copy did not produce exactly one shell".into(),
+        ));
+    };
+    target.set_shell_body_class(*copied, BodyClass::Sheet)?;
+    Ok(*copied)
+}
+
 #[allow(clippy::items_after_statements)]
 fn deep_copy_solid_with_maps(
     source: &Topology,
     target: &mut Topology,
     solid_id: SolidId,
 ) -> Result<(SolidId, DeepCopyMaps), AlgoError> {
-    // ── Snapshot phase ──────────────────────────────────────────────
-
     let solid = source.solid(solid_id)?;
     let outer_shell_id = solid.outer_shell();
     let inner_shell_ids: Vec<_> = solid.inner_shells().to_vec();
-
     let all_shell_ids: Vec<_> = std::iter::once(outer_shell_id)
         .chain(inner_shell_ids.iter().copied())
         .collect();
+    let (new_shell_ids, maps) = deep_copy_shells_with_maps(source, target, &all_shell_ids)?;
+    let new_outer = *new_shell_ids
+        .first()
+        .ok_or_else(|| AlgoError::AssemblyFailed("solid has no shells to copy".into()))?;
+    let new_inner: Vec<_> = new_shell_ids[1..].to_vec();
+    Ok((target.add_solid(Solid::new(new_outer, new_inner)), maps))
+}
+
+#[allow(clippy::too_many_lines, clippy::items_after_statements)]
+fn deep_copy_shells_with_maps(
+    source: &Topology,
+    target: &mut Topology,
+    all_shell_ids: &[ShellId],
+) -> Result<(Vec<ShellId>, DeepCopyMaps), AlgoError> {
+    // ── Snapshot phase ──────────────────────────────────────────────
 
     struct VertexSnap {
         old_index: usize,
@@ -274,7 +316,7 @@ fn deep_copy_solid_with_maps(
     let mut seen_edges = std::collections::HashSet::new();
     let mut seen_wires = std::collections::HashSet::new();
 
-    for &shell_id in &all_shell_ids {
+    for &shell_id in all_shell_ids {
         let shell = source.shell(shell_id)?;
         let mut face_snaps = Vec::new();
 
@@ -440,13 +482,8 @@ fn deep_copy_solid_with_maps(
         }
     }
 
-    let new_outer = *new_shell_ids
-        .first()
-        .ok_or_else(|| AlgoError::AssemblyFailed("solid has no shells to copy".into()))?;
-    let new_inner: Vec<_> = new_shell_ids[1..].to_vec();
-
     Ok((
-        target.add_solid(Solid::new(new_outer, new_inner)),
+        new_shell_ids,
         DeepCopyMaps {
             faces: face_map,
             edges: edge_map

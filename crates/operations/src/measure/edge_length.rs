@@ -1,7 +1,7 @@
 //! Edge and wire length computation.
 
-use remus_topology::Topology;
 use remus_topology::face::FaceId;
+use remus_topology::{BodyClass, BodyId, Topology};
 
 /// Compute the length of a single edge.
 ///
@@ -101,6 +101,36 @@ pub fn wire_length(
         total += edge_length(topo, oe.edge())?;
     }
     Ok(total)
+}
+
+/// Compute length through the body-level dispatch contract.
+///
+/// # Errors
+///
+/// Wire bodies delegate to [`wire_length`]. Solid and sheet bodies return a
+/// typed dimensional mismatch rather than an invented zero length.
+pub fn body_length(topo: &Topology, body: BodyId) -> Result<f64, crate::OperationsError> {
+    match body {
+        BodyId::Wire(wire) => {
+            let actual = topo.body_class_of(body)?;
+            if actual != BodyClass::Wire {
+                return Err(crate::OperationsError::BodyClassMeasureMismatch {
+                    operation: "length",
+                    expected: BodyClass::Wire.as_str(),
+                    actual: actual.as_str(),
+                });
+            }
+            wire_length(topo, wire)
+        }
+        BodyId::Solid(_) | BodyId::Shell(_) => {
+            let actual = topo.body_class_of(body)?;
+            Err(crate::OperationsError::BodyClassMeasureMismatch {
+                operation: "length",
+                expected: BodyClass::Wire.as_str(),
+                actual: actual.as_str(),
+            })
+        }
+    }
 }
 
 /// Compute the perimeter of a face (outer wire length).

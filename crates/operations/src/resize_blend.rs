@@ -9,6 +9,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 use remus_blend::BlendResult;
+use remus_blend::fillet_builder::FilletBuilder;
 use remus_math::curves::Circle3D;
 use remus_math::tolerance::Tolerance;
 use remus_math::vec::Vec3;
@@ -208,7 +209,8 @@ fn resize_blend_impl(
     }
 
     let input_volume = crate::measure::solid_volume(topo, solid, 0.05)?;
-    let sharp = remove_blend_region(topo, solid, &band, new_radius)?;
+    let external_support_side = reconstructs_external_cylinder_cone(topo, &band)?;
+    let sharp = remove_blend_region(topo, solid, &band)?;
 
     validate_exact_result(topo, sharp.solid, "sharp support reconstruction")?;
     let sharp_volume = crate::measure::solid_volume(topo, sharp.solid, 0.05)?;
@@ -220,7 +222,14 @@ fn resize_blend_impl(
         });
     }
 
-    let rebuilt = rebuild_blend_edges(topo, sharp.solid, &sharp.edges, band.radius, new_radius)?;
+    let rebuilt = rebuild_blend_edges(
+        topo,
+        sharp.solid,
+        &sharp.edges,
+        band.radius,
+        new_radius,
+        external_support_side,
+    )?;
     validate_exact_result(topo, rebuilt.solid, "resized blend")?;
     let result_volume = crate::measure::solid_volume(topo, rebuilt.solid, 0.05)?;
     validate_volume_progress(
@@ -241,7 +250,6 @@ fn remove_blend_region(
     topo: &mut Topology,
     solid: SolidId,
     band: &BandDescription,
-    rebuild_radius: f64,
 ) -> Result<SharpResult, OperationsError> {
     let support_types: Vec<&'static str> = band
         .supports
@@ -255,18 +263,7 @@ fn remove_blend_region(
         ["plane", "cylinder"] | ["cylinder", "plane"] => {
             heal_plane_cylinder_band(topo, solid, band)
         }
-        ["cylinder", "cone"] | ["cone", "cylinder"] => {
-            if !Tolerance::new().approx_eq(rebuild_radius, 0.0) {
-                // The sharp circle is exact, but the closed-rim assembler
-                // cannot reconstruct this support pair at positive radius.
-                return Err(ResizeBlendError::UnsupportedSupportPair {
-                    first: support_types[0],
-                    second: support_types[1],
-                }
-                .into());
-            }
-            heal_cylinder_cone_band(topo, solid, band)
-        }
+        ["cylinder", "cone"] | ["cone", "cylinder"] => heal_cylinder_cone_band(topo, solid, band),
         [first, second] => Err(ResizeBlendError::UnsupportedSupportPair { first, second }.into()),
         _ => Err(reconstruction(format!(
             "blend region has unsupported support surfaces {support_types:?}; expected all planes or one supported analytic pair"
@@ -280,7 +277,22 @@ fn rebuild_blend_edges(
     edges: &[EdgeId],
     old_radius: f64,
     new_radius: f64,
+    external_support_side: bool,
 ) -> Result<BlendResult, OperationsError> {
+    if external_support_side {
+        let mut builder = FilletBuilder::new(topo, solid);
+        builder.use_external_support_side();
+        builder.add_edges(edges, new_radius);
+        let result = builder.build()?;
+        if result.is_partial {
+            return Err(OperationsError::PartialResult {
+                operation: "resize blend",
+                succeeded: result.succeeded.len(),
+                failed: result.failed.len(),
+            });
+        }
+        return Ok(result);
+    }
     match fillet_v2(topo, solid, edges, new_radius) {
         Ok(result) => Ok(result),
         Err(OperationsError::Blend(remus_blend::BlendError::RadiusTooLarge { .. })) => {
@@ -295,6 +307,45 @@ fn rebuild_blend_edges(
             "fillet reconstruction at {new_radius} mm failed: {error}"
         ))),
     }
+}
+
+fn reconstructs_external_cylinder_cone(
+    topo: &Topology,
+    band: &BandDescription,
+) -> Result<bool, OperationsError> {
+    if band.faces.len() != 1 || band.supports.len() != 2 {
+        return Ok(false);
+    }
+    let cylinder_radius = band.supports.iter().find_map(|support| {
+        let face = topo.face(*support).ok()?;
+        match face.surface() {
+            FaceSurface::Cylinder(cylinder) => Some(cylinder.radius()),
+            _ => None,
+        }
+    });
+    let has_cone = band.supports.iter().any(|support| {
+        topo.face(*support)
+            .is_ok_and(|face| matches!(face.surface(), FaceSurface::Cone(_)))
+    });
+    let torus_major_radius = match topo.face(band.faces[0])?.surface() {
+        FaceSurface::Torus(torus) => Some(torus.major_radius()),
+        _ => None,
+    };
+    let (Some(cylinder), true, Some(major)) = (cylinder_radius, has_cone, torus_major_radius)
+    else {
+        return Ok(false);
+    };
+    let tol = Tolerance::new();
+    if tol.approx_eq(major, cylinder + band.radius) {
+        return Ok(true);
+    }
+    if cylinder > band.radius && tol.approx_eq(major, cylinder - band.radius) {
+        return Ok(false);
+    }
+    Err(reconstruction(format!(
+        "cylinder/cone torus major radius {major} does not prove either reconstruction branch around cylinder radius {cylinder} and blend radius {}",
+        band.radius
+    )))
 }
 
 fn invalid(reason: impl Into<String>) -> OperationsError {
@@ -535,7 +586,7 @@ fn move_planar_faces_with_blends_remove_rebuild(
     while let Some(seed) = adjacent_blend_seed(topo, current_solid, &selected_faces)? {
         let band = describe_band(topo, current_solid, seed)?;
         let stage_volume = crate::measure::solid_volume(topo, current_solid, 0.05)?;
-        let sharp = remove_blend_region(topo, current_solid, &band, band.radius)?;
+        let sharp = remove_blend_region(topo, current_solid, &band)?;
         validate_exact_result(topo, sharp.solid, "sharp support reconstruction")?;
         let sharp_volume = crate::measure::solid_volume(topo, sharp.solid, 0.05)?;
         validate_volume_progress(stage_volume, sharp_volume, sharp_volume, band.radius, 0.0)?;
@@ -589,6 +640,7 @@ fn move_planar_faces_with_blends_remove_rebuild(
             &edges,
             plans[index].radius,
             plans[index].radius,
+            false,
         )?;
         validate_exact_result(topo, rebuilt.solid, "moved blend reconstruction")?;
         let rebuilt_volume = crate::measure::solid_volume(topo, rebuilt.solid, 0.05)?;
@@ -1884,7 +1936,9 @@ fn heal_cylinder_cone_band(
     if cone_slope.abs() <= Tolerance::new().angular {
         return Err(reconstruction("cone support has no radial slope"));
     }
-    let sharp_height = sample_height.signum() * cylinder_surface.radius() / cone_slope;
+    // `ConicalSurface::half_angle` is measured from the radial plane, so its
+    // tangent is axial/radial (not radial/axial).
+    let sharp_height = sample_height.signum() * cylinder_surface.radius() * cone_slope;
     let center = cone_surface.apex() + axis * sharp_height;
 
     let (_, cylinder_wire) = contact_wire(topo, cylinder, &cylinder_contacts)?;
@@ -1995,17 +2049,17 @@ fn validate_volume_progress(
         && new_magnitude > old_magnitude
         && !tol.approx_eq(new_magnitude, old_magnitude)
     {
-        return Err(reconstruction(
-            "shrinking the radius increased the blend's volume effect",
-        ));
+        return Err(reconstruction(format!(
+            "shrinking the radius from {old_radius} to {new_radius} mm increased the blend's volume effect from {old_magnitude} to {new_magnitude}"
+        )));
     }
     if new_radius > old_radius
         && new_magnitude < old_magnitude
         && !tol.approx_eq(new_magnitude, old_magnitude)
     {
-        return Err(reconstruction(
-            "growing the radius decreased the blend's volume effect",
-        ));
+        return Err(reconstruction(format!(
+            "growing the radius from {old_radius} to {new_radius} mm decreased the blend's volume effect from {old_magnitude} to {new_magnitude}"
+        )));
     }
     Ok(())
 }

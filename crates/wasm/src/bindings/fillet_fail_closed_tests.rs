@@ -21,6 +21,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use crate::kernel::BrepKernel;
+use remus_math::vec::Point3;
 
 fn run(kernel: &mut BrepKernel, ops: &[serde_json::Value]) -> Vec<serde_json::Value> {
     let json = serde_json::Value::Array(ops.to_vec()).to_string();
@@ -74,6 +75,54 @@ fn volume(kernel: &mut BrepKernel, solid: u32) -> f64 {
 /// Closed-form material a convex fillet removes: (1−π/4)·r² per unit length.
 fn convex_fillet_removed(radius: f64, length: f64) -> f64 {
     (1.0 - std::f64::consts::FRAC_PI_4) * radius * radius * length
+}
+
+fn origin_setback_specs(
+    kernel: &mut BrepKernel,
+    solid: u32,
+    mismatched: bool,
+) -> Vec<serde_json::Value> {
+    let origin = Point3::new(0.0, 0.0, 0.0);
+    let mut selected = Vec::new();
+    for handle in edge_handles(kernel, solid) {
+        let edge_id = kernel.resolve_edge(handle).unwrap();
+        let edge = kernel.topo().edge(edge_id).unwrap();
+        let start = kernel.topo().vertex(edge.start()).unwrap().point();
+        let end = kernel.topo().vertex(edge.end()).unwrap().point();
+        if (start - origin).length() < 1e-10 {
+            selected.push((handle, true));
+        } else if (end - origin).length() < 1e-10 {
+            selected.push((handle, false));
+        }
+    }
+    assert_eq!(selected.len(), 3);
+
+    selected
+        .into_iter()
+        .zip([1.2_f64, 1.4, 1.6])
+        .enumerate()
+        .map(|(index, ((edge, origin_is_start), far_radius))| {
+            let setback = if mismatched && index == 0 { 0.8 } else { 1.0 };
+            if mismatched {
+                serde_json::json!({
+                    "edge": edge,
+                    "law": "constant",
+                    "radius": 1.0,
+                    "startSetback": if origin_is_start { setback } else { 0.0 },
+                    "endSetback": if origin_is_start { 0.0 } else { setback },
+                })
+            } else {
+                serde_json::json!({
+                    "edge": edge,
+                    "law": "scurve",
+                    "start": if origin_is_start { 1.0 } else { far_radius },
+                    "end": if origin_is_start { far_radius } else { 1.0 },
+                    "startSetback": if origin_is_start { setback } else { 0.0 },
+                    "endSetback": if origin_is_start { 0.0 } else { setback },
+                })
+            }
+        })
+        .collect()
 }
 
 // ── executeBatch: success must be a genuinely changed, valid solid ──
@@ -189,6 +238,102 @@ fn batch_fillet_variable_success_is_a_real_fillet() {
     assert!(
         after < 1000.0 && after > 990.0,
         "a single-edge variable fillet removes only a sliver, got {after}"
+    );
+}
+
+#[test]
+fn direct_and_batch_variable_setbacks_are_parity_watertight() {
+    let mut direct_kernel = BrepKernel::new();
+    let direct_input = make_box(&mut direct_kernel, 10.0, 10.0, 10.0);
+    let direct_specs = origin_setback_specs(&mut direct_kernel, direct_input, false);
+    let direct_result = direct_kernel
+        .fillet_variable(
+            direct_input,
+            &serde_json::Value::Array(direct_specs).to_string(),
+        )
+        .expect("direct filletVariable setback call");
+    let direct_volume = volume(&mut direct_kernel, direct_result);
+
+    let mut batch_kernel = BrepKernel::new();
+    let batch_input = make_box(&mut batch_kernel, 10.0, 10.0, 10.0);
+    let batch_specs = origin_setback_specs(&mut batch_kernel, batch_input, false);
+    let out = run(
+        &mut batch_kernel,
+        &[op(
+            "filletVariable",
+            serde_json::json!({"solid": batch_input, "specs": batch_specs}),
+        )],
+    );
+    let batch_result = u32::try_from(out[0]["ok"].as_u64().unwrap()).unwrap();
+    let batch_volume = volume(&mut batch_kernel, batch_result);
+    assert!((direct_volume - batch_volume).abs() < 1e-9);
+
+    for (kernel, result) in [
+        (&mut direct_kernel, direct_result),
+        (&mut batch_kernel, batch_result),
+    ] {
+        let quality = run(
+            kernel,
+            &[op(
+                "meshQuality",
+                serde_json::json!({"solid": result, "deflection": 0.01}),
+            )],
+        );
+        assert_eq!(quality[0]["ok"]["isWatertight"], true);
+        assert_eq!(quality[0]["ok"]["boundaryEdges"], 0);
+        assert_eq!(quality[0]["ok"]["nonManifoldEdges"], 0);
+    }
+}
+
+#[test]
+fn batch_variable_setback_mismatch_keeps_the_input_and_code() {
+    let mut kernel = BrepKernel::new();
+    let input = make_box(&mut kernel, 10.0, 10.0, 10.0);
+    let specs = origin_setback_specs(&mut kernel, input, true);
+    let out = run_v2(
+        &mut kernel,
+        &[
+            op(
+                "filletVariable",
+                serde_json::json!({"solid": input, "specs": specs}),
+            ),
+            op(
+                "volume",
+                serde_json::json!({"solid": input, "deflection": 0.01}),
+            ),
+        ],
+    );
+    assert_eq!(out[0]["error"]["details"]["kernelCode"], "setback-mismatch");
+    assert!((out[1]["ok"].as_f64().unwrap() - 1000.0).abs() < 1e-9);
+}
+
+#[test]
+fn batch_variable_setback_rejects_a_present_nonnumeric_distance() {
+    let mut kernel = BrepKernel::new();
+    let input = make_box(&mut kernel, 10.0, 10.0, 10.0);
+    let edge = edge_handles(&mut kernel, input)[0];
+    let out = run_v2(
+        &mut kernel,
+        &[op(
+            "filletVariable",
+            serde_json::json!({
+                "solid": input,
+                "specs": [{
+                    "edge": edge,
+                    "law": "constant",
+                    "radius": 1.0,
+                    "startSetback": "one",
+                }],
+            }),
+        )],
+    );
+    assert_eq!(out[0]["error"]["code"], "invalid_argument");
+    assert_eq!(out[0]["error"]["category"], "invalid_input");
+    assert!(
+        out[0]["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("'startSetback' in fillet spec must be a number")
     );
 }
 

@@ -5,7 +5,11 @@
 
 use remus_math::context::OperationContext;
 use remus_math::tolerance::Tolerance;
+use remus_topology::BodyClass;
 use remus_topology::Topology;
+use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::shell::ShellId;
+use remus_topology::solid::Solid;
 use remus_topology::solid::SolidId;
 
 use crate::bop::BooleanOp;
@@ -155,6 +159,309 @@ fn boolean_with_context_impl(
     context.check_cancelled()?;
 
     Ok(result)
+}
+
+/// Split a solid with a first-class sheet-body face set.
+///
+/// The sheet is installed in the isolated GFA topology behind a traversal-only
+/// solid adapter. That adapter is never classified as a volume and its faces
+/// are never passed through boolean selection: they participate only in pave
+/// filling, face partitioning, and the two oppositely oriented cell closures.
+/// The currently qualified exact subset is one cylindrical sheet face.
+///
+/// # Errors
+///
+/// Returns [`AlgoError::UnsupportedSheetSplit`] when the root is not a sheet,
+/// the sheet is not the qualified single cylindrical face, or it does not
+/// separate the solid into two cells. Other GFA and topology errors propagate.
+pub fn split_by_sheet(
+    topo: &mut Topology,
+    solid: SolidId,
+    sheet: ShellId,
+) -> Result<Vec<SolidId>, AlgoError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        split_by_sheet_impl(topo, solid, sheet)
+    })
+}
+
+fn split_by_sheet_impl(
+    topo: &mut Topology,
+    solid: SolidId,
+    sheet: ShellId,
+) -> Result<Vec<SolidId>, AlgoError> {
+    topo.solid(solid)?;
+    let sheet_data = topo.shell(sheet)?;
+    if sheet_data.body_class() != BodyClass::Sheet {
+        return Err(AlgoError::UnsupportedSheetSplit {
+            reason: format!(
+                "tool shell is tagged `{}` instead of `sheet`",
+                sheet_data.body_class().as_str()
+            ),
+        });
+    }
+    let [sheet_face] = sheet_data.faces() else {
+        return Err(AlgoError::UnsupportedSheetSplit {
+            reason: format!(
+                "qualified sheet split requires exactly one face, got {}",
+                sheet_data.faces().len()
+            ),
+        });
+    };
+    let FaceSurface::Cylinder(cylinder) = topo.face(*sheet_face)?.surface() else {
+        return Err(AlgoError::UnsupportedSheetSplit {
+            reason: format!(
+                "qualified sheet split requires a cylindrical face, got `{}`",
+                topo.face(*sheet_face)?.surface().type_tag()
+            ),
+        });
+    };
+    let cylinder = cylinder.clone();
+
+    reject_unsupported_curves(topo, solid)?;
+
+    // A full clone is the isolation boundary. Existing handles remain valid in
+    // it, so the sheet shell can be put behind a traversal-only adapter without
+    // mutating or reclassifying the caller's first-class sheet body.
+    let mut store_topo = topo.clone();
+    let sheet_adapter = store_topo.add_solid(Solid::new(sheet, Vec::new()));
+    reject_unsupported_curves(&store_topo, sheet_adapter)?;
+
+    let tol = Tolerance::default();
+    let mut arena = GfaArena::new();
+    pave_filler::run_pave_filler(&mut store_topo, solid, sheet_adapter, tol, &mut arena)?;
+    let mut builder = Builder::with_tolerance(store_topo, arena, solid, sheet_adapter, tol);
+    builder.perform_sheet_arrangement()?;
+    let (store_topo, store_regions) = builder.build_cylindrical_sheet_regions(&cylinder)?;
+
+    let mut regions = Vec::with_capacity(store_regions.len());
+    for region in store_regions {
+        regions.push(crate::ds::shape_store::deep_copy_solid(&store_topo, topo, region)?.0);
+    }
+    Ok(regions)
+}
+
+/// Trim a first-class sheet body against a solid, retaining either its inside
+/// or outside face patches.
+///
+/// The sheet is a face-set operand: a traversal-only adapter feeds its faces
+/// through pave filling and splitting, but it is classified only against the
+/// real solid and is never interpreted as bounding material.
+///
+/// # Errors
+///
+/// Returns [`AlgoError::UnsupportedSheetTrim`] for an incorrectly tagged,
+/// empty, coincident, or empty-result sheet configuration. Other exact GFA and
+/// topology failures propagate.
+pub fn trim_sheet_by_solid(
+    topo: &mut Topology,
+    sheet: ShellId,
+    solid: SolidId,
+    keep_inside: bool,
+) -> Result<ShellId, AlgoError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        trim_sheet_by_solid_impl(topo, sheet, solid, keep_inside)
+    })
+}
+
+fn trim_sheet_by_solid_impl(
+    topo: &mut Topology,
+    sheet: ShellId,
+    solid: SolidId,
+    keep_inside: bool,
+) -> Result<ShellId, AlgoError> {
+    topo.solid(solid)?;
+    let sheet_data = topo.shell(sheet)?;
+    if sheet_data.body_class() != BodyClass::Sheet {
+        return Err(AlgoError::UnsupportedSheetTrim {
+            reason: format!(
+                "tool shell is tagged `{}` instead of `sheet`",
+                sheet_data.body_class().as_str()
+            ),
+        });
+    }
+    if sheet_data.faces().is_empty() {
+        return Err(AlgoError::UnsupportedSheetTrim {
+            reason: "sheet contains no faces".into(),
+        });
+    }
+    let sheet_faces = sheet_data.faces().to_vec();
+    let solid_faces = remus_topology::explorer::solid_faces(topo, solid)?;
+    if sheet_faces.iter().any(|face| solid_faces.contains(face)) {
+        return Err(AlgoError::UnsupportedSheetTrim {
+            reason: "sheet and solid share a face identity; keep-side classification is ambiguous"
+                .into(),
+        });
+    }
+
+    reject_unsupported_curves(topo, solid)?;
+    let mut store_topo = topo.clone();
+    let sheet_adapter = store_topo.add_solid(Solid::new(sheet, Vec::new()));
+    reject_unsupported_curves(&store_topo, sheet_adapter)?;
+
+    let tol = Tolerance::default();
+    let mut arena = GfaArena::new();
+    pave_filler::run_pave_filler(&mut store_topo, solid, sheet_adapter, tol, &mut arena)?;
+    let mut builder = Builder::with_tolerance(store_topo, arena, solid, sheet_adapter, tol);
+    builder.perform_sheet_arrangement()?;
+    let (store_topo, store_sheet) = builder.build_sheet_trim(keep_inside)?;
+    crate::ds::shape_store::deep_copy_sheet(&store_topo, topo, store_sheet)
+}
+
+/// Mutually trim two first-class planar sheets by their oriented sides.
+///
+/// Positive is the side each sheet's effective face normal points toward;
+/// negative is the opposite side. Both input sheets participate only as face
+/// sets, and both returned handles are new first-class sheets.
+///
+/// # Errors
+///
+/// Returns [`AlgoError::UnsupportedSheetTrim`] unless both operands are
+/// distinct, single-face planar sheets that split each other transversally.
+pub fn mutual_trim_sheets(
+    topo: &mut Topology,
+    sheet_a: ShellId,
+    sheet_b: ShellId,
+    keep_a_positive: bool,
+    keep_b_positive: bool,
+) -> Result<(ShellId, ShellId), AlgoError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        mutual_trim_sheets_impl(topo, sheet_a, sheet_b, keep_a_positive, keep_b_positive)
+    })
+}
+
+/// Trim one first-class planar sheet by one oriented side of another.
+///
+/// The tool sheet is used only to split and classify the target. It need not
+/// itself be divided by the finite target intersection.
+///
+/// # Errors
+///
+/// Returns [`AlgoError::UnsupportedSheetTrim`] unless both operands are
+/// distinct, single-face planar sheets and the tool splits the target.
+pub fn trim_sheet_by_sheet(
+    topo: &mut Topology,
+    target: ShellId,
+    tool: ShellId,
+    keep_positive: bool,
+) -> Result<ShellId, AlgoError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        trim_sheet_by_sheet_impl(topo, target, tool, keep_positive)
+    })
+}
+
+fn planar_sheet(
+    topo: &Topology,
+    sheet: ShellId,
+    label: &str,
+) -> Result<(remus_math::vec::Vec3, f64), AlgoError> {
+    let shell = topo.shell(sheet)?;
+    if shell.body_class() != BodyClass::Sheet {
+        return Err(AlgoError::UnsupportedSheetTrim {
+            reason: format!(
+                "{label} shell is tagged `{}` instead of `sheet`",
+                shell.body_class().as_str()
+            ),
+        });
+    }
+    let [face_id] = shell.faces() else {
+        return Err(AlgoError::UnsupportedSheetTrim {
+            reason: format!(
+                "qualified mutual trim requires one face per sheet; {label} has {}",
+                shell.faces().len()
+            ),
+        });
+    };
+    let face = topo.face(*face_id)?;
+    let FaceSurface::Plane { normal, d } = *face.surface() else {
+        return Err(AlgoError::UnsupportedSheetTrim {
+            reason: format!(
+                "qualified mutual trim requires planar sheets; {label} is `{}`",
+                face.surface().type_tag()
+            ),
+        });
+    };
+    let magnitude = normal.length();
+    if !magnitude.is_finite() || magnitude <= f64::EPSILON || !d.is_finite() {
+        return Err(AlgoError::UnsupportedSheetTrim {
+            reason: format!("{label} has an invalid supporting plane"),
+        });
+    }
+    let normal = normal * magnitude.recip();
+    let d = d / magnitude;
+    if face.is_reversed() {
+        Ok((-normal, -d))
+    } else {
+        Ok((normal, d))
+    }
+}
+
+fn mutual_trim_sheets_impl(
+    topo: &mut Topology,
+    sheet_a: ShellId,
+    sheet_b: ShellId,
+    keep_a_positive: bool,
+    keep_b_positive: bool,
+) -> Result<(ShellId, ShellId), AlgoError> {
+    if sheet_a == sheet_b {
+        return Err(AlgoError::UnsupportedSheetTrim {
+            reason: "mutual trim requires two distinct sheet handles".into(),
+        });
+    }
+    let (normal_a, d_a) = planar_sheet(topo, sheet_a, "sheet A")?;
+    let (normal_b, d_b) = planar_sheet(topo, sheet_b, "sheet B")?;
+
+    let mut store_topo = topo.clone();
+    let adapter_a = store_topo.add_solid(Solid::new(sheet_a, Vec::new()));
+    let adapter_b = store_topo.add_solid(Solid::new(sheet_b, Vec::new()));
+    reject_unsupported_curves(&store_topo, adapter_a)?;
+    reject_unsupported_curves(&store_topo, adapter_b)?;
+
+    let tol = Tolerance::default();
+    let mut arena = GfaArena::new();
+    pave_filler::run_pave_filler(&mut store_topo, adapter_a, adapter_b, tol, &mut arena)?;
+    let mut builder = Builder::with_tolerance(store_topo, arena, adapter_a, adapter_b, tol);
+    builder.perform_sheet_sheet_arrangement()?;
+    let (store_topo, store_a, store_b) = builder.build_planar_sheet_sheet_trim(
+        normal_a,
+        d_a,
+        normal_b,
+        d_b,
+        keep_a_positive,
+        keep_b_positive,
+    )?;
+    let result_a = crate::ds::shape_store::deep_copy_sheet(&store_topo, topo, store_a)?;
+    let result_b = crate::ds::shape_store::deep_copy_sheet(&store_topo, topo, store_b)?;
+    Ok((result_a, result_b))
+}
+
+fn trim_sheet_by_sheet_impl(
+    topo: &mut Topology,
+    target: ShellId,
+    tool: ShellId,
+    keep_positive: bool,
+) -> Result<ShellId, AlgoError> {
+    if target == tool {
+        return Err(AlgoError::UnsupportedSheetTrim {
+            reason: "sheet-by-sheet trim requires distinct target and tool handles".into(),
+        });
+    }
+    let _ = planar_sheet(topo, target, "target sheet")?;
+    let (normal_tool, d_tool) = planar_sheet(topo, tool, "tool sheet")?;
+
+    let mut store_topo = topo.clone();
+    let adapter_a = store_topo.add_solid(Solid::new(target, Vec::new()));
+    let adapter_b = store_topo.add_solid(Solid::new(tool, Vec::new()));
+    reject_unsupported_curves(&store_topo, adapter_a)?;
+    reject_unsupported_curves(&store_topo, adapter_b)?;
+
+    let tol = Tolerance::default();
+    let mut arena = GfaArena::new();
+    pave_filler::run_pave_filler(&mut store_topo, adapter_a, adapter_b, tol, &mut arena)?;
+    let mut builder = Builder::with_tolerance(store_topo, arena, adapter_a, adapter_b, tol);
+    builder.perform_sheet_sheet_arrangement()?;
+    let (store_topo, store_result) =
+        builder.build_planar_sheet_by_sheet_trim(normal_tool, d_tool, keep_positive)?;
+    crate::ds::shape_store::deep_copy_sheet(&store_topo, topo, store_result)
 }
 
 /// Fuse **N** solids into one via a single GFA arrangement.
@@ -471,7 +778,7 @@ pub enum VertexEvent {
 
 /// Construction-derived vertex/edge/face history of one GFA boolean, in
 /// caller-space indices.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EntityEvolution {
     /// Result-face provenance, as in [`boolean_with_face_origins`].
     pub faces: FaceOriginIndices,
@@ -479,6 +786,148 @@ pub struct EntityEvolution {
     pub edges: Vec<(usize, EdgeEvent)>,
     /// Result vertex index → its event. Total over the result's vertices.
     pub vertices: Vec<(usize, VertexEvent)>,
+}
+
+/// One disconnected boolean result region and its construction-derived
+/// entity evolution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BooleanRegion {
+    /// The independently valid result solid.
+    pub solid: SolidId,
+    /// Provenance total over this region's faces, edges, and vertices.
+    pub evolution: EntityEvolution,
+}
+
+/// Store-local construction records that must be captured before the builder
+/// consumes the pave-filler arena.
+struct EntityLineage {
+    split_parent: std::collections::HashMap<usize, usize>,
+    pave_block_original: std::collections::HashMap<usize, usize>,
+    section_origins: std::collections::BTreeMap<usize, (usize, usize)>,
+}
+
+impl EntityLineage {
+    fn capture(arena: &GfaArena) -> Self {
+        let mut split_parent = std::collections::HashMap::new();
+        let mut pave_block_original = std::collections::HashMap::new();
+        for (pave_block_id, pave_block) in arena.pave_blocks.iter() {
+            pave_block_original.insert(pave_block_id.index(), pave_block.original_edge.index());
+            if let Some(split) = pave_block.split_edge {
+                split_parent.insert(split.index(), pave_block.original_edge.index());
+            }
+        }
+        for (_, common_block) in arena.common_blocks.iter() {
+            if let (Some(split), Some(&first_pave_block)) =
+                (common_block.split_edge, common_block.pave_blocks.first())
+                && let Some(pave_block) = arena.pave_blocks.get(first_pave_block)
+            {
+                split_parent.insert(split.index(), pave_block.original_edge.index());
+            }
+        }
+        Self {
+            split_parent,
+            pave_block_original,
+            section_origins: arena.section_edge_origins.clone(),
+        }
+    }
+}
+
+fn export_entity_evolution(
+    topo: &mut Topology,
+    store: &crate::ds::GfaShapeStore,
+    store_result: SolidId,
+    store_origins: crate::builder::FaceProvenance,
+    builder_lineage: &crate::builder::split_types::EdgeLineageLog,
+    lineage: &EntityLineage,
+) -> Result<(SolidId, EntityEvolution), AlgoError> {
+    let (result, export) = store.export_solid_with_entity_maps(topo, store_result)?;
+
+    let mut faces = Vec::with_capacity(store_origins.len());
+    for (store_out, store_src) in store_origins {
+        let caller_out = export
+            .faces
+            .get(&store_out.index())
+            .ok_or_else(|| {
+                AlgoError::AssemblyFailed(
+                    "result face missing from export map (provenance desync)".into(),
+                )
+            })?
+            .index();
+        let caller_src =
+            store_src.and_then(|source| store.input_face_to_caller.get(&source.index()).copied());
+        faces.push((caller_out, caller_src));
+    }
+
+    let resolve_edge = |store_index: usize| -> EdgeEvent {
+        let mut current = store_index;
+        let mut transformed = false;
+        for _ in 0..64 {
+            if let Some(&caller) = store.input_edge_to_caller.get(&current) {
+                return if transformed {
+                    EdgeEvent::Modified(caller)
+                } else {
+                    EdgeEvent::Preserved(caller)
+                };
+            }
+            if let Some(&(face_a, face_b)) = lineage.section_origins.get(&current) {
+                return EdgeEvent::Generated {
+                    face_a: store.input_face_to_caller.get(&face_a).copied(),
+                    face_b: store.input_face_to_caller.get(&face_b).copied(),
+                };
+            }
+            if let Some(&old) = builder_lineage.rewrites.get(&current) {
+                current = old;
+                transformed = true;
+                continue;
+            }
+            if let Some(&pave_block) = builder_lineage.to_pave_block.get(&current) {
+                if let Some(&original) = lineage.pave_block_original.get(&pave_block) {
+                    current = original;
+                    transformed = true;
+                    continue;
+                }
+                break;
+            }
+            if let Some(&parent) = lineage.split_parent.get(&current) {
+                current = parent;
+                transformed = true;
+                continue;
+            }
+            break;
+        }
+        EdgeEvent::Unresolved
+    };
+
+    let mut edges: Vec<(usize, EdgeEvent)> = export
+        .edges
+        .iter()
+        .map(|(&store_index, caller_edge)| (caller_edge.index(), resolve_edge(store_index)))
+        .collect();
+    edges.sort_by_key(|(index, _)| *index);
+
+    let mut vertices: Vec<(usize, VertexEvent)> = export
+        .vertices
+        .iter()
+        .map(|(&store_index, caller_vertex)| {
+            let event = store
+                .input_vertex_to_caller
+                .get(&store_index)
+                .map_or(VertexEvent::Created, |&caller| {
+                    VertexEvent::Preserved(caller)
+                });
+            (caller_vertex.index(), event)
+        })
+        .collect();
+    vertices.sort_by_key(|(index, _)| *index);
+
+    Ok((
+        result,
+        EntityEvolution {
+            faces,
+            edges,
+            vertices,
+        },
+    ))
 }
 
 /// Run a GFA boolean, returning construction-derived vertex, edge, and face
@@ -497,15 +946,12 @@ pub struct EntityEvolution {
 /// # Errors
 ///
 /// Returns [`AlgoError`] if any GFA stage fails.
-#[allow(clippy::too_many_lines)]
 pub fn boolean_with_entity_evolution(
     topo: &mut Topology,
     op: BooleanOp,
     solid_a: SolidId,
     solid_b: SolidId,
 ) -> Result<(SolidId, EntityEvolution), AlgoError> {
-    use std::collections::HashMap;
-
     reject_unsupported_curves(topo, solid_a)?;
     reject_unsupported_curves(topo, solid_b)?;
 
@@ -521,25 +967,7 @@ pub fn boolean_with_entity_evolution(
         &mut arena,
     )?;
 
-    // Snapshot construction lineage before the builder consumes the arena.
-    // split edge (store idx) → original edge (store idx), and pave block
-    // index → its original edge (the link wire-edge materialization records).
-    let mut split_parent: HashMap<usize, usize> = HashMap::new();
-    let mut pb_original: HashMap<usize, usize> = HashMap::new();
-    for (pb_id, pb) in arena.pave_blocks.iter() {
-        pb_original.insert(pb_id.index(), pb.original_edge.index());
-        if let Some(split) = pb.split_edge {
-            split_parent.insert(split.index(), pb.original_edge.index());
-        }
-    }
-    for (_, cb) in arena.common_blocks.iter() {
-        if let (Some(split), Some(&first_pb)) = (cb.split_edge, cb.pave_blocks.first())
-            && let Some(pb) = arena.pave_blocks.get(first_pb)
-        {
-            split_parent.insert(split.index(), pb.original_edge.index());
-        }
-    }
-    let section_origins = arena.section_edge_origins.clone();
+    let lineage = EntityLineage::capture(&arena);
 
     let mut builder = Builder::with_tolerance(
         std::mem::take(&mut store.topo),
@@ -553,105 +981,167 @@ pub fn boolean_with_entity_evolution(
     // The returned log includes both the perform-phase records and the
     // assembly-rebuild records (weld and collinear splits), so result
     // edges rebuilt during assembly chase back to their parents.
-    let (store_topo, store_result, store_origins, lineage) =
+    let (store_topo, store_result, store_origins, builder_lineage) =
         builder.build_result_with_origins(op)?;
     store.topo = store_topo;
 
-    let (result, export) = store.export_solid_with_entity_maps(topo, store_result)?;
+    export_entity_evolution(
+        topo,
+        &store,
+        store_result,
+        store_origins,
+        &builder_lineage,
+        &lineage,
+    )
+}
 
-    // Faces: translate exactly as boolean_with_face_origins does.
-    let mut faces = Vec::with_capacity(store_origins.len());
-    for (store_out, store_src) in store_origins {
-        let caller_out = export
-            .faces
-            .get(&store_out.index())
-            .ok_or_else(|| {
-                AlgoError::AssemblyFailed(
-                    "result face missing from export map (provenance desync)".into(),
-                )
-            })?
-            .index();
-        let caller_src =
-            store_src.and_then(|s| store.input_face_to_caller.get(&s.index()).copied());
-        faces.push((caller_out, caller_src));
+/// Run a GFA boolean and return each disconnected result region separately.
+///
+/// This is the cellular counterpart to [`boolean_with_entity_evolution`].
+/// The builder never folds disconnected growth shells into one `Solid`, and
+/// each returned region carries its own total construction history.
+///
+/// # Errors
+///
+/// Returns [`AlgoError`] if any GFA stage, region assembly, or export fails.
+pub fn boolean_regions_with_entity_evolution(
+    topo: &mut Topology,
+    op: BooleanOp,
+    solid_a: SolidId,
+    solid_b: SolidId,
+) -> Result<Vec<BooleanRegion>, AlgoError> {
+    reject_unsupported_curves(topo, solid_a)?;
+    reject_unsupported_curves(topo, solid_b)?;
+
+    let tolerance = Tolerance::default();
+    let mut store = crate::ds::GfaShapeStore::new(topo, solid_a, solid_b)?;
+    let mut arena = GfaArena::new();
+    pave_filler::run_pave_filler(
+        &mut store.topo,
+        store.solid_a,
+        store.solid_b,
+        tolerance,
+        &mut arena,
+    )?;
+    let lineage = EntityLineage::capture(&arena);
+    let mut builder = Builder::with_tolerance(
+        std::mem::take(&mut store.topo),
+        arena,
+        store.solid_a,
+        store.solid_b,
+        tolerance,
+    );
+    builder.perform()?;
+    let (store_topo, store_regions, store_origins, builder_lineage) =
+        builder.build_result_regions_with_origins(op)?;
+    store.topo = store_topo;
+
+    let origins_by_face: std::collections::HashMap<FaceId, Option<FaceId>> =
+        store_origins.into_iter().collect();
+    let mut regions = Vec::with_capacity(store_regions.len());
+    for store_region in store_regions {
+        let region_origins = remus_topology::explorer::solid_faces(&store.topo, store_region)?
+            .into_iter()
+            .map(|face| (face, origins_by_face.get(&face).copied().flatten()))
+            .collect();
+        let (solid, evolution) = export_entity_evolution(
+            topo,
+            &store,
+            store_region,
+            region_origins,
+            &builder_lineage,
+            &lineage,
+        )?;
+        regions.push(BooleanRegion { solid, evolution });
     }
+    Ok(regions)
+}
 
-    // Resolve one store edge index through the construction records.
-    // Chases split chains (a split of a split, and splits OF section
-    // edges) with a hard bound so a malformed record cannot loop.
-    let resolve_edge = |store_idx: usize| -> EdgeEvent {
-        let mut current = store_idx;
-        let mut transformed = false;
-        for _ in 0..64 {
-            if let Some(&caller) = store.input_edge_to_caller.get(&current) {
-                return if transformed {
-                    EdgeEvent::Modified(caller)
-                } else {
-                    EdgeEvent::Preserved(caller)
-                };
-            }
-            if let Some(&(fa, fb)) = section_origins.get(&current) {
-                return EdgeEvent::Generated {
-                    face_a: store.input_face_to_caller.get(&fa).copied(),
-                    face_b: store.input_face_to_caller.get(&fb).copied(),
-                };
-            }
-            if let Some(&old) = lineage.rewrites.get(&current) {
-                current = old;
-                transformed = true;
-                continue;
-            }
-            if let Some(&pb) = lineage.to_pave_block.get(&current) {
-                if let Some(&original) = pb_original.get(&pb) {
-                    current = original;
-                    transformed = true;
-                    continue;
-                }
-                break;
-            }
-            if let Some(&parent) = split_parent.get(&current) {
-                current = parent;
-                transformed = true;
-                continue;
-            }
-            break;
+/// Split the target solid's faces wherever they intersect the tool while
+/// preserving every target patch and returning total construction lineage.
+///
+/// The tool participates only in the pave-filler arrangement. Its faces are
+/// never selected into the result and no target patch is classified or
+/// discarded. The currently qualified subset requires a real transversal
+/// split, no same-domain face overlap, and complete edge lineage.
+///
+/// # Errors
+///
+/// Returns [`AlgoError::UnsupportedImprint`] when the operands are identical,
+/// no target face is divided, a same-domain overlap is present, or any result
+/// edge lacks construction lineage. Other GFA errors are propagated.
+pub fn imprint_with_entity_evolution(
+    topo: &mut Topology,
+    target: SolidId,
+    tool: SolidId,
+) -> Result<(SolidId, EntityEvolution), AlgoError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        if target == tool {
+            return Err(AlgoError::UnsupportedImprint {
+                reason: "target and tool must be distinct solid handles".into(),
+            });
         }
-        EdgeEvent::Unresolved
-    };
+        for (label, solid) in [("target", target), ("tool", tool)] {
+            for face_id in remus_topology::explorer::solid_faces(topo, solid)? {
+                let surface = topo.face(face_id)?.surface();
+                if !surface.is_planar() {
+                    return Err(AlgoError::UnsupportedImprint {
+                        reason: format!(
+                            "{label} face {} has unqualified `{}` surface geometry",
+                            face_id.index(),
+                            surface.type_tag()
+                        ),
+                    });
+                }
+            }
+        }
+        reject_unsupported_curves(topo, target)?;
+        reject_unsupported_curves(topo, tool)?;
 
-    // The export edge map is store idx → caller edge: total over the
-    // result's edges by construction, so inverting it enumerates exactly
-    // the result's edge set.
-    let mut edges: Vec<(usize, EdgeEvent)> = export
-        .edges
-        .iter()
-        .map(|(&store_idx, caller_edge)| (caller_edge.index(), resolve_edge(store_idx)))
-        .collect();
-    edges.sort_by_key(|(idx, _)| *idx);
+        let tolerance = Tolerance::default();
+        let mut store = crate::ds::GfaShapeStore::new(topo, target, tool)?;
+        let mut arena = GfaArena::new();
+        pave_filler::run_pave_filler(
+            &mut store.topo,
+            store.solid_a,
+            store.solid_b,
+            tolerance,
+            &mut arena,
+        )?;
+        let lineage = EntityLineage::capture(&arena);
 
-    let mut vertices: Vec<(usize, VertexEvent)> = export
-        .vertices
-        .iter()
-        .map(|(&store_idx, caller_vertex)| {
-            let event = store
-                .input_vertex_to_caller
-                .get(&store_idx)
-                .map_or(VertexEvent::Created, |&caller| {
-                    VertexEvent::Preserved(caller)
-                });
-            (caller_vertex.index(), event)
-        })
-        .collect();
-    vertices.sort_by_key(|(idx, _)| *idx);
+        let mut builder = Builder::with_tolerance(
+            std::mem::take(&mut store.topo),
+            arena,
+            store.solid_a,
+            store.solid_b,
+            tolerance,
+        );
+        builder.perform_imprint_arrangement()?;
+        let (store_topo, store_result, store_origins, builder_lineage) =
+            builder.build_imprint_result_with_origins()?;
+        store.topo = store_topo;
 
-    Ok((
-        result,
-        EntityEvolution {
-            faces,
-            edges,
-            vertices,
-        },
-    ))
+        let (result, evolution) = export_entity_evolution(
+            topo,
+            &store,
+            store_result,
+            store_origins,
+            &builder_lineage,
+            &lineage,
+        )?;
+        if evolution.faces.iter().any(|(_, source)| source.is_none())
+            || evolution
+                .edges
+                .iter()
+                .any(|(_, event)| matches!(event, EdgeEvent::Unresolved))
+        {
+            return Err(AlgoError::UnsupportedImprint {
+                reason: "result construction lineage is incomplete".into(),
+            });
+        }
+        Ok((result, evolution))
+    })
 }
 
 #[cfg(test)]

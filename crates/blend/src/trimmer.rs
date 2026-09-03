@@ -8,6 +8,7 @@
 //! straight contact lines, creating new edges, vertices, and wires for the
 //! trimmed result.
 
+use remus_math::nurbs::curve::NurbsCurve;
 use remus_math::vec::Point3;
 use remus_topology::Topology;
 use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
@@ -70,6 +71,10 @@ struct BoundaryHit {
     t: f64,
     /// 3D intersection point.
     point_3d: Point3,
+    /// Parameter on the contact curve at this boundary.
+    contact_parameter: f64,
+    /// Certified distance from the contact endpoint to the boundary carrier.
+    tolerance: f64,
 }
 
 /// Trim a face along a contact curve, keeping the side away from the fillet.
@@ -181,6 +186,8 @@ pub fn trim_face(
                 edge_idx: idx,
                 t,
                 point_3d: pt,
+                contact_parameter: 0.0,
+                tolerance: VERTEX_TOL,
             });
         }
     }
@@ -799,6 +806,84 @@ fn line_segment_intersect_2d(
 // General trimmer (planar + non-planar)
 // ===========================================================================
 
+/// Closest point on an oriented edge to `target`, returned as a normalized
+/// traversal parameter, the curve point, and the residual distance.
+fn closest_on_oriented_edge(
+    topo: &Topology,
+    oriented: OrientedEdge,
+    target: Point3,
+) -> Result<(f64, Point3, f64), BlendError> {
+    const SAMPLES: u32 = 128;
+
+    let edge = topo.edge(oriented.edge())?;
+    let start = topo.vertex(edge.start())?.point();
+    let end = topo.vertex(edge.end())?.point();
+    if matches!(edge.curve(), EdgeCurve::Line) {
+        let (a, b) = if oriented.is_forward() {
+            (start, end)
+        } else {
+            (end, start)
+        };
+        let direction = b - a;
+        let denominator = direction.dot(direction);
+        let fraction = if denominator > f64::EPSILON {
+            (target - a).dot(direction) / denominator
+        } else {
+            0.0
+        }
+        .clamp(0.0, 1.0);
+        let point = a + direction * fraction;
+        return Ok((fraction, point, (point - target).length()));
+    }
+
+    let (source_t0, source_t1) = edge.strict_domain().map_err(crate::edge_domain_input)?;
+    let (t0, t1) = if oriented.is_forward() {
+        (source_t0, source_t1)
+    } else {
+        (source_t1, source_t0)
+    };
+    let evaluate = |fraction: f64| {
+        let parameter = (t1 - t0).mul_add(fraction, t0);
+        edge.curve().evaluate_with_endpoints(parameter, start, end)
+    };
+    let mut best_index = 0_u32;
+    let mut best_point = evaluate(0.0);
+    let mut best_distance = (best_point - target).length();
+    for index in 1..=SAMPLES {
+        let fraction = f64::from(index) / f64::from(SAMPLES);
+        let point = evaluate(fraction);
+        let distance = (point - target).length();
+        if distance < best_distance {
+            best_index = index;
+            best_point = point;
+            best_distance = distance;
+        }
+    }
+    let mut low = f64::from(best_index.saturating_sub(1)) / f64::from(SAMPLES);
+    let mut high = f64::from((best_index + 1).min(SAMPLES)) / f64::from(SAMPLES);
+    for _ in 0..32 {
+        let left = (2.0 * low + high) / 3.0;
+        let right = (low + 2.0 * high) / 3.0;
+        if (evaluate(left) - target).length() <= (evaluate(right) - target).length() {
+            high = right;
+        } else {
+            low = left;
+        }
+    }
+    let fraction = f64::midpoint(low, high);
+    let point = evaluate(fraction);
+    let distance = (point - target).length();
+    if distance < best_distance {
+        Ok((fraction, point, distance))
+    } else {
+        Ok((
+            f64::from(best_index) / f64::from(SAMPLES),
+            best_point,
+            best_distance,
+        ))
+    }
+}
+
 /// Trim a face along a 3D contact curve, handling both planar and non-planar
 /// surfaces.
 ///
@@ -816,13 +901,12 @@ fn line_segment_intersect_2d(
 pub fn trim_face_general(
     topo: &mut Topology,
     face_id: FaceId,
-    contact_3d: &[Point3],
+    contact: &NurbsCurve,
     keep: TrimKeep,
     avoid_edges: &[EdgeId],
 ) -> Result<TrimResult, BlendError> {
-    if contact_3d.len() < 2 {
-        return Err(BlendError::TrimmingFailure { face: face_id });
-    }
+    let (contact_t0, contact_t1) = contact.domain();
+    let contact_3d = [contact.evaluate(contact_t0), contact.evaluate(contact_t1)];
 
     let face = topo.face(face_id)?;
     let surface = face.surface().clone();
@@ -857,72 +941,88 @@ pub fn trim_face_general(
             })
             .collect();
 
-        return trim_face(topo, face_id, contact_3d, &contact_uv, keep, avoid_edges);
+        return trim_face(topo, face_id, &contact_3d, &contact_uv, keep, avoid_edges);
     }
 
-    // Non-planar path: project to UV space
-    let uv_start = surface.project_point(contact_3d[0]);
-    let uv_end = surface.project_point(contact_3d[contact_3d.len() - 1]);
-
-    let (Some(uv_s), Some(uv_e)) = (uv_start, uv_end) else {
-        log::warn!(
-            "trim_face_general: UV projection failed for non-planar face {face_id:?}, returning untrimmed"
-        );
-        return Ok(untrimmed_result(face_id));
-    };
-
+    // Non-planar path: a walking contact is bounded by the same end faces as
+    // its spine, so its two endpoints must lie on two boundary carriers. Find
+    // those carriers against their actual 3D curves; projecting only boundary
+    // vertices to UV linearized circles/NURBS edges and missed valid contacts.
     let face = topo.face(face_id)?;
     let reversed = face.is_reversed();
     let outer_wire_id = face.outer_wire();
     let outer_wire = topo.wire(outer_wire_id)?;
     let oriented_edges: Vec<OrientedEdge> = outer_wire.edges().to_vec();
 
-    #[allow(clippy::type_complexity)]
-    let mut edge_data_uv: Vec<(OrientedEdge, Point3, Point3, (f64, f64), (f64, f64))> =
-        Vec::with_capacity(oriented_edges.len());
-    for &oe in &oriented_edges {
-        let edge = topo.edge(oe.edge())?;
-        let (s3, e3) = if oe.is_forward() {
-            (
-                topo.vertex(edge.start())?.point(),
-                topo.vertex(edge.end())?.point(),
-            )
-        } else {
-            (
-                topo.vertex(edge.end())?.point(),
-                topo.vertex(edge.start())?.point(),
-            )
-        };
-        let s_uv = surface.project_point(s3);
-        let e_uv = surface.project_point(e3);
-        let (Some(s_uv), Some(e_uv)) = (s_uv, e_uv) else {
-            log::warn!(
-                "trim_face_general: boundary UV projection failed for face {face_id:?}, returning untrimmed"
-            );
-            return Ok(untrimmed_result(face_id));
-        };
-        edge_data_uv.push((oe, s3, e3, s_uv, e_uv));
-    }
-
-    let mut hits: Vec<BoundaryHit> = Vec::new();
-    for (edge_idx, (_oe, s3, e3, s_uv, e_uv)) in edge_data_uv.iter().enumerate() {
-        if let Some(t) = line_segment_intersect_2d(*s_uv, *e_uv, uv_s, uv_e) {
-            let point_3d = *s3 + (*e3 - *s3) * t;
+    let candidates = |target: Point3, parameter: f64| -> Result<Vec<BoundaryHit>, BlendError> {
+        let mut hits = Vec::with_capacity(oriented_edges.len());
+        for (edge_idx, oriented) in oriented_edges.iter().copied().enumerate() {
+            if avoid_edges.contains(&oriented.edge()) {
+                continue;
+            }
+            let (t, _boundary_point, distance) = closest_on_oriented_edge(topo, oriented, target)?;
             hits.push(BoundaryHit {
                 edge_idx,
                 t,
-                point_3d,
+                point_3d: target,
+                contact_parameter: parameter,
+                tolerance: distance.max(VERTEX_TOL),
             });
         }
+        hits.sort_by(|left, right| left.tolerance.total_cmp(&right.tolerance));
+        Ok(hits)
+    };
+    let start_hits = candidates(contact_3d[0], contact_t0)?;
+    let end_hits = candidates(contact_3d[1], contact_t1)?;
+    let mut selected = None;
+    for start in &start_hits {
+        for end in &end_hits {
+            if start.edge_idx == end.edge_idx
+                || oriented_edges[start.edge_idx].edge() == oriented_edges[end.edge_idx].edge()
+            {
+                continue;
+            }
+            let score = start.tolerance + end.tolerance;
+            if selected
+                .as_ref()
+                .is_none_or(|(_, _, best): &(&BoundaryHit, &BoundaryHit, f64)| score < *best)
+            {
+                selected = Some((start, end, score));
+            }
+        }
     }
-
-    if hits.len() != 2 {
+    let Some((start, end, _)) = selected else {
         log::warn!(
-            "trim_face_general: expected 2 boundary hits, got {} for face {face_id:?}, returning untrimmed",
-            hits.len()
+            "curved trim {face_id:?}: contact endpoints do not reach distinct boundary edges"
         );
-        return Ok(untrimmed_result(face_id));
+        return Err(BlendError::TrimmingFailure { face: face_id });
+    };
+    let scale = (contact_3d[1] - contact_3d[0]).length().max(1.0);
+    let fit_tolerance = 50.0 * remus_math::tolerance::Tolerance::new().linear * scale;
+    if start.tolerance > fit_tolerance || end.tolerance > fit_tolerance {
+        log::warn!(
+            "curved trim {face_id:?}: endpoint residuals {} and {} exceed {fit_tolerance}",
+            start.tolerance,
+            end.tolerance
+        );
+        return Err(BlendError::TrimmingFailure { face: face_id });
     }
+    let mut hits = [
+        BoundaryHit {
+            edge_idx: start.edge_idx,
+            t: start.t,
+            point_3d: start.point_3d,
+            contact_parameter: start.contact_parameter,
+            tolerance: start.tolerance,
+        },
+        BoundaryHit {
+            edge_idx: end.edge_idx,
+            t: end.t,
+            point_3d: end.point_3d,
+            contact_parameter: end.contact_parameter,
+            tolerance: end.tolerance,
+        },
+    ];
 
     // Sort hits by edge index (to process in wire order)
     hits.sort_by_key(|h| (h.edge_idx, (h.t * 1e10) as i64));
@@ -935,24 +1035,31 @@ pub fn trim_face_general(
     let idx_a = hit_a.edge_idx;
     let idx_b = hit_b.edge_idx;
 
-    let oe_a = edge_data_uv[idx_a].0;
-    let oe_b = edge_data_uv[idx_b].0;
+    let oe_a = oriented_edges[idx_a];
+    let oe_b = oriented_edges[idx_b];
 
     // Same wire position, or two positions of a repeated (seam-style) edge:
     // the second split would re-split the edge the first propagate_split
     // already rewrote out of every wire. Bail before any mutation.
     if idx_a == idx_b || oe_a.edge() == oe_b.edge() {
+        log::warn!("curved trim {face_id:?}: both endpoints land on one boundary carrier");
         return Err(BlendError::TrimmingFailure { face: face_id });
     }
 
-    let va = topo.add_vertex(Vertex::new(hit_a.point_3d, VERTEX_TOL));
-    let vb = topo.add_vertex(Vertex::new(hit_b.point_3d, VERTEX_TOL));
+    let va = topo.add_vertex(Vertex::new(hit_a.point_3d, hit_a.tolerance));
+    let vb = topo.add_vertex(Vertex::new(hit_b.point_3d, hit_b.tolerance));
     let (sub_a1, sub_a2) = split_edge_at(topo, &oe_a, va)?;
     let (sub_b1, sub_b2) = split_edge_at(topo, &oe_b, vb)?;
     let (ea_pre, ea_post) = (sub_a1.edge(), sub_a2.edge());
     let (eb_pre, eb_post) = (sub_b1.edge(), sub_b2.edge());
 
-    let contact_eid = topo.add_edge(Edge::new(va, vb, EdgeCurve::Line));
+    let contact_eid = crate::builder_utils::add_certified_curve_edge(
+        topo,
+        va,
+        vb,
+        EdgeCurve::NurbsCurve(contact.clone()),
+        (hit_a.contact_parameter, hit_b.contact_parameter),
+    )?;
 
     // Build "left" side wire: edges from idx_a..idx_b + contact edge.
     // New split edges (ea_post, eb_pre, etc.) are created in traversal order,
@@ -976,40 +1083,6 @@ pub fn trim_face_general(
     right_edges.push(OrientedEdge::new(ea_pre, true));
     right_edges.push(OrientedEdge::new(contact_eid, true));
 
-    let keep_side = match keep {
-        TrimKeep::Side(side) => side,
-        TrimKeep::AwayFrom(p) => {
-            let face_normal = match &surface {
-                FaceSurface::Plane { normal, .. } => {
-                    if reversed {
-                        -*normal
-                    } else {
-                        *normal
-                    }
-                }
-                _ => return Err(BlendError::TrimmingFailure { face: face_id }),
-            };
-            let contact_dir = hit_b.point_3d - hit_a.point_3d;
-            let left_sample = (idx_a..idx_b).rev().find_map(|i| {
-                let oe = oriented_edges[i];
-                let e = topo.edge(oe.edge()).ok()?;
-                let vid = if oe.is_forward() { e.end() } else { e.start() };
-                let q = topo.vertex(vid).ok()?.point();
-                let side = face_normal.dot(contact_dir.cross(q - hit_a.point_3d));
-                (side.abs() > 1e-12).then_some(side > 0.0)
-            });
-            let Some(left_chain_is_left) = left_sample else {
-                return Err(BlendError::TrimmingFailure { face: face_id });
-            };
-            let p_is_left = face_normal.dot(contact_dir.cross(p - hit_a.point_3d)) > 0.0;
-            if p_is_left == left_chain_is_left {
-                TrimSide::Right
-            } else {
-                TrimSide::Left
-            }
-        }
-    };
-
     // Prefer the chain that excludes the blended (spine) edges — see
     // `trim_face` for the rationale. Fall back to `keep_side` when the
     // spine edge appears in both chains or neither.
@@ -1017,15 +1090,50 @@ pub fn trim_face_general(
     let avoid_right = right_edges
         .iter()
         .any(|oe| avoid_edges.contains(&oe.edge()));
-    let (keep_edges, _contact_forward) = if avoid_left == avoid_right {
+    let keep_edges = if avoid_left == avoid_right {
+        let keep_side = match keep {
+            TrimKeep::Side(side) => side,
+            TrimKeep::AwayFrom(point) => {
+                let (Some(a), Some(b), Some(p)) = (
+                    surface.project_point(hit_a.point_3d),
+                    surface.project_point(hit_b.point_3d),
+                    surface.project_point(point),
+                ) else {
+                    log::warn!("curved trim {face_id:?}: fallback UV projection failed");
+                    return Err(BlendError::TrimmingFailure { face: face_id });
+                };
+                let side = |q: (f64, f64)| (b.0 - a.0) * (q.1 - a.1) - (b.1 - a.1) * (q.0 - a.0);
+                let left_sample = (idx_a..idx_b).rev().find_map(|index| {
+                    let use_ = oriented_edges[index];
+                    let edge = topo.edge(use_.edge()).ok()?;
+                    let vertex = if use_.is_forward() {
+                        edge.end()
+                    } else {
+                        edge.start()
+                    };
+                    let uv = surface.project_point(topo.vertex(vertex).ok()?.point())?;
+                    let signed = side(uv);
+                    (signed.abs() > PARAM_TOL).then_some(signed > 0.0)
+                });
+                let Some(left_chain_is_left) = left_sample else {
+                    log::warn!("curved trim {face_id:?}: fallback side is indeterminate");
+                    return Err(BlendError::TrimmingFailure { face: face_id });
+                };
+                if (side(p) > 0.0) == left_chain_is_left {
+                    TrimSide::Right
+                } else {
+                    TrimSide::Left
+                }
+            }
+        };
         match keep_side {
-            TrimSide::Left => (left_edges, false),
-            TrimSide::Right => (right_edges, true),
+            TrimSide::Left => left_edges,
+            TrimSide::Right => right_edges,
         }
     } else if avoid_left {
-        (right_edges, true)
+        right_edges
     } else {
-        (left_edges, false)
+        left_edges
     };
 
     if keep_edges.is_empty() {

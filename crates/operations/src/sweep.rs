@@ -10,13 +10,13 @@ use remus_math::nurbs::curve::NurbsCurve;
 use remus_math::nurbs::surface_fitting::interpolate_surface;
 use remus_math::tolerance::Tolerance;
 use remus_math::vec::{Point3, Vec3};
-use remus_topology::Topology;
 use remus_topology::edge::{Edge, EdgeCurve};
 use remus_topology::face::{Face, FaceId, FaceSurface};
 use remus_topology::shell::Shell;
 use remus_topology::solid::{Solid, SolidId};
 use remus_topology::vertex::{Vertex, VertexId};
-use remus_topology::wire::{OrientedEdge, Wire};
+use remus_topology::wire::{OrientedEdge, Wire, WireId};
+use remus_topology::{BodyClass, BodyId, Topology};
 
 use crate::dot_normal_point;
 
@@ -827,6 +827,78 @@ pub fn sweep(
     let solid = topo.add_solid(Solid::new(shell_id, vec![]));
 
     Ok(solid)
+}
+
+/// Sweep a closed planar wire body along a path curve to produce a solid.
+///
+/// This is the body-class entry point for wire profiles. It snapshots the
+/// profile into a private planar face so the resulting operation cannot alias
+/// or mutate the caller's first-class wire root. Open and non-planar wire
+/// profiles remain explicitly unqualified.
+///
+/// # Errors
+///
+/// Returns a typed unsupported error for an open or non-planar profile, a
+/// body-validation error for an invalid wire, or any error from [`sweep`]. All
+/// topology mutations roll back on failure.
+pub fn sweep_wire(
+    topo: &mut Topology,
+    profile: WireId,
+    path: &NurbsCurve,
+) -> Result<SolidId, crate::OperationsError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let actual = topo.body_class_of(BodyId::Wire(profile))?;
+        if actual != BodyClass::Wire {
+            return Err(crate::OperationsError::BodyClassOperationUnsupported {
+                operation: "sweep wire profile",
+                actual: actual.as_str(),
+            });
+        }
+        if !topo.wire(profile)?.is_closed() {
+            return Err(crate::OperationsError::Unsupported {
+                operation: "sweep_wire",
+                reason: "open wire profiles require sheet-result sweep assembly".into(),
+            });
+        }
+        match remus_topology::builder::wire_plane(topo, profile) {
+            Ok(_) => {}
+            Err(remus_topology::TopologyError::NotPlanar) => {
+                return Err(crate::OperationsError::Unsupported {
+                    operation: "sweep_wire",
+                    reason: "non-planar wire profiles require an explicit section surface".into(),
+                });
+            }
+            Err(error) => return Err(error.into()),
+        }
+
+        let report = remus_check::validate::validate_wire_body(
+            topo,
+            profile,
+            &remus_check::validate::ValidateOptions::default(),
+        )?;
+        if report.error_count() != 0 {
+            return Err(crate::OperationsError::BodyValidationFailed {
+                body_class: BodyClass::Wire.as_str(),
+                error_count: report.error_count(),
+            });
+        }
+
+        let copied = crate::copy::copy_wire(topo, profile)?;
+        let face = remus_topology::builder::make_planar_face_from_wire(topo, copied)?;
+        let solid = sweep(topo, face, path)?;
+        let result_report = remus_check::validate::validate_solid(
+            topo,
+            solid,
+            &remus_check::validate::ValidateOptions::default(),
+        )?;
+        if !result_report.is_valid() {
+            return Err(crate::OperationsError::BodyValidationFailed {
+                body_class: BodyClass::Solid.as_str(),
+                error_count: result_report.error_count(),
+            });
+        }
+        Ok(solid)
+    })
 }
 
 /// Sweep a face along a path with smooth NURBS side surfaces.

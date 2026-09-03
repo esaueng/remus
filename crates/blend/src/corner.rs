@@ -7,10 +7,11 @@
 //! each vertex and builds the appropriate corner patch:
 //!
 //! - **`MultiEdge(n)`** — 3+ stripes: delegates to `spherical_triangle` for
-//!   exact rational NURBS patches on the rolling-ball sphere.
+//!   an exact analytic sphere patch or a shared-edge triangle fan.
 //! - **Two-edge** — 2 stripes meeting; a simple triangular fill.
 //! - **None** — 0-1 stripes; no corner needed.
 
+use remus_math::det_hash::DetHashMap;
 use remus_math::nurbs::surface::NurbsSurface;
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
@@ -220,7 +221,38 @@ fn build_triangular_patch(
     Ok((surface, vec![v0, v1, v2], vec![e0, e1, e2]))
 }
 
-/// Solve the exact corner ball for a vertex where stripes over three
+/// Solve a point offset by signed `radius` from every supplied plane.
+fn solve_tangent_ball_offset(normals: &[Vec3], signs: &[f64], radius: f64) -> Option<Vec3> {
+    if normals.len() < 3 || normals.len() != signs.len() {
+        return None;
+    }
+    let mut best: Option<(usize, usize, usize, f64)> = None;
+    for i in 0..normals.len() - 2 {
+        for j in i + 1..normals.len() - 1 {
+            for k in j + 1..normals.len() {
+                let det = normals[i].dot(normals[j].cross(normals[k]));
+                if best.is_none_or(|(_, _, _, best_det)| det.abs() > best_det.abs()) {
+                    best = Some((i, j, k, det));
+                }
+            }
+        }
+    }
+    let (i, j, k, det) = best?;
+    if det.abs() < 1e-6 {
+        return None;
+    }
+    let offset = (normals[j].cross(normals[k]) * (signs[i] * radius)
+        + normals[k].cross(normals[i]) * (signs[j] * radius)
+        + normals[i].cross(normals[j]) * (signs[k] * radius))
+        * (1.0 / det);
+    normals
+        .iter()
+        .zip(signs)
+        .all(|(normal, sign)| (normal.dot(offset) - sign * radius).abs() <= radius * 1e-8)
+        .then_some(offset)
+}
+
+/// Solve the exact corner ball for a vertex where stripes over three or more
 /// distinct planar faces meet.
 ///
 /// The ball is tangent to all three face planes on the material side, so its
@@ -232,17 +264,17 @@ fn build_triangular_patch(
 /// normal-sum offset, which is only a tangent centre when the faces are
 /// mutually perpendicular.
 ///
-/// Returns the centre and the three tangency contact points (one per face,
-/// each exactly at distance R from the centre), or `None` when the vertex
-/// is not a three-planar-face corner or the planes are too close to
-/// coplanar to solve stably (the caller then falls back to the heuristic).
+/// Returns the centre, one tangency contact per face, and the common corner
+/// orientation, or `None` when the signed constraints conflict, alternate
+/// around the vertex, the vertex is not wholly planar, or no well-conditioned
+/// plane triple determines a centre satisfying every plane.
 fn tangent_corner_ball(
     vertex_id: VertexId,
     stripes: &[Stripe],
     stripe_indices: &[usize],
     radius: f64,
     topo: &Topology,
-) -> Option<(Point3, Vec<Point3>)> {
+) -> Option<(Point3, Vec<Point3>, bool)> {
     let vertex_pos = topo.vertex(vertex_id).ok()?.point();
 
     let mut plane_faces: Vec<usize> = Vec::new();
@@ -252,36 +284,38 @@ fn tangent_corner_ball(
         let stripe = &stripes[idx];
         let section = contact_section_at_vertex(vertex_id, stripe, topo)?;
         for face_id in [stripe.face1, stripe.face2] {
-            if plane_faces.contains(&face_id.index()) {
-                continue;
-            }
-            let FaceSurface::Plane { normal, .. } = topo.face(face_id).ok()?.surface() else {
+            let face = topo.face(face_id).ok()?;
+            let FaceSurface::Plane { .. } = face.surface() else {
                 return Option::None;
             };
-            let n = normal.normalize().ok()?;
+            let n = face.effective_plane_normal()?.normalize().ok()?;
             let side = n.dot(section.center - vertex_pos);
             if side.abs() < radius * 1e-6 {
                 return Option::None; // section centre on the plane: degenerate
             }
-            plane_faces.push(face_id.index());
-            normals.push(n);
-            signs.push(side.signum());
+            let sign = side.signum();
+            if let Some(existing) = plane_faces.iter().position(|face| *face == face_id.index()) {
+                if (signs[existing] - sign).abs() > TOL || normals[existing].dot(n) < 1.0 - TOL {
+                    return Option::None;
+                }
+            } else {
+                plane_faces.push(face_id.index());
+                normals.push(n);
+                signs.push(sign);
+            }
         }
     }
-    if normals.len() != 3 {
+    let is_convex = if signs.iter().all(|sign| *sign < 0.0) {
+        true
+    } else if signs.iter().all(|sign| *sign > 0.0) {
+        false
+    } else {
+        // A connected spherical cap has one material side. Alternating sides
+        // require a general vertex patch rather than silently flipping part
+        // of one analytic sphere fan.
         return Option::None;
-    }
-
-    // Cramer's rule on nᵢ · c' = sᵢ·R with c' = c − v.
-    let det = normals[0].dot(normals[1].cross(normals[2]));
-    if det.abs() < 1e-6 {
-        return Option::None; // near-coplanar normals: unstable
-    }
-    let b = [signs[0] * radius, signs[1] * radius, signs[2] * radius];
-    let offset = (normals[1].cross(normals[2]) * b[0]
-        + normals[2].cross(normals[0]) * b[1]
-        + normals[0].cross(normals[1]) * b[2])
-        * (1.0 / det);
+    };
+    let offset = solve_tangent_ball_offset(&normals, &signs, radius)?;
     let center = vertex_pos + offset;
 
     // Tangency contact on plane i: the centre projected onto the plane.
@@ -290,7 +324,7 @@ fn tangent_corner_ball(
         .zip(&signs)
         .map(|(n, s)| center - *n * (*s * radius))
         .collect();
-    Some((center, contacts))
+    Some((center, contacts, is_convex))
 }
 
 /// Classify the vertex blend type based on the stripes meeting at this vertex.
@@ -330,14 +364,28 @@ fn build_multi_edge_corner(
     let radius = stripe_radius_at_vertex(vertex_id, &stripes[indices[0]], topo)
         .ok_or(BlendError::CornerFailure { vertex: vertex_id })?;
     let vertex_pos = topo.vertex(vertex_id)?.point();
+    let all_incident_faces_planar = indices.iter().try_fold(true, |all_planar, &index| {
+        let stripe = &stripes[index];
+        Ok::<_, BlendError>(
+            all_planar
+                && matches!(
+                    topo.face(stripe.face1)?.surface(),
+                    FaceSurface::Plane { .. }
+                )
+                && matches!(
+                    topo.face(stripe.face2)?.surface(),
+                    FaceSurface::Plane { .. }
+                ),
+        )
+    })?;
 
-    // Exact path: a corner over three distinct planar faces has an exact
+    // Exact path: a corner over three or more distinct planar faces has an exact
     // tangent ball, solved from the face planes and the material side. Its
     // tangency points replace the stripes' raw end contacts — the stripe
     // sections end at the vertex plane (no setback), so the raw contacts sit
     // at distance √2·R from any tangent centre of an orthogonal corner and
     // would otherwise inflate the corner ball to √2·R.
-    if let Some((center, contacts)) =
+    if let Some((center, contacts, is_convex)) =
         tangent_corner_ball(vertex_id, stripes, &indices, radius, topo)
     {
         let face_normals: Vec<Vec3> = contacts
@@ -349,15 +397,30 @@ fn build_multi_edge_corner(
             contact_points: contacts,
             face_normals,
             radius,
-            is_convex: true,
+            is_convex,
             vertex_id,
             ball: Some((center, radius)),
         };
-        let sr = build_spherical_corner(&data)?;
-        return finish_corner_results(vec![sr], topo);
+        let spherical_results = if data.contact_points.len() == 3 {
+            vec![build_spherical_corner(&data)?]
+        } else {
+            build_n_edge_corner(&data)?
+        };
+        return finish_corner_results(spherical_results, topo);
     }
 
-    // Legacy heuristic path (non-planar or 4+ faces): estimate the ball from
+    if all_incident_faces_planar {
+        // A planar corner that failed the signed common-ball qualification is
+        // not eligible for the normal-sum approximation below. In particular,
+        // alternating material sides cannot share one consistently oriented
+        // analytic sphere fan.
+        return Err(BlendError::UnsupportedVertexBlend {
+            vertex: vertex_id,
+            stripes: indices.len(),
+        });
+    }
+
+    // Legacy heuristic path (non-planar faces): estimate the ball from
     // the raw contacts and the normal-sum offset. Only correct for mutually
     // orthogonal faces with set-back contacts.
     let mut face_normals: Vec<Vec3> = Vec::new();
@@ -425,6 +488,16 @@ fn finish_corner_results(
     topo: &mut Topology,
 ) -> Result<Vec<CornerResult>, BlendError> {
     let mut results = Vec::with_capacity(spherical_results.len());
+    let mut shared_vertices: DetHashMap<(i64, i64, i64), VertexId> = DetHashMap::default();
+    let mut shared_edges: DetHashMap<(usize, usize), EdgeId> = DetHashMap::default();
+    let point_key = |point: Point3| {
+        #[allow(clippy::cast_possible_truncation)]
+        (
+            (point.x() / TOL).round() as i64,
+            (point.y() / TOL).round() as i64,
+            (point.z() / TOL).round() as i64,
+        )
+    };
 
     for sr in spherical_results {
         let n_curves = sr.boundary_curves.len();
@@ -475,32 +548,56 @@ fn finish_corner_results(
         }
 
         for &point in &starts {
-            let vid = topo.add_vertex(Vertex::new(point, TOL));
+            let key = point_key(point);
+            let vid = *shared_vertices
+                .entry(key)
+                .or_insert_with(|| topo.add_vertex(Vertex::new(point, TOL)));
             new_vertices.push(vid);
         }
 
         for i in 0..n_curves {
             let v_start = new_vertices[i];
             let v_end = new_vertices[(i + 1) % n_curves];
-            let curve = sr.boundary_curves[i].clone();
-            let eid = add_certified_curve_edge(
-                topo,
-                v_start,
-                v_end,
-                EdgeCurve::NurbsCurve(curve),
-                domains[i],
-            )?;
+            let key = if v_start.index() <= v_end.index() {
+                (v_start.index(), v_end.index())
+            } else {
+                (v_end.index(), v_start.index())
+            };
+            let eid = if let Some(&existing) = shared_edges.get(&key) {
+                existing
+            } else {
+                let curve = sr.boundary_curves[i].clone();
+                let edge = add_certified_curve_edge(
+                    topo,
+                    v_start,
+                    v_end,
+                    EdgeCurve::NurbsCurve(curve),
+                    domains[i],
+                )?;
+                shared_edges.insert(key, edge);
+                edge
+            };
             new_edges.push(eid);
         }
 
         let oriented_edges: Vec<OrientedEdge> = new_edges
             .iter()
-            .map(|&eid| OrientedEdge::new(eid, true))
+            .enumerate()
+            .map(|(i, &eid)| {
+                let forward = topo
+                    .edge(eid)
+                    .is_ok_and(|edge| edge.start() == new_vertices[i]);
+                OrientedEdge::new(eid, forward)
+            })
             .collect();
         let wire = Wire::new(oriented_edges, true)?;
         let wire_id = topo.add_wire(wire);
 
-        let face = Face::new(wire_id, Vec::new(), sr.surface.clone());
+        let face = if sr.reversed {
+            Face::new_reversed(wire_id, Vec::new(), sr.surface.clone())
+        } else {
+            Face::new(wire_id, Vec::new(), sr.surface.clone())
+        };
         let face_id = topo.add_face(face);
 
         results.push(CornerResult {
@@ -605,6 +702,74 @@ mod tests {
     use remus_topology::solid::Solid;
     use remus_topology::vertex::Vertex;
     use remus_topology::wire::{OrientedEdge, Wire};
+
+    #[test]
+    fn n_way_linear_solver_accepts_a_solvable_mixed_signed_system() {
+        let xy = 3.0_f64.sqrt() * 0.5;
+        let normals = [
+            Vec3::new(xy, 0.0, 0.5),
+            Vec3::new(0.0, xy, -0.5),
+            Vec3::new(-xy, 0.0, 0.5),
+            Vec3::new(0.0, -xy, -0.5),
+        ];
+        let signs = [1.0, -1.0, 1.0, -1.0];
+        let offset = solve_tangent_ball_offset(&normals, &signs, 1.0).unwrap();
+        assert!((offset - Vec3::new(0.0, 0.0, 2.0)).length() < 1e-10);
+    }
+
+    #[test]
+    fn n_way_tangent_ball_rejects_inconsistent_extra_plane() {
+        let xy = 3.0_f64.sqrt() * 0.5;
+        let normals = [
+            Vec3::new(xy, 0.0, 0.5),
+            Vec3::new(0.0, xy, 0.5),
+            Vec3::new(-xy, 0.0, 0.5),
+            Vec3::new(0.0, -xy, 0.5),
+        ];
+        assert!(solve_tangent_ball_offset(&normals, &[1.0, 1.0, 1.0, -1.0], 1.0).is_none());
+    }
+
+    #[test]
+    fn four_way_sphere_fan_reuses_internal_edges_with_opposite_orientation() {
+        let mut topo = Topology::new();
+        let vertex_id = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 2.0), TOL));
+        let center = Point3::new(0.0, 0.0, 0.0);
+        let contacts = vec![
+            Point3::new(0.8, 0.0, 0.6),
+            Point3::new(0.0, 0.8, 0.6),
+            Point3::new(-0.8, 0.0, 0.6),
+            Point3::new(0.0, -0.8, 0.6),
+        ];
+        let data = VertexContactData {
+            vertex_pos: topo.vertex(vertex_id).unwrap().point(),
+            face_normals: contacts.iter().map(|point| *point - center).collect(),
+            contact_points: contacts,
+            radius: 1.0,
+            is_convex: true,
+            vertex_id,
+            ball: Some((center, 1.0)),
+        };
+        let spherical = build_n_edge_corner(&data).unwrap();
+        let results = finish_corner_results(spherical, &mut topo).unwrap();
+        assert_eq!(results.len(), 4);
+
+        let mut edge_uses = DetHashMap::<usize, Vec<bool>>::default();
+        for result in &results {
+            let face = topo.face(result.face_id).unwrap();
+            let wire = topo.wire(face.outer_wire()).unwrap();
+            for oriented in wire.edges() {
+                edge_uses
+                    .entry(oriented.edge().index())
+                    .or_default()
+                    .push(oriented.is_forward());
+            }
+        }
+        assert_eq!(edge_uses.len(), 8);
+        assert_eq!(edge_uses.values().filter(|uses| uses.len() == 1).count(), 4);
+        let internal: Vec<_> = edge_uses.values().filter(|uses| uses.len() == 2).collect();
+        assert_eq!(internal.len(), 4);
+        assert!(internal.iter().all(|uses| uses[0] != uses[1]));
+    }
 
     /// Helper: build a simple box topology with 8 vertices, 12 edges, 6 faces,
     /// and return the corner vertex at the origin along with 3 stripes that
@@ -1075,5 +1240,22 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn concave_planar_corner_uses_the_opposite_ball_and_face_orientation() {
+        let (mut topo, v000, mut stripes, _solid_id) = setup_box_corner();
+        let radius = 0.2;
+        stripes[0].sections[0].center = Point3::new(0.0, -radius, -radius);
+        stripes[1].sections[0].center = Point3::new(-radius, 0.0, -radius);
+        stripes[2].sections[0].center = Point3::new(-radius, -radius, 0.0);
+
+        let results = build_multi_edge_corner(v000, &stripes, &mut topo).unwrap();
+        assert_eq!(results.len(), 1);
+        let FaceSurface::Sphere(sphere) = &results[0].surface else {
+            panic!("Expected Sphere surface");
+        };
+        assert!((sphere.center() - Point3::new(-radius, -radius, -radius)).length() < 1e-12);
+        assert!(topo.face(results[0].face_id).unwrap().is_reversed());
     }
 }

@@ -1235,6 +1235,21 @@ fn operations_diagnostic(error: &OperationsError) -> DiagnosticRecord {
                 error.to_string(),
             )
         }
+        OperationsError::BodyValidationFailed { .. } => DiagnosticRecord::error(
+            FailureCategory::InvalidTopology,
+            "body_validation_failed",
+            error.to_string(),
+        ),
+        OperationsError::BodyClassMeasureMismatch { .. } => DiagnosticRecord::error(
+            FailureCategory::InvalidInput,
+            "body_class_measure_mismatch",
+            error.to_string(),
+        ),
+        OperationsError::BodyClassOperationUnsupported { .. } => DiagnosticRecord::error(
+            FailureCategory::Unsupported,
+            "body_class_operand_unsupported",
+            error.to_string(),
+        ),
         OperationsError::Unsupported { .. } | OperationsError::PatternInstancesOverlap { .. } => {
             DiagnosticRecord::error(
                 FailureCategory::Unsupported,
