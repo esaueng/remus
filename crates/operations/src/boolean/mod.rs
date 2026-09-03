@@ -7,10 +7,168 @@
 pub mod assembly;
 mod classify;
 mod types;
-pub(crate) use assembly::{assemble_solid_mixed, assemble_solid_mixed_with_history};
+pub(crate) use assembly::{
+    BoundaryCurveOverride, assemble_solid_mixed, assemble_solid_mixed_with_history,
+    assemble_solid_mixed_with_history_and_curves,
+};
 use assembly::{validate_boolean_result, validate_boolean_result_with_tolerance};
 pub use remus_algo::gfa::{EdgeEvent, EntityEvolution, VertexEvent};
 pub use types::{BooleanOp, BooleanOptions, FaceSpec};
+
+/// Exact cellular boolean output: a Compound plus per-region construction
+/// history in the same stable order as the Compound's solid list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BooleanRegionsResult {
+    /// Compound containing one independently valid solid per result region.
+    pub compound: remus_topology::compound::CompoundId,
+    /// Per-region provenance, ordered like `compound.solids()`.
+    pub regions: Vec<remus_algo::gfa::BooleanRegion>,
+}
+
+/// Which side of a solid a sheet trim retains.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SheetTrimMode {
+    /// Retain sheet patches classified inside the solid.
+    KeepInside,
+    /// Retain sheet patches classified outside the solid.
+    KeepOutside,
+}
+
+/// Oriented side of a sheet retained by a sheet-by-sheet trim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SheetSide {
+    /// The side the tool sheet's effective face normal points toward.
+    Positive,
+    /// The side opposite the tool sheet's effective face normal.
+    Negative,
+}
+
+/// The two new sheets returned by a mutual trim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MutualSheetTrim {
+    /// Sheet A trimmed by the selected side of sheet B.
+    pub sheet_a: remus_topology::shell::ShellId,
+    /// Sheet B trimmed by the selected side of sheet A.
+    pub sheet_b: remus_topology::shell::ShellId,
+}
+
+/// Trim a first-class sheet body against a solid.
+///
+/// The sheet participates as a GFA face set, not as a volume. Its split face
+/// patches are classified against `solid`, selected according to `mode`, and
+/// returned as a new validated sheet body. Coincident patches currently fail
+/// closed because their keep-side semantics are not yet qualified.
+///
+/// # Errors
+///
+/// Returns a typed unsupported error for non-sheet, coincident, or empty-result
+/// configurations. A result that fails the sheet validation profile is rolled
+/// back with [`crate::OperationsError::BodyValidationFailed`].
+pub fn trim_sheet_by_solid(
+    topo: &mut Topology,
+    sheet: remus_topology::shell::ShellId,
+    solid: SolidId,
+    mode: SheetTrimMode,
+) -> Result<remus_topology::shell::ShellId, crate::OperationsError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let result = remus_algo::gfa::trim_sheet_by_solid(
+            topo,
+            sheet,
+            solid,
+            mode == SheetTrimMode::KeepInside,
+        )?;
+        let report = remus_check::validate::validate_sheet_body(
+            topo,
+            result,
+            &remus_check::validate::ValidateOptions::default(),
+        )?;
+        if !report.is_valid() {
+            return Err(crate::OperationsError::BodyValidationFailed {
+                body_class: remus_topology::BodyClass::Sheet.as_str(),
+                error_count: report.error_count(),
+            });
+        }
+        Ok(result)
+    })
+}
+
+/// Mutually trim two first-class sheets by their oriented material sides.
+///
+/// The currently qualified exact subset is a transversal pair of single-face
+/// planar sheets. Each input is split by the other, and both selected face
+/// sets are returned as new validation-gated Sheet bodies.
+///
+/// # Errors
+///
+/// Returns a typed unsupported error outside the qualified subset. Either
+/// invalid output rolls the whole two-result operation back.
+pub fn mutual_trim_sheets(
+    topo: &mut Topology,
+    sheet_a: remus_topology::shell::ShellId,
+    sheet_b: remus_topology::shell::ShellId,
+    keep_a: SheetSide,
+    keep_b: SheetSide,
+) -> Result<MutualSheetTrim, crate::OperationsError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let (result_a, result_b) = remus_algo::gfa::mutual_trim_sheets(
+            topo,
+            sheet_a,
+            sheet_b,
+            keep_a == SheetSide::Positive,
+            keep_b == SheetSide::Positive,
+        )?;
+        for result in [result_a, result_b] {
+            let report = remus_check::validate::validate_sheet_body(
+                topo,
+                result,
+                &remus_check::validate::ValidateOptions::default(),
+            )?;
+            if !report.is_valid() {
+                return Err(crate::OperationsError::BodyValidationFailed {
+                    body_class: remus_topology::BodyClass::Sheet.as_str(),
+                    error_count: report.error_count(),
+                });
+            }
+        }
+        Ok(MutualSheetTrim {
+            sheet_a: result_a,
+            sheet_b: result_b,
+        })
+    })
+}
+
+/// Trim one first-class sheet by an oriented side of another sheet.
+///
+/// Unlike [`mutual_trim_sheets`], only `target` must be divided by the finite
+/// intersection. This composes for boundary-by-boundary surface modeling.
+///
+/// # Errors
+///
+/// Returns a typed unsupported error outside the qualified single-planar-face
+/// subset. An invalid output is rolled back.
+pub fn trim_sheet_by_sheet(
+    topo: &mut Topology,
+    target: remus_topology::shell::ShellId,
+    tool: remus_topology::shell::ShellId,
+    keep: SheetSide,
+) -> Result<remus_topology::shell::ShellId, crate::OperationsError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let result =
+            remus_algo::gfa::trim_sheet_by_sheet(topo, target, tool, keep == SheetSide::Positive)?;
+        let report = remus_check::validate::validate_sheet_body(
+            topo,
+            result,
+            &remus_check::validate::ValidateOptions::default(),
+        )?;
+        if !report.is_valid() {
+            return Err(crate::OperationsError::BodyValidationFailed {
+                body_class: remus_topology::BodyClass::Sheet.as_str(),
+                error_count: report.error_count(),
+            });
+        }
+        Ok(result)
+    })
+}
 
 /// Runs an exact GFA boolean, returning construction-derived vertex,
 /// edge, and face history (Issue 12) alongside the result — the L3
@@ -39,6 +197,209 @@ pub fn boolean_with_entity_evolution(
     Ok(remus_algo::gfa::boolean_with_entity_evolution(
         topo, algo_op, solid_a, solid_b,
     )?)
+}
+
+/// Run an exact boolean and preserve disconnected result regions as a
+/// Compound instead of folding them into one compatibility `Solid`.
+///
+/// Each member is independently validation-gated and carries total
+/// construction-derived face, edge, and vertex evolution. Incomplete edge
+/// lineage fails closed; this API never routes to the mesh fallback.
+///
+/// # Errors
+///
+/// Returns [`crate::OperationsError`] if GFA, region validation, or lineage
+/// qualification fails. All mutations roll back on failure.
+pub fn boolean_regions(
+    topo: &mut Topology,
+    op: BooleanOp,
+    solid_a: SolidId,
+    solid_b: SolidId,
+) -> Result<BooleanRegionsResult, crate::OperationsError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let algo_op = match op {
+            BooleanOp::Fuse => remus_algo::bop::BooleanOp::Fuse,
+            BooleanOp::Cut => remus_algo::bop::BooleanOp::Cut,
+            BooleanOp::Intersect => remus_algo::bop::BooleanOp::Intersect,
+        };
+        let regions = remus_algo::gfa::boolean_regions_with_entity_evolution(
+            topo, algo_op, solid_a, solid_b,
+        )?;
+        finish_boolean_regions(topo, op, regions)
+    })
+}
+
+fn finish_boolean_regions(
+    topo: &mut Topology,
+    op: BooleanOp,
+    regions: Vec<remus_algo::gfa::BooleanRegion>,
+) -> Result<BooleanRegionsResult, crate::OperationsError> {
+    if regions.is_empty() {
+        return Err(crate::OperationsError::EmptyResult {
+            reason: format!("{op:?} produced no regions"),
+        });
+    }
+    for region in &regions {
+        validate_boolean_result(topo, region.solid)?;
+        if region
+            .evolution
+            .edges
+            .iter()
+            .any(|(_, event)| matches!(event, remus_algo::gfa::EdgeEvent::Unresolved))
+        {
+            return Err(crate::OperationsError::InvalidInput {
+                reason: "cellular boolean result has incomplete edge lineage".into(),
+            });
+        }
+    }
+    let solids = regions.iter().map(|region| region.solid).collect();
+    let compound = topo.add_compound(remus_topology::compound::Compound::new(solids));
+    Ok(BooleanRegionsResult { compound, regions })
+}
+
+fn identity_boolean_region(
+    topo: &Topology,
+    solid: SolidId,
+) -> Result<remus_algo::gfa::BooleanRegion, crate::OperationsError> {
+    let mut faces = remus_topology::explorer::solid_faces(topo, solid)?;
+    let mut edges = remus_topology::explorer::solid_edges(topo, solid)?;
+    let mut vertices = remus_topology::explorer::solid_vertices(topo, solid)?;
+    faces.sort_by_key(|id| id.index());
+    edges.sort_by_key(|id| id.index());
+    vertices.sort_by_key(|id| id.index());
+    Ok(remus_algo::gfa::BooleanRegion {
+        solid,
+        evolution: EntityEvolution {
+            faces: faces
+                .into_iter()
+                .map(|id| (id.index(), Some(id.index())))
+                .collect(),
+            edges: edges
+                .into_iter()
+                .map(|id| (id.index(), EdgeEvent::Preserved(id.index())))
+                .collect(),
+            vertices: vertices
+                .into_iter()
+                .map(|id| (id.index(), VertexEvent::Preserved(id.index())))
+                .collect(),
+        },
+    })
+}
+
+fn compound_member_solids(
+    topo: &Topology,
+    compound: remus_topology::compound::CompoundId,
+) -> Result<Vec<SolidId>, crate::OperationsError> {
+    let members = topo.compound(compound)?.solids().to_vec();
+    if members.is_empty() {
+        return Err(crate::OperationsError::InvalidInput {
+            reason: "cellular boolean operand compound is empty".into(),
+        });
+    }
+    let components = members
+        .iter()
+        .map(|&solid| remus_topology::explorer::solid_faces(topo, solid))
+        .collect::<Result<Vec<_>, _>>()?;
+    if members.len() >= 2 && !components_are_disjoint_pieces(topo, &components) {
+        return Err(crate::OperationsError::Unsupported {
+            operation: "boolean_compound_regions",
+            reason: "compound members must be pairwise disjoint".into(),
+        });
+    }
+    Ok(members)
+}
+
+/// Boolean two cellular operands without collapsing their member solids.
+///
+/// Qualified semantics are deliberately bounded:
+/// - `Fuse` accepts pairwise-disjoint members and preserves them as regions;
+/// - `Intersect` distributes exact GFA intersections over every member pair;
+/// - `Cut` distributes a single tool member over every target member.
+///
+/// No path uses a mesh fallback. Unsupported overlap or multi-tool lineage
+/// composition fails closed.
+///
+/// # Errors
+///
+/// Returns [`crate::OperationsError`] for invalid/overlapping compounds, an
+/// unqualified Cut, an empty result, or any failed exact region operation.
+pub fn boolean_compound_regions(
+    topo: &mut Topology,
+    op: BooleanOp,
+    compound_a: remus_topology::compound::CompoundId,
+    compound_b: remus_topology::compound::CompoundId,
+) -> Result<BooleanRegionsResult, crate::OperationsError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let members_a = compound_member_solids(topo, compound_a)?;
+        let members_b = compound_member_solids(topo, compound_b)?;
+        match op {
+            BooleanOp::Fuse => {
+                let all_members: Vec<SolidId> =
+                    members_a.iter().chain(&members_b).copied().collect();
+                let components = all_members
+                    .iter()
+                    .map(|&solid| remus_topology::explorer::solid_faces(topo, solid))
+                    .collect::<Result<Vec<_>, _>>()?;
+                if !components_are_disjoint_pieces(topo, &components) {
+                    return Err(crate::OperationsError::Unsupported {
+                        operation: "boolean_compound_regions",
+                        reason: "fusing intersecting Compound members requires recursive lineage composition"
+                            .into(),
+                    });
+                }
+                let regions = all_members
+                    .into_iter()
+                    .map(|solid| identity_boolean_region(topo, solid))
+                    .collect::<Result<Vec<_>, _>>()?;
+                finish_boolean_regions(topo, op, regions)
+            }
+            BooleanOp::Intersect => {
+                let tolerance = remus_math::tolerance::Tolerance::new().linear;
+                let bounds_a = members_a
+                    .iter()
+                    .map(|&solid| crate::measure::solid_bounding_box(topo, solid))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let bounds_b = members_b
+                    .iter()
+                    .map(|&solid| crate::measure::solid_bounding_box(topo, solid))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let mut regions = Vec::new();
+                for (index_a, &solid_a) in members_a.iter().enumerate() {
+                    for (index_b, &solid_b) in members_b.iter().enumerate() {
+                        if !bounds_a[index_a]
+                            .expanded(tolerance)
+                            .intersects(bounds_b[index_b].expanded(tolerance))
+                        {
+                            continue;
+                        }
+                        regions.extend(remus_algo::gfa::boolean_regions_with_entity_evolution(
+                            topo,
+                            remus_algo::bop::BooleanOp::Intersect,
+                            solid_a,
+                            solid_b,
+                        )?);
+                    }
+                }
+                finish_boolean_regions(topo, op, regions)
+            }
+            BooleanOp::Cut if members_b.len() == 1 => {
+                let mut regions = Vec::new();
+                for solid_a in members_a {
+                    regions.extend(remus_algo::gfa::boolean_regions_with_entity_evolution(
+                        topo,
+                        remus_algo::bop::BooleanOp::Cut,
+                        solid_a,
+                        members_b[0],
+                    )?);
+                }
+                finish_boolean_regions(topo, op, regions)
+            }
+            BooleanOp::Cut => Err(crate::OperationsError::Unsupported {
+                operation: "boolean_compound_regions",
+                reason: "multi-tool Compound Cut requires recursive lineage composition".into(),
+            }),
+        }
+    })
 }
 
 /// Minimum distance used when healing coincident result boundaries, in mm.

@@ -1648,12 +1648,10 @@ impl BrepKernel {
     #[wasm_bindgen(js_name = "wireLength")]
     pub fn wire_length(&self, wire: u32) -> Result<f64, JsError> {
         let wire_id = self.resolve_wire(wire)?;
-        let wire_data = self.topo.wire(wire_id)?;
-        let mut total = 0.0;
-        for oe in wire_data.edges() {
-            total += remus_operations::measure::edge_length(&self.topo, oe.edge())?;
-        }
-        Ok(total)
+        Ok(remus_operations::measure::body_length(
+            &self.topo,
+            remus_topology::BodyId::Wire(wire_id),
+        )?)
     }
 
     /// Get the analytic surface parameters of a face.

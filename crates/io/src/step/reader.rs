@@ -1,7 +1,8 @@
 //! STEP Part 21 file reader.
 //!
 //! Parses ISO 10303-21 files and reconstructs B-Rep topology from
-//! `MANIFOLD_SOLID_BREP` / `BREP_WITH_VOIDS`, `CLOSED_SHELL`,
+//! `MANIFOLD_SOLID_BREP` / `BREP_WITH_VOIDS`,
+//! `SHELL_BASED_SURFACE_MODEL`, `OPEN_SHELL` / `CLOSED_SHELL`,
 //! `ADVANCED_FACE`, `EDGE_CURVE` and the analytic and NURBS geometry they
 //! reference.
 //!
@@ -43,11 +44,11 @@ use remus_topology::coedge::CoedgeId;
 use remus_topology::edge::{Edge, EdgeCurve};
 use remus_topology::face::{Face, FaceSurface};
 use remus_topology::pcurve::PCurve;
-use remus_topology::shell::Shell;
+use remus_topology::shell::{Shell, ShellId};
 use remus_topology::solid::{Solid, SolidId};
 use remus_topology::vertex::{Vertex, VertexId};
 use remus_topology::wire::{OrientedEdge, Wire, WireId};
-use remus_topology::{PeriodicWinding, Topology};
+use remus_topology::{BodyClass, PeriodicWinding, Topology};
 
 use crate::IoError;
 use crate::limits::{ImportLimits, ensure_input_size, ensure_limit};
@@ -127,6 +128,7 @@ impl remus_math::diagnostic::ToDiagnostic for StepImportDiagnostic {
 #[derive(Debug, Clone, PartialEq)]
 pub struct StepReadResult {
     solids: Vec<SolidId>,
+    sheets: Vec<ShellId>,
     diagnostics: Vec<StepImportDiagnostic>,
     validation: Vec<StepValidationReport>,
 }
@@ -136,6 +138,14 @@ impl StepReadResult {
     #[must_use]
     pub fn solids(&self) -> &[SolidId] {
         &self.solids
+    }
+
+    /// First-class sheet-body handles created by a body-aware import.
+    ///
+    /// Legacy solid-only entry points leave this collection empty.
+    #[must_use]
+    pub fn sheets(&self) -> &[ShellId] {
+        &self.sheets
     }
 
     /// Non-fatal diagnostics emitted by bounded import adapters.
@@ -203,7 +213,34 @@ pub fn read_step_with_limits_and_report(
     topo: &mut Topology,
     limits: ImportLimits,
 ) -> Result<StepReadResult, IoError> {
-    read_step_impl(input, topo, limits, None)
+    read_step_impl(input, topo, limits, None, false)
+}
+
+/// Read every supported STEP body root, including standalone sheet bodies.
+///
+/// `MANIFOLD_SOLID_BREP` and `BREP_WITH_VOIDS` produce solids;
+/// `SHELL_BASED_SURFACE_MODEL` produces tagged sheet-body shells. Root order is
+/// deterministic within each handle class.
+///
+/// # Errors
+///
+/// Returns [`IoError`] when a limit is exceeded, STEP data is invalid, or a
+/// sheet model does not contain an `OPEN_SHELL` or `CLOSED_SHELL` constituent.
+pub fn read_step_bodies(input: &str, topo: &mut Topology) -> Result<StepReadResult, IoError> {
+    read_step_bodies_with_limits(input, topo, ImportLimits::default())
+}
+
+/// Read every supported STEP body root with explicit hostile-input limits.
+///
+/// # Errors
+///
+/// Returns [`IoError`] when a limit is exceeded or STEP data is invalid.
+pub fn read_step_bodies_with_limits(
+    input: &str,
+    topo: &mut Topology,
+    limits: ImportLimits,
+) -> Result<StepReadResult, IoError> {
+    read_step_impl(input, topo, limits, None, true)
 }
 
 /// Read a STEP file and compare embedded CAx-IF validation properties with
@@ -224,7 +261,7 @@ pub fn read_step_with_validation(
     limits: ImportLimits,
     options: StepValidationOptions,
 ) -> Result<StepReadResult, IoError> {
-    read_step_impl(input, topo, limits, Some(options.validate()?))
+    read_step_impl(input, topo, limits, Some(options.validate()?), false)
 }
 
 fn read_step_impl(
@@ -232,17 +269,20 @@ fn read_step_impl(
     topo: &mut Topology,
     limits: ImportLimits,
     validation_options: Option<StepValidationOptions>,
+    include_sheets: bool,
 ) -> Result<StepReadResult, IoError> {
     ensure_input_size(input.len(), limits)?;
     let entities = parse_step_entities(input, limits)?;
-    // Solid B-Reps are the only thing this reader builds, so they are also
-    // the only consumers of the length factor. A file with none of them
-    // never reads a length-valued value, which is why the missing-unit
-    // refusal below is conditioned on their presence.
-    let has_solids = entities.values().any(is_solid_brep);
-    let Some(units) = resolve_unit_scale(&entities, has_solids)? else {
+    // Only requested body roots consume the length factor. A legacy
+    // solid-only import of a metadata/sheet-only file therefore retains its
+    // historical empty result instead of newly requiring length units.
+    let has_geometry = entities
+        .values()
+        .any(|entity| is_solid_brep(entity) || (include_sheets && is_sheet_model(entity)));
+    let Some(units) = resolve_unit_scale(&entities, has_geometry)? else {
         return Ok(StepReadResult {
             solids: Vec::new(),
+            sheets: Vec::new(),
             diagnostics: Vec::new(),
             validation: Vec::new(),
         });
@@ -255,18 +295,27 @@ fn read_step_impl(
     // an otherwise rejected file to the caller.
     let snapshot = topo.clone();
     let result: Result<StepReadResult, IoError> = (|| {
-        let (built, diagnostics) = {
-            let mut builder = StepBuilder::new(topo, &entities, units)?;
+        let (built_solids, built_sheets, diagnostics) = {
+            let mut builder = if include_sheets {
+                StepBuilder::new_for_body_import(topo, &entities, units)?
+            } else {
+                StepBuilder::new(topo, &entities, units)?
+            };
             let solids = builder.build_all_solids()?;
-            (solids, builder.diagnostics)
+            let sheets = if include_sheets {
+                builder.build_all_sheet_models()?
+            } else {
+                Vec::new()
+            };
+            (solids, sheets, builder.diagnostics)
         };
-        for &(_, solid_id) in &built {
+        for &(_, solid_id) in &built_solids {
             merge_split_rim_arcs(topo, solid_id, Tolerance::new())?;
         }
         let mut validation = Vec::new();
         if let (Some(options), Some(declarations)) = (validation_options, declarations.as_ref()) {
-            validation.reserve(built.len());
-            for (solid_index, &(brep_entity, solid_id)) in built.iter().enumerate() {
+            validation.reserve(built_solids.len());
+            for (solid_index, &(brep_entity, solid_id)) in built_solids.iter().enumerate() {
                 validation.push(compare_validation_properties(
                     topo,
                     solid_id,
@@ -278,7 +327,8 @@ fn read_step_impl(
             }
         }
         Ok(StepReadResult {
-            solids: built.iter().map(|&(_, solid)| solid).collect(),
+            solids: built_solids.iter().map(|&(_, solid)| solid).collect(),
+            sheets: built_sheets,
             diagnostics,
             validation,
         })
@@ -1594,7 +1644,24 @@ impl<'a> StepBuilder<'a> {
         entities: &'a HashMap<u64, StepEntity>,
         units: UnitScale,
     ) -> Result<Self, IoError> {
-        let brep_tolerance_caps = representation_model_tolerances(entities)?;
+        Self::new_with_roots(topo, entities, units, false)
+    }
+
+    fn new_for_body_import(
+        topo: &'a mut Topology,
+        entities: &'a HashMap<u64, StepEntity>,
+        units: UnitScale,
+    ) -> Result<Self, IoError> {
+        Self::new_with_roots(topo, entities, units, true)
+    }
+
+    fn new_with_roots(
+        topo: &'a mut Topology,
+        entities: &'a HashMap<u64, StepEntity>,
+        units: UnitScale,
+        include_sheets: bool,
+    ) -> Result<Self, IoError> {
+        let brep_tolerance_caps = representation_model_tolerances(entities, include_sheets)?;
         Ok(Self {
             topo,
             entities,
@@ -1638,6 +1705,77 @@ impl<'a> StepBuilder<'a> {
             solid_ids.push((brep_id, solid_id));
         }
         Ok(solid_ids)
+    }
+
+    /// Build standalone sheet bodies from `SHELL_BASED_SURFACE_MODEL` roots.
+    ///
+    /// One STEP surface model may contain multiple disconnected shell
+    /// constituents. Remus represents each constituent as its own first-class
+    /// sheet root, preserving model order followed by constituent-list order.
+    fn build_all_sheet_models(&mut self) -> Result<Vec<ShellId>, IoError> {
+        let mut model_ids: Vec<u64> = self
+            .entities
+            .iter()
+            .filter(|(_, entity)| is_sheet_model(entity))
+            .map(|(&id, _)| id)
+            .collect();
+        model_ids.sort_unstable();
+
+        let mut sheets = Vec::new();
+        for model_id in model_ids {
+            self.model_tolerance_cap = self
+                .brep_tolerance_caps
+                .get(&model_id)
+                .copied()
+                .ok_or_else(|| IoError::ParseError {
+                    reason: format!(
+                        "sheet model #{model_id} has no unambiguous shape-representation context"
+                    ),
+                })?;
+            self.vertex_cache.clear();
+            self.edge_cache.clear();
+
+            let slots = split_attr_slots(&self.get_entity(model_id)?.attrs);
+            let shell_refs = match slots.get(1) {
+                Some(AttrSlot::List(items)) => {
+                    exact_reference_list(items).map_err(|reason| IoError::ParseError {
+                        reason: format!(
+                            "SHELL_BASED_SURFACE_MODEL #{model_id} has an invalid shell list: {reason}"
+                        ),
+                    })?
+                }
+                other => {
+                    return Err(IoError::ParseError {
+                        reason: format!(
+                            "SHELL_BASED_SURFACE_MODEL #{model_id} needs a shell list, got {}",
+                            describe_slot(other)
+                        ),
+                    });
+                }
+            };
+            if shell_refs.is_empty() {
+                return Err(IoError::ParseError {
+                    reason: format!(
+                        "SHELL_BASED_SURFACE_MODEL #{model_id} declares no shell constituents"
+                    ),
+                });
+            }
+
+            for shell_ref in shell_refs {
+                let shell_type = self.get_entity(shell_ref)?.entity_type.as_str();
+                if !matches!(shell_type, "OPEN_SHELL" | "CLOSED_SHELL") {
+                    return Err(IoError::UnsupportedEntity {
+                        entity: format!(
+                            "{shell_type} as SHELL_BASED_SURFACE_MODEL #{model_id} constituent"
+                        ),
+                    });
+                }
+                let sheet = self.build_shell(shell_ref, false)?;
+                self.topo.set_shell_body_class(sheet, BodyClass::Sheet)?;
+                sheets.push(sheet);
+            }
+        }
+        Ok(sheets)
     }
 
     /// Build one solid from a `MANIFOLD_SOLID_BREP` or its `BREP_WITH_VOIDS`
@@ -7026,6 +7164,11 @@ fn is_solid_brep(entity: &StepEntity) -> bool {
         && find_exact_composite_component(&entity.attrs, "MANIFOLD_SOLID_BREP").is_some())
 }
 
+/// True when an entity is a standalone surface-model root.
+fn is_sheet_model(entity: &StepEntity) -> bool {
+    entity.entity_type == "SHELL_BASED_SURFACE_MODEL"
+}
+
 /// Re-express a curve read from a `same_sense = .F.` `EDGE_CURVE` in
 /// remus's own orientation convention.
 ///
@@ -7153,25 +7296,26 @@ fn trimmed_curve_sense_is_reversed(curve_ref: u64, attrs: &str) -> Result<bool, 
     }
 }
 
-/// Resolve the uncertainty cap for every imported solid through the
-/// `SHAPE_REPRESENTATION` that names the B-Rep and its representation context.
+/// Resolve the uncertainty cap for every imported body root through the
+/// `SHAPE_REPRESENTATION` that names it and its representation context.
 /// An uncertainty context elsewhere in the file is unrelated authority and
 /// must not broaden the accepted residuals of this representation.
 fn representation_model_tolerances(
     entities: &HashMap<u64, StepEntity>,
+    include_sheets: bool,
 ) -> Result<HashMap<u64, f64>, IoError> {
-    let solid_refs: HashSet<u64> = entities
+    let body_refs: HashSet<u64> = entities
         .iter()
-        .filter(|(_, entity)| is_solid_brep(entity))
+        .filter(|(_, entity)| is_solid_brep(entity) || (include_sheets && is_sheet_model(entity)))
         .map(|(&id, _)| id)
         .collect();
-    if solid_refs.is_empty() {
+    if body_refs.is_empty() {
         return Ok(HashMap::new());
     }
 
     let mut representation_tolerances = HashMap::new();
     let mut representation_contexts = HashMap::new();
-    let mut representation_solids: HashMap<u64, Vec<u64>> = HashMap::new();
+    let mut representation_bodies: HashMap<u64, Vec<u64>> = HashMap::new();
     let mut representation_items: HashMap<u64, HashSet<u64>> = HashMap::new();
     for (&representation_ref, entity) in entities {
         let attrs = if matches!(
@@ -7212,10 +7356,10 @@ fn representation_model_tolerances(
                 });
             }
         };
-        let owned_solids: Vec<_> = item_refs
+        let owned_bodies: Vec<_> = item_refs
             .iter()
             .copied()
-            .filter(|item_ref| solid_refs.contains(item_ref))
+            .filter(|item_ref| body_refs.contains(item_ref))
             .collect();
         let context_ref =
             slots
@@ -7231,7 +7375,7 @@ fn representation_model_tolerances(
         representation_tolerances.insert(representation_ref, tolerance);
         representation_contexts.insert(representation_ref, context_ref);
         representation_items.insert(representation_ref, item_refs.into_iter().collect());
-        representation_solids.insert(representation_ref, owned_solids);
+        representation_bodies.insert(representation_ref, owned_bodies);
     }
 
     // A schema-valid shape occurrence carries the assembly-side cap back to
@@ -7413,8 +7557,8 @@ fn representation_model_tolerances(
             .push(assembly_rep);
     }
     let mut result = HashMap::new();
-    for (&representation_ref, owned_solids) in &representation_solids {
-        if owned_solids.is_empty() {
+    for (&representation_ref, owned_bodies) in &representation_bodies {
+        if owned_bodies.is_empty() {
             continue;
         }
         let mut component = vec![representation_ref];
@@ -7440,15 +7584,15 @@ fn representation_model_tolerances(
                     .copied(),
             );
         }
-        for solid_ref in owned_solids {
-            match result.get(solid_ref).copied() {
+        for body_ref in owned_bodies {
+            match result.get(body_ref).copied() {
                 None => {
-                    result.insert(*solid_ref, tolerance);
+                    result.insert(*body_ref, tolerance);
                 }
                 Some(existing) if !approx_same_factor(existing, tolerance) => {
                     return Err(IoError::ParseError {
                         reason: format!(
-                            "solid B-Rep #{solid_ref} is assigned conflicting representation-context uncertainties ({existing} vs {tolerance} mm)"
+                            "body root #{body_ref} is assigned conflicting representation-context uncertainties ({existing} vs {tolerance} mm)"
                         ),
                     });
                 }
@@ -7457,15 +7601,15 @@ fn representation_model_tolerances(
         }
     }
 
-    let mut missing: Vec<_> = solid_refs
+    let mut missing: Vec<_> = body_refs
         .into_iter()
-        .filter(|solid_ref| !result.contains_key(solid_ref))
+        .filter(|body_ref| !result.contains_key(body_ref))
         .collect();
     missing.sort_unstable();
-    if let Some(solid_ref) = missing.first() {
+    if let Some(body_ref) = missing.first() {
         return Err(IoError::ParseError {
             reason: format!(
-                "solid B-Rep #{solid_ref} is not an item of a SHAPE_REPRESENTATION with a representation context"
+                "body root #{body_ref} is not an item of a SHAPE_REPRESENTATION with a representation context"
             ),
         });
     }

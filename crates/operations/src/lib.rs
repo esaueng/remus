@@ -52,6 +52,7 @@ pub mod push_pull;
 
 pub mod draft;
 pub mod fill_face;
+pub mod imprint;
 pub mod section;
 pub mod shell_op;
 pub mod split;
@@ -280,6 +281,35 @@ pub enum OperationsError {
         operation: &'static str,
         /// Why this configuration has no exact construction.
         reason: String,
+    },
+
+    /// A measurement is undefined for the supplied dimensional body class.
+    #[error("{operation} requires a {expected} body, but the supplied body is {actual}")]
+    BodyClassMeasureMismatch {
+        /// Measurement that was requested.
+        operation: &'static str,
+        /// Body class on which the measurement is defined.
+        expected: &'static str,
+        /// Actual body class supplied by the caller.
+        actual: &'static str,
+    },
+
+    /// An operation has no qualified implementation for this body class.
+    #[error("{operation} does not support {actual} bodies")]
+    BodyClassOperationUnsupported {
+        /// Operation that was requested.
+        operation: &'static str,
+        /// Actual body class supplied by the caller.
+        actual: &'static str,
+    },
+
+    /// A newly constructed body failed its class-specific postcondition.
+    #[error("constructed {body_class} body failed validation with {error_count} error(s)")]
+    BodyValidationFailed {
+        /// Class of body that was being constructed.
+        body_class: &'static str,
+        /// Number of error-severity validation findings.
+        error_count: usize,
     },
 
     /// A pattern would place two instances over the same material volume.

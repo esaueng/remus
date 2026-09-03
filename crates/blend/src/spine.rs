@@ -33,12 +33,37 @@ pub struct Spine {
     forward: Vec<bool>,
 }
 
-/// Get the chord-length endpoints of an edge.
-fn edge_endpoints(topo: &Topology, edge_id: EdgeId) -> Result<(Point3, Point3), BlendError> {
+/// Arc length used by the walker's global spine parameter.
+///
+/// A closed rim has coincident topological endpoints, so its chord length is
+/// zero even though the curve has a full, authoritative parameter span. Keep
+/// circles exact and use a deterministic chordal estimate for the remaining
+/// curved carriers; the walker needs a monotone station scale, not a second
+/// geometry representation.
+fn edge_arc_length(topo: &Topology, edge_id: EdgeId) -> Result<f64, BlendError> {
+    const SEGMENTS: u32 = 64;
+
     let edge = topo.edge(edge_id)?;
-    let p_start = topo.vertex(edge.start())?.point();
-    let p_end = topo.vertex(edge.end())?.point();
-    Ok((p_start, p_end))
+    let start = topo.vertex(edge.start())?.point();
+    let end = topo.vertex(edge.end())?.point();
+    if matches!(edge.curve(), remus_topology::edge::EdgeCurve::Line) {
+        return Ok((end - start).length());
+    }
+    let (t0, t1) = edge.strict_domain().map_err(crate::edge_domain_input)?;
+    if let remus_topology::edge::EdgeCurve::Circle(circle) = edge.curve() {
+        return Ok(circle.radius() * (t1 - t0).abs());
+    }
+
+    let mut previous = edge.curve().evaluate_with_endpoints(t0, start, end);
+    let mut length = 0.0;
+    for index in 1..=SEGMENTS {
+        let fraction = f64::from(index) / f64::from(SEGMENTS);
+        let parameter = (t1 - t0).mul_add(fraction, t0);
+        let point = edge.curve().evaluate_with_endpoints(parameter, start, end);
+        length += (point - previous).length();
+        previous = point;
+    }
+    Ok(length)
 }
 
 impl Spine {
@@ -47,14 +72,14 @@ impl Spine {
     /// # Errors
     /// Returns `BlendError` if the edge or its vertices cannot be found.
     pub fn from_single_edge(topo: &Topology, edge_id: EdgeId) -> Result<Self, BlendError> {
-        let (p_start, p_end) = edge_endpoints(topo, edge_id)?;
-        let length = (p_end - p_start).length();
+        let edge = topo.edge(edge_id)?;
+        let length = edge_arc_length(topo, edge_id)?;
 
         Ok(Self {
             edges: vec![edge_id],
             params: vec![0.0, length],
             length,
-            is_closed: false,
+            is_closed: edge.is_closed(),
             forward: vec![true],
         })
     }
@@ -95,15 +120,26 @@ impl Spine {
         let mut cumulative = 0.0;
 
         for &eid in &edges {
-            let (p_start, p_end) = edge_endpoints(topo, eid)?;
-            cumulative += (p_end - p_start).length();
+            cumulative += edge_arc_length(topo, eid)?;
             params.push(cumulative);
         }
 
-        let is_closed = if edges.len() >= 2 {
+        let is_closed = if edges.len() == 1 {
+            topo.edge(edges[0])?.is_closed()
+        } else if edges.len() >= 2 {
             let first = topo.edge(edges[0])?;
             let last = topo.edge(edges[edges.len() - 1])?;
-            first.start() == last.end()
+            let first_start = if forward[0] {
+                first.start()
+            } else {
+                first.end()
+            };
+            let last_end = if forward[forward.len() - 1] {
+                last.end()
+            } else {
+                last.start()
+            };
+            first_start == last_end
         } else {
             false
         };
@@ -235,6 +271,48 @@ mod tests {
         assert!((spine.length() - 10.0).abs() < 1e-10);
         assert_eq!(spine.edge_count(), 1);
         assert!(!spine.is_closed());
+    }
+
+    #[test]
+    fn closed_circle_spine_uses_its_authoritative_full_turn() {
+        let mut topo = Topology::new();
+        let circle =
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 2.0).unwrap();
+        let start = circle.evaluate(0.0);
+        let vertex = topo.add_vertex(Vertex::new(start, 1e-7));
+        let mut edge = Edge::new(vertex, vertex, EdgeCurve::Circle(circle));
+        edge.set_trim(Some((0.0, std::f64::consts::TAU)));
+        let edge = topo.add_edge(edge);
+
+        let spine = Spine::from_chain(&topo, vec![edge]).unwrap();
+
+        assert!(spine.is_closed());
+        assert!((spine.length() - 4.0 * std::f64::consts::PI).abs() < 1e-12);
+        let opposite = Point3::new(-start.x(), -start.y(), -start.z());
+        assert!((spine.evaluate(&topo, spine.length() * 0.5).unwrap() - opposite).length() < 1e-12);
+    }
+
+    #[test]
+    fn reversed_first_edge_still_closes_multi_edge_spine() {
+        let mut topo = Topology::new();
+        let v0 = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
+        let v1 = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
+        let v2 = topo.add_vertex(Vertex::new(Point3::new(0.0, 1.0, 0.0), 1e-7));
+        let reversed_first = topo.add_edge(Edge::new(v1, v0, EdgeCurve::Line));
+        let second = topo.add_edge(Edge::new(v1, v2, EdgeCurve::Line));
+        let third = topo.add_edge(Edge::new(v2, v0, EdgeCurve::Line));
+
+        let spine = Spine::from_chain(&topo, vec![reversed_first, second, third]).unwrap();
+
+        assert!(spine.is_closed());
+        assert_eq!(
+            spine.evaluate(&topo, 0.0).unwrap(),
+            topo.vertex(v0).unwrap().point()
+        );
+        assert_eq!(
+            spine.evaluate(&topo, spine.length()).unwrap(),
+            topo.vertex(v0).unwrap().point()
+        );
     }
 
     #[test]

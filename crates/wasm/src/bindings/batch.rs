@@ -21,16 +21,17 @@ use remus_operations::sweep::sweep;
 use remus_operations::transform::transform_solid;
 use remus_topology::edge::EdgeCurve;
 
-use super::operations::validate_move_faces_topology_work;
+use super::operations::{parse_variable_fillet_specs, validate_move_faces_topology_work};
 use crate::error::{
     StructuredWasmError, WasmError, validate_face_pair_count, validate_work_count,
     validate_work_product,
 };
 use crate::handles::{
-    compound_id_to_u32, edge_id_to_u32, face_id_to_u32, solid_id_to_u32, wire_id_to_u32,
+    compound_id_to_u32, edge_id_to_u32, face_id_to_u32, shell_id_to_u32, solid_id_to_u32,
+    wire_id_to_u32,
 };
 use crate::helpers::{
-    TOL, classify_to_string, get_f64, get_f64_array, get_u32, get_u32_array,
+    TOL, classify_to_string, get_bool, get_f64, get_f64_array, get_u32, get_u32_array,
     get_u32_array_optional, panic_message, try_chamfer,
 };
 use crate::kernel::BrepKernel;
@@ -153,9 +154,9 @@ enum BatchOpKind {
 fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
     match op {
         #[cfg(feature = "io")]
-        "exportStep" => Some(BatchOpKind::ReadOnly),
+        "exportStep" | "exportStepSheet" => Some(BatchOpKind::ReadOnly),
         #[cfg(feature = "io")]
-        "importStepWithValidation" => Some(BatchOpKind::Mutating),
+        "importStepBodies" | "importStepWithValidation" => Some(BatchOpKind::Mutating),
         "boundingBox"
         | "centerOfMass"
         | "chamfer2d"
@@ -172,7 +173,13 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "projectEdges"
         | "solidEdges"
         | "solidToSolidDistance"
+        | "sheetArea"
+        | "sheetBoundingBox"
+        | "sheetCenterOfArea"
+        | "sheetVolume"
         | "surfaceArea"
+        | "tessellateSheet"
+        | "validateSheetBody"
         | "validateSolid"
         | "resolveOperationOutput"
         | "journalSummary"
@@ -184,6 +191,7 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "getFaceMinRadius"
         | "getFaceVertexPositions"
         | "getOpposingPlanarFacePairs"
+        | "wireLength"
         | "volume" => Some(BatchOpKind::ReadOnly),
         // Serialized-reference ops: their dispatch arms in `naming.rs` are
         // `io`-gated because the reference codec is. Classifying them without
@@ -196,6 +204,7 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "resolveRef"
         | "resolveRefFaceAttributes" => Some(BatchOpKind::ReadOnly),
         "makeBox"
+        | "makeCompound"
         | "fuseJournaled"
         | "cutJournaled"
         | "intersectJournaled"
@@ -208,6 +217,8 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "filletJournaled"
         | "chamferJournaled"
         | "linearPatternJournaled"
+        | "imprint"
+        | "offsetJournaled"
         | "makeCylinder"
         | "makeSphere"
         | "makeCone"
@@ -216,6 +227,8 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "fuse"
         | "cut"
         | "intersect"
+        | "booleanRegions"
+        | "booleanCompoundRegions"
         | "booleanWithQuality"
         | "fuseWithOptions"
         | "cutWithOptions"
@@ -234,6 +247,7 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "extrude"
         | "revolve"
         | "sweep"
+        | "sweepWire"
         | "sweepWithOptions"
         | "helicalSweep"
         | "multiSectionSweep"
@@ -267,6 +281,10 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "offsetSolidV2"
         | "section"
         | "split"
+        | "splitBySheet"
+        | "trimSheetBySolid"
+        | "trimSheetBySheet"
+        | "mutualTrimSheets"
         | "sewFaces"
         | "thicken"
         | "pipe"
@@ -282,6 +300,7 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "makeWire"
         | "makePlanarFaceFromWire"
         | "makeFaceFromWires"
+        | "makeSheetBody"
         | "addHolesToFace" => Some(BatchOpKind::Mutating),
         _ => None,
     }
@@ -750,6 +769,62 @@ impl BrepKernel {
                 Ok(serde_json::Value::String(step))
             }
             #[cfg(feature = "io")]
+            "exportStepSheet" => {
+                let sheet = get_u32(args, "sheet")?;
+                let sheet_id = self
+                    .resolve_shell(sheet)
+                    .map_err(StructuredWasmError::from)?;
+                let options = match args.get("options") {
+                    None | Some(serde_json::Value::Null) => {
+                        remus_io::step::StepWriteOptions::default()
+                    }
+                    Some(value) => serde_json::from_value(value.clone()).map_err(|error| {
+                        StructuredWasmError::invalid_argument(
+                            format!("invalid STEP write options: {error}"),
+                            Some("options"),
+                        )
+                    })?,
+                };
+                let step = remus_io::step::write_step_bodies_with_options(
+                    &self.topo,
+                    &[],
+                    &[sheet_id],
+                    &options,
+                )
+                .map_err(StructuredWasmError::from)?;
+                Ok(serde_json::Value::String(step))
+            }
+            #[cfg(feature = "io")]
+            "importStepBodies" => {
+                let data = args["data"].as_str().ok_or_else(|| {
+                    StructuredWasmError::invalid_argument(
+                        "missing or invalid 'data' STEP string",
+                        Some("data"),
+                    )
+                })?;
+                let optional_f64 =
+                    |name: &'static str| -> Result<Option<f64>, StructuredWasmError> {
+                        match args.get(name) {
+                            None | Some(serde_json::Value::Null) => Ok(None),
+                            Some(value) => value.as_f64().map(Some).ok_or_else(|| {
+                                StructuredWasmError::invalid_argument(
+                                    format!("'{name}' must be a number"),
+                                    Some(name),
+                                )
+                            }),
+                        }
+                    };
+                let limits = super::io::import_limits_from(
+                    optional_f64("maxInputBytes")?,
+                    optional_f64("maxEntities")?,
+                )
+                .map_err(StructuredWasmError::from)?;
+                let result =
+                    remus_io::step::read_step_bodies_with_limits(data, self.topo_mut(), limits)
+                        .map_err(StructuredWasmError::from)?;
+                Ok(super::io::step_body_result_json(&result))
+            }
+            #[cfg(feature = "io")]
             "importStepWithValidation" => {
                 let data = args["data"].as_str().ok_or_else(|| {
                     StructuredWasmError::invalid_argument(
@@ -801,6 +876,22 @@ impl BrepKernel {
                 let solid = remus_operations::primitives::make_box(self.topo_mut(), w, h, d)
                     .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(solid)))
+            }
+            "makeCompound" => {
+                let handles = get_u32_array(args, "solids")?;
+                let count = u32::try_from(handles.len()).unwrap_or(u32::MAX);
+                validate_work_count(count, "solids").map_err(StructuredWasmError::from)?;
+                let solids = handles
+                    .into_iter()
+                    .map(|handle| {
+                        self.resolve_solid(handle)
+                            .map_err(StructuredWasmError::from)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                let compound = self
+                    .topo_mut()
+                    .add_compound(remus_topology::compound::Compound::new(solids));
+                Ok(serde_json::json!(compound_id_to_u32(compound)))
             }
             "makeCylinder" => {
                 let r = get_f64(args, "radius")?;
@@ -883,6 +974,74 @@ impl BrepKernel {
                 let result = boolean(self.topo_mut(), BooleanOp::Intersect, a_id, b_id)
                     .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(result)))
+            }
+            "booleanRegions" => {
+                let a = get_u32(args, "solidA")?;
+                let b = get_u32(args, "solidB")?;
+                let operation = args["operation"].as_str().ok_or_else(|| {
+                    StructuredWasmError::invalid_argument(
+                        "missing or invalid 'operation' string",
+                        Some("operation"),
+                    )
+                })?;
+                let bool_op = match operation {
+                    "fuse" | "union" => BooleanOp::Fuse,
+                    "cut" | "difference" => BooleanOp::Cut,
+                    "intersect" | "intersection" => BooleanOp::Intersect,
+                    _ => {
+                        return Err(StructuredWasmError::invalid_argument(
+                            format!("unknown boolean op: {operation}"),
+                            Some("operation"),
+                        ));
+                    }
+                };
+                let a_id = self.resolve_solid(a).map_err(StructuredWasmError::from)?;
+                let b_id = self.resolve_solid(b).map_err(StructuredWasmError::from)?;
+                let result = remus_operations::boolean::boolean_regions(
+                    self.topo_mut(),
+                    bool_op,
+                    a_id,
+                    b_id,
+                )
+                .map_err(StructuredWasmError::from)?;
+                Ok(serde_json::json!(crate::handles::compound_id_to_u32(
+                    result.compound
+                )))
+            }
+            "booleanCompoundRegions" => {
+                let a = get_u32(args, "compoundA")?;
+                let b = get_u32(args, "compoundB")?;
+                let operation = args["operation"].as_str().ok_or_else(|| {
+                    StructuredWasmError::invalid_argument(
+                        "missing or invalid 'operation' string",
+                        Some("operation"),
+                    )
+                })?;
+                let bool_op = match operation {
+                    "fuse" | "union" => BooleanOp::Fuse,
+                    "cut" | "difference" => BooleanOp::Cut,
+                    "intersect" | "intersection" => BooleanOp::Intersect,
+                    _ => {
+                        return Err(StructuredWasmError::invalid_argument(
+                            format!("unknown boolean op: {operation}"),
+                            Some("operation"),
+                        ));
+                    }
+                };
+                let a_id = self
+                    .resolve_compound(a)
+                    .map_err(StructuredWasmError::from)?;
+                let b_id = self
+                    .resolve_compound(b)
+                    .map_err(StructuredWasmError::from)?;
+                let result = remus_operations::boolean::boolean_compound_regions(
+                    self.topo_mut(),
+                    bool_op,
+                    a_id,
+                    b_id,
+                )
+                .map_err(StructuredWasmError::from)?;
+                Ok(serde_json::json!(compound_id_to_u32(result.compound)))
             }
             "booleanWithQuality" => {
                 use remus_operations::boolean::{BooleanQuality, boolean_with_context};
@@ -1095,6 +1254,14 @@ impl BrepKernel {
                     .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(v))
             }
+            "wireLength" => {
+                let wire = get_u32(args, "wire")?;
+                let wire_id = self.resolve_wire(wire).map_err(StructuredWasmError::from)?;
+                let length =
+                    measure::body_length(&self.topo, remus_topology::BodyId::Wire(wire_id))
+                        .map_err(StructuredWasmError::from)?;
+                Ok(serde_json::json!(length))
+            }
             "validateSolid" => {
                 let solid = get_u32(args, "solid")?;
                 let solid_id = self
@@ -1113,6 +1280,113 @@ impl BrepKernel {
                 let a = measure::solid_surface_area(&self.topo, solid_id, deflection)
                     .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(a))
+            }
+            "sheetArea" => {
+                let sheet = get_u32(args, "sheet")?;
+                let deflection = get_deflection(args)?;
+                let sheet_id = self
+                    .resolve_shell(sheet)
+                    .map_err(StructuredWasmError::from)?;
+                let area = measure::body_surface_area(
+                    &self.topo,
+                    remus_topology::BodyId::Shell(sheet_id),
+                    deflection,
+                )
+                .map_err(StructuredWasmError::from)?;
+                Ok(serde_json::json!(area))
+            }
+            "sheetBoundingBox" => {
+                let sheet = get_u32(args, "sheet")?;
+                let sheet_id = self
+                    .resolve_shell(sheet)
+                    .map_err(StructuredWasmError::from)?;
+                let aabb = measure::sheet_bounding_box(&self.topo, sheet_id)
+                    .map_err(StructuredWasmError::from)?;
+                Ok(serde_json::json!([
+                    aabb.min.x(),
+                    aabb.min.y(),
+                    aabb.min.z(),
+                    aabb.max.x(),
+                    aabb.max.y(),
+                    aabb.max.z()
+                ]))
+            }
+            "sheetCenterOfArea" => {
+                let sheet = get_u32(args, "sheet")?;
+                let sheet_id = self
+                    .resolve_shell(sheet)
+                    .map_err(StructuredWasmError::from)?;
+                let center = measure::sheet_center_of_area(&self.topo, sheet_id)
+                    .map_err(StructuredWasmError::from)?;
+                Ok(serde_json::json!([center.x(), center.y(), center.z()]))
+            }
+            "sheetVolume" => {
+                let sheet = get_u32(args, "sheet")?;
+                let deflection = get_deflection(args)?;
+                let sheet_id = self
+                    .resolve_shell(sheet)
+                    .map_err(StructuredWasmError::from)?;
+                let volume = measure::body_volume(
+                    &self.topo,
+                    remus_topology::BodyId::Shell(sheet_id),
+                    deflection,
+                )
+                .map_err(StructuredWasmError::from)?;
+                Ok(serde_json::json!(volume))
+            }
+            "validateSheetBody" => {
+                let sheet = get_u32(args, "sheet")?;
+                let sheet_id = self
+                    .resolve_shell(sheet)
+                    .map_err(StructuredWasmError::from)?;
+                let report = remus_check::validate::validate_sheet_body(
+                    &self.topo,
+                    sheet_id,
+                    &remus_check::validate::ValidateOptions::default(),
+                )
+                .map_err(StructuredWasmError::from)?;
+                Ok(serde_json::json!({
+                    "errorCount": report.error_count(),
+                    "warningCount": report.warning_count(),
+                    "issues": report.issues.into_iter().map(|issue| serde_json::json!({
+                        "severity": match issue.severity {
+                            remus_check::validate::Severity::Info => "info",
+                            remus_check::validate::Severity::Error => "error",
+                            remus_check::validate::Severity::Warning => "warning",
+                        },
+                        "description": issue.description,
+                    })).collect::<Vec<_>>(),
+                }))
+            }
+            "tessellateSheet" => {
+                let sheet = get_u32(args, "sheet")?;
+                let deflection = get_deflection(args)?;
+                let angular_tolerance = get_angular_tolerance(args)?;
+                let sheet_id = self
+                    .resolve_shell(sheet)
+                    .map_err(StructuredWasmError::from)?;
+                let mesh = remus_operations::tessellate::tessellate_body_with_tolerance(
+                    &self.topo,
+                    remus_topology::BodyId::Shell(sheet_id),
+                    deflection,
+                    angular_tolerance,
+                )
+                .map_err(StructuredWasmError::from)?;
+                let positions = mesh
+                    .positions
+                    .iter()
+                    .flat_map(|point| [point.x(), point.y(), point.z()])
+                    .collect::<Vec<_>>();
+                let normals = mesh
+                    .normals
+                    .iter()
+                    .flat_map(|normal| [normal.x(), normal.y(), normal.z()])
+                    .collect::<Vec<_>>();
+                Ok(serde_json::json!({
+                    "positions": positions,
+                    "normals": normals,
+                    "indices": mesh.indices,
+                }))
             }
             "boundingBox" => {
                 let s = get_u32(args, "solid")?;
@@ -1314,6 +1588,20 @@ impl BrepKernel {
                     .map_err(StructuredWasmError::from)?;
                 let solid =
                     sweep(self.topo_mut(), face_id, &curve).map_err(StructuredWasmError::from)?;
+                Ok(serde_json::json!(solid_id_to_u32(solid)))
+            }
+            "sweepWire" => {
+                let profile = get_u32(args, "profile")?;
+                let path_edge = get_u32(args, "pathEdge")?;
+                let wire_id = self
+                    .resolve_wire(profile)
+                    .map_err(StructuredWasmError::from)?;
+                let path_curve = self
+                    .extract_nurbs_curve(path_edge)
+                    .map_err(StructuredWasmError::from)?;
+                let solid =
+                    remus_operations::sweep::sweep_wire(self.topo_mut(), wire_id, &path_curve)
+                        .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(solid)))
             }
             "sweepWithOptions" => {
@@ -1559,46 +1847,12 @@ impl BrepKernel {
                 let specs = args["specs"]
                     .as_array()
                     .ok_or_else(|| "missing 'specs' array".to_string())?;
-                let mut edge_laws = Vec::with_capacity(specs.len());
-                for spec in specs {
-                    let edge_handle = spec["edge"]
-                        .as_u64()
-                        .ok_or_else(|| "missing 'edge' in fillet spec".to_string())?
-                        as u32;
-                    let edge_id = self
-                        .resolve_edge(edge_handle)
-                        .map_err(StructuredWasmError::from)?;
-                    let start_val = spec["start"]
-                        .as_f64()
-                        .or_else(|| spec["startRadius"].as_f64());
-                    let end_val = spec["end"].as_f64().or_else(|| spec["endRadius"].as_f64());
-                    let law_str =
-                        spec["law"]
-                            .as_str()
-                            .unwrap_or_else(|| match (start_val, end_val) {
-                                (Some(sv), Some(ev)) if (sv - ev).abs() > f64::EPSILON => "linear",
-                                _ => "constant",
-                            });
-                    let law = match law_str {
-                        "linear" => remus_operations::fillet::FilletRadiusLaw::Linear {
-                            start: start_val.unwrap_or(1.0),
-                            end: end_val.unwrap_or(1.0),
-                        },
-                        "scurve" => remus_operations::fillet::FilletRadiusLaw::SCurve {
-                            start: start_val.unwrap_or(1.0),
-                            end: end_val.unwrap_or(1.0),
-                        },
-                        _ => {
-                            let r = spec["radius"].as_f64().or(start_val).unwrap_or(1.0);
-                            remus_operations::fillet::FilletRadiusLaw::Constant(r)
-                        }
-                    };
-                    edge_laws.push((edge_id, law));
-                }
-                let result = remus_operations::fillet::fillet_variable(
+                let edge_specs =
+                    parse_variable_fillet_specs(self, specs).map_err(StructuredWasmError::from)?;
+                let result = remus_operations::fillet::fillet_variable_with_setbacks(
                     self.topo_mut(),
                     solid_id,
-                    &edge_laws,
+                    &edge_specs,
                 )
                 .map_err(StructuredWasmError::blend_failure)?;
                 Ok(serde_json::json!(solid_id_to_u32(result)))
@@ -2177,6 +2431,102 @@ impl BrepKernel {
                     "negative": solid_id_to_u32(result.negative),
                 }))
             }
+            "splitBySheet" => {
+                let solid = get_u32(args, "solid")?;
+                let sheet = get_u32(args, "sheet")?;
+                let solid_id = self
+                    .resolve_solid(solid)
+                    .map_err(StructuredWasmError::from)?;
+                let sheet_id = self
+                    .resolve_shell(sheet)
+                    .map_err(StructuredWasmError::from)?;
+                let result =
+                    remus_operations::split::split_by_sheet(self.topo_mut(), solid_id, sheet_id)
+                        .map_err(StructuredWasmError::from)?;
+                Ok(serde_json::json!(compound_id_to_u32(result)))
+            }
+            "trimSheetBySolid" => {
+                let sheet = get_u32(args, "sheet")?;
+                let solid = get_u32(args, "solid")?;
+                let keep_inside = get_bool(args, "keepInside")?;
+                let sheet_id = self
+                    .resolve_shell(sheet)
+                    .map_err(StructuredWasmError::from)?;
+                let solid_id = self
+                    .resolve_solid(solid)
+                    .map_err(StructuredWasmError::from)?;
+                let mode = if keep_inside {
+                    remus_operations::boolean::SheetTrimMode::KeepInside
+                } else {
+                    remus_operations::boolean::SheetTrimMode::KeepOutside
+                };
+                let result = remus_operations::boolean::trim_sheet_by_solid(
+                    self.topo_mut(),
+                    sheet_id,
+                    solid_id,
+                    mode,
+                )
+                .map_err(StructuredWasmError::from)?;
+                Ok(serde_json::json!(shell_id_to_u32(result)))
+            }
+            "trimSheetBySheet" => {
+                let target = get_u32(args, "target")?;
+                let tool = get_u32(args, "tool")?;
+                let keep_positive = get_bool(args, "keepPositive")?;
+                let target_id = self
+                    .resolve_shell(target)
+                    .map_err(StructuredWasmError::from)?;
+                let tool_id = self
+                    .resolve_shell(tool)
+                    .map_err(StructuredWasmError::from)?;
+                let side = if keep_positive {
+                    remus_operations::boolean::SheetSide::Positive
+                } else {
+                    remus_operations::boolean::SheetSide::Negative
+                };
+                let result = remus_operations::boolean::trim_sheet_by_sheet(
+                    self.topo_mut(),
+                    target_id,
+                    tool_id,
+                    side,
+                )
+                .map_err(StructuredWasmError::from)?;
+                Ok(serde_json::json!(shell_id_to_u32(result)))
+            }
+            "mutualTrimSheets" => {
+                let sheet_a = get_u32(args, "sheetA")?;
+                let sheet_b = get_u32(args, "sheetB")?;
+                let keep_a_positive = get_bool(args, "keepAPositive")?;
+                let keep_b_positive = get_bool(args, "keepBPositive")?;
+                let sheet_a_id = self
+                    .resolve_shell(sheet_a)
+                    .map_err(StructuredWasmError::from)?;
+                let sheet_b_id = self
+                    .resolve_shell(sheet_b)
+                    .map_err(StructuredWasmError::from)?;
+                let side_a = if keep_a_positive {
+                    remus_operations::boolean::SheetSide::Positive
+                } else {
+                    remus_operations::boolean::SheetSide::Negative
+                };
+                let side_b = if keep_b_positive {
+                    remus_operations::boolean::SheetSide::Positive
+                } else {
+                    remus_operations::boolean::SheetSide::Negative
+                };
+                let result = remus_operations::boolean::mutual_trim_sheets(
+                    self.topo_mut(),
+                    sheet_a_id,
+                    sheet_b_id,
+                    side_a,
+                    side_b,
+                )
+                .map_err(StructuredWasmError::from)?;
+                Ok(serde_json::json!([
+                    shell_id_to_u32(result.sheet_a),
+                    shell_id_to_u32(result.sheet_b),
+                ]))
+            }
             "sewFaces" => {
                 let face_handles: Vec<u32> = get_u32_array_optional(args, "faces")?;
                 let tol = get_f64(args, "tolerance").unwrap_or(1e-6);
@@ -2421,6 +2771,16 @@ impl BrepKernel {
                     .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(fid))
             }
+            "makeSheetBody" => {
+                let handles = get_u32_array(args, "faces")?;
+                let faces = handles
+                    .iter()
+                    .map(|&handle| self.resolve_face(handle).map_err(StructuredWasmError::from))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let sheet = remus_operations::sew::make_sheet_body(self.topo_mut(), &faces)
+                    .map_err(StructuredWasmError::from)?;
+                Ok(serde_json::json!(shell_id_to_u32(sheet)))
+            }
             "addHolesToFace" => {
                 let face = get_u32(args, "face")?;
                 let holes = get_u32_array(args, "holeWires")?;
@@ -2562,6 +2922,88 @@ mod batch_contract_tests {
             imported[0]["ok"]["validation"][0]["diagnostics"]
                 .as_array()
                 .expect("diagnostics array")
+                .is_empty()
+        );
+    }
+
+    #[cfg(feature = "io")]
+    #[test]
+    fn sheet_step_batch_companions_preserve_handle_class_and_refuse_solid_shells() {
+        let mut exporting = BrepKernel::new();
+        let face =
+            remus_topology::builder::make_rectangle_face(exporting.topo_mut(), 2.0, 1.0, TOL)
+                .expect("trimmed face");
+        let surface = NurbsSurface::new(
+            1,
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![
+                vec![Point3::new(-1.0, -0.5, 0.0), Point3::new(1.0, -0.5, 0.0)],
+                vec![Point3::new(-1.0, 0.5, 0.0), Point3::new(1.0, 0.5, 0.0)],
+            ],
+            vec![vec![1.0, 1.0], vec![1.0, 1.0]],
+        )
+        .expect("bilinear NURBS");
+        exporting
+            .topo_mut()
+            .face_mut(face)
+            .expect("face")
+            .set_surface(remus_topology::face::FaceSurface::Nurbs(surface));
+        let sheet = remus_operations::sew::make_sheet_body(exporting.topo_mut(), &[face])
+            .expect("sheet body");
+        let exported = parse(&exporting.execute_batch_v2(&format!(
+            r#"[{{"op":"exportStepSheet","args":{{"sheet":{}}}}}]"#,
+            shell_id_to_u32(sheet)
+        )));
+        let step = exported[0]["ok"].as_str().expect("sheet STEP string");
+        assert!(step.contains("SHELL_BASED_SURFACE_MODEL("));
+        assert!(step.contains("OPEN_SHELL("));
+        assert!(step.contains("B_SPLINE_SURFACE_WITH_KNOTS("));
+
+        let mut wrong_class = BrepKernel::new();
+        wrong_class
+            .make_box_solid(2.0, 1.0, 1.0)
+            .expect("solid fixture");
+        let rejected = parse(
+            &wrong_class.execute_batch_v2(r#"[{"op":"exportStepSheet","args":{"sheet":0}}]"#),
+        );
+        assert_eq!(
+            rejected[0]["error"]["details"]["kernelCode"],
+            "body_class_unresolved"
+        );
+        let message = rejected[0]["error"]["message"]
+            .as_str()
+            .expect("typed error message");
+        assert!(
+            message.contains("body class solid, expected sheet"),
+            "{message}"
+        );
+
+        let input = serde_json::to_string(&serde_json::json!([{
+            "op": "importStepBodies",
+            "args": { "data": step }
+        }]))
+        .expect("batch JSON");
+        let mut importing = BrepKernel::new();
+        let imported = parse(&importing.execute_batch_v2(&input));
+        assert!(
+            imported[0]["ok"]["solids"]
+                .as_array()
+                .expect("solid handle array")
+                .is_empty()
+        );
+        assert_eq!(
+            imported[0]["ok"]["sheets"]
+                .as_array()
+                .expect("sheet handle array")
+                .len(),
+            1
+        );
+        assert!(
+            imported[0]["ok"]["diagnostics"]
+                .as_array()
+                .expect("diagnostic array")
                 .is_empty()
         );
     }
@@ -3362,6 +3804,69 @@ mod batch_contract_tests {
         let v2 = parse(&kernel.execute_batch_v2(&json));
         assert_eq!(v2[0]["error"]["code"], "batch_limit_exceeded");
         assert_eq!(v2[0]["error"]["details"]["resource"], "json_bytes");
+    }
+
+    #[test]
+    fn sheet_body_batch_contract_matches_direct_semantics() {
+        let mut kernel = BrepKernel::new();
+        let response = parse(&kernel.execute_batch_v2(
+            r#"[
+                {"op":"makeBox","args":{"width":4.0,"height":2.0,"depth":1.0}},
+                {"op":"makeSheetBody","args":{"faces":[0]}},
+                {"op":"sheetArea","args":{"sheet":1,"deflection":0.05}},
+                {"op":"sheetBoundingBox","args":{"sheet":1}},
+                {"op":"sheetCenterOfArea","args":{"sheet":1}},
+                {"op":"validateSheetBody","args":{"sheet":1}},
+                {"op":"tessellateSheet","args":{"sheet":1,"deflection":0.05}},
+                {"op":"sheetVolume","args":{"sheet":1,"deflection":0.05}},
+                {"op":"sheetArea","args":{"sheet":0,"deflection":0.05}},
+                {"op":"sheetBoundingBox","args":{"sheet":0}},
+                {"op":"sheetCenterOfArea","args":{"sheet":0}}
+            ]"#,
+        ));
+
+        assert_eq!(response[0]["ok"], 0);
+        assert_eq!(response[1]["ok"], 1);
+        let area = response[2]["ok"].as_f64().expect("sheet area result");
+        assert!((area - 8.0).abs() < 1e-10, "area={area}");
+        assert_eq!(
+            response[3]["ok"],
+            serde_json::json!([0.0, 0.0, 0.0, 4.0, 2.0, 0.0])
+        );
+        let center = response[4]["ok"].as_array().expect("sheet center result");
+        for (actual, expected) in center.iter().zip([2.0, 1.0, 0.0]) {
+            assert!((actual.as_f64().expect("sheet center component") - expected).abs() < 1e-12);
+        }
+        assert_eq!(response[5]["ok"]["errorCount"], 0);
+        assert!(
+            response[5]["ok"]["warningCount"]
+                .as_u64()
+                .expect("sheet warning count")
+                > 0
+        );
+        assert!(
+            !response[6]["ok"]["indices"]
+                .as_array()
+                .expect("sheet mesh indices")
+                .is_empty()
+        );
+        assert_eq!(response[7]["error"]["category"], "invalid_input");
+        assert_eq!(
+            response[7]["error"]["details"]["kernelCode"],
+            "body_class_measure_mismatch"
+        );
+        assert_eq!(
+            response[8]["error"]["details"]["kernelCode"],
+            "body_class_measure_mismatch"
+        );
+        assert_eq!(
+            response[9]["error"]["details"]["kernelCode"],
+            "body_class_measure_mismatch"
+        );
+        assert_eq!(
+            response[10]["error"]["details"]["kernelCode"],
+            "body_class_measure_mismatch"
+        );
     }
 }
 

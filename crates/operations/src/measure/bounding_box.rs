@@ -8,9 +8,10 @@ use remus_math::nurbs::projection::{project_point_to_surface, project_point_to_s
 use remus_math::nurbs::surface::NurbsSurface;
 use remus_math::surfaces::{SphericalSurface, ToroidalSurface};
 use remus_math::vec::{Point3, Vec3};
-use remus_topology::Topology;
 use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::shell::ShellId;
 use remus_topology::solid::SolidId;
+use remus_topology::{BodyClass, BodyId, Topology};
 
 use super::helpers::{collect_solid_vertex_points, compute_angular_range};
 
@@ -49,6 +50,27 @@ pub fn solid_bounding_box(
     }
 
     Ok(aabb)
+}
+
+/// Compute the axis-aligned bounding box of a first-class sheet body.
+///
+/// # Errors
+///
+/// Returns a typed body-class mismatch for a shell that is not tagged as a
+/// sheet, or an error if the sheet has no vertices or a topology lookup fails.
+pub fn sheet_bounding_box(
+    topo: &Topology,
+    sheet: ShellId,
+) -> Result<Aabb3, crate::OperationsError> {
+    let actual = topo.body_class_of(BodyId::Shell(sheet))?;
+    if actual != BodyClass::Sheet {
+        return Err(crate::OperationsError::BodyClassMeasureMismatch {
+            operation: "bounding box",
+            expected: BodyClass::Sheet.as_str(),
+            actual: actual.as_str(),
+        });
+    }
+    face_set_bounding_box(topo, topo.shell(sheet)?.faces())
 }
 
 /// Compute a conservative axis-aligned bounding box over an arbitrary set of
