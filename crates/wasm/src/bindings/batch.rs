@@ -65,6 +65,28 @@ fn get_angular_tolerance(args: &serde_json::Value) -> Result<f64, StructuredWasm
     Ok(angular_tolerance)
 }
 
+fn get_optional_work_budget(
+    args: &serde_json::Value,
+    name: &str,
+) -> Result<Option<usize>, StructuredWasmError> {
+    match args.get(name) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(value) => {
+            let raw = value.as_f64().ok_or_else(|| {
+                StructuredWasmError::invalid_argument(
+                    format!("invalid '{name}': expected number"),
+                    Some(name),
+                )
+            })?;
+            crate::error::validate_iteration_budget(raw, name)
+                .map(Some)
+                .map_err(|error| {
+                    StructuredWasmError::invalid_argument(error.to_string(), Some(name))
+                })
+        }
+    }
+}
+
 #[wasm_bindgen(typescript_custom_section)]
 const BATCH_V2_TYPES: &str = r#"
 /** Stable error codes returned by `executeBatchV2`. */
@@ -893,50 +915,23 @@ impl BrepKernel {
                         )
                     })?,
                 };
-                let newton_budget = match args.get("newtonIterations") {
-                    None | Some(serde_json::Value::Null) => None,
-                    Some(value) => {
-                        let raw = value.as_f64().ok_or_else(|| {
-                            StructuredWasmError::invalid_argument(
-                                "invalid 'newtonIterations': expected number",
-                                Some("newtonIterations"),
-                            )
-                        })?;
-                        Some(
-                            crate::error::validate_iteration_budget(raw, "newtonIterations")
-                                .map_err(|e| {
-                                    StructuredWasmError::invalid_argument(
-                                        e.to_string(),
-                                        Some("newtonIterations"),
-                                    )
-                                })?,
-                        )
-                    }
-                };
-                let subdivision_budget = match args.get("subdivisionDepth") {
-                    None | Some(serde_json::Value::Null) => None,
-                    Some(value) => {
-                        let raw = value.as_f64().ok_or_else(|| {
-                            StructuredWasmError::invalid_argument(
-                                "invalid 'subdivisionDepth': expected number",
-                                Some("subdivisionDepth"),
-                            )
-                        })?;
-                        Some(
-                            crate::error::validate_iteration_budget(raw, "subdivisionDepth")
-                                .map_err(|e| {
-                                    StructuredWasmError::invalid_argument(
-                                        e.to_string(),
-                                        Some("subdivisionDepth"),
-                                    )
-                                })?,
-                        )
-                    }
-                };
+                let newton_budget = get_optional_work_budget(args, "newtonIterations")?;
+                let subdivision_budget = get_optional_work_budget(args, "subdivisionDepth")?;
+                let march_budget = get_optional_work_budget(args, "marchSteps")?;
+                let queue_budget = get_optional_work_budget(args, "queueSize")?;
+                let segment_budget = get_optional_work_budget(args, "segments")?;
+                let branch_budget = get_optional_work_budget(args, "branchesPerDirection")?;
                 let a_id = self.resolve_solid(a).map_err(StructuredWasmError::from)?;
                 let b_id = self.resolve_solid(b).map_err(StructuredWasmError::from)?;
-                let context =
-                    super::booleans::quality_context(exact_only, newton_budget, subdivision_budget);
+                let context = super::booleans::quality_context(
+                    exact_only,
+                    newton_budget,
+                    subdivision_budget,
+                    march_budget,
+                    queue_budget,
+                    segment_budget,
+                    branch_budget,
+                );
                 let outcome = boolean_with_context(self.topo_mut(), bool_op, a_id, b_id, &context)
                     .map_err(StructuredWasmError::from)?;
                 match outcome.quality {
@@ -2943,8 +2938,8 @@ mod batch_contract_tests {
         // context's authority below that.
         for extra in [
             "",
-            r#","newtonIterations":20,"subdivisionDepth":6"#,
-            r#","newtonIterations":0,"subdivisionDepth":0"#,
+            r#","newtonIterations":20,"subdivisionDepth":6,"marchSteps":200,"queueSize":100,"segments":50,"branchesPerDirection":10"#,
+            r#","newtonIterations":0,"subdivisionDepth":0,"marchSteps":0,"queueSize":0,"segments":0,"branchesPerDirection":0"#,
         ] {
             let mut kernel = BrepKernel::new();
             let script = format!(
@@ -3036,6 +3031,41 @@ mod batch_contract_tests {
                 response[2]["error"]["details"]["argument"], "subdivisionDepth",
                 "error must name the argument: {response}"
             );
+        }
+    }
+
+    #[test]
+    fn batch_boolean_with_quality_rejects_invalid_marcher_budgets_without_mutation() {
+        for field in [
+            "marchSteps",
+            "queueSize",
+            "segments",
+            "branchesPerDirection",
+        ] {
+            for bad in ["-1", "2.5", r#""many""#, "10001", "true"] {
+                let mut kernel = BrepKernel::new();
+                let script = format!(
+                    r#"[
+                        {{"op":"makeBox","args":{{"width":2,"height":2,"depth":2}}}},
+                        {{"op":"makeBox","args":{{"width":1,"height":1,"depth":1}}}},
+                        {{"op":"booleanWithQuality","args":{{"operation":"fuse","solidA":0,"solidB":1,"{field}":{bad}}}}},
+                        {{"op":"volume","args":{{"solid":0,"deflection":0.05}}}}
+                    ]"#
+                );
+                let response = parse(&kernel.execute_batch_v2(&script));
+                assert_eq!(
+                    response[2]["error"]["code"], "invalid_argument",
+                    "{field}={bad} must be a typed argument error: {response}"
+                );
+                assert_eq!(
+                    response[2]["error"]["details"]["argument"], field,
+                    "error must name the argument: {response}"
+                );
+                assert_eq!(
+                    response[3]["ok"], 8.0,
+                    "rejected {field} must preserve the input topology: {response}"
+                );
+            }
         }
     }
 
