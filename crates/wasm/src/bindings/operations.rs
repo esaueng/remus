@@ -17,7 +17,10 @@ use crate::error::{
     WasmError, validate_finite, validate_move_faces_work, validate_positive, validate_work_count,
     validate_work_product,
 };
-use crate::handles::{edge_id_to_u32, face_id_to_u32, solid_id_to_u32, wire_id_to_u32};
+use crate::handles::{
+    compound_id_to_u32, edge_id_to_u32, face_id_to_u32, shell_id_to_u32, solid_id_to_u32,
+    wire_id_to_u32,
+};
 use remus_geometry::extrema::point_to_nurbs_surface;
 
 use crate::helpers::{
@@ -33,7 +36,7 @@ use remus_operations::offset_wire::JoinType;
 use remus_operations::push_pull::{move_faces, push_pull_face, resize_cylindrical_face};
 use remus_operations::resize_blend::{blend_region, resize_blend, resize_blend_failure_code};
 use remus_operations::revolve::revolve;
-use remus_operations::sweep::sweep;
+use remus_operations::sweep::{sweep, sweep_wire};
 
 pub fn validate_move_faces_topology_work(
     topo: &remus_topology::Topology,
@@ -966,6 +969,24 @@ impl BrepKernel {
         Ok(solid_id_to_u32(solid_id))
     }
 
+    /// Sweep a closed planar first-class wire profile along an edge path.
+    ///
+    /// The input wire remains an independent body. Open and non-planar wire
+    /// profiles are refused until sheet-result sweep assembly is qualified.
+    /// Returns a solid handle (`u32`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if either handle is invalid, the profile is not a
+    /// qualified wire body, or the sweep operation fails.
+    #[wasm_bindgen(js_name = "sweepWire")]
+    pub fn sweep_wire(&mut self, profile: u32, path_edge: u32) -> Result<u32, JsError> {
+        let wire_id = self.resolve_wire(profile)?;
+        let path_curve = self.extract_nurbs_curve(path_edge)?;
+        let solid_id = sweep_wire(self.topo_mut(), wire_id, &path_curve)?;
+        Ok(solid_id_to_u32(solid_id))
+    }
+
     /// Sweep through multiple section profiles along a spine, lofting the
     /// rotation-minimizing-frame-placed profiles.
     ///
@@ -1242,6 +1263,116 @@ impl BrepKernel {
         Ok(vec![
             solid_id_to_u32(result.positive),
             solid_id_to_u32(result.negative),
+        ])
+    }
+
+    /// Split a solid into cells using a first-class sheet body.
+    ///
+    /// Returns a compound handle whose solids are in deterministic cell order.
+    /// The qualified exact subset is currently one cylindrical sheet face.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed unsupported error for other sheet configurations and
+    /// rolls back if intersection, cell validation, or volume conservation
+    /// fails.
+    #[wasm_bindgen(js_name = "splitBySheet")]
+    pub fn split_by_sheet_body(&mut self, solid: u32, sheet: u32) -> Result<u32, JsError> {
+        let solid_id = self.resolve_solid(solid)?;
+        let sheet_id = self.resolve_shell(sheet)?;
+        let result = remus_operations::split::split_by_sheet(self.topo_mut(), solid_id, sheet_id)?;
+        Ok(compound_id_to_u32(result))
+    }
+
+    /// Trim a first-class sheet body by a solid and retain one classified side.
+    ///
+    /// `keep_inside = true` retains sheet patches inside the solid; `false`
+    /// retains the outside remainder. Returns a new sheet-body shell handle.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed unsupported error for empty, coincident, or empty-result
+    /// configurations, and rolls back if the retained sheet fails validation.
+    #[wasm_bindgen(js_name = "trimSheetBySolid")]
+    pub fn trim_sheet_by_solid_body(
+        &mut self,
+        sheet: u32,
+        solid: u32,
+        keep_inside: bool,
+    ) -> Result<u32, JsError> {
+        let sheet_id = self.resolve_shell(sheet)?;
+        let solid_id = self.resolve_solid(solid)?;
+        let mode = if keep_inside {
+            remus_operations::boolean::SheetTrimMode::KeepInside
+        } else {
+            remus_operations::boolean::SheetTrimMode::KeepOutside
+        };
+        let result = remus_operations::boolean::trim_sheet_by_solid(
+            self.topo_mut(),
+            sheet_id,
+            solid_id,
+            mode,
+        )?;
+        Ok(shell_id_to_u32(result))
+    }
+
+    /// Trim one planar sheet by one oriented side of another planar sheet.
+    #[wasm_bindgen(js_name = "trimSheetBySheet")]
+    pub fn trim_sheet_by_sheet_body(
+        &mut self,
+        target: u32,
+        tool: u32,
+        keep_positive: bool,
+    ) -> Result<u32, JsError> {
+        let target_id = self.resolve_shell(target)?;
+        let tool_id = self.resolve_shell(tool)?;
+        let side = if keep_positive {
+            remus_operations::boolean::SheetSide::Positive
+        } else {
+            remus_operations::boolean::SheetSide::Negative
+        };
+        let result = remus_operations::boolean::trim_sheet_by_sheet(
+            self.topo_mut(),
+            target_id,
+            tool_id,
+            side,
+        )?;
+        Ok(shell_id_to_u32(result))
+    }
+
+    /// Mutually trim two transversal planar sheets by their oriented sides.
+    ///
+    /// Returns `[trimmedA, trimmedB]` in input order.
+    #[wasm_bindgen(js_name = "mutualTrimSheets")]
+    pub fn mutual_trim_sheets_body(
+        &mut self,
+        sheet_a: u32,
+        sheet_b: u32,
+        keep_a_positive: bool,
+        keep_b_positive: bool,
+    ) -> Result<Vec<u32>, JsError> {
+        let sheet_a_id = self.resolve_shell(sheet_a)?;
+        let sheet_b_id = self.resolve_shell(sheet_b)?;
+        let side_a = if keep_a_positive {
+            remus_operations::boolean::SheetSide::Positive
+        } else {
+            remus_operations::boolean::SheetSide::Negative
+        };
+        let side_b = if keep_b_positive {
+            remus_operations::boolean::SheetSide::Positive
+        } else {
+            remus_operations::boolean::SheetSide::Negative
+        };
+        let result = remus_operations::boolean::mutual_trim_sheets(
+            self.topo_mut(),
+            sheet_a_id,
+            sheet_b_id,
+            side_a,
+            side_b,
+        )?;
+        Ok(vec![
+            shell_id_to_u32(result.sheet_a),
+            shell_id_to_u32(result.sheet_b),
         ])
     }
 
@@ -2318,10 +2449,12 @@ mod tests {
 
     use std::collections::HashSet;
 
-    use remus_math::vec::Point3;
+    use remus_math::mat::Mat4;
+    use remus_math::vec::{Point3, Vec3};
     use remus_topology::builder::make_polygon_wire;
+    use remus_topology::face::{Face, FaceSurface};
 
-    use crate::handles::{edge_id_to_u32, solid_id_to_u32, wire_id_to_u32};
+    use crate::handles::{edge_id_to_u32, shell_id_to_u32, solid_id_to_u32, wire_id_to_u32};
     use crate::helpers::TOL;
     use crate::kernel::BrepKernel;
 
@@ -2380,6 +2513,299 @@ mod tests {
         parsed[0].clone()
     }
 
+    fn cylindrical_sheet_handles(k: &mut BrepKernel) -> (u32, u32) {
+        let blank = remus_operations::primitives::make_box(k.topo_mut(), 10.0, 10.0, 10.0).unwrap();
+        let carrier = remus_operations::primitives::make_cylinder(k.topo_mut(), 2.0, 12.0).unwrap();
+        remus_operations::transform::transform_solid(
+            k.topo_mut(),
+            carrier,
+            &Mat4::translation(5.0, 5.0, -1.0),
+        )
+        .unwrap();
+        let lateral = remus_topology::explorer::solid_faces(k.topo(), carrier)
+            .unwrap()
+            .into_iter()
+            .find(|&face| {
+                matches!(
+                    k.topo().face(face).unwrap().surface(),
+                    FaceSurface::Cylinder(_)
+                )
+            })
+            .unwrap();
+        let sheet = remus_operations::sew::make_sheet_body(k.topo_mut(), &[lateral]).unwrap();
+        (solid_id_to_u32(blank), shell_id_to_u32(sheet))
+    }
+
+    fn planar_sheet_handles(k: &mut BrepKernel) -> (u32, u32) {
+        let blank = remus_operations::primitives::make_box(k.topo_mut(), 10.0, 10.0, 10.0).unwrap();
+        let points = [
+            Point3::new(-2.0, -2.0, 5.0),
+            Point3::new(12.0, -2.0, 5.0),
+            Point3::new(12.0, 12.0, 5.0),
+            Point3::new(-2.0, 12.0, 5.0),
+        ];
+        let wire = make_polygon_wire(k.topo_mut(), &points, TOL).unwrap();
+        let face = k.topo_mut().add_face(Face::new(
+            wire,
+            Vec::new(),
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 5.0,
+            },
+        ));
+        let sheet = remus_operations::sew::make_sheet_body(k.topo_mut(), &[face]).unwrap();
+        (solid_id_to_u32(blank), shell_id_to_u32(sheet))
+    }
+
+    fn perpendicular_sheet_handles(k: &mut BrepKernel) -> (u32, u32) {
+        let make_sheet = |k: &mut BrepKernel, points: [Point3; 4], normal: Vec3, d: f64| {
+            let wire = make_polygon_wire(k.topo_mut(), &points, TOL).unwrap();
+            let face = k.topo_mut().add_face(Face::new(
+                wire,
+                Vec::new(),
+                FaceSurface::Plane { normal, d },
+            ));
+            shell_id_to_u32(remus_operations::sew::make_sheet_body(k.topo_mut(), &[face]).unwrap())
+        };
+        let horizontal = make_sheet(
+            k,
+            [
+                Point3::new(-2.0, -2.0, 0.0),
+                Point3::new(2.0, -2.0, 0.0),
+                Point3::new(2.0, 2.0, 0.0),
+                Point3::new(-2.0, 2.0, 0.0),
+            ],
+            Vec3::new(0.0, 0.0, 1.0),
+            0.0,
+        );
+        let vertical = make_sheet(
+            k,
+            [
+                Point3::new(0.0, -2.0, -2.0),
+                Point3::new(0.0, 2.0, -2.0),
+                Point3::new(0.0, 2.0, 2.0),
+                Point3::new(0.0, -2.0, 2.0),
+            ],
+            Vec3::new(1.0, 0.0, 0.0),
+            0.0,
+        );
+        (horizontal, vertical)
+    }
+
+    #[test]
+    fn direct_and_batch_split_by_sheet_return_valid_compounds() {
+        let mut signatures = Vec::new();
+        for batch in [false, true] {
+            let mut kernel = BrepKernel::new();
+            let (solid, sheet) = cylindrical_sheet_handles(&mut kernel);
+            let compound = if batch {
+                dispatch(
+                    &mut kernel,
+                    "splitBySheet",
+                    serde_json::json!({"solid": solid, "sheet": sheet}),
+                )["ok"]
+                    .as_u64()
+                    .unwrap() as u32
+            } else {
+                kernel.split_by_sheet_body(solid, sheet).unwrap()
+            };
+            let regions = kernel.get_compound_solids(compound).unwrap();
+            assert_eq!(regions.len(), 2);
+            let volumes: Vec<f64> = regions
+                .iter()
+                .map(|&region| kernel.volume(region, 0.01).unwrap())
+                .collect();
+            assert!((volumes.iter().sum::<f64>() - 1000.0).abs() < 1.0e-7);
+            signatures.push(
+                volumes
+                    .into_iter()
+                    .map(|volume| (volume * 1.0e9).round() as i64)
+                    .collect::<Vec<_>>(),
+            );
+        }
+        assert_eq!(signatures[0], signatures[1]);
+    }
+
+    #[test]
+    fn batch_v2_split_by_sheet_preserves_typed_refusal() {
+        let mut kernel = BrepKernel::new();
+        let blank =
+            remus_operations::primitives::make_box(kernel.topo_mut(), 10.0, 10.0, 10.0).unwrap();
+        let face = remus_topology::explorer::solid_faces(kernel.topo(), blank).unwrap()[0];
+        let sheet = remus_operations::sew::make_sheet_body(kernel.topo_mut(), &[face]).unwrap();
+        let input = serde_json::json!([{
+            "op": "splitBySheet",
+            "args": {
+                "solid": solid_id_to_u32(blank),
+                "sheet": shell_id_to_u32(sheet),
+            }
+        }]);
+        let output: Vec<serde_json::Value> =
+            serde_json::from_str(&kernel.execute_batch_v2(&input.to_string())).unwrap();
+        assert_eq!(
+            output[0]["error"]["details"]["kernelCode"],
+            "unsupported_sheet_split"
+        );
+        assert_eq!(output[0]["error"]["category"], "unsupported");
+    }
+
+    #[test]
+    fn direct_and_batch_trim_sheet_by_solid_match_for_both_sides() {
+        let mut signatures = Vec::new();
+        for batch in [false, true] {
+            for keep_inside in [true, false] {
+                let mut kernel = BrepKernel::new();
+                let (solid, sheet) = planar_sheet_handles(&mut kernel);
+                let trimmed = if batch {
+                    dispatch(
+                        &mut kernel,
+                        "trimSheetBySolid",
+                        serde_json::json!({
+                            "sheet": sheet,
+                            "solid": solid,
+                            "keepInside": keep_inside,
+                        }),
+                    )["ok"]
+                        .as_u64()
+                        .unwrap() as u32
+                } else {
+                    kernel
+                        .trim_sheet_by_solid_body(sheet, solid, keep_inside)
+                        .unwrap()
+                };
+                let sheet_id = kernel.resolve_shell(trimmed).unwrap();
+                let area =
+                    remus_operations::measure::sheet_surface_area(kernel.topo(), sheet_id, 1.0e-3)
+                        .unwrap();
+                let report = remus_check::validate::validate_sheet_body(
+                    kernel.topo(),
+                    sheet_id,
+                    &remus_check::validate::ValidateOptions::default(),
+                )
+                .unwrap();
+                assert!(report.is_valid(), "{:#?}", report.issues);
+                signatures.push((keep_inside, (area * 1.0e9).round() as i64));
+            }
+        }
+        assert_eq!(signatures[0], (true, 100_000_000_000));
+        assert_eq!(signatures[1], (false, 96_000_000_000));
+        assert_eq!(&signatures[..2], &signatures[2..]);
+    }
+
+    #[test]
+    fn batch_v2_trim_sheet_by_solid_preserves_typed_refusal() {
+        let mut kernel = BrepKernel::new();
+        let blank =
+            remus_operations::primitives::make_box(kernel.topo_mut(), 10.0, 10.0, 10.0).unwrap();
+        let face = remus_topology::explorer::solid_faces(kernel.topo(), blank).unwrap()[0];
+        let sheet = remus_operations::sew::make_sheet_body(kernel.topo_mut(), &[face]).unwrap();
+        let input = serde_json::json!([{
+            "op": "trimSheetBySolid",
+            "args": {
+                "solid": solid_id_to_u32(blank),
+                "sheet": shell_id_to_u32(sheet),
+                "keepInside": true,
+            }
+        }]);
+        let output: Vec<serde_json::Value> =
+            serde_json::from_str(&kernel.execute_batch_v2(&input.to_string())).unwrap();
+        assert_eq!(
+            output[0]["error"]["details"]["kernelCode"],
+            "unsupported_sheet_trim"
+        );
+        assert_eq!(output[0]["error"]["category"], "unsupported");
+    }
+
+    #[test]
+    fn direct_and_batch_planar_sheet_trims_match() {
+        let mut signatures = Vec::new();
+        for batch in [false, true] {
+            let mut kernel = BrepKernel::new();
+            let (target, tool) = perpendicular_sheet_handles(&mut kernel);
+            let one_way = if batch {
+                dispatch(
+                    &mut kernel,
+                    "trimSheetBySheet",
+                    serde_json::json!({
+                        "target": target,
+                        "tool": tool,
+                        "keepPositive": true,
+                    }),
+                )["ok"]
+                    .as_u64()
+                    .unwrap() as u32
+            } else {
+                kernel.trim_sheet_by_sheet_body(target, tool, true).unwrap()
+            };
+            let one_way_id = kernel.resolve_shell(one_way).unwrap();
+            let one_way_area =
+                remus_operations::measure::sheet_surface_area(kernel.topo(), one_way_id, 1.0e-3)
+                    .unwrap();
+
+            let mut kernel = BrepKernel::new();
+            let (sheet_a, sheet_b) = perpendicular_sheet_handles(&mut kernel);
+            let mutual = if batch {
+                dispatch(
+                    &mut kernel,
+                    "mutualTrimSheets",
+                    serde_json::json!({
+                        "sheetA": sheet_a,
+                        "sheetB": sheet_b,
+                        "keepAPositive": true,
+                        "keepBPositive": false,
+                    }),
+                )["ok"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|value| value.as_u64().unwrap() as u32)
+                    .collect::<Vec<_>>()
+            } else {
+                kernel
+                    .mutual_trim_sheets_body(sheet_a, sheet_b, true, false)
+                    .unwrap()
+            };
+            let mutual_areas: Vec<i64> = mutual
+                .into_iter()
+                .map(|sheet| {
+                    let sheet_id = kernel.resolve_shell(sheet).unwrap();
+                    let area = remus_operations::measure::sheet_surface_area(
+                        kernel.topo(),
+                        sheet_id,
+                        1.0e-3,
+                    )
+                    .unwrap();
+                    (area * 1.0e9).round() as i64
+                })
+                .collect();
+            signatures.push(((one_way_area * 1.0e9).round() as i64, mutual_areas));
+        }
+        assert_eq!(signatures[0], (8_000_000_000, vec![8_000_000_000; 2]));
+        assert_eq!(signatures[0], signatures[1]);
+    }
+
+    #[test]
+    fn batch_v2_mutual_sheet_trim_preserves_typed_refusal() {
+        let mut kernel = BrepKernel::new();
+        let (sheet, _) = perpendicular_sheet_handles(&mut kernel);
+        let input = serde_json::json!([{
+            "op": "mutualTrimSheets",
+            "args": {
+                "sheetA": sheet,
+                "sheetB": sheet,
+                "keepAPositive": true,
+                "keepBPositive": false,
+            }
+        }]);
+        let output: Vec<serde_json::Value> =
+            serde_json::from_str(&kernel.execute_batch_v2(&input.to_string())).unwrap();
+        assert_eq!(
+            output[0]["error"]["details"]["kernelCode"],
+            "unsupported_sheet_trim"
+        );
+        assert_eq!(output[0]["error"]["category"], "unsupported");
+    }
+
     fn batch_solid_handle(result: &serde_json::Value, label: &str) -> u32 {
         result
             .get("ok")
@@ -2406,6 +2832,42 @@ mod tests {
             (coarse - fine).abs() / fine < 0.02,
             "{label}: volume must converge under mesh refinement: coarse={coarse}, fine={fine}"
         );
+    }
+
+    fn cylinder_cone_shoulder_handles(k: &mut BrepKernel) -> (u32, u32) {
+        let cylinder = remus_operations::primitives::make_cylinder(k.topo_mut(), 3.0, 5.0).unwrap();
+        let cone = remus_operations::primitives::make_cone(k.topo_mut(), 3.0, 1.0, 4.0).unwrap();
+        remus_operations::transform::transform_solid(
+            k.topo_mut(),
+            cone,
+            &Mat4::translation(0.0, 0.0, 5.0),
+        )
+        .unwrap();
+        let solid = remus_operations::boolean::boolean(
+            k.topo_mut(),
+            remus_operations::boolean::BooleanOp::Fuse,
+            cylinder,
+            cone,
+        )
+        .unwrap();
+        let adjacency = k.topo().build_adjacency(solid).unwrap();
+        let shoulder = remus_topology::explorer::solid_edges(k.topo(), solid)
+            .unwrap()
+            .into_iter()
+            .find(|edge| {
+                let faces = adjacency.faces_for_edge(*edge);
+                faces.len() == 2
+                    && matches!(
+                        (
+                            k.topo().face(faces[0]).unwrap().surface(),
+                            k.topo().face(faces[1]).unwrap().surface(),
+                        ),
+                        (FaceSurface::Cylinder(_), FaceSurface::Cone(_))
+                            | (FaceSurface::Cone(_), FaceSurface::Cylinder(_))
+                    )
+            })
+            .expect("fused body must retain its cylinder-cone shoulder");
+        (solid_id_to_u32(solid), edge_id_to_u32(shoulder))
     }
 
     fn wire_perimeter(k: &BrepKernel, wire_handle: u32) -> f64 {
@@ -2543,6 +3005,82 @@ mod tests {
         assert!(
             volume < 1000.0,
             "convex fillet must remove material, got {volume}"
+        );
+    }
+
+    #[test]
+    fn cylinder_cone_fillet_matches_direct_and_batch_wasm_routes() {
+        let mut direct = BrepKernel::new();
+        let (solid, shoulder) = cylinder_cone_shoulder_handles(&mut direct);
+        let direct_result = direct.fillet_v2(solid, vec![shoulder], 0.25).unwrap();
+        assert_batch_solid_geometry(&direct, direct_result, "direct cylinder-cone fillet");
+        let direct_volume = remus_operations::measure::solid_volume(
+            direct.topo(),
+            direct.resolve_solid(direct_result).unwrap(),
+            0.01,
+        )
+        .unwrap();
+
+        let mut batch = BrepKernel::new();
+        let (solid, shoulder) = cylinder_cone_shoulder_handles(&mut batch);
+        let response = dispatch(
+            &mut batch,
+            "filletV2",
+            serde_json::json!({ "solid": solid, "edges": [shoulder], "radius": 0.25 }),
+        );
+        let batch_result = batch_solid_handle(&response, "batch cylinder-cone fillet");
+        assert_batch_solid_geometry(&batch, batch_result, "batch cylinder-cone fillet");
+        let batch_volume = remus_operations::measure::solid_volume(
+            batch.topo(),
+            batch.resolve_solid(batch_result).unwrap(),
+            0.01,
+        )
+        .unwrap();
+
+        assert!(
+            (direct_volume - batch_volume).abs() / direct_volume < 1.0e-9,
+            "direct and batch paths diverged: {direct_volume} vs {batch_volume}"
+        );
+    }
+
+    #[test]
+    fn all_edge_box_vertex_blend_matches_direct_and_batch_wasm_routes() {
+        let run = |batch_route: bool| {
+            let mut kernel = BrepKernel::new();
+            let solid = kernel.make_box_solid(12.0, 10.0, 8.0).unwrap();
+            let edges = kernel.get_solid_edges(solid).unwrap();
+            assert_eq!(edges.len(), 12);
+            let result = if batch_route {
+                let response = dispatch(
+                    &mut kernel,
+                    "filletV2",
+                    serde_json::json!({ "solid": solid, "edges": edges, "radius": 0.5 }),
+                );
+                batch_solid_handle(&response, "batch all-edge box fillet")
+            } else {
+                kernel.fillet_v2(solid, edges, 0.5).unwrap()
+            };
+            assert_batch_solid_geometry(&kernel, result, "all-edge box fillet");
+            let result_id = kernel.resolve_solid(result).unwrap();
+            let faces = remus_topology::explorer::solid_faces(kernel.topo(), result_id).unwrap();
+            assert_eq!(
+                faces
+                    .iter()
+                    .filter(|&&face| matches!(
+                        kernel.topo().face(face).unwrap().surface(),
+                        FaceSurface::Sphere(_)
+                    ))
+                    .count(),
+                8
+            );
+            remus_operations::measure::solid_volume(kernel.topo(), result_id, 0.01).unwrap()
+        };
+
+        let direct_volume = run(false);
+        let batch_volume = run(true);
+        assert!(
+            (direct_volume - batch_volume).abs() / direct_volume < 1.0e-9,
+            "direct and batch paths diverged: {direct_volume} vs {batch_volume}"
         );
     }
 
@@ -2923,6 +3461,36 @@ mod tests {
         );
         let solid = batch_solid_handle(&out, "sweep with Line path");
         assert_batch_solid_geometry(&k, solid, "sweep with Line path");
+    }
+
+    #[test]
+    fn wire_sweep_has_direct_and_batch_measurement_parity() {
+        let mut direct = BrepKernel::new();
+        let direct_profile = square_wire(&mut direct);
+        let direct_path = direct
+            .make_line_edge(0.0, 0.0, 0.0, 0.0, 0.0, 12.0)
+            .unwrap();
+        let direct_solid = direct.sweep_wire(direct_profile, direct_path).unwrap();
+        assert!((direct.wire_length(direct_profile).unwrap() - 40.0).abs() < 1e-9);
+        assert!((direct.volume(direct_solid, 0.1).unwrap() - 1200.0).abs() < 1e-7);
+
+        let mut batch = BrepKernel::new();
+        let batch_profile = square_wire(&mut batch);
+        let batch_path = batch.make_line_edge(0.0, 0.0, 0.0, 0.0, 0.0, 12.0).unwrap();
+        let length = dispatch(
+            &mut batch,
+            "wireLength",
+            serde_json::json!({ "wire": batch_profile }),
+        );
+        assert!((length["ok"].as_f64().unwrap() - 40.0).abs() < 1e-9);
+        let swept = dispatch(
+            &mut batch,
+            "sweepWire",
+            serde_json::json!({ "profile": batch_profile, "pathEdge": batch_path }),
+        );
+        let batch_solid = batch_solid_handle(&swept, "sweepWire");
+        assert!((batch.volume(batch_solid, 0.1).unwrap() - 1200.0).abs() < 1e-7);
+        assert!((batch.wire_length(batch_profile).unwrap() - 40.0).abs() < 1e-9);
     }
 
     #[test]

@@ -40,12 +40,13 @@ journal, persistent naming with typed resolution, attribute propagation,
 serialization — is machinery most kernels never grew. It makes milestone M6
 (direct modeling) unusually valuable here.
 
-**Three pillars are missing**, and they are architectural, not features:
-per-entity tolerant modeling (M3), sheet/wire/cellular body taxonomy (M4),
-and general curved×curved boolean intersection (M2). Issue 2.2 closes the
-first general-position cell: two offset spheres now fuse, cut, and intersect
-through an exact radical-plane circle with analytic spherical result faces.
-General quadric and NURBS pairs remain the honest D2 boundary.
+**The three architectural pillars are M2, M3, and M4.** The
+sheet/wire/cellular body taxonomy (M4) is now implemented in review through
+Issue 4.7; per-entity tolerant modeling (M3) and general curved×curved boolean
+intersection (M2) remain open. Issue 2.2 closes the first general-position
+cell: two offset spheres now fuse, cut, and intersect through an exact
+radical-plane circle with analytic spherical result faces. General quadric
+and NURBS pairs remain the honest D2 boundary.
 
 **Ordering principle: architecture before generality, generality before
 polish.** Tolerant modeling and body taxonomy change data structures every
@@ -511,9 +512,9 @@ analysis tolerance-statistics pass becomes the reporting backbone.
 
 Parasolid bodies are solid, sheet, wire, or general, and booleans work across
 them — trim a sheet by a solid, split a solid into cells, imprint edges
-without removing material. In Remus the sheet/wire/general axis of the
-capability matrix is all-Unqualified, and multi-region results hide behind a
-`TODO: use a Compound` in the shell assembler. This is how surface-modeling
+without removing material. At RFC acceptance the sheet/wire/general axis of
+the capability matrix was all-Unqualified, and multi-region results hide
+behind a `TODO: use a Compound` in the shell assembler. This is how surface-modeling
 workflows and principled multi-body results arrive.
 
 ### 4.1 RFC 0005: body classes & cellular results (M)
@@ -533,21 +534,49 @@ semantics for sheet operands (side-of, not in/out).
 Delivered in [PR #127](https://github.com/esaueng/remus/pull/127): the RFC
 maps the existing capability-matrix body axis to solid, sheet, wire, and
 general-body semantics; side-of sheet classification; Compound-first
-cellular results; STEP entities; and construction-derived evolution. All
-non-solid cells remain Unqualified until Issues 4.2–4.7 land.
+cellular results; STEP entities; and construction-derived evolution. Non-solid
+cells start Unqualified and are promoted only by the bounded evidence of
+Issues 4.2–4.7; Issue 4.2's bounded sheet workflow is now qualified.
+Issue 4.3's first cellular result is implemented for the
+qualified single-cylinder-sheet cell.
+Issue 4.4's planar solid×sheet and sheet×sheet implementation is complete,
+including the trim-plus-sew exit witness; curved and multi-face sheet
+pairs remain unqualified.
+Issue 4.5's planar solid×solid imprint is implemented with exact
+construction lineage; curved and same-domain imprint cells remain unqualified.
+Issue 4.6 is implemented: exact two-solid operations return
+independently validated regions in a Compound with per-region construction
+lineage, and bounded Compound operands preserve or distribute those exact
+regions. The legacy single-Solid entry points remain as explicit compatibility
+surfaces; intersecting-member fuse and multi-tool Compound cut stay
+Unqualified until recursive lineage composition exists.
+Issue 4.7's bounded wire-body cell is implemented: body-level length,
+existing copy/transform semantics, additive arena-v5 wire roots, and validated
+closed-planar profile sweep all have native/direct/batch WASM evidence. Open
+and non-planar wire sweeps remain typed refusals. This completes the bounded M4
+implementation sequence.
 
 ### 4.2 Sheet bodies first-class (M)
 
 `crates/topology/src/shell.rs` · `crates/check/src/validate/` ·
 `crates/operations/src/tessellate/` · `crates/io/src/step/`
 
-Partial, in review in [PR #209](https://github.com/esaueng/remus/pull/209):
-RFC 0005 Stage 1 adds the public solid/sheet/wire/general vocabulary,
-validated shell/wire tags, class-aware validation profiles, stable
-diagnostics, and backward-compatible arena-v3 tags. Standalone sheet roots,
-construction, body-level area/tessellation, STEP round-trip, and direct/batch
-WASM contracts remain required by this issue; no capability cell is promoted
-by the substrate alone.
+Implemented in [PR #209](https://github.com/esaueng/remus/pull/209),
+[PR #210](https://github.com/esaueng/remus/pull/210),
+[PR #211](https://github.com/esaueng/remus/pull/211),
+[PR #212](https://github.com/esaueng/remus/pull/212), and
+[PR #213](https://github.com/esaueng/remus/pull/213): RFC 0005 Stage 1 adds the
+public solid/sheet/wire/general vocabulary, validated shell/wire tags,
+class-aware validation profiles, stable diagnostics, and backward-compatible
+arena-v3 tags. The operations tranches add transactional face-set
+construction, body-level area, bounding box, center-of-area, typed volume
+refusal, boundary-preserving tessellation, and direct/batch WASM contracts.
+Arena v4 adds standalone sheet roots with exact trimmed-NURBS/coedge-pcurve
+replay, root order and duplicate preservation, typed transactional refusal,
+WASM parity, and frozen v3 writer bytes. STEP body-aware APIs now map tagged
+sheets to `SHELL_BASED_SURFACE_MODEL` over `OPEN_SHELL` or `CLOSED_SHELL`,
+preserve representation-scoped tolerance authority, keep solid roots distinct,
+and expose direct/batch WASM parity. The implementation exit witness is green.
 
 Open shells as bodies with their own validation profile (free boundary
 allowed and reported, orientation consistent), area properties, tessellation,
@@ -566,6 +595,16 @@ Generalize split-by-plane to split-by-sheet-body: the sheet's faces act as
 the tool's face set in GFA without a bounding solid. First consumer of the
 cellular result model.
 
+Implemented, in review in [PR #214](https://github.com/esaueng/remus/pull/214):
+the isolated GFA arrangement uses the sheet only for pave filling, target-face
+partitioning, and oppositely oriented cell closure—never as a volumetric
+boolean operand. `split_by_sheet` returns a Compound after validating every
+cell and proving volume conservation. The bounded exit witness is one
+connected cylindrical face crossing a box: two deterministic native/direct
+WASM/batch cells, each valid, with the inner closed-form cylinder volume and
+the cell sum equal to the box. Other surface families and multi-face sheets
+refuse with `unsupported_sheet_split`; expanding those cells remains open.
+
 > **Exit gate:** a curved sheet splits a solid into N regions whose volumes
 > sum exactly to the original; each region individually valid; determinism
 > pinned.
@@ -579,17 +618,42 @@ sheet×sheet trims — the surface-modeling loop that ends in `sew` producing a
 solid. Classification of sheet faces against the solid reuses the M2-hardened
 classifiers.
 
+Implemented, in review in [PR #215](https://github.com/esaueng/remus/pull/215)
+and [PR #216](https://github.com/esaueng/remus/pull/216): the face-set GFA
+arrangement classifies only sheet patches and returns new validation-gated
+Sheets. Solid trims retain either the exact 100-area inside square or connected
+96-area outside remainder. Sheet trims use each tool face's effective normal
+for positive/negative side selection; a strict mutual form returns both
+divided sheets, while the one-way form composes boundary by boundary. Six
+outward-oriented carrier sheets trim to the box faces, sew into a valid
+six-face solid, and match `make_box` volume exactly and deterministically.
+Native/direct/batch WASM paths agree, and coincident, non-dividing, curved, or
+multi-face configurations fail closed with `unsupported_sheet_trim`.
+
 > **Exit gate:** build a closed solid purely from mutually-trimmed sheets +
 > sew; volume matches the same solid built by primitive booleans.
 
 ### 4.5 Imprint (M)
 
-`crates/operations/` (new module) · `crates/algo/src/builder/`
+`crates/operations/src/imprint.rs` · `crates/algo/src/builder/`
 
 Imprint the intersection edges of one body onto another's faces without
 removing material — GFA's split phase without the classification/discard
 phase. The naming stack makes this shine: imprints journal as pure Split
 events, so persistent refs across an imprint are exact.
+
+Implemented, in review in [PR #217](https://github.com/esaueng/remus/pull/217):
+the tool participates only in pave filling and face partitioning; assembly
+retains every target patch in a new validation-gated solid. The bounded
+transversal planar witness imprints a rectangular loop into a box face while
+preserving the box's 1000-unit volume. Construction records journal every
+result face as `Modified`, section edges as `Generated` from both participating
+faces, original target edges as preserved or modified, and the untouched tool
+as `Preserved`; there are no `Deleted` or `Unresolved` events. A face reference
+is `Bound` before the operation and resolves `BoundMany` over its split pieces
+afterward. Repeated native runs and direct/batch WASM agree. Aliased, disjoint,
+same-domain, curved, or incomplete-lineage configurations fail closed with
+`unsupported_imprint` and roll back.
 
 > **Exit gate:** imprinted solid has identical volume, split faces claimed by
 > Split events, zero unresolved; refs to pre-imprint faces resolve BoundMany.
@@ -604,6 +668,24 @@ regions, return them as a Compound with per-region provenance instead of the
 current single-solid convention. Also closes the "Fuse/Intersect over
 disjoint multi-component inputs are left to mesh" note.
 
+Implemented, in review in [PR #218](https://github.com/esaueng/remus/pull/218)
+and [PR #219](https://github.com/esaueng/remus/pull/219): the BuilderSolid final
+phase produces one `Solid` per disconnected growth shell, assigns closed
+cavity shells deterministically to the smallest containing region, and keeps
+the old single-solid result only through an explicit compatibility fold. The
+exact-only transactional `boolean_regions` API returns those solids in a
+Compound with total construction-derived face/edge/vertex evolution per
+member and rejects incomplete lineage. A 10×10×10 box severed by a
+through-slab returns two valid 400-volume solids; disjoint boxes fuse as two
+exact regions, deterministically, through native and direct/batch WASM paths.
+The `boolean_compound_regions` follow-up accepts pairwise-disjoint Compound
+members: fuse preserves exact member roots with identity lineage, intersect
+distributes exact GFA work over member pairs, and a single-member cut tool is
+distributed over every target member. Native and direct/batch WASM witnesses
+cover all three operations. Intersecting-member fuse and multi-tool cut fail
+closed until recursive lineage composition is qualified; legacy single-solid
+entry points remain for compatibility. The stated exit gate is complete.
+
 > **Exit gate:** a cut that severs a body returns two valid solids with
 > correct volumes and complete evolution; disjoint-operand fuse no longer
 > routes to mesh.
@@ -612,6 +694,17 @@ disjoint multi-component inputs are left to mesh" note.
 
 Wire bodies as measurable, transformable, sweepable first-class inputs.
 Mostly bookkeeping once 4.1 lands; defer freely.
+
+Implemented, in review in [PR #222](https://github.com/esaueng/remus/pull/222):
+`body_length` provides dimensional dispatch without weakening the existing
+wire measurement, and arena v5 adds ordered, duplicate-preserving standalone
+wire roots while retaining v1–v4 readers and frozen v3/v4 writers. The
+transactional `sweep_wire` path snapshots a validated closed planar wire into
+a private face, validates the resulting solid, and leaves the input root
+independent. Native and direct/batch WASM witnesses agree on exact rectangular
+perimeter and prism volume. Open and non-planar profiles fail closed without
+allocating live topology. The stated exit gate, and therefore the M4
+implementation sequence, is complete in review.
 
 > **Exit gate:** wire body round-trips arena IO; sweeps accept it as a
 > profile source.
@@ -633,6 +726,24 @@ Unqualified. Qualify against oracles: a linear law on a straight edge has a
 closed-form band; S-curve verified by sampled-section invariants (radius at
 parameter, tangency to both supports).
 
+Implemented, in review in [PR #226](https://github.com/esaueng/remus/pull/226):
+standard constant, linear, and S-curve laws expose exact whole-domain extrema
+and refuse a tolerance-collapsed radius before topology work. A caller-supplied
+exclusive local limit is checked over the complete law domain and returns
+typed `RadiusTooLarge` at equality or above. The walker validates every
+station before Newton evaluation. Its straight-edge perpendicular-plane
+linear band lies on the analytic ruled quarter-circle surface and integrates
+to the closed-form removed volume; S-curve stations independently pin law
+radius, support incidence, and tangency. Opaque custom callbacks are no longer
+silently replaced by endpoint-linear interpolation: the builder preserves the
+function, preflights a deterministic domain grid, and the walker checks every
+consumed station. Because an arbitrary closure has no provable bound between
+samples, its whole-domain certification remains explicitly Unqualified.
+Likewise, turning the qualified walking band into a trimmed solid remains on
+the existing typed trimmer-refusal path; curved supports, corner assembly,
+setbacks, and overflow remain Issues 5.2–5.5 rather than being inferred from
+this component result.
+
 > **Exit gate:** variable-radius cells move to Qualified with closed-form +
 > invariant oracles; refusals typed at law-domain boundaries (radius → 0,
 > radius ≥ local limit).
@@ -648,6 +759,28 @@ experimental and unblocks the pinned `resize_blend` refusal (cylinder-wall ×
 cone-wall rim reconstruction). Contact curves on curved supports are exactly
 the geometry 2.4 taught the splitter to consume.
 
+Implemented, in review in [PR #228](https://github.com/esaueng/remus/pull/228):
+the ordinary constant-radius walker now uses the material side of every
+analytic support, recovers across periodic parameter seams, and closes a rim
+on its authoritative curve domain. Coaxial cylinder/cone shoulders are
+recognized back to exact toroidal bands; the other qualified closed walks use
+a degree-1 periodic NURBS band whose boundary curves are the shared support
+contacts. Assembly replaces
+either an outer-rim block or a complete inner rim, normalizes effective shell
+winding, and tessellates the periodic band from the same shared edge vertices.
+Native witnesses cover cylinder/cone, cylinder/sphere, cone/cone, and the
+segmented orthogonal cylinder/cylinder rim of a cross-drilled shaft. Every
+result passes solid validation, has zero free and non-manifold edges, produces
+a watertight welded mesh, and agrees with the B-Rep volume within 2%; direct and
+batch WASM routes agree on the cylinder/cone result. The existing closed-rim
+chamfer matrix remains green. `resize_blend` now removes the cylinder/cone band
+back to the exact sharp body (relative volume error below 1e-7) and rebuilds a
+smaller positive radius. The imported Shapr3D witness also preserves its
+carrier-proven external tangent branch when resizing radius 4 to 3, replacing
+the pinned `unsupported-support-pair` refusal. This qualifies only those closed
+analytic cells; open, non-coaxial, variable-radius curved assembly and other
+support pairs remain fail-closed.
+
 > **Exit gate:** fillet a cylinder-cone shoulder and a cross-drilled hole
 > rim: watertight, volume vs. mesh oracle, free-edge count zero; the
 > resize_blend `unsupported-support-pair` refusal flips to reconstruction.
@@ -659,6 +792,29 @@ the geometry 2.4 taught the splitter to consume.
 Generalize the spherical-triangle corner patch to N incident stripes with
 mixed convexity — the setback-free corner solver Parasolid calls a vertex
 blend.
+
+Implemented, in review in [PR #231](https://github.com/esaueng/remus/pull/231):
+constant-radius planar vertex blends now solve a common tangent ball from the
+best-conditioned face-plane triple and qualify every remaining incident face.
+Each stripe ends at the exact projection of that ball centre onto its spine;
+the corner is one analytic sphere cap for three contacts or a shared-edge
+sphere fan for arbitrary N. Convex and concave corner orientation propagates
+through the fan. The production planar path also keeps arbitrary-dihedral
+stripes as exact cylinders and records transverse support-plane runouts as
+strictly trimmed ellipses. Native exit witnesses cover an all-edge box (eight
+caps and 24 G1 stripe/corner seams) and a four-stripe pyramid apex (one cap,
+four G1 seams, and four trimmed ellipse runouts); the deterministic torture
+corpus additionally promotes its four- and five-stripe pyramid cases. Every
+built witness has closed, manifold B-Rep and welded-mesh topology, and the
+torture gate compares B-Rep volume with an independent mesh integral. Direct
+and batch WASM routes agree on the all-edge box, and the approximation census
+promotes its pyramid row from failed planar fallback to exact analytic output.
+The qualified domain is same-radius, planar, common-ball geometry with one
+connected material-side orientation. Uniform convex and uniform concave
+corners are supported; alternating convex/concave material sides return typed
+`unsupported-vertex-blend` transactionally because one connected analytic
+sphere fan cannot reverse its effective normal between wedges. Nonplanar and
+variable-radius corners remain for Issues 5.4 and later.
 
 > **Exit gate:** all-edges-filleted box (3-stripe corners) and 4-stripe
 > pyramid apex close watertight; G1 across every stripe-corner boundary

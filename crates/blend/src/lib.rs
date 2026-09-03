@@ -91,11 +91,10 @@ pub enum BlendError {
         vertex: VertexId,
     },
 
-    /// Multiple blend stripes meet at a vertex, which the walking engine's
-    /// watertight assembly does not support yet: the corner solver computes
-    /// exact vertex-blend geometry, but the stripes are not set back and the
-    /// corner faces do not share boundary edges with them, so the assembled
-    /// shell can never close. Callers fall back to another engine.
+    /// Multiple blend stripes meet in a configuration with no qualified,
+    /// consistently oriented vertex patch. This includes walking paths whose
+    /// stripes are not set back for assembly and planar N-way corners with
+    /// alternating material sides.
     #[error("unsupported vertex blend at {vertex:?}: {stripes} stripes meet")]
     UnsupportedVertexBlend {
         /// The vertex where multiple stripes meet.

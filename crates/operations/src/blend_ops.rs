@@ -252,9 +252,17 @@ impl BlendSize {
 
 /// Reject a blend whose volume change is geometrically impossible.
 ///
-/// A blend only moves material inside a tube of radius `size` around each
-/// blended edge, so `|Δvolume|` is bounded by `size²·length` per edge plus
-/// `2·size³` of end effects. And the sign is fixed by convexity: rounding a
+/// A blend only moves material inside a bounded tube around each edge the
+/// engine actually blends. Its radius is not generally the requested fillet
+/// radius: at a shallow dihedral, the contact setback is larger. For effective
+/// outward-normal angle `theta`, the convex and concave centre offsets are
+/// bounded by `size / cos(theta/2)` and `size / sin(theta/2)`, respectively.
+/// The magnitude guard uses the larger because a local convexity classifier
+/// can itself be indeterminate. A fillet seed expands across its complete G1
+/// chain, so the bound covers that chain rather than only the caller-named
+/// segment. Each edge contributes the volume of a capsule at the
+/// angle-adjusted reach; summing capsules is conservative even where
+/// neighbouring capsules overlap. The sign is fixed by convexity: rounding a
 /// convex edge cuts material away, a concave one fills it in. A result that
 /// breaks either rule is wrong even when it is a topologically valid closed
 /// solid — the failure mode a wrong-side trim produces, which the shell and
@@ -287,38 +295,65 @@ pub(crate) fn validate_blend_volume(
     let delta = after - before;
     let reach = size.reach();
 
+    let budget_edges = if operation == "fillet" {
+        let tol = remus_math::tolerance::Tolerance::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut expanded = Vec::new();
+        for chain in remus_blend::g1_chain::g1_chains(topo, input_solid, edges, tol)? {
+            for edge in chain {
+                if seen.insert(edge) {
+                    expanded.push(edge);
+                }
+            }
+        }
+        expanded
+    } else {
+        edges.to_vec()
+    };
+
     let adjacency = topo.build_adjacency(input_solid)?;
     let mut budget = 0.0;
     let mut min_move = 0.0;
-    for &edge in edges {
-        let e = topo.edge(edge)?;
-        let start = topo.vertex(e.start())?.point();
-        let end = topo.vertex(e.end())?.point();
-        let length = if e.start() == e.end() {
-            // Closed edge: use the curve's own extent.
-            let (t0, t1) = crate::authoritative_edge_domain(e, "blend-volume validation")?;
-            let mut len = 0.0;
-            let mut prev = e.curve().evaluate_with_endpoints(t0, start, end);
-            for i in 1..=32 {
-                let t = t0 + (t1 - t0) * f64::from(i) / 32.0;
-                let p = e.curve().evaluate_with_endpoints(t, start, end);
-                len += (p - prev).length();
-                prev = p;
+    for &edge in &budget_edges {
+        let length = crate::measure::edge_length(topo, edge)?;
+        let edge_data = topo.edge(edge)?;
+        let start = topo.vertex(edge_data.start())?.point();
+        let end = topo.vertex(edge_data.end())?.point();
+        let (t0, t1) =
+            crate::authoritative_edge_domain(edge_data, "blend-volume angle-adjusted reach")?;
+        let mut faces = adjacency.faces_for_edge(edge).to_vec();
+        faces.sort_unstable_by_key(|face| face.index());
+        faces.dedup();
+        let mut edge_reach = reach;
+        if let [face_a, face_b] = faces.as_slice() {
+            for index in 0..=16 {
+                let parameter = (t1 - t0).mul_add(f64::from(index) / 16.0, t0);
+                let point = edge_data
+                    .curve()
+                    .evaluate_with_endpoints(parameter, start, end);
+                let Some(normal_a) = crate::query::effective_face_normal(topo, *face_a, point)
+                else {
+                    continue;
+                };
+                let Some(normal_b) = crate::query::effective_face_normal(topo, *face_b, point)
+                else {
+                    continue;
+                };
+                let angle = normal_a
+                    .cross(normal_b)
+                    .length()
+                    .atan2(normal_a.dot(normal_b));
+                let half_angle = angle * 0.5;
+                let denominator = half_angle.sin().min(half_angle.cos()).max(1.0e-6);
+                edge_reach = edge_reach.max(reach / denominator);
             }
-            len
-        } else {
-            (end - start).length()
-        };
-        budget += reach * reach * length + 2.0 * reach * reach * reach;
 
-        // An edge whose dihedral cannot be read contributes nothing to the
-        // floor, which keeps the floor a lower bound.
-        let faces = adjacency.faces_for_edge(edge);
-        if faces.len() == 2
-            && let Some(phi) = crate::query::edge_normal_angle(topo, edge, faces[0], faces[1])?
-        {
-            min_move += size.min_section_area(phi) * length;
+            if let Some(phi) = crate::query::edge_normal_angle(topo, edge, *face_a, *face_b)? {
+                min_move += size.min_section_area(phi) * length;
+            }
         }
+        budget += std::f64::consts::PI * edge_reach * edge_reach * length
+            + (4.0 / 3.0) * std::f64::consts::PI * edge_reach * edge_reach * edge_reach;
     }
 
     if delta.abs() > budget {
@@ -332,7 +367,7 @@ pub(crate) fn validate_blend_volume(
 
     // Sign rule, applied only when every blended edge shares one convexity
     // (a mixed set can legitimately net out either way).
-    let convexities: Vec<bool> = edges
+    let convexities: Vec<bool> = budget_edges
         .iter()
         .filter_map(|&e| {
             // The classifier refuses to guess when the probe overshoots the
@@ -352,7 +387,16 @@ pub(crate) fn validate_blend_volume(
             None
         })
         .collect();
-    if convexities.len() == edges.len() && !convexities.is_empty() {
+    // Point-in-solid convexity depends on a consistently oriented input shell.
+    // The blend postcondition deliberately permits repairing baseline defects,
+    // so do not turn an inherited orientation error into a confident sign
+    // verdict. The angle-adjusted magnitude bound still applies.
+    let options = postcondition_options(topo, input_solid)?;
+    let input_is_validation_clean = error_magnitudes(topo, input_solid, &options)?.is_empty();
+    if input_is_validation_clean
+        && convexities.len() == budget_edges.len()
+        && !convexities.is_empty()
+    {
         let all_convex = convexities.iter().all(|&c| c);
         let all_concave = convexities.iter().all(|&c| !c);
         // Allow a hair of tessellation noise either way. The noise lives at the

@@ -17,9 +17,9 @@
 //! pipeline can hold for one operator and fall back for another on the same two
 //! solids; offset/fillet/chamfer run on
 //! every analytic primitive to show they stay exact (no probe fires). A final
-//! "remaining paths" section then constructs the inputs the primitive matrix
-//! cannot reach — a NURBS-faced loft, a torus, and a 4-valence pyramid apex — so
-//! that all seven approximation paths fire at least once.
+//! "remaining paths" section then constructs inputs the primitive matrix
+//! cannot reach — a NURBS-faced loft, a torus, and a 4-valence pyramid apex —
+//! retaining promoted exact rows alongside the approximation-path sentinels.
 
 #![allow(clippy::print_stdout, deprecated, missing_docs)]
 
@@ -840,8 +840,8 @@ fn remaining_paths() -> Result<(), Box<dyn Error>> {
         }
     }
 
-    // rolling-ball fillet on a square pyramid: the 4-valence apex yields a
-    // non-triangular corner → flat planar-blend fallback.
+    // Rolling-ball fillet on a square pyramid: the 4-valence apex is the
+    // promoted exact N-way vertex-blend census row.
     {
         let mut topo = Topology::new();
         let pyr = make_pyramid(&mut topo, 5.0, 8.0)?;
