@@ -181,6 +181,7 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "resolveRef"
         | "resolveRefFaceAttributes" => Some(BatchOpKind::ReadOnly),
         "makeBox"
+        | "makeCompound"
         | "fuseJournaled"
         | "cutJournaled"
         | "intersectJournaled"
@@ -203,6 +204,7 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "cut"
         | "intersect"
         | "booleanRegions"
+        | "booleanCompoundRegions"
         | "booleanWithQuality"
         | "fuseWithOptions"
         | "cutWithOptions"
@@ -850,6 +852,22 @@ impl BrepKernel {
                     .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(solid)))
             }
+            "makeCompound" => {
+                let handles = get_u32_array(args, "solids")?;
+                let count = u32::try_from(handles.len()).unwrap_or(u32::MAX);
+                validate_work_count(count, "solids").map_err(StructuredWasmError::from)?;
+                let solids = handles
+                    .into_iter()
+                    .map(|handle| {
+                        self.resolve_solid(handle)
+                            .map_err(StructuredWasmError::from)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                let compound = self
+                    .topo_mut()
+                    .add_compound(remus_topology::compound::Compound::new(solids));
+                Ok(serde_json::json!(compound_id_to_u32(compound)))
+            }
             "makeCylinder" => {
                 let r = get_f64(args, "radius")?;
                 let h = get_f64(args, "height")?;
@@ -964,6 +982,41 @@ impl BrepKernel {
                 Ok(serde_json::json!(crate::handles::compound_id_to_u32(
                     result.compound
                 )))
+            }
+            "booleanCompoundRegions" => {
+                let a = get_u32(args, "compoundA")?;
+                let b = get_u32(args, "compoundB")?;
+                let operation = args["operation"].as_str().ok_or_else(|| {
+                    StructuredWasmError::invalid_argument(
+                        "missing or invalid 'operation' string",
+                        Some("operation"),
+                    )
+                })?;
+                let bool_op = match operation {
+                    "fuse" | "union" => BooleanOp::Fuse,
+                    "cut" | "difference" => BooleanOp::Cut,
+                    "intersect" | "intersection" => BooleanOp::Intersect,
+                    _ => {
+                        return Err(StructuredWasmError::invalid_argument(
+                            format!("unknown boolean op: {operation}"),
+                            Some("operation"),
+                        ));
+                    }
+                };
+                let a_id = self
+                    .resolve_compound(a)
+                    .map_err(StructuredWasmError::from)?;
+                let b_id = self
+                    .resolve_compound(b)
+                    .map_err(StructuredWasmError::from)?;
+                let result = remus_operations::boolean::boolean_compound_regions(
+                    self.topo_mut(),
+                    bool_op,
+                    a_id,
+                    b_id,
+                )
+                .map_err(StructuredWasmError::from)?;
+                Ok(serde_json::json!(compound_id_to_u32(result.compound)))
             }
             "booleanWithQuality" => {
                 use remus_operations::boolean::{BooleanQuality, boolean_with_context};
