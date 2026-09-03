@@ -1659,6 +1659,70 @@ fn fuse_box_sphere_succeeds() {
 }
 
 #[test]
+fn centered_box_sphere_fuse_is_exact_and_watertight() {
+    use remus_math::context::{FallbackPolicy, OperationContext};
+
+    let mut topo = Topology::new();
+    let bx = crate::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+    let sp = crate::primitives::make_sphere(&mut topo, 6.0, 24).unwrap();
+    crate::transform::transform_solid(
+        &mut topo,
+        sp,
+        &remus_math::mat::Mat4::translation(5.0, 5.0, 5.0),
+    )
+    .unwrap();
+    let exact = OperationContext::new().with_fallback(FallbackPolicy::ExactOnly);
+    let outcome = boolean_with_context(&mut topo, BooleanOp::Fuse, bx, sp, &exact).unwrap();
+    assert_eq!(outcome.quality, BooleanQuality::Exact);
+
+    let faces = remus_topology::explorer::solid_faces(&topo, outcome.solid).unwrap();
+    assert_eq!(faces.len(), 16, "expected 6 box patches + 10 sphere caps");
+    let (mut planes, mut spheres, mut others) = (0_usize, 0_usize, 0_usize);
+    for &face_id in &faces {
+        match topo.face(face_id).unwrap().surface() {
+            FaceSurface::Plane { .. } => planes += 1,
+            FaceSurface::Sphere(_) => spheres += 1,
+            _ => others += 1,
+        }
+    }
+    assert_eq!((planes, spheres, others), (6, 10, 0));
+
+    let adjacency = remus_topology::adjacency::AdjacencyIndex::build(&topo, outcome.solid).unwrap();
+    assert!(adjacency.is_manifold());
+    assert!(adjacency.boundary_edges().is_empty());
+    let report = crate::validate::validate_solid(&topo, outcome.solid).unwrap();
+    assert!(report.is_valid(), "validation issues: {:?}", report.issues);
+
+    // Independent inclusion-exclusion oracle: the centered box∩sphere
+    // shortcut is a separately constructed exact eight-face solid.
+    let mut oracle_topo = Topology::new();
+    let oracle_box = crate::primitives::make_box(&mut oracle_topo, 10.0, 10.0, 10.0).unwrap();
+    let oracle_sphere = crate::primitives::make_sphere(&mut oracle_topo, 6.0, 24).unwrap();
+    crate::transform::transform_solid(
+        &mut oracle_topo,
+        oracle_sphere,
+        &remus_math::mat::Mat4::translation(5.0, 5.0, 5.0),
+    )
+    .unwrap();
+    let common = boolean_with_context(
+        &mut oracle_topo,
+        BooleanOp::Intersect,
+        oracle_box,
+        oracle_sphere,
+        &exact,
+    )
+    .unwrap();
+    assert_eq!(common.quality, BooleanQuality::Exact);
+    let overlap = crate::measure::solid_volume(&oracle_topo, common.solid, 0.01).unwrap();
+    let expected = 1000.0 + 4.0 * std::f64::consts::PI * 216.0 / 3.0 - overlap;
+    let actual = crate::measure::solid_volume(&topo, outcome.solid, 0.01).unwrap();
+    assert!(
+        (actual - expected).abs() / expected < 2e-4,
+        "exact fuse volume {actual} differs from inclusion-exclusion {expected}"
+    );
+}
+
+#[test]
 fn cut_box_by_sphere_succeeds() {
     let mut topo = Topology::new();
     let bx = crate::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
