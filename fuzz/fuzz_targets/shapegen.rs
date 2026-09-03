@@ -314,10 +314,7 @@ pub struct Combined {
 /// whose face rests on a target's face is disjoint in the interior, and its
 /// boolean has an exact answer.
 #[must_use]
-pub fn boxes_interior_disjoint(
-    a: &remus_math::aabb::Aabb3,
-    b: &remus_math::aabb::Aabb3,
-) -> bool {
+pub fn boxes_interior_disjoint(a: &remus_math::aabb::Aabb3, b: &remus_math::aabb::Aabb3) -> bool {
     const EPS: f64 = 1e-9;
     let sep = |amin: f64, amax: f64, bmin: f64, bmax: f64| amax <= bmin + EPS || bmax <= amin + EPS;
     sep(a.min.x(), a.max.x(), b.min.x(), b.max.x())
