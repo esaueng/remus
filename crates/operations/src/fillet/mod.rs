@@ -431,7 +431,14 @@ fn fillet_transacted(
     // bounded amount of material (an oversized radius used to "succeed" with
     // the volume growing — e.g. r=50 on a 10 mm box returned 3833 mm³).
     crate::blend_ops::validate_blend_solid_against_input(topo, "fillet", solid, result)?;
-    crate::blend_ops::validate_blend_volume(topo, "fillet", solid, result, edges, radius)?;
+    crate::blend_ops::validate_blend_volume(
+        topo,
+        "fillet",
+        solid,
+        result,
+        edges,
+        crate::blend_ops::BlendSize::Fillet { radius },
+    )?;
     Ok(result)
 }
 
@@ -1011,11 +1018,24 @@ fn fillet_variable_transacted(
     // "succeed" here with the volume GROWING (r=50 on a 10 mm box returned
     // 3242 mm³), and holed-plate selections returned invalid shells as Ok.
     crate::blend_ops::validate_blend_solid_against_input(topo, "fillet", solid, solid_id)?;
-    let max_radius = edge_laws
-        .iter()
-        .flat_map(|(_, law)| [0.0, 0.25, 0.5, 0.75, 1.0].map(|t| law.evaluate(t)))
-        .fold(0.0_f64, f64::max);
+    let samples = || {
+        edge_laws
+            .iter()
+            .flat_map(|(_, law)| [0.0, 0.25, 0.5, 0.75, 1.0].map(|t| law.evaluate(t)))
+    };
+    let max_radius = samples().fold(0.0_f64, f64::max);
+    let min_radius = samples().fold(f64::INFINITY, f64::min).max(0.0);
     let edges: Vec<EdgeId> = edge_laws.iter().map(|(edge_id, _)| *edge_id).collect();
-    crate::blend_ops::validate_blend_volume(topo, "fillet", solid, solid_id, &edges, max_radius)?;
+    crate::blend_ops::validate_blend_volume(
+        topo,
+        "fillet",
+        solid,
+        solid_id,
+        &edges,
+        crate::blend_ops::BlendSize::VariableFillet {
+            min_radius,
+            max_radius,
+        },
+    )?;
     Ok(solid_id)
 }
