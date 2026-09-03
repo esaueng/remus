@@ -19,13 +19,13 @@ mod invariants;
 mod shapegen;
 
 use arbitrary::Arbitrary;
+use invariants as inv;
 use remus_operations::blend_ops::{chamfer_v2, fillet_v2};
 use remus_operations::draft::draft;
 use remus_operations::shell_op::shell;
 use remus_topology::Topology;
 use remus_topology::explorer;
 use remus_topology::solid::SolidId;
-use invariants as inv;
 use shapegen::{BaseBody, Refusal};
 
 /// Bodies past this size make a fuzz iteration a timeout report rather than a
@@ -156,7 +156,14 @@ fn apply(
                     inv::measure(&alt, other.solid),
                 )
             {
-                inv::assert_option_honoured("fillet", "radius r", "radius r/2", a.volume, b.volume);
+                inv::assert_option_honoured(
+                    "fillet",
+                    "radius r",
+                    "radius r/2",
+                    v_before,
+                    a.volume,
+                    b.volume,
+                );
             }
             finish(topo, "fillet", result.solid, before, v_before, Growth::Any);
         }

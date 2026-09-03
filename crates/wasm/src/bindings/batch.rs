@@ -66,6 +66,28 @@ fn get_angular_tolerance(args: &serde_json::Value) -> Result<f64, StructuredWasm
     Ok(angular_tolerance)
 }
 
+fn get_optional_work_budget(
+    args: &serde_json::Value,
+    name: &str,
+) -> Result<Option<usize>, StructuredWasmError> {
+    match args.get(name) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(value) => {
+            let raw = value.as_f64().ok_or_else(|| {
+                StructuredWasmError::invalid_argument(
+                    format!("invalid '{name}': expected number"),
+                    Some(name),
+                )
+            })?;
+            crate::error::validate_iteration_budget(raw, name)
+                .map(Some)
+                .map_err(|error| {
+                    StructuredWasmError::invalid_argument(error.to_string(), Some(name))
+                })
+        }
+    }
+}
+
 #[wasm_bindgen(typescript_custom_section)]
 const BATCH_V2_TYPES: &str = r#"
 /** Stable error codes returned by `executeBatchV2`. */
@@ -899,50 +921,23 @@ impl BrepKernel {
                         )
                     })?,
                 };
-                let newton_budget = match args.get("newtonIterations") {
-                    None | Some(serde_json::Value::Null) => None,
-                    Some(value) => {
-                        let raw = value.as_f64().ok_or_else(|| {
-                            StructuredWasmError::invalid_argument(
-                                "invalid 'newtonIterations': expected number",
-                                Some("newtonIterations"),
-                            )
-                        })?;
-                        Some(
-                            crate::error::validate_iteration_budget(raw, "newtonIterations")
-                                .map_err(|e| {
-                                    StructuredWasmError::invalid_argument(
-                                        e.to_string(),
-                                        Some("newtonIterations"),
-                                    )
-                                })?,
-                        )
-                    }
-                };
-                let subdivision_budget = match args.get("subdivisionDepth") {
-                    None | Some(serde_json::Value::Null) => None,
-                    Some(value) => {
-                        let raw = value.as_f64().ok_or_else(|| {
-                            StructuredWasmError::invalid_argument(
-                                "invalid 'subdivisionDepth': expected number",
-                                Some("subdivisionDepth"),
-                            )
-                        })?;
-                        Some(
-                            crate::error::validate_iteration_budget(raw, "subdivisionDepth")
-                                .map_err(|e| {
-                                    StructuredWasmError::invalid_argument(
-                                        e.to_string(),
-                                        Some("subdivisionDepth"),
-                                    )
-                                })?,
-                        )
-                    }
-                };
+                let newton_budget = get_optional_work_budget(args, "newtonIterations")?;
+                let subdivision_budget = get_optional_work_budget(args, "subdivisionDepth")?;
+                let march_budget = get_optional_work_budget(args, "marchSteps")?;
+                let queue_budget = get_optional_work_budget(args, "queueSize")?;
+                let segment_budget = get_optional_work_budget(args, "segments")?;
+                let branch_budget = get_optional_work_budget(args, "branchesPerDirection")?;
                 let a_id = self.resolve_solid(a).map_err(StructuredWasmError::from)?;
                 let b_id = self.resolve_solid(b).map_err(StructuredWasmError::from)?;
-                let context =
-                    super::booleans::quality_context(exact_only, newton_budget, subdivision_budget);
+                let context = super::booleans::quality_context(
+                    exact_only,
+                    newton_budget,
+                    subdivision_budget,
+                    march_budget,
+                    queue_budget,
+                    segment_budget,
+                    branch_budget,
+                );
                 let outcome = boolean_with_context(self.topo_mut(), bool_op, a_id, b_id, &context)
                     .map_err(StructuredWasmError::from)?;
                 match outcome.quality {
@@ -3041,8 +3036,8 @@ mod batch_contract_tests {
         // context's authority below that.
         for extra in [
             "",
-            r#","newtonIterations":20,"subdivisionDepth":6"#,
-            r#","newtonIterations":0,"subdivisionDepth":0"#,
+            r#","newtonIterations":20,"subdivisionDepth":6,"marchSteps":200,"queueSize":100,"segments":50,"branchesPerDirection":10"#,
+            r#","newtonIterations":0,"subdivisionDepth":0,"marchSteps":0,"queueSize":0,"segments":0,"branchesPerDirection":0"#,
         ] {
             let mut kernel = BrepKernel::new();
             let script = format!(
@@ -3092,6 +3087,104 @@ mod batch_contract_tests {
     }
 
     #[test]
+    fn batch_torus_box_intersect_is_exact() {
+        let mut kernel = BrepKernel::new();
+        let response = parse(&kernel.execute_batch_v2(
+            r#"[
+                {"op":"makeTorus","args":{"majorRadius":10,"minorRadius":3,"segments":32}},
+                {"op":"makeBox","args":{"width":8,"height":8,"depth":8}},
+                {"op":"transform","args":{"solid":1,"matrix":[1,0,0,6,0,1,0,-4,0,0,1,-4,0,0,0,1]}},
+                {"op":"booleanWithQuality","args":{"operation":"intersect","solidA":0,"solidB":1,"exactOnly":true}},
+                {"op":"volume","args":{"solid":2,"deflection":0.01}},
+                {"op":"validateSolid","args":{"solid":2}},
+                {"op":"getSolidFaces","args":{"solid":2}}
+            ]"#,
+        ));
+
+        assert_eq!(response[3]["ok"]["quality"], "exact", "{response}");
+        assert_eq!(response[3]["ok"]["solid"], 2, "{response}");
+        let volume = response[4]["ok"].as_f64().expect("numeric volume");
+        assert!(
+            (volume - 232.45).abs() / 232.45 < 0.01,
+            "torus-box intersection volume {volume}"
+        );
+        assert_eq!(response[5]["ok"], 0, "{response}");
+        assert_eq!(
+            response[6]["ok"].as_array().map(Vec::len),
+            Some(5),
+            "{response}"
+        );
+    }
+
+    #[test]
+    fn batch_centered_box_sphere_fuse_is_exact() {
+        let mut kernel = BrepKernel::new();
+        let response = parse(&kernel.execute_batch_v2(
+            r#"[
+                {"op":"makeBox","args":{"width":10,"height":10,"depth":10}},
+                {"op":"makeSphere","args":{"radius":6,"segments":24}},
+                {"op":"transform","args":{"solid":1,"matrix":[1,0,0,5,0,1,0,5,0,0,1,5,0,0,0,1]}},
+                {"op":"booleanWithQuality","args":{"operation":"fuse","solidA":0,"solidB":1,"exactOnly":true}},
+                {"op":"volume","args":{"solid":2,"deflection":0.01}},
+                {"op":"validateSolid","args":{"solid":2}},
+                {"op":"getSolidFaces","args":{"solid":2}}
+            ]"#,
+        ));
+
+        assert_eq!(response[3]["ok"]["quality"], "exact", "{response}");
+        assert_eq!(response[3]["ok"]["solid"], 2, "{response}");
+        let volume = response[4]["ok"].as_f64().expect("numeric volume");
+        assert!(
+            (volume - 1106.75).abs() < 0.25,
+            "centered box-sphere union volume {volume}"
+        );
+        assert_eq!(response[5]["ok"], 0, "{response}");
+        assert_eq!(
+            response[6]["ok"].as_array().map(Vec::len),
+            Some(16),
+            "{response}"
+        );
+    }
+
+    #[test]
+    fn batch_perpendicular_equal_radius_cylinder_intersect_is_exact() {
+        let mut kernel = BrepKernel::new();
+        let response = parse(&kernel.execute_batch_v2(
+            r#"[
+                {"op":"makeCylinder","args":{"radius":3,"height":20}},
+                {"op":"transform","args":{"solid":0,"matrix":[1,0,0,0,0,1,0,0,0,0,1,-10,0,0,0,1]}},
+                {"op":"makeCylinder","args":{"radius":3,"height":20}},
+                {"op":"transform","args":{"solid":1,"matrix":[0,0,1,-10,0,1,0,0,-1,0,0,0,0,0,0,1]}},
+                {"op":"booleanWithQuality","args":{"operation":"intersect","solidA":0,"solidB":1,"exactOnly":true}},
+                {"op":"getSolidFaces","args":{"solid":2}},
+                {"op":"solidEdges","args":{"solid":2}},
+                {"op":"volume","args":{"solid":2,"deflection":0.001}},
+                {"op":"validateSolid","args":{"solid":2}},
+                {"op":"meshQuality","args":{"solid":2,"deflection":0.01}}
+            ]"#,
+        ));
+
+        assert_eq!(response[4]["ok"]["quality"], "exact", "{response}");
+        assert_eq!(response[4]["ok"]["solid"], 2, "{response}");
+        assert_eq!(
+            response[5]["ok"].as_array().map(Vec::len),
+            Some(6),
+            "{response}"
+        );
+        assert_eq!(
+            response[6]["ok"].as_array().map(Vec::len),
+            Some(10),
+            "{response}"
+        );
+        let volume = response[7]["ok"].as_f64().expect("numeric volume");
+        assert!((volume - 144.0).abs() / 144.0 < 1.0e-4, "{response}");
+        assert_eq!(response[8]["ok"], 0, "{response}");
+        assert_eq!(response[9]["ok"]["boundaryEdges"], 0, "{response}");
+        assert_eq!(response[9]["ok"]["nonManifoldEdges"], 0, "{response}");
+        assert_eq!(response[9]["ok"]["isWatertight"], true, "{response}");
+    }
+
+    #[test]
     fn batch_boolean_with_quality_rejects_invalid_newton_iterations() {
         for bad in ["-1", "2.5", r#""twenty""#, "10001", "true"] {
             let mut kernel = BrepKernel::new();
@@ -3134,6 +3227,41 @@ mod batch_contract_tests {
                 response[2]["error"]["details"]["argument"], "subdivisionDepth",
                 "error must name the argument: {response}"
             );
+        }
+    }
+
+    #[test]
+    fn batch_boolean_with_quality_rejects_invalid_marcher_budgets_without_mutation() {
+        for field in [
+            "marchSteps",
+            "queueSize",
+            "segments",
+            "branchesPerDirection",
+        ] {
+            for bad in ["-1", "2.5", r#""many""#, "10001", "true"] {
+                let mut kernel = BrepKernel::new();
+                let script = format!(
+                    r#"[
+                        {{"op":"makeBox","args":{{"width":2,"height":2,"depth":2}}}},
+                        {{"op":"makeBox","args":{{"width":1,"height":1,"depth":1}}}},
+                        {{"op":"booleanWithQuality","args":{{"operation":"fuse","solidA":0,"solidB":1,"{field}":{bad}}}}},
+                        {{"op":"volume","args":{{"solid":0,"deflection":0.05}}}}
+                    ]"#
+                );
+                let response = parse(&kernel.execute_batch_v2(&script));
+                assert_eq!(
+                    response[2]["error"]["code"], "invalid_argument",
+                    "{field}={bad} must be a typed argument error: {response}"
+                );
+                assert_eq!(
+                    response[2]["error"]["details"]["argument"], field,
+                    "error must name the argument: {response}"
+                );
+                assert_eq!(
+                    response[3]["ok"], 8.0,
+                    "rejected {field} must preserve the input topology: {response}"
+                );
+            }
         }
     }
 

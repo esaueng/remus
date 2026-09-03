@@ -636,9 +636,12 @@ export class BrepKernel {
      * Cancellation is typed (`operation_cancelled`) and transactional: no
      * partial topology is retained. Result quality follows
      * `booleanWithQuality`, including the optional exact-only policy and the
-     * optional Newton and subdivision caps.
+     * optional SSI work-budget caps. The final four additive arguments cap
+     * marching steps, pending branch seeds, traced segments, and branch
+     * points per direction; omitted or `null` values preserve their kernel
+     * defaults.
      */
-    booleanWithCancellation(op: string, a: number, b: number, token: OperationCancellationToken, exact_only?: boolean | null, newton_iterations?: number | null, subdivision_depth?: number | null): CancellableBooleanResult;
+    booleanWithCancellation(op: string, a: number, b: number, token: OperationCancellationToken, exact_only?: boolean | null, newton_iterations?: number | null, subdivision_depth?: number | null, march_steps?: number | null, queue_size?: number | null, segments?: number | null, branches_per_direction?: number | null): CancellableBooleanResult;
     /**
      * Perform a boolean with disclosed result quality.
      *
@@ -656,15 +659,19 @@ export class BrepKernel {
      * or `null` keeps the kernel default, reproducing prior behavior.
      * `subdivision_depth` likewise caps recursive SSI seed subdivision
      * (`0` disables recursive splitting; omitted or `null` keeps depth 6).
+     * The additive `march_steps`, `queue_size`, `segments`, and
+     * `branches_per_direction` arguments cap the remaining SSI marcher and
+     * branch-exploration work. Omitted or `null` values retain the historical
+     * defaults (200, 100, 50, and 10 respectively).
      *
      * # Errors
      *
      * Returns an error if a handle is invalid, the op string is unknown,
-     * `newton_iterations` is not a non-negative integer within the public
-     * work budget, `subdivision_depth` is invalid under the same rules, or
-     * (under `exact_only`) the exact pipeline cannot produce the result.
+     * any work-budget argument is not a non-negative integer within the
+     * public work budget, or (under `exact_only`) the exact pipeline cannot
+     * produce the result.
      */
-    booleanWithQuality(op: string, a: number, b: number, exact_only?: boolean | null, newton_iterations?: number | null, subdivision_depth?: number | null): BooleanQualityResult;
+    booleanWithQuality(op: string, a: number, b: number, exact_only?: boolean | null, newton_iterations?: number | null, subdivision_depth?: number | null, march_steps?: number | null, queue_size?: number | null, segments?: number | null, branches_per_direction?: number | null): BooleanQualityResult;
     /**
      * Compute the axis-aligned bounding box of a solid.
      *
@@ -957,6 +964,12 @@ export class BrepKernel {
      * Cut (subtract) solid `b` from solid `a`.
      *
      * Returns a new solid handle (`u32`).
+     *
+     * When the exact engine cannot handle the pair the kernel falls back to
+     * a mesh boolean and logs a `warn` on the `remus_approx` target (visible
+     * on the JS console through the log bridge); the returned handle then
+     * carries a mesh, not analytic faces. Use `booleanWithQuality` to have
+     * that disclosed in the result or refused outright.
      *
      * # Errors
      *
@@ -1486,6 +1499,12 @@ export class BrepKernel {
      * Fuse (union) two solids into one.
      *
      * Returns a new solid handle (`u32`).
+     *
+     * When the exact engine cannot handle the pair the kernel falls back to
+     * a mesh boolean and logs a `warn` on the `remus_approx` target (visible
+     * on the JS console through the log bridge); the returned handle then
+     * carries a mesh, not analytic faces. Use `booleanWithQuality` to have
+     * that disclosed in the result or refused outright.
      *
      * # Errors
      *
@@ -2182,6 +2201,12 @@ export class BrepKernel {
      * Intersect two solids, keeping only their common volume.
      *
      * Returns a new solid handle (`u32`).
+     *
+     * When the exact engine cannot handle the pair the kernel falls back to
+     * a mesh boolean and logs a `warn` on the `remus_approx` target (visible
+     * on the JS console through the log bridge); the returned handle then
+     * carries a mesh, not analytic faces. Use `booleanWithQuality` to have
+     * that disclosed in the result or refused outright.
      *
      * # Errors
      *
