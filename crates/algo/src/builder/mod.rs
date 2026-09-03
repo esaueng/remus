@@ -37,6 +37,7 @@ use remus_math::surfaces::CylindricalSurface;
 use remus_math::vec::Point3;
 use remus_topology::Topology;
 use remus_topology::face::FaceId;
+use remus_topology::shell::{Shell, ShellId};
 use remus_topology::solid::SolidId;
 
 use crate::bop::{self, BooleanOp};
@@ -419,6 +420,56 @@ impl Builder {
             )?;
         }
         Ok(())
+    }
+
+    /// Materialize the rank-B side of a sheet-by-solid arrangement as a
+    /// first-class open shell. The sheet pieces are selected directly from
+    /// their classification against the real rank-A solid; no boolean truth
+    /// table or volumetric interpretation of the sheet is involved.
+    pub(crate) fn build_sheet_trim(
+        mut self,
+        keep_inside: bool,
+    ) -> Result<(Topology, ShellId), AlgoError> {
+        if !self.sd_pairs.is_empty() {
+            return Err(AlgoError::UnsupportedSheetTrim {
+                reason: "coincident sheet/solid patches have no qualified keep-side rule".into(),
+            });
+        }
+        let wanted = if keep_inside {
+            FaceClass::Inside
+        } else {
+            FaceClass::Outside
+        };
+        let faces: Vec<FaceId> = self
+            .sub_faces
+            .iter()
+            .filter(|sf| sf.rank == Rank::B && sf.classification == wanted)
+            .map(|sf| sf.face_id)
+            .collect();
+        if faces.is_empty() {
+            return Err(AlgoError::UnsupportedSheetTrim {
+                reason: format!(
+                    "keep-{} selection produced no sheet faces",
+                    if keep_inside { "inside" } else { "outside" }
+                ),
+            });
+        }
+        if self.sub_faces.iter().any(|sf| {
+            sf.rank == Rank::B
+                && matches!(
+                    sf.classification,
+                    FaceClass::On | FaceClass::CoplanarSame | FaceClass::CoplanarOpposite
+                )
+        }) {
+            return Err(AlgoError::UnsupportedSheetTrim {
+                reason: "coincident sheet/solid patches have no qualified keep-side rule".into(),
+            });
+        }
+
+        let shell = self.topo.add_shell(Shell::new(faces)?);
+        self.topo
+            .set_shell_body_class(shell, remus_topology::BodyClass::Sheet)?;
+        Ok((self.topo, shell))
     }
 
     /// Assemble both cells of the currently qualified cylindrical-sheet

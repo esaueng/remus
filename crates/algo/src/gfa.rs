@@ -240,6 +240,73 @@ fn split_by_sheet_impl(
     Ok(regions)
 }
 
+/// Trim a first-class sheet body against a solid, retaining either its inside
+/// or outside face patches.
+///
+/// The sheet is a face-set operand: a traversal-only adapter feeds its faces
+/// through pave filling and splitting, but it is classified only against the
+/// real solid and is never interpreted as bounding material.
+///
+/// # Errors
+///
+/// Returns [`AlgoError::UnsupportedSheetTrim`] for an incorrectly tagged,
+/// empty, coincident, or empty-result sheet configuration. Other exact GFA and
+/// topology failures propagate.
+pub fn trim_sheet_by_solid(
+    topo: &mut Topology,
+    sheet: ShellId,
+    solid: SolidId,
+    keep_inside: bool,
+) -> Result<ShellId, AlgoError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        trim_sheet_by_solid_impl(topo, sheet, solid, keep_inside)
+    })
+}
+
+fn trim_sheet_by_solid_impl(
+    topo: &mut Topology,
+    sheet: ShellId,
+    solid: SolidId,
+    keep_inside: bool,
+) -> Result<ShellId, AlgoError> {
+    topo.solid(solid)?;
+    let sheet_data = topo.shell(sheet)?;
+    if sheet_data.body_class() != BodyClass::Sheet {
+        return Err(AlgoError::UnsupportedSheetTrim {
+            reason: format!(
+                "tool shell is tagged `{}` instead of `sheet`",
+                sheet_data.body_class().as_str()
+            ),
+        });
+    }
+    if sheet_data.faces().is_empty() {
+        return Err(AlgoError::UnsupportedSheetTrim {
+            reason: "sheet contains no faces".into(),
+        });
+    }
+    let sheet_faces = sheet_data.faces().to_vec();
+    let solid_faces = remus_topology::explorer::solid_faces(topo, solid)?;
+    if sheet_faces.iter().any(|face| solid_faces.contains(face)) {
+        return Err(AlgoError::UnsupportedSheetTrim {
+            reason: "sheet and solid share a face identity; keep-side classification is ambiguous"
+                .into(),
+        });
+    }
+
+    reject_unsupported_curves(topo, solid)?;
+    let mut store_topo = topo.clone();
+    let sheet_adapter = store_topo.add_solid(Solid::new(sheet, Vec::new()));
+    reject_unsupported_curves(&store_topo, sheet_adapter)?;
+
+    let tol = Tolerance::default();
+    let mut arena = GfaArena::new();
+    pave_filler::run_pave_filler(&mut store_topo, solid, sheet_adapter, tol, &mut arena)?;
+    let mut builder = Builder::with_tolerance(store_topo, arena, solid, sheet_adapter, tol);
+    builder.perform_sheet_arrangement()?;
+    let (store_topo, store_sheet) = builder.build_sheet_trim(keep_inside)?;
+    crate::ds::shape_store::deep_copy_sheet(&store_topo, topo, store_sheet)
+}
+
 /// Fuse **N** solids into one via a single GFA arrangement.
 ///
 /// One pass over all operands instead of the sequential pairwise fuse's

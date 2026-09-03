@@ -84,6 +84,14 @@ pub enum AlgoError {
         /// Stable, actionable explanation of the refused configuration.
         reason: String,
     },
+
+    /// The sheet-by-solid trimming arrangement cannot represent the supplied
+    /// configuration exactly in its currently qualified subset.
+    #[error("unsupported sheet trim: {reason}")]
+    UnsupportedSheetTrim {
+        /// Stable, actionable explanation of the refused configuration.
+        reason: String,
+    },
 }
 
 impl remus_math::diagnostic::ToDiagnostic for AlgoError {
@@ -143,6 +151,12 @@ impl remus_math::diagnostic::ToDiagnostic for AlgoError {
                 self.to_string(),
             )
             .with_detail("reason", reason.as_str()),
+            Self::UnsupportedSheetTrim { reason } => Diagnostic::new(
+                FailureCategory::Unsupported,
+                "unsupported_sheet_trim",
+                self.to_string(),
+            )
+            .with_detail("reason", reason.as_str()),
         }
     }
 }
@@ -194,6 +208,13 @@ mod diagnostic_registry_tests {
         .diagnostic();
         assert_eq!(d.category(), FailureCategory::Unsupported);
         assert_eq!(d.code(), "unsupported_sheet_split");
+
+        let d = AlgoError::UnsupportedSheetTrim {
+            reason: "coincident sheet boundary".into(),
+        }
+        .diagnostic();
+        assert_eq!(d.category(), FailureCategory::Unsupported);
+        assert_eq!(d.code(), "unsupported_sheet_trim");
     }
 
     #[test]

@@ -253,6 +253,7 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "section"
         | "split"
         | "splitBySheet"
+        | "trimSheetBySolid"
         | "sewFaces"
         | "thicken"
         | "pipe"
@@ -2367,6 +2368,38 @@ impl BrepKernel {
                     remus_operations::split::split_by_sheet(self.topo_mut(), solid_id, sheet_id)
                         .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(compound_id_to_u32(result)))
+            }
+            "trimSheetBySolid" => {
+                let sheet = get_u32(args, "sheet")?;
+                let solid = get_u32(args, "solid")?;
+                let keep_inside = args
+                    .get("keepInside")
+                    .and_then(serde_json::Value::as_bool)
+                    .ok_or_else(|| {
+                        StructuredWasmError::invalid_argument(
+                            "missing or invalid 'keepInside' boolean",
+                            Some("keepInside"),
+                        )
+                    })?;
+                let sheet_id = self
+                    .resolve_shell(sheet)
+                    .map_err(StructuredWasmError::from)?;
+                let solid_id = self
+                    .resolve_solid(solid)
+                    .map_err(StructuredWasmError::from)?;
+                let mode = if keep_inside {
+                    remus_operations::boolean::SheetTrimMode::KeepInside
+                } else {
+                    remus_operations::boolean::SheetTrimMode::KeepOutside
+                };
+                let result = remus_operations::boolean::trim_sheet_by_solid(
+                    self.topo_mut(),
+                    sheet_id,
+                    solid_id,
+                    mode,
+                )
+                .map_err(StructuredWasmError::from)?;
+                Ok(serde_json::json!(shell_id_to_u32(result)))
             }
             "sewFaces" => {
                 let face_handles: Vec<u32> = get_u32_array_optional(args, "faces")?;

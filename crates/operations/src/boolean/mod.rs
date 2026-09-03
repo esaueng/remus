@@ -12,6 +12,55 @@ use assembly::{validate_boolean_result, validate_boolean_result_with_tolerance};
 pub use remus_algo::gfa::{EdgeEvent, EntityEvolution, VertexEvent};
 pub use types::{BooleanOp, BooleanOptions, FaceSpec};
 
+/// Which side of a solid a sheet trim retains.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SheetTrimMode {
+    /// Retain sheet patches classified inside the solid.
+    KeepInside,
+    /// Retain sheet patches classified outside the solid.
+    KeepOutside,
+}
+
+/// Trim a first-class sheet body against a solid.
+///
+/// The sheet participates as a GFA face set, not as a volume. Its split face
+/// patches are classified against `solid`, selected according to `mode`, and
+/// returned as a new validated sheet body. Coincident patches currently fail
+/// closed because their keep-side semantics are not yet qualified.
+///
+/// # Errors
+///
+/// Returns a typed unsupported error for non-sheet, coincident, or empty-result
+/// configurations. A result that fails the sheet validation profile is rolled
+/// back with [`crate::OperationsError::BodyValidationFailed`].
+pub fn trim_sheet_by_solid(
+    topo: &mut Topology,
+    sheet: remus_topology::shell::ShellId,
+    solid: SolidId,
+    mode: SheetTrimMode,
+) -> Result<remus_topology::shell::ShellId, crate::OperationsError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let result = remus_algo::gfa::trim_sheet_by_solid(
+            topo,
+            sheet,
+            solid,
+            mode == SheetTrimMode::KeepInside,
+        )?;
+        let report = remus_check::validate::validate_sheet_body(
+            topo,
+            result,
+            &remus_check::validate::ValidateOptions::default(),
+        )?;
+        if !report.is_valid() {
+            return Err(crate::OperationsError::BodyValidationFailed {
+                body_class: remus_topology::BodyClass::Sheet.as_str(),
+                error_count: report.error_count(),
+            });
+        }
+        Ok(result)
+    })
+}
+
 /// Runs an exact GFA boolean, returning construction-derived vertex,
 /// edge, and face history (Issue 12) alongside the result — the L3
 /// surface of [`remus_algo::gfa::boolean_with_entity_evolution`].

@@ -18,7 +18,8 @@ use crate::error::{
     validate_work_product,
 };
 use crate::handles::{
-    compound_id_to_u32, edge_id_to_u32, face_id_to_u32, solid_id_to_u32, wire_id_to_u32,
+    compound_id_to_u32, edge_id_to_u32, face_id_to_u32, shell_id_to_u32, solid_id_to_u32,
+    wire_id_to_u32,
 };
 use remus_geometry::extrema::point_to_nurbs_surface;
 
@@ -1265,6 +1266,38 @@ impl BrepKernel {
         Ok(compound_id_to_u32(result))
     }
 
+    /// Trim a first-class sheet body by a solid and retain one classified side.
+    ///
+    /// `keep_inside = true` retains sheet patches inside the solid; `false`
+    /// retains the outside remainder. Returns a new sheet-body shell handle.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed unsupported error for empty, coincident, or empty-result
+    /// configurations, and rolls back if the retained sheet fails validation.
+    #[wasm_bindgen(js_name = "trimSheetBySolid")]
+    pub fn trim_sheet_by_solid_body(
+        &mut self,
+        sheet: u32,
+        solid: u32,
+        keep_inside: bool,
+    ) -> Result<u32, JsError> {
+        let sheet_id = self.resolve_shell(sheet)?;
+        let solid_id = self.resolve_solid(solid)?;
+        let mode = if keep_inside {
+            remus_operations::boolean::SheetTrimMode::KeepInside
+        } else {
+            remus_operations::boolean::SheetTrimMode::KeepOutside
+        };
+        let result = remus_operations::boolean::trim_sheet_by_solid(
+            self.topo_mut(),
+            sheet_id,
+            solid_id,
+            mode,
+        )?;
+        Ok(shell_id_to_u32(result))
+    }
+
     // ── Draft ─────────────────────────────────────────────────────
 
     /// Apply draft angle to faces of a solid.
@@ -2339,9 +2372,9 @@ mod tests {
     use std::collections::HashSet;
 
     use remus_math::mat::Mat4;
-    use remus_math::vec::Point3;
+    use remus_math::vec::{Point3, Vec3};
     use remus_topology::builder::make_polygon_wire;
-    use remus_topology::face::FaceSurface;
+    use remus_topology::face::{Face, FaceSurface};
 
     use crate::handles::{edge_id_to_u32, shell_id_to_u32, solid_id_to_u32, wire_id_to_u32};
     use crate::helpers::TOL;
@@ -2425,6 +2458,27 @@ mod tests {
         (solid_id_to_u32(blank), shell_id_to_u32(sheet))
     }
 
+    fn planar_sheet_handles(k: &mut BrepKernel) -> (u32, u32) {
+        let blank = remus_operations::primitives::make_box(k.topo_mut(), 10.0, 10.0, 10.0).unwrap();
+        let points = [
+            Point3::new(-2.0, -2.0, 5.0),
+            Point3::new(12.0, -2.0, 5.0),
+            Point3::new(12.0, 12.0, 5.0),
+            Point3::new(-2.0, 12.0, 5.0),
+        ];
+        let wire = make_polygon_wire(k.topo_mut(), &points, TOL).unwrap();
+        let face = k.topo_mut().add_face(Face::new(
+            wire,
+            Vec::new(),
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 5.0,
+            },
+        ));
+        let sheet = remus_operations::sew::make_sheet_body(k.topo_mut(), &[face]).unwrap();
+        (solid_id_to_u32(blank), shell_id_to_u32(sheet))
+    }
+
     #[test]
     fn direct_and_batch_split_by_sheet_return_valid_compounds() {
         let mut signatures = Vec::new();
@@ -2478,6 +2532,73 @@ mod tests {
         assert_eq!(
             output[0]["error"]["details"]["kernelCode"],
             "unsupported_sheet_split"
+        );
+        assert_eq!(output[0]["error"]["category"], "unsupported");
+    }
+
+    #[test]
+    fn direct_and_batch_trim_sheet_by_solid_match_for_both_sides() {
+        let mut signatures = Vec::new();
+        for batch in [false, true] {
+            for keep_inside in [true, false] {
+                let mut kernel = BrepKernel::new();
+                let (solid, sheet) = planar_sheet_handles(&mut kernel);
+                let trimmed = if batch {
+                    dispatch(
+                        &mut kernel,
+                        "trimSheetBySolid",
+                        serde_json::json!({
+                            "sheet": sheet,
+                            "solid": solid,
+                            "keepInside": keep_inside,
+                        }),
+                    )["ok"]
+                        .as_u64()
+                        .unwrap() as u32
+                } else {
+                    kernel
+                        .trim_sheet_by_solid_body(sheet, solid, keep_inside)
+                        .unwrap()
+                };
+                let sheet_id = kernel.resolve_shell(trimmed).unwrap();
+                let area =
+                    remus_operations::measure::sheet_surface_area(kernel.topo(), sheet_id, 1.0e-3)
+                        .unwrap();
+                let report = remus_check::validate::validate_sheet_body(
+                    kernel.topo(),
+                    sheet_id,
+                    &remus_check::validate::ValidateOptions::default(),
+                )
+                .unwrap();
+                assert!(report.is_valid(), "{:#?}", report.issues);
+                signatures.push((keep_inside, (area * 1.0e9).round() as i64));
+            }
+        }
+        assert_eq!(signatures[0], (true, 100_000_000_000));
+        assert_eq!(signatures[1], (false, 96_000_000_000));
+        assert_eq!(&signatures[..2], &signatures[2..]);
+    }
+
+    #[test]
+    fn batch_v2_trim_sheet_by_solid_preserves_typed_refusal() {
+        let mut kernel = BrepKernel::new();
+        let blank =
+            remus_operations::primitives::make_box(kernel.topo_mut(), 10.0, 10.0, 10.0).unwrap();
+        let face = remus_topology::explorer::solid_faces(kernel.topo(), blank).unwrap()[0];
+        let sheet = remus_operations::sew::make_sheet_body(kernel.topo_mut(), &[face]).unwrap();
+        let input = serde_json::json!([{
+            "op": "trimSheetBySolid",
+            "args": {
+                "solid": solid_id_to_u32(blank),
+                "sheet": shell_id_to_u32(sheet),
+                "keepInside": true,
+            }
+        }]);
+        let output: Vec<serde_json::Value> =
+            serde_json::from_str(&kernel.execute_batch_v2(&input.to_string())).unwrap();
+        assert_eq!(
+            output[0]["error"]["details"]["kernelCode"],
+            "unsupported_sheet_trim"
         );
         assert_eq!(output[0]["error"]["category"], "unsupported");
     }
