@@ -5,7 +5,11 @@
 
 use remus_math::context::OperationContext;
 use remus_math::tolerance::Tolerance;
+use remus_topology::BodyClass;
 use remus_topology::Topology;
+use remus_topology::face::FaceSurface;
+use remus_topology::shell::ShellId;
+use remus_topology::solid::Solid;
 use remus_topology::solid::SolidId;
 
 use crate::bop::BooleanOp;
@@ -155,6 +159,85 @@ fn boolean_with_context_impl(
     context.check_cancelled()?;
 
     Ok(result)
+}
+
+/// Split a solid with a first-class sheet-body face set.
+///
+/// The sheet is installed in the isolated GFA topology behind a traversal-only
+/// solid adapter. That adapter is never classified as a volume and its faces
+/// are never passed through boolean selection: they participate only in pave
+/// filling, face partitioning, and the two oppositely oriented cell closures.
+/// The currently qualified exact subset is one cylindrical sheet face.
+///
+/// # Errors
+///
+/// Returns [`AlgoError::UnsupportedSheetSplit`] when the root is not a sheet,
+/// the sheet is not the qualified single cylindrical face, or it does not
+/// separate the solid into two cells. Other GFA and topology errors propagate.
+pub fn split_by_sheet(
+    topo: &mut Topology,
+    solid: SolidId,
+    sheet: ShellId,
+) -> Result<Vec<SolidId>, AlgoError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        split_by_sheet_impl(topo, solid, sheet)
+    })
+}
+
+fn split_by_sheet_impl(
+    topo: &mut Topology,
+    solid: SolidId,
+    sheet: ShellId,
+) -> Result<Vec<SolidId>, AlgoError> {
+    topo.solid(solid)?;
+    let sheet_data = topo.shell(sheet)?;
+    if sheet_data.body_class() != BodyClass::Sheet {
+        return Err(AlgoError::UnsupportedSheetSplit {
+            reason: format!(
+                "tool shell is tagged `{}` instead of `sheet`",
+                sheet_data.body_class().as_str()
+            ),
+        });
+    }
+    let [sheet_face] = sheet_data.faces() else {
+        return Err(AlgoError::UnsupportedSheetSplit {
+            reason: format!(
+                "qualified sheet split requires exactly one face, got {}",
+                sheet_data.faces().len()
+            ),
+        });
+    };
+    let FaceSurface::Cylinder(cylinder) = topo.face(*sheet_face)?.surface() else {
+        return Err(AlgoError::UnsupportedSheetSplit {
+            reason: format!(
+                "qualified sheet split requires a cylindrical face, got `{}`",
+                topo.face(*sheet_face)?.surface().type_tag()
+            ),
+        });
+    };
+    let cylinder = cylinder.clone();
+
+    reject_unsupported_curves(topo, solid)?;
+
+    // A full clone is the isolation boundary. Existing handles remain valid in
+    // it, so the sheet shell can be put behind a traversal-only adapter without
+    // mutating or reclassifying the caller's first-class sheet body.
+    let mut store_topo = topo.clone();
+    let sheet_adapter = store_topo.add_solid(Solid::new(sheet, Vec::new()));
+    reject_unsupported_curves(&store_topo, sheet_adapter)?;
+
+    let tol = Tolerance::default();
+    let mut arena = GfaArena::new();
+    pave_filler::run_pave_filler(&mut store_topo, solid, sheet_adapter, tol, &mut arena)?;
+    let mut builder = Builder::with_tolerance(store_topo, arena, solid, sheet_adapter, tol);
+    builder.perform_sheet_arrangement()?;
+    let (store_topo, store_regions) = builder.build_cylindrical_sheet_regions(&cylinder)?;
+
+    let mut regions = Vec::with_capacity(store_regions.len());
+    for region in store_regions {
+        regions.push(crate::ds::shape_store::deep_copy_solid(&store_topo, topo, region)?.0);
+    }
+    Ok(regions)
 }
 
 /// Fuse **N** solids into one via a single GFA arrangement.

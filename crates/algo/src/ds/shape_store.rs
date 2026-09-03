@@ -203,7 +203,7 @@ pub struct DeepCopyMaps {
     pub vertices: HashMap<usize, remus_topology::VertexId>,
 }
 
-fn deep_copy_solid(
+pub fn deep_copy_solid(
     source: &Topology,
     target: &mut Topology,
     solid_id: SolidId,

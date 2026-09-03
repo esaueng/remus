@@ -33,6 +33,7 @@ use std::fmt::Write as _;
 
 use remus_math::tolerance::Tolerance;
 
+use remus_math::surfaces::CylindricalSurface;
 use remus_math::vec::Point3;
 use remus_topology::Topology;
 use remus_topology::face::FaceId;
@@ -387,6 +388,122 @@ impl Builder {
             }
         }
         Ok(())
+    }
+
+    /// Build the common GFA arrangement for a solid (rank A) cut by a sheet
+    /// carried through the rank-B traversal adapter.
+    ///
+    /// Unlike a boolean, an open sheet has no volumetric inside. Target
+    /// sub-faces therefore remain unclassified here; only sheet pieces are
+    /// classified against the real solid so assembly can retain the patches
+    /// that lie inside it.
+    pub(crate) fn perform_sheet_arrangement(&mut self) -> Result<(), AlgoError> {
+        self.build_face_ranks()?;
+        self.fill_images()?;
+
+        let target_geoms = classifier::RayCastGeoms::new(&self.topo, self.solid_a).ok();
+        for sf in &mut self.sub_faces {
+            if sf.rank != Rank::B {
+                continue;
+            }
+            let point = match sf.interior_point {
+                Some(point) => point,
+                None => sample_face_interior(&self.topo, sf.face_id, self.tol)?,
+            };
+            sf.classification = classifier::classify_point_cached_with_tolerance(
+                &self.topo,
+                self.solid_a,
+                target_geoms.as_ref(),
+                point,
+                self.tol,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Assemble both cells of the currently qualified cylindrical-sheet
+    /// arrangement. Rank-B faces are used only as separators; they are never
+    /// selected as ordinary boolean result faces.
+    pub(crate) fn build_cylindrical_sheet_regions(
+        mut self,
+        cylinder: &CylindricalSurface,
+    ) -> Result<(Topology, Vec<SolidId>), AlgoError> {
+        let separator: Vec<SubFace> = self
+            .sub_faces
+            .iter()
+            .filter(|sf| sf.rank == Rank::B && sf.classification == FaceClass::Inside)
+            .cloned()
+            .collect();
+        if separator.is_empty() {
+            return Err(AlgoError::UnsupportedSheetSplit {
+                reason: "sheet does not contribute a face patch inside the solid".into(),
+            });
+        }
+
+        let mut negative = Vec::new();
+        let mut positive = Vec::new();
+        for sf in self.sub_faces.iter().filter(|sf| sf.rank == Rank::A) {
+            let point = match sf.interior_point {
+                Some(point) => point,
+                None => sample_face_interior(&self.topo, sf.face_id, self.tol)?,
+            };
+            let delta = point - cylinder.origin();
+            let radial = delta - cylinder.axis() * cylinder.axis().dot(delta);
+            let signed = radial.length() - cylinder.radius();
+            if signed.abs() <= self.tol.linear {
+                return Err(AlgoError::UnsupportedSheetSplit {
+                    reason: format!(
+                        "target sub-face {:?} has no stable side-of-sheet classification",
+                        sf.face_id
+                    ),
+                });
+            }
+            if signed.is_sign_negative() {
+                negative.push(sf.clone());
+            } else {
+                positive.push(sf.clone());
+            }
+        }
+        if negative.is_empty() || positive.is_empty() {
+            return Err(AlgoError::UnsupportedSheetSplit {
+                reason: "sheet does not separate the solid into two non-empty cells".into(),
+            });
+        }
+
+        let mut regions = Vec::with_capacity(2);
+        for (target, positive_side) in [(negative, false), (positive, true)] {
+            let mut selected: Vec<bop::SelectedFace> = target
+                .into_iter()
+                .map(|sf| bop::SelectedFace {
+                    face_id: sf.face_id,
+                    source_face: sf.source_face,
+                    reversed: false,
+                })
+                .collect();
+            for sf in &separator {
+                let stored_reversed = self.topo.face(sf.face_id)?.is_reversed();
+                selected.push(bop::SelectedFace {
+                    face_id: sf.face_id,
+                    source_face: sf.source_face,
+                    // The cylinder carrier normal points from the negative
+                    // radial side to the positive side. It is outward for the
+                    // inner cell and inward for the outer cell.
+                    reversed: if positive_side {
+                        !stored_reversed
+                    } else {
+                        stored_reversed
+                    },
+                });
+            }
+            regions.push(assemble::assemble_solid(
+                &mut self.topo,
+                &selected,
+                &[],
+                &mut self.edge_lineage,
+            )?);
+        }
+
+        Ok((self.topo, regions))
     }
 
     /// Select faces for the given boolean operation and assemble them

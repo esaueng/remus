@@ -17,7 +17,9 @@ use crate::error::{
     WasmError, validate_finite, validate_move_faces_work, validate_positive, validate_work_count,
     validate_work_product,
 };
-use crate::handles::{edge_id_to_u32, face_id_to_u32, solid_id_to_u32, wire_id_to_u32};
+use crate::handles::{
+    compound_id_to_u32, edge_id_to_u32, face_id_to_u32, solid_id_to_u32, wire_id_to_u32,
+};
 use remus_geometry::extrema::point_to_nurbs_surface;
 
 use crate::helpers::{
@@ -1245,6 +1247,24 @@ impl BrepKernel {
         ])
     }
 
+    /// Split a solid into cells using a first-class sheet body.
+    ///
+    /// Returns a compound handle whose solids are in deterministic cell order.
+    /// The qualified exact subset is currently one cylindrical sheet face.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed unsupported error for other sheet configurations and
+    /// rolls back if intersection, cell validation, or volume conservation
+    /// fails.
+    #[wasm_bindgen(js_name = "splitBySheet")]
+    pub fn split_by_sheet_body(&mut self, solid: u32, sheet: u32) -> Result<u32, JsError> {
+        let solid_id = self.resolve_solid(solid)?;
+        let sheet_id = self.resolve_shell(sheet)?;
+        let result = remus_operations::split::split_by_sheet(self.topo_mut(), solid_id, sheet_id)?;
+        Ok(compound_id_to_u32(result))
+    }
+
     // ── Draft ─────────────────────────────────────────────────────
 
     /// Apply draft angle to faces of a solid.
@@ -2318,10 +2338,12 @@ mod tests {
 
     use std::collections::HashSet;
 
+    use remus_math::mat::Mat4;
     use remus_math::vec::Point3;
     use remus_topology::builder::make_polygon_wire;
+    use remus_topology::face::FaceSurface;
 
-    use crate::handles::{edge_id_to_u32, solid_id_to_u32, wire_id_to_u32};
+    use crate::handles::{edge_id_to_u32, shell_id_to_u32, solid_id_to_u32, wire_id_to_u32};
     use crate::helpers::TOL;
     use crate::kernel::BrepKernel;
 
@@ -2378,6 +2400,86 @@ mod tests {
         let out = k.execute_batch(&batch.to_string());
         let parsed: Vec<serde_json::Value> = serde_json::from_str(&out).unwrap();
         parsed[0].clone()
+    }
+
+    fn cylindrical_sheet_handles(k: &mut BrepKernel) -> (u32, u32) {
+        let blank = remus_operations::primitives::make_box(k.topo_mut(), 10.0, 10.0, 10.0).unwrap();
+        let carrier = remus_operations::primitives::make_cylinder(k.topo_mut(), 2.0, 12.0).unwrap();
+        remus_operations::transform::transform_solid(
+            k.topo_mut(),
+            carrier,
+            &Mat4::translation(5.0, 5.0, -1.0),
+        )
+        .unwrap();
+        let lateral = remus_topology::explorer::solid_faces(k.topo(), carrier)
+            .unwrap()
+            .into_iter()
+            .find(|&face| {
+                matches!(
+                    k.topo().face(face).unwrap().surface(),
+                    FaceSurface::Cylinder(_)
+                )
+            })
+            .unwrap();
+        let sheet = remus_operations::sew::make_sheet_body(k.topo_mut(), &[lateral]).unwrap();
+        (solid_id_to_u32(blank), shell_id_to_u32(sheet))
+    }
+
+    #[test]
+    fn direct_and_batch_split_by_sheet_return_valid_compounds() {
+        let mut signatures = Vec::new();
+        for batch in [false, true] {
+            let mut kernel = BrepKernel::new();
+            let (solid, sheet) = cylindrical_sheet_handles(&mut kernel);
+            let compound = if batch {
+                dispatch(
+                    &mut kernel,
+                    "splitBySheet",
+                    serde_json::json!({"solid": solid, "sheet": sheet}),
+                )["ok"]
+                    .as_u64()
+                    .unwrap() as u32
+            } else {
+                kernel.split_by_sheet_body(solid, sheet).unwrap()
+            };
+            let regions = kernel.get_compound_solids(compound).unwrap();
+            assert_eq!(regions.len(), 2);
+            let volumes: Vec<f64> = regions
+                .iter()
+                .map(|&region| kernel.volume(region, 0.01).unwrap())
+                .collect();
+            assert!((volumes.iter().sum::<f64>() - 1000.0).abs() < 1.0e-7);
+            signatures.push(
+                volumes
+                    .into_iter()
+                    .map(|volume| (volume * 1.0e9).round() as i64)
+                    .collect::<Vec<_>>(),
+            );
+        }
+        assert_eq!(signatures[0], signatures[1]);
+    }
+
+    #[test]
+    fn batch_v2_split_by_sheet_preserves_typed_refusal() {
+        let mut kernel = BrepKernel::new();
+        let blank =
+            remus_operations::primitives::make_box(kernel.topo_mut(), 10.0, 10.0, 10.0).unwrap();
+        let face = remus_topology::explorer::solid_faces(kernel.topo(), blank).unwrap()[0];
+        let sheet = remus_operations::sew::make_sheet_body(kernel.topo_mut(), &[face]).unwrap();
+        let input = serde_json::json!([{
+            "op": "splitBySheet",
+            "args": {
+                "solid": solid_id_to_u32(blank),
+                "sheet": shell_id_to_u32(sheet),
+            }
+        }]);
+        let output: Vec<serde_json::Value> =
+            serde_json::from_str(&kernel.execute_batch_v2(&input.to_string())).unwrap();
+        assert_eq!(
+            output[0]["error"]["details"]["kernelCode"],
+            "unsupported_sheet_split"
+        );
+        assert_eq!(output[0]["error"]["category"], "unsupported");
     }
 
     fn batch_solid_handle(result: &serde_json::Value, label: &str) -> u32 {

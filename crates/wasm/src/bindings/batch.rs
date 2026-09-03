@@ -252,6 +252,7 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "offsetSolidV2"
         | "section"
         | "split"
+        | "splitBySheet"
         | "sewFaces"
         | "thicken"
         | "pipe"
@@ -2352,6 +2353,20 @@ impl BrepKernel {
                     "positive": solid_id_to_u32(result.positive),
                     "negative": solid_id_to_u32(result.negative),
                 }))
+            }
+            "splitBySheet" => {
+                let solid = get_u32(args, "solid")?;
+                let sheet = get_u32(args, "sheet")?;
+                let solid_id = self
+                    .resolve_solid(solid)
+                    .map_err(StructuredWasmError::from)?;
+                let sheet_id = self
+                    .resolve_shell(sheet)
+                    .map_err(StructuredWasmError::from)?;
+                let result =
+                    remus_operations::split::split_by_sheet(self.topo_mut(), solid_id, sheet_id)
+                        .map_err(StructuredWasmError::from)?;
+                Ok(serde_json::json!(compound_id_to_u32(result)))
             }
             "sewFaces" => {
                 let face_handles: Vec<u32> = get_u32_array_optional(args, "faces")?;

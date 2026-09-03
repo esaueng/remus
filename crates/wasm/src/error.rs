@@ -389,6 +389,11 @@ impl From<remus_operations::OperationsError> for StructuredWasmError {
             remus_operations::OperationsError::Algo(remus_algo::error::AlgoError::Math(error)) => {
                 Self::from(error)
             }
+            remus_operations::OperationsError::Algo(error) => {
+                let mut structured = Self::from(error);
+                structured.message = message;
+                structured
+            }
             remus_operations::OperationsError::Check(error) => {
                 let mut structured = Self::from(error);
                 structured.message = message;
@@ -495,7 +500,13 @@ impl From<remus_heal::HealError> for StructuredWasmError {
 
 impl From<remus_algo::error::AlgoError> for StructuredWasmError {
     fn from(error: remus_algo::error::AlgoError) -> Self {
-        Self::operation_failed(error.to_string()).with_kernel_diagnostic(&error)
+        let diagnostic = error.diagnostic();
+        let mut structured = Self::operation_failed(error.to_string());
+        structured.category = diagnostic.category().as_str();
+        structured
+            .details
+            .insert("kernelCode".to_string(), Value::from(diagnostic.code()));
+        structured
     }
 }
 
