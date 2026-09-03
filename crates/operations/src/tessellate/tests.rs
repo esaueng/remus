@@ -2489,25 +2489,24 @@ fn pinched_ledge_prism_is_watertight() {
 // `tessellate_analytic_with_boundary` carried a note saying its dropping of
 // inner wires was safe because the holed sub-face of
 // `split_face_with_internal_loops` is discarded by classification. Measured on
-// an equal-radius cross-drilled shaft — the body that took two fixes on the
-// measurement side — neither half of that holds.
+// an unequal-radius cross-drilled shaft — the ordinary quartic-seam case that
+// still uses a holed wall — neither half of that holds.
 //
 // The face carrying the holes is the shaft wall the cut KEEPS, not a discarded
 // sub-face. Its outer boundary is the ordinary two rim circles and a seam, so
 // the hole-free analytic grid used to span the whole UV box and paste over both
 // bore rims. The regression below pins the dedicated hole-aware route.
 
-/// A shaft of radius 3 and height 30 with an equal-radius bore driven clean
-/// through its side at mid-height. Equal radii keep the cut analytic: the two
-/// cylinders meet in a pair of plane ellipses, and each becomes an inner wire
-/// on the shaft wall.
-fn cross_drilled_shaft() -> (Topology, remus_topology::solid::SolidId) {
+/// A shaft of radius 3 and height 30 with a radius-1.5 bore driven clean through
+/// its side at mid-height. The unequal radii retain the general quartic seam,
+/// represented as inner wires on the shaft wall.
+fn holed_cross_drilled_shaft() -> (Topology, remus_topology::solid::SolidId) {
     use remus_math::mat::Mat4;
 
     let mut topo = Topology::new();
     let shaft = crate::primitives::make_cylinder(&mut topo, 3.0, 30.0).unwrap();
     let len = 30.0 + 4.0 * 3.0;
-    let bore = crate::primitives::make_cylinder(&mut topo, 3.0, len).unwrap();
+    let bore = crate::primitives::make_cylinder(&mut topo, 1.5, len).unwrap();
     crate::transform::transform_solid(
         &mut topo,
         bore,
@@ -2566,7 +2565,7 @@ fn a_cut_keeps_a_cylindrical_face_that_carries_holes() {
     // The premise the old note rested on: that a holed cylindrical face only
     // ever appears as a sub-face classification throws away. It appears in the
     // kept result, with both bore rims on it.
-    let (topo, solid) = cross_drilled_shaft();
+    let (topo, solid) = holed_cross_drilled_shaft();
     let wall = holed_cylindrical_face(&topo, solid);
     assert_eq!(
         topo.face(wall).unwrap().inner_wires().len(),
@@ -2579,13 +2578,12 @@ fn a_cut_keeps_a_cylindrical_face_that_carries_holes() {
 fn holed_cylindrical_wall_mesh_preserves_bores_and_closes_the_solid() {
     type PosKey = (i64, i64, i64);
 
-    // Closed form for the wall that is left. The full wall is 2*pi*r*h =
-    // 565.486678. The bore removes, in the wall's (u, z) parameters, the region
-    // |z - h/2| < r|cos u| — its area on the surface is
-    // r * integral over 0..2pi of 2r|cos u| du = 4r^2 * 2 = 72 for r = 3.
-    // So the drilled wall is 565.486678 - 72 = 493.486678.
-    //
-    let (topo, solid) = cross_drilled_shaft();
+    // Independent surface-area oracle. On the shaft wall at angle u, the
+    // radius-b bore removes an axial span
+    // `2 sqrt(b^2 - (r sin u)^2)` wherever that radicand is positive. Integrate
+    // that span against the cylinder area element `r du`, then subtract it
+    // from the full wall.
+    let (topo, solid) = holed_cross_drilled_shaft();
     let wall = holed_cylindrical_face(&topo, solid);
     let deflection = 0.005;
     let wall_mesh = crate::tessellate::tessellate(&topo, wall, deflection).unwrap();
@@ -2647,7 +2645,17 @@ fn holed_cylindrical_wall_mesh_preserves_bores_and_closes_the_solid() {
     }
 
     let area = tessellated_area(&topo, wall, deflection);
-    let expected = 2.0 * std::f64::consts::PI * 3.0 * 30.0 - 72.0;
+    let samples = 200_000;
+    let removed: f64 = (0..samples)
+        .map(|index| {
+            let u = std::f64::consts::TAU * (f64::from(index) + 0.5) / f64::from(samples);
+            let radicand = 1.5_f64.powi(2) - (3.0 * u.sin()).powi(2);
+            3.0 * 2.0 * radicand.max(0.0).sqrt()
+        })
+        .sum::<f64>()
+        * std::f64::consts::TAU
+        / f64::from(samples);
+    let expected = 2.0 * std::f64::consts::PI * 3.0 * 30.0 - removed;
     assert!(
         (area - expected).abs() < 0.01 * expected,
         "the rendered wall should be the drilled wall {expected:.6}, got {area:.6}"
@@ -3036,9 +3044,8 @@ fn split_rim_anchor_is_independent_of_neighbor_wire_orientation() {
 }
 
 /// A cross-drilled shaft whose bore radius is smaller than the shaft's, so the
-/// bore leaves a wall of its own. `cross_drilled_shaft` above drills at the
-/// shaft's own radius, where the two cylinders are tangent and the bore wall is
-/// the degenerate Steinmetz case; these tests need the ordinary one.
+/// bore leaves a wall of its own. These tests exercise the general quartic
+/// seam rather than the exact equal-radius Steinmetz ellipses.
 fn shaft_drilled_with(bore: f64) -> (Topology, remus_topology::solid::SolidId) {
     use remus_math::mat::Mat4;
 
@@ -3105,9 +3112,8 @@ fn bore_wall_mesh(
 ///     A = integral over 0..2pi of 2 b sqrt(r^2 - b^2 sin^2 t) dt
 ///
 /// At `b = r` this is `2 r^2 * integral |cos t| dt = 8 r^2` — 72 at r = 3,
-/// which is exactly what `holed_cylindrical_wall_mesh_preserves_bores_and_closes_the_solid`
-/// independently derives as the area the bore REMOVES from the shaft wall. The
-/// two closed forms agreeing at the tangent case is the check on this one.
+/// agreeing with the equal-radius shaft-wall removal oracle in the Steinmetz
+/// limit.
 fn exact_bore_wall_area(bore: f64, shaft: f64) -> f64 {
     let n = 2_000_000;
     let mut sum = 0.0;

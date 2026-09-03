@@ -2989,6 +2989,44 @@ mod batch_contract_tests {
     }
 
     #[test]
+    fn batch_perpendicular_equal_radius_cylinder_intersect_is_exact() {
+        let mut kernel = BrepKernel::new();
+        let response = parse(&kernel.execute_batch_v2(
+            r#"[
+                {"op":"makeCylinder","args":{"radius":3,"height":20}},
+                {"op":"transform","args":{"solid":0,"matrix":[1,0,0,0,0,1,0,0,0,0,1,-10,0,0,0,1]}},
+                {"op":"makeCylinder","args":{"radius":3,"height":20}},
+                {"op":"transform","args":{"solid":1,"matrix":[0,0,1,-10,0,1,0,0,-1,0,0,0,0,0,0,1]}},
+                {"op":"booleanWithQuality","args":{"operation":"intersect","solidA":0,"solidB":1,"exactOnly":true}},
+                {"op":"getSolidFaces","args":{"solid":2}},
+                {"op":"solidEdges","args":{"solid":2}},
+                {"op":"volume","args":{"solid":2,"deflection":0.001}},
+                {"op":"validateSolid","args":{"solid":2}},
+                {"op":"meshQuality","args":{"solid":2,"deflection":0.01}}
+            ]"#,
+        ));
+
+        assert_eq!(response[4]["ok"]["quality"], "exact", "{response}");
+        assert_eq!(response[4]["ok"]["solid"], 2, "{response}");
+        assert_eq!(
+            response[5]["ok"].as_array().map(Vec::len),
+            Some(6),
+            "{response}"
+        );
+        assert_eq!(
+            response[6]["ok"].as_array().map(Vec::len),
+            Some(10),
+            "{response}"
+        );
+        let volume = response[7]["ok"].as_f64().expect("numeric volume");
+        assert!((volume - 144.0).abs() / 144.0 < 1.0e-4, "{response}");
+        assert_eq!(response[8]["ok"], 0, "{response}");
+        assert_eq!(response[9]["ok"]["boundaryEdges"], 0, "{response}");
+        assert_eq!(response[9]["ok"]["nonManifoldEdges"], 0, "{response}");
+        assert_eq!(response[9]["ok"]["isWatertight"], true, "{response}");
+    }
+
+    #[test]
     fn batch_boolean_with_quality_rejects_invalid_newton_iterations() {
         for bad in ["-1", "2.5", r#""twenty""#, "10001", "true"] {
             let mut kernel = BrepKernel::new();
