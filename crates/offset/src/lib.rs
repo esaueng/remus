@@ -258,11 +258,11 @@ fn thick_solid_impl(
     })
 }
 
-fn validate_face_map<S: std::hash::BuildHasher>(
+fn validate_face_map(
     topo: &Topology,
     source_faces: &[FaceId],
     result: SolidId,
-    face_map: &std::collections::HashMap<usize, FaceId, S>,
+    face_map: &DetHashMap<usize, FaceId>,
 ) -> Result<(), OffsetError> {
     let source_indices: DetHashSet<usize> =
         source_faces.iter().copied().map(FaceId::index).collect();

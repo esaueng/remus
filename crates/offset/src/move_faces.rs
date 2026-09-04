@@ -6,6 +6,7 @@ use remus_math::analytic_intersection::{
     AnalyticSurface, ExactIntersectionCurve, exact_plane_analytic,
 };
 use remus_math::curves::{Circle3D, Ellipse3D};
+use remus_math::det_hash::DetHashMap;
 use remus_math::surfaces::CylindricalSurface;
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
@@ -169,7 +170,9 @@ fn replace_surface_impl(
         source_counts,
         source_shell_sizes.as_slice(),
     )?;
-    super::validate_face_map(topo, &source_faces, result.solid, &result.face_map)?;
+    let validated_face_map: DetHashMap<_, _> =
+        result.face_map.iter().map(|(&a, &b)| (a, b)).collect();
+    super::validate_face_map(topo, &source_faces, result.solid, &validated_face_map)?;
     Ok(MoveFacesResult {
         solid: result.solid,
         face_map: result.face_map,
