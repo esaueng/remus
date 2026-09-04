@@ -152,7 +152,11 @@ does not itself promote or demote anything.
   bore/shaft radius ratios 1, 2/3, and 1/3 and scales 0.1, 1, and 10:
   independent orthogonal-cylinder volume oracles match, and coarse/fine
   display meshes are non-empty, closed, and manifold through the deterministic
-  WASM batch path and a versioned replay bundle. General-position
+  WASM batch path and a versioned replay bundle. Parallel-axis box and cylinder
+  tools cutting or intersecting either side of a cylinder wall are also exact
+  and consistently oriented: both validators, closed-form overlap volumes,
+  material-side classification, and welded-mesh edge-use checks cover the
+  selected cylinder outer/inner wire contract. General-position
   equal-radius sphere×sphere fuse, cut, and intersect are exact: the result
   retains four spherical faces, matches the independent spherical-lens and
   inclusion–exclusion volumes, classifies material probes, and tessellates
