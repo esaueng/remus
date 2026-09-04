@@ -16,7 +16,7 @@ use crate::kernel::BrepKernel;
 ///
 /// `max_input_bytes` bounds the encoded input size; `max_entities` bounds
 /// format-specific model records (vertices, faces, triangles, STEP entities).
-/// Absent values keep the production defaults (128 MiB / 2,000,000).
+/// Absent values keep the production defaults (256 MiB / 3,000,000).
 pub(super) fn import_limits_from(
     max_input_bytes: Option<f64>,
     max_entities: Option<f64>,
@@ -340,7 +340,7 @@ impl BrepKernel {
     /// Import an OBJ file and return a solid handle.
     ///
     /// `maxInputBytes` / `maxEntities` optionally tighten the hostile-input
-    /// resource budgets below the production defaults (128 MiB / 2,000,000
+    /// resource budgets below the production defaults (256 MiB / 3,000,000
     /// model entities); exceeding a budget returns an error before large
     /// allocations.
     ///
