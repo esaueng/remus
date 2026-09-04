@@ -302,6 +302,13 @@ fn build_inner_side_faces(
     let mut faces = Vec::new();
 
     for seg in 0..num_segments {
+        let ring_points: Vec<Point3> = iwd.ring_verts[seg]
+            .iter()
+            .map(|&vertex| topo.vertex(vertex).map(Vertex::point))
+            .collect::<Result<_, _>>()?;
+        let path_hint = topo.vertex(iwd.ring_verts[seg + 1][0])?.point() - ring_points[0];
+        let follows_path_winding =
+            crate::winding::newell_normal(&ring_points).dot(path_hint) >= 0.0;
         for i in 0..iwd.n {
             let next_i = (i + 1) % iwd.n;
 
@@ -311,11 +318,16 @@ fn build_inner_side_faces(
             let p1_next = topo.vertex(iwd.ring_verts[seg + 1][next_i])?.point();
             let edge_dir = p1 - p0;
             let path_dir = p_next - p0;
-            // Reversed normal (inward-facing).
-            let side_normal = path_dir
-                .cross(edge_dir)
-                .normalize()
-                .unwrap_or(Vec3::new(1.0, 0.0, 0.0));
+            // Inner loops are accepted in either stored winding. Point the
+            // wall into the opening instead of assuming that the caller has
+            // already normalized it against the outer boundary.
+            let side_normal = if follows_path_winding {
+                path_dir.cross(edge_dir)
+            } else {
+                edge_dir.cross(path_dir)
+            }
+            .normalize()
+            .unwrap_or(Vec3::new(1.0, 0.0, 0.0));
             let surface =
                 if (p1_next - p0).dot(side_normal).abs() <= Tolerance::new().linear * 100.0 {
                     FaceSurface::Plane {
@@ -326,13 +338,15 @@ fn build_inner_side_faces(
                     FaceSurface::Nurbs(crate::cap::bilinear_cap_patch(&[p0, p1, p1_next, p_next])?)
                 };
 
-            // Reversed winding compared to outer side faces.
+            // Match the outer wall's edge traversal so each cap sees the
+            // opposite use of its ring edge. `side_normal` above supplies the
+            // material-side orientation independently of stored loop winding.
             let side_wire = Wire::new(
                 vec![
-                    OrientedEdge::new(iwd.path_edges[seg][i], true),
-                    OrientedEdge::new(iwd.ring_edges[seg + 1][i], true),
-                    OrientedEdge::new(iwd.path_edges[seg][next_i], false),
-                    OrientedEdge::new(iwd.ring_edges[seg][i], false),
+                    OrientedEdge::new(iwd.ring_edges[seg][i], true),
+                    OrientedEdge::new(iwd.path_edges[seg][next_i], true),
+                    OrientedEdge::new(iwd.ring_edges[seg + 1][i], false),
+                    OrientedEdge::new(iwd.path_edges[seg][i], false),
                 ],
                 true,
             )
@@ -553,8 +567,8 @@ fn try_straight_extrude(
 /// # Errors
 ///
 /// Returns an error if the path has fewer than 2 control points, a degenerate
-/// tangent is encountered, or a section boundary is non-planar with more than
-/// four edges or with holes (unsupported cap).
+/// tangent is encountered, or a non-planar section hole is not a disjoint
+/// rectangular iso-parametric loop on a four-sided bilinear cap.
 #[allow(clippy::too_many_lines)]
 pub fn sweep(
     topo: &mut Topology,
@@ -919,8 +933,8 @@ pub fn sweep_wire(
 /// # Errors
 ///
 /// Returns an error if the path has fewer than 2 control points, surface
-/// fitting fails, or a section boundary is non-planar with more than four edges
-/// or with holes (unsupported cap).
+/// fitting fails, or a non-planar section hole is not a disjoint rectangular
+/// iso-parametric loop on a four-sided bilinear cap.
 #[allow(clippy::too_many_lines)]
 pub fn sweep_smooth(
     topo: &mut Topology,
