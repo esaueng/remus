@@ -169,10 +169,41 @@ fn replace_surface_impl(
         source_counts,
         source_shell_sizes.as_slice(),
     )?;
+    validate_replacement_face_map(topo, &source_faces, result.solid, &result.face_map)?;
     Ok(MoveFacesResult {
         solid: result.solid,
         face_map: result.face_map,
     })
+}
+
+fn validate_replacement_face_map(
+    topo: &Topology,
+    source_faces: &[FaceId],
+    result: SolidId,
+    face_map: &HashMap<usize, FaceId>,
+) -> Result<(), OffsetError> {
+    let source_indices: HashSet<_> = source_faces.iter().copied().map(FaceId::index).collect();
+    let result_indices: HashSet<_> = solid_faces(topo, result)?
+        .into_iter()
+        .map(FaceId::index)
+        .collect();
+    let mapped_indices: HashSet<_> = face_map.values().copied().map(FaceId::index).collect();
+    if face_map.len() != source_indices.len()
+        || face_map.keys().copied().collect::<HashSet<_>>() != source_indices
+        || mapped_indices.len() != face_map.len()
+        || mapped_indices != result_indices
+    {
+        return Err(OffsetError::AssemblyFailed {
+            reason: format!(
+                "replace-surface face map is not one-to-one ({} source faces, {} map entries, {} distinct mapped faces, {} result faces)",
+                source_indices.len(),
+                face_map.len(),
+                mapped_indices.len(),
+                result_indices.len()
+            ),
+        });
+    }
+    Ok(())
 }
 
 fn move_faces_impl(
