@@ -448,9 +448,9 @@ covered. Each domain has two tables: **A** (identity and status) and **B**
 
 | ID | Outcome | Reference capability | Disposition | Contract | Competitive | Evidence | Owner |
 |---|---|---|---|---|---|---|---|
-| IP-7.1 | Replace surface with neighbor re-limitation | Not a documented reference op (local ops framework only) | In-scope | Partial (plane→plane, coaxial bore); **not exposed in WASM** | Lead candidate (with refs) — but R8 violated until WASM lands | 6.1 in review; no `replaceSurface` binding | 6.1 (WASM tranche), 6.5 |
+| IP-7.1 | Replace surface with neighbor re-limitation | Not a documented reference op (local ops framework only) | In-scope | Partial (plane→plane, coaxial bore); **not exposed in WASM** | Lead candidate (with refs) — but R8 violated until WASM lands | 6.1 merged (PR #238), reused by 6.2 bore moves (PR #257); no `replaceSurface` binding | 6.1 (WASM tranche), 6.5 |
 | IP-7.2 | Move, rotate, offset, resize, delete face | Local operations; defeaturing | In-scope | Qualified bounded (`push_pull_face`, `move_faces`, `resize_cylindrical_face`, `defeature`) | Gap-measured (curved neighbors, holes carried) | ledger Push/pull row | 6.2, 6.3 |
-| IP-7.3 | Local topology changes (boss across fillet, hole through move) | Documented | In-scope | Unqualified | Behind-unmeasured | — | 6.2 |
+| IP-7.3 | Local topology changes (boss across fillet, hole through move) | Documented | In-scope | Partial (holed planar boss cap through an incident constant-radius fillet, exact evolution, PR #257) | Gap-measured (rotation, lateral relocation, outward cylinders, ambiguous blend regions) | 6.2 ledger row | 6.2 residue, 6.3 |
 | IP-7.4 | Imported-part edits | Documented | In-scope | Unqualified (imports are exact-tolerance only) | Behind-unmeasured | — | M3.5 + M6 (B4 exit benchmark) |
 | IP-7.5 | Defeaturing of holes, pockets, bosses, ribs, slots, grooves, fillets, chamfers | Defeaturing documented | In-scope | Qualified declared set (planar wounds); typed elsewhere | Gap-measured (curved kept faces; fillet-band removal via 6.3) | `qualify_defeature.rs`; `resize_blend` removal | 6.3 |
 | IP-7.6 | Recognition of common manufacturing features | Not a reference kernel capability | In-scope | Qualified declared set | Lead (no reference equivalent) | `qualify_feature_recognition.rs` | done (declared set) |
@@ -547,7 +547,7 @@ covered. Each domain has two tables: **A** (identity and status) and **B**
 | IP-11.5 | Validation properties | Documented | In-scope | Qualified (CAx-IF 4.6 opt-in) | Parity-proven; lead on transactional malformed refusal | `step-conformance.md` | O1.4b (test rounds) |
 | IP-11.6 | External references, partial loading | Not documented for the basic translator | Later/horizon | Absent | Deferred (decision) | — | O5.5 → new |
 | IP-11.7 | Semantic and presentation PMI/GD&T | XDE PMI read/write | In-scope (read), Later (write) | Absent | Gap-measured | audit item 9 | O5.3b/c |
-| IP-11.8 | Tessellated representations; void shells; surface models | Documented | In-scope | Partial (sheets qualified; voids read + write in PR #251; no tessellated STEP) | Gap-measured (tessellated STEP read) | 4.2, B13 | B13 (in review); tessellated STEP: non-goal until corpus pull |
+| IP-11.8 | Tessellated representations; void shells; surface models | Documented | In-scope | Partial (sheets qualified; voids read + write in PR #251; no tessellated STEP) | Gap-measured (tessellated STEP read) | 4.2, B13 | B13 complete (PR #251); tessellated STEP: non-goal until corpus pull |
 | IP-11.9 | Deterministic output; malformed-input and resource-limit behavior; write/read/write stability | Not guaranteed | In-scope | Qualified | Lead (LC1, LC5) | `io::limits`, fuzz targets, B11 | done |
 | IP-11.10 | Mesh formats (STL, 3MF, OBJ, PLY, glTF) | Documented | In-scope | Qualified bounded | Parity-proven on limits; Gap-measured on round-trip evidence (issue #244/#247/#245) | ledger row; open issues | O1.1d, PR #251 |
 | IP-11.11 | IGES | Documented (5.3) | Intentionally out of scope | Experimental by decision | Out of scope | stabilization C3 | reassessed: no reopen (§1) |
