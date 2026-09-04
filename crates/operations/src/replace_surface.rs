@@ -1,9 +1,8 @@
 //! Exact support-surface replacement with topology-preserving re-limitation.
 
-use std::collections::HashMap;
-
 use remus_algo::compute_pcurve_on_surface_in_domain;
 use remus_math::curves2d::Curve2D;
+use remus_math::det_hash::DetHashMap;
 use remus_math::vec::Point3;
 use remus_topology::Topology;
 use remus_topology::explorer::solid_faces;
@@ -19,7 +18,10 @@ pub struct ReplaceSurfaceResult {
     /// Edited solid.
     pub solid: SolidId,
     /// Source face index to the one result face derived from it.
-    pub face_map: HashMap<usize, FaceId>,
+    ///
+    /// Deterministically hashed: the offset layer builds this with a std map,
+    /// whose iteration order varies run to run.
+    pub face_map: DetHashMap<usize, FaceId>,
 }
 
 /// Replace one face's support surface and rebuild every affected boundary.
@@ -59,7 +61,7 @@ pub fn replace_surface(
         }
         Ok(ReplaceSurfaceResult {
             solid: result.solid,
-            face_map: result.face_map,
+            face_map: result.face_map.into_iter().collect(),
         })
     })
 }
