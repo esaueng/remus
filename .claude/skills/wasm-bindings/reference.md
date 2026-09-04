@@ -90,13 +90,15 @@ Output shape: `ok - ...` per check, final line `All smoke tests passed`. Run it 
 
 ## 6. Binary size: budget and diagnosis
 
-Small wasm size is a headline competitive property of this kernel. The shipped `.wasm` is several times smaller than the reference kernel's. Nothing in CI enforces it, so erosion is silent unless someone reads the size comment.
+Small wasm size is a headline competitive property of this kernel. The shipped `.wasm` is several times smaller than the reference kernel's. The only enforcement is the coarse `validate_output` gate in `xtask/src/wasm.rs` (below); inside that window erosion is silent unless someone reads the size comment.
 
 ### What CI measures
 
-The `wasm-size` job ("WASM Size Report") in `.github/workflows/ci.yml` runs on PRs only. It builds `cargo build -p remus-wasm --target wasm32-unknown-unknown --release` for both the PR head and the base branch, stats `target/wasm32-unknown-unknown/release/remus_wasm.wasm`, and posts or updates one PR comment titled "WASM Binary Size" with a main/PR/delta table. It is informational only: it has no failure path, and growth above 50 KB just adds a "Please verify this is expected" line to the comment. The only hard gate anywhere is the coarse `validate_output` window in `xtask/src/wasm.rs` (`MIN_WASM_SIZE` 500 KB, `MAX_WASM_SIZE` 20 MB). Treat the size comment as a review item on every PR that touches `crates/wasm` or anything in its dependency tree.
+The `wasm-size` job ("WASM Size Report") in `.github/workflows/ci.yml` runs on PRs only. The `wasm` job runs `cargo xtask wasm-build` on the PR head and uploads `crates/wasm/pkg/remus_wasm_bg.wasm`; the report job stats that against the committed `crates/wasm/pkg/remus_wasm_bg.wasm` on the base branch and posts or updates one PR comment titled "WASM Binary Size" with a main/PR/delta table. It is informational only: it has no failure path, and growth above 50 KB just adds a "Please verify this is expected" line to the comment. Treat the size comment as a review item on every PR that touches `crates/wasm` or anything in its dependency tree.
 
-The CI number is the un-optimized cargo build. The shipped artifact goes through `cargo xtask wasm-build`, which runs `wasm-opt -O3` on `pkg/remus_wasm_bg.wasm` and prints before and after KB. The two deltas usually track each other; confirm a suspicious delta on the wasm-opt output before acting on it.
+The only hard gate is the `validate_output` window in `xtask/src/wasm.rs`, which runs inside `cargo xtask wasm-build` and therefore in every CI and publish build: `MIN_WASM_SIZE` 500 KB, `REVIEW_WASM_SIZE` 9 MiB (prints a WARN and requires a kernel-size review), `MAX_WASM_SIZE` 10 MiB (fails). Those two ceilings mirror the consumer's `KERNEL_WASM_POLICY` (`rawReviewBytes` / `rawHardBytes`) in esaueng/openzcad `scripts/bundle-size-policy.mjs`, with the rationale in its `docs/kernel-wasm-size-policy.md`; change them only together with that policy. The consumer additionally hard-fails on gzip size (3.5 MiB), which nothing in Remus measures — check `gzip -c crates/wasm/pkg/remus_wasm_bg.wasm | wc -c` by hand when the raw size is near the review line.
+
+Both CI numbers are the shipped artifact: `cargo xtask wasm-build` runs `wasm-opt` with the flags from `crates/wasm/Cargo.toml` (`-Oz --enable-simd`) on `pkg/remus_wasm_bg.wasm` and prints before and after KB. A plain `cargo build --release` for wasm32 is larger and only useful for attribution with twiggy.
 
 ### Budget rule
 
@@ -105,14 +107,14 @@ The CI number is the un-optimized cargo build. The shipped artifact goes through
 
 ### Diagnosis recipe
 
-1. Reproduce the CI measurement on both branches (main via a worktree or stash):
+1. Reproduce the CI measurement: `cargo xtask wasm-build` on the branch, then compare `stat -c %s crates/wasm/pkg/remus_wasm_bg.wasm` against the committed package on main (`git cat-file -s main:crates/wasm/pkg/remus_wasm_bg.wasm`). The wasm-opt before/after line shows how much of the growth survives optimization.
+
+2. For attribution, build the un-optimized artifact, which keeps symbol names twiggy can use:
 
 ```bash
 cargo build -p remus-wasm --target wasm32-unknown-unknown --release
 stat -c %s target/wasm32-unknown-unknown/release/remus_wasm.wasm
 ```
-
-2. Confirm on the shipped path: `cargo xtask wasm-build`, read the wasm-opt before/after line, or stat `crates/wasm/pkg/remus_wasm_bg.wasm`.
 3. Attribute the growth with twiggy. Check availability first (`command -v twiggy`; `cargo install twiggy` if missing):
 
 ```bash
