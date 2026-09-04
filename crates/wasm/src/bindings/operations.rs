@@ -2538,7 +2538,7 @@ mod tests {
 
     use remus_math::mat::Mat4;
     use remus_math::vec::{Point3, Vec3};
-    use remus_topology::builder::make_polygon_wire;
+    use remus_topology::builder::{make_planar_face, make_polygon_wire};
     use remus_topology::face::{Face, FaceSurface};
 
     use crate::handles::{
@@ -2556,6 +2556,30 @@ mod tests {
         ];
         let wid = make_polygon_wire(k.topo_mut(), &pts, TOL).unwrap();
         wire_id_to_u32(wid)
+    }
+
+    fn l_bracket_handle(k: &mut BrepKernel) -> u32 {
+        let profile = make_planar_face(
+            k.topo_mut(),
+            &[
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(4.0, 0.0, 0.0),
+                Point3::new(4.0, 1.0, 0.0),
+                Point3::new(1.0, 1.0, 0.0),
+                Point3::new(1.0, 4.0, 0.0),
+                Point3::new(0.0, 4.0, 0.0),
+            ],
+            TOL,
+        )
+        .unwrap();
+        let solid = remus_operations::extrude::extrude(
+            k.topo_mut(),
+            profile,
+            Vec3::new(0.0, 0.0, 1.0),
+            2.0,
+        )
+        .unwrap();
+        solid_id_to_u32(solid)
     }
 
     fn topology_counts(
@@ -2593,6 +2617,50 @@ mod tests {
         assert!(error.to_string().contains("collapsed"));
         assert_eq!(topology_counts(kernel.topo()), before);
         assert!(kernel.resolve_solid(solid).is_ok());
+    }
+
+    #[test]
+    fn folded_l_bracket_shell_has_direct_batch_parity() {
+        let mut direct = BrepKernel::new();
+        let direct_source = l_bracket_handle(&mut direct);
+        let direct_result = direct.shell_solid(direct_source, 0.6, Vec::new()).unwrap();
+        let direct_id = direct.resolve_solid(direct_result).unwrap();
+        let direct_faces = remus_topology::explorer::solid_faces(direct.topo(), direct_id).unwrap();
+        let direct_volume =
+            remus_operations::measure::solid_volume(direct.topo(), direct_id, 0.01).unwrap();
+        assert_eq!(direct_faces.len(), 8);
+        assert!((direct_volume - 14.0).abs() < 1e-10);
+
+        let mut batch = BrepKernel::new();
+        let batch_source = l_bracket_handle(&mut batch);
+        let output = dispatch(
+            &mut batch,
+            "shell",
+            serde_json::json!({"solid": batch_source, "thickness": 0.6}),
+        );
+        let batch_result = u32::try_from(output["ok"].as_u64().unwrap()).unwrap();
+        let batch_id = batch.resolve_solid(batch_result).unwrap();
+        let batch_faces = remus_topology::explorer::solid_faces(batch.topo(), batch_id).unwrap();
+        let batch_volume =
+            remus_operations::measure::solid_volume(batch.topo(), batch_id, 0.01).unwrap();
+        assert_eq!(batch_faces.len(), direct_faces.len());
+        assert_eq!(batch_volume.to_bits(), direct_volume.to_bits());
+
+        let structured: Vec<serde_json::Value> = serde_json::from_str(
+            &batch.execute_batch_v2(
+                &serde_json::json!([{
+                    "op": "shell",
+                    "args": {"solid": batch_source, "thickness": 0.6}
+                }])
+                .to_string(),
+            ),
+        )
+        .unwrap();
+        let structured_result = u32::try_from(structured[0]["ok"].as_u64().unwrap()).unwrap();
+        let structured_id = batch.resolve_solid(structured_result).unwrap();
+        let structured_volume =
+            remus_operations::measure::solid_volume(batch.topo(), structured_id, 0.01).unwrap();
+        assert_eq!(structured_volume.to_bits(), direct_volume.to_bits());
     }
 
     fn dispatch(k: &mut BrepKernel, op: &str, args: serde_json::Value) -> serde_json::Value {
