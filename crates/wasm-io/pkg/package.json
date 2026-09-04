@@ -1,0 +1,42 @@
+{
+  "description": "WebAssembly file-format translators for remus — STEP, IGES, STL, 3MF, OBJ, PLY, glTF",
+  "exports": {
+    ".": {
+      "node": "./remus_wasm_io_node.cjs",
+      "import": "./remus_wasm_io.js",
+      "default": "./remus_wasm_io.js"
+    },
+    "./remus_wasm_io_bg.wasm": "./remus_wasm_io_bg.wasm"
+  },
+  "files": [
+    "remus_wasm_io_bg.wasm",
+    "remus_wasm_io.js",
+    "remus_wasm_io_bg.js",
+    "remus_wasm_io.d.ts",
+    "remus_wasm_io_node.cjs",
+    "LICENSE-APACHE"
+  ],
+  "keywords": [
+    "cad",
+    "brep",
+    "wasm",
+    "step",
+    "iges"
+  ],
+  "license": "Apache-2.0",
+  "main": "remus_wasm_io_node.cjs",
+  "module": "remus_wasm_io.js",
+  "name": "remus-wasm-io",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/esaueng/remus.git"
+  },
+  "sideEffects": [
+    "./remus_wasm_io.js",
+    "./snippets/*"
+  ],
+  "type": "module",
+  "types": "remus_wasm_io.d.ts",
+  "version": "2.130.0",
+  "homepage": "https://github.com/esaueng/remus"
+}
