@@ -75,7 +75,12 @@ pub(super) fn reconstruct_structural_sampling_domain(
 /// Internal topology and face-splitter callers use this entry point.
 /// [`compute_pcurve_on_surface`] remains the named raw-construction adapter
 /// for callers that do not yet carry a range.
-pub(super) fn compute_pcurve_on_surface_in_domain(
+///
+/// # Errors
+///
+/// Returns [`AlgoError::PcurveProjectionFailed`] when a sampled 3D point
+/// cannot be projected to a finite UV coordinate.
+pub fn compute_pcurve_on_surface_in_domain(
     curve_3d: &EdgeCurve,
     start: Point3,
     end: Point3,
