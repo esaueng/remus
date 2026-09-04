@@ -133,7 +133,11 @@ impl StructuredWasmError {
     /// cause without matching prose.
     pub(crate) fn blend_failure(error: remus_operations::OperationsError) -> Self {
         let code = remus_operations::blend_ops::blend_failure_code(&error);
+        let unsupported = code == "unsupported-face-face-blend";
         let mut structured = Self::from(error);
+        if unsupported {
+            structured.category = FailureCategory::Unsupported.as_str();
+        }
         structured
             .details
             .insert("kernelCode".to_string(), Value::from(code));
