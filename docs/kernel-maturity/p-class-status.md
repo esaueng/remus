@@ -53,7 +53,7 @@ Issue 2.0's measured baseline is
 | 5.7b General offset self-intersection removal | Pending — added 2026-09-04 by the industrial-parity overlay (rows IP-5.1, IP-5.3, IP-5.4); program exit benchmark B3 depends on it | — |
 | 5.8 Blend rollover through re-limitation | Pending — added 2026-09-04 by the industrial-parity overlay (rows IP-4.2, IP-4.4, IP-4.7); unblocked by 6.1 (#238) and B4 | — |
 | 6.1 Replace-surface re-limitation | Merged — one planar support or one coaxial inward-facing bore cylinder re-limits exactly against planar/cylindrical neighbors while preserving topology and a total face map; changed conic trims and every result coedge p-curve are rebuilt from authoritative domains. Tilted-cap and doubled-bore witnesses pin validation, watertightness, independent volume, scale/translation, and typed face/edge rollback. Surface-type changes, bosses, NURBS supports, topology-changing edits, WASM, and evolution remain later cells | [#238](https://github.com/esaueng/remus/pull/238) |
-| 6.2 Generalized move / rotate / offset face | Pending | — |
+| 6.2 Generalized move / rotate / offset face | Partial — holed planar supports move through uniquely attributable constant-radius analytic blend bands with exact re-limitation, total construction face evolution, transactional journal history, scale/translation coverage, and direct/batch WASM parity. Inward coaxial bore moves now reuse 6.1. Rotation, lateral relocation, outward cylinders, surface-type changes, and ambiguous complex blend regions remain unqualified | In review |
 | 6.3 Curved delete-face-and-heal | Pending | — |
 | 6.4 Curved-face draft | Pending | — |
 | 6.5 Journaled direct edits | Pending | — |
