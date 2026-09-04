@@ -27,6 +27,12 @@
 
 ### Bug Fixes
 
+* **heal,operations,wasm:** make every public healing mutation disclose counted,
+  typed repair categories and fail closed behind two independent validators.
+  Raw L2 fixer results now explicitly say verification was not performed and
+  carry typed refusals for detection-only repairs; verified native, direct
+  WASM, and batch entry points roll back invalid, refused, or unverifiable
+  results with stable healing diagnostic codes.
 * **operations:** the blend volume oracle now has a floor as well as a
   ceiling. On a selection whose edges share one convexity and whose dihedrals
   can be read, a fillet or chamfer must move at least a quarter of the

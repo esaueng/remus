@@ -98,20 +98,18 @@ pub fn fix_split_common_vertex(
             "detected {} over-connected vertices (>{MAX_VERTEX_EDGES} edges) but all are single-group — no splits needed",
             over_connected.len()
         ));
-        return Ok(FixResult {
-            status: Status::DONE5,
-            actions_taken: 0,
-        });
+        return Ok(FixResult::ok());
     }
 
     ctx.info(format!(
         "split {total_splits} over-connected vertices into separate groups"
     ));
 
-    Ok(FixResult {
-        status: Status::DONE5,
-        actions_taken: total_splits,
-    })
+    Ok(FixResult::changed(
+        Status::DONE5,
+        super::RepairActionKind::CommonVertexSplit,
+        total_splits,
+    ))
 }
 
 /// Split a single over-connected vertex into separate groups.

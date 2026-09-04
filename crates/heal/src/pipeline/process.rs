@@ -106,10 +106,11 @@ mod tests {
         ) -> Result<(SolidId, FixResult), HealError> {
             Ok((
                 solid_id,
-                FixResult {
-                    status: Status::DONE1,
-                    actions_taken: 7,
-                },
+                FixResult::changed(
+                    Status::DONE1,
+                    crate::fix::RepairActionKind::GeometryConvertedToBspline,
+                    7,
+                ),
             ))
         }
     }

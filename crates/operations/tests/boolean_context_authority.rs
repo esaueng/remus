@@ -189,12 +189,7 @@ fn failed_healing_rolls_back_the_whole_optioned_boolean() {
 
     let err = boolean_with_options(&mut topo, BooleanOp::Fuse, box_id, box_id, opts).unwrap_err();
     assert!(
-        matches!(
-            err,
-            OperationsError::InvalidInput { .. }
-                | OperationsError::NonManifoldResult
-                | OperationsError::Topology(_)
-        ),
+        matches!(err, OperationsError::HealingValidationFailed { .. }),
         "healing must run and reject its invalid result, got {err}"
     );
     assert_eq!(

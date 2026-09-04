@@ -9,7 +9,8 @@ bitflags::bitflags! {
     /// Outcome of a healing operation, encoded as bit flags.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct Status: u32 {
-        /// No action was needed — the entity was already valid.
+        /// No action was taken by this fixer. This does not claim that the
+        /// entity or enclosing shape is valid; only a validator can do that.
         const OK    = 0x0001;
         /// Primary fix applied.
         const DONE1 = 0x0002;
@@ -60,7 +61,8 @@ impl Status {
         self.bits() & FAIL_MASK != 0
     }
 
-    /// True if OK and no failures.
+    /// True if this fixer took no action and reported no refusal.
+    /// This is not a shape-validity verdict.
     #[must_use]
     pub fn is_ok(self) -> bool {
         self.contains(Self::OK) && !self.is_fail()

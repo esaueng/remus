@@ -594,17 +594,42 @@ impl Model {
         remus_io::step::write_step_with_options(&self.topology, solids, options)
     }
 
-    /// Runs the configurable healing pipeline on a solid.
+    /// Runs the raw L2 configurable healing pipeline on a solid.
+    ///
+    /// The returned [`FixResult`] discloses repairs and refusals but has
+    /// [`remus_heal::fix::FixVerification::NotPerformed`]. Use
+    /// [`Self::heal_verified`] before presenting the result as valid.
     ///
     /// # Errors
     ///
-    /// Returns [`HealError`] when a requested repair cannot be applied.
+    /// Returns [`HealError`] when topology access or mutation fails. Typed
+    /// repair refusals are carried in the successful [`FixResult`].
     pub fn heal(
         &mut self,
         solid: SolidId,
         config: &FixConfig,
     ) -> Result<(SolidId, FixResult), HealError> {
         remus_heal::fix::fix_shape(&mut self.topology, solid, config)
+    }
+
+    /// Runs configurable healing transactionally and returns its complete
+    /// repair disclosure only after both validators accept the result.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OperationsError`] when a fixer declines requested work or
+    /// validity cannot be established. Refused mutations are rolled back.
+    pub fn heal_verified(
+        &mut self,
+        solid: SolidId,
+        config: &FixConfig,
+    ) -> Result<remus_operations::heal::ConfiguredRepairReport, OperationsError> {
+        remus_operations::heal::fix_shape_verified(
+            &mut self.topology,
+            solid,
+            config,
+            Some(self.context.tolerance.linear),
+        )
     }
 
     /// Resolves a persistent reference against the model's journal and topology.

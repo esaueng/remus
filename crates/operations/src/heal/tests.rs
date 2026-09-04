@@ -146,13 +146,26 @@ fn heal_report_all_fields() {
 }
 
 #[test]
-fn heal_cylinder_no_crash() {
+fn heal_cylinder_refuses_destructive_legacy_recipe() {
     let mut topo = Topology::new();
     let solid = crate::primitives::make_cylinder(&mut topo, 1.0, 2.0).unwrap();
+    let faces_before = remus_topology::explorer::solid_faces(&topo, solid)
+        .unwrap()
+        .len();
 
-    // Healing should not crash on cylinders (has non-planar faces).
-    let report = heal_solid(&mut topo, solid, 1e-7).unwrap();
-    assert_eq!(report.wire_gaps_closed, 0);
+    let error = heal_solid(&mut topo, solid, 1e-7).unwrap_err();
+    assert!(matches!(
+        error,
+        crate::OperationsError::HealingValidationFailed { ref healing, .. }
+            if healing.small_faces_removed == 2
+    ));
+    assert_eq!(
+        remus_topology::explorer::solid_faces(&topo, solid)
+            .unwrap()
+            .len(),
+        faces_before,
+        "invalid cap removal must be rolled back"
+    );
 }
 
 #[test]
@@ -171,6 +184,123 @@ fn heal_clean_geometry_zero_repairs() {
         report.is_valid_after(),
         "clean box should be valid after repair"
     );
+}
+
+#[test]
+fn repair_discloses_each_change_and_commits_only_verified_topology() {
+    let mut topo = Topology::new();
+    let solid = crate::primitives::make_box(&mut topo, 2.0, 2.0, 2.0).unwrap();
+    let face = remus_topology::explorer::solid_faces(&topo, solid)
+        .unwrap()
+        .into_iter()
+        .find(|&face_id| {
+            matches!(
+                topo.face(face_id).unwrap().surface(),
+                FaceSurface::Plane { normal, .. } if normal.x() > 0.9
+            )
+        })
+        .unwrap();
+    let (normal, d) = match topo.face(face).unwrap().surface() {
+        FaceSurface::Plane { normal, d } => (*normal, *d),
+        _ => unreachable!(),
+    };
+    topo.face_mut(face)
+        .unwrap()
+        .set_surface(FaceSurface::Plane {
+            normal: -normal,
+            d: -d,
+        });
+
+    let report = repair_solid(&mut topo, solid, 1e-7).unwrap();
+
+    assert!(report.is_valid_after());
+    assert_eq!(
+        report.healing.changes(),
+        vec![HealingChange {
+            kind: HealingChangeKind::FaceOrientationFixed,
+            count: 1,
+        }]
+    );
+    assert_eq!(report.total_repairs(), 1);
+}
+
+#[test]
+fn healing_refuses_unverified_result_and_rolls_back() {
+    let mut topo = Topology::new();
+    let solid = topo.add_empty_solid();
+    let counts_before = (
+        topo.num_vertices(),
+        topo.num_edges(),
+        topo.num_wires(),
+        topo.num_faces(),
+        topo.num_shells(),
+        topo.num_solids(),
+    );
+
+    let error = heal_solid(&mut topo, solid, 1e-7).unwrap_err();
+
+    match error {
+        crate::OperationsError::HealingValidationFailed {
+            operations_errors,
+            check_errors,
+            healing,
+        } => {
+            assert!(check_errors > 0);
+            assert!(operations_errors > 0 || check_errors > 0);
+            assert!(healing.changes().is_empty());
+        }
+        other => panic!("expected typed healing validation refusal, got {other:?}"),
+    }
+    assert_eq!(
+        counts_before,
+        (
+            topo.num_vertices(),
+            topo.num_edges(),
+            topo.num_wires(),
+            topo.num_faces(),
+            topo.num_shells(),
+            topo.num_solids(),
+        ),
+        "refused healing must restore the topology"
+    );
+    assert!(
+        topo.solid(solid).is_ok(),
+        "pre-existing handle must survive"
+    );
+}
+
+#[test]
+fn configured_healing_is_verified_on_success_and_refusal() {
+    let mut topo = Topology::new();
+    let box_solid = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+    let success = fix_shape_verified(
+        &mut topo,
+        box_solid,
+        &remus_heal::fix::FixConfig::default(),
+        Some(1e-7),
+    )
+    .unwrap();
+    assert!(success.is_valid_after());
+    assert!(success.fixing.actions.is_empty());
+    assert!(success.fixing.refusals.is_empty());
+
+    let invalid = topo.add_empty_solid();
+    let error = fix_shape_verified(
+        &mut topo,
+        invalid,
+        &remus_heal::fix::FixConfig::default(),
+        Some(1e-7),
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        crate::OperationsError::ConfiguredHealingValidationFailed {
+            operations_errors,
+            check_errors,
+            ..
+        } if operations_errors > 0 || check_errors > 0
+    ));
+    assert!(topo.solid(invalid).is_ok());
 }
 
 #[test]
