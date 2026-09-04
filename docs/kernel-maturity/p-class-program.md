@@ -10,6 +10,11 @@ typed exit gate.
 - **Promotion authority** remains
   [capability-matrix.md](capability-matrix.md); this program plans the work,
   it does not promote labels.
+- **Competitive overlay:** [industrial-parity.md](industrial-parity.md)
+  maps every reference-kernel parity target onto the issues below and added
+  4.8, 5.7b, 5.8, 6.6, 7.6, 7.7, 8.6, and 8.7 (2026-09-04) where the audit
+  found no owner. It owns no state; this ledger and
+  [p-class-status.md](p-class-status.md) stay authoritative.
 
 ## §0 What "Parasolid-class" means here
 
@@ -397,6 +402,17 @@ never a torn arena — the transaction machinery makes this cheap.
 > loop in algo/math answers to a context budget; WASM exposes cancellation
 > tokens with contract tests.
 
+Scope extension (2026-09-04, industrial-parity overlay rows IP-14.7,
+IP-14.9, IP-16.2): the exit gate additionally requires a generated-topology
+budget and a memory budget in `OperationContext` with typed
+`resource_limit` refusal reporting the amount consumed, and cancellation
+adoption in sweeps, blends, offsets, tessellation, and import with a
+measured cancellation latency per family. OpenZCAD does not call
+`booleanWithCancellation` today because a running WASM call cannot be
+interrupted from its own thread; the issue documents the worker-side token
+pattern (cancellation polled between batch operations, and inside long
+operations through the shared token) so the consumer can adopt it.
+
 ## M3 — Tolerant modeling (L, RFC 0004)
 
 Parasolid's defining feature and the single biggest lever for "imported
@@ -709,6 +725,66 @@ implementation sequence, is complete.
 > **Exit gate:** wire body round-trips arena IO; sweeps accept it as a
 > profile source.
 
+### 4.8 N-ary and mixed-dimensional General Fuse with recursive lineage (M)
+
+`crates/operations/src/boolean/` · `crates/algo/src/builder/builder_solid.rs` ·
+`crates/algo/src/gfa.rs` · `crates/wasm/src/bindings/booleans.rs`, `batch.rs`
+
+Added 2026-09-04 by the industrial-parity overlay (rows IP-2.2, IP-3.3,
+IP-3.4). Issue 4.6 closed its gate with pairwise-disjoint Compound operands
+and left intersecting-member fuse and multi-tool cut as typed refusals; no
+issue owned the remainder. The reference kernel's General Fuse accepts any
+mix of solids, shells, faces, wires, and compounds in one operation with
+history, so the crosswalk scores the cell `Gap-measured`.
+
+- **Why it matters:** OpenZCAD's union command fuses N bodies through
+  `fuseAll` + `unifyFaces` and detects dropped operands by bounding-box
+  containment because no N-ary result carries lineage; W5 (mixed-body
+  workflow) cannot pass without it.
+- **Current measured limitation:** `boolean_compound_regions` refuses
+  overlapping members (`unsupported_*`) and any multi-tool cut; wire
+  operands are not boolean operands; solid×sheet×wire mixes are untested.
+- **Dependencies:** 4.6 (done), 2.4d (census integration), B7 for curved
+  member seams. **Lane:** builder/operations (geometry lane; not parallel
+  with 2.4c/d in `builder/`).
+- **Size:** M (three PRs: intersecting-member fuse with composed lineage;
+  multi-tool cut; wire and mixed-dimension operands or their typed refusal).
+- **Implementation boundary:** recursive composition of per-region
+  construction lineage over the existing Compound-first cellular model; no
+  cell complex, no shared faces (RFC 0005 later RFC).
+- **Exactness and fallback:** exact only through `boolean_regions`; the
+  compatibility fold never routes an N-ary case to mesh silently.
+- **Diagnostics:** `unsupported_compound_operand_mix`,
+  `lineage_composition_incomplete` (both pinned); existing codes unchanged.
+- **Transactionality:** `run_transacted`; failure leaves every member
+  byte-identical. **Evolution:** total per-member events composed across
+  recursion, or typed `Unresolved` with the member named.
+- **Native / WASM:** `boolean_compound_regions` widened; `booleanCompoundRegions`
+  direct and batch companions; contract tests. **Python:** via O4.3 facade.
+- **Oracle:** per-member volume conservation (Σ regions = inclusion–exclusion
+  of members); closed-form box/cylinder stacks; mesh co-refinement for curved
+  seams.
+- **Matrix:** operand class (solid/sheet/wire/compound) × member count
+  (2, 3, 5) × overlap (disjoint/touching/intersecting) × scale 1e-3/1/1e3.
+- **Boundary tests:** aliased members, self-touching members, and cell
+  complexes refuse typed both sides. **Scale/transform:** rigid-motion
+  invariance of the region set.
+- **Fixture:** three-box intersecting fuse and a two-tool cut as repro
+  bundles; the OpenZCAD union sequence natively.
+- **Performance:** N-body fuse bench (existing `fuse_perf`) extended to the
+  composed path; entity growth bounded by the sum of pairwise results.
+- **Docs/ledger:** capability matrix body-type axis; stability matrix
+  "Cellular and Compound operands" row; this ledger.
+
+> **Exit gate:** three mutually intersecting boxes fuse into one valid
+> region whose volume equals the inclusion–exclusion sum, with every result
+> face claimed exactly once across the composed lineage; a two-tool cut
+> distributes both tools with per-member lineage; a solid × sheet × wire
+> operand mix either returns its regions with total lineage or refuses with
+> `unsupported_compound_operand_mix`; native and direct/batch WASM agree;
+> OpenZCAD's bounding-box operand-drop check becomes redundant for the
+> qualified cells.
+
 ## M5 — Blend depth (L)
 
 The gap between "fillets a box" and "fillets a casting" is most of what
@@ -963,6 +1039,101 @@ than authorizing material deletion.
 > offset: folded region excised, result valid, volume vs. mesh oracle; the
 > ledger's "still refusing" note removed.
 
+### 5.7b General offset self-intersection removal (L, staged)
+
+`crates/offset/src/self_int.rs` · `crates/offset/src/inter3d.rs` ·
+`crates/operations/src/shell_op.rs`
+
+Added 2026-09-04 by the industrial-parity overlay (rows IP-5.1, IP-5.3,
+IP-5.4). Issue 5.7 merged its bounded uniform-L-prism cell; the general
+BOP-based removal the issue text anticipated has no owner. Program exit
+benchmark B3 (curved thin-wall shell that folds) is unreachable without it.
+
+- **Why it matters:** OpenZCAD's shell and offset commands refuse every fold
+  outside the L-prism cell; thin-wall enclosures are the consumer's most
+  common shelled part.
+- **Current measured limitation:** partial or connected folds, multiple
+  folded regions, holed or curved components, and general face-face offset
+  intersections refuse typed; NURBS-NURBS 3D intersection in the offset path
+  refuses.
+- **Dependencies:** 2.5 (NURBS SSI in booleans), 2.4d; B5 provenance map
+  (done). **Lane:** offset crate (disjoint from algo).
+- **Size:** L, staged: (a) connected planar folds via the GFA split of the
+  offset shell against itself; (b) curved components; (c) holed components.
+- **Boundary:** removal only after the retained component is proven sound;
+  never delete material on a heuristic.
+- **Exactness and fallback:** exact analytic where inputs are analytic; NURBS
+  intersections disclosed; no mesh fallback.
+- **Diagnostics:** `offset_fold_unresolved` (typed refusal naming the
+  component) joins the existing `SelfIntersectionRemoval` codes.
+- **Transactionality:** whole shell operation transactional (existing).
+- **Evolution:** removed faces reported as `Deleted`, replacement faces
+  `Generated` with sources (closes the B5 arc-joint/self-int caveat).
+- **Native / WASM:** `shell`, `offsetSolidV2`, `thicken` direct and batch;
+  `offsetJournaled` map widened. **Python:** facade.
+- **Oracle:** mesh-volume co-refinement within deflection bound; closed-form
+  where the fold is planar.
+- **Matrix:** profile (L, U, T, holed, curved) × wall (below/at/above local
+  collapse) × cavity × exclude × scale. **Boundary:** each fold class both
+  sides. **Scale/transform:** translated 1e-3/1/1e3.
+- **Fixture:** curved thin-wall enclosure (program exit benchmark B3) as a
+  repro bundle. **Performance:** shell bench at three wall thicknesses;
+  entity growth ≤ 2× the input face count.
+- **Docs/ledger:** stability matrix Shell and Offset rows; capability matrix
+  offset family.
+
+> **Exit gate:** a curved thin-wall part shelled past its local collapse
+> thickness returns a valid solid whose folded region is excised, matching
+> the mesh oracle, with complete evolution; each unsupported fold class
+> refuses with `offset_fold_unresolved` naming the component; B3 becomes a
+> permanent test.
+
+### 5.8 Blend rollover through re-limitation (M)
+
+`crates/blend/src/trimmer.rs` · `crates/blend/src/walker.rs` ·
+`crates/operations/src/replace_surface.rs` · `crates/operations/src/blend_ops.rs`
+
+Added 2026-09-04 by the industrial-parity overlay (rows IP-4.2, IP-4.4,
+IP-4.7). Issue 5.5 declared the stop-at-cliff policy and closed; the
+rollover it described as "shared machinery with 6.1, build once" has no
+owner now that 6.1 exists. The reference kernel completes a band that
+crosses a narrow support onto the next face; Remus refuses typed, which is
+a contract success and a `Gap-measured` cell.
+
+- **Why it matters:** the OpenZCAD fillet probe ladder re-runs failed
+  fillets at smaller radii to tell a structural failure from a size failure;
+  rollover turns the commonest size failure into a build.
+- **Current measured limitation:** `CliffEncountered` at planar outer
+  boundaries, inner-loop obstacles, and rim exhaustion; the variable-radius
+  band (5.1) still has no trimmed-solid assembly.
+- **Dependencies:** 6.1 merged (PR #238), B4 trimmer completion, 5.1.
+  **Lane:** blend crate + `replace_surface.rs` (not parallel with 6.2).
+- **Size:** M. **Boundary:** planar and cylindrical supports first
+  (the 6.1 cell); curved neighbors follow 6.1's own widening.
+- **Exactness and fallback:** exact re-limited neighbors; typed cliff stays
+  the answer when the neighbor's neighbor cannot be re-limited.
+- **Diagnostics:** `cliff-encountered` retained; new `rollover_unresolved`
+  when re-limitation loses an edge.
+- **Transactionality:** existing v2 fail-closed contract. **Evolution:**
+  neighbor faces `Modified`, consumed face `Deleted`, band `Generated`.
+- **Native / WASM:** `filletV2`/`chamferV2` direct and batch with a
+  `rollover` policy field; contract tests. **Python:** facade.
+- **Oracle:** closed-form volume for a band rolling over a planar step;
+  mesh-volume agreement elsewhere.
+- **Matrix:** wall width × radius sweep across the cliff × support pair ×
+  scale. **Boundary:** radius exactly at the wall, radius consuming two
+  faces (still typed). **Scale/transform:** translated 1e-3/1/1e3.
+- **Fixture:** thin-wall box and two-rim cylinder from 5.5 with radius past
+  the cliff. **Performance:** fillet bench unchanged within noise.
+- **Docs/ledger:** stability matrix "Fillet overflow/cliff policy" row
+  gains the rollover cell; O1.3 torture corpus flips its rollover rows.
+
+> **Exit gate:** the 5.5 thin-wall witnesses at radius past the wall build
+> as closed/manifold solids with the band rolled onto the next face,
+> volume vs oracle, complete evolution, native/WASM parity; two-face
+> consumption still refuses typed; the torture suite's rollover rows move
+> from refusal to built.
+
 ## M6 — Direct modeling (L)
 
 Move, offset, and delete faces on any body with automatic neighbor
@@ -1051,6 +1222,61 @@ for direct edits.
 > **Exit gate:** edit → resolve-ref round-trip pinned for all 6.x ops; zero
 > unresolved events on the qualification fixtures.
 
+### 6.6 Sketch external references on persistent topology identity (M)
+
+`crates/operations/src/sketch.rs` · `crates/topology/src/naming.rs` ·
+`crates/wasm/src/bindings/gcs_sketch.rs` · `crates/remus/src/model.rs`
+
+Added 2026-09-04 by the industrial-parity overlay (row IP-13.2, leadership
+claim LC10). The GCS solver has no topology semantics; OpenZCAD attaches
+sketches to faces by a witness hash and loses the attachment on 12 of its
+18 lineage classes. No reference kernel offers this; it is the RFC 0003
+stack's most product-visible payoff and nothing owns it.
+
+- **Why it matters:** face-attached sketches are how every OpenZCAD feature
+  after the first is placed; a broken attachment after an upstream edit is
+  the consumer's most visible rebuild failure.
+- **Current measured limitation:** `crates/sketch` depends on nothing; no
+  projection of B-Rep edges or faces into a sketch plane; no external
+  reference type; OpenZCAD's `face-attachment.ts` resolves through its own
+  hash-only lineage.
+- **Dependencies:** RFC 0003 (done), 6.5 (journaled direct edits) for full
+  survival, B18 for barrier-free histories. **Lane:** operations/wasm
+  (disjoint from blend and algo).
+- **Size:** M: (a) sketch plane and external-geometry references as
+  `PersistentRef`-anchored inputs with projection into the plane; (b)
+  re-solve after model edits with typed rebinding outcomes; (c) WASM/batch.
+- **Boundary:** planar sketch planes on planar faces; projected lines,
+  circles, and ellipses (exact conics of analytic edges); NURBS edges as
+  sampled-with-bound references.
+- **Exactness and fallback:** exact projection of analytic edges; ambiguous
+  rebinding refuses (`ref_ambiguous`), never a nearest-face guess.
+- **Diagnostics:** existing `ref_*` codes plus `sketch_reference_unbound`.
+- **Transactionality:** re-solve is read-only on topology. **Evolution:**
+  consumes events; produces none.
+- **Native / WASM:** `Model::sketch_on_face`, `add_external_reference`,
+  `resolve_sketch_references`; `gcsAddExternalRef`, `gcsResolveRefs` direct
+  and batch. **Python:** facade.
+- **Oracle:** projected geometry lies on the plane and on the source edge
+  within tol; solved positions match a hand-derived closed form.
+- **Matrix:** edit class (boolean, fillet, split, move face, pattern) ×
+  reference class (face plane, edge, vertex) × scale. **Boundary:** deleted
+  source (`Dangling`), split source (`BoundMany` refused for a point
+  reference, accepted for a plane), foreign topology.
+- **Fixture:** W1 bracket rebuilt after moving the attached face; repro
+  bundle through the batch path. **Performance:** re-solve ≤ solve cost;
+  no topology allocation.
+- **Docs/ledger:** capability matrix Sketch family gains the external-reference
+  axis; stability matrix DogLeg row.
+
+> **Exit gate:** a sketch attached to a face and constrained to two of its
+> edges re-solves to the same profile after a boolean cut, a fillet on an
+> unrelated edge, and a move of the attached face, with every reference
+> resolving `Bound`; a split of a referenced edge returns typed
+> `BoundMany` handling; an ambiguous rebinding refuses; native and
+> direct/batch WASM agree; OpenZCAD's hash-only classes have a kernel
+> alternative for face attachment.
+
 ## M7 — Sweep, surfacing & interrogation depth (M)
 
 The sweeps family is broad but shallow: no guide rails, laws, continuity
@@ -1090,6 +1316,14 @@ machinery, not a near-coincident pair of faces).
 Upgrade Coons fill to N-sided patches with G1 boundary conditions against
 neighbor faces — the hole-patching workhorse for M4 sheet workflows and 5.6.
 
+Scope note (2026-09-04, industrial-parity overlay row IP-6.6): the shipped
+fill is 4-sided bilinear Coons only (`fill_coons_patch` refuses fewer than
+four curves and ignores extra ones), so the N-sided and G1 halves are both
+open. The issue also owns Gordon-surface construction from an N×M curve
+network (the reference kernel added it in its current release); exit
+evidence for that half is that every network curve is reproduced on the
+surface within tolerance.
+
 > **Exit gate:** fill a 5-sided hole in a curved sheet with G1 to all
 > neighbors, measured by normal deviation sampling along every boundary.
 
@@ -1122,11 +1356,121 @@ queries — feeds manufacturability checks and M5 radius limits), and
 **draft-angle analysis** (per-face pull-direction angle maps, the read-only
 twin of 6.4). All read-only, low risk, high product value.
 
+Scope note (2026-09-04, industrial-parity overlay rows IP-10.2, IP-10.5–10.7):
+none of the four exists yet — there is no clash query, no silhouette, and no
+draft-angle map; only the curvature slice landed. The issue additionally owns
+**wall-thickness analysis** (minimum local thickness with witness points,
+the printability check OpenZCAD approximates through `meshQuality`) and
+**oriented-bounding-box exposure** (`math::obb` has one internal consumer
+and no public or WASM surface). Exit evidence: thickness matches the
+closed form on a shelled box and cylinder; OBB extents match the
+closed form on rotated primitives.
+
 > **Exit gate:** clash: witness-point distance matches brute-force sampled
 > minimum on a touching/clearance/interfering triple. Silhouette of a torus
 > matches its closed form. Curvature maps exact on all five analytic
 > primitives, NURBS within fitted tolerance. All surfaced through WASM per
 > R8.
+
+### 7.6 Curve construction, fairing, degree reduction, and continuity analysis (M)
+
+`crates/math/src/nurbs/fitting.rs` · `crates/math/src/nurbs/knot_ops.rs` ·
+`crates/heal/src/custom/bspline_restriction.rs` · `crates/check/src/analyze/` ·
+`crates/remus/src/model.rs` · `crates/wasm/src/bindings/nurbs.rs`
+
+Added 2026-09-04 by the industrial-parity overlay (rows IP-1.5, IP-1.6,
+IP-6.8, IP-8.3). The reference kernel documents interpolation with
+continuity control, approximation, batten/minimal-variation fairing,
+constraint-built lines and circles, and degree reduction inside its
+restriction tool. Remus has `interpolate`, `approximate_lspia`,
+`interpolate_surface`, knot removal, and degree elevation in math with no
+facade or WASM surface, no fairing, no degree reduction
+(`bspline_restriction.rs` counts violations only), and only a G1 edge test.
+
+- **Why it matters:** W4 (freeform) needs fitted and faired curves as
+  inputs; imported high-degree NURBS need reduction before export to
+  degree-limited receivers; OpenZCAD's text feature ships its own polygon
+  fitting.
+- **Current measured limitation:** as above; `check_bspline_restrictions`
+  reports but cannot repair.
+- **Dependencies:** none for the math half; 7.5 for the analysis half.
+  **Lane:** math/check/wasm (disjoint from algo and blend).
+- **Size:** M: (a) surface interpolation/approximation through facade and
+  WASM; (b) degree reduction with a certified error bound; (c) G0/G1/G2
+  continuity and regularity queries on edges and faces; (d) fairing only if
+  W4 evidence demands it (otherwise closed as not-needed with the evidence).
+- **Boundary:** curves and surfaces of degree ≤ 9 (the NUM-001 floor);
+  rational inputs reduced only when the bound is provable, else typed.
+- **Exactness and fallback:** interpolation exact at the data; reduction
+  reports its max deviation; never silent.
+- **Diagnostics:** `degree_reduction_bound_exceeded`,
+  `continuity_query_degenerate`.
+- **Transactionality:** geometry-only; no topology mutation except the
+  heal-side replacement, which runs through the verified boundary.
+- **Evolution:** heal-side replacement journals `Modified` with the
+  representation change disclosed.
+- **Native / WASM:** `Model::interpolate_curve`, `approximate_curve`,
+  `reduce_degree`, `edge_continuity`; `curveInterpolate`,
+  `curveReduceDegree`, `edgeContinuity` direct and batch. **Python:** facade.
+- **Oracle:** point passage; NURBS-lowered twin identity; closed-form
+  continuity on analytic joins.
+- **Matrix:** point count × degree × periodic × rational × scale;
+  continuity class × edge type. **Boundary:** collinear/duplicate data,
+  degree above the floor, non-finite input, all typed.
+- **Fixture:** an imported degree-7 surface reduced for export; repro bundle
+  through batch. **Performance:** fitting benches join `nurbs_inner_loops`.
+- **Docs/ledger:** capability matrix Geometry family (new construction axis);
+  stability matrix NURBS row.
+
+> **Exit gate:** interpolation through N points at degrees 3 and 5 passes
+> every point within tolerance and matches the reference construction on
+> the fitted-twin oracle; degree reduction of a degree-7 surface to 3
+> reports a bound that the sampled deviation never exceeds or refuses
+> typed; G0/G1/G2 classification is exact on the five analytic primitives
+> and their joins; every entry point has direct and batch WASM parity.
+
+### 7.7 Wire and curve offset completeness (M)
+
+`crates/operations/src/offset_wire.rs` · `crates/math/src/polygon_offset.rs` ·
+`crates/geometry/src/` · `crates/wasm/src/bindings/operations.rs`
+
+Added 2026-09-04 by the industrial-parity overlay (row IP-5.5). The
+reference kernel offsets 2D and 3D wires with join control; Remus offsets
+only closed line/circle wires lying on a planar face, with intersection,
+arc, and chamfer joins.
+
+- **Why it matters:** W1 (bracket) and CAM-adjacent consumers need offset
+  profiles from arbitrary sketch wires; OpenZCAD does not expose wire offset
+  because the domain is too narrow (roadmap C6).
+- **Current measured limitation:** non-planar faces refuse; open wires
+  refuse; NURBS and ellipse edges have no arm.
+- **Dependencies:** 7.6 (fitted joins for NURBS), 4.7 wire bodies (done).
+  **Lane:** operations (disjoint).
+- **Size:** M: (a) open planar wires with end caps; (b) NURBS/ellipse arms
+  with disclosed approximation; (c) 3D wires on a developable or with a
+  normal law, or their typed refusal.
+- **Boundary:** planar exact for line/circle/ellipse; NURBS offset is a
+  fitted curve with reported error; self-overlapping offsets refuse.
+- **Exactness and fallback:** as above; never silently drop a loop.
+- **Diagnostics:** `offset_wire_self_overlap`, `unsupported_wire_offset`
+  (both pinned, both sides).
+- **Transactionality:** new wire body; input untouched. **Evolution:** wire
+  `Generated` from source edges (edge-level events per B18).
+- **Native / WASM:** `Model::offset_wire`; `offsetWire*` widened direct and
+  batch. **Python:** facade.
+- **Oracle:** closed-form area change (perimeter × distance + π d² for convex
+  closed wires); Minkowski identity for arc joins.
+- **Matrix:** curve type × open/closed × join × sign × scale.
+  **Boundary:** distance beyond local collapse both sides.
+- **Fixture:** sketch profile with an arc slot offset inward and outward.
+  **Performance:** O(n) in edge count; bench added.
+- **Docs/ledger:** capability matrix construction family; README Known
+  Limitations only when the domain widens.
+
+> **Exit gate:** open and closed planar wires of lines, circles, ellipses,
+> and NURBS offset in both directions with the declared join, matching the
+> closed-form area identity for convex inputs and a sampled distance oracle
+> otherwise; collapse and self-overlap refuse typed; native and WASM agree.
 
 ## M8 — Industrialization (L)
 
@@ -1173,6 +1517,12 @@ gate) and this is the riskiest way to lose it.
 > **Exit gate:** the 200-run determinism gate holds under parallel execution;
 > measured speedup on the N-body fuse benches.
 
+Scope note (2026-09-04, overlay row IP-14.4): the gate also covers a
+concurrent-session test — N independent `Model` sessions on N threads
+running the same replay produce bit-identical results with no shared
+mutable state, and a thread-safe import/export witness (the reference
+kernel's current release advertises per-thread STEP safety).
+
 ### 8.5 Real-model corpus (M)
 
 Nightly import → operate → export sweep over collected real STEP assemblies,
@@ -1181,6 +1531,89 @@ constructed pairs to the geometry customers actually have.
 
 > **Exit gate:** corpus ≥ 50 real models running nightly with a tracked
 > scoreboard; regressions bisectable to a merge.
+
+### 8.6 Arena compaction and the versioned checkpoint contract (M)
+
+`crates/topology/src/arena.rs` · `crates/topology/src/topology.rs` ·
+`crates/wasm/src/bindings/checkpoint.rs`, `lifecycle.rs` ·
+`docs/design/deferred-e6b-arena-compaction-and-slot-reuse.md`
+
+Added 2026-09-04 by the industrial-parity overlay (rows IP-2.8, IP-12.4,
+IP-12.6). The target's P1 list names "memory compaction and session
+lifecycle" but no issue owns it; e6b is a deferred design. OpenZCAD's
+history cache depends on an undocumented checkpoint/handle contract, caps
+history at 32 checkpoints because each is a full deep snapshot, and asks
+(its roadmap W5) for the contract to be versioned.
+
+- **Why it matters:** long browser sessions grow the arena without bound;
+  the consumer rebuilds from scratch past the checkpoint cap.
+- **Current measured limitation:** slots never reused (correct), no
+  reclamation; checkpoint = deep snapshot; contract stated only in the
+  consumer's comments.
+- **Dependencies:** e6b design (exists); O4.6 for the compatibility policy.
+  **Lane:** topology (coordinate with O3.2, additive files).
+- **Size:** M: (a) publish the checkpoint/handle contract as a versioned
+  document with pinned tests; (b) explicit copy-compaction (e6b Option A)
+  with atomic remapping of every reference, journal, attribute, pcurve key,
+  root, and checkpoint; (c) WASM `compact()` with a handle-remap table.
+- **Boundary:** explicit, caller-invoked compaction only; never automatic;
+  stale handles fail typed after compaction.
+- **Exactness and fallback:** exact remap; no geometry change.
+- **Diagnostics:** `stale_handle_after_compaction` (typed, both sides).
+- **Transactionality:** compaction is atomic or a no-op. **Evolution:**
+  journal ordinals preserved; a compaction entry recorded.
+- **Native / WASM:** `Topology::compact`, `Model::compact`; `compact()`
+  direct only (not a batch op — it changes handles). **Python:** facade.
+- **Oracle:** post-compaction validation, census, and closed-form volumes
+  identical; byte-identical arena serialization before and after.
+- **Matrix:** retirement fraction × checkpoint depth × body class × root
+  aliasing. **Boundary:** compaction with live checkpoints (refuse or
+  remap, declared), foreign handles.
+- **Fixture:** `topology_mutation` fuzz extended with compaction steps.
+  **Performance:** long-session growth bench (1,000 edit/undo cycles) with
+  a declared memory ceiling; checkpoint depth 256 without the cap.
+- **Docs/ledger:** operation contract "Transactional mutation" section;
+  book WASM chapter; stability matrix no label change.
+
+> **Exit gate:** a 1,000-cycle edit/undo session stays under the declared
+> memory ceiling with periodic compaction; every stale handle refuses typed
+> after compaction; serialization and volumes are byte- and value-identical
+> across compaction; the checkpoint contract is a versioned document whose
+> pinned tests OpenZCAD's history cache can cite instead of its own probe.
+
+### 8.7 WASM threads and SIMD evidence gate (S, evidence-gated, owner decision)
+
+`crates/wasm/Cargo.toml` · `xtask/src/wasm.rs` · `crates/operations/src/tessellate/solid.rs`
+
+Added 2026-09-04 by the industrial-parity overlay (rows IP-14.8, IP-14.9).
+`wasm-opt --enable-simd` is already on; there is no threads/atomics build,
+and the README's P2 line promises parallel tessellation on the WASM target
+without an owner. Like O3.3, this is evidence-first: build the threaded
+variant behind a feature, measure, and either adopt or close with numbers.
+
+- **Why it matters:** W8 (large-model browser workflow) tessellation and
+  cancellation latency; the owner must weigh the cross-origin isolation
+  headers threads require against OpenZCAD's deployment.
+- **Current measured limitation:** single-threaded WASM; cold-init and
+  scaling unmeasured.
+- **Dependencies:** 8.3 (deterministic parallel tessellation), O1.2f
+  (baseline columns). **Lane:** wasm/xtask.
+- **Size:** S. **Boundary:** tessellation only; booleans stay serial.
+- **Exactness:** bit-identical meshes threaded vs serial (8.3's oracle).
+- **Diagnostics:** none new. **Transactionality:** n/a.
+- **Native / WASM:** feature-gated package variant; the default package is
+  unchanged until the owner decides. **Python:** n/a.
+- **Matrix:** threads 1/2/4/8 × three deflections × three models;
+  cold-init and size columns (§3.1 of the overlay) for both variants.
+- **Fixture:** gauntlet smoke models. **Performance:** ≥1.5× on 4 threads
+  with determinism held, or a documented negative result.
+- **Docs/ledger:** README P2 line reworded to match the decision; K-W3 size
+  policy respected for both variants.
+
+> **Exit gate:** a threads-enabled build tessellates the reference models
+> ≥1.5× faster on 4 threads with bit-identical output and passes the size
+> gate, and the owner records adopt/decline; or the item closes as
+> not-worth-it with the measurements attached.
 
 ## §4 Dependency structure
 

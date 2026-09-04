@@ -45,6 +45,11 @@ future builds (versioned schema).
 
 Standing properties, applied per family as they qualify:
 
+- native/WASM per-operation invariant agreement over the whole batch
+  operation list, generated rather than hand-written (O1.5);
+- perturbation stability: a qualification fixture keeps its classification
+  or refuses typed under coordinate nudges 1e-13..1e-6 (O2.4);
+
 - transform invariance; uniform-scale invariance with correspondingly scaled
   tolerance;
 - parameter reversal; operand symmetry where applicable;
@@ -67,6 +72,17 @@ commercial kernels only where appropriately licensed. Mechanics:
   containment, region count/type, surface types, intersection curves,
   bounding boxes, distances, expected-failure classification.
 - A disagreement is a triage input, not automatic proof the oracle is right.
+- The head-to-head harness (O1.2) is the only sanctioned instrument for a
+  *competitive* claim. Its per-scenario metric schema (O1.2d), workflow
+  scenarios W1–W9 (O1.2e), and baseline-pin milestone (O1.2f) are specified
+  in [industrial-parity.md](industrial-parity.md) §3–§4. Two rules bind every
+  comparison: equivalence before speed (a timing is admissible only when both
+  kernels succeeded at the same declared output quality), and no numeric
+  band anywhere before the baseline is pinned. The absolute gates in §3.4
+  there (zero silent-wrong, zero crash, zero undisclosed approximation or
+  repair, typed non-success, determinism, native/WASM agreement, complete
+  evolution, permanent reproduction, reproducible claims) need no baseline
+  and gate every horizon from H5 on.
 
 ## Fuzzing
 
@@ -99,8 +115,9 @@ byte-identical re-serialization, and typed, non-mutating refusal of
 corrupted references. Its byte-identity oracle pinned the serde_json
 `float_roundtrip` feature as load-bearing for exact f64 replay.
 `arena_reader` and `wasm_batch` currently compile in PR CI but are not
-scheduled; curve-intersection and offset-specific fuzzing remain
-outstanding.
+scheduled; curve-intersection, offset, GCS, and tessellation fuzzing remain
+outstanding and are owned by bridge row B19, which also fixes the stale
+CDT glob in `mutants.toml`.
 
 ## Corpus
 
