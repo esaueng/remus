@@ -1,7 +1,7 @@
 //! Qualification matrix for the analytic primitive constructors.
 //!
 //! Axes covered (B6 in `docs/kernel-maturity/roadmap.md`): primitive kind
-//! (box, cylinder, pointed cone, frustum, sphere, torus), scale
+//! (box, cylinder, pointed cone, frustum, sphere, torus, ellipsoid), scale
 //! (`1e-3 / 1 / 1e3`), invalid-input boundaries, and the complete solid
 //! postcondition set. Successes are checked against closed-form volume and
 //! bounding-box oracles, exact analytic surface/entity censuses, both solid
@@ -14,11 +14,13 @@
 use std::collections::BTreeMap;
 use std::f64::consts::PI;
 
+use remus_math::mat::Mat4;
 use remus_math::tolerance::Tolerance;
 use remus_operations::OperationsError;
 use remus_operations::measure::{solid_bounding_box, solid_volume};
 use remus_operations::primitives::{make_box, make_cone, make_cylinder, make_sphere, make_torus};
 use remus_operations::tessellate::{tessellate_solid_with_tolerance, welded_mesh_quality};
+use remus_operations::transform::transform_solid;
 use remus_topology::Topology;
 use remus_topology::explorer::{solid_entity_counts, solid_faces};
 use remus_topology::solid::SolidId;
@@ -34,16 +36,18 @@ enum Primitive {
     Frustum,
     Sphere,
     Torus,
+    Ellipsoid,
 }
 
 impl Primitive {
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 7] = [
         Self::Box,
         Self::Cylinder,
         Self::PointedCone,
         Self::Frustum,
         Self::Sphere,
         Self::Torus,
+        Self::Ellipsoid,
     ];
 
     fn build(self, topo: &mut Topology, scale: f64) -> Result<SolidId, OperationsError> {
@@ -54,6 +58,15 @@ impl Primitive {
             Self::Frustum => make_cone(topo, 3.0 * scale, scale, 4.0 * scale),
             Self::Sphere => make_sphere(topo, 2.0 * scale, 16),
             Self::Torus => make_torus(topo, 4.0 * scale, scale, 16),
+            Self::Ellipsoid => {
+                let solid = make_sphere(topo, 1.0, 16)?;
+                transform_solid(
+                    topo,
+                    solid,
+                    &Mat4::scale(1.5 * scale, 2.0 * scale, 2.5 * scale),
+                )?;
+                Ok(solid)
+            }
         }
     }
 
@@ -65,6 +78,7 @@ impl Primitive {
             Self::Frustum => 52.0 * PI / 3.0,
             Self::Sphere => 32.0 * PI / 3.0,
             Self::Torus => 8.0 * PI * PI,
+            Self::Ellipsoid => 10.0 * PI,
         };
         unit * scale.powi(3)
     }
@@ -76,6 +90,7 @@ impl Primitive {
             Self::PointedCone | Self::Frustum => [-3.0, -3.0, 0.0, 3.0, 3.0, 4.0],
             Self::Sphere => [-2.0, -2.0, -2.0, 2.0, 2.0, 2.0],
             Self::Torus => [-5.0, -5.0, -1.0, 5.0, 5.0, 1.0],
+            Self::Ellipsoid => [-1.5, -2.0, -2.5, 1.5, 2.0, 2.5],
         };
         unit.map(|value| value * scale)
     }
@@ -85,7 +100,7 @@ impl Primitive {
             Self::Box => (6, 12, 8),
             Self::Cylinder | Self::Frustum => (3, 3, 2),
             Self::PointedCone => (2, 2, 2),
-            Self::Sphere => (2, 16, 16),
+            Self::Sphere | Self::Ellipsoid => (2, 16, 16),
             Self::Torus => (1, 2, 1),
         }
     }
@@ -98,6 +113,7 @@ impl Primitive {
             Self::Frustum => &[("cone", 1), ("plane", 2)],
             Self::Sphere => &[("sphere", 2)],
             Self::Torus => &[("torus", 1)],
+            Self::Ellipsoid => &[("nurbs", 2)],
         };
         entries.iter().copied().collect()
     }
@@ -106,6 +122,13 @@ impl Primitive {
         match self {
             Self::Torus => 0,
             _ => 2,
+        }
+    }
+
+    const fn volume_tolerance(self) -> f64 {
+        match self {
+            Self::Ellipsoid => 1e-3,
+            _ => 1e-9,
         }
     }
 }
@@ -206,7 +229,7 @@ fn qualify(case: Primitive, scale: f64) -> Snapshot {
         &format!("{label}: B-Rep volume"),
         volume,
         expected_volume,
-        1e-9,
+        case.volume_tolerance(),
     );
 
     let bounds = solid_bounding_box(&topo, solid).unwrap();
@@ -295,7 +318,7 @@ fn qualify(case: Primitive, scale: f64) -> Snapshot {
 }
 
 #[test]
-fn analytic_primitives_are_qualified_across_kind_and_scale() {
+fn primitive_family_is_qualified_across_kind_and_scale() {
     for case in Primitive::ALL {
         for scale in SCALES {
             let first = qualify(case, scale);

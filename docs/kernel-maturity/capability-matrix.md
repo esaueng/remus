@@ -328,13 +328,13 @@ does not itself promote or demote anything.
 
 ### Construction (fill, sew, untrim), primitives, transforms, patterns
 
-- Ledger rows: "Coons fill, sew, untrim" (blocked); analytic primitives
-  (qualified); ellipsoid and convex hull/Minkowski (blocked); mirror/pattern
+- Ledger rows: "Coons fill, sew, untrim" (blocked); analytic primitives and
+  ellipsoid (qualified); convex hull/Minkowski (blocked); mirror/pattern
   under the offset row (guarded).
-- Primitive qualification: box, cylinder, pointed cone, frustum, sphere, and
-  torus pass a generated kind × 1e-3/1/1e3 scale matrix against independent
-  closed-form volume and bounds, exact entity/surface censuses, both solid
-  validators, oriented closed B-Rep topology, watertight/manifold mesh,
+- Primitive qualification: box, cylinder, pointed cone, frustum, sphere,
+  torus, and ellipsoid pass a generated kind × 1e-3/1/1e3 scale matrix against
+  independent closed-form volume and bounds, exact entity/surface censuses,
+  both solid validators, oriented closed B-Rep topology, watertight/manifold mesh,
   independently integrated mesh volume, and bit-stable rebuilds. Native
   invalid/boundary cases pin typed non-mutating refusal (including non-finite
   inputs); direct and structured-batch WASM match the same oracles and batch
@@ -348,13 +348,14 @@ does not itself promote or demote anything.
   Native tests pin closed-form box intersection volume, rollback, contact, and
   1e-3/1/1e3 scale behavior; the versioned
   `pattern-overlap-typed-refusal` bundle pins deterministic WASM behavior.
-- Known gaps: the WASM-only ellipsoid adapter is not qualified: transforming
-  the sphere to NURBS currently gives an empty unit/large-scale solid mesh and
-  a leaky half-volume mesh at 1e-3, pinned by
-  `ellipsoid-tessellation-scale.json` and an ignored acceptance target.
-  Exact fusing of overlapping pattern instances and provenance through that
-  fuse remain unimplemented; convex hull / Minkowski degenerate coverage is
-  incomplete.
+- The ellipsoid's two affine sphere hemispheres remain distinct exact rational
+  NURBS patches; their pole-cap tessellation reuses the shared equator, and
+  their bounding boxes retain the complete polar domain. The permanent
+  `ellipsoid-tessellation-scale.json` replay pins validation, closed-form
+  volume/bounds, and deterministic watertight Euler-2 meshes.
+- Known gaps: exact fusing of overlapping pattern instances and provenance
+  through that fuse remain unimplemented; convex hull / Minkowski degenerate
+  coverage is incomplete.
 
 ### Measurement, classification, distance
 
