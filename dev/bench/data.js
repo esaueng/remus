@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788499874480,
+  "lastUpdate": 1788500258728,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -11431,6 +11431,216 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 105522,
             "range": "± 1265",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "dcdd026681fea1c3f3aeb6c2d86b35b35db992b4",
+          "message": "feat(wasm): ship file-format translators as a separate module (#250)\n\nThe browser kernel package carried every STEP/IGES/STL/3MF/OBJ/PLY/glTF\ntranslator, about 1.4 MB of a binary that sat 29 KB under its size\ngate and 88% of the consumer's review line while growing ~0.5 MB/week.\nTranslators are the one clean seam: bodies can cross a module boundary\nas exact arena documents, so they now ship as their own WASM package\nloaded only around import and export.\n\n- New L4 crate `remus-wasm-io` exporting `RemusIo`: exports take the\n  bytes of `serializeSolids`/`serializeSheets`, imports return bytes\n  for `deserializeSolids`/`deserializeSheets`; STEP report variants\n  return a `StepImportResult`. Native tests cover STEP, sheet, mesh,\n  and refusal paths.\n- remus-io: `formats` default feature gates the translator modules and\n  their deps; the arena and persistent-reference codecs stay on.\n- remus-wasm: `io` now means \"bundle translators\"; the shipped kernel\n  builds without it. Arena bindings move to `bindings/arena.rs`; the\n  naming codec and its batch ops are no longer feature-gated.\n- xtask builds, validates, and version-locks both packages\n  (`--kernel-io` keeps the single-module layout). publish.yml and the\n  candidate workflow handle both; the CI size comment reports both\n  rows and judges the kernel only. Smoke, tarball, and OpenZCAD\n  regression scripts drive the pair.\n\nKernel module 8.36 MB -> 7.22 MB; translator module 2.31 MB.\n\nBREAKING: `BrepKernel` no longer exposes import/export methods in the\nshipped package. OpenZCAD must add `remus-wasm-io` pinned to the same\ncommit and route its import/export through the arena-document hop.\n\nCo-authored-by: Claude Fable 5.1 <noreply@anthropic.com>",
+          "timestamp": "2026-09-04T01:26:28-04:00",
+          "tree_id": "0201da1d88cacd18c26831e9f4dd5430018d148d",
+          "url": "https://github.com/esaueng/remus/commit/dcdd026681fea1c3f3aeb6c2d86b35b35db992b4"
+        },
+        "date": 1788500257420,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1165662,
+            "range": "± 12725",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1258580,
+            "range": "± 13962",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 22665,
+            "range": "± 457",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 856662,
+            "range": "± 6799",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 34456375,
+            "range": "± 450806",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 22,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 75,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 36,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 166,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 125,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 665,
+            "range": "± 12",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 125,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 270,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 183,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 398,
+            "range": "± 12",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 772,
+            "range": "± 14",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 2662,
+            "range": "± 37",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 9,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 29,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 48,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 47,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 478035,
+            "range": "± 10680",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 9723443,
+            "range": "± 162178",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 146970,
+            "range": "± 3415",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 531100,
+            "range": "± 1570",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 83468,
+            "range": "± 1778",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 821563,
+            "range": "± 51259",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 9688262,
+            "range": "± 263428",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 599196,
+            "range": "± 6109",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 1071141,
+            "range": "± 18429",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 69367,
+            "range": "± 2421",
             "unit": "ns/iter"
           }
         ]
