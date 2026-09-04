@@ -140,8 +140,10 @@ The README enumerates exactly four gaps; each is one workstream:
    bilinear-only cap with a Coons/loft cap over an n-sided ring (the
    `fill_face.rs` Coons machinery is the starting point). Oracle: watertight
    mesh + volume convergence across deflections.
-2. **Holes on non-planar sections.** Cap ring-with-hole sections (annular
-   Coons or cap-then-subtract); qualify against extruded-annulus ground truth.
+2. **Holes on non-planar sections — done 2026-09-04 (B12).** Four-sided
+   bilinear sweep/pipe caps preserve certified rectangular iso-parametric holes;
+   B-Rep, mesh, classifier, and volume converge against an independently
+   extruded annulus. Broader trimmed patches refuse typed.
 3. **Partial revolution with non-planar boundary.** Build the two cap faces
    from the swept boundary curves instead of requiring a plane.
 4. **Miter-corner sweep with non-planar profiles.** The bisector-plane joint
@@ -317,9 +319,10 @@ Executed in one campaign; per the maintenance rule, each item's outcome:
   fixed. The ellipsoid follow-up preserves exact rational hemisphere images,
   full polar bounds, and shared-rim watertight tessellation across the same
   scale ladder; `ellipsoid-tessellation-scale.json` is its permanent replay.
-- **B2 Non-planar caps — workstreams 1 and 3 done, promoted** with declared
-  bounds (Coons n-sided caps; partial-revolve polygonal caps). Workstream 2
-  (holes) and 4 (miter) stay typed refusals.
+- **B2 Non-planar caps — workstreams 1–3 done, promoted** with declared bounds
+  (Coons n-sided caps; certified rectangular holes on four-sided bilinear
+  sweep/pipe caps; partial-revolve polygonal caps). Workstream 4 (miter) stays
+  a typed refusal; general trimmed holes remain outside the declared domain.
 - **B1 Torus booleans — configuration 3 done, label retained (Beta).** Exact
   coaxial torus×cylinder and axis-centred torus×sphere circles (the marching
   hang is gone), a containment-shortcut unsoundness fixed (seam-vertex-only
