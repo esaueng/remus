@@ -22,6 +22,7 @@
 
 use std::collections::HashMap;
 
+use remus_math::context::DEFAULT_MAX_ENTITY_TOLERANCE;
 use remus_math::curves::{Circle3D, Ellipse3D, Hyperbola3D, Parabola3D};
 use remus_math::curves2d::Curve2D;
 use remus_math::nurbs::curve::NurbsCurve;
@@ -1844,9 +1845,15 @@ fn certify_arena_edge_authority(
 }
 
 fn validate_arena_tolerance(tolerance: f64, subject: &str) -> Result<(), IoError> {
-    if !tolerance.is_finite() || tolerance.is_sign_negative() {
+    if !tolerance.is_finite()
+        || tolerance.is_sign_negative()
+        || tolerance > DEFAULT_MAX_ENTITY_TOLERANCE
+    {
         return Err(IoError::ParseError {
-            reason: format!("arena {subject} has invalid tolerance {tolerance}"),
+            reason: format!(
+                "arena {subject} has invalid tolerance {tolerance}; maximum is \
+                 {DEFAULT_MAX_ENTITY_TOLERANCE}"
+            ),
         });
     }
     Ok(())
@@ -2691,6 +2698,30 @@ mod tests {
     }
 
     #[test]
+    fn oversized_arena_tolerances_are_rejected_atomically() {
+        let circle =
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+        let bytes = single_edge_document(
+            SerEdgeCurve::Circle(circle.clone()),
+            circle.evaluate(0.0),
+            circle.evaluate(1.0),
+            false,
+            Some(1e6),
+            None,
+        );
+        let mut destination = Topology::new();
+        let sentinel = destination.add_empty_solid();
+
+        let error = deserialize_solid(&bytes, &mut destination).unwrap_err();
+
+        assert!(error.to_string().contains("maximum is"));
+        assert_eq!(destination.num_vertices(), 0);
+        assert_eq!(destination.num_edges(), 0);
+        assert_eq!(destination.num_solids(), 1);
+        assert!(destination.is_empty_solid(sentinel));
+    }
+
+    #[test]
     fn nonfinite_legacy_line_trim_is_rejected_atomically() {
         let bytes = single_edge_document(
             SerEdgeCurve::Line,
@@ -2891,7 +2922,7 @@ mod tests {
     }
 
     #[test]
-    fn arbitrary_vertex_tolerances_round_trip_bit_exactly() {
+    fn admissible_vertex_tolerances_round_trip_bit_exactly() {
         // serde_json's default float path can round the last bit on parse;
         // the `float_roundtrip` feature is load-bearing for the arena
         // format's exact-replay contract. The first six values are measured
@@ -2914,7 +2945,7 @@ mod tests {
         };
         let sweep = (0..64).map(|_| {
             let mantissa = (splitmix() >> 11) as f64 / (1u64 << 53) as f64;
-            10f64.powf(-9.0 + mantissa * 6.0)
+            10f64.powf(-9.0 + mantissa * 5.0)
         });
         for tolerance in known_bad.into_iter().chain(sweep) {
             let mut topo = Topology::new();
