@@ -17,8 +17,8 @@ use super::mesh_ops::{
 use super::nonplanar::{
     tessellate_cone_apex_fan_shared, tessellate_latitude_band_shared, tessellate_nonplanar_cdt,
     tessellate_nonplanar_snap, tessellate_nurbs_blend_band_shared,
-    tessellate_revolution_band_shared, tessellate_sphere_cap_shared, tessellate_torus_notch_band,
-    tessellate_torus_two_rim_band,
+    tessellate_nurbs_pole_cap_shared, tessellate_revolution_band_shared,
+    tessellate_sphere_cap_shared, tessellate_torus_notch_band, tessellate_torus_two_rim_band,
 };
 use super::nurbs::{compute_angular_range, compute_v_param_range};
 use super::planar::{
@@ -1192,7 +1192,15 @@ pub(super) fn tessellate_face_with_shared_edges(
             )?;
         }
     } else if matches!(face_data.surface(), FaceSurface::Nurbs(_)) {
-        let handled = tessellate_nurbs_blend_band_shared(
+        let handled = tessellate_nurbs_pole_cap_shared(
+            topo,
+            face_data,
+            deflection,
+            angular_tol,
+            edge_global_indices,
+            merged,
+            point_to_global,
+        )? || tessellate_nurbs_blend_band_shared(
             topo,
             face_data,
             deflection,
@@ -1202,6 +1210,9 @@ pub(super) fn tessellate_face_with_shared_edges(
             point_to_global,
         )?;
         if !handled {
+            let pos_save = merged.positions.len();
+            let nrm_save = merged.normals.len();
+            let idx_save = merged.indices.len();
             let cdt_ok = tessellate_nonplanar_cdt(
                 topo,
                 face_id,
@@ -1213,7 +1224,11 @@ pub(super) fn tessellate_face_with_shared_edges(
                 merged,
                 point_to_global,
             );
-            if cdt_ok.is_err() {
+            if cdt_ok.is_err() || merged.indices.len() == idx_save {
+                merged.positions.truncate(pos_save);
+                merged.normals.truncate(nrm_save);
+                merged.indices.truncate(idx_save);
+                point_to_global.retain(|_, gid| (*gid as usize) < pos_save);
                 tessellate_nonplanar_snap(
                     topo,
                     face_id,
