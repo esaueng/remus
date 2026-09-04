@@ -234,7 +234,7 @@ does not itself promote or demote anything.
   common stationary radius and tangent ball. A three-edge box witness pins the
   exact sphere, all physical setback stations, angular-tolerance G1 seams,
   closed/manifold B-Rep, watertight mesh, independent volume agreement, the
-  exact census row, and direct/batch WASM parity. In-review PR #235 declares
+  exact census row, and direct/batch WASM parity. Merged PR #235 declares
   the v2 overflow policy to be stop-at-cliff: planar support boundaries, inner-loop
   obstacles, closed-rim wall exhaustion, and inward cap collapse return typed
   `CliffEncountered` with edge/face/requested/available metadata. Exact-width
@@ -283,10 +283,17 @@ does not itself promote or demote anything.
   cavity-preserving offsets with shell-separation precondition; rolling-ball
   arc joints on convex polyhedra verified against the Minkowski/Steiner
   closed form across 1e3–1e-3 scale; typed refusals for each unsupported arc
-  configuration.
-- Known Unsupported-typed cells (kept typed, target of future work): global
-  self-intersection removal; NURBS-NURBS 3D intersection in the offset path;
-  excluded faces on cavity solids.
+  configuration. Closed, hole-free, straight-edged all-planar prisms with one
+  six-edge orthogonal L-profile and equal arm widths may remove one fully
+  collapsed disconnected inner offset component after exact retained-profile,
+  cap-inversion, prism-topology, closed/manifold, and strict-containment
+  checks, and only when it exactly matches the construction-proven generated
+  inner-face set. The L-bracket witness pins the surviving and collapsed sides
+  from 1e-3 to 1e3 scale, exact and mesh volume, evolution, and WASM parity.
+- Known Unsupported-typed cells (kept typed, target of future work): partial
+  or connected folds, other profiles, multiple folded regions, holed/curved
+  self-intersection removal, general face-face offset intersections; NURBS-NURBS 3D
+  intersection in the offset path; excluded faces on cavity solids.
 
 ### Direct edits (push/pull and move face)
 
