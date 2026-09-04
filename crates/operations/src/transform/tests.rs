@@ -1405,14 +1405,14 @@ fn is_uniform_scale_needs_equal_norms_and_orthogonal_columns() {
 /// mirroring the ellipsoid. Pin the selection to the hemisphere classification.
 #[test]
 fn north_hemisphere_patch_survives_negative_roundoff_in_v_min() {
-    let sphere = remus_math::surfaces::SphericalSurface::new(Point3::new(0.0, 0.0, 0.0), 1.0)
-        .expect("unit sphere");
+    let sphere =
+        remus_math::surfaces::SphericalSurface::new(Point3::new(0.0, 0.0, 0.0), 1.0).unwrap();
     let matrix = Mat4::scale(1.0, 1.0, 2.0);
 
     for v_min in [0.0, -f64::EPSILON, f64::EPSILON] {
         let patch =
             sphere_to_transformed_nurbs(&sphere, &matrix, v_min, std::f64::consts::FRAC_PI_2)
-                .expect("north hemisphere patch");
+                .unwrap();
         let (u0, u1) = patch.domain_u();
         let (w0, w1) = patch.domain_v();
         let z: Vec<f64> = [w0, f64::midpoint(w0, w1), w1]
