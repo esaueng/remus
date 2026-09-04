@@ -304,9 +304,21 @@ does not itself promote or demote anything.
   boundary is a typed invalid-input error. Native closed-form volume and
   topology oracles plus the versioned WASM `push-pull-cylinder-top-cap` repro
   bundle pin the public contract.
-- Known Partial/Unqualified cells: decorated cylindrical solids and general
-  planar faces retain the validated boolean/re-limitation paths; generalized
-  curved-face re-limitation and direct-edit evolution remain roadmap work.
+- **Replace-surface cell (in review in PR #238):** one planar face may receive
+  a coherently oriented replacement plane, and one inward-facing cylindrical
+  bore wall may receive a same-axis coaxial radius. Planar/cylindrical
+  neighbors are re-intersected without changing the source adjacency graph;
+  closed Circle→Ellipse boundaries receive new exact trims and every result
+  coedge receives a p-curve derived over its authoritative 3D domain. Exact
+  nonadjacent-boundary clearance refuses plane/circle/ellipse or bore/line
+  crossings with the selected face and offending edge. Tilted bored-cap and
+  doubled-bore witnesses cover validation, two edge uses, welded watertight
+  meshes, B-Rep/independent-mesh volume, p-curve residuals, rollback, and
+  translated 1e-3/1/1e3 scale.
+- Known Partial/Unqualified cells: surface-type changes, outward-facing
+  cylindrical walls, non-coaxial cylinders, non-analytic supports,
+  topology-changing replacements, blend rollover, generalized curved-face
+  re-limitation, WASM exposure, and direct-edit evolution remain roadmap work.
 
 ### Sweeps (extrude, revolve, sweep, loft, pipe, helix)
 

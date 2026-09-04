@@ -75,6 +75,106 @@ pub fn move_faces_with_face_map(
     result
 }
 
+/// Replace one face's support surface and re-limit its existing adjacency.
+///
+/// The qualified cell accepts plane-to-plane and coaxial
+/// cylinder-to-cylinder replacements whose neighboring supports are planar
+/// or cylindrical. Every source edge is rebuilt from the new pair of support
+/// surfaces, while the face, wire, edge, vertex, and shell counts remain
+/// unchanged.
+///
+/// # Errors
+///
+/// Returns a typed refusal naming the source face or adjacency when the
+/// replacement is unsupported, loses an edge, changes a wire, or opens the
+/// shell. Failure restores the exact pre-call topology.
+pub fn replace_surface_with_face_map(
+    topo: &mut Topology,
+    solid: SolidId,
+    face: FaceId,
+    replacement: FaceSurface,
+) -> Result<MoveFacesResult, OffsetError> {
+    let snapshot = topo.clone();
+    let result = replace_surface_impl(topo, solid, face, replacement);
+    if result.is_err() {
+        topo.restore_preserving_handle_slots(&snapshot);
+    }
+    result
+}
+
+#[allow(clippy::too_many_lines)]
+fn replace_surface_impl(
+    topo: &mut Topology,
+    solid: SolidId,
+    face: FaceId,
+    replacement: FaceSurface,
+) -> Result<MoveFacesResult, OffsetError> {
+    let options = OffsetOptions::default();
+    let source_faces = solid_faces(topo, solid)?;
+    if !source_faces.contains(&face) {
+        return Err(OffsetError::FaceNotInSolid { face, solid });
+    }
+    let replacement = validate_replacement(topo, face, replacement, options.tolerance)?;
+    let displacement = replacement_displacement(topo, face, &replacement)?;
+    if displacement <= options.tolerance.linear {
+        return Err(OffsetError::InvalidInput {
+            reason: format!("replacement surface for face {} is unchanged", face.index()),
+        });
+    }
+
+    let selected = HashSet::from([face.index()]);
+    let source_counts = solid_entity_counts(topo, solid)?;
+    let source_shell_sizes = shell_face_counts(topo, solid)?;
+    let source_wire_shapes = source_faces
+        .iter()
+        .map(|&source_face| Ok((source_face, wire_shape(topo, source_face)?)))
+        .collect::<Result<HashMap<_, _>, OffsetError>>()?;
+    let source_edge_faces = edge_to_face_map(topo, solid)?;
+    validate_source_edges(topo, &source_edge_faces, &selected)?;
+    validate_replacement_clearance(
+        topo,
+        face,
+        &replacement,
+        &source_edge_faces,
+        options.tolerance,
+    )?;
+
+    let marker = displacement.max(2.0 * options.tolerance.linear);
+    let mut data = OffsetData::new(marker, options, Vec::new());
+    populate_replacement_surfaces(topo, solid, face, replacement, marker, &mut data)?;
+    let all_surfaces = data.offset_faces.clone();
+    let relevant_faces = move_neighborhood(&source_edge_faces, &selected);
+    data.offset_faces
+        .retain(|candidate, _| relevant_faces.contains(&candidate.index()));
+    crate::inter3d::intersect_faces_3d(topo, solid, &mut data)?;
+    data.offset_faces = all_surfaces;
+    crate::inter2d::intersect_pcurves_2d(topo, solid, &mut data)?;
+    restore_exact_plane_cylinder_edges::<true>(topo, Vec3::new(0.0, 0.0, 0.0), 0.0, &mut data)?;
+    validate_rebuilt_edges::<true, _>(topo, &source_edge_faces, &selected, &data)?;
+    build_topology_preserving_wires::<true, _>(
+        topo,
+        solid,
+        Vec3::new(0.0, 0.0, 0.0),
+        0.0,
+        &source_edge_faces,
+        &mut data,
+    )?;
+    validate_rebuilt_wires(topo, &source_wire_shapes, &data)?;
+
+    let result = crate::assemble::assemble_solid_with_face_map(topo, &data)?;
+    super::validate_offset_result(topo, result.solid)?;
+    validate_result_topology(
+        topo,
+        result.solid,
+        source_counts,
+        source_shell_sizes.as_slice(),
+    )?;
+    Ok(MoveFacesResult {
+        solid: result.solid,
+        face_map: result.face_map,
+    })
+}
+
 fn move_faces_impl(
     topo: &mut Topology,
     solid: SolidId,
@@ -148,9 +248,9 @@ fn move_faces_impl(
     crate::inter3d::intersect_faces_3d(topo, solid, &mut data)?;
     data.offset_faces = all_surfaces;
     crate::inter2d::intersect_pcurves_2d(topo, solid, &mut data)?;
-    restore_exact_plane_cylinder_edges(topo, reference_normal, distance, &mut data)?;
-    validate_rebuilt_edges(topo, &source_edge_faces, &selected, &data)?;
-    build_topology_preserving_wires(
+    restore_exact_plane_cylinder_edges::<false>(topo, reference_normal, distance, &mut data)?;
+    validate_rebuilt_edges::<false, _>(topo, &source_edge_faces, &selected, &data)?;
+    build_topology_preserving_wires::<false, _>(
         topo,
         solid,
         reference_normal,
@@ -187,7 +287,7 @@ fn move_neighborhood<V: std::ops::Deref<Target = [FaceId]>>(
     relevant
 }
 
-fn restore_exact_plane_cylinder_edges(
+fn restore_exact_plane_cylinder_edges<const REPLACEMENT: bool>(
     topo: &mut Topology,
     move_normal: Vec3,
     distance: f64,
@@ -216,12 +316,14 @@ fn restore_exact_plane_cylinder_edges(
             }
             _ => continue,
         };
-        let shift = if face_a.distance != 0.0 || face_b.distance != 0.0 {
+        let shift = if REPLACEMENT {
+            Vec3::new(0.0, 0.0, 0.0)
+        } else if face_a.distance != 0.0 || face_b.distance != 0.0 {
             move_normal * distance
         } else {
             Vec3::new(0.0, 0.0, 0.0)
         };
-        if let Some(edge) = exact_plane_cylinder_edge(
+        if let Some(edge) = exact_plane_cylinder_edge::<REPLACEMENT>(
             topo,
             intersection.original_edge,
             normal,
@@ -236,7 +338,7 @@ fn restore_exact_plane_cylinder_edges(
     Ok(())
 }
 
-fn exact_plane_cylinder_edge(
+fn exact_plane_cylinder_edge<const REPLACEMENT: bool>(
     topo: &mut Topology,
     source_edge: EdgeId,
     normal: Vec3,
@@ -292,8 +394,23 @@ fn exact_plane_cylinder_edge(
                 source_ellipse.v_axis(),
             )?)
         }
+        (EdgeCurve::Circle(_), [ExactIntersectionCurve::Ellipse(ellipse)]) if REPLACEMENT => {
+            EdgeCurve::Ellipse(ellipse.clone())
+        }
         _ => return Ok(None),
     };
+    if REPLACEMENT && source_curve.type_tag() != curve.type_tag() {
+        return Ok(Some(add_reparameterized_curve_edge(
+            topo,
+            source_edge,
+            source_start,
+            source_end,
+            source_tolerance,
+            source_range,
+            curve,
+            tolerance,
+        )?));
+    }
     Ok(Some(add_projected_curve_edge(
         topo,
         source_edge,
@@ -306,6 +423,87 @@ fn exact_plane_cylinder_edge(
         shift,
         tolerance,
     )?))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn add_reparameterized_curve_edge(
+    topo: &mut Topology,
+    source_edge: EdgeId,
+    source_start: VertexId,
+    source_end: VertexId,
+    edge_tolerance: Option<f64>,
+    source_range: (f64, f64),
+    curve: EdgeCurve,
+    tolerance: f64,
+) -> Result<EdgeId, OffsetError> {
+    let start_vertex = topo.vertex(source_start)?;
+    let start_point = start_vertex.point();
+    let start_tolerance = start_vertex.tolerance();
+    let end_vertex = topo.vertex(source_end)?;
+    let end_point = end_vertex.point();
+    let end_tolerance = end_vertex.tolerance();
+    let vertex_tolerance =
+        replacement_vertex_tolerance(start_tolerance, end_tolerance, edge_tolerance, tolerance)
+            .map_err(|reason| OffsetError::TopologyChange {
+                face: None,
+                edge: Some(source_edge),
+                reason,
+            })?;
+
+    let project = |point| match &curve {
+        EdgeCurve::Circle(circle) => Some(circle.project(point)),
+        EdgeCurve::Ellipse(ellipse) => Some(ellipse.project(point)),
+        _ => None,
+    };
+    let start_parameter = project(start_point).ok_or_else(|| OffsetError::TopologyChange {
+        face: None,
+        edge: Some(source_edge),
+        reason: "changed intersection curve has no exact parameter projector".into(),
+    })?;
+    let source_span = source_range.1 - source_range.0;
+    let end_parameter = if source_start == source_end {
+        start_parameter + source_span.signum() * std::f64::consts::TAU
+    } else {
+        let raw_end = project(end_point).ok_or_else(|| OffsetError::TopologyChange {
+            face: None,
+            edge: Some(source_edge),
+            reason: "changed intersection curve end has no exact parameter projector".into(),
+        })?;
+        let delta = if source_span.is_sign_negative() {
+            -((start_parameter - raw_end).rem_euclid(std::f64::consts::TAU))
+        } else {
+            (raw_end - start_parameter).rem_euclid(std::f64::consts::TAU)
+        };
+        start_parameter + delta
+    };
+    if !start_parameter.is_finite()
+        || !end_parameter.is_finite()
+        || (end_parameter - start_parameter).abs() <= f64::EPSILON
+    {
+        return Err(OffsetError::TopologyChange {
+            face: None,
+            edge: Some(source_edge),
+            reason: "changed intersection curve has no finite non-zero trim".into(),
+        });
+    }
+
+    let new_start = curve.evaluate_with_endpoints(start_parameter, start_point, end_point);
+    let new_end = curve.evaluate_with_endpoints(end_parameter, start_point, end_point);
+    let start = topo.add_vertex(Vertex::new(new_start, vertex_tolerance));
+    let end = if source_start == source_end {
+        start
+    } else {
+        topo.add_vertex(Vertex::new(new_end, vertex_tolerance))
+    };
+    let mut edge = Edge::with_tolerance(start, end, curve, edge_tolerance);
+    edge.set_trim(Some((start_parameter, end_parameter)));
+    edge.strict_domain()
+        .map_err(|error| OffsetError::TopologyChange {
+            face: None,
+            edge: Some(source_edge),
+            reason: format!("changed intersection curve has invalid trim authority: {error}"),
+        })?;
+    Ok(topo.add_edge(edge))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -517,7 +715,10 @@ fn distance_to_line(point: Point3, origin: Point3, direction: Vec3) -> f64 {
 }
 
 #[allow(clippy::too_many_lines)]
-fn build_topology_preserving_wires<V: std::ops::Deref<Target = [FaceId]>>(
+fn build_topology_preserving_wires<
+    const REPLACEMENT: bool,
+    V: std::ops::Deref<Target = [FaceId]>,
+>(
     topo: &mut Topology,
     solid: SolidId,
     move_normal: Vec3,
@@ -572,8 +773,19 @@ fn build_topology_preserving_wires<V: std::ops::Deref<Target = [FaceId]>>(
     for source_vertex in source_vertices {
         let source = topo.vertex(source_vertex)?;
         let point = if selected_vertices.contains(&source_vertex.index()) {
-            let predicted = source.point() + move_normal * distance;
-            rebuild_vertex_point(
+            let predicted = if REPLACEMENT {
+                project_to_changed_surface(
+                    source.point(),
+                    incident_edges
+                        .get(&source_vertex.index())
+                        .map_or(&[][..], Vec::as_slice),
+                    source_edge_faces,
+                    data,
+                )?
+            } else {
+                source.point() + move_normal * distance
+            };
+            rebuild_vertex_point::<REPLACEMENT, _>(
                 topo,
                 source_vertex,
                 predicted,
@@ -610,12 +822,17 @@ fn build_topology_preserving_wires<V: std::ops::Deref<Target = [FaceId]>>(
                 reason: "move collapsed a non-degenerate source edge".into(),
             });
         }
-        let curve = preliminary.get(&source_edge.index()).map_or_else(
+        let replacement = preliminary.get(&source_edge.index()).copied();
+        let curve = replacement.map_or_else(
             || Ok::<_, OffsetError>(source.curve().clone()),
-            |replacement| Ok(topo.edge(*replacement)?.curve().clone()),
+            |replacement| Ok(topo.edge(replacement)?.curve().clone()),
         )?;
         let mut rebuilt = Edge::with_tolerance(start, end, curve, source.tolerance());
-        rebuilt.set_trim(source.trim());
+        rebuilt.set_trim(if REPLACEMENT && let Some(replacement) = replacement {
+            topo.edge(replacement)?.trim()
+        } else {
+            source.trim()
+        });
         edge_map.insert(source_edge.index(), topo.add_edge(rebuilt));
     }
 
@@ -648,8 +865,57 @@ fn build_topology_preserving_wires<V: std::ops::Deref<Target = [FaceId]>>(
     Ok(())
 }
 
+fn project_to_changed_surface<V: std::ops::Deref<Target = [FaceId]>>(
+    point: Point3,
+    incident_edges: &[EdgeId],
+    source_edge_faces: &std::collections::BTreeMap<usize, V>,
+    data: &OffsetData,
+) -> Result<Point3, OffsetError> {
+    let changed = incident_edges.iter().find_map(|edge| {
+        source_edge_faces.get(&edge.index()).and_then(|faces| {
+            faces.iter().find_map(|face| {
+                data.offset_faces
+                    .get(face)
+                    .filter(|candidate| candidate.distance != 0.0)
+            })
+        })
+    });
+    let Some(changed) = changed else {
+        return Ok(point);
+    };
+    project_point_to_surface(point, &changed.surface, changed.original)
+}
+
+fn project_point_to_surface(
+    point: Point3,
+    surface: &FaceSurface,
+    face: FaceId,
+) -> Result<Point3, OffsetError> {
+    match surface {
+        FaceSurface::Plane { normal, d } => {
+            let length_sq = normal.dot(*normal);
+            if !length_sq.is_finite() || length_sq <= f64::EPSILON {
+                return Err(OffsetError::InvalidInput {
+                    reason: "replacement plane has a zero or non-finite normal".into(),
+                });
+            }
+            let origin = Point3::new(0.0, 0.0, 0.0);
+            Ok(point + *normal * ((*d - normal.dot(point - origin)) / length_sq))
+        }
+        FaceSurface::Cylinder(cylinder) => {
+            let (u, v) = cylinder.project_point(point);
+            Ok(cylinder.evaluate(u, v))
+        }
+        other => Err(OffsetError::UnsupportedMoveFace {
+            face,
+            surface_type: other.type_tag(),
+            reason: "replacement vertex projection supports planes and cylinders only".into(),
+        }),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
-fn rebuild_vertex_point<V: std::ops::Deref<Target = [FaceId]>>(
+fn rebuild_vertex_point<const REPLACEMENT: bool, V: std::ops::Deref<Target = [FaceId]>>(
     topo: &Topology,
     source_vertex: VertexId,
     predicted: Point3,
@@ -660,7 +926,20 @@ fn rebuild_vertex_point<V: std::ops::Deref<Target = [FaceId]>>(
 ) -> Result<Point3, OffsetError> {
     let curves: Vec<_> = incident_edges
         .iter()
-        .map(|edge| preliminary.get(&edge.index()).copied().unwrap_or(*edge))
+        .filter_map(|edge| {
+            preliminary.get(&edge.index()).copied().or_else(|| {
+                if !REPLACEMENT {
+                    return Some(*edge);
+                }
+                let faces = source_edge_faces.get(&edge.index())?;
+                let selected_self_seam = faces.iter().all(|face| {
+                    data.offset_faces
+                        .get(face)
+                        .is_some_and(|surface| surface.distance != 0.0)
+                });
+                (!selected_self_seam).then_some(*edge)
+            })
+        })
         .collect();
 
     let mut candidates = Vec::new();
@@ -918,6 +1197,281 @@ fn effective_plane(topo: &Topology, face: FaceId) -> Result<(Vec3, f64), OffsetE
     }
 }
 
+fn validate_replacement(
+    topo: &Topology,
+    face: FaceId,
+    replacement: FaceSurface,
+    tolerance: remus_math::tolerance::Tolerance,
+) -> Result<FaceSurface, OffsetError> {
+    let source = topo.face(face)?.surface();
+    match (source, replacement) {
+        (
+            FaceSurface::Plane {
+                normal: source_normal,
+                ..
+            },
+            FaceSurface::Plane { normal, d },
+        ) => {
+            if normal.0.iter().any(|value| !value.is_finite()) || !d.is_finite() {
+                return Err(OffsetError::InvalidInput {
+                    reason: "replacement plane must be finite".into(),
+                });
+            }
+            let length = normal.length();
+            if length <= f64::EPSILON {
+                return Err(OffsetError::InvalidInput {
+                    reason: "replacement plane normal must be non-zero".into(),
+                });
+            }
+            let normal = normal * (1.0 / length);
+            let source_normal = source_normal.normalize()?;
+            if normal.dot(source_normal) <= tolerance.angular {
+                return Err(OffsetError::UnsupportedMoveFace {
+                    face,
+                    surface_type: "plane",
+                    reason: "replacement plane reverses or turns through the source face".into(),
+                });
+            }
+            Ok(FaceSurface::Plane {
+                normal,
+                d: d / length,
+            })
+        }
+        (FaceSurface::Cylinder(source), FaceSurface::Cylinder(replacement)) => {
+            if !replacement.radius().is_finite()
+                || replacement.radius() <= tolerance.linear
+                || replacement
+                    .origin()
+                    .0
+                    .iter()
+                    .any(|value| !value.is_finite())
+                || replacement.axis().0.iter().any(|value| !value.is_finite())
+            {
+                return Err(OffsetError::InvalidInput {
+                    reason: "replacement cylinder must be finite with a positive radius".into(),
+                });
+            }
+            if source.axis().dot(replacement.axis()) < 1.0 - tolerance.angular {
+                return Err(OffsetError::UnsupportedMoveFace {
+                    face,
+                    surface_type: "cylinder",
+                    reason: "qualified replacement cylinders preserve the source axis direction"
+                        .into(),
+                });
+            }
+            let delta = replacement.origin() - source.origin();
+            let radial = delta - source.axis() * delta.dot(source.axis());
+            if radial.length() > tolerance.linear {
+                return Err(OffsetError::UnsupportedMoveFace {
+                    face,
+                    surface_type: "cylinder",
+                    reason: "qualified replacement cylinders are coaxial with the source".into(),
+                });
+            }
+            Ok(FaceSurface::Cylinder(replacement))
+        }
+        (source, replacement) => Err(OffsetError::UnsupportedMoveFace {
+            face,
+            surface_type: replacement.type_tag(),
+            reason: format!(
+                "qualified replace-surface does not change {} to {}",
+                source.type_tag(),
+                replacement.type_tag()
+            ),
+        }),
+    }
+}
+
+fn replacement_displacement(
+    topo: &Topology,
+    face: FaceId,
+    replacement: &FaceSurface,
+) -> Result<f64, OffsetError> {
+    let vertices = remus_topology::explorer::face_vertices(topo, face)?;
+    if vertices.is_empty() {
+        return Err(OffsetError::TopologyChange {
+            face: Some(face),
+            edge: None,
+            reason: "replacement face has no boundary vertices".into(),
+        });
+    }
+    vertices.into_iter().try_fold(0.0_f64, |maximum, vertex| {
+        let point = topo.vertex(vertex)?.point();
+        let projected = project_point_to_surface(point, replacement, face)?;
+        Ok(maximum.max((projected - point).length()))
+    })
+}
+
+fn validate_replacement_clearance<V: std::ops::Deref<Target = [FaceId]>>(
+    topo: &Topology,
+    selected: FaceId,
+    replacement: &FaceSurface,
+    edge_faces: &std::collections::BTreeMap<usize, V>,
+    tolerance: remus_math::tolerance::Tolerance,
+) -> Result<(), OffsetError> {
+    let selected_face = topo.face(selected)?;
+    let selected_vertices: HashSet<_> = remus_topology::explorer::face_vertices(topo, selected)?
+        .into_iter()
+        .map(VertexId::index)
+        .collect();
+    if matches!(replacement, FaceSurface::Cylinder(_)) && !selected_face.is_reversed() {
+        return Err(OffsetError::UnsupportedMoveFace {
+            face: selected,
+            surface_type: "cylinder",
+            reason: "qualified cylinder replacement is limited to inward-facing bore walls".into(),
+        });
+    }
+
+    for (&edge_index, faces) in edge_faces {
+        if faces.contains(&selected) {
+            continue;
+        }
+        let edge_id =
+            topo.edge_id_from_index(edge_index)
+                .ok_or_else(|| OffsetError::TopologyChange {
+                    face: Some(selected),
+                    edge: None,
+                    reason: format!("source edge {edge_index} is unavailable"),
+                })?;
+        let edge = topo.edge(edge_id)?;
+        let start = topo.vertex(edge.start())?.point();
+        let end = topo.vertex(edge.end())?.point();
+        let scale = [
+            start.x().abs(),
+            start.y().abs(),
+            start.z().abs(),
+            end.x().abs(),
+            end.y().abs(),
+            end.z().abs(),
+            1.0,
+        ]
+        .into_iter()
+        .fold(1.0_f64, f64::max);
+        let linear = tolerance.linear.max(tolerance.relative * scale);
+        let clear = match replacement {
+            FaceSurface::Plane { normal, d } => {
+                let orientation = if selected_face.is_reversed() {
+                    -1.0
+                } else {
+                    1.0
+                };
+                let normal = *normal * orientation;
+                let d = *d * orientation;
+                let origin = Point3::new(0.0, 0.0, 0.0);
+                let center_value = |point: Point3| normal.dot(point - origin) - d;
+                let maximum = match edge.curve() {
+                    EdgeCurve::Line => [
+                        (!selected_vertices.contains(&edge.start().index()))
+                            .then(|| center_value(start)),
+                        (!selected_vertices.contains(&edge.end().index()))
+                            .then(|| center_value(end)),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .fold(f64::NEG_INFINITY, f64::max),
+                    EdgeCurve::Circle(circle) => {
+                        let radial = circle.radius()
+                            * normal
+                                .dot(circle.u_axis())
+                                .hypot(normal.dot(circle.v_axis()));
+                        center_value(circle.center()) + radial
+                    }
+                    EdgeCurve::Ellipse(ellipse) => {
+                        let u = ellipse.semi_major() * normal.dot(ellipse.u_axis());
+                        let v = ellipse.semi_minor() * normal.dot(ellipse.v_axis());
+                        center_value(ellipse.center()) + u.hypot(v)
+                    }
+                    other => {
+                        return Err(OffsetError::TopologyChange {
+                            face: Some(selected),
+                            edge: Some(edge_id),
+                            reason: format!(
+                                "cannot prove replacement-plane clearance against a nonadjacent {} edge",
+                                other.type_tag()
+                            ),
+                        });
+                    }
+                };
+                maximum <= linear
+            }
+            FaceSurface::Cylinder(cylinder) => match edge.curve() {
+                EdgeCurve::Line => {
+                    minimum_segment_axis_distance(start, end, cylinder)
+                        >= cylinder.radius() - linear
+                }
+                other => {
+                    return Err(OffsetError::TopologyChange {
+                        face: Some(selected),
+                        edge: Some(edge_id),
+                        reason: format!(
+                            "cannot prove replacement-bore clearance against a nonadjacent {} edge",
+                            other.type_tag()
+                        ),
+                    });
+                }
+            },
+            _ => unreachable!("replacement validation limits the surface variants"),
+        };
+        if !clear {
+            return Err(OffsetError::TopologyChange {
+                face: Some(selected),
+                edge: Some(edge_id),
+                reason: "replacement surface crosses a nonadjacent source boundary".into(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn minimum_segment_axis_distance(start: Point3, end: Point3, cylinder: &CylindricalSurface) -> f64 {
+    let axis = cylinder.axis();
+    let offset = start - cylinder.origin();
+    let direction = end - start;
+    let radial_offset = offset - axis * offset.dot(axis);
+    let radial_direction = direction - axis * direction.dot(axis);
+    let denominator = radial_direction.dot(radial_direction);
+    let parameter = if denominator <= f64::EPSILON {
+        0.0
+    } else {
+        (-radial_offset.dot(radial_direction) / denominator).clamp(0.0, 1.0)
+    };
+    (radial_offset + radial_direction * parameter).length()
+}
+
+fn populate_replacement_surfaces(
+    topo: &Topology,
+    solid: SolidId,
+    selected: FaceId,
+    replacement: FaceSurface,
+    marker: f64,
+    data: &mut OffsetData,
+) -> Result<(), OffsetError> {
+    let solid_data = topo.solid(solid)?;
+    for shell_id in
+        std::iter::once(solid_data.outer_shell()).chain(solid_data.inner_shells().iter().copied())
+    {
+        let faces = topo.shell(shell_id)?.faces().to_vec();
+        data.shell_faces.push(faces.clone());
+        for face_id in faces {
+            let face = topo.face(face_id)?;
+            data.offset_faces.insert(
+                face_id,
+                OffsetFace {
+                    original: face_id,
+                    surface: if face_id == selected {
+                        replacement.clone()
+                    } else {
+                        face.surface().clone()
+                    },
+                    distance: if face_id == selected { marker } else { 0.0 },
+                    status: OffsetStatus::Done,
+                },
+            );
+        }
+    }
+    Ok(())
+}
+
 fn populate_surfaces(
     topo: &Topology,
     solid: SolidId,
@@ -1016,7 +1570,7 @@ fn validate_source_edges<V: std::ops::Deref<Target = [FaceId]>>(
     Ok(())
 }
 
-fn validate_rebuilt_edges<V: std::ops::Deref<Target = [FaceId]>>(
+fn validate_rebuilt_edges<const ALLOW_CONIC_CHANGE: bool, V: std::ops::Deref<Target = [FaceId]>>(
     topo: &Topology,
     source_edge_faces: &std::collections::BTreeMap<usize, V>,
     selected: &HashSet<usize>,
@@ -1053,10 +1607,16 @@ fn validate_rebuilt_edges<V: std::ops::Deref<Target = [FaceId]>>(
                 ),
             });
         }
-        let source_kind = topo.edge(edge)?.curve().type_tag();
+        let source_curve = topo.edge(edge)?.curve();
+        let source_kind = source_curve.type_tag();
         let replacement = matches[0].new_edges[0];
-        let replacement_kind = topo.edge(replacement)?.curve().type_tag();
-        if source_kind != replacement_kind {
+        let replacement_curve = topo.edge(replacement)?.curve();
+        let replacement_kind = replacement_curve.type_tag();
+        let qualified_conic_change = matches!(
+            (source_curve, replacement_curve),
+            (EdgeCurve::Circle(_), EdgeCurve::Ellipse(_))
+        );
+        if source_kind != replacement_kind && !(ALLOW_CONIC_CHANGE && qualified_conic_change) {
             return Err(OffsetError::TopologyChange {
                 face: faces.first().copied(),
                 edge: Some(edge),
