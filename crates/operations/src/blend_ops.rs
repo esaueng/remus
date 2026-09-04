@@ -1159,6 +1159,9 @@ pub fn blend_failure_code(error: &OperationsError) -> &'static str {
         OperationsError::Blend(BlendError::UnsupportedSetbackCorner { .. }) => {
             "unsupported-setback-corner"
         }
+        OperationsError::Blend(BlendError::UnsupportedFaceFaceBlend { .. }) => {
+            "unsupported-face-face-blend"
+        }
         OperationsError::Blend(BlendError::TrimmingFailure { .. }) => "trimming-failure",
         OperationsError::Blend(BlendError::CliffEncountered { .. }) => "cliff-encountered",
         OperationsError::Blend(BlendError::RadiusTooLarge { .. }) => "radius-too-large",

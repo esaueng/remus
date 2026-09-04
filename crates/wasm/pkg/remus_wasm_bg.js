@@ -2027,6 +2027,41 @@ export class BrepKernel {
         return ret[0];
     }
     /**
+     * Build an exact standalone blend sheet between two disjoint planar faces.
+     * @param {number} first_face
+     * @param {number} second_face
+     * @param {number} radius
+     * @returns {number}
+     */
+    faceFaceBlend(first_face, second_face, radius) {
+        const ret = wasm.brepkernel_faceFaceBlend(this.__wbg_ptr, first_face, second_face, radius);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Build a face-face blend sheet and verify one prescribed contact line.
+     * @param {number} first_face
+     * @param {number} second_face
+     * @param {number} radius
+     * @param {number} hold_face
+     * @param {number} start_x
+     * @param {number} start_y
+     * @param {number} start_z
+     * @param {number} end_x
+     * @param {number} end_y
+     * @param {number} end_z
+     * @returns {number}
+     */
+    faceFaceBlendWithHoldLine(first_face, second_face, radius, hold_face, start_x, start_y, start_z, end_x, end_y, end_z) {
+        const ret = wasm.brepkernel_faceFaceBlendWithHoldLine(this.__wbg_ptr, first_face, second_face, radius, hold_face, start_x, start_y, start_z, end_x, end_y, end_z);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
      * Compute the perimeter of a face.
      *
      * # Errors
