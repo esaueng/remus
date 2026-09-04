@@ -66,6 +66,11 @@ file governs *how* to chase. Before claiming anything: `gh pr list --state open`
 and read the last scheduled runs (Corpus Gauntlet, Fuzz Smoke, Mutation Testing)
 — a red proof job nobody looked at is not proof.
 
+`docs/kernel-maturity/industrial-parity.md` is the non-owning competitive
+overlay: it says where a row stands against the reference kernel and which
+program row owns the gap, never what is open — never claim work from it
+directly; claim the owner row it points at.
+
 ## The priority filters (rules with reasons)
 
 1. **Chase operations that RE-CREATE an existing analytic surface type. Do NOT chase
@@ -126,9 +131,8 @@ that does not exist yet; without it, stop.
 
 ## Open items with a repro
 
-The `#[ignore]` inventory (regenerated 2026-09-03) holds one open engine defect:
-`regress_parallel_boss_band_sections.rs` pins cut/intersect pocket faces on a
-cylinder wall coming back inconsistently oriented. The remaining ignores are
+The `#[ignore]` inventory (regenerated 2026-09-04) holds no open engine defects.
+The remaining ignores are
 two fork-policy pins blocked on the trim-contract reconciliation
 (`crates/operations/tests/regress_chamfer_obtuse_ridge.rs`,
 `regress_fillet_concave_notch.rs`, see PR #126), one ~2 min perf run
@@ -201,6 +205,9 @@ harness's own option-honoured floor misreading a correct 0.05 fillet on an
   "graze" heuristic keyed to face extent is blind to corner-window exits.
 - **Test a boolean result's VERTICES, never its bounding box:**
   `solid_bounding_box` bounds a trimmed curved patch by its untrimmed surface.
+- **A geometrically closed splitter loop can still carry the wrong stored winding;**
+  normalize selected cylinder outer/inner loops against the carrier normal before
+  duplicate-edge merge (`builder_solid.rs`, B15).
 - **A volume band wide enough to hide an operand is not an oracle;** pin
   closed forms, inclusion–exclusion sums, and ray-cast classification.
 - **`log::debug!` inside `fill_images_faces.rs` does not emit** (cause

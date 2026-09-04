@@ -33,6 +33,13 @@ A cell may additionally be annotated **Approximate** when success is delivered
 under an explicit approximation policy rather than exactly
 (see the fallback policy in [operation-contract.md](operation-contract.md)).
 
+These states describe the kernel's *contract* with its caller. They are not
+a competitive score: the [industrial-parity overlay](industrial-parity.md)
+keeps a second, independent axis (`Lead-proven` … `Intentionally out of
+scope`) per crosswalk row, because a `Qualified` typed refusal on a cell the
+reference kernel completes is a contract success and a parity gap at the
+same time. Nothing in this matrix is promoted or demoted by that axis.
+
 ## Classification axes
 
 ### Geometric families (booleans, intersections, blends, offsets, sweeps, sectioning)
@@ -105,6 +112,14 @@ achievable rather than aspirational:
 - **Assemblies, feature recognition, defeaturing, projection** —
   family-specific axes to be declared when each family is first worked on;
   until then every cell is Unqualified.
+- **Families the overlay expects to declare axes for** (each first worked
+  on by the row named): construction and analysis (7.6: point count ×
+  degree × periodic × rational × scale; continuity class × edge type), wire
+  offset (7.7), external sketch references (6.6: edit class × reference
+  class × scale), incremental tessellation (O3.4), assembly occurrences
+  (O5.4), healing defect classes (B17: defect class × severity × repair
+  policy × scale), evolution completeness (B18: family × operation ×
+  fixture). Until those rows land, the cells are Unqualified.
 
 ## Operation family inventory and current mapped state
 
@@ -137,7 +152,11 @@ does not itself promote or demote anything.
   bore/shaft radius ratios 1, 2/3, and 1/3 and scales 0.1, 1, and 10:
   independent orthogonal-cylinder volume oracles match, and coarse/fine
   display meshes are non-empty, closed, and manifold through the deterministic
-  WASM batch path and a versioned replay bundle. General-position
+  WASM batch path and a versioned replay bundle. Parallel-axis box and cylinder
+  tools cutting or intersecting either side of a cylinder wall are also exact
+  and consistently oriented: both validators, closed-form overlap volumes,
+  material-side classification, and welded-mesh edge-use checks cover the
+  selected cylinder outer/inner wire contract. General-position
   equal-radius sphere×sphere fuse, cut, and intersect are exact: the result
   retains four spherical faces, matches the independent spherical-lens and
   inclusion–exclusion volumes, classifies material probes, and tessellates
