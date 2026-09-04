@@ -119,7 +119,7 @@ struct StepReport<V> {
 ///
 /// `max_input_bytes` bounds the encoded input size; `max_entities` bounds
 /// format-specific model records. Absent values keep the production
-/// defaults (128 MiB / 2,000,000).
+/// defaults (256 MiB / 3,000,000).
 fn import_limits_from(
     max_input_bytes: Option<f64>,
     max_entities: Option<f64>,
@@ -542,7 +542,7 @@ impl RemusIo {
     /// or no bytes when the file holds no solids.
     ///
     /// `maxInputBytes` / `maxEntities` optionally tighten the hostile-input
-    /// resource budgets below the production defaults (128 MiB / 2,000,000).
+    /// resource budgets below the production defaults (256 MiB / 3,000,000).
     #[wasm_bindgen(js_name = "importStep")]
     pub fn import_step(
         &self,
