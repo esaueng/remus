@@ -1064,6 +1064,29 @@ fn tessellate_solid_sphere_produces_mesh() {
 }
 
 #[test]
+fn tessellate_affine_ellipsoid_reuses_the_shared_equator() {
+    let mut topo = Topology::new();
+    let solid = crate::primitives::make_sphere(&mut topo, 1.0, 16).unwrap();
+    crate::transform::transform_solid(
+        &mut topo,
+        solid,
+        &remus_math::mat::Mat4::scale(1.5, 2.0, 2.5),
+    )
+    .unwrap();
+
+    let mesh = tessellate_solid_with_tolerance(&topo, solid, 0.01, 0.1).unwrap();
+    let quality = welded_mesh_quality(&mesh);
+    assert!(quality.is_watertight(), "{quality:?}");
+    assert_eq!(quality.euler_characteristic, 2);
+    let expected = 4.0 / 3.0 * std::f64::consts::PI * 1.5 * 2.0 * 2.5;
+    let actual = signed_volume_raw(&mesh).abs();
+    assert!(
+        (actual - expected).abs() / expected < 0.02,
+        "ellipsoid mesh volume {actual} differs from {expected}"
+    );
+}
+
+#[test]
 fn is_watertight_basic() {
     let mesh = TriangleMesh {
         positions: vec![
@@ -2094,6 +2117,7 @@ fn circle_and_degenerate_ellipse_do_not_over_tessellate() {
     let solid_e = extrude_ellipse(&mut topo_e, 5.0, 5.0, 10.0);
     let mesh_e = tessellate_solid(&topo_e, solid_e, 0.01).unwrap();
     let n_e = mesh_e.positions.len();
+    let quality_e = welded_mesh_quality(&mesh_e);
 
     let mut topo_c = Topology::new();
     let solid_c = crate::primitives::make_cylinder(&mut topo_c, 5.0, 10.0).unwrap();
@@ -2107,6 +2131,13 @@ fn circle_and_degenerate_ellipse_do_not_over_tessellate() {
     assert!(
         n_e < 5_000,
         "near-circular ellipse(5,5) over-tessellates: {n_e} mesh vertices"
+    );
+    assert!(quality_e.is_watertight(), "{quality_e:?}");
+    let expected = std::f64::consts::PI * 5.0 * 5.0 * 10.0;
+    let actual = signed_volume_raw(&mesh_e).abs();
+    assert!(
+        (actual - expected).abs() / expected < 0.02,
+        "near-circular ellipse mesh volume {actual} differs from {expected}"
     );
 }
 

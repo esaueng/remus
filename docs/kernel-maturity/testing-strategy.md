@@ -24,14 +24,14 @@ only with:
 Characterization-first: a slice that changes behavior lands its failing
 characterization or regression test before the implementation.
 
-The B6 analytic-primitive family is the current reference matrix: six
+The B6 primitive family is the current reference matrix: seven
 primitive kinds × 1e-3/1/1e3 scale, with closed-form volume/bounds, exact
 topology and surface censuses, dual validation, oriented closed B-Rep,
 watertight/manifold mesh, independent mesh-volume integration, determinism,
-typed non-mutating refusal, and direct/batch WASM parity. Its deliberately
-ignored ellipsoid acceptance target demonstrates how a failed postcondition
-keeps a superficially valid constructor in a separate blocked cell instead of
-weakening the family claim.
+typed non-mutating refusal, and direct/batch WASM parity. The ellipsoid cell
+also demonstrates the characterization-first rule: its initially ignored
+acceptance target exposed distinct geometry, tessellation, and bounding-box
+defects before becoming an always-on matrix row and deterministic replay.
 
 ## Reproduction bundles (Issue 2)
 

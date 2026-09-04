@@ -1771,10 +1771,11 @@ fn stitch_rings(
     }
 }
 
-/// Tessellate a periodic walking-blend NURBS band from its two shared contact
-/// loops. Its UV boundary is a rectangle whose two periodic sides collapse to
-/// closed 3D curves, a shape the planar CDT cannot represent without dropping
-/// most boundary constraints.
+/// Tessellate a periodic-v NURBS band from its two shared closed rims.
+///
+/// Walking blends and extruded closed conics both have a rectangular UV
+/// boundary whose periodic sides collapse to a doubled open seam, a shape the
+/// planar CDT cannot represent without dropping most boundary constraints.
 pub(super) fn tessellate_nurbs_blend_band_shared(
     topo: &Topology,
     face_data: &remus_topology::face::Face,
@@ -1804,13 +1805,9 @@ pub(super) fn tessellate_nurbs_blend_band_shared(
             continue;
         }
         let edge = topo.edge(edge_use.edge())?;
-        match (
-            counts[&edge_use.edge().index()],
-            edge.is_closed(),
-            edge.curve(),
-        ) {
-            (1, true, EdgeCurve::NurbsCurve(_)) => contacts.push(edge_use.edge()),
-            (2, false, _) => doubled_open += 1,
+        match (counts[&edge_use.edge().index()], edge.is_closed()) {
+            (1, true) => contacts.push(edge_use.edge()),
+            (2, false) => doubled_open += 1,
             _ => return Ok(false),
         }
     }
@@ -3404,6 +3401,228 @@ fn collect_boundary_loop(
         boundary.pop();
     }
     Ok(boundary)
+}
+
+/// Tessellate a periodic NURBS polar cap from its shared rim.
+///
+/// Exact rational sphere patches, and their affine ellipsoid images, collapse
+/// one end of the v-domain to a pole. Their single rim projects to a zero-area
+/// UV loop, so generic CDT emits no triangles; the standalone NURBS grid then
+/// re-samples that rim independently and cracks it. This path reuses every
+/// shared rim vertex and closes structured interior rings at the pole.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+pub(super) fn tessellate_nurbs_pole_cap_shared(
+    topo: &Topology,
+    face_data: &remus_topology::face::Face,
+    deflection: f64,
+    angular_tol: f64,
+    edge_global_indices: &DetHashMap<usize, Vec<u32>>,
+    merged: &mut TriangleMesh,
+    point_to_global: &mut DetHashMap<(i64, i64, i64), u32>,
+) -> Result<bool, crate::OperationsError> {
+    let FaceSurface::Nurbs(surface) = face_data.surface() else {
+        return Ok(false);
+    };
+    if !face_data.inner_wires().is_empty() || !surface.is_periodic_u() {
+        return Ok(false);
+    }
+
+    let ((u_min, u_max), (v_min, v_max)) = (surface.domain_u(), surface.domain_v());
+    if u_max <= u_min || v_max <= v_min {
+        return Ok(false);
+    }
+    let radius = nurbs_estimated_radius(surface);
+    let pole_tol = radius.mul_add(1e-8, 1e-12);
+    let endpoint_spread = |v: f64| {
+        let first = surface.evaluate(u_min, v);
+        (1..=4)
+            .map(|i| {
+                let u = (f64::from(i) / 4.0).mul_add(u_max - u_min, u_min);
+                (surface.evaluate(u, v) - first).length()
+            })
+            .fold(0.0_f64, f64::max)
+    };
+    let low_is_pole = endpoint_spread(v_min) <= pole_tol;
+    let high_is_pole = endpoint_spread(v_max) <= pole_tol;
+    let (pole_v, boundary_v) = match (low_is_pole, high_is_pole) {
+        (true, false) => (v_min, v_max),
+        (false, true) => (v_max, v_min),
+        _ => return Ok(false),
+    };
+
+    let pos_save = merged.positions.len();
+    let nrm_save = merged.normals.len();
+    let idx_save = merged.indices.len();
+    let boundary = collect_boundary_loop(
+        topo,
+        face_data,
+        deflection,
+        angular_tol,
+        edge_global_indices,
+        merged,
+        point_to_global,
+    )?;
+    let decline = |merged: &mut TriangleMesh,
+                   point_to_global: &mut DetHashMap<(i64, i64, i64), u32>| {
+        merged.positions.truncate(pos_save);
+        merged.normals.truncate(nrm_save);
+        merged.indices.truncate(idx_save);
+        point_to_global.retain(|_, gid| (*gid as usize) < pos_save);
+        Ok(false)
+    };
+    if boundary.len() < 3 {
+        return decline(merged, point_to_global);
+    }
+
+    let projection_tol = radius.mul_add(1e-8, 1e-12);
+    let v_tol = (v_max - v_min) * 1e-6;
+    let mut seen = DetHashSet::default();
+    let mut ring = Vec::with_capacity(boundary.len());
+    let mut boundary_normals = Vec::with_capacity(boundary.len());
+    for gid in boundary {
+        if !seen.insert(gid) {
+            continue;
+        }
+        let point = merged.positions[gid as usize];
+        let Ok(projected) =
+            remus_math::nurbs::projection::project_point_to_surface(surface, point, projection_tol)
+        else {
+            return decline(merged, point_to_global);
+        };
+        if projected.distance > projection_tol || (projected.v - boundary_v).abs() > v_tol {
+            return decline(merged, point_to_global);
+        }
+        let angle = (std::f64::consts::TAU * (projected.u - u_min) / (u_max - u_min))
+            .rem_euclid(std::f64::consts::TAU);
+        ring.push((angle, gid));
+        let Ok(normal) = surface.normal(projected.u, projected.v) else {
+            return decline(merged, point_to_global);
+        };
+        boundary_normals.push((gid, normal));
+    }
+    if ring.len() < 3 {
+        return decline(merged, point_to_global);
+    }
+    ring.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    let max_gap = ring
+        .windows(2)
+        .map(|pair| pair[1].0 - pair[0].0)
+        .chain(std::iter::once(
+            ring[0].0 + std::f64::consts::TAU - ring[ring.len() - 1].0,
+        ))
+        .fold(0.0_f64, f64::max);
+    if max_gap > std::f64::consts::PI {
+        return decline(merged, point_to_global);
+    }
+
+    let n_v = segments_for_chord_deviation_a(
+        radius,
+        std::f64::consts::FRAC_PI_2,
+        deflection,
+        angular_tol,
+        true,
+    )
+    .max(1);
+    let n_u = ring.len().max(segments_for_chord_deviation_a(
+        radius,
+        std::f64::consts::TAU,
+        deflection,
+        angular_tol,
+        true,
+    ));
+    if validate_interior_grid_size(n_u, n_v).is_err() {
+        return decline(merged, point_to_global);
+    }
+    for (gid, normal) in boundary_normals {
+        merged.normals[gid as usize] = normal;
+    }
+
+    let emit = |merged: &mut TriangleMesh, a: u32, b: u32, c: u32| {
+        if a == b || b == c || a == c {
+            return;
+        }
+        let (pa, pb, pc) = (
+            merged.positions[a as usize],
+            merged.positions[b as usize],
+            merged.positions[c as usize],
+        );
+        let geometric = (pb - pa).cross(pc - pa);
+        if geometric.length() < 1e-20 {
+            return;
+        }
+        let outward =
+            merged.normals[a as usize] + merged.normals[b as usize] + merged.normals[c as usize];
+        let mut triangle = [a, b, c];
+        if geometric.dot(outward) < 0.0 {
+            triangle.swap(1, 2);
+        }
+        merged.indices.extend_from_slice(&triangle);
+    };
+
+    let mut previous = ring;
+    for iv in 1..n_v {
+        let t = iv as f64 / n_v as f64;
+        let v = boundary_v + (pole_v - boundary_v) * t;
+        let mut row = Vec::with_capacity(n_u);
+        for iu in 0..n_u {
+            let fraction = iu as f64 / n_u as f64;
+            let u = fraction.mul_add(u_max - u_min, u_min);
+            let point = surface.evaluate(u, v);
+            let normal = surface.normal(u, v)?;
+            let key = point_merge_key(point, MERGE_GRID);
+            let gid = *point_to_global.entry(key).or_insert_with(|| {
+                let index = merged.positions.len() as u32;
+                merged.positions.push(point);
+                merged.normals.push(normal);
+                index
+            });
+            row.push((std::f64::consts::TAU * fraction, gid));
+        }
+        stitch_rings(merged, &previous, &row, &emit);
+        previous = row;
+    }
+
+    let pole = surface.evaluate(u_min, pole_v);
+    let near_pole_v = boundary_v + (pole_v - boundary_v) * (1.0 - 1e-6);
+    let fallback_normal = (pole
+        - Point3::new(
+            previous
+                .iter()
+                .map(|entry| merged.positions[entry.1 as usize].x())
+                .sum::<f64>()
+                / previous.len() as f64,
+            previous
+                .iter()
+                .map(|entry| merged.positions[entry.1 as usize].y())
+                .sum::<f64>()
+                / previous.len() as f64,
+            previous
+                .iter()
+                .map(|entry| merged.positions[entry.1 as usize].z())
+                .sum::<f64>()
+                / previous.len() as f64,
+        ))
+    .normalize()
+    .unwrap_or(Vec3::new(0.0, 0.0, 1.0));
+    let pole_normal = surface
+        .normal(f64::midpoint(u_min, u_max), near_pole_v)
+        .unwrap_or(fallback_normal);
+    let pole_key = point_merge_key(pole, MERGE_GRID);
+    let pole_gid = *point_to_global.entry(pole_key).or_insert_with(|| {
+        let index = merged.positions.len() as u32;
+        merged.positions.push(pole);
+        merged.normals.push(pole_normal);
+        index
+    });
+    for index in 0..previous.len() {
+        emit(
+            merged,
+            previous[index].1,
+            previous[(index + 1) % previous.len()].1,
+            pole_gid,
+        );
+    }
+    Ok(merged.indices.len() > idx_save)
 }
 
 /// Tessellate a spherical face with no inner wires from shared boundary samples.
