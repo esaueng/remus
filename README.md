@@ -272,8 +272,8 @@ materials or scene graph. IGES is experimental, as described in
 [Known Limitations](#known-limitations).
 
 All Rust importer entry points apply production defaults through
-`ImportLimits`: 128 MiB encoded input, 256 MiB for the uncompressed 3MF model
-XML entry, and 2,000,000 format-specific model entities. Use each format's
+`ImportLimits`: 256 MiB encoded input, 256 MiB for the uncompressed 3MF model
+XML entry, and 3,000,000 format-specific model entities. Use each format's
 `*_with_limits` reader to choose stricter or application-specific budgets; the
 WASM importers accept optional `maxInputBytes` / `maxEntities` arguments for
 the same purpose. Limit violations return `IoError::LimitExceeded` before
