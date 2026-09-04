@@ -24,6 +24,15 @@ only with:
 Characterization-first: a slice that changes behavior lands its failing
 characterization or regression test before the implementation.
 
+The B6 analytic-primitive family is the current reference matrix: six
+primitive kinds × 1e-3/1/1e3 scale, with closed-form volume/bounds, exact
+topology and surface censuses, dual validation, oriented closed B-Rep,
+watertight/manifold mesh, independent mesh-volume integration, determinism,
+typed non-mutating refusal, and direct/batch WASM parity. Its deliberately
+ignored ellipsoid acceptance target demonstrates how a failed postcondition
+keeps a superficially valid constructor in a separate blocked cell instead of
+weakening the family claim.
+
 ## Reproduction bundles (Issue 2)
 
 A versioned format + runner containing: model input, operation sequence,

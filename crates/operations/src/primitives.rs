@@ -30,7 +30,7 @@ const MAX_MINKOWSKI_POINT_SUMS: usize = 1_000_000;
 ///
 /// # Errors
 ///
-/// Returns an error if any dimension is zero or negative.
+/// Returns an error if any dimension is non-finite, zero, or negative.
 pub fn make_box(
     topo: &mut Topology,
     dx: f64,
@@ -39,7 +39,13 @@ pub fn make_box(
 ) -> Result<SolidId, crate::OperationsError> {
     let tol = Tolerance::new();
 
-    if dx <= tol.linear || dy <= tol.linear || dz <= tol.linear {
+    if !dx.is_finite()
+        || !dy.is_finite()
+        || !dz.is_finite()
+        || dx <= tol.linear
+        || dy <= tol.linear
+        || dz <= tol.linear
+    {
         return Err(crate::OperationsError::InvalidInput {
             reason: format!("box dimensions must be positive, got ({dx}, {dy}, {dz})"),
         });
@@ -488,7 +494,8 @@ pub fn make_cone(
 ///
 /// # Errors
 ///
-/// Returns an error if `radius` is zero or negative, or `segments < 4`.
+/// Returns an error if `radius` is non-finite, zero, or negative, or
+/// `segments < 4`.
 #[allow(clippy::too_many_lines)]
 pub fn make_sphere(
     topo: &mut Topology,
@@ -497,7 +504,7 @@ pub fn make_sphere(
 ) -> Result<SolidId, crate::OperationsError> {
     let tol = Tolerance::new();
 
-    if radius <= tol.linear {
+    if !radius.is_finite() || radius <= tol.linear {
         return Err(crate::OperationsError::InvalidInput {
             reason: format!("sphere radius must be positive, got {radius}"),
         });
@@ -574,8 +581,9 @@ pub fn make_sphere(
 ///
 /// # Errors
 ///
-/// Returns an error if either radius is non-positive, or if the minor
-/// radius is greater than the major radius (self-intersecting torus).
+/// Returns an error if either radius is non-finite or non-positive, or if the
+/// minor radius is greater than or equal to the major radius
+/// (self-intersecting torus).
 pub fn make_torus(
     topo: &mut Topology,
     major_radius: f64,
@@ -584,12 +592,12 @@ pub fn make_torus(
 ) -> Result<SolidId, crate::OperationsError> {
     let tol = Tolerance::new();
 
-    if major_radius <= tol.linear {
+    if !major_radius.is_finite() || major_radius <= tol.linear {
         return Err(crate::OperationsError::InvalidInput {
             reason: format!("torus major radius must be positive, got {major_radius}"),
         });
     }
-    if minor_radius <= tol.linear {
+    if !minor_radius.is_finite() || minor_radius <= tol.linear {
         return Err(crate::OperationsError::InvalidInput {
             reason: format!("torus minor radius must be positive, got {minor_radius}"),
         });
