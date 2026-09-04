@@ -26,13 +26,14 @@ enum Primitive {
 }
 
 impl Primitive {
-    const QUALIFIED: [Self; 6] = [
+    const QUALIFIED: [Self; 7] = [
         Self::Box,
         Self::Cylinder,
         Self::PointedCone,
         Self::Frustum,
         Self::Sphere,
         Self::Torus,
+        Self::Ellipsoid,
     ];
 
     fn make_direct(
@@ -128,6 +129,13 @@ impl Primitive {
             _ => 2,
         }
     }
+
+    const fn volume_tolerance(self) -> f64 {
+        match self {
+            Self::Ellipsoid => 1e-3,
+            _ => 1e-9,
+        }
+    }
 }
 
 fn assert_relative(label: &str, actual: f64, expected: f64, limit: f64) {
@@ -156,36 +164,6 @@ fn signed_mesh_volume(mesh: &remus_operations::tessellate::TriangleMesh) -> f64 
 
 fn parse(response: &str) -> serde_json::Value {
     serde_json::from_str(response).expect("batch response must be valid JSON")
-}
-
-#[test]
-#[ignore = "B6 follow-up: transformed-sphere ellipsoids do not tessellate watertight"]
-fn ellipsoid_scale_and_mesh_postconditions_are_not_yet_qualified() {
-    for scale in SCALES {
-        let mut kernel = BrepKernel::new();
-        let handle = Primitive::Ellipsoid
-            .make_direct(&mut kernel, scale)
-            .unwrap();
-        let measured = kernel.volume(handle, 0.01 * scale).unwrap();
-        assert_relative(
-            &format!("ellipsoid at scale {scale}: direct volume"),
-            measured,
-            Primitive::Ellipsoid.expected_volume(scale),
-            1e-3,
-        );
-        let solid = kernel.resolve_solid(handle).unwrap();
-        let mesh =
-            tessellate_solid_with_tolerance(kernel.topo(), solid, 0.01 * scale, 0.1).unwrap();
-        let quality = welded_mesh_quality(&mesh);
-        assert!(quality.is_watertight(), "scale {scale}: {quality:?}");
-        assert_eq!(quality.euler_characteristic, 2, "scale {scale}");
-        assert_relative(
-            &format!("ellipsoid at scale {scale}: independent mesh volume"),
-            signed_mesh_volume(&mesh),
-            Primitive::Ellipsoid.expected_volume(scale),
-            0.02,
-        );
-    }
 }
 
 fn batch_program(case: Primitive, scale: f64) -> String {
@@ -220,7 +198,7 @@ fn primitive_matrix_has_direct_batch_parity_across_scales() {
                 &format!("{label}: direct volume"),
                 direct_volume,
                 expected_volume,
-                1e-9,
+                case.volume_tolerance(),
             );
             let direct_bounds = direct.bounding_box(handle).unwrap();
             for (axis, (&actual, expected)) in direct_bounds.iter().zip(expected_bounds).enumerate()
