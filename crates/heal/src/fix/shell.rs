@@ -185,10 +185,11 @@ fn fix_orientation(
         ctx.info(format!(
             "flipped {flipped_count} faces for orientation consistency"
         ));
-        Ok(FixResult {
-            status: Status::DONE1,
-            actions_taken: flipped_count,
-        })
+        Ok(FixResult::changed(
+            Status::DONE1,
+            super::RepairActionKind::ShellFaceOrientationFixed,
+            flipped_count,
+        ))
     } else {
         Ok(FixResult::ok())
     }

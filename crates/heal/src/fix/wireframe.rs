@@ -88,14 +88,19 @@ pub fn fix_wireframe(
         ));
     }
 
-    if sewn > 0 {
-        Ok(FixResult {
-            status: Status::DONE4,
-            actions_taken: sewn,
-        })
-    } else {
-        Ok(FixResult::ok())
+    let mut result = FixResult::changed(
+        Status::DONE4,
+        super::RepairActionKind::FreeEdgePairSewn,
+        sewn,
+    );
+    if remaining > 0 {
+        result.merge(&FixResult::refused(
+            Status::FAIL1,
+            super::RepairRefusalKind::FreeEdgesRemain,
+            remaining,
+        ));
     }
+    Ok(result)
 }
 
 /// Snapshot of a free edge's geometric data.
