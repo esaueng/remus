@@ -310,6 +310,12 @@ Executed in one campaign; per the maintenance rule, each item's outcome:
   wrappers. Direct edits remain the declared face-provenance gap; arc-joint
   and self-intersection-removal offsets need richer generated/replaced-face
   records before they can expose the same map.
+- **Bridge B6 analytic primitives — done 2026-09-03.** Box, cylinder,
+  pointed cone, frustum, sphere, and torus now carry the full generated
+  native/direct/batch matrix in `qualify_primitives.rs` and WASM
+  `qualify_primitives_tests.rs`; non-finite acceptance found by the matrix is
+  fixed. The WASM-only ellipsoid is split into its own blocked cell because
+  its transformed-sphere NURBS mesh fails the closed-solid postconditions.
 - **B2 Non-planar caps — workstreams 1 and 3 done, promoted** with declared
   bounds (Coons n-sided caps; partial-revolve polygonal caps). Workstream 2
   (holes) and 4 (miter) stay typed refusals.
