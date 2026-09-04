@@ -723,6 +723,7 @@ impl StepWriteContext {
                 }
             }
         }
+        faces.sort_unstable_by_key(|face| face.index());
 
         for &face_id in &faces {
             let face = topo.face(face_id).map_err(topo_err)?;
@@ -741,7 +742,11 @@ impl StepWriteContext {
                 });
             }
             let surface_id = self.surface_map[&(face_id.index() as u64)];
-            for &loop_id in face.boundary_loops() {
+            let mut loop_ids = face.boundary_loops().to_vec();
+            if let Some(inner) = loop_ids.get_mut(1..) {
+                inner.sort_unstable_by_key(|loop_id| loop_id.index());
+            }
+            for loop_id in loop_ids {
                 for &coedge_id in topo.face_loop(loop_id).map_err(topo_err)?.coedges() {
                     if !seen_coedges.insert(coedge_id) {
                         continue;
@@ -1346,7 +1351,9 @@ impl StepWriteContext {
         );
         bound_ids.push(outer_bound);
 
-        for &inner_loop_id in face.inner_loops() {
+        let mut inner_loop_ids = face.inner_loops().to_vec();
+        inner_loop_ids.sort_unstable_by_key(|loop_id| loop_id.index());
+        for inner_loop_id in inner_loop_ids {
             let inner_loop = self.write_edge_loop(topo, inner_loop_id, reverse_bounds)?;
             let inner_bound = self.next_id();
             self.write_entity(
@@ -1463,7 +1470,8 @@ impl StepWriteContext {
     fn write_solid(&mut self, topo: &Topology, solid_id: SolidId) -> Result<u64, IoError> {
         let solid = topo.solid(solid_id).map_err(topo_err)?;
         let outer_shell_id = solid.outer_shell();
-        let inner_shell_ids = solid.inner_shells().to_vec();
+        let mut inner_shell_ids = solid.inner_shells().to_vec();
+        inner_shell_ids.sort_unstable_by_key(|shell_id| shell_id.index());
         let shell = self.write_shell(topo, outer_shell_id, false)?;
 
         let solid_name = topo
@@ -1556,9 +1564,11 @@ impl StepWriteContext {
         shell_type: &'static str,
     ) -> Result<u64, IoError> {
         let shell = topo.shell(shell_id).map_err(topo_err)?;
-        let mut face_step_ids = Vec::new();
+        let mut face_ids = shell.faces().to_vec();
+        face_ids.sort_unstable_by_key(|face_id| face_id.index());
+        let mut face_step_ids = Vec::with_capacity(face_ids.len());
 
-        for &face_id in shell.faces() {
+        for face_id in face_ids {
             let step_face = self.write_face(topo, face_id, flip)?;
             face_step_ids.push(step_face);
         }
@@ -2085,6 +2095,41 @@ mod tests {
         assert!(step_str.contains("HEADER;"));
         assert!(step_str.contains("DATA;"));
         assert!(step_str.contains("END-ISO-10303-21;"));
+    }
+
+    #[test]
+    fn shell_face_storage_order_does_not_change_step_output() {
+        let mut topo = Topology::new();
+        let solid = make_unit_cube_non_manifold(&mut topo);
+        let shell = topo.solid(solid).unwrap().outer_shell();
+
+        let canonical = write_step(&topo, &[solid]).unwrap();
+        topo.shell_mut(shell).unwrap().faces_mut().reverse();
+        let reordered = write_step(&topo, &[solid]).unwrap();
+
+        assert_eq!(
+            reordered, canonical,
+            "shell faces form an unordered aggregate; storage order must not renumber STEP entities"
+        );
+    }
+
+    #[test]
+    fn inner_shell_storage_order_does_not_change_step_output() {
+        let mut topo = Topology::new();
+        let outer = remus_operations::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+        let first_void = remus_operations::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+        let second_void = remus_operations::primitives::make_box(&mut topo, 2.0, 2.0, 2.0).unwrap();
+        let outer_shell = topo.solid(outer).unwrap().outer_shell();
+        let first_shell = topo.solid(first_void).unwrap().outer_shell();
+        let second_shell = topo.solid(second_void).unwrap().outer_shell();
+        let forward = topo.add_solid(Solid::new(outer_shell, vec![first_shell, second_shell]));
+        let reversed = topo.add_solid(Solid::new(outer_shell, vec![second_shell, first_shell]));
+
+        assert_eq!(
+            write_step(&topo, &[forward]).unwrap(),
+            write_step(&topo, &[reversed]).unwrap(),
+            "void shells form an unordered aggregate; storage order must not renumber STEP entities"
+        );
     }
 
     #[test]
