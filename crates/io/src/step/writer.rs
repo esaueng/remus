@@ -150,6 +150,9 @@ pub fn write_step_bodies_with_options(
 
     let mut uncertainty = 1e-7_f64;
     for &solid_id in solids {
+        for face_id in remus_topology::explorer::solid_faces(topo, solid_id)? {
+            uncertainty = uncertainty.max(planar_face_vertex_residual(topo, face_id)?);
+        }
         for vertex_id in solid_vertices(topo, solid_id)? {
             let vertex_tolerance = topo.vertex(vertex_id)?.tolerance();
             if !vertex_tolerance.is_finite() || vertex_tolerance < 0.0 {
@@ -185,6 +188,7 @@ pub fn write_step_bodies_with_options(
             .into());
         }
         for &face_id in topo.shell(sheet_id)?.faces() {
+            uncertainty = uncertainty.max(planar_face_vertex_residual(topo, face_id)?);
             for vertex_id in face_vertices(topo, face_id)? {
                 let vertex_tolerance = topo.vertex(vertex_id)?.tolerance();
                 if !vertex_tolerance.is_finite() || vertex_tolerance < 0.0 {
@@ -303,6 +307,39 @@ pub fn write_step_bodies_with_options(
     }
 
     Ok(ctx.finish())
+}
+
+/// Maximum distance of a planar face's boundary vertices from its carrier.
+///
+/// Same-domain healing can merge a chain of nearly coplanar mesh facets. The
+/// representative plane then carries a larger accumulated residual than any
+/// individual source vertex tolerance, which STEP must disclose as model
+/// uncertainty for its own reader to interpret the approximation honestly.
+fn planar_face_vertex_residual(topo: &Topology, face_id: FaceId) -> Result<f64, IoError> {
+    let face = topo.face(face_id).map_err(topo_err)?;
+    let FaceSurface::Plane { normal, d } = face.surface() else {
+        return Ok(0.0);
+    };
+    let normal_length = normal.length();
+    if !normal_length.is_finite() || normal_length <= f64::EPSILON {
+        return Err(IoError::InvalidTopology {
+            reason: format!("planar face {face_id:?} has an invalid normal"),
+        });
+    }
+    face_vertices(topo, face_id)?
+        .into_iter()
+        .try_fold(0.0_f64, |maximum, vertex_id| {
+            let point = topo.vertex(vertex_id).map_err(topo_err)?.point();
+            let residual =
+                (normal.dot(Vec3::new(point.x(), point.y(), point.z())) - *d).abs() / normal_length;
+            if residual.is_finite() {
+                Ok(maximum.max(residual))
+            } else {
+                Err(IoError::InvalidTopology {
+                    reason: format!("planar face {face_id:?} has a non-finite boundary residual"),
+                })
+            }
+        })
 }
 
 /// Incremental STEP entity ID counter and output buffer.
@@ -2095,6 +2132,31 @@ mod tests {
         assert!(step_str.contains("HEADER;"));
         assert!(step_str.contains("DATA;"));
         assert!(step_str.contains("END-ISO-10303-21;"));
+    }
+
+    #[test]
+    fn planar_boundary_residual_is_declared_and_round_trips() {
+        let mut topo = Topology::new();
+        let solid = remus_operations::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+        let face_id = solid_faces(&topo, solid).unwrap()[0];
+        let plane = match topo.face(face_id).unwrap().surface() {
+            FaceSurface::Plane { normal, d } => Some((*normal, *d)),
+            _ => None,
+        };
+        let (normal, d) = plane.expect("box face should be planar");
+        topo.face_mut(face_id)
+            .unwrap()
+            .set_surface(FaceSurface::Plane {
+                normal,
+                d: d + 0.05,
+            });
+
+        let step = write_step(&topo, &[solid]).unwrap();
+        let mut imported = Topology::new();
+        let round_tripped = crate::step::reader::read_step(&step, &mut imported).unwrap();
+
+        assert_eq!(round_tripped.len(), 1);
+        assert_eq!(solid_faces(&imported, round_tripped[0]).unwrap().len(), 6);
     }
 
     #[test]
