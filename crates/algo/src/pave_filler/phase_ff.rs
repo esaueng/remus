@@ -29,6 +29,27 @@ const NURBS_SAMPLES: usize = 32;
 /// Default march step for NURBS-NURBS intersection.
 const NURBS_MARCH_STEP: f64 = 0.01;
 
+/// Refinement is bounded for predictable FF cost. The budget covers the known
+/// 1,173 mm / sub-millimetre hazard (11,730 required samples), which the former
+/// 1,024 clamp under-sampled. If this larger density still cannot be honoured,
+/// callers keep the candidate instead of treating a clamped miss as geometric
+/// proof that the curve is outside.
+const MAX_FINE_SAMPLES: usize = 16_384;
+
+fn fine_sample_count(approx_len: f64, min_dim: f64, coarse: usize) -> Option<usize> {
+    if !approx_len.is_finite() || !min_dim.is_finite() || approx_len < 0.0 || min_dim <= 0.0 {
+        return None;
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let requested = (8.0 * approx_len / min_dim).ceil().max(coarse as f64);
+    #[allow(clippy::cast_precision_loss)]
+    if requested > MAX_FINE_SAMPLES as f64 {
+        return None;
+    }
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    Some(requested as usize)
+}
+
 /// `BK_FF_TRACE=<x>`: report every face pair whose AABBs straddle that x, and
 /// whether the pair was AABB-rejected. Diagnostic only, and resolved ONCE per
 /// process — the pair loop runs hundreds of times per boolean and must not pay
@@ -710,27 +731,19 @@ pub fn perform_with_context(
                     if (0..=N).map(|i| sample(i, N)).any(in_both) {
                         return true;
                     }
-                    // Plane×plane lines that the sampled test missed get the
-                    // exact answer against the faces' TRUE OUTLINES (the fix
-                    // the AABB slab-clip could not safely provide here: an
-                    // inflated AABB grossly over-approximates a planar face
-                    // and admitted spurious lines into the A1-corner nub
-                    // fuse). The in-both window of a lattice facet can be far
-                    // under the sample pitch — a mitsukude band's 0.05 mm
-                    // side facets lost 80+ real sections to this aliasing and
-                    // sent every wall-pattern fuse to the mesh fallback.
-                    // Polygon clips are hull ranges on non-convex outlines,
-                    // so this can only over-admit (downstream trims);
-                    // indeterminate polygons keep the historical drop.
-                    if matches!(raw.curve, EdgeCurve::Line) {
-                        let ca = clip_line_to_face(topo, fa, raw);
-                        let cb = clip_line_to_face(topo, fb, raw);
-                        return match (ca, cb) {
-                            (FaceClip::Range(a), FaceClip::Range(b)) => {
-                                a.0.max(b.0) < a.1.min(b.1) - 1e-9
-                            }
-                            _ => false,
-                        };
+                    // If the AABB samples miss a plane×plane line, upgrade the
+                    // decision to exact convex face outlines. This stays after
+                    // the sampled keep: junction-snapped boundary sections rely
+                    // on the inflated-AABB tolerance band and must not be
+                    // rejected by a second exact clip. Holes, curved borders,
+                    // and non-convex outlines fall through to refined sampling.
+                    let both_planes = matches!(surf_a, FaceSurface::Plane { .. })
+                        && matches!(surf_b, FaceSurface::Plane { .. });
+                    if both_planes
+                        && matches!(raw.curve, EdgeCurve::Line)
+                        && let Some(intersects) = exact_plane_line_in_both(topo, fa, fb, raw)
+                    {
+                        return intersects;
                     }
                     if traced && std::env::var("BK_F2_TRACE").is_ok() {
                         let dist = |bb: &Aabb3, p: Point3| -> f64 {
@@ -769,8 +782,9 @@ pub fn perform_with_context(
                         if d.is_finite() { d } else { tol.linear * 1e2 }
                     };
                     let dim = dim_of(&bb_a, &bb_b);
-                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                    let n_fine = ((8.0 * approx_len / dim).ceil() as usize).clamp(N, 1024);
+                    let Some(n_fine) = fine_sample_count(approx_len, dim, N) else {
+                        return true;
+                    };
                     n_fine > N && (0..=n_fine).map(|i| sample(i, n_fine)).any(in_both)
                 })
                 .collect();
@@ -1657,8 +1671,10 @@ fn restrict_curves_to_faces(
                 .min_dimension()
                 .min(ext_b.min_dimension())
                 .max(tol.linear * 1e3);
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            let n_fine = ((8.0 * approx_len / min_dim).ceil() as usize).clamp(N, 1024);
+            let Some(n_fine) = fine_sample_count(approx_len, min_dim, N) else {
+                out.push(raw);
+                continue;
+            };
             if n_fine <= N {
                 out.extend(rescue_corner_crossing(
                     topo, fa, fb, &raw, &ext_a, &ext_b, &inb, tol, junctions,
@@ -5706,6 +5722,88 @@ enum FaceClip {
     Indeterminate,
 }
 
+/// Decide plane×plane Line membership exactly when both trimmed faces have a
+/// single convex polygonal boundary. Holes and non-convex outlines can contain
+/// disjoint material windows, which [`FaceClip::Range`] intentionally reduces
+/// to a hull range; those cases must keep the conservative sampled fallback.
+fn exact_plane_line_in_both(
+    topo: &Topology,
+    fa: FaceId,
+    fb: FaceId,
+    raw: &RawCurve,
+) -> Option<bool> {
+    if !plane_face_has_exact_line_clip(topo, fa) || !plane_face_has_exact_line_clip(topo, fb) {
+        return None;
+    }
+    match (
+        clip_line_to_face(topo, fa, raw),
+        clip_line_to_face(topo, fb, raw),
+    ) {
+        (FaceClip::Empty, _) | (_, FaceClip::Empty) => Some(false),
+        (FaceClip::Range(a), FaceClip::Range(b)) =>
+        // Fractional epsilon matches the established plane clip contract and
+        // rejects point contact while retaining a genuine short interval.
+        {
+            Some(a.0.max(b.0) < a.1.min(b.1) - 1e-9)
+        }
+        (FaceClip::Range(_) | FaceClip::Indeterminate, FaceClip::Indeterminate)
+        | (FaceClip::Indeterminate, FaceClip::Range(_)) => None,
+    }
+}
+
+fn plane_face_has_exact_line_clip(topo: &Topology, face_id: FaceId) -> bool {
+    let Ok(face) = topo.face(face_id) else {
+        return false;
+    };
+    if !matches!(face.surface(), FaceSurface::Plane { .. }) || !face.inner_wires().is_empty() {
+        return false;
+    }
+    let Ok(wire) = topo.wire(face.outer_wire()) else {
+        return false;
+    };
+    let edges: Vec<_> = wire
+        .edges()
+        .iter()
+        .filter_map(|oe| {
+            let edge = topo.edge(oe.edge()).ok()?;
+            matches!(edge.curve(), EdgeCurve::Line).then_some((edge.start(), edge.end()))
+        })
+        .collect();
+    if edges.len() != wire.edges().len() || edges.len() < 3 {
+        return false;
+    }
+    let Some(mut vertices) = chain_edge_vertices(&edges) else {
+        return false;
+    };
+    if vertices.first() == vertices.last() {
+        vertices.pop();
+    }
+    let points: Option<Vec<_>> = vertices
+        .into_iter()
+        .map(|vertex| {
+            topo.vertex(vertex)
+                .ok()
+                .map(remus_topology::vertex::Vertex::point)
+        })
+        .collect();
+    let Some(points) = points else {
+        return false;
+    };
+    let FaceSurface::Plane { normal, .. } = face.surface() else {
+        return false;
+    };
+    let frame =
+        super::super::builder::plane_frame::PlaneFrame::from_normal_and_point(*normal, points[0]);
+    let polygon: Vec<_> = points
+        .into_iter()
+        .map(|point| {
+            let uv = frame.project(point);
+            (uv.x(), uv.y())
+        })
+        .collect();
+    polygon_is_convex(&polygon)
+}
+
 /// Orders connected edges without repeatedly scanning all unconsumed edges.
 fn chain_edge_vertices<T>(edges: &[(T, T)]) -> Option<Vec<T>>
 where
@@ -6078,6 +6176,121 @@ mod tests {
                 d: 0.0,
             },
         ))
+    }
+
+    fn polygon_plane_face(topo: &mut Topology, points: &[Point3]) -> FaceId {
+        use remus_topology::face::Face;
+        use remus_topology::wire::{OrientedEdge, Wire};
+
+        let vertices: Vec<_> = points
+            .iter()
+            .copied()
+            .map(|point| topo.add_vertex(Vertex::new(point, 1e-7)))
+            .collect();
+        let edges: Vec<_> = (0..vertices.len())
+            .map(|i| {
+                topo.add_edge(Edge::new(
+                    vertices[i],
+                    vertices[(i + 1) % vertices.len()],
+                    EdgeCurve::Line,
+                ))
+            })
+            .collect();
+        let wire = topo.add_wire(
+            Wire::new(
+                edges
+                    .into_iter()
+                    .map(|edge| OrientedEdge::new(edge, true))
+                    .collect(),
+                true,
+            )
+            .unwrap(),
+        );
+        topo.add_face(Face::new(
+            wire,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ))
+    }
+
+    fn raw_line(start: Point3, end: Point3) -> RawCurve {
+        RawCurve {
+            curve: EdgeCurve::Line,
+            bbox: Aabb3::from_points([start, end]),
+            t_range: (0.0, (end - start).length()),
+            p_start: start,
+            p_end: end,
+        }
+    }
+
+    #[test]
+    fn fine_sample_count_refuses_an_aliasing_clamp() {
+        assert_eq!(fine_sample_count(1173.0, 0.8, 24), Some(11_730));
+        assert_eq!(fine_sample_count(22.261, 0.44, 24), Some(405));
+        assert_eq!(fine_sample_count(2000.0, 0.8, 24), None);
+    }
+
+    #[test]
+    fn exact_plane_line_clip_finds_sub_sample_overlap() {
+        let mut topo = Topology::new();
+        let a = square_plane_face(&mut topo, 0.01);
+        let b = square_plane_face(&mut topo, 0.01);
+        // With 16 uniform samples this asymmetric 201 mm segment never probes
+        // the 0.02 mm mutual window around x=0.
+        let raw = raw_line(Point3::new(-100.0, 0.0, 0.0), Point3::new(101.0, 0.0, 0.0));
+
+        assert_eq!(exact_plane_line_in_both(&topo, a, b, &raw), Some(true));
+    }
+
+    #[test]
+    fn exact_plane_line_clip_rejects_overlapping_aabbs_without_face_overlap() {
+        let mut topo = Topology::new();
+        let lower_left = polygon_plane_face(
+            &mut topo,
+            &[
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(1.0, 0.0, 0.0),
+                Point3::new(0.0, 1.0, 0.0),
+            ],
+        );
+        let upper_right = polygon_plane_face(
+            &mut topo,
+            &[
+                Point3::new(1.0, 1.0, 0.0),
+                Point3::new(0.0, 1.0, 0.0),
+                Point3::new(1.0, 0.0, 0.0),
+            ],
+        );
+        // Both face AABBs contain x=0, y=0.9, but the two triangular material
+        // intervals only touch at x=0.1 and have no linear overlap.
+        let raw = raw_line(Point3::new(-10.0, 0.9, 0.0), Point3::new(10.0, 0.9, 0.0));
+
+        assert_eq!(
+            exact_plane_line_in_both(&topo, lower_left, upper_right, &raw),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn exact_plane_line_clip_defers_nonconvex_outlines() {
+        let mut topo = Topology::new();
+        let concave = polygon_plane_face(
+            &mut topo,
+            &[
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(2.0, 0.0, 0.0),
+                Point3::new(1.0, 1.0, 0.0),
+                Point3::new(2.0, 2.0, 0.0),
+                Point3::new(0.0, 2.0, 0.0),
+            ],
+        );
+        let convex = square_plane_face(&mut topo, 2.0);
+        let raw = raw_line(Point3::new(-3.0, 1.0, 0.0), Point3::new(3.0, 1.0, 0.0));
+
+        assert_eq!(exact_plane_line_in_both(&topo, concave, convex, &raw), None);
     }
 
     fn writer_state(
