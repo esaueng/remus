@@ -12,6 +12,11 @@ and durable as an open-source project.
   P-Class scope, ordering, or gates. Every pillar below is scheduled around
   P-Class's file footprint so parallel sessions don't collide (see §8).
 - **Promotion authority** remains [capability-matrix.md](capability-matrix.md).
+- **Competitive overlay:** [industrial-parity.md](industrial-parity.md)
+  scores every capability against the reference kernel on two axes,
+  defines the H5–H7 horizons and the leadership-claim discipline, and
+  extends O1.2 into the full scorecard (O1.2d–f). It adds no scoreboard
+  claim of its own; S1–S7 remain this program's public claims.
 
 ## §1 The competitive thesis
 
@@ -394,6 +399,10 @@ The program's definition of done — public numbers, each with its harness:
 | S5 | Interchange trust | CAx-IF round-trip with validation properties; AP242 assemblies + attributes |
 | S6 | Someone else ships on it | ≥1 external consumer in production with their corpus in Remus CI |
 | S7 | The naming demo | Direct-edit + persistent-ref survival, in the browser — the capability no other open kernel can show |
+
+The overlay's leadership claims LC1–LC13 are the measured form of S1–S7:
+each names its scorecard column, its regression gate, and requires
+published losses beside wins before it may be stated publicly.
 
 ## §8 Sequencing against P-Class
 
