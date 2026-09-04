@@ -12,6 +12,16 @@
 
 use crate::kernel::BrepKernel;
 
+use remus_math::mat::Mat4;
+use remus_math::tolerance::Tolerance;
+use remus_math::vec::Vec3;
+use remus_operations::blend_ops::fillet_v2;
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::primitives::{make_box, make_cylinder};
+use remus_operations::transform::transform_solid;
+use remus_topology::edge::EdgeCurve;
+use remus_topology::explorer::{face_vertices, solid_edges, solid_faces};
+
 fn run(k: &mut BrepKernel, ops: &[serde_json::Value]) -> Vec<serde_json::Value> {
     let json = serde_json::Value::Array(ops.to_vec()).to_string();
     serde_json::from_str(&k.execute_batch(&json)).unwrap()
@@ -38,6 +48,64 @@ fn op(name: &str, args: serde_json::Value) -> serde_json::Value {
 
 fn as_u32(v: &serde_json::Value) -> u32 {
     u32::try_from(v.as_u64().unwrap()).unwrap()
+}
+
+fn generalized_move_fixture(kernel: &mut BrepKernel) -> (u32, u32) {
+    let topo = kernel.topo_mut();
+    let plate = make_box(topo, 40.0, 40.0, 5.0).expect("plate");
+    let boss = make_box(topo, 16.0, 16.0, 10.0).expect("boss");
+    transform_solid(topo, boss, &Mat4::translation(12.0, 12.0, 5.0)).expect("place boss");
+    let sharp = boolean(topo, BooleanOp::Fuse, plate, boss).expect("fuse boss");
+    let drill = make_cylinder(topo, 3.0, 17.0).expect("drill");
+    transform_solid(topo, drill, &Mat4::translation(20.0, 20.0, -1.0)).expect("place drill");
+    let bored = boolean(topo, BooleanOp::Cut, sharp, drill).expect("drill boss");
+    let edge = solid_edges(topo, bored)
+        .expect("edges")
+        .into_iter()
+        .find(|edge| {
+            let edge = topo.edge(*edge).expect("edge");
+            let start = topo.vertex(edge.start()).expect("start").point();
+            let end = topo.vertex(edge.end()).expect("end").point();
+            matches!(edge.curve(), EdgeCurve::Line)
+                && Tolerance::new().approx_eq(start.y(), 12.0)
+                && Tolerance::new().approx_eq(end.y(), 12.0)
+                && Tolerance::new().approx_eq(start.z(), 15.0)
+                && Tolerance::new().approx_eq(end.z(), 15.0)
+        })
+        .expect("boss top edge");
+    let filleted = fillet_v2(topo, bored, &[edge], 1.0)
+        .expect("fillet boss")
+        .solid;
+    let cap = solid_faces(topo, filleted)
+        .expect("faces")
+        .into_iter()
+        .filter(|face| {
+            let face = topo.face(*face).expect("face");
+            face.inner_wires().len() == 1
+                && face.effective_plane_normal().is_some_and(|normal| {
+                    normal.dot(Vec3::new(0.0, 0.0, 1.0)) > 1.0 - Tolerance::new().angular
+                })
+        })
+        .max_by(|first, second| {
+            let max_z = |face| {
+                face_vertices(topo, face)
+                    .expect("face vertices")
+                    .into_iter()
+                    .map(|vertex| topo.vertex(vertex).expect("vertex").point().z())
+                    .fold(f64::NEG_INFINITY, f64::max)
+            };
+            max_z(*first).total_cmp(&max_z(*second))
+        })
+        .expect("holed boss cap");
+    (
+        crate::handles::solid_id_to_u32(filleted),
+        crate::handles::face_id_to_u32(cap),
+    )
+}
+
+fn kernel_volume(kernel: &BrepKernel, solid: u32) -> f64 {
+    let solid = kernel.resolve_solid(solid).expect("solid handle");
+    remus_operations::measure::solid_volume(kernel.topo(), solid, 0.001).expect("volume")
 }
 
 /// The wall of `solid` whose stored plane normal is closest to `target`.
@@ -232,4 +300,30 @@ fn batch_draft_is_deterministic() {
         out[0].as_f64().unwrap().to_bits()
     };
     assert_eq!(run_once(), run_once());
+}
+
+/// The shipped direct and batch entry points run the same exact
+/// boss/plate/fillet/hole re-limitation cell.
+#[test]
+fn direct_and_batch_move_faces_match_generalized_witness() {
+    let mut direct = BrepKernel::new();
+    let (solid, cap) = generalized_move_fixture(&mut direct);
+    let direct_result = direct
+        .move_faces_binding(solid, vec![cap], 2.0)
+        .expect("direct moveFaces");
+    let direct_volume = kernel_volume(&direct, direct_result);
+
+    let mut batch = BrepKernel::new();
+    let (solid, cap) = generalized_move_fixture(&mut batch);
+    let output = run_all_ok(
+        &mut batch,
+        &[op(
+            "moveFaces",
+            serde_json::json!({"solid": solid, "faces": [cap], "distance": 2.0}),
+        )],
+    );
+    let batch_result = as_u32(&output[0]);
+    let batch_volume = kernel_volume(&batch, batch_result);
+
+    assert_eq!(direct_volume.to_bits(), batch_volume.to_bits());
 }

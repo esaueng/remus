@@ -164,6 +164,15 @@ pub(crate) fn copy_solid_between(
     destination: &mut Topology,
     solid_id: SolidId,
 ) -> Result<SolidId, crate::OperationsError> {
+    copy_solid_between_with_face_map(source, destination, solid_id).map(|(solid, _)| solid)
+}
+
+/// [`copy_solid_between`], with the exact source-index to copied-face map.
+pub(crate) fn copy_solid_between_with_face_map(
+    source: &Topology,
+    destination: &mut Topology,
+    solid_id: SolidId,
+) -> Result<(SolidId, HashMap<usize, FaceId>), crate::OperationsError> {
     let solid = source.solid(solid_id)?;
     let solid_attributes = source.attributes().solid(solid_id).cloned();
     let shell_ids: Vec<_> = std::iter::once(solid.outer_shell())
@@ -319,7 +328,7 @@ pub(crate) fn copy_solid_between(
     if let Some(attributes) = solid_attributes {
         destination.set_solid_attributes(copied, attributes)?;
     }
-    Ok(copied)
+    Ok((copied, face_map))
 }
 
 /// Create a deep copy of a solid and all its topology.
