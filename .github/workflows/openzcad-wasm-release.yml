@@ -23,29 +23,31 @@ jobs:
         with:
           tool: wasm-pack
 
-      - name: Build and validate WASM package
+      - name: Build and validate WASM packages
         run: cargo xtask wasm-build
 
       - name: Stamp fork provenance
-        working-directory: crates/wasm/pkg
         run: |
-          npm pkg set \
-            repository.type=git \
-            repository.url=git+https://github.com/esaueng/remus.git \
-            homepage=https://github.com/esaueng/remus \
-            remusSourceCommit="$GITHUB_SHA"
+          for pkg in crates/wasm/pkg crates/wasm-io/pkg; do
+            npm --prefix "$pkg" pkg set \
+              repository.type=git \
+              repository.url=git+https://github.com/esaueng/remus.git \
+              homepage=https://github.com/esaueng/remus \
+              remusSourceCommit="$GITHUB_SHA"
+          done
 
-      - name: Pack npm-compatible artifact
+      - name: Pack npm-compatible artifacts
         id: pack
-        working-directory: crates/wasm/pkg
         run: |
-          package_name=$(npm pack --pack-destination "$RUNNER_TEMP")
-          echo "path=$RUNNER_TEMP/$package_name" >> "$GITHUB_OUTPUT"
-          echo "name=$package_name" >> "$GITHUB_OUTPUT"
+          mkdir -p "$RUNNER_TEMP/packed"
+          for pkg in crates/wasm/pkg crates/wasm-io/pkg; do
+            (cd "$pkg" && npm pack --pack-destination "$RUNNER_TEMP/packed")
+          done
+          echo "path=$RUNNER_TEMP/packed" >> "$GITHUB_OUTPUT"
 
-      - name: Upload validation artifact
+      - name: Upload validation artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ${{ steps.pack.outputs.name }}
-          path: ${{ steps.pack.outputs.path }}
+          name: remus-wasm-candidate-${{ github.sha }}
+          path: ${{ steps.pack.outputs.path }}/*.tgz
           if-no-files-found: error

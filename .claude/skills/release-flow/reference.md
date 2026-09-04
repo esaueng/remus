@@ -27,11 +27,13 @@ assume from the repository's shape:
   pre-fork line. It is not a published version.
 - Anything on npm under a Remus-like name came from somewhere else.
 
-## The committed package
+## The committed packages
 
-`crates/wasm/pkg` is a real distribution channel, not a build leftover: a
-consumer installs it by git path, so whatever is committed there is what they
-get. Contents:
+`crates/wasm/pkg` (kernel, `remus-wasm`) and `crates/wasm-io/pkg` (file-format
+translators, `remus-wasm-io`) are a real distribution channel, not a build
+leftover: a consumer installs them by git path, so whatever is committed there
+is what they get. Each holds the same layout (`<crate>` is `remus_wasm` or
+`remus_wasm_io`):
 
 ```
 package.json          # name, exports, files list, provenance stamp
@@ -64,24 +66,29 @@ longer exempts this directory, so a stale name here fails the naming job.
 
 ## Build anatomy
 
-`cargo xtask wasm-build` (see `xtask/src/wasm.rs`):
+`cargo xtask wasm-build` (see `xtask/src/wasm.rs`), for each of the two
+packages (`crates/wasm` built with `--no-default-features`, then
+`crates/wasm-io`):
 
-1. `wasm-pack build crates/wasm --target bundler --out-dir pkg`
-2. `wasm-pack build crates/wasm --target nodejs --out-dir pkg-node`
+1. `wasm-pack build <crate> --target bundler --out-dir pkg` (runs `wasm-opt
+   -Oz --enable-simd` from the crate's `Cargo.toml`)
+2. `wasm-pack build <crate> --target nodejs --out-dir pkg-node --no-opt`
 3. Merges: copies the node entry in as `*_node.cjs`, rewrites `package.json`
    (`main`, `module`, `exports`, `files`).
 4. Copies `LICENSE-APACHE` in, removes a stale `LICENSE-MIT` if present.
-5. Runs `wasm-opt` unless `--skip-opt`.
+5. Validates files, size window, `.d.ts` class and method count.
 
-Flags: `--no-simd` disables the SIMD build; `--skip-opt` skips `wasm-opt`
-(what CI uses, for speed). `cargo xtask wasm-publish` exists and takes
-`--dry-run`; **do not run it without the dry-run flag** — see the publishing
-gate above.
+Then the smoke and tarball harnesses run against the pair. Before any build
+it checks that both crates declare the same version. Flags: `--no-simd`
+disables the SIMD build; `--kernel-io` bundles the translators into the
+kernel module as well (the pre-split single-module layout; not what CI
+ships). `cargo xtask wasm-publish` exists and takes `--dry-run`; **do not run
+it without the dry-run flag** — see the publishing gate above.
 
 Note that wasm-pack wipes its `--out-dir`. A local `cargo xtask wasm-build`
-therefore destroys the committed snapshot in your working tree. That is
-recoverable (`git checkout -- crates/wasm/pkg`) but easy to commit by accident;
-check `git status` before staging.
+therefore destroys the committed snapshots in your working tree. That is
+recoverable (`git checkout -- crates/wasm/pkg crates/wasm-io/pkg`) but easy
+to commit by accident; check `git status` before staging.
 
 ## Provenance stamp
 
@@ -127,8 +134,9 @@ dispatch from another ref no-ops. Push runs skip a `[skip ci]` message, which is
 what stops the bot's own refresh commit from triggering another refresh.
 
 - `install-wasm-package-archive.py` is a deliberate airlock: it accepts only
-  regular files and directories beneath `crates/wasm/pkg`, so a build-produced
-  archive can never write elsewhere in the checkout.
+  regular files and directories beneath the package roots it is given
+  (`crates/wasm/pkg` and `crates/wasm-io/pkg`), so a build-produced archive
+  can never write elsewhere in the checkout.
 - The commit job disables git hooks (`core.hooksPath=/dev/null`) while a write
   token is present, and the build job never sees that token.
 - `HAS_APP_CREDENTIALS` is computed from `REMUS_BOT_APP_ID` and

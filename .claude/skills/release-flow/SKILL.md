@@ -9,8 +9,9 @@ description: Getting a merged Remus change into the hands of a consumer. Use whe
 
 A Remus change is not in a consumer's hands when its PR merges. This repository
 **publishes nothing** — no crates.io, no npm, no GitHub releases — so the only
-channel that reaches a consumer is the WASM package committed at
-`crates/wasm/pkg`, installed by git path. This skill covers that channel: how
+channel that reaches a consumer is the pair of WASM packages committed at
+`crates/wasm/pkg` (kernel) and `crates/wasm-io/pkg` (file-format translators),
+installed by git path. This skill covers that channel: how
 it is refreshed, how to validate a build, and what publishing is still gated
 on.
 
@@ -40,8 +41,8 @@ from their presence; verify with
 | Hop | Action | Gate before next hop |
 |-----|--------|---------------------|
 | 1 | Feature PR squash-merges to `main` | `CI Pass` green on the merge |
-| 2 | Build and validate the package locally | `cargo xtask wasm-build` succeeds; both consumer harnesses pass |
-| 3 | The refresh workflow rebuilds and commits the snapshot | New `chore(wasm): refresh committed package` commit on `main` |
+| 2 | Build and validate both packages locally | `cargo xtask wasm-build` succeeds; both consumer harnesses pass |
+| 3 | The refresh workflow rebuilds and commits both snapshots | New `chore(wasm): refresh committed package` commit on `main` |
 | 4 | Consumer reinstalls from the git path | Consumer's own tests pass against the new snapshot |
 
 Hop 3 runs automatically on every push to `main`; hop 4 is the consumer's move,
@@ -50,14 +51,17 @@ whenever one exists.
 ## Hop 2: build and validate
 
 ```bash
-cargo xtask wasm-build              # dual-target build, merge, validate
-node scripts/test-wasm-smoke.mjs    # loads the package, runs consumer regressions
-node scripts/test-wasm-tarball-consumer.mjs   # npm pack into a disposable consumer
+cargo xtask wasm-build              # both packages: dual-target build, merge, validate
+node scripts/test-wasm-smoke.mjs    # loads both packages, runs consumer regressions
+node scripts/test-wasm-tarball-consumer.mjs   # npm pack both into a disposable consumer
 ```
 
-The tarball test is the stronger of the two: it packs the package and installs
-it into a throwaway consumer, so it catches `files`-list omissions and entry
-point mistakes that the in-tree smoke test cannot.
+The tarball test is the stronger of the two: it packs both packages and
+installs them into a throwaway consumer, so it catches `files`-list omissions
+and entry point mistakes that the in-tree smoke test cannot. Both harnesses
+exercise the kernel and translator modules together: a STEP round trip is
+`io.exportStep(kernel.serializeSolids(ids))` then
+`kernel.deserializeSolids(io.importStep(bytes))`.
 
 Both run the regressions in `scripts/openzcad-wasm-consumer-regressions.mjs`,
 which encode consumer-shaped geometry rather than synthetic cases — for
@@ -73,11 +77,12 @@ Workflow: **Refresh Apache Staging Package** (`.github/workflows/publish.yml`),
 on every push to `main`, and by `workflow_dispatch`.
 
 Two jobs. `build-committed-package` runs `cargo xtask wasm-build`,
-stamps fork provenance into `package.json`, and uploads the result as an
-artifact. `sync-committed-package` downloads it, installs it through
+stamps fork provenance into both `package.json` files, and uploads the pair
+as one artifact. `sync-committed-package` downloads it, installs it through
 `scripts/install-wasm-package-archive.py` (which accepts only regular files and
-directories under `crates/wasm/pkg` — never extract a build-produced archive
-straight into the checkout), commits, and pushes to `main` with `[skip ci]`.
+directories under `crates/wasm/pkg` and `crates/wasm-io/pkg` — never extract a
+build-produced archive straight into the checkout), commits, and pushes to
+`main` with `[skip ci]`.
 
 Notes that matter:
 
@@ -106,7 +111,12 @@ The documented consumer installs the snapshot by git path:
 
 ```
 "remus-wasm": "github:esaueng/remus#main&path:/crates/wasm/pkg"
+"remus-wasm-io": "github:esaueng/remus#main&path:/crates/wasm-io/pkg"
 ```
+
+The two must be pinned to the same commit: the arena document format they
+exchange is versioned by the kernel, and `cargo xtask wasm-build` refuses to
+produce them at different package versions.
 
 No consumer is pinned to this today. The form above is what the repository
 documents; an older pin naming `apache-main` will not resolve, because that

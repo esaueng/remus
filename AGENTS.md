@@ -9,7 +9,8 @@ engine.
 Strict layered Cargo workspace. Each layer depends only on layers below it.
 
 ```
-L4: remus-wasm        → JS bindings (wasm-bindgen)
+L4: remus-wasm        → JS bindings (wasm-bindgen): the kernel module
+L4: remus-wasm-io     → JS bindings for the file-format translators (own module)
 L4: remus-render      → Offscreen GPU rendering (wgpu) to image + face-id buffer
 L3: remus-io          → STEP, 3MF, STL, IGES, OBJ, PLY, glTF import/export
 L3: remus-operations  → Booleans, fillets, extrusions, tessellation
@@ -43,6 +44,7 @@ Enforced by `scripts/check-boundaries.sh` — run before pushing:
 | `io` | `math`, `topology`, `operations` |
 | `render` | `math`, `topology`, `operations` (L4 leaf — the script also rejects any crate that depends on `render`) |
 | `wasm` | all crates (`blend` only transitively, via `operations`) |
+| `wasm-io` | `math`, `topology`, `operations`, `io` |
 
 The script checks `[dependencies]` in each `Cargo.toml`. A violation fails the `boundaries` job in CI.
 
@@ -60,6 +62,7 @@ The script checks `[dependencies]` in each `Cargo.toml`. A violation fails the `
 - `io/src/**` → `remus_math::*`, `remus_topology::*`, `remus_operations::*`
 - `render/src/**` → `remus_math::*`, `remus_topology::*`, `remus_operations::*`
 - `wasm/src/**` → all `remus_*`
+- `wasm-io/src/**` → `remus_math::*`, `remus_topology::*`, `remus_operations::*`, `remus_io::*`
 
 ## Module Map
 
@@ -409,7 +412,8 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Topology query, edge/surface evaluation | `bindings/query.rs` |
 | Measurement (volume, area, bbox, distances) | `bindings/measure.rs` |
 | Tessellation & wireframe | `bindings/tessellate.rs` |
-| File I/O import/export (`#[cfg(feature = "io")]`) | `bindings/io.rs` |
+| Exact arena document bindings (`serializeSolids`, always compiled) | `bindings/arena.rs` |
+| File I/O import/export (`#[cfg(feature = "io")]`; off in the shipped kernel package) | `bindings/io.rs` |
 | Shape healing, validation, feature recognition | `bindings/heal.rs` |
 | Checkpoint / restore | `bindings/checkpoint.rs` |
 | 2D sketch constraint solver | `bindings/sketch.rs` |
@@ -430,6 +434,19 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Holed-face integration tests | `bindings/holed_face_tests.rs` |
 | Qualified-operation integration tests | `bindings/qualify_ops_tests.rs` |
 | Direct/batch B6 primitive qualification | `bindings/qualify_primitives_tests.rs` |
+
+### L4: wasm-io (`crates/wasm-io/src/`)
+| Task | File(s) |
+|------|---------|
+| `RemusIo` translator class: every format import/export over arena documents | `lib.rs` |
+| Error type, `validate_positive` | `error.rs` |
+
+The shipped browser kernel (`crates/wasm/pkg`) is built without the `io`
+feature; STEP/IGES/mesh formats ship as the separate `remus-wasm-io` package
+(`crates/wasm-io/pkg`), loaded only around import and export. Bodies cross
+between the two as exact arena documents: `kernel.serializeSolids(ids)` →
+`io.exportStep(bytes)`, and `io.importStep(file)` → `kernel.deserializeSolids(bytes)`.
+`cargo xtask wasm-build` builds, validates, and version-locks both packages.
 
 ### L5: facade (`crates/remus/src/`)
 | Task | File(s) |
@@ -628,8 +645,11 @@ Pattern: see `obj/` module (simplest), `step/` (most complex)
    - B-Rep: `pub fn read_step(input: &str, topo: &mut Topology) -> Result<Vec<SolidId>, IoError>`
    - Mesh formats pair a `read_ply(data) -> TriangleMesh` with a
      `read_ply_solid(..) -> SolidId` that also needs `&mut Topology`
-5. **Add WASM bindings** `importFormat` / `exportFormat` in `bindings/io.rs`
-6. **Add to `executeBatch` dispatch** in `bindings/batch.rs` if commonly used
+5. **Add WASM bindings** `importFormat` / `exportFormat` on `RemusIo` in
+   `crates/wasm-io/src/lib.rs` (arena-document in, arena-document out) and,
+   for the single-module `io` build, in `bindings/io.rs`
+6. **Batch dispatch** (`bindings/batch.rs`) only exists in the single-module
+   `io` build; the shipped kernel has no format ops to dispatch
 
 ### Recipe 3: Add a new operation
 
@@ -682,6 +702,7 @@ cargo test --workspace                     # Test all
 cargo clippy --all-targets -- -D warnings  # Lint
 cargo fmt --all                            # Format
 cargo build -p remus-wasm --target wasm32-unknown-unknown  # WASM
+cargo xtask wasm-build                     # kernel + translator packages, validated
 ./scripts/check-boundaries.sh              # Verify layer deps
 ./scripts/check-det-hash.sh                # No new std HashMap/HashSet in geometry crates
 ./scripts/check-doc-paths.sh               # Verify doc file paths still resolve

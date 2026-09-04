@@ -6,24 +6,24 @@ Deep detail backing SKILL.md. Everything here is verified against the repo; re-v
 
 `xtask` is aliased in `.cargo/config.toml` (`xtask = "run --manifest-path xtask/Cargo.toml --"`) and is intentionally not a workspace member. Source: `xtask/src/main.rs`, `xtask/src/wasm.rs`.
 
-`cargo xtask wasm-build [--no-simd] [--skip-opt]` runs five steps:
+`cargo xtask wasm-build [--no-simd] [--kernel-io]` builds two packages, described by the `PackageSpec` constants `KERNEL` and `TRANSLATORS` in `xtask/src/wasm.rs`:
 
-1. `check_tools`: requires `wasm-pack`. If a local `wasm-bindgen-cli` is installed it must equal the pinned `WASM_BINDGEN_VERSION` constant in `xtask/src/wasm.rs`. Known gotcha: that constant is `0.2.121` while the workspace `Cargo.toml` pins `wasm-bindgen = "=0.2.125"`, so a correctly matched local cli fails the check. Fix the constant or uninstall the cli (wasm-pack fetches its own). `wasm-opt` is optional; missing means a warning and a skipped step.
-2. `build_both_targets`: two wasm-pack builds from `crates/wasm` with `RUSTFLAGS="-Dwarnings"` (plus `-C target-feature=+simd128` unless `--no-simd`): `--target bundler --out-dir pkg` and `--target nodejs --out-dir pkg-node`.
-3. `run_wasm_opt`: `wasm-opt -O3` in place on `pkg/remus_wasm_bg.wasm`, prints before/after KB.
-4. `merge_packages`: copies `pkg-node/remus_wasm.js` into `pkg/` as `remus_wasm_node.cjs` (renamed to `.cjs` because the bundler package.json has `"type": "module"`), patches `pkg/package.json` (`name: remus-wasm`, `main: remus_wasm_node.cjs`, `module: remus_wasm.js`, an `exports` map with node/import/default conditions, `files`), then deletes `pkg-node/`.
-5. `validate_output`: checks the required files exist, `.wasm` size in a 500 KB to 20 MB window, the `.d.ts` contains `export class BrepKernel` with at least `MIN_METHOD_COUNT` methods, and package.json fields.
+1. `check_tools`: requires `wasm-pack`. If a local `wasm-bindgen-cli` is installed it must equal the `WASM_BINDGEN_VERSION` constant, which must match the workspace `Cargo.toml` pin. `check_versions_match` then refuses to build if `crates/wasm` and `crates/wasm-io` declare different versions: the two packages ship in lockstep.
+2. Per package, `build_both_targets`: two wasm-pack builds with `RUSTFLAGS="-Dwarnings"` (plus `-C target-feature=+simd128` unless `--no-simd`): `--target bundler --out-dir pkg` (wasm-opt with the flags from the crate's `Cargo.toml`, `-Oz --enable-simd`) and `--target nodejs --out-dir pkg-node --no-opt`. The kernel build passes `--no-default-features` so the format translators stay out of it; `--kernel-io` drops that and produces the pre-split single module.
+3. Per package, `merge_packages`: copies `pkg-node/<stem>.js` into `pkg/` as `<stem>_node.cjs` (renamed to `.cjs` because the bundler package.json has `"type": "module"`), patches `pkg/package.json` (`name`, `main`, `module`, an `exports` map with node/import/default conditions, `files`), then deletes `pkg-node/`.
+4. Per package, `validate_output`: required files exist, `.wasm` size inside the package's `SizeBudget` (kernel: 500 KB to 10 MiB with a WARN above 9 MiB; translators: no review band), the `.d.ts` exports the package's class (`BrepKernel` / `RemusIo`) with at least `min_methods` methods, and package.json fields.
+5. Once both exist: `node scripts/test-wasm-smoke.mjs` and `node scripts/test-wasm-tarball-consumer.mjs`, which load the pair together.
 
-Output lands in `crates/wasm/pkg/`, git-ignored by wasm-pack's own generated `crates/wasm/pkg/.gitignore`.
+Output lands in `crates/wasm/pkg/` and `crates/wasm-io/pkg/`, each git-ignored by wasm-pack's own generated `.gitignore` (the refresh workflow force-adds them).
 
-`cargo xtask wasm-publish [--dry-run]` runs the same pipeline, then `node scripts/test-wasm-smoke.mjs`, then `npm publish --provenance --access public`. It requires a `TAG_NAME` env var matching the `package.json` version.
+`cargo xtask wasm-publish [--dry-run]` runs the same pipeline, then `npm publish --provenance --access public` for the kernel package only. It requires a `TAG_NAME` env var matching the `package.json` version.
 
 ### Which build for which purpose
 
 | Purpose | Build | Entry file |
 |---|---|---|
-| Node / vitest, quick iteration | `wasm-pack build crates/wasm --target nodejs --release` | `crates/wasm/pkg/remus_wasm.js` (CJS despite the name) |
-| Published package, smoke test, overlay into a real app | `cargo xtask wasm-build` | `crates/wasm/pkg/remus_wasm_node.cjs` (node) + `remus_wasm.js` (bundler ESM) |
+| Node / vitest, quick iteration | `wasm-pack build crates/wasm --target nodejs --release` (add `-- --no-default-features` to match the shipped kernel; `wasm-pack build crates/wasm-io --target nodejs --release` for the translators) | `crates/wasm/pkg/remus_wasm.js` (CJS despite the name) |
+| Published packages, smoke test, overlay into a real app | `cargo xtask wasm-build` | `crates/wasm/pkg/remus_wasm_node.cjs` + `crates/wasm-io/pkg/remus_wasm_io_node.cjs` (node), `remus_wasm.js` / `remus_wasm_io.js` (bundler ESM) |
 | Browsers via a bundler | the same xtask package; the bundler resolves the `import` condition | `remus_wasm.js` |
 
 Never `--target web` for node: its init path uses `fetch()`. The bundler ESM entry also fails under vitest because Vite resolves the `import` exports condition to an entry that uses the unsupported WASM ESM integration proposal (see the comment in `$BREPJS/vitest.config.ts`). Node and vitest must get the CJS entry.
