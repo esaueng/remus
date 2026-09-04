@@ -145,6 +145,7 @@ inconsistently oriented — an engine defect with no §B row yet.
 
 ## Durable lessons (one line each; the story is in `campaign-history.md`)
 
+- **Deterministic STEP emission sorts unordered face, void-shell, and hole-loop aggregates by arena ID but never sorts coedges;** coedge sequence carries boundary traversal semantics (`crates/io/src/step/writer.rs`).
 - **Public profile construction must use the strict wire-to-face path;** the low-level plane-from-points builder is not a collinearity validity gate (`crates/remus/src/model.rs`, PR #225).
 - **Performance baselines start from measured stack families, not a guessed loop list;** O3.1's 3% census and native-only Criterion map live in `docs/kernel-maturity/o31-inner-loop-baseline.md`.
 - **Exact rational conic twins do not preserve angle-linear parameter speed;** compare positions after projection plus tangent direction and curvature, and use a deterministic one-sided radial derivative at revolution poles (`crates/math/src/surfaces/swept/tests.rs`, PR #189).
