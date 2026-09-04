@@ -772,6 +772,8 @@ impl Builder {
         );
         if op == BooleanOp::Fuse {
             orient_selected_fuse_analytic_holes(&mut self.topo, &self.sub_faces, &selected);
+        } else {
+            builder_solid::orient_cylinder_face_wires(&mut self.topo, &selected)?;
         }
         log_subfaces_in_box(&self.topo, &self.sub_faces, &selected)?;
         log_source_face_partition(&self.topo, &self.sub_faces, &selected);
@@ -809,6 +811,8 @@ impl Builder {
         );
         if op == BooleanOp::Fuse {
             orient_selected_fuse_analytic_holes(&mut self.topo, &self.sub_faces, &selected);
+        } else {
+            builder_solid::orient_cylinder_face_wires(&mut self.topo, &selected)?;
         }
         log_subfaces_in_box(&self.topo, &self.sub_faces, &selected)?;
         log_source_face_partition(&self.topo, &self.sub_faces, &selected);
@@ -849,6 +853,8 @@ impl Builder {
         );
         if op == BooleanOp::Fuse {
             orient_selected_fuse_analytic_holes(&mut self.topo, &self.sub_faces, &selected);
+        } else {
+            builder_solid::orient_cylinder_face_wires(&mut self.topo, &selected)?;
         }
         log_subfaces_in_box(&self.topo, &self.sub_faces, &selected)?;
         log_source_face_partition(&self.topo, &self.sub_faces, &selected);
