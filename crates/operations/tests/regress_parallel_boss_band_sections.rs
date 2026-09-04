@@ -77,21 +77,12 @@ fn exact_volume(op: BooleanOp, deg: f64, dist: f64, z: f64) -> f64 {
     let outcome = boolean_with_context(&mut topo, op, shaft, boss, &exact)
         .unwrap_or_else(|e| panic!("{op:?} at {deg}°, d={dist}, z={z} left the exact path: {e}"));
     assert_eq!(outcome.quality, BooleanQuality::Exact);
-    // Strict validation is asserted for the fuse only: a cut or intersect
-    // whose pocket is an interior loop on the wall comes back with
-    // inconsistently oriented shared edges, and it did so before these
-    // sections reached the wall at all (a box boss cut from the wall shows
-    // the same report on the pre-existing exact path). That is a separate
-    // defect of the cut/intersect assembly, tracked by
-    // `pocket_cut_from_wall_is_consistently_oriented` below.
-    if op == BooleanOp::Fuse {
-        let report = validate_solid(&topo, outcome.solid).unwrap();
-        assert!(
-            report.is_valid(),
-            "{op:?} at {deg}°, d={dist}, z={z}: {:?}",
-            report.issues
-        );
-    }
+    let report = validate_solid(&topo, outcome.solid).unwrap();
+    assert!(
+        report.is_valid(),
+        "{op:?} at {deg}°, d={dist}, z={z}: {:?}",
+        report.issues
+    );
     let curved = cylinder_face_count(&topo, outcome.solid);
     assert!(
         curved >= 2,
@@ -319,33 +310,122 @@ fn chamfered_shaft_with_flush_parallel_boss_fuses_exactly() {
     );
 }
 
-/// A pocket cut into the shaft wall — by the cylindrical boss, and by a box
-/// boss that never left the exact path — must be consistently oriented.
-/// Both report "shared edges have inconsistent face orientations" today.
+/// Area where a 10-unit-wide box extending inward from a cylinder's tangent
+/// plane overlaps the cylinder disc.
+fn box_wall_overlap_area(radius: f64) -> f64 {
+    let half_width = 5.0;
+    let inner_x = 12.0;
+    let full_height_until = (radius * radius - half_width * half_width).sqrt();
+    let disc_integral = |x: f64| {
+        x * (radius * radius - x * x).max(0.0).sqrt() + radius * radius * (x / radius).asin()
+    };
+    2.0 * half_width * (full_height_until - inner_x) + disc_integral(radius)
+        - disc_integral(full_height_until)
+}
+
+/// Cut and intersect pockets at both sides of the cylinder must preserve the
+/// selected analytic faces with coherent B-Rep and rendered orientation.
+///
+/// The independent oracles pin closed-form volume, both validation engines,
+/// material-side point classification, and welded mesh edge use. A merely
+/// closed shell with a plausible face count cannot satisfy all four.
 #[test]
-#[ignore = "pre-existing: cut/intersect pocket faces on a cylinder wall come back inconsistently oriented"]
-fn pocket_cut_from_wall_is_consistently_oriented() {
+fn pocket_cut_and_intersect_are_consistently_oriented() {
+    use remus_check::classify::{ClassifyOptions, PointClassification, classify_point};
     use remus_operations::primitives::make_box;
+    use remus_operations::tessellate::tessellate_solid_with_tolerance;
+
     let exact = OperationContext::new().with_fallback(FallbackPolicy::ExactOnly);
+    let shaft_volume = PI * SHAFT_R * SHAFT_R * SHAFT_H;
     for tool_is_box in [true, false] {
-        let mut topo = Topology::new();
-        let shaft = make_cylinder(&mut topo, SHAFT_R, SHAFT_H).unwrap();
-        let tool = if tool_is_box {
-            let b = make_box(&mut topo, 10.0, 10.0, BOSS_H).unwrap();
-            transform_solid(&mut topo, b, &Mat4::translation(-22.0, -5.0, 20.0)).unwrap();
-            b
-        } else {
-            let b = make_cylinder(&mut topo, BOSS_R, BOSS_H).unwrap();
-            transform_solid(&mut topo, b, &Mat4::translation(15.0, 0.0, 20.0)).unwrap();
-            b
-        };
-        let outcome = boolean_with_context(&mut topo, BooleanOp::Cut, shaft, tool, &exact).unwrap();
-        let report = validate_solid(&topo, outcome.solid).unwrap();
-        assert!(
-            report.is_valid(),
-            "box tool = {tool_is_box}: {:?}",
-            report.issues
-        );
+        for side in [-1.0_f64, 1.0] {
+            for op in [BooleanOp::Cut, BooleanOp::Intersect] {
+                let tool_name = if tool_is_box { "box" } else { "cylinder" };
+                let label = format!("{op:?} with {tool_name} tool at side {side:+}");
+                let mut topo = Topology::new();
+                let shaft = make_cylinder(&mut topo, SHAFT_R, SHAFT_H).unwrap();
+                let (tool, overlap_area, overlap_x) = if tool_is_box {
+                    let tool = make_box(&mut topo, 10.0, 10.0, BOSS_H).unwrap();
+                    let x = if side < 0.0 { -22.0 } else { 12.0 };
+                    transform_solid(&mut topo, tool, &Mat4::translation(x, -5.0, 20.0)).unwrap();
+                    (tool, box_wall_overlap_area(SHAFT_R), 13.0 * side)
+                } else {
+                    let tool = make_cylinder(&mut topo, BOSS_R, BOSS_H).unwrap();
+                    transform_solid(&mut topo, tool, &Mat4::translation(15.0 * side, 0.0, 20.0))
+                        .unwrap();
+                    (tool, lens_area(SHAFT_R, BOSS_R, 15.0), 14.0 * side)
+                };
+
+                let outcome = boolean_with_context(&mut topo, op, shaft, tool, &exact)
+                    .unwrap_or_else(|error| panic!("{label} left the exact path: {error}"));
+                assert_eq!(outcome.quality, BooleanQuality::Exact, "{label}");
+
+                let operations_report = validate_solid(&topo, outcome.solid).unwrap();
+                assert!(
+                    operations_report.is_valid(),
+                    "{label}: L3 validation issues: {:?}",
+                    operations_report.issues
+                );
+                let check_report = remus_check::validate::validate_solid(
+                    &topo,
+                    outcome.solid,
+                    &remus_check::validate::ValidateOptions::default(),
+                )
+                .unwrap();
+                assert!(
+                    check_report.is_valid(),
+                    "{label}: check validation issues: {:?}",
+                    check_report.issues
+                );
+
+                let overlap = overlap_area * BOSS_H;
+                let expected_volume = match op {
+                    BooleanOp::Cut => shaft_volume - overlap,
+                    BooleanOp::Intersect => overlap,
+                    BooleanOp::Fuse => unreachable!(),
+                };
+                assert_close(
+                    consistent_volume(&topo, outcome.solid, &label),
+                    expected_volume,
+                    &format!("{label}: closed-form volume"),
+                );
+
+                let options = ClassifyOptions::default();
+                for (point, cut_expected) in [
+                    (
+                        remus_math::vec::Point3::new(overlap_x, 0.0, 30.0),
+                        PointClassification::Outside,
+                    ),
+                    (
+                        remus_math::vec::Point3::new(0.0, 0.0, 30.0),
+                        PointClassification::Inside,
+                    ),
+                ] {
+                    let expected = if op == BooleanOp::Cut {
+                        cut_expected
+                    } else {
+                        match cut_expected {
+                            PointClassification::Inside => PointClassification::Outside,
+                            PointClassification::Outside => PointClassification::Inside,
+                            PointClassification::OnBoundary => unreachable!(),
+                        }
+                    };
+                    assert_eq!(
+                        classify_point(&topo, outcome.solid, point, &options).unwrap(),
+                        expected,
+                        "{label}: material-side probe {point:?}"
+                    );
+                }
+
+                let mesh =
+                    tessellate_solid_with_tolerance(&topo, outcome.solid, 0.02, 0.1).unwrap();
+                assert_eq!(
+                    mesh_defects(&mesh),
+                    (0, 0),
+                    "{label}: tessellation must be closed and consistently wound"
+                );
+            }
+        }
     }
 }
 
