@@ -24,24 +24,63 @@ pub struct RepairReport {
     pub healing: HealingReport,
     /// Validation issues remaining after healing.
     pub after: crate::validate::ValidationReport,
+    /// Independent L2 validation issues remaining after healing.
+    pub check_after: remus_check::validate::ValidationReport,
+}
+
+/// Verified result of the configurable L2 healing pipeline.
+#[derive(Debug, Clone)]
+pub struct ConfiguredRepairReport {
+    /// Handle of the repaired solid, which may differ from the input.
+    pub solid: SolidId,
+    /// Typed repairs and refusals reported by the fixers.
+    pub fixing: remus_heal::fix::FixResult,
+    /// L3 validation report for the committed result.
+    pub after: crate::validate::ValidationReport,
+    /// Independent L2 validation report for the committed result.
+    pub check_after: remus_check::validate::ValidationReport,
+}
+
+/// Verified result of a named configurable healing pipeline.
+#[derive(Debug, Clone)]
+pub struct PipelineRepairReport {
+    /// Handle of the repaired solid, which may differ from the input.
+    pub solid: SolidId,
+    /// One typed fixer result per requested pipeline step.
+    pub steps: Vec<remus_heal::fix::FixResult>,
+    /// L3 validation report for the committed result.
+    pub after: crate::validate::ValidationReport,
+    /// Independent L2 validation report for the committed result.
+    pub check_after: remus_check::validate::ValidationReport,
+}
+
+impl PipelineRepairReport {
+    /// True only when both independent validators established validity.
+    #[must_use]
+    pub fn is_valid_after(&self) -> bool {
+        self.after.is_valid() && self.check_after.is_valid()
+    }
+}
+
+impl ConfiguredRepairReport {
+    /// True only when both independent validators established validity.
+    #[must_use]
+    pub fn is_valid_after(&self) -> bool {
+        self.after.is_valid() && self.check_after.is_valid()
+    }
 }
 
 impl RepairReport {
     /// Whether the solid is valid after repair (no remaining errors).
     #[must_use]
     pub fn is_valid_after(&self) -> bool {
-        self.after.is_valid()
+        self.after.is_valid() && self.check_after.is_valid()
     }
 
     /// Total number of repairs performed.
     #[must_use]
     pub fn total_repairs(&self) -> usize {
-        self.healing.vertices_merged
-            + self.healing.degenerate_edges_removed
-            + self.healing.orientations_fixed
-            + self.healing.wire_gaps_closed
-            + self.healing.small_faces_removed
-            + self.healing.duplicate_faces_removed
+        self.healing.total()
     }
 }
 
@@ -53,20 +92,101 @@ impl RepairReport {
 /// and what remains.
 ///
 /// # Errors
-/// Returns an error if topology lookups fail.
+///
+/// Returns a typed validation failure or unavailable-verifier refusal when
+/// the post-repair topology cannot be established as valid. Any mutation is
+/// rolled back on error.
 pub fn repair_solid(
     topo: &mut Topology,
     solid: SolidId,
     tolerance: f64,
 ) -> Result<RepairReport, crate::OperationsError> {
-    let before = crate::validate::validate_solid(topo, solid)?;
-    let healing = heal_solid(topo, solid, tolerance)?;
-    let after = crate::validate::validate_solid(topo, solid)?;
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let before = crate::validate::validate_solid(topo, solid)?;
+        let healing = heal_solid_unverified(topo, solid, tolerance)?;
+        let (after, check_after) = verify_healing(topo, solid, &healing)?;
 
-    Ok(RepairReport {
-        before,
-        healing,
-        after,
+        Ok(RepairReport {
+            before,
+            healing,
+            after,
+            check_after,
+        })
+    })
+}
+
+/// Run the configurable fixer transactionally and commit only a fully
+/// disclosed result accepted by both validators.
+///
+/// # Errors
+///
+/// Returns a typed refusal if a requested fix was declined, either validator
+/// cannot produce a verdict, or the repaired solid remains invalid. Every
+/// failure rolls topology back to its pre-healing state.
+pub fn fix_shape_verified(
+    topo: &mut Topology,
+    solid: SolidId,
+    config: &remus_heal::fix::FixConfig,
+    tolerance: Option<f64>,
+) -> Result<ConfiguredRepairReport, crate::OperationsError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let (new_solid, fixing) = match tolerance {
+            Some(tolerance) => {
+                remus_heal::fix::fix_shape_with_tolerance(topo, solid, config, tolerance)
+            }
+            None => remus_heal::fix::fix_shape(topo, solid, config),
+        }?;
+
+        if !fixing.refusals.is_empty() || fixing.status.is_fail() {
+            return Err(crate::OperationsError::HealingRepairRefused {
+                refusal_count: fixing.refusals.iter().map(|refusal| refusal.count).sum(),
+                actions: fixing.actions.clone(),
+                refusals: fixing.refusals.clone(),
+            });
+        }
+
+        let (after, check_after) = verify_configured_healing(topo, new_solid, &fixing)?;
+        Ok(ConfiguredRepairReport {
+            solid: new_solid,
+            fixing,
+            after,
+            check_after,
+        })
+    })
+}
+
+/// Run a named healing pipeline transactionally and commit only a fully
+/// disclosed result accepted by both validators.
+///
+/// # Errors
+///
+/// Returns a typed refusal for an unavailable repair or unverifiable result;
+/// every failure restores the pre-pipeline topology.
+pub fn run_heal_pipeline_verified(
+    topo: &mut Topology,
+    solid: SolidId,
+    process: &remus_heal::pipeline::process::HealProcess,
+) -> Result<PipelineRepairReport, crate::OperationsError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let (new_solid, steps) = process.execute(topo, solid)?;
+        let mut aggregate = remus_heal::fix::FixResult::ok();
+        for step in &steps {
+            aggregate.merge(step);
+        }
+        if !aggregate.refusals.is_empty() || aggregate.status.is_fail() {
+            return Err(crate::OperationsError::HealingRepairRefused {
+                refusal_count: aggregate.refusals.iter().map(|refusal| refusal.count).sum(),
+                actions: aggregate.actions.clone(),
+                refusals: aggregate.refusals.clone(),
+            });
+        }
+        let (after, check_after) = verify_configured_healing(topo, new_solid, &aggregate)?;
+        Ok(PipelineRepairReport {
+            solid: new_solid,
+            steps,
+            after,
+            check_after,
+        })
     })
 }
 
@@ -86,8 +206,49 @@ pub fn merge_split_rim_arcs(
     Ok(remus_heal::upgrade::merge_split_rim_arcs::merge_split_rim_arcs(topo, solid, tolerance)?)
 }
 
+/// Machine-readable kind of repair performed by [`heal_solid`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HealingChangeKind {
+    /// A wire endpoint gap was closed.
+    WireGapClosed,
+    /// Coincident vertices were merged.
+    VertexMerged,
+    /// A degenerate edge was removed.
+    DegenerateEdgeRemoved,
+    /// A small face was removed.
+    SmallFaceRemoved,
+    /// A duplicate face was removed.
+    DuplicateFaceRemoved,
+    /// A face orientation was corrected.
+    FaceOrientationFixed,
+}
+
+impl HealingChangeKind {
+    /// Stable wire name used by structured bindings.
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::WireGapClosed => "wire_gap_closed",
+            Self::VertexMerged => "vertex_merged",
+            Self::DegenerateEdgeRemoved => "degenerate_edge_removed",
+            Self::SmallFaceRemoved => "small_face_removed",
+            Self::DuplicateFaceRemoved => "duplicate_face_removed",
+            Self::FaceOrientationFixed => "face_orientation_fixed",
+        }
+    }
+}
+
+/// One non-empty repair category from a [`HealingReport`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HealingChange {
+    /// What repair was performed.
+    pub kind: HealingChangeKind,
+    /// Number of repairs of this kind.
+    pub count: usize,
+}
+
 /// Summary of repairs performed by [`heal_solid`].
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct HealingReport {
     /// Number of coincident vertices merged.
     pub vertices_merged: usize,
@@ -103,6 +264,47 @@ pub struct HealingReport {
     pub duplicate_faces_removed: usize,
 }
 
+impl HealingReport {
+    /// Every repair category that changed topology, excluding zero-count no-ops.
+    #[must_use]
+    pub fn changes(&self) -> Vec<HealingChange> {
+        [
+            (HealingChangeKind::WireGapClosed, self.wire_gaps_closed),
+            (HealingChangeKind::VertexMerged, self.vertices_merged),
+            (
+                HealingChangeKind::DegenerateEdgeRemoved,
+                self.degenerate_edges_removed,
+            ),
+            (
+                HealingChangeKind::SmallFaceRemoved,
+                self.small_faces_removed,
+            ),
+            (
+                HealingChangeKind::DuplicateFaceRemoved,
+                self.duplicate_faces_removed,
+            ),
+            (
+                HealingChangeKind::FaceOrientationFixed,
+                self.orientations_fixed,
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(kind, count)| (count > 0).then_some(HealingChange { kind, count }))
+        .collect()
+    }
+
+    /// Total number of disclosed repairs.
+    #[must_use]
+    pub const fn total(&self) -> usize {
+        self.vertices_merged
+            + self.degenerate_edges_removed
+            + self.orientations_fixed
+            + self.wire_gaps_closed
+            + self.small_faces_removed
+            + self.duplicate_faces_removed
+    }
+}
+
 /// Run all healing operations on a solid.
 ///
 /// This is the top-level repair function. It runs:
@@ -111,8 +313,23 @@ pub struct HealingReport {
 /// 3. Fix face orientations (ensure outward normals)
 ///
 /// # Errors
-/// Returns an error if topology lookups fail.
+///
+/// Returns a typed validation failure or unavailable-verifier refusal when
+/// the post-healing topology cannot be established as valid. Any mutation is
+/// rolled back on error.
 pub fn heal_solid(
+    topo: &mut Topology,
+    solid: SolidId,
+    tolerance: f64,
+) -> Result<HealingReport, crate::OperationsError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let healing = heal_solid_unverified(topo, solid, tolerance)?;
+        verify_healing(topo, solid, &healing)?;
+        Ok(healing)
+    })
+}
+
+fn heal_solid_unverified(
     topo: &mut Topology,
     solid: SolidId,
     tolerance: f64,
@@ -134,6 +351,94 @@ pub fn heal_solid(
         small_faces_removed,
         duplicate_faces_removed,
     })
+}
+
+fn verify_healing(
+    topo: &Topology,
+    solid: SolidId,
+    healing: &HealingReport,
+) -> Result<
+    (
+        crate::validate::ValidationReport,
+        remus_check::validate::ValidationReport,
+    ),
+    crate::OperationsError,
+> {
+    let after = crate::validate::validate_solid(topo, solid).map_err(|error| {
+        crate::OperationsError::HealingVerificationUnavailable {
+            validator: "operations",
+            reason: error.to_string(),
+            healing: healing.clone(),
+        }
+    })?;
+    let check_after = remus_check::validate::validate_solid(
+        topo,
+        solid,
+        &remus_check::validate::ValidateOptions::default(),
+    )
+    .map_err(
+        |error| crate::OperationsError::HealingVerificationUnavailable {
+            validator: "check",
+            reason: error.to_string(),
+            healing: healing.clone(),
+        },
+    )?;
+
+    let operations_errors = after.error_count();
+    let check_errors = check_after.error_count();
+    if operations_errors > 0 || check_errors > 0 {
+        return Err(crate::OperationsError::HealingValidationFailed {
+            operations_errors,
+            check_errors,
+            healing: healing.clone(),
+        });
+    }
+
+    Ok((after, check_after))
+}
+
+fn verify_configured_healing(
+    topo: &Topology,
+    solid: SolidId,
+    fixing: &remus_heal::fix::FixResult,
+) -> Result<
+    (
+        crate::validate::ValidationReport,
+        remus_check::validate::ValidationReport,
+    ),
+    crate::OperationsError,
+> {
+    let after = crate::validate::validate_solid(topo, solid).map_err(|error| {
+        crate::OperationsError::ConfiguredHealingVerificationUnavailable {
+            validator: "operations",
+            reason: error.to_string(),
+            actions: fixing.actions.clone(),
+        }
+    })?;
+    let check_after = remus_check::validate::validate_solid(
+        topo,
+        solid,
+        &remus_check::validate::ValidateOptions::default(),
+    )
+    .map_err(
+        |error| crate::OperationsError::ConfiguredHealingVerificationUnavailable {
+            validator: "check",
+            reason: error.to_string(),
+            actions: fixing.actions.clone(),
+        },
+    )?;
+
+    let operations_errors = after.error_count();
+    let check_errors = check_after.error_count();
+    if operations_errors > 0 || check_errors > 0 {
+        return Err(crate::OperationsError::ConfiguredHealingValidationFailed {
+            operations_errors,
+            check_errors,
+            actions: fixing.actions.clone(),
+        });
+    }
+
+    Ok((after, check_after))
 }
 
 /// Merge near-coincident vertices in a solid.

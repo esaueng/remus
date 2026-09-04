@@ -170,6 +170,7 @@ export const brepkernel_gridPattern: (a: number, b: number, c: number, d: number
 export const brepkernel_guidedSweep: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number) => [number, number, number];
 export const brepkernel_healPipelineSteps: (a: number) => [number, number];
 export const brepkernel_healSolid: (a: number, b: number) => [number, number, number];
+export const brepkernel_healSolidDetailed: (a: number, b: number) => [number, number, number];
 export const brepkernel_helicalSweep: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => [number, number, number];
 export const brepkernel_import3mf: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
 export const brepkernel_importGlb: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number];
@@ -269,6 +270,7 @@ export const brepkernel_recognizeFeatures: (a: number, b: number, c: number) => 
 export const brepkernel_removeDegenerateEdges: (a: number, b: number, c: number) => [number, number, number];
 export const brepkernel_removeHolesFromFace: (a: number, b: number) => [number, number, number];
 export const brepkernel_repairSolid: (a: number, b: number) => [number, number, number];
+export const brepkernel_repairSolidDetailed: (a: number, b: number) => [number, number, number];
 export const brepkernel_resizeBlend: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
 export const brepkernel_resizeBlendWithEvolution: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
 export const brepkernel_resizeCylindricalFace: (a: number, b: number, c: number, d: number) => [number, number, number];
