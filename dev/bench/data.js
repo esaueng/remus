@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788500258728,
+  "lastUpdate": 1788502436297,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -11641,6 +11641,216 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 69367,
             "range": "± 2421",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "0769b194a75b5b898d5b115215bb1d621382cac8",
+          "message": "feat(operations): add exact replace-surface re-limitation (#238)\n\n* feat(blend): add typed cliff handling\n\n* docs: link P-Class 5.5 pull request\n\n* docs: record P-Class 5.5 status\n\n* docs: link reconciled P-Class 5.5 pull request\n\n* fix(wasm): keep cliff diagnostics within size budget\n\n* build(wasm): optimize release package for size\n\n* feat(blend): add exact face-face blend sheets\n\n* feat(wasm): expose face-face blend sheets\n\n* docs: qualify P-Class face-face blends\n\n* docs: link P-Class face-face blend PR\n\n* feat(offset): excise collapsed L-prism cavities\n\n* feat(wasm): preserve collapsed shell parity\n\n* docs: qualify P-Class offset fold removal\n\n* docs: link P-Class offset fold PR\n\n* feat(operations): add exact surface re-limitation\n\n* fix(offset): preserve move-face wasm footprint\n\n* docs: qualify P-Class replace-surface\n\n* docs: map replace-surface module\n\n* fix(operations): use a deterministic map for the replace-surface face map\n\nThe det-hash ratchet rejects std HashMap/HashSet in the geometry crates:\ntheir per-instance hasher seed makes iteration order vary run to run, so\nany result whose construction walks a map is nondeterministic. The new\nreplace-surface face correspondence is a public result type callers will\niterate, so it must be seed-stable.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01WQEa2RbRi5cioGQAT3prRN\n\n* build(wasm): regenerate kernel package on merged main\n\n---------\n\nCo-authored-by: Codex Review <codex-review@localhost>\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-09-04T02:05:35-04:00",
+          "tree_id": "cc9f0cf18111161a41fb70213c4f1fd8bb27efae",
+          "url": "https://github.com/esaueng/remus/commit/0769b194a75b5b898d5b115215bb1d621382cac8"
+        },
+        "date": 1788502435498,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1412521,
+            "range": "± 2829",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1510247,
+            "range": "± 29729",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 26202,
+            "range": "± 110",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 1066265,
+            "range": "± 9058",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 41112026,
+            "range": "± 93481",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 39,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 106,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 66,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 224,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 156,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 837,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 166,
+            "range": "± 7",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 357,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 221,
+            "range": "± 12",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 534,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 724,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 3493,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 17,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 38,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 62,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 62,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 573355,
+            "range": "± 1627",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 11668037,
+            "range": "± 33225",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 171297,
+            "range": "± 546",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 661917,
+            "range": "± 4308",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 129258,
+            "range": "± 117",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 929927,
+            "range": "± 1763",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 11447694,
+            "range": "± 536691",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 760892,
+            "range": "± 2708",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 1321970,
+            "range": "± 2199",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 87987,
+            "range": "± 327",
             "unit": "ns/iter"
           }
         ]
