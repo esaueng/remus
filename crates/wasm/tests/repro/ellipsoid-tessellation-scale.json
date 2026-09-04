@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "name": "ellipsoid-tessellation-scale",
+  "description": "B6 ellipsoid repro: anisotropically scaled sphere topology validates, but its NURBS solid tessellation is empty at unit/large scale and leaky with about half the closed-form volume at 1e-3. The ignored ellipsoid_scale_and_mesh_postconditions_are_not_yet_qualified test carries the acceptance oracle; this bundle preserves the minimized deterministic WASM operation sequence without accepting the defective mesh as correct.",
+  "revision": "49f88649",
+  "operations": [
+    {"op": "makeEllipsoid", "args": {"rx": 0.0015, "ry": 0.002, "rz": 0.0025}},
+    {"op": "validateSolid", "args": {"solid": 0}},
+    {"op": "volume", "args": {"solid": 0, "deflection": 0.00001}},
+    {"op": "meshQuality", "args": {"solid": 0, "deflection": 0.00001, "angularTolerance": 0.1}},
+    {"op": "makeEllipsoid", "args": {"rx": 1.5, "ry": 2.0, "rz": 2.5}},
+    {"op": "validateSolid", "args": {"solid": 1}},
+    {"op": "volume", "args": {"solid": 1, "deflection": 0.01}},
+    {"op": "meshQuality", "args": {"solid": 1, "deflection": 0.01, "angularTolerance": 0.1}},
+    {"op": "makeEllipsoid", "args": {"rx": 1500.0, "ry": 2000.0, "rz": 2500.0}},
+    {"op": "validateSolid", "args": {"solid": 2}},
+    {"op": "volume", "args": {"solid": 2, "deflection": 10.0}},
+    {"op": "meshQuality", "args": {"solid": 2, "deflection": 10.0, "angularTolerance": 0.1}}
+  ],
+  "expect": [
+    {"ok": 0},
+    null,
+    null,
+    null,
+    {"ok": 1},
+    null,
+    null,
+    null,
+    {"ok": 2},
+    null,
+    null,
+    null
+  ]
+}
