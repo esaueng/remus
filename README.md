@@ -295,9 +295,10 @@ Two consequences worth stating plainly:
 - A `remus-wasm` package on npm does **not** come from this repository. It
   belongs to the historical upstream line, which is no longer permissively
   licensed. Installing it does not get you this kernel.
-- The checked-in `crates/wasm/pkg` directory is a frozen compatibility
-  snapshot for an existing consumer that installs it by git path. It is not a
-  release channel and it is not the way to adopt Remus.
+- The checked-in `crates/wasm/pkg` (kernel) and `crates/wasm-io/pkg`
+  (file-format translators) directories are frozen compatibility snapshots
+  for an existing consumer that installs them by git path, pinned to one
+  commit. They are not a release channel and not the way to adopt Remus.
 
 Until packages exist, build from source.
 
@@ -323,12 +324,15 @@ cargo test --workspace
 cargo clippy --all-targets -- -D warnings
 cargo fmt --all
 
-# WASM package: dual-target build, merge, and validation
+# WASM packages (kernel + file-format translators): dual-target build,
+# merge, and validation
 cargo xtask wasm-build
 
-# Plain WASM builds (with and without I/O)
-cargo build -p remus-wasm --target wasm32-unknown-unknown --release
+# Plain WASM builds: the kernel as shipped (no translators), the single-module
+# kernel with translators bundled, and the translator module
 cargo build -p remus-wasm --target wasm32-unknown-unknown --release --no-default-features
+cargo build -p remus-wasm --target wasm32-unknown-unknown --release
+cargo build -p remus-wasm-io --target wasm32-unknown-unknown --release
 
 # API docs
 cargo doc --workspace --no-deps --open

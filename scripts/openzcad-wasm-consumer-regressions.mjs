@@ -98,7 +98,10 @@ export const runOpenZcadAnalyticFlangeBooleanRegression = ({ BrepKernel }) => {
 export const runOpenZcadCylindricalFaceResizeRegression = ({
   BrepKernel,
   decodeEvolutionPayload,
+  RemusIo,
 }) => {
+  // File formats live in the translator module; bodies cross as arena bytes.
+  const io = new RemusIo();
   const W = 80;
   const D = 40;
   const PLATE_T = 8;
@@ -229,7 +232,7 @@ export const runOpenZcadCylindricalFaceResizeRegression = ({
   assertVolumeAndClosure(narrowed, FINAL_VOLUME, 'r4.8 -> r3.8 bracket');
   assertExactCylinderRadii(kernel, narrowed, 'resized bracket');
 
-  const step = kernel.exportStep(narrowed);
+  const step = io.exportStep(kernel.serializeSolids(Uint32Array.of(narrowed)));
   const stepText = new TextDecoder().decode(step);
   assert.equal(
     stepText.match(/CYLINDRICAL_SURFACE/g)?.length,
@@ -237,7 +240,7 @@ export const runOpenZcadCylindricalFaceResizeRegression = ({
     'STEP must encode every cylinder analytically',
   );
   const importedKernel = new BrepKernel();
-  const imported = Array.from(importedKernel.importStep(step));
+  const imported = Array.from(importedKernel.deserializeSolids(io.importStep(step)));
   assert.equal(imported.length, 1, 'STEP round trip must yield one bracket solid');
   assert.equal(importedKernel.validateSolid(imported[0]), 0, 'STEP bracket: closed, valid shell');
   const importedVolume = importedKernel.volume(imported[0], BRACKET_DEFLECTION);
@@ -249,7 +252,9 @@ export const runOpenZcadCylindricalFaceResizeRegression = ({
   console.log('ok - OpenZCAD mounting bracket: decoded lineage, r3 -> r4.8 -> r3.8, exact STEP');
 };
 
-export const runOpenZcadConsumerRegressions = (packageExports) => {
-  runOpenZcadAnalyticFlangeBooleanRegression(packageExports);
-  runOpenZcadCylindricalFaceResizeRegression(packageExports);
+/** `exports` merges the kernel package (`BrepKernel`, `decodeEvolutionPayload`)
+ * with the translator package (`RemusIo`). */
+export const runOpenZcadConsumerRegressions = (exports) => {
+  runOpenZcadAnalyticFlangeBooleanRegression(exports);
+  runOpenZcadCylindricalFaceResizeRegression(exports);
 };

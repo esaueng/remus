@@ -17,7 +17,12 @@ wasm-opt = ["-Oz", "--enable-simd"]
 
 [features]
 default = ["io"]
-io = ["dep:remus-io"]
+# Bundle the file-format translators into the kernel module. The shipped
+# browser package builds WITHOUT this (see `cargo xtask wasm-build`): the
+# translators ship as the separate `remus-wasm-io` module and bodies cross
+# between the two as exact arena documents. The arena and persistent-reference
+# codecs are always present.
+io = ["remus-io/formats"]
 
 [dependencies]
 log.workspace = true
@@ -25,7 +30,8 @@ remus-algo.workspace = true
 remus-check.workspace = true
 remus-geometry.workspace = true
 remus-heal.workspace = true
-remus-io = {workspace = true, optional = true}
+# Explicit path: an inherited dependency cannot switch default features off.
+remus-io = {path = "../io", version = "=0.1.0", default-features = false}
 remus-math.workspace = true
 remus-operations.workspace = true
 remus-sketch.workspace = true

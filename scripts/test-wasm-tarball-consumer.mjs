@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /**
- * Pack and install remus-wasm into a disposable consumer, then run the
- * OpenZCAD-shaped exact-geometry regressions through the installed package.
+ * Pack and install remus-wasm and remus-wasm-io into a disposable consumer,
+ * then run the OpenZCAD-shaped exact-geometry regressions through the
+ * installed packages.
  *
  * Usage: node scripts/test-wasm-tarball-consumer.mjs
  */
@@ -17,7 +18,10 @@ import { runOpenZcadConsumerRegressions } from './openzcad-wasm-consumer-regress
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(scriptDir, '..');
-const packageDir = resolve(projectRoot, 'crates/wasm/pkg');
+const packageDirs = {
+  'remus-wasm': resolve(projectRoot, 'crates/wasm/pkg'),
+  'remus-wasm-io': resolve(projectRoot, 'crates/wasm-io/pkg'),
+};
 const temporaryRoot = mkdtempSync(resolve(tmpdir(), 'remus-tarball-consumer-'));
 const consumerDir = resolve(temporaryRoot, 'consumer');
 const npmEnvironment = {
@@ -27,14 +31,16 @@ const npmEnvironment = {
 
 try {
   mkdirSync(consumerDir);
-  const packOutput = execFileSync(
-    'npm',
-    ['pack', packageDir, '--json', '--pack-destination', temporaryRoot],
-    { encoding: 'utf8', env: npmEnvironment },
-  );
-  const packed = JSON.parse(packOutput);
-  assert.equal(packed.length, 1, 'npm pack must produce exactly one tarball');
-  const tarball = resolve(temporaryRoot, packed[0].filename);
+  const tarballs = Object.values(packageDirs).map((packageDir) => {
+    const packOutput = execFileSync(
+      'npm',
+      ['pack', packageDir, '--json', '--pack-destination', temporaryRoot],
+      { encoding: 'utf8', env: npmEnvironment },
+    );
+    const packed = JSON.parse(packOutput);
+    assert.equal(packed.length, 1, 'npm pack must produce exactly one tarball');
+    return resolve(temporaryRoot, packed[0].filename);
+  });
 
   execFileSync(
     'npm',
@@ -47,18 +53,21 @@ try {
       '--ignore-scripts',
       '--no-audit',
       '--no-fund',
-      tarball,
+      ...tarballs,
     ],
     { env: npmEnvironment, stdio: 'inherit' },
   );
 
   const consumerRequire = createRequire(resolve(consumerDir, 'consumer.cjs'));
-  const resolvedEntry = consumerRequire.resolve('remus-wasm');
-  const installedPackageDir = realpathSync(resolve(consumerDir, 'node_modules/remus-wasm'));
-  assert.ok(
-    resolvedEntry.startsWith(`${installedPackageDir}${sep}`),
-    `remus-wasm resolved outside the installed consumer: ${resolvedEntry}`,
-  );
+  for (const name of Object.keys(packageDirs)) {
+    const resolvedEntry = consumerRequire.resolve(name);
+    const installedPackageDir = realpathSync(resolve(consumerDir, `node_modules/${name}`));
+    assert.ok(
+      resolvedEntry.startsWith(`${installedPackageDir}${sep}`),
+      `${name} resolved outside the installed consumer: ${resolvedEntry}`,
+    );
+    console.log(`ok - installed tarball entry resolved from ${resolvedEntry}`);
+  }
 
   const packageExports = consumerRequire('remus-wasm');
   assert.equal(typeof packageExports.BrepKernel, 'function', 'installed BrepKernel export');
@@ -67,9 +76,10 @@ try {
     'function',
     'installed decodeEvolutionPayload export',
   );
-  console.log(`ok - installed tarball entry resolved from ${resolvedEntry}`);
+  const ioExports = consumerRequire('remus-wasm-io');
+  assert.equal(typeof ioExports.RemusIo, 'function', 'installed RemusIo export');
 
-  runOpenZcadConsumerRegressions(packageExports);
+  runOpenZcadConsumerRegressions({ ...packageExports, ...ioExports });
   console.log('\nInstalled-tarball consumer regressions passed');
 } finally {
   rmSync(temporaryRoot, { recursive: true, force: true });

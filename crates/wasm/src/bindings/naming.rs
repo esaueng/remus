@@ -19,16 +19,10 @@ use wasm_bindgen::prelude::*;
 use remus_algo::bop::BooleanOp;
 use remus_operations::journal_ops;
 use remus_topology::journal::{EntityKind, JournalAttributePropagation, OpId};
-// Discriminators are only constructed by the serialized-reference codec,
-// which is `io`-gated.
-#[cfg(feature = "io")]
 use remus_topology::naming::Discriminator;
 use remus_topology::naming::{PersistentRef, Provenance, Resolution, resolve};
 
 use crate::error::StructuredWasmError;
-// The only consumer, `capture_signature_ref`, lives in an `io`-gated
-// impl block, so the import has to carry the same gate.
-#[cfg(feature = "io")]
 use crate::error::validate_finite;
 use crate::helpers::get_u32;
 use crate::kernel::BrepKernel;
@@ -217,13 +211,11 @@ impl BrepKernel {
         Ok(name.map_or(serde_json::Value::Null, serde_json::Value::String))
     }
 
-    #[cfg(feature = "io")]
     fn ref_from_json(reference: &str) -> Result<PersistentRef, StructuredWasmError> {
         remus_io::naming_io::deserialize_persistent_ref(reference.as_bytes())
             .map_err(StructuredWasmError::from)
     }
 
-    #[cfg(feature = "io")]
     fn ref_to_json(reference: &PersistentRef) -> Result<serde_json::Value, StructuredWasmError> {
         let bytes = remus_io::naming_io::serialize_persistent_ref(reference)
             .map_err(StructuredWasmError::from)?;
@@ -233,7 +225,6 @@ impl BrepKernel {
         Ok(serde_json::json!({ "ref": text }))
     }
 
-    #[cfg(feature = "io")]
     fn capture_signature_ref_json(
         &self,
         kind: &str,
@@ -265,7 +256,6 @@ impl BrepKernel {
         Self::ref_to_json(&PersistentRef::signature(signature))
     }
 
-    #[cfg(feature = "io")]
     fn add_ref_discriminator_json(
         reference: &str,
         discriminator: &str,
@@ -285,13 +275,11 @@ impl BrepKernel {
         Self::ref_to_json(&parsed.with_discriminator(discriminator))
     }
 
-    #[cfg(feature = "io")]
     fn resolve_ref_json(&self, reference: &str) -> Result<serde_json::Value, StructuredWasmError> {
         let parsed = Self::ref_from_json(reference)?;
         Ok(resolution_json(&resolve(self.topo(), &parsed)))
     }
 
-    #[cfg(feature = "io")]
     fn resolve_ref_face_attributes_json(
         &self,
         reference: &str,
@@ -350,7 +338,6 @@ impl BrepKernel {
                 self.set_face_name_json(face, name)
             }),
             "getFaceName" => get_u32(args, "face").and_then(|face| self.get_face_name_json(face)),
-            #[cfg(feature = "io")]
             "makeOperationOutputRef" => get_u32(args, "op").and_then(|op_id| {
                 get_str(args, "kind").map(str::to_owned).and_then(|kind| {
                     get_u32(args, "index").and_then(|index| {
@@ -363,14 +350,12 @@ impl BrepKernel {
                     })
                 })
             }),
-            #[cfg(feature = "io")]
             "captureSignatureRef" => get_str(args, "kind").map(str::to_owned).and_then(|kind| {
                 get_u32(args, "handle").and_then(|handle| {
                     let quantum = args["quantum"].as_f64().unwrap_or(1e-7);
                     self.capture_signature_ref_json(&kind, handle, quantum)
                 })
             }),
-            #[cfg(feature = "io")]
             "addRefDiscriminator" => get_str(args, "ref").map(str::to_owned).and_then(|r| {
                 get_str(args, "discriminator")
                     .map(str::to_owned)
@@ -379,11 +364,9 @@ impl BrepKernel {
                             .and_then(|tag| Self::add_ref_discriminator_json(&r, &d, tag))
                     })
             }),
-            #[cfg(feature = "io")]
             "resolveRef" => get_str(args, "ref")
                 .map(str::to_owned)
                 .and_then(|r| self.resolve_ref_json(&r)),
-            #[cfg(feature = "io")]
             "resolveRefFaceAttributes" => get_str(args, "ref")
                 .map(str::to_owned)
                 .and_then(|r| self.resolve_ref_face_attributes_json(&r)),
@@ -484,7 +467,6 @@ impl BrepKernel {
     }
 }
 
-#[cfg(feature = "io")]
 #[wasm_bindgen]
 impl BrepKernel {
     /// Serializes "the `index`-th `kind` output of journal operation
@@ -594,9 +576,6 @@ mod naming_contract_tests {
     /// The full journey: name a face, run a journaled fuse, propagate,
     /// resolve through the journal, and read the name back through a
     /// serialized reference.
-    // Exercises the io-gated serialized-reference ops; those batch
-    // operations are not registered in a no-default-features build.
-    #[cfg(feature = "io")]
     #[test]
     fn names_survive_a_journaled_fuse_end_to_end() {
         let mut kernel = BrepKernel::new();
@@ -719,9 +698,6 @@ mod naming_contract_tests {
     }
 
     /// Signature references: capture, discriminate, resolve — inferred.
-    // Exercises the io-gated serialized-reference ops; those batch
-    // operations are not registered in a no-default-features build.
-    #[cfg(feature = "io")]
     #[test]
     fn signature_refs_capture_and_discriminate() {
         let mut kernel = BrepKernel::new();
