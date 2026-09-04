@@ -738,7 +738,11 @@ fn sphere_to_transformed_nurbs(
             .map_err(|e| crate::OperationsError::InvalidInput {
                 reason: format!("splitting sphere NURBS at the equator failed: {e}"),
             })?;
-        return transform_nurbs_surface(if v_min < 0.0 { &south } else { &north }, matrix);
+        // Select on the classification, not on `sign(v_min)`: an equatorial
+        // trim reaches here with `v_min` a rounding-noise value either side
+        // of zero, which would hand a north face the southern patch.
+        let patch = if is_south_hemisphere { &south } else { &north };
+        return transform_nurbs_surface(patch, matrix);
     }
 
     sampled_transformed_nurbs(|u, v| sph.evaluate(u, v), matrix, v_min, v_max)

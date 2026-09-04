@@ -1397,3 +1397,31 @@ fn is_uniform_scale_needs_equal_norms_and_orthogonal_columns() {
     shear.0[1][1] = 0.8;
     assert!(!is_uniform_scale(&shear));
 }
+
+/// An equatorial sphere trim reaches `sphere_to_transformed_nurbs` with a
+/// `v_min` that is rounding noise around zero — the mean of `project_point`
+/// latitudes at the seam. Selecting the patch on `sign(v_min)` handed a north
+/// face the southern half whenever that mean landed just below zero, silently
+/// mirroring the ellipsoid. Pin the selection to the hemisphere classification.
+#[test]
+fn north_hemisphere_patch_survives_negative_roundoff_in_v_min() {
+    let sphere = remus_math::surfaces::SphericalSurface::new(Point3::new(0.0, 0.0, 0.0), 1.0)
+        .expect("unit sphere");
+    let matrix = Mat4::scale(1.0, 1.0, 2.0);
+
+    for v_min in [0.0, -f64::EPSILON, f64::EPSILON] {
+        let patch =
+            sphere_to_transformed_nurbs(&sphere, &matrix, v_min, std::f64::consts::FRAC_PI_2)
+                .expect("north hemisphere patch");
+        let (u0, u1) = patch.domain_u();
+        let (w0, w1) = patch.domain_v();
+        let z: Vec<f64> = [w0, f64::midpoint(w0, w1), w1]
+            .into_iter()
+            .map(|v| patch.evaluate(f64::midpoint(u0, u1), v).z())
+            .collect();
+        assert!(
+            z.iter().all(|z| *z >= -1e-9),
+            "v_min={v_min:e} selected the southern patch: sampled z = {z:?}"
+        );
+    }
+}
