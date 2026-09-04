@@ -563,17 +563,54 @@ fn nurbs_patch_domain(
         v_hi = v_hi.max(v);
     }
 
+    let v = if closed_v {
+        full_v
+    } else if closed_u {
+        // A rational sphere hemisphere (or an affine ellipsoid image) has a
+        // full-period rim at one v endpoint and collapses the other endpoint
+        // to a pole. The rim alone cannot encode which side it bounds. When
+        // the surface domain is already that half-patch, retaining its full v
+        // span is both tight and necessary; shrinking to the rim reported a
+        // zero-height ellipsoid box.
+        let extent = surface_extent(nurbs);
+        let pole_tol = extent.mul_add(1e-8, 1e-12);
+        let endpoint_spread = |v: f64| {
+            let first = nurbs.evaluate(full_u.0, v);
+            (1..=4)
+                .map(|i| {
+                    let u = (f64::from(i) / 4.0).mul_add(full_u.1 - full_u.0, full_u.0);
+                    (nurbs.evaluate(u, v) - first).length()
+                })
+                .fold(0.0_f64, f64::max)
+        };
+        let low_is_pole = endpoint_spread(full_v.0) <= pole_tol;
+        let high_is_pole = endpoint_spread(full_v.1) <= pole_tol;
+        let param_tol = (full_v.1 - full_v.0) * 1e-6;
+        let boundary_at_non_pole = match (low_is_pole, high_is_pole) {
+            (true, false) => {
+                (v_lo - full_v.1).abs() <= param_tol && (v_hi - full_v.1).abs() <= param_tol
+            }
+            (false, true) => {
+                (v_lo - full_v.0).abs() <= param_tol && (v_hi - full_v.0).abs() <= param_tol
+            }
+            _ => false,
+        };
+        if boundary_at_non_pole {
+            full_v
+        } else {
+            padded_span((v_lo, v_hi), full_v)
+        }
+    } else {
+        padded_span((v_lo, v_hi), full_v)
+    };
+
     PatchDomain {
         u: if closed_u {
             full_u
         } else {
             padded_span((u_lo, u_hi), full_u)
         },
-        v: if closed_v {
-            full_v
-        } else {
-            padded_span((v_lo, v_hi), full_v)
-        },
+        v,
     }
 }
 
