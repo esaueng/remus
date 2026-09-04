@@ -1147,3 +1147,197 @@ fn shell_emits_no_same_sense_edge_pairs() {
         "shelled box must be strictly consistently wound"
     );
 }
+
+fn l_bracket(topo: &mut Topology, scale: f64, origin: Point3) -> SolidId {
+    l_profile_prism(topo, scale, origin, 1.0, 1.0)
+}
+
+fn l_profile_prism(
+    topo: &mut Topology,
+    scale: f64,
+    origin: Point3,
+    horizontal_arm: f64,
+    vertical_arm: f64,
+) -> SolidId {
+    let point =
+        |x: f64, y: f64| Point3::new(origin.x() + x * scale, origin.y() + y * scale, origin.z());
+    let profile = remus_topology::builder::make_planar_face(
+        topo,
+        &[
+            point(0.0, 0.0),
+            point(4.0, 0.0),
+            point(4.0, horizontal_arm),
+            point(vertical_arm, horizontal_arm),
+            point(vertical_arm, 4.0),
+            point(0.0, 4.0),
+        ],
+        Tolerance::new().linear,
+    )
+    .unwrap();
+    crate::extrude::extrude(topo, profile, Vec3::new(0.0, 0.0, 1.0), 2.0 * scale).unwrap()
+}
+
+fn mesh_volume(mesh: &crate::tessellate::TriangleMesh) -> f64 {
+    mesh.indices
+        .chunks_exact(3)
+        .map(|triangle| {
+            let a = mesh.positions[triangle[0] as usize];
+            let b = mesh.positions[triangle[1] as usize];
+            let c = mesh.positions[triangle[2] as usize];
+            Vec3::new(a.x(), a.y(), a.z())
+                .dot((b - Point3::new(0.0, 0.0, 0.0)).cross(c - Point3::new(0.0, 0.0, 0.0)))
+                / 6.0
+        })
+        .sum::<f64>()
+        .abs()
+}
+
+#[test]
+fn shell_excises_fully_collapsed_l_bracket_inner_prism() {
+    let mut topo = Topology::new();
+    let bracket = l_bracket(&mut topo, 1.0, Point3::new(0.0, 0.0, 0.0));
+    let (result, evolution) = shell_with_evolution(&mut topo, bracket, 0.6, &[]).unwrap();
+
+    let faces = remus_topology::explorer::solid_faces(&topo, result).unwrap();
+    assert_eq!(
+        faces.len(),
+        8,
+        "the completely folded eight-face cavity must be excised"
+    );
+    assert!(
+        evolution.generated.is_empty(),
+        "excised cavity faces must not remain in evolution"
+    );
+    assert_eq!(
+        evolution.modified.values().map(Vec::len).sum::<usize>(),
+        faces.len(),
+        "every retained source face must keep its exact modified result"
+    );
+
+    let report = crate::validate::validate_solid(&topo, result).unwrap();
+    assert!(
+        report.is_valid(),
+        "excised result must validate: {report:?}"
+    );
+    let uses = remus_topology::explorer::edge_to_face_map(&topo, result).unwrap();
+    assert!(uses.values().all(|faces| faces.len() == 2));
+
+    let brep_volume = crate::measure::solid_volume(&topo, result, 0.01).unwrap();
+    assert!((brep_volume - 14.0).abs() < 1e-10, "volume={brep_volume}");
+    let mesh = crate::tessellate::tessellate_solid(&topo, result, 0.01).unwrap();
+    let quality = crate::tessellate::welded_mesh_quality(&mesh);
+    assert!(quality.is_watertight(), "mesh quality: {quality:?}");
+    let independent_volume = mesh_volume(&mesh);
+    assert!(
+        (independent_volume - brep_volume).abs() < 1e-9,
+        "mesh volume {independent_volume} vs B-Rep {brep_volume}"
+    );
+}
+
+#[test]
+fn l_bracket_fold_boundary_is_scale_stable_and_partial_fold_refuses() {
+    for scale in [1e-3, 1.0, 1e3] {
+        let mut topo = Topology::new();
+        let bracket = l_bracket(
+            &mut topo,
+            scale,
+            Point3::new(17.0 * scale, -23.0 * scale, 31.0 * scale),
+        );
+        let below = shell(&mut topo, bracket, 0.4 * scale, &[]).unwrap();
+        assert_eq!(
+            remus_topology::explorer::solid_faces(&topo, below)
+                .unwrap()
+                .len(),
+            16,
+            "scale={scale}: a surviving cavity must not be excised"
+        );
+        let below_volume = crate::measure::solid_volume(&topo, below, 0.01 * scale).unwrap();
+        let expected_below = 12.512 * scale.powi(3);
+        assert!(
+            (below_volume - expected_below).abs() <= expected_below.abs().max(1e-12) * 1e-8,
+            "scale={scale}: below-boundary volume {below_volume} vs {expected_below}"
+        );
+
+        let above = shell(&mut topo, bracket, 0.6 * scale, &[]).unwrap();
+        let above_volume = crate::measure::solid_volume(&topo, above, 0.01 * scale).unwrap();
+        let expected_above = 14.0 * scale.powi(3);
+        assert!(
+            (above_volume - expected_above).abs() <= expected_above.abs().max(1e-12) * 1e-8,
+            "scale={scale}: collapsed volume {above_volume} vs {expected_above}"
+        );
+    }
+
+    let mut topo = Topology::new();
+    let bracket = l_bracket(&mut topo, 1.0, Point3::new(0.0, 0.0, 0.0));
+    let top = find_faces_by_normal(&topo, bracket, Vec3::new(0.0, 0.0, 1.0));
+    let before = (
+        topo.num_vertices(),
+        topo.num_edges(),
+        topo.num_wires(),
+        topo.num_faces(),
+        topo.num_shells(),
+        topo.num_solids(),
+    );
+    let error = shell(&mut topo, bracket, 0.6, &top).unwrap_err();
+    let error_message = error.to_string();
+    assert!(
+        matches!(
+            error,
+            crate::OperationsError::Unsupported {
+                operation: "shell",
+                ..
+            }
+        ),
+        "a connected open-top fold must refuse, got {error:?}"
+    );
+    assert!(
+        error_message.contains("outside the qualified uniform-L collapse cell"),
+        "the refusal must identify the unqualified connected fold: {error_message}"
+    );
+    assert_eq!(
+        before,
+        (
+            topo.num_vertices(),
+            topo.num_edges(),
+            topo.num_wires(),
+            topo.num_faces(),
+            topo.num_shells(),
+            topo.num_solids(),
+        ),
+        "the typed partial-fold refusal must roll back every allocation"
+    );
+
+    let mut topo = Topology::new();
+    let unequal = l_profile_prism(&mut topo, 1.0, Point3::new(0.0, 0.0, 0.0), 1.0, 2.0);
+    let before = (
+        topo.num_vertices(),
+        topo.num_edges(),
+        topo.num_wires(),
+        topo.num_faces(),
+        topo.num_shells(),
+        topo.num_solids(),
+    );
+    let error = shell(&mut topo, unequal, 0.6, &[]).unwrap_err();
+    assert!(
+        matches!(
+            error,
+            crate::OperationsError::Unsupported {
+                operation: "shell",
+                ..
+            }
+        ),
+        "a fold in only the narrow arm must refuse, got {error:?}"
+    );
+    assert_eq!(
+        before,
+        (
+            topo.num_vertices(),
+            topo.num_edges(),
+            topo.num_wires(),
+            topo.num_faces(),
+            topo.num_shells(),
+            topo.num_solids(),
+        ),
+        "the unequal-arm partial-fold refusal must roll back every allocation"
+    );
+}
