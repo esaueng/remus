@@ -193,11 +193,8 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "getOpposingPlanarFacePairs"
         | "wireLength"
         | "volume" => Some(BatchOpKind::ReadOnly),
-        // Serialized-reference ops: their dispatch arms in `naming.rs` are
-        // `io`-gated because the reference codec is. Classifying them without
-        // the feature would admit an op that can never dispatch, so the batch
-        // would take a rollback share of the topology only to fail afterwards.
-        #[cfg(feature = "io")]
+        // Serialized-reference ops: the reference codec is always linked, so
+        // these dispatch in every build (the `io` feature gates formats only).
         "makeOperationOutputRef"
         | "captureSignatureRef"
         | "addRefDiscriminator"
@@ -3330,11 +3327,11 @@ mod batch_contract_tests {
     }
 
     /// Classification must agree with what `dispatch_naming_op` can actually
-    /// run. The serialized-reference arms there are `io`-gated, so without the
-    /// feature these ops must be rejected outright rather than admitted as
-    /// ReadOnly and failed after the batch has taken its rollback share.
+    /// run. The serialized-reference arms dispatch in every build now that the
+    /// reference codec is no longer behind the `io` feature; an op admitted as
+    /// ReadOnly must never fail after the batch has taken its rollback share.
     #[test]
-    fn serialized_reference_ops_are_classified_only_with_io() {
+    fn serialized_reference_ops_are_classified_in_every_build() {
         const REF_OPS: [&str; 5] = [
             "makeOperationOutputRef",
             "captureSignatureRef",
@@ -3343,12 +3340,7 @@ mod batch_contract_tests {
             "resolveRefFaceAttributes",
         ];
         for op in REF_OPS {
-            let kind = batch_op_kind(op);
-            if cfg!(feature = "io") {
-                assert_eq!(kind, Some(BatchOpKind::ReadOnly), "{op} with io");
-            } else {
-                assert_eq!(kind, None, "{op} without io");
-            }
+            assert_eq!(batch_op_kind(op), Some(BatchOpKind::ReadOnly), "{op}");
         }
     }
 

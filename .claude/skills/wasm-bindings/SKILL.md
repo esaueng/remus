@@ -5,7 +5,9 @@ description: Use when adding or changing methods on BrepKernel in crates/wasm, w
 
 # wasm-bindings
 
-The WASM layer exports one class, `BrepKernel` (`crates/wasm/src/kernel.rs`). JS holds opaque `u32` handles (arena indices into the kernel's `Topology`, NOT batch result indices). Bindings live in `crates/wasm/src/bindings/<domain>.rs`, one `#[wasm_bindgen] impl BrepKernel` block per module (wasm-bindgen supports multiple impl blocks across files; non-exported helpers go in a separate plain `impl BrepKernel` block).
+The WASM layer ships two modules. The kernel package `remus-wasm` exports one class, `BrepKernel` (`crates/wasm/src/kernel.rs`). JS holds opaque `u32` handles (arena indices into the kernel's `Topology`, NOT batch result indices). Bindings live in `crates/wasm/src/bindings/<domain>.rs`, one `#[wasm_bindgen] impl BrepKernel` block per module (wasm-bindgen supports multiple impl blocks across files; non-exported helpers go in a separate plain `impl BrepKernel` block).
+
+The translator package `remus-wasm-io` (`crates/wasm-io/src/lib.rs`) exports `RemusIo`: every STEP/IGES/STL/3MF/OBJ/PLY/glTF import and export, loaded by the consumer only around file I/O. It never sees kernel handles: exports take the bytes of `kernel.serializeSolids(ids)` (or `serializeSheets`), imports return bytes for `kernel.deserializeSolids` / `deserializeSheets`. The arena codec (`bindings/arena.rs`) is always in the kernel; the format bindings in `bindings/io.rs` exist only under the crate's `io` feature, which the shipped package is built without (`cargo xtask wasm-build --kernel-io` restores the single-module layout). Adding a format binding means adding it to `RemusIo` first.
 
 ## Quick reference
 
@@ -14,8 +16,8 @@ The WASM layer exports one class, `BrepKernel` (`crates/wasm/src/kernel.rs`). JS
 | Type-check for wasm target | `cargo build -p remus-wasm --target wasm32-unknown-unknown` | Clean build; catches target-specific errors |
 | Run contract tests | `cargo test -p remus-wasm` | Native target; see "Contract tests" below |
 | Build for node/vitest | `wasm-pack build crates/wasm --target nodejs --release` | `crates/wasm/pkg/` with CJS entry `remus_wasm.js` |
-| Full release package | `cargo xtask wasm-build` | Dual-target merge + wasm-opt; entry `remus_wasm_node.cjs`. See [reference.md](reference.md) section 1 |
-| Smoke-test the package | `node scripts/test-wasm-smoke.mjs` | `ok - ...` lines, ends `All smoke tests passed`. Only works after xtask build (needs `remus_wasm_node.cjs`) |
+| Full release packages | `cargo xtask wasm-build` | Both packages, dual-target merge + wasm-opt, version-locked; entries `remus_wasm_node.cjs` and `remus_wasm_io_node.cjs`. See [reference.md](reference.md) section 1 |
+| Smoke-test the packages | `node scripts/test-wasm-smoke.mjs` | `ok - ...` lines, ends `All smoke tests passed`. Only works after xtask build (needs both `*_node.cjs` entries) |
 
 Never `wasm-pack build --target web` for node consumption: the web target's init uses `fetch()` and fails under node. The bundler ESM entry also fails under vitest.
 

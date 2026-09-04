@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /**
- * Smoke test for the remus WASM package.
- * Verifies that the built package loads and basic operations work.
+ * Smoke test for the remus WASM packages: the kernel (`remus-wasm`) and the
+ * file-format translators (`remus-wasm-io`). Verifies that both load and
+ * that bodies cross between them as exact arena documents.
  *
  * Usage: node scripts/test-wasm-smoke.mjs
  */
@@ -28,8 +29,14 @@ const {
   OperationCancellationToken,
   decodeEvolutionPayload,
 } = require(resolve(projectRoot, 'crates/wasm/pkg/remus_wasm_node.cjs'));
+const { RemusIo } = require(resolve(projectRoot, 'crates/wasm-io/pkg/remus_wasm_io_node.cjs'));
 
 const DEFLECTION = 0.1;
+
+// The translator module never sees kernel handles: exports take the bytes of
+// `serializeSolids`, imports return bytes for `deserializeSolids`.
+const io = new RemusIo();
+const bodies = (kernel, ...solids) => kernel.serializeSolids(Uint32Array.from(solids));
 
 const assertCompleteEvolution = (payload, label) => {
   assert.equal(payload.schemaVersion, 1, `${label}: schema version`);
@@ -52,6 +59,9 @@ const assertCompleteEvolution = (payload, label) => {
 // 1. Kernel creation
 const kernel = new BrepKernel();
 console.log('ok - BrepKernel created');
+assert.equal(typeof kernel.exportStep, 'undefined', 'translators must not ship in the kernel');
+assert.equal(typeof kernel.serializeSolids, 'function', 'arena codec must ship in the kernel');
+console.log('ok - RemusIo created; kernel module carries the arena codec only');
 
 // Stable batch-v2 errors are additive: successful envelopes match v1, while
 // v1 keeps its string error and v2 exposes the same text plus code/details.
@@ -311,24 +321,20 @@ assert.equal(quality.boundaryEdges, 0, 'box mesh should have no boundary edges')
 assert.equal(quality.isWatertight, true, 'box mesh should be watertight');
 console.log(`ok - meshQuality: watertight, euler=${quality.eulerCharacteristic}`);
 
-// 7. STL export (only if io feature is compiled in)
-if (typeof kernel.exportStl === 'function') {
-  const stl = kernel.exportStl(boxId, DEFLECTION);
+// 7. STL export through the translator module
+{
+  const stl = io.exportStl(bodies(kernel, boxId), DEFLECTION);
   assert.ok(stl.length > 0, 'STL export should not be empty');
   console.log(`ok - STL export: ${stl.length} bytes`);
-} else {
-  console.log('skip - exportStl not available (io feature not enabled)');
 }
 
-// 8. PLY round trip (only if io feature is compiled in)
-if (typeof kernel.importPly === 'function') {
-  const ply = kernel.exportPly(boxId, DEFLECTION);
-  const reimported = kernel.importPly(ply);
+// 8. PLY round trip through the translator module
+{
+  const ply = io.exportPly(bodies(kernel, boxId), DEFLECTION);
+  const [reimported] = kernel.deserializeSolids(io.importPly(ply));
   const vol2 = kernel.volume(reimported, DEFLECTION);
   assert.ok(Math.abs(vol2 - 6000) < 60, `PLY round-trip volume=${vol2}`);
   console.log(`ok - PLY round trip: volume=${vol2}`);
-} else {
-  console.log('skip - importPly not available (io feature not enabled)');
 }
 
 // Successful STEP imports expose bounded, edge-local healing without changing
@@ -338,8 +344,10 @@ if (typeof kernel.importPly === 'function') {
   const step = readFileSync(
     resolve(projectRoot, 'crates/io/tests/data/shapr_untrimmed_nurbs_domain.step'),
   );
-  const report = JSON.parse(reportKernel.importStepWithReport(step));
-  assert.equal(report.solids.length, 1);
+  const imported = io.importStepWithReport(step);
+  const report = JSON.parse(imported.report);
+  assert.equal(report.solidCount, 1);
+  assert.equal(reportKernel.deserializeSolids(imported.solids).length, 1);
   assert.equal(report.diagnostics.length, 2);
   for (const diagnostic of report.diagnostics) {
     assert.equal(diagnostic.code, 'step_untrimmed_nurbs_domain_recovered');
@@ -399,11 +407,9 @@ if (typeof kernel.importPly === 'function') {
   );
   console.log(`ok - resizeCylindricalFace(5) -> volume ${widenedVol}`);
 
-  if (typeof kernel.exportStep === 'function') {
-    const step = kernel.exportStep(widened);
-    assert.ok(step.length > 0, 'STEP export of the resized bore should not be empty');
-    console.log(`ok - resized bore STEP export: ${step.length} bytes`);
-  }
+  const step = io.exportStep(bodies(kernel, widened));
+  assert.ok(step.length > 0, 'STEP export of the resized bore should not be empty');
+  console.log(`ok - resized bore STEP export: ${step.length} bytes`);
 }
 
 // 11. Analytic preservation through an OpenZCAD-shaped flange boolean.
@@ -466,7 +472,7 @@ for (const operation of ['fillet', 'chamfer']) {
     evolutionKernel.volume(payload.result.solid, DEFLECTION) > 0,
     `${method}: positive volume`,
   );
-  const step = evolutionKernel.exportStep(payload.result.solid);
+  const step = io.exportStep(bodies(evolutionKernel, payload.result.solid));
   assert.ok(step.length > 0, `${method}: STEP export`);
   console.log(`ok - ${method}: typed, complete, exact-geometry parity`);
 }
@@ -551,7 +557,7 @@ for (const operation of ['fillet', 'chamfer']) {
   );
   const step = readFileSync(stepPath);
   const periodicKernel = new BrepKernel();
-  const imported = Array.from(periodicKernel.importStep(step));
+  const imported = Array.from(periodicKernel.deserializeSolids(io.importStep(step)));
   assert.equal(imported.length, 1, 'MAMBO B12 STEP must contain one solid');
   const solid = imported[0];
   const exactVolume = 1.25 * Math.PI ** 2;
@@ -561,9 +567,9 @@ for (const operation of ['fillet', 'chamfer']) {
   assert.equal(quality.nonManifoldEdges, 0);
   assert.equal(quality.isWatertight, true);
 
-  const roundTrip = periodicKernel.exportStep(solid);
+  const roundTrip = io.exportStep(bodies(periodicKernel, solid));
   const roundKernel = new BrepKernel();
-  const [roundSolid] = Array.from(roundKernel.importStep(roundTrip));
+  const [roundSolid] = Array.from(roundKernel.deserializeSolids(io.importStep(roundTrip)));
   assert.ok(Math.abs(roundKernel.volume(roundSolid, 0.01) - exactVolume) < 1e-9);
 
   const source = step.toString('utf8');
@@ -572,22 +578,19 @@ for (const operation of ['fillet', 'chamfer']) {
     "#46=ADVANCED_FACE('',(#50,#50),#52,.T.);",
   );
   assert.notEqual(malformed, source, 'periodic refusal fixture rewrite must apply');
-  const refusalKernel = new BrepKernel();
-  const sentinel = refusalKernel.makeBox(2, 3, 4);
   assert.throws(
-    () => refusalKernel.importStep(Buffer.from(malformed)),
+    () => io.importStep(Buffer.from(malformed)),
     /the two circles must wind the same periodic axis in opposite directions/,
   );
-  assert.ok(Math.abs(refusalKernel.volume(sentinel, 0.01) - 24) < 1e-9);
   console.log('ok - periodic STEP band import, round trip, and typed refusal');
 }
 
-// 14. CAx-IF STEP validation properties through direct and batch bindings.
+// 14. CAx-IF STEP validation properties through the translator module.
 {
   const sourceKernel = new BrepKernel();
   const sourceSolid = sourceKernel.makeBox(2, 3, 4);
-  const stepBytes = sourceKernel.exportStepWithOptions(
-    sourceSolid,
+  const stepBytes = io.exportStepWithOptions(
+    bodies(sourceKernel, sourceSolid),
     JSON.stringify({ validationProperties: true }),
   );
   const step = Buffer.from(stepBytes).toString('utf8');
@@ -597,10 +600,10 @@ for (const operation of ['fillet', 'chamfer']) {
   );
 
   const directKernel = new BrepKernel();
-  const direct = JSON.parse(
-    directKernel.importStepWithValidation(stepBytes, undefined, undefined, undefined),
-  );
-  assert.equal(direct.solids.length, 1);
+  const validated = io.importStepWithValidation(stepBytes, undefined, undefined, undefined);
+  const direct = JSON.parse(validated.report);
+  assert.equal(direct.solidCount, 1);
+  assert.equal(directKernel.deserializeSolids(validated.solids).length, 1);
   assert.equal(direct.diagnostics.length, 0);
   assert.equal(direct.validation.length, 1);
   assert.equal(direct.validation[0].diagnostics.length, 0);
@@ -615,12 +618,7 @@ for (const operation of ['fillet', 'chamfer']) {
   const volumeEnd = step.indexOf(')', volumeStart);
   const deviating = `${step.slice(0, volumeStart)}2.4144E1${step.slice(volumeEnd)}`;
   const deviation = JSON.parse(
-    new BrepKernel().importStepWithValidation(
-      Buffer.from(deviating),
-      undefined,
-      undefined,
-      undefined,
-    ),
+    io.importStepWithValidation(Buffer.from(deviating), undefined, undefined, undefined).report,
   );
   assert.equal(
     deviation.validation[0].diagnostics[0].code,
@@ -633,41 +631,14 @@ for (const operation of ['fillet', 'chamfer']) {
   const geometryArea = step.indexOf(areaMarker, firstArea + areaMarker.length);
   assert.ok(geometryArea >= 0, 'geometry-level area property');
   const malformed = `${step.slice(0, geometryArea)}'surface area measure', VOLUME_MEASURE(${step.slice(geometryArea + areaMarker.length)}`;
-  const refusalKernel = new BrepKernel();
-  const sentinel = refusalKernel.makeBox(1, 2, 3);
   assert.throws(
     () =>
-      refusalKernel.importStepWithValidation(
-        Buffer.from(malformed),
-        undefined,
-        undefined,
-        undefined,
-      ),
+      io.importStepWithValidation(Buffer.from(malformed), undefined, undefined, undefined),
     /step_validation_invalid_measure/,
   );
-  assert.ok(Math.abs(refusalKernel.volume(sentinel, 0.01) - 6) < 1e-9);
 
-  const exportBatch = JSON.parse(
-    new BrepKernel().executeBatchV2(
-      JSON.stringify([
-        { op: 'makeBox', args: { width: 2, height: 3, depth: 4 } },
-        {
-          op: 'exportStep',
-          args: { solid: 0, options: { validationProperties: true } },
-        },
-      ]),
-    ),
-  );
-  assert.match(exportBatch[1].ok, /geometric validation property/);
-  const importBatch = JSON.parse(
-    new BrepKernel().executeBatchV2(
-      JSON.stringify([{ op: 'importStepWithValidation', args: { data: exportBatch[1].ok } }]),
-    ),
-  );
-  assert.equal(importBatch[0].ok.validation[0].diagnostics.length, 0);
-  assert.equal(importBatch[0].ok.diagnostics.length, 0);
-
-  const refusalBatch = JSON.parse(
+  // The kernel module no longer registers the translator batch ops.
+  const batch = JSON.parse(
     new BrepKernel().executeBatchV2(
       JSON.stringify([
         { op: 'makeBox', args: { width: 1, height: 2, depth: 3 } },
@@ -676,10 +647,9 @@ for (const operation of ['fillet', 'chamfer']) {
       ]),
     ),
   );
-  assert.equal(refusalBatch[1].error.code, 'invalid_argument');
-  assert.equal(refusalBatch[1].error.details.kernelCode, 'step_validation_invalid_measure');
-  assert.ok(Math.abs(refusalBatch[2].ok - 6) < 1e-9);
-  console.log('ok - CAx-IF STEP validation properties: direct, batch, diagnostics, rollback');
+  assert.equal(batch[1].error.code, 'unknown_operation');
+  assert.ok(Math.abs(batch[2].ok - 6) < 1e-9);
+  console.log('ok - CAx-IF STEP validation properties: translator direct, diagnostics, refusal');
 }
 
 // 15. The real Shapr3D hammer-holder contract from the connected-blend work.
@@ -691,7 +661,7 @@ for (const operation of ['fillet', 'chamfer']) {
   const step = readFileSync(
     resolve(projectRoot, 'crates/io/tests/data/shapr3d_hammer_holder.step'),
   );
-  const imported = Array.from(hammerKernel.importStep(step));
+  const imported = Array.from(hammerKernel.deserializeSolids(io.importStep(step)));
   assert.equal(imported.length, 1, 'hammer holder STEP must contain one solid');
   const solid = imported[0];
   const faces = Array.from(hammerKernel.getSolidFaces(solid));
@@ -742,6 +712,6 @@ for (const operation of ['fillet', 'chamfer']) {
 }
 
 // 15. OpenZCAD mounting-bracket cylindrical-face resize and STEP round trip.
-runOpenZcadCylindricalFaceResizeRegression({ BrepKernel, decodeEvolutionPayload });
+runOpenZcadCylindricalFaceResizeRegression({ BrepKernel, decodeEvolutionPayload, RemusIo });
 
 console.log('\nAll smoke tests passed');

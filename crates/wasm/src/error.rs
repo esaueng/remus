@@ -69,7 +69,6 @@ pub(crate) enum WasmErrorCode {
     TopologyError,
     OperationFailed,
     Cancelled,
-    #[cfg_attr(not(feature = "io"), allow(dead_code))]
     ResourceLimitExceeded,
     InternalError,
 }
@@ -211,7 +210,6 @@ impl StructuredWasmError {
         Self::new(WasmErrorCode::OperationFailed, message)
     }
 
-    #[cfg_attr(not(feature = "io"), allow(dead_code))]
     pub(crate) fn resource_limit(
         message: impl Into<String>,
         resource: &'static str,
@@ -514,7 +512,6 @@ impl From<remus_algo::error::AlgoError> for StructuredWasmError {
     }
 }
 
-#[cfg(feature = "io")]
 impl From<remus_io::IoError> for StructuredWasmError {
     fn from(error: remus_io::IoError) -> Self {
         let message = error.to_string();

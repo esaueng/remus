@@ -1,0 +1,31 @@
+[package]
+categories = ["wasm", "mathematics", "science"]
+description = "WebAssembly file-format translators for remus — STEP, IGES, STL, 3MF, OBJ, PLY, glTF"
+edition.workspace = true
+keywords = ["cad", "brep", "wasm", "step", "iges"]
+license.workspace = true
+name = "remus-wasm-io"
+repository.workspace = true
+rust-version.workspace = true
+# Ships in lockstep with `remus-wasm`; `cargo xtask wasm-build` refuses to
+# package the two at different versions.
+version = "2.130.0"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ["-Oz", "--enable-simd"]
+
+[dependencies]
+remus-io.workspace = true
+remus-math.workspace = true
+remus-operations.workspace = true
+remus-topology.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+wasm-bindgen.workspace = true
+
+[lints]
+workspace = true
