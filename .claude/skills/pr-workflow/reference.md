@@ -24,7 +24,7 @@ Three PR checks sit OUTSIDE the fan-in and are easy to miss: `apache-lineage`, `
 | `platform-test` | Test (macos-latest), Test (windows-latest) | yes | matrix build/test on non-Linux hosts |
 | `coverage` | Coverage | yes | llvm-cov coverage report; usually the slowest job (~40 min) |
 | `msrv` | MSRV (1.88) | yes | build on the minimum supported Rust |
-| `wasm` | WASM Build & Validate | yes | `cargo xtask wasm-build --skip-opt` |
+| `wasm` | WASM Build & Validate | yes | `cargo xtask wasm-build` |
 | `fuzz-check` | Fuzz Targets Compile | yes | fuzz targets still compile |
 | `render` | Software Rendering | yes | headless render smoke test |
 | `boundaries` | Layer Boundaries | yes | `./scripts/check-boundaries.sh` |
@@ -96,7 +96,7 @@ What actually runs, verified against the workflow file and a live merge
 
 - Workflow name "Refresh Apache Staging Package"; runs on every push to
   `main`, skipping its own `[skip ci]` commits so it cannot loop.
-- Rebuilds `crates/wasm/pkg` with `cargo xtask wasm-build --skip-opt`,
+- Rebuilds `crates/wasm/pkg` with `cargo xtask wasm-build`,
   stamps stable provenance fields (never the commit SHA — that would dirty
   every run), and when the rebuilt package differs, commits it back as
   `chore(wasm): refresh committed package to vX.Y.Z from <sha> [skip ci]`.
