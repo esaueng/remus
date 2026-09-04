@@ -225,25 +225,30 @@ jobs:
           tool: wasm-pack
       - name: Build and validate WASM
         run: cargo xtask wasm-build
-      - name: Prepare WASM size artifact
+      - name: Prepare WASM size artifacts
         if: github.event_name == 'pull_request'
         run: |
           metadata=$(cargo metadata --no-deps --format-version 1)
-          wasm_package=$(jq -r '.packages[] | select(.manifest_path | endswith("/crates/wasm/Cargo.toml")) | .name' <<< "$metadata")
-          wasm_target=$(jq -r '.packages[] | select(.name == $package) | .targets[] | select(.crate_types | index("cdylib")) | .name' --arg package "$wasm_package" <<< "$metadata")
-          test -n "$wasm_target"
           mkdir -p "$RUNNER_TEMP/wasm-size"
-          cp "crates/wasm/pkg/${wasm_target}_bg.wasm" "$RUNNER_TEMP/wasm-size/pr.wasm"
+          # kernel module first, translator module second
+          for crate_dir in crates/wasm crates/wasm-io; do
+            wasm_package=$(jq -r '.packages[] | select(.manifest_path | endswith("/'"$crate_dir"'/Cargo.toml")) | .name' <<< "$metadata")
+            wasm_target=$(jq -r '.packages[] | select(.name == $package) | .targets[] | select(.crate_types | index("cdylib")) | .name' --arg package "$wasm_package" <<< "$metadata")
+            test -n "$wasm_target"
+            cp "$crate_dir/pkg/${wasm_target}_bg.wasm" "$RUNNER_TEMP/wasm-size/pr-${wasm_target}.wasm"
+          done
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: github.event_name == 'pull_request'
         with:
           name: wasm-size-pr
-          path: ${{ runner.temp }}/wasm-size/pr.wasm
+          path: ${{ runner.temp }}/wasm-size/pr-*.wasm
           if-no-files-found: error
           retention-days: 1
       - name: Validate npm package contents
-        working-directory: crates/wasm/pkg
-        run: npm pack --dry-run
+        run: |
+          for pkg in crates/wasm/pkg crates/wasm-io/pkg; do
+            (cd "$pkg" && npm pack --dry-run)
+          done
       - name: Build WASM without optional I/O
         run: |
           cargo clippy -p remus-wasm --target wasm32-unknown-unknown --no-default-features -- -D warnings
@@ -292,56 +297,52 @@ jobs:
         with:
           name: wasm-size-pr
           path: ${{ runner.temp }}/wasm-size
-      - name: Read WASM size (PR)
+      - name: Measure both modules against the committed base packages
         run: |
-          PR_SIZE=$(stat --printf="%s" "$RUNNER_TEMP/wasm-size/pr.wasm")
-          echo "PR_SIZE=$PR_SIZE" >> "$GITHUB_ENV"
-          echo "PR_SIZE_MB=$(echo "scale=2; $PR_SIZE / 1048576" | bc)" >> "$GITHUB_ENV"
-      - name: Read distributed WASM size (base)
-        run: |
-          metadata=$(cargo metadata --no-deps --format-version 1)
-          wasm_package=$(jq -r '.packages[] | select(.manifest_path | endswith("/crates/wasm/Cargo.toml")) | .name' <<< "$metadata")
-          wasm_target=$(jq -r '.packages[] | select(.name == $package) | .targets[] | select(.crate_types | index("cdylib")) | .name' --arg package "$wasm_package" <<< "$metadata")
-          test -n "$wasm_target"
-          BASE_SIZE=$(stat --printf="%s" "crates/wasm/pkg/${wasm_target}_bg.wasm")
-          echo "BASE_SIZE=$BASE_SIZE" >> "$GITHUB_ENV"
-          echo "BASE_SIZE_MB=$(echo "scale=2; $BASE_SIZE / 1048576" | bc)" >> "$GITHUB_ENV"
-      - name: Compute delta
-        run: |
-          DELTA=$(( PR_SIZE - BASE_SIZE ))
-          if [ $BASE_SIZE -gt 0 ]; then
-            PCT=$(echo "scale=1; $DELTA * 100 / $BASE_SIZE" | bc)
-          else
-            PCT="N/A"
-          fi
-          DELTA_KB=$(echo "scale=1; $DELTA / 1024" | bc)
-          if [ $DELTA -gt 0 ]; then
-            EMOJI="⚠️"
-            SIGN="+"
-          elif [ $DELTA -lt 0 ]; then
-            EMOJI="✅"
-            SIGN=""
-          else
-            EMOJI="✅"
-            SIGN=""
-          fi
-
+          # The base checkout holds the committed packages; a module with no
+          # committed base yet (first PR that adds it) reports as new.
+          rows=""
+          kernel_delta=0
+          for stem in remus_wasm remus_wasm_io; do
+            case "$stem" in
+              remus_wasm) crate_dir=crates/wasm ;;
+              remus_wasm_io) crate_dir=crates/wasm-io ;;
+            esac
+            pr_size=$(stat --printf="%s" "$RUNNER_TEMP/wasm-size/pr-${stem}.wasm")
+            pr_mb=$(echo "scale=2; $pr_size / 1048576" | bc)
+            base_file="$crate_dir/pkg/${stem}_bg.wasm"
+            if [ -f "$base_file" ]; then
+              base_size=$(stat --printf="%s" "$base_file")
+              base_mb=$(echo "scale=2; $base_size / 1048576" | bc)
+              delta=$(( pr_size - base_size ))
+              pct=$(echo "scale=1; $delta * 100 / $base_size" | bc)
+              delta_kb=$(echo "scale=1; $delta / 1024" | bc)
+              sign=""; [ $delta -gt 0 ] && sign="+"
+              rows="$rows| \`${stem}_bg.wasm\` | ${base_mb} MB | ${pr_mb} MB | ${sign}${delta_kb} KB (${sign}${pct}%) |"$'\n'
+            else
+              delta=$pr_size
+              rows="$rows| \`${stem}_bg.wasm\` | (new) | ${pr_mb} MB | new module |"$'\n'
+            fi
+            [ "$stem" = remus_wasm ] && kernel_delta=$delta
+          done
           {
             echo "COMMENT_BODY<<WASM_EOF"
             echo "## WASM Binary Size"
             echo ""
             echo "| File | main | PR | Delta |"
             echo "|------|------|----|-------|"
-            echo "| \`remus_wasm.wasm\` | ${BASE_SIZE_MB} MB | ${PR_SIZE_MB} MB | ${SIGN}${DELTA_KB} KB (${SIGN}${PCT}%) |"
+            printf '%s' "$rows"
             echo ""
-            if [ $DELTA -gt 51200 ]; then
-              echo "${EMOJI} Size increased by >50 KB. Please verify this is expected."
-            elif [ $DELTA -gt 0 ]; then
-              echo "${EMOJI} Size increased slightly."
-            elif [ $DELTA -eq 0 ]; then
-              echo "${EMOJI} No size change."
+            # Only the kernel module counts against the consumer's size policy;
+            # the translator module loads lazily around import and export.
+            if [ $kernel_delta -gt 51200 ]; then
+              echo "⚠️ Kernel module grew by >50 KB. Please verify this is expected."
+            elif [ $kernel_delta -gt 0 ]; then
+              echo "⚠️ Kernel module grew slightly."
+            elif [ $kernel_delta -eq 0 ]; then
+              echo "✅ Kernel module unchanged."
             else
-              echo "${EMOJI} Size decreased — nice!"
+              echo "✅ Kernel module shrank — nice!"
             fi
             echo "WASM_EOF"
           } >> "$GITHUB_ENV"
