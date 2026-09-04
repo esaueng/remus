@@ -2537,6 +2537,7 @@ mod tests {
     use std::collections::HashSet;
 
     use remus_math::mat::Mat4;
+    use remus_math::nurbs::surface::NurbsSurface;
     use remus_math::vec::{Point3, Vec3};
     use remus_topology::builder::{make_planar_face, make_polygon_wire};
     use remus_topology::face::{Face, FaceSurface};
@@ -2580,6 +2581,90 @@ mod tests {
         )
         .unwrap();
         solid_id_to_u32(solid)
+    }
+
+    fn saddle_annulus_profile(k: &mut BrepKernel) -> u32 {
+        let height = |x: f64, y: f64| 0.1 * x * y;
+        let point = |x: f64, y: f64| Point3::new(x, y, height(x, y));
+        let outer_points = [
+            point(-2.0, -2.0),
+            point(2.0, -2.0),
+            point(2.0, 2.0),
+            point(-2.0, 2.0),
+        ];
+        let hole_points = [
+            point(-1.0, -1.0),
+            point(-1.0, 1.0),
+            point(1.0, 1.0),
+            point(1.0, -1.0),
+        ];
+        let outer = make_polygon_wire(k.topo_mut(), &outer_points, TOL).unwrap();
+        let hole = make_polygon_wire(k.topo_mut(), &hole_points, TOL).unwrap();
+        let surface = NurbsSurface::new(
+            1,
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![
+                vec![outer_points[0], outer_points[1]],
+                vec![outer_points[3], outer_points[2]],
+            ],
+            vec![vec![1.0, 1.0], vec![1.0, 1.0]],
+        )
+        .unwrap();
+        let face = k
+            .topo_mut()
+            .add_face(Face::new(outer, vec![hole], FaceSurface::Nurbs(surface)));
+        face_id_to_u32(face)
+    }
+
+    fn assert_saddle_annulus_sweep(k: &BrepKernel, handle: u32, label: &str) -> f64 {
+        let solid = k.resolve_solid(handle).unwrap();
+        let faces = remus_topology::explorer::solid_faces(k.topo(), solid).unwrap();
+        let holed_caps = faces
+            .iter()
+            .filter(|&&face_id| {
+                let face = k.topo().face(face_id).unwrap();
+                matches!(face.surface(), FaceSurface::Nurbs(_)) && face.inner_wires().len() == 1
+            })
+            .count();
+        assert_eq!(holed_caps, 2, "{label}: both non-planar caps keep the hole");
+
+        let report = remus_operations::validate::validate_solid(k.topo(), solid).unwrap();
+        assert_eq!(
+            report.error_count(),
+            0,
+            "{label}: invalid solid: {report:?}"
+        );
+        let mesh = remus_operations::tessellate::tessellate_solid(k.topo(), solid, 0.01).unwrap();
+        let quality = remus_operations::tessellate::welded_mesh_quality(&mesh);
+        assert!(
+            quality.is_watertight(),
+            "{label}: mesh has {} boundary and {} non-manifold edges",
+            quality.boundary_edges,
+            quality.non_manifold_edges
+        );
+
+        let options = remus_check::classify::ClassifyOptions::default();
+        let opening = remus_check::classify::classify_point(
+            k.topo(),
+            solid,
+            Point3::new(0.0, 0.0, 3.0),
+            &options,
+        )
+        .unwrap();
+        assert_eq!(
+            opening,
+            remus_check::classify::PointClassification::Outside,
+            "{label}: the opening was silently capped"
+        );
+
+        let volume = remus_operations::measure::solid_volume(k.topo(), solid, 1e-4).unwrap();
+        assert!(
+            (volume - 72.0).abs() / 72.0 < 1e-4,
+            "{label}: volume {volume} vs extruded-annulus ground truth 72"
+        );
+        volume
     }
 
     fn topology_counts(
@@ -3743,6 +3828,35 @@ mod tests {
         );
         let solid = batch_solid_handle(&out, "sweep with Line path");
         assert_batch_solid_geometry(&k, solid, "sweep with Line path");
+    }
+
+    #[test]
+    fn nonplanar_annulus_sweep_matches_direct_and_batch_contracts() {
+        let mut direct = BrepKernel::new();
+        let direct_profile = saddle_annulus_profile(&mut direct);
+        let direct_solid = direct
+            .sweep_face(
+                direct_profile,
+                1,
+                vec![0.0, 0.0, 1.0, 1.0],
+                vec![0.0, 0.0, 0.0, 0.0, 0.0, 6.0],
+                vec![1.0, 1.0],
+            )
+            .unwrap();
+        let direct_volume = assert_saddle_annulus_sweep(&direct, direct_solid, "direct sweep");
+
+        let mut batch = BrepKernel::new();
+        let batch_profile = saddle_annulus_profile(&mut batch);
+        let path = batch.make_line_edge(0.0, 0.0, 0.0, 0.0, 0.0, 6.0).unwrap();
+        let result = dispatch(
+            &mut batch,
+            "sweep",
+            serde_json::json!({"face": batch_profile, "pathEdge": path}),
+        );
+        let batch_solid = batch_solid_handle(&result, "non-planar annulus sweep");
+        let batch_volume = assert_saddle_annulus_sweep(&batch, batch_solid, "batch sweep");
+
+        assert!((direct_volume - batch_volume).abs() < 1e-9);
     }
 
     #[test]
