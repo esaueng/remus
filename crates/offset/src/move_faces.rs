@@ -169,6 +169,7 @@ fn replace_surface_impl(
         source_counts,
         source_shell_sizes.as_slice(),
     )?;
+    super::validate_face_map(topo, &source_faces, result.solid, &result.face_map)?;
     Ok(MoveFacesResult {
         solid: result.solid,
         face_map: result.face_map,

@@ -8,7 +8,7 @@
     clippy::unwrap_used
 )]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::f64::consts::{PI, TAU};
 
 use remus_algo::PlaneFrame;
@@ -250,6 +250,30 @@ fn tilted_bored_cap_relimits_lines_and_circle_to_an_ellipse() {
     assert_eq!(
         solid_entity_counts(&topo, result.solid).expect("result counts"),
         source_counts
+    );
+    let source_face_indices: HashSet<_> = solid_faces(&topo, source)
+        .expect("source faces")
+        .into_iter()
+        .map(FaceId::index)
+        .collect();
+    let result_face_indices: HashSet<_> = solid_faces(&topo, result.solid)
+        .expect("result faces")
+        .into_iter()
+        .map(FaceId::index)
+        .collect();
+    assert_eq!(
+        result.face_map.keys().copied().collect::<HashSet<_>>(),
+        source_face_indices,
+        "face map must cover every source face"
+    );
+    assert_eq!(
+        result
+            .face_map
+            .values()
+            .map(|face| face.index())
+            .collect::<HashSet<_>>(),
+        result_face_indices,
+        "face map must cover every result face exactly once"
     );
     assert_qualified_result(&topo, result.solid, DX * DY * DZ - PI * DZ);
     let result_top = result.face_map[&selected.index()];
