@@ -126,7 +126,12 @@ that does not exist yet; without it, stop.
 
 ## Open items with a repro
 
-The `#[ignore]` inventory (regenerated 2026-09-02) holds no open engine defect:
+The `#[ignore]` inventory (regenerated 2026-09-03) holds two open engine defects:
+the WASM-only ellipsoid's transformed-sphere NURBS mesh is empty at unit/large
+scale and leaky at 1e-3 (`ellipsoid-tessellation-scale.json`,
+`qualify_primitives_tests.rs`), and `regress_parallel_boss_band_sections.rs`
+pins cut/intersect pocket faces on a cylinder wall coming back inconsistently
+oriented. The remaining ignores are
 two fork-policy pins blocked on the trim-contract reconciliation
 (`crates/operations/tests/regress_chamfer_obtuse_ridge.rs`,
 `regress_fillet_concave_notch.rs`, see PR #126), one ~2 min perf run
@@ -135,13 +140,12 @@ diagnostics (`profile_intersect.rs` ×3, the two #696 dovetail probes, the four
 `diag_*tangency*` landscape probes — re-run those with `--ignored --nocapture`
 before re-opening the tangency row). Everything else that was once "deferred"
 is either a §B row in `roadmap.md`, a program-ledger issue, or a closed entry in
+`campaign-history.md`.
+
 The `modifier_ops` fuzz red that stood from 2026-08-16 to 2026-09-02 was the
 harness's own option-honoured floor misreading a correct 0.05 fillet on an
 800 u³ body, not a kernel defect (fixed in #223; seed committed at
-`fuzz/corpus/modifier_ops/fillet-small-radius-on-large-disjoint-body`). Still open with
-a repro: `crates/operations/tests/regress_parallel_boss_band_sections.rs`
-(#198) pins cut/intersect pocket faces on a cylinder wall coming back
-inconsistently oriented — an engine defect with no §B row yet.
+`fuzz/corpus/modifier_ops/fillet-small-radius-on-large-disjoint-body`).
 
 ## Durable lessons (one line each; the story is in `campaign-history.md`)
 
