@@ -364,6 +364,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Shared loft/sweep/pipe/revolve end caps | `cap.rs` |
 | Journal ingestion for modeling operations | `journal_ops.rs` |
 | Direct push/pull face editing | `push_pull.rs` |
+| Exact support-surface replacement with topology-preserving re-limitation | `replace_surface.rs` |
 | Exact constant-radius blend-band resizing | `resize_blend.rs` |
 | Full-turn rim chain recognition | `tessellate/rim_chain.rs` |
 | Shared test assertion helpers | `test_helpers.rs` |
