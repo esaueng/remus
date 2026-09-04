@@ -4563,10 +4563,11 @@ export class BrepKernel {
         return ret[0] >>> 0;
     }
     /**
-     * Translate planar faces together along their common direction.
+     * Move a supported face selection through exact neighbor re-limitation.
      *
-     * This is the multi-face direct-edit primitive used for symmetric
-     * dimensions. Returns a new solid handle (`u32`).
+     * The qualified domain includes coherent planar groups, holed planar
+     * supports with incident analytic fillet bands, and inward coaxial bore
+     * walls. Returns a new solid handle (`u32`).
      *
      * # Errors
      *

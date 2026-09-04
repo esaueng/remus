@@ -334,10 +334,24 @@ does not itself promote or demote anything.
   doubled-bore witnesses cover validation, two edge uses, welded watertight
   meshes, B-Rep/independent-mesh volume, p-curve residuals, rollback, and
   translated 1e-3/1/1e3 scale.
+- **Generalized move cell:** a holed planar support may move normal to itself
+  through incident constant-radius analytic fillet bands. The operation uses
+  either exact remove/move/rebuild or a proof-gated translation-invariant
+  patch, and composes its construction records into one face map. The
+  boss-on-plate witness follows the exact patch path and retains its through
+  bore and radius-one band, exact face/edge/vertex census,
+  finite non-zero trims throughout the re-limited neighborhood,
+  closed/manifold B-Rep and welded mesh, independent volume agreement, and
+  construction-proven persistent references across
+  translated 1e-3/1/1e3 scale. Native, direct WASM, and batch WASM agree.
+  Inward coaxial bore moves now reuse the replace-surface cell and report the
+  same total construction provenance. A collision refuses transactionally.
 - Known Partial/Unqualified cells: surface-type changes, outward-facing
   cylindrical walls, non-coaxial cylinders, non-analytic supports,
-  topology-changing replacements, blend rollover, generalized curved-face
-  re-limitation, WASM exposure, and direct-edit evolution remain roadmap work.
+  topology-changing replacements, blend rollover, arbitrary face rotation or
+  lateral relocation, and complex blend regions without unique construction
+  correspondence remain roadmap work. Replace-surface itself is not yet a
+  WASM operation; full direct-edit journal/evolution exposure remains 6.5.
 
 ### Sweeps (extrude, revolve, sweep, loft, pipe, helix)
 
@@ -477,9 +491,12 @@ does not itself promote or demote anything.
 ### Evolution and naming
 
 - Ledger row: "Face provenance" (Beta). Construction-derived face provenance
-  covers booleans, walking/planar blend builders, patterns, draft, split,
-  defeature, shell, and default intersection-joint V2 offsets. Direct edits
-  produce none. Arc-joint offsets and offsets followed by self-intersection
+  covers booleans, walking/planar blend builders, generalized face moves,
+  patterns, draft, split, defeature, shell, and default intersection-joint V2
+  offsets. `move_faces_journaled` carries exact one-to-one identities through
+  ordinary re-limitation, inward bore replacement, and uniquely attributable
+  blend removal/rebuild; ambiguity is explicit `unresolved`. Other direct
+  edits produce none. Arc-joint offsets and offsets followed by self-intersection
   removal do not expose a face map: those variants may synthesize or replace
   faces after the one-to-one offset construction and fail closed rather than
   publishing stale provenance.

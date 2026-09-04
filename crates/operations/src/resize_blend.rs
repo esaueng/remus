@@ -139,10 +139,17 @@ struct SupportPair {
 }
 
 #[derive(Debug)]
+struct BandFaceLineage {
+    source: usize,
+    supports: Vec<FaceId>,
+}
+
+#[derive(Debug)]
 struct BlendMovePlan {
     radius: f64,
     volume_effect: f64,
     support_pairs: Vec<SupportPair>,
+    band_faces: Vec<BandFaceLineage>,
 }
 
 /// Resize or remove a constant-radius analytic blend band.
@@ -532,7 +539,7 @@ pub(crate) fn move_planar_faces_with_blends(
     solid: SolidId,
     faces: &[FaceId],
     distance: f64,
-) -> Result<Option<SolidId>, OperationsError> {
+) -> Result<Option<crate::push_pull::MoveFacesResult>, OperationsError> {
     if adjacent_analytic_blend_seed(topo, solid, faces)?.is_none() {
         return Ok(None);
     }
@@ -560,7 +567,7 @@ fn move_planar_faces_with_blends_remove_rebuild(
     solid: SolidId,
     faces: &[FaceId],
     distance: f64,
-) -> Result<Option<SolidId>, OperationsError> {
+) -> Result<Option<crate::push_pull::MoveFacesResult>, OperationsError> {
     if faces.is_empty() {
         return Ok(None);
     }
@@ -583,9 +590,17 @@ fn move_planar_faces_with_blends_remove_rebuild(
     let mut current_solid = solid;
     let mut selected_faces = faces.to_vec();
     let mut plans = Vec::new();
+    let mut construction_map: HashMap<usize, FaceId> = source_faces
+        .iter()
+        .map(|face| (face.index(), *face))
+        .collect();
+    let mut lineage_is_exact = true;
 
     while let Some(seed) = adjacent_blend_seed(topo, current_solid, &selected_faces)? {
         let band = describe_band(topo, current_solid, seed)?;
+        let (band_faces, exact) =
+            describe_band_face_lineage(topo, current_solid, &band, &construction_map)?;
+        lineage_is_exact &= exact;
         let stage_volume = crate::measure::solid_volume(topo, current_solid, 0.05)?;
         let sharp = remove_blend_region(topo, current_solid, &band)?;
         validate_exact_result(topo, sharp.solid, "sharp support reconstruction")?;
@@ -596,7 +611,9 @@ fn move_planar_faces_with_blends_remove_rebuild(
         for plan in &mut plans {
             remap_plan(plan, &sharp.face_map)?;
         }
+        remap_construction_lineage(&mut construction_map, &sharp.face_map, &band.faces)?;
         let mapped_supports = remap_faces(&band.supports, &sharp.face_map, "blend support")?;
+        let band_faces = remap_band_face_lineage(band_faces, &sharp.face_map)?;
         plans.push(BlendMovePlan {
             radius: band.radius,
             volume_effect: stage_volume - sharp_volume,
@@ -606,6 +623,7 @@ fn move_planar_faces_with_blends_remove_rebuild(
                 &sharp.edges,
                 &mapped_supports,
             )?,
+            band_faces,
         });
         current_solid = sharp.solid;
     }
@@ -630,6 +648,7 @@ fn move_planar_faces_with_blends_remove_rebuild(
     for plan in &mut plans {
         remap_plan(plan, &moved.face_map)?;
     }
+    remap_construction_lineage(&mut construction_map, &moved.face_map, &[])?;
     current_solid = moved.solid;
 
     for index in (0..plans.len()).rev() {
@@ -658,6 +677,9 @@ fn move_planar_faces_with_blends_remove_rebuild(
             .iter()
             .map(|(source, result)| (source.index(), *result))
             .collect();
+        remap_construction_lineage(&mut construction_map, &survivor_map, &[])?;
+        lineage_is_exact &=
+            restore_band_face_lineage(&mut construction_map, &plans[index].band_faces, origins);
         for plan in &mut plans[..index] {
             remap_plan(plan, &survivor_map)?;
         }
@@ -678,7 +700,23 @@ fn move_planar_faces_with_blends_remove_rebuild(
         "blend-aware planar move",
     )?;
 
-    Ok(Some(current_solid))
+    let result_faces = remus_topology::explorer::solid_faces(topo, current_solid)?;
+    let evolution =
+        if lineage_is_exact && lineage_is_total(&source_faces, &result_faces, &construction_map) {
+            crate::push_pull::exact_face_evolution(
+                topo,
+                &source_faces,
+                current_solid,
+                construction_map,
+            )?
+        } else {
+            conservative_move_evolution(&source_faces, &result_faces, &construction_map)
+        };
+
+    Ok(Some(crate::push_pull::MoveFacesResult {
+        solid: current_solid,
+        evolution,
+    }))
 }
 
 fn adjacent_blend_seed(
@@ -937,7 +975,7 @@ fn move_translation_invariant_blend_region(
     solid: SolidId,
     faces: &[FaceId],
     distance: f64,
-) -> Result<SolidId, OperationsError> {
+) -> Result<crate::push_pull::MoveFacesResult, OperationsError> {
     if !distance.is_finite() || distance.abs() <= Tolerance::new().linear {
         return Err(remus_offset::OffsetError::InvalidInput {
             reason: "move-face distance must be non-zero and finite".into(),
@@ -1106,9 +1144,12 @@ fn move_translation_invariant_blend_region(
         )));
     }
 
-    let result = crate::copy::copy_solid_between(&work, topo, solid)?;
+    let (result, face_map) = crate::copy::copy_solid_between_with_face_map(&work, topo, solid)?;
     validate_exact_result(topo, result, "accepted blend-aware planar move")?;
-    Ok(result)
+    Ok(crate::push_pull::MoveFacesResult {
+        solid: result,
+        evolution: crate::push_pull::exact_face_evolution(topo, &source_faces, result, face_map)?,
+    })
 }
 
 fn remap_faces(
@@ -1129,6 +1170,167 @@ fn remap_faces(
         .collect()
 }
 
+fn describe_band_face_lineage(
+    topo: &Topology,
+    solid: SolidId,
+    band: &BandDescription,
+    construction_map: &HashMap<usize, FaceId>,
+) -> Result<(Vec<BandFaceLineage>, bool), OperationsError> {
+    let current_to_source: HashMap<usize, usize> = construction_map
+        .iter()
+        .map(|(&source, current)| (current.index(), source))
+        .collect();
+    let support_set: HashSet<FaceId> = band.supports.iter().copied().collect();
+    let adjacency = topo.build_adjacency(solid)?;
+    let mut exact = true;
+    let mut lineages = Vec::new();
+    for &band_face in &band.faces {
+        let Some(&source) = current_to_source.get(&band_face.index()) else {
+            exact = false;
+            continue;
+        };
+        let mut supports = HashSet::new();
+        for edge in face_edges(topo, band_face)? {
+            for adjacent in distinct_faces(adjacency.faces_for_edge(edge)) {
+                if support_set.contains(&adjacent)
+                    && tangent_across(topo, edge, band_face, adjacent)?
+                {
+                    supports.insert(adjacent);
+                }
+            }
+        }
+        let mut supports: Vec<_> = supports.into_iter().collect();
+        supports.sort_unstable_by_key(|face| face.index());
+        if supports.is_empty() {
+            exact = false;
+        }
+        lineages.push(BandFaceLineage { source, supports });
+    }
+    if lineages.len() != band.faces.len() {
+        exact = false;
+    }
+    Ok((lineages, exact))
+}
+
+fn remap_band_face_lineage(
+    mut lineages: Vec<BandFaceLineage>,
+    face_map: &HashMap<usize, FaceId>,
+) -> Result<Vec<BandFaceLineage>, OperationsError> {
+    for lineage in &mut lineages {
+        lineage.supports = remap_faces(&lineage.supports, face_map, "blend lineage support")?;
+    }
+    Ok(lineages)
+}
+
+fn remap_construction_lineage(
+    construction_map: &mut HashMap<usize, FaceId>,
+    stage_map: &HashMap<usize, FaceId>,
+    removed: &[FaceId],
+) -> Result<(), OperationsError> {
+    let removed: HashSet<usize> = removed.iter().map(|face| face.index()).collect();
+    let current = std::mem::take(construction_map);
+    for (source, face) in current {
+        if let Some(&result) = stage_map.get(&face.index()) {
+            construction_map.insert(source, result);
+        } else if !removed.contains(&face.index()) {
+            return Err(reconstruction(format!(
+                "face {} disappeared without a construction record",
+                face.index()
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn canonical_faces(faces: &[FaceId]) -> Vec<usize> {
+    let mut indices: Vec<_> = faces.iter().map(|face| face.index()).collect();
+    indices.sort_unstable();
+    indices.dedup();
+    indices
+}
+
+fn restore_band_face_lineage(
+    construction_map: &mut HashMap<usize, FaceId>,
+    lineages: &[BandFaceLineage],
+    origins: &BlendFaceOrigins,
+) -> bool {
+    let mut exact = origins.created_unattributed.is_empty();
+    let mut used = HashSet::new();
+    for lineage in lineages {
+        let supports = canonical_faces(&lineage.supports);
+        let matches: Vec<_> = origins
+            .created
+            .iter()
+            .filter(|(result, sources)| {
+                !used.contains(result) && canonical_faces(sources) == supports
+            })
+            .map(|(result, _)| *result)
+            .collect();
+        if let [result] = matches.as_slice() {
+            construction_map.insert(lineage.source, *result);
+            used.insert(*result);
+        } else {
+            exact = false;
+        }
+    }
+    exact && used.len() == origins.created.len()
+}
+
+fn lineage_is_total(
+    source_faces: &[FaceId],
+    result_faces: &[FaceId],
+    construction_map: &HashMap<usize, FaceId>,
+) -> bool {
+    let sources: HashSet<_> = source_faces.iter().map(|face| face.index()).collect();
+    let mapped_sources: HashSet<_> = construction_map.keys().copied().collect();
+    let results: HashSet<_> = result_faces.iter().map(|face| face.index()).collect();
+    let mapped_results: HashSet<_> = construction_map.values().map(|face| face.index()).collect();
+    sources == mapped_sources
+        && results == mapped_results
+        && construction_map.len() == result_faces.len()
+}
+
+fn conservative_move_evolution(
+    source_faces: &[FaceId],
+    result_faces: &[FaceId],
+    construction_map: &HashMap<usize, FaceId>,
+) -> EvolutionMap {
+    let mut evolution = EvolutionMap::exact();
+    let result_set: HashSet<_> = result_faces.iter().map(|face| face.index()).collect();
+    let mut candidates_by_result: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for (&source, result) in construction_map {
+        if result_set.contains(&result.index()) {
+            candidates_by_result
+                .entry(result.index())
+                .or_default()
+                .push(source);
+        }
+    }
+    let mut proven_sources = HashSet::new();
+    let mut proven_results = HashSet::new();
+    for (&result, candidates) in &mut candidates_by_result {
+        candidates.sort_unstable();
+        candidates.dedup();
+        if let [source] = candidates.as_slice() {
+            evolution.add_modified(*source, result);
+            proven_sources.insert(*source);
+            proven_results.insert(result);
+        }
+    }
+    let mut uncertain_sources: Vec<_> = source_faces
+        .iter()
+        .map(|face| face.index())
+        .filter(|source| !proven_sources.contains(source))
+        .collect();
+    uncertain_sources.sort_unstable();
+    for result in result_faces {
+        if !proven_results.contains(&result.index()) {
+            evolution.add_unresolved(result.index(), uncertain_sources.clone());
+        }
+    }
+    evolution
+}
+
 fn remap_plan(
     plan: &mut BlendMovePlan,
     face_map: &HashMap<usize, FaceId>,
@@ -1146,6 +1348,9 @@ fn remap_plan(
                 pair.second.index()
             ))
         })?;
+    }
+    for lineage in &mut plan.band_faces {
+        lineage.supports = remap_faces(&lineage.supports, face_map, "blend lineage support")?;
     }
     Ok(())
 }
@@ -2185,13 +2390,44 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        assert_eq!(solid_entity_counts(&topo, moved).unwrap(), source_counts);
-        let moved_volume = crate::measure::solid_volume(&topo, moved, 0.05).unwrap();
+        assert_eq!(
+            solid_entity_counts(&topo, moved.solid).unwrap(),
+            source_counts
+        );
+        assert!(moved.evolution.origin.is_exact());
+        assert!(moved.evolution.is_complete());
+        let moved_volume = crate::measure::solid_volume(&topo, moved.solid, 0.05).unwrap();
         let expected = 1100.0 - fillet_removed;
         assert!(
             (moved_volume - expected).abs() < 1e-3 * expected,
             "moving the support by 1 must lengthen the filleted block: {moved_volume} vs {expected}"
         );
+    }
+
+    #[test]
+    fn conservative_move_lineage_refuses_duplicate_construction_claims() {
+        use remus_topology::explorer::solid_faces;
+
+        let mut topo = Topology::new();
+        let source = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+        let result = crate::primitives::make_box(&mut topo, 2.0, 2.0, 2.0).unwrap();
+        let source_faces = solid_faces(&topo, source).unwrap();
+        let result_faces = solid_faces(&topo, result).unwrap();
+        let mut construction = HashMap::new();
+        construction.insert(source_faces[1].index(), result_faces[0]);
+        construction.insert(source_faces[0].index(), result_faces[0]);
+        for index in 2..source_faces.len() {
+            construction.insert(source_faces[index].index(), result_faces[index]);
+        }
+
+        let evolution = conservative_move_evolution(&source_faces, &result_faces, &construction);
+        let uncertain = vec![source_faces[0].index(), source_faces[1].index()];
+        assert_eq!(evolution.unresolved[&result_faces[0].index()], uncertain);
+        assert_eq!(evolution.unresolved[&result_faces[1].index()], uncertain);
+        assert!(!evolution.modified.contains_key(&source_faces[0].index()));
+        assert!(!evolution.modified.contains_key(&source_faces[1].index()));
+        assert!(!evolution.is_complete());
+        assert!(evolution.origin.is_exact());
     }
 
     #[test]
