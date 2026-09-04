@@ -29,6 +29,6 @@
     "invalid_input": 13,
     "invalid_topology": 6
   },
-  "boolean_exact": 9,
-  "boolean_approximate": 22
+  "boolean_exact": 8,
+  "boolean_approximate": 23
 }
