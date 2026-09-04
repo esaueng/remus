@@ -289,7 +289,7 @@ class RemusIo {
      * or no bytes when the file holds no solids.
      *
      * `maxInputBytes` / `maxEntities` optionally tighten the hostile-input
-     * resource budgets below the production defaults (128 MiB / 2,000,000).
+     * resource budgets below the production defaults (256 MiB / 3,000,000).
      * @param {Uint8Array} data
      * @param {number | null} [max_input_bytes]
      * @param {number | null} [max_entities]
