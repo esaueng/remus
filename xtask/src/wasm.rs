@@ -12,9 +12,16 @@ const WASM_BINDGEN_VERSION: &str = "0.2.126";
 /// changes significantly.
 const MIN_METHOD_COUNT: usize = 170;
 
-/// Valid .wasm file size range (bytes).
+/// Valid .wasm file size range (bytes). The upper bounds mirror the consumer
+/// policy `KERNEL_WASM_POLICY` in esaueng/openzcad
+/// `scripts/bundle-size-policy.mjs` (rationale in its
+/// `docs/kernel-wasm-size-policy.md`): `rawReviewBytes` (9 MiB) warns and
+/// requires a kernel-size review, `rawHardBytes` (10 MiB) fails. Change them
+/// together with that policy, never independently.
 const MIN_WASM_SIZE: u64 = 500_000;
-const MAX_WASM_SIZE: u64 = 8 * 1024 * 1024;
+const REVIEW_WASM_SIZE: u64 = 9 * 1024 * 1024;
+const MAX_WASM_SIZE: u64 = 10 * 1024 * 1024;
+const _: () = assert!(MIN_WASM_SIZE < REVIEW_WASM_SIZE && REVIEW_WASM_SIZE < MAX_WASM_SIZE);
 
 fn project_root() -> Result<PathBuf> {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -295,6 +302,8 @@ fn validate_at(pkg: &Path) -> Result<()> {
         let size = fs::metadata(&wasm_path)?.len();
         if let Some(error) = wasm_size_error(size) {
             errors.push(error);
+        } else if let Some(warning) = wasm_size_warning(size) {
+            println!("  WARN {warning}");
         } else {
             println!("  ok .wasm size: {:.1} KB", size as f64 / 1024.0);
         }
@@ -373,6 +382,16 @@ fn wasm_size_error(size: u64) -> Option<String> {
     } else {
         None
     }
+}
+
+/// Sizes inside the hard budget but above the consumer's review threshold.
+fn wasm_size_warning(size: u64) -> Option<String> {
+    (REVIEW_WASM_SIZE < size && size <= MAX_WASM_SIZE).then(|| {
+        format!(
+            ".wasm size {size} bytes exceeds the review threshold ({REVIEW_WASM_SIZE}); \
+             hard limit {MAX_WASM_SIZE}. A kernel-size review is required before shipping"
+        )
+    })
 }
 
 /// Validate package.json fields, pushing errors into the collector.
@@ -546,6 +565,19 @@ mod tests {
             wasm_size_error(MAX_WASM_SIZE + 1)
                 .is_some_and(|error| error.contains("too large"))
         );
+    }
+
+    #[test]
+    fn wasm_size_review_warning_covers_only_the_band_below_the_hard_limit() {
+        assert!(wasm_size_warning(REVIEW_WASM_SIZE).is_none());
+        assert!(
+            wasm_size_warning(REVIEW_WASM_SIZE + 1)
+                .is_some_and(|warning| warning.contains("review threshold"))
+        );
+        assert!(wasm_size_warning(MAX_WASM_SIZE).is_some());
+        // Above the hard limit the error path owns the message.
+        assert!(wasm_size_warning(MAX_WASM_SIZE + 1).is_none());
+        assert!(wasm_size_error(MAX_WASM_SIZE + 1).is_some());
     }
 
     #[test]
