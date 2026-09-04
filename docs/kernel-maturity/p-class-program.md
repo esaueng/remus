@@ -41,7 +41,7 @@ serialization — is machinery most kernels never grew. It makes milestone M6
 (direct modeling) unusually valuable here.
 
 **The three architectural pillars are M2, M3, and M4.** The
-sheet/wire/cellular body taxonomy (M4) is now implemented in review through
+sheet/wire/cellular body taxonomy (M4) is now implemented through
 Issue 4.7; per-entity tolerant modeling (M3) and general curved×curved boolean
 intersection (M2) remain open. Issue 2.2 closes the first general-position
 cell: two offset spheres now fuse, cut, and intersect through an exact
@@ -302,7 +302,7 @@ reviewable stages:
    operator census and parity matrix, and reconcile the capability/stability
    ledgers without weakening typed refusal or fallback disclosure.
 
-Stage 2.4b is in review in PR #207. The torus-notch arrangement emits both
+Stage 2.4b merged in PR #207. The torus-notch arrangement emits both
 complementary annular `u`-bands with distinct interior witnesses and
 winding-correct outer/inner roles. Operator-neutral classification retains the
 long band for Cut and the short band for Intersect. The latter is a five-face
@@ -461,7 +461,7 @@ floor; entity tolerance only widens.
 > their declared balls interferes in VV; all existing suites unchanged
 > (entity tolerances default to the floor).
 
-In review in [PR #208](https://github.com/esaueng/remus/pull/208): the existing
+Merged in [PR #208](https://github.com/esaueng/remus/pull/208): the existing
 10×-global VV ball witness is joined by declared-tube EE/VE, forced-overlap,
 and tolerance-aware pave-vertex lookup regressions. SameParameter and
 SameRange use the larger of the caller bound and effective edge tolerance;
@@ -595,7 +595,7 @@ Generalize split-by-plane to split-by-sheet-body: the sheet's faces act as
 the tool's face set in GFA without a bounding solid. First consumer of the
 cellular result model.
 
-Implemented, in review in [PR #214](https://github.com/esaueng/remus/pull/214):
+Landed via [PR #233](https://github.com/esaueng/remus/pull/233) (superseding [PR #214](https://github.com/esaueng/remus/pull/214)):
 the isolated GFA arrangement uses the sheet only for pave filling, target-face
 partitioning, and oppositely oriented cell closure—never as a volumetric
 boolean operand. `split_by_sheet` returns a Compound after validating every
@@ -618,7 +618,7 @@ sheet×sheet trims — the surface-modeling loop that ends in `sew` producing a
 solid. Classification of sheet faces against the solid reuses the M2-hardened
 classifiers.
 
-Implemented, in review in [PR #215](https://github.com/esaueng/remus/pull/215)
+Landed via [PR #233](https://github.com/esaueng/remus/pull/233) (superseding [PR #215](https://github.com/esaueng/remus/pull/215))
 and [PR #216](https://github.com/esaueng/remus/pull/216): the face-set GFA
 arrangement classifies only sheet patches and returns new validation-gated
 Sheets. Solid trims retain either the exact 100-area inside square or connected
@@ -642,7 +642,7 @@ removing material — GFA's split phase without the classification/discard
 phase. The naming stack makes this shine: imprints journal as pure Split
 events, so persistent refs across an imprint are exact.
 
-Implemented, in review in [PR #217](https://github.com/esaueng/remus/pull/217):
+Landed via [PR #233](https://github.com/esaueng/remus/pull/233) (superseding [PR #217](https://github.com/esaueng/remus/pull/217)):
 the tool participates only in pave filling and face partitioning; assembly
 retains every target patch in a new validation-gated solid. The bounded
 transversal planar witness imprints a rectangular loop into a box face while
@@ -668,7 +668,7 @@ regions, return them as a Compound with per-region provenance instead of the
 current single-solid convention. Also closes the "Fuse/Intersect over
 disjoint multi-component inputs are left to mesh" note.
 
-Implemented, in review in [PR #218](https://github.com/esaueng/remus/pull/218)
+Landed via [PR #233](https://github.com/esaueng/remus/pull/233) (superseding [PR #218](https://github.com/esaueng/remus/pull/218))
 and [PR #219](https://github.com/esaueng/remus/pull/219): the BuilderSolid final
 phase produces one `Solid` per disconnected growth shell, assigns closed
 cavity shells deterministically to the smallest containing region, and keeps
@@ -695,7 +695,7 @@ entry points remain for compatibility. The stated exit gate is complete.
 Wire bodies as measurable, transformable, sweepable first-class inputs.
 Mostly bookkeeping once 4.1 lands; defer freely.
 
-Implemented, in review in [PR #222](https://github.com/esaueng/remus/pull/222):
+Landed via [PR #233](https://github.com/esaueng/remus/pull/233) (superseding [PR #222](https://github.com/esaueng/remus/pull/222)):
 `body_length` provides dimensional dispatch without weakening the existing
 wire measurement, and arena v5 adds ordered, duplicate-preserving standalone
 wire roots while retaining v1–v4 readers and frozen v3/v4 writers. The
@@ -704,7 +704,7 @@ a private face, validates the resulting solid, and leaves the input root
 independent. Native and direct/batch WASM witnesses agree on exact rectangular
 perimeter and prism volume. Open and non-planar profiles fail closed without
 allocating live topology. The stated exit gate, and therefore the M4
-implementation sequence, is complete in review.
+implementation sequence, is complete.
 
 > **Exit gate:** wire body round-trips arena IO; sweeps accept it as a
 > profile source.
@@ -726,7 +726,7 @@ Unqualified. Qualify against oracles: a linear law on a straight edge has a
 closed-form band; S-curve verified by sampled-section invariants (radius at
 parameter, tangency to both supports).
 
-Implemented, in review in [PR #226](https://github.com/esaueng/remus/pull/226):
+Landed via [PR #233](https://github.com/esaueng/remus/pull/233) (superseding [PR #226](https://github.com/esaueng/remus/pull/226)):
 standard constant, linear, and S-curve laws expose exact whole-domain extrema
 and refuse a tolerance-collapsed radius before topology work. A caller-supplied
 exclusive local limit is checked over the complete law domain and returns
@@ -759,7 +759,7 @@ experimental and unblocks the pinned `resize_blend` refusal (cylinder-wall ×
 cone-wall rim reconstruction). Contact curves on curved supports are exactly
 the geometry 2.4 taught the splitter to consume.
 
-Implemented, in review in [PR #228](https://github.com/esaueng/remus/pull/228):
+Landed via [PR #233](https://github.com/esaueng/remus/pull/233) (superseding [PR #228](https://github.com/esaueng/remus/pull/228)):
 the ordinary constant-radius walker now uses the material side of every
 analytic support, recovers across periodic parameter seams, and closes a rim
 on its authoritative curve domain. Coaxial cylinder/cone shoulders are
@@ -793,7 +793,7 @@ Generalize the spherical-triangle corner patch to N incident stripes with
 mixed convexity — the setback-free corner solver Parasolid calls a vertex
 blend.
 
-Implemented, in review in [PR #231](https://github.com/esaueng/remus/pull/231):
+Landed via [PR #233](https://github.com/esaueng/remus/pull/233) (superseding [PR #231](https://github.com/esaueng/remus/pull/231)):
 constant-radius planar vertex blends now solve a common tangent ball from the
 best-conditioned face-plane triple and qualify every remaining incident face.
 Each stripe ends at the exact projection of that ball centre onto its spine;
@@ -895,7 +895,7 @@ one), and hold-line variants where one contact curve is prescribed. The
 styling tier — genuinely optional for mechanical CAD; keep behind the rest of
 M5.
 
-Implemented, in review in [PR #236](https://github.com/esaueng/remus/pull/236),
+Merged in [PR #236](https://github.com/esaueng/remus/pull/236),
 for one exact bounded cell. Each face set contains one convex, hole-free,
 straight-edged planar support; the two carrier planes are transversal, their
 faces share no `EdgeId`, and their bounded polygons overlap along a positive
@@ -932,7 +932,7 @@ offset folds. The general BOP-based approach becomes viable once M2
 generality lands; the bounded exact cell below does not claim that broader
 coverage.
 
-**Implemented, in review in [PR #237](https://github.com/esaueng/remus/pull/237),
+**Merged in [PR #237](https://github.com/esaueng/remus/pull/237),
 for the fully collapsed uniform-L-prism cell.** A closed shell
 of a hole-free, straight-edged, all-planar prism with one six-edge orthogonal
 L-profile and equal arm widths may contain one disconnected inner offset
@@ -981,7 +981,7 @@ in this milestone is a caller of this function. Failure policy: if
 re-intersection loses an edge or opens the shell, refuse typed with the
 offending adjacency named — never emit the broken solid.
 
-Implemented in [PR #238](https://github.com/esaueng/remus/pull/238) for the
+Merged in [PR #238](https://github.com/esaueng/remus/pull/238) for the
 first exact analytic cell. `replace_surface` accepts one coherently oriented
 plane replacement, or one same-axis coaxial radius replacement on an
 inward-facing cylindrical bore wall. The existing re-limitation engine
