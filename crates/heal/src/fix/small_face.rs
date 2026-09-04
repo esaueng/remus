@@ -58,10 +58,11 @@ pub fn fix_small_faces(
         Ok(FixResult::ok())
     } else {
         ctx.info(format!("marked {total_removed} small faces for removal"));
-        Ok(FixResult {
-            status: Status::DONE3,
-            actions_taken: total_removed,
-        })
+        Ok(FixResult::changed(
+            Status::DONE3,
+            super::RepairActionKind::SmallFaceRemoved,
+            total_removed,
+        ))
     }
 }
 

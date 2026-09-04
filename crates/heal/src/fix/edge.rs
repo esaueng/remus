@@ -105,13 +105,24 @@ pub fn fix_same_parameter_on_face(
         [] => return Ok(FixResult::ok()),
         [only] => *only,
         _ => {
+            let needs_fix = senses.iter().any(|&sense| {
+                topo.pcurve_oriented(edge_id, face_id, sense)
+                    .is_none_or(|_| {
+                        compute_pcurve_deviation(topo, edge_id, face_id, sense)
+                            .map_or(true, |deviation| deviation > ctx.tolerance.linear)
+                    })
+            });
+            if !config.fix_same_parameter.should_fix(needs_fix) || !needs_fix {
+                return Ok(FixResult::ok());
+            }
             ctx.info(format!(
                 "Edge {edge_id:?} on Face {face_id:?}: seam edge (used in both senses);                  SameParameter needs a side the projection cannot infer, skipping",
             ));
-            return Ok(FixResult {
-                status: Status::FAIL1,
-                actions_taken: 0,
-            });
+            return Ok(FixResult::refused(
+                Status::FAIL1,
+                super::RepairRefusalKind::AmbiguousSeamPcurve,
+                senses.len(),
+            ));
         }
     };
 
@@ -134,8 +145,11 @@ pub fn fix_same_parameter_on_face(
             "Edge {edge_id:?} on Face {face_id:?}: PCurve deviation {max_dev:.2e} exceeds tolerance {tol:.2e}, rebuilding",
         ));
     } else {
-        // No PCurve exists -- always needs fixing unless mode is Off.
-        if !config.fix_same_parameter.should_fix(true) {
+        // Absence is not itself a SameParameter defect: many valid native
+        // solids intentionally carry no pcurves. Auto mode repairs a measured
+        // deviation only; explicit On mode requests construction of a missing
+        // representation and the high-level boundary verifies the result.
+        if config.fix_same_parameter != FixMode::On {
             return Ok(FixResult::ok());
         }
 
@@ -174,10 +188,11 @@ pub fn fix_same_parameter_on_face(
     let pcurve = PCurve::new(Curve2D::Nurbs(nurbs_2d), t_start, t_end);
     topo.set_pcurve_oriented(edge_id, face_id, forward, pcurve)?;
 
-    Ok(FixResult {
-        status: Status::DONE3,
-        actions_taken: 1,
-    })
+    Ok(FixResult::changed(
+        Status::DONE3,
+        super::RepairActionKind::PcurveRebuilt,
+        1,
+    ))
 }
 
 /// The senses in which `face` uses `edge`, deduplicated.
@@ -229,10 +244,11 @@ fn fix_vertex_tolerance(
         ));
     }
 
-    Ok(FixResult {
-        status: Status::DONE1,
-        actions_taken: 1,
-    })
+    Ok(FixResult::refused(
+        Status::FAIL2,
+        super::RepairRefusalKind::VertexToleranceRepairUnsupported,
+        usize::from(start_dev > tol) + usize::from(end_dev > tol),
+    ))
 }
 
 /// Detect and remove degenerate edges (closed + zero-length curve).
@@ -257,10 +273,11 @@ fn fix_degenerate(
     ));
     ctx.reshape.remove_edge(edge_id);
 
-    Ok(FixResult {
-        status: Status::DONE2,
-        actions_taken: 1,
-    })
+    Ok(FixResult::changed(
+        Status::DONE2,
+        super::RepairActionKind::DegenerateEdgeRemoved,
+        1,
+    ))
 }
 
 /// Stub for SameParameter when no face context is available.
@@ -275,10 +292,11 @@ fn fix_same_parameter_stub(ctx: &mut HealContext, config: &FixConfig) -> FixResu
         "SameParameter fix: requires face context, use fix_same_parameter_on_face()".to_string(),
     );
 
-    FixResult {
-        status: Status::DONE3,
-        actions_taken: 0,
-    }
+    FixResult::refused(
+        Status::FAIL3,
+        super::RepairRefusalKind::SameParameterNeedsFace,
+        1,
+    )
 }
 
 /// Compute the maximum deviation between a 3D edge curve and its PCurve
