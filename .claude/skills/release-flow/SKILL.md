@@ -72,7 +72,7 @@ get a build out.**
 Workflow: **Refresh Apache Staging Package** (`.github/workflows/publish.yml`),
 on every push to `main`, and by `workflow_dispatch`.
 
-Two jobs. `build-committed-package` runs `cargo xtask wasm-build --skip-opt`,
+Two jobs. `build-committed-package` runs `cargo xtask wasm-build`,
 stamps fork provenance into `package.json`, and uploads the result as an
 artifact. `sync-committed-package` downloads it, installs it through
 `scripts/install-wasm-package-archive.py` (which accepts only regular files and
