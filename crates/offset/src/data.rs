@@ -130,7 +130,8 @@ impl Default for OffsetOptions {
         Self {
             joint: JointType::default(),
             tolerance: Tolerance::default(),
-            // Default to false until SI removal is fully implemented.
+            // General SI removal remains fail-closed; the bounded L-prism
+            // cell is invoked with construction provenance by shell_op.
             remove_self_intersections: false,
         }
     }
