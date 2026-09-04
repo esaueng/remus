@@ -5,7 +5,7 @@
 
 use remus_math::nurbs::curve::NurbsCurve;
 use remus_math::tolerance::Tolerance;
-use remus_math::vec::Vec3;
+use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
 use remus_topology::edge::{Edge, EdgeCurve};
 use remus_topology::face::{Face, FaceId, FaceSurface};
@@ -41,8 +41,8 @@ struct InnerPipeData {
 /// # Errors
 ///
 /// Returns an error if the path is too short, the guide curve produces
-/// degenerate scaling, or a section boundary is non-planar with more than four
-/// edges or with holes (unsupported cap).
+/// degenerate scaling, or a non-planar section hole is not a disjoint
+/// rectangular iso-parametric loop on a four-sided bilinear cap.
 #[allow(clippy::too_many_lines)]
 pub fn pipe(
     topo: &mut Topology,
@@ -290,6 +290,13 @@ pub fn pipe(
 
     for ipd in &inner_pipe_data {
         for seg in 0..num_segments {
+            let ring_points: Vec<Point3> = ipd.ring_verts[seg]
+                .iter()
+                .map(|&vertex| topo.vertex(vertex).map(Vertex::point))
+                .collect::<Result<_, _>>()?;
+            let path_hint = topo.vertex(ipd.ring_verts[seg + 1][0])?.point() - ring_points[0];
+            let follows_path_winding =
+                crate::winding::newell_normal(&ring_points).dot(path_hint) >= 0.0;
             for i in 0..ipd.n {
                 let next_i = (i + 1) % ipd.n;
                 let p0 = topo.vertex(ipd.ring_verts[seg][i])?.point();
@@ -297,18 +304,21 @@ pub fn pipe(
                 let p_next = topo.vertex(ipd.ring_verts[seg + 1][i])?.point();
                 let edge_dir = p1 - p0;
                 let path_dir = p_next - p0;
-                let side_normal = path_dir
-                    .cross(edge_dir)
-                    .normalize()
-                    .unwrap_or(Vec3::new(1.0, 0.0, 0.0));
+                let side_normal = if follows_path_winding {
+                    path_dir.cross(edge_dir)
+                } else {
+                    edge_dir.cross(path_dir)
+                }
+                .normalize()
+                .unwrap_or(Vec3::new(1.0, 0.0, 0.0));
                 let side_d = dot_normal_point(side_normal, p0);
 
                 let side_wire = Wire::new(
                     vec![
-                        OrientedEdge::new(ipd.path_edges[seg][i], true),
-                        OrientedEdge::new(ipd.ring_edges[seg + 1][i], true),
-                        OrientedEdge::new(ipd.path_edges[seg][next_i], false),
-                        OrientedEdge::new(ipd.ring_edges[seg][i], false),
+                        OrientedEdge::new(ipd.ring_edges[seg][i], true),
+                        OrientedEdge::new(ipd.path_edges[seg][next_i], true),
+                        OrientedEdge::new(ipd.ring_edges[seg + 1][i], false),
+                        OrientedEdge::new(ipd.path_edges[seg][i], false),
                     ],
                     true,
                 )
@@ -419,6 +429,27 @@ mod tests {
             vec![1.0, 1.0],
         )
         .unwrap()
+    }
+
+    fn saddle_annulus(topo: &mut Topology) -> FaceId {
+        let height = |x: f64, y: f64| 0.1 * x * y;
+        let point = |x: f64, y: f64| Point3::new(x, y, height(x, y));
+        let outer_points = [
+            point(-2.0, -2.0),
+            point(2.0, -2.0),
+            point(2.0, 2.0),
+            point(-2.0, 2.0),
+        ];
+        let hole_points = [
+            point(-1.0, -1.0),
+            point(-1.0, 1.0),
+            point(1.0, 1.0),
+            point(1.0, -1.0),
+        ];
+        let outer = remus_topology::builder::make_polygon_wire(topo, &outer_points, 1e-7).unwrap();
+        let hole = remus_topology::builder::make_polygon_wire(topo, &hole_points, 1e-7).unwrap();
+        let surface = crate::cap::bilinear_cap_patch(&outer_points).unwrap();
+        topo.add_face(Face::new(outer, vec![hole], FaceSurface::Nurbs(surface)))
     }
 
     fn diverging_guide(start_dist: f64, end_dist: f64) -> NurbsCurve {
@@ -615,5 +646,30 @@ mod tests {
             vol > 85.0 && vol < 110.0,
             "non-planar pipe volume out of expected range, got {vol}"
         );
+    }
+
+    #[test]
+    fn pipe_nonplanar_annulus_preserves_its_hole() {
+        let mut topo = Topology::new();
+        let profile = saddle_annulus(&mut topo);
+        let solid = pipe(&mut topo, profile, &straight_z_path(6.0), None).unwrap();
+        let faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
+        assert_eq!(
+            faces
+                .iter()
+                .filter(|&&face| {
+                    let face = topo.face(face).unwrap();
+                    matches!(face.surface(), FaceSurface::Nurbs(_)) && face.inner_wires().len() == 1
+                })
+                .count(),
+            2
+        );
+
+        let report = crate::validate::validate_solid(&topo, solid).unwrap();
+        assert_eq!(report.error_count(), 0, "invalid annular pipe: {report:?}");
+        let mesh = crate::tessellate::tessellate_solid(&topo, solid, 0.01).unwrap();
+        assert!(crate::tessellate::welded_mesh_quality(&mesh).is_watertight());
+        let volume = crate::measure::solid_volume(&topo, solid, 1e-4).unwrap();
+        assert!((volume - 72.0).abs() / 72.0 < 1e-4);
     }
 }

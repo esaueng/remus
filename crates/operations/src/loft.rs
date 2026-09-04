@@ -82,6 +82,22 @@ fn cap_normal_from_verts(verts: &[Point3], inward: bool) -> Result<Vec3, crate::
     Ok(if inward { unit * -1.0 } else { unit })
 }
 
+fn reject_holed_profiles(
+    topo: &Topology,
+    profiles: &[FaceId],
+) -> Result<(), crate::OperationsError> {
+    for &profile in profiles {
+        if !topo.face(profile)?.inner_wires().is_empty() {
+            return Err(crate::OperationsError::InvalidInput {
+                reason:
+                    "loft profiles with holes are unsupported; refusing to discard an inner wire"
+                        .into(),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Loft two or more profiles into a solid.
 ///
 /// Each profile is a face; its surface may be planar or curved — only the
@@ -91,12 +107,14 @@ fn cap_normal_from_verts(verts: &[Point3], inward: bool) -> Result<Vec3, crate::
 /// the first and last sections as end caps: a planar section boundary gets an
 /// exact `Plane` cap, while a non-planar boundary is filled by a bilinear patch
 /// through its corners. Profiles are resampled to a common vertex count when
-/// they differ. Inner wires (holes) in profiles are ignored.
+/// they differ. Profiles with inner wires are refused rather than silently
+/// emitting hole-free caps and walls.
 ///
 /// # Errors
 ///
 /// Returns an error if:
 /// - Fewer than 2 profiles are provided
+/// - A profile has an inner wire (unsupported loft correspondence)
 /// - Profiles resample to fewer than 3 vertices
 /// - A section boundary is non-planar with more than 4 edges (unsupported cap)
 #[allow(clippy::too_many_lines)]
@@ -108,6 +126,7 @@ pub fn loft(topo: &mut Topology, profiles: &[FaceId]) -> Result<SolidId, crate::
             reason: "loft requires at least 2 profiles".into(),
         });
     }
+    reject_holed_profiles(topo, profiles)?;
 
     // Fast path: lofting a stack of coaxial circles (incl. NURBS-recognized
     // circles produced by brepjs `sketchCircle`) collapses to an exact
@@ -496,7 +515,7 @@ fn merge_cocircular_arcs(edges: Vec<ProfileEdgeGeom>) -> Vec<ProfileEdgeGeom> {
 
 /// Extract a planar profile's outer-wire edges in traversal order, each
 /// oriented so `start`→`end` follows the wire. Returns `None` if the face is
-/// not planar or has inner wires (holes) — the general loft handles those.
+/// not planar or has inner wires (holes).
 ///
 /// NURBS edges are recognized back to their analytic form (a brepjs sketch
 /// delivers rounded-rect corner arcs and even straight runs as NURBS): without
@@ -1409,6 +1428,7 @@ fn face_recognized_circle(topo: &Topology, face_id: FaceId) -> Option<(Point3, V
 ///
 /// Returns an error if:
 /// - Fewer than 2 profiles are provided
+/// - A profile has an inner wire (unsupported loft correspondence)
 /// - Profiles resample to fewer than 3 vertices
 /// - A section boundary is non-planar with more than 4 edges (unsupported cap)
 /// - Surface interpolation fails
@@ -1424,6 +1444,7 @@ pub fn loft_smooth(
             reason: "loft requires at least 2 profiles".into(),
         });
     }
+    reject_holed_profiles(topo, profiles)?;
 
     // For 2 profiles, delegate to the basic loft (ruled surfaces are optimal).
     if profiles.len() == 2 {

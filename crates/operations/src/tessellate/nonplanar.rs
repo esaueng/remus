@@ -2038,6 +2038,86 @@ pub(super) fn tessellate_nonplanar_cdt(
         });
     }
 
+    // Holed non-planar faces are supported only on a bounded, non-periodic
+    // NURBS carrier. Periodic hole charts need branch-aware unwrapping for
+    // every loop; declining them is safer than filling the hole by falling
+    // through to the rectangular surface mesh.
+    if !face_data.inner_wires().is_empty()
+        && !matches!(face_data.surface(), FaceSurface::Nurbs(surface) if !surface.is_periodic_u() && !surface.is_periodic_v())
+    {
+        return Err(crate::OperationsError::InvalidInput {
+            reason: "holed non-planar tessellation requires a non-periodic NURBS carrier".into(),
+        });
+    }
+
+    let mut hole_boundaries_3d: Vec<Vec<(Point3, u32, EdgeId, bool)>> = Vec::new();
+    for &hole_wire_id in face_data.inner_wires() {
+        let hole_wire = topo.wire(hole_wire_id)?;
+        let mut hole: Vec<(Point3, u32, EdgeId, bool)> = Vec::new();
+        for oe in hole_wire.edges() {
+            let edge_id = oe.edge();
+            let is_forward = oe.is_forward();
+            let points_and_ids: Vec<(Point3, u32)> = if let Some(global_ids) =
+                edge_global_indices.get(&edge_id.index())
+            {
+                let ordered: Vec<u32> = if is_forward {
+                    global_ids.clone()
+                } else {
+                    global_ids.iter().rev().copied().collect()
+                };
+                ordered
+                    .into_iter()
+                    .map(|gid| (merged.positions[gid as usize], gid))
+                    .collect()
+            } else {
+                let edge = topo.edge(edge_id)?;
+                let mut points = sample_edge(topo, edge, deflection, angular_tol, circle_floor)?;
+                if !is_forward {
+                    points.reverse();
+                }
+                points
+                    .into_iter()
+                    .map(|point| {
+                        let key = point_merge_key(point, MERGE_GRID);
+                        let gid = *point_to_global.entry(key).or_insert_with(|| {
+                            let id = merged.positions.len() as u32;
+                            merged.positions.push(point);
+                            merged.normals.push(Vec3::new(0.0, 0.0, 0.0));
+                            id
+                        });
+                        (point, gid)
+                    })
+                    .collect()
+            };
+
+            for (index, (point, gid)) in points_and_ids.into_iter().enumerate() {
+                if index == 0
+                    && hole.last().is_some_and(|&(last, last_gid, _, _)| {
+                        last_gid == gid || (last - point).length() < tol_dup
+                    })
+                {
+                    continue;
+                }
+                hole.push((point, gid, edge_id, is_forward));
+            }
+        }
+        if hole.len() > 2
+            && hole.first().zip(hole.last()).is_some_and(
+                |(&(first, first_gid, _, _), &(last, last_gid, _, _))| {
+                    first_gid == last_gid || (first - last).length() < tol_dup
+                },
+            )
+        {
+            hole.pop();
+        }
+        if hole.len() < 3 {
+            return Err(crate::OperationsError::InvalidInput {
+                reason: "non-planar cap hole has fewer than three boundary vertices".into(),
+            });
+        }
+        hole_boundaries_3d.push(hole);
+    }
+
     let mut boundary_uv: Vec<(f64, f64)> = boundary_3d
         .iter()
         .map(|(pt, _, edge_id_local, _)| {
@@ -2254,6 +2334,32 @@ pub(super) fn tessellate_nonplanar_cdt(
         uv_bounds(&boundary_uv)
     };
 
+    let hole_uvs: Vec<Vec<(f64, f64)>> = hole_boundaries_3d
+        .iter()
+        .map(|hole| {
+            hole.iter()
+                .map(|(point, _, edge_id, _)| {
+                    if let Ok(Some(pcurve)) = topo.pcurve(*edge_id, face_id)
+                        && let Some(uv) = project_via_pcurve(pcurve, *point, face_data.surface())
+                    {
+                        return Ok(uv);
+                    }
+                    project_to_surface_uv(face_data.surface(), *point)
+                })
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .collect::<Result<Vec<_>, crate::OperationsError>>()?;
+    for hole in &hole_uvs {
+        if hole
+            .iter()
+            .any(|&(u, v)| !point_in_polygon_2d(&boundary_uv, Point2::new(u, v)))
+        {
+            return Err(crate::OperationsError::InvalidInput {
+                reason: "non-planar cap hole leaves its outer parameter boundary".into(),
+            });
+        }
+    }
+
     let du = u_max - u_min;
     let dv = v_max - v_min;
 
@@ -2303,12 +2409,59 @@ pub(super) fn tessellate_nonplanar_cdt(
             .map_err(crate::OperationsError::Math)?;
     }
 
+    let mut hole_cdt_ids: Vec<Vec<usize>> = Vec::with_capacity(hole_uvs.len());
+    let mut hole_pairs: Vec<(usize, usize)> = Vec::new();
+    for (hole, hole_3d) in hole_uvs.iter().zip(&hole_boundaries_3d) {
+        let points: Vec<Point2> = hole.iter().map(|&(u, v)| to_cdt(u, v)).collect();
+        let ids = cdt
+            .insert_points_hilbert(&points)
+            .map_err(crate::OperationsError::Math)?;
+        let max_id = ids.iter().copied().max().unwrap_or(2);
+        if cdt_to_global.len() <= max_id {
+            cdt_to_global.resize(max_id + 1, None);
+        }
+        for (&id, &(_, global_id, _, _)) in ids.iter().zip(hole_3d) {
+            if cdt_to_global[id].replace(global_id).is_some() {
+                return Err(crate::OperationsError::InvalidInput {
+                    reason: "non-planar cap hole collapses in parameter space".into(),
+                });
+            }
+        }
+        for index in 0..ids.len() {
+            let pair = (ids[index], ids[(index + 1) % ids.len()]);
+            cdt.insert_constraint(pair.0, pair.1)
+                .map_err(crate::OperationsError::Math)?;
+            hole_pairs.push(pair);
+        }
+        hole_cdt_ids.push(ids);
+    }
+
     if du > 1e-15 && dv > 1e-15 {
         let (n_u, n_v) =
             interior_grid_resolution(face_data.surface(), du, dv, deflection, angular_tol);
         validate_interior_grid_size(n_u, n_v)?;
 
         let boundary_uv_ref = &boundary_uv;
+        let hole_uvs_ref = &hole_uvs;
+        let on_hole_boundary = |point: Point2| {
+            hole_uvs_ref.iter().any(|hole| {
+                (0..hole.len()).any(|index| {
+                    let (ax, ay) = hole[index];
+                    let (bx, by) = hole[(index + 1) % hole.len()];
+                    let a = Point2::new(ax, ay);
+                    let b = Point2::new(bx, by);
+                    let edge = b - a;
+                    let length_sq = edge.dot(edge);
+                    let fraction = if length_sq > 1e-30 {
+                        ((point - a).dot(edge) / length_sq).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
+                    let nearest = a + edge * fraction;
+                    (point - nearest).length() <= 1e-10 * du.max(dv).max(1.0)
+                })
+            })
+        };
         let has_ellipse_wire = wire.edges().iter().any(|oriented| {
             topo.edge(oriented.edge())
                 .is_ok_and(|edge| matches!(edge.curve(), EdgeCurve::Ellipse(_)))
@@ -2318,7 +2471,13 @@ pub(super) fn tessellate_nonplanar_cdt(
                 (1..n_v).filter_map(move |iv| {
                     let u = u_min + du * (iu as f64 / n_u as f64);
                     let v = v_min + dv * (iv as f64 / n_v as f64);
-                    point_in_polygon_2d(boundary_uv_ref, Point2::new(u, v)).then(|| to_cdt(u, v))
+                    let point = Point2::new(u, v);
+                    (point_in_polygon_2d(boundary_uv_ref, point)
+                        && hole_uvs_ref
+                            .iter()
+                            .all(|hole| !point_in_polygon_2d(hole, point))
+                        && !on_hole_boundary(point))
+                    .then(|| to_cdt(u, v))
                 })
             })
             .collect();
@@ -2499,13 +2658,59 @@ pub(super) fn tessellate_nonplanar_cdt(
         }
     }
 
+    let mut emitted_triangles = Vec::new();
     for (i0, i1, i2) in triangles {
         if i0 < 3 || i1 < 3 || i2 < 3 {
             continue; // Skip super-triangle vertices
         }
-        merged.indices.push(final_global_ids[i0]);
-        merged.indices.push(final_global_ids[i1]);
-        merged.indices.push(final_global_ids[i2]);
+        let cdt_centroid = Point2::new(
+            (cdt_verts[i0].x() + cdt_verts[i1].x() + cdt_verts[i2].x()) / 3.0,
+            (cdt_verts[i0].y() + cdt_verts[i1].y() + cdt_verts[i2].y()) / 3.0,
+        );
+        let (centroid_u, centroid_v) = from_cdt(cdt_centroid);
+        let centroid = Point2::new(centroid_u, centroid_v);
+        if hole_uvs
+            .iter()
+            .any(|hole| point_in_polygon_2d(hole, centroid))
+        {
+            continue;
+        }
+        emitted_triangles.push([
+            final_global_ids[i0],
+            final_global_ids[i1],
+            final_global_ids[i2],
+        ]);
+    }
+
+    if !hole_pairs.is_empty() {
+        let mut incidence: DetHashMap<(u32, u32), usize> = DetHashMap::default();
+        for triangle in &emitted_triangles {
+            for (a, b) in [
+                (triangle[0], triangle[1]),
+                (triangle[1], triangle[2]),
+                (triangle[2], triangle[0]),
+            ] {
+                let key = if a < b { (a, b) } else { (b, a) };
+                *incidence.entry(key).or_default() += 1;
+            }
+        }
+        for ids in &hole_cdt_ids {
+            for index in 0..ids.len() {
+                let a = final_global_ids[ids[index]];
+                let b = final_global_ids[ids[(index + 1) % ids.len()]];
+                let key = if a < b { (a, b) } else { (b, a) };
+                if incidence.get(&key) != Some(&1) {
+                    return Err(crate::OperationsError::InvalidInput {
+                        reason: "non-planar cap tessellation could not preserve a hole boundary"
+                            .into(),
+                    });
+                }
+            }
+        }
+    }
+
+    for triangle in emitted_triangles {
+        merged.indices.extend_from_slice(&triangle);
     }
 
     Ok(())
