@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Install a generated WASM package from a narrowly scoped tar archive."""
+"""Install generated WASM packages from a narrowly scoped tar archive.
+
+Usage: install-wasm-package-archive.py ARCHIVE ROOT [ROOT ...]
+
+Every ROOT (for example ``crates/wasm/pkg``) is both the archive prefix the
+member must sit under and the checkout directory it is installed into.
+Members outside every ROOT are refused.
+"""
 
 import os
 import shutil
@@ -8,12 +15,18 @@ import tarfile
 from pathlib import Path, PurePosixPath
 
 
-ARCHIVE_ROOT = PurePosixPath("crates/wasm/pkg")
+def owning_root(path: PurePosixPath, roots: list[PurePosixPath]) -> PurePosixPath | None:
+    for root in roots:
+        if path == root or root in path.parents:
+            return root
+    return None
 
 
 def main() -> None:
     archive = Path(sys.argv[1])
-    destination = Path(sys.argv[2])
+    roots = [PurePosixPath(root) for root in sys.argv[2:]]
+    if not roots:
+        raise ValueError("at least one package root is required")
     seen: set[PurePosixPath] = set()
 
     with tarfile.open(archive, "r:gz") as package:
@@ -24,20 +37,25 @@ def main() -> None:
                 path in seen
                 or path.is_absolute()
                 or ".." in path.parts
-                or (path != ARCHIVE_ROOT and ARCHIVE_ROOT not in path.parents)
+                or owning_root(path, roots) is None
                 or not (member.isdir() or member.isreg())
             ):
                 raise ValueError(f"unsafe archive member: {member.name!r}")
             seen.add(path)
 
-        if not any(path != ARCHIVE_ROOT for path in seen):
-            raise ValueError("archive contains no package files")
+        for root in roots:
+            if not any(path != root and root in path.parents for path in seen):
+                raise ValueError(f"archive contains no package files under {root}")
 
-        shutil.rmtree(destination, ignore_errors=True)
-        destination.mkdir(parents=True)
+        for root in roots:
+            destination = Path(*root.parts)
+            shutil.rmtree(destination, ignore_errors=True)
+            destination.mkdir(parents=True)
         for member in members:
-            relative = PurePosixPath(member.name).relative_to(ARCHIVE_ROOT)
-            target = destination.joinpath(*relative.parts)
+            path = PurePosixPath(member.name)
+            root = owning_root(path, roots)
+            assert root is not None
+            target = Path(*root.parts).joinpath(*path.relative_to(root).parts)
             if member.isdir():
                 target.mkdir(parents=True, exist_ok=True)
                 continue

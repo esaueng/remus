@@ -4,6 +4,7 @@
 //! for a specific domain. wasm-bindgen supports multiple impl blocks
 //! across files.
 
+pub mod arena;
 pub mod assembly;
 pub mod batch;
 pub mod booleans;

@@ -32,8 +32,9 @@ cargo check -p remus-wasm --target wasm32-unknown-unknown --no-default-features
 cargo test --manifest-path xtask/Cargo.toml
 RUSTDOCFLAGS=-Dwarnings cargo doc --workspace --no-deps --all-features
 ./scripts/check-boundaries.sh
-cargo xtask wasm-build --skip-opt
+cargo xtask wasm-build
 (cd crates/wasm/pkg && npm pack --dry-run)
+(cd crates/wasm-io/pkg && npm pack --dry-run)
 ```
 
 - [ ] Every command exits zero and its duration/result is attached to the
@@ -55,7 +56,7 @@ cargo xtask wasm-build --skip-opt
   MSRV, WASM/no-I/O, deny, RustSec, docs, boundaries, machete, and Taplo.
 - [ ] The coverage job remains at or above its configured 60% line threshold.
 - [ ] The CI and publish workflows produce the same package through
-  `cargo xtask wasm-build --skip-opt`.
+  `cargo xtask wasm-build`.
 - [ ] Run `cargo xtask wasm-publish --dry-run` with `TAG_NAME` set to the exact
   candidate tag. Never remove `--dry-run` during validation.
 - [ ] Record the tarball hash, unpacked file list, WASM size, provenance plan,
