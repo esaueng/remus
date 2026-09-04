@@ -72,6 +72,77 @@ fn make_square(topo: &mut Topology, size: f64) -> FaceId {
     ))
 }
 
+fn saddle_height(x: f64, y: f64, outer_half: f64) -> f64 {
+    0.4 * x * y / outer_half.powi(2)
+}
+
+fn make_saddle_annulus(topo: &mut Topology, hole_on_surface: bool) -> FaceId {
+    let outer_half = 2.0;
+    let hole_half = 1.0;
+    let point = |x: f64, y: f64| Point3::new(x, y, saddle_height(x, y, outer_half));
+    let outer_points = [
+        point(-outer_half, -outer_half),
+        point(outer_half, -outer_half),
+        point(outer_half, outer_half),
+        point(-outer_half, outer_half),
+    ];
+    let hole_point = |x: f64, y: f64| {
+        Point3::new(
+            x,
+            y,
+            if hole_on_surface {
+                saddle_height(x, y, outer_half)
+            } else {
+                0.0
+            },
+        )
+    };
+    // Clockwise viewed from +Z: inner loops oppose the outer boundary.
+    let hole_points = [
+        hole_point(-hole_half, -hole_half),
+        hole_point(-hole_half, hole_half),
+        hole_point(hole_half, hole_half),
+        hole_point(hole_half, -hole_half),
+    ];
+    let outer = remus_topology::builder::make_polygon_wire(topo, &outer_points, 1e-7).unwrap();
+    let hole = remus_topology::builder::make_polygon_wire(topo, &hole_points, 1e-7).unwrap();
+    let surface = crate::cap::bilinear_cap_patch(&outer_points).unwrap();
+    topo.add_face(Face::new(outer, vec![hole], FaceSurface::Nurbs(surface)))
+}
+
+fn make_planar_annulus(topo: &mut Topology) -> FaceId {
+    let outer = remus_topology::builder::make_polygon_wire(
+        topo,
+        &[
+            Point3::new(-2.0, -2.0, 0.0),
+            Point3::new(2.0, -2.0, 0.0),
+            Point3::new(2.0, 2.0, 0.0),
+            Point3::new(-2.0, 2.0, 0.0),
+        ],
+        1e-7,
+    )
+    .unwrap();
+    let hole = remus_topology::builder::make_polygon_wire(
+        topo,
+        &[
+            Point3::new(-1.0, -1.0, 0.0),
+            Point3::new(-1.0, 1.0, 0.0),
+            Point3::new(1.0, 1.0, 0.0),
+            Point3::new(1.0, -1.0, 0.0),
+        ],
+        1e-7,
+    )
+    .unwrap();
+    topo.add_face(Face::new(
+        outer,
+        vec![hole],
+        FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: 0.0,
+        },
+    ))
+}
+
 #[test]
 fn sweep_wire_preserves_the_profile_body_and_builds_a_valid_solid() {
     let mut topo = Topology::new();
@@ -1792,6 +1863,107 @@ fn sweep_nonplanar_saddle_profile_is_valid_solid() {
     assert!(
         vol > 85.0 && vol < 110.0,
         "non-planar sweep volume out of expected range, got {vol}"
+    );
+}
+
+#[test]
+fn sweep_nonplanar_annulus_preserves_its_hole() {
+    // Translation keeps the saddle term identical on both caps, so the hole
+    // has the same independent 72-volume oracle as the planar annulus below.
+    let mut topo = Topology::new();
+    let profile = make_saddle_annulus(&mut topo, true);
+    let solid = sweep(&mut topo, profile, &straight_z_path(6.0)).unwrap();
+
+    let faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
+    let holed_nurbs_caps = faces
+        .iter()
+        .filter(|&&face_id| {
+            let face = topo.face(face_id).unwrap();
+            matches!(face.surface(), FaceSurface::Nurbs(_)) && face.inner_wires().len() == 1
+        })
+        .count();
+    assert_eq!(
+        holed_nurbs_caps, 2,
+        "both saddle caps retain the annular hole"
+    );
+
+    let report = crate::validate::validate_solid(&topo, solid).unwrap();
+    assert_eq!(report.error_count(), 0, "invalid annular sweep: {report:?}");
+    let adjacency = remus_topology::explorer::edge_to_face_map(&topo, solid).unwrap();
+    assert!(
+        adjacency.values().all(|uses| uses.len() == 2),
+        "every outer, inner, and cap edge must have exactly two face uses"
+    );
+
+    let mesh = crate::tessellate::tessellate_solid(&topo, solid, 0.01).unwrap();
+    let quality = crate::tessellate::welded_mesh_quality(&mesh);
+    assert!(
+        quality.is_watertight(),
+        "annular sweep mesh has {} boundary and {} non-manifold edges",
+        quality.boundary_edges,
+        quality.non_manifold_edges
+    );
+
+    let classify = |point| {
+        remus_check::classify::classify_point(
+            &topo,
+            solid,
+            point,
+            &remus_check::classify::ClassifyOptions::default(),
+        )
+        .unwrap()
+    };
+    assert_eq!(
+        classify(Point3::new(0.0, 0.0, 3.0)),
+        remus_check::classify::PointClassification::Outside,
+        "the annular opening must remain void"
+    );
+    assert_eq!(
+        classify(Point3::new(1.5, 0.0, 3.0)),
+        remus_check::classify::PointClassification::Inside,
+        "the annular band must remain material"
+    );
+
+    // Independent ground truth: the same 4x4-minus-2x2 annulus extruded 6.
+    let mut ground_topo = Topology::new();
+    let ground_profile = make_planar_annulus(&mut ground_topo);
+    let ground = crate::extrude::extrude(
+        &mut ground_topo,
+        ground_profile,
+        Vec3::new(0.0, 0.0, 1.0),
+        6.0,
+    )
+    .unwrap();
+    let ground_volume = crate::measure::solid_volume(&ground_topo, ground, 1e-4).unwrap();
+    assert!((ground_volume - 72.0).abs() < 1e-9);
+
+    let coarse = crate::measure::solid_volume(&topo, solid, 2e-4).unwrap();
+    let fine = crate::measure::solid_volume(&topo, solid, 1e-4).unwrap();
+    for (label, volume) in [("coarse", coarse), ("fine", fine)] {
+        assert!(
+            (volume - ground_volume).abs() / ground_volume < 1e-4,
+            "{label} saddle-annulus volume {volume} vs extruded ground truth {ground_volume}"
+        );
+    }
+    assert!((coarse - fine).abs() / ground_volume < 1e-4);
+}
+
+#[test]
+fn sweep_nonplanar_annulus_refuses_an_off_surface_hole() {
+    let mut topo = Topology::new();
+    let profile = make_saddle_annulus(&mut topo, false);
+    let solids_before = topo.num_solids();
+
+    let error = sweep(&mut topo, profile, &straight_z_path(6.0)).unwrap_err();
+
+    assert!(
+        error.to_string().contains("hole leaves its fill surface"),
+        "unexpected refusal: {error}"
+    );
+    assert_eq!(
+        topo.num_solids(),
+        solids_before,
+        "a refused cap must not emit a solid"
     );
 }
 

@@ -135,7 +135,16 @@ pub(super) fn tessellate_with_uvs_floor(
                 .collect();
             Ok::<_, crate::OperationsError>(TriangleMeshUV { mesh, uvs })
         }
-        FaceSurface::Nurbs(surface) => Ok(tessellate_nurbs(surface, deflection, angular_tol)),
+        FaceSurface::Nurbs(surface) => {
+            if !face_data.inner_wires().is_empty() {
+                return Err(crate::OperationsError::InvalidInput {
+                    reason: "standalone tessellation of a holed NURBS face is unsupported; \
+                             tessellate its owning solid so shared hole constraints are preserved"
+                        .into(),
+                });
+            }
+            Ok(tessellate_nurbs(surface, deflection, angular_tol))
+        }
         FaceSurface::Cylinder(cyl) => {
             if !face_data.inner_wires().is_empty() {
                 tessellate_cylinder_with_holes(topo, face_data, cyl, deflection, angular_tol)

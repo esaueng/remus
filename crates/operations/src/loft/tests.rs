@@ -3,6 +3,7 @@
 use remus_math::tolerance::Tolerance;
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
+use remus_topology::builder::make_polygon_wire;
 use remus_topology::edge::{Edge, EdgeCurve};
 use remus_topology::face::{Face, FaceSurface};
 use remus_topology::vertex::Vertex;
@@ -46,6 +47,43 @@ fn make_square_at(topo: &mut Topology, size: f64, z: f64) -> FaceId {
             d: z,
         },
     ))
+}
+
+#[test]
+fn loft_refuses_profiles_with_holes_without_mutation() {
+    let mut topo = Topology::new();
+    let bottom = make_square_at(&mut topo, 4.0, 0.0);
+    let top = make_square_at(&mut topo, 4.0, 2.0);
+    let hole = make_polygon_wire(
+        &mut topo,
+        &[
+            Point3::new(-1.0, -1.0, 0.0),
+            Point3::new(-1.0, 1.0, 0.0),
+            Point3::new(1.0, 1.0, 0.0),
+            Point3::new(1.0, -1.0, 0.0),
+        ],
+        1e-7,
+    )
+    .unwrap();
+    let bottom_face = topo.face(bottom).unwrap();
+    let outer = bottom_face.outer_wire();
+    let surface = bottom_face.surface().clone();
+    let holed_bottom = topo.add_face(Face::new(outer, vec![hole], surface));
+    let before = topo.allocated_slot_count();
+
+    for result in [
+        loft(&mut topo, &[holed_bottom, top]),
+        loft_smooth(&mut topo, &[holed_bottom, top]),
+    ] {
+        let error = result.unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("refusing to discard an inner wire"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(topo.allocated_slot_count(), before);
+    }
 }
 
 #[test]

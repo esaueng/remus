@@ -3,15 +3,174 @@
 //! Fills an N-sided boundary with a surface patch. For 4-sided boundaries,
 //! uses Coons patch interpolation.
 
+use remus_math::nurbs::projection::{SurfaceSeedGrid, project_point_to_surface_with_grid};
 use remus_math::nurbs::surface::NurbsSurface;
-use remus_math::vec::Point3;
+use remus_math::vec::{Point2, Point3};
 use remus_topology::Topology;
 use remus_topology::edge::{Edge, EdgeCurve};
 use remus_topology::face::{Face, FaceSurface};
 use remus_topology::vertex::Vertex;
-use remus_topology::wire::{OrientedEdge, Wire};
+use remus_topology::wire::{OrientedEdge, Wire, WireId};
 
 use crate::OperationsError;
+
+/// Certify the bounded annular trim supported by non-planar section caps.
+///
+/// A generated bilinear cap owns the full rectangular parameter domain. Its
+/// holes are exact only when every hole is a non-touching interior rectangle
+/// made from four surface iso-lines. Anything broader needs a general trimmed
+/// surface construction, so it is refused instead of attaching a wire that
+/// the cap surface or tessellator cannot honor.
+///
+/// # Errors
+///
+/// Returns an error if a hole is not a closed four-line rectangle, leaves the
+/// cap surface, touches its outer boundary, or overlaps another hole.
+pub(crate) fn validate_annular_cap_holes(
+    topo: &Topology,
+    surface: &NurbsSurface,
+    holes: &[WireId],
+    scale: f64,
+) -> Result<(), OperationsError> {
+    if holes.is_empty() {
+        return Ok(());
+    }
+
+    let (u0, u1) = surface.domain_u();
+    let (v0, v1) = surface.domain_v();
+    let u_span = u1 - u0;
+    let v_span = v1 - v0;
+    if !u_span.is_finite() || u_span <= 0.0 || !v_span.is_finite() || v_span <= 0.0 {
+        return Err(OperationsError::InvalidInput {
+            reason: "non-planar cap has an invalid parameter domain".into(),
+        });
+    }
+
+    let grid = SurfaceSeedGrid::for_surface(surface);
+    let distance_tol = (scale * 1e-7).max(1e-8);
+    let param_tol = 1e-6 * u_span.max(v_span);
+    let boundary_margin = 10.0 * param_tol;
+    let mut rectangles: Vec<(f64, f64, f64, f64)> = Vec::with_capacity(holes.len());
+
+    for &wire_id in holes {
+        let wire = topo.wire(wire_id)?;
+        if !wire.is_closed() || wire.edges().len() != 4 {
+            return Err(OperationsError::InvalidInput {
+                reason: "non-planar cap holes require closed four-edge rectangular loops".into(),
+            });
+        }
+
+        let mut corners = Vec::with_capacity(4);
+        for oe in wire.edges() {
+            let edge = topo.edge(oe.edge())?;
+            if !matches!(edge.curve(), EdgeCurve::Line) {
+                return Err(OperationsError::InvalidInput {
+                    reason: "non-planar cap holes currently require line-edge loops".into(),
+                });
+            }
+            let start = topo.vertex(oe.oriented_start(edge))?.point();
+            let end = topo.vertex(oe.oriented_end(edge))?.point();
+            let mut start_uv = None;
+            let mut end_uv = None;
+            for sample in 0..=8 {
+                let fraction = f64::from(sample) / 8.0;
+                let point = start + (end - start) * fraction;
+                let projection =
+                    project_point_to_surface_with_grid(surface, point, distance_tol, &grid)
+                        .map_err(|_| OperationsError::InvalidInput {
+                            reason:
+                                "non-planar cap hole could not be projected onto its fill surface"
+                                    .into(),
+                        })?;
+                if !projection.distance.is_finite() || projection.distance > distance_tol {
+                    return Err(OperationsError::InvalidInput {
+                        reason: format!(
+                            "non-planar cap hole leaves its fill surface by {} (tolerance {})",
+                            projection.distance, distance_tol
+                        ),
+                    });
+                }
+                if projection.u <= u0 + boundary_margin
+                    || projection.u >= u1 - boundary_margin
+                    || projection.v <= v0 + boundary_margin
+                    || projection.v >= v1 - boundary_margin
+                {
+                    return Err(OperationsError::InvalidInput {
+                        reason: "non-planar cap hole touches or leaves the outer cap boundary"
+                            .into(),
+                    });
+                }
+                if sample == 0 {
+                    start_uv = Some(Point2::new(projection.u, projection.v));
+                } else if sample == 8 {
+                    end_uv = Some(Point2::new(projection.u, projection.v));
+                }
+            }
+
+            let start_uv = start_uv.ok_or_else(|| OperationsError::InvalidInput {
+                reason: "non-planar cap hole has no start parameter".into(),
+            })?;
+            let end_uv = end_uv.ok_or_else(|| OperationsError::InvalidInput {
+                reason: "non-planar cap hole has no end parameter".into(),
+            })?;
+            let constant_u = (start_uv.x() - end_uv.x()).abs() <= param_tol;
+            let constant_v = (start_uv.y() - end_uv.y()).abs() <= param_tol;
+            if constant_u == constant_v {
+                return Err(OperationsError::InvalidInput {
+                    reason: "non-planar cap hole edges must follow one surface parameter at a time"
+                        .into(),
+                });
+            }
+            corners.push(start_uv);
+        }
+
+        for index in 0..4 {
+            let current = corners[index];
+            let next = corners[(index + 1) % 4];
+            let following = corners[(index + 2) % 4];
+            let current_u = (current.x() - next.x()).abs() <= param_tol;
+            let next_u = (next.x() - following.x()).abs() <= param_tol;
+            if current_u == next_u {
+                return Err(OperationsError::InvalidInput {
+                    reason: "non-planar cap hole edges do not alternate around a rectangle".into(),
+                });
+            }
+        }
+
+        let min_u = corners.iter().map(|p| p.x()).fold(f64::INFINITY, f64::min);
+        let max_u = corners
+            .iter()
+            .map(|p| p.x())
+            .fold(f64::NEG_INFINITY, f64::max);
+        let min_v = corners.iter().map(|p| p.y()).fold(f64::INFINITY, f64::min);
+        let max_v = corners
+            .iter()
+            .map(|p| p.y())
+            .fold(f64::NEG_INFINITY, f64::max);
+        if max_u - min_u <= boundary_margin || max_v - min_v <= boundary_margin {
+            return Err(OperationsError::InvalidInput {
+                reason: "non-planar cap hole has a degenerate parameter-space area".into(),
+            });
+        }
+
+        if rectangles
+            .iter()
+            .any(|&(other_min_u, other_max_u, other_min_v, other_max_v)| {
+                min_u < other_max_u + boundary_margin
+                    && max_u > other_min_u - boundary_margin
+                    && min_v < other_max_v + boundary_margin
+                    && max_v > other_min_v - boundary_margin
+            })
+        {
+            return Err(OperationsError::InvalidInput {
+                reason: "non-planar cap holes overlap or touch in parameter space".into(),
+            });
+        }
+        rectangles.push((min_u, max_u, min_v, max_v));
+    }
+
+    Ok(())
+}
 
 /// Fill a 4-sided boundary with a Coons patch.
 ///
