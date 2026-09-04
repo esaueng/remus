@@ -81,10 +81,12 @@ const NORMAL_PARALLEL_COS_TOL: f64 = 1e-6;
 /// Detect and remove geometrically duplicate faces in a solid's outer shell.
 ///
 /// This conservative pass only compares unperforated planar polygon faces.
-/// Their ordered outer-boundary vertices must coincide (allowing a cyclic shift
-/// and opposite traversal). Curved edges and surfaces, NURBS, and perforated
-/// faces are skipped because proving their trimmed regions equal requires a
-/// parameter-space comparison.
+/// Their ordered outer-boundary vertices must coincide with the same winding
+/// (allowing a cyclic shift), and their effective normals must agree. Oppositely
+/// oriented coincident faces are preserved: removing one would silently choose
+/// a side of a zero-thickness or otherwise malformed region. Curved edges and
+/// surfaces, NURBS, and perforated faces are skipped because proving their
+/// trimmed regions equal requires a parameter-space comparison.
 ///
 /// This must be a solid-scoped pass: a duplicate can only be found by comparing
 /// a face against the others, so a per-face fix (which sees one face in
@@ -107,13 +109,13 @@ fn fix_duplicate_faces(
         if !face.inner_wires().is_empty() {
             continue;
         }
-        let normal = match face.surface() {
-            FaceSurface::Plane { normal, .. } => *normal,
-            FaceSurface::Cylinder(_)
-            | FaceSurface::Cone(_)
-            | FaceSurface::Sphere(_)
-            | FaceSurface::Torus(_)
-            | FaceSurface::Nurbs(_) => continue,
+        let FaceSurface::Plane { normal, .. } = face.surface() else {
+            continue;
+        };
+        let normal = if face.is_reversed() {
+            -*normal
+        } else {
+            *normal
         };
 
         let wire = topo.wire(face.outer_wire())?;
@@ -146,10 +148,10 @@ fn fix_duplicate_faces(
             if points_a.len() != points_b.len() {
                 continue;
             }
-            if na.dot(*nb).abs() < 1.0 - NORMAL_PARALLEL_COS_TOL {
+            if na.dot(*nb) < 1.0 - NORMAL_PARALLEL_COS_TOL {
                 continue;
             }
-            if boundaries_coincide(points_a, points_b, tol) {
+            if boundaries_coincide_with_same_winding(points_a, points_b, tol) {
                 duplicates.insert(fid_j.index());
             }
         }
@@ -179,18 +181,15 @@ fn fix_duplicate_faces(
     ))
 }
 
-fn boundaries_coincide(a: &[Point3], b: &[Point3], tolerance: f64) -> bool {
+fn boundaries_coincide_with_same_winding(a: &[Point3], b: &[Point3], tolerance: f64) -> bool {
     if a.is_empty() || a.len() != b.len() {
         return false;
     }
 
     (0..b.len()).any(|offset| {
         (a[0] - b[offset]).length() < tolerance
-            && ((0..a.len())
+            && (0..a.len())
                 .all(|index| (a[index] - b[(offset + index) % b.len()]).length() < tolerance)
-                || (0..a.len()).all(|index| {
-                    (a[index] - b[(offset + b.len() - index) % b.len()]).length() < tolerance
-                }))
     })
 }
 
@@ -468,5 +467,58 @@ mod tests {
         assert_eq!(result.actions_taken, 0);
         assert!(!ctx.reshape.is_face_removed(small));
         assert!(!ctx.reshape.is_face_removed(large));
+    }
+
+    #[test]
+    fn keeps_coincident_face_with_opposite_winding() {
+        let mut topo = Topology::new();
+        let original = add_triangle(
+            &mut topo,
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(0.0, 1.0, 0.0),
+        );
+        let opposite = add_triangle(
+            &mut topo,
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(0.0, 1.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+        );
+        let shell = topo.add_shell(Shell::new(vec![original, opposite]).unwrap());
+        let solid_id = topo.add_solid(Solid::new(shell, vec![]));
+
+        let mut ctx = HealContext::new();
+        let result = fix_duplicate_faces(&topo, solid_id, &mut ctx).unwrap();
+
+        assert_eq!(result.actions_taken, 0);
+        assert!(!ctx.reshape.is_face_removed(original));
+        assert!(!ctx.reshape.is_face_removed(opposite));
+    }
+
+    #[test]
+    fn keeps_coincident_face_with_opposite_effective_normal() {
+        let mut topo = Topology::new();
+        let original = add_triangle(
+            &mut topo,
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(0.0, 1.0, 0.0),
+        );
+        let opposite = add_triangle(
+            &mut topo,
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(0.0, 1.0, 0.0),
+        );
+        topo.face_mut(opposite).unwrap().set_reversed(true);
+        let shell = topo.add_shell(Shell::new(vec![original, opposite]).unwrap());
+        let solid_id = topo.add_solid(Solid::new(shell, vec![]));
+
+        let mut ctx = HealContext::new();
+        let result = fix_duplicate_faces(&topo, solid_id, &mut ctx).unwrap();
+
+        assert_eq!(result.actions_taken, 0);
+        assert!(!ctx.reshape.is_face_removed(original));
+        assert!(!ctx.reshape.is_face_removed(opposite));
     }
 }

@@ -1516,6 +1516,14 @@ export class BrepKernel {
      */
     faceArea(face: number, deflection: number): number;
     /**
+     * Build an exact standalone blend sheet between two disjoint planar faces.
+     */
+    faceFaceBlend(first_face: number, second_face: number, radius: number): number;
+    /**
+     * Build a face-face blend sheet and verify one prescribed contact line.
+     */
+    faceFaceBlendWithHoldLine(first_face: number, second_face: number, radius: number, hold_face: number, start_x: number, start_y: number, start_z: number, end_x: number, end_y: number, end_z: number): number;
+    /**
      * Compute the perimeter of a face.
      *
      * # Errors

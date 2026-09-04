@@ -257,6 +257,8 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "fillet"
         | "filletVariable"
         | "filletV2"
+        | "faceFaceBlend"
+        | "faceFaceBlendWithHoldLine"
         | "chamferV2"
         | "chamferDistanceAngle"
         | "shell"
@@ -1876,6 +1878,62 @@ impl BrepKernel {
                 )
                 .map_err(StructuredWasmError::blend_failure)?;
                 Ok(serde_json::json!(solid_id_to_u32(result.solid)))
+            }
+            "faceFaceBlend" => {
+                let first = self
+                    .resolve_face(get_u32(args, "firstFace")?)
+                    .map_err(StructuredWasmError::from)?;
+                let second = self
+                    .resolve_face(get_u32(args, "secondFace")?)
+                    .map_err(StructuredWasmError::from)?;
+                let radius = get_f64(args, "radius")?;
+                crate::error::validate_positive(radius, "radius")
+                    .map_err(StructuredWasmError::from)?;
+                let result = remus_operations::face_face_blend::face_face_blend(
+                    self.topo_mut(),
+                    &[first],
+                    &[second],
+                    radius,
+                    None,
+                )
+                .map_err(StructuredWasmError::blend_failure)?;
+                Ok(serde_json::json!(shell_id_to_u32(result.sheet)))
+            }
+            "faceFaceBlendWithHoldLine" => {
+                let first = self
+                    .resolve_face(get_u32(args, "firstFace")?)
+                    .map_err(StructuredWasmError::from)?;
+                let second = self
+                    .resolve_face(get_u32(args, "secondFace")?)
+                    .map_err(StructuredWasmError::from)?;
+                let hold_face = self
+                    .resolve_face(get_u32(args, "holdFace")?)
+                    .map_err(StructuredWasmError::from)?;
+                let radius = get_f64(args, "radius")?;
+                crate::error::validate_positive(radius, "radius")
+                    .map_err(StructuredWasmError::from)?;
+                let hold = remus_operations::face_face_blend::FaceFaceHoldLine {
+                    support: hold_face,
+                    start: remus_math::vec::Point3::new(
+                        get_f64(args, "startX")?,
+                        get_f64(args, "startY")?,
+                        get_f64(args, "startZ")?,
+                    ),
+                    end: remus_math::vec::Point3::new(
+                        get_f64(args, "endX")?,
+                        get_f64(args, "endY")?,
+                        get_f64(args, "endZ")?,
+                    ),
+                };
+                let result = remus_operations::face_face_blend::face_face_blend(
+                    self.topo_mut(),
+                    &[first],
+                    &[second],
+                    radius,
+                    Some(hold),
+                )
+                .map_err(StructuredWasmError::blend_failure)?;
+                Ok(serde_json::json!(shell_id_to_u32(result.sheet)))
             }
             "chamferV2" => {
                 let s = get_u32(args, "solid")?;
