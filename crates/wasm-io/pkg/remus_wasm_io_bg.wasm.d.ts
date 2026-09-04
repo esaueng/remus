@@ -1,0 +1,35 @@
+/* tslint:disable */
+/* eslint-disable */
+export const memory: WebAssembly.Memory;
+export const __wbg_remusio_free: (a: number, b: number) => void;
+export const __wbg_stepimportresult_free: (a: number, b: number) => void;
+export const remusio_export3mf: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+export const remusio_exportGlb: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+export const remusio_exportIges: (a: number, b: number, c: number) => [number, number, number, number];
+export const remusio_exportObj: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+export const remusio_exportPly: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+export const remusio_exportStep: (a: number, b: number, c: number) => [number, number, number, number];
+export const remusio_exportStepWithOptions: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+export const remusio_exportStl: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+export const remusio_exportStlAscii: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+export const remusio_import3mf: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
+export const remusio_importGlb: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
+export const remusio_importIges: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
+export const remusio_importIndexedMesh: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+export const remusio_importObj: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
+export const remusio_importPly: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
+export const remusio_importStep: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
+export const remusio_importStepBodies: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number];
+export const remusio_importStepWithReport: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number];
+export const remusio_importStepWithValidation: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number, number];
+export const remusio_importStl: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
+export const stepimportresult_report: (a: number) => [number, number];
+export const stepimportresult_sheets: (a: number) => [number, number];
+export const stepimportresult_solids: (a: number) => [number, number];
+export const remusio_new: () => number;
+export const __wbindgen_externrefs: WebAssembly.Table;
+export const __wbindgen_malloc: (a: number, b: number) => number;
+export const __externref_table_dealloc: (a: number) => void;
+export const __wbindgen_free: (a: number, b: number, c: number) => void;
+export const __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
+export const __wbindgen_start: () => void;
