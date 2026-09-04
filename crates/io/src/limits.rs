@@ -10,23 +10,23 @@ use crate::IoError;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(clippy::struct_field_names)]
 pub struct ImportLimits {
-    /// Maximum encoded file size accepted by an importer (128 MiB by default).
+    /// Maximum encoded file size accepted by an importer (256 MiB by default).
     pub max_input_bytes: usize,
     /// Maximum uncompressed 3MF model XML entry (256 MiB by default).
     pub max_archive_entry_bytes: usize,
     /// Maximum parsed model records, vertices, faces, or triangles.
     ///
     /// Importers apply this limit to the format-specific entity counts that
-    /// drive allocation and work. Default: 2,000,000.
+    /// drive allocation and work. Default: 3,000,000.
     pub max_model_entities: usize,
 }
 
 impl Default for ImportLimits {
     fn default() -> Self {
         Self {
-            max_input_bytes: 128 * 1024 * 1024,
+            max_input_bytes: 256 * 1024 * 1024,
             max_archive_entry_bytes: 256 * 1024 * 1024,
-            max_model_entities: 2_000_000,
+            max_model_entities: 3_000_000,
         }
     }
 }
@@ -53,6 +53,13 @@ pub(crate) fn ensure_input_size(data_len: usize, limits: ImportLimits) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn defaults_accept_writer_scale_faceted_step_files() {
+        let limits = ImportLimits::default();
+        assert_eq!(limits.max_input_bytes, 256 * 1024 * 1024);
+        assert_eq!(limits.max_model_entities, 3_000_000);
+    }
 
     #[test]
     fn input_limit_reports_resource_and_values() {
