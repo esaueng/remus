@@ -304,7 +304,7 @@ does not itself promote or demote anything.
   boundary is a typed invalid-input error. Native closed-form volume and
   topology oracles plus the versioned WASM `push-pull-cylinder-top-cap` repro
   bundle pin the public contract.
-- **Replace-surface cell (in review in PR #238):** one planar face may receive
+- **Replace-surface cell (merged in PR #238):** one planar face may receive
   a coherently oriented replacement plane, and one inward-facing cylindrical
   bore wall may receive a same-axis coaxial radius. Planar/cylindrical
   neighbors are re-intersected without changing the source adjacency graph;
@@ -401,11 +401,11 @@ does not itself promote or demote anything.
   qualified. Cross-drilled display tessellation is qualified at two relative
   deflections, three bore ratios, and scales 0.1 through 10; `meshQuality`
   accepts the render angular tolerance and cannot label an empty mesh
-  watertight. In-review PR #210 adds deterministic open sheet tessellation for
+  watertight. PR #210 (landed via #233) adds deterministic open sheet tessellation for
   a trimmed NURBS patch and pins that solid-only proximity welding cannot erase
   an intentional triangular hole smaller than the requested deflection.
-  PR #213 carries that patch through native and direct/batch WASM STEP exchange.
-  The unit-scale patch workflow is qualified in review; broader sheet
+  PR #213 (landed via #233) carries that patch through native and direct/batch WASM
+  STEP exchange. The unit-scale patch workflow is qualified; broader sheet
   geometry/scale/parity and performance cells remain Unqualified.
 
 ### Validation and healing
