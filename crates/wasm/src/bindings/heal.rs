@@ -11,6 +11,32 @@ use crate::handles::{face_id_to_u32, solid_id_to_u32};
 use crate::helpers::{TOL, serialize_feature};
 use crate::kernel::BrepKernel;
 
+fn healing_repairs(
+    report: &remus_operations::heal::HealingReport,
+) -> Vec<crate::types::HealRepairDisclosure> {
+    report
+        .changes()
+        .into_iter()
+        .map(|change| crate::types::HealRepairDisclosure {
+            kind: change.kind.code().to_string(),
+            #[allow(clippy::cast_possible_truncation)]
+            count: change.count as u32,
+        })
+        .collect()
+}
+
+fn fixer_repairs(result: &remus_heal::fix::FixResult) -> Vec<crate::types::HealRepairDisclosure> {
+    result
+        .actions
+        .iter()
+        .map(|action| crate::types::HealRepairDisclosure {
+            kind: action.kind.code().to_string(),
+            #[allow(clippy::cast_possible_truncation)]
+            count: action.count as u32,
+        })
+        .collect()
+}
+
 #[wasm_bindgen]
 impl BrepKernel {
     // -- Sewing ----------------------------------------------------------------
@@ -159,6 +185,17 @@ impl BrepKernel {
             + report.duplicate_faces_removed) as u32)
     }
 
+    /// Heal a solid and return exact repair categories plus a verified-valid
+    /// postcondition. Invalid or unverifiable results are rolled back and
+    /// returned as typed errors.
+    #[wasm_bindgen(js_name = "healSolidDetailed")]
+    pub fn heal_solid_detailed(&mut self, solid: u32) -> Result<JsValue, JsError> {
+        let result = self.heal_solid_detailed_impl(solid)?;
+        Ok(serde_json::to_string(&result)
+            .map_err(|error| JsError::new(&error.to_string()))?
+            .into())
+    }
+
     /// Validate, heal, and re-validate a solid in one pass.
     ///
     /// Returns the number of remaining validation errors after repair.
@@ -173,6 +210,16 @@ impl BrepKernel {
         let report = remus_operations::heal::repair_solid(self.topo_mut(), solid_id, TOL)?;
         #[allow(clippy::cast_possible_truncation)]
         Ok(report.after.error_count() as u32)
+    }
+
+    /// Validate, heal, and re-validate a solid with exact repair disclosure.
+    /// Success always means both independent validators accepted the result.
+    #[wasm_bindgen(js_name = "repairSolidDetailed")]
+    pub fn repair_solid_detailed(&mut self, solid: u32) -> Result<JsValue, JsError> {
+        let result = self.repair_solid_detailed_impl(solid)?;
+        Ok(serde_json::to_string(&result)
+            .map_err(|error| JsError::new(&error.to_string()))?
+            .into())
     }
 
     /// Remove degenerate (zero-length) edges from a solid.
@@ -444,6 +491,48 @@ fn parse_heal_config(
 /// Natively-testable implementations (`JsError` cannot be constructed on
 /// non-wasm targets).
 impl BrepKernel {
+    pub(crate) fn heal_solid_detailed_impl(
+        &mut self,
+        solid: u32,
+    ) -> Result<crate::types::HealDetailedResult, crate::error::WasmError> {
+        let solid_id =
+            self.resolve_solid(solid)
+                .map_err(|_| crate::error::WasmError::InvalidHandle {
+                    entity: "solid",
+                    index: solid as usize,
+                })?;
+        let report = remus_operations::heal::heal_solid(self.topo_mut(), solid_id, TOL)?;
+        #[allow(clippy::cast_possible_truncation)]
+        Ok(crate::types::HealDetailedResult {
+            solid,
+            repairs: healing_repairs(&report),
+            total_repairs: report.total() as u32,
+            verified: true,
+        })
+    }
+
+    pub(crate) fn repair_solid_detailed_impl(
+        &mut self,
+        solid: u32,
+    ) -> Result<crate::types::RepairDetailedResult, crate::error::WasmError> {
+        let solid_id =
+            self.resolve_solid(solid)
+                .map_err(|_| crate::error::WasmError::InvalidHandle {
+                    entity: "solid",
+                    index: solid as usize,
+                })?;
+        let report = remus_operations::heal::repair_solid(self.topo_mut(), solid_id, TOL)?;
+        #[allow(clippy::cast_possible_truncation)]
+        Ok(crate::types::RepairDetailedResult {
+            solid,
+            errors_before: report.before.error_count() as u32,
+            repairs: healing_repairs(&report.healing),
+            total_repairs: report.total_repairs() as u32,
+            errors_after: (report.after.error_count() + report.check_after.error_count()) as u32,
+            verified: report.is_valid_after(),
+        })
+    }
+
     pub(crate) fn fix_shape_with_config_impl(
         &mut self,
         solid: u32,
@@ -456,21 +545,20 @@ impl BrepKernel {
                     entity: "solid",
                     index: solid as usize,
                 })?;
-        let (new_solid, result) = match tolerance {
-            Some(t) => {
-                remus_heal::fix::fix_shape_with_tolerance(self.topo_mut(), solid_id, &config, t)
-            }
-            None => remus_heal::fix::fix_shape(self.topo_mut(), solid_id, &config),
-        }
-        .map_err(|e| crate::error::WasmError::InvalidInput {
-            reason: format!("heal: {e}"),
-        })?;
+        let report = remus_operations::heal::fix_shape_verified(
+            self.topo_mut(),
+            solid_id,
+            &config,
+            tolerance,
+        )?;
         #[allow(clippy::cast_possible_truncation)]
         Ok(crate::types::HealFixResult {
-            solid: solid_id_to_u32(new_solid),
-            actions_taken: result.actions_taken as u32,
-            done: result.status.is_done(),
-            failed: result.status.is_fail(),
+            solid: solid_id_to_u32(report.solid),
+            actions_taken: report.fixing.actions_taken as u32,
+            done: report.fixing.status.is_done(),
+            failed: false,
+            repairs: fixer_repairs(&report.fixing),
+            verified: report.is_valid_after(),
         })
     }
 
@@ -511,24 +599,26 @@ impl BrepKernel {
         for step in &steps {
             process.add_step(step);
         }
-        let (new_solid, results) = self
-            .with_topology_transaction(|topo| process.execute(topo, solid_id))
-            .map_err(|e| crate::error::WasmError::InvalidInput {
-                reason: format!("heal pipeline: {e}"),
-            })?;
+        let report = remus_operations::heal::run_heal_pipeline_verified(
+            self.topo_mut(),
+            solid_id,
+            &process,
+        )?;
         #[allow(clippy::cast_possible_truncation)]
         Ok(crate::types::HealPipelineResult {
-            solid: solid_id_to_u32(new_solid),
+            solid: solid_id_to_u32(report.solid),
             steps: steps
                 .iter()
-                .zip(results.iter())
+                .zip(report.steps.iter())
                 .map(|(name, r)| crate::types::HealStepResult {
                     step: name.clone(),
                     actions_taken: r.actions_taken as u32,
                     done: r.status.is_done(),
-                    failed: r.status.is_fail(),
+                    failed: false,
+                    repairs: fixer_repairs(r),
                 })
                 .collect(),
+            verified: report.is_valid_after(),
         })
     }
 }
@@ -549,9 +639,10 @@ impl BrepKernel {
     /// `orientation`, `sameParameter`, `vertexTolerance`, `pcurve`,
     /// `coincidentVertices`, `wireframe`, `splitCommonVertex`, `smallFaces`.
     ///
-    /// Returns a JSON string `{ solid, actionsTaken, done, failed }` (see the
-    /// `HealFixResult` TypeScript type); `solid` is the healed solid's handle
-    /// and may differ from the input.
+    /// Returns a JSON string `{ solid, actionsTaken, done, failed, repairs,
+    /// verified }` (see the `HealFixResult` TypeScript type); `solid` is the
+    /// healed solid's handle and may differ from the input. Success is
+    /// committed only after both validators accept the result.
     #[wasm_bindgen(js_name = "fixShapeWithConfig")]
     pub fn fix_shape_with_config(
         &mut self,
@@ -575,7 +666,9 @@ impl BrepKernel {
     /// step name fails the whole run before any mutation of later steps.
     ///
     /// Returns a JSON string `{ solid, steps: [{step, actionsTaken, done,
-    /// failed}] }` (see the `HealPipelineResult` TypeScript type).
+    /// failed, repairs}], verified }` (see the `HealPipelineResult`
+    /// TypeScript type). Success is committed only after both validators
+    /// accept the result.
     #[wasm_bindgen(js_name = "runHealPipeline")]
     pub fn run_heal_pipeline(
         &mut self,
@@ -625,6 +718,30 @@ mod heal_config_tests {
         // The healed solid still resolves and keeps its volume.
         let vol = k.volume(r.solid, 0.01).unwrap();
         assert!((vol - 8.0).abs() < 0.05, "volume after heal = {vol}");
+    }
+
+    #[test]
+    fn detailed_healing_reports_verified_success_and_typed_refusal() {
+        let mut k = BrepKernel::new();
+        let solid = make_box(&mut k);
+        let success = k.repair_solid_detailed_impl(solid).unwrap();
+        assert!(success.verified);
+        assert_eq!(success.errors_after, 0);
+        assert_eq!(success.total_repairs, 0);
+        assert!(success.repairs.is_empty());
+
+        let invalid = k.topo_mut().add_empty_solid();
+        let invalid_handle = crate::handles::solid_id_to_u32(invalid);
+        let error = k
+            .heal_solid_detailed_impl(invalid_handle)
+            .expect_err("invalid healed result must be refused");
+        assert!(matches!(
+            error,
+            crate::error::WasmError::Operations(
+                remus_operations::OperationsError::HealingValidationFailed { .. }
+            )
+        ));
+        assert!(k.topo().solid(invalid).is_ok());
     }
 
     #[test]
