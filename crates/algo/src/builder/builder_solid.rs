@@ -262,6 +262,208 @@ fn retain_aligned<T, U>(
     });
 }
 
+/// Restore the stored winding convention on cylinder faces before edge merge.
+///
+/// Splitter loops are geometrically closed but can arrive wound with an outer
+/// loop opposing the stored cylinder normal, or an inner loop following it.
+/// That makes every merged edge on a cut/intersect pocket disagree with its
+/// adjacent face even though the selected surfaces and volumes are correct.
+/// Multi-opening periodic walls are deliberately left unchanged: independent
+/// 3D Newell projections cannot establish a shared ordering between holes.
+pub(super) fn orient_cylinder_face_wires(
+    topo: &mut Topology,
+    selected: &[SelectedFace],
+) -> Result<(), AlgoError> {
+    let mut processed = HashSet::new();
+    for selected_face in selected {
+        let face_id = selected_face.face_id;
+        if !processed.insert(face_id) {
+            continue;
+        }
+        let (surface, outer, inners) = {
+            let face = topo.face(face_id)?;
+            if !matches!(face.surface(), FaceSurface::Cylinder(_)) {
+                continue;
+            }
+            (
+                face.surface().clone(),
+                face.outer_wire(),
+                face.inner_wires().to_vec(),
+            )
+        };
+        let (oriented_outer, outer_changed) = orient_wire_to_surface(topo, outer, &surface, true)?;
+        let mut changed = outer_changed;
+        let mut oriented_inners = Vec::with_capacity(inners.len());
+        // B15 is the single-pocket case. Do not guess how separately projected
+        // loops on a multi-opening periodic wall should be ordered.
+        if inners.len() == 1 {
+            let (inner, inner_changed) = orient_wire_to_surface(topo, inners[0], &surface, false)?;
+            changed |= inner_changed;
+            oriented_inners.push(inner);
+        } else {
+            oriented_inners.extend(inners.iter().copied());
+        }
+        if changed {
+            let mut carried_pcurves = Vec::new();
+            for wire_id in std::iter::once(outer).chain(inners.iter().copied()) {
+                for oriented in topo.wire(wire_id)?.edges() {
+                    if let Some(pcurve) = topo
+                        .pcurve_oriented(oriented.edge(), face_id, oriented.is_forward())
+                        .cloned()
+                    {
+                        carried_pcurves.push((oriented.edge(), oriented.is_forward(), pcurve));
+                    }
+                }
+            }
+            topo.set_face_boundary_wires(face_id, oriented_outer, oriented_inners.clone())?;
+            restore_reversed_pcurves(
+                topo,
+                face_id,
+                std::iter::once(oriented_outer).chain(oriented_inners),
+                &carried_pcurves,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn restore_reversed_pcurves(
+    topo: &mut Topology,
+    face_id: FaceId,
+    wires: impl Iterator<Item = WireId>,
+    carried: &[(EdgeId, bool, remus_topology::pcurve::PCurve)],
+) -> Result<(), AlgoError> {
+    // Re-key each reversed coedge's exact 2D authority; rebuilding a face loop
+    // otherwise retains authority only for uses whose orientation is unchanged.
+    let mut uses = Vec::new();
+    for wire_id in wires {
+        uses.extend(
+            topo.wire(wire_id)?
+                .edges()
+                .iter()
+                .map(|oriented| (oriented.edge(), oriented.is_forward())),
+        );
+    }
+    for (edge_id, forward) in uses {
+        if topo.pcurve_oriented(edge_id, face_id, forward).is_some() {
+            continue;
+        }
+        let Some((_, _, pcurve)) = carried
+            .iter()
+            .find(|(edge, old_forward, _)| *edge == edge_id && *old_forward != forward)
+        else {
+            continue;
+        };
+        topo.set_pcurve_oriented(
+            edge_id,
+            face_id,
+            forward,
+            remus_topology::pcurve::PCurve::new(
+                pcurve.curve().clone(),
+                pcurve.t_end(),
+                pcurve.t_start(),
+            ),
+        )?;
+    }
+    Ok(())
+}
+
+/// Reverse a wire when its sampled 3D winding has the wrong relationship to
+/// the stored surface normal. Outer loops follow it; inner loops oppose it.
+fn orient_wire_to_surface(
+    topo: &mut Topology,
+    wire_id: WireId,
+    surface: &FaceSurface,
+    same_direction: bool,
+) -> Result<(WireId, bool), AlgoError> {
+    let Some(alignment) = wire_surface_alignment(topo, wire_id, surface)? else {
+        return Ok((wire_id, false));
+    };
+    if (same_direction && alignment > 0.0) || (!same_direction && alignment < 0.0) {
+        return Ok((wire_id, false));
+    }
+    let wire = topo.wire(wire_id)?;
+    let closed = wire.is_closed();
+    // A rotation of a closed loop does not change its winding. Keep the same
+    // anchor so deterministic edge enumeration is not perturbed by the repair.
+    let anchor = wire.edges().first().map(OrientedEdge::edge);
+    let mut edges: Vec<_> = wire
+        .edges()
+        .iter()
+        .rev()
+        .map(|edge| OrientedEdge::new(edge.edge(), !edge.is_forward()))
+        .collect();
+    if let Some(position) =
+        anchor.and_then(|anchor| edges.iter().position(|oriented| oriented.edge() == anchor))
+    {
+        edges.rotate_left(position);
+    }
+    let wire = remus_topology::wire::Wire::new(edges, closed)?;
+    Ok((topo.add_wire(wire), true))
+}
+
+fn wire_surface_alignment(
+    topo: &Topology,
+    wire_id: WireId,
+    surface: &FaceSurface,
+) -> Result<Option<f64>, AlgoError> {
+    let wire = topo.wire(wire_id)?;
+    let mut points = Vec::with_capacity(wire.edges().len() * 4);
+    for oriented in wire.edges() {
+        let edge = topo.edge(oriented.edge())?;
+        // A closed rim plus a doubled seam bounds a full wrapped cylinder.
+        // Its 3D Newell vector projects the whole period onto an arbitrary
+        // radial direction, so it cannot decide winding for this correction.
+        if edge.start() == edge.end() {
+            return Ok(None);
+        }
+        let start = topo.vertex(edge.start())?.point();
+        let end = topo.vertex(edge.end())?.point();
+        let domain = edge.strict_domain().map_err(|error| {
+            AlgoError::AssemblyFailed(format!(
+                "cannot orient cylinder wire with invalid edge domain: {error}"
+            ))
+        })?;
+        let samples = if matches!(edge.curve(), EdgeCurve::Line) {
+            1
+        } else {
+            4
+        };
+        super::pcurve_compute::sample_edge_uniform(
+            edge.curve(),
+            start,
+            end,
+            domain,
+            samples,
+            oriented.is_forward(),
+            &mut points,
+        );
+    }
+    if points.len() < 3 {
+        return Ok(None);
+    }
+
+    let mut centroid = Vec3::new(0.0, 0.0, 0.0);
+    for point in &points {
+        centroid += Vec3::new(point.x(), point.y(), point.z());
+    }
+    let inverse_count = 1.0 / points.len() as f64;
+    let centroid = Point3::new(
+        centroid.x() * inverse_count,
+        centroid.y() * inverse_count,
+        centroid.z() * inverse_count,
+    );
+    let winding = newell_normal(&points);
+    if winding.length() < 1e-12 {
+        return Ok(None);
+    }
+    let Some((u, v)) = surface.project_point(centroid) else {
+        return Ok(None);
+    };
+    let alignment = winding.dot(surface.normal(u, v));
+    Ok((alignment.abs() > winding.length() * 1e-10).then_some(alignment))
+}
+
 // ── Phase 1 ──────────────────────────────────────────────────────────
 
 /// Iteratively remove faces with free (single-face) edges.
