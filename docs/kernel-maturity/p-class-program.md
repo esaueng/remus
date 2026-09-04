@@ -881,8 +881,8 @@ rims of an 8-by-2 cylinder build at radius 0.9, while radius 1.1 reports the
 second wall cliff with 0.9 of local support remaining. Both refusals preserve
 the original topology and volume, and the structured batch route reports the
 same stable code. Actual rollover onto a neighboring face remains
-Unqualified; it is deferred to the general re-limitation machinery in 6.1
-rather than approximated here.
+Unqualified. Issue 6.1 now supplies a bounded exact re-limitation primitive,
+but the blend caller does not yet use it and no rollover is approximated here.
 
 > **Exit gate:** fillet radius exceeding a thin wall's width produces the
 > overflowed topology or a typed cliff refusal per declared policy — never a
@@ -980,6 +980,24 @@ re-intersect every affected edge, rebuild trims and p-curves. Everything else
 in this milestone is a caller of this function. Failure policy: if
 re-intersection loses an edge or opens the shell, refuse typed with the
 offending adjacency named — never emit the broken solid.
+
+Implemented in [PR #238](https://github.com/esaueng/remus/pull/238) for the
+first exact analytic cell. `replace_surface` accepts one coherently oriented
+plane replacement, or one same-axis coaxial radius replacement on an
+inward-facing cylindrical bore wall. The existing re-limitation engine
+intersects the replacement against planar/cylindrical neighbors, preserves the
+source adjacency graph and exact face map, permits the required closed
+Circle→Ellipse trim transition, and rebuilds every result coedge p-curve over
+the edge's authoritative domain. Exact nonadjacent line/circle/ellipse
+clearance guards the plane cell; exact line-segment/axis clearance guards the
+bore cell. A crossed boundary returns `TopologyChange` with the selected face
+and offending source edge and rolls back every allocation. Tilted bored-cap
+and doubled-bore-radius witnesses pin strict validation, two uses per edge,
+welded watertight meshes, B-Rep/independent-mesh volume, p-curve residuals,
+and translated `1e-3 / 1 / 1e3` scale behavior. Surface-type changes,
+outward-facing cylinders, non-coaxial axes, non-analytic neighbors, topology
+changes, blend rollover, WASM exposure, and evolution journaling remain
+Unqualified or assigned to later 6.x issues.
 
 > **Exit gate:** replace a planar face with a tilted plane and a cylindrical
 > wall with a larger radius on a bored block: watertight, valid, all neighbor

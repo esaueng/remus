@@ -27,7 +27,7 @@ mod builder;
 pub mod classifier;
 
 pub use builder::FaceClass;
-pub use builder::pcurve_compute::compute_pcurve_on_surface;
+pub use builder::pcurve_compute::{compute_pcurve_on_surface, compute_pcurve_on_surface_in_domain};
 pub use builder::plane_frame::PlaneFrame;
 pub use builder::split_types::sub_trim;
 pub(crate) mod ds;

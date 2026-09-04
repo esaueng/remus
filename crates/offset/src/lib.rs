@@ -69,7 +69,9 @@ pub(crate) mod self_int;
 
 pub use data::{JointType, OffsetOptions};
 pub use error::OffsetError;
-pub use move_faces::{MoveFacesResult, move_faces, move_faces_with_face_map};
+pub use move_faces::{
+    MoveFacesResult, move_faces, move_faces_with_face_map, replace_surface_with_face_map,
+};
 pub use self_int::{SelfIntersectionRemoval, remove_folded_uniform_l_prism_region};
 
 use remus_math::det_hash::{DetHashMap, DetHashSet};
