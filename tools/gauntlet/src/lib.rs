@@ -1240,6 +1240,25 @@ fn operations_diagnostic(error: &OperationsError) -> DiagnosticRecord {
             "body_validation_failed",
             error.to_string(),
         ),
+        OperationsError::HealingValidationFailed { .. }
+        | OperationsError::ConfiguredHealingValidationFailed { .. } => DiagnosticRecord::error(
+            FailureCategory::InvalidTopology,
+            "healing_validation_failed",
+            error.to_string(),
+        ),
+        OperationsError::HealingVerificationUnavailable { .. }
+        | OperationsError::ConfiguredHealingVerificationUnavailable { .. } => {
+            DiagnosticRecord::error(
+                FailureCategory::Internal,
+                "healing_verification_unavailable",
+                error.to_string(),
+            )
+        }
+        OperationsError::HealingRepairRefused { .. } => DiagnosticRecord::error(
+            FailureCategory::Unsupported,
+            "healing_repair_refused",
+            error.to_string(),
+        ),
         OperationsError::BodyClassMeasureMismatch { .. } => DiagnosticRecord::error(
             FailureCategory::InvalidInput,
             "body_class_measure_mismatch",

@@ -313,6 +313,73 @@ pub enum OperationsError {
         error_count: usize,
     },
 
+    /// Healing completed its mutation pass, but the result did not satisfy
+    /// both independent solid validators. The attempted repairs were rolled
+    /// back and remain available for disclosure on the error value.
+    #[error(
+        "healing result refused: operations validator found {operations_errors} error(s), \
+         check validator found {check_errors} error(s)"
+    )]
+    HealingValidationFailed {
+        /// Error count from the L3 operations validator.
+        operations_errors: usize,
+        /// Error count from the independent L2 check validator.
+        check_errors: usize,
+        /// Exact repair categories attempted before rollback.
+        healing: crate::heal::HealingReport,
+    },
+
+    /// A validator errored before it could establish the healed result's
+    /// validity. The attempted repairs were rolled back.
+    #[error("healing verification unavailable from {validator}: {reason}")]
+    HealingVerificationUnavailable {
+        /// Validator that could not produce a verdict.
+        validator: &'static str,
+        /// Typed lower-layer failure rendered for diagnostics.
+        reason: String,
+        /// Exact repair categories attempted before rollback.
+        healing: crate::heal::HealingReport,
+    },
+
+    /// A configured fixer declined at least one requested repair. Any repairs
+    /// made earlier in the pass were rolled back and are disclosed here.
+    #[error("configured healing refused {refusal_count} unresolved repair site(s)")]
+    HealingRepairRefused {
+        /// Total number of sites whose requested repair was declined.
+        refusal_count: usize,
+        /// Repairs attempted before the refusal was known.
+        actions: Vec<remus_heal::fix::RepairAction>,
+        /// Typed reasons and affected-site counts.
+        refusals: Vec<remus_heal::fix::RepairRefusal>,
+    },
+
+    /// Configured healing completed, but the result failed validation. The
+    /// complete attempted repair disclosure is retained after rollback.
+    #[error(
+        "configured healing result refused: operations validator found {operations_errors} \
+         error(s), check validator found {check_errors} error(s)"
+    )]
+    ConfiguredHealingValidationFailed {
+        /// Error count from the L3 operations validator.
+        operations_errors: usize,
+        /// Error count from the independent L2 check validator.
+        check_errors: usize,
+        /// Repairs attempted before validation vetoed the commit.
+        actions: Vec<remus_heal::fix::RepairAction>,
+    },
+
+    /// A validator errored before it could establish configured healing's
+    /// validity. The complete attempted repair disclosure is retained.
+    #[error("configured healing verification unavailable from {validator}: {reason}")]
+    ConfiguredHealingVerificationUnavailable {
+        /// Validator that could not produce a verdict.
+        validator: &'static str,
+        /// Typed lower-layer failure rendered for diagnostics.
+        reason: String,
+        /// Repairs attempted before verification failed.
+        actions: Vec<remus_heal::fix::RepairAction>,
+    },
+
     /// A pattern would place two instances over the same material volume.
     ///
     /// Returning the instances as an ordinary compound would double-count

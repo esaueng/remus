@@ -193,10 +193,11 @@ fn fix_reorder(
         gap = order_result.max_gap,
     ));
 
-    Ok(FixResult {
-        status: Status::DONE1,
-        actions_taken: 1,
-    })
+    Ok(FixResult::changed(
+        Status::DONE1,
+        super::RepairActionKind::WireReordered,
+        1,
+    ))
 }
 
 /// Close gaps between consecutive edges by merging nearby vertices.
@@ -289,10 +290,11 @@ fn fix_connected_with_tol(
         "Wire {wire_id:?}: closed {gaps_closed} gap(s) by merging vertices",
     ));
 
-    Ok(FixResult {
-        status: Status::DONE2,
-        actions_taken: gaps_closed,
-    })
+    Ok(FixResult::changed(
+        Status::DONE2,
+        super::RepairActionKind::WireGapClosed,
+        gaps_closed,
+    ))
 }
 
 /// Ensure wire closure: if the wire is flagged as closed but the last
@@ -338,10 +340,11 @@ fn fix_closed(
         ctx.warn(format!(
             "Wire {wire_id:?}: closure gap {dist:.2e} exceeds tolerance, cannot close",
         ));
-        return Ok(FixResult {
-            status: Status::FAIL1,
-            actions_taken: 0,
-        });
+        return Ok(FixResult::refused(
+            Status::FAIL1,
+            super::RepairRefusalKind::ClosureGapTooLarge,
+            1,
+        ));
     }
 
     ctx.reshape.replace_vertex(first_start, last_end);
@@ -350,10 +353,11 @@ fn fix_closed(
         "Wire {wire_id:?}: closed closure gap of {dist:.2e}",
     ));
 
-    Ok(FixResult {
-        status: Status::DONE3,
-        actions_taken: 1,
-    })
+    Ok(FixResult::changed(
+        Status::DONE3,
+        super::RepairActionKind::WireGapClosed,
+        1,
+    ))
 }
 
 /// Remove edges shorter than tolerance and merge their vertices.
@@ -396,10 +400,11 @@ fn fix_small(
         return Ok(FixResult::ok());
     }
 
-    Ok(FixResult {
-        status: Status::DONE4,
-        actions_taken: removed,
-    })
+    Ok(FixResult::changed(
+        Status::DONE4,
+        super::RepairActionKind::SmallEdgeRemoved,
+        removed,
+    ))
 }
 
 /// Remove degenerate edges: closed (start == end) with zero-length curve.
@@ -448,10 +453,11 @@ fn fix_degenerate(
         ctx.reshape.replace_wire(wire_id, new_wire_id);
     }
 
-    Ok(FixResult {
-        status: Status::DONE5,
-        actions_taken: removed,
-    })
+    Ok(FixResult::changed(
+        Status::DONE5,
+        super::RepairActionKind::DegenerateEdgeRemoved,
+        removed,
+    ))
 }
 
 /// Close 3D gaps between consecutive edges, including gaps wider than
@@ -564,10 +570,11 @@ fn fix_tail(
         last_oe.edge(),
     ));
 
-    Ok(FixResult {
-        status: Status::DONE6,
-        actions_taken: 1,
-    })
+    Ok(FixResult::changed(
+        Status::DONE6,
+        super::RepairActionKind::WireTailRemoved,
+        1,
+    ))
 }
 
 /// Detect self-intersections in the wire by checking non-adjacent edge
@@ -639,10 +646,11 @@ fn fix_self_intersection(
     }
 
     if crossings_found > 0 {
-        Ok(FixResult {
-            status: Status::DONE1,
-            actions_taken: crossings_found,
-        })
+        Ok(FixResult::refused(
+            Status::FAIL1,
+            super::RepairRefusalKind::SelfIntersectionRepairUnsupported,
+            crossings_found,
+        ))
     } else {
         Ok(FixResult::ok())
     }
@@ -840,10 +848,11 @@ fn fix_lacking(
     }
 
     if adjusted > 0 {
-        Ok(FixResult {
-            status: Status::DONE1,
-            actions_taken: adjusted,
-        })
+        Ok(FixResult::changed(
+            Status::DONE1,
+            super::RepairActionKind::VertexMovedToCurve,
+            adjusted,
+        ))
     } else {
         Ok(FixResult::ok())
     }
@@ -975,10 +984,11 @@ fn fix_notched(
     }
 
     if cusps_found > 0 {
-        Ok(FixResult {
-            status: Status::DONE1,
-            actions_taken: cusps_found,
-        })
+        Ok(FixResult::changed(
+            Status::DONE1,
+            super::RepairActionKind::NotchedEdgeRemoved,
+            cusps_found,
+        ))
     } else {
         Ok(FixResult::ok())
     }
@@ -1066,10 +1076,11 @@ fn fix_intersecting_edges(
     }
 
     if crossings_found > 0 {
-        Ok(FixResult {
-            status: Status::DONE1,
-            actions_taken: crossings_found,
-        })
+        Ok(FixResult::refused(
+            Status::FAIL1,
+            super::RepairRefusalKind::IntersectingEdgesRepairUnsupported,
+            crossings_found,
+        ))
     } else {
         Ok(FixResult::ok())
     }
@@ -1171,10 +1182,11 @@ fn fix_missing_seam(
              of period {period:.3} but has no seam edge \
              (seam insertion not yet implemented)",
         ));
-        Ok(FixResult {
-            status: Status::DONE1,
-            actions_taken: 0,
-        })
+        Ok(FixResult::refused(
+            Status::FAIL1,
+            super::RepairRefusalKind::MissingSeamRepairUnsupported,
+            1,
+        ))
     } else {
         Ok(FixResult::ok())
     }

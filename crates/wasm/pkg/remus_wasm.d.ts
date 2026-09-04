@@ -57,6 +57,20 @@ export interface EvolutionShapeV1 {
 }
 
 /**
+ * One counted healing repair category.
+ */
+export interface HealRepairDisclosure {
+    /**
+     * Stable machine-readable repair kind.
+     */
+    kind: string;
+    /**
+     * Number of repairs of this kind.
+     */
+    count: number;
+}
+
+/**
  * One issue reported by detailed solid validation.
  */
 export interface ValidationIssueResult {
@@ -98,6 +112,10 @@ export interface HealStepResult {
      * At least one fix could not be applied.
      */
     failed: boolean;
+    /**
+     * Exact non-empty repair categories applied by this step.
+     */
+    repairs: HealRepairDisclosure[];
 }
 
 /**
@@ -232,6 +250,14 @@ export interface HealFixResult {
      * At least one fix could not be applied.
      */
     failed: boolean;
+    /**
+     * Exact non-empty repair categories applied.
+     */
+    repairs: HealRepairDisclosure[];
+    /**
+     * Both independent validators accepted the returned solid.
+     */
+    verified: boolean;
 }
 
 /**
@@ -385,6 +411,28 @@ export interface FaceCurvatureResult {
 }
 
 /**
+ * Typed result for `healSolidDetailed`.
+ */
+export interface HealDetailedResult {
+    /**
+     * Handle of the healed solid.
+     */
+    solid: number;
+    /**
+     * Exact non-empty repair categories applied.
+     */
+    repairs: HealRepairDisclosure[];
+    /**
+     * Total number of repairs applied.
+     */
+    totalRepairs: number;
+    /**
+     * Both independent validators accepted the returned solid.
+     */
+    verified: boolean;
+}
+
+/**
  * Typed result for `massProperties`.
  */
 export interface MassPropertiesResult {
@@ -464,6 +512,36 @@ export interface PolygonBoolean2dResult {
 }
 
 /**
+ * Typed result for `repairSolidDetailed`.
+ */
+export interface RepairDetailedResult {
+    /**
+     * Handle of the repaired solid.
+     */
+    solid: number;
+    /**
+     * Error count before repair.
+     */
+    errorsBefore: number;
+    /**
+     * Exact non-empty repair categories applied.
+     */
+    repairs: HealRepairDisclosure[];
+    /**
+     * Total number of repairs applied.
+     */
+    totalRepairs: number;
+    /**
+     * Error count after repair; always zero on success.
+     */
+    errorsAfter: number;
+    /**
+     * Both independent validators accepted the returned solid.
+     */
+    verified: boolean;
+}
+
+/**
  * Typed result for `runHealPipeline`.
  */
 export interface HealPipelineResult {
@@ -475,6 +553,10 @@ export interface HealPipelineResult {
      * One entry per executed step, in order.
      */
     steps: HealStepResult[];
+    /**
+     * Both independent validators accepted the returned solid.
+     */
+    verified: boolean;
 }
 
 /**
@@ -1564,9 +1646,10 @@ export class BrepKernel {
      * `orientation`, `sameParameter`, `vertexTolerance`, `pcurve`,
      * `coincidentVertices`, `wireframe`, `splitCommonVertex`, `smallFaces`.
      *
-     * Returns a JSON string `{ solid, actionsTaken, done, failed }` (see the
-     * `HealFixResult` TypeScript type); `solid` is the healed solid's handle
-     * and may differ from the input.
+     * Returns a JSON string `{ solid, actionsTaken, done, failed, repairs,
+     * verified }` (see the `HealFixResult` TypeScript type); `solid` is the
+     * healed solid's handle and may differ from the input. Success is
+     * committed only after both validators accept the result.
      */
     fixShapeWithConfig(solid: number, config_json: string): any;
     /**
@@ -2116,6 +2199,12 @@ export class BrepKernel {
      * Returns the number of issues fixed.
      */
     healSolid(solid: number): number;
+    /**
+     * Heal a solid and return exact repair categories plus a verified-valid
+     * postcondition. Invalid or unverifiable results are rolled back and
+     * returned as typed errors.
+     */
+    healSolidDetailed(solid: number): any;
     /**
      * Create a helical sweep of a profile face.
      *
@@ -3139,6 +3228,11 @@ export class BrepKernel {
      */
     repairSolid(solid: number): number;
     /**
+     * Validate, heal, and re-validate a solid with exact repair disclosure.
+     * Success always means both independent validators accepted the result.
+     */
+    repairSolidDetailed(solid: number): any;
+    /**
      * Resize or remove an exact constant-radius analytic blend band.
      *
      * `face` is only a seed: the kernel re-derives the complete band, its
@@ -3255,7 +3349,9 @@ export class BrepKernel {
      * step name fails the whole run before any mutation of later steps.
      *
      * Returns a JSON string `{ solid, steps: [{step, actionsTaken, done,
-     * failed}] }` (see the `HealPipelineResult` TypeScript type).
+     * failed, repairs}], verified }` (see the `HealPipelineResult`
+     * TypeScript type). Success is committed only after both validators
+     * accept the result.
      */
     runHealPipeline(solid: number, steps: string[]): any;
     /**
