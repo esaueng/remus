@@ -1,7 +1,8 @@
 name: Refresh Apache Staging Package
 
-# Keeps the committed package at `crates/wasm/pkg` in step with the source on
-# `main`. That directory is a real distribution channel: it is installed
+# Keeps the committed packages at `crates/wasm/pkg` (kernel) and
+# `crates/wasm-io/pkg` (file-format translators) in step with the source on
+# `main`. Those directories are a real distribution channel: they are installed
 # directly by git path, so whatever is committed there is what a consumer gets.
 # A stale snapshot silently serves old kernel behavior while the Rust source
 # looks current, so every package-affecting push runs this automatically.
@@ -31,10 +32,11 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # The committed package directory is a real distribution channel, not a
+  # The committed package directories are a real distribution channel, not a
   # build leftover: OpenZCAD installs this repo as
   #   "remus-wasm": "github:esaueng/remus#main&path:/crates/wasm/pkg"
-  # so npm/pnpm fetches whatever `crates/wasm/pkg` holds on main.
+  #   "remus-wasm-io": "github:esaueng/remus#main&path:/crates/wasm-io/pkg"
+  # so npm/pnpm fetches whatever those directories hold on main.
   # A missed package-affecting refresh would leave consumers running stale generated code while
   # main's Rust source appears current.
   build-committed-package:
@@ -77,26 +79,27 @@ jobs:
 
       # Keep the staging package on the same reproducible build path that the
       # standalone project will use after it adopts its final package name.
-      - name: Build, merge, validate, and smoke-test WASM package
+      - name: Build, merge, validate, and smoke-test WASM packages
         run: cargo xtask wasm-build
 
       # Point consumers of the committed directory at this repo. Deliberately
       # stable fields only — stamping the commit SHA here would make the diff
       # non-empty on every run and commit even when the kernel is unchanged.
       - name: Stamp fork provenance
-        working-directory: crates/wasm/pkg
         run: |
-          npm pkg set \
-            repository.type=git \
-            repository.url=git+https://github.com/${GITHUB_REPOSITORY}.git \
-            homepage=https://github.com/${GITHUB_REPOSITORY}
+          for pkg in crates/wasm/pkg crates/wasm-io/pkg; do
+            npm --prefix "$pkg" pkg set \
+              repository.type=git \
+              repository.url=git+https://github.com/${GITHUB_REPOSITORY}.git \
+              homepage=https://github.com/${GITHUB_REPOSITORY}
+          done
 
       # Build scripts execute before this point. Pass only the generated
       # package to a fresh runner that will receive the repository write token.
-      - name: Archive generated package
+      - name: Archive generated packages
         # Use the system binary by absolute path because build scripts can add
         # a malicious replacement to GITHUB_PATH for later steps in this job.
-        run: /usr/bin/tar -czf committed-wasm-package.tar.gz crates/wasm/pkg
+        run: /usr/bin/tar -czf committed-wasm-package.tar.gz crates/wasm/pkg crates/wasm-io/pkg
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -120,21 +123,21 @@ jobs:
         with:
           name: committed-wasm-package
 
-      - name: Install generated package
+      - name: Install generated packages
         run: |
           # Never extract an artifact produced by build-time code directly
           # into the checkout. The installer accepts only regular files and
-          # directories beneath crates/wasm/pkg.
+          # directories beneath the two package roots.
           /usr/bin/python3 scripts/install-wasm-package-archive.py \
-            committed-wasm-package.tar.gz crates/wasm/pkg
+            committed-wasm-package.tar.gz crates/wasm/pkg crates/wasm-io/pkg
 
       - name: Check whether the package needs publishing
         id: package-diff
         run: |
           # wasm-pack places a `*` .gitignore in its output directory, so force
           # staging is required for newly generated package files.
-          git add --force crates/wasm/pkg
-          if git diff --cached --quiet -- crates/wasm/pkg; then
+          git add --force crates/wasm/pkg crates/wasm-io/pkg
+          if git diff --cached --quiet -- crates/wasm/pkg crates/wasm-io/pkg; then
             echo "needs_publish=false" >> "$GITHUB_OUTPUT"
             echo "::notice::Committed package already matches this build — nothing to publish."
           else
@@ -174,4 +177,4 @@ jobs:
           # a newer branch head. A concurrent source push makes this push fail;
           # that newer push starts its own refresh from the correct source.
           git push "$remote" HEAD:main
-          echo "::notice::Committed remus-wasm ${VERSION}; consumers on #main pick it up on the next install."
+          echo "::notice::Committed remus-wasm and remus-wasm-io ${VERSION}; consumers on #main pick them up on the next install."

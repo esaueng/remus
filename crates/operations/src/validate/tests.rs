@@ -743,13 +743,21 @@ fn repair_preserves_volume() {
 }
 
 #[test]
-fn repair_cylinder_no_crash() {
+fn repair_cylinder_refuses_invalid_cap_removal() {
     let mut topo = Topology::new();
     let solid = crate::primitives::make_cylinder(&mut topo, 1.0, 2.0).unwrap();
+    let faces_before = explorer::solid_faces(&topo, solid).unwrap().len();
 
-    let report = crate::heal::repair_solid(&mut topo, solid, 1e-7).unwrap();
-    // Should not crash; may or may not be valid depending on cylinder topology
-    let _ = report.is_valid_after();
+    let error = crate::heal::repair_solid(&mut topo, solid, 1e-7).unwrap_err();
+    assert!(matches!(
+        error,
+        crate::OperationsError::HealingValidationFailed { ref healing, .. }
+            if healing.small_faces_removed == 2
+    ));
+    assert_eq!(
+        explorer::solid_faces(&topo, solid).unwrap().len(),
+        faces_before
+    );
 }
 
 #[test]

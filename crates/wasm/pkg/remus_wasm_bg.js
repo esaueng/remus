@@ -2306,9 +2306,10 @@ export class BrepKernel {
      * `orientation`, `sameParameter`, `vertexTolerance`, `pcurve`,
      * `coincidentVertices`, `wireframe`, `splitCommonVertex`, `smallFaces`.
      *
-     * Returns a JSON string `{ solid, actionsTaken, done, failed }` (see the
-     * `HealFixResult` TypeScript type); `solid` is the healed solid's handle
-     * and may differ from the input.
+     * Returns a JSON string `{ solid, actionsTaken, done, failed, repairs,
+     * verified }` (see the `HealFixResult` TypeScript type); `solid` is the
+     * healed solid's handle and may differ from the input. Success is
+     * committed only after both validators accept the result.
      * @param {number} solid
      * @param {string} config_json
      * @returns {any}
@@ -3532,6 +3533,20 @@ export class BrepKernel {
         return ret[0] >>> 0;
     }
     /**
+     * Heal a solid and return exact repair categories plus a verified-valid
+     * postcondition. Invalid or unverifiable results are rolled back and
+     * returned as typed errors.
+     * @param {number} solid
+     * @returns {any}
+     */
+    healSolidDetailed(solid) {
+        const ret = wasm.brepkernel_healSolidDetailed(this.__wbg_ptr, solid);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
      * Create a helical sweep of a profile face.
      *
      * Sweeps the profile along a helix defined by axis, radius, pitch,
@@ -4313,7 +4328,8 @@ export class BrepKernel {
         return ret[0] >>> 0;
     }
     /**
-     * Create a box solid with the given dimensions, centered at the origin.
+     * Create a box solid with one corner at the origin and the opposite
+     * corner at `(dx, dy, dz)`.
      *
      * Returns a solid handle (`u32`).
      *
@@ -5863,6 +5879,19 @@ export class BrepKernel {
         return ret[0] >>> 0;
     }
     /**
+     * Validate, heal, and re-validate a solid with exact repair disclosure.
+     * Success always means both independent validators accepted the result.
+     * @param {number} solid
+     * @returns {any}
+     */
+    repairSolidDetailed(solid) {
+        const ret = wasm.brepkernel_repairSolidDetailed(this.__wbg_ptr, solid);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
      * Resize or remove an exact constant-radius analytic blend band.
      *
      * `face` is only a seed: the kernel re-derives the complete band, its
@@ -6105,7 +6134,9 @@ export class BrepKernel {
      * step name fails the whole run before any mutation of later steps.
      *
      * Returns a JSON string `{ solid, steps: [{step, actionsTaken, done,
-     * failed}] }` (see the `HealPipelineResult` TypeScript type).
+     * failed, repairs}], verified }` (see the `HealPipelineResult`
+     * TypeScript type). Success is committed only after both validators
+     * accept the result.
      * @param {number} solid
      * @param {string[]} steps
      * @returns {any}

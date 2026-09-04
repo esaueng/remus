@@ -17,6 +17,7 @@ set -euo pipefail
 #   L3   (io)         — depends on math, topology, operations
 #   L4   (render)     — depends on math, topology, operations
 #   L4   (wasm)       — depends on all
+#   L4   (wasm-io)    — file-format translator module; depends on io, operations, topology, math
 #   L5   (remus)      — native facade; depends on operations, io, check, heal, math, topology, sketch
 
 FAIL=0
@@ -74,6 +75,7 @@ check_deps "operations" "remus-math" "remus-topology" "remus-algo" "remus-blend"
 check_deps "io"         "remus-math" "remus-topology" "remus-operations"
 check_deps "render"     "remus-math" "remus-topology" "remus-operations"
 check_deps "wasm"       "remus-math" "remus-topology" "remus-algo" "remus-blend" "remus-heal" "remus-check" "remus-geometry" "remus-offset" "remus-sketch" "remus-operations" "remus-io"
+check_deps "wasm-io"    "remus-math" "remus-topology" "remus-operations" "remus-io"
 check_deps "remus"      "remus-operations" "remus-io" "remus-check" "remus-heal" "remus-math" "remus-topology" "remus-sketch"
 
 if [ $FAIL -ne 0 ]; then

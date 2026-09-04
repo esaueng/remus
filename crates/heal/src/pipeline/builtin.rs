@@ -69,19 +69,17 @@ impl HealOperator for UnifySameDomainOp {
         let options = crate::upgrade::unify_same_domain::UnifyOptions::default();
         let (new_solid, unify) =
             crate::upgrade::unify_same_domain::unify_same_domain(topo, solid_id, &options)?;
-        let actions = unify.faces_merged + unify.edges_merged;
-        let status = if actions > 0 {
-            crate::status::Status::DONE1
-        } else {
-            crate::status::Status::OK
-        };
-        Ok((
-            new_solid,
-            FixResult {
-                status,
-                actions_taken: actions,
-            },
-        ))
+        let mut result = FixResult::changed(
+            crate::status::Status::DONE1,
+            crate::fix::RepairActionKind::SameDomainFaceUnified,
+            unify.faces_merged,
+        );
+        result.merge(&FixResult::changed(
+            crate::status::Status::DONE1,
+            crate::fix::RepairActionKind::SameDomainEdgeUnified,
+            unify.edges_merged,
+        ));
+        Ok((new_solid, result))
     }
 }
 
@@ -249,17 +247,13 @@ impl HealOperator for RemoveInternalWiresOp {
         _ctx: &mut HealContext,
     ) -> Result<(SolidId, FixResult), HealError> {
         let removed = crate::upgrade::remove_internal_wires::remove_internal_wires(topo, solid_id)?;
-        let status = if removed > 0 {
-            crate::status::Status::DONE1
-        } else {
-            crate::status::Status::OK
-        };
         Ok((
             solid_id,
-            FixResult {
-                status,
-                actions_taken: removed,
-            },
+            FixResult::changed(
+                crate::status::Status::DONE1,
+                crate::fix::RepairActionKind::InternalWireRemoved,
+                removed,
+            ),
         ))
     }
 }
@@ -284,14 +278,14 @@ impl HealOperator for SewShellsOp {
         let report =
             crate::upgrade::shell_sewing::sew_shell_report(topo, shell_id, ctx.tolerance.linear)?;
 
-        let mut status = crate::status::Status::empty();
-        if report.sewn > 0 {
-            status |= crate::status::Status::DONE1;
-        }
+        let mut result = FixResult::changed(
+            crate::status::Status::DONE1,
+            crate::fix::RepairActionKind::FreeEdgePairSewn,
+            report.sewn,
+        );
         if report.declined > 0 {
             // Coincident free edges the pass refused to merge: the shell is
             // still open there, and saying so beats reporting success.
-            status |= crate::status::Status::FAIL1;
             ctx.send_message(
                 crate::context::MessageSeverity::Warning,
                 format!(
@@ -299,20 +293,15 @@ impl HealOperator for SewShellsOp {
                      or whose partner was ambiguous",
                     report.declined
                 ),
-                status,
+                crate::status::Status::FAIL1,
             );
+            result.merge(&FixResult::refused(
+                crate::status::Status::FAIL1,
+                crate::fix::RepairRefusalKind::FreeEdgesRemain,
+                report.declined,
+            ));
         }
-        if status.is_empty() {
-            status = crate::status::Status::OK;
-        }
-
-        Ok((
-            solid_id,
-            FixResult {
-                status,
-                actions_taken: report.sewn,
-            },
-        ))
+        Ok((solid_id, result))
     }
 }
 
@@ -358,17 +347,13 @@ impl HealOperator for ConvertToBSplineOp {
     ) -> Result<(SolidId, FixResult), HealError> {
         let converted =
             crate::custom::convert_to_bspline::convert_solid_to_bspline(topo, solid_id)?;
-        let status = if converted > 0 {
-            crate::status::Status::DONE1
-        } else {
-            crate::status::Status::OK
-        };
         Ok((
             solid_id,
-            FixResult {
-                status,
-                actions_taken: converted,
-            },
+            FixResult::changed(
+                crate::status::Status::DONE1,
+                crate::fix::RepairActionKind::GeometryConvertedToBspline,
+                converted,
+            ),
         ))
     }
 }
@@ -401,19 +386,17 @@ impl HealOperator for ConvertToElementaryOp {
             solid_id,
             &ctx.tolerance,
         )?;
-        let total = surfaces + edges;
-        let status = if total > 0 {
-            crate::status::Status::DONE1
-        } else {
-            crate::status::Status::OK
-        };
-        Ok((
-            solid_id,
-            FixResult {
-                status,
-                actions_taken: total,
-            },
-        ))
+        let mut result = FixResult::changed(
+            crate::status::Status::DONE1,
+            crate::fix::RepairActionKind::SurfaceConvertedToElementary,
+            surfaces,
+        );
+        result.merge(&FixResult::changed(
+            crate::status::Status::DONE1,
+            crate::fix::RepairActionKind::CurveConvertedToElementary,
+            edges,
+        ));
+        Ok((solid_id, result))
     }
 }
 
