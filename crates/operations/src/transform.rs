@@ -328,8 +328,8 @@ pub fn transform_solid(
 /// Determine the v-range (latitude) of a sphere face from its boundary.
 ///
 /// Projects boundary vertices onto the sphere to find their latitudes,
-/// then uses the sign of the average vertex Z offset from center to
-/// determine which hemisphere the face covers.
+/// then uses a pole vertex or the equatorial wire winding to determine
+/// which hemisphere the face covers.
 fn sphere_face_v_range(
     topo: &Topology,
     face_id: FaceId,
@@ -361,36 +361,9 @@ fn sphere_face_v_range(
     // Determine hemisphere by checking whether face is above or below boundary.
     let boundary_v = v_vals.iter().copied().sum::<f64>() / v_vals.len() as f64;
 
-    // Check which side: sample a face interior point. A simpler heuristic:
-    // if any inner wire exists, check it. Otherwise, examine the face's
-    // Newell normal direction relative to the sphere center.
-    //
-    // For remus's make_sphere: south hemisphere has normals pointing
-    // away from center with v ∈ [-π/2, boundary_v], north hemisphere
-    // v ∈ [boundary_v, π/2].
-    //
-    // Use a heuristic: compute the average Z of boundary relative to center
-    // and compare with the face's position hints.
     let center = sph.center();
-    let avg_boundary_z: f64 = {
-        let mut sum = 0.0;
-        for oe in wire.edges() {
-            let edge = topo.edge(oe.edge())?;
-            let pt = inverse.mul_point(topo.vertex(edge.start())?.point());
-            sum += pt.z() - center.z();
-        }
-        sum / wire.edges().len() as f64
-    };
 
-    // If the boundary is near the equator (avg_z ≈ 0), we need another way.
-    // Try to detect hemisphere by checking if the face has a pole vertex
-    // (a degenerate edge with a pole at v = ±π/2).
-    // Simpler approach: this is called before the transform, and make_sphere
-    // creates two faces. Just check if boundary_v ≈ 0 and pick hemispheres.
     if boundary_v.abs() < 0.1 {
-        // Near equator: use face ordering. Check if this face has vertices
-        // near the north pole (z > center.z) or south pole (z < center.z).
-        // If avg_boundary_z is near 0, look for a degenerate pole vertex.
         let mut has_pole_north = false;
         let mut has_pole_south = false;
         for oe in wire.edges() {
@@ -411,16 +384,37 @@ fn sphere_face_v_range(
         if has_pole_south {
             return Ok((-FRAC_PI_2, boundary_v));
         }
-        // Default: use the winding direction. If first edge goes "forward" in
-        // parameter space, it's the north hemisphere.
-        // Fallback: just check avg Z of all edge midpoints would require
-        // curve evaluation. Use a simpler heuristic based on face ordering.
-        // The first face in make_sphere is south, second is north.
-        // This is fragile, but works for this specific case.
-        if avg_boundary_z >= 0.0 {
+
+        // At an equatorial trim, position alone cannot distinguish the north
+        // and south patches. Use the outer wire's directed area in the
+        // sphere's own (x, y) frame: the north hemisphere runs CCW and the
+        // south hemisphere runs CW. The old position-based fallback selected
+        // north for both faces of `make_sphere`, duplicating half an ellipsoid
+        // after anisotropic scaling.
+        let mut signed_area_twice = 0.0;
+        for oe in wire.edges() {
+            let edge = topo.edge(oe.edge())?;
+            let start = inverse.mul_point(topo.vertex(oe.oriented_start(edge))?.point());
+            let end = inverse.mul_point(topo.vertex(oe.oriented_end(edge))?.point());
+            let start_r = start - center;
+            let end_r = end - center;
+            let start_x = sph.x_axis().dot(start_r);
+            let start_y = sph.y_axis().dot(start_r);
+            let end_x = sph.x_axis().dot(end_r);
+            let end_y = sph.y_axis().dot(end_r);
+            signed_area_twice += start_x * end_y - end_x * start_y;
+        }
+        let winding_tol = remus_math::tolerance::Tolerance::new().linear * sph.radius().powi(2);
+        if signed_area_twice > winding_tol {
             return Ok((boundary_v, FRAC_PI_2));
         }
-        return Ok((-FRAC_PI_2, boundary_v));
+        if signed_area_twice < -winding_tol {
+            return Ok((-FRAC_PI_2, boundary_v));
+        }
+        return Err(crate::OperationsError::InvalidInput {
+            reason: "cannot determine sphere patch across a degenerate equatorial boundary"
+                .to_string(),
+        });
     }
 
     if boundary_v > 0.0 {
@@ -718,29 +712,48 @@ fn is_uniform_scale(matrix: &Mat4) -> bool {
     norms_equal && orthogonal
 }
 
-/// Sample a spherical surface over a given v-range, transform the points
-/// with a matrix, and refit as a NURBS surface. This preserves the correct
-/// geometry when a non-uniform scale is applied (sphere → ellipsoid).
-#[allow(clippy::cast_precision_loss)]
+/// Convert a spherical patch to NURBS and apply a non-uniform transform.
+///
+/// Whole hemispheres use exact rational half-sphere patches. Other trims retain
+/// their analytic parameter match through sampled interpolation.
 fn sphere_to_transformed_nurbs(
     sph: &remus_math::surfaces::SphericalSurface,
     matrix: &Mat4,
     v_min: f64,
     v_max: f64,
 ) -> Result<NurbsSurface, crate::OperationsError> {
+    use std::f64::consts::FRAC_PI_2;
+
+    let is_north_hemisphere =
+        v_min.abs() <= ANALYTIC_ROUNDOFF_REL && (v_max - FRAC_PI_2).abs() <= ANALYTIC_ROUNDOFF_REL;
+    let is_south_hemisphere =
+        (v_min + FRAC_PI_2).abs() <= ANALYTIC_ROUNDOFF_REL && v_max.abs() <= ANALYTIC_ROUNDOFF_REL;
+    if is_north_hemisphere || is_south_hemisphere {
+        let full = remus_heal::construct::convert_surface::sphere_to_nurbs(sph).map_err(|e| {
+            crate::OperationsError::InvalidInput {
+                reason: format!("sphere_to_nurbs failed: {e}"),
+            }
+        })?;
+        let (south, north) = remus_heal::upgrade::split_surface::split_surface_at_v(&full, 0.0)
+            .map_err(|e| crate::OperationsError::InvalidInput {
+                reason: format!("splitting sphere NURBS at the equator failed: {e}"),
+            })?;
+        // Select on the classification, not on `sign(v_min)`: an equatorial
+        // trim reaches here with `v_min` a rounding-noise value either side
+        // of zero, which would hand a north face the southern patch.
+        let patch = if is_south_hemisphere { &south } else { &north };
+        return transform_nurbs_surface(patch, matrix);
+    }
+
     sampled_transformed_nurbs(|u, v| sph.evaluate(u, v), matrix, v_min, v_max)
 }
 
 /// Sample an analytic surface over (u ∈ [0, τ], v ∈ [v_min, v_max]), map the
 /// samples through `matrix`, and refit as a NURBS surface.
 ///
-/// Used by the sphere path (its heal-side converter has pole singularities
-/// that the sampled fit sidesteps). Cylinder/cone/torus use heal's exact
-/// rational converters instead — those are param-matched to the analytic
-/// surfaces and keep rationality through STEP round-trips. Note when
-/// verifying any of these paths: measure by sampling the surface, never by
-/// tessellated volume — seam-carrying NURBS walls have a pre-existing
-/// mesher defect (see the ignored ready-repro in transform/tests.rs).
+/// Used for trimmed sphere patches whose analytic latitude does not map to the
+/// exact rational converter's polynomial parameter. Whole hemispheres and the
+/// cylinder/cone/torus paths use exact rational conversions instead.
 fn sampled_transformed_nurbs(
     evaluate: impl Fn(f64, f64) -> remus_math::vec::Point3,
     matrix: &Mat4,
