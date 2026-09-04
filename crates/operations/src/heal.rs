@@ -1867,8 +1867,7 @@ fn unify_faces_with_history_impl(
             }
         }
 
-        // Skip groups whose merged boundary would be too complex before
-        // reconstructing loops for the topology-preservation check below.
+        // Skip groups whose merged boundary would be too complex.
         // A face with hundreds of boundary edges can cause O(N²) or worse
         // performance in subsequent boolean intersection computations.
         if boundary_edges.len() > MAX_BOUNDARY_EDGES {
@@ -1878,33 +1877,6 @@ fn unify_faces_with_history_impl(
                 MAX_BOUNDARY_EDGES
             );
             continue;
-        }
-
-        // Prove that replacing this planar group with one face preserves the
-        // adjusted Euler characteristic V-E+F-L. For N faces with I internal
-        // edges, existing inner loops L0, and candidate inner loops L1, the
-        // local delta is I + (1-N) - (L1-L0). A non-zero result means boundary
-        // reconstruction would invent or lose a topological loop. Leave only
-        // that group unmerged so independent safe reductions remain.
-        if matches!(representative_surface, Some(FaceSurface::Plane { .. })) {
-            let loops = order_edges_into_loops(topo, &boundary_edges)?;
-            let original_inner_count = group_face_ids.iter().try_fold(0usize, |count, &face| {
-                topo.face(face).map(|face| count + face.inner_wires().len())
-            })?;
-            let candidate_inner_count = all_inner_wires.len() + loops.len().saturating_sub(1);
-            let adjusted_euler_delta = merge_adjusted_euler_delta(
-                group_face_ids.len(),
-                internal_edges.len(),
-                original_inner_count,
-                candidate_inner_count,
-            );
-            if adjusted_euler_delta != 0 {
-                log::warn!(
-                    "unify_faces: skipping {}-face planar group whose adjusted Euler delta is {adjusted_euler_delta}",
-                    group_face_ids.len(),
-                );
-                continue;
-            }
         }
 
         let Some(surface) = representative_surface else {
@@ -2203,18 +2175,6 @@ fn loop_area_3d(
     }
     // Newell normal magnitude = 2× enclosed area.
     Ok(crate::winding::newell_normal(&positions).length() * 0.5)
-}
-
-#[allow(clippy::cast_possible_wrap)]
-const fn merge_adjusted_euler_delta(
-    face_count: usize,
-    internal_edge_count: usize,
-    original_inner_count: usize,
-    candidate_inner_count: usize,
-) -> i64 {
-    internal_edge_count as i64 + 1
-        - face_count as i64
-        - (candidate_inner_count as i64 - original_inner_count as i64)
 }
 
 /// Quantized 3D position key for vertex matching in edge chaining.

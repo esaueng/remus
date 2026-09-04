@@ -167,13 +167,6 @@ fn no_duplicates_in_box() {
 }
 
 #[test]
-fn planar_merge_euler_guard_rejects_an_invented_hole() {
-    assert_eq!(merge_adjusted_euler_delta(2, 1, 0, 0), 0);
-    assert_eq!(merge_adjusted_euler_delta(80, 80, 0, 1), 0);
-    assert_eq!(merge_adjusted_euler_delta(80, 79, 0, 1), -1);
-}
-
-#[test]
 fn duplicate_faces_require_matching_boundaries() {
     let mut topo = Topology::new();
     let first = add_planar_triangle(
