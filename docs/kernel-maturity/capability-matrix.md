@@ -311,11 +311,17 @@ does not itself promote or demote anything.
 ### Sweeps (extrude, revolve, sweep, loft, pipe, helix)
 
 - Ledger rows: "Extrude", "Revolve, sweep, loft, pipe", "Helical sweep"
-  (Stable, blocked), "Non-planar profiles" (Beta).
+  (Stable, blocked), "Non-planar profiles" (Stable with declared bounds).
 - In-review PR #222 adds a Partial Wire-profile cell: a validated closed
   planar polygonal Wire produces a validation-gated solid without aliasing the
   input, with exact prism-volume native/direct/batch WASM oracles. Open and
   non-planar Wire profiles are Unsupported-typed and rollback exactly.
+- B12 qualifies disjoint rectangular iso-parametric holes on four-sided
+  bilinear sweep/pipe caps. Native B-Rep/manifold, watertight-mesh, classifier,
+  and converged-volume witnesses match an independently extruded annulus;
+  direct WASM and `executeBatch` repeat the contract. Off-surface, curved,
+  touching/overlapping, and n-sided holed trims refuse typed. Loft-hole
+  correspondence and holed partial revolutions remain Unsupported-typed.
 - Known gaps: degenerate/cavity matrices, topology and nonconvergence
   budgets, termination/performance evidence incomplete; guide rails, laws,
   periodic lofts, continuity options, and broader wire curve/scale matrices

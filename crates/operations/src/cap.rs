@@ -175,19 +175,20 @@ pub fn outward_normal(verts: &[Point3], toward: Vec3) -> Result<Vec3, crate::Ope
 /// Build one end-cap face that fills the ring boundary (and any holes).
 ///
 /// `outer_ring_edges` is the section's outer boundary in ring order;
-/// `inner_wires` are pre-built hole loops (empty for hole-free sections, and
-/// only supported on a planar cap). `outward` is the section's outward normal;
+/// `inner_wires` are pre-built hole loops. On a non-planar cap, the supported
+/// exact domain is one or more disjoint rectangular iso-parametric holes on a
+/// four-sided bilinear patch. `outward` is the section's outward normal;
 /// `start_role` builds the reversed-ring wire so the cap faces away from the
 /// body.
 ///
-/// A planar ring → exact `Plane` cap. A non-planar 4-sided hole-free ring →
-/// bilinear patch. A non-planar ring with more than four edges, or with holes,
-/// is unsupported.
+/// A planar ring → exact `Plane` cap. A non-planar 4-sided ring → a
+/// bilinear patch, optionally trimmed by certified rectangular holes. A
+/// hole-free non-planar ring with more than four edges → a Coons patch.
 ///
 /// # Errors
 ///
 /// Returns an error if the wire is invalid, the bilinear patch cannot be built,
-/// or the ring is an unsupported non-planar shape.
+/// or the ring/hole configuration is outside the supported non-planar domain.
 pub fn build_cap_face(
     topo: &mut Topology,
     outer_ring_edges: &[EdgeId],
@@ -232,9 +233,9 @@ pub fn build_cap_face(
         return Ok(topo.add_face(Face::new(wid, inner_wires, surface)));
     }
 
-    if !inner_wires.is_empty() {
+    if !inner_wires.is_empty() && n != 4 {
         return Err(crate::OperationsError::InvalidInput {
-            reason: "cap with holes on a non-planar section boundary is not supported".into(),
+            reason: "non-planar cap holes currently require a four-sided outer ring".into(),
         });
     }
 
@@ -247,6 +248,7 @@ pub fn build_cap_face(
     } else {
         coons_cap_patch(cap_verts)?
     };
+    crate::fill_face::validate_annular_cap_holes(topo, &surf, &inner_wires, ring_scale(cap_verts))?;
     // A near-flat bilinear lid: its center normal is stable and aligned with the
     // ring axis, so probe there and flip if it opposes `outward`.
     let reversed = surf
@@ -254,7 +256,47 @@ pub fn build_cap_face(
         .map(|nrm| nrm.dot(outward) < 0.0)
         .unwrap_or(false);
     let wid = ring_wire(topo, reversed)?;
-    let mut face = Face::new(wid, vec![], FaceSurface::Nurbs(surf));
+    let outer_points: Vec<Point3> = {
+        let wire = topo.wire(wid)?;
+        wire.edges()
+            .iter()
+            .map(|oe| {
+                let edge = topo.edge(oe.edge())?;
+                topo.vertex(oe.oriented_start(edge))
+                    .map(remus_topology::vertex::Vertex::point)
+            })
+            .collect::<Result<_, _>>()?
+    };
+    let outer_winding = crate::winding::newell_normal(&outer_points);
+    let mut oriented_inner_wires = Vec::with_capacity(inner_wires.len());
+    for wire_id in inner_wires {
+        let (edges, inner_points): (Vec<OrientedEdge>, Vec<Point3>) = {
+            let wire = topo.wire(wire_id)?;
+            let edges = wire.edges().to_vec();
+            let points = edges
+                .iter()
+                .map(|oe| {
+                    let edge = topo.edge(oe.edge())?;
+                    topo.vertex(oe.oriented_start(edge))
+                        .map(remus_topology::vertex::Vertex::point)
+                })
+                .collect::<Result<_, _>>()?;
+            (edges, points)
+        };
+        if crate::winding::newell_normal(&inner_points).dot(outer_winding) < 0.0 {
+            oriented_inner_wires.push(wire_id);
+        } else {
+            let reversed_edges: Vec<OrientedEdge> = edges
+                .iter()
+                .rev()
+                .map(|oe| OrientedEdge::new(oe.edge(), !oe.is_forward()))
+                .collect();
+            oriented_inner_wires.push(topo.add_wire(
+                Wire::new(reversed_edges, true).map_err(crate::OperationsError::Topology)?,
+            ));
+        }
+    }
+    let mut face = Face::new(wid, oriented_inner_wires, FaceSurface::Nurbs(surf));
     if reversed {
         face.set_reversed(true);
     }
