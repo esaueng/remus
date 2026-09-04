@@ -267,7 +267,9 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "convertToBspline"
         | "convertToElementary"
         | "healSolid"
+        | "healSolidDetailed"
         | "repairSolid"
+        | "repairSolidDetailed"
         | "loft"
         | "loftWithOptions"
         | "loftSmooth"
@@ -2051,6 +2053,13 @@ impl BrepKernel {
                     .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(solid_id)))
             }
+            "healSolidDetailed" => {
+                let solid = get_u32(args, "solid")?;
+                let result = self
+                    .heal_solid_detailed_impl(solid)
+                    .map_err(StructuredWasmError::from)?;
+                serde_json::to_value(result).map_err(StructuredWasmError::from)
+            }
             "repairSolid" => {
                 let s = get_u32(args, "solid")?;
                 let tol = get_f64(args, "tolerance").unwrap_or(1e-7);
@@ -2063,6 +2072,13 @@ impl BrepKernel {
                     "errorsAfter": report.after.error_count(),
                     "totalRepairs": report.total_repairs(),
                 }))
+            }
+            "repairSolidDetailed" => {
+                let solid = get_u32(args, "solid")?;
+                let result = self
+                    .repair_solid_detailed_impl(solid)
+                    .map_err(StructuredWasmError::from)?;
+                serde_json::to_value(result).map_err(StructuredWasmError::from)
             }
             "classifyPoint" => {
                 let s = get_u32(args, "solid")?;
@@ -2935,6 +2951,61 @@ mod batch_contract_tests {
 
     fn parse(response: &str) -> serde_json::Value {
         serde_json::from_str(response).expect("batch response must be valid JSON")
+    }
+
+    #[test]
+    fn detailed_healing_batch_discloses_success_and_typed_refusal() {
+        let mut kernel = BrepKernel::new();
+        let solid = kernel.make_box_solid(1.0, 1.0, 1.0).expect("box fixture");
+        let success = parse(
+            &kernel.execute_batch_v2(
+                &serde_json::json!([{
+                    "op": "repairSolidDetailed",
+                    "args": { "solid": solid }
+                }])
+                .to_string(),
+            ),
+        );
+        assert_eq!(success[0]["ok"]["verified"], true);
+        assert_eq!(success[0]["ok"]["errorsAfter"], 0);
+        assert_eq!(success[0]["ok"]["repairs"], serde_json::json!([]));
+
+        let invalid = kernel.topo_mut().add_empty_solid();
+        let invalid_handle = crate::handles::solid_id_to_u32(invalid);
+        let counts_before = (
+            kernel.topo().num_vertices(),
+            kernel.topo().num_edges(),
+            kernel.topo().num_wires(),
+            kernel.topo().num_faces(),
+            kernel.topo().num_shells(),
+            kernel.topo().num_solids(),
+        );
+        let refused = parse(
+            &kernel.execute_batch_v2(
+                &serde_json::json!([{
+                    "op": "healSolidDetailed",
+                    "args": { "solid": invalid_handle }
+                }])
+                .to_string(),
+            ),
+        );
+        assert_eq!(
+            refused[0]["error"]["details"]["kernelCode"],
+            "healing_validation_failed"
+        );
+        assert_eq!(refused[0]["error"]["category"], "invalid_topology");
+        assert_eq!(
+            counts_before,
+            (
+                kernel.topo().num_vertices(),
+                kernel.topo().num_edges(),
+                kernel.topo().num_wires(),
+                kernel.topo().num_faces(),
+                kernel.topo().num_shells(),
+                kernel.topo().num_solids(),
+            )
+        );
+        assert!(kernel.topo().solid(invalid).is_ok());
     }
 
     #[cfg(feature = "io")]
