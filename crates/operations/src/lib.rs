@@ -41,6 +41,7 @@ pub mod mesh_boolean;
 
 pub mod blend_ops;
 pub mod chamfer;
+pub mod face_face_blend;
 pub mod fillet;
 pub mod resize_blend;
 

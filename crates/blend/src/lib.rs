@@ -11,6 +11,7 @@ pub(crate) mod blend_func;
 pub(crate) mod builder_utils;
 pub mod chamfer_builder;
 pub(crate) mod corner;
+pub mod face_face;
 pub mod fillet_builder;
 pub mod g1_chain;
 pub mod query;
@@ -96,6 +97,13 @@ pub enum BlendError {
         /// Local support-radius limit at the point where the cliff was
         /// detected. The boundary itself may be exclusive.
         available_radius: f64,
+    },
+
+    /// The requested face-face blend is outside the qualified exact subset.
+    #[error("unsupported face-face blend: {reason}")]
+    UnsupportedFaceFaceBlend {
+        /// Exact precondition that was not met.
+        reason: String,
     },
 
     /// Face trimming failed.
