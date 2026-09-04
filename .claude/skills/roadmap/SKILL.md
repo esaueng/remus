@@ -66,6 +66,11 @@ file governs *how* to chase. Before claiming anything: `gh pr list --state open`
 and read the last scheduled runs (Corpus Gauntlet, Fuzz Smoke, Mutation Testing)
 — a red proof job nobody looked at is not proof.
 
+`docs/kernel-maturity/industrial-parity.md` is the non-owning competitive
+overlay: it says where a row stands against the reference kernel and which
+program row owns the gap, never what is open — never claim work from it
+directly; claim the owner row it points at.
+
 ## The priority filters (rules with reasons)
 
 1. **Chase operations that RE-CREATE an existing analytic surface type. Do NOT chase

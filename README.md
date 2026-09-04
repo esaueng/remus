@@ -108,6 +108,10 @@ feature label.
 - **[Stabilization plan](docs/kernel-maturity/stabilization-plan.md)** — the
   working plan for promoting every Beta/Experimental row below to Stable,
   sequenced under the capability-matrix promotion rules.
+- **[Industrial parity overlay](docs/kernel-maturity/industrial-parity.md)** —
+  where each capability stands against the incumbent open-source reference
+  kernel, on a competitive axis kept separate from the contract states
+  above; it changes no label here.
 
 Four mechanisms carry that contract in code:
 

@@ -5,6 +5,10 @@ updated in the final PR for every issue. `Pending` means no implementation PR
 has landed; it is not evidence that the issue is unowned in another worktree,
 so the live open-PR inventory remains authoritative before work starts.
 
+Issues 4.8, 5.7b, 5.8, 6.6, 7.6, 7.7, 8.6, and 8.7 were added on 2026-09-04
+by the [industrial-parity overlay](industrial-parity.md); the overlay indexes
+them but this ledger is their only state of record.
+
 Issue 2.0's measured baseline is
 `39c7a7b7ccbfc746ed7d9e9b8f156d54d6cfe090`.
 
@@ -38,6 +42,7 @@ Issue 2.0's measured baseline is
 | 4.5 Imprint | Implemented — a planar solid tool splits target faces without discarding material; the new validated solid preserves exact volume, journals only construction-derived Modified/Generated/Preserved events, resolves an anchored split face BoundMany, matches direct/batch WASM, and refuses unqualified configurations transactionally | [#217](https://github.com/esaueng/remus/pull/217) |
 | 4.6 Multi-region boolean output | Implemented — exact two-solid booleans return a Compound of independently validated regions with deterministic cavity assignment and total per-region construction lineage; bounded pairwise-disjoint Compound operands add member-preserving fuse, distributed intersect, and distributed single-tool cut with native/direct/batch WASM parity. Intersecting-member fuse and multi-tool cut fail closed pending recursive lineage composition | [#218](https://github.com/esaueng/remus/pull/218) + [#219](https://github.com/esaueng/remus/pull/219) |
 | 4.7 Wire bodies | Implemented — body-level length and existing copy/transform semantics are joined by additive arena-v5 standalone wire roots plus validation-gated closed-planar wire sweep; native/direct/batch WASM match exact perimeter and prism-volume oracles, while open and non-planar profiles refuse transactionally | [#222](https://github.com/esaueng/remus/pull/222) |
+| 4.8 N-ary and mixed-dimensional General Fuse | Pending — added 2026-09-04 by the industrial-parity overlay (rows IP-2.2, IP-3.3, IP-3.4) | — |
 | 5.1 Variable-radius qualification | Implemented — standard-law whole-domain bounds and typed collapse/local-limit refusals guard every walker station; the straight-edge perpendicular-plane linear band matches its analytic surface and closed-form volume, while S-curve samples preserve radius and both support tangencies. Opaque custom callbacks are preserved and station-checked rather than endpoint-linearized, but arbitrary between-sample certification and trimmed-solid assembly remain explicitly unqualified | [#226](https://github.com/esaueng/remus/pull/226) |
 | 5.2 Curved-support blends | Implemented — constant-radius closed rims on qualified cylinder/cone, cylinder/sphere, cone/cone, and segmented cylinder/cylinder supports assemble exact toroidal shoulders where provable and periodic walking-NURBS bands otherwise; unsupported support combinations and closed legacy spines fail typed | [#228](https://github.com/esaueng/remus/pull/228) |
 | 5.3 General vertex blends | Implemented — same-radius planar N-way corners with one connected material-side orientation produce analytic sphere caps, cylindrical stripes, and trimmed ellipse runouts with native/direct/batch WASM and G1/watertightness witnesses; mixed-side, non-planar, and variable-radius corners remain unqualified | [#231](https://github.com/esaueng/remus/pull/231) |
@@ -45,18 +50,25 @@ Issue 2.0's measured baseline is
 | 5.5 Overflow and cliff handling | Merged — v2 fillets stop transactionally at planar support boundaries, inner-loop obstacles, closed-rim wall exhaustion, paired bands consuming one wall, and inward cap collapse with typed edge/face/requested/available metadata and stable native/WASM parity; actual rollover remains unqualified pending 6.1 | [#235](https://github.com/esaueng/remus/pull/235) |
 | 5.6 Face-face blends and hold lines | Merged — disjoint-edge convex planar face selections with transversal carriers produce a new validated exact cylindrical Sheet; a prescribed complete contact segment is verified analytically, with scale/translation, independent area, direct/batch WASM, and transactional typed-refusal witnesses. Multi-face, curved/holed-support, partial-hold, and support-trimming cells remain unqualified | [#236](https://github.com/esaueng/remus/pull/236) |
 | 5.7 Offset self-intersection removal | Merged — a closed hole-free straight-edged uniform-width six-edge orthogonal L-prism may excise one fully collapsed disconnected inner component after retained-profile, cap-inversion, prismatic-topology, manifold, containment, and construction-proven generated-face proofs; the L-bracket witness pins both sides of the collapse boundary, exact/mesh volume, scale/translation, WASM parity, exact evolution, and transactional connected-fold refusal. Other profiles, partial, multiple, holed, curved, and general intersecting cells remain unqualified | [#237](https://github.com/esaueng/remus/pull/237) |
+| 5.7b General offset self-intersection removal | Pending — added 2026-09-04 by the industrial-parity overlay (rows IP-5.1, IP-5.3, IP-5.4); program exit benchmark B3 depends on it | — |
+| 5.8 Blend rollover through re-limitation | Pending — added 2026-09-04 by the industrial-parity overlay (rows IP-4.2, IP-4.4, IP-4.7); unblocked by 6.1 (#238) and B4 | — |
 | 6.1 Replace-surface re-limitation | Implemented, in review — one planar support or one coaxial inward-facing bore cylinder re-limits exactly against planar/cylindrical neighbors while preserving topology and a total face map; changed conic trims and every result coedge p-curve are rebuilt from authoritative domains. Tilted-cap and doubled-bore witnesses pin validation, watertightness, independent volume, scale/translation, and typed face/edge rollback. Surface-type changes, bosses, NURBS supports, topology-changing edits, WASM, and evolution remain later cells | [#238](https://github.com/esaueng/remus/pull/238) |
 | 6.2 Generalized move / rotate / offset face | Pending | — |
 | 6.3 Curved delete-face-and-heal | Pending | — |
 | 6.4 Curved-face draft | Pending | — |
 | 6.5 Journaled direct edits | Pending | — |
+| 6.6 Sketch external references on persistent topology identity | Pending — added 2026-09-04 by the industrial-parity overlay (row IP-13.2, leadership claim LC10) | — |
 | 7.1 Guided sweeps | Pending | — |
 | 7.2 Loft continuity and periodic lofts | Pending | — |
 | 7.3 Constrained N-sided fill | Pending | — |
 | 7.4 Surface extension and curve imprint | Pending | — |
 | 7.5 Interrogation | Partial — curvature analysis slice (`analyze::curvature` + `getFaceCurvature`/`getFaceMinRadius`); clash, silhouettes, draft pending | — |
+| 7.6 Curve construction, fairing, degree reduction, continuity analysis | Pending — added 2026-09-04 by the industrial-parity overlay (rows IP-1.5, IP-1.6, IP-6.8, IP-8.3) | — |
+| 7.7 Wire and curve offset completeness | Pending — added 2026-09-04 by the industrial-parity overlay (row IP-5.5) | — |
 | 8.1 Differential testing harness | Pending | — |
 | 8.2 Performance budget gates | Pending | — |
 | 8.3 Parallel tessellation | Pending | — |
 | 8.4 Parallel boolean internals | Pending | — |
 | 8.5 Real-model corpus | Pending | — |
+| 8.6 Arena compaction and versioned checkpoint contract | Pending — added 2026-09-04 by the industrial-parity overlay (rows IP-2.8, IP-12.4, IP-12.6); OpenZCAD roadmap W5 | — |
+| 8.7 WASM threads and SIMD evidence gate | Pending — owner-gated adoption; added 2026-09-04 by the industrial-parity overlay (rows IP-14.8, IP-14.9) | — |

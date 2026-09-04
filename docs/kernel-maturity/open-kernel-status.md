@@ -10,6 +10,9 @@ the implementation plan (§W, §X) — check both before claiming an issue.
 Owner-gated rows require an explicit maintainer decision recorded in the PR
 that flips them; agents do not flip them autonomously.
 
+Rows added on 2026-09-04 by the [industrial-parity overlay](industrial-parity.md)
+are indexed there; this ledger is their only state of record.
+
 | Issue | Wave | State | PR |
 | --- | --- | --- | --- |
 | O1.1a Gauntlet pipeline skeleton | A | Complete — isolated bounded workers run import, validation, disclosed probe boolean, manifold tessellation, and property-checked STEP round-trip; JSONL and aggregate JSON/Markdown outputs use stable taxonomy codes | [#164](https://github.com/esaueng/remus/pull/164) |
@@ -19,10 +22,14 @@ that flips them; agents do not flip them autonomously.
 | O1.2a Head-to-head protocol + runners | B | Pending | — |
 | O1.2b Head-to-head scenario set | B | Pending | — |
 | O1.2c Head-to-head results page | B | Pending | — |
+| O1.2d Scorecard metric schema + absolute gates | A | Pending — added 2026-09-04 by the industrial-parity overlay (§3) | — |
+| O1.2e Workflow scenarios W1–W9 | A | Pending — added 2026-09-04 by the industrial-parity overlay (§4) | — |
+| O1.2f Baseline pin milestone | B | Pending — added 2026-09-04 by the industrial-parity overlay (§3.3); locks the H5/H6 numeric bands | — |
 | O1.3a Fillet torture corpus + runner | A | Complete — 10 named cases built-and-verified or transactionally refused with stable codes | [#139](https://github.com/esaueng/remus/pull/139) |
 | O1.3b Fillet torture publication | C | Pending | — |
 | O1.4a STEP validation properties | A | Complete — opt-in CAx-IF validation properties round-trip aggregate and per-solid area, volume, centroid, and bounding boxes with derived units; malformed properties refuse transactionally with stable diagnostics, and direct/batch WASM contracts preserve import diagnostics | [#180](https://github.com/esaueng/remus/pull/180) |
 | O1.4b CAx-IF test-round manifest | B | Pending | — |
+| O1.5 Native/WASM per-operation parity harness | A | Pending — added 2026-09-04 by the industrial-parity overlay (row IP-16.5) | — |
 | O2.1a RFC 0006 swept analytic surfaces | A | Complete — the accepted design preserves STEP parameterization with self-contained math-layer profiles, checked projection, exact lowering/recognition, typed unsupported paths, staged R8 contracts, and a measured disposition for all 92 production `FaceSurface` wildcard matches | [#183](https://github.com/esaueng/remus/pull/183) |
 | O2.1b Revolution/extrusion math substrate | A | Complete — self-contained swept profiles plus revolution and linear-extrusion carriers provide checked evaluation/projection, exact first and second derivatives, curvature, explicit periods, and exact directed finite-span rational NURBS lowering; scale, seam, pole, reversed-span, success, and typed-refusal properties pin all six profile variants without adding topology variants | [#189](https://github.com/esaueng/remus/pull/189) |
 | O2.1c FaceSurface variants + site audit | B | Pending | — |
@@ -33,9 +40,11 @@ that flips them; agents do not flip them autonomously.
 | O2.3b UV-arrangement core | B | Pending | — |
 | O2.3c Winding classification bridge | B | Pending | — |
 | O2.3d Special-case migration + ratchet | B | Pending | — |
+| O2.4 Predicate escalation policy | B (after 2.6) | Pending — added 2026-09-04 by the industrial-parity overlay (row IP-1.9) | — |
 | O3.1 Inner-loop benches (math/algo/blend) | A | Complete — measured 64-cut and Gridfinity flamegraphs declare a 3% inclusive threshold; every qualifying stack family plus the prerequisite NURBS, SSI, Bézier clipping, CDT, GFA, and blend-walker loops now has a Criterion baseline wired into local comparison and hosted trend tracking | [#197](https://github.com/esaueng/remus/pull/197) |
 | O3.2 Journal-invalidated spatial cache | B | Pending | — |
 | O3.3 SIMD in NURBS evaluation | B (evidence-gated) | Pending | — |
+| O3.4 Journal-driven incremental tessellation | B (after O3.2) | Pending — added 2026-09-04 by the industrial-parity overlay (rows IP-9.5, IP-14.6) | — |
 | O4.1a Facade crate + Model type | A | Complete — the native `remus::Model` owns topology and operation policy with journal access; its curated prelude exposes quality-disclosed booleans, v2 blends, sweeps, measurement, tessellation, STEP, validation, and persistent references with flat typed errors; the runnable quickstart and transactional refusal tests pin the contract | [#201](https://github.com/esaueng/remus/pull/201) |
 | O4.1b Facade examples | A | Complete — packaged native workflows now cover constrained-sketch bracket construction through exact STEP, typed STEP recovery with validate/heal-or-tolerate handling and an exact containment boolean, and native replay of the committed cross-drilled WASM contract; analytic volume plus validation and welded watertight/manifold oracles pin every result | [#225](https://github.com/esaueng/remus/pull/225) |
 | O4.1c WASM delegation to facade | B | Pending | — |
@@ -46,6 +55,9 @@ that flips them; agents do not flip them autonomously.
 | O4.3b Python wheels + CI | B | Pending | — |
 | O4.3c PyPI publish | owner-gated | Pending | — |
 | O4.4 Stable error-code registry (e5b) | A | Pending | — |
+| O4.5 Stable C ABI decision record | owner-gated | Pending — added 2026-09-04 by the industrial-parity overlay (row IP-15.4) | — |
+| O4.6 Serialization compatibility and migration policy | A | Pending — added 2026-09-04 by the industrial-parity overlay (rows IP-2.7, IP-12.5, IP-12.7) | — |
+| O4.7 Typed direct-method WASM results | A | Pending — added 2026-09-04 by the industrial-parity overlay (row IP-15.2; OpenZCAD roadmap W6) | — |
 | O5.1a STEP assembly reader | A | Pending | — |
 | O5.1b STEP assembly writer | A | Pending | — |
 | O5.1c Assembly WASM + batch | A | Pending | — |
@@ -53,6 +65,8 @@ that flips them; agents do not flip them autonomously.
 | O5.3a AP242 writer schema | B | Pending | — |
 | O5.3b PMI read, ref-anchored | C | Pending | — |
 | O5.3c PMI write | C | Pending | — |
+| O5.4 Assembly occurrence identity and instancing | A/B (with O5.1) | Pending — added 2026-09-04 by the industrial-parity overlay (rows IP-2.3, IP-11.3) | — |
+| O5.5 External references and partial loading (design + decision) | A | Pending — added 2026-09-04 by the industrial-parity overlay (row IP-11.6) | — |
 | O6.1 Docs site | A | Pending | — |
 | O6.2 Browser playground | B | Pending | — |
 | O6.3 Second-consumer track (ongoing) | rolling | Pending | — |
