@@ -13,8 +13,8 @@
     "remus_wasm_io.js",
     "remus_wasm_io_bg.js",
     "remus_wasm_io.d.ts",
-    "remus_wasm_io_node.cjs",
-    "LICENSE-APACHE"
+    "LICENSE-APACHE",
+    "remus_wasm_io_node.cjs"
   ],
   "keywords": [
     "cad",
