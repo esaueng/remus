@@ -66,10 +66,21 @@ fn describe(topo: &Topology, sid: remus_topology::solid::SolidId, label: &str) {
 }
 
 struct DropLogger;
+
+fn is_replay_diagnostic(message: &str) -> bool {
+    message.contains("growth sliver")
+        || message.contains("growth shell")
+        || message.contains("FF_TRACE")
+        || message.contains("SUBFACE")
+        || message.contains("RAYTRACE")
+        || message.contains("fill_images_faces:")
+}
+
 impl log::Log for DropLogger {
     fn enabled(&self, m: &log::Metadata) -> bool {
-        // Only the assembler's shell chatter — an unconditional `true` here
-        // would route every record in the workspace through `log()`.
+        // Only the algorithm diagnostics selected by `is_replay_diagnostic` —
+        // an unconditional `true` here would route every workspace record
+        // through `log()`.
         m.target().starts_with("remus_algo") && m.level() <= log::Level::Debug
     }
     fn log(&self, r: &log::Record) {
@@ -77,18 +88,25 @@ impl log::Log for DropLogger {
             return;
         }
         let msg = format!("{}", r.args());
-        if msg.contains("growth sliver")
-            || msg.contains("growth shell")
-            || msg.contains("FF_TRACE")
-            || msg.contains("SUBFACE")
-            || msg.contains("RAYTRACE")
-        {
+        if is_replay_diagnostic(&msg) {
             println!("    [algo] {msg}");
         }
     }
     fn flush(&self) {}
 }
 static DROP_LOGGER: DropLogger = DropLogger;
+
+#[cfg(test)]
+mod tests {
+    use super::is_replay_diagnostic;
+
+    #[test]
+    fn fill_images_face_diagnostics_are_not_silently_dropped() {
+        assert!(is_replay_diagnostic(
+            "fill_images_faces: face Id(42) has_sections=true sections=3"
+        ));
+    }
+}
 
 fn main() {
     if std::env::var("SHELL_LOG").is_ok() {
