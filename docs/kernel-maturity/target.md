@@ -12,6 +12,10 @@ kernel-maturity contract:
   their relationship to the existing stable error-code registry.
 - [testing-strategy.md](testing-strategy.md) — the evidence rules: what kind of
   test qualifies a capability cell, and what CI must eventually gate.
+- [industrial-parity.md](industrial-parity.md) — the competitive overlay:
+  scope contract against the reference kernel, the two-axis status model,
+  the scorecard, workflow scenarios, and the post-v1.0 horizons H5–H7. It
+  owns no state; it points at the program ledgers.
 
 ## Naming
 
@@ -82,6 +86,12 @@ behavior; memory compaction and session lifecycle.
 facet modeling; cellular topology; lattice representation; concurrent
 operations; large-model scaling.
 
+**Post-v1.0 — parity and leadership:** the overlay's H5 (core modeling
+parity), H6 (industrial interchange and corpus parity), and H7
+(demonstrated leadership) horizons extend the program past v1.0 without
+adding a program: every parity target is owned by a P-Class, Open Kernel,
+or Bridge row.
+
 ## Constraints
 
 These are program invariants, not aspirations:
@@ -145,3 +155,11 @@ The kernel is materially closer to a professional kernel when:
 - Public API and serialized-data compatibility are managed through versioning.
 - Feature status is based on capability-matrix evidence rather than individual
   demonstrations.
+
+Beyond that, the kernel reaches *industrial parity* when the overlay's
+crosswalk has no in-scope row in `Gap-measured`, `Behind-unmeasured`, or
+`Unknown` on its competitive axis, measured by the O1.2 harness under a
+pinned baseline — and *leadership* when at least five leadership claims meet
+the discipline of [industrial-parity.md](industrial-parity.md) §7. A typed
+refusal on a cell the reference kernel completes is a contract success and
+still a parity gap; a valid B-Rep without an independent oracle is neither.
