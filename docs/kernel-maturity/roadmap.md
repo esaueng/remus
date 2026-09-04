@@ -74,11 +74,17 @@ its state. Before claiming anything: `gh pr list --state open` (R6).
 
 ### H0 — in flight (verify before duplicating)
 
-As of 2026-09-04: P-Class 2.0–2.3, 3.1–3.3, 4.1–4.7, and 5.1–5.7 are merged
-(see `p-class-status.md`); 2.4 and 2.8 are partial; 6.1 replace-surface
-landed in PR #238. The Open Kernel Wave A rows still unclaimed are O4.4,
-O5.1a–c, O6.1, and O6.4. Bridge rows closed since the draft: B1, B5, the B6
-primitive family (including ellipsoid), and the B11 STEP-ordering item.
+As of 2026-09-04: P-Class 2.0–2.3, 3.1–3.3, 4.1–4.7, 5.1–5.7, and 6.1 are
+merged (see `p-class-status.md`); 2.4, 2.8, and 6.2 are partial — 6.2
+generalized face moves (PR #257) qualifies a holed planar boss cap moving
+through an incident constant-radius fillet with exact evolution and
+direct/batch WASM parity, reusing 6.1 for coaxial bores; rotation, lateral
+relocation, outward cylinders, and surface-type changes remain open. The
+Open Kernel Wave A rows still unclaimed are O4.4, O5.1a–c, O6.1, and O6.4.
+Bridge rows closed since the draft: B1, B5, the B6 primitive family
+(including ellipsoid), the B11 STEP-ordering item, B13 void export, and B15
+pocket-face orientation; B12 is partial (rectangular holes on sweep/pipe
+caps, PR #252). No `#[ignore]` pins a live engine defect.
 
 OpenZCAD consumer-roadmap K-S4 (`approx_census` CI enforcement): **done (PR
 #140)**. Its authoritative disposition line remains in planning PR
@@ -110,8 +116,8 @@ O5.3a AP242, O6.2 playground). Bridge: B2 scale residuals close inside
 ### H3 — after M4 / M5
 
 M5 blend depth ∥ M6 direct modeling ∥ M7 surfacing; O1.3b torture-suite
-publication, O5.3b PMI read, O7 hybrid RFC. Bridge: B12 non-planar cap
-holes (with M7's cap work).
+publication, O5.3b PMI read, O7 hybrid RFC. Bridge: the B12 residue
+(loft-hole correspondence, holed partial revolutions) with M7's cap work.
 
 ### H4 — v1.0
 
@@ -181,7 +187,7 @@ P-Class 2.3 · conic boolean cells = O2.2 · offset self-intersection = 5.7
 | B9 | **Torus ∖ coaxial cylinder tangent cut** — the single cell keeping torus booleans Beta; needs a tangent-contact primitive (explicitly NOT the band splitter). | `math/analytic_intersection.rs`, `algo` splitter | M | B1-ledger promotion Beta→Stable; closed-form oracle exists. Rides 2.7 tangency machinery. | Open |
 | B10 | **Curve-curve / curve-surface classification qualification** + conic distance/classification cells | `math`, `geometry/extrema`, matrix harness | M | Unqualified since the matrix was written; sits under many families' claims; pure evidence. | Open |
 | B11 | **Small hygiene set** — `log::debug!` false-zero in `fill_images_faces.rs` (diagnostic-infra bug); deterministic STEP entity ordering; heal `fix_duplicate_faces` winding-blind comparison; plane×plane sampled in-both exact upgrade; `n_fine` clamp hazard note→guard. | various | S each | Cheap, each has already cost or will cost a debugging session. | **Partial (2026-09-03, PR #239):** STEP export now canonicalizes unordered face, void-shell, and hole-loop aggregates while preserving semantic coedge traversal order; byte-equality regressions cover reordered faces and void shells. Remaining: false-zero diagnostic, winding-aware duplicate-face healing, plane×plane exact upgrade, and `n_fine` guard. |
-| B12 | **Holes on non-planar section caps** — annular Coons or cap-then-subtract vs extruded-annulus ground truth (stabilization B2.2). | `operations/src/cap.rs`, `fill_face.rs` | M | Largest remaining non-planar-cap value with clean ground truth. H3, with M7 cap work. | Open |
+| B12 | **Holes on non-planar section caps** — annular Coons or cap-then-subtract vs extruded-annulus ground truth (stabilization B2.2). | `operations/src/cap.rs`, `fill_face.rs` | M | Largest remaining non-planar-cap value with clean ground truth. H3, with M7 cap work. | **Partial (2026-09-04, PR #252):** sweep and pipe caps preserve disjoint rectangular iso-parametric holes on four-sided bilinear caps, matched against an independently extruded annulus by converged volume, manifold B-Rep, watertight mesh, classification, and direct/batch WASM. Off-surface, curved, touching, and n-sided holed trims refuse typed; loft-hole correspondence and holed partial revolutions remain Unsupported-typed and ride M7's cap work. |
 | B13 | **STEP inner-shell (voids) export** — emit and read `BREP_WITH_VOIDS`, preserving cavity shell count and volume. | `io/src/step/{writer,reader}.rs` | S–M | Round-trip honesty for hollow parts; gauntlet round-trip stage will hit it. | Complete (2026-09-04): one- and two-void regressions verify single-solid round trips, shell counts, and volume. |
 | B15 | **Cut/intersect pocket-face orientation on cylinder walls** | `crates/operations/tests/regress_parallel_boss_band_sections.rs`, `algo` assembly | M | **Done (2026-09-04, PR #255):** non-fuse assembly normalizes selected cylinder outer/inner wire winding before edge merge. Box and cylinder tools on both wall sides pass exact cut/intersect, dual validation, closed-form volume, material classification, and welded-mesh orientation oracles. The formerly ignored regression is permanent coverage. | Done |
 | B14 | **Render promotion track** — Experimental→Beta after a contract-stable release cycle (stabilization C4 residue); outside both programs. | `render` | S (time-gated) | Cleans the last stabilization row. | Open |
