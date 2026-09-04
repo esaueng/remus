@@ -119,6 +119,44 @@ fn no_small_faces_in_box() {
 
 // ── Duplicate face removal tests ────────────────────
 
+fn add_planar_triangle(topo: &mut Topology, points: [Point3; 3]) -> FaceId {
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::face::Face;
+    use remus_topology::vertex::Vertex;
+
+    let vertices = points.map(|point| topo.add_vertex(Vertex::new(point, 1e-7)));
+    let edges = [
+        topo.add_edge(Edge::new(vertices[0], vertices[1], EdgeCurve::Line)),
+        topo.add_edge(Edge::new(vertices[1], vertices[2], EdgeCurve::Line)),
+        topo.add_edge(Edge::new(vertices[2], vertices[0], EdgeCurve::Line)),
+    ];
+    let wire = topo.add_wire(
+        Wire::new(
+            edges
+                .into_iter()
+                .map(|edge| OrientedEdge::new(edge, true))
+                .collect(),
+            true,
+        )
+        .unwrap(),
+    );
+    topo.add_face(Face::new(
+        wire,
+        vec![],
+        FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: 0.0,
+        },
+    ))
+}
+
+fn solid_from_faces(topo: &mut Topology, faces: Vec<FaceId>) -> SolidId {
+    use remus_topology::solid::Solid;
+
+    let shell = topo.add_shell(Shell::new(faces).unwrap());
+    topo.add_solid(Solid::new(shell, vec![]))
+}
+
 #[test]
 fn no_duplicates_in_box() {
     let mut topo = Topology::new();
@@ -126,6 +164,59 @@ fn no_duplicates_in_box() {
 
     let count = remove_duplicate_faces(&mut topo, solid, 1e-7).unwrap();
     assert_eq!(count, 0, "box should have no duplicate faces");
+}
+
+#[test]
+fn planar_merge_euler_guard_rejects_an_invented_hole() {
+    assert_eq!(merge_adjusted_euler_delta(2, 1, 0, 0), 0);
+    assert_eq!(merge_adjusted_euler_delta(80, 80, 0, 1), 0);
+    assert_eq!(merge_adjusted_euler_delta(80, 79, 0, 1), -1);
+}
+
+#[test]
+fn duplicate_faces_require_matching_boundaries() {
+    let mut topo = Topology::new();
+    let first = add_planar_triangle(
+        &mut topo,
+        [
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(3.0, 0.0, 0.0),
+            Point3::new(0.0, 3.0, 0.0),
+        ],
+    );
+    let same_centroid = add_planar_triangle(
+        &mut topo,
+        [
+            Point3::new(2.0, 2.0, 0.0),
+            Point3::new(-1.0, 2.0, 0.0),
+            Point3::new(2.0, -1.0, 0.0),
+        ],
+    );
+    let solid = solid_from_faces(&mut topo, vec![first, same_centroid]);
+
+    assert_eq!(remove_duplicate_faces(&mut topo, solid, 1e-7).unwrap(), 0);
+    assert_eq!(
+        topo.shell(topo.solid(solid).unwrap().outer_shell())
+            .unwrap()
+            .faces()
+            .len(),
+        2
+    );
+}
+
+#[test]
+fn duplicate_faces_remove_same_winding_boundary_copy() {
+    let mut topo = Topology::new();
+    let points = [
+        Point3::new(0.0, 0.0, 0.0),
+        Point3::new(1.0, 0.0, 0.0),
+        Point3::new(0.0, 1.0, 0.0),
+    ];
+    let first = add_planar_triangle(&mut topo, points);
+    let duplicate = add_planar_triangle(&mut topo, points);
+    let solid = solid_from_faces(&mut topo, vec![first, duplicate]);
+
+    assert_eq!(remove_duplicate_faces(&mut topo, solid, 1e-7).unwrap(), 1);
 }
 
 // ── Full heal pipeline tests ────────────────────────

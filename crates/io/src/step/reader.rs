@@ -3064,7 +3064,10 @@ impl<'a> StepBuilder<'a> {
         for point in points {
             let offset = point - frame.origin;
             let planar_distance = offset.dot(frame.z).abs();
-            if planar_distance > FACE_BOUND_CLASSIFICATION_DEFLECTION + tol {
+            let declared_margin = self
+                .model_tolerance_cap
+                .max(FACE_BOUND_CLASSIFICATION_DEFLECTION);
+            if planar_distance > declared_margin + tol {
                 return Err(IoError::ParseError {
                     reason: format!(
                         "ADVANCED_FACE #{face_ref} bound #{} leaves its plane by \
@@ -14196,6 +14199,55 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
             (read_volume - source_volume).abs() < 1e-6,
             "re-imported volume {read_volume} should match {source_volume}"
         );
+    }
+
+    #[test]
+    fn two_voids_round_trip_as_one_solid_with_matching_volume() {
+        let mut write_topo = Topology::new();
+        let outer = remus_operations::primitives::make_box(&mut write_topo, 5.0, 5.0, 5.0).unwrap();
+        let first_void =
+            remus_operations::primitives::make_box(&mut write_topo, 1.0, 1.0, 1.0).unwrap();
+        remus_operations::transform::transform_solid(
+            &mut write_topo,
+            first_void,
+            &remus_math::mat::Mat4::translation(1.0, 1.0, 1.0),
+        )
+        .unwrap();
+        let once_hollow = remus_operations::boolean::boolean(
+            &mut write_topo,
+            remus_operations::boolean::BooleanOp::Cut,
+            outer,
+            first_void,
+        )
+        .unwrap();
+        let second_void =
+            remus_operations::primitives::make_box(&mut write_topo, 1.0, 1.0, 1.0).unwrap();
+        remus_operations::transform::transform_solid(
+            &mut write_topo,
+            second_void,
+            &remus_math::mat::Mat4::translation(3.0, 3.0, 3.0),
+        )
+        .unwrap();
+        let hollow = remus_operations::boolean::boolean(
+            &mut write_topo,
+            remus_operations::boolean::BooleanOp::Cut,
+            once_hollow,
+            second_void,
+        )
+        .unwrap();
+        assert_eq!(write_topo.solid(hollow).unwrap().inner_shells().len(), 2);
+        let source_volume =
+            remus_operations::measure::solid_volume(&write_topo, hollow, 0.01).unwrap();
+
+        let step = writer::write_step(&write_topo, &[hollow]).unwrap();
+        let mut read_topo = Topology::new();
+        let solids = read_step(&step, &mut read_topo).unwrap();
+
+        assert_eq!(solids.len(), 1);
+        assert_eq!(read_topo.solid(solids[0]).unwrap().inner_shells().len(), 2);
+        let round_trip_volume =
+            remus_operations::measure::solid_volume(&read_topo, solids[0], 0.01).unwrap();
+        assert!((round_trip_volume - source_volume).abs() < 1e-6);
     }
 
     #[test]

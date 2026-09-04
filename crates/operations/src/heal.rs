@@ -1069,10 +1069,10 @@ pub fn remove_small_faces(
 
 /// Remove duplicate (coincident) faces from a solid.
 ///
-/// Two faces are considered duplicates if their outward normals are
-/// parallel (or anti-parallel) and all vertices of one face are within
-/// `tolerance` of the other face's plane. This happens when boolean
-/// operations create overlapping fragments.
+/// This conservative pass only removes unperforated planar polygon faces whose
+/// ordered boundary vertices coincide with the same winding and whose effective
+/// normals agree. Curved/perforated faces are retained until their trimmed
+/// regions can be compared in parameter space.
 ///
 /// Returns the number of duplicate faces removed.
 ///
@@ -1083,6 +1083,8 @@ pub fn remove_duplicate_faces(
     solid: SolidId,
     tolerance: f64,
 ) -> Result<usize, crate::OperationsError> {
+    const NORMAL_PARALLEL_COS_TOL: f64 = 1e-6;
+
     let tol = if tolerance > 0.0 {
         tolerance
     } else {
@@ -1094,43 +1096,37 @@ pub fn remove_duplicate_faces(
     let shell = topo.shell(shell_id)?;
     let face_ids: Vec<_> = shell.faces().to_vec();
 
-    // Collect face data for comparison.
-    // Tuple: (centroid, normal, vertex_count)
-    let mut face_data: Vec<(FaceId, Point3, Vec3, usize)> = Vec::new();
+    // (face, effective plane normal, ordered outer-boundary vertices).
+    let mut face_data: Vec<(FaceId, Vec3, Vec<Point3>)> = Vec::new();
 
     for &fid in &face_ids {
         let face = topo.face(fid)?;
-        let normal = match face.surface() {
-            FaceSurface::Plane { normal, .. } => *normal,
-            FaceSurface::Cylinder(cyl) => cyl.axis(),
-            FaceSurface::Cone(cone) => cone.axis(),
-            FaceSurface::Sphere(_) => Vec3::new(0.0, 0.0, 1.0), // placeholder for comparison
-            FaceSurface::Torus(tor) => tor.z_axis(),
-            FaceSurface::Nurbs(_) => continue, // NURBS dedup needs parameter-space comparison
+        if !face.inner_wires().is_empty() {
+            continue;
+        }
+        let Some(normal) = face
+            .effective_plane_normal()
+            .and_then(|normal| normal.normalize().ok())
+        else {
+            continue;
         };
 
         let wire = topo.wire(face.outer_wire())?;
-        let mut centroid = Vec3::new(0.0, 0.0, 0.0);
-        let mut count = 0;
-
+        let mut points = Vec::with_capacity(wire.edges().len());
         for oe in wire.edges() {
             let edge = topo.edge(oe.edge())?;
-            let pos = topo.vertex(edge.start())?.point();
-            centroid += Vec3::new(pos.x(), pos.y(), pos.z());
-            count += 1;
+            if !matches!(edge.curve(), EdgeCurve::Line) {
+                points.clear();
+                break;
+            }
+            points.push(topo.vertex(oe.oriented_start(edge))?.point());
         }
-
-        if count > 0 {
-            #[allow(clippy::cast_precision_loss)]
-            let inv = 1.0 / count as f64;
-            centroid = centroid * inv;
+        if !points.is_empty() {
+            face_data.push((fid, normal, points));
         }
-
-        let centroid_pt = Point3::new(centroid.x(), centroid.y(), centroid.z());
-        face_data.push((fid, centroid_pt, normal, count));
     }
 
-    // Find duplicate pairs: same vertex count, parallel normals, close centroids.
+    // Mark the later face of each exact geometric duplicate pair.
     let mut duplicates: std::collections::HashSet<usize> = std::collections::HashSet::new();
 
     for i in 0..face_data.len() {
@@ -1142,23 +1138,15 @@ pub fn remove_duplicate_faces(
                 continue;
             }
 
-            let (_, centroid_a, normal_a, count_a) = &face_data[i];
-            let (fid_j, centroid_b, normal_b, count_b) = &face_data[j];
-
-            // Same vertex count.
-            if count_a != count_b {
+            let (_, normal_a, points_a) = &face_data[i];
+            let (fid_j, normal_b, points_b) = &face_data[j];
+            if points_a.len() != points_b.len() {
                 continue;
             }
-
-            // Normals parallel or anti-parallel.
-            let dot = normal_a.dot(*normal_b).abs();
-            if dot < 1.0 - tol {
+            if normal_a.dot(*normal_b) < 1.0 - NORMAL_PARALLEL_COS_TOL {
                 continue;
             }
-
-            // Centroids close.
-            let centroid_dist = (*centroid_a - *centroid_b).length();
-            if centroid_dist < tol {
+            if boundaries_coincide_with_same_winding(points_a, points_b, tol) {
                 duplicates.insert(fid_j.index());
             }
         }
@@ -1185,6 +1173,18 @@ pub fn remove_duplicate_faces(
     *topo.shell_mut(shell_id)? = new_shell;
 
     Ok(removed_count)
+}
+
+fn boundaries_coincide_with_same_winding(a: &[Point3], b: &[Point3], tolerance: f64) -> bool {
+    if a.is_empty() || a.len() != b.len() {
+        return false;
+    }
+
+    (0..b.len()).any(|offset| {
+        (a[0] - b[offset]).length() < tolerance
+            && (0..a.len())
+                .all(|index| (a[index] - b[(offset + index) % b.len()]).length() < tolerance)
+    })
 }
 
 // ── Face Unification ──────────────────────────────────────────────
@@ -1424,6 +1424,20 @@ pub(crate) struct FaceUnifyHistory {
     pub(crate) modified: Vec<(FaceId, FaceId)>,
 }
 
+enum UnifyTransactionError {
+    Operation(crate::OperationsError),
+    InvalidCandidate {
+        faces_merged: usize,
+        error_count: usize,
+    },
+}
+
+impl From<crate::OperationsError> for UnifyTransactionError {
+    fn from(error: crate::OperationsError) -> Self {
+        Self::Operation(error)
+    }
+}
+
 /// [`unify_faces`] with the exact input-face to final-face association recorded
 /// by the merge groups that rebuild the shell.
 ///
@@ -1435,9 +1449,41 @@ pub(crate) fn unify_faces_with_history(
     topo: &mut Topology,
     solid: SolidId,
 ) -> Result<FaceUnifyHistory, crate::OperationsError> {
-    remus_topology::transaction::run_transacted(topo, |topo| {
-        unify_faces_with_history_impl(topo, solid)
-    })
+    let input_was_valid = crate::validate::validate_solid(topo, solid)?.is_valid();
+    let original_faces = {
+        let shell_id = topo.solid(solid)?.outer_shell();
+        topo.shell(shell_id)?.faces().to_vec()
+    };
+    match remus_topology::transaction::run_transacted(topo, |topo| {
+        let result = unify_faces_with_history_impl(topo, solid)?;
+        if input_was_valid {
+            let validation = crate::validate::validate_solid(topo, solid)?;
+            if !validation.is_valid() {
+                return Err(UnifyTransactionError::InvalidCandidate {
+                    faces_merged: result.faces_merged,
+                    error_count: validation.error_count(),
+                });
+            }
+        }
+        Ok(result)
+    }) {
+        Ok(result) => Ok(result),
+        Err(UnifyTransactionError::InvalidCandidate {
+            faces_merged,
+            error_count,
+        }) => {
+            log::warn!(
+                "unify_faces: reverting {} face merge(s) because the candidate failed strict validation with {} error(s)",
+                faces_merged,
+                error_count
+            );
+            Ok(FaceUnifyHistory {
+                faces_merged: 0,
+                modified: original_faces.iter().map(|&face| (face, face)).collect(),
+            })
+        }
+        Err(UnifyTransactionError::Operation(error)) => Err(error),
+    }
 }
 
 #[allow(clippy::too_many_lines)]
@@ -1821,7 +1867,8 @@ fn unify_faces_with_history_impl(
             }
         }
 
-        // Skip groups whose merged boundary would be too complex.
+        // Skip groups whose merged boundary would be too complex before
+        // reconstructing loops for the topology-preservation check below.
         // A face with hundreds of boundary edges can cause O(N²) or worse
         // performance in subsequent boolean intersection computations.
         if boundary_edges.len() > MAX_BOUNDARY_EDGES {
@@ -1831,6 +1878,33 @@ fn unify_faces_with_history_impl(
                 MAX_BOUNDARY_EDGES
             );
             continue;
+        }
+
+        // Prove that replacing this planar group with one face preserves the
+        // adjusted Euler characteristic V-E+F-L. For N faces with I internal
+        // edges, existing inner loops L0, and candidate inner loops L1, the
+        // local delta is I + (1-N) - (L1-L0). A non-zero result means boundary
+        // reconstruction would invent or lose a topological loop. Leave only
+        // that group unmerged so independent safe reductions remain.
+        if matches!(representative_surface, Some(FaceSurface::Plane { .. })) {
+            let loops = order_edges_into_loops(topo, &boundary_edges)?;
+            let original_inner_count = group_face_ids.iter().try_fold(0usize, |count, &face| {
+                topo.face(face).map(|face| count + face.inner_wires().len())
+            })?;
+            let candidate_inner_count = all_inner_wires.len() + loops.len().saturating_sub(1);
+            let adjusted_euler_delta = merge_adjusted_euler_delta(
+                group_face_ids.len(),
+                internal_edges.len(),
+                original_inner_count,
+                candidate_inner_count,
+            );
+            if adjusted_euler_delta != 0 {
+                log::warn!(
+                    "unify_faces: skipping {}-face planar group whose adjusted Euler delta is {adjusted_euler_delta}",
+                    group_face_ids.len(),
+                );
+                continue;
+            }
         }
 
         let Some(surface) = representative_surface else {
@@ -2129,6 +2203,18 @@ fn loop_area_3d(
     }
     // Newell normal magnitude = 2× enclosed area.
     Ok(crate::winding::newell_normal(&positions).length() * 0.5)
+}
+
+#[allow(clippy::cast_possible_wrap)]
+const fn merge_adjusted_euler_delta(
+    face_count: usize,
+    internal_edge_count: usize,
+    original_inner_count: usize,
+    candidate_inner_count: usize,
+) -> i64 {
+    internal_edge_count as i64 + 1
+        - face_count as i64
+        - (candidate_inner_count as i64 - original_inner_count as i64)
 }
 
 /// Quantized 3D position key for vertex matching in edge chaining.
