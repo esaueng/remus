@@ -385,7 +385,11 @@ fn circle_lies_on_surface(circle: &Circle3D, surface: &FaceSurface, tolerance: T
     }
 }
 
-fn materialize_spine(topo: &mut Topology, spine: &GeometricSpine, tolerance: Tolerance) -> EdgeId {
+pub(crate) fn materialize_spine(
+    topo: &mut Topology,
+    spine: &GeometricSpine,
+    tolerance: Tolerance,
+) -> EdgeId {
     let (curve, start, end) = match spine {
         GeometricSpine::Line { start, end } => (EdgeCurve::Line, *start, *end),
         GeometricSpine::Circle(circle) => {
@@ -423,7 +427,7 @@ fn dot(vector: Vec3, point: Point3) -> f64 {
     vector.x() * point.x() + vector.y() * point.y() + vector.z() * point.z()
 }
 
-fn inward_surface(surface: &FaceSurface, is_reversed: bool) -> FaceSurface {
+pub(crate) fn inward_surface(surface: &FaceSurface, is_reversed: bool) -> FaceSurface {
     if is_reversed {
         return surface.clone();
     }

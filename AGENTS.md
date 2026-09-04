@@ -201,6 +201,7 @@ Quick reference — find the right file for any task:
 | Shared builder utilities | `builder_utils.rs` |
 | G1-continuous fillet edge-chain expansion | `g1_chain.rs` |
 | Read-only analytic blend queries | `query.rs` |
+| Exact face-face blend bands for disjoint planar support patches | `face_face.rs` |
 | Geometry-aware snap tolerance for assembly dedup | `adaptive_tolerance.rs` |
 | Spherical triangle corner patches (3+ stripes) | `spherical_triangle.rs` |
 
@@ -353,6 +354,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Evolution tracking | `evolution.rs` |
 | Compound operations | `compound_ops.rs` |
 | Blend v2 wrappers (fillet/chamfer) | `blend_ops.rs` |
+| Exact standalone face-face blend sheets | `face_face_blend.rs` |
 | Offset v2 (delegates to remus-offset) | `offset_v2.rs` |
 | Shared winding utilities | `winding.rs` |
 | Edge projection with hidden-line removal | `projection.rs` |

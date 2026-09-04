@@ -240,7 +240,14 @@ does not itself promote or demote anything.
   `CliffEncountered` with edge/face/requested/available metadata. Exact-width
   box and two-rim thin-wall witnesses pin the supported and refused sides,
   transactionality, mesh/B-Rep integrity, volume agreement, and structured
-  WASM `cliff-encountered` parity.
+  WASM `cliff-encountered` parity. The bounded face-face cell accepts one
+  convex, hole-free, straight-edged planar face in each disjoint-edge set and
+  returns a validated standalone Sheet on an exact cylindrical carrier. A
+  hold line must equal one complete analytic contact segment. The perpendicular
+  radius-1 witness has exact area `5 pi`, agrees with an independently
+  integrated mesh, remains stable across `1e-3 / 1 / 1e3` scale and rigid
+  translation, and has direct/batch WASM parity. Refusals use
+  `unsupported-face-face-blend` and preserve topology.
 - Fail-closed contract (Qualified, every public entry point): direct WASM
   bindings, `executeBatch`/`executeBatchV2`, journaled wrappers, and the
   legacy v1 Rust APIs (`fillet`, `fillet_rolling_ball`, `fillet_variable`,
@@ -264,6 +271,9 @@ does not itself promote or demote anything.
   mixed-radius junction surfaces, G2 profiles, and actual rollover onto a
   neighboring face remain Unqualified or absent and fail closed. Stop-at-cliff
   detection is Qualified; it does not imply rollover or re-limitation support.
+  Face-face multi-face sets, curved or holed supports, partial-contact hold
+  curves, and trimming the band into either source body also remain
+  Unqualified; the qualified result is a standalone exact Sheet.
 
 ### Offset, shell, thicken
 

@@ -2301,6 +2301,72 @@ impl BrepKernel {
         Ok(solid_id_to_u32(result.solid))
     }
 
+    /// Build an exact standalone blend sheet between two disjoint planar faces.
+    #[wasm_bindgen(js_name = "faceFaceBlend")]
+    pub fn face_face_blend(
+        &mut self,
+        first_face: u32,
+        second_face: u32,
+        radius: f64,
+    ) -> Result<u32, JsError> {
+        validate_positive(radius, "radius")?;
+        let first = self.resolve_face(first_face)?;
+        let second = self.resolve_face(second_face)?;
+        let result = remus_operations::face_face_blend::face_face_blend(
+            self.topo_mut(),
+            &[first],
+            &[second],
+            radius,
+            None,
+        )
+        .map_err(|error| fillet_failure_js_error(&error))?;
+        Ok(shell_id_to_u32(result.sheet))
+    }
+
+    /// Build a face-face blend sheet and verify one prescribed contact line.
+    #[wasm_bindgen(js_name = "faceFaceBlendWithHoldLine")]
+    pub fn face_face_blend_with_hold_line(
+        &mut self,
+        first_face: u32,
+        second_face: u32,
+        radius: f64,
+        hold_face: u32,
+        start_x: f64,
+        start_y: f64,
+        start_z: f64,
+        end_x: f64,
+        end_y: f64,
+        end_z: f64,
+    ) -> Result<u32, JsError> {
+        validate_positive(radius, "radius")?;
+        for (value, name) in [
+            (start_x, "startX"),
+            (start_y, "startY"),
+            (start_z, "startZ"),
+            (end_x, "endX"),
+            (end_y, "endY"),
+            (end_z, "endZ"),
+        ] {
+            validate_finite(value, name)?;
+        }
+        let first = self.resolve_face(first_face)?;
+        let second = self.resolve_face(second_face)?;
+        let hold = remus_operations::face_face_blend::FaceFaceHoldLine {
+            support: self.resolve_face(hold_face)?,
+            start: Point3::new(start_x, start_y, start_z),
+            end: Point3::new(end_x, end_y, end_z),
+        };
+        let result = remus_operations::face_face_blend::face_face_blend(
+            self.topo_mut(),
+            &[first],
+            &[second],
+            radius,
+            Some(hold),
+        )
+        .map_err(|error| fillet_failure_js_error(&error))?;
+        Ok(shell_id_to_u32(result.sheet))
+    }
+
     /// Chamfer edges with two distances using the v2 blend engine.
     ///
     /// Returns a new solid handle.
@@ -2475,7 +2541,9 @@ mod tests {
     use remus_topology::builder::make_polygon_wire;
     use remus_topology::face::{Face, FaceSurface};
 
-    use crate::handles::{edge_id_to_u32, shell_id_to_u32, solid_id_to_u32, wire_id_to_u32};
+    use crate::handles::{
+        edge_id_to_u32, face_id_to_u32, shell_id_to_u32, solid_id_to_u32, wire_id_to_u32,
+    };
     use crate::helpers::TOL;
     use crate::kernel::BrepKernel;
 
@@ -2611,6 +2679,131 @@ mod tests {
             0.0,
         );
         (horizontal, vertical)
+    }
+
+    fn disjoint_face_handles(k: &mut BrepKernel) -> (u32, u32) {
+        let make_face = |k: &mut BrepKernel, points: [Point3; 4], normal: Vec3| {
+            let wire = make_polygon_wire(k.topo_mut(), &points, TOL).unwrap();
+            face_id_to_u32(k.topo_mut().add_face(Face::new(
+                wire,
+                Vec::new(),
+                FaceSurface::Plane { normal, d: 0.0 },
+            )))
+        };
+        let horizontal = make_face(
+            k,
+            [
+                Point3::new(0.5, 0.0, 0.0),
+                Point3::new(0.5, 10.0, 0.0),
+                Point3::new(4.0, 10.0, 0.0),
+                Point3::new(4.0, 0.0, 0.0),
+            ],
+            Vec3::new(0.0, 0.0, -1.0),
+        );
+        let vertical = make_face(
+            k,
+            [
+                Point3::new(0.0, 0.0, 0.5),
+                Point3::new(0.0, 0.0, 4.0),
+                Point3::new(0.0, 10.0, 4.0),
+                Point3::new(0.0, 10.0, 0.5),
+            ],
+            Vec3::new(-1.0, 0.0, 0.0),
+        );
+        (horizontal, vertical)
+    }
+
+    #[test]
+    fn direct_and_batch_face_face_blends_match_with_and_without_hold_line() {
+        let mut signatures = Vec::new();
+        for use_hold in [false, true] {
+            for batch in [false, true] {
+                let mut kernel = BrepKernel::new();
+                let (first, second) = disjoint_face_handles(&mut kernel);
+                let sheet = match (use_hold, batch) {
+                    (false, false) => kernel.face_face_blend(first, second, 1.0).unwrap(),
+                    (false, true) => dispatch(
+                        &mut kernel,
+                        "faceFaceBlend",
+                        serde_json::json!({
+                            "firstFace": first,
+                            "secondFace": second,
+                            "radius": 1.0,
+                        }),
+                    )["ok"]
+                        .as_u64()
+                        .unwrap() as u32,
+                    (true, false) => kernel
+                        .face_face_blend_with_hold_line(
+                            first, second, 1.0, first, 1.0, 0.0, 0.0, 1.0, 10.0, 0.0,
+                        )
+                        .unwrap(),
+                    (true, true) => dispatch(
+                        &mut kernel,
+                        "faceFaceBlendWithHoldLine",
+                        serde_json::json!({
+                            "firstFace": first,
+                            "secondFace": second,
+                            "radius": 1.0,
+                            "holdFace": first,
+                            "startX": 1.0,
+                            "startY": 0.0,
+                            "startZ": 0.0,
+                            "endX": 1.0,
+                            "endY": 10.0,
+                            "endZ": 0.0,
+                        }),
+                    )["ok"]
+                        .as_u64()
+                        .unwrap() as u32,
+                };
+                let sheet_id = kernel.resolve_shell(sheet).unwrap();
+                let report = remus_check::validate::validate_sheet_body(
+                    kernel.topo(),
+                    sheet_id,
+                    &remus_check::validate::ValidateOptions::default(),
+                )
+                .unwrap();
+                assert!(report.is_valid());
+                let area =
+                    remus_operations::measure::sheet_surface_area(kernel.topo(), sheet_id, 0.01)
+                        .unwrap();
+                signatures.push((use_hold, batch, (area * 1.0e9).round() as i64));
+            }
+        }
+        assert_eq!(signatures[0].2, signatures[1].2);
+        assert_eq!(signatures[2].2, signatures[3].2);
+        assert_eq!(signatures[0].2, signatures[2].2);
+    }
+
+    #[test]
+    fn batch_v2_face_face_hold_mismatch_is_typed_and_transactional() {
+        let mut kernel = BrepKernel::new();
+        let (first, second) = disjoint_face_handles(&mut kernel);
+        let before = topology_counts(kernel.topo());
+        let input = serde_json::json!([{
+            "op": "faceFaceBlendWithHoldLine",
+            "args": {
+                "firstFace": first,
+                "secondFace": second,
+                "radius": 1.0,
+                "holdFace": first,
+                "startX": 2.0,
+                "startY": 0.0,
+                "startZ": 0.0,
+                "endX": 2.0,
+                "endY": 10.0,
+                "endZ": 0.0,
+            }
+        }]);
+        let output: Vec<serde_json::Value> =
+            serde_json::from_str(&kernel.execute_batch_v2(&input.to_string())).unwrap();
+        assert_eq!(
+            output[0]["error"]["details"]["kernelCode"],
+            "unsupported-face-face-blend"
+        );
+        assert_eq!(output[0]["error"]["category"], "unsupported");
+        assert_eq!(topology_counts(kernel.topo()), before);
     }
 
     #[test]
