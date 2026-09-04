@@ -1182,6 +1182,35 @@ Generalize the planar-only `move_faces` and `push_pull` through 6.1:
 transformed or offset surface in, re-limitation out. Includes through-feature
 preservation (a moved wall carries its holes).
 
+The first generalized cell is implemented. A planar support can move through
+an incident constant-radius analytic blend by exact remove/move/rebuild when
+the support heal is available, or by the existing proof-gated
+translation-invariant patch path. The boss-on-plate/fillet/hole witness uses
+the latter. Holes remain inner wires and their walls extend to the moved
+support. The inward coaxial bore-radius path now calls the 6.1
+replace-surface primitive instead of its older parallel reconstruction. Every
+affected edge retains finite, non-zero trim authority; existing per-use p-curve
+authority is preserved without fabricating unsupported data on legacy imports.
+
+`move_faces_with_evolution` publishes the direct construction copy map for the
+patch path and composes removal, lower-move, and rebuild maps for the
+remove/rebuild path. A rebuilt band keeps identity only when its construction
+record names one unique support set; complex ambiguous regions report explicit
+`unresolved` outputs instead of geometry matching. `move_faces_journaled`
+records that map transactionally. The boss-on-plate witness combines a through
+bore and an incident radius-one fillet, keeps the source face/edge/vertex
+census, validates with two uses per B-Rep edge, produces closed/manifold welded
+meshes, matches B-Rep and independent-mesh volume, retains authoritative trims,
+and resolves every anchored source face `Bound` with construction
+provenance. The same cell passes translated `1e-3 / 1 / 1e3` scale and direct
+versus batch WASM parity; a cap moved through the base refuses without topology
+or journal changes.
+
+Arbitrary face rotation, lateral relocation, outward cylindrical walls,
+surface-type changes, and multi-band/corner regions without a unique
+construction correspondence remain Unqualified, so Issue 6.2 remains Partial
+outside this exact cell.
+
 > **Exit gate:** move a boss across a filleted plate; holes and fillet bands
 > re-limit; persistent refs to every moved face still resolve Bound.
 
