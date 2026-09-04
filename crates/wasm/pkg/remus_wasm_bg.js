@@ -4313,7 +4313,8 @@ export class BrepKernel {
         return ret[0] >>> 0;
     }
     /**
-     * Create a box solid with the given dimensions, centered at the origin.
+     * Create a box solid with one corner at the origin and the opposite
+     * corner at `(dx, dy, dz)`.
      *
      * Returns a solid handle (`u32`).
      *

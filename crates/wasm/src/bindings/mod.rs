@@ -34,3 +34,5 @@ mod gridfinity_tests;
 mod holed_face_tests;
 #[cfg(test)]
 mod qualify_ops_tests;
+#[cfg(test)]
+mod qualify_primitives_tests;
