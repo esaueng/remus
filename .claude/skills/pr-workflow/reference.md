@@ -96,7 +96,7 @@ What actually runs, verified against the workflow file and a live merge
 
 - Workflow name "Refresh Apache Staging Package"; runs on every push to
   `main`, skipping its own `[skip ci]` commits so it cannot loop.
-- Rebuilds `crates/wasm/pkg` with `cargo xtask wasm-build`,
+- Rebuilds `crates/wasm/pkg` and `crates/wasm-io/pkg` with `cargo xtask wasm-build`,
   stamps stable provenance fields (never the commit SHA — that would dirty
   every run), and when the rebuilt package differs, commits it back as
   `chore(wasm): refresh committed package to vX.Y.Z from <sha> [skip ci]`.

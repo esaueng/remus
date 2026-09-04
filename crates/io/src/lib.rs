@@ -4,16 +4,29 @@
 //!
 //! This is layer L3, depending on `remus-math`, `remus-topology`,
 //! and `remus-operations`.
+//!
+//! The format translators sit behind the default `formats` feature. Without
+//! it the crate is only the exact arena document codec ([`arena_io`]) and
+//! the persistent-reference codec ([`naming_io`]), the two pieces the browser
+//! kernel module needs to exchange bodies with the separate translator
+//! module.
 
 pub mod arena_io;
+#[cfg(feature = "formats")]
 pub mod gltf;
+#[cfg(feature = "formats")]
 pub mod iges;
 pub mod limits;
 pub mod naming_io;
+#[cfg(feature = "formats")]
 pub mod obj;
+#[cfg(feature = "formats")]
 pub mod ply;
+#[cfg(feature = "formats")]
 pub mod step;
+#[cfg(feature = "formats")]
 pub mod stl;
+#[cfg(feature = "formats")]
 pub mod threemf;
 
 pub use limits::ImportLimits;
@@ -75,6 +88,7 @@ pub enum IoError {
     Operations(#[from] remus_operations::OperationsError),
 
     /// An error writing the ZIP archive.
+    #[cfg(feature = "formats")]
     #[error(transparent)]
     Zip(#[from] zip::result::ZipError),
 }
