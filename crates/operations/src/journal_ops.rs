@@ -9,7 +9,8 @@
 //! - [`record_face_evolution`] journals any operation that produces an
 //!   [`EvolutionMap`] (v2 blends via
 //!   [`fillet_with_evolution`](crate::blend_ops::fillet_with_evolution),
-//!   pattern and boolean face maps) as a faces-only entry.
+//!   generalized face moves, pattern and boolean face maps) as a faces-only
+//!   entry.
 //! - [`record_barrier_over_solid`] journals an explicit barrier for an
 //!   operation that produces no evolution records: every entity of the
 //!   result solid is unresolved across it, and a resolver fails closed
@@ -455,6 +456,33 @@ pub fn offset_journaled(
             solid: result,
             op,
             map,
+        })
+    })
+}
+
+/// Moves a supported face selection and journals its construction-derived
+/// face evolution as one entry (kind `move_faces`).
+///
+/// The whole call is transactional: failed geometry, postconditions, or
+/// journal recording restore both topology and history.
+///
+/// # Errors
+///
+/// Returns [`OperationsError`] if the move or recording fails.
+pub fn move_faces_journaled(
+    topo: &mut Topology,
+    solid: SolidId,
+    faces: &[remus_topology::FaceId],
+    distance: f64,
+) -> Result<JournaledSolidOp, OperationsError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let pending = begin_scoped(topo, "move_faces", &[solid])?;
+        let result = crate::push_pull::move_faces_with_evolution(topo, solid, faces, distance)?;
+        let op = record_face_evolution(topo, pending, &result.evolution, &[result.solid])?;
+        Ok(JournaledSolidOp {
+            solid: result.solid,
+            op,
+            map: result.evolution,
         })
     })
 }
