@@ -177,6 +177,7 @@ fn compute_miter_offset(outer: Point3, unique_normals: &[(Vec3, bool)], thicknes
 /// no exact construction: an opened face that is not planar, a free boundary
 /// that lies in none of the opened faces' planes or does not close into a
 /// loop, or a result that comes back open, invalid or enclosing no volume.
+/// Any failure rolls the topology back.
 pub fn shell(
     topo: &mut Topology,
     solid: SolidId,
@@ -197,9 +198,21 @@ pub fn shell(
 ///
 /// # Errors
 ///
-/// Exactly [`shell`]'s errors.
+/// Exactly [`shell`]'s errors. Any failure rolls the topology back.
 #[allow(clippy::too_many_lines)]
 pub fn shell_with_evolution(
+    topo: &mut Topology,
+    solid: SolidId,
+    thickness: f64,
+    open_faces: &[FaceId],
+) -> Result<(SolidId, crate::evolution::EvolutionMap), crate::OperationsError> {
+    remus_topology::transaction::run_transacted(topo, |topology| {
+        shell_with_evolution_impl(topology, solid, thickness, open_faces)
+    })
+}
+
+#[allow(clippy::too_many_lines)]
+fn shell_with_evolution_impl(
     topo: &mut Topology,
     solid: SolidId,
     thickness: f64,
@@ -216,6 +229,15 @@ pub fn shell_with_evolution(
     let solid_data = topo.solid(solid)?;
     let shell_data = topo.shell(solid_data.outer_shell())?;
     let all_face_ids: Vec<FaceId> = shell_data.faces().to_vec();
+    // The qualified fold-removal cell starts from a hole-free planar prism.
+    // A pocket or bore gives the generated skin additional, legitimate face
+    // connectivity that geometry alone cannot distinguish from the collapsed
+    // component proof, so those solids stay on the established shell gate.
+    let inspect_planar_folds = all_face_ids.iter().all(|face_id| {
+        topo.face(*face_id).is_ok_and(|face| {
+            matches!(face.surface(), FaceSurface::Plane { .. }) && face.inner_wires().is_empty()
+        })
+    });
 
     let open_set: HashSet<usize> = open_faces.iter().map(|f| f.index()).collect();
 
@@ -619,7 +641,7 @@ pub fn shell_with_evolution(
 
     if boundary_edge_ids.is_empty() {
         // No open boundary — shell is already closed (no open faces, or all faces present).
-        return Ok((gate(topo, solid)?, evolution));
+        return finish_shell(topo, solid, evolution, tol.linear, inspect_planar_folds);
     }
 
     // Determine the oriented direction of each boundary edge relative to its
@@ -814,7 +836,61 @@ pub fn shell_with_evolution(
         remus_topology::shell::Shell::new(new_faces).map_err(crate::OperationsError::Topology)?;
     *topo.shell_mut(shell_id)? = new_shell;
 
-    Ok((gate(topo, solid)?, evolution))
+    finish_shell(topo, solid, evolution, tol.linear, inspect_planar_folds)
+}
+
+/// Remove the one exact global-fold cell before the ordinary shell gate.
+///
+/// The offset pass returns the original handle when every face remains
+/// positively oriented. If it excises a fully collapsed inner prism, the
+/// generated-face evolution entries that named that vanished component are
+/// removed as well; the retained outer faces remain exact `modified` outputs.
+fn finish_shell(
+    topo: &mut Topology,
+    solid: SolidId,
+    mut evolution: crate::evolution::EvolutionMap,
+    tolerance: f64,
+    inspect_planar_folds: bool,
+) -> Result<(SolidId, crate::evolution::EvolutionMap), crate::OperationsError> {
+    if !inspect_planar_folds {
+        return Ok((gate(topo, solid)?, evolution));
+    }
+    let removable_faces: Vec<_> = evolution
+        .generated
+        .values()
+        .flatten()
+        .filter_map(|output| topo.face_id_from_index(*output))
+        .collect();
+    let removal = remus_offset::remove_folded_uniform_l_prism_region(
+        topo,
+        solid,
+        tolerance,
+        &removable_faces,
+    )
+    .map_err(|error| unsupported(format!("self-intersection removal failed: {error}")))?;
+    if removal.removed_faces.is_empty() {
+        return Ok((gate(topo, removal.solid)?, evolution));
+    }
+
+    let removed: HashSet<_> = removal
+        .removed_faces
+        .iter()
+        .copied()
+        .map(FaceId::index)
+        .collect();
+    for outputs in evolution.modified.values_mut() {
+        outputs.retain(|output| !removed.contains(output));
+    }
+    evolution.modified.retain(|_, outputs| !outputs.is_empty());
+    for outputs in evolution.generated.values_mut() {
+        outputs.retain(|output| !removed.contains(output));
+    }
+    evolution.generated.retain(|_, outputs| !outputs.is_empty());
+    evolution
+        .unresolved
+        .retain(|output, _| !removed.contains(output));
+
+    Ok((gate(topo, removal.solid)?, evolution))
 }
 
 /// Conservative upper bound for both pairwise containment passes.
