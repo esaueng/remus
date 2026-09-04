@@ -1229,17 +1229,24 @@ pub(super) fn tessellate_face_with_shared_edges(
                 merged.normals.truncate(nrm_save);
                 merged.indices.truncate(idx_save);
                 point_to_global.retain(|_, gid| (*gid as usize) < pos_save);
-                tessellate_nonplanar_snap(
-                    topo,
-                    face_id,
-                    face_data,
-                    deflection,
-                    angular_tol,
-                    circle_floor,
-                    edge_global_indices,
-                    merged,
-                    point_to_global,
-                )?;
+                if face_data.inner_wires().is_empty() {
+                    tessellate_nonplanar_snap(
+                        topo,
+                        face_id,
+                        face_data,
+                        deflection,
+                        angular_tol,
+                        circle_floor,
+                        edge_global_indices,
+                        merged,
+                        point_to_global,
+                    )?;
+                } else {
+                    // A trimmed non-planar cap must never fall back to the
+                    // rectangular surface mesh: that path ignores inner wires
+                    // and would silently fill the opening.
+                    cdt_ok?;
+                }
             }
         }
     } else if matches!(
