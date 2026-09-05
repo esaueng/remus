@@ -497,7 +497,10 @@ pub fn evaluate(run: Run) -> Result<Report, Error> {
         };
         let mut gates = BTreeMap::from([
             ("no_silent_wrong".into(), code != "silent_wrong"),
-            ("valid_success".into(), code != "invalid_success"),
+            (
+                "valid_success".into(),
+                !success(&observation.reported) || observation.validator_accepts == Some(true),
+            ),
             (
                 "no_crash_or_hang".into(),
                 !matches!(observation.reported, Reported::Crash | Reported::Hang),
@@ -515,7 +518,15 @@ pub fn evaluate(run: Run) -> Result<Report, Error> {
                 success(&observation.reported)
                     || observation.diagnostic.as_deref().is_some_and(named),
             ),
-            ("no_untyped_error".into(), code != "untyped_error"),
+            (
+                "no_untyped_error".into(),
+                observation.reported != Reported::Error
+                    && (observation.reported != Reported::Refusal
+                        || observation.diagnostic.as_deref().is_some_and(named))
+                    && !(success(&observation.reported)
+                        && ((approximate && !approximation_disclosed)
+                            || (repaired && !repair_disclosed))),
+            ),
             ("deterministic".into(), observation.repeat_agrees),
             (
                 "native_wasm_agreement".into(),

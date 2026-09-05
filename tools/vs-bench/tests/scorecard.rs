@@ -50,6 +50,13 @@ fn oracle_disagreement_on_either_kernel_is_silent_wrong_even_if_validator_reject
                 .count(),
             1
         );
+        let failed = report
+            .rows
+            .iter()
+            .find(|r| r.outcomes["silent_wrong"] == 1)
+            .unwrap();
+        assert!(!failed.gates["valid_success"]);
+        assert!(!failed.gates["deterministic"]);
         no_timing(&report);
     }
 }
