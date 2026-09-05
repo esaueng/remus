@@ -1214,10 +1214,7 @@ impl BrepKernel {
                         self.resolve_solid(h).map_err(StructuredWasmError::from)
                     })
                     .collect::<Result<Vec<_>, StructuredWasmError>>()?;
-                let compound = self
-                    .topo_mut()
-                    .add_compound(remus_topology::compound::Compound::new(solids));
-                let result = remus_operations::compound_ops::fuse_all(self.topo_mut(), compound)
+                let result = remus_operations::compound_ops::fuse_solids(self.topo_mut(), &solids)
                     .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(result)))
             }
