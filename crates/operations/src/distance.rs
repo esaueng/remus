@@ -66,7 +66,7 @@ pub fn point_to_solid_distance(
     // solid"). This query is not one of the per-shell exceptions.
     let face_ids: Vec<FaceId> = remus_topology::explorer::solid_faces(topo, solid)?;
 
-    let face_aabbs = build_face_aabbs(topo, &face_ids)?;
+    let (face_aabbs, prunable) = build_face_aabbs(topo, &face_ids)?;
     let bvh = Bvh::build(&face_aabbs);
 
     let mut best_dist = f64::INFINITY;
@@ -77,7 +77,7 @@ pub fn point_to_solid_distance(
     for idx in candidates {
         let fid = face_ids[idx];
         let aabb_dist_sq = face_aabbs[idx].1.distance_squared_to_point(point);
-        if aabb_dist_sq > best_dist * best_dist {
+        if prunable[idx] && aabb_dist_sq > best_dist * best_dist {
             continue;
         }
 
@@ -136,14 +136,14 @@ pub fn solid_to_solid_distance(
     // considered, so walk outer + inner shells (CLAUDE.md, "Walking faces in a
     // solid"). This query is not one of the per-shell exceptions.
     let faces_b: Vec<FaceId> = remus_topology::explorer::solid_faces(topo, solid_b)?;
-    let aabbs_b = build_face_aabbs(topo, &faces_b)?;
+    let (aabbs_b, prunable_b) = build_face_aabbs(topo, &faces_b)?;
     let bvh_b = Bvh::build(&aabbs_b);
 
     for &pa in &verts_a {
         let candidates = bvh_distance_candidates(&bvh_b, &aabbs_b, pa);
         for idx in candidates {
             let aabb_dist_sq = aabbs_b[idx].1.distance_squared_to_point(pa);
-            if aabb_dist_sq > best_dist * best_dist {
+            if prunable_b[idx] && aabb_dist_sq > best_dist * best_dist {
                 continue;
             }
             if let Some((dist, closest)) = point_to_face_distance(topo, pa, faces_b[idx], tol)?
@@ -161,14 +161,14 @@ pub fn solid_to_solid_distance(
     // considered, so walk outer + inner shells (CLAUDE.md, "Walking faces in a
     // solid"). This query is not one of the per-shell exceptions.
     let faces_a: Vec<FaceId> = remus_topology::explorer::solid_faces(topo, solid_a)?;
-    let aabbs_a = build_face_aabbs(topo, &faces_a)?;
+    let (aabbs_a, prunable_a) = build_face_aabbs(topo, &faces_a)?;
     let bvh_a = Bvh::build(&aabbs_a);
 
     for &pb in &verts_b {
         let candidates = bvh_distance_candidates(&bvh_a, &aabbs_a, pb);
         for idx in candidates {
             let aabb_dist_sq = aabbs_a[idx].1.distance_squared_to_point(pb);
-            if aabb_dist_sq > best_dist * best_dist {
+            if prunable_a[idx] && aabb_dist_sq > best_dist * best_dist {
                 continue;
             }
             if let Some((dist, closest)) = point_to_face_distance(topo, pb, faces_a[idx], tol)?
@@ -359,23 +359,105 @@ pub(crate) fn point_to_face_distance(
     tol: Tolerance,
 ) -> Result<Option<(f64, Point3)>, crate::OperationsError> {
     let face = topo.face(face_id)?;
-    match face.surface() {
+    let projection = match face.surface() {
         FaceSurface::Plane { normal, d } => {
             let verts = face_polygon(topo, face_id)?;
-            Ok(point_to_polygon_distance(point, &verts, *normal, *d, tol))
+            point_to_polygon_distance(point, &verts, *normal, *d, tol)
         }
         FaceSurface::Nurbs(surface) => {
             let proj =
                 remus_math::nurbs::projection::project_point_to_surface(surface, point, tol.linear);
             match proj {
-                Ok(p) => Ok(Some((p.distance, p.point))),
-                Err(_) => Ok(None),
+                Ok(p) => Some((p.distance, p.point)),
+                Err(_) => None,
             }
         }
-        FaceSurface::Cylinder(cyl) => Ok(Some(point_to_cylinder(point, cyl))),
-        FaceSurface::Cone(cone) => Ok(Some(point_to_cone(point, cone))),
-        FaceSurface::Sphere(sph) => Ok(Some(point_to_sphere(point, sph))),
-        FaceSurface::Torus(tor) => Ok(Some(point_to_torus(point, tor))),
+        FaceSurface::Cylinder(cyl) => Some(point_to_cylinder(point, cyl)),
+        FaceSurface::Cone(cone) => Some(point_to_cone(point, cone)),
+        FaceSurface::Sphere(sph) => Some(point_to_sphere(point, sph)),
+        FaceSurface::Torus(tor) => Some(point_to_torus(point, tor)),
+    };
+    if let Some((distance, closest)) = projection
+        && remus_check::classify::surface_point_in_face(topo, face_id, closest)?
+    {
+        return Ok(Some((distance, closest)));
+    }
+
+    let mut best: Option<(f64, Point3)> = None;
+    for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+        for oriented in topo.wire(wid)?.edges() {
+            let candidate = closest_boundary_point(topo, point, oriented.edge())?;
+            if best.is_none_or(|(distance, _)| candidate.0 < distance) {
+                best = Some(candidate);
+            }
+        }
+    }
+    Ok(best)
+}
+
+fn closest_boundary_point(
+    topo: &Topology,
+    point: Point3,
+    edge_id: remus_topology::edge::EdgeId,
+) -> Result<(f64, Point3), crate::OperationsError> {
+    use remus_geometry::extrema::point_to_curve;
+    use remus_topology::edge::EdgeCurve;
+
+    let edge = topo.edge(edge_id)?;
+    let start = topo.vertex(edge.start())?.point();
+    let end = topo.vertex(edge.end())?.point();
+    if matches!(edge.curve(), EdgeCurve::Line) {
+        let closest = closest_point_on_segment(point, start, end);
+        return Ok(((point - closest).length(), closest));
+    }
+    let (a, b) = edge
+        .strict_domain()
+        .map_err(|error| crate::OperationsError::InvalidInput {
+            reason: error.to_string(),
+        })?;
+    let (lo, hi) = (a.min(b), a.max(b));
+    let closest = match edge.curve() {
+        EdgeCurve::Circle(circle) => {
+            let raw = circle.project(point);
+            let center = lo + (hi - lo) * 0.5;
+            let period = std::f64::consts::TAU;
+            let t = raw + period * ((center - raw) / period).round();
+            circle.evaluate(t.clamp(lo, hi))
+        }
+        EdgeCurve::Ellipse(curve) => point_to_curve(point, curve, lo, hi).point,
+        EdgeCurve::NurbsCurve(curve) => point_to_curve(point, curve, lo, hi).point,
+        EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => {
+            let curve = BoundaryCurve {
+                curve: edge.curve(),
+                start,
+                end,
+                domain: (lo, hi),
+            };
+            point_to_curve(point, &curve, lo, hi).point
+        }
+        EdgeCurve::Line => closest_point_on_segment(point, start, end),
+    };
+    Ok(((point - closest).length(), closest))
+}
+
+struct BoundaryCurve<'a> {
+    curve: &'a remus_topology::edge::EdgeCurve,
+    start: Point3,
+    end: Point3,
+    domain: (f64, f64),
+}
+
+impl remus_math::traits::ParametricCurve for BoundaryCurve<'_> {
+    fn evaluate(&self, t: f64) -> Point3 {
+        self.curve.evaluate_with_endpoints(t, self.start, self.end)
+    }
+
+    fn tangent(&self, t: f64) -> Vec3 {
+        self.curve.tangent_with_endpoints(t, self.start, self.end)
+    }
+
+    fn domain(&self) -> (f64, f64) {
+        self.domain
     }
 }
 
@@ -413,32 +495,38 @@ fn point_to_torus(point: Point3, torus: &remus_math::surfaces::ToroidalSurface) 
 
 // -- BVH helpers --------------------------------------------------------------
 
-/// Build AABBs for a set of faces (from vertex extents).
+/// Vertex bounds order candidates; only planar, straight-edged bounds can prune.
+#[allow(clippy::type_complexity)]
 fn build_face_aabbs(
     topo: &Topology,
     face_ids: &[FaceId],
-) -> Result<Vec<(usize, Aabb3)>, crate::OperationsError> {
+) -> Result<(Vec<(usize, Aabb3)>, Vec<bool>), crate::OperationsError> {
     let mut result = Vec::with_capacity(face_ids.len());
+    let mut prunable = Vec::with_capacity(face_ids.len());
     for (i, &fid) in face_ids.iter().enumerate() {
         let face = topo.face(fid)?;
         let wire = topo.wire(face.outer_wire())?;
+        let mut polygonal = face.surface().is_planar();
         let mut min = Point3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);
         let mut max = Point3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
         for oe in wire.edges() {
             let edge = topo.edge(oe.edge())?;
+            polygonal &= matches!(edge.curve(), remus_topology::edge::EdgeCurve::Line);
             for vid in [edge.start(), edge.end()] {
                 let p = topo.vertex(vid)?.point();
                 min = Point3::new(min.x().min(p.x()), min.y().min(p.y()), min.z().min(p.z()));
                 max = Point3::new(max.x().max(p.x()), max.y().max(p.y()), max.z().max(p.z()));
             }
         }
-        // Expand AABB slightly for analytic surfaces (they may extend beyond vertices).
+        // Curved faces can extend arbitrarily far beyond seam vertices.
+        // Their boxes are ordering hints, never distance lower bounds.
         let margin = 0.01;
         min = Point3::new(min.x() - margin, min.y() - margin, min.z() - margin);
         max = Point3::new(max.x() + margin, max.y() + margin, max.z() + margin);
         result.push((i, Aabb3 { min, max }));
+        prunable.push(polygonal);
     }
-    Ok(result)
+    Ok((result, prunable))
 }
 
 /// Get candidate face indices sorted by AABB distance to a point.

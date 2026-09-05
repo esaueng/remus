@@ -422,10 +422,7 @@ impl BrepKernel {
             .iter()
             .map(|&h| self.resolve_solid(h))
             .collect::<Result<Vec<_>, _>>()?;
-        let compound = self
-            .topo_mut()
-            .add_compound(remus_topology::compound::Compound::new(solid_ids));
-        let result = compound_ops::fuse_all(self.topo_mut(), compound)?;
+        let result = compound_ops::fuse_solids(self.topo_mut(), &solid_ids)?;
         Ok(solid_id_to_u32(result))
     }
 

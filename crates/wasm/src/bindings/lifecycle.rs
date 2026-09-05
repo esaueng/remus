@@ -141,4 +141,35 @@ mod tests {
         let fresh = kernel.make_box_solid(2.0, 2.0, 2.0).unwrap();
         assert!(fresh > retired);
     }
+    #[test]
+    fn fuse_all_does_not_pin_inputs_in_a_hidden_compound() {
+        for batch in [false, true] {
+            let mut kernel = BrepKernel::new();
+            let solid = kernel.make_box_solid(1.0, 1.0, 1.0).unwrap();
+            let result = if batch {
+                let output: serde_json::Value = serde_json::from_str(&kernel.execute_batch(
+                    &format!(r#"[{{"op":"fuseAll","args":{{"solids":[{solid}]}}}}]"#),
+                ))
+                .unwrap();
+                assert!(output[0]["ok"].is_number(), "{output}");
+                u32::try_from(output[0]["ok"].as_u64().unwrap()).unwrap()
+            } else {
+                kernel.fuse_all(vec![solid]).unwrap()
+            };
+            assert_eq!(kernel.topo.num_compounds(), 0);
+            kernel.delete_solid_impl(solid).unwrap();
+            assert!((kernel.volume(result, 0.01).unwrap() - 1.0).abs() < 1e-7);
+        }
+    }
+
+    #[test]
+    fn failed_batch_fuse_all_does_not_allocate_a_compound() {
+        let mut kernel = BrepKernel::new();
+        let output: serde_json::Value = serde_json::from_str(
+            &kernel.execute_batch(r#"[{"op":"fuseAll","args":{"solids":[]}}]"#),
+        )
+        .unwrap();
+        assert!(output[0]["error"].is_string(), "{output}");
+        assert_eq!(kernel.topo.num_compounds(), 0);
+    }
 }

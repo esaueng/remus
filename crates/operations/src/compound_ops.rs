@@ -39,6 +39,18 @@ pub fn fuse_all(
         comp.solids().to_vec()
     };
 
+    fuse_solids(topo, &solids)
+}
+
+/// Fuse a nonempty list of solids without creating a compound dependency.
+///
+/// # Errors
+///
+/// Returns an error if the list is empty, a handle is invalid, or fusion fails.
+pub fn fuse_solids(
+    topo: &mut Topology,
+    solids: &[SolidId],
+) -> Result<SolidId, crate::OperationsError> {
     if solids.is_empty() {
         return Err(crate::OperationsError::InvalidInput {
             reason: "compound has no solids to fuse".into(),
