@@ -91,6 +91,25 @@ const boxId = kernel.makeBox(10, 20, 30);
 assert.equal(typeof boxId, 'number', 'makeBox should return a number handle');
 console.log(`ok - makeBox(10, 20, 30) -> handle ${boxId}`);
 
+{
+  const k = new BrepKernel();
+  const cylinder = k.makeCylinder(1, 2);
+  const measured = k.pointToSolidDistance(1, 0, 5, cylinder);
+  assert.ok(Math.abs(measured[0] - 3) < 1e-7, `trimmed cylinder: ${measured}`);
+  assert.ok(Math.abs(measured[3] - 2) < 1e-7, `closest point: ${measured}`);
+  for (const batch of [false, true]) {
+    const input = k.makeBox(1, 1, 1);
+    const fused = batch
+      ? JSON.parse(k.executeBatch(JSON.stringify([{ op: 'fuseAll', args: { solids: [input] } }])))[0].ok
+      : k.fuseAll(Uint32Array.of(input));
+    assert.equal(typeof fused, 'number');
+    k.deleteSolid(input);
+    assert.ok(Math.abs(k.volume(fused, DEFLECTION) - 1) < 1e-7);
+  }
+  k.free();
+  console.log('ok - trimmed distance and fuseAll input lifecycle');
+}
+
 // JS-controlled work counts must fail before they reach allocation or topology
 // construction. This input was previously accepted and created 10,001 edges.
 assert.throws(

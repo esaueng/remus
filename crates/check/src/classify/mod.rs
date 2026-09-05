@@ -5,6 +5,7 @@
 //! lies inside, outside, or on the boundary of a B-Rep solid.
 
 pub(crate) mod boundary;
+pub use boundary::surface_point_in_face;
 pub(crate) mod ray_surface;
 pub(crate) mod winding;
 
