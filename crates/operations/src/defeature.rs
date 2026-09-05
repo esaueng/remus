@@ -42,7 +42,7 @@ fn unsupported(reason: impl Into<String>) -> OperationsError {
 /// Remove selected faces from a solid and heal the resulting gap.
 ///
 /// The selected faces are deleted from the shell and the hole they leave is
-/// closed exactly. Two heal strategies are implemented, chosen from the
+/// closed exactly. Three heal strategies are implemented, chosen from the
 /// topology of the wound (the set of edges that separated a removed face from
 /// a kept one):
 ///
@@ -57,6 +57,10 @@ fn unsupported(reason: impl Into<String>) -> OperationsError {
 ///    found by walking the wound loop, which is what extending the adjacent
 ///    faces until they meet produces. This restores the sharp edge behind a
 ///    chamfer or a corner cut.
+/// 3. **Analytic band** — a complete toroidal fillet band between supported
+///    analytic neighbors is removed through the exact blend reconstruction
+///    machinery. The selection must match the entire band; retained faces
+///    are never implicitly added to the deletion.
 ///
 /// Anything else is refused with [`OperationsError::Unsupported`] naming the
 /// reason. The result is validated with [`crate::validate::validate_solid`]
@@ -70,14 +74,17 @@ fn unsupported(reason: impl Into<String>) -> OperationsError {
 ///
 /// Returns [`OperationsError::InvalidInput`] if no face is selected, a
 /// selected face is not part of the solid's outer shell, or removing the
-/// selection would leave fewer than 4 faces.
+/// selection leaves fewer than 4 faces for planar extension or 3 for capping.
+/// Analytic band reconstruction can restore a three-face cylinder.
 ///
 /// Returns [`OperationsError::Unsupported`] if the gap cannot be closed
 /// exactly — for example the solid has cavity shells, the input is not
-/// edge-manifold, the wound crosses a curved kept face, the wound loop is not
+/// edge-manifold, the wound crosses an unsupported curved kept face, the wound loop is not
 /// a simple cycle, no well-conditioned three-plane corner exists (the
 /// adjacent faces are parallel and would have to be merged rather than
 /// extended), or the healed shell fails validation.
+/// Analytic band refusals use [`OperationsError::ResizeBlend`]. Every failure
+/// rolls back the topology transaction.
 pub fn defeature(
     topo: &mut Topology,
     solid: SolidId,
@@ -153,6 +160,17 @@ fn defeature_impl(
     faces_to_remove: &[FaceId],
     prefer_nearest_corner: bool,
 ) -> Result<DefeatureOutcome, OperationsError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        defeature_inner(topo, solid, faces_to_remove, prefer_nearest_corner)
+    })
+}
+
+fn defeature_inner(
+    topo: &mut Topology,
+    solid: SolidId,
+    faces_to_remove: &[FaceId],
+    prefer_nearest_corner: bool,
+) -> Result<DefeatureOutcome, OperationsError> {
     if faces_to_remove.is_empty() {
         return Err(OperationsError::InvalidInput {
             reason: "must select at least one face to remove".into(),
@@ -187,20 +205,27 @@ fn defeature_impl(
     }
 
     let kept_positions: Vec<usize> = (0..all_faces.len()).filter(|p| !removed[*p]).collect();
-    if kept_positions.len() < 4 {
+    let wound = wound_edges(topo, &all_faces, &removed)?;
+    let plan = classify_wound(topo, &all_faces, &kept_positions, &wound)?;
+    let curved_band = if plan.needs_extend && !prefer_nearest_corner {
+        crate::resize_blend::defeature_curved_band(topo, solid, faces_to_remove)?
+    } else {
+        None
+    };
+    let minimum_faces = if plan.needs_extend { 4 } else { 3 };
+    if curved_band.is_none() && kept_positions.len() < minimum_faces {
         return Err(OperationsError::InvalidInput {
             reason: format!(
-                "removing {} faces would leave only {} faces (minimum 4 for a solid)",
+                "removing {} faces would leave only {} faces (minimum {minimum_faces} for this heal)",
                 faces_to_remove.len(),
                 kept_positions.len()
             ),
         });
     }
 
-    let wound = wound_edges(topo, &all_faces, &removed)?;
-    let plan = classify_wound(topo, &all_faces, &kept_positions, &wound)?;
-
-    let result = if plan.needs_extend {
+    let result = if let Some(outcome) = curved_band {
+        outcome
+    } else if plan.needs_extend {
         heal_by_extending(
             topo,
             &all_faces,
