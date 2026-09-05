@@ -29,6 +29,7 @@ jobs:
       - name: Check identity and immutable merge parents
         id: policy
         env:
+          ENABLED: ${{ vars.REMUS_OWNER_PR_VPS_ENABLED }}
           GH_TOKEN: ${{ github.token }}
           EVENT_NAME: ${{ github.event_name }}
           REPOSITORY: ${{ github.repository }}
@@ -74,7 +75,8 @@ jobs:
               pr = event.get("pull_request") or {}
               sender = event.get("sender") or {}
               return (
-                  context.get("EVENT_NAME") == "pull_request"
+                  context.get("ENABLED") == "true"
+                  and context.get("EVENT_NAME") == "pull_request"
                   and context.get("REPOSITORY") == REPOSITORY
                   and context.get("REPOSITORY_ID") == str(REPOSITORY_ID)
                   and context.get("ACTOR") == OWNER
@@ -135,7 +137,7 @@ jobs:
     env:
       CARGO_TERM_COLOR: always
       RUSTFLAGS: -Dwarnings
-      # One compiler/test worker fits the host's existing CPU and memory budget.
+      # Bound build and test concurrency within the existing host budget.
       CARGO_BUILD_JOBS: "1"
       RUST_TEST_THREADS: "1"
       CARGO_INCREMENTAL: "0"

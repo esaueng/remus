@@ -28,7 +28,7 @@ def fixtures():
     }
     event = {"pull_request": pr, "sender": copy.deepcopy(owner)}
     context = {
-        "EVENT_NAME": "pull_request", "REPOSITORY": repo["full_name"],
+        "ENABLED": "true", "EVENT_NAME": "pull_request", "REPOSITORY": repo["full_name"],
         "REPOSITORY_ID": str(repo["id"]), "ACTOR": owner["login"],
         "ACTOR_ID": str(owner["id"]), "TRIGGERING_ACTOR": owner["login"],
         "REF": "refs/pull/300/merge", "SHA": "c" * 40,
@@ -47,6 +47,7 @@ class OwnerPolicyTests(unittest.TestCase):
     def test_other_event_actor_repository_or_ref_is_denied(self):
         event, context, _ = fixtures()
         cases = {
+            "ENABLED": ["false", "", "True", "1"],
             "EVENT_NAME": ["pull_request_target", "push", "workflow_dispatch",
                            "workflow_run", "workflow_call", ""],
             "REPOSITORY": ["attacker/remus", "esaueng/other", ""],
