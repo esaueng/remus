@@ -1,0 +1,145 @@
+{
+  "schema_version": 1,
+  "harness_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "manifest_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "kernels": [
+    "remus-fixture",
+    "reference-fixture"
+  ],
+  "scenarios": [
+    {
+      "id": "box-volume",
+      "oracle": "closed-form: width*height*depth",
+      "quality": {
+        "representation": "exact",
+        "deflection": 0.01,
+        "tolerance_model": "linear=1e-7;angular=1e-12",
+        "error_budget": 0.0
+      },
+      "applicable_metrics": [
+        "runtime_median",
+        "runtime_p95",
+        "evolution_completeness",
+        "native_wasm_agreement"
+      ],
+      "topology_producing": true,
+      "native_wasm_required": true
+    }
+  ],
+  "observations": [
+    {
+      "scenario": "box-volume",
+      "kernel": "remus-fixture",
+      "reported": "exact_success",
+      "diagnostic": null,
+      "oracle_agrees": true,
+      "validator_accepts": true,
+      "repeat_agrees": true,
+      "quality": {
+        "representation": "exact",
+        "deflection": 0.01,
+        "tolerance_model": "linear=1e-7;angular=1e-12",
+        "error_budget": 0.0
+      },
+      "approximation": null,
+      "repairs": [],
+      "repair_occurred": false,
+      "evolution_explicit": true,
+      "defect_repro": null,
+      "metrics": {
+        "history": {
+          "evolution_completeness": 1.0,
+          "persistent_ref_survival": null
+        },
+        "interchange": {
+          "import_validity": null,
+          "post_import_operation_success": null,
+          "round_trip_geometry_fidelity": null,
+          "assembly_metadata_fidelity": null
+        },
+        "geometry_quality": {
+          "tessellation_watertight": null,
+          "volume_error": null,
+          "area_error": null,
+          "centroid_error": null,
+          "inertia_error": null
+        },
+        "resources": {
+          "runtime_median": 1.0,
+          "runtime_p95": 1.2,
+          "peak_memory": null,
+          "entity_growth": null,
+          "cancellation_latency": null
+        },
+        "browser": {
+          "wasm_cold_init": null,
+          "module_size_raw": null,
+          "module_size_gzip": null,
+          "module_size_brotli": null,
+          "native_wasm_agreement": true
+        },
+        "concurrency": {
+          "thread_scaling_efficiency": null
+        }
+      }
+    },
+    {
+      "scenario": "box-volume",
+      "kernel": "reference-fixture",
+      "reported": "exact_success",
+      "diagnostic": null,
+      "oracle_agrees": true,
+      "validator_accepts": true,
+      "repeat_agrees": true,
+      "quality": {
+        "representation": "exact",
+        "deflection": 0.01,
+        "tolerance_model": "linear=1e-7;angular=1e-12",
+        "error_budget": 0.0
+      },
+      "approximation": null,
+      "repairs": [],
+      "repair_occurred": false,
+      "evolution_explicit": true,
+      "defect_repro": null,
+      "metrics": {
+        "history": {
+          "evolution_completeness": 1.0,
+          "persistent_ref_survival": null
+        },
+        "interchange": {
+          "import_validity": null,
+          "post_import_operation_success": null,
+          "round_trip_geometry_fidelity": null,
+          "assembly_metadata_fidelity": null
+        },
+        "geometry_quality": {
+          "tessellation_watertight": null,
+          "volume_error": null,
+          "area_error": null,
+          "centroid_error": null,
+          "inertia_error": null
+        },
+        "resources": {
+          "runtime_median": 1.0,
+          "runtime_p95": 1.2,
+          "peak_memory": null,
+          "entity_growth": null,
+          "cancellation_latency": null
+        },
+        "browser": {
+          "wasm_cold_init": null,
+          "module_size_raw": null,
+          "module_size_gzip": null,
+          "module_size_brotli": null,
+          "native_wasm_agreement": true
+        },
+        "concurrency": {
+          "thread_scaling_efficiency": null
+        }
+      }
+    }
+  ],
+  "run_id": "synthetic-protocol-fixture",
+  "repetitions": 3
+}

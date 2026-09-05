@@ -2270,6 +2270,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "remus-vs-bench"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "remus-wasm"
 version = "2.130.0"
 dependencies = [
