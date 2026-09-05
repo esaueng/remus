@@ -604,8 +604,14 @@ does not itself promote or demote anything.
 - Qualified cells: the classes above with exact restored volumes and full
   validation (`qualify_defeature.rs`); construction-derived evolution
   (`defeature_with_evolution`).
-- Unsupported-typed cells: cavity solids, wounds crossing curved kept faces,
-  removals leaving fewer than four faces, empty/foreign selections.
+- Additional bounded cells: complete toroidal rim-band deletion restores
+  analytic support intersections, and capped boss deletion can restore a
+  three-face cylindrical body (`resize_blend.rs` integration tests). Rim
+  deletion has exact face history, scale/translation and direct/batch WASM
+  coverage. Selection must equal the complete band.
+- Unsupported-typed cells: cavity solids, general wounds crossing curved
+  kept faces, partial bands, over-removal, empty/foreign selections. Planar
+  extension requires four retained faces; capping requires three.
 
 ### Assemblies
 
