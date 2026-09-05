@@ -375,6 +375,16 @@ fn validate_shell_checks(
                             options.tolerance_scale * 1e-7,
                         )?);
                     }
+                    if !options
+                        .disabled_checks
+                        .contains(&CheckId::EdgeCurveDirection)
+                    {
+                        issues.extend(edge::check_edge_curve_direction(
+                            topo,
+                            eid,
+                            options.tolerance_scale * 1e-4,
+                        )?);
+                    }
                     if !options.disabled_checks.contains(&CheckId::VertexOnCurve) {
                         let edge_data = topo.edge(eid)?;
                         issues.extend(vertex::check_vertex_on_curve(
@@ -506,6 +516,16 @@ fn validate_wire_checks(
                 topo,
                 edge_id,
                 options.tolerance_scale * 1e-7,
+            )?);
+        }
+        if !options
+            .disabled_checks
+            .contains(&CheckId::EdgeCurveDirection)
+        {
+            issues.extend(edge::check_edge_curve_direction(
+                topo,
+                edge_id,
+                options.tolerance_scale * 1e-4,
             )?);
         }
         if !options.disabled_checks.contains(&CheckId::VertexOnCurve) {
