@@ -34,7 +34,7 @@ fn tolerance_bearing_document_round_trips_byte_identically() {
     source
         .edge_mut(edges[1])
         .unwrap()
-        .set_tolerance(Some(0.5))
+        .set_tolerance(Some(5.0e-5))
         .unwrap();
 
     let bytes = serialize_solids(&source, &[solid]).unwrap();
