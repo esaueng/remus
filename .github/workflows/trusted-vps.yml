@@ -1,0 +1,92 @@
+name: Trusted main VPS pilot
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: trusted-vps-main
+  cancel-in-progress: false
+
+jobs:
+  policy:
+    name: VPS policy probe (${{ matrix.probe }})
+    # The variable is an activation switch, not an access control. The runner
+    # group must separately allow this repository and this workflow on main.
+    if: >-
+      github.repository == 'esaueng/remus' &&
+      github.ref == 'refs/heads/main' &&
+      github.ref_protected &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      vars.REMUS_TRUSTED_VPS_ENABLED == 'true'
+    runs-on:
+      group: ci-trusted-main
+      labels: ci-small
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      # Both are eligible together; the machine's single listener must serialize
+      # them. A workflow-local limit would hide an accidental second runner.
+      max-parallel: 2
+      matrix:
+        probe: [1, 2]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Verify runner isolation and fresh storage
+        env:
+          EXPECTED_RUNNER: ci-vm-1441561
+        run: |
+          set -euo pipefail
+          date -u +%FT%TZ
+          test "$RUNNER_NAME" = "$EXPECTED_RUNNER"
+          test "$(id -un)" = ci-runner
+          test "$(id -u)" != 0
+          test "$HOME" = /srv/ci/home
+          test ! -w /opt/ci-runner/bin/Runner.Listener
+          test "$(awk '/^NoNewPrivs:/ {print $2}' /proc/self/status)" = 1
+          test ! -e "$HOME/.remus-ci-sentinel"
+          test ! -e /srv/ci/work/.remus-ci-sentinel
+          touch "$HOME/.remus-ci-sentinel" /srv/ci/work/.remus-ci-sentinel
+          test "$DOCKER_HOST" = unix:///run/ci-docker/docker.sock
+          docker info --format '{{json .SecurityOptions}}' | jq -e 'index("name=rootless") != null'
+          test -z "$(docker ps --all --quiet)"
+          test -z "$(docker image ls --quiet)"
+          test "$(cat /sys/fs/cgroup/ci.slice/memory.max)" = 3221225472
+          test "$(cat /sys/fs/cgroup/ci.slice/memory.swap.max)" = 0
+          awk '{exit !($1 == $2)}' /sys/fs/cgroup/ci.slice/cpu.max
+          grep -Fx '0::/ci.slice/ci-runner.service' /proc/self/cgroup
+          cat /proc/self/cgroup
+          git --version
+          python3 --version
+          /usr/bin/time --version
+          df -h /srv/ci
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Layer boundaries
+        run: /usr/bin/time -v ./scripts/check-boundaries.sh
+      - name: CI classifier unit tests
+        run: /usr/bin/time -v python3 scripts/test-classify-ci-changes.py
+      - name: Record capacity evidence
+        if: always()
+        run: |
+          set -euo pipefail
+          {
+            echo "Runner: $RUNNER_NAME; UID: $(id -u); commit: $GITHUB_SHA"
+            date -u +%FT%TZ
+            echo 'Command elapsed time and maximum RSS are in the check-step logs.'
+            echo 'CI slice counters below may include earlier jobs; inspect host cleanup after completion.'
+            for metric in memory.current memory.peak memory.events; do
+              echo "$metric"
+              cat "/sys/fs/cgroup/ci.slice/$metric"
+            done
+            du -sh "$HOME" "$GITHUB_WORKSPACE"
+            df -h /srv/ci
+          } | tee -a "$GITHUB_STEP_SUMMARY"
