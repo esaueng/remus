@@ -327,3 +327,48 @@ fn direct_and_batch_move_faces_match_generalized_witness() {
 
     assert_eq!(direct_volume.to_bits(), batch_volume.to_bits());
 }
+
+#[test]
+fn direct_and_batch_defeature_restore_curved_rim() {
+    let fixture = |kernel: &mut BrepKernel| {
+        let topo = kernel.topo_mut();
+        let sharp = make_cylinder(topo, 10.0, 20.0).unwrap();
+        let rim = solid_edges(topo, sharp)
+            .unwrap()
+            .into_iter()
+            .find(|&edge| matches!(topo.edge(edge).unwrap().curve(), EdgeCurve::Circle(_)))
+            .unwrap();
+        let input = fillet_v2(topo, sharp, &[rim], 1.0).unwrap().solid;
+        let band = solid_faces(topo, input)
+            .unwrap()
+            .into_iter()
+            .find(|&face| {
+                matches!(
+                    topo.face(face).unwrap().surface(),
+                    remus_topology::face::FaceSurface::Torus(_)
+                )
+            })
+            .unwrap();
+        (
+            crate::handles::solid_id_to_u32(input),
+            crate::handles::face_id_to_u32(band),
+        )
+    };
+    let mut direct = BrepKernel::new();
+    let (input, band) = fixture(&mut direct);
+    let result = direct.defeature(input, vec![band]).unwrap();
+    let direct_volume = kernel_volume(&direct, result);
+    let mut batch = BrepKernel::new();
+    let (input, band) = fixture(&mut batch);
+    let result = run_all_ok(
+        &mut batch,
+        &[op(
+            "defeature",
+            serde_json::json!({"solid": input, "faces": [band]}),
+        )],
+    );
+    let batch_volume = kernel_volume(&batch, as_u32(&result[0]));
+    let expected = std::f64::consts::PI * 2000.0;
+    assert!((direct_volume - expected).abs() < expected * 1e-4);
+    assert_eq!(direct_volume.to_bits(), batch_volume.to_bits());
+}
