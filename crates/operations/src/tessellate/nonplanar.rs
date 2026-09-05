@@ -362,6 +362,47 @@ pub(super) fn tessellate_revolution_band_shared(
         return Ok(false);
     };
 
+    // A rim must lie in a plane perpendicular to the axis (a constant-v
+    // circle on the surface). Pure circle-edge cycles satisfy that by
+    // construction; a chain containing NURBS pieces does not necessarily —
+    // an interpolated tangent-contact polyline can wind a full turn while
+    // wandering along the wall, and sweeping a band to it skins a region
+    // the model does not have (issue #265). Verify NURBS-bearing cycles
+    // against their pooled 3D samples and decline to the CDT/snap chain
+    // when the cycle strays off its plane. Fitted NURBS circle rims sit
+    // exactly in their plane, so they pass.
+    let axis = match face_data.surface() {
+        FaceSurface::Cylinder(c) => c.axis(),
+        FaceSurface::Cone(c) => c.axis(),
+        _ => return Ok(false),
+    };
+    let flat_tol = 1e-4 * estimate_surface_radius(face_data.surface()).max(1.0);
+    for cycle in &cycles {
+        let mut has_nurbs = false;
+        let mut axial_min = f64::INFINITY;
+        let mut axial_max = f64::NEG_INFINITY;
+        for &edge_index in &cycle.edge_indices {
+            let Some(edge_id) = topo.edge_id_from_index(edge_index) else {
+                return Ok(false);
+            };
+            if matches!(topo.edge(edge_id)?.curve(), EdgeCurve::NurbsCurve(_)) {
+                has_nurbs = true;
+            }
+            let Some(gids) = edge_global_indices.get(&edge_index) else {
+                return Ok(false);
+            };
+            for &gid in gids {
+                let point = merged.positions[gid as usize];
+                let axial = axis.dot(Vec3::new(point.x(), point.y(), point.z()));
+                axial_min = axial_min.min(axial);
+                axial_max = axial_max.max(axial);
+            }
+        }
+        if has_nurbs && axial_max - axial_min > flat_tol {
+            return Ok(false);
+        }
+    }
+
     // Pull each rim's shared global vertex IDs. Chained pieces share their
     // joint vertices through the pool, so id-dedup merges the chain into one
     // ring; a closed circle carries its closing duplicate instead.
