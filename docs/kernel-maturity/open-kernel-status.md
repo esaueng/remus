@@ -22,7 +22,7 @@ are indexed there; this ledger is their only state of record.
 | O1.2a Head-to-head protocol + runners | B | Pending | — |
 | O1.2b Head-to-head scenario set | B | Pending | — |
 | O1.2c Head-to-head results page | B | Pending | — |
-| O1.2d Scorecard metric schema + absolute gates | A | Pending — added 2026-09-04 by the industrial-parity overlay (§3) | — |
+| O1.2d Scorecard metric schema + absolute gates | A | Complete — versioned `tools/vs-bench` observations and deterministic JSON reports preserve all metric groups, one-hot oracle-classified outcomes, independent absolute gates, and equivalent-quality-only timing. Adversarial native/CLI contracts reject schema mismatch, incomplete evidence, undisclosed degradation, and oracle disagreement on either kernel; kernel runners and measured baselines remain O1.2a–c/e/f | This PR |
 | O1.2e Workflow scenarios W1–W9 | A | Pending — added 2026-09-04 by the industrial-parity overlay (§4) | — |
 | O1.2f Baseline pin milestone | B | Pending — added 2026-09-04 by the industrial-parity overlay (§3.3); locks the H5/H6 numeric bands | — |
 | O1.3a Fillet torture corpus + runner | A | Complete — 10 named cases built-and-verified or transactionally refused with stable codes | [#139](https://github.com/esaueng/remus/pull/139) |
