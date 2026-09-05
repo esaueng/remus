@@ -1491,7 +1491,16 @@ fn try_algebraic_intersection(
         (AnalyticSurface::Torus(t), AnalyticSurface::Sphere(s))
         | (AnalyticSurface::Sphere(s), AnalyticSurface::Torus(t)) => algebraic_torus_sphere(t, s),
         (AnalyticSurface::Cone(c1), AnalyticSurface::Cone(c2)) => algebraic_cone_cone(c1, c2),
-        _ => Ok(None),
+        // Coaxial torus-torus, torus-cone, and cone-sphere: exact rings via
+        // the meridian circle-circle / line-circle reduction (issue #260);
+        // non-coaxial configurations defer to the marcher (`None`).
+        (AnalyticSurface::Torus(t1), AnalyticSurface::Torus(t2)) => algebraic_torus_torus(t1, t2),
+        (AnalyticSurface::Torus(t), AnalyticSurface::Cone(c))
+        | (AnalyticSurface::Cone(c), AnalyticSurface::Torus(t)) => algebraic_torus_cone(t, c),
+        (AnalyticSurface::Cone(c), AnalyticSurface::Sphere(s))
+        | (AnalyticSurface::Sphere(s), AnalyticSurface::Cone(c)) => algebraic_cone_sphere(c, s),
+        // Every quadric pair has an arm above; a future variant is flagged
+        // here by the compiler instead of silently marching.
     }
 }
 
@@ -1972,6 +1981,236 @@ pub fn exact_torus_sphere(
     Ok(Some(circles))
 }
 
+/// Shared coaxiality test for the exact ring routes: the axes must be
+/// parallel and `point_b` must lie on the axis line through `point_a` (the
+/// surfaces may still be offset ALONG the shared axis). Returns the common
+/// unit axis when coaxial.
+fn coaxial_axis(axis_a: Vec3, point_a: Point3, axis_b: Vec3, point_b: Point3) -> Option<Vec3> {
+    if axis_a.dot(axis_b).abs() < 1.0 - 1e-10 {
+        return None;
+    }
+    let delta = point_b - point_a;
+    let along = delta.dot(axis_a);
+    if (delta - axis_a * along).length() > 1e-8 {
+        return None;
+    }
+    Some(axis_a)
+}
+
+/// Exact coaxial torus–torus intersection: the shared ring(s).
+///
+/// Two tori sharing an axis meet where their meridian circles cross. In the
+/// (ρ, z) meridian half-plane — ρ the radial distance from the shared axis,
+/// z the axial coordinate measured from the first torus's centre — each
+/// torus is the circle `(ρ − Rᵢ)² + (z − zᵢ)² = rᵢ²`, and the two circles
+/// cross in zero, one (tangent), or two points. Each crossing with ρ > 0 is
+/// a ring around the axis, an exact [`Circle3D`]. A crossing with ρ ≈ 0 is a
+/// pole contact (a point, not a curve) and one with ρ < 0 lies off the
+/// physical tube; both are dropped.
+///
+/// Returns `None` (defer to the marcher) for non-coaxial tori and for the
+/// coincident-torus overlap.
+///
+/// # Errors
+///
+/// Returns [`MathError`] if a shared `Circle3D` cannot be constructed.
+pub fn exact_torus_torus(
+    t1: &ToroidalSurface,
+    t2: &ToroidalSurface,
+) -> Result<Option<Vec<ExactIntersectionCurve>>, MathError> {
+    let Some(axis) = coaxial_axis(t1.z_axis(), t1.center(), t2.z_axis(), t2.center()) else {
+        return Ok(None);
+    };
+    let d = (t2.center() - t1.center()).dot(axis);
+    let (big_r1, r1) = (t1.major_radius(), t1.minor_radius());
+    let (big_r2, r2) = (t2.major_radius(), t2.minor_radius());
+
+    // Meridian circles: A centred (R1, 0) with radius r1, B at (R2, d) with
+    // radius r2 — a 2D circle-circle crossing.
+    let (dx, dz) = (big_r2 - big_r1, d);
+    let dd = dx.hypot(dz);
+    if dd < 1e-12 {
+        // Concentric meridian circles: coincident tori (defer to the
+        // same-domain handling) or a contact-free concentric pair.
+        return Ok(None);
+    }
+    if dd > r1 + r2 + 1e-12 || dd < (r1 - r2).abs() - 1e-12 {
+        return Ok(Some(vec![])); // separate or contained tubes — no contact
+    }
+    // Distance from A's centre to the radical chord, along A→B.
+    let a = (dd.mul_add(dd, r1.mul_add(r1, -(r2 * r2)))) / (2.0 * dd);
+    let h_sq = r1.mul_add(r1, -(a * a));
+    let h = h_sq.max(0.0).sqrt();
+    let (ux, uz) = (dx / dd, dz / dd);
+    let (mx, mz) = (a.mul_add(ux, big_r1), a * uz);
+    let mut circles = Vec::new();
+    let c0 = t1.center();
+    let mut emit = |rho: f64, z: f64| -> Result<(), MathError> {
+        if rho > 1e-9 {
+            circles.push(ExactIntersectionCurve::Circle(Circle3D::new(
+                Point3::new(
+                    axis.x().mul_add(z, c0.x()),
+                    axis.y().mul_add(z, c0.y()),
+                    axis.z().mul_add(z, c0.z()),
+                ),
+                axis,
+                rho,
+            )?));
+        }
+        Ok(())
+    };
+    if h < 1e-10 {
+        emit(mx, mz)?; // tangent tubes — one shared ring
+    } else {
+        emit(h.mul_add(-uz, mx), h.mul_add(ux, mz))?;
+        emit(h.mul_add(uz, mx), h.mul_add(-ux, mz))?;
+    }
+    Ok(Some(circles))
+}
+
+/// Exact coaxial torus–cone intersection: the shared ring(s).
+///
+/// With the cone's apex as the origin of the axial coordinate `t` along the
+/// shared axis, the cone's meridian line is `ρ = m·t` with
+/// `m = cot(half_angle)`, and the torus's meridian circle is
+/// `(ρ − R)² + (t − t₀)² = r²` with `t₀` the torus centre's axial offset.
+/// Substituting the line into the circle gives one quadratic in `t`; each
+/// root with `m·t > 0` (a real ring on the cone's own nappe) is an exact
+/// [`Circle3D`].
+///
+/// Returns `None` (defer to the marcher) for non-coaxial axes or a
+/// near-flat / near-axial cone.
+///
+/// # Errors
+///
+/// Returns [`MathError`] if a shared `Circle3D` cannot be constructed.
+pub fn exact_torus_cone(
+    torus: &ToroidalSurface,
+    cone: &ConicalSurface,
+) -> Result<Option<Vec<ExactIntersectionCurve>>, MathError> {
+    let Some(axis) = coaxial_axis(cone.axis(), cone.apex(), torus.z_axis(), torus.center()) else {
+        return Ok(None);
+    };
+    let s = cone.half_angle().sin();
+    if s.abs() < 1e-12 {
+        return Ok(None); // near-flat cone
+    }
+    let m = cone.half_angle().cos() / s;
+    if m.abs() < 1e-12 {
+        return Ok(None); // near-axial cone: radius ~constant
+    }
+    let t0 = (torus.center() - cone.apex()).dot(axis);
+    let big_r = torus.major_radius();
+    let r = torus.minor_radius();
+
+    // (m·t − R)² + (t − t₀)² = r²  →  (m²+1)·t² − 2(mR + t₀)·t + (R² + t₀² − r²) = 0
+    let qa = m.mul_add(m, 1.0);
+    let qb = -2.0 * m.mul_add(big_r, t0);
+    let qc = big_r.mul_add(big_r, t0.mul_add(t0, -(r * r)));
+    let disc = qb.mul_add(qb, -4.0 * qa * qc);
+    if disc < -1e-12 {
+        return Ok(Some(vec![])); // the cone misses the tube entirely
+    }
+    let apex = cone.apex();
+    let mut circles = Vec::new();
+    let mut emit = |t: f64| -> Result<(), MathError> {
+        let rho = m * t;
+        if rho > 1e-9 {
+            circles.push(ExactIntersectionCurve::Circle(Circle3D::new(
+                Point3::new(
+                    axis.x().mul_add(t, apex.x()),
+                    axis.y().mul_add(t, apex.y()),
+                    axis.z().mul_add(t, apex.z()),
+                ),
+                axis,
+                rho,
+            )?));
+        }
+        Ok(())
+    };
+    if disc <= 0.0 {
+        emit(-qb / (2.0 * qa))?; // tangent cone — one shared ring
+    } else {
+        let root = disc.sqrt();
+        emit((-qb + root) / (2.0 * qa))?;
+        emit((-qb - root) / (2.0 * qa))?;
+    }
+    Ok(Some(circles))
+}
+
+/// Exact cone–sphere intersection for a sphere centred on the cone's axis:
+/// the shared ring(s).
+///
+/// With the cone's apex as the origin of the axial coordinate `t`, the cone
+/// is `ρ = m·t` (`m = cot(half_angle)`) and the sphere is
+/// `ρ² + (t − tₛ)² = rₛ²` with `tₛ` the sphere centre's axial offset.
+/// Substituting gives one quadratic in `t`; each root with `m·t > 0` is an
+/// exact [`Circle3D`] ring.
+///
+/// Returns `None` (defer to the marcher) when the sphere centre lies off the
+/// cone's axis or the cone is near-flat / near-axial.
+///
+/// # Errors
+///
+/// Returns [`MathError`] if a shared `Circle3D` cannot be constructed.
+pub fn exact_cone_sphere(
+    cone: &ConicalSurface,
+    sphere: &SphericalSurface,
+) -> Result<Option<Vec<ExactIntersectionCurve>>, MathError> {
+    let axis = cone.axis();
+    // A sphere has no axis of its own: coaxial means its centre lies on the
+    // cone's axis line.
+    let delta = sphere.center() - cone.apex();
+    let along = delta.dot(axis);
+    if (delta - axis * along).length() > 1e-8 {
+        return Ok(None);
+    }
+    let s = cone.half_angle().sin();
+    if s.abs() < 1e-12 {
+        return Ok(None); // near-flat cone
+    }
+    let m = cone.half_angle().cos() / s;
+    if m.abs() < 1e-12 {
+        return Ok(None); // near-axial cone
+    }
+    let ts = along;
+    let r_s = sphere.radius();
+
+    // m²t² + (t − tₛ)² = rₛ²  →  (m²+1)·t² − 2·tₛ·t + (tₛ² − rₛ²) = 0
+    let qa = m.mul_add(m, 1.0);
+    let qb = -2.0 * ts;
+    let qc = ts.mul_add(ts, -(r_s * r_s));
+    let disc = qb.mul_add(qb, -4.0 * qa * qc);
+    if disc < -1e-12 {
+        return Ok(Some(vec![])); // the sphere misses the cone entirely
+    }
+    let apex = cone.apex();
+    let mut circles = Vec::new();
+    let mut emit = |t: f64| -> Result<(), MathError> {
+        let rho = m * t;
+        if rho > 1e-9 {
+            circles.push(ExactIntersectionCurve::Circle(Circle3D::new(
+                Point3::new(
+                    axis.x().mul_add(t, apex.x()),
+                    axis.y().mul_add(t, apex.y()),
+                    axis.z().mul_add(t, apex.z()),
+                ),
+                axis,
+                rho,
+            )?));
+        }
+        Ok(())
+    };
+    if disc <= 0.0 {
+        emit(-qb / (2.0 * qa))?; // tangent — one shared ring
+    } else {
+        let root = disc.sqrt();
+        emit((-qb + root) / (2.0 * qa))?;
+        emit((-qb - root) / (2.0 * qa))?;
+    }
+    Ok(Some(circles))
+}
+
 /// Algebraic axis-centred torus-sphere intersection (NURBS form for the
 /// general bounded path). Delegates to [`exact_torus_sphere`]; phase FF
 /// prefers the exact circle form directly.
@@ -2006,6 +2245,74 @@ fn algebraic_torus_sphere(
         curves.push(IntersectionCurve { curve, points });
     }
     Ok(Some(curves))
+}
+
+/// Sample exact ring circles into interpolated NURBS `IntersectionCurve`s
+/// for the general bounded path; phase FF prefers the exact circle form
+/// directly.
+fn exact_rings_to_marched(
+    exacts: &[ExactIntersectionCurve],
+) -> Result<Vec<IntersectionCurve>, MathError> {
+    let mut curves = Vec::new();
+    for exact in exacts {
+        let ExactIntersectionCurve::Circle(circle) = exact else {
+            continue;
+        };
+        let n_samples = 33;
+        let mut points = Vec::with_capacity(n_samples);
+        let mut positions = Vec::with_capacity(n_samples);
+        #[allow(clippy::cast_precision_loss)]
+        for i in 0..n_samples {
+            let theta = TAU * i as f64 / (n_samples - 1) as f64;
+            let pt = crate::traits::ParametricCurve::evaluate(circle, theta);
+            positions.push(pt);
+            points.push(IntersectionPoint {
+                point: pt,
+                param1: (0.0, 0.0),
+                param2: (0.0, 0.0),
+            });
+        }
+        let degree = 3.min(positions.len() - 1);
+        let curve = interpolate(&positions, degree)?;
+        curves.push(IntersectionCurve { curve, points });
+    }
+    Ok(curves)
+}
+
+/// Algebraic coaxial torus-torus intersection (NURBS form for the general
+/// bounded path). Delegates to [`exact_torus_torus`].
+fn algebraic_torus_torus(
+    t1: &ToroidalSurface,
+    t2: &ToroidalSurface,
+) -> Result<Option<Vec<IntersectionCurve>>, MathError> {
+    let Some(exacts) = exact_torus_torus(t1, t2)? else {
+        return Ok(None);
+    };
+    Ok(Some(exact_rings_to_marched(&exacts)?))
+}
+
+/// Algebraic coaxial torus-cone intersection (NURBS form for the general
+/// bounded path). Delegates to [`exact_torus_cone`].
+fn algebraic_torus_cone(
+    torus: &ToroidalSurface,
+    cone: &ConicalSurface,
+) -> Result<Option<Vec<IntersectionCurve>>, MathError> {
+    let Some(exacts) = exact_torus_cone(torus, cone)? else {
+        return Ok(None);
+    };
+    Ok(Some(exact_rings_to_marched(&exacts)?))
+}
+
+/// Algebraic cone-sphere intersection for an axis-centred sphere (NURBS form
+/// for the general bounded path). Delegates to [`exact_cone_sphere`].
+fn algebraic_cone_sphere(
+    cone: &ConicalSurface,
+    sphere: &SphericalSurface,
+) -> Result<Option<Vec<IntersectionCurve>>, MathError> {
+    let Some(exacts) = exact_cone_sphere(cone, sphere)? else {
+        return Ok(None);
+    };
+    Ok(Some(exact_rings_to_marched(&exacts)?))
 }
 
 /// Algebraic coaxial torus-cylinder intersection (NURBS form for the
@@ -4001,6 +4308,161 @@ mod tests {
                         "bore r={bore_r}: breakout point at radius {radius} is off the r=3 shaft"
                     );
                 }
+            }
+        }
+    }
+
+    // ── Coaxial exact ring routes (issue #260) ───────────────────────────
+
+    /// Collect (radius, z) of every exact ring in a result.
+    fn rings(curves: &[ExactIntersectionCurve]) -> Vec<(f64, f64)> {
+        curves
+            .iter()
+            .filter_map(|c| match c {
+                ExactIntersectionCurve::Circle(c) => Some((c.radius(), c.center().z())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn coaxial_torus_torus_gives_exact_rings() {
+        // t1: R=3, r=1 at the origin; t2: R=2.5, r=1 at z=0.5.
+        // Meridian circles (ρ−3)²+z²=1 and (ρ−2.5)²+(z−0.5)²=1 cross at
+        // ρ≈2.0886, z≈−0.4114 and ρ≈3.4114, z≈0.9114 (z = ρ − 2.5).
+        let t1 = ToroidalSurface::new(Point3::new(0.0, 0.0, 0.0), 3.0, 1.0).unwrap();
+        let t2 = ToroidalSurface::new(Point3::new(0.0, 0.0, 0.5), 2.5, 1.0).unwrap();
+        let rings = rings(&exact_torus_torus(&t1, &t2).unwrap().unwrap());
+        assert_eq!(rings.len(), 2, "two crossings: {rings:?}");
+        // Closed form: midpoint (2.75, 0.25) ± √(7/8)·(∓√2/2, ±√2/2).
+        let h = 0.875_f64.sqrt();
+        let s = 0.5_f64.sqrt();
+        let expected = [(2.75 - h * s, 0.25 - h * s), (2.75 + h * s, 0.25 + h * s)];
+        for &(er, ez) in &expected {
+            assert!(
+                rings
+                    .iter()
+                    .any(|&(r, z)| (r - er).abs() < 1e-9 && (z - ez).abs() < 1e-9),
+                "expected ring radius={er} z={ez} in {rings:?}"
+            );
+        }
+
+        // Every ring point must lie on both tori.
+        let curves = exact_torus_torus(&t1, &t2).unwrap().unwrap();
+        for c in &curves {
+            let ExactIntersectionCurve::Circle(circle) = c else {
+                continue;
+            };
+            for i in 0..16 {
+                #[allow(clippy::cast_precision_loss)]
+                let t = TAU * f64::from(i) / 16.0;
+                let p = crate::traits::ParametricCurve::evaluate(circle, t);
+                let (rho, z) = (p.x().hypot(p.y()), p.z());
+                let e1 = ((rho - 3.0).powi(2) + z * z).sqrt() - 1.0;
+                let e2 = ((rho - 2.5).powi(2) + (z - 0.5).powi(2)).sqrt() - 1.0;
+                assert!(
+                    e1.abs() < 1e-9 && e2.abs() < 1e-9,
+                    "point {p:?} off a torus"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn non_coaxial_torus_torus_defers() {
+        let t1 = ToroidalSurface::new(Point3::new(0.0, 0.0, 0.0), 3.0, 1.0).unwrap();
+        let t2 = ToroidalSurface::new(Point3::new(0.5, 0.0, 0.0), 2.5, 1.0).unwrap();
+        assert!(exact_torus_torus(&t1, &t2).unwrap().is_none());
+    }
+
+    #[test]
+    fn coaxial_torus_cone_gives_exact_rings() {
+        // Torus R=2, r=1 at the origin; cone apex (0,0,−1), axis +z, 45°
+        // half-angle (m = 1): (t−2)²+(t−1)²=1 → t=1 (ring ρ=1 at z=0) and
+        // t=2 (ring ρ=2 at z=1).
+        let torus = ToroidalSurface::new(Point3::new(0.0, 0.0, 0.0), 2.0, 1.0).unwrap();
+        let cone = ConicalSurface::new(
+            Point3::new(0.0, 0.0, -1.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            std::f64::consts::FRAC_PI_4,
+        )
+        .unwrap();
+        let rings = rings(&exact_torus_cone(&torus, &cone).unwrap().unwrap());
+        assert_eq!(rings.len(), 2, "two crossings: {rings:?}");
+        for &(er, ez) in &[(1.0_f64, 0.0_f64), (2.0_f64, 1.0_f64)] {
+            assert!(
+                rings
+                    .iter()
+                    .any(|&(r, z)| (r - er).abs() < 1e-9 && (z - ez).abs() < 1e-9),
+                "expected ring radius={er} z={ez} in {rings:?}"
+            );
+        }
+
+        // Off-axis cone defers to the marcher.
+        let cone_off = ConicalSurface::new(
+            Point3::new(0.5, 0.0, -1.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            std::f64::consts::FRAC_PI_4,
+        )
+        .unwrap();
+        assert!(exact_torus_cone(&torus, &cone_off).unwrap().is_none());
+    }
+
+    #[test]
+    fn cone_sphere_axis_centred_gives_exact_rings() {
+        // Cone apex at the origin, axis +z, 45° half-angle (m = 1); sphere
+        // centre (0,0,3), radius 2.5: t²+(t−3)²=6.25 → 2t²−6t+2.75=0 →
+        // t = (6±√14)/4 ≈ 2.4354 or 0.5646.
+        let cone = ConicalSurface::new(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            std::f64::consts::FRAC_PI_4,
+        )
+        .unwrap();
+        let sphere = SphericalSurface::new(Point3::new(0.0, 0.0, 3.0), 2.5).unwrap();
+        let rings = rings(&exact_cone_sphere(&cone, &sphere).unwrap().unwrap());
+        assert_eq!(rings.len(), 2, "two crossings: {rings:?}");
+        let expected = [(6.0 + 14.0_f64.sqrt()) / 4.0, (6.0 - 14.0_f64.sqrt()) / 4.0];
+        for &et in &expected {
+            assert!(
+                rings
+                    .iter()
+                    .any(|&(r, z)| (r - et).abs() < 1e-9 && (z - et).abs() < 1e-9),
+                "expected ring radius=z={et} in {rings:?}"
+            );
+        }
+
+        // Sphere centre off the cone axis defers.
+        let sphere_off = SphericalSurface::new(Point3::new(0.5, 0.0, 3.0), 2.5).unwrap();
+        assert!(exact_cone_sphere(&cone, &sphere_off).unwrap().is_none());
+    }
+
+    #[test]
+    fn unified_entry_uses_exact_torus_torus_route() {
+        // The marcher entry must pick up the exact rings (the NURBS refit of
+        // each circle), not a fragmented march.
+        let t1 = ToroidalSurface::new(Point3::new(0.0, 0.0, 0.0), 3.0, 1.0).unwrap();
+        let t2 = ToroidalSurface::new(Point3::new(0.0, 0.0, 0.5), 2.5, 1.0).unwrap();
+        let curves = intersect_analytic_analytic(
+            AnalyticSurface::Torus(&t1),
+            AnalyticSurface::Torus(&t2),
+            16,
+        )
+        .unwrap();
+        assert_eq!(curves.len(), 2, "two exact rings: {:?}", curves.len());
+        for c in &curves {
+            let (t0, t1) = c.curve.domain();
+            for i in 0..=32 {
+                #[allow(clippy::cast_precision_loss)]
+                let t = t0 + (t1 - t0) * (i as f64) / 32.0;
+                let p = crate::traits::ParametricCurve::evaluate(&c.curve, t);
+                let (rho, z) = (p.x().hypot(p.y()), p.z());
+                let e1 = ((rho - 3.0).powi(2) + z * z).sqrt() - 1.0;
+                let e2 = ((rho - 2.5).powi(2) + (z - 0.5).powi(2)).sqrt() - 1.0;
+                assert!(
+                    e1.abs() < 1e-3 && e2.abs() < 1e-3,
+                    "refit ring point {p:?} off a torus"
+                );
             }
         }
     }
