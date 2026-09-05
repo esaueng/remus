@@ -37,6 +37,7 @@ use crate::state::{Checkpoint, GcsSketchState, SketchState};
 ///
 /// Owns all topological state. JavaScript holds this reference and
 /// invokes methods to create, transform, and query geometry.
+#[cfg_attr(feature = "workflow-probes", derive(Debug))]
 #[wasm_bindgen]
 pub struct BrepKernel {
     pub(crate) topo: Rc<Topology>,
