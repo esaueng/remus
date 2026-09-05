@@ -223,16 +223,14 @@ fn hit_in_hole_3d(holes: &[Vec<Point3>], hit: Point3, normal: Vec3) -> bool {
 fn count_analytic_crossings<F>(
     topo: &Topology,
     face_id: FaceId,
-    origin: Point3,
-    direction: Vec3,
-    roots: &SmallVec<[f64; 4]>,
+    hits: &[Point3],
     project: F,
     v_periodic: bool,
 ) -> Result<u32, CheckError>
 where
     F: Fn(Point3) -> (f64, f64),
 {
-    if roots.is_empty() {
+    if hits.is_empty() {
         return Ok(0);
     }
 
@@ -255,11 +253,7 @@ where
     let holes = hole_uv_boundaries(topo, face_id, &project, u_period, v_period)?;
 
     let mut crossings = 0u32;
-    for &t in roots {
-        if t <= RAY_T_MIN {
-            continue;
-        }
-        let hit = origin + direction * t;
+    for &hit in hits {
         let (hit_u, hit_v) = project(hit);
 
         if let Some(boundary) = &uv_boundary
@@ -319,12 +313,10 @@ where
 fn count_sphere_cap_crossings(
     topo: &Topology,
     face_id: FaceId,
-    origin: Point3,
-    direction: Vec3,
-    roots: &SmallVec<[f64; 4]>,
+    hits: &[Point3],
     sph: &remus_math::surfaces::SphericalSurface,
 ) -> Result<Option<u32>, CheckError> {
-    if roots.is_empty() {
+    if hits.is_empty() {
         return Ok(Some(0));
     }
 
@@ -391,11 +383,7 @@ fn count_sphere_cap_crossings(
 
     let holes = face_hole_polygons(topo, face_id)?;
     let mut crossings = 0u32;
-    for &t in roots {
-        if t <= RAY_T_MIN {
-            continue;
-        }
-        let hit = origin + direction * t;
+    for &hit in hits {
         // Exact: the cap is every point of the sphere on this side of the plane.
         if (hit - ref_pt).dot(plane_normal) * cap_sign < -HALF_SPACE_EPS {
             continue;
@@ -419,9 +407,7 @@ fn count_sphere_cap_crossings(
 fn count_sphere_circle_patch_crossings(
     topo: &Topology,
     face_id: FaceId,
-    origin: Point3,
-    direction: Vec3,
-    roots: &SmallVec<[f64; 4]>,
+    hits: &[Point3],
     sphere: &remus_math::surfaces::SphericalSurface,
 ) -> Result<Option<u32>, CheckError> {
     let face = topo.face(face_id)?;
@@ -500,11 +486,7 @@ fn count_sphere_circle_patch_crossings(
     }
 
     let mut crossings = 0_u32;
-    for &t in roots {
-        if t <= RAY_T_MIN {
-            continue;
-        }
-        let hit = origin + direction * t;
+    for &hit in hits {
         if constraints.iter().all(|(plane_point, half_normal)| {
             (hit - *plane_point).dot(*half_normal) >= -HALF_SPACE_EPS
         }) {
@@ -528,11 +510,9 @@ fn count_sphere_circle_patch_crossings(
 fn count_3d_polygon_crossings(
     topo: &Topology,
     face_id: FaceId,
-    origin: Point3,
-    direction: Vec3,
-    roots: &SmallVec<[f64; 4]>,
+    hits: &[Point3],
 ) -> Result<u32, CheckError> {
-    if roots.is_empty() {
+    if hits.is_empty() {
         return Ok(0);
     }
 
@@ -550,12 +530,7 @@ fn count_3d_polygon_crossings(
     let holes = face_hole_polygons(topo, face_id)?;
 
     let mut crossings = 0u32;
-    for &t in roots {
-        if t <= RAY_T_MIN {
-            continue;
-        }
-        let hit = origin + direction * t;
-
+    for &hit in hits {
         // The hit must be on the face's side of the boundary plane.
         let side = (hit - ref_pt).dot(normal);
         if side < -HALF_SPACE_EPS {
@@ -598,9 +573,7 @@ pub fn count_face_ray_crossings(
             count_analytic_crossings(
                 topo,
                 face_id,
-                origin,
-                direction,
-                &roots,
+                &ray_hit_points(origin, direction, &roots),
                 |p| cyl.project_point(p),
                 false,
             )
@@ -611,9 +584,7 @@ pub fn count_face_ray_crossings(
             count_analytic_crossings(
                 topo,
                 face_id,
-                origin,
-                direction,
-                &roots,
+                &ray_hit_points(origin, direction, &roots),
                 |p| cone.project_point(p),
                 false,
             )
@@ -626,16 +597,26 @@ pub fn count_face_ray_crossings(
             // lune or a boolean-made spherical triangle, whose boundary is not.
             let sph = sph.clone();
             let roots = ray_surface::ray_sphere(origin, direction, &sph);
-            if let Some(count) =
-                count_sphere_cap_crossings(topo, face_id, origin, direction, &roots, &sph)?
-            {
+            if let Some(count) = count_sphere_cap_crossings(
+                topo,
+                face_id,
+                &ray_hit_points(origin, direction, &roots),
+                &sph,
+            )? {
                 Ok(count)
-            } else if let Some(count) =
-                count_sphere_circle_patch_crossings(topo, face_id, origin, direction, &roots, &sph)?
-            {
+            } else if let Some(count) = count_sphere_circle_patch_crossings(
+                topo,
+                face_id,
+                &ray_hit_points(origin, direction, &roots),
+                &sph,
+            )? {
                 Ok(count)
             } else {
-                count_3d_polygon_crossings(topo, face_id, origin, direction, &roots)
+                count_3d_polygon_crossings(
+                    topo,
+                    face_id,
+                    &ray_hit_points(origin, direction, &roots),
+                )
             }
         }
         FaceSurface::Torus(tor) => {
@@ -644,9 +625,7 @@ pub fn count_face_ray_crossings(
             count_analytic_crossings(
                 topo,
                 face_id,
-                origin,
-                direction,
-                &roots,
+                &ray_hit_points(origin, direction, &roots),
                 |p| tor.project_point(p),
                 true,
             )
@@ -702,6 +681,19 @@ fn ray_crossings_nurbs(
         return Ok(0);
     }
 
+    let points: Vec<_> = hits
+        .iter()
+        .map(|&(t, u, v)| (origin + direction * t, u, v))
+        .collect();
+    count_nurbs_hits(topo, face_id, surface, &points)
+}
+
+fn count_nurbs_hits(
+    topo: &Topology,
+    face_id: FaceId,
+    surface: &remus_math::nurbs::surface::NurbsSurface,
+    hits: &[(Point3, f64, f64)],
+) -> Result<u32, CheckError> {
     let verts = face_polygon(topo, face_id)?;
     let project = |p: Point3| -> (f64, f64) { surface.project_point(p) };
     // A full-surface face counts every forward hit that does not land in a
@@ -748,14 +740,14 @@ fn ray_crossings_nurbs(
     if let Some(boundary) = &uv_boundary
         && uv_boundary_is_degenerate(boundary)
     {
-        let roots: SmallVec<[f64; 4]> = hits.iter().map(|(t, _, _)| *t).collect();
-        return count_3d_polygon_crossings(topo, face_id, origin, direction, &roots);
+        let points: Vec<_> = hits.iter().map(|(point, _, _)| *point).collect();
+        return count_3d_polygon_crossings(topo, face_id, &points);
     }
 
     let holes = hole_uv_boundaries(topo, face_id, &project, u_period, v_period)?;
 
     let mut crossings = 0u32;
-    for (_, hit_u, hit_v) in &hits {
+    for (_, hit_u, hit_v) in hits {
         if let Some(boundary) = &uv_boundary
             && !point_in_uv_boundary(*hit_u, *hit_v, boundary, u_period, v_period)
         {
@@ -768,4 +760,61 @@ fn ray_crossings_nurbs(
     }
 
     Ok(crossings)
+}
+
+fn ray_hit_points(origin: Point3, direction: Vec3, roots: &[f64]) -> SmallVec<[Point3; 4]> {
+    roots
+        .iter()
+        .filter(|&&t| t > RAY_T_MIN)
+        .map(|&t| origin + direction * t)
+        .collect()
+}
+
+/// Test whether a point on a face's support surface lies within its trims.
+///
+/// The caller must first project onto the support surface. Uses the same
+/// sampled UV boundaries and spherical cap tests as ray classification.
+///
+/// # Errors
+///
+/// Returns an error if a boundary entity or curve domain is invalid.
+pub fn surface_point_in_face(
+    topo: &Topology,
+    face_id: FaceId,
+    point: Point3,
+) -> Result<bool, CheckError> {
+    let hits = [point];
+    let count = match topo.face(face_id)?.surface() {
+        FaceSurface::Plane { normal, .. } => {
+            let outer = face_polygon(topo, face_id)?;
+            let holes = face_hole_polygons(topo, face_id)?;
+            return Ok(point_in_polygon_3d(&point, &outer, normal)
+                && !hit_in_hole_3d(&holes, point, *normal));
+        }
+        FaceSurface::Cylinder(surface) => {
+            count_analytic_crossings(topo, face_id, &hits, |p| surface.project_point(p), false)?
+        }
+        FaceSurface::Cone(surface) => {
+            count_analytic_crossings(topo, face_id, &hits, |p| surface.project_point(p), false)?
+        }
+        FaceSurface::Torus(surface) => {
+            count_analytic_crossings(topo, face_id, &hits, |p| surface.project_point(p), true)?
+        }
+        FaceSurface::Sphere(surface) => {
+            if let Some(count) = count_sphere_cap_crossings(topo, face_id, &hits, surface)? {
+                count
+            } else if let Some(count) =
+                count_sphere_circle_patch_crossings(topo, face_id, &hits, surface)?
+            {
+                count
+            } else {
+                count_3d_polygon_crossings(topo, face_id, &hits)?
+            }
+        }
+        FaceSurface::Nurbs(surface) => {
+            let (u, v) = surface.project_point(point);
+            count_nurbs_hits(topo, face_id, surface, &[(point, u, v)])?
+        }
+    };
+    Ok(count > 0)
 }
