@@ -933,7 +933,15 @@ pub fn validate_solid_with_options(
             let dy = p_start.y() - p_end.y();
             let dz = p_start.z() - p_end.z();
             let dist = (dx * dx + dy * dy + dz * dz).sqrt();
-            if dist < tol.linear {
+            // Honour a tolerance the edge declares for itself (the way the
+            // classifier and pave filler do): an edge minted from sampled or
+            // marched curves legitimately carries a tolerance above the
+            // global floor, and a gap inside that declared band is honest
+            // noise, not degeneracy. The vertex-inherited fallback is not
+            // consulted: coincident endpoints on default-tolerance vertices
+            // must keep flagging.
+            let covered = edge.tolerance().is_some_and(|t| dist <= t);
+            if dist < tol.linear && !covered {
                 issues.push(ValidationIssue {
                     severity: Severity::Error,
                     description: format!(
@@ -1246,6 +1254,8 @@ pub fn validate_solid_relaxed_with_options(
 
     // Zero-length edges — demoted to Warning in relaxed validation.
     // Boolean edge splitting can create tiny edges below tolerance.
+    // An edge whose declared tolerance covers the endpoint gap is accepted,
+    // matching the strict path above.
     let all_edges = explorer::solid_edges(topo, solid)?;
     for eid in &all_edges {
         let edge = topo.edge(*eid)?;
@@ -1256,7 +1266,8 @@ pub fn validate_solid_relaxed_with_options(
             let dy = p_start.y() - p_end.y();
             let dz = p_start.z() - p_end.z();
             let dist = (dx * dx + dy * dy + dz * dz).sqrt();
-            if dist < tol.linear {
+            let covered = edge.tolerance().is_some_and(|t| dist <= t);
+            if dist < tol.linear && !covered {
                 issues.push(ValidationIssue {
                     severity: Severity::Warning,
                     description: format!(
