@@ -2621,10 +2621,18 @@ pub(super) fn tessellate_nonplanar_cdt(
     let cdt_verts = cdt.vertices();
     let triangles = cdt.triangles();
 
-    let mut final_global_ids: Vec<u32> = vec![0; cdt_to_global.len()];
+    // Size by the FINAL vertex count, not the insert-time id map: constraint
+    // recovery can grow the triangulation past what insert_points_hilbert
+    // returned, because recover_edge Steiner-splits a constraint when flip
+    // recovery stalls (a near-degenerate corridor, or a constraint crossing
+    // another constraint). A Steiner vertex has no recorded boundary id, so
+    // it falls through to the projection branch like any interior vertex.
+    // Sizing by the insert-time map instead panicked with an out-of-bounds
+    // index on exactly those faces (issue #262).
+    let mut final_global_ids: Vec<u32> = vec![0; cdt_verts.len()];
 
-    for i in 0..cdt_to_global.len() {
-        if let Some(gid) = cdt_to_global[i] {
+    for i in 0..cdt_verts.len() {
+        if let Some(gid) = cdt_to_global.get(i).copied().flatten() {
             final_global_ids[i] = gid;
         } else if i >= 3 {
             let (pu_raw, pv) = from_cdt(cdt_verts[i]);
@@ -2663,6 +2671,18 @@ pub(super) fn tessellate_nonplanar_cdt(
         if i0 < 3 || i1 < 3 || i2 < 3 {
             continue; // Skip super-triangle vertices
         }
+        // Defence in depth: a library caller cannot catch a panic (WASM
+        // aborts), so an index bookkeeping failure must be an Err, never
+        // an out-of-bounds access.
+        let (Some(&g0), Some(&g1), Some(&g2)) = (
+            final_global_ids.get(i0),
+            final_global_ids.get(i1),
+            final_global_ids.get(i2),
+        ) else {
+            return Err(crate::OperationsError::InvalidInput {
+                reason: "non-planar CDT emitted a triangle outside its vertex array".into(),
+            });
+        };
         let cdt_centroid = Point2::new(
             (cdt_verts[i0].x() + cdt_verts[i1].x() + cdt_verts[i2].x()) / 3.0,
             (cdt_verts[i0].y() + cdt_verts[i1].y() + cdt_verts[i2].y()) / 3.0,
@@ -2675,11 +2695,7 @@ pub(super) fn tessellate_nonplanar_cdt(
         {
             continue;
         }
-        emitted_triangles.push([
-            final_global_ids[i0],
-            final_global_ids[i1],
-            final_global_ids[i2],
-        ]);
+        emitted_triangles.push([g0, g1, g2]);
     }
 
     if !hole_pairs.is_empty() {

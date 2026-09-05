@@ -399,6 +399,97 @@ fn tessellate_plain_cylinder_watertight() {
     );
 }
 
+/// Regression for issue #262: the non-planar CDT sized its global-id map by
+/// the insert-time vertex count, but constraint recovery can Steiner-split a
+/// constraint (a self-crossing UV boundary forces exactly that), growing the
+/// triangulation. When the face is too thin to seed an interior grid, no
+/// later insertion resizes the map past the Steiner id, and triangle
+/// emission indexed past it — a panic a library caller cannot catch (WASM
+/// aborts).
+#[test]
+fn nonplanar_cdt_survives_steiner_split_boundary() {
+    use remus_math::surfaces::CylindricalSurface;
+
+    let mut topo = Topology::new();
+    // A cylinder wall whose UV boundary is a thin self-crossing strip. This
+    // exact polygon panicked the pre-fix code: its CDT constraint recovery
+    // splits constraints, adding vertices past the insert-time count, and
+    // the thin winding-cancelling strip seeds no interior grid points that
+    // would resize the id map. (Found by a randomized search over
+    // self-crossing strips on the pre-fix code.)
+    let at = |u: f64, v: f64| Point3::new(u.cos(), u.sin(), v);
+    let uv_corners = [
+        (0.000_788_218_993_877_111_8, 0.009_383_163_975_873_769),
+        (0.130_133_586_779_733_58, 0.005_392_273_633_133_684),
+        (0.110_856_525_625_767_31, 0.023_939_619_358_614_93),
+        (0.133_070_708_656_001_54, 0.024_304_387_712_456_38),
+        (0.128_310_713_574_362_6, 0.020_766_784_802_723_395),
+        (0.158_756_814_375_230_32, 0.010_184_544_897_681_23),
+    ];
+    let vids: Vec<_> = uv_corners
+        .iter()
+        .map(|&(u, v)| topo.add_vertex(Vertex::new(at(u, v), 1e-7)))
+        .collect();
+    let mut edge_ids = Vec::new();
+    let mut oes = Vec::new();
+    let n = uv_corners.len();
+    for i in 0..n {
+        let e = topo.add_edge(Edge::new(vids[i], vids[(i + 1) % n], EdgeCurve::Line));
+        edge_ids.push(e);
+        oes.push(OrientedEdge::new(e, true));
+    }
+    let wire = topo.add_wire(Wire::new(oes, true).unwrap());
+    let face = topo.add_face(Face::new(
+        wire,
+        vec![],
+        FaceSurface::Cylinder(
+            CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0)
+                .unwrap(),
+        ),
+    ));
+
+    // Minimal shared pool: the two endpoints of each line edge.
+    let mut merged = TriangleMesh::default();
+    let mut edge_global_indices = DetHashMap::default();
+    let mut point_to_global = DetHashMap::default();
+    for &e in &edge_ids {
+        let edge = topo.edge(e).unwrap();
+        let mut ids = Vec::new();
+        for vid in [edge.start(), edge.end()] {
+            let p = topo.vertex(vid).unwrap().point();
+            let idx = u32::try_from(merged.positions.len()).unwrap();
+            merged.positions.push(p);
+            merged.normals.push(Vec3::new(0.0, 0.0, 0.0));
+            ids.push(idx);
+        }
+        edge_global_indices.insert(e.index(), ids);
+    }
+
+    // The self-crossing boundary makes the mesh geometrically meaningless
+    // either way; the contract here is only "no panic, no out-of-bounds
+    // index".
+    let result = super::nonplanar::tessellate_nonplanar_cdt(
+        &topo,
+        face,
+        topo.face(face).unwrap(),
+        0.1,
+        remus_math::chord::DEFAULT_ANGULAR_TOL,
+        false,
+        &edge_global_indices,
+        &mut merged,
+        &mut point_to_global,
+    );
+    if result.is_ok() {
+        for &i in &merged.indices {
+            assert!(
+                (i as usize) < merged.positions.len(),
+                "triangle index {i} out of bounds (len {})",
+                merged.positions.len()
+            );
+        }
+    }
+}
+
 /// Regression for issue #696: dovetail-style fuse where a small tongue protrudes
 /// into two adjacent slabs. The downstream consumer (gridfinity-layout-tool)
 /// adds a TONGUE_PROTRUSION specifically to avoid coplanar fuse residue, but
