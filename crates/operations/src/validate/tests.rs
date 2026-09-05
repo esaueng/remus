@@ -536,6 +536,63 @@ fn validate_detects_zero_length_edge() {
     );
 }
 
+// Issue #268: an edge whose endpoints are closer than the global 1e-7 floor
+// but within its own declared tolerance (typical for edges minted from
+// marched intersection curves) must not fail validation.
+#[test]
+fn near_zero_length_edge_within_declared_tolerance_is_accepted() {
+    use remus_math::vec::Point3;
+
+    let mut topo = Topology::new();
+    let solid = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+
+    let edges = explorer::solid_edges(&topo, solid).unwrap();
+    let edge = topo.edge(edges[0]).unwrap();
+    let end_vid = edge.end();
+    let start_pos = topo.vertex(edge.start()).unwrap().point();
+
+    // Shrink the edge to 5e-8: below the global floor, above nothing.
+    let tiny_end = Point3::new(start_pos.x() + 5e-8, start_pos.y(), start_pos.z());
+    topo.vertex_mut(end_vid).unwrap().set_point(tiny_end);
+
+    let is_near_zero_issue = |i: &ValidationIssue| {
+        i.description.contains("near-zero length")
+            && i.description.contains(&format!("{}", edges[0].index()))
+    };
+
+    // Control: with no declared tolerance the global floor flags it.
+    let report = validate_solid(&topo, solid).unwrap();
+    assert!(
+        report.issues.iter().any(is_near_zero_issue),
+        "edge below the global floor must be flagged: {:?}",
+        report.issues
+    );
+
+    // Declaring a tolerance that covers the gap clears the flag.
+    topo.edge_mut(edges[0])
+        .unwrap()
+        .set_tolerance(Some(1e-6))
+        .unwrap();
+    let report = validate_solid(&topo, solid).unwrap();
+    assert!(
+        !report.issues.iter().any(is_near_zero_issue),
+        "edge within its declared tolerance must not be flagged: {:?}",
+        report.issues
+    );
+
+    // A declared tolerance smaller than the gap keeps the flag.
+    topo.edge_mut(edges[0])
+        .unwrap()
+        .set_tolerance(Some(1e-9))
+        .unwrap();
+    let report = validate_solid(&topo, solid).unwrap();
+    assert!(
+        report.issues.iter().any(is_near_zero_issue),
+        "edge longer than its declared tolerance must be flagged: {:?}",
+        report.issues
+    );
+}
+
 #[test]
 fn validate_connected_shell_passes() {
     let mut topo = Topology::new();
