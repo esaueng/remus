@@ -22,8 +22,6 @@ pub mod repro;
 pub mod shapes;
 mod state;
 mod types;
-#[cfg(feature = "workflow-probes")]
-mod workflow_probes;
 
 pub use types::FaceEvolutionPayloadV1;
 
