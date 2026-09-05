@@ -1308,6 +1308,7 @@ fn check_id_code(check: CheckId) -> &'static str {
         CheckId::EdgeSameParameter => "edge_same_parameter",
         CheckId::EdgeRangeValid => "edge_range_valid",
         CheckId::EdgeDegenerate => "edge_degenerate",
+        CheckId::EdgeCurveDirection => "edge_curve_direction",
         CheckId::WireEmpty => "wire_empty",
         CheckId::WireNotConnected => "wire_not_connected",
         CheckId::WireClosure3D => "wire_closure_3d",
