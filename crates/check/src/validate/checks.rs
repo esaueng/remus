@@ -22,6 +22,8 @@ pub enum CheckId {
     EdgeRangeValid,
     /// Edge is degenerate (zero length).
     EdgeDegenerate,
+    /// Edge curve runs opposite to the declared start/end vertices.
+    EdgeCurveDirection,
     /// Wire contains no edges.
     WireEmpty,
     /// Consecutive edges not connected at shared vertices.
