@@ -1222,6 +1222,17 @@ Generalize the defeature extend strategy past its planar declared domain:
 deleting a face heals by extending curved neighbors through 6.1 machinery.
 Closes the "wounds crossing curved kept faces" typed refusal.
 
+First implementation cell: complete toroidal rim bands reuse the exact
+analytic support reconstruction from blend resizing, with a strict selection
+equality check and transactional rollback. A cylinder rim unfillets to the
+original three-face cylinder with construction-derived evolution; a boss
+opening on a cylindrical body's planar cap closes through the existing cap
+strategy. The cap strategy now accepts three retained faces. Native tests pin
+restored volume, validation, watertightness, rim scale/translation, and extra
+selection refusal; direct/batch WASM routes pin the rim witness. General
+curved wound extension through 6.1, partial bands, and bosses whose wounds
+cross a curved support remain pending; this cell does not complete 6.3.
+
 > **Exit gate:** delete a fillet band and a boss on a curved-walled part;
 > neighbors re-extend exactly; restored volume oracles hold.
 

@@ -253,6 +253,33 @@ fn resize_blend_impl(
     })
 }
 
+pub(crate) fn defeature_curved_band(
+    topo: &mut Topology,
+    solid: SolidId,
+    selected: &[FaceId],
+) -> Result<Option<crate::defeature::DefeatureOutcome>, OperationsError> {
+    let Some(&seed) = selected.first() else {
+        return Ok(None);
+    };
+    if !matches!(topo.face(seed)?.surface(), FaceSurface::Torus(_)) {
+        return Ok(None);
+    }
+    let band = describe_band(topo, solid, seed)?;
+    let selection: std::collections::BTreeSet<_> = selected.iter().copied().collect();
+    let members: std::collections::BTreeSet<_> = band.faces.iter().copied().collect();
+    if selection != members {
+        return Err(reconstruction(
+            "delete-face selection must contain exactly the complete analytic blend band",
+        ));
+    }
+    let sharp = remove_blend_region(topo, solid, &band)?;
+    validate_exact_result(topo, sharp.solid, "deleted curved blend reconstruction")?;
+    Ok(Some(crate::defeature::DefeatureOutcome {
+        solid: sharp.solid,
+        face_map: sharp.face_map,
+    }))
+}
+
 fn remove_blend_region(
     topo: &mut Topology,
     solid: SolidId,
