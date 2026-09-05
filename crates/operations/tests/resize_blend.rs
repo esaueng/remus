@@ -83,6 +83,122 @@ fn cylinder_fixture(radius: f64) -> (Topology, SolidId, FaceId) {
     (topo, solid, bands[0])
 }
 
+#[test]
+fn delete_curved_band_restores_cylinder_with_exact_history() {
+    let (mut topo, input, band) = cylinder_fixture(1.0);
+    let source_faces = solid_faces(&topo, input).unwrap();
+    let (result, evolution) =
+        remus_operations::defeature::defeature_with_evolution(&mut topo, input, &[band]).unwrap();
+    assert_valid(&topo, result);
+    assert_watertight(&topo, result);
+    let expected = std::f64::consts::PI * 100.0 * 20.0;
+    assert!((volume(&topo, result) - expected).abs() < expected * 1e-4);
+    assert_eq!(solid_faces(&topo, result).unwrap().len(), 3);
+    assert_eq!(evolution.deleted.len(), 1);
+    assert!(evolution.deleted.contains(&band.index()));
+    assert_eq!(evolution.modified.len(), source_faces.len() - 1);
+    assert!(evolution.unresolved.is_empty());
+    let mesh = tessellate_solid_with_tolerance(&topo, result, 0.01, 0.1).unwrap();
+    let mesh_volume: f64 = mesh
+        .indices
+        .chunks_exact(3)
+        .map(|triangle| {
+            let a = mesh.positions[triangle[0] as usize] - Point3::new(0.0, 0.0, 0.0);
+            let b = mesh.positions[triangle[1] as usize] - Point3::new(0.0, 0.0, 0.0);
+            let c = mesh.positions[triangle[2] as usize] - Point3::new(0.0, 0.0, 0.0);
+            a.dot(b.cross(c)) / 6.0
+        })
+        .sum();
+    assert!((mesh_volume.abs() - expected).abs() < expected * 0.003);
+    for edge in solid_edges(&topo, result).unwrap() {
+        let (start, end) = topo.edge(edge).unwrap().strict_domain().unwrap();
+        assert!(start.is_finite() && end.is_finite() && (end - start).abs() > 0.0);
+    }
+}
+
+#[test]
+fn delete_curved_band_refuses_extra_faces_without_mutation() {
+    let (mut topo, input, band) = cylinder_fixture(1.0);
+    let retained = solid_faces(&topo, input)
+        .unwrap()
+        .into_iter()
+        .find(|&face| face != band)
+        .unwrap();
+    let before = format!("{topo:?}");
+    let error =
+        remus_operations::defeature::defeature(&mut topo, input, &[band, retained]).unwrap_err();
+    assert!(matches!(
+        error,
+        remus_operations::OperationsError::ResizeBlend(_)
+    ));
+    assert_eq!(format!("{topo:?}"), before);
+}
+
+#[test]
+fn delete_curved_band_is_scale_and_translation_stable() {
+    for scale in [1e-3, 1.0, 1e3] {
+        let (mut topo, input, band) = cylinder_fixture(1.0);
+        remus_operations::transform::transform_solid(
+            &mut topo,
+            input,
+            &remus_math::mat::Mat4::scale(scale, scale, scale),
+        )
+        .unwrap();
+        remus_operations::transform::transform_solid(
+            &mut topo,
+            input,
+            &remus_math::mat::Mat4::translation(17.0 * scale, -23.0 * scale, 31.0 * scale),
+        )
+        .unwrap();
+        let result = remus_operations::defeature::defeature(&mut topo, input, &[band]).unwrap();
+        assert_valid(&topo, result);
+        let expected = std::f64::consts::PI * 2000.0 * scale.powi(3);
+        let actual = solid_volume(&topo, result, 0.01 * scale).unwrap();
+        assert!(
+            (actual - expected).abs() < expected * 1e-4,
+            "scale {scale}: {actual} vs {expected}"
+        );
+    }
+}
+
+#[test]
+fn delete_boss_on_cylindrical_body_restores_volume() {
+    let mut topo = Topology::new();
+    let base = make_cylinder(&mut topo, 10.0, 20.0).unwrap();
+    let boss = make_cylinder(&mut topo, 3.0, 5.0).unwrap();
+    remus_operations::transform::transform_solid(
+        &mut topo,
+        boss,
+        &remus_math::mat::Mat4::translation(0.0, 0.0, 20.0),
+    )
+    .unwrap();
+    let input = remus_operations::boolean::boolean(
+        &mut topo,
+        remus_operations::boolean::BooleanOp::Fuse,
+        base,
+        boss,
+    )
+    .unwrap();
+    let selected: Vec<_> = solid_faces(&topo, input)
+        .unwrap()
+        .into_iter()
+        .filter(|&face| match topo.face(face).unwrap().surface() {
+            FaceSurface::Cylinder(cylinder) => cylinder.radius() < 5.0,
+            FaceSurface::Plane { .. } => face_vertices(&topo, face)
+                .unwrap()
+                .iter()
+                .all(|&vertex| topo.vertex(vertex).unwrap().point().z() > 24.0),
+            _ => false,
+        })
+        .collect();
+    assert_eq!(selected.len(), 2);
+    let result = remus_operations::defeature::defeature(&mut topo, input, &selected).unwrap();
+    assert_valid(&topo, result);
+    assert_watertight(&topo, result);
+    let expected = std::f64::consts::PI * 100.0 * 20.0;
+    assert!((volume(&topo, result) - expected).abs() < expected * 1e-4);
+}
+
 fn trihedral_fixture(radius: f64) -> (Topology, SolidId, FaceId) {
     let mut topo = Topology::new();
     let sharp = make_box(&mut topo, 40.0, 40.0, 10.0).unwrap();
