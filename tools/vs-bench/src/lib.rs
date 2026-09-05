@@ -544,9 +544,9 @@ pub fn evaluate(run: Run) -> Result<Report, Error> {
             ),
             (
                 "quality_label_consistent".into(),
-                !((observation.reported == Reported::ExactSuccess && approximate)
-                    || (observation.reported == Reported::ApproximateSuccess
-                        && observation.quality.representation != Representation::Approximate)
+                !((approximate
+                    && (observation.reported == Reported::ExactSuccess
+                        || observation.quality.representation != Representation::Approximate))
                     || (repaired
                         && success(&observation.reported)
                         && observation.reported != Reported::RepairedSuccess)),

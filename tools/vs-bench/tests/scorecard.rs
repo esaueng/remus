@@ -309,3 +309,19 @@ fn success_labels_cannot_suppress_approximation_or_repetition_evidence() {
     assert!(!report.passed);
     no_timing(&report);
 }
+
+#[test]
+fn generic_success_cannot_disguise_approximation_as_exact_quality() {
+    let mut input = fixture();
+    input["observations"][0]["reported"] = json!("correct_success");
+    input["observations"][0]["approximation"] = json!({"method":"mesh", "error_bound":0.0});
+    let report = evaluate(&input);
+    assert!(!report.passed);
+    assert!(
+        report
+            .rows
+            .iter()
+            .any(|r| !r.gates["quality_label_consistent"])
+    );
+    no_timing(&report);
+}
