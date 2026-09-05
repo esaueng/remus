@@ -23,6 +23,7 @@ use remus_topology::solid::SolidId;
 
 use crate::boolean::{BooleanOp, boolean};
 use crate::copy::{copy_face, copy_solid_with_face_map};
+use crate::evolution::EvolutionMap;
 use crate::extrude::extrude;
 use crate::heal::unify_faces;
 use crate::measure::solid_volume;
@@ -37,6 +38,16 @@ enum Concavity {
     Hole,
     /// A boss: material lies inside the cylinder.
     Boss,
+}
+
+/// A topology-preserving face move and its construction-derived evolution.
+#[derive(Debug)]
+pub struct MoveFacesResult {
+    /// Edited solid.
+    pub solid: SolidId,
+    /// Exact face evolution when the construction could prove it; otherwise
+    /// every uncertain result face is reported in `unresolved`.
+    pub evolution: EvolutionMap,
 }
 
 /// Move a supported face selection while preserving the solid's adjacency
@@ -64,14 +75,58 @@ pub fn move_faces(
     faces: &[FaceId],
     distance: f64,
 ) -> Result<SolidId, crate::OperationsError> {
+    Ok(move_faces_with_evolution(topo, solid, faces, distance)?.solid)
+}
+
+/// [`move_faces`] with construction-derived face evolution.
+///
+/// Planar re-limitation and coaxial bore moves report a total one-to-one face
+/// map. Blend-aware moves keep the same identity for each rebuilt band when
+/// its support pair proves a unique correspondence; more complex regions fail
+/// closed in [`EvolutionMap::unresolved`] rather than guessing.
+///
+/// # Errors
+///
+/// Returns the same typed refusals as [`move_faces`]. Any failure restores the
+/// topology to its pre-call state.
+pub fn move_faces_with_evolution(
+    topo: &mut Topology,
+    solid: SolidId,
+    faces: &[FaceId],
+    distance: f64,
+) -> Result<MoveFacesResult, crate::OperationsError> {
     let snapshot = topo.clone();
-    let outcome = (|| -> Result<SolidId, crate::OperationsError> {
+    let outcome = (|| -> Result<MoveFacesResult, crate::OperationsError> {
+        let source_faces = solid_faces(topo, solid)?;
         let result = if let Some((face, new_radius)) =
             cylindrical_bore_move_request(topo, solid, faces, distance)?
         {
             let source_counts = remus_topology::explorer::solid_entity_counts(topo, solid)?;
-            let result = resize_cylindrical_face(topo, solid, face, new_radius)?;
-            let result_counts = remus_topology::explorer::solid_entity_counts(topo, result)?;
+            let cylinder = match topo.face(face)?.surface() {
+                FaceSurface::Cylinder(cylinder) => cylinder,
+                surface => {
+                    return Err(remus_offset::OffsetError::UnsupportedMoveFace {
+                        face,
+                        surface_type: surface.type_tag(),
+                        reason: "cylindrical move classification changed before replacement".into(),
+                    }
+                    .into());
+                }
+            };
+            let replacement = CylindricalSurface::with_ref_dir(
+                cylinder.origin(),
+                cylinder.axis(),
+                new_radius,
+                cylinder.x_axis(),
+            )?;
+            let replaced = crate::replace_surface::replace_surface(
+                topo,
+                solid,
+                face,
+                FaceSurface::Cylinder(replacement),
+            )?;
+            let result_counts =
+                remus_topology::explorer::solid_entity_counts(topo, replaced.solid)?;
             if result_counts != source_counts {
                 return Err(remus_offset::OffsetError::TopologyChange {
                     face: Some(face),
@@ -82,14 +137,22 @@ pub fn move_faces(
                 }
                 .into());
             }
-            result
+            MoveFacesResult {
+                solid: replaced.solid,
+                evolution: exact_face_evolution(
+                    topo,
+                    &source_faces,
+                    replaced.solid,
+                    replaced.face_map,
+                )?,
+            }
         } else if let Some(result) =
             crate::resize_blend::move_planar_faces_with_blends(topo, solid, faces, distance)?
         {
             result
         } else {
             refuse_swept_face_intersections(topo, solid, faces, distance)?;
-            let result = remus_offset::move_faces(topo, solid, faces, distance)?;
+            let moved = remus_offset::move_faces_with_face_map(topo, solid, faces, distance)?;
 
             if move_is_prismatic(topo, solid, faces)? {
                 let deflection = verify_deflection(topo, solid);
@@ -98,7 +161,7 @@ pub fn move_faces(
                     crate::measure::face_area(topo, face, deflection).map(|value| sum + value)
                 })?;
                 let expected = distance.mul_add(area, before);
-                let actual = solid_volume(topo, result, verify_deflection(topo, result))?;
+                let actual = solid_volume(topo, moved.solid, verify_deflection(topo, moved.solid))?;
                 let slack = expected.abs().mul_add(2e-3, 1e-6);
                 if (actual - expected).abs() > slack {
                     return Err(remus_offset::OffsetError::TopologyChange {
@@ -109,10 +172,13 @@ pub fn move_faces(
                     .into());
                 }
             }
-            result
+            MoveFacesResult {
+                solid: moved.solid,
+                evolution: exact_face_evolution(topo, &source_faces, moved.solid, moved.face_map)?,
+            }
         };
 
-        let report = crate::validate::validate_solid(topo, result)?;
+        let report = crate::validate::validate_solid(topo, result.solid)?;
         if !report.is_valid() {
             let summary = report
                 .issues
@@ -140,6 +206,42 @@ pub fn move_faces(
         topo.restore_preserving_handle_slots(&snapshot);
     }
     outcome
+}
+
+pub(crate) fn exact_face_evolution(
+    topo: &Topology,
+    source_faces: &[FaceId],
+    result: SolidId,
+    pairs: impl IntoIterator<Item = (usize, FaceId)>,
+) -> Result<EvolutionMap, crate::OperationsError> {
+    let map: std::collections::BTreeMap<_, _> = pairs.into_iter().collect();
+    let source: std::collections::BTreeSet<_> =
+        source_faces.iter().map(|face| face.index()).collect();
+    let result_faces = solid_faces(topo, result)?;
+    let outputs: std::collections::BTreeSet<_> = map.values().map(|face| face.index()).collect();
+    let expected_outputs: std::collections::BTreeSet<_> =
+        result_faces.iter().map(|face| face.index()).collect();
+    if map
+        .keys()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>()
+        != source
+        || outputs != expected_outputs
+        || map.len() != result_faces.len()
+    {
+        return Err(remus_offset::OffsetError::TopologyChange {
+            face: source_faces.first().copied(),
+            edge: None,
+            reason: "move-face construction map is not total and one-to-one".into(),
+        }
+        .into());
+    }
+
+    let mut evolution = EvolutionMap::exact();
+    for (input, output) in map {
+        evolution.add_modified(input, output.index());
+    }
+    Ok(evolution)
 }
 
 /// Validate and translate the Phase 4.3 cylindrical move contract.

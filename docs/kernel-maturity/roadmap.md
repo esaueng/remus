@@ -11,6 +11,7 @@ record and the bridge backlog neither program owns:
 | [Stabilization plan](stabilization-plan.md) | Historical label promotions; residue absorbed below | its Dispositions section |
 | **Bridge backlog (§B below)** | Ready items covered by neither program | §B table, updated in-place |
 | [Campaign history](campaign-history.md) | Closed roots, refuted theories, and the digs behind them (not loaded by default) | read-only, append when a dig closes |
+| [Industrial parity overlay](industrial-parity.md) | Non-owning competitive crosswalk against the reference kernel, scope contract, scorecard, workflow scenarios, H5–H7 gates | no ledger — points at the rows above; update pointers when an owner row flips |
 
 The work-selection *doctrine* (chase filters, TERMINAL list, acceptance bar,
 durable lessons) remains `.claude/skills/roadmap/SKILL.md`; this page is
@@ -73,11 +74,17 @@ its state. Before claiming anything: `gh pr list --state open` (R6).
 
 ### H0 — in flight (verify before duplicating)
 
-As of 2026-09-04: P-Class 2.0–2.3, 3.1–3.3, 4.1–4.7, and 5.1–5.7 are merged
-(see `p-class-status.md`); 2.4 and 2.8 are partial; 6.1 replace-surface
-landed in PR #238. The Open Kernel Wave A rows still unclaimed are O4.4,
-O5.1a–c, O6.1, and O6.4. Bridge rows closed since the draft: B1, B5, the B6
-primitive family (including ellipsoid), and the B11 STEP-ordering item.
+As of 2026-09-04: P-Class 2.0–2.3, 3.1–3.3, 4.1–4.7, 5.1–5.7, and 6.1 are
+merged (see `p-class-status.md`); 2.4, 2.8, and 6.2 are partial — 6.2
+generalized face moves (PR #257) qualifies a holed planar boss cap moving
+through an incident constant-radius fillet with exact evolution and
+direct/batch WASM parity, reusing 6.1 for coaxial bores; rotation, lateral
+relocation, outward cylinders, and surface-type changes remain open. The
+Open Kernel Wave A rows still unclaimed are O4.4, O5.1a–c, O6.1, and O6.4.
+Bridge rows closed since the draft: B1, B5, the B6 primitive family
+(including ellipsoid), the B11 STEP-ordering item, B13 void export, and B15
+pocket-face orientation; B12 is partial (rectangular holes on sweep/pipe
+caps, PR #252). No `#[ignore]` pins a live engine defect.
 
 OpenZCAD consumer-roadmap K-S4 (`approx_census` CI enforcement): **done (PR
 #140)**. Its authoritative disposition line remains in planning PR
@@ -109,8 +116,8 @@ O5.3a AP242, O6.2 playground). Bridge: B2 scale residuals close inside
 ### H3 — after M4 / M5
 
 M5 blend depth ∥ M6 direct modeling ∥ M7 surfacing; O1.3b torture-suite
-publication, O5.3b PMI read, O7 hybrid RFC. Bridge: B12 non-planar cap
-holes (with M7's cap work).
+publication, O5.3b PMI read, O7 hybrid RFC. Bridge: the B12 residue
+(loft-hole correspondence, holed partial revolutions) with M7's cap work.
 
 ### H4 — v1.0
 
@@ -119,6 +126,44 @@ benchmarks **B1–B5** green as permanent tests + Open Kernel scoreboard
 claims **S1–S7** live + zero Unsupported-untyped cells in the capability
 matrix + the bridge backlog empty or explicitly re-triaged. Anything
 short of all four publishes as 0.x.
+
+### H5 — Core modeling parity (post-v1.0)
+
+Prove parity with the reference kernel across the in-scope
+authored-modeling domain. Gates (full text in
+[industrial-parity.md](industrial-parity.md) §6): complete crosswalk with
+no `Unknown` or unowned in-scope rows; zero Unsupported-untyped cells
+re-verified; W1, W2, W5, W7 complete correctly (not by refusal) on both
+surfaces at three scales; 2.4c/d, 2.5, 2.6, 2.7, 4.8 closed; blend
+(M5 + 5.8), chamfer (B3), shell/offset (5.7b), draft (6.4), sweep (7.1),
+loft (7.2), direct-edit (6.2, 6.3) matrices qualified with typed
+both-sides boundaries; evolution complete for every covered family (B18,
+6.5); stable Rust (O4.1c, O4.2a/b), JS/WASM (O4.4, O4.7), and Python
+(O4.3a/b) surfaces; parity numbers published for the from-scratch
+workflows with the O1.2f baseline pinned. Numeric bands are locked by
+O1.2f, not before.
+
+### H6 — Industrial interchange and corpus parity
+
+Comparable outcomes on real supplier data, assemblies, and large models.
+Gates: W3 passes with zero heal invocations on the tolerant path (3.4,
+3.5, B1, B2 exit benchmark); AP242 structure, attributes, and the declared
+PMI read profile qualified on CAx-IF models (O5.1, O5.2, O5.3a/b, O1.4b);
+occurrence identity stable (O5.4); gauntlet stage pass rates within the
+locked bands with the taxonomy public (O1.1c/d); zero silent-wrong,
+crash, and unbounded-hang outcomes on the gated corpus; imported-model
+boolean/blend/offset/direct-edit/tessellation/measurement stages within
+bands; large-model memory and tail-latency budgets enforced (8.2, 8.6,
+O3.2, O3.4; W8); deterministic concurrent sessions and supported parallel
+operations (8.3, 8.4; 8.7 decided); a second external consumer with its
+corpus in CI (O6.3, S6).
+
+### H7 — Demonstrated technical leadership
+
+At least five of the overlay's leadership claims LC1–LC13 meeting the
+leadership discipline (stable corpus, equivalent quality, pinned
+baseline, repeatable results, published losses, always-on gate), at
+least two from the correctness family and one from the browser family.
 
 ## §B Bridge backlog — owned by neither program
 
@@ -142,10 +187,15 @@ P-Class 2.3 · conic boolean cells = O2.2 · offset self-intersection = 5.7
 | B9 | **Torus ∖ coaxial cylinder tangent cut** — the single cell keeping torus booleans Beta; needs a tangent-contact primitive (explicitly NOT the band splitter). | `math/analytic_intersection.rs`, `algo` splitter | M | B1-ledger promotion Beta→Stable; closed-form oracle exists. Rides 2.7 tangency machinery. | Open |
 | B10 | **Curve-curve / curve-surface classification qualification** + conic distance/classification cells | `math`, `geometry/extrema`, matrix harness | M | Unqualified since the matrix was written; sits under many families' claims; pure evidence. | Open |
 | B11 | **Small hygiene set** — `log::debug!` false-zero in `fill_images_faces.rs` (diagnostic-infra bug); deterministic STEP entity ordering; heal `fix_duplicate_faces` winding-blind comparison; plane×plane sampled in-both exact upgrade; `n_fine` clamp hazard note→guard. | various | S each | Cheap, each has already cost or will cost a debugging session. | **Partial (2026-09-03, PR #239):** STEP export now canonicalizes unordered face, void-shell, and hole-loop aggregates while preserving semantic coedge traversal order; byte-equality regressions cover reordered faces and void shells. Remaining: false-zero diagnostic, winding-aware duplicate-face healing, plane×plane exact upgrade, and `n_fine` guard. |
-| B12 | **Holes on non-planar section caps** — annular Coons or cap-then-subtract vs extruded-annulus ground truth (stabilization B2.2). | `operations/src/cap.rs`, `fill_face.rs` | M | Largest remaining non-planar-cap value with clean ground truth. H3, with M7 cap work. | Open |
+| B12 | **Holes on non-planar section caps** — annular Coons or cap-then-subtract vs extruded-annulus ground truth (stabilization B2.2). | `operations/src/cap.rs`, `fill_face.rs` | M | Largest remaining non-planar-cap value with clean ground truth. H3, with M7 cap work. | **Partial (2026-09-04, PR #252):** sweep and pipe caps preserve disjoint rectangular iso-parametric holes on four-sided bilinear caps, matched against an independently extruded annulus by converged volume, manifold B-Rep, watertight mesh, classification, and direct/batch WASM. Off-surface, curved, touching, and n-sided holed trims refuse typed; loft-hole correspondence and holed partial revolutions remain Unsupported-typed and ride M7's cap work. |
 | B13 | **STEP inner-shell (voids) export** — emit and read `BREP_WITH_VOIDS`, preserving cavity shell count and volume. | `io/src/step/{writer,reader}.rs` | S–M | Round-trip honesty for hollow parts; gauntlet round-trip stage will hit it. | Complete (2026-09-04): one- and two-void regressions verify single-solid round trips, shell counts, and volume. |
-| B15 | **Cut/intersect pocket faces on a cylinder wall come back inconsistently oriented** — pinned but ignored since #198; the fix is engine-side, the repro is already in-tree. | `crates/operations/tests/regress_parallel_boss_band_sections.rs`, `algo` assembly | M | The only `#[ignore]` in the inventory that pins a live engine defect rather than a fork-policy or diagnostic case. Geometry lane. | Open |
+| B15 | **Cut/intersect pocket-face orientation on cylinder walls** | `crates/operations/tests/regress_parallel_boss_band_sections.rs`, `algo` assembly | M | **Done (2026-09-04, PR #255):** non-fuse assembly normalizes selected cylinder outer/inner wire winding before edge merge. Box and cylinder tools on both wall sides pass exact cut/intersect, dual validation, closed-form volume, material classification, and welded-mesh orientation oracles. The formerly ignored regression is permanent coverage. | Done |
 | B14 | **Render promotion track** — Experimental→Beta after a contract-stable release cycle (stabilization C4 residue); outside both programs. | `render` | S (time-gated) | Cleans the last stabilization row. | Open |
+| B16 | **Consumer topology-query API set** — one binding per OpenZCAD heuristic it currently reimplements (its roadmap C2): trimmed edge parameter domain, face material sense, ordered wire traversal, per-edge convexity, sphere-patch identity, seam-edge parity, `maxFilletRadius(solid, edges)`, batched `classifyPoint`, per-edge ids in `meshEdgesAll`; plus the GCS qualification matrix (constraint type × system state × scale, nonconvergence budget) from the P-Class §6 inherited queue. Each: exact, typed refusal on foreign handles, direct + batch WASM, contract test. Added 2026-09-04 by the [industrial-parity overlay](industrial-parity.md) (rows IP-15.9, IP-9.3, IP-10.3, IP-13.1/13.4). | `wasm/bindings/query.rs`, `batch.rs`, `operations/src/query.rs`, `sketch/`, `operations/tests/qualify_gcs.rs` (new) | S each | Every row retires an adapter-side heuristic; highest OpenZCAD impact per line. Exit: the named heuristic deleted from the consumer's adapter (recorded in the PR), matrix green. | Open |
+| B17 | **Healing defect-class qualification matrix** — a generated defect class × severity × repair policy × scale matrix per fixer (wire order/closure/gaps/small edges, face orientation/small faces, seams, shell orientation/sewing/free bounds, duplicates, continuity splits, representation conversion), plus an operand self-interference report for booleans and the faceted-import sew/unify contract (issue #244). Every cell: verified repair with counted disclosure, or typed refusal; both sides. Added 2026-09-04 by the overlay (rows IP-8.3, IP-3.8, IP-8.6). | `heal/`, `operations/src/heal.rs`, `operations/tests/qualify_heal.rs` (new), `stl/import.rs` | M (S per fixer) | The family is Qualified only at the B1 boundary; the reference kernel's healing breadth is its strongest documented area. Exit: every fixer has a matrix; #244 fixture green; self-interference report typed on a self-touching corpus. | Open |
+| B18 | **Evolution completeness audit** — every topology-producing family reports total attribution or a typed unresolved record: unify same-domain (`unify_with_evolution`, OpenZCAD C1's top ask), sew, sweep/loft/revolve/extrude caps, arc-joint and self-intersection-removal offsets, section/split edges, direct edits (with 6.5), edge/vertex events beyond booleans. Added 2026-09-04 by the overlay (rows IP-3.6, IP-5.7, IP-12.1; leadership claim LC3). | `journal_ops.rs`, `evolution.rs`, `qualify_evolution_coverage.rs`, per-op modules | M (S per family) | Absolute gate §3.4 item 8; unblocks OpenZCAD's adoption order boolean → pattern → chamfer → shell/offset → direct edits. Exit: the coverage fixture claims every result face of every family exactly once or pins its typed unresolved; no `record_barrier_over_solid` call remains for a family that can construct its map. | Open |
+| B19 | **Remaining fuzz slices and the mutants glob** — curve-intersection, offset, GCS, and tessellation fuzz targets with independent oracles on the weekly schedule; fix the stale `crates/math/src/cdt.rs` glob in `mutants.toml` (CDT is a directory now). Added 2026-09-04 by the overlay (row IP-16.4; LC13). | `fuzz/fuzz_targets/`, `mutants.toml`, `.github/workflows/fuzz.yml` | S each | The S4 follow-ups have had no ID since PR #173; the mutants glob silently examines nothing for CDT. Exit: four targets scheduled with committed seeds; mutants report shows CDT mutants examined. | Open |
+| B20 | **Exact measurement completion (K-S2 remainder)** — ellipse, hyperbola, and NURBS planar boundaries; general curved-face area; deflection-independent curved-body volume, centroid, and inertia by Gauss quadrature over exact geometry with a stated bound; direct + batch WASM; scale matrix. Added 2026-09-04 by the overlay (row IP-10.1). | `check/src/properties/`, `operations/src/measure/` | M | OpenZCAD S2 measures 0.2–3.5 % volume error on filleted parts at its display deflection; the reference kernel integrates surfaces directly. Exit: relative error ≤ 1e-6 against closed forms on filleted and cavity primitives at 1e-3/1/1e3, independent of caller deflection; ledger row loses its "incomplete" caveat. | Open |
 
 **Explicitly not queued** (decided or terminal — do not re-open without
 the named primitive): IGES growth (C3, decided), box∪sphere and torus∩box
@@ -153,7 +203,10 @@ census rows (TERMINAL → O2.3 re-opens them properly), universal
 duplicate-edge merge key (proven unbuildable), mesh co-refinement
 watertightness (below the chase filter until a live case routes there),
 kumiko lattice family (probe only per the roadmap skill's engine-side
-question), v1-fillet API migration (product decision, owner's).
+question), v1-fillet API migration (product decision, owner's),
+monolithic mechanical-feature operators and tessellated-STEP read
+(overlay §1: composable from imprint/boolean, and no corpus pull),
+non-manifold shared-face topology (RFC 0005 later RFC; owner decision).
 
 ## §D External roadmap dispositions
 
@@ -224,6 +277,10 @@ Match session type to lane; check both ledgers and `gh pr list` first.
   [open-kernel-status.md](open-kernel-status.md).
 - **Evidence session** (test-writing capacity): B6 families, B10, O1.3a.
 - **Docs/ecosystem session:** O6 rows.
+- **Consumer-impact session:** B16 (one query binding), O4.7, B20, or
+  B18's unify item — each retires a named OpenZCAD adapter heuristic.
+- **Parity-evidence session:** O1.2d–e (Remus-only rows first), O1.5,
+  B19; see the overlay's §8 ranking.
 - **Owner-only:** O4.2c/O4.3c publishes, O6.2 hosting, O6.3 outreach,
   v1-fillet migration decision.
 

@@ -12,6 +12,11 @@ files, sizes, dependencies, and typed exit gates, in the style of the
 - Size scale: **S** = one PR · **M** = 2–4 PRs · **L** = 5+ PRs, staged.
 - Issue IDs are `O<pillar>.<issue>`; letters (`a`, `b`, …) are staged PRs
   inside one issue.
+- **Competitive overlay:** [industrial-parity.md](industrial-parity.md)
+  maps the reference-kernel crosswalk onto these issues and added O1.2d–f,
+  O1.5, O2.4, O3.4, O4.5–O4.7, O5.4, and O5.5 (2026-09-04) where it found
+  no owner. The overlay owns no state; this plan and
+  [open-kernel-status.md](open-kernel-status.md) stay authoritative.
 
 ## §0 Repository conventions this program introduces
 
@@ -121,9 +126,48 @@ from a clean checkout.
 > the published table; at least one headline claim of the form "N% of
 > scenarios exact-or-refused vs. competitor's silent-wrong count."
 
+**d — Scorecard metric schema and absolute gates (S).** Added 2026-09-04
+(overlay §3). The result JSON carries every column of the overlay's §3.1
+schema per scenario and per kernel — the eleven mutually exclusive outcome
+columns (`correct_success` … `nondeterminism`), history, interchange,
+geometry-quality, resource, browser, and concurrency groups — and the
+report generator enforces the §3.4 absolute gates as pass/fail rows
+independent of any competitor result. Equivalence-before-speed (§3.2) is a
+schema rule: a timing column is emitted only when both kernels' outcome
+columns are success-class at the scenario's declared output-quality
+requirement. Oracle per scenario is named in the job spec, never inferred.
+Exit: a scenario whose oracle disagrees with a reported success lands in
+`silent_wrong` on either kernel; a run with any absolute-gate failure exits
+non-zero; the schema is versioned and rejected on mismatch.
+
+**e — Workflow scenarios W1–W9 (M).** Added 2026-09-04 (overlay §4). One
+job per workflow, each stage a separately scored step, driven identically
+through the native facade and the WASM batch path (`execute_batch` bundles
+generated from the same spec). Stages that no owner row has closed yet are
+run anyway and land in `typed_refusal` or `untyped_error` — the point is
+the visible flip history, not a green board. Reference-kernel runners
+execute the same stage sequence through their documented public API. Exit:
+all nine workflows run end-to-end on both surfaces with per-stage rows; W9
+proves byte-identical session state after every refusal; the results page
+renders the workflow table beside the scenario table.
+
+**f — Baseline pin milestone (S, gate for every numeric band).** Added
+2026-09-04 (overlay §3.3). A committed manifest pins the reference kernel
+version, build flags, and binding layer; hardware and software environment
+(CPU, memory, OS, toolchain, browser and Node versions); gauntlet manifest
+hashes and generated-scenario seeds; per-scenario operation context,
+tolerances, and output-quality requirements; repetition count and the
+median/p95 method with its outlier rule; and the refresh policy
+(re-baseline on a reference minor release, hardware change, or protocol
+change, never silently). The first baseline run lands on the results branch
+with the harness SHA. Exit: the PR that lands the baseline edits the
+`[locked by O1.2f]` placeholders in the overlay's H5/H6 gates into numeric
+bands in the same change; no band exists anywhere before that PR.
+
 **Depends on:** O4.1a (facade, for the Remus runner); scenario breadth
 worth publishing arrives with P-Class 2.4. Build the harness now, publish
-after 2.4.
+after 2.4. d and e can land before a competitor runner exists (Remus-only
+rows); f requires at least the reference-kernel runner.
 
 ### O1.3 Fillet torture suite (M)
 
@@ -172,6 +216,48 @@ ledger pattern, applied to interop.
 > the fixture corpus; conformance doc enumerates every known deviation.
 
 **Depends on:** nothing (io-only). `a` before O5.3 (AP242 inherits it).
+
+### O1.5 Native/WASM per-operation parity harness (M)
+
+`tools/parity/` (new) · `crates/wasm/tests/` · `crates/wasm/src/bindings/batch.rs`
+
+Added 2026-09-04 by the industrial-parity overlay (row IP-16.5, leadership
+claim LC8). Native/WASM agreement is target characteristic 15 and an
+absolute gate (§3.4 item 7), but today it is tested one operation at a time
+through hand-written contract tests; there is no harness that runs every
+batch operation on both builds and diffs invariants, and no platform matrix.
+
+- **Why it matters:** OpenZCAD ships the WASM build; every native-only
+  qualification is a claim the consumer cannot see.
+- **Current measured limitation:** ~129 batch ops; contract tests cover a
+  subset by hand; no generated cross-build comparison.
+- **Dependencies:** O4.1c helps (structural parity) but is not required.
+  **Lane:** tools + wasm tests (disjoint).
+- **Size:** M: (a) generator that emits one bundle per batch op from the
+  qualification fixtures; (b) runner executing each bundle natively and
+  through the packaged WASM in Node, diffing volume, census, diagnostics
+  codes, evolution payloads, and serialized bytes; (c) CI job on the
+  platform matrix (Linux, macOS, Windows; x86-64 and arm64).
+- **Boundary:** invariant equality, not float-identical meshes across
+  platforms; byte identity is required within one platform.
+- **Diagnostics:** disagreement is a harness failure naming the op and the
+  invariant, never a tolerance widening.
+- **Native / WASM:** consumes both; adds no API. **Python:** O4.3 joins as a
+  third column once wheels exist.
+- **Oracle:** the native result is not privileged — a disagreement is triage
+  input (testing strategy, differential rule).
+- **Matrix:** every batch op × its qualification fixtures × platform.
+  **Boundary:** an op absent from one surface is a harness failure (R8).
+- **Fixture:** the repro bundle corpus doubles as input.
+  **Performance:** the run fits the nightly window; per-op timing recorded
+  for O1.2's `native_wasm_agreement` and cold-init columns.
+- **Docs/ledger:** testing strategy "Native + WASM agreement" evidence
+  class points at the harness; capability-matrix cells cite it.
+
+> **Exit gate:** every batch operation has at least one bundle that
+> executes on native and WASM with identical invariants and diagnostics on
+> every platform in the matrix; an op missing on either surface fails the
+> job; the harness runs nightly and its table feeds O1.2c.
 
 ---
 
@@ -288,6 +374,63 @@ cone-split coordination) re-open against the new primitive as candidates.
 **Depends on:** P-Class 2.4 (same files, and 2.4's splitter work informs
 the API). a can be written during M2 (read-only analysis).
 
+### O2.4 Predicate escalation policy for topology decisions (M)
+
+`crates/math/src/predicates.rs` · `crates/math/src/filtered.rs` ·
+`crates/math/src/cdt/` · `crates/algo/src/classifier/` ·
+`crates/algo/src/pave_filler/phase_ff.rs` · `crates/math/src/context.rs`
+
+Added 2026-09-04 by the industrial-parity overlay (row IP-1.9, leadership
+claim LC2). The exact `robust`-backed predicates and the Shewchuk-style
+float filter in `filtered.rs` exist, but `filtered_orient2d/3d/in_circle`
+and the SoS tie-breakers have **zero consumers**; the CDT, the 2D
+classifier, and phase FF call the unfiltered arms and resolve ambiguity by
+tolerance bands. The reference kernel documents no exact escalation either
+— this is a lead to prove, not a gap to close.
+
+- **Why it matters:** the silent-wrong classes the census and B2 chase
+  (scale-dependent flips, on-plane samples) are predicate-ambiguity
+  failures; a declared escalation policy turns them into certified
+  decisions or typed refusals.
+- **Current measured limitation:** no interval arithmetic; no policy;
+  filtered arms dead; perturbation sensitivity unmeasured.
+- **Dependencies:** 2.6 (scale-relative bands) first so the policy is not
+  fighting absolute constants. **Lane:** math + classifier (coordinate with
+  M2 for `phase_ff.rs`).
+- **Size:** M: (a) policy record in `OperationContext` (`PredicatePolicy::
+  {Filtered, ExactOnAmbiguity, RefuseOnAmbiguity}`) with the classification
+  of every predicate call site; (b) route CDT and `classify_2d` through the
+  filtered arms; (c) phase-FF/classifier sites, with a typed
+  `predicate_ambiguous` refusal when the exact arm cannot decide within the
+  entity tolerances.
+- **Boundary:** orientation, in-circle, and segment-intersection
+  predicates; no bignum root isolation (later horizon).
+- **Exactness and fallback:** exact on filter failure; refusal only when
+  the geometric question is genuinely degenerate under the declared
+  tolerance.
+- **Diagnostics:** `predicate_ambiguous` (typed, pinned).
+- **Transactionality:** unchanged (callers already transactional).
+  **Evolution:** unchanged.
+- **Native / WASM:** policy field on `booleanWithQuality` direct and batch;
+  default reproduces prior behavior. **Python:** facade context.
+- **Oracle:** perturbation census — every qualification fixture run under
+  coordinate nudges 1e-13..1e-6 must keep its classification or refuse
+  typed; census byte-identical at zero nudge.
+- **Matrix:** predicate × consumer × nudge magnitude × scale.
+  **Boundary:** exactly-degenerate inputs (collinear, cocircular) refuse or
+  classify deterministically both sides.
+- **Fixture:** the on-plane sample cases from the roadmap skill's durable
+  lessons. **Performance:** filtered fast path ≤ 5 % over unfiltered on the
+  CDT bench.
+- **Docs/ledger:** operation contract "Context" section gains the policy;
+  numerical-robustness skill gains the rule.
+
+> **Exit gate:** the filtered predicates have production consumers in the
+> CDT, the 2D classifier, and phase FF; the perturbation census shows zero
+> classification flips across 1e-13..1e-6 on every qualification fixture
+> (or typed `predicate_ambiguous`); the CDT bench regresses ≤ 5 %; native
+> and WASM agree.
+
 ---
 
 ## O3 — Native performance
@@ -347,6 +490,51 @@ if the speedup is <1.5× (that outcome is a valid exit).
 
 > **Exit gate:** ≥1.5× on the named benches native + wasm, or a documented
 > negative result.
+
+### O3.4 Journal-driven incremental tessellation (M)
+
+`crates/operations/src/tessellate/solid.rs` · `crates/topology/src/spatial.rs`
+(O3.2) · `crates/wasm/src/bindings/tessellate.rs`
+
+Added 2026-09-04 by the industrial-parity overlay (rows IP-9.5, IP-14.6,
+leadership claim LC11). The reference kernel's incremental mesher reuses
+unchanged face triangulations; Remus re-meshes the whole solid on every
+call, and OpenZCAD re-tessellates every body on every rebuild at
+size-relative deflection. The evolution journal knows which faces changed,
+so invalidation can be exact rather than heuristic.
+
+- **Why it matters:** W8 (large-model browser workflow); interactive edit
+  latency is dominated by remeshing untouched faces.
+- **Current measured limitation:** per-call memos only; no cross-call cache;
+  no remesh-time bench.
+- **Dependencies:** O3.2 (cache substrate and invalidation rules).
+  **Lane:** operations/topology (after O3.2).
+- **Size:** M: (a) per-face mesh cache keyed by (face id, deflection,
+  angular tol, journal revision); (b) `tessellate_solid_incremental`
+  returning the grouped mesh with a per-face changed mask; (c) WASM direct
+  and batch with the same mask so the consumer updates buffers in place.
+- **Boundary:** identical output to a full remesh; welded shared edges
+  re-derived when either neighbor changes.
+- **Exactness:** bit-identical to the non-incremental path.
+- **Diagnostics:** none new; a cache miss is not an error.
+- **Transactionality:** cache invalidated on commit; rollback restores the
+  prior revision's entries. **Evolution:** consumer of journal events.
+- **Native / WASM:** `tessellateSolidGroupedIncremental` direct and batch.
+  **Python:** facade.
+- **Oracle:** bit-identity against full remesh after every edit in a
+  sequence.
+- **Matrix:** edit class × face count (10², 10³, 10⁴) × deflection.
+  **Boundary:** a barrier journal entry invalidates everything (pinned).
+- **Fixture:** the W7 long history replayed with remesh after each step.
+  **Performance:** ≥ 5× remesh time on a one-face edit of a 10³-face body;
+  cache memory bounded by a declared LRU cap.
+- **Docs/ledger:** capability matrix Tessellation family gains the
+  incremental cell; book WASM chapter.
+
+> **Exit gate:** remeshing after a single-face edit of a 1,000-face body is
+> ≥ 5× faster than a full remesh and bit-identical to it; a barrier entry
+> forces a full remesh (pinned); native and WASM agree; the changed mask is
+> exact against the journal.
 
 ---
 
@@ -454,6 +642,89 @@ identifiers rather than strings.
 
 **Depends on:** nothing.
 
+### O4.5 Stable C ABI decision record (S — owner decision)
+
+`docs/design/` (new decision record)
+
+Added 2026-09-04 by the industrial-parity overlay (row IP-15.4). There is
+no `extern "C"` surface and no cbindgen; Python is planned over PyO3
+directly. A C ABI would open C++, C#, and other consumers and could carry
+Python as well, at the cost of a second frozen surface. This issue is a
+decision, not an implementation.
+
+- **Deliverable:** a decision record covering the candidate surface (the
+  facade's `Model` methods over opaque handles), error mapping (stable
+  codes only), memory ownership, versioning, and the maintenance cost;
+  a recommendation; and the owner's decision.
+- **Exit gate:** the record is merged with an explicit adopt/decline and,
+  if adopted, a follow-up issue with the full issue-ready field set; no
+  ABI code before the record.
+
+### O4.6 Serialization compatibility and migration policy (S)
+
+`crates/io/src/arena_io.rs` · `crates/wasm/src/repro.rs` ·
+`crates/wasm/src/types.rs` (evolution payload) · `docs/`
+
+Added 2026-09-04 by the industrial-parity overlay (rows IP-2.7, IP-12.5,
+IP-12.7, leadership claim LC5). Arena versions 1–5 are read forever by
+convention and the writer bytes are frozen, but the policy lives in code
+comments; the repro schema and the evolution payload schema have their own
+unwritten rules; and a delta format for collaboration is undecided.
+
+- **Deliverable:** a written compatibility policy (read-forever floor,
+  writer freezing, additive-only fields, deprecation of readers, the
+  checkpoint contract from 8.6), a reader × writer version matrix test
+  generated from committed fixtures for every released version, the same
+  for repro bundles and evolution payloads, and a decision on a journal
+  delta format (adopt, defer, or decline) recorded here.
+- **Surfaces:** native and WASM readers; Python once O4.3 lands.
+- **Oracle:** byte identity on re-serialization; validation, census, and
+  closed-form volume identical after every migration path.
+- **Boundary:** corrupted references and future versions refuse typed.
+- **Exit gate:** the matrix test runs in CI over v1–v5 (and every later
+  version) with no hand-maintained list; the policy document is linked from
+  the release checklist; the delta-format decision is recorded.
+
+### O4.7 Typed direct-method results on the WASM surface (M)
+
+`crates/wasm/src/bindings/*` · `crates/wasm/src/error.rs` ·
+`docs/design/deferred-e5b-stable-error-codes.md`
+
+Added 2026-09-04 by the industrial-parity overlay (row IP-15.2). e5b gave
+`executeBatchV2` stable categories and codes, and its resolved decisions
+allow direct methods to gain structure only through additive detailed
+variants. OpenZCAD calls ~115 direct methods, uses no batch API, parses 13
+JSON-string returns, and regex-matches English refusal prose
+(`'unsupported vertex blend'`) to decide commit behavior — its roadmap W6.
+
+- **Why it matters:** the consumer's refusal cards, probe ladder, and
+  commit gate all key off strings that any wording change breaks.
+- **Current measured limitation:** direct methods throw `JsError` with a
+  prefixed message; `kernelCode`/`category` exist only on the batch
+  contract.
+- **Dependencies:** O4.4 (registry completeness). **Lane:** wasm bindings.
+- **Size:** M: (a) a `*Detailed` twin for every mutating direct method
+  returning `{status, code, category, details, value}` as data; (b) typed
+  tsify results replacing the 13 JSON-string returns; (c) a generated test
+  that every direct method with a typed failure has a twin.
+- **Boundary:** additive only; existing methods unchanged.
+- **Diagnostics:** the registry; no new codes.
+- **Transactionality:** unchanged (already fail-closed).
+- **Native / WASM:** WASM only; native already typed. **Python:** the same
+  code set maps to the exception hierarchy.
+- **Oracle:** contract tests asserting the same code from the direct twin
+  and the batch path for every pinned refusal.
+- **Matrix:** every mutating method × its pinned refusals.
+  **Boundary:** a twin missing for a method with a typed failure fails the
+  generated test.
+- **Fixture:** OpenZCAD's regex sites enumerated as the acceptance list.
+- **Docs/ledger:** book WASM chapter; e5b marked complete for direct methods.
+
+> **Exit gate:** every mutating direct method has a `*Detailed` twin whose
+> `code` equals the batch `kernelCode` for every pinned refusal; the 13
+> JSON-string returns have typed results; OpenZCAD's regex sites each have a
+> code to key on (listed in the PR).
+
 ---
 
 ## O5 — Interchange depth
@@ -537,6 +808,65 @@ doc's §9 lives here.
 **Depends on:** O1.4a (validation properties precede PMI credibility);
 5.3b's binding needs nothing from P-Class but *shows best* after M6
 exists.
+
+### O5.4 Assembly occurrence identity and shared-definition instancing (M)
+
+`crates/operations/src/assembly.rs` · `crates/io/src/arena_io.rs` ·
+`crates/topology/src/naming.rs` · `crates/wasm/src/bindings/assembly.rs`
+
+Added 2026-09-04 by the industrial-parity overlay (rows IP-2.3, IP-11.3).
+O5.1 owns STEP product structure; nothing owns the in-memory side it maps
+onto: `ComponentId` is a tree index, instances are repeated `SolidId` +
+`Mat4` with no persistent occurrence identity, and assemblies do not
+serialize in the arena format.
+
+- **Why it matters:** W6 (assembly workflow) and any consumer that edits a
+  shared definition and expects every occurrence to follow; interference
+  results must name occurrences, not solids.
+- **Current measured limitation:** as above; no occurrence events in the
+  journal.
+- **Dependencies:** O5.1a (reader shape), RFC 0003. **Lane:** operations/io
+  (coordinate with O5.1 files).
+- **Size:** M: (a) occurrence ids stable across edits and serialization,
+  path-addressed, with shared definitions referenced not copied; (b) arena
+  v6 additive assembly roots; (c) journal events for occurrence add/remove/
+  retransform and definition replacement; (d) WASM/batch.
+- **Boundary:** tree assemblies; no external references (O5.5).
+- **Exactness:** transforms exact (already qualified).
+- **Diagnostics:** `occurrence_unresolved`, `assembly_cycle` (typed).
+- **Transactionality:** assembly edits transactional. **Evolution:**
+  occurrence events; definition edits propagate through the existing face
+  events.
+- **Native / WASM:** `Assembly` API widened; `assembly*` direct and batch;
+  `serializeAssembly`. **Python:** facade.
+- **Oracle:** flatten equality across serialize/deserialize; occurrence ids
+  identical across round trip and after a definition edit.
+- **Matrix:** depth × sharing × edit-after-instance × scale.
+  **Boundary:** cycles refuse; dangling definitions refuse.
+- **Fixture:** a 3-level assembly with one definition instanced 20 times.
+  **Performance:** instancing 1,000 occurrences of one definition adds no
+  topology.
+- **Docs/ledger:** stability matrix Assemblies row; capability matrix
+  assembly axes.
+
+> **Exit gate:** occurrence ids survive arena round trip and STEP round trip
+> (with O5.1) unchanged; editing a shared definition updates every
+> occurrence with journaled events; 1,000 occurrences allocate no new
+> topology; native and WASM agree.
+
+### O5.5 External references and partial loading — design and decision (S)
+
+`docs/design/` (new)
+
+Added 2026-09-04 by the industrial-parity overlay (row IP-11.6). Large
+assemblies reference external part files and load subsets; whether the
+kernel owns any of that (a reference type that resolves lazily) or the
+application document does is undecided. Deliverable: a design note with
+the two options, the OpenZCAD document model's needs, and the owner's
+decision; if the kernel owns a piece, a follow-up issue with the full
+issue-ready field set. No implementation before the decision.
+
+> **Exit gate:** decision recorded; H6 gate 3 cites it.
 
 ---
 
@@ -643,6 +973,12 @@ O2.1c–e (the variant ripple), O2.2 (conics, M2 track), O2.3b–d
 
 **Wave C — after M4 / M5:** O1.3b (torture suite public), O5.3b (PMI
 read), O7 (RFC 0007), O5.3c last.
+
+**Added 2026-09-04 (industrial-parity overlay):** O1.2d–e, O1.5, O4.6,
+O4.7, and O5.5 join Wave A (tools, wasm tests, docs; no P-Class
+collision); O1.2f joins Wave B with O1.2a; O2.4 joins Wave B after 2.6
+(math + `phase_ff.rs`, M2 track); O3.4 follows O3.2 in Wave B; O4.5 is
+owner-gated; O5.4 rides Wave A/B with O5.1.
 
 **Owner-gated at any time:** O4.2c first publish · O4.3c PyPI · O6.2
 hosting target · O6.3 outreach.
