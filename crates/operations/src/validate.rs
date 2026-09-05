@@ -1070,8 +1070,15 @@ pub fn validate_solid_with_options(
                     reason: e.to_string(),
                 })?
             {
+                // Preserve the check's severity: the planar variant is an
+                // Error (its emitter side normalizes winding), the periodic
+                // variant is a Warning until curved-face emission catches up.
+                let severity = match issue.severity {
+                    remus_check::validate::checks::Severity::Error => Severity::Error,
+                    _ => Severity::Warning,
+                };
                 issues.push(ValidationIssue {
-                    severity: Severity::Error,
+                    severity,
                     description: issue.description,
                 });
             }
