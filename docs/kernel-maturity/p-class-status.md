@@ -56,7 +56,7 @@ Issue 2.0's measured baseline is
 | 6.2 Generalized move / rotate / offset face | Partial — holed planar supports move through uniquely attributable constant-radius analytic blend bands with exact re-limitation, total construction face evolution, transactional journal history, scale/translation coverage, and direct/batch WASM parity. Inward coaxial bore moves now reuse 6.1. Rotation, lateral relocation, outward cylinders, surface-type changes, and ambiguous complex blend regions remain unqualified | [#257](https://github.com/esaueng/remus/pull/257) |
 | 6.3 Curved delete-face-and-heal | Partial — complete toroidal rim-band deletion reuses exact analytic support reconstruction; complete boss wounds on cylindrical inner wires are also qualified with exact construction, analytic/mesh volume, transformed scale coverage, face history, rollback, and WASM parity. General outer-wire extension, partial bands, and rim-crossing boss wounds remain pending | [#274](https://github.com/esaueng/remus/pull/274), [#276](https://github.com/esaueng/remus/pull/276) |
 | 6.4 Curved-face draft | Pending | — |
-| 6.5 Journaled direct edits | Pending | — |
+| 6.5 Journaled direct edits | Pending | Includes [boundary-aware partial-cylinder resizing](../roadmap/partial-cylinder-resize.md): Jolly Fox quarter-wall, adjacent trim reconstruction, explicit unsupported-case refusals, and native/WASM geometry acceptance; fix not implemented. |
 | 6.6 Sketch external references on persistent topology identity | Pending — added 2026-09-04 by the industrial-parity overlay (row IP-13.2, leadership claim LC10) | — |
 | 7.1 Guided sweeps | Pending | — |
 | 7.2 Loft continuity and periodic lofts | Pending | — |
