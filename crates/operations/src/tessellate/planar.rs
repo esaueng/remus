@@ -215,7 +215,7 @@ pub(super) fn tessellate_analytic_with_boundary(
 fn sample_cylinder_wire(
     topo: &Topology,
     wire: &remus_topology::wire::Wire,
-    cyl: &remus_math::surfaces::CylindricalSurface,
+    cyl: &impl remus_math::traits::ParametricSurface,
     deflection: f64,
     angular_tol: f64,
 ) -> Result<CylinderLoop, crate::OperationsError> {
@@ -266,7 +266,7 @@ fn clip_cylinder_pocket(
     samples: &[CylinderSample],
     boundary_u: f64,
     keep_greater: bool,
-    cyl: &remus_math::surfaces::CylindricalSurface,
+    cyl: &impl remus_math::traits::ParametricSurface,
 ) -> Vec<CylinderSample> {
     let Some(&last) = samples.last() else {
         return Vec::new();
@@ -315,7 +315,7 @@ fn cylinder_pocket_pieces(
     positions: &[Point3],
     uvs: &[CylinderUv],
     outer_u: (f64, f64),
-    cyl: &remus_math::surfaces::CylindricalSurface,
+    cyl: &impl remus_math::traits::ParametricSurface,
 ) -> Vec<CylinderLoop> {
     if uvs.len() < 3 {
         return Vec::new();
@@ -408,13 +408,14 @@ fn cylinder_band_strands_above(uvs: &[CylinderUv], range: (usize, usize), u: f64
         .count()
 }
 
-/// Tessellate a cylindrical face with inner wires in the cylinder's developed
-/// UV plane. All wire polylines become CDT constraints; inner-loop cells are
+/// Tessellate a cylindrical or conical face with inner wires in its unwrapped
+/// UV chart. All wire polylines become CDT constraints; inner-loop cells are
 /// then removed before the vertices are mapped back to the analytic surface.
-pub(super) fn tessellate_cylinder_with_holes(
+pub(super) fn tessellate_revolved_with_holes(
     topo: &Topology,
     face_data: &remus_topology::face::Face,
-    cyl: &remus_math::surfaces::CylindricalSurface,
+    cyl: &impl remus_math::traits::ParametricSurface,
+    radius: f64,
     deflection: f64,
     angular_tol: f64,
 ) -> Result<TriangleMeshUV, crate::OperationsError> {
@@ -493,7 +494,7 @@ pub(super) fn tessellate_cylinder_with_holes(
             (lo.min(v), hi.max(v))
         });
     let nu = segments_for_chord_deviation_a(
-        cyl.radius(),
+        radius,
         outer_u.1 - outer_u.0,
         deflection,
         angular_tol,
@@ -537,7 +538,7 @@ pub(super) fn tessellate_cylinder_with_holes(
     // square in physical units (`radius * du` by `dv`). Points inside removed
     // pockets or bands are harmless: the pocket-parity and band predicates
     // below remove their triangles.
-    let physical_u_step = cyl.radius() * (outer_u.1 - outer_u.0) / nu as f64;
+    let physical_u_step = radius * (outer_u.1 - outer_u.0) / nu as f64;
     let nv = cylinder_grid_rows(physical_u_step, outer_v.1 - outer_v.0, nu.saturating_sub(1))?;
     for iu in 1..nu {
         #[allow(clippy::cast_precision_loss)]
@@ -550,7 +551,6 @@ pub(super) fn tessellate_cylinder_with_holes(
         }
     }
 
-    let radius = cyl.radius();
     let pts2d: Vec<Point2> = all_uvs
         .iter()
         .map(|&(u, v)| Point2::new(radius * u, v))

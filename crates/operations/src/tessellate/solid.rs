@@ -406,8 +406,10 @@ fn tessellate_faces_core(
     {
         for &face_id in all_faces {
             let face_data = topo.face(face_id)?;
-            if matches!(face_data.surface(), FaceSurface::Cylinder(_))
-                && !face_data.inner_wires().is_empty()
+            if matches!(
+                face_data.surface(),
+                FaceSurface::Cylinder(_) | FaceSurface::Cone(_)
+            ) && !face_data.inner_wires().is_empty()
             {
                 continue;
             }
