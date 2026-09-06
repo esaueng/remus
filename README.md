@@ -275,6 +275,7 @@ authority to publish.
 Broad directions, no dates.
 
 - **Boolean robustness.** Harden torus and mixed-surface booleans, and shrink the set of inputs that fall back to meshing.
+- **Boundary-aware cylindrical resizing.** Resize partial cylindrical walls while rebuilding adjoining face boundaries, preserving the axis, axial extent, and exact analytic geometry. See [scope and acceptance criteria](docs/roadmap/partial-cylinder-resize.md).
 - **Sweep generalization.** Extend non-planar profile support to the miter-corner sweep, to section boundaries with more than four edges, and to partial revolutions with non-planar boundaries.
 - **Parallel tessellation in WASM.** Native builds already parallelize per-face meshing. Bring it to the WASM target via threads.
 - **Assembly metadata.** Colors, layers, materials, and PMI for richer data exchange.
