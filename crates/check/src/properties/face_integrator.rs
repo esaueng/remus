@@ -1033,12 +1033,13 @@ fn face_uv_bounds<S: ParametricSurface>(
     if matches!(
         face.surface(),
         FaceSurface::Sphere(_) | FaceSurface::Cone(_)
-    ) || (matches!(face.surface(), FaceSurface::Cylinder(_))
-        && topo.wire(face.outer_wire())?.edges().iter().any(|oe| {
-            topo.edge(oe.edge())
-                .is_ok_and(|e| matches!(e.curve(), EdgeCurve::NurbsCurve(_)))
-        }))
-    {
+    ) || (matches!(
+        face.surface(),
+        FaceSurface::Cylinder(_) | FaceSurface::Torus(_)
+    ) && topo.wire(face.outer_wire())?.edges().iter().any(|oe| {
+        topo.edge(oe.edge())
+            .is_ok_and(|e| matches!(e.curve(), EdgeCurve::NurbsCurve(_)))
+    })) {
         // A quadric section can bulge far beyond its edge endpoints.
         let points = crate::util::wire_polygon_curve_sampled(
             topo,
