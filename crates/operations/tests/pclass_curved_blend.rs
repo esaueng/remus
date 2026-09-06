@@ -114,18 +114,44 @@ fn cross_drilled_shaft(topo: &mut Topology) -> (remus_topology::solid::SolidId, 
 }
 
 #[test]
-fn cross_drilled_hole_rim_fillet_is_watertight() {
+fn cross_drilled_hole_rim_fillet_refuses_wrong_side_material() {
     let mut topo = Topology::new();
     let (solid, rim) = cross_drilled_shaft(&mut topo);
-    let before = remus_operations::measure::solid_volume(&topo, solid, 0.01).unwrap();
-    let result = fillet_v2(&mut topo, solid, &[rim], 0.15).unwrap();
-    let after = remus_operations::measure::solid_volume(&topo, result.solid, 0.01).unwrap();
-    assert!(!result.is_partial);
-    assert!(
-        after > before,
-        "a concave hole-rim fillet must add material"
+    assert_eq!(
+        remus_operations::query::edge_concavity(&topo, solid, rim, 0.01).unwrap(),
+        remus_operations::query::EdgeConcavity::Convex,
     );
-    assert_watertight_with_mesh_oracle(&topo, result.solid);
+    // At (3, 0, 5), material is inside the shaft and outside the bore:
+    // only the x<3, z<5 quadrant is solid, independently proving convexity.
+    for dx in [-0.02, 0.02] {
+        for dz in [-0.02, 0.02] {
+            let expected = if dx < 0.0 && dz < 0.0 {
+                remus_check::classify::PointClassification::Inside
+            } else {
+                remus_check::classify::PointClassification::Outside
+            };
+            assert_eq!(
+                remus_check::classify::classify_point(
+                    &topo,
+                    solid,
+                    remus_math::vec::Point3::new(3.0 + dx, 0.0, 5.0 + dz),
+                    &remus_check::classify::ClassifyOptions::default(),
+                )
+                .unwrap(),
+                expected
+            );
+        }
+    }
+    let before = remus_io::arena_io::serialize_solid(&topo, solid).unwrap();
+    let error = fillet_v2(&mut topo, solid, &[rim], 0.15)
+        .err()
+        .expect("wrong-side blend must refuse");
+    assert!(error.to_string().contains("convex edges added"), "{error}");
+    assert_eq!(
+        remus_io::arena_io::serialize_solid(&topo, solid).unwrap(),
+        before
+    );
+    assert_watertight_with_mesh_oracle(&topo, solid);
 }
 
 #[test]
@@ -225,4 +251,81 @@ fn cone_cone_shoulder_fillet_is_watertight() {
 
     assert!(!result.is_partial);
     assert_watertight_with_mesh_oracle(&topo, result.solid);
+}
+
+#[test]
+fn cross_drilled_shaft_inner_wires_oppose_outer_wire() {
+    for scale in [0.1, 1.0, 10.0] {
+        for angle in [0.0, 0.37, std::f64::consts::FRAC_PI_2] {
+            for raw in [false, true] {
+                let mut topo = Topology::new();
+                let shaft = make_cylinder(&mut topo, 3.0 * scale, 12.0 * scale).unwrap();
+                let tool = make_cylinder(&mut topo, scale, 10.0 * scale).unwrap();
+                transform_solid(
+                    &mut topo,
+                    tool,
+                    &Mat4::rotation_y(std::f64::consts::FRAC_PI_2),
+                )
+                .unwrap();
+                transform_solid(
+                    &mut topo,
+                    tool,
+                    &Mat4::translation(-5.0 * scale, 0.0, 6.0 * scale),
+                )
+                .unwrap();
+                transform_solid(&mut topo, tool, &Mat4::rotation_z(angle)).unwrap();
+                let solid = if raw {
+                    remus_algo::gfa::boolean(
+                        &mut topo,
+                        remus_algo::bop::BooleanOp::Cut,
+                        shaft,
+                        tool,
+                    )
+                    .unwrap()
+                } else {
+                    boolean(&mut topo, BooleanOp::Cut, shaft, tool).unwrap()
+                };
+                let mut checked_holes = 0;
+                for face_id in remus_topology::explorer::solid_faces(&topo, solid).unwrap() {
+                    let face = topo.face(face_id).unwrap();
+                    if matches!(face.surface(), FaceSurface::Cylinder(_)) {
+                        checked_holes += face.inner_wires().len();
+                        let issues = remus_check::validate::check_face_inner_wire_orientation(
+                            &topo, face_id,
+                        )
+                        .unwrap();
+                        assert!(
+                            issues.is_empty(),
+                            "scale={scale}, angle={angle}, raw={raw}: {issues:?}"
+                        );
+                    }
+                }
+                assert_eq!(checked_holes, 2, "scale={scale}, angle={angle}, raw={raw}");
+                assert!(
+                    remus_operations::validate::validate_solid(&topo, solid)
+                        .unwrap()
+                        .is_valid()
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn cross_drilled_winding_survives_step_round_trip() {
+    let mut topo = Topology::new();
+    let (solid, _) = cross_drilled_shaft(&mut topo);
+    let step = remus_io::step::writer::write_step(&topo, &[solid]).unwrap();
+    let mut imported = Topology::new();
+    let solids = remus_io::step::reader::read_step(&step, &mut imported).unwrap();
+    assert_eq!(solids.len(), 1);
+    let mut holes = 0;
+    for face in remus_topology::explorer::solid_faces(&imported, solids[0]).unwrap() {
+        holes += imported.face(face).unwrap().inner_wires().len();
+        let issues =
+            remus_check::validate::check_face_inner_wire_orientation(&imported, face).unwrap();
+        assert!(issues.is_empty(), "{issues:?}");
+    }
+    assert_eq!(holes, 2);
+    assert_watertight_with_mesh_oracle(&imported, solids[0]);
 }

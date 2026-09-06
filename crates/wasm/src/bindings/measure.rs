@@ -1048,6 +1048,21 @@ mod tests {
                     "scale={scale} bore={bore_radius}: {parsed}"
                 );
 
+                if bore_radius < 3.0 {
+                    let solid = k.topo.solid_id_from_index(2).unwrap();
+                    let mut holes = 0;
+                    for face in remus_topology::explorer::solid_faces(&k.topo, solid).unwrap() {
+                        holes += k.topo.face(face).unwrap().inner_wires().len();
+                        let issues =
+                            remus_check::validate::check_face_inner_wire_orientation(&k.topo, face)
+                                .unwrap();
+                        assert!(
+                            issues.is_empty(),
+                            "scale={scale} bore={bore_radius}: {issues:?}"
+                        );
+                    }
+                    assert_eq!(holes, 2);
+                }
                 let measured = parsed[5]["ok"].as_f64().unwrap();
                 let expected = unit_volume * scale.powi(3);
                 assert!(
