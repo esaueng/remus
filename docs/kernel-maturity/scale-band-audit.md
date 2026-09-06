@@ -87,6 +87,15 @@ result and unchanged operand geometry; the other refusal/rollback tests remain.
   and large curves lost all four anchors; reversed curves returned fractions
   inconsistent with their traversal. The legacy reverse fixture now carries
   the actual reverse orientation rather than swapped endpoints with forward=true.
+  Full-workspace qualification exposed an additional honeycomb partition defect:
+  the newly retained anchors made coincident planar-NURBS walls over-share edges.
+  Straight-carrier crossings now enter the NURBS chart's split set; control-point
+  proofs recognize planar-NURBS coincidence and avoid noise-generated sections;
+  every directly proven cross-rank overlap of complementary pieces participates
+  in same-domain selection. Shared containing representatives are emitted once.
+  The existing four-cutter regression again requires zero over-shared edges.
+  Its pcut1 free-edge residual improves from the documented ceiling of 52 to 36;
+  the remaining raw open edges are still unresolved, not claimed watertight.
   Other NURBS projection sites and pathological multi-extremum curves remain open.
 - The circle and
   ellipse boundary/section finders now use model-space endpoint and duplicate
