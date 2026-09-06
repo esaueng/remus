@@ -1,0 +1,35 @@
+name: Mutation Scope
+
+on:
+  pull_request:
+    paths:
+      - '.cargo/mutants.toml'
+      - 'mutants.toml'
+      - 'crates/math/**'
+      - 'scripts/test-mutants-scope.py'
+      - '.github/workflows/mutants.yml'
+      - '.github/workflows/mutation-scope.yml'
+  push:
+    branches: [main]
+    paths:
+      - '.cargo/mutants.toml'
+      - 'mutants.toml'
+      - 'crates/math/**'
+      - 'scripts/test-mutants-scope.py'
+      - '.github/workflows/mutants.yml'
+      - '.github/workflows/mutation-scope.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  scope:
+    name: Mutation Scope Contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518 # v2.62.30
+        with:
+          tool: cargo-mutants@27.0.0
+      - run: python3 scripts/test-mutants-scope.py
