@@ -1,5 +1,5 @@
 //! A transverse cone-sphere seam closes once and remains on both carriers between fit samples.
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::panic)]
 use remus_math::{
     analytic_intersection::{AnalyticSurface, intersect_analytic_analytic_bounded},
     surfaces::{ConicalSurface, CylindricalSurface, SphericalSurface},
@@ -99,4 +99,69 @@ fn offset_sphere_cylinder_has_two_supported_closed_seams() {
             }
         }
     }
+}
+
+#[test]
+fn offset_torus_sphere_seams_close_before_the_march_budget() {
+    use remus_math::surfaces::ToroidalSurface;
+    for scale in [0.1, 1.0, 10.0] {
+        let torus =
+            ToroidalSurface::new(Point3::new(0.0, 0.0, 0.0), 6.0 * scale, 2.0 * scale).unwrap();
+        let center = Point3::new(5.0 * scale, 0.0, scale);
+        let sphere = SphericalSurface::new(center, 3.0 * scale).unwrap();
+        for reverse in [false, true] {
+            let (a, b) = if reverse {
+                (
+                    AnalyticSurface::Sphere(&sphere),
+                    AnalyticSurface::Torus(&torus),
+                )
+            } else {
+                (
+                    AnalyticSurface::Torus(&torus),
+                    AnalyticSurface::Sphere(&sphere),
+                )
+            };
+            let curves = intersect_analytic_analytic_bounded(a, b, 32, None, None)
+                .unwrap_or_else(|error| panic!("scale={scale}, reverse={reverse}: {error}"));
+            assert_eq!(curves.len(), 1, "scale={scale}, reverse={reverse}");
+            for result in curves {
+                let curve = result.curve;
+                let (lo, hi) = curve.domain();
+                let gap = (curve.evaluate(lo) - curve.evaluate(hi)).length();
+                assert!(
+                    gap < 1e-9,
+                    "open seam gap={gap}, scale={scale}, reverse={reverse}"
+                );
+                for i in 0..=4096 {
+                    let p = curve.evaluate((hi - lo).mul_add(f64::from(i) / 4096.0, lo));
+                    let sphere_error = ((p - center).length() - 3.0 * scale).abs();
+                    let torus_error =
+                        ((p.x().hypot(p.y()) - 6.0 * scale).hypot(p.z()) - 2.0 * scale).abs();
+                    assert!(
+                        sphere_error < 2e-9 && torus_error < 2e-9,
+                        "scale={scale}, reverse={reverse}, sphere={sphere_error}, torus={torus_error}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn exhausted_torus_march_refuses_instead_of_returning_open_fragments() {
+    let torus =
+        remus_math::surfaces::ToroidalSurface::new(Point3::new(0.0, 0.0, 0.0), 6000.0, 2000.0)
+            .unwrap();
+    let sphere = SphericalSurface::new(Point3::new(5000.0, 0.0, 1000.0), 3000.0).unwrap();
+    let result = intersect_analytic_analytic_bounded(
+        AnalyticSurface::Torus(&torus),
+        AnalyticSurface::Sphere(&sphere),
+        32,
+        None,
+        None,
+    );
+    assert!(matches!(
+        result,
+        Err(remus_math::MathError::ConvergenceFailure { iterations: 500 })
+    ));
 }
