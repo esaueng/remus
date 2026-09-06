@@ -43,7 +43,7 @@ proptest = "1"
 criterion = {version = "0.8", features = ["html_reports"]}
 
 # IO formats
-quick-xml = "0.41"
+quick-xml = "0.42"
 sevenz-rust2 = {version = "=0.20.2", default-features = false, features = ["util"]}
 ureq = {version = "=3.4.0", default-features = false, features = ["rustls"]}
 zip = {version = "8", default-features = false, features = ["deflate"]}
