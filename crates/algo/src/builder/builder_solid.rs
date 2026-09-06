@@ -262,15 +262,15 @@ fn retain_aligned<T, U>(
     });
 }
 
-/// Restore the stored winding convention on cylinder faces before edge merge.
+/// Restore the stored winding convention on cylinder and cone faces before edge merge.
 ///
 /// Splitter loops are geometrically closed but can arrive wound with an outer
-/// loop opposing the stored cylinder normal, or an inner loop following it.
+/// loop opposing the stored surface normal, or an inner loop following it.
 /// That makes every merged edge on a cut/intersect pocket disagree with its
 /// adjacent face even though the selected surfaces and volumes are correct.
 /// Multi-opening walls compare contractible loops in seam-unwrapped UV so
-/// opposite sides of the cylinder use the same orientation reference.
-pub(super) fn orient_cylinder_face_wires(
+/// opposite sides of the carrier use the same orientation reference.
+pub(super) fn orient_revolved_face_wires(
     topo: &mut Topology,
     selected: &[SelectedFace],
 ) -> Result<(), AlgoError> {
@@ -282,7 +282,10 @@ pub(super) fn orient_cylinder_face_wires(
         }
         let (surface, outer, inners) = {
             let face = topo.face(face_id)?;
-            if !matches!(face.surface(), FaceSurface::Cylinder(_)) {
+            if !matches!(
+                face.surface(),
+                FaceSurface::Cylinder(_) | FaceSurface::Cone(_)
+            ) {
                 continue;
             }
             (
@@ -294,14 +297,14 @@ pub(super) fn orient_cylinder_face_wires(
         let (oriented_outer, outer_changed) = orient_wire_to_surface(topo, outer, &surface, true)?;
         let mut changed = outer_changed;
         let mut oriented_inners = Vec::with_capacity(inners.len());
-        if inners.len() == 1 {
+        if inners.len() == 1 && matches!(surface, FaceSurface::Cylinder(_)) {
             let (inner, inner_changed) = orient_wire_to_surface(topo, inners[0], &surface, false)?;
             changed |= inner_changed;
             oriented_inners.push(inner);
         } else if !inners.is_empty() {
-            let outer_area = cylinder_wire_uv_area(topo, oriented_outer, &surface)?;
+            let outer_area = revolved_wire_uv_area(topo, oriented_outer, &surface)?;
             for &inner in &inners {
-                let inner_area = cylinder_wire_uv_area(topo, inner, &surface)?;
+                let inner_area = revolved_wire_uv_area(topo, inner, &surface)?;
                 if matches!((outer_area, inner_area), (Some(a), Some(b)) if a.is_sign_positive() == b.is_sign_positive())
                 {
                     oriented_inners.push(reverse_wire(topo, inner)?);
@@ -415,7 +418,7 @@ fn reverse_wire(topo: &mut Topology, wire_id: WireId) -> Result<WireId, AlgoErro
 }
 
 /// Full rings have no enclosed UV area; only contractible boundaries can be compared.
-fn cylinder_wire_uv_area(
+fn revolved_wire_uv_area(
     topo: &Topology,
     wire_id: WireId,
     surface: &FaceSurface,

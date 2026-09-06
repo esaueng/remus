@@ -3593,6 +3593,30 @@ fn fill_sphere_hemisphere_patch(
         if geometric.dot(outward) < 0.0 {
             triangle.swap(1, 2);
         }
+        // Opposite hemispheres must not share a flat ear across their
+        // equator: coincident-triangle removal would turn it into a hole.
+        // Lift an interior sample through this hemisphere's chart instead.
+        if [pa, pb, pc]
+            .iter()
+            .all(|p| (*p - center).dot(sphere.z_axis()).abs() <= hemisphere_tol)
+        {
+            let point3 = center + outward * radius;
+            let key = point_merge_key(point3, MERGE_GRID);
+            let interior_id = *point_to_global.entry(key).or_insert_with(|| {
+                let id = merged.positions.len() as u32;
+                merged.positions.push(point3);
+                merged.normals.push(outward);
+                id
+            });
+            for (a, b) in [
+                (triangle[0], triangle[1]),
+                (triangle[1], triangle[2]),
+                (triangle[2], triangle[0]),
+            ] {
+                triangles.push([a, b, interior_id]);
+            }
+            continue;
+        }
         triangles.push(triangle);
     }
     if triangles.is_empty() {
@@ -4027,6 +4051,33 @@ pub(super) fn tessellate_sphere_cap_shared(
     if !circular_rim {
         rim_axis = None;
     }
+    let mut hemisphere_axis = None;
+    for oriented in &cap_edges {
+        let (center, axis, radius) = match topo.edge(oriented.edge())?.curve() {
+            EdgeCurve::Circle(c) => (c.center(), c.normal(), c.radius()),
+            EdgeCurve::Ellipse(c)
+                if (c.semi_major() - c.semi_minor()).abs() <= sphere.radius() * 1e-10 =>
+            {
+                (c.center(), c.normal(), c.semi_major())
+            }
+            _ => continue,
+        };
+        if (center - sphere.center()).length() <= sphere.radius() * 1e-10
+            && (radius - sphere.radius()).abs() <= sphere.radius() * 1e-10
+        {
+            hemisphere_axis = Some(axis);
+            break;
+        }
+    }
+    let hemisphere_sphere = hemisphere_axis
+        .map(|axis| {
+            remus_math::surfaces::SphericalSurface::with_axis(
+                sphere.center(),
+                sphere.radius(),
+                axis,
+            )
+        })
+        .transpose()?;
     let latitude_sphere = rim_axis
         .map(|axis| {
             remus_math::surfaces::SphericalSurface::with_axis(
@@ -4055,7 +4106,7 @@ pub(super) fn tessellate_sphere_cap_shared(
             point_to_global,
         )
         || fill_sphere_hemisphere_patch(
-            sphere,
+            hemisphere_sphere.as_ref().unwrap_or(sphere),
             &boundary,
             deflection,
             angular_tol,

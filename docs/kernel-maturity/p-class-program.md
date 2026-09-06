@@ -307,6 +307,23 @@ reviewable stages:
    operator census and parity matrix, and reconcile the capability/stability
    ledgers without weakening typed refusal or fallback disclosure.
 
+Stage 2.4c now has a bounded cone–sphere qualification slice. A radius-4
+sphere centred at `(2, 0, 6)` protrudes from a height-12, radius-6-to-2 cone.
+The old Fuse could return the unchanged cone as an exact result. The repaired
+seam closes on both carriers, clips at hemisphere boundaries, and retains the
+proper complementary regions for Fuse, Cut, and Intersect. The native matrix
+covers scales 0.1, 1, and 10, with and without a common rotation/translation;
+it checks support residuals, topology, watertight meshes, and an independent
+horizontal-disk overlap integral (197.106403011 mm³ at unit scale). Planar
+ellipse moments also preserve the cap measurement after rigid transforms.
+
+The pinned off-axis sphere–cylinder and torus–sphere witnesses still refuse
+through `ExactOnlyUnattainable` for all three operators, restoring the live
+model on refusal. This slice does **not** qualify general quartic arrangements
+or close 2.4c/2.4d; those broader arrangements and the integration ratchet remain.
+See `crates/operations/tests/pclass_quadric_seams.rs` and
+`crates/math/tests/regress_marched_quadric_seam.rs`.
+
 Stage 2.4b merged in PR #207. The torus-notch arrangement emits both
 complementary annular `u`-bands with distinct interior witnesses and
 winding-correct outer/inner roles. Operator-neutral classification retains the
