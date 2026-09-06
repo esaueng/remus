@@ -92,10 +92,23 @@ Current 2.4 qualification work covers bounded off-axis cone/sphere,
 sphere/cylinder, and torus/sphere matrices; integration remains pending. The
 2.6 through-tool family now has a 72-cell exact scale/placement matrix;
 [remaining band audits](scale-band-audit.md) keep the broader item partial.
-The torus/box notch Cut still needs a stricter orientation-validation
-qualification pass: a probe of the pre-change c1d8d211 package reports
-validation issues despite the existing analytic/manifold/volume test
-passing. See `campaign-history.md` for the measured distinction.
+The torus/box notch follow-up now passes the 18-cell exact-only matrix in
+`pclass_torus_notch_orientation`: three operations, scales 0.1/1/10, and origin
+or rotated/translated placement. Gates include strict orientation/manifold
+validation, analytic carriers, fitted-seam residual within linear tolerance,
+watertight tessellation, volume within 0.1% of independent annular-section
+quadrature, and signed mesh volume within 1%. Fixes cover complementary rim
+traversal, carried trim domains, scale-relative march/branch distances, bounded
+seam refitting, Fuse rim preservation, and oriented band integration. The new
+public `integrate_torus_band_face` query lets measurement retain its fallback
+for unsupported trims. Workspace Clippy, layer boundaries, warnings-denied docs,
+and the unchanged 52-row census pass. Both WASM packages, smoke/installed
+consumers (all 18 cells through direct and batch APIs), workspace doctests,
+and the deterministic complexity guard pass. Full workspace: 4,842 passed,
+13 skipped; a process-leak warning on the passing honeycomb case did not recur
+in a clean four-test rerun. An idle performance comparison remains pending
+because other browser jobs caused drift in the unchanged parent benchmark;
+this follow-up is not integrated.
 
 OpenZCAD consumer-roadmap K-S4 (`approx_census` CI enforcement): **done (PR
 #140)**. Its authoritative disposition line remains in planning PR

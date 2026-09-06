@@ -1118,9 +1118,11 @@ fn collect_torus_phi_ring(
             topo.vertex(edge.start())?.point(),
             topo.vertex(edge.end())?.point(),
         );
+        let (d0, d1) = crate::authoritative_edge_domain(edge, "torus notch rim")?;
         for k in 0..=8 {
             let f = f64::from(k) / 8.0;
-            let t = if oe.is_forward() { f } else { 1.0 - f };
+            let fraction = if oe.is_forward() { f } else { 1.0 - f };
+            let t = d0 + (d1 - d0) * fraction;
             let point = edge.curve().evaluate_with_endpoints(t, start, end);
             phi_path.push(torus.project_point(point).1);
         }
@@ -1204,8 +1206,8 @@ pub(super) fn tessellate_torus_notch_band(
 
     // Ring-angle (u) of each loop: each loop sits at a u-BAND where a box wall
     // cuts the tube. The outer loop's v-winding selects its material side by
-    // the oriented-surface boundary rule: positive v runs keep increasing u;
-    // negative v runs keep decreasing u. Include each loop's half-u-spread so
+    // the oriented-surface boundary rule: positive v runs keep decreasing u;
+    // negative v runs keep increasing u. Include each loop's half-u-spread so
     // interior rows start at the kept-side edge, not inside the boundary strip.
     let mean_u = |ring: &[(f64, u32)]| -> f64 {
         let (mut sx, mut sy) = (0.0, 0.0);
@@ -1231,7 +1233,7 @@ pub(super) fn tessellate_torus_notch_band(
     let spread_a = half_spread(&ring_a, u_a);
     let spread_b = half_spread(&ring_b, u_b);
 
-    let increasing = outer_winding > 0.0;
+    let increasing = outer_winding < 0.0;
     let (u_start, u_end) = if increasing {
         let span = (u_b - u_a).rem_euclid(TAU);
         (u_a + spread_a, u_a + span - spread_b)
