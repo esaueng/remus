@@ -1498,10 +1498,8 @@ pub fn intersect_analytic_analytic_bounded(
             let dist = (pa - pb).length();
 
             if dist < seed_threshold {
-                // Use the coarse seed directly. The marching algorithm
-                // corrects positions at each step via projection, so seeds
-                // don't need to be on the exact intersection — they just
-                // need to be close enough for the marcher to converge.
+                // Seed collection is deliberately coarse; correction before
+                // deduplication puts different guesses onto the same seam.
                 let mid = Point3::new(
                     (pa.x() + pb.x()) * 0.5,
                     (pa.y() + pb.y()) * 0.5,
@@ -1522,7 +1520,30 @@ pub fn intersect_analytic_analytic_bounded(
     let march_step = (char_size * 0.02).clamp(0.005, 0.5);
     let dedup_radius = march_step * 10.0;
     let mut unique_seeds = Vec::new();
-    for seed in &seeds {
+    for coarse in &seeds {
+        let point = correct_to_intersection(
+            &a,
+            &b,
+            surf_a.as_ref(),
+            norm_a.as_ref(),
+            surf_b.as_ref(),
+            norm_b.as_ref(),
+            coarse.0,
+            u_range_a,
+            v_range_a,
+            u_range_b,
+            v_range_b,
+            20,
+        );
+        let pa = project_analytic(&a, point, u_range_a, v_range_a);
+        let pb = project_analytic(&b, point, u_range_b, v_range_b);
+        let tolerance = Tolerance::new().linear;
+        if (point - surf_a(pa.0, pa.1)).length() > tolerance
+            || (point - surf_b(pb.0, pb.1)).length() > tolerance
+        {
+            continue;
+        }
+        let seed = &(point, pa, pb);
         let dominated = unique_seeds
             .iter()
             .any(|s: &(Point3, (f64, f64), (f64, f64))| (s.0 - seed.0).length() < dedup_radius);
@@ -1569,21 +1590,70 @@ pub fn intersect_analytic_analytic_bounded(
                 }
             }
 
-            let ipts: Vec<IntersectionPoint> = march_result
-                .iter()
-                .map(|&pt| IntersectionPoint {
-                    point: pt,
-                    param1: (0.0, 0.0),
-                    param2: (0.0, 0.0),
-                })
-                .collect();
-
-            let degree = 3.min(march_result.len() - 1);
-            if let Ok(curve) = interpolate(&march_result, degree) {
-                curves.push(IntersectionCurve {
-                    curve,
-                    points: ipts,
-                });
+            // Interpolating on-carrier samples does not keep the spline on
+            // either carrier between them. Refine offending spans to a tighter
+            // residual than topology welding, so trimming and tessellation use
+            // the same geometric seam. Refuse the whole intersection if the
+            // bounded refinement cannot qualify every branch.
+            let mut fit_points = march_result;
+            let mut fitted = false;
+            for _ in 0..12 {
+                let curve = interpolate(&fit_points, 3.min(fit_points.len() - 1))?;
+                let params = crate::nurbs::fitting::chord_length_params(&fit_points);
+                let mut refined = Vec::with_capacity(fit_points.len());
+                let mut accepted = true;
+                for (i, ts) in params.windows(2).enumerate() {
+                    refined.push(fit_points[i]);
+                    let mut bad = false;
+                    for fraction in [0.25, 0.5, 0.75] {
+                        let p = curve.evaluate((ts[1] - ts[0]).mul_add(fraction, ts[0]));
+                        let (ua, va) = project_analytic(&a, p, u_range_a, v_range_a);
+                        let (ub, vb) = project_analytic(&b, p, u_range_b, v_range_b);
+                        bad |= (p - surf_a(ua, va)).length() > 1e-9
+                            || (p - surf_b(ub, vb)).length() > 1e-9;
+                    }
+                    if bad {
+                        accepted = false;
+                        let p = curve.evaluate(f64::midpoint(ts[0], ts[1]));
+                        refined.push(correct_to_intersection(
+                            &a,
+                            &b,
+                            surf_a.as_ref(),
+                            norm_a.as_ref(),
+                            surf_b.as_ref(),
+                            norm_b.as_ref(),
+                            p,
+                            u_range_a,
+                            v_range_a,
+                            u_range_b,
+                            v_range_b,
+                            20,
+                        ));
+                    }
+                }
+                if accepted {
+                    let points = fit_points
+                        .iter()
+                        .map(|&point| IntersectionPoint {
+                            point,
+                            param1: (0.0, 0.0),
+                            param2: (0.0, 0.0),
+                        })
+                        .collect();
+                    curves.push(IntersectionCurve { curve, points });
+                    fitted = true;
+                    break;
+                }
+                if refined.len() > 2048 {
+                    break;
+                }
+                if let Some(last) = fit_points.last() {
+                    refined.push(*last);
+                }
+                fit_points = refined;
+            }
+            if !fitted {
+                return Err(MathError::ConvergenceFailure { iterations: 12 });
             }
         }
     }
@@ -3143,7 +3213,7 @@ fn correct_to_intersection(
         let da = (pv - Vec3::new(pa.x(), pa.y(), pa.z())).dot(na);
         let db = (pv - Vec3::new(pb.x(), pb.y(), pb.z())).dot(nb);
 
-        if da.abs() < 1e-7 && db.abs() < 1e-7 {
+        if da.abs() < 1e-11 && db.abs() < 1e-11 {
             break;
         }
 
@@ -3227,6 +3297,9 @@ fn march_analytic_intersection(
     u_periodic_a: bool,
     u_periodic_b: bool,
 ) -> Vec<Point3> {
+    let seed = correct_to_intersection(
+        a, b, surf_a, norm_a, surf_b, norm_b, seed, u_range_a, v_range_a, u_range_b, v_range_b, 20,
+    );
     let max_steps = 500;
     let h_min = 1e-6;
     let h_max = initial_step * 4.0;
@@ -3285,10 +3358,23 @@ fn march_analytic_intersection(
 
             let pa = surf_a(ua2, va2);
             let pb = surf_b(ub2, vb2);
-            let mid = Point3::new(
-                (pa.x() + pb.x()) * 0.5,
-                (pa.y() + pb.y()) * 0.5,
-                (pa.z() + pb.z()) * 0.5,
+            let mid = correct_to_intersection(
+                a,
+                b,
+                surf_a,
+                norm_a,
+                surf_b,
+                norm_b,
+                Point3::new(
+                    (pa.x() + pb.x()) * 0.5,
+                    (pa.y() + pb.y()) * 0.5,
+                    (pa.z() + pb.z()) * 0.5,
+                ),
+                u_range_a,
+                v_range_a,
+                u_range_b,
+                v_range_b,
+                10,
             );
             let out_a = (!u_periodic_a && (ua2 <= u_range_a.0 || ua2 >= u_range_a.1))
                 || va2 <= v_range_a.0
@@ -3306,8 +3392,10 @@ fn march_analytic_intersection(
             // Require ≥10 steps to avoid premature closure near the seed.
             let dist_to_seed = (mid - seed).length();
             if points.len() > 10 && dist_to_seed < closure_dist {
-                points.push(seed);
-                break;
+                let mut closed = vec![seed];
+                closed.append(points);
+                closed.push(seed);
+                return closed;
             }
 
             points.push(mid);
