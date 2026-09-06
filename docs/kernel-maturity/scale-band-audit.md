@@ -31,7 +31,7 @@ mistook individual short edges for closed loops.
 | --- | --- | --- |
 | `phase_ff.rs`, boundary-junction search | Exact closest-point projection on a straight edge replaces fixed-count ternary refinement | Curved boundary refinement keeps its existing algorithm and budgets |
 | `phase_ff.rs`, junction reuse | Cap `100 × linear tolerance` at 1% of the combined face-pair extent, with the caller's linear tolerance as the floor | Same extent authority as the previously capped boundary-search trigger |
-| `face_splitter/edge_splitting.rs`, line anchors | Limit anchor acceptance and spatial dedup by 1% of the edge length | Normalized parameter endpoint checks still need a separate dimensional audit |
+| `face_splitter/edge_splitting.rs`, line anchors | Limit anchor acceptance and spatial dedup by 1% of the edge length | Endpoint exclusion converts linear tolerance to normalized parameter units; deduplication uses 3D distance |
 | `face_splitter/mod.rs`, planar internal loops | Limit endpoint quantization and interior margin by polygon extent | Curved endpoints alone cannot bound a carrier and retain their existing band |
 | `face_splitter/mod.rs`, planar arrangement | Limit endpoint adoption and coarse snapping by the arrangement extent | The new extent cap applies to straight inputs |
 | `face_splitter/mod.rs`, planar sections | Limit endpoint welding, bridging, and zero-extent filtering by the boundary extent | Non-planar chart handling is unchanged |
@@ -46,10 +46,20 @@ result and unchanged operand geometry; the other refusal/rollback tests remain.
 
 ## Remaining audit
 
-- Dimensionless edge-parameter comparisons that currently reuse a length tolerance.
+- Curved edge-parameter comparisons that currently reuse a length tolerance.
+  Straight-edge endpoint exclusion now divides by edge length and its duplicate
+  anchors are compared only in 3D. A regression covers edge lengths 1e-4, 1,
+  and 1e6, rejecting sub-tolerance endpoint fragments while retaining distinct
+  interior anchors near the endpoints and near one another.
 - Curved and periodic face bands, including the cases where endpoint bounds
   do not represent the carrier's extent.
 - Anisotropic models and small features embedded in much larger faces.
+  A packaged-WASM probe of a 1e6 by 1 by 1 blank and a 0.1 by 0.4 by 2
+  tool at (0.1, 0.3, -0.5) still returns an incorrect exact Fuse: volume
+  1e6 rather than 1e6 + 0.04, and the tool-only point (0.15, 0.5, -0.25)
+  is outside the result. The same defect reproduces on the package preceding
+  the straight-edge parameter correction. Cut refuses typed; Intersect
+  preserves the expected 0.04 volume. This material-loss witness is open.
 - The remaining raw absolute snap/weld/acceptance constants in the other
   pave-filler, arrangement, classifier, and assembly paths.
 
