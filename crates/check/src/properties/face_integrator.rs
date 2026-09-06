@@ -79,9 +79,9 @@ pub struct FaceContribution {
 /// are one such pair. A wrapping hole that instead CAPS the wall, leaving the
 /// outer wire at a single `v`, clips the `v` range rather than masking, as a
 /// drilled tunnel's rim does on a sphere — see `full_revolution_hole_vs`. A
-/// wrapping hole on a torus is still not subtracted: the tube is periodic in
-/// BOTH parameters, so it has neither an "above" nor a far end to clip, and
-/// callers that can meet one defer the whole solid rather than measure it here.
+/// torus with two monotone tube-wrapping rims uses their oriented material
+/// interval instead. Other wrapping torus trims remain outside that qualified
+/// family; callers can use [`integrate_torus_band_face`] to detect this limit.
 ///
 /// A face whose whole boundary is ONE closed edge has a single boundary
 /// vertex, so it cannot bound its own domain out of the surface's analytic
@@ -340,6 +340,9 @@ pub fn integrate_face(
             ))
         }
         FaceSurface::Torus(s) => {
+            if let Some(band) = integrate_torus_tube_band(topo, face_id, s, gauss_order, sign)? {
+                return Ok(band);
+            }
             let full = ((0.0, std::f64::consts::TAU), (0.0, std::f64::consts::TAU));
             let (u_range, v_range) = face_uv_bounds(topo, face_id, s, true, true, full)?;
             // A torus is periodic in `v` as well, so the trimming boundary has
@@ -479,6 +482,151 @@ fn face_boundary_v_extent<S: ParametricSurface>(
             "face boundary has no finite extent on its surface".into(),
         ))
     }
+}
+
+/// Integrate a torus face bounded by two monotone tube-wrapping rims.
+///
+/// Returns `None` when the boundary is outside this qualified band family.
+/// This lets measurement callers retain their fallback for unsupported trims.
+///
+/// # Errors
+/// Returns an error for missing topology or an exceeded trim-sampling budget.
+pub fn integrate_torus_band_face(
+    topo: &Topology,
+    face_id: FaceId,
+    gauss_order: usize,
+) -> Result<Option<FaceContribution>, CheckError> {
+    let face = topo.face(face_id)?;
+    let FaceSurface::Torus(torus) = face.surface() else {
+        return Ok(None);
+    };
+    integrate_torus_tube_band(
+        topo,
+        face_id,
+        torus,
+        gauss_order,
+        if face.is_reversed() { -1.0 } else { 1.0 },
+    )
+}
+
+/// Integrate between two tube-wrapping rims using their oriented material side.
+#[allow(clippy::too_many_lines, clippy::cast_precision_loss)]
+fn integrate_torus_tube_band(
+    topo: &Topology,
+    face_id: FaceId,
+    torus: &remus_math::surfaces::ToroidalSurface,
+    order: usize,
+    sign: f64,
+) -> Result<Option<FaceContribution>, CheckError> {
+    use std::f64::consts::{PI, TAU};
+    let face = topo.face(face_id)?;
+    if face.inner_wires().len() != 1 {
+        return Ok(None);
+    }
+    let edge_count = topo
+        .wire(face.outer_wire())?
+        .edges()
+        .len()
+        .saturating_add(topo.wire(face.inner_wires()[0])?.edges().len());
+    if edge_count.saturating_mul(TRIM_SAMPLES) > MAX_TRIM_POINTS {
+        return Err(CheckError::IntegrationFailed(format!(
+            "face trim exceeds the {MAX_TRIM_POINTS}-point integration budget"
+        )));
+    }
+    let mut rings = Vec::new();
+    let mut windings = Vec::new();
+    for wire in [face.outer_wire(), face.inner_wires()[0]] {
+        let points =
+            crate::util::wire_polygon_curve_sampled(topo, wire, TRIM_SAMPLES, TRIM_SAMPLES)?;
+        if points.len() < 3 {
+            return Ok(None);
+        }
+        let mut uv: Vec<_> = points.into_iter().map(|p| torus.project_point(p)).collect();
+        uv.push(uv[0]);
+        let mut winding = 0.0;
+        for pair in uv.windows(2) {
+            let delta = (pair[1].1 - pair[0].1 + PI).rem_euclid(TAU) - PI;
+            winding += delta;
+        }
+        if (winding.abs() - TAU).abs() > 1e-6 {
+            return Ok(None);
+        }
+        // A folded rim is not a single-valued u(v) graph.
+        if uv.windows(2).any(|pair| {
+            let delta = (pair[1].1 - pair[0].1 + PI).rem_euclid(TAU) - PI;
+            delta * winding < -1e-10
+        }) {
+            return Ok(None);
+        }
+        uv.pop();
+        let mut ring: Vec<_> = uv
+            .into_iter()
+            .map(|(u, v)| (v.rem_euclid(TAU), u))
+            .collect();
+        ring.sort_by(|a, b| a.0.total_cmp(&b.0));
+        if ring.windows(2).any(|pair| {
+            (pair[1].0 - pair[0].0).abs() < 1e-12
+                && ((pair[1].1 - pair[0].1 + PI).rem_euclid(TAU) - PI).abs() > 1e-8
+        }) {
+            return Ok(None);
+        }
+        ring.dedup_by(|a, b| (a.0 - b.0).abs() < 1e-12);
+        if ring.len() < 3 {
+            return Ok(None);
+        }
+        rings.push(ring);
+        windings.push(winding);
+    }
+    if windings[0] * windings[1] >= 0.0 {
+        return Ok(None);
+    }
+    let at = |ring: &[(f64, f64)], v: f64| {
+        let index = ring.partition_point(|point| point.0 <= v);
+        let (a, b) = if index == 0 {
+            (
+                (ring[ring.len() - 1].0 - TAU, ring[ring.len() - 1].1),
+                ring[0],
+            )
+        } else if index == ring.len() {
+            (ring[index - 1], (ring[0].0 + TAU, ring[0].1))
+        } else {
+            (ring[index - 1], ring[index])
+        };
+        let delta = (b.1 - a.1 + PI).rem_euclid(TAU) - PI;
+        a.1 + delta * (v - a.0) / (b.0 - a.0)
+    };
+    let mut breaks = vec![0.0, TAU];
+    for ring in &rings {
+        breaks.extend(ring.iter().map(|point| point.0));
+    }
+    breaks.sort_by(f64::total_cmp);
+    breaks.dedup_by(|a, b| (*a - *b).abs() < 1e-12);
+    let gauss = gauss_legendre_points(order);
+    let mut acc = Accumulator::default();
+    for interval in breaks.windows(2) {
+        let v_scale = (interval[1] - interval[0]) / 2.0;
+        let v_mid = f64::midpoint(interval[0], interval[1]);
+        for gv in gauss {
+            let v = v_scale.mul_add(gv.x, v_mid);
+            let a = at(&rings[0], v);
+            let b = at(&rings[1], v);
+            let span = if windings[0] < 0.0 {
+                (b - a).rem_euclid(TAU)
+            } else {
+                -(a - b).rem_euclid(TAU)
+            };
+            let patches = patch_count(span.abs(), PatchScale::ANGULAR.u);
+            let step = span / patches as f64;
+            for patch in 0..patches {
+                let mid = a + (patch as f64 + 0.5) * step;
+                for gu in gauss {
+                    let u = (step / 2.0).mul_add(gu.x, mid);
+                    acc.add(torus, u, v, gu.w * gv.w * step.abs() / 2.0 * v_scale);
+                }
+            }
+        }
+    }
+    Ok(Some(acc.finish(sign)))
 }
 
 /// A face boundary loop projected into its surface's UV domain.
@@ -2139,6 +2287,73 @@ mod tests {
         let canonical = UvLoop::new(pts, true, false);
         assert!(!canonical.encloses(deg(180.0), deg(300.0), true));
         assert!(canonical.encloses(deg(180.0), deg(180.0), true));
+    }
+
+    #[test]
+    fn torus_tube_bands_integrate_complementary_regions_after_translation() {
+        use remus_math::{curves::Circle3D, surfaces::ToroidalSurface};
+        use remus_topology::{
+            edge::Edge,
+            face::Face,
+            vertex::Vertex,
+            wire::{OrientedEdge, Wire},
+        };
+        use std::f64::consts::{PI, TAU};
+        let center = Point3::new(13.0, -7.0, 5.0);
+        let torus = ToroidalSurface::new(center, 10.0, 3.0).unwrap();
+        let mut topo = Topology::new();
+        let mut edges = Vec::new();
+        for u in [0.2_f64, 1.2] {
+            let radial = Vec3::new(u.cos(), u.sin(), 0.0);
+            let circle = Circle3D::new_with_ref(
+                center + radial * 10.0,
+                Vec3::new(u.sin(), -u.cos(), 0.0),
+                3.0,
+                radial,
+            )
+            .unwrap();
+            let vertex = topo.add_vertex(Vertex::new(center + radial * 13.0, 1e-7));
+            let mut edge = Edge::new(vertex, vertex, EdgeCurve::Circle(circle));
+            edge.set_trim(Some((0.0, TAU)));
+            edges.push(topo.add_edge(edge));
+        }
+        let mut contributions = Vec::new();
+        for complement in [false, true] {
+            let outer = topo
+                .add_wire(Wire::new(vec![OrientedEdge::new(edges[0], complement)], true).unwrap());
+            let inner = topo
+                .add_wire(Wire::new(vec![OrientedEdge::new(edges[1], !complement)], true).unwrap());
+            let face = topo.add_face(Face::new(
+                outer,
+                vec![inner],
+                FaceSurface::Torus(torus.clone()),
+            ));
+            let contribution = integrate_face(&topo, face, 8).unwrap();
+            let qualified = integrate_torus_band_face(&topo, face, 8).unwrap().unwrap();
+            assert!((qualified.volume - contribution.volume).abs() < 1e-10);
+            let unsupported =
+                topo.add_face(Face::new(outer, vec![], FaceSurface::Torus(torus.clone())));
+            assert!(
+                integrate_torus_band_face(&topo, unsupported, 8)
+                    .unwrap()
+                    .is_none()
+            );
+            let same_winding = topo.add_face(Face::new(
+                outer,
+                vec![outer],
+                FaceSurface::Torus(torus.clone()),
+            ));
+            assert!(
+                integrate_torus_band_face(&topo, same_winding, 8)
+                    .unwrap()
+                    .is_none()
+            );
+            let span = if complement { TAU - 1.0 } else { 1.0 };
+            assert!((contribution.area - span * 60.0 * PI).abs() < 1e-7);
+            contributions.push(contribution);
+        }
+        let volume: f64 = contributions.iter().map(|part| part.volume).sum();
+        assert!((volume - 180.0 * PI * PI).abs() < 1e-7);
     }
 
     #[test]
