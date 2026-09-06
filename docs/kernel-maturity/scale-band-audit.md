@@ -62,6 +62,7 @@ precision is not claimed fixed by this qualification.
 | `boolean/mod.rs`, Fuse acceptance | Cap bounds margin by both result and checked-operand size | Bounding-box containment remains a necessary, not sufficient, material test |
 | `phase_ff.rs`, boundary-junction search | Exact closest-point projection on a straight edge replaces fixed-count ternary refinement | Curved boundary refinement keeps its existing algorithm and budgets |
 | `phase_ff.rs`, junction reuse | Cap `100 × linear tolerance` at 1% of the combined face-pair extent, with the caller's linear tolerance as the floor | Same extent authority as the previously capped boundary-search trigger |
+| `face_splitter/edge_splitting.rs`, analytic arc anchors | Circle and ellipse endpoint exclusion and duplicate anchors use 3D distance; strict fraction bounds retain arc membership | NURBS projection and endpoint checks remain unaudited; boundary traversal conventions are unchanged |
 | `face_splitter/edge_splitting.rs`, line anchors | Limit anchor acceptance and spatial dedup by 1% of the edge length | Endpoint exclusion converts linear tolerance to normalized parameter units; deduplication uses 3D distance |
 | `face_splitter/mod.rs`, planar internal loops | Limit endpoint quantization and interior margin by polygon extent | Curved endpoints alone cannot bound a carrier and retain their existing band |
 | `face_splitter/mod.rs`, planar arrangement | Limit endpoint adoption and coarse snapping by the arrangement extent | The new extent cap applies to straight inputs |
@@ -77,7 +78,12 @@ result and unchanged operand geometry; the other refusal/rollback tests remain.
 
 ## Remaining audit
 
-- Curved edge-parameter comparisons that currently reuse a length tolerance.
+- NURBS edge-parameter comparisons and projection acceptance. The circle and
+  ellipse boundary/section finders now use model-space endpoint and duplicate
+  distances. Their regression covers radii 1e-4, 1, and 1e6; section twins run
+  in both directions and must preserve every distinct geometric anchor,
+  merge near-coincident anchors, and reject sub-tolerance endpoint fragments.
+  Existing closed-rim and other-window tests preserve the traversal contract.
   Straight-edge endpoint exclusion now divides by edge length and its duplicate
   anchors are compared only in 3D. A regression covers edge lengths 1e-4, 1,
   and 1e6, rejecting sub-tolerance endpoint fragments while retaining distinct
