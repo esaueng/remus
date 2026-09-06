@@ -13,8 +13,8 @@ use super::nurbs::{
     compute_v_param_range, sphere_analytic_kind, tessellate_nurbs,
 };
 use super::planar::{
-    tessellate_analytic, tessellate_analytic_with_boundary, tessellate_cylinder_with_holes,
-    tessellate_planar,
+    tessellate_analytic, tessellate_analytic_with_boundary, tessellate_planar,
+    tessellate_revolved_with_holes,
 };
 
 /// Diagonal shrink factors for spheres: both u and v are curved
@@ -147,7 +147,14 @@ pub(super) fn tessellate_with_uvs_floor(
         }
         FaceSurface::Cylinder(cyl) => {
             if !face_data.inner_wires().is_empty() {
-                tessellate_cylinder_with_holes(topo, face_data, cyl, deflection, angular_tol)
+                tessellate_revolved_with_holes(
+                    topo,
+                    face_data,
+                    cyl,
+                    cyl.radius(),
+                    deflection,
+                    angular_tol,
+                )
             } else if cylinder_has_non_standard_boundary(topo, face_data)? {
                 tessellate_analytic_with_boundary(topo, face_data, cyl, deflection, angular_tol)
             } else {
@@ -174,53 +181,68 @@ pub(super) fn tessellate_with_uvs_floor(
             }
         }
         FaceSurface::Cone(cone) => {
-            // Boolean results can bound a cone by a winding chain of marched
-            // NURBS pieces; the plain analytic sweep below ignores the
-            // boundary and skins the full parametric band, so classify
-            // meshes lose the wall lobes. Try the locally sampled cycle-rim
-            // band first; it declines anything that is not a two-rim band.
-            let has_nurbs_boundary = {
-                let wire = topo.wire(face_data.outer_wire())?;
-                wire.edges().iter().any(|oe| {
-                    topo.edge(oe.edge())
-                        .is_ok_and(|e| matches!(e.curve(), EdgeCurve::NurbsCurve(_)))
-                })
-            };
-            if has_nurbs_boundary
-                && let Some(band) = super::nonplanar::tessellate_band_face_local(
+            if face_data.inner_wires().is_empty() {
+                // Boolean results can bound a cone by a winding chain of marched
+                // NURBS pieces; the plain analytic sweep below ignores the
+                // boundary and skins the full parametric band, so classify
+                // meshes lose the wall lobes. Try the locally sampled cycle-rim
+                // band first; it declines anything that is not a two-rim band.
+                let has_nurbs_boundary = {
+                    let wire = topo.wire(face_data.outer_wire())?;
+                    wire.edges().iter().any(|oe| {
+                        topo.edge(oe.edge())
+                            .is_ok_and(|e| matches!(e.curve(), EdgeCurve::NurbsCurve(_)))
+                    })
+                };
+                if has_nurbs_boundary
+                    && let Some(band) = super::nonplanar::tessellate_band_face_local(
+                        topo,
+                        face_data,
+                        deflection,
+                        angular_tol,
+                    )?
+                {
+                    Ok(band)
+                } else {
+                    let v_range =
+                        compute_v_param_range(topo, face_data, |p| cone.project_point(p).1);
+                    let u_range =
+                        compute_angular_range(topo, face_data, |p| cone.project_point(p))?;
+                    let max_radius = cone.radius_at(v_range.1.abs().max(v_range.0.abs()));
+                    let nu = segments_for_chord_deviation_a(
+                        max_radius.max(0.01),
+                        u_range.1 - u_range.0,
+                        deflection,
+                        angular_tol,
+                        false,
+                    );
+                    let nv = 1;
+                    let kind = if v_range.0.abs() < 1e-10 {
+                        AnalyticKind::ConeApex
+                    } else {
+                        AnalyticKind::General
+                    };
+                    let cone = cone.clone();
+                    tessellate_analytic(
+                        |u, v| cone.evaluate(u, v),
+                        |u, v| cone.normal(u, v),
+                        u_range,
+                        v_range,
+                        nu,
+                        nv,
+                        kind,
+                    )
+                }
+            } else {
+                let range = compute_v_param_range(topo, face_data, |p| cone.project_point(p).1);
+                let radius = cone.radius_at(range.0.abs().max(range.1.abs()));
+                tessellate_revolved_with_holes(
                     topo,
                     face_data,
+                    cone,
+                    radius,
                     deflection,
                     angular_tol,
-                )?
-            {
-                Ok(band)
-            } else {
-                let v_range = compute_v_param_range(topo, face_data, |p| cone.project_point(p).1);
-                let u_range = compute_angular_range(topo, face_data, |p| cone.project_point(p))?;
-                let max_radius = cone.radius_at(v_range.1.abs().max(v_range.0.abs()));
-                let nu = segments_for_chord_deviation_a(
-                    max_radius.max(0.01),
-                    u_range.1 - u_range.0,
-                    deflection,
-                    angular_tol,
-                    false,
-                );
-                let nv = 1;
-                let kind = if v_range.0.abs() < 1e-10 {
-                    AnalyticKind::ConeApex
-                } else {
-                    AnalyticKind::General
-                };
-                let cone = cone.clone();
-                tessellate_analytic(
-                    |u, v| cone.evaluate(u, v),
-                    |u, v| cone.normal(u, v),
-                    u_range,
-                    v_range,
-                    nu,
-                    nv,
-                    kind,
                 )
             }
         }
