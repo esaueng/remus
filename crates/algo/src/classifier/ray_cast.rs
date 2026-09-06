@@ -1254,7 +1254,7 @@ pub fn point_in_planar_region(
     !holes.iter().any(|h| point_in_face_3d(point, h, normal))
 }
 
-/// Compute the solid-level AABB from boundary vertices.
+/// Compute a conservative solid-level AABB from boundaries and closed carriers.
 ///
 /// # Errors
 ///
@@ -1264,10 +1264,23 @@ pub fn compute_solid_bbox(
     topo: &Topology,
     solid: SolidId,
 ) -> Result<remus_math::aabb::Aabb3, AlgoError> {
+    use remus_topology::face::FaceSurface;
+
     let mut points = Vec::new();
     let faces = remus_topology::explorer::solid_faces(topo, solid)?;
     for fid in faces {
         let face = topo.face(fid)?;
+        // Equators and fundamental-polygon seams do not bound the carrier's
+        // interior. Whole-carrier bounds are conservative even for trimmed
+        // patches here: this is a solid broad phase, not face classification.
+        let carrier = match face.surface() {
+            FaceSurface::Sphere(sphere) => Some(sphere.aabb()),
+            FaceSurface::Torus(torus) => Some(torus.aabb()),
+            _ => None,
+        };
+        if let Some(bounds) = carrier {
+            points.extend([bounds.min, bounds.max]);
+        }
         let wire = topo.wire(face.outer_wire())?;
         for oe in wire.edges() {
             let edge = topo.edge(oe.edge())?;

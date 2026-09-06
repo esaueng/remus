@@ -300,10 +300,12 @@ pub fn transform_solid(
                     let new_center = matrix.mul_point(tor.center());
                     let m = &matrix.0;
                     let sx = (m[0][0] * m[0][0] + m[1][0] * m[1][0] + m[2][0] * m[2][0]).sqrt();
-                    let new_tor = remus_math::surfaces::ToroidalSurface::new(
+                    let new_tor = remus_math::surfaces::ToroidalSurface::with_axis_and_ref_dir(
                         new_center,
                         tor.major_radius() * sx,
                         tor.minor_radius() * sx,
+                        transform_direction(matrix, tor.z_axis())?,
+                        transform_direction(matrix, tor.x_axis())?,
                     )?;
                     topo.face_mut(fid)?.set_surface(FaceSurface::Torus(new_tor));
                 } else {
@@ -611,10 +613,12 @@ pub(crate) fn transform_face_surface(
                 let new_center = matrix.mul_point(tor.center());
                 let m = &matrix.0;
                 let sx = (m[0][0] * m[0][0] + m[1][0] * m[1][0] + m[2][0] * m[2][0]).sqrt();
-                let new_tor = remus_math::surfaces::ToroidalSurface::new(
+                let new_tor = remus_math::surfaces::ToroidalSurface::with_axis_and_ref_dir(
                     new_center,
                     tor.major_radius() * sx,
                     tor.minor_radius() * sx,
+                    transform_direction(matrix, tor.z_axis())?,
+                    transform_direction(matrix, tor.x_axis())?,
                 )?;
                 topo.face_mut(fid)?.set_surface(FaceSurface::Torus(new_tor));
             } else {

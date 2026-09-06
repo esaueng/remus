@@ -18,6 +18,7 @@ import {
   runWideSphereCapRegression,
   runOffsetConeSphereRegression,
   runOffsetSphereCylinderRegression,
+  runOffsetTorusSphereRegression,
 } from './openzcad-wasm-consumer-regressions.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -741,3 +742,5 @@ console.log('\nAll smoke tests passed');
 runWideSphereCapRegression({ BrepKernel, RemusIo });
 runOffsetConeSphereRegression({ BrepKernel });
 runOffsetSphereCylinderRegression({ BrepKernel });
+
+runOffsetTorusSphereRegression({ BrepKernel });

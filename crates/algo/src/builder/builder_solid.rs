@@ -284,7 +284,10 @@ pub(super) fn orient_revolved_face_wires(
             let face = topo.face(face_id)?;
             if !matches!(
                 face.surface(),
-                FaceSurface::Cylinder(_) | FaceSurface::Cone(_) | FaceSurface::Sphere(_)
+                FaceSurface::Cylinder(_)
+                    | FaceSurface::Cone(_)
+                    | FaceSurface::Sphere(_)
+                    | FaceSurface::Torus(_)
             ) {
                 continue;
             }
@@ -294,23 +297,36 @@ pub(super) fn orient_revolved_face_wires(
                 face.inner_wires().to_vec(),
             )
         };
-        let (oriented_outer, outer_changed) =
-            if matches!(surface, FaceSurface::Sphere(_)) && !inners.is_empty() {
-                (outer, false)
-            } else if matches!(surface, FaceSurface::Cylinder(_) | FaceSurface::Cone(_))
-                && let Some(area) = revolved_wire_uv_area(topo, outer, &surface)?
-            {
-                if area < 0.0 {
-                    (reverse_wire(topo, outer)?, true)
-                } else {
-                    (outer, false)
-                }
+        let (oriented_outer, outer_changed) = if matches!(surface, FaceSurface::Torus(_)) {
+            match revolved_wire_uv_area(topo, outer, &surface)? {
+                Some(area) if area < 0.0 => (reverse_wire(topo, outer)?, true),
+                _ => (outer, false),
+            }
+        } else if matches!(surface, FaceSurface::Sphere(_)) && !inners.is_empty() {
+            (outer, false)
+        } else if matches!(surface, FaceSurface::Cylinder(_) | FaceSurface::Cone(_))
+            && let Some(area) = revolved_wire_uv_area(topo, outer, &surface)?
+        {
+            if area < 0.0 {
+                (reverse_wire(topo, outer)?, true)
             } else {
-                orient_wire_to_surface(topo, outer, &surface, true)?
-            };
+                (outer, false)
+            }
+        } else {
+            orient_wire_to_surface(topo, outer, &surface, true)?
+        };
         let mut changed = outer_changed;
         let mut oriented_inners = Vec::with_capacity(inners.len());
-        if matches!(surface, FaceSurface::Sphere(_)) {
+        if matches!(surface, FaceSurface::Torus(_)) {
+            for &inner in &inners {
+                if revolved_wire_uv_area(topo, inner, &surface)?.is_some_and(|area| area > 0.0) {
+                    oriented_inners.push(reverse_wire(topo, inner)?);
+                    changed = true;
+                } else {
+                    oriented_inners.push(inner);
+                }
+            }
+        } else if matches!(surface, FaceSurface::Sphere(_)) {
             for &inner in &inners {
                 let (inner, inner_changed) = orient_wire_to_surface(topo, inner, &surface, false)?;
                 changed |= inner_changed;
@@ -470,8 +486,12 @@ fn revolved_wire_uv_area(
         return Ok(None);
     }
     uv.push(uv[0]);
-    super::pcurve_compute::unwrap_periodic_params_pub(&mut uv, Some(std::f64::consts::TAU), None);
-    if (uv[uv.len() - 1].x() - uv[0].x()).abs() > std::f64::consts::PI {
+    let (u_period, v_period) = super::pcurve_compute::surface_periods(surface);
+    super::pcurve_compute::unwrap_periodic_params_pub(&mut uv, u_period, v_period);
+    let last = uv[uv.len() - 1];
+    if u_period.is_some_and(|period| (last.x() - uv[0].x()).abs() > period * 0.5)
+        || v_period.is_some_and(|period| (last.y() - uv[0].y()).abs() > period * 0.5)
+    {
         return Ok(None);
     }
     // Translate before summing to avoid cancellation on axially translated parts.
@@ -970,10 +990,17 @@ fn shell_is_outward_oriented(topo: &Topology, faces: &[FaceId]) -> Option<bool> 
                     continue;
                 };
                 let (sp, ep) = (sv.point(), ev.point());
+                let Ok((lo, hi)) = edge.strict_domain() else {
+                    continue;
+                };
                 for k in 0..4 {
                     let f = f64::from(k) / 4.0;
                     let f = if oe.is_forward() { f } else { 1.0 - f };
-                    pts.push(edge.curve().evaluate_with_endpoints(f, sp, ep));
+                    pts.push(edge.curve().evaluate_with_endpoints(
+                        (hi - lo).mul_add(f, lo),
+                        sp,
+                        ep,
+                    ));
                 }
             }
             if pts.len() < 3 {
@@ -995,11 +1022,14 @@ fn shell_is_outward_oriented(topo: &Topology, faces: &[FaceId]) -> Option<bool> 
             any = true;
         } else {
             // Curved: integrate over the boundary's (u, v) parameter box.
-            let Ok(wire) = topo.wire(face.outer_wire()) else {
-                continue;
-            };
             let mut uvs: Vec<(f64, f64)> = Vec::new();
-            for oe in wire.edges() {
+            // A periodic band can use its outer and inner wires for opposite
+            // rims. Either rim alone misses most of the retained carrier.
+            let boundary_edges = std::iter::once(face.outer_wire())
+                .chain(face.inner_wires().iter().copied())
+                .filter_map(|wire| topo.wire(wire).ok())
+                .flat_map(remus_topology::wire::Wire::edges);
+            for oe in boundary_edges {
                 let Ok(edge) = topo.edge(oe.edge()) else {
                     continue;
                 };
@@ -1007,9 +1037,14 @@ fn shell_is_outward_oriented(topo: &Topology, faces: &[FaceId]) -> Option<bool> 
                     continue;
                 };
                 let (sp, ep) = (sv.point(), ev.point());
+                let Ok((lo, hi)) = edge.strict_domain() else {
+                    continue;
+                };
                 for k in 0..=8 {
                     let f = f64::from(k) / 8.0;
-                    let p = edge.curve().evaluate_with_endpoints(f, sp, ep);
+                    let p = edge
+                        .curve()
+                        .evaluate_with_endpoints((hi - lo).mul_add(f, lo), sp, ep);
                     if let Some((u, v)) = surface.project_point(p) {
                         uvs.push((u, v));
                     }

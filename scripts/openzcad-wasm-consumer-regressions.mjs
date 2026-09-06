@@ -261,6 +261,7 @@ export const runOpenZcadConsumerRegressions = (exports) => {
   runWideSphereCapRegression(exports);
   runOffsetConeSphereRegression(exports);
   runOffsetSphereCylinderRegression(exports);
+  runOffsetTorusSphereRegression(exports);
 };
 
 export const runWideSphereCapRegression = ({ BrepKernel, RemusIo }) => {
@@ -358,4 +359,34 @@ export const runOffsetSphereCylinderRegression = ({ BrepKernel }) => {
     );
   }
   console.log('ok - offset sphere/cylinder: exact fuse, cut, intersect against disk-overlap oracle');
+};
+
+
+export const runOffsetTorusSphereRegression = ({ BrepKernel }) => {
+  // Independent annulus/disk overlap integral from the native qualification matrix.
+  const overlap = 56.2702148298352;
+  for (const [operation, expected] of [
+    ['fuse', 48 * Math.PI ** 2 + 36 * Math.PI - overlap],
+    ['cut', 48 * Math.PI ** 2 - overlap],
+    ['intersect', overlap],
+  ]) {
+    const kernel = new BrepKernel();
+    const torus = kernel.makeTorus(6, 2, 32);
+    const sphere = kernel.makeSphere(3, 24);
+    kernel.transformSolid(
+      sphere,
+      new Float64Array([1, 0, 0, 5, 0, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 1]),
+    );
+    const c = Math.cos(0.37);
+    const s = Math.sin(0.37);
+    const placement = new Float64Array([c, 0, s, 17, 0, 1, 0, -23, -s, 0, c, 31, 0, 0, 0, 1]);
+    kernel.transformSolid(torus, placement);
+    kernel.transformSolid(sphere, placement);
+    const result = kernel.booleanWithQuality(operation, torus, sphere, true);
+    assert.equal(result.quality, 'exact', `${operation}: exact torus seam result`);
+    assert.equal(kernel.validateSolid(result.solid), 0, `${operation}: valid torus seam shell`);
+    const volume = kernel.volume(result.solid, 0.01);
+    assert.ok(Math.abs(volume - expected) < expected * 0.001, `${operation}: ${volume} vs ${expected}`);
+  }
+  console.log('ok - offset torus/sphere: exact rotated fuse, cut, intersect against annulus-overlap oracle');
 };
