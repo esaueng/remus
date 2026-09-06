@@ -62,7 +62,8 @@ precision is not claimed fixed by this qualification.
 | `boolean/mod.rs`, Fuse acceptance | Cap bounds margin by both result and checked-operand size | Bounding-box containment remains a necessary, not sufficient, material test |
 | `phase_ff.rs`, boundary-junction search | Exact closest-point projection on a straight edge replaces fixed-count ternary refinement | Curved boundary refinement keeps its existing algorithm and budgets |
 | `phase_ff.rs`, junction reuse | Cap `100 × linear tolerance` at 1% of the combined face-pair extent, with the caller's linear tolerance as the floor | Same extent authority as the previously capped boundary-search trigger |
-| `face_splitter/edge_splitting.rs`, analytic arc anchors | Circle and ellipse endpoint exclusion and duplicate anchors use 3D distance; strict fraction bounds retain arc membership | NURBS projection and endpoint checks remain unaudited; boundary traversal conventions are unchanged |
+| `face_splitter/edge_splitting.rs`, analytic arc anchors | Circle and ellipse endpoint exclusion and duplicate anchors use 3D distance; strict fraction bounds retain arc membership | Boundary traversal conventions are unchanged; NURBS section qualification is recorded separately |
+| `face_splitter/edge_splitting.rs`, NURBS section anchors | Use carried traversal domain, conservative control-point bounds, bounded projection with a model-space residual check, and spatial endpoint/dedup bands | Parabolic section matrix only; nearest-sample projection is not a certified global closest-point solver |
 | `face_splitter/edge_splitting.rs`, line anchors | Limit anchor acceptance and spatial dedup by 1% of the edge length | Endpoint exclusion converts linear tolerance to normalized parameter units; deduplication uses 3D distance |
 | `face_splitter/mod.rs`, planar internal loops | Limit endpoint quantization and interior margin by polygon extent | Curved endpoints alone cannot bound a carrier and retain their existing band |
 | `face_splitter/mod.rs`, planar arrangement | Limit endpoint adoption and coarse snapping by the arrangement extent | The new extent cap applies to straight inputs |
@@ -78,7 +79,16 @@ result and unchanged operand geometry; the other refusal/rollback tests remain.
 
 ## Remaining audit
 
-- NURBS edge-parameter comparisons and projection acceptance. The circle and
+- General NURBS projection coverage beyond the parabolic section matrix.
+  The section regression covers scales 1e-4, 1, and 1e6, both traversals,
+  full and carried 20–80% trims at default 1e-7 tolerance. It checks returned
+  fraction/point agreement, distinct anchors, endpoint exclusion, deduplication,
+  and rejection of off-curve and out-of-trim probes. Before correction, ordinary
+  and large curves lost all four anchors; reversed curves returned fractions
+  inconsistent with their traversal. The legacy reverse fixture now carries
+  the actual reverse orientation rather than swapped endpoints with forward=true.
+  Other NURBS projection sites and pathological multi-extremum curves remain open.
+- The circle and
   ellipse boundary/section finders now use model-space endpoint and duplicate
   distances. Their regression covers radii 1e-4, 1, and 1e6; section twins run
   in both directions and must preserve every distinct geometric anchor,
