@@ -253,6 +253,15 @@ jobs:
         run: |
           cargo clippy -p remus-wasm --target wasm32-unknown-unknown --no-default-features -- -D warnings
           cargo test -p remus-wasm --no-default-features
+      - name: W9 native and WASM preflight workflow
+        run: bash scripts/test-w9-preflight.sh
+      - name: Preserve W9 stage report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: w9-preflight
+          path: target/w9-preflight.json
+          if-no-files-found: warn
 
   fuzz-check:
     name: Fuzz Targets Compile
