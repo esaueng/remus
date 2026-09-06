@@ -150,6 +150,7 @@ harness's own option-honoured floor misreading a correct 0.05 fillet on an
 
 ## Durable lessons (one line each; the story is in `campaign-history.md`)
 
+- **cargo-mutants 27 discovers `.cargo/mutants.toml`, not a root-level config;** verify real default selection and stale-path refusals with `scripts/test-mutants-scope.py` before claiming mutation scope (B19).
 - **Deterministic STEP emission sorts unordered face, void-shell, and hole-loop aggregates by arena ID but never sorts coedges;** coedge sequence carries boundary traversal semantics (`crates/io/src/step/writer.rs`).
 - **Public profile construction must use the strict wire-to-face path;** the low-level plane-from-points builder is not a collinearity validity gate (`crates/remus/src/model.rs`, PR #225).
 - **Performance baselines start from measured stack families, not a guessed loop list;** O3.1's 3% census and native-only Criterion map live in `docs/kernel-maturity/o31-inner-loop-baseline.md`.
