@@ -1230,8 +1230,20 @@ opening on a cylindrical body's planar cap closes through the existing cap
 strategy. The cap strategy now accepts three retained faces. Native tests pin
 restored volume, validation, watertightness, rim scale/translation, and extra
 selection refusal; direct/batch WASM routes pin the rim witness. General
-curved wound extension through 6.1, partial bands, and bosses whose wounds
-cross a curved support remain pending; this cell does not complete 6.3.
+curved wound extension through 6.1 and partial bands remain pending; this
+cell does not complete 6.3.
+
+The curved-wall capping cell is also qualified in
+`crates/operations/tests/qualify_curved_boss_heal.rs`: a rectangular boss
+opens directly on the cylinder's lateral face, not a planar cap. Exact-only
+boolean construction preserves that cylinder and its wound inner wire;
+deleting the complete boss closes that wire through the existing cap heal.
+The witness pins analytic and independent mesh volume, watertightness,
+rotation/translation and scales `1e-3 / 1 / 1e3`, trim authority, unchanged
+input serialization, complete construction face history, incomplete-selection
+rollback, and direct/batch WASM parity. No new healing algorithm is claimed.
+Bosses whose wounds cross retained outer wires or the cylinder/cap rim still
+require general extension and remain unqualified.
 
 > **Exit gate:** delete a fillet band and a boss on a curved-walled part;
 > neighbors re-extend exactly; restored volume oracles hold.
