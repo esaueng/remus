@@ -175,7 +175,9 @@ impl JunctionRegistry {
 
         // Reuse only a near-identical, already-validated junction. The wider
         // trigger above must not become a dimensional snap band.
-        let weld = tol.linear * 100.0;
+        let weld = (tol.linear * 100.0)
+            .min(self.pair_extent(topo, fa, fb, tol) * Self::BOUNDARY_TRIGGER_EXTENT_FRACTION)
+            .max(tol.linear);
         if let Some(j) = self.lookup(boundary_junction, weld) {
             return j;
         }
@@ -2506,6 +2508,22 @@ fn snap_to_boundary_junction_band(
                 "boundary-junction search",
             )
             .ok()?;
+            if matches!(edge.curve(), EdgeCurve::Line) {
+                // A fixed ternary-search count leaves a model-relative error
+                // even when the exact section already meets a straight edge.
+                let direction = ep - sp;
+                let length_squared = direction.length_squared();
+                if length_squared > 0.0 {
+                    let parameter =
+                        ((p - sp).dot(direction) / length_squared).clamp(d0.min(d1), d0.max(d1));
+                    let foot = sp + direction * parameter;
+                    let distance = (foot - p).length();
+                    if distance < weld && best.as_ref().is_none_or(|b| distance < b.0) {
+                        best = Some((distance, foot, parameter, fid, oe.edge()));
+                    }
+                }
+                continue;
+            }
             let mut best_k = 0;
             let mut best_d = f64::MAX;
             for k in 0..=NS {
