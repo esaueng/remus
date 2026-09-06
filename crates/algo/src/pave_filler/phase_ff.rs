@@ -4305,6 +4305,24 @@ fn plane_analytic_intersection(
                     p_end,
                 });
             }
+            analytic_intersection::ExactIntersectionCurve::Line { point, direction } => {
+                // Plane/plane line: trim to the partner's extent here; lines
+                // are clipped exactly downstream by `clip_line_to_face`.
+                let t_range = trim_t_range_to_aabb(point, direction, analytic_bbox, analytic_bbox);
+                let p0 = point + direction * t_range.0;
+                let p1 = point + direction * t_range.1;
+                let bbox = Aabb3 {
+                    min: Point3::new(p0.x().min(p1.x()), p0.y().min(p1.y()), p0.z().min(p1.z())),
+                    max: Point3::new(p0.x().max(p1.x()), p0.y().max(p1.y()), p0.z().max(p1.z())),
+                };
+                results.push(RawCurve {
+                    curve: EdgeCurve::Line,
+                    bbox,
+                    t_range,
+                    p_start: p0,
+                    p_end: p1,
+                });
+            }
             analytic_intersection::ExactIntersectionCurve::Points(pts) => {
                 // A tangential contact can sample as one point repeated N
                 // times (adjacent half-socket corner cylinders touching the
