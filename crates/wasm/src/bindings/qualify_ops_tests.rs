@@ -372,3 +372,60 @@ fn direct_and_batch_defeature_restore_curved_rim() {
     assert!((direct_volume - expected).abs() < expected * 1e-4);
     assert_eq!(direct_volume.to_bits(), batch_volume.to_bits());
 }
+
+#[test]
+fn direct_and_batch_defeature_restore_curved_wall_boss() {
+    let fixture = |kernel: &mut BrepKernel| {
+        let topo = kernel.topo_mut();
+        let base = make_cylinder(topo, 10.0, 20.0).unwrap();
+        let boss = make_box(topo, 5.0, 4.0, 4.0).unwrap();
+        transform_solid(topo, boss, &Mat4::translation(8.0, -2.0, 8.0)).unwrap();
+        let outcome = remus_operations::boolean::boolean_with_context(
+            topo,
+            BooleanOp::Fuse,
+            base,
+            boss,
+            &remus_math::context::OperationContext::new()
+                .with_fallback(remus_math::context::FallbackPolicy::ExactOnly),
+        )
+        .unwrap();
+        assert_eq!(
+            outcome.quality,
+            remus_operations::boolean::BooleanQuality::Exact
+        );
+        let input = outcome.solid;
+        let selected: Vec<_> = solid_faces(topo, input)
+            .unwrap()
+            .into_iter()
+            .filter(|&face| {
+                matches!(
+                    topo.face(face).unwrap().surface(),
+                    remus_topology::face::FaceSurface::Plane { .. }
+                ) && face_vertices(topo, face).unwrap().iter().all(|&vertex| {
+                    let z = topo.vertex(vertex).unwrap().point().z();
+                    z > 7.0 && z < 13.0
+                })
+            })
+            .map(crate::handles::face_id_to_u32)
+            .collect();
+        assert_eq!(selected.len(), 5);
+        (crate::handles::solid_id_to_u32(input), selected)
+    };
+    let mut direct = BrepKernel::new();
+    let (input, faces) = fixture(&mut direct);
+    let result = direct.defeature(input, faces).unwrap();
+    let direct_volume = kernel_volume(&direct, result);
+    let mut batch = BrepKernel::new();
+    let (input, faces) = fixture(&mut batch);
+    let result = run_all_ok(
+        &mut batch,
+        &[op(
+            "defeature",
+            serde_json::json!({"solid": input, "faces": faces}),
+        )],
+    );
+    let batch_volume = kernel_volume(&batch, as_u32(&result[0]));
+    let expected = std::f64::consts::PI * 2000.0;
+    assert!((direct_volume - expected).abs() < expected * 1e-4);
+    assert_eq!(direct_volume.to_bits(), batch_volume.to_bits());
+}

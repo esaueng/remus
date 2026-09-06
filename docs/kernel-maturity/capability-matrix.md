@@ -609,6 +609,12 @@ does not itself promote or demote anything.
   three-face cylindrical body (`resize_blend.rs` integration tests). Rim
   deletion has exact face history, scale/translation and direct/batch WASM
   coverage. Selection must equal the complete band.
+- Curved-wall capping: a rectangular boss wholly within a cylindrical wall
+  leaves a complete wound inner wire on that cylinder. Removing its five
+  exposed faces restores the cylinder with exact-only fixture construction,
+  analytic/mesh volume, watertightness, transformed scale coverage, complete
+  face history, input preservation, selection rollback, and direct/batch WASM
+  parity (`qualify_curved_boss_heal.rs`). This qualifies the existing cap heal.
 - Unsupported-typed cells: cavity solids, general wounds crossing curved
   kept faces, partial bands, over-removal, empty/foreign selections. Planar
   extension requires four retained faces; capping requires three.
