@@ -1,0 +1,232 @@
+name: Owner PR Rust checks
+
+on:
+  workflow_call:
+    inputs:
+      heavy:
+        required: true
+        type: boolean
+      docs:
+        required: true
+        type: boolean
+    outputs:
+      trusted:
+        value: ${{ jobs.select.outputs.trusted }}
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  select:
+    name: Authorize owner PR
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      trusted: ${{ steps.policy.outputs.trusted }}
+    steps:
+      # Keep authorization inside the immutable workflow, before any checkout.
+      - name: Check identity and immutable merge parents
+        id: policy
+        env:
+          ENABLED: ${{ vars.REMUS_OWNER_PR_VPS_ENABLED }}
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          REPOSITORY: ${{ github.repository }}
+          REPOSITORY_ID: ${{ github.repository_id }}
+          ACTOR: ${{ github.actor }}
+          ACTOR_ID: ${{ github.actor_id }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          REF: ${{ github.ref }}
+          SHA: ${{ github.sha }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import urllib.request
+          
+          OWNER = "petergstfsn"
+          OWNER_ID = 171875562
+          REPOSITORY = "esaueng/remus"
+          REPOSITORY_ID = 1334765869
+          
+          def valid_pr(pr):
+              def same_repo(repo):
+                  return (repo.get("id") == REPOSITORY_ID
+                          and repo.get("full_name") == REPOSITORY
+                          and repo.get("fork") is False)
+          
+              head = pr.get("head") or {}
+              base = pr.get("base") or {}
+              author = pr.get("user") or {}
+              return (
+                  pr.get("state") == "open"
+                  and type(pr.get("number")) is int and pr["number"] > 0
+                  and author.get("login") == OWNER and author.get("id") == OWNER_ID
+                  and same_repo(head.get("repo") or {})
+                  and same_repo(base.get("repo") or {})
+                  and base.get("ref") == "main"
+                  and all(re.fullmatch(r"[0-9a-f]{40}", str(side.get("sha", "")))
+                          for side in (head, base))
+              )
+          
+          def eligible(event, context):
+              pr = event.get("pull_request") or {}
+              sender = event.get("sender") or {}
+              return (
+                  context.get("ENABLED") == "true"
+                  and context.get("EVENT_NAME") == "pull_request"
+                  and context.get("REPOSITORY") == REPOSITORY
+                  and context.get("REPOSITORY_ID") == str(REPOSITORY_ID)
+                  and context.get("ACTOR") == OWNER
+                  and context.get("ACTOR_ID") == str(OWNER_ID)
+                  and context.get("TRIGGERING_ACTOR") == OWNER
+                  and sender.get("login") == OWNER and sender.get("id") == OWNER_ID
+                  and valid_pr(pr)
+                  and context.get("REF") == f"refs/pull/{pr['number']}/merge"
+                  and re.fullmatch(r"[0-9a-f]{40}", context.get("SHA", "")) is not None
+              )
+          
+          def current_merge(event_pr, current_pr, commit, sha):
+              return (
+                  valid_pr(current_pr)
+                  and current_pr["number"] == event_pr["number"]
+                  and all(current_pr[side]["sha"] == event_pr[side]["sha"]
+                          for side in ("head", "base"))
+                  and commit.get("sha") == sha
+                  and [parent.get("sha") for parent in commit.get("parents", [])]
+                      == [event_pr["base"]["sha"], event_pr["head"]["sha"]]
+              )
+          
+          def get(path):
+              request = urllib.request.Request(
+                  f"https://api.github.com/repos/{REPOSITORY}/{path}",
+                  headers={"Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+                           "Accept": "application/vnd.github+json",
+                           "X-GitHub-Api-Version": "2022-11-28"},
+              )
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  return json.load(response)
+          
+          def main():
+              with open(os.environ["GITHUB_EVENT_PATH"]) as stream:
+                  event = json.load(stream)
+              trusted = False
+              if eligible(event, os.environ):
+                  pr = event["pull_request"]
+                  sha = os.environ["SHA"]
+                  trusted = current_merge(pr, get(f"pulls/{pr['number']}"),
+                                          get(f"commits/{sha}"), sha)
+              with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+                  output.write(f"trusted={str(trusted).lower()}\n")
+              print("Owner PR authorized for VPS" if trusted else "Use hosted CI")
+          
+          if __name__ == "__main__":
+              main()
+          PY
+
+  rust:
+    name: Native Rust on VPS
+    needs: select
+    if: needs.select.outputs.trusted == 'true' && (inputs.heavy || inputs.docs)
+    runs-on:
+      group: ci-trusted-main
+      labels: ci-small
+    timeout-minutes: 90
+    env:
+      CARGO_TERM_COLOR: always
+      RUSTFLAGS: -Dwarnings
+      # Bound build and test concurrency within the existing host budget.
+      CARGO_BUILD_JOBS: "1"
+      RUST_TEST_THREADS: "1"
+      CARGO_INCREMENTAL: "0"
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Verify runner isolation and fresh storage
+        run: |
+          set -euo pipefail
+          test "$RUNNER_NAME" = ci-vm-1441561
+          test "$(id -un)" = ci-runner
+          test "$(id -u)" != 0
+          test "$HOME" = /srv/ci/home
+          test ! -w /opt/ci-runner/bin/Runner.Listener
+          test ! -w /etc/systemd/system/ci-runner.service
+          test "$(awk '/^NoNewPrivs:/ {print $2}' /proc/self/status)" = 1
+          test ! -e "$HOME/.remus-pr-sentinel"
+          test ! -e /srv/ci/work/.remus-pr-sentinel
+          touch "$HOME/.remus-pr-sentinel" /srv/ci/work/.remus-pr-sentinel
+          test "$DOCKER_HOST" = unix:///run/ci-docker/docker.sock
+          docker info --format '{{json .SecurityOptions}}' | jq -e 'index("name=rootless") != null'
+          test -z "$(docker ps --all --quiet)"
+          test -z "$(docker image ls --quiet)"
+          test "$(cat /sys/fs/cgroup/ci.slice/memory.max)" = 3221225472
+          test "$(cat /sys/fs/cgroup/ci.slice/memory.swap.max)" = 0
+          awk '{exit !($1 == $2)}' /sys/fs/cgroup/ci.slice/cpu.max
+          grep -Fx '0::/ci.slice/ci-runner.service' /proc/self/cgroup
+          cat /sys/fs/cgroup/ci.slice/memory.events > "$RUNNER_TEMP/memory-events-before"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: esaueng/remus
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
+        with:
+          toolchain: "1.96.0"
+          components: clippy,rustfmt,rust-src
+          targets: wasm32-unknown-unknown
+      - uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518 # v2.86.5
+        if: inputs.heavy
+        with:
+          tool: nextest
+      - name: Clippy
+        if: inputs.heavy
+        run: /usr/bin/time -v cargo clippy --all-targets --all-features -- -D warnings
+      - name: Test
+        if: inputs.heavy
+        run: /usr/bin/time -v cargo nextest run --workspace --cargo-profile ci-test --test-threads 1
+      - name: Documentation tests
+        if: inputs.heavy
+        run: /usr/bin/time -v cargo test --workspace --profile ci-test --doc
+      - name: Complexity guards
+        if: inputs.heavy
+        run: /usr/bin/time -v cargo nextest run -p remus-operations --features perf-counters --cargo-profile ci-test --test-threads 1 -E 'test(scaling_)'
+      - name: Fuzz Targets Compile
+        if: inputs.heavy
+        run: /usr/bin/time -v cargo check --manifest-path fuzz/Cargo.toml --bins
+      - name: Documentation
+        if: inputs.docs
+        run: /usr/bin/time -v cargo doc --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: -D warnings
+      - uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518 # v2.86.5
+        if: inputs.docs
+        with:
+          tool: mdbook@0.4.52
+      - name: Build book
+        if: inputs.docs
+        run: mdbook build book
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
+        if: inputs.heavy
+        with:
+          toolchain: "1.88.0"
+      - name: MSRV (1.88)
+        if: inputs.heavy
+        run: /usr/bin/time -v cargo +1.88.0 check --workspace --all-features
+      - name: Record capacity evidence
+        if: always()
+        run: |
+          {
+            echo "Runner: $RUNNER_NAME; commit: $GITHUB_SHA"
+            date -u +%FT%TZ
+            echo 'Before job:'
+            cat "$RUNNER_TEMP/memory-events-before"
+            echo 'After job (cgroup counters are cumulative):'
+            cat /sys/fs/cgroup/ci.slice/memory.events
+            cat /sys/fs/cgroup/ci.slice/memory.peak
+            du -sh "$HOME" "$GITHUB_WORKSPACE"
+            df -h /srv/ci
+          } >> "$GITHUB_STEP_SUMMARY"
+
