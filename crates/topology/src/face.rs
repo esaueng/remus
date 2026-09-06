@@ -214,6 +214,24 @@ impl FaceSurface {
 /// A face has exactly one authoritative outer loop and zero or more inner
 /// loops. Boundary wires are a compatibility facade kept synchronized by
 /// topology-owned mutation APIs; strict validation refuses facade divergence.
+///
+/// # Periodic surfaces
+///
+/// Two boundary representations are supported for a full-revolution band on a
+/// periodic surface (cylinder, cone, sphere, torus):
+///
+/// * **Doubled seam** (what the kernel's own builders emit): a single outer
+///   wire walks both rims and the seam twice — e.g. `bottom rim, seam up, top
+///   rim reversed, seam down`.
+/// * **Two-ring**: the outer wire is one full-turn rim and a single inner
+///   wire is the other rim, wound opposite in the surface's (u, v) parameter
+///   space, with no seam edge anywhere. Tessellation recognizes this shape
+///   for cylinder/cone (structured band) and sphere/torus (latitude band)
+///   walls; other wire layouts on periodic faces fall back to chart-based
+///   meshing, which cannot represent ring boundaries.
+///
+/// A two-ring band's inner wire still follows the usual convention: wound
+/// opposite the outer wire in the surface's (u, v) parameter space.
 #[derive(Debug, Clone)]
 pub struct Face {
     /// The outer boundary wire of this face.
