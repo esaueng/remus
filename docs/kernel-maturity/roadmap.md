@@ -170,6 +170,35 @@ Direct-edit follow-up under [P-Class 6.5](p-class-status.md):
 is planned; the Jolly Fox reproduction, scope, and acceptance criteria are recorded,
 with implementation still pending.
 
+### Correctness follow-up: curved hole winding (#278)
+
+Cut/intersect assembly now compares multi-opening cylinder wires in
+seam-unwrapped UV and preserves reversed coedge p-curves. Periodic
+same-wound holes are validation errors. The cross-drilled shaft regression
+covers raw GFA and public booleans across scales and bore angles, STEP
+round trips, and the WASM render/measure matrix.
+
+This exposed a false success in the cross-drilled rim fillet: its convex
+edge received added material, and the malformed input had suppressed the
+volume-sign gate. The corrected input now receives a transactional refusal.
+Correct-side curved rim assembly remains B4/M5 work; this case is not a
+qualified blend success.
+
+### Correctness follow-up: wide spherical caps (#285)
+
+Exact circular rims now enable the shared latitude-cap tessellator without
+requiring a second trimmed face on the same sphere. Rim traversal selects
+the retained pole, including caps larger than a hemisphere. The primitive
+polygon-equator path stays unchanged. `regress_wide_sphere_cap.rs` checks
+small and large caps, the radius-9/cut-7.5 ball-stud case, scales, rigid
+transforms, two deflections, manifold meshes, closed-form volume, standalone
+face area, and STEP. The packaged WASM consumer replays the generated
+wide-cap STEP fixtures through the translator and kernel, checking
+volume and direct/batch mesh quality, including the explicit doubled pole seam. Equal-axis ellipse representations of
+circular rims use the same verified path.
+This qualification covers circular rims with or without one doubled pole
+seam; arbitrary non-circular trims are not included.
+
 ## §B Bridge backlog — owned by neither program
 
 Ready items from the stabilization-plan residue, the capability-matrix
