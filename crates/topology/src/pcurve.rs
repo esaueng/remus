@@ -105,9 +105,21 @@ impl PCurve {
 
 /// Compatibility index from the historical per-use key to the authoritative
 /// coedge. Access goes through [`Topology`](crate::Topology)'s pcurve methods.
-#[derive(Debug, Default, Clone)]
+#[derive(Default, Clone)]
 pub struct PCurveRegistry {
     uses: HashMap<PCurveKey, CoedgeId>,
+}
+
+impl std::fmt::Debug for PCurveRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Rollback rebuilds this map; diagnostics must not depend on its hash seed.
+        let Self { uses } = self;
+        let mut uses: Vec<_> = uses.iter().collect();
+        uses.sort_by_key(|(key, _)| (key.edge.index(), key.face.index(), key.forward));
+        f.debug_struct("PCurveRegistry")
+            .field("uses", &uses)
+            .finish()
+    }
 }
 
 impl PCurveRegistry {
@@ -213,6 +225,21 @@ mod tests {
     use crate::wire::{OrientedEdge, Wire};
 
     use super::*;
+
+    #[test]
+    fn registry_debug_is_independent_of_map_rebuild_order() {
+        let (topo, edge, face) = make_simple_topology();
+        let coedge = topo.coedges_of_edge(edge)[0];
+        let mut first = PCurveRegistry::new();
+        first.index_use(edge, face, true, coedge);
+        first.index_use(edge, face, false, coedge);
+        let mut second = PCurveRegistry::new();
+        second.index_use(edge, face, false, coedge);
+        second.index_use(edge, face, true, coedge);
+        assert_eq!(format!("{first:?}"), format!("{second:?}"));
+        second.uses.remove(&PCurveKey::new(edge, face, true));
+        assert_ne!(format!("{first:?}"), format!("{second:?}"));
+    }
 
     fn make_simple_topology() -> (Topology, EdgeId, FaceId) {
         let mut topo = Topology::new();
