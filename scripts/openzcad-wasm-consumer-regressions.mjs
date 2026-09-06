@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 const DEFLECTION = 0.1;
 
@@ -257,4 +258,48 @@ export const runOpenZcadCylindricalFaceResizeRegression = ({
 export const runOpenZcadConsumerRegressions = (exports) => {
   runOpenZcadAnalyticFlangeBooleanRegression(exports);
   runOpenZcadCylindricalFaceResizeRegression(exports);
+  runWideSphereCapRegression(exports);
+};
+
+export const runWideSphereCapRegression = ({ BrepKernel, RemusIo }) => {
+  for (const fixture of ['wide_sphere_cap.step', 'wide_sphere_cap_with_seam.step']) {
+    const kernel = new BrepKernel();
+    const io = new RemusIo();
+    const step = readFileSync(new URL(`../crates/io/tests/data/${fixture}`, import.meta.url));
+    const solids = Array.from(kernel.deserializeSolids(io.importStep(step)));
+    assert.equal(solids.length, 1);
+    const solid = solids[0];
+    assert.equal(kernel.getSolidFaces(solid).length, 2);
+    const expected = (Math.PI * 16.5 ** 2 * (27 - 16.5)) / 3;
+    for (const deflection of [0.045, 0.0045]) {
+      const mesh = kernel.tessellateSolid(solid, deflection);
+      let volume = 0;
+      for (let i = 0; i < mesh.indices.length; i += 3) {
+        const a = mesh.indices[i] * 3;
+        const b = mesh.indices[i + 1] * 3;
+        const c = mesh.indices[i + 2] * 3;
+        const p = mesh.positions;
+        volume +=
+          (p[a] * (p[b + 1] * p[c + 2] - p[b + 2] * p[c + 1]) +
+            p[a + 1] * (p[b + 2] * p[c] - p[b] * p[c + 2]) +
+            p[a + 2] * (p[b] * p[c + 1] - p[b + 1] * p[c])) /
+          6;
+      }
+      assert.ok(
+        Math.abs(volume - expected) / expected < 0.01,
+        `wide spherical cap volume ${volume} vs ${expected}`,
+      );
+      const direct = JSON.parse(kernel.meshQuality(solid, deflection));
+      assert.equal(direct.isWatertight, true);
+      assert.equal(direct.boundaryEdges, 0);
+      assert.equal(direct.nonManifoldEdges, 0);
+      const [batch] = JSON.parse(
+        kernel.executeBatch(JSON.stringify([{ op: 'meshQuality', args: { solid, deflection } }])),
+      );
+      assert.deepEqual(batch.ok, direct);
+    }
+    kernel.free();
+    io.free();
+  }
+  console.log('ok - wide spherical cap preserves closed-form volume and direct/batch mesh quality');
 };

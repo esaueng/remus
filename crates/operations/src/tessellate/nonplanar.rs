@@ -3647,14 +3647,13 @@ fn fill_sphere_hemisphere_patch(
 /// the closing duplicate are removed.
 fn collect_boundary_loop(
     topo: &Topology,
-    face_data: &remus_topology::face::Face,
+    edges: &[remus_topology::wire::OrientedEdge],
     deflection: f64,
     angular_tol: f64,
     edge_global_indices: &DetHashMap<usize, Vec<u32>>,
     merged: &mut TriangleMesh,
     point_to_global: &mut DetHashMap<(i64, i64, i64), u32>,
 ) -> Result<Vec<u32>, crate::OperationsError> {
-    let wire = topo.wire(face_data.outer_wire())?;
     let tol_dup = 1e-10;
     let mut boundary: Vec<u32> = Vec::new();
 
@@ -3669,7 +3668,7 @@ fn collect_boundary_loop(
         boundary.push(gid);
     };
 
-    for oe in wire.edges() {
+    for oe in edges {
         let is_fwd = oe.is_forward();
         if let Some(global_ids) = edge_global_indices.get(&oe.edge().index()) {
             let ordered: Vec<u32> = if is_fwd {
@@ -3764,7 +3763,7 @@ pub(super) fn tessellate_nurbs_pole_cap_shared(
     let idx_save = merged.indices.len();
     let boundary = collect_boundary_loop(
         topo,
-        face_data,
+        topo.wire(face_data.outer_wire())?.edges(),
         deflection,
         angular_tol,
         edge_global_indices,
@@ -3943,10 +3942,10 @@ pub(super) fn tessellate_nurbs_pole_cap_shared(
 /// chains drive the planar CDT into zero-UV-area triangles that carry real 3D
 /// area (rendered as flaps across the cap) and, at unlucky deflections, cracks.
 /// Both structured paths reuse the shared edge-pool vertices verbatim, so seams
-/// stay watertight by construction. The latitude-cap path is enabled only when
-/// solid-level adjacency finds a trimmed face on the same sphere. It remains
-/// disabled for primitive/standalone sphere tessellation and the mesh-boolean
-/// fallback, preserving their triangle semantics and boolean acceptance.
+/// stay watertight by construction. The latitude-cap path accepts exact circular
+/// rims, or faces whose solid-level adjacency finds a trimmed face on the same
+/// sphere. Primitive spheres with polygonal equators retain their existing
+/// dispatch and triangle semantics.
 ///
 /// Returns `Ok(true)` when the face is such a cap and was tessellated here;
 /// `Ok(false)` defers to the CDT/snap path.
@@ -3968,20 +3967,78 @@ pub(super) fn tessellate_sphere_cap_shared(
         return Ok(false);
     }
 
+    let wire = topo.wire(face_data.outer_wire())?;
+    let mut cap_edges = wire.edges().to_vec();
+    // A circular rim plus a doubled pole seam bounds the same geometric
+    // patch as the rim alone. The seam contributes no physical boundary.
+    if cap_edges.len() == 3 {
+        for i in 0..3 {
+            let rim = topo.edge(cap_edges[i].edge())?;
+            let a = cap_edges[(i + 1) % 3];
+            let b = cap_edges[(i + 2) % 3];
+            if rim.start() == rim.end()
+                && matches!(rim.curve(), EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_))
+                && a.edge() == b.edge()
+                && a.is_forward() != b.is_forward()
+            {
+                cap_edges = vec![cap_edges[i]];
+                break;
+            }
+        }
+    }
+
     let pos_save = merged.positions.len();
     let idx_save = merged.indices.len();
     let boundary = collect_boundary_loop(
         topo,
-        face_data,
+        &cap_edges,
         deflection,
         angular_tol,
         edge_global_indices,
         merged,
         point_to_global,
     )?;
-    if (allow_latitude_cap
+    // An exact circular rim can bound the larger cap, whose interior is on
+    // the opposite side from its boundary centroid. Its traversal selects
+    // the pole; the latitude filler verifies the full constant-latitude ring.
+    let mut circular_rim = true;
+    let mut rim_axis = None;
+    for oriented in &cap_edges {
+        let axis = match topo.edge(oriented.edge())?.curve() {
+            EdgeCurve::Circle(circle) => circle.normal(),
+            // Rigid transforms can retain circular conics as equal-axis
+            // ellipses through floating-point roundoff. The latitude filler
+            // still verifies every boundary sample against the sphere.
+            EdgeCurve::Ellipse(ellipse)
+                if remus_math::tolerance::Tolerance::new()
+                    .approx_eq(ellipse.semi_major(), ellipse.semi_minor()) =>
+            {
+                ellipse.normal()
+            }
+            _ => {
+                circular_rim = false;
+                break;
+            }
+        };
+        rim_axis.get_or_insert(axis);
+    }
+    // Sphere frames need not follow rigid rotations; an exact rim supplies
+    // its own pole axis without changing the sphere's geometric carrier.
+    if !circular_rim {
+        rim_axis = None;
+    }
+    let latitude_sphere = rim_axis
+        .map(|axis| {
+            remus_math::surfaces::SphericalSurface::with_axis(
+                sphere.center(),
+                sphere.radius(),
+                axis,
+            )
+        })
+        .transpose()?;
+    if ((allow_latitude_cap || circular_rim)
         && fill_sphere_latitude_cap(
-            sphere,
+            latitude_sphere.as_ref().unwrap_or(sphere),
             &boundary,
             deflection,
             angular_tol,
