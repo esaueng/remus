@@ -22,6 +22,14 @@ pub enum ExactIntersectionCurve {
     Circle(Circle3D),
     /// An ellipse (plane oblique to cylinder/cone axis).
     Ellipse(Ellipse3D),
+    /// A straight line (plane/plane intersection, or a plane parallel to a
+    /// cylinder/cone axis): a point and a unit direction.
+    Line {
+        /// A point on the line.
+        point: Point3,
+        /// Unit direction along the line.
+        direction: Vec3,
+    },
     /// Fallback to sampled point chain (torus, degenerate cases).
     Points(Vec<Point3>),
 }
@@ -71,6 +79,16 @@ pub fn exact_plane_analytic_bounded(
                 .into_iter()
                 .map(ExactIntersectionCurve::Points)
                 .collect())
+        }
+        AnalyticSurface::Plane { normal, d } => {
+            // Plane × plane: the exact intersection line, or nothing when
+            // the planes are parallel or coincident.
+            Ok(
+                crate::plane::plane_plane_intersection(normal, d, plane_normal, plane_d, 1e-12)
+                    .into_iter()
+                    .map(|(point, direction)| ExactIntersectionCurve::Line { point, direction })
+                    .collect(),
+            )
         }
     }
 }
@@ -312,6 +330,122 @@ pub enum AnalyticSurface<'a> {
     Sphere(&'a SphericalSurface),
     /// Toroidal surface reference.
     Torus(&'a ToroidalSurface),
+    /// A plane by unit normal and signed offset: `normal · p = d`. Carried by
+    /// value (no heap-allocated plane type exists); the lifetime parameter is
+    /// unused for this variant.
+    Plane {
+        /// Unit plane normal.
+        normal: Vec3,
+        /// Signed offset along the normal.
+        d: f64,
+    },
+}
+
+/// Convert an exact plane/plane or plane/quadric result to the marcher's
+/// sampled-curve type. Circles and ellipses are sampled densely and refit;
+/// a line is a degree-1 NURBS over `±line_half_extent` (the marcher-API
+/// convention is that consumers re-trim against face bounds downstream).
+fn exact_to_marched(
+    exact: &ExactIntersectionCurve,
+    line_half_extent: f64,
+) -> Result<Option<IntersectionCurve>, MathError> {
+    match exact {
+        ExactIntersectionCurve::Circle(circle) => {
+            let n_samples = 33;
+            let mut positions = Vec::with_capacity(n_samples);
+            let mut points = Vec::with_capacity(n_samples);
+            #[allow(clippy::cast_precision_loss)]
+            for i in 0..n_samples {
+                let theta = TAU * i as f64 / (n_samples - 1) as f64;
+                let pt = crate::traits::ParametricCurve::evaluate(circle, theta);
+                positions.push(pt);
+                points.push(IntersectionPoint {
+                    point: pt,
+                    param1: (0.0, 0.0),
+                    param2: (0.0, 0.0),
+                });
+            }
+            let degree = 3.min(positions.len() - 1);
+            let curve = interpolate(&positions, degree)?;
+            Ok(Some(IntersectionCurve { curve, points }))
+        }
+        ExactIntersectionCurve::Ellipse(ellipse) => {
+            let n_samples = 33;
+            let mut positions = Vec::with_capacity(n_samples);
+            let mut points = Vec::with_capacity(n_samples);
+            #[allow(clippy::cast_precision_loss)]
+            for i in 0..n_samples {
+                let theta = TAU * i as f64 / (n_samples - 1) as f64;
+                let pt = crate::traits::ParametricCurve::evaluate(ellipse, theta);
+                positions.push(pt);
+                points.push(IntersectionPoint {
+                    point: pt,
+                    param1: (0.0, 0.0),
+                    param2: (0.0, 0.0),
+                });
+            }
+            let degree = 3.min(positions.len() - 1);
+            let curve = interpolate(&positions, degree)?;
+            Ok(Some(IntersectionCurve { curve, points }))
+        }
+        ExactIntersectionCurve::Line { point, direction } => {
+            let endpoints = [
+                *point - *direction * line_half_extent,
+                *point + *direction * line_half_extent,
+            ];
+            let points = endpoints
+                .iter()
+                .map(|&pt| IntersectionPoint {
+                    point: pt,
+                    param1: (0.0, 0.0),
+                    param2: (0.0, 0.0),
+                })
+                .collect();
+            let curve = interpolate(&endpoints, 1)?;
+            Ok(Some(IntersectionCurve { curve, points }))
+        }
+        ExactIntersectionCurve::Points(pts) => {
+            // Sampled chains (plane × torus): refit to NURBS like the
+            // boolean engine's Points arm — deduplicate first, since a
+            // tangential contact can sample as one point repeated N times
+            // and interpolation through duplicates is singular.
+            let mut dedup: Vec<Point3> = Vec::with_capacity(pts.len());
+            for &p in pts {
+                if dedup.last().is_none_or(|&q| (p - q).length() > 1e-10) {
+                    dedup.push(p);
+                }
+            }
+            if dedup.len() < 3 {
+                return Ok(None);
+            }
+            let curve = interpolate(&dedup, 3.min(dedup.len() - 1))?;
+            let points = dedup
+                .iter()
+                .map(|&pt| IntersectionPoint {
+                    point: pt,
+                    param1: (0.0, 0.0),
+                    param2: (0.0, 0.0),
+                })
+                .collect();
+            Ok(Some(IntersectionCurve { curve, points }))
+        }
+    }
+}
+
+/// Convert exact intersection results to the marcher's sampled-curve type.
+/// Sampled-point chains are refit to NURBS (a tangential contact collapsing
+/// to a point is dropped, matching the boolean engine's Points arm).
+fn exacts_to_marched(
+    exacts: &[ExactIntersectionCurve],
+    line_half_extent: f64,
+) -> Result<Vec<IntersectionCurve>, MathError> {
+    let mut curves = Vec::new();
+    for exact in exacts {
+        if let Some(curve) = exact_to_marched(exact, line_half_extent)? {
+            curves.push(curve);
+        }
+    }
+    Ok(curves)
 }
 
 /// Compute `n . p` treating a `Point3` as a position vector.
@@ -336,6 +470,22 @@ pub fn intersect_plane_analytic(
         AnalyticSurface::Cone(cone) => intersect_plane_cone(cone, normal, d),
         AnalyticSurface::Sphere(sphere) => intersect_plane_sphere(sphere, normal, d),
         AnalyticSurface::Torus(torus) => intersect_plane_torus(torus, normal, d),
+        AnalyticSurface::Plane {
+            normal: plane_n,
+            d: plane_d,
+        } => {
+            // Plane × plane: the exact line (nothing when parallel).
+            let exacts = exact_plane_analytic_bounded(
+                AnalyticSurface::Plane {
+                    normal: plane_n,
+                    d: plane_d,
+                },
+                normal,
+                d,
+                None,
+            )?;
+            exacts_to_marched(&exacts, 1.0)
+        }
     }
 }
 
@@ -359,6 +509,19 @@ pub fn sample_plane_analytic(
         AnalyticSurface::Cone(cone) => sample_plane_cone(cone, normal, d, None),
         AnalyticSurface::Sphere(sphere) => sample_plane_sphere(sphere, normal, d),
         AnalyticSurface::Torus(torus) => sample_plane_torus(torus, normal, d),
+        AnalyticSurface::Plane {
+            normal: plane_n,
+            d: plane_d,
+        } => {
+            // Plane × plane: a two-point chain along the intersection line
+            // (nothing when parallel).
+            Ok(
+                crate::plane::plane_plane_intersection(plane_n, plane_d, normal, d, 1e-12)
+                    .into_iter()
+                    .map(|(point, direction)| vec![point - direction, point + direction])
+                    .collect(),
+            )
+        }
     }
 }
 
@@ -1491,6 +1654,36 @@ fn try_algebraic_intersection(
         (AnalyticSurface::Torus(t), AnalyticSurface::Sphere(s))
         | (AnalyticSurface::Sphere(s), AnalyticSurface::Torus(t)) => algebraic_torus_sphere(t, s),
         (AnalyticSurface::Cone(c1), AnalyticSurface::Cone(c2)) => algebraic_cone_cone(c1, c2),
+        // Plane pairs: exact closed forms, never the marcher.
+        (
+            AnalyticSurface::Plane { normal: n1, d: d1 },
+            AnalyticSurface::Plane { normal: n2, d: d2 },
+        ) => {
+            let exacts = exact_plane_analytic_bounded(
+                AnalyticSurface::Plane {
+                    normal: *n1,
+                    d: *d1,
+                },
+                *n2,
+                *d2,
+                None,
+            )?;
+            Ok(Some(exacts_to_marched(&exacts, 1.0)?))
+        }
+        (AnalyticSurface::Plane { normal, d }, other)
+        | (other, AnalyticSurface::Plane { normal, d }) => {
+            // Plane × quadric: the exact conic routes. A line (plane parallel
+            // to a cylinder/cone axis) spans the partner's v extent; the
+            // marcher-API convention re-trims downstream anyway.
+            let v_extent = match other {
+                AnalyticSurface::Cylinder(_) | AnalyticSurface::Cone(_) => v_range_a
+                    .or(v_range_b)
+                    .map_or(2.0, |(lo, hi)| (hi - lo).abs().max(1.0)),
+                _ => 1.0,
+            };
+            let exacts = exact_plane_analytic_bounded(*other, *normal, *d, None)?;
+            Ok(Some(exacts_to_marched(&exacts, v_extent / 2.0)?))
+        }
         _ => Ok(None),
     }
 }
@@ -2859,12 +3052,27 @@ fn project_analytic(
             let (u, v) = torus.project_point(point);
             (u.clamp(u_range.0, u_range.1), v.clamp(v_range.0, v_range.1))
         }
+        AnalyticSurface::Plane { normal, d } => {
+            // Orthogonal projection onto the plane, expressed in the same
+            // frame `surface_closures` builds for it.
+            let origin = Point3::new(normal.x() * d, normal.y() * d, normal.z() * d);
+            let frame = Frame3::from_normal(origin, *normal);
+            let Ok(frame) = frame else {
+                return (0.0, 0.0);
+            };
+            let along = dot_np(*normal, point) - d;
+            let q = point - *normal * along;
+            let dq = q - frame.origin;
+            (
+                dq.dot(frame.x).clamp(u_range.0, u_range.1),
+                dq.dot(frame.y).clamp(v_range.0, v_range.1),
+            )
+        }
     }
 }
 
 /// Returns `true` if the surface's u-parameter is periodic (wraps around 2π).
-/// All current `AnalyticSurface` variants have periodic u — this is trivially
-/// true today but exists as a guard for future non-periodic analytic types.
+/// All quadric `AnalyticSurface` variants have periodic u; a plane does not.
 fn is_u_periodic(surface: &AnalyticSurface<'_>) -> bool {
     matches!(
         surface,
@@ -2910,11 +3118,32 @@ fn surface_closures<'a>(
             (0.0, TAU),
             (0.0, TAU),
         ),
+        AnalyticSurface::Plane { normal, d } => {
+            // Plane pairs are decided exactly before the marcher runs; these
+            // arms exist for exhaustiveness. The frame is deterministic given
+            // the plane, so `project_analytic`'s arm agrees with it.
+            let (normal, d) = (*normal, *d);
+            let origin = Point3::new(normal.x() * d, normal.y() * d, normal.z() * d);
+            let frame = Frame3::from_normal(origin, normal).unwrap_or_else(|_| Frame3 {
+                // A zero-normal plane is malformed; give a harmless frame.
+                origin,
+                x: Vec3::new(1.0, 0.0, 0.0),
+                y: Vec3::new(0.0, 1.0, 0.0),
+                z: Vec3::new(0.0, 0.0, 1.0),
+            });
+            let (x, y) = (frame.x, frame.y);
+            (
+                Box::new(move |u, v| origin + x * u + y * v),
+                Box::new(move |_, _| normal),
+                (-1.0, 1.0),
+                (-1.0, 1.0),
+            )
+        }
     }
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::tolerance::Tolerance;
@@ -3814,6 +4043,9 @@ mod tests {
                 .map(|i| ParametricCurve::evaluate(e, TAU * f64::from(i) / 64.0))
                 .collect(),
             ExactIntersectionCurve::Points(pts) => pts.clone(),
+            ExactIntersectionCurve::Line { point, direction } => (-4..=4)
+                .map(|i| *point + *direction * f64::from(i))
+                .collect(),
         }
     }
 
@@ -4001,6 +4233,148 @@ mod tests {
                         "bore r={bore_r}: breakout point at radius {radius} is off the r=3 shaft"
                     );
                 }
+            }
+        }
+    }
+
+    // ── Plane variant routing (issues #258, #259) ────────────────────────
+
+    #[test]
+    fn plane_plane_returns_exact_line_variant() {
+        // z=0 plane × y=0 plane → the x-axis.
+        let curves = exact_plane_analytic_bounded(
+            AnalyticSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+            Vec3::new(0.0, 1.0, 0.0),
+            0.0,
+            None,
+        )
+        .unwrap();
+        assert_eq!(curves.len(), 1, "crossing planes give one line");
+        let ExactIntersectionCurve::Line { point, direction } = &curves[0] else {
+            panic!("expected a Line, got {:?}", curves[0]);
+        };
+        assert!(
+            direction.x().abs() > 1.0 - 1e-9,
+            "the line runs along x: {direction:?}"
+        );
+        assert!(
+            point.y().abs() < 1e-12 && point.z().abs() < 1e-12,
+            "the line lies in both planes: {point:?}"
+        );
+    }
+
+    #[test]
+    fn parallel_planes_return_no_curve() {
+        let curves = exact_plane_analytic_bounded(
+            AnalyticSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+            Vec3::new(0.0, 0.0, 1.0),
+            2.0,
+            None,
+        )
+        .unwrap();
+        assert!(curves.is_empty(), "parallel planes do not intersect");
+    }
+
+    #[test]
+    fn unified_entry_routes_plane_plane_exactly() {
+        use crate::traits::ParametricCurve;
+        // The marcher entry must not march a plane pair: one straight
+        // degree-1 segment comes back.
+        let curves = intersect_analytic_analytic(
+            AnalyticSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+            AnalyticSurface::Plane {
+                normal: Vec3::new(0.0, 1.0, 0.0),
+                d: 0.0,
+            },
+            8,
+        )
+        .unwrap();
+        assert_eq!(curves.len(), 1);
+        let (t0, t1) = curves[0].curve.domain();
+        let p0 = ParametricCurve::evaluate(&curves[0].curve, t0);
+        let p1 = ParametricCurve::evaluate(&curves[0].curve, t1);
+        let dir = (p1 - p0).normalize().unwrap();
+        assert!(
+            dir.x().abs() > 1.0 - 1e-6,
+            "the unified entry's plane/plane curve is the x-axis line: {dir:?}"
+        );
+    }
+
+    #[test]
+    fn unified_entry_routes_plane_cylinder_exactly() {
+        use crate::traits::ParametricCurve;
+        // z = 3 plane across an r=2 z-axis cylinder → exact circle, no march.
+        let cyl =
+            CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 2.0)
+                .unwrap();
+        let curves = intersect_analytic_analytic(
+            AnalyticSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 3.0,
+            },
+            AnalyticSurface::Cylinder(&cyl),
+            8,
+        )
+        .unwrap();
+        assert_eq!(curves.len(), 1);
+        let (t0, t1) = curves[0].curve.domain();
+        // The unified entry returns the sampled (refit) form; the exact
+        // circle is available through `exact_plane_analytic_bounded`.
+        for i in 0..=64 {
+            #[allow(clippy::cast_precision_loss)]
+            let t = t0 + (t1 - t0) * (i as f64) / 64.0;
+            let p = ParametricCurve::evaluate(&curves[0].curve, t);
+            assert!(
+                ((p.x().hypot(p.y()) - 2.0).abs() < 1e-4) && (p.z() - 3.0).abs() < 1e-6,
+                "point {p:?} must lie on both the cylinder and the plane"
+            );
+        }
+    }
+
+    #[test]
+    fn unified_entry_routes_plane_torus_to_sampled_curves() {
+        use crate::traits::ParametricCurve;
+
+        // z = 0 plane through the tube centre of an R=3, r=1 torus → the two
+        // circles of radius R−r and R+r, kept as refit sampled chains.
+        let torus = ToroidalSurface::new(Point3::new(0.0, 0.0, 0.0), 3.0, 1.0).unwrap();
+        let curves = intersect_analytic_analytic(
+            AnalyticSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+            AnalyticSurface::Torus(&torus),
+            12,
+        )
+        .unwrap();
+        assert!(
+            !curves.is_empty(),
+            "plane through the tube must yield section curves"
+        );
+        for c in &curves {
+            let (t0, t1) = c.curve.domain();
+            for i in 0..=32 {
+                #[allow(clippy::cast_precision_loss)]
+                let t = t0 + (t1 - t0) * (i as f64) / 32.0;
+                let p = ParametricCurve::evaluate(&c.curve, t);
+                assert!(
+                    p.z().abs() < 1e-4,
+                    "plane×torus point {p:?} must lie on the plane"
+                );
+                let on_torus = ((p.x().hypot(p.y()) - 3.0).powi(2) + p.z().powi(2)).sqrt() - 1.0;
+                assert!(
+                    on_torus.abs() < 1e-3,
+                    "plane×torus point {p:?} must lie on the torus"
+                );
             }
         }
     }
