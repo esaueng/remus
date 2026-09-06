@@ -837,6 +837,46 @@ pub fn perform_with_context(
                 emit_exact_arc(topo, arena, fa, fb, raw, tol, &mut exact_arc_vertices)?;
             }
 
+            // A sphere's rim arc and its section can share both endpoints
+            // while bounding different curves. Give the section an interior
+            // vertex so endpoint-pair edge merging cannot collapse that face.
+            let raw_curves = if matches!(surf_a, FaceSurface::Sphere(_))
+                || matches!(surf_b, FaceSurface::Sphere(_))
+            {
+                raw_curves
+                    .into_iter()
+                    .flat_map(|raw| {
+                        if matches!(raw.curve, EdgeCurve::NurbsCurve(_))
+                            && (raw.p_start - raw.p_end).length() > tol.linear
+                        {
+                            let tm = f64::midpoint(raw.t_range.0, raw.t_range.1);
+                            let pm = raw
+                                .curve
+                                .evaluate_with_endpoints(tm, raw.p_start, raw.p_end);
+                            vec![
+                                RawCurve {
+                                    curve: raw.curve.clone(),
+                                    bbox: raw.bbox,
+                                    t_range: (raw.t_range.0, tm),
+                                    p_start: raw.p_start,
+                                    p_end: pm,
+                                },
+                                RawCurve {
+                                    curve: raw.curve,
+                                    bbox: raw.bbox,
+                                    t_range: (tm, raw.t_range.1),
+                                    p_start: pm,
+                                    p_end: raw.p_end,
+                                },
+                            ]
+                        } else {
+                            vec![raw]
+                        }
+                    })
+                    .collect()
+            } else {
+                raw_curves
+            };
             for raw in raw_curves {
                 let mut raw = raw;
                 // Closed Circle3D sections — produced by plane-sphere
@@ -1146,6 +1186,12 @@ fn emit_exact_arc(
 /// face (so surface-surface intersection curves can be restricted to the
 /// region inside both faces — the reference's "true boundary" restriction).
 enum FaceExtent {
+    Hemisphere {
+        center: Point3,
+        axis: Vec3,
+        radius: f64,
+        margin: f64,
+    },
     /// Planar face: 2D outer boundary polygon in a plane frame (arc edges
     /// sampled), plus any inner-wire (hole) polygons subtracted from it.
     Plane {
@@ -1176,6 +1222,37 @@ impl FaceExtent {
         v_range: Option<(f64, f64)>,
         tol: Tolerance,
     ) -> Result<Option<Self>, AlgoError> {
+        if let FaceSurface::Sphere(sphere) = surface {
+            let face = topo.face(face_id)?;
+            if face.inner_wires().is_empty()
+                && let Some(axis) = sphere_region_axis(topo, face_id, sphere.center(), tol)?
+            {
+                let mut equatorial = true;
+                for oe in topo.wire(face.outer_wire())?.edges() {
+                    let edge = topo.edge(oe.edge())?;
+                    let start = topo.vertex(edge.start())?.point();
+                    let end = topo.vertex(edge.end())?.point();
+                    let domain = super::helpers::authoritative_edge_domain(
+                        edge,
+                        oe.edge(),
+                        "hemisphere extent",
+                    )?;
+                    for i in 0..=8 {
+                        let t = domain.0 + (domain.1 - domain.0) * f64::from(i) / 8.0;
+                        let p = edge.curve().evaluate_with_endpoints(t, start, end);
+                        equatorial &= (p - sphere.center()).dot(axis).abs() <= tol.linear;
+                    }
+                }
+                if equatorial {
+                    return Ok(Some(Self::Hemisphere {
+                        center: sphere.center(),
+                        axis,
+                        radius: sphere.radius(),
+                        margin: tol.linear,
+                    }));
+                }
+            }
+        }
         if let FaceSurface::Plane { normal, .. } = surface {
             let face = topo.face(face_id)?;
             let outer = topo.wire(face.outer_wire())?;
@@ -1306,6 +1383,7 @@ impl FaceExtent {
                 (max_x - min_x).min(max_y - min_y).abs()
             }
             Self::Analytic { v0, v1, .. } => (v1 - v0).abs(),
+            Self::Hemisphere { radius, .. } => *radius,
         }
     }
 
@@ -1315,6 +1393,7 @@ impl FaceExtent {
     /// rides the margin band along a boundary (a tangency graze).
     fn contains_strict(&self, p: Point3, depth: f64) -> bool {
         match self {
+            Self::Hemisphere { center, axis, .. } => (p - *center).dot(*axis) > depth,
             Self::Plane {
                 frame, poly, holes, ..
             } => {
@@ -1350,6 +1429,7 @@ impl FaceExtent {
     /// (their v-boundaries are legitimately ridden by cap-rim sections).
     fn contains_or_on_boundary(&self, p: Point3, band: f64) -> bool {
         match self {
+            Self::Hemisphere { .. } => true,
             Self::Plane {
                 frame, poly, holes, ..
             } => {
@@ -1368,6 +1448,12 @@ impl FaceExtent {
 
     fn contains(&self, p: Point3) -> bool {
         match self {
+            Self::Hemisphere {
+                center,
+                axis,
+                margin,
+                ..
+            } => (p - *center).dot(*axis) >= -*margin,
             Self::Plane {
                 frame,
                 poly,
@@ -2270,13 +2356,10 @@ fn rescue_corner_crossing(
     })
 }
 
-/// Emit every maximal in-both window of a CLOSED section curve. Non-wrapping
-/// windows get their in/out transitions bisected to the exact mutual-extent
-/// boundary and their endpoints snapped to the boundary triple junction —
-/// sample-index endpoints land ~a sample-spacing off the junction the chain
-/// must weld to. Seam-wrapping windows keep the historical sample-index trim
-/// (bisection across the seam is curve-type dependent; `trim_closed_curve_to_inboth_arc`
-/// owns the wrap split).
+/// Emit every maximal in-both window with refined boundary junctions.
+/// A wrapping NURBS window is evaluated periodically during bisection, then
+/// split into in-domain pieces: clamping or sample-index trimming would leave
+/// the adjacent faces with different endpoints at their shared boundary.
 #[allow(clippy::too_many_arguments)]
 fn emit_closed_curve_windows(
     topo: &Topology,
@@ -2294,7 +2377,14 @@ fn emit_closed_curve_windows(
     let span = raw.t_range.1 - raw.t_range.0;
     #[allow(clippy::cast_precision_loss)]
     let t_at = |i: usize| raw.t_range.0 + span * (i as f64) / (n as f64);
-    let point_at = |t: f64| raw.curve.evaluate_with_endpoints(t, raw.p_start, raw.p_end);
+    let point_at = |t: f64| {
+        let t = if matches!(raw.curve, EdgeCurve::NurbsCurve(_)) {
+            raw.t_range.0 + (t - raw.t_range.0).rem_euclid(span)
+        } else {
+            t
+        };
+        raw.curve.evaluate_with_endpoints(t, raw.p_start, raw.p_end)
+    };
     // Trim against the MARGIN-FREE window: the boundary margin exists so
     // boundary-coincident sections aren't rejected, but bisecting a window's
     // end against the inflated extent overshoots the true face boundary by
@@ -2327,18 +2417,6 @@ fn emit_closed_curve_windows(
         } else {
             &lenient_inside
         };
-        if r1 > n {
-            // Seam-wrapping window. An Ellipse evaluates out-of-domain
-            // parameters periodically, so its transitions can be bisected in
-            // the unwrapped parameter like any other window (fall through).
-            // A clamped NURBS cannot (out-of-domain evaluation is garbage);
-            // it keeps the historical sample-index trim, whose wrap split
-            // `trim_closed_curve_to_inboth_arc` owns.
-            if !matches!(raw.curve, EdgeCurve::Ellipse(_)) {
-                out.extend(trim_closed_curve_to_inboth_arc(raw, r0, r1, n));
-                continue;
-            }
-        }
         let mut t_lo = t_at(r0);
         if r0 > 0 {
             let (mut out_t, mut in_t) = (t_at(r0 - 1), t_lo);
@@ -2372,15 +2450,14 @@ fn emit_closed_curve_windows(
         if t_hi <= t_lo {
             continue;
         }
-        let p_start = junctions.resolve(topo, fa, fb, point_at(t_lo), tol);
-        let p_end = junctions.resolve(topo, fa, fb, point_at(t_hi), tol);
-        out.push(RawCurve {
-            curve: raw.curve.clone(),
-            bbox: raw.bbox,
-            t_range: (t_lo, t_hi),
-            p_start,
-            p_end,
-        });
+        let mut arcs = trim_closed_curve_interval(raw, t_lo, t_hi);
+        if let Some(first) = arcs.first_mut() {
+            first.p_start = junctions.resolve(topo, fa, fb, point_at(t_lo), tol);
+        }
+        if let Some(last) = arcs.last_mut() {
+            last.p_end = junctions.resolve(topo, fa, fb, point_at(t_hi), tol);
+        }
+        out.extend(arcs);
     }
 }
 
@@ -2545,6 +2622,7 @@ fn snap_to_boundary_junction_band(
 ///   the seam (where the closed curve's endpoints coincide), preserving BOTH
 ///   pieces of the wrapping run instead of dropping the head. A non-wrapping
 ///   NURBS run (`b1 ≤ N`) is a single in-domain arc.
+#[cfg(test)]
 fn trim_closed_curve_to_inboth_arc(
     raw: &RawCurve,
     b0: usize,
@@ -2556,6 +2634,13 @@ fn trim_closed_curve_to_inboth_arc(
     let span = raw.t_range.1 - raw.t_range.0;
     let t0 = raw.t_range.0 + span * frac(b0);
     let t1 = raw.t_range.0 + span * frac(b1);
+    trim_closed_curve_interval(raw, t0, t1)
+}
+
+/// Keep exact refined transition parameters while splitting at a clamped
+/// NURBS seam or at the shorter-arc limit of an open circular conic.
+fn trim_closed_curve_interval(raw: &RawCurve, t0: f64, t1: f64) -> Vec<RawCurve> {
+    let span = raw.t_range.1 - raw.t_range.0;
     let point_at = |t: f64| raw.curve.evaluate_with_endpoints(t, raw.p_start, raw.p_end);
 
     let one_arc = |ta: f64, tb: f64| RawCurve {
@@ -2566,10 +2651,10 @@ fn trim_closed_curve_to_inboth_arc(
         p_end: point_at(tb),
     };
 
-    let wraps = b1 > n; // the in-both run crosses the periodic seam.
+    let wraps = t1 > raw.t_range.1;
     if matches!(raw.curve, EdgeCurve::NurbsCurve(_)) && wraps {
         // Split at the domain end / start so neither arc leaves the domain.
-        let t1_wrapped = t1 - span; // = raw.t_range.0 + span * frac(b1 - n)
+        let t1_wrapped = t1 - span;
         vec![
             one_arc(t0, raw.t_range.1),
             one_arc(raw.t_range.0, t1_wrapped),
@@ -3695,6 +3780,12 @@ fn face_v_range(
     face_id: FaceId,
     surface: &FaceSurface,
 ) -> Result<Option<(f64, f64)>, AlgoError> {
+    // A sphere's boundary does not bound its latitude domain: a hemisphere's
+    // equator projects to zero, with a spurious nonzero span after rotation.
+    // March the carrier and clip to the face's hemisphere afterward.
+    if matches!(surface, FaceSurface::Sphere(_)) {
+        return Ok(None);
+    }
     let face = topo.face(face_id)?;
     let wire = topo.wire(face.outer_wire())?;
     let mut v_min = f64::MAX;
