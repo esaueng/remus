@@ -197,6 +197,7 @@ pub(super) fn find_splits_on_line(
     if edge_len_sq < tol * tol {
         return Vec::new();
     }
+    let weld = super::local_weld_band(tol, edge_len_sq.sqrt());
     let mut splits = Vec::new();
     for &sp in split_pts_3d {
         crate::perf::bump_face_split_probe();
@@ -214,7 +215,7 @@ pub(super) fn find_splits_on_line(
         // pendant the arrangement rightly refuses, so the face under-splits
         // and the fuse aborts on an open growth shell. The split point uses
         // the foot on the line, so boundary pieces stay exact.
-        if dist < tol * 100.0 {
+        if dist < weld {
             // Return the FOOT, not the raw candidate: the candidate may sit
             // anywhere in the weld band, and consumers thread the returned
             // point into wires (section T-junction splits use it verbatim).
@@ -226,7 +227,7 @@ pub(super) fn find_splits_on_line(
     // the SAME junction carrying different fit error (~1e-6); a parameter-only
     // exact-tol dedup keeps both and mints an untrackable micro boundary piece
     // between them.
-    splits.dedup_by(|a, b| (a.0 - b.0).abs() < tol || (a.1 - b.1).length() < tol * 100.0);
+    splits.dedup_by(|a, b| (a.0 - b.0).abs() < tol || (a.1 - b.1).length() < weld);
     splits
 }
 
