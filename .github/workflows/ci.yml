@@ -56,6 +56,18 @@ jobs:
           CHANGED_COUNT: ${{ steps.classify.outputs.changed_count }}
         run: echo "CI mode is ${MODE} for ${CHANGED_COUNT} changed path(s)." >> "$GITHUB_STEP_SUMMARY"
 
+  owner-pr:
+    name: Owner PR Rust checks
+    needs: changes
+    permissions:
+      contents: read
+      pull-requests: read
+    # The runner group permits only this immutable callee, never PR workflow refs.
+    uses: esaueng/remus/.github/workflows/owner-pr.yml@126778b2b4e7bb95447d736256e2357a3b6b38ad
+    with:
+      heavy: ${{ needs.changes.outputs.heavy == 'true' }}
+      docs: ${{ needs.changes.outputs.docs == 'true' }}
+
   repo-policy:
     name: Repository Policy
     runs-on: ubuntu-latest
@@ -88,6 +100,8 @@ jobs:
           check "Product naming" ./scripts/check-remus-rename.sh
           check "Publish workflow contract" ./scripts/test-publish-credentials.sh
           check "Gauntlet workflow contract" python3 scripts/test-gauntlet-workflow.py
+          check "Owner PR policy tests" python3 scripts/test-owner-pr-policy.py
+          check "Owner PR routing tests" python3 scripts/test-owner-pr-routing.py
           check "CI classifier tests" python3 scripts/test-classify-ci-changes.py
           check "Unused dependencies" cargo machete
           check "TOML format" taplo fmt --check
@@ -95,8 +109,8 @@ jobs:
 
   clippy:
     name: Clippy
-    needs: changes
-    if: needs.changes.outputs.heavy == 'true'
+    needs: [changes, owner-pr]
+    if: needs.changes.outputs.heavy == 'true' && needs.owner-pr.outputs.trusted != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -107,8 +121,8 @@ jobs:
 
   test:
     name: Test
-    needs: changes
-    if: needs.changes.outputs.heavy == 'true'
+    needs: [changes, owner-pr]
+    if: needs.changes.outputs.heavy == 'true' && needs.owner-pr.outputs.trusted != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -195,8 +209,8 @@ jobs:
 
   msrv:
     name: MSRV (1.88)
-    needs: changes
-    if: needs.changes.outputs.heavy == 'true'
+    needs: [changes, owner-pr]
+    if: needs.changes.outputs.heavy == 'true' && needs.owner-pr.outputs.trusted != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -265,8 +279,8 @@ jobs:
 
   fuzz-check:
     name: Fuzz Targets Compile
-    needs: changes
-    if: needs.changes.outputs.heavy == 'true'
+    needs: [changes, owner-pr]
+    if: needs.changes.outputs.heavy == 'true' && needs.owner-pr.outputs.trusted != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -396,8 +410,8 @@ jobs:
 
   docs:
     name: Documentation
-    needs: changes
-    if: needs.changes.outputs.docs == 'true'
+    needs: [changes, owner-pr]
+    if: needs.changes.outputs.docs == 'true' && needs.owner-pr.outputs.trusted != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -439,7 +453,7 @@ jobs:
   ci-pass:
     name: CI Pass
     if: always()
-    needs: [changes, repo-policy, clippy, test, approx-census, platform-test, coverage, msrv, wasm, fuzz-check, render, deny, audit, docs, secrets-scan]
+    needs: [changes, owner-pr, repo-policy, clippy, test, approx-census, platform-test, coverage, msrv, wasm, fuzz-check, render, deny, audit, docs, secrets-scan]
     runs-on: ubuntu-latest
     steps:
       - name: Check all jobs
