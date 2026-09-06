@@ -403,6 +403,10 @@ The large-scale rollback fixture is promoted to a correctness test, while
 the smaller 1e-6 through-cut remains a typed refusal. This closes the named
 scale witnesses, not the entire band inventory: see [the audit](scale-band-audit.md)
 for changed bands and remaining dimensional, curved, and anisotropic cases.
+The additional 36-cell anisotropic box/tool matrix preserves small-feature
+material under rigid placement through point, local-volume, and watertightness
+oracles. The stricter world-volume precision target for rotated long bodies
+remains an explicit runnable measurement regression.
 
 > **Exit gate:** `boolean_scale_gap.rs` exact from 1e-5 to 1e6 — or a typed
 > refusal; never a silent wrong volume at any scale. The rollback fixture in
