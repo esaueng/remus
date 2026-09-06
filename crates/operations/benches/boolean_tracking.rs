@@ -83,6 +83,22 @@ fn bench_booleans(c: &mut Criterion) {
         });
     });
 
+    group.bench_function("cross_drilled_cylinder", |bencher| {
+        bencher.iter(|| {
+            let mut topo = Topology::new();
+            let shaft = make_cylinder(&mut topo, 3.0, 12.0).unwrap();
+            let tool = make_cylinder(&mut topo, 1.0, 10.0).unwrap();
+            transform_solid(
+                &mut topo,
+                tool,
+                &Mat4::rotation_y(std::f64::consts::FRAC_PI_2),
+            )
+            .unwrap();
+            transform_solid(&mut topo, tool, &Mat4::translation(-5.0, 0.0, 6.0)).unwrap();
+            black_box(boolean(&mut topo, BooleanOp::Cut, shaft, tool).unwrap())
+        });
+    });
+
     // Issue #987: a 6×6 perforated panel (36 through-holes). Tracks the
     // many-holes Cut path that the O(N²) fixes made near-linear.
     group.bench_function("perforated_cut_36", |bencher| {

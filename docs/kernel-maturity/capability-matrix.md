@@ -229,8 +229,10 @@ does not itself promote or demote anything.
   local-limit boundaries, an analytic ruled-surface plus closed-form linear
   volume oracle, and sampled S-curve radius/incidence/tangency invariants.
   In-review PR #228 qualifies constant-radius closed curved-support assembly
-  for coaxial cylinder/cone, cylinder/sphere, cone/cone, and the segmented
-  orthogonal cylinder/cylinder rim of a cross-drilled shaft. The analytic
+  for coaxial cylinder/cone, cylinder/sphere, and cone/cone. The segmented
+  orthogonal cylinder/cylinder rim of a cross-drilled shaft now refuses
+  wrong-side material addition: correcting #278's malformed input winding
+  restores the volume-sign gate. Correct-side assembly remains unqualified. The analytic
   cylinder/cone cell is recovered as an exact torus; other closed walks use a
   periodic degree-1 NURBS band tessellated from shared contact-edge vertices.
   The native matrix pins solid validation, zero free/non-manifold edges,
