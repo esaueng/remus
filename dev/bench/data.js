@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788669404815,
+  "lastUpdate": 1788672157012,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -15211,6 +15211,216 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 87779,
             "range": "± 302",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8379605083bcb27a0a9486fd2be8c63b4800a107",
+          "message": "feat(math): exact coaxial rings for torus/torus, torus/cone, cone/sphere (#291)\n\n* feat(math): exact coaxial rings for torus/torus, torus/cone, cone/sphere\n\nThe analytic pair dispatch had exact routes for cylinder/cylinder,\ncone/cylinder, sphere/cylinder, torus/cylinder, torus/sphere, and\ncone/cone, but torus/torus, torus/cone, and cone/sphere fell to the\nmarching algorithm even in the coaxial configurations, where the\nintersection is exactly a circle — the marcher returned a fitted NURBS\nand dominated run time (a flange with four bolts spent ~1.1 s on 26\nedges).\n\nAll three coaxial cases reduce to a 2D circle-circle or line-circle\ncrossing in the meridian half-plane; each crossing with positive radial\ncoordinate is an exact Circle3D ring. The new exact_torus_torus,\nexact_torus_cone, and exact_cone_sphere follow the existing\nexact_torus_cylinder / exact_torus_sphere conventions (coaxial gate,\ntangent and miss cases, deferral to the marcher otherwise) and are wired\ninto try_algebraic_intersection, so both the bounded marcher entry and\nthe GFA's general analytic path pick up the exact rings.\n\nWith those arms the pair matrix is complete: the try_algebraic wildcard\nis gone, so a future AnalyticSurface variant is flagged by the compiler\ninstead of silently marching.\n\nCloses #260\n\n* style(math): rustfmt the merged try_algebraic_intersection tail",
+          "timestamp": "2026-09-06T01:16:45-04:00",
+          "tree_id": "3892c368718cb4a2f7940cffb5ccad3d694fd1af",
+          "url": "https://github.com/esaueng/remus/commit/8379605083bcb27a0a9486fd2be8c63b4800a107"
+        },
+        "date": 1788672155732,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1150748,
+            "range": "± 1179",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1231657,
+            "range": "± 2681",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 21940,
+            "range": "± 324",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 848481,
+            "range": "± 6269",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 34262926,
+            "range": "± 629064",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 28,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 82,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 49,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 175,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 126,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 665,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 133,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 270,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 173,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 414,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 618,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 2772,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 15,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 30,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 52,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 51,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 456105,
+            "range": "± 906",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 9323961,
+            "range": "± 13610",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 134129,
+            "range": "± 467",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 516565,
+            "range": "± 859",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 107395,
+            "range": "± 194",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 757500,
+            "range": "± 20890",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 8921409,
+            "range": "± 189633",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 605953,
+            "range": "± 5650",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 1076379,
+            "range": "± 1499",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 82889,
+            "range": "± 824",
             "unit": "ns/iter"
           }
         ]
