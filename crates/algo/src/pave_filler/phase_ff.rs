@@ -554,7 +554,7 @@ pub fn perform_with_context(
                                 fb
                             };
                             let seg_len = (raw.p_end - raw.p_start).length();
-                            match clip_line_to_face(topo, plane_face, &raw) {
+                            match clip_line_to_face(topo, plane_face, &raw, tol) {
                                 FaceClip::Empty => return None,
                                 FaceClip::Range((a0, a1)) => {
                                     let overlap = hi.min(a1) - lo.max(a0);
@@ -573,8 +573,8 @@ pub fn perform_with_context(
                             let trimmed = trim_raw_line(&raw, lo, hi, tol)?;
                             return clip_trimmed_line_to_planes(topo, fa, fb, trimmed, tol);
                         }
-                        let clip_a = clip_line_to_face(topo, fa, &raw);
-                        let clip_b = clip_line_to_face(topo, fb, &raw);
+                        let clip_a = clip_line_to_face(topo, fa, &raw, tol);
+                        let clip_b = clip_line_to_face(topo, fb, &raw, tol);
                         match (clip_a, clip_b) {
                             // A face's polygon was built but the line lies
                             // entirely outside it: the mutual overlap is
@@ -743,7 +743,7 @@ pub fn perform_with_context(
                         && matches!(surf_b, FaceSurface::Plane { .. });
                     if both_planes
                         && matches!(raw.curve, EdgeCurve::Line)
-                        && let Some(intersects) = exact_plane_line_in_both(topo, fa, fb, raw)
+                        && let Some(intersects) = exact_plane_line_in_both(topo, fa, fb, raw, tol)
                     {
                         return intersects;
                     }
@@ -5791,8 +5791,8 @@ fn clip_trimmed_line_to_planes(
     raw: RawCurve,
     tol: Tolerance,
 ) -> Option<RawCurve> {
-    let clip_a = clip_line_to_face(topo, fa, &raw);
-    let clip_b = clip_line_to_face(topo, fb, &raw);
+    let clip_a = clip_line_to_face(topo, fa, &raw, tol);
+    let clip_b = clip_line_to_face(topo, fb, &raw, tol);
     match (clip_a, clip_b) {
         (FaceClip::Empty, _) | (_, FaceClip::Empty) => None,
         (FaceClip::Range(a), FaceClip::Range(b)) => {
@@ -5858,20 +5858,21 @@ fn exact_plane_line_in_both(
     fa: FaceId,
     fb: FaceId,
     raw: &RawCurve,
+    tol: Tolerance,
 ) -> Option<bool> {
     if !plane_face_has_exact_line_clip(topo, fa) || !plane_face_has_exact_line_clip(topo, fb) {
         return None;
     }
     match (
-        clip_line_to_face(topo, fa, raw),
-        clip_line_to_face(topo, fb, raw),
+        clip_line_to_face(topo, fa, raw, tol),
+        clip_line_to_face(topo, fb, raw, tol),
     ) {
         (FaceClip::Empty, _) | (_, FaceClip::Empty) => Some(false),
         (FaceClip::Range(a), FaceClip::Range(b)) =>
-        // Fractional epsilon matches the established plane clip contract and
-        // rejects point contact while retaining a genuine short interval.
+        // Point contact is measured in model space, independent of the
+        // untrimmed carrier's length.
         {
-            Some(a.0.max(b.0) < a.1.min(b.1) - 1e-9)
+            Some((a.1.min(b.1) - a.0.max(b.0)) * (raw.p_end - raw.p_start).length() > tol.linear)
         }
         (FaceClip::Range(_) | FaceClip::Indeterminate, FaceClip::Indeterminate)
         | (FaceClip::Indeterminate, FaceClip::Range(_)) => None,
@@ -5986,7 +5987,7 @@ mod edge_chaining_tests {
 }
 
 /// Clip a Line curve to a planar face's boundary polygon.
-fn clip_line_to_face(topo: &Topology, face_id: FaceId, raw: &RawCurve) -> FaceClip {
+fn clip_line_to_face(topo: &Topology, face_id: FaceId, raw: &RawCurve, tol: Tolerance) -> FaceClip {
     let Ok(face) = topo.face(face_id) else {
         return FaceClip::Indeterminate;
     };
@@ -6056,12 +6057,13 @@ fn clip_line_to_face(topo: &Topology, face_id: FaceId, raw: &RawCurve) -> FaceCl
     // both faces' bounding boxes and cross a rounded-rect corner arc mid-edge,
     // which forces the downstream planar arrangement to bail.
     if !polygon_is_convex(&poly) {
-        return match clip_line_to_polygon_general((s.x(), s.y()), (e.x(), e.y()), &poly) {
+        return match clip_line_to_polygon_general((s.x(), s.y()), (e.x(), e.y()), &poly, tol.linear)
+        {
             Some(range) => FaceClip::Range(range),
             None => FaceClip::Empty,
         };
     }
-    match clip_line_to_polygon((s.x(), s.y()), (e.x(), e.y()), &poly) {
+    match clip_line_to_polygon((s.x(), s.y()), (e.x(), e.y()), &poly, tol.linear) {
         Some(range) => FaceClip::Range(range),
         None => FaceClip::Empty,
     }
@@ -6104,6 +6106,7 @@ fn clip_line_to_polygon(
     start: (f64, f64),
     end: (f64, f64),
     polygon: &[(f64, f64)],
+    linear: f64,
 ) -> Option<(f64, f64)> {
     let n = polygon.len();
     if n < 3 {
@@ -6174,11 +6177,11 @@ fn clip_line_to_polygon(
         } else {
             t_max = t_max.min(t);
         }
-        if t_min > t_max + 1e-6 {
+        if (t_min - t_max) * d_len > linear {
             return None;
         }
     }
-    if t_max - t_min < 1e-6 {
+    if (t_max - t_min) * d_len <= linear {
         return None;
     }
     Some((t_min.max(0.0), t_max.min(1.0)))
@@ -6200,6 +6203,7 @@ fn clip_line_to_polygon_general(
     start: (f64, f64),
     end: (f64, f64),
     polygon: &[(f64, f64)],
+    linear: f64,
 ) -> Option<(f64, f64)> {
     use remus_math::predicates::point_in_polygon;
     use remus_math::vec::Point2;
@@ -6210,7 +6214,8 @@ fn clip_line_to_polygon_general(
     }
     let dx = end.0 - start.0;
     let dy = end.1 - start.1;
-    if dx.hypot(dy) < 1e-12 {
+    let d_len = dx.hypot(dy);
+    if d_len < 1e-12 {
         return None;
     }
 
@@ -6234,14 +6239,14 @@ fn clip_line_to_polygon_general(
         }
     }
     ts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    ts.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+    ts.dedup_by(|a, b| (*a - *b).abs() * d_len <= linear);
 
     let poly_pts: Vec<Point2> = polygon.iter().map(|&(x, y)| Point2::new(x, y)).collect();
     let mut lo = f64::MAX;
     let mut hi = f64::MIN;
     for w in ts.windows(2) {
         let (ta, tb) = (w[0], w[1]);
-        if tb - ta < 1e-9 {
+        if (tb - ta) * d_len <= linear {
             continue;
         }
         let tm = 0.5 * (ta + tb);
@@ -6251,7 +6256,7 @@ fn clip_line_to_polygon_general(
             hi = hi.max(tb);
         }
     }
-    if hi - lo < 1e-6 {
+    if (hi - lo) * d_len <= linear {
         return None;
     }
     Some((lo.max(0.0), hi.min(1.0)))
@@ -6369,7 +6374,10 @@ mod tests {
         // the 0.02 mm mutual window around x=0.
         let raw = raw_line(Point3::new(-100.0, 0.0, 0.0), Point3::new(101.0, 0.0, 0.0));
 
-        assert_eq!(exact_plane_line_in_both(&topo, a, b, &raw), Some(true));
+        assert_eq!(
+            exact_plane_line_in_both(&topo, a, b, &raw, Tolerance::default()),
+            Some(true)
+        );
     }
 
     #[test]
@@ -6396,7 +6404,7 @@ mod tests {
         let raw = raw_line(Point3::new(-10.0, 0.9, 0.0), Point3::new(10.0, 0.9, 0.0));
 
         assert_eq!(
-            exact_plane_line_in_both(&topo, lower_left, upper_right, &raw),
+            exact_plane_line_in_both(&topo, lower_left, upper_right, &raw, Tolerance::default()),
             Some(false)
         );
     }
@@ -6417,7 +6425,10 @@ mod tests {
         let convex = square_plane_face(&mut topo, 2.0);
         let raw = raw_line(Point3::new(-3.0, 1.0, 0.0), Point3::new(3.0, 1.0, 0.0));
 
-        assert_eq!(exact_plane_line_in_both(&topo, concave, convex, &raw), None);
+        assert_eq!(
+            exact_plane_line_in_both(&topo, concave, convex, &raw, Tolerance::default()),
+            None
+        );
     }
 
     fn writer_state(
@@ -6995,14 +7006,14 @@ mod tests {
     #[test]
     fn clip_inside_square() {
         let poly = vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)];
-        let r = clip_line_to_polygon((0.2, 0.5), (0.8, 0.5), &poly).unwrap();
+        let r = clip_line_to_polygon((0.2, 0.5), (0.8, 0.5), &poly, 1e-7).unwrap();
         assert!((r.0).abs() < 1e-6 && (r.1 - 1.0).abs() < 1e-6);
     }
 
     #[test]
     fn clip_crossing() {
         let poly = vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)];
-        let r = clip_line_to_polygon((-1.0, 0.5), (2.0, 0.5), &poly).unwrap();
+        let r = clip_line_to_polygon((-1.0, 0.5), (2.0, 0.5), &poly, 1e-7).unwrap();
         assert!((r.0 - 1.0 / 3.0).abs() < 1e-6);
         assert!((r.1 - 2.0 / 3.0).abs() < 1e-6);
     }
@@ -7010,7 +7021,7 @@ mod tests {
     #[test]
     fn clip_outside() {
         let poly = vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)];
-        assert!(clip_line_to_polygon((2.0, 0.5), (3.0, 0.5), &poly).is_none());
+        assert!(clip_line_to_polygon((2.0, 0.5), (3.0, 0.5), &poly, 1e-7).is_none());
     }
 
     #[test]
@@ -7020,7 +7031,7 @@ mod tests {
         // an absolute parallel epsilon reads this as a genuine crossing and
         // clips the span to the ratio of two residues (t_max = 0.5 here).
         let poly = vec![(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)];
-        let r = clip_line_to_polygon((10.0, 1e-13), (90.0, -1e-13), &poly).unwrap();
+        let r = clip_line_to_polygon((10.0, 1e-13), (90.0, -1e-13), &poly, 1e-7).unwrap();
         assert!(r.0.abs() < 1e-9 && (r.1 - 1.0).abs() < 1e-9);
     }
 
@@ -7030,26 +7041,26 @@ mod tests {
         // still drift across the edge: start 2e-8 outside, end 2e-8 inside.
         // Rejecting on the start point alone would drop it entirely.
         let poly = vec![(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)];
-        let r = clip_line_to_polygon((10.0, -2e-8), (90.0, 2e-8), &poly).unwrap();
+        let r = clip_line_to_polygon((10.0, -2e-8), (90.0, 2e-8), &poly, 1e-7).unwrap();
         assert!((r.1 - 1.0).abs() < 1e-9);
     }
 
     #[test]
     fn clip_parallel_outside_edge_is_dropped() {
         let poly = vec![(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)];
-        assert!(clip_line_to_polygon((10.0, -0.5), (90.0, -0.5), &poly).is_none());
+        assert!(clip_line_to_polygon((10.0, -0.5), (90.0, -0.5), &poly, 1e-7).is_none());
     }
 
     #[test]
     fn clip_zero_length_segment_is_dropped() {
         let poly = vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)];
-        assert!(clip_line_to_polygon((0.5, 0.5), (0.5, 0.5), &poly).is_none());
+        assert!(clip_line_to_polygon((0.5, 0.5), (0.5, 0.5), &poly, 1e-7).is_none());
     }
 
     #[test]
     fn clip_cw_polygon() {
         let poly = vec![(0.0, 1.0), (1.0, 1.0), (1.0, 0.0), (0.0, 0.0)];
-        let r = clip_line_to_polygon((-1.0, 0.5), (2.0, 0.5), &poly).unwrap();
+        let r = clip_line_to_polygon((-1.0, 0.5), (2.0, 0.5), &poly, 1e-7).unwrap();
         assert!((r.0 - 1.0 / 3.0).abs() < 1e-6);
         assert!((r.1 - 2.0 / 3.0).abs() < 1e-6);
     }
@@ -7059,7 +7070,7 @@ mod tests {
         // A line provably outside a built (convex) polygon yields `None`,
         // which the FF trim path maps to `FaceClip::Empty` → drop the curve.
         let poly = vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)];
-        assert!(clip_line_to_polygon((2.0, 0.5), (3.0, 0.5), &poly).is_none());
+        assert!(clip_line_to_polygon((2.0, 0.5), (3.0, 0.5), &poly, 1e-7).is_none());
     }
 
     #[test]
@@ -7098,21 +7109,21 @@ mod tests {
             (0.0, 2.0),
         ];
         // Line at y=0.5 (in the wide lower arm): inside for x in [0,2].
-        let r = clip_line_to_polygon_general((-5.0, 0.5), (5.0, 0.5), &poly).unwrap();
+        let r = clip_line_to_polygon_general((-5.0, 0.5), (5.0, 0.5), &poly, 1e-7).unwrap();
         let x0 = -5.0 + 10.0 * r.0;
         let x1 = -5.0 + 10.0 * r.1;
         assert!((x0 - 0.0).abs() < 1e-6, "x0={x0}");
         assert!((x1 - 2.0).abs() < 1e-6, "x1={x1}");
 
         // Line at y=1.5 (in the narrow upper arm): inside only for x in [0,1].
-        let r = clip_line_to_polygon_general((-5.0, 1.5), (5.0, 1.5), &poly).unwrap();
+        let r = clip_line_to_polygon_general((-5.0, 1.5), (5.0, 1.5), &poly, 1e-7).unwrap();
         let x0 = -5.0 + 10.0 * r.0;
         let x1 = -5.0 + 10.0 * r.1;
         assert!((x0 - 0.0).abs() < 1e-6, "x0={x0}");
         assert!((x1 - 1.0).abs() < 1e-6, "x1={x1}");
 
         // A line entirely outside returns None.
-        assert!(clip_line_to_polygon_general((-5.0, 3.0), (5.0, 3.0), &poly).is_none());
+        assert!(clip_line_to_polygon_general((-5.0, 3.0), (5.0, 3.0), &poly, 1e-7).is_none());
     }
 
     fn hit_at(angle: f64) -> (f64, Point3) {
