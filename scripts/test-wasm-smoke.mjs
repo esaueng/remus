@@ -15,6 +15,7 @@ import { fileURLToPath } from 'node:url';
 import {
   runOpenZcadAnalyticFlangeBooleanRegression,
   runOpenZcadCylindricalFaceResizeRegression,
+  runWideSphereCapRegression,
 } from './openzcad-wasm-consumer-regressions.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -734,3 +735,5 @@ for (const operation of ['fillet', 'chamfer']) {
 runOpenZcadCylindricalFaceResizeRegression({ BrepKernel, decodeEvolutionPayload, RemusIo });
 
 console.log('\nAll smoke tests passed');
+
+runWideSphereCapRegression({ BrepKernel, RemusIo });
