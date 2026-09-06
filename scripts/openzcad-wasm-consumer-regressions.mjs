@@ -262,6 +262,7 @@ export const runOpenZcadConsumerRegressions = (exports) => {
   runOffsetConeSphereRegression(exports);
   runOffsetSphereCylinderRegression(exports);
   runOffsetTorusSphereRegression(exports);
+  runTorusNotchRegression(exports);
   runBooleanScaleRegression(exports);
   runAnisotropicBooleanRegression(exports);
 };
@@ -469,4 +470,50 @@ export const runAnisotropicBooleanRegression = ({ BrepKernel }) => {
     }
   }
   console.log('ok - 36 anisotropic boolean cells in direct and batch APIs retain local material');
+};
+
+export const runTorusNotchRegression = ({ BrepKernel }) => {
+  // Independent annular-section quadrature, recomputed in the native matrix.
+  const overlap = 233.17975756277542;
+  const torusVolume = 180 * Math.PI ** 2;
+  for (const batch of [false, true]) for (const scale of [0.1, 1, 10]) {
+    for (const placed of [false, true]) for (const operation of ['fuse', 'cut', 'intersect']) {
+      const kernel = new BrepKernel();
+      try {
+        const invoke = (op, args) => {
+          const [result] = JSON.parse(kernel.executeBatch(JSON.stringify([{ op, args }])));
+          assert.ok(Object.hasOwn(result, 'ok'), JSON.stringify(result));
+          return result.ok;
+        };
+        const transform = (solid, matrix) => batch
+          ? invoke('transform', { solid, matrix })
+          : kernel.transformSolid(solid, new Float64Array(matrix));
+        const torus = batch
+          ? invoke('makeTorus', { majorRadius: 10 * scale, minorRadius: 3 * scale, segments: 32 })
+          : kernel.makeTorus(10 * scale, 3 * scale, 32);
+        const box = batch
+          ? invoke('makeBox', { width: 8 * scale, height: 8 * scale, depth: 8 * scale })
+          : kernel.makeBox(8 * scale, 8 * scale, 8 * scale);
+        transform(box, [1,0,0,6*scale,0,1,0,-4*scale,0,0,1,-4*scale,0,0,0,1]);
+        if (placed) {
+          const c = Math.cos(0.37), s = Math.sin(0.37);
+          const matrix = [c,0,s,17*scale,0,1,0,-23*scale,-s,0,c,31*scale,0,0,0,1];
+          for (const solid of [torus, box]) transform(solid, matrix);
+        }
+        const result = batch
+          ? invoke('booleanWithQuality', { operation, solidA: torus, solidB: box, exactOnly: true })
+          : kernel.booleanWithQuality(operation, torus, box, true);
+        const label = `${operation} scale=${scale} placed=${placed} batch=${batch}`;
+        assert.equal(result.quality, 'exact', label);
+        assert.equal(kernel.validateSolid(result.solid), 0, label);
+        const expected = operation === 'fuse' ? torusVolume + 512 - overlap
+          : operation === 'cut' ? torusVolume - overlap : overlap;
+        const volume = kernel.volume(result.solid, 0.01 * scale) / scale ** 3;
+        assert.ok(Math.abs(volume - expected) / expected < 0.001, `${label}: ${volume} vs ${expected}`);
+      } finally {
+        kernel.free();
+      }
+    }
+  }
+  console.log('ok - torus notch: 18 exact scale/placement cells through direct and batch APIs');
 };

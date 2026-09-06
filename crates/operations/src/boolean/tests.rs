@@ -1501,6 +1501,13 @@ fn cut_torus_by_box_notch_is_analytic_watertight() {
     .unwrap();
     let result = boolean(&mut topo, BooleanOp::Cut, tor, bx).unwrap();
 
+    let report = crate::validate::validate_solid(&topo, result).unwrap();
+    assert!(
+        report.is_valid(),
+        "torus notch validation: {:?}",
+        report.issues
+    );
+
     let face_ids = remus_topology::explorer::solid_faces(&topo, result).unwrap();
     let (mut planes, mut tori, mut others) = (0usize, 0usize, 0usize);
     for fid in &face_ids {
