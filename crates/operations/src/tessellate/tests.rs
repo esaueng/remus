@@ -820,6 +820,153 @@ fn tessellate_drilled_hole_watertight_across_radii() {
     }
 }
 
+/// Issue #265: a NURBS boundary chain that winds a full turn but wanders
+/// along the wall (an interpolated tangent-contact polyline) must not be
+/// swept as a rim band — the band does not exist in the model. Only rims in
+/// a plane perpendicular to the axis may be swept; a fitted NURBS circle rim
+/// (flat) must keep the structured path.
+#[test]
+fn nurbs_rim_must_be_planar_perpendicular_to_axis() {
+    use remus_math::nurbs::fitting::interpolate;
+    use remus_math::surfaces::CylindricalSurface;
+
+    // Build a cylinder wall face whose outer wire is the doubled-seam band
+    // with the TOP rim replaced by two NURBS arcs forming a full ring at
+    // mean z=1 with axial wander amplitude `wander`.
+    let build_wall = |topo: &mut Topology, wander: f64| {
+        let v_bot = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
+        let v_a = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 1.0), 1e-7));
+        let v_b = topo.add_vertex(Vertex::new(Point3::new(-1.0, 0.0, 1.0), 1e-7));
+
+        let bot_circle = remus_math::curves::Circle3D::new(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            1.0,
+        )
+        .unwrap();
+        let mut bot_edge = Edge::new(v_bot, v_bot, EdgeCurve::Circle(bot_circle.clone()));
+        let bot_start = bot_circle.project(topo.vertex(v_bot).unwrap().point());
+        bot_edge.set_trim(Some((bot_start, bot_start + std::f64::consts::TAU)));
+        let e_bot = topo.add_edge(bot_edge);
+
+        // Two NURBS arcs: u ∈ [0, π] and u ∈ [π, 2π], z = 1 + wander·sin(3u).
+        let ring_point = |u: f64| Point3::new(u.cos(), u.sin(), 1.0 + wander * (3.0 * u).sin());
+        let pts1: Vec<_> = (0..=4)
+            .map(|k| ring_point(std::f64::consts::PI * (k as f64) / 4.0))
+            .collect();
+        let pts2: Vec<_> = (0..=4)
+            .map(|k| ring_point(std::f64::consts::PI * (1.0 + (k as f64) / 4.0)))
+            .collect();
+        let mut arc1 = Edge::new(
+            v_a,
+            v_b,
+            EdgeCurve::NurbsCurve(interpolate(&pts1, 3).unwrap()),
+        );
+        let mut arc2 = Edge::new(
+            v_b,
+            v_a,
+            EdgeCurve::NurbsCurve(interpolate(&pts2, 3).unwrap()),
+        );
+        for arc in [&mut arc1, &mut arc2] {
+            let domain = match arc.curve() {
+                EdgeCurve::NurbsCurve(nc) => nc.domain(),
+                _ => unreachable!(),
+            };
+            arc.set_trim(Some(domain));
+        }
+        let e_arc1 = topo.add_edge(arc1);
+        let e_arc2 = topo.add_edge(arc2);
+
+        let e_seam_up = topo.add_edge(Edge::new(v_bot, v_a, EdgeCurve::Line));
+        let e_seam_down = topo.add_edge(Edge::new(v_a, v_bot, EdgeCurve::Line));
+
+        let wire = topo.add_wire(
+            Wire::new(
+                vec![
+                    OrientedEdge::new(e_bot, true),
+                    OrientedEdge::new(e_seam_up, true),
+                    OrientedEdge::new(e_arc1, true),
+                    OrientedEdge::new(e_arc2, true),
+                    OrientedEdge::new(e_seam_down, true),
+                ],
+                true,
+            )
+            .unwrap(),
+        );
+        let face = topo.add_face(Face::new(
+            wire,
+            vec![],
+            FaceSurface::Cylinder(
+                CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0)
+                    .unwrap(),
+            ),
+        ));
+        (face, vec![e_bot, e_seam_up, e_arc1, e_arc2, e_seam_down])
+    };
+
+    let mut topo = Topology::new();
+    let (face, edge_ids) = build_wall(&mut topo, 0.4);
+
+    // Shared pool from the same sampler the solid path uses.
+    let mut merged = TriangleMesh::default();
+    let mut edge_global_indices = DetHashMap::default();
+    for &e in &edge_ids {
+        let edge_data = topo.edge(e).unwrap();
+        let pts = super::edge_sampling::sample_edge(&topo, edge_data, 0.05, 0.35, false).unwrap();
+        let mut ids = Vec::new();
+        for p in pts {
+            let idx = u32::try_from(merged.positions.len()).unwrap();
+            merged.positions.push(p);
+            merged.normals.push(Vec3::new(0.0, 0.0, 0.0));
+            ids.push(idx);
+        }
+        edge_global_indices.insert(e.index(), ids);
+    }
+
+    let face_data = topo.face(face).unwrap();
+    let handled = super::nonplanar::tessellate_revolution_band_shared(
+        &topo,
+        face_data,
+        &edge_global_indices,
+        &mut merged,
+    )
+    .unwrap();
+    assert!(
+        !handled,
+        "a rim wandering ±0.4 along the wall must decline the band sweep"
+    );
+
+    // Same construction with a flat NURBS ring keeps the structured band.
+    let mut topo = Topology::new();
+    let (face, edge_ids) = build_wall(&mut topo, 0.0);
+    let mut merged = TriangleMesh::default();
+    let mut edge_global_indices = DetHashMap::default();
+    for &e in &edge_ids {
+        let edge_data = topo.edge(e).unwrap();
+        let pts = super::edge_sampling::sample_edge(&topo, edge_data, 0.05, 0.35, false).unwrap();
+        let mut ids = Vec::new();
+        for p in pts {
+            let idx = u32::try_from(merged.positions.len()).unwrap();
+            merged.positions.push(p);
+            merged.normals.push(Vec3::new(0.0, 0.0, 0.0));
+            ids.push(idx);
+        }
+        edge_global_indices.insert(e.index(), ids);
+    }
+    let face_data = topo.face(face).unwrap();
+    let handled = super::nonplanar::tessellate_revolution_band_shared(
+        &topo,
+        face_data,
+        &edge_global_indices,
+        &mut merged,
+    )
+    .unwrap();
+    assert!(
+        handled,
+        "a flat fitted NURBS ring must keep the structured band path"
+    );
+}
+
 /// Issue #696 end-to-end: a gridfinity-style tile (pocketed slab + four magnet
 /// holes drilled through the floor into the pocket cavity) must tessellate
 /// watertight. This is the multi-feature scenario the consumer hit; the magnet
