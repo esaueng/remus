@@ -2248,11 +2248,10 @@ pub(super) fn tessellate_nonplanar_cdt(
         });
     }
 
-    // Holed non-planar faces are supported only on a bounded, non-periodic
-    // NURBS carrier. Periodic hole charts need branch-aware unwrapping for
-    // every loop; declining them is safer than filling the hole by falling
-    // through to the rectangular surface mesh.
+    // Torus holes must unwrap into the same bounded chart as the outer wire;
+    // this is checked below before CDT constraints are inserted.
     if !face_data.inner_wires().is_empty()
+        && !matches!(face_data.surface(), FaceSurface::Torus(_))
         && !matches!(face_data.surface(), FaceSurface::Nurbs(surface) if !surface.is_periodic_u() && !surface.is_periodic_v())
     {
         return Err(crate::OperationsError::InvalidInput {
@@ -2544,7 +2543,7 @@ pub(super) fn tessellate_nonplanar_cdt(
         uv_bounds(&boundary_uv)
     };
 
-    let hole_uvs: Vec<Vec<(f64, f64)>> = hole_boundaries_3d
+    let mut hole_uvs: Vec<Vec<(f64, f64)>> = hole_boundaries_3d
         .iter()
         .map(|hole| {
             hole.iter()
@@ -2559,6 +2558,32 @@ pub(super) fn tessellate_nonplanar_cdt(
                 .collect::<Result<Vec<_>, _>>()
         })
         .collect::<Result<Vec<_>, crate::OperationsError>>()?;
+    if matches!(face_data.surface(), FaceSurface::Torus(_)) {
+        let tau = std::f64::consts::TAU;
+        for hole in &mut hole_uvs {
+            for i in 1..hole.len() {
+                let previous = hole[i - 1];
+                hole[i].0 -= tau * ((hole[i].0 - previous.0) / tau).round();
+                hole[i].1 -= tau * ((hole[i].1 - previous.1) / tau).round();
+            }
+            let first = hole[0];
+            let last = hole[hole.len() - 1];
+            if (first.0 - last.0).abs() > tau * 0.5 || (first.1 - last.1).abs() > tau * 0.5 {
+                return Err(crate::OperationsError::InvalidInput {
+                    reason: "torus hole winds a parameter period".into(),
+                });
+            }
+            let (hu0, hu1, hv0, hv1) = uv_bounds(hole);
+            let u_shift =
+                tau * ((f64::midpoint(u_min, u_max) - f64::midpoint(hu0, hu1)) / tau).round();
+            let v_shift =
+                tau * ((f64::midpoint(v_min, v_max) - f64::midpoint(hv0, hv1)) / tau).round();
+            for point in hole {
+                point.0 += u_shift;
+                point.1 += v_shift;
+            }
+        }
+    }
     for hole in &hole_uvs {
         if hole
             .iter()
