@@ -4224,7 +4224,15 @@ fn compute_raw_curves(
 
         (FaceSurface::Plane { normal, d }, FaceSurface::Nurbs(nurbs))
         | (FaceSurface::Nurbs(nurbs), FaceSurface::Plane { normal, d }) => {
-            plane_nurbs_intersection(*normal, *d, nurbs)
+            // A coincident surface has a two-dimensional intersection. Sampling
+            // its roundoff as a zero-crossing field invents section curves.
+            if nurbs.control_points().iter().flatten().all(|p| {
+                (normal.dot(*p - Point3::new(0.0, 0.0, 0.0)) - *d).abs() <= context.tolerance.linear
+            }) {
+                Ok(Vec::new())
+            } else {
+                plane_nurbs_intersection(*normal, *d, nurbs)
+            }
         }
 
         (analytic_surf, FaceSurface::Nurbs(nurbs)) if analytic_surf.as_analytic().is_some() => {
@@ -7421,6 +7429,53 @@ mod context_budget_tests {
             vec![vec![1.0, 1.0], vec![1.0, 1.0]],
         )
         .unwrap()
+    }
+
+    #[test]
+    fn coplanar_nurbs_does_not_emit_noise_sections_but_transverse_patch_does() {
+        use remus_math::aabb::Aabb3;
+        use remus_math::vec::Vec3;
+        use remus_topology::face::FaceSurface;
+        let near = NurbsSurface::new(
+            1,
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![
+                vec![Point3::new(0.0, 0.0, -1e-12), Point3::new(0.0, 1.0, -1e-12)],
+                vec![Point3::new(1.0, 0.0, 1e-12), Point3::new(1.0, 1.0, 1e-12)],
+            ],
+            vec![vec![1.0; 2]; 2],
+        )
+        .unwrap();
+        let plane = FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: 0.0,
+        };
+        let bbox = Aabb3 {
+            min: Point3::new(-1.0, -1.0, -1.0),
+            max: Point3::new(2.0, 2.0, 1.0),
+        };
+        for (surface, coincident) in [
+            (flat_surface(), true),
+            (near, true),
+            (tilted_surface(), false),
+        ] {
+            let surface = FaceSurface::Nurbs(surface);
+            for (a, b) in [(&plane, &surface), (&surface, &plane)] {
+                let curves = super::compute_raw_curves(
+                    a,
+                    b,
+                    &bbox,
+                    &bbox,
+                    None,
+                    None,
+                    &OperationContext::default(),
+                )
+                .unwrap();
+                assert_eq!(curves.is_empty(), coincident);
+            }
+        }
     }
 
     fn control_point_count(curves: &[super::RawCurve]) -> usize {
