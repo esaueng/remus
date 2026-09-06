@@ -165,6 +165,31 @@ pub fn integrate_face(
                     break;
                 }
             }
+            if framed.is_none()
+                && topo.wire(face.outer_wire())?.edges().iter().all(|oe| {
+                    topo.edge(oe.edge())
+                        .is_ok_and(|edge| matches!(edge.curve(), EdgeCurve::Line))
+                })
+            {
+                let mut points = Vec::new();
+                for oe in topo.wire(face.outer_wire())?.edges() {
+                    let edge = topo.edge(oe.edge())?;
+                    points.push(topo.vertex(oe.oriented_start(edge))?.point() - s.center());
+                }
+                let mut axis = Vec3::new(0.0, 0.0, 0.0);
+                for i in 0..points.len() {
+                    axis += points[i].cross(points[(i + 1) % points.len()]);
+                }
+                if let Ok(axis) = axis.normalize()
+                    && points.iter().all(|p| p.dot(axis).abs() < s.radius() * 1e-9)
+                {
+                    framed = Some(remus_math::surfaces::SphericalSurface::with_axis(
+                        s.center(),
+                        s.radius(),
+                        axis,
+                    )?);
+                }
+            }
             let s = framed.as_ref().unwrap_or(s);
             let full = (
                 (0.0, std::f64::consts::TAU),
@@ -173,6 +198,56 @@ pub fn integrate_face(
             let (u_range, v_range) = face_uv_bounds(topo, face_id, s, true, false, full)?;
             let mut uv = build_face_uv(topo, face_id, |p| s.project_point(p), true, false, false)?;
             uv.hole_vs = full_revolution_hole_vs(topo, face_id, s);
+            for hole in crate::util::face_hole_polygons_curve_sampled(
+                topo,
+                face_id,
+                TRIM_SAMPLES,
+                TRIM_SAMPLES,
+            )? {
+                let mut band = UvLoop::new(
+                    hole.iter()
+                        .map(|&p| {
+                            let (u, v) = s.project_point(p);
+                            Point2::new(u, v)
+                        })
+                        .collect(),
+                    true,
+                    false,
+                );
+                let winding = band.u_winding();
+                let lo = band
+                    .points
+                    .iter()
+                    .map(|p| p.y())
+                    .fold(f64::INFINITY, f64::min);
+                let hi = band
+                    .points
+                    .iter()
+                    .map(|p| p.y())
+                    .fold(f64::NEG_INFINITY, f64::max);
+                if winding.abs() >= std::f64::consts::TAU - WRAP_EPS
+                    && hi - lo > 1e-9
+                    && let Some(first) = band.points.first().copied()
+                {
+                    let end = first.x() + winding;
+                    let pole = if winding < 0.0 { full.1.1 } else { full.1.0 };
+                    band.points.push(Point2::new(end, first.y()));
+                    band.points.push(Point2::new(end, pole));
+                    band.points.push(Point2::new(first.x(), pole));
+                    let low = band
+                        .points
+                        .iter()
+                        .map(|p| p.x())
+                        .fold(f64::INFINITY, f64::min);
+                    let high = band
+                        .points
+                        .iter()
+                        .map(|p| p.x())
+                        .fold(f64::NEG_INFINITY, f64::max);
+                    band.u_center = f64::midpoint(low, high);
+                    uv.pockets.push(band);
+                }
+            }
             let winding = uv.boundary.u_winding();
             let latitude_span = uv
                 .boundary
@@ -958,7 +1033,12 @@ fn face_uv_bounds<S: ParametricSurface>(
     if matches!(
         face.surface(),
         FaceSurface::Sphere(_) | FaceSurface::Cone(_)
-    ) {
+    ) || (matches!(face.surface(), FaceSurface::Cylinder(_))
+        && topo.wire(face.outer_wire())?.edges().iter().any(|oe| {
+            topo.edge(oe.edge())
+                .is_ok_and(|e| matches!(e.curve(), EdgeCurve::NurbsCurve(_)))
+        }))
+    {
         // A quadric section can bulge far beyond its edge endpoints.
         let points = crate::util::wire_polygon_curve_sampled(
             topo,
@@ -1021,6 +1101,9 @@ fn face_uv_bounds<S: ParametricSurface>(
         v_max = v_min + (full_domain.1.1 - full_domain.1.0);
     }
 
+    if matches!(face.surface(), FaceSurface::Sphere(_)) && v_max - v_min < 1e-9 {
+        return Ok(full_domain);
+    }
     if u_min >= u_max || v_min >= v_max {
         // A degenerate projection (e.g. all boundary vertices on a sphere's
         // pole seam) does not mean an empty face — it means the boundary failed
