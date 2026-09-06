@@ -329,11 +329,26 @@ This slice passes all 4,796 workspace tests (12 skipped), preserves the
 52-row approximation census, and passes direct and installed-tarball WASM
 regressions for all three operators.
 
-The pinned torus–sphere witness still requires `ExactOnlyUnattainable` for
-all three operators, restoring the live model on refusal. These bounded
-slices do **not** qualify general quartic arrangements or close 2.4c/2.4d.
+A third bounded matrix covers a major-radius-6, minor-radius-2 torus and a
+radius-3 sphere centred at `(5, 0, 1)`. All three operators pass at scales
+0.1, 1, and 10, both unplaced and under a common rotation/translation.
+The independent horizontal annulus/disk integral gives 56.270214830 mm³
+intersection volume at unit scale. The matrix checks carrier support below
+2e-9, valid topology, watertight tessellation, measured volume within 0.1%,
+and mesh volume within 1%. Direct and installed-tarball WASM tests cover the
+rotated witness; a native batch binding test covers all three operators.
+
+This slice repairs conservative closed-carrier bounds, the torus marcher's
+physical step scale, NURBS sphere arrangement cells, and contractible holes
+in a torus fundamental polygon. Rigid transforms preserve the torus carrier
+frame for both solids and standalone faces. The 500-step march limit and
+2,048-point fit limit remain bounded; an oversized torus/sphere witness
+requires `ExactOnlyUnattainable` for all three operators and restores every
+live topology count. These bounded slices do **not** qualify arbitrary
+quartic arrangements; 2.4d still requires integration of the preceding heads.
 See `crates/operations/tests/pclass_quadric_seams.rs`,
-`crates/operations/tests/pclass_sphere_cylinder_seams.rs`, and
+`crates/operations/tests/pclass_sphere_cylinder_seams.rs`,
+`crates/operations/tests/pclass_torus_sphere_seams.rs`, and
 `crates/math/tests/regress_marched_quadric_seam.rs`.
 
 Stage 2.4b merged in PR #207. The torus-notch arrangement emits both
