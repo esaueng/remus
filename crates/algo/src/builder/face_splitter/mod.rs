@@ -1277,10 +1277,10 @@ fn boundary_seam_u(
 }
 
 /// Split every section piece that crosses the seam meridian at the crossing
-/// point (bisected on the piece's own curve). Pieces are assumed u-monotone
-/// between their endpoints (chain pieces subtend well under a half-turn);
-/// pieces already ending on the seam, or not straddling it, pass through
-/// unchanged. Split halves clear their UV hints and pave block id, matching
+/// point (bisected on the piece's own curve). NURBS pieces are sampled to
+/// bracket crossings even when their endpoints coincide. Other chain pieces
+/// are u-monotone and subtend less than a half-turn; those already ending on
+/// the seam, or not straddling it, pass through unchanged. Split halves clear their UV hints and pave block id, matching
 /// `presplit_sections_at_registry`.
 fn split_sections_at_seam_meridian(
     sections: &[SectionEdge],
@@ -1294,6 +1294,56 @@ fn split_sections_at_seam_meridian(
         |p: Point3| -> Option<f64> { surface.project_point(p).map(|(u, _)| wrap(u - seam_u)) };
     let mut out = Vec::with_capacity(sections.len() + 2);
     for s in sections {
+        if matches!(s.curve_3d, EdgeCurve::NurbsCurve(_)) {
+            let (t0, t1) = s.domain();
+            let mut cuts = vec![t0];
+            for k in 0..32 {
+                let a = (t1 - t0).mul_add(f64::from(k) / 32.0, t0);
+                let b = (t1 - t0).mul_add(f64::from(k + 1) / 32.0, t0);
+                let eval = |t| s.curve_3d.evaluate_with_endpoints(t, s.start, s.end);
+                let (Some(fa), Some(fb)) = (delta_u(eval(a)), delta_u(eval(b))) else {
+                    continue;
+                };
+                if fa * fb >= 0.0 || (fa - fb).abs() >= PI {
+                    continue;
+                }
+                let (mut lo, mut hi) = (a, b);
+                for _ in 0..60 {
+                    let mid = f64::midpoint(lo, hi);
+                    let Some(fm) = delta_u(eval(mid)) else {
+                        break;
+                    };
+                    if (fm > 0.0) == (fa > 0.0) {
+                        lo = mid;
+                    } else {
+                        hi = mid;
+                    }
+                }
+                let t = f64::midpoint(lo, hi);
+                let p = eval(t);
+                if (p - s.start).length() > tol * 10.0 && (p - s.end).length() > tol * 10.0 {
+                    cuts.push(t);
+                }
+            }
+            cuts.push(t1);
+            for interval in cuts.windows(2) {
+                let mut piece = s.clone();
+                piece.trim = Some((interval[0], interval[1]));
+                piece.start = s
+                    .curve_3d
+                    .evaluate_with_endpoints(interval[0], s.start, s.end);
+                piece.end = s
+                    .curve_3d
+                    .evaluate_with_endpoints(interval[1], s.start, s.end);
+                piece.start_uv_a = None;
+                piece.end_uv_a = None;
+                piece.start_uv_b = None;
+                piece.end_uv_b = None;
+                piece.pave_block_id = None;
+                out.push(piece);
+            }
+            continue;
+        }
         let (Some(d0), Some(d1)) = (delta_u(s.start), delta_u(s.end)) else {
             out.push(s.clone());
             continue;
@@ -1400,6 +1450,11 @@ fn split_periodic_face_by_winding_chain(
         let is_closed = (e.start_3d - e.end_3d).length() < close_tol;
         match (&e.curve_3d, is_closed) {
             (EdgeCurve::Circle(_), true) => boundary_circles.push(e),
+            (EdgeCurve::Ellipse(ellipse), true)
+                if (ellipse.semi_major() - ellipse.semi_minor()).abs() < tol =>
+            {
+                boundary_circles.push(e);
+            }
             (EdgeCurve::Line, false) => seam_edges.push(e),
             _ => return None,
         }
@@ -1430,10 +1485,11 @@ fn split_periodic_face_by_winding_chain(
     // chain aligned with it plays the LOWER role as listed, else it is
     // flipped (the circle-band rule).
     let ref_tan = {
-        let EdgeCurve::Circle(c) = &bot_edge.curve_3d else {
-            return None;
+        let t = match &bot_edge.curve_3d {
+            EdgeCurve::Circle(c) => c.tangent(c.project(bot_edge.start_3d)),
+            EdgeCurve::Ellipse(c) => c.tangent(c.project(bot_edge.start_3d)),
+            _ => return None,
         };
-        let t = c.tangent(c.project(bot_edge.start_3d));
         if bot_edge.forward { t } else { -t }
     };
 
@@ -1733,10 +1789,20 @@ fn winding_section_chains(
             } else {
                 (s.end, s.start)
             };
-            let (Some(u0), Some(u1)) = (proj_u(from), proj_u(to)) else {
-                return None;
-            };
-            winding += wrap_pi(u1 - u0);
+            let mut previous = proj_u(from)?;
+            let (lo, hi) = s.domain();
+            for k in 1..=32 {
+                let fraction = f64::from(k) / 32.0;
+                let fraction = if forward { fraction } else { 1.0 - fraction };
+                let point = s.curve_3d.evaluate_with_endpoints(
+                    (hi - lo).mul_add(fraction, lo),
+                    s.start,
+                    s.end,
+                );
+                let next = proj_u(point)?;
+                winding += wrap_pi(next - previous);
+                previous = next;
+            }
             let to_key = q3(to);
             if to_key == origin {
                 closed = true;
@@ -1791,6 +1857,10 @@ fn sections_form_closed_chains(sections: &[SectionEdge], tol: f64) -> bool {
 /// Whether the sections chain into a loop that WINDS the surface's periodic
 /// u direction. See [`winding_section_chain`].
 fn sections_form_winding_chain(sections: &[SectionEdge], surface: &FaceSurface, tol: f64) -> bool {
+    // A longitude-wrapping sphere loop still bounds a disc through its pole.
+    if matches!(surface, FaceSurface::Sphere(_)) {
+        return false;
+    }
     winding_section_chain(sections, surface, tol).is_some()
 }
 
@@ -1811,7 +1881,7 @@ fn winding_section_chain(
     let (Some(_), _) = super::pcurve_compute::surface_periods(surface) else {
         return None;
     };
-    if sections.len() < 2 {
+    if sections.is_empty() {
         return None;
     }
     let proj_u = |p: Point3| -> Option<f64> { surface.project_point(p).map(|(u, _)| u) };
@@ -1852,10 +1922,20 @@ fn winding_section_chain(
             } else {
                 (s.end, s.start)
             };
-            let (Some(u0), Some(u1)) = (proj_u(from), proj_u(to)) else {
-                return None;
-            };
-            winding += wrap_pi(u1 - u0);
+            let mut previous = proj_u(from)?;
+            let (lo, hi) = s.domain();
+            for k in 1..=32 {
+                let fraction = f64::from(k) / 32.0;
+                let fraction = if forward { fraction } else { 1.0 - fraction };
+                let point = s.curve_3d.evaluate_with_endpoints(
+                    (hi - lo).mul_add(fraction, lo),
+                    s.start,
+                    s.end,
+                );
+                let next = proj_u(point)?;
+                winding += wrap_pi(next - previous);
+                previous = next;
+            }
             let to_key = q3(to);
             if to_key == origin {
                 closed = true;
@@ -7528,6 +7608,18 @@ pub fn face_has_curved_lens_holes(topo: &Topology, face_id: FaceId) -> bool {
 /// not inside any inner wire (hole), then evaluate it to 3D via the surface.
 #[allow(clippy::too_many_lines)]
 pub fn interior_point_3d(sub_face: &SplitSubFace, frame: Option<&PlaneFrame>) -> Point3 {
+    if sub_face.inner_wires.is_empty()
+        && !sub_face.outer_wire.is_empty()
+        && sub_face
+            .outer_wire
+            .iter()
+            .all(|edge| matches!(edge.curve_3d, EdgeCurve::NurbsCurve(_)))
+        && let Some(point) =
+            special_cases::sphere_closed_loop_interior(&sub_face.surface, &sub_face.outer_wire)
+    {
+        return point;
+    }
+
     // For a lateral analytic band (cylinder/cone), the section edges' pcurves
     // can evaluate to a different 2pi window than the boundary edges' stored
     // (already-unwrapped) UV — e.g. a rounded-rect corner band split by a

@@ -284,7 +284,7 @@ pub(super) fn orient_revolved_face_wires(
             let face = topo.face(face_id)?;
             if !matches!(
                 face.surface(),
-                FaceSurface::Cylinder(_) | FaceSurface::Cone(_)
+                FaceSurface::Cylinder(_) | FaceSurface::Cone(_) | FaceSurface::Sphere(_)
             ) {
                 continue;
             }
@@ -294,10 +294,29 @@ pub(super) fn orient_revolved_face_wires(
                 face.inner_wires().to_vec(),
             )
         };
-        let (oriented_outer, outer_changed) = orient_wire_to_surface(topo, outer, &surface, true)?;
+        let (oriented_outer, outer_changed) =
+            if matches!(surface, FaceSurface::Sphere(_)) && !inners.is_empty() {
+                (outer, false)
+            } else if matches!(surface, FaceSurface::Cylinder(_) | FaceSurface::Cone(_))
+                && let Some(area) = revolved_wire_uv_area(topo, outer, &surface)?
+            {
+                if area < 0.0 {
+                    (reverse_wire(topo, outer)?, true)
+                } else {
+                    (outer, false)
+                }
+            } else {
+                orient_wire_to_surface(topo, outer, &surface, true)?
+            };
         let mut changed = outer_changed;
         let mut oriented_inners = Vec::with_capacity(inners.len());
-        if inners.len() == 1 && matches!(surface, FaceSurface::Cylinder(_)) {
+        if matches!(surface, FaceSurface::Sphere(_)) {
+            for &inner in &inners {
+                let (inner, inner_changed) = orient_wire_to_surface(topo, inner, &surface, false)?;
+                changed |= inner_changed;
+                oriented_inners.push(inner);
+            }
+        } else if inners.len() == 1 && matches!(surface, FaceSurface::Cylinder(_)) {
             let (inner, inner_changed) = orient_wire_to_surface(topo, inners[0], &surface, false)?;
             changed |= inner_changed;
             oriented_inners.push(inner);
@@ -826,6 +845,90 @@ fn face_normal_at(topo: &Topology, face_id: FaceId, point: Point3) -> Option<Vec
 
 // ── Phase 3 ──────────────────────────────────────────────────────────
 
+/// Equatorial boundaries enclose a hemisphere even though their latitude span
+/// vanishes. Integrate its solid angle and subtract the sampled polar pockets.
+fn spherical_hemisphere_flux(topo: &Topology, face: &Face) -> Option<f64> {
+    let FaceSurface::Sphere(sphere) = face.surface() else {
+        return None;
+    };
+    let outer = topo.wire(face.outer_wire()).ok()?;
+    let mut points = Vec::new();
+    for oe in outer.edges() {
+        let edge = topo.edge(oe.edge()).ok()?;
+        if !matches!(edge.curve(), EdgeCurve::Line) {
+            return None;
+        }
+        points.push(
+            (topo.vertex(oe.oriented_start(edge)).ok()?.point() - sphere.center())
+                .normalize()
+                .ok()?,
+        );
+    }
+    if points.len() < 3 {
+        return None;
+    }
+    let mut area_axis = Vec3::new(0.0, 0.0, 0.0);
+    for i in 0..points.len() {
+        area_axis += points[i].cross(points[(i + 1) % points.len()]);
+    }
+    let axis = area_axis.normalize().ok()?;
+    if points.iter().any(|p| p.dot(axis).abs() > 1e-9) {
+        return None;
+    }
+    let mut omega = std::f64::consts::TAU;
+    let mut vector_area = axis * std::f64::consts::PI;
+    for &wid in face.inner_wires() {
+        let wire = topo.wire(wid).ok()?;
+        let mut ring = Vec::new();
+        for oe in wire.edges() {
+            let edge = topo.edge(oe.edge()).ok()?;
+            let sp = topo.vertex(edge.start()).ok()?.point();
+            let ep = topo.vertex(edge.end()).ok()?.point();
+            let (lo, hi) = edge.strict_domain().ok()?;
+            for k in 0..128 {
+                let f = f64::from(k) / 128.0;
+                let f = if oe.is_forward() { f } else { 1.0 - f };
+                let p = edge
+                    .curve()
+                    .evaluate_with_endpoints((hi - lo).mul_add(f, lo), sp, ep);
+                let direction = (p - sphere.center()).normalize().ok()?;
+                if direction.dot(axis) < -1e-9 {
+                    return None;
+                }
+                ring.push(direction);
+            }
+        }
+        let center = ring
+            .iter()
+            .copied()
+            .fold(Vec3::new(0.0, 0.0, 0.0), |sum, p| sum + p)
+            .normalize()
+            .ok()?;
+        let mut hole_omega = 0.0;
+        let mut hole_area = Vec3::new(0.0, 0.0, 0.0);
+        for i in 0..ring.len() {
+            let a = ring[i];
+            let b = ring[(i + 1) % ring.len()];
+            let cross = a.cross(b);
+            hole_omega += 2.0
+                * center
+                    .dot(cross)
+                    .atan2(1.0 + center.dot(a) + a.dot(b) + b.dot(center));
+            let length = cross.length();
+            if length > 1e-15 {
+                hole_area += cross * (0.5 * length.atan2(a.dot(b)) / length);
+            }
+        }
+        omega -= hole_omega.abs();
+        vector_area -= hole_area * hole_omega.signum();
+    }
+    let center = sphere.center();
+    let radius = sphere.radius();
+    let flux = radius.powi(3) * omega
+        + radius.powi(2) * Vec3::new(center.x(), center.y(), center.z()).dot(vector_area);
+    Some(if face.is_reversed() { -flux } else { flux })
+}
+
 /// Robust outward-orientation test for a closed shell, independent of face
 /// curvature and wire winding.
 ///
@@ -850,7 +953,10 @@ fn shell_is_outward_oriented(topo: &Topology, faces: &[FaceId]) -> Option<bool> 
         let flux_before = if trace { flux } else { 0.0 };
         let Ok(face) = topo.face(fid) else { continue };
         let surface = face.surface();
-        if let FaceSurface::Plane { .. } = surface {
+        if let Some(contribution) = spherical_hemisphere_flux(topo, face) {
+            flux += contribution;
+            any = true;
+        } else if let FaceSurface::Plane { .. } = surface {
             // Planar: corner fan from sampled boundary points is exact.
             let Ok(wire) = topo.wire(face.outer_wire()) else {
                 continue;
