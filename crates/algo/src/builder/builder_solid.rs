@@ -268,8 +268,8 @@ fn retain_aligned<T, U>(
 /// loop opposing the stored cylinder normal, or an inner loop following it.
 /// That makes every merged edge on a cut/intersect pocket disagree with its
 /// adjacent face even though the selected surfaces and volumes are correct.
-/// Multi-opening periodic walls are deliberately left unchanged: independent
-/// 3D Newell projections cannot establish a shared ordering between holes.
+/// Multi-opening walls compare contractible loops in seam-unwrapped UV so
+/// opposite sides of the cylinder use the same orientation reference.
 pub(super) fn orient_cylinder_face_wires(
     topo: &mut Topology,
     selected: &[SelectedFace],
@@ -294,14 +294,22 @@ pub(super) fn orient_cylinder_face_wires(
         let (oriented_outer, outer_changed) = orient_wire_to_surface(topo, outer, &surface, true)?;
         let mut changed = outer_changed;
         let mut oriented_inners = Vec::with_capacity(inners.len());
-        // B15 is the single-pocket case. Do not guess how separately projected
-        // loops on a multi-opening periodic wall should be ordered.
         if inners.len() == 1 {
             let (inner, inner_changed) = orient_wire_to_surface(topo, inners[0], &surface, false)?;
             changed |= inner_changed;
             oriented_inners.push(inner);
-        } else {
-            oriented_inners.extend(inners.iter().copied());
+        } else if !inners.is_empty() {
+            let outer_area = cylinder_wire_uv_area(topo, oriented_outer, &surface)?;
+            for &inner in &inners {
+                let inner_area = cylinder_wire_uv_area(topo, inner, &surface)?;
+                if matches!((outer_area, inner_area), (Some(a), Some(b)) if a.is_sign_positive() == b.is_sign_positive())
+                {
+                    oriented_inners.push(reverse_wire(topo, inner)?);
+                    changed = true;
+                } else {
+                    oriented_inners.push(inner);
+                }
+            }
         }
         if changed {
             let mut carried_pcurves = Vec::new();
@@ -382,6 +390,10 @@ fn orient_wire_to_surface(
     if (same_direction && alignment > 0.0) || (!same_direction && alignment < 0.0) {
         return Ok((wire_id, false));
     }
+    Ok((reverse_wire(topo, wire_id)?, true))
+}
+
+fn reverse_wire(topo: &mut Topology, wire_id: WireId) -> Result<WireId, AlgoError> {
     let wire = topo.wire(wire_id)?;
     let closed = wire.is_closed();
     // A rotation of a closed loop does not change its winding. Keep the same
@@ -399,7 +411,66 @@ fn orient_wire_to_surface(
         edges.rotate_left(position);
     }
     let wire = remus_topology::wire::Wire::new(edges, closed)?;
-    Ok((topo.add_wire(wire), true))
+    Ok(topo.add_wire(wire))
+}
+
+/// Full rings have no enclosed UV area; only contractible boundaries can be compared.
+fn cylinder_wire_uv_area(
+    topo: &Topology,
+    wire_id: WireId,
+    surface: &FaceSurface,
+) -> Result<Option<f64>, AlgoError> {
+    use remus_math::vec::Point2;
+    let mut points = Vec::new();
+    for oriented in topo.wire(wire_id)?.edges() {
+        let edge = topo.edge(oriented.edge())?;
+        let domain = edge.strict_domain().map_err(|error| {
+            AlgoError::AssemblyFailed(format!("cannot orient cylinder wire: {error}"))
+        })?;
+        super::pcurve_compute::sample_edge_uniform(
+            edge.curve(),
+            topo.vertex(edge.start())?.point(),
+            topo.vertex(edge.end())?.point(),
+            domain,
+            32,
+            oriented.is_forward(),
+            &mut points,
+        );
+    }
+    let Some(mut uv) = points
+        .iter()
+        .map(|&point| surface.project_point(point).map(|(u, v)| Point2::new(u, v)))
+        .collect::<Option<Vec<_>>>()
+    else {
+        return Ok(None);
+    };
+    if uv.len() < 3 {
+        return Ok(None);
+    }
+    uv.push(uv[0]);
+    super::pcurve_compute::unwrap_periodic_params_pub(&mut uv, Some(std::f64::consts::TAU), None);
+    if (uv[uv.len() - 1].x() - uv[0].x()).abs() > std::f64::consts::PI {
+        return Ok(None);
+    }
+    // Translate before summing to avoid cancellation on axially translated parts.
+    let origin = uv[0];
+    let area: f64 = uv
+        .windows(2)
+        .map(|pair| {
+            let a = pair[0] - origin;
+            let b = pair[1] - origin;
+            a.x() * b.y() - b.x() * a.y()
+        })
+        .sum();
+    let magnitude: f64 = uv
+        .windows(2)
+        .map(|pair| {
+            let a = pair[0] - origin;
+            let b = pair[1] - origin;
+            (a.x() * b.y()).abs() + (b.x() * a.y()).abs()
+        })
+        .sum();
+    Ok((area.abs() > remus_math::tolerance::Tolerance::new().relative * magnitude).then_some(area))
 }
 
 fn wire_surface_alignment(
