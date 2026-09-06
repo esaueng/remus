@@ -135,6 +135,9 @@ pub(crate) fn select_faces(
 
     // Step 4: Apply SD-specific selection on valid pairs only
     apply_sd_selection(sub_faces, op, &valid_sd_pairs, &mut selected);
+    // Several complementary faces can share one containing representative.
+    let mut emitted = HashSet::new();
+    selected.retain(|face| emitted.insert((face.face_id, face.reversed)));
 
     selected
 }
