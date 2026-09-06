@@ -490,6 +490,124 @@ fn nonplanar_cdt_survives_steiner_split_boundary() {
     }
 }
 
+/// Issue #264: a capped cylinder whose wall is the two-ring representation —
+/// the wall face's outer wire is one rim circle and its inner wire is the
+/// other, with no seam edge anywhere — used to validate clean but tessellate
+/// to a fraction of the volume (the periodic CDT fallbacks mis-triangulate
+/// the ring boundaries). The wall must take the structured two-rim band path.
+///
+/// Builds the solid directly in the arena with shared rim edges, the way
+/// importers and direct face-construction consumers do.
+#[test]
+fn tessellate_two_ring_cylinder_band_watertight() {
+    use remus_math::curves::Circle3D;
+
+    let mut topo = Topology::new();
+    let (radius, height) = (1.0, 2.0);
+
+    let v_bot = topo.add_vertex(Vertex::new(Point3::new(radius, 0.0, 0.0), 1e-7));
+    let v_top = topo.add_vertex(Vertex::new(Point3::new(radius, 0.0, height), 1e-7));
+    let bot_circle =
+        Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), radius).unwrap();
+    let top_circle = Circle3D::new(
+        Point3::new(0.0, 0.0, height),
+        Vec3::new(0.0, 0.0, 1.0),
+        radius,
+    )
+    .unwrap();
+    let mut bot_edge = Edge::new(v_bot, v_bot, EdgeCurve::Circle(bot_circle.clone()));
+    let bot_start = bot_circle.project(topo.vertex(v_bot).unwrap().point());
+    bot_edge.set_trim(Some((bot_start, bot_start + std::f64::consts::TAU)));
+    let e_bot = topo.add_edge(bot_edge);
+    let mut top_edge = Edge::new(v_top, v_top, EdgeCurve::Circle(top_circle.clone()));
+    let top_start = top_circle.project(topo.vertex(v_top).unwrap().point());
+    top_edge.set_trim(Some((top_start, top_start + std::f64::consts::TAU)));
+    let e_top = topo.add_edge(top_edge);
+
+    // Wall: outer wire is the bottom rim, inner wire is the top rim wound
+    // opposite (the two-ring band convention), no seam edge.
+    let wall_outer = topo.add_wire(Wire::new(vec![OrientedEdge::new(e_bot, true)], true).unwrap());
+    let wall_inner = topo.add_wire(Wire::new(vec![OrientedEdge::new(e_top, false)], true).unwrap());
+    let wall = topo.add_face(Face::new(
+        wall_outer,
+        vec![wall_inner],
+        FaceSurface::Cylinder(
+            remus_math::surfaces::CylindricalSurface::new(
+                Point3::new(0.0, 0.0, 0.0),
+                Vec3::new(0.0, 0.0, 1.0),
+                radius,
+            )
+            .unwrap(),
+        ),
+    ));
+
+    // Caps share the rim edges, as in `make_cylinder`.
+    let bot_cap_wire =
+        topo.add_wire(Wire::new(vec![OrientedEdge::new(e_bot, false)], true).unwrap());
+    let bot_cap = topo.add_face(Face::new(
+        bot_cap_wire,
+        vec![],
+        FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, -1.0),
+            d: 0.0,
+        },
+    ));
+    let top_cap_wire =
+        topo.add_wire(Wire::new(vec![OrientedEdge::new(e_top, true)], true).unwrap());
+    let top_cap = topo.add_face(Face::new(
+        top_cap_wire,
+        vec![],
+        FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: height,
+        },
+    ));
+
+    let shell = topo.add_shell(Shell::new(vec![wall, bot_cap, top_cap]).unwrap());
+    let solid = topo.add_solid(Solid::new(shell, vec![]));
+
+    // The canonical doubled-seam cylinder is the reference: the two-ring
+    // representation must mesh to the same polygon volume, and the analytic
+    // check catches the original "fraction of the volume" regression.
+    let canonical = crate::primitives::make_cylinder(&mut topo, radius, height).unwrap();
+    let mesh_volume = |solid, deflection| -> f64 {
+        let mesh = tessellate_solid(&topo, solid, deflection).unwrap();
+        mesh.indices
+            .chunks_exact(3)
+            .map(|tri| {
+                let a = mesh.positions[tri[0] as usize];
+                let b = mesh.positions[tri[1] as usize];
+                let c = mesh.positions[tri[2] as usize];
+                (a.x() * (b.y() * c.z() - b.z() * c.y())
+                    + a.y() * (b.z() * c.x() - b.x() * c.z())
+                    + a.z() * (b.x() * c.y() - b.y() * c.x()))
+                    / 6.0
+            })
+            .sum::<f64>()
+            .abs()
+    };
+
+    let analytic = std::f64::consts::PI * radius * radius * height;
+    for deflection in [0.1, 0.02] {
+        let reference = mesh_volume(canonical, deflection);
+        let mesh = tessellate_solid(&topo, solid, deflection).unwrap();
+        assert_eq!(
+            boundary_edge_count(&mesh),
+            0,
+            "two-ring cylinder band must be watertight (deflection {deflection})"
+        );
+        let volume = mesh_volume(solid, deflection);
+        assert!(
+            (volume - reference).abs() / reference < 0.01,
+            "two-ring band volume {volume} should match the canonical band's {reference}"
+        );
+        assert!(
+            (volume - analytic).abs() / analytic < 0.05,
+            "two-ring band volume {volume} should be within 5% of analytic {analytic}"
+        );
+    }
+}
+
 /// Regression for issue #696: dovetail-style fuse where a small tongue protrudes
 /// into two adjacent slabs. The downstream consumer (gridfinity-layout-tool)
 /// adds a TONGUE_PROTRUSION specifically to avoid coplanar fuse residue, but

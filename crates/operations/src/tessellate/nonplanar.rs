@@ -288,22 +288,30 @@ pub(super) fn tessellate_band_face_local(
 ///
 /// Returns `Ok(true)` when the face is a simple two-rim band that was handled
 /// here, `Ok(false)` when it is not (the caller then falls back to the snap or
-/// CDT path). A "simple band" has no inner wires and exactly two rims
-/// (everything else a seam line). Each rim is either one **closed** circle
-/// edge or a CHAIN of open circle arcs at one constant `v` whose spans sum to
-/// a full revolution — a boolean that splits a rim at tangency or crossing
-/// points (e.g. the cone∪box inscribed-rim fuse, whose z=6 rim arrives as
-/// four arcs each shared with a different corner face) still gets the
-/// structured watertight band. Rims with equal shared-vertex counts sweep
-/// index-paired exactly as before; unequal counts (each rim's sampling is
-/// dictated by its own neighbours) are stitched with an angular zipper merge.
+/// CDT path). A "simple band" has exactly two rims and, in the outer wire,
+/// everything else a seam line. The second rim may also arrive as the face's
+/// single inner wire — the two-ring representation of issue #264 — accepted
+/// only when neither wire carries any other edge kind. Each rim is either one
+/// **closed** circle edge or a CHAIN of open circle arcs at one constant `v`
+/// whose spans sum to a full revolution — a boolean that splits a rim at
+/// tangency or crossing points (e.g. the cone∪box inscribed-rim fuse, whose
+/// z=6 rim arrives as four arcs each shared with a different corner face)
+/// still gets the structured watertight band. Rims with equal shared-vertex
+/// counts sweep index-paired exactly as before; unequal counts (each rim's
+/// sampling is dictated by its own neighbours) are stitched with an angular
+/// zipper merge.
 pub(super) fn tessellate_revolution_band_shared(
     topo: &Topology,
     face_data: &remus_topology::face::Face,
     edge_global_indices: &DetHashMap<usize, Vec<u32>>,
     merged: &mut TriangleMesh,
 ) -> Result<bool, crate::OperationsError> {
-    if !face_data.inner_wires().is_empty() {
+    // The second rim may arrive in the outer wire (canonical doubled-seam
+    // band) or as the face's single inner wire (the two-ring representation
+    // of issue #264, produced by direct face construction). Anything else —
+    // holes, extra rims, seam lines mixed with a two-ring layout — declines.
+    let two_ring = !face_data.inner_wires().is_empty();
+    if two_ring && face_data.inner_wires().len() != 1 {
         return Ok(false);
     }
 
@@ -339,6 +347,7 @@ pub(super) fn tessellate_revolution_band_shared(
         remus_topology::vertex::VertexId,
     )> = Vec::new();
     let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    let mut outer_had_line = false;
     for oe in wire.edges() {
         let e = topo.edge(oe.edge())?;
         match e.curve() {
@@ -350,7 +359,9 @@ pub(super) fn tessellate_revolution_band_shared(
                     curved.push((oe.edge().index(), e.start(), e.end()));
                 }
             }
-            EdgeCurve::Line => {}
+            EdgeCurve::Line => {
+                outer_had_line = true;
+            }
             // Ellipse rims keep the CDT path.
             EdgeCurve::Ellipse(_) | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => {
                 return Ok(false);
@@ -358,8 +369,44 @@ pub(super) fn tessellate_revolution_band_shared(
         }
     }
     let project_u = |point| project(point).0;
-    let Some(cycles) = collect_full_turn_rim_cycles(topo, &curved, &project_u, 2)? else {
-        return Ok(false);
+    let cycles = if two_ring {
+        // Two-ring band: the outer wire is one full-turn rim (and nothing
+        // else — a seam line would mean a partial band) and the single inner
+        // wire is the other rim. The CDT fallback mis-triangulates these ring
+        // boundaries, so accept exactly this shape and sweep it like the
+        // canonical band.
+        let Some(one) = collect_full_turn_rim_cycles(topo, &curved, &project_u, 1)? else {
+            return Ok(false);
+        };
+        if outer_had_line {
+            return Ok(false);
+        }
+        let inner_wire = topo.wire(face_data.inner_wires()[0])?;
+        let mut inner_curved = Vec::new();
+        let mut inner_seen = std::collections::HashSet::new();
+        for oe in inner_wire.edges() {
+            let e = topo.edge(oe.edge())?;
+            match e.curve() {
+                EdgeCurve::NurbsCurve(_) if e.start() == e.end() => return Ok(false),
+                EdgeCurve::Circle(_) | EdgeCurve::NurbsCurve(_) => {
+                    if inner_seen.insert(oe.edge().index()) {
+                        inner_curved.push((oe.edge().index(), e.start(), e.end()));
+                    }
+                }
+                _ => return Ok(false),
+            }
+        }
+        let Some(two) = collect_full_turn_rim_cycles(topo, &inner_curved, &project_u, 1)? else {
+            return Ok(false);
+        };
+        let mut cycles = one;
+        cycles.extend(two);
+        cycles
+    } else {
+        let Some(cycles) = collect_full_turn_rim_cycles(topo, &curved, &project_u, 2)? else {
+            return Ok(false);
+        };
+        cycles
     };
 
     // Pull each rim's shared global vertex IDs. Chained pieces share their
