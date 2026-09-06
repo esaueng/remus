@@ -359,6 +359,14 @@ pub(super) fn tessellate_revolution_band_shared(
                     curved.push((oe.edge().index(), e.start(), e.end()));
                 }
             }
+            EdgeCurve::Ellipse(ellipse)
+                if (ellipse.semi_major() - ellipse.semi_minor()).abs()
+                    <= ellipse.semi_major() * 1e-10 =>
+            {
+                if seen.insert(oe.edge().index()) {
+                    curved.push((oe.edge().index(), e.start(), e.end()));
+                }
+            }
             EdgeCurve::Line => {
                 outer_had_line = true;
             }
@@ -409,21 +417,19 @@ pub(super) fn tessellate_revolution_band_shared(
         cycles
     };
 
-    // A rim must lie in a plane perpendicular to the axis (a constant-v
-    // circle on the surface). Pure circle-edge cycles satisfy that by
-    // construction; a chain containing NURBS pieces does not necessarily —
-    // an interpolated tangent-contact polyline can wind a full turn while
-    // wandering along the wall, and sweeping a band to it skins a region
-    // the model does not have (issue #265). Verify NURBS-bearing cycles
-    // against their pooled 3D samples and decline to the CDT/snap chain
-    // when the cycle strays off its plane. Fitted NURBS circle rims sit
-    // exactly in their plane, so they pass.
+    // A wavy separator is safe to sweep only when it stays on the carrier,
+    // winds monotonically once, and stays axially separate from the other rim.
+    // Tangent-contact fits can wind while leaving the carrier (issue #265).
+    // Preserve the established planar-rim path; qualify non-planar fits below.
     let axis = match face_data.surface() {
         FaceSurface::Cylinder(c) => c.axis(),
         FaceSurface::Cone(c) => c.axis(),
         _ => return Ok(false),
     };
     let flat_tol = 1e-4 * estimate_surface_radius(face_data.surface()).max(1.0);
+    let mut axial_ranges = Vec::new();
+    let mut has_wavy = false;
+    let mut support_error = 0.0_f64;
     for cycle in &cycles {
         let mut has_nurbs = false;
         let mut axial_min = f64::INFINITY;
@@ -440,13 +446,72 @@ pub(super) fn tessellate_revolution_band_shared(
             };
             for &gid in gids {
                 let point = merged.positions[gid as usize];
+                let (u, v) = project(point);
+                let Some(on_surface) = face_data.surface().evaluate(u, v) else {
+                    return Ok(false);
+                };
+                support_error = support_error.max((point - on_surface).length());
                 let axial = axis.dot(Vec3::new(point.x(), point.y(), point.z()));
                 axial_min = axial_min.min(axial);
                 axial_max = axial_max.max(axial);
             }
         }
         if has_nurbs && axial_max - axial_min > flat_tol {
-            return Ok(false);
+            has_wavy = true;
+        }
+        axial_ranges.push((axial_min, axial_max));
+    }
+    if has_wavy && support_error > 1e-8 {
+        return Ok(false);
+    }
+    if has_wavy
+        && !(axial_ranges[0].1 < axial_ranges[1].0 - flat_tol
+            || axial_ranges[1].1 < axial_ranges[0].0 - flat_tol)
+    {
+        return Ok(false);
+    }
+
+    if has_wavy {
+        for cycle in &cycles {
+            let mut at = None;
+            let mut angles = Vec::new();
+            for &index in &cycle.edge_indices {
+                let Some(id) = topo.edge_id_from_index(index) else {
+                    return Ok(false);
+                };
+                let edge = topo.edge(id)?;
+                let forward = at.is_none_or(|vertex| vertex == edge.start());
+                if at.is_some_and(|vertex| vertex != edge.start() && vertex != edge.end()) {
+                    return Ok(false);
+                }
+                at = Some(if forward { edge.end() } else { edge.start() });
+                let Some(gids) = edge_global_indices.get(&index) else {
+                    return Ok(false);
+                };
+                let ids: Vec<_> = if forward {
+                    gids.clone()
+                } else {
+                    gids.iter().rev().copied().collect()
+                };
+                angles.extend(
+                    ids.iter()
+                        .map(|&gid| project(merged.positions[gid as usize]).0),
+                );
+            }
+            if angles.is_empty() {
+                return Ok(false);
+            }
+            let (mut winding, mut travel) = (0.0_f64, 0.0_f64);
+            for i in 0..angles.len() {
+                let delta = (angles[(i + 1) % angles.len()] - angles[i] + std::f64::consts::PI)
+                    .rem_euclid(TAU)
+                    - std::f64::consts::PI;
+                winding += delta;
+                travel += delta.abs();
+            }
+            if (winding.abs() - TAU).abs() > 1e-6 || travel - winding.abs() > 1e-6 {
+                return Ok(false);
+            }
         }
     }
 
@@ -1260,8 +1325,9 @@ pub(super) fn tessellate_torus_notch_band(
 /// `Ok(false)` (the caller then takes the CDT/snap path). Detection is
 /// deliberately conservative: a face qualifies only if its surface is a sphere
 /// or torus, it has exactly one inner wire, and both the outer and inner wires
-/// are closed full-revolution loops, each at a single constant `v`, built only
-/// from `Line`/`Circle` edges, at two distinct `v` levels.
+/// are closed full-revolution loops. One boundary must have constant latitude;
+/// the other may vary monotonically around longitude, including a qualified
+/// NURBS section. Shared rim vertices keep the adjacent faces watertight.
 #[allow(clippy::too_many_lines)]
 pub(super) fn tessellate_latitude_band_shared(
     topo: &Topology,
@@ -1279,6 +1345,38 @@ pub(super) fn tessellate_latitude_band_shared(
     let (project, surf_eval, surf_normal): (ProjectFn, EvalFn, NormalFn) = match face_data.surface()
     {
         FaceSurface::Sphere(s) => {
+            let mut axis = remus_math::vec::Vec3::new(0.0, 0.0, 0.0);
+            let wire = topo.wire(face_data.outer_wire())?;
+            let points: Vec<_> = wire
+                .edges()
+                .iter()
+                .map(|oe| {
+                    let e = topo.edge(oe.edge())?;
+                    Ok(topo.vertex(oe.oriented_start(e))?.point() - s.center())
+                })
+                .collect::<Result<_, remus_topology::TopologyError>>()?;
+            for i in 0..points.len() {
+                axis += points[i].cross(points[(i + 1) % points.len()]);
+            }
+            let planar_polygon = wire.edges().iter().all(|oe| {
+                topo.edge(oe.edge())
+                    .is_ok_and(|edge| matches!(edge.curve(), EdgeCurve::Line))
+            });
+            let framed = axis
+                .normalize()
+                .ok()
+                .filter(|axis| {
+                    planar_polygon && {
+                        points
+                            .iter()
+                            .all(|p| p.dot(*axis).abs() < s.radius() * 1e-9)
+                    }
+                })
+                .and_then(|axis| {
+                    remus_math::surfaces::SphericalSurface::with_axis(s.center(), s.radius(), axis)
+                        .ok()
+                });
+            let s = framed.as_ref().unwrap_or(s);
             let (s1, s2, s3) = (s.clone(), s.clone(), s.clone());
             (
                 Box::new(move |p| s1.project_point(p)),
@@ -1376,16 +1474,19 @@ pub(super) fn tessellate_latitude_band_shared(
         return Ok(true);
     }
 
-    // Case 2 — a COLLAR: the inner wire is a constant-v cap circle, the outer
-    // wire is a full-longitude-wrap "floor" at varying v (great-circle/seam
-    // arcs, e.g. a box ∩ sphere patch). Sweep interior rows whose per-column v
-    // interpolates from the scalloped floor up to the cap.
-    let Some((v_cap, cap_ring)) = inner_const else {
+    // A collar can have its variable boundary on either wire: a scalloped
+    // outer floor around a latitude cap, or a polar pocket inside an equator.
+    // Interpolate each longitude column between the two boundaries.
+    let (v_cap, cap_ring, variable_wid) = if let Some((v, ring)) = inner_const {
+        (v, ring, outer_wid)
+    } else if let Some((v, ring)) = outer_const {
+        (v, ring, inner_wid)
+    } else {
         return Ok(false);
     };
     let Some(floor) = collect_var_v_ring(
         topo,
-        outer_wid,
+        variable_wid,
         project.as_ref(),
         edge_global_indices,
         merged,
@@ -1646,8 +1747,8 @@ type VarRing = Vec<(f64, f64, u32)>;
 
 /// Collect a wire's shared boundary vertices as a longitude-sorted [`VarRing`],
 /// or `None` if the wire is not a closed full-revolution loop (built only from
-/// `Line`/`Circle` edges). Unlike [`collect_constant_v_ring`], the latitude may
-/// vary with longitude.
+/// lines, circles, or monotone NURBS sections). Unlike
+/// [`collect_constant_v_ring`], the latitude may vary with longitude.
 fn collect_var_v_ring(
     topo: &Topology,
     wire_id: remus_topology::wire::WireId,
@@ -1657,16 +1758,22 @@ fn collect_var_v_ring(
 ) -> Result<Option<VarRing>, crate::OperationsError> {
     let wire = topo.wire(wire_id)?;
     let mut gids: Vec<u32> = Vec::new();
+    let mut has_nurbs = false;
     for oe in wire.edges() {
         let e = topo.edge(oe.edge())?;
+        has_nurbs |= matches!(e.curve(), EdgeCurve::NurbsCurve(_));
         match e.curve() {
-            EdgeCurve::Line | EdgeCurve::Circle(_) => {}
+            EdgeCurve::Line | EdgeCurve::Circle(_) | EdgeCurve::NurbsCurve(_) => {}
             _ => return Ok(None),
         }
         let Some(edge_gids) = edge_global_indices.get(&oe.edge().index()) else {
             return Ok(None);
         };
-        gids.extend_from_slice(edge_gids);
+        if oe.is_forward() {
+            gids.extend_from_slice(edge_gids);
+        } else {
+            gids.extend(edge_gids.iter().rev().copied());
+        }
     }
     if gids.len() < 3 {
         return Ok(None);
@@ -1682,6 +1789,21 @@ fn collect_var_v_ring(
     }
     if ring.len() < 3 {
         return Ok(None);
+    }
+    if has_nurbs {
+        // Sorting a reversing seam would invent a different boundary.
+        let mut winding = 0.0_f64;
+        let mut travel = 0.0_f64;
+        for i in 0..ring.len() {
+            let delta = (ring[(i + 1) % ring.len()].0 - ring[i].0 + std::f64::consts::PI)
+                .rem_euclid(TAU)
+                - std::f64::consts::PI;
+            winding += delta;
+            travel += delta.abs();
+        }
+        if (winding.abs() - TAU).abs() > 1e-6 || travel - winding.abs() > 1e-6 {
+            return Ok(None);
+        }
     }
     ring.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
 

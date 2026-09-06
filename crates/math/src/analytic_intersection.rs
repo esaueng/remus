@@ -1598,22 +1598,49 @@ pub fn intersect_analytic_analytic_bounded(
             let mut fit_points = march_result;
             let mut fitted = false;
             for _ in 0..12 {
+                let mut max_residual = 0.0_f64;
                 let curve = interpolate(&fit_points, 3.min(fit_points.len() - 1))?;
                 let params = crate::nurbs::fitting::chord_length_params(&fit_points);
-                let mut refined = Vec::with_capacity(fit_points.len());
-                let mut accepted = true;
-                for (i, ts) in params.windows(2).enumerate() {
-                    refined.push(fit_points[i]);
+                let mut splits = Vec::with_capacity(params.len() - 1);
+                for ts in params.windows(2) {
                     let mut bad = false;
                     for fraction in [0.25, 0.5, 0.75] {
                         let p = curve.evaluate((ts[1] - ts[0]).mul_add(fraction, ts[0]));
                         let (ua, va) = project_analytic(&a, p, u_range_a, v_range_a);
                         let (ub, vb) = project_analytic(&b, p, u_range_b, v_range_b);
-                        bad |= (p - surf_a(ua, va)).length() > 1e-9
-                            || (p - surf_b(ub, vb)).length() > 1e-9;
+                        let residual = (p - surf_a(ua, va))
+                            .length()
+                            .max((p - surf_b(ub, vb)).length());
+                        max_residual = max_residual.max(residual);
+                        // Leave margin for interpolation changes in adjacent spans.
+                        bad |= residual > 0.25e-9;
                     }
-                    if bad {
-                        accepted = false;
+                    splits.push(bad);
+                }
+                let accepted = max_residual <= 1e-9;
+                if accepted {
+                    let points = fit_points
+                        .iter()
+                        .map(|&point| IntersectionPoint {
+                            point,
+                            param1: (0.0, 0.0),
+                            param2: (0.0, 0.0),
+                        })
+                        .collect();
+                    curves.push(IntersectionCurve { curve, points });
+                    fitted = true;
+                    break;
+                }
+                let mut refined = Vec::with_capacity(fit_points.len());
+                for (i, ts) in params.windows(2).enumerate() {
+                    refined.push(fit_points[i]);
+                    // A new interpolation sample changes neighboring spline
+                    // spans too. Refining that neighborhood avoids repeatedly
+                    // moving a just-over-tolerance error to the next span.
+                    if splits[i]
+                        || (i > 0 && splits[i - 1])
+                        || splits.get(i + 1).copied().unwrap_or(false)
+                    {
                         let p = curve.evaluate(f64::midpoint(ts[0], ts[1]));
                         refined.push(correct_to_intersection(
                             &a,
@@ -1630,19 +1657,6 @@ pub fn intersect_analytic_analytic_bounded(
                             20,
                         ));
                     }
-                }
-                if accepted {
-                    let points = fit_points
-                        .iter()
-                        .map(|&point| IntersectionPoint {
-                            point,
-                            param1: (0.0, 0.0),
-                            param2: (0.0, 0.0),
-                        })
-                        .collect();
-                    curves.push(IntersectionCurve { curve, points });
-                    fitted = true;
-                    break;
                 }
                 if refined.len() > 2048 {
                     break;
