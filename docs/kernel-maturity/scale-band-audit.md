@@ -50,7 +50,10 @@ result and unchanged operand geometry; the other refusal/rollback tests remain.
   Straight-edge endpoint exclusion now divides by edge length and its duplicate
   anchors are compared only in 3D. A regression covers edge lengths 1e-4, 1,
   and 1e6, rejecting sub-tolerance endpoint fragments while retaining distinct
-  interior anchors near the endpoints and near one another.
+  interior anchors near the endpoints and near one another. The existing
+  tangent-boss Fuse/Cut matrix now also passes exactly at 1e3 scale; its
+  former refusal expectation is replaced by the same watertightness, analytic
+  surface, and 1e-9 closed-form volume oracles used at smaller scales.
 - Curved and periodic face bands, including the cases where endpoint bounds
   do not represent the carrier's extent.
 - Anisotropic models and small features embedded in much larger faces.
