@@ -35,7 +35,7 @@ const COINCIDENT_SQ: f64 = 1e-12;
 /// coordinate's actual period: `2*PI` for the analytic surfaces' angular `u`,
 /// the knot span for a NURBS direction that closes.
 #[inline]
-fn unwrap_periodic(prev: f64, next: f64, period: f64) -> f64 {
+pub fn unwrap_periodic(prev: f64, next: f64, period: f64) -> f64 {
     let half = period * 0.5;
     let diff = next - prev;
     prev + diff - period * ((diff + half) / period).floor()
@@ -73,7 +73,7 @@ where
 }
 
 /// Twice the signed area of a UV polygon (the shoelace sum).
-fn uv_polygon_double_area(poly: &[(f64, f64)]) -> f64 {
+pub fn uv_polygon_double_area(poly: &[(f64, f64)]) -> f64 {
     let n = poly.len();
     if n < 3 {
         return 0.0;
@@ -98,7 +98,7 @@ fn uv_polygon_double_area(poly: &[(f64, f64)]) -> f64 {
 /// crossing for any ray.
 ///
 /// Judged against the polygon's own extent so it holds at any parameter scale.
-fn uv_boundary_is_degenerate(poly: &[(f64, f64)]) -> bool {
+pub fn uv_boundary_is_degenerate(poly: &[(f64, f64)]) -> bool {
     if poly.len() < 3 {
         return true;
     }
