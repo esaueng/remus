@@ -20,10 +20,10 @@
 //! result's own bounding box, which over-approximates trimmed curved faces (see
 //! `curved_cut_result_is_not_rejected` below, which pins exactly that).
 //!
-//! Rejecting routes these to the bounded, disclosed mesh fallback instead of a
-//! silent wrong answer: at 1e-3 that returns the exact volume, and at 1e-4 it
-//! fails with a typed error rather than answering. Under `ExactOnly` both
-//! become a typed refusal.
+//! The public gate first stopped silent wrong answers. Local junction and
+//! face-arrangement bands now preserve the exact through-cut down to 1e-5;
+//! the smaller 1e-6 witness still refuses under `ExactOnly`. The complete
+//! operator/placement matrix lives in `qualify_boolean_scale.rs`.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -115,27 +115,28 @@ fn cut_result_never_escapes_the_blank() {
 /// extent, and 1e-4 flipped when the `tol.linear * 1000.0` term — which had
 /// escaped that cap — was brought under it. Refusing is no longer the correct
 /// answer at either scale, so `small_scale_cut_is_exact_under_exact_only`
-/// demands the exact one; this test pins the scale where refusal still is.
+/// demands the exact one. The local arrangement-band audit subsequently
+/// freed 1e-5; this test pins the smaller scale where refusal still is.
 #[test]
 fn small_scale_cut_still_refuses_below_the_exact_boundary() {
-    let s = 1e-5;
+    let s = 1e-6;
     let mut topo = Topology::new();
     let (blank, tool) = through_cut(&mut topo, s);
     let ctx = OperationContext::new().with_fallback(FallbackPolicy::ExactOnly);
     let outcome = boolean_with_context(&mut topo, BooleanOp::Cut, blank, tool, &ctx);
     assert!(
         outcome.is_err(),
-        "scale 1e-5: exact-only returned a result where the exact pipeline does not \
+        "scale 1e-6: exact-only returned a result where the exact pipeline does not \
          hold; it must refuse instead"
     );
 }
 
 /// The other side of that boundary: down to 1e-4 the exact pipeline now
-/// holds, so `ExactOnly` must return the exact answer — not refuse, and not
+/// holds through 1e-5, so `ExactOnly` must return the exact answer — not refuse, and not
 /// fall back.
 #[test]
 fn small_scale_cut_is_exact_under_exact_only() {
-    for s in [1e-3, 2e-4, 1e-4] {
+    for s in [1e-3, 2e-4, 1e-4, 1e-5] {
         let mut topo = Topology::new();
         let (blank, tool) = through_cut(&mut topo, s);
         let ctx = OperationContext::new().with_fallback(FallbackPolicy::ExactOnly);
