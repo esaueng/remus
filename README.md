@@ -385,7 +385,7 @@ mixed-surface cases); transactional topology mutation; kernel-wide diagnostics.
 evolution with persistent topological naming; general blends, offsets,
 shelling, sweeps, and lofts — including the miter-corner sweep, boundaries with
 more than four edges, and partial revolutions with non-planar boundaries;
-direct face editing; attribute propagation; broad STEP round-trip behavior with
+direct face editing, including [boundary-aware partial-cylinder resizing](docs/roadmap/partial-cylinder-resize.md); attribute propagation; broad STEP round-trip behavior with
 topology attributes; memory compaction and session lifecycle.
 
 **P2 — extended scope.** General and non-manifold bodies; mixed B-rep and facet
