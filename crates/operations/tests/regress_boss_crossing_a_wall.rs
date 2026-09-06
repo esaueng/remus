@@ -35,7 +35,6 @@ use std::f64::consts::PI;
 
 use remus_math::context::{FallbackPolicy, OperationContext};
 use remus_math::mat::Mat4;
-use remus_operations::OperationsError;
 use remus_operations::boolean::{BooleanOp, BooleanQuality, boolean, boolean_with_context};
 use remus_operations::measure::{mass_properties, solid_volume};
 use remus_operations::primitives::{make_box, make_cylinder};
@@ -254,11 +253,8 @@ fn a_tangent_boss_is_never_silently_dropped() {
     }
 }
 
-/// The operand-loss gate is scale-relative, not an accidental fit to the
-/// original millimetre witness. Probe both sides of tangency as well as at the
-/// knife edge: a clear boss and a crossing boss stay analytic,
-/// while exact tangency may use the bounded fallback but must retain the
-/// requested material.
+/// Both sides of tangency and the exact contact retain analytic material
+/// across the scale sweep, including the former large-scale refusal.
 #[test]
 fn tangent_boundary_is_stable_across_scale() {
     for scale in SCALE_SWEEP {
@@ -267,81 +263,24 @@ fn tangent_boundary_is_stable_across_scale() {
                 let mut topo = Topology::new();
                 let (plate, boss) = build_scaled(&mut topo, d, scale);
                 let what = format!("{name} at d/r={} and scale={scale}", d / R);
-
-                let (result, approximate) = if d.abs() <= f64::EPSILON {
-                    let exact_expected = scale < 1e3;
-                    let exact = OperationContext::new().with_fallback(FallbackPolicy::ExactOnly);
-                    match boolean_with_context(&mut topo, op, plate, boss, &exact) {
-                        Ok(outcome) => {
-                            assert!(
-                                exact_expected,
-                                "{what}: the 1e3 cell must refuse rather than silently change its declared quality"
-                            );
-                            assert_eq!(outcome.quality, BooleanQuality::Exact, "{what}");
-                            (outcome.solid, false)
-                        }
-                        Err(err) => {
-                            assert!(
-                                !exact_expected,
-                                "{what}: the 1e-3 and unit cells are qualified exact"
-                            );
-                            assert!(
-                                matches!(err, OperationsError::ExactOnlyUnattainable),
-                                "{what}: expected exact-only refusal, got {err}"
-                            );
-                            assert!(
-                                topo.solid(plate).is_ok() && topo.solid(boss).is_ok(),
-                                "{what}: exact-only refusal did not roll back"
-                            );
-
-                            let budget = DEFLECTION * scale;
-                            let approximate = OperationContext::new()
-                                .with_fallback(FallbackPolicy::AllowApproximate { budget });
-                            let outcome =
-                                boolean_with_context(&mut topo, op, plate, boss, &approximate)
-                                    .unwrap_or_else(|e| {
-                                        panic!("{what}: disclosed fallback failed: {e}")
-                                    });
-                            assert_eq!(
-                                outcome.quality,
-                                BooleanQuality::Approximate { deflection: budget },
-                                "{what}: exact tangency must disclose its fallback"
-                            );
-                            (outcome.solid, true)
-                        }
-                    }
-                } else {
-                    let exact = OperationContext::new().with_fallback(FallbackPolicy::ExactOnly);
-                    let outcome = boolean_with_context(&mut topo, op, plate, boss, &exact)
-                        .unwrap_or_else(|e| panic!("{what}: exact side of boundary failed: {e}"));
-                    assert_eq!(outcome.quality, BooleanQuality::Exact, "{what}");
-                    (outcome.solid, false)
-                };
-
+                let exact = OperationContext::new().with_fallback(FallbackPolicy::ExactOnly);
+                let outcome = boolean_with_context(&mut topo, op, plate, boss, &exact)
+                    .unwrap_or_else(|e| panic!("{what}: qualified exact cell failed: {e}"));
+                assert_eq!(outcome.quality, BooleanQuality::Exact, "{what}");
+                let result = outcome.solid;
                 assert_watertight(&topo, result, &what);
-
                 let want = expected_scaled(op, d, scale);
-                let got = if approximate {
-                    solid_volume(&topo, result, DEFLECTION * scale).unwrap()
-                } else {
-                    integrated_volume(&topo, result)
-                };
+                let got = integrated_volume(&topo, result);
                 let rel = (got - want).abs() / want;
-                let limit = if approximate { 4e-3 } else { 1e-9 };
                 assert!(
-                    rel < limit,
-                    "{what}: volume {got:.10} against closed form {want:.10} ({:.6} %)",
-                    rel * 100.0
+                    rel < 1e-9,
+                    "{what}: volume {got:.10} against closed form {want:.10} ({rel:e})"
                 );
-
-                if !approximate {
-                    let (_, cylinders, other) = surface_census(&topo, result);
-                    assert!(
-                        cylinders >= 1 && other == 0,
-                        "{what}: expected an analytic curved wall, got {cylinders} cylinder(s) \
-                         and {other} other non-planar face(s)"
-                    );
-                }
+                let (_, cylinders, other) = surface_census(&topo, result);
+                assert!(
+                    cylinders >= 1 && other == 0,
+                    "{what}: expected analytic curved wall, got {cylinders} cylinders and {other} other non-planar faces"
+                );
             }
         }
     }
