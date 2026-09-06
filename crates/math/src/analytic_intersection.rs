@@ -1691,9 +1691,8 @@ fn try_algebraic_intersection(
             };
             let exacts = exact_plane_analytic_bounded(*other, *normal, *d, None)?;
             Ok(Some(exacts_to_marched(&exacts, v_extent / 2.0)?))
-        }
-        // Every pair of the five variants has an arm above; a future variant
-        // is flagged here by the compiler instead of silently marching.
+        } // Every pair of the five variants has an arm above; a future variant
+          // is flagged here by the compiler instead of silently marching.
     }
 }
 
