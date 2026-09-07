@@ -282,6 +282,16 @@ regressions cover over-limit selections and a valid 500-sided prism. Both rebuil
 package suites and the full native suite pass with these preflights. This does not close the
 blend-boundary, radius-edit, replacement, draft, or delete/heal history cells.
 
+Surface-replacement history is the next review slice: `replace_surface_journaled`
+and direct/batch `replaceSurfaceJournaled` retain construction face, edge, and
+vertex identities through planar and qualified coaxial-cylinder replacements.
+Native tilt-then-bore composition and refusal tests pass. Rebuilt-package tests
+preserve every reference through plane and imported quarter-wall sequences,
+including arena save/restore with handle remapping, STEP geometry round trips,
+and collision rollback. The binding preserves the established topology-work
+limit. Final qualification: 4,894 workspace tests passed, 13 skipped; both
+rebuilt WASM package suites, Clippy, rustdoc, and the 52-row census pass.
+
 ### Correctness follow-up: curved hole winding (#278)
 
 Cut/intersect assembly now compares multi-opening cylinder wires in

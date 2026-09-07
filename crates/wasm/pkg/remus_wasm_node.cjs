@@ -5246,6 +5246,40 @@ class BrepKernel {
         return takeFromExternrefTable0(ret[0]);
     }
     /**
+     * Replace a support surface with exact face, edge, and vertex history.
+     *
+     * `replacement` is JSON: `{type:"plane", normal:[x,y,z], d}` or
+     * `{type:"cylinder", origin:[x,y,z], axis:[x,y,z], radius}`. Plane
+     * coefficients represent `normal dot point = d`; cylinder replacements
+     * retain the source parameter reference direction. Unknown fields refuse.
+     * Returns JSON `{"solid", "op"}`. Batch calls pass the replacement object
+     * directly as `args.replacement`.
+     * @param {number} solid
+     * @param {number} face
+     * @param {string} replacement
+     * @returns {string}
+     */
+    replaceSurfaceJournaled(solid, face, replacement) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(replacement, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.brepkernel_replaceSurfaceJournaled(this.__wbg_ptr, solid, face, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
      * Resize or remove an exact constant-radius analytic blend band.
      *
      * `face` is only a seed: the kernel re-derives the complete band, its

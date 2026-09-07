@@ -260,6 +260,7 @@ export const runOpenZcadConsumerRegressions = (exports) => {
   runOpenZcadCylindricalFaceResizeRegression(exports);
   runPartialCylinderResizeRegression(exports);
   runDirectEditHistoryRegression(exports);
+  runSurfaceReplacementHistoryRegression(exports);
   runWideSphereCapRegression(exports);
   runOffsetConeSphereRegression(exports);
   runOffsetSphereCylinderRegression(exports);
@@ -751,4 +752,125 @@ export const runDirectEditHistoryRegression = ({ BrepKernel }) => {
     } finally { kernel.free(); }
   }
   console.log('ok - direct edit history: 26 references across two edits, direct/batch rollback and work limits');
+};
+
+
+export const runSurfaceReplacementHistoryRegression = ({ BrepKernel, RemusIo }) => {
+  const fixture = readFileSync(new URL('../crates/io/tests/data/jolly_fox_partial_cylinder.step', import.meta.url));
+  const expectedVolume = radius => 73 * 41 * 8 + 12 * 30.5 * 12 + Math.PI * radius ** 2 * 12 / 4;
+  const kinds = [['face', 'getSolidFaces'], ['edge', 'getSolidEdges'], ['vertex', 'getSolidVertices']];
+  const replace = (kernel, solid, face, replacement, batch) => {
+    if (!batch) return JSON.parse(kernel.replaceSurfaceJournaled(solid, face, JSON.stringify(replacement)));
+    const [response] = JSON.parse(kernel.executeBatchV2(JSON.stringify([
+      { op: 'replaceSurfaceJournaled', args: { solid, face, replacement } },
+    ])));
+    assert.equal(response.error, undefined, JSON.stringify(response));
+    return response.ok;
+  };
+  const references = (kernel, result) => kinds.flatMap(([kind, query]) =>
+    Array.from(kernel[query](result.solid), (_, index) => ({
+      kind, reference: kernel.makeOperationOutputRef(result.op, kind, index),
+    })));
+  const checkReferences = (kernel, solid, refs) => {
+    for (const [kind, query] of kinds) {
+      const resolved = new Set();
+      for (const item of refs.filter(item => item.kind === kind)) {
+        const result = JSON.parse(kernel.resolveRef(item.reference));
+        assert.equal(result.status, 'bound', JSON.stringify(result));
+        assert.equal(result.provenance, 'construction');
+        assert.equal(result.entities.length, 1);
+        assert.equal(result.entities[0].kind, kind);
+        resolved.add(result.entities[0].handle);
+      }
+      assert.deepEqual(resolved, new Set(kernel[query](solid)), `${kind} replacement references`);
+    }
+  };
+  const qualify = (kernel, solid, volume) => {
+    const validation = JSON.parse(kernel.validateSolidDetailed(solid));
+    assert.equal(validation.errorCount, 0);
+    assert.equal(validation.warningCount, 0);
+    assert.ok(Math.abs(kernel.volume(solid, 0.005) - volume) < 1e-5);
+    for (const deflection of [0.005, 0.02]) {
+      assert.equal(JSON.parse(kernel.meshQuality(solid, deflection)).isWatertight, true);
+    }
+  };
+  const checkArena = (kernel, result, refs, volume) => {
+    const restored = new BrepKernel();
+    try {
+      restored.makeBox(1, 1, 1);
+      const [solid] = restored.deserializeSolids(kernel.serializeSolids(Uint32Array.of(result)));
+      qualify(restored, solid, volume);
+      checkReferences(restored, solid, refs);
+    } finally { restored.free(); }
+  };
+  for (const batch of [false, true]) {
+    const kernel = new BrepKernel();
+    try {
+      const top = solid => Array.from(kernel.getSolidFaces(solid)).find(face => kernel.getFaceNormal(face)[2] > 0.9);
+      const source = kernel.makeBox(3, 5, 7);
+      const first = replace(kernel, source, top(source), { type: 'plane', normal: [0, 0, 1], d: 8 }, batch);
+      const refs = references(kernel, first);
+      const second = replace(kernel, first.solid, top(first.solid), { type: 'plane', normal: [-0.1, 0, 1], d: 7.85 }, batch);
+      qualify(kernel, second.solid, 120);
+      checkReferences(kernel, second.solid, refs);
+      checkArena(kernel, second.solid, refs, 120);
+    } finally { kernel.free(); }
+    const budgetKernel = new BrepKernel();
+    try {
+      const wire = budgetKernel.makeRegularPolygonWire(10, 500);
+      const profile = budgetKernel.makeFaceFromWire(wire);
+      const source = budgetKernel.extrude(profile, 0, 0, 1, 1);
+      assert.equal(budgetKernel.validateSolid(source), 0);
+      const face = Array.from(budgetKernel.getSolidFaces(source)).find(face => budgetKernel.getFaceNormal(face)[2] > 0.9);
+      const before = Uint8Array.from(budgetKernel.serializeSolids(Uint32Array.of(source)));
+      const replacement = { type: 'plane', normal: [0, 0, 1], d: 1.25 };
+      if (batch) {
+        const [response] = JSON.parse(budgetKernel.executeBatchV2(JSON.stringify([
+          { op: 'replaceSurfaceJournaled', args: { solid: source, face, replacement } },
+        ])));
+        assert.ok(response.error);
+        assert.match(response.error.message, /moveFaces topology work must be at most/);
+      } else {
+        assert.throws(() => budgetKernel.replaceSurfaceJournaled(source, face, JSON.stringify(replacement)), /moveFaces topology work must be at most/);
+      }
+      assert.deepEqual(budgetKernel.serializeSolids(Uint32Array.of(source)), before);
+    } finally { budgetKernel.free(); }
+    for (const radius of [20, 22, 28]) {
+      const kernel = new BrepKernel();
+      const io = new RemusIo();
+      try {
+        const [source] = kernel.deserializeSolids(io.importStep(fixture));
+        const wall = solid => Array.from(kernel.getSolidFaces(solid)).find(face => kernel.getSurfaceType(face) === 'cylinder');
+        const replacement = (solid, radius) => ({ ...JSON.parse(kernel.getAnalyticSurfaceParams(wall(solid))), radius });
+        const first = replace(kernel, source, wall(source), replacement(source, 21), batch);
+        const refs = references(kernel, first);
+        const second = replace(kernel, first.solid, wall(first.solid), replacement(first.solid, radius), batch);
+        qualify(kernel, second.solid, expectedVolume(radius));
+        assert.ok(Math.abs(JSON.parse(kernel.getAnalyticSurfaceParams(wall(source))).radius - 20.5) < 1e-9);
+        checkReferences(kernel, second.solid, refs);
+        checkArena(kernel, second.solid, refs, expectedVolume(radius));
+        const roundTrip = new BrepKernel();
+        try {
+          const [solid] = roundTrip.deserializeSolids(io.importStep(io.exportStep(kernel.serializeSolids(Uint32Array.of(second.solid)))));
+          qualify(roundTrip, solid, expectedVolume(radius));
+        } finally { roundTrip.free(); }
+        const before = Uint8Array.from(kernel.serializeSolids(Uint32Array.of(second.solid)));
+        const journal = kernel.journalSummary();
+        const invalid = replacement(second.solid, 32);
+        if (batch) {
+          const [response] = JSON.parse(kernel.executeBatchV2(JSON.stringify([
+            { op: 'replaceSurfaceJournaled', args: { solid: second.solid, face: wall(second.solid), replacement: invalid } },
+          ])));
+          assert.ok(response.error);
+          assert.match(response.error.message, /quarter-wall sweep may contact/);
+        } else {
+          assert.throws(() => kernel.replaceSurfaceJournaled(second.solid, wall(second.solid), JSON.stringify(invalid)), /quarter-wall sweep may contact/);
+        }
+        assert.equal(kernel.journalSummary(), journal);
+        assert.deepEqual(kernel.serializeSolids(Uint32Array.of(second.solid)), before);
+        checkReferences(kernel, second.solid, refs);
+      } finally { kernel.free(); io.free(); }
+    }
+  }
+  console.log('ok - replacement history: plane and quarter-wall edits, all entity refs, arena/STEP round trips, rollback');
 };
