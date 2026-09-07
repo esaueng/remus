@@ -84,7 +84,9 @@ Open Kernel Wave A rows still unclaimed are O4.4, O5.1a–c, O6.1, and O6.4.
 Bridge rows closed since the draft: B1, B5, the B6 primitive family
 (including ellipsoid), the B11 STEP-ordering item, B13 void export, and B15
 pocket-face orientation; B12 is partial (rectangular holes on sweep/pipe
-caps, PR #252). No `#[ignore]` pins a live engine defect.
+caps, PR #252). The ignore inventory now includes the explicit unresolved
+[anisotropic world-volume precision witness](scale-band-audit.md); the
+remaining diagnostic, slow, and fork-policy skips retain their stated scope.
 
 Current 2.4 qualification work covers bounded off-axis cone/sphere,
 sphere/cylinder, and torus/sphere matrices; integration remains pending. The

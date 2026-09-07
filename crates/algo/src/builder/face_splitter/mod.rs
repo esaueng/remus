@@ -163,6 +163,36 @@ fn split_sections_at_t_junctions(
             }
         }
     }
+    // The generic NURBS chart has no plane-arrangement rescue. Interior
+    // crossings of straight carriers must join the endpoint split set too.
+    if matches!(surface, FaceSurface::Nurbs(_)) {
+        let straight: Vec<_> = all_edges[section_start..]
+            .iter()
+            .filter(|e| e.forward && edge_curve_is_straight(&e.curve_3d))
+            .collect();
+        for (i, a) in straight.iter().enumerate() {
+            for b in &straight[i + 1..] {
+                let da = a.end_3d - a.start_3d;
+                let db = b.end_3d - b.start_3d;
+                let normal = da.cross(db);
+                let denom = normal.dot(normal);
+                if !denom.is_finite() || denom <= f64::MIN_POSITIVE {
+                    continue;
+                }
+                let delta = b.start_3d - a.start_3d;
+                let ta = delta.cross(db).dot(normal) / denom;
+                let tb = delta.cross(da).dot(normal) / denom;
+                if !(0.0..=1.0).contains(&ta) || !(0.0..=1.0).contains(&tb) {
+                    continue;
+                }
+                let pa = a.start_3d + da * ta;
+                let pb = b.start_3d + db * tb;
+                if (pa - pb).length() <= tol {
+                    endpoints.push(pa + (pb - pa) * 0.5);
+                }
+            }
+        }
+    }
     // Coarse query grid: cell sized to the mean section length so a section
     // spans O(1) cells. Each endpoint is stored once.
     let coarse = if len_cnt > 0.0 {
@@ -552,9 +582,9 @@ fn edge_curve_is_straight(curve: &EdgeCurve) -> bool {
             }
             pts.iter().all(|p| {
                 let v = *p - *first;
-                let along = v.dot(chord) / len;
-                let dev_sq = along.mul_add(-along, v.dot(v));
-                dev_sq < 1e-14
+                // Subtracting squared lengths loses the tiny perpendicular
+                // residual on long collinear control polygons.
+                v.cross(chord).length() / len < 1e-7
             })
         }
         // An unbounded conic is never a straight segment. (Also unreachable
@@ -8185,6 +8215,82 @@ mod tests {
     use remus_math::curves2d::Line2D;
     use remus_math::vec::Vec2;
     use remus_topology::test_utils::make_unit_square_face;
+
+    #[test]
+    fn straight_nurbs_crossings_split_both_traversals_without_projecting_skew_lines() {
+        use remus_math::nurbs::{fitting::interpolate, surface::NurbsSurface};
+        let surface = FaceSurface::Nurbs(
+            NurbsSurface::new(
+                1,
+                1,
+                vec![0.0, 0.0, 1.0, 1.0],
+                vec![0.0, 0.0, 1.0, 1.0],
+                vec![
+                    vec![Point3::new(0.0, 0.0, 0.0), Point3::new(0.0, 1.0, 0.0)],
+                    vec![Point3::new(1.0, 0.0, 0.0), Point3::new(1.0, 1.0, 0.0)],
+                ],
+                vec![vec![1.0; 2]; 2],
+            )
+            .unwrap(),
+        );
+        let crossing = Point3::new(0.6, 0.4, 0.0);
+        for (z, expected) in [(0.0, 8), (0.001, 4)] {
+            let mut edges = Vec::new();
+            for (source, (a, b)) in [
+                (Point3::new(0.1, 0.4, 0.0), Point3::new(0.9, 0.4, 0.0)),
+                (Point3::new(0.6, 0.1, z), Point3::new(0.6, 0.9, z)),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let curve = interpolate(&[a, b], 1).unwrap();
+                for forward in [true, false] {
+                    let (start, end) = if forward { (a, b) } else { (b, a) };
+                    edges.push(OrientedPCurveEdge {
+                        curve_3d: EdgeCurve::NurbsCurve(curve.clone()),
+                        trim: Some(curve.domain()),
+                        pcurve: dummy_pcurve(),
+                        start_uv: Point2::new(start.x(), start.y()),
+                        end_uv: Point2::new(end.x(), end.y()),
+                        start_3d: start,
+                        end_3d: end,
+                        forward,
+                        source_edge_idx: Some(source),
+                        pave_block_id: None,
+                        source_topo_edge: None,
+                    });
+                }
+            }
+            split_sections_at_t_junctions(&mut edges, 0, &surface, None, &[], 1e-7, None).unwrap();
+            assert_eq!(edges.len(), expected);
+            for edge in &edges {
+                assert!(matches!(edge.curve_3d, EdgeCurve::NurbsCurve(_)));
+                let (a, b) = edge.traversal_domain();
+                assert!(
+                    (edge
+                        .curve_3d
+                        .evaluate_with_endpoints(a, edge.start_3d, edge.end_3d)
+                        - edge.start_3d)
+                        .length()
+                        < 1e-7
+                );
+                assert!(
+                    (edge
+                        .curve_3d
+                        .evaluate_with_endpoints(b, edge.start_3d, edge.end_3d)
+                        - edge.end_3d)
+                        .length()
+                        < 1e-7
+                );
+                if expected == 8 {
+                    assert!(
+                        (edge.start_3d - crossing).length() < 1e-7
+                            || (edge.end_3d - crossing).length() < 1e-7
+                    );
+                }
+            }
+        }
+    }
 
     fn dummy_pcurve() -> remus_math::curves2d::Curve2D {
         remus_math::curves2d::Curve2D::Line(
