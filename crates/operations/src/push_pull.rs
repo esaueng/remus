@@ -223,7 +223,7 @@ pub(crate) fn move_faces_with_entity_evolution(
     outcome
 }
 
-fn boundary_entity_pairs(
+pub(crate) fn boundary_entity_pairs(
     result: &remus_offset::MoveFacesEntityResult,
 ) -> Vec<(EntityKey, EntityKey)> {
     result

@@ -514,6 +514,46 @@ pub fn move_faces_journaled(
     })
 }
 
+/// Replaces a support surface with exact face, edge, and vertex history.
+///
+/// Every rebuilt entity records its construction source. Geometry,
+/// postconditions, and journal recording form one transaction.
+///
+/// # Errors
+///
+/// Returns the same geometry refusals as [`crate::replace_surface::replace_surface`]
+/// or an error if the construction history cannot be recorded.
+pub fn replace_surface_journaled(
+    topo: &mut Topology,
+    solid: SolidId,
+    face: remus_topology::FaceId,
+    replacement: remus_topology::face::FaceSurface,
+) -> Result<JournaledSolidOp, OperationsError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let pending = begin_scoped(topo, "replace_surface", &[solid])?;
+        let source_faces = solid_faces(topo, solid)?;
+        let result = crate::replace_surface::replace_surface_with_entity_map(
+            topo,
+            solid,
+            face,
+            replacement,
+        )?;
+        let boundary_pairs = crate::push_pull::boundary_entity_pairs(&result);
+        let map = crate::push_pull::exact_face_evolution(
+            topo,
+            &source_faces,
+            result.solid,
+            result.face_map,
+        )?;
+        let op = record_entity_evolution(topo, pending, &map, &[result.solid], &boundary_pairs)?;
+        Ok(JournaledSolidOp {
+            solid: result.solid,
+            op,
+            map,
+        })
+    })
+}
+
 /// Runs a draft and journals its construction-derived face evolution as
 /// one entry (kind `draft`).
 ///
