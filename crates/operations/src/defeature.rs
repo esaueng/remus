@@ -14,7 +14,8 @@ use remus_topology::shell::Shell;
 use remus_topology::solid::{Solid, SolidId};
 
 use crate::OperationsError;
-use crate::boolean::{FaceSpec, assemble_solid_mixed_with_history};
+use crate::boolean::FaceSpec;
+use crate::boolean::assembly::assemble_solid_mixed_with_boundary_history;
 use crate::dot_normal_point;
 
 /// Operation name carried by [`OperationsError::Unsupported`] refusals.
@@ -109,6 +110,15 @@ pub fn defeature_with_evolution(
     solid: SolidId,
     faces_to_remove: &[FaceId],
 ) -> Result<(SolidId, crate::evolution::EvolutionMap), OperationsError> {
+    let (outcome, evolution) = defeature_with_history(topo, solid, faces_to_remove)?;
+    Ok((outcome.solid, evolution))
+}
+
+pub(crate) fn defeature_with_history(
+    topo: &mut Topology,
+    solid: SolidId,
+    faces_to_remove: &[FaceId],
+) -> Result<(DefeatureOutcome, crate::evolution::EvolutionMap), OperationsError> {
     let input_faces: Vec<usize> = {
         let solid_data = topo.solid(solid)?;
         let shell = topo.shell(solid_data.outer_shell())?;
@@ -132,7 +142,7 @@ pub fn defeature_with_evolution(
             evolution.add_deleted(src);
         }
     }
-    Ok((outcome.solid, evolution))
+    Ok((outcome, evolution))
 }
 
 /// Exact defeature result used by operations that must compose face history.
@@ -141,6 +151,12 @@ pub(crate) struct DefeatureOutcome {
     pub(crate) solid: SolidId,
     /// Original face index to healed face.
     pub(crate) face_map: HashMap<usize, FaceId>,
+    pub(crate) boundary_history: Option<
+        Vec<(
+            remus_topology::journal::EntityKey,
+            Option<remus_topology::journal::EntityKey>,
+        )>,
+    >,
 }
 
 /// Remove an analytic blend band while allowing curved edges that belong to
@@ -388,7 +404,11 @@ fn heal_by_capping(
     kept_positions: &[usize],
     plan: &HealPlan,
 ) -> Result<DefeatureOutcome, OperationsError> {
-    let (copy, copied_faces) = crate::copy::copy_solid_with_face_map(topo, solid)?;
+    use remus_topology::journal::EntityKey;
+
+    let copied = crate::copy::copy_solid_with_entity_map(topo, solid)?;
+    let copy = copied.solid;
+    let copied_faces = copied.face_map;
     // `copy_solid` preserves shell face order, so positions carry over.
     let copy_faces: Vec<FaceId> = topo
         .shell(topo.solid(copy)?.outer_shell())?
@@ -420,15 +440,42 @@ fn heal_by_capping(
     let face_map = copied_faces
         .into_iter()
         .filter_map(|(source, copied)| {
-            if !kept_indices.contains(&copied) {
+            if !kept_indices.contains(&copied.index()) {
                 return None;
             }
-            topo.face_id_from_index(copied).map(|face| (source, face))
+            Some((source, copied))
         })
+        .collect();
+    let edges: BTreeSet<_> = remus_topology::explorer::solid_edges(topo, result)?
+        .into_iter()
+        .collect();
+    let vertices: BTreeSet<_> = remus_topology::explorer::solid_vertices(topo, result)?
+        .into_iter()
+        .collect();
+    let boundary_history = copied
+        .edge_map
+        .into_iter()
+        .map(|(source, target)| {
+            (
+                EntityKey::edge(source),
+                edges
+                    .contains(&target)
+                    .then_some(EntityKey::edge(target.index())),
+            )
+        })
+        .chain(copied.vertex_map.into_iter().map(|(source, target)| {
+            (
+                EntityKey::vertex(source),
+                vertices
+                    .contains(&target)
+                    .then_some(EntityKey::vertex(target.index())),
+            )
+        }))
         .collect();
     Ok(DefeatureOutcome {
         solid: result,
         face_map,
+        boundary_history: Some(boundary_history),
     })
 }
 // ---------------------------------------------------------------------------
@@ -643,12 +690,14 @@ fn heal_by_extending(
     // Rebuild every kept face with its relocated corners substituted.
     let mut specs: Vec<FaceSpec> = Vec::with_capacity(kept_positions.len());
     let mut sources: Vec<FaceId> = Vec::with_capacity(kept_positions.len());
+    let mut vertex_sources = Vec::new();
+    let mut retained_edges = BTreeSet::new();
     for &pos in kept_positions {
         let fid = all_faces[pos];
         let face = topo.face(fid)?;
         let plane = planes[pos].ok_or_else(|| unsupported("kept face lost its plane"))?;
 
-        let outer = substitute_wire(topo, face.outer_wire(), &moved)?;
+        let (outer, outer_sources) = substitute_wire(topo, face.outer_wire(), &moved)?;
         if outer.len() < 3 {
             // The face was consumed by the heal (e.g. a chamfer running the
             // full length of a narrow face). Dropping it is correct; if it was
@@ -656,19 +705,34 @@ fn heal_by_extending(
             continue;
         }
 
+        retained_edges.extend(
+            topo.wire(face.outer_wire())?
+                .edges()
+                .iter()
+                .map(remus_topology::OrientedEdge::edge),
+        );
+
         let drop_slots: &[usize] = plan
             .drop_inner
             .iter()
             .find(|(p, _)| *p == pos)
             .map_or(&[], |(_, slots)| slots.as_slice());
         let mut inner_wires = Vec::new();
+        let mut wire_sources = vec![outer_sources];
         for (slot, &wire_id) in face.inner_wires().iter().enumerate() {
             if drop_slots.contains(&slot) {
                 continue;
             }
-            let pts = substitute_wire(topo, wire_id, &moved)?;
+            let (pts, point_sources) = substitute_wire(topo, wire_id, &moved)?;
             if pts.len() >= 3 {
                 inner_wires.push(pts);
+                wire_sources.push(point_sources);
+                retained_edges.extend(
+                    topo.wire(wire_id)?
+                        .edges()
+                        .iter()
+                        .map(remus_topology::OrientedEdge::edge),
+                );
             }
         }
 
@@ -705,6 +769,7 @@ fn heal_by_extending(
             }
         });
         sources.push(fid);
+        vertex_sources.push(wire_sources);
     }
 
     if specs.len() < 4 {
@@ -715,7 +780,9 @@ fn heal_by_extending(
         )));
     }
 
-    let assembly = assemble_solid_mixed_with_history(topo, &specs, tol)?;
+    let assembly = assemble_solid_mixed_with_boundary_history(topo, &specs, tol)?;
+    let boundary_history =
+        extended_boundary_history(topo, all_faces, &vertex_sources, &retained_edges, &assembly)?;
     let face_map = sources
         .into_iter()
         .zip(assembly.faces_by_spec)
@@ -724,7 +791,121 @@ fn heal_by_extending(
     Ok(DefeatureOutcome {
         solid: assembly.solid,
         face_map,
+        boundary_history: Some(boundary_history),
     })
+}
+
+fn extended_boundary_history(
+    topo: &Topology,
+    source_faces: &[FaceId],
+    sources: &[Vec<Vec<Vec<remus_topology::VertexId>>>],
+    retained_edges: &BTreeSet<EdgeId>,
+    assembly: &crate::boolean::assembly::MixedAssemblyResult,
+) -> Result<
+    Vec<(
+        remus_topology::journal::EntityKey,
+        Option<remus_topology::journal::EntityKey>,
+    )>,
+    OperationsError,
+> {
+    use remus_topology::journal::EntityKey;
+    let live_vertices: BTreeSet<_> =
+        remus_topology::explorer::solid_vertices(topo, assembly.solid)?
+            .into_iter()
+            .collect();
+    let live_edges: BTreeSet<_> = remus_topology::explorer::solid_edges(topo, assembly.solid)?
+        .into_iter()
+        .collect();
+    let mut declared = BTreeSet::new();
+    let mut targets: BTreeMap<_, BTreeSet<_>> = BTreeMap::new();
+    let mut unknown = BTreeSet::new();
+    if sources.len() != assembly.vertices_by_spec.len() {
+        return Err(unsupported("assembly lost a boundary source specification"));
+    }
+    for (spec, target_spec) in sources.iter().zip(&assembly.vertices_by_spec) {
+        if spec.len() != target_spec.len() {
+            return Err(unsupported("assembly lost a boundary source wire"));
+        }
+        for (wire, target_wire) in spec.iter().zip(target_spec) {
+            if wire.len() != target_wire.len() {
+                return Err(unsupported("assembly lost a boundary source corner"));
+            }
+            for (group, target) in wire.iter().zip(target_wire) {
+                for &source in group {
+                    declared.insert(source);
+                    match target.filter(|target| live_vertices.contains(target)) {
+                        Some(target) => {
+                            targets.entry(source).or_default().insert(target);
+                        }
+                        None => {
+                            unknown.insert(source);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut source_edges = BTreeSet::new();
+    let mut source_vertices = BTreeSet::new();
+    for &face in source_faces {
+        let face = topo.face(face)?;
+        for wire in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+            for oe in topo.wire(wire)?.edges() {
+                source_edges.insert(oe.edge());
+                let edge = topo.edge(oe.edge())?;
+                source_vertices.extend([edge.start(), edge.end()]);
+            }
+        }
+    }
+    let unique: BTreeMap<_, _> = targets
+        .into_iter()
+        .filter_map(|(source, targets)| {
+            (targets.len() == 1 && !unknown.contains(&source))
+                .then(|| (source, *targets.first().unwrap_or(&source)))
+        })
+        .collect();
+    let mut history = Vec::new();
+    for source in source_vertices {
+        if !declared.contains(&source) {
+            history.push((EntityKey::vertex(source.index()), None));
+        } else if let Some(target) = unique.get(&source) {
+            history.push((
+                EntityKey::vertex(source.index()),
+                Some(EntityKey::vertex(target.index())),
+            ));
+        }
+    }
+    for source in source_edges {
+        let edge = topo.edge(source)?;
+        let key = EntityKey::edge(source.index());
+        if !retained_edges.contains(&source) {
+            history.push((key, None));
+            continue;
+        }
+        if !declared.contains(&edge.start()) || !declared.contains(&edge.end()) {
+            history.push((key, None));
+            continue;
+        }
+        let (Some(start), Some(end)) = (unique.get(&edge.start()), unique.get(&edge.end())) else {
+            continue;
+        };
+        if start == end {
+            history.push((key, None));
+            continue;
+        }
+        let pair = (
+            start.index().min(end.index()),
+            start.index().max(end.index()),
+        );
+        if let Some(target) = assembly
+            .boundary_edges
+            .get(&pair)
+            .filter(|target| live_edges.contains(target))
+        {
+            history.push((key, Some(EntityKey::edge(target.index()))));
+        }
+    }
+    Ok(history)
 }
 
 fn wound_edge_collapses(
@@ -954,9 +1135,10 @@ fn substitute_wire(
     topo: &Topology,
     wire: remus_topology::wire::WireId,
     moved: &BTreeMap<usize, Point3>,
-) -> Result<Vec<Point3>, OperationsError> {
+) -> Result<(Vec<Point3>, Vec<Vec<remus_topology::VertexId>>), OperationsError> {
     let tol = Tolerance::new();
     let mut points: Vec<Point3> = Vec::new();
+    let mut sources: Vec<Vec<remus_topology::VertexId>> = Vec::new();
     for oe in topo.wire(wire)?.edges() {
         let edge = topo.edge(oe.edge())?;
         let vid = oe.oriented_start(edge);
@@ -969,12 +1151,18 @@ fn substitute_wire(
             .is_none_or(|last| (*last - p).length() > tol.linear)
         {
             points.push(p);
+            sources.push(vec![vid]);
+        } else if let Some(last) = sources.last_mut() {
+            last.push(vid);
         }
     }
     while points.len() >= 2 && (points[0] - points[points.len() - 1]).length() <= tol.linear {
         points.pop();
+        if let Some(last) = sources.pop() {
+            sources[0].extend(last);
+        }
     }
-    Ok(points)
+    Ok((points, sources))
 }
 
 /// Auto-detect small features in a solid.

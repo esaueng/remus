@@ -20,6 +20,7 @@ import {
   runSurfaceReplacementHistoryRegression,
   runCylindricalRadiusHistoryRegression,
   runDraftHistoryRegression,
+  runDefeatureHistoryRegression,
   runWideSphereCapRegression,
   runOffsetConeSphereRegression,
   runOffsetSphereCylinderRegression,
@@ -758,6 +759,7 @@ runDirectEditHistoryRegression({ BrepKernel, RemusIo });
 runSurfaceReplacementHistoryRegression({ BrepKernel, RemusIo });
 runCylindricalRadiusHistoryRegression({ BrepKernel, RemusIo });
 runDraftHistoryRegression({ BrepKernel, RemusIo });
+runDefeatureHistoryRegression({ BrepKernel, RemusIo });
 runBooleanScaleRegression({ BrepKernel });
 runAnisotropicBooleanRegression({ BrepKernel });
 

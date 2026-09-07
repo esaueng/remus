@@ -626,3 +626,495 @@ fn failed_draft_does_not_publish_a_preexisting_mutation_gap() {
             < 1e-6
     );
 }
+
+#[test]
+fn capped_defeature_records_retained_and_consumed_boundaries() {
+    for scale in [1e-3_f64, 1.0, 1e3] {
+        for rotation in [0.0, 0.7] {
+            let mut topo = Topology::new();
+            let cube = make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+            let tool = make_box(&mut topo, 4.0, 4.0, 20.0).unwrap();
+            remus_operations::transform::transform_solid(
+                &mut topo,
+                tool,
+                &remus_math::mat::Mat4::translation(3.0, 3.0, -5.0),
+            )
+            .unwrap();
+            let source = remus_operations::boolean::boolean(
+                &mut topo,
+                remus_operations::boolean::BooleanOp::Cut,
+                cube,
+                tool,
+            )
+            .unwrap();
+            let walls: Vec<_> = solid_faces(&topo, source)
+                .unwrap()
+                .into_iter()
+                .filter(|&face| {
+                    topo.wire(topo.face(face).unwrap().outer_wire())
+                        .unwrap()
+                        .edges()
+                        .iter()
+                        .all(|oe| {
+                            let edge = topo.edge(oe.edge()).unwrap();
+                            [edge.start(), edge.end()].iter().all(|&vertex| {
+                                let p = topo.vertex(vertex).unwrap().point();
+                                p.x() > 2.9 && p.x() < 7.1 && p.y() > 2.9 && p.y() < 7.1
+                            })
+                        })
+                })
+                .collect();
+            assert_eq!(walls.len(), 4);
+            let transform =
+                remus_math::mat::Mat4::translation(123.0 * scale, -57.0 * scale, 31.0 * scale)
+                    * remus_math::mat::Mat4::rotation_x(rotation)
+                    * remus_math::mat::Mat4::scale(scale, scale, scale);
+            remus_operations::transform::transform_solid(&mut topo, source, &transform).unwrap();
+
+            let source_keys =
+                remus_operations::journal_ops::solid_entity_keys(&topo, source).unwrap();
+            let pending = begin_scoped(&mut topo, "hole_fixture", &[source]).unwrap();
+            let mut anchor_draft = remus_topology::journal::EvolutionDraft::construction();
+            for &key in &source_keys {
+                anchor_draft.push(
+                    key,
+                    remus_topology::journal::EventDraft::Generated {
+                        sources: Vec::new(),
+                    },
+                );
+            }
+            let anchor = topo
+                .journal_record_evolution(pending, anchor_draft)
+                .unwrap();
+            let result =
+                remus_operations::journal_ops::defeature_journaled(&mut topo, source, &walls)
+                    .unwrap();
+            let journal = topo.journal();
+            let EntryPayload::Evolution { events, .. } =
+                journal.entries().last().unwrap().payload()
+            else {
+                panic!("expected evolution")
+            };
+            for key in
+                remus_operations::journal_ops::solid_entity_keys(&topo, result.solid).unwrap()
+            {
+                let ordinal = journal.ordinal_of(key).unwrap();
+                assert!(
+                    events.iter().any(|(subject, event)| *subject == ordinal
+                        && matches!(event, EntityEvent::Modified { .. })),
+                    "missing retained boundary {key:?}"
+                );
+            }
+            let deleted_boundaries = source_keys
+                .iter()
+                .filter(|key| key.kind != EntityKind::Face)
+                .filter(|key| {
+                    let ordinal = journal.ordinal_of(**key).unwrap();
+                    events.iter().any(|(subject, event)| {
+                        *subject == ordinal && matches!(event, EntityEvent::Deleted)
+                    })
+                })
+                .count();
+            assert_eq!(deleted_boundaries, 20);
+            let mut bound = std::collections::BTreeSet::new();
+            let mut dangling = 0;
+            for kind in [EntityKind::Face, EntityKind::Edge, EntityKind::Vertex] {
+                for index in 0..source_keys.iter().filter(|key| key.kind == kind).count() {
+                    match resolve(&topo, &PersistentRef::operation_output(anchor, kind, index)) {
+                        Resolution::Bound {
+                            entity,
+                            provenance: Provenance::Construction,
+                        } => {
+                            bound.insert(entity);
+                        }
+                        Resolution::Dangling { deleted_at } => {
+                            assert_eq!(deleted_at, result.op);
+                            dangling += 1;
+                        }
+                        other => panic!("unqualified capped history: {other:?}"),
+                    }
+                }
+            }
+            assert_eq!(dangling, 24);
+            assert_eq!(
+                bound,
+                remus_operations::journal_ops::solid_entity_keys(&topo, result.solid)
+                    .unwrap()
+                    .into_iter()
+                    .collect()
+            );
+
+            assert!(
+                (remus_operations::measure::solid_volume(&topo, result.solid, 0.01 * scale)
+                    .unwrap()
+                    - 1000.0 * scale.powi(3))
+                .abs()
+                    < 1e-6 * scale.powi(3)
+            );
+            assert!(
+                (remus_operations::measure::solid_volume(&topo, source, 0.01 * scale).unwrap()
+                    - 840.0 * scale.powi(3))
+                .abs()
+                    < 1e-6 * scale.powi(3)
+            );
+        }
+    }
+}
+
+#[test]
+fn failed_defeature_restores_unpublished_gap_and_topology() {
+    let mut topo = Topology::new();
+    let source = make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+    let pending = topo.journal_begin("source_fixture");
+    record_barrier_over_solid(&mut topo, pending, source).unwrap();
+    let unrelated = make_box(&mut topo, 2.0, 3.0, 4.0).unwrap();
+    let before = topo.journal().snapshot();
+    let counts = (
+        topo.num_vertices(),
+        topo.num_edges(),
+        topo.num_wires(),
+        topo.num_faces(),
+        topo.num_shells(),
+        topo.num_solids(),
+    );
+    let foreign = solid_faces(&topo, unrelated).unwrap();
+    let all = solid_faces(&topo, source).unwrap();
+    for selection in [Vec::new(), foreign, all] {
+        assert!(
+            remus_operations::journal_ops::defeature_journaled(&mut topo, source, &selection)
+                .is_err()
+        );
+        let after = topo.journal().snapshot();
+        assert_eq!(after.entries, before.entries);
+        assert_eq!(after.index, before.index);
+        assert_eq!(after.next_ordinal, before.next_ordinal);
+        assert_eq!(
+            (
+                topo.num_vertices(),
+                topo.num_edges(),
+                topo.num_wires(),
+                topo.num_faces(),
+                topo.num_shells(),
+                topo.num_solids()
+            ),
+            counts
+        );
+        assert!(
+            (remus_operations::measure::solid_volume(&topo, source, 0.01).unwrap() - 1000.0).abs()
+                < 1e-6
+        );
+    }
+}
+
+#[test]
+fn extended_defeature_records_reconstructed_boundaries() {
+    for scale in [1e-3_f64, 1.0, 1e3] {
+        for rotation in [0.0, 0.7] {
+            for fillet in [false, true] {
+                let mut topo = Topology::new();
+                let cube = make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+                let edge = solid_edges(&topo, cube)
+                    .unwrap()
+                    .into_iter()
+                    .find(|&edge| {
+                        let edge = topo.edge(edge).unwrap();
+                        [edge.start(), edge.end()]
+                            .iter()
+                            .all(|&v| (topo.vertex(v).unwrap().point().z() - 10.0).abs() < 1e-9)
+                    })
+                    .unwrap();
+                let source = if fillet {
+                    remus_operations::blend_ops::fillet_v2(&mut topo, cube, &[edge], 2.0)
+                        .unwrap()
+                        .solid
+                } else {
+                    remus_operations::chamfer::chamfer(&mut topo, cube, &[edge], 2.0).unwrap()
+                };
+                let bevel: Vec<_> = solid_faces(&topo, source)
+                    .unwrap()
+                    .into_iter()
+                    .filter(|&face| {
+                        let Some(n) = topo.face(face).unwrap().effective_plane_normal() else {
+                            return true;
+                        };
+                        [n.x(), n.y(), n.z()]
+                            .iter()
+                            .filter(|x| x.abs() > 1e-6)
+                            .count()
+                            > 1
+                    })
+                    .collect();
+                assert_eq!(bevel.len(), 1);
+                let transform =
+                    remus_math::mat::Mat4::translation(123.0 * scale, -57.0 * scale, 31.0 * scale)
+                        * remus_math::mat::Mat4::rotation_x(rotation)
+                        * remus_math::mat::Mat4::scale(scale, scale, scale);
+                remus_operations::transform::transform_solid(&mut topo, source, &transform)
+                    .unwrap();
+
+                let keys = remus_operations::journal_ops::solid_entity_keys(&topo, source).unwrap();
+                let pending = begin_scoped(&mut topo, "chamfer_fixture", &[source]).unwrap();
+                let mut draft = remus_topology::journal::EvolutionDraft::construction();
+                for &key in &keys {
+                    draft.push(
+                        key,
+                        remus_topology::journal::EventDraft::Generated {
+                            sources: Vec::new(),
+                        },
+                    );
+                }
+                let anchor = topo.journal_record_evolution(pending, draft).unwrap();
+                let result =
+                    remus_operations::journal_ops::defeature_journaled(&mut topo, source, &bevel)
+                        .unwrap();
+                let journal = topo.journal();
+                let EntryPayload::Evolution { events, .. } =
+                    journal.entries().last().unwrap().payload()
+                else {
+                    panic!("expected evolution")
+                };
+                for key in
+                    remus_operations::journal_ops::solid_entity_keys(&topo, result.solid).unwrap()
+                {
+                    let ordinal = journal.ordinal_of(key).unwrap();
+                    assert!(
+                        events.iter().any(|(subject, event)| *subject == ordinal
+                            && !matches!(event, EntityEvent::Unresolved { .. })),
+                        "missing reconstructed boundary {key:?}"
+                    );
+                }
+                let mut resolved = std::collections::BTreeSet::new();
+                let mut deleted = 0;
+                for kind in [EntityKind::Face, EntityKind::Edge, EntityKind::Vertex] {
+                    for index in 0..keys.iter().filter(|key| key.kind == kind).count() {
+                        match resolve(&topo, &PersistentRef::operation_output(anchor, kind, index))
+                        {
+                            Resolution::Bound {
+                                entity,
+                                provenance: Provenance::Construction,
+                            } => {
+                                resolved.insert(entity);
+                            }
+                            Resolution::Dangling { deleted_at } => {
+                                assert_eq!(deleted_at, result.op);
+                                deleted += 1;
+                            }
+                            other => panic!("unqualified extension history {other:?}"),
+                        }
+                    }
+                }
+                assert_eq!(deleted, 3);
+                assert_eq!(
+                    resolved,
+                    remus_operations::journal_ops::solid_entity_keys(&topo, result.solid)
+                        .unwrap()
+                        .into_iter()
+                        .collect()
+                );
+                assert_eq!(
+                    events
+                        .iter()
+                        .filter(|(_, event)| matches!(event, EntityEvent::Merged { .. }))
+                        .count(),
+                    3
+                );
+                let expected_source = if fillet {
+                    1000.0 - 10.0 * (4.0 - std::f64::consts::PI)
+                } else {
+                    980.0
+                };
+                assert!(
+                    (remus_operations::measure::solid_volume(&topo, result.solid, 0.01 * scale)
+                        .unwrap()
+                        - 1000.0 * scale.powi(3))
+                    .abs()
+                        < 1e-6 * scale.powi(3)
+                );
+                assert!(
+                    (remus_operations::measure::solid_volume(&topo, source, 0.01 * scale).unwrap()
+                        - expected_source * scale.powi(3))
+                    .abs()
+                        < 1e-5 * scale.powi(3)
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn closed_rim_defeature_preserves_construction_references() {
+    let mut topo = Topology::new();
+    let cylinder = remus_operations::primitives::make_cylinder(&mut topo, 10.0, 20.0).unwrap();
+    let rim = solid_edges(&topo, cylinder)
+        .unwrap()
+        .into_iter()
+        .find(|&edge| {
+            let edge = topo.edge(edge).unwrap();
+            edge.is_closed() && (topo.vertex(edge.start()).unwrap().point().z() - 20.0).abs() < 1e-9
+        })
+        .unwrap();
+    let source = remus_operations::blend_ops::fillet_v2(&mut topo, cylinder, &[rim], 2.0)
+        .unwrap()
+        .solid;
+    let band: Vec<_> = solid_faces(&topo, source)
+        .unwrap()
+        .into_iter()
+        .filter(|&face| {
+            matches!(
+                topo.face(face).unwrap().surface(),
+                remus_topology::face::FaceSurface::Torus(_)
+            )
+        })
+        .collect();
+    assert_eq!(band.len(), 1);
+    let keys = remus_operations::journal_ops::solid_entity_keys(&topo, source).unwrap();
+    let pending = begin_scoped(&mut topo, "rim_fixture", &[source]).unwrap();
+    let mut draft = remus_topology::journal::EvolutionDraft::construction();
+    for &key in &keys {
+        draft.push(
+            key,
+            remus_topology::journal::EventDraft::Generated {
+                sources: Vec::new(),
+            },
+        );
+    }
+    let anchor = topo.journal_record_evolution(pending, draft).unwrap();
+    let result =
+        remus_operations::journal_ops::defeature_journaled(&mut topo, source, &band).unwrap();
+    let mut resolved = std::collections::BTreeSet::new();
+    let mut deleted = 0;
+    for kind in [EntityKind::Face, EntityKind::Edge, EntityKind::Vertex] {
+        for index in 0..keys.iter().filter(|key| key.kind == kind).count() {
+            match resolve(&topo, &PersistentRef::operation_output(anchor, kind, index)) {
+                Resolution::Bound {
+                    entity,
+                    provenance: Provenance::Construction,
+                } => {
+                    resolved.insert(entity);
+                }
+                Resolution::Dangling { deleted_at } => {
+                    assert_eq!(deleted_at, result.op);
+                    deleted += 1;
+                }
+                other => panic!("unqualified rim history {other:?}"),
+            }
+        }
+    }
+    assert!(deleted >= 2);
+    assert_eq!(
+        resolved,
+        remus_operations::journal_ops::solid_entity_keys(&topo, result.solid)
+            .unwrap()
+            .into_iter()
+            .collect()
+    );
+    let expected = std::f64::consts::PI * 100.0 * 20.0;
+    assert!(
+        (remus_operations::measure::solid_volume(&topo, result.solid, 0.01).unwrap() - expected)
+            .abs()
+            < 1e-6
+    );
+}
+
+#[test]
+fn cylinder_cone_defeature_preserves_construction_references() {
+    let mut topo = Topology::new();
+    let cylinder = remus_operations::primitives::make_cylinder(&mut topo, 3.0, 5.0).unwrap();
+    let cone = remus_operations::primitives::make_cone(&mut topo, 3.0, 1.0, 4.0).unwrap();
+    remus_operations::transform::transform_solid(
+        &mut topo,
+        cone,
+        &remus_math::mat::Mat4::translation(0.0, 0.0, 5.0),
+    )
+    .unwrap();
+    let sharp = remus_operations::boolean::boolean(
+        &mut topo,
+        remus_operations::boolean::BooleanOp::Fuse,
+        cylinder,
+        cone,
+    )
+    .unwrap();
+    let adjacency = topo.build_adjacency(sharp).unwrap();
+    let shoulder = solid_edges(&topo, sharp)
+        .unwrap()
+        .into_iter()
+        .find(|&edge| {
+            let faces = adjacency.faces_for_edge(edge);
+            faces.len() == 2
+                && matches!(
+                    (
+                        topo.face(faces[0]).unwrap().surface(),
+                        topo.face(faces[1]).unwrap().surface()
+                    ),
+                    (
+                        remus_topology::face::FaceSurface::Cylinder(_),
+                        remus_topology::face::FaceSurface::Cone(_)
+                    ) | (
+                        remus_topology::face::FaceSurface::Cone(_),
+                        remus_topology::face::FaceSurface::Cylinder(_)
+                    )
+                )
+        })
+        .unwrap();
+    let source = remus_operations::blend_ops::fillet_v2(&mut topo, sharp, &[shoulder], 0.25)
+        .unwrap()
+        .solid;
+    let band: Vec<_> = solid_faces(&topo, source)
+        .unwrap()
+        .into_iter()
+        .filter(|&face| {
+            matches!(
+                topo.face(face).unwrap().surface(),
+                remus_topology::face::FaceSurface::Torus(_)
+            )
+        })
+        .collect();
+    assert_eq!(band.len(), 1);
+    let keys = remus_operations::journal_ops::solid_entity_keys(&topo, source).unwrap();
+    let pending = begin_scoped(&mut topo, "rim_fixture", &[source]).unwrap();
+    let mut draft = remus_topology::journal::EvolutionDraft::construction();
+    for &key in &keys {
+        draft.push(
+            key,
+            remus_topology::journal::EventDraft::Generated {
+                sources: Vec::new(),
+            },
+        );
+    }
+    let anchor = topo.journal_record_evolution(pending, draft).unwrap();
+    let result =
+        remus_operations::journal_ops::defeature_journaled(&mut topo, source, &band).unwrap();
+    let mut resolved = std::collections::BTreeSet::new();
+    let mut deleted = 0;
+    for kind in [EntityKind::Face, EntityKind::Edge, EntityKind::Vertex] {
+        for index in 0..keys.iter().filter(|key| key.kind == kind).count() {
+            match resolve(&topo, &PersistentRef::operation_output(anchor, kind, index)) {
+                Resolution::Bound {
+                    entity,
+                    provenance: Provenance::Construction,
+                } => {
+                    resolved.insert(entity);
+                }
+                Resolution::Dangling { deleted_at } => {
+                    assert_eq!(deleted_at, result.op);
+                    deleted += 1;
+                }
+                other => panic!("unqualified rim history {other:?}"),
+            }
+        }
+    }
+    assert!(deleted >= 2);
+    assert_eq!(
+        resolved,
+        remus_operations::journal_ops::solid_entity_keys(&topo, result.solid)
+            .unwrap()
+            .into_iter()
+            .collect()
+    );
+    let expected = std::f64::consts::PI * 187.0 / 3.0;
+    assert!(
+        (remus_operations::measure::solid_volume(&topo, result.solid, 0.01).unwrap() - expected)
+            .abs()
+            < 1e-6
+    );
+}

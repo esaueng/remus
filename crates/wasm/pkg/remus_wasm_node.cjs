@@ -1197,6 +1197,36 @@ class BrepKernel {
         return ret[0] >>> 0;
     }
     /**
+     * Remove selected feature faces with construction history.
+     *
+     * Returns JSON `{"solid", "op"}`. Capping retains copied boundary identities
+     * and records consumed boundaries as deleted. Unqualified reconstructed
+     * boundaries remain unresolved. Batch uses `solid` and `faces`.
+     * @param {number} solid
+     * @param {Uint32Array} faces
+     * @returns {string}
+     */
+    defeatureJournaled(solid, faces) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passArray32ToWasm0(faces, wasm.__wbindgen_malloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.brepkernel_defeatureJournaled(this.__wbg_ptr, solid, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
      * Retire a solid handle and its unshared topology subtree.
      *
      * The handle becomes permanently invalid. This does not compact the
