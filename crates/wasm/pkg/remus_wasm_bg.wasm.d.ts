@@ -100,6 +100,7 @@ export const brepkernel_filletVariable: (a: number, b: number, c: number, d: num
 export const brepkernel_filletWithEvolution: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
 export const brepkernel_fixFaceOrientations: (a: number, b: number) => [number, number, number];
 export const brepkernel_fixShapeWithConfig: (a: number, b: number, c: number, d: number) => [number, number, number];
+export const brepkernel_fixShapeWithConfigJournaled: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const brepkernel_fromBREP: (a: number, b: number, c: number) => [number, number, number];
 export const brepkernel_fuse: (a: number, b: number, c: number) => [number, number, number];
 export const brepkernel_fuseAll: (a: number, b: number, c: number) => [number, number, number];
@@ -259,6 +260,7 @@ export const brepkernel_restore: (a: number, b: number) => [number, number];
 export const brepkernel_reverseShape: (a: number, b: number) => [number, number, number];
 export const brepkernel_revolve: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number, number];
 export const brepkernel_runHealPipeline: (a: number, b: number, c: number, d: number) => [number, number, number];
+export const brepkernel_runHealPipelineJournaled: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const brepkernel_sampleEdge: (a: number, b: number, c: number) => [number, number, number, number];
 export const brepkernel_section: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number, number];
 export const brepkernel_serializeSheet: (a: number, b: number) => [number, number, number, number];

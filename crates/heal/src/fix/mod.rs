@@ -249,12 +249,8 @@ pub fn fix_shape(
     solid_id: SolidId,
     config: &FixConfig,
 ) -> Result<(SolidId, FixResult), HealError> {
-    let mut ctx = HealContext::new();
-    let result = solid::fix_solid(topo, solid_id, &mut ctx, config)?;
-
-    let new_solid = ctx.reshape.apply(topo, solid_id)?;
-
-    Ok((new_solid, result))
+    let (solid, result, _) = fix_shape_with_history(topo, solid_id, config, None)?;
+    Ok((solid, result))
 }
 
 /// Top-level shape fixer with custom tolerance.
@@ -268,10 +264,23 @@ pub fn fix_shape_with_tolerance(
     config: &FixConfig,
     tolerance: f64,
 ) -> Result<(SolidId, FixResult), HealError> {
-    let mut ctx = HealContext::with_tolerance(tolerance);
+    let (solid, result, _) = fix_shape_with_history(topo, solid_id, config, Some(tolerance))?;
+    Ok((solid, result))
+}
+
+/// Fix a shape while retaining the recorded replacement actions.
+///
+/// # Errors
+///
+/// Returns the same repair errors as [`fix_shape`].
+pub fn fix_shape_with_history(
+    topo: &mut Topology,
+    solid_id: SolidId,
+    config: &FixConfig,
+    tolerance: Option<f64>,
+) -> Result<(SolidId, FixResult, crate::reshape::ReShape), HealError> {
+    let mut ctx = tolerance.map_or_else(HealContext::new, HealContext::with_tolerance);
     let result = solid::fix_solid(topo, solid_id, &mut ctx, config)?;
-
     let new_solid = ctx.reshape.apply(topo, solid_id)?;
-
-    Ok((new_solid, result))
+    Ok((new_solid, result, ctx.reshape))
 }
