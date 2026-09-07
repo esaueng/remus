@@ -496,13 +496,14 @@ export const runSphereCylinderWallRegression = ({ BrepKernel, RemusIo }) => {
       for (const deflection of [0.1, 0.01]) {
         const mesh = kernel.tessellateSolid(solid, deflection);
         const positions = mesh.positions;
+        const indices = mesh.indices;
         // Match the consumer's float32 weld at one part per million of the 60 mm extent.
         const key = (id) =>
           [0, 1, 2].map((axis) => Math.round(positions[id * 3 + axis] / 0.00006)).join(',');
         const edges = new Map();
         let volume = 0;
-        for (let i = 0; i < mesh.indices.length; i += 3) {
-          const ids = Array.from(mesh.indices.subarray(i, i + 3));
+        for (let i = 0; i < indices.length; i += 3) {
+          const ids = Array.from(indices.subarray(i, i + 3));
           const keys = ids.map(key);
           if (new Set(keys).size !== 3) continue;
           for (const [a, b] of [
