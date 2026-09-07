@@ -113,6 +113,9 @@ impl HealOperator for UnifySameDomainOp {
                 }
             }
         }
+        for (source, targets) in history.face_regions {
+            replacements.split_face(source, targets);
+        }
         for (sources, target) in history.edge_runs {
             for source in sources {
                 replacements.replace_edge(source, target);
