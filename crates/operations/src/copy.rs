@@ -173,6 +173,22 @@ pub(crate) fn copy_solid_between_with_face_map(
     destination: &mut Topology,
     solid_id: SolidId,
 ) -> Result<(SolidId, HashMap<usize, FaceId>), crate::OperationsError> {
+    let copied = copy_solid_between_with_entity_map(source, destination, solid_id)?;
+    Ok((copied.solid, copied.face_map))
+}
+
+pub(crate) struct CopiedSolidEntities {
+    pub solid: SolidId,
+    pub face_map: HashMap<usize, FaceId>,
+    pub edge_map: HashMap<usize, remus_topology::EdgeId>,
+    pub vertex_map: HashMap<usize, VertexId>,
+}
+
+pub(crate) fn copy_solid_between_with_entity_map(
+    source: &Topology,
+    destination: &mut Topology,
+    solid_id: SolidId,
+) -> Result<CopiedSolidEntities, crate::OperationsError> {
     let solid = source.solid(solid_id)?;
     let solid_attributes = source.attributes().solid(solid_id).cloned();
     let shell_ids: Vec<_> = std::iter::once(solid.outer_shell())
@@ -328,7 +344,12 @@ pub(crate) fn copy_solid_between_with_face_map(
     if let Some(attributes) = solid_attributes {
         destination.set_solid_attributes(copied, attributes)?;
     }
-    Ok((copied, face_map))
+    Ok(CopiedSolidEntities {
+        solid: copied,
+        face_map,
+        edge_map,
+        vertex_map,
+    })
 }
 
 /// Create a deep copy of a solid and all its topology.

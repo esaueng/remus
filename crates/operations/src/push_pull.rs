@@ -109,7 +109,7 @@ pub(crate) fn move_faces_with_entity_evolution(
 ) -> Result<DirectEditEvolution, crate::OperationsError> {
     let snapshot = topo.clone();
     let outcome = (|| -> Result<DirectEditEvolution, crate::OperationsError> {
-        let mut boundary_pairs = Vec::new();
+        let boundary_pairs;
         let source_faces = solid_faces(topo, solid)?;
         let result = if let Some((face, new_radius)) =
             cylindrical_bore_move_request(topo, solid, faces, distance)?
@@ -163,7 +163,11 @@ pub(crate) fn move_faces_with_entity_evolution(
         } else if let Some(result) =
             crate::resize_blend::move_planar_faces_with_blends(topo, solid, faces, distance)?
         {
-            result
+            boundary_pairs = result.boundary_pairs;
+            MoveFacesResult {
+                solid: result.solid,
+                evolution: result.evolution,
+            }
         } else {
             refuse_swept_face_intersections(topo, solid, faces, distance)?;
             let moved = remus_offset::move_faces_with_entity_map(topo, solid, faces, distance)?;
