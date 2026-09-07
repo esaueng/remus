@@ -458,6 +458,34 @@ process-leak warnings. The final test-fixture boundary API correction also passe
 all 140 healing tests. The rebuilt kernel grows by 12,090 bytes; the translator
 binary is unchanged. This increment is qualified locally, not yet merged.
 
+### Sewing entity history — qualification in progress
+
+The next B18 increment records the edge redirects and final vertex representatives
+committed by shell sewing. `sew_shell_with_history` returns a `SewHistory` alongside
+the existing counted report; the ordinary API keeps its geometry, tolerances,
+curve-agreement checks, ambiguity refusals, and rollback. Records are produced
+only after boundary and vertex updates succeed. The pipeline attributes consumed
+sources only when they are absent from the complete result solid; sources still
+used by another shell retain their live identity.
+
+Native witnesses cover all 12 edge joins and 16 vertex joins of a disjoint-face
+cube, ordinary-operation parity, repeated no-op sewing, and refusal without
+replacement claims for mismatched curves or ambiguous partners. A shared-inner-
+patch fixture tests retained-source identity without claiming closed-solid
+qualification. A separate verified three-scale box witness preserves every
+reference through sewing, populated arena restore, and later draft; a deliberately
+failing later operator proves topology and journal rollback after sewing.
+
+The direct/batch WASM regression uses explicit construction anchors in a legacy
+arena fixture and reproduces `unresolvedAcrossOperation` on the preceding package.
+Both rebuilt optimized packages pass smoke and installed-tarball consumer
+suites, including all six direct/batch sewing cells. Workspace Clippy, rustdoc,
+doctests, mdBook, boundary checks, and the unchanged 52-row census pass. The
+kernel grows by 12,122 bytes; the translator binary is unchanged. The full
+all-features native run passes 4,935 tests (13 skipped), with no leak warnings.
+This increment is qualified locally, not yet merged. It does not extend sewing
+to cavity shells or close the broader B17 repair matrix.
+
 ## §B Bridge backlog — owned by neither program
 
 Ready items from the stabilization-plan residue, the capability-matrix

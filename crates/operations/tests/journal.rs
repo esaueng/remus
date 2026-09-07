@@ -1498,3 +1498,193 @@ fn verified_unification_journals_merged_faces_and_consumed_center() {
         assert!((actual - expected).abs() < expected * 1e-6);
     }
 }
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn verified_sewing_preserves_all_references_through_arena_and_later_draft() {
+    use remus_topology::wire::{OrientedEdge, Wire};
+    #[derive(Debug)]
+    struct RefuseAfterSewing;
+    impl remus_heal::pipeline::operator::HealOperator for RefuseAfterSewing {
+        fn name(&self) -> &'static str {
+            "refuse_after_sewing"
+        }
+        fn execute(
+            &self,
+            topo: &mut Topology,
+            solid: remus_topology::SolidId,
+            _ctx: &mut remus_heal::context::HealContext,
+        ) -> Result<(remus_topology::SolidId, remus_heal::fix::FixResult), remus_heal::HealError>
+        {
+            assert_eq!(
+                remus_topology::explorer::solid_edges(topo, solid)
+                    .unwrap()
+                    .len(),
+                12
+            );
+            Err(remus_heal::HealError::FixFailed(
+                "refused after sewing".into(),
+            ))
+        }
+    }
+
+    for scale in [0.001, 1.0, 10.0] {
+        let mut topo = Topology::new();
+        let solid = make_box(&mut topo, 10.0 * scale, 10.0 * scale, 10.0 * scale).unwrap();
+        for face in solid_faces(&topo, solid).unwrap() {
+            let wire = topo.face(face).unwrap().outer_wire();
+            let boundary = topo.wire(wire).unwrap().edges().to_vec();
+            let mut vertices = std::collections::HashMap::new();
+            let mut uses = Vec::new();
+            for oe in boundary {
+                let mut edge = topo.edge(oe.edge()).unwrap().clone();
+                for source in [edge.start(), edge.end()] {
+                    vertices.entry(source).or_insert_with(|| {
+                        let vertex = topo.vertex(source).unwrap().clone();
+                        topo.add_vertex(vertex)
+                    });
+                }
+                edge.set_start(vertices[&edge.start()]);
+                edge.set_end(vertices[&edge.end()]);
+                uses.push(OrientedEdge::new(topo.add_edge(edge), oe.is_forward()));
+            }
+            let wire = topo.add_wire(Wire::new(uses, true).unwrap());
+            topo.set_face_boundary_wires(face, wire, Vec::new())
+                .unwrap();
+        }
+        let keys = remus_operations::journal_ops::solid_entity_keys(&topo, solid).unwrap();
+        let pending = begin_scoped(&mut topo, "disjoint_face_fixture", &[solid]).unwrap();
+        let mut draft = remus_topology::journal::EvolutionDraft::construction();
+        for &key in &keys {
+            draft.push(
+                key,
+                remus_topology::journal::EventDraft::Generated {
+                    sources: Vec::new(),
+                },
+            );
+        }
+        let anchor = topo.journal_record_evolution(pending, draft).unwrap();
+        let mut failing = remus_heal::pipeline::process::HealProcess::new();
+        failing
+            .registry_mut()
+            .register("refuse_after_sewing", Box::new(RefuseAfterSewing));
+        failing.add_step("sew_shells");
+        failing.add_step("refuse_after_sewing");
+        let before = remus_io::arena_io::serialize_solids(&topo, &[solid]).unwrap();
+        let journal_before = topo.journal().snapshot();
+        let error =
+            remus_operations::journal_ops::heal_pipeline_journaled(&mut topo, solid, &failing)
+                .err()
+                .unwrap();
+        assert!(error.to_string().contains("refused after sewing"));
+        assert_eq!(topo.journal().snapshot(), journal_before);
+        assert_eq!(
+            remus_io::arena_io::serialize_solids(&topo, &[solid]).unwrap(),
+            before
+        );
+        let mut process = remus_heal::pipeline::process::HealProcess::new();
+        process.add_step("sew_shells");
+        let result =
+            remus_operations::journal_ops::heal_pipeline_journaled(&mut topo, solid, &process)
+                .unwrap();
+        assert!(result.result.is_valid_after());
+        assert_eq!(solid_faces(&topo, result.result.solid).unwrap().len(), 6);
+        let mut bound = std::collections::BTreeSet::new();
+        let mut deleted = 0;
+        for kind in [EntityKind::Face, EntityKind::Edge, EntityKind::Vertex] {
+            for index in 0..keys.iter().filter(|key| key.kind == kind).count() {
+                match resolve(&topo, &PersistentRef::operation_output(anchor, kind, index)) {
+                    Resolution::Bound {
+                        entity,
+                        provenance: Provenance::Construction,
+                    } => {
+                        bound.insert(entity);
+                    }
+                    Resolution::Dangling { deleted_at } => {
+                        assert_eq!(deleted_at, result.op);
+                        deleted += 1;
+                    }
+                    other => panic!("sewing lost {kind:?}/{index}: {other:?}"),
+                }
+            }
+        }
+        assert_eq!(deleted, 0);
+        assert_eq!(
+            bound,
+            remus_operations::journal_ops::solid_entity_keys(&topo, result.result.solid)
+                .unwrap()
+                .into_iter()
+                .collect()
+        );
+        let volume =
+            remus_operations::measure::solid_volume(&topo, result.result.solid, 0.01 * scale)
+                .unwrap();
+        assert!((volume - 1000.0 * scale.powi(3)).abs() < 1e-6 * scale.powi(3));
+        let bytes = remus_io::arena_io::serialize_solids(&topo, &[result.result.solid]).unwrap();
+        let mut restored = Topology::new();
+        make_box(&mut restored, 1.0, 1.0, 1.0).unwrap();
+        let restored_solid =
+            remus_io::arena_io::deserialize_solids(&bytes, &mut restored).unwrap()[0];
+        let repeat = remus_operations::journal_ops::heal_pipeline_journaled(
+            &mut restored,
+            restored_solid,
+            &process,
+        )
+        .unwrap();
+        let wall = solid_faces(&restored, repeat.result.solid)
+            .unwrap()
+            .into_iter()
+            .find(|&face| {
+                restored
+                    .face(face)
+                    .unwrap()
+                    .effective_plane_normal()
+                    .is_some_and(|normal| normal.x() > 0.9)
+            })
+            .unwrap();
+        let drafted = remus_operations::journal_ops::draft_journaled(
+            &mut restored,
+            repeat.result.solid,
+            &[wall],
+            remus_math::vec::Vec3::new(0.0, 0.0, 1.0),
+            remus_math::vec::Point3::new(0.0, 0.0, 0.0),
+            0.05,
+        )
+        .unwrap();
+        let mut surviving = std::collections::BTreeSet::new();
+        let mut still_deleted = 0;
+        for kind in [EntityKind::Face, EntityKind::Edge, EntityKind::Vertex] {
+            for index in 0..keys.iter().filter(|key| key.kind == kind).count() {
+                match resolve(
+                    &restored,
+                    &PersistentRef::operation_output(anchor, kind, index),
+                ) {
+                    Resolution::Bound {
+                        entity,
+                        provenance: Provenance::Construction,
+                    } => {
+                        surviving.insert(entity);
+                    }
+                    Resolution::Dangling { deleted_at } => {
+                        assert_eq!(deleted_at, result.op);
+                        still_deleted += 1;
+                    }
+                    other => panic!("sew/arena/draft lost {kind:?}/{index}: {other:?}"),
+                }
+            }
+        }
+        assert_eq!(still_deleted, 0);
+        assert_eq!(
+            surviving,
+            remus_operations::journal_ops::solid_entity_keys(&restored, drafted.solid)
+                .unwrap()
+                .into_iter()
+                .collect()
+        );
+        let expected = (1000.0 + 500.0 * 0.05_f64.tan()) * scale.powi(3);
+        let actual =
+            remus_operations::measure::solid_volume(&restored, drafted.solid, 0.01 * scale)
+                .unwrap();
+        assert!((actual - expected).abs() < expected * 1e-6);
+    }
+}
