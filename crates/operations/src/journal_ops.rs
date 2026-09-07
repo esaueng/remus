@@ -611,12 +611,16 @@ pub fn replace_surface_journaled(
     })
 }
 
-/// Runs a draft and journals its construction-derived face evolution as
-/// one entry (kind `draft`).
+/// Applies a planar draft with construction-derived face and boundary history.
+///
+/// Geometry and journal recording form one transaction. Boundary identities
+/// require a total one-to-one face map and a unique incidence correspondence,
+/// including every outer and inner wire. Ambiguous boundaries remain unresolved.
 ///
 /// # Errors
 ///
-/// Returns [`OperationsError`] if the draft or the recording fails.
+/// Returns the geometry refusals of [`crate::draft::draft`] or an error recording
+/// the construction history; either failure restores topology and history.
 pub fn draft_journaled(
     topo: &mut Topology,
     solid: SolidId,
@@ -625,20 +629,39 @@ pub fn draft_journaled(
     neutral_point: remus_math::vec::Point3,
     angle_radians: f64,
 ) -> Result<JournaledSolidOp, OperationsError> {
-    let pending = begin_scoped(topo, "draft", &[solid])?;
-    let (result, map) = crate::draft::draft_with_evolution(
-        topo,
-        solid,
-        draft_faces,
-        pull_direction,
-        neutral_point,
-        angle_radians,
-    )?;
-    let op = record_face_evolution(topo, pending, &map, &[result])?;
-    Ok(JournaledSolidOp {
-        solid: result,
-        op,
-        map,
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let pending = begin_scoped(topo, "draft", &[solid])?;
+        let (result, map) = crate::draft::draft_with_evolution(
+            topo,
+            solid,
+            draft_faces,
+            pull_direction,
+            neutral_point,
+            angle_radians,
+        )?;
+        let face_map = map
+            .modified
+            .iter()
+            .map(|(&source, outputs)| {
+                let [output] = outputs.as_slice() else {
+                    return None;
+                };
+                topo.face_id_from_index(*output)
+                    .map(|target| (source, target))
+            })
+            .collect::<Option<std::collections::HashMap<_, _>>>();
+        let pairs = match face_map {
+            Some(face_map) if map.origin.is_exact() && map.is_complete() => {
+                crate::resize_blend::construction_boundary_pairs(topo, solid, result, &face_map)?
+            }
+            _ => Vec::new(),
+        };
+        let op = record_entity_evolution(topo, pending, &map, &[result], &pairs)?;
+        Ok(JournaledSolidOp {
+            solid: result,
+            op,
+            map,
+        })
     })
 }
 
