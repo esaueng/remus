@@ -1491,6 +1491,12 @@ export class BrepKernel {
      */
     fixShapeWithConfig(solid: number, config_json: string): any;
     /**
+     * Run configured verified healing with entity history.
+     * Returns the `fixShapeWithConfig` report plus `op`. Untracked replacements
+     * remain unresolved. Batch uses `solid` and the JSON string `configJson`.
+     */
+    fixShapeWithConfigJournaled(solid: number, config_json: string): string;
+    /**
      * Reconstruct a solid from a BREP string.
      *
      * Accepts both STEP format (from `toBREP`) and JSON format (from
@@ -3078,6 +3084,12 @@ export class BrepKernel {
      * accept the result.
      */
     runHealPipeline(solid: number, steps: string[]): any;
+    /**
+     * Run verified healing steps with composed entity history.
+     * Returns the `runHealPipeline` report plus `op`. Topology and journal
+     * changes roll back together on failure. Batch uses `solid` and `steps`.
+     */
+    runHealPipelineJournaled(solid: number, steps: string[]): string;
     /**
      * Span-true polyline of one edge at the given chordal deflection.
      *
