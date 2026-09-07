@@ -263,6 +263,7 @@ export const runOpenZcadConsumerRegressions = (exports) => {
   runOffsetSphereCylinderRegression(exports);
   runOffsetTorusSphereRegression(exports);
   runBooleanScaleRegression(exports);
+  runAnisotropicBooleanRegression(exports);
 };
 
 export const runWideSphereCapRegression = ({ BrepKernel, RemusIo }) => {
@@ -419,4 +420,53 @@ export const runBooleanScaleRegression = ({ BrepKernel }) => {
     }
   }
   console.log('ok - 72 exact through-tool boolean cells across scales 1e-5..1e6 and rigid placement');
+};
+
+
+export const runAnisotropicBooleanRegression = ({ BrepKernel }) => {
+  for (const batch of [false, true]) {
+    for (const length of [1, 1e3, 1e6]) for (const width of [0.1, 0.001]) {
+      for (const placed of [false, true]) for (const operation of ['fuse', 'cut', 'intersect']) {
+        const kernel = new BrepKernel();
+        try {
+          const invoke = (op, args) => {
+            const [result] = JSON.parse(kernel.executeBatch(JSON.stringify([{ op, args }])));
+            assert.ok(Object.hasOwn(result, 'ok'), JSON.stringify(result));
+            return result.ok;
+          };
+          const box = (x, y, z) => batch ? invoke('makeBox', { width: x, height: y, depth: z }) : kernel.makeBox(x, y, z);
+          const transform = (solid, matrix) => batch ? invoke('transform', { solid, matrix }) : kernel.transformSolid(solid, new Float64Array(matrix));
+          const boolean = (op, a, b) => batch ? invoke('booleanWithQuality', { operation: op, solidA: a, solidB: b, exactOnly: true }) : kernel.booleanWithQuality(op, a, b, true);
+          const blank = box(length, 1, 1);
+          const tool = box(width, 0.4, 2);
+          transform(tool, [1,0,0,width,0,1,0,0.3,0,0,1,-0.5,0,0,0,1]);
+          const c = Math.cos(0.37), s = Math.sin(0.37);
+          const placement = [c,0,s,17,0,1,0,-23,-s,0,c,31,0,0,0,1];
+          if (placed) for (const solid of [blank, tool]) transform(solid, placement);
+          const result = boolean(operation, blank, tool);
+          const label = `${operation} length=${length} width=${width} placed=${placed} batch=${batch}`;
+          assert.equal(result.quality, 'exact', label);
+          assert.equal(kernel.validateSolid(result.solid), 0, label);
+          const overlap = width * 0.4;
+          const expected = operation === 'fuse' ? length + overlap : operation === 'cut' ? length - overlap : overlap;
+          const tolerance = placed ? Math.max(expected * 1e-9, overlap * 1e-5) : overlap * 1e-5;
+          assert.ok(Math.abs(kernel.volume(result.solid, 0.001) - expected) <= tolerance, `${label}: world volume`);
+          for (const z of [-0.25, 0.5, 1.25]) {
+            const x = 1.5 * width;
+            const point = placed ? [c*x+s*z+17, -22.5, -s*x+c*z+31] : [x,0.5,z];
+            const inside = z === 0.5 ? operation !== 'cut' : operation === 'fuse';
+            assert.equal(kernel.classifyPoint(result.solid, ...point, 1e-7), inside ? 'inside' : 'outside', `${label}: point z=${z}`);
+          }
+          const crop = box(3 * width, 1, 2);
+          transform(crop, [1,0,0,0,0,1,0,0,0,0,1,-0.5,0,0,0,1]);
+          if (placed) transform(crop, placement);
+          const local = boolean('intersect', result.solid, crop);
+          assert.equal(local.quality, 'exact', label);
+          const expectedLocal = operation === 'fuse' ? 3*width+overlap : operation === 'cut' ? 3*width-overlap : overlap;
+          assert.ok(Math.abs(kernel.volume(local.solid, 0.001) - expectedLocal) / overlap <= 1e-5, `${label}: local material volume`);
+        } finally { kernel.free(); }
+      }
+    }
+  }
+  console.log('ok - 36 anisotropic boolean cells in direct and batch APIs retain local material');
 };
