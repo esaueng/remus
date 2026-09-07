@@ -1862,3 +1862,119 @@ fn verified_inner_wire_removal_deletes_consumed_references_and_preserves_survivo
         assert!((actual - expected).abs() < expected * 1e-6);
     }
 }
+
+#[test]
+fn common_vertex_split_refuses_open_fans_and_rolls_back_completed_splits() {
+    use remus_math::vec::{Point3, Vec3};
+    use remus_topology::{
+        edge::{Edge, EdgeCurve},
+        face::{Face, FaceSurface},
+        shell::Shell,
+        solid::Solid,
+        vertex::Vertex,
+        wire::{OrientedEdge, Wire},
+    };
+    #[derive(Debug)]
+    struct RefuseAfterSplit;
+    impl remus_heal::pipeline::operator::HealOperator for RefuseAfterSplit {
+        fn name(&self) -> &'static str {
+            "refuse_after_split"
+        }
+        fn execute(
+            &self,
+            topo: &mut Topology,
+            solid: remus_topology::SolidId,
+            _ctx: &mut remus_heal::context::HealContext,
+        ) -> Result<(remus_topology::SolidId, remus_heal::fix::FixResult), remus_heal::HealError>
+        {
+            assert_eq!(solid_vertices(topo, solid).unwrap().len(), 33);
+            Err(remus_heal::HealError::FixFailed(
+                "refused after completed vertex split".into(),
+            ))
+        }
+    }
+    for scale in [0.001, 1.0, 10.0] {
+        let mut topo = Topology::new();
+        let source = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
+        let mut faces = Vec::new();
+        for i in 0..11 {
+            let x = f64::from(i + 1) * scale;
+            let a = topo.add_vertex(Vertex::new(Point3::new(x, 0.0, 0.0), 1e-7));
+            let b = topo.add_vertex(Vertex::new(Point3::new(x, scale, 0.0), 1e-7));
+            let mut uses = Vec::new();
+            for (start, end) in [(source, a), (a, b), (b, source)] {
+                let edge = topo.add_edge(Edge::new(start, end, EdgeCurve::Line));
+                uses.push(OrientedEdge::new(edge, true));
+            }
+            let wire = topo.add_wire(Wire::new(uses, true).unwrap());
+            faces.push(topo.add_face(Face::new(
+                wire,
+                vec![],
+                FaceSurface::Plane {
+                    normal: Vec3::new(0.0, 0.0, 1.0),
+                    d: 0.0,
+                },
+            )));
+        }
+        let shell = topo.add_shell(Shell::new(faces).unwrap());
+        let solid = topo.add_solid(Solid::new(shell, vec![]));
+        let keys = remus_operations::journal_ops::solid_entity_keys(&topo, solid).unwrap();
+        let pending = begin_scoped(&mut topo, "open_vertex_fans_fixture", &[solid]).unwrap();
+        let mut draft = remus_topology::journal::EvolutionDraft::construction();
+        for &key in &keys {
+            draft.push(
+                key,
+                remus_topology::journal::EventDraft::Generated {
+                    sources: Vec::new(),
+                },
+            );
+        }
+        topo.journal_record_evolution(pending, draft).unwrap();
+        let before = remus_io::arena_io::serialize_solids(&topo, &[solid]).unwrap();
+        let journal_before = topo.journal().snapshot();
+        let mut process = remus_heal::pipeline::process::HealProcess::new();
+        process.add_step("split_common_vertex");
+        let mut probe = topo.clone();
+        let (_, reports, history) = process.execute_with_history(&mut probe, solid).unwrap();
+        assert_eq!(reports[0].actions_taken, 10);
+        assert_eq!(
+            history[0].replacements.entity_history().unwrap()[&EntityKey::vertex(source.index())]
+                .len(),
+            11
+        );
+        let error =
+            remus_operations::journal_ops::heal_pipeline_journaled(&mut topo, solid, &process)
+                .err()
+                .unwrap();
+        assert!(
+            error
+                .to_string()
+                .contains("configured healing result refused"),
+            "{error}"
+        );
+        assert_eq!(topo.journal().snapshot(), journal_before);
+        assert_eq!(
+            remus_io::arena_io::serialize_solids(&topo, &[solid]).unwrap(),
+            before
+        );
+        process
+            .registry_mut()
+            .register("refuse_after_split", Box::new(RefuseAfterSplit));
+        process.add_step("refuse_after_split");
+        let error =
+            remus_operations::journal_ops::heal_pipeline_journaled(&mut topo, solid, &process)
+                .err()
+                .unwrap();
+        assert!(
+            error
+                .to_string()
+                .contains("refused after completed vertex split"),
+            "{error}"
+        );
+        assert_eq!(topo.journal().snapshot(), journal_before);
+        assert_eq!(
+            remus_io::arena_io::serialize_solids(&topo, &[solid]).unwrap(),
+            before
+        );
+    }
+}
