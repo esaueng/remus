@@ -266,6 +266,7 @@ export const runOpenZcadConsumerRegressions = (exports) => {
   runDefeatureHistoryRegression(exports);
   runHealingHistoryRegression(exports);
   runUnifyHistoryRegression(exports);
+  runSewingHistoryRegression(exports);
   runWideSphereCapRegression(exports);
   runOffsetConeSphereRegression(exports);
   runOffsetSphereCylinderRegression(exports);
@@ -1374,4 +1375,93 @@ export const runUnifyHistoryRegression = ({ BrepKernel }) => {
     } finally { kernel.free(); restored.free(); }
   }
   console.log('ok - unify history: six direct/batch scale cells, merged/deleted references, legacy import, arena and later draft');
+};
+
+export const runSewingHistoryRegression = ({ BrepKernel }) => {
+  const kinds = [['face', 'getSolidFaces'], ['edge', 'getSolidEdges'], ['vertex', 'getSolidVertices']];
+  for (const scale of [0.001, 1, 10]) for (const batch of [false, true]) {
+    const kernel = new BrepKernel(), restored = new BrepKernel();
+    try {
+      const cube = kernel.makeBox(10 * scale, 10 * scale, 10 * scale);
+      const document = JSON.parse(new TextDecoder().decode(kernel.serializeSolids(Uint32Array.of(cube))));
+      const shell = document.shells[document.solids[document.solid_roots[0]].outer_shell];
+      const sourceEdges = [], sourceVertices = [];
+      for (const faceId of shell.faces) {
+        const face = document.faces[faceId], vertices = new Map();
+        const edges = document.wires[face.outer_wire].edges.map(use => {
+          const edge = structuredClone(document.edges[use.edge]);
+          for (const key of ['start', 'end']) {
+            if (!vertices.has(edge[key])) vertices.set(edge[key], document.vertices.push(structuredClone(document.vertices[edge[key]])) - 1);
+            edge[key] = vertices.get(edge[key]);
+          }
+          const id = document.edges.push(edge) - 1;
+          sourceEdges.push(id);
+          return { edge: id, forward: use.forward };
+        });
+        sourceVertices.push(...vertices.values());
+        face.outer_wire = document.wires.push({ edges, closed: true }) - 1;
+      }
+      // Exercise the supported legacy reader, which reconstructs coedge authority.
+      document.version = 2;
+      document.pcurves = [];
+      delete document.boundary_authority;
+      delete document.attributes;
+      // Explicit fixture construction anchors include the unsewn source entities.
+      // The repair boundary still has to independently verify the sewn solid.
+      const index = [['face', shell.faces], ['edge', sourceEdges], ['vertex', sourceVertices]]
+        .flatMap(([kind, locals]) => locals.map(local => ({ kind, local })))
+        .map((entry, ordinal) => ({ ...entry, ordinal }));
+      document.journal = { next_op: 1, next_ordinal: index.length, index,
+        entries: [{ op: 0, kind: 'disjoint_face_fixture', payload: 'Evolution', construction: true,
+          scope: index.map(entry => entry.ordinal), events: index.map(entry => [entry.ordinal, { event: 'Generated', sources: [] }]) }] };
+      const [source] = kernel.deserializeSolids(new TextEncoder().encode(JSON.stringify(document)));
+      assert.equal(kernel.getSolidFaces(source).length, 6);
+      assert.equal(kernel.getSolidEdges(source).length, 24);
+      assert.equal(kernel.getSolidVertices(source).length, 24);
+      const anchor = { solid: source, op: 0 };
+      const refs = kinds.flatMap(([kind, query]) => Array.from(kernel[query](anchor.solid), (_, index) => ({ kind, ref: kernel.makeOperationOutputRef(anchor.op, kind, index) })));
+      const edit = (active, solid) => {
+        if (!batch) return JSON.parse(active.runHealPipelineJournaled(solid, ['sew_shells']));
+        const [response] = JSON.parse(active.executeBatchV2(JSON.stringify([{ op: 'runHealPipelineJournaled', args: { solid, steps: ['sew_shells'] } }])));
+        assert.equal(response.error, undefined, JSON.stringify(response));
+        return response.ok;
+      };
+      const before = Uint8Array.from(kernel.serializeSolids(Uint32Array.of(source))), journal = kernel.journalSummary();
+      assert.throws(() => kernel.runHealPipelineJournaled(source, ['sew_shells', 'missing']));
+      assert.equal(kernel.journalSummary(), journal);
+      assert.deepEqual(kernel.serializeSolids(Uint32Array.of(source)), before);
+      const result = edit(kernel, anchor.solid);
+      assert.equal(result.verified, true);
+      assert.equal(result.steps[0].actionsTaken, 12);
+      const check = (active, solid, expected) => {
+        let deleted = 0;
+        for (const [kind, query] of kinds) {
+          const bound = new Set();
+          for (const item of refs.filter(item => item.kind === kind)) {
+            const resolution = JSON.parse(active.resolveRef(item.ref));
+            if (resolution.status === 'dangling') { deleted++; continue; }
+            assert.equal(resolution.status, 'bound', JSON.stringify(resolution));
+            assert.equal(resolution.provenance, 'construction');
+            for (const entity of resolution.entities) bound.add(entity.handle);
+          }
+          assert.deepEqual(bound, new Set(active[query](solid)));
+        }
+        assert.equal(deleted, 0);
+        assert.equal(active.validateSolid(solid), 0);
+        assert.ok(Math.abs(active.volume(solid, 0.005 * scale) - expected) < expected * 1e-6);
+        assert.equal(JSON.parse(active.meshQuality(solid, 0.005 * scale)).isWatertight, true);
+      };
+      check(kernel, result.solid, 1000 * scale ** 3);
+      restored.makeBox(1, 1, 1);
+      const [copy] = restored.deserializeSolids(kernel.serializeSolids(Uint32Array.of(result.solid)));
+      const repeated = edit(restored, copy);
+      check(restored, repeated.solid, 1000 * scale ** 3);
+      const wall = Array.from(restored.getSolidFaces(repeated.solid)).find(face => restored.getFaceNormal(face)[0] > 0.9);
+      const drafted = JSON.parse(restored.draftJournaled(repeated.solid, Uint32Array.of(wall), Float64Array.of(0, 0, 1), Float64Array.of(0, 0, 0), 5));
+      check(restored, drafted.solid, (1000 + 500 * Math.tan(5 * Math.PI / 180)) * scale ** 3);
+    } catch (error) {
+      throw new Error(`sewing history scale=${scale} batch=${batch}: ${error.message}`, { cause: error });
+    } finally { kernel.free(); restored.free(); }
+  }
+  console.log('ok - sewing history: six direct/batch scale cells, merged edge/vertex references, legacy import, arena and later draft');
 };
