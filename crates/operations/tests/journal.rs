@@ -1983,74 +1983,126 @@ fn common_vertex_split_refuses_open_fans_and_rolls_back_completed_splits() {
 }
 
 #[test]
-fn cavity_duplicate_repair_preserves_hollow_volume_and_reports_deletion() {
+fn duplicate_repair_policy_matrix() {
     for scale in [0.001, 1.0, 10.0] {
-        let mut topo = Topology::new();
-        let source = make_box(&mut topo, 10.0 * scale, 10.0 * scale, 10.0 * scale).unwrap();
-        let tool = make_box(&mut topo, 8.0 * scale, 8.0 * scale, 8.0 * scale).unwrap();
-        remus_operations::transform::transform_solid(
-            &mut topo,
-            tool,
-            &remus_math::mat::Mat4::translation(scale, scale, scale),
-        )
-        .unwrap();
-        let solid = remus_operations::boolean::boolean(
-            &mut topo,
-            remus_operations::boolean::BooleanOp::Cut,
-            source,
-            tool,
-        )
-        .unwrap();
-        let inner = topo.solid(solid).unwrap().inner_shells()[0];
-        let mut faces = topo.shell(inner).unwrap().faces().to_vec();
-        let copied = topo.face(faces[0]).unwrap().clone();
-        let duplicate = topo.add_face(copied);
-        faces.push(duplicate);
-        *topo.shell_mut(inner).unwrap() = remus_topology::shell::Shell::new(faces).unwrap();
-        let keys = remus_operations::journal_ops::solid_entity_keys(&topo, solid).unwrap();
-        let pending = begin_scoped(&mut topo, "duplicate_cavity_fixture", &[solid]).unwrap();
-        let mut draft = remus_topology::journal::EvolutionDraft::construction();
-        for &key in &keys {
-            draft.push(
-                key,
-                remus_topology::journal::EventDraft::Generated {
-                    sources: Vec::new(),
-                },
-            );
-        }
-        let anchor = topo.journal_record_evolution(pending, draft).unwrap();
-        let result = remus_operations::journal_ops::fix_shape_journaled(
-            &mut topo,
-            solid,
-            &remus_heal::fix::FixConfig::default(),
-            None,
-        )
-        .unwrap();
-        assert!(result.result.is_valid_after());
-        assert_eq!(solid_faces(&topo, solid).unwrap().len(), 12);
-        let expected = 488.0 * scale.powi(3);
-        let volume = remus_operations::measure::solid_volume(&topo, solid, 0.01 * scale).unwrap();
-        assert!((volume - expected).abs() < expected * 1e-6);
-        for (index, key) in keys
-            .iter()
-            .filter(|key| key.kind == EntityKind::Face)
-            .enumerate()
-        {
-            let resolution = resolve(
-                &topo,
-                &PersistentRef::operation_output(anchor, EntityKind::Face, index),
-            );
-            if key.index == duplicate.index() {
-                assert!(matches!(resolution, Resolution::Dangling { .. }));
-            } else {
-                assert!(matches!(
-                    resolution,
-                    Resolution::Bound {
-                        provenance: Provenance::Construction,
-                        ..
-                    }
-                ));
+        for cavity in [false, true] {
+            for duplicates in [0, 1, 3] {
+                for mode in [
+                    remus_heal::fix::FixMode::Off,
+                    remus_heal::fix::FixMode::Auto,
+                    remus_heal::fix::FixMode::On,
+                ] {
+                    qualify_duplicate_repair(scale, cavity, duplicates, mode);
+                }
             }
+        }
+    }
+}
+
+fn qualify_duplicate_repair(
+    scale: f64,
+    cavity: bool,
+    duplicates: usize,
+    mode: remus_heal::fix::FixMode,
+) {
+    let mut topo = Topology::new();
+    let source = make_box(&mut topo, 10.0 * scale, 10.0 * scale, 10.0 * scale).unwrap();
+    let tool = make_box(&mut topo, 8.0 * scale, 8.0 * scale, 8.0 * scale).unwrap();
+    remus_operations::transform::transform_solid(
+        &mut topo,
+        tool,
+        &remus_math::mat::Mat4::translation(scale, scale, scale),
+    )
+    .unwrap();
+    let solid = remus_operations::boolean::boolean(
+        &mut topo,
+        remus_operations::boolean::BooleanOp::Cut,
+        source,
+        tool,
+    )
+    .unwrap();
+    let inner = if cavity {
+        topo.solid(solid).unwrap().inner_shells()[0]
+    } else {
+        topo.solid(solid).unwrap().outer_shell()
+    };
+    let mut faces = topo.shell(inner).unwrap().faces().to_vec();
+    let copied = topo.face(faces[0]).unwrap().clone();
+    let removed: Vec<_> = (0..duplicates)
+        .map(|_| topo.add_face(copied.clone()))
+        .collect();
+    faces.extend(removed.iter().copied());
+    *topo.shell_mut(inner).unwrap() = remus_topology::shell::Shell::new(faces).unwrap();
+    let keys = remus_operations::journal_ops::solid_entity_keys(&topo, solid).unwrap();
+    let pending = begin_scoped(&mut topo, "duplicate_cavity_fixture", &[solid]).unwrap();
+    let mut draft = remus_topology::journal::EvolutionDraft::construction();
+    for &key in &keys {
+        draft.push(
+            key,
+            remus_topology::journal::EventDraft::Generated {
+                sources: Vec::new(),
+            },
+        );
+    }
+    let anchor = topo.journal_record_evolution(pending, draft).unwrap();
+    let before = remus_io::arena_io::serialize_solids(&topo, &[solid]).unwrap();
+    let journal_before = topo.journal().snapshot();
+    let config = remus_heal::fix::FixConfig {
+        fix_duplicate_faces: mode,
+        ..Default::default()
+    };
+    let outcome =
+        remus_operations::journal_ops::fix_shape_journaled(&mut topo, solid, &config, None);
+    if mode == remus_heal::fix::FixMode::Off && duplicates > 0 {
+        assert!(
+            matches!(
+                outcome,
+                Err(remus_operations::OperationsError::ConfiguredHealingValidationFailed { .. })
+            ),
+            "unexpected outcome: {:?}",
+            outcome.as_ref().err()
+        );
+        assert_eq!(topo.journal().snapshot(), journal_before);
+        assert_eq!(
+            remus_io::arena_io::serialize_solids(&topo, &[solid]).unwrap(),
+            before
+        );
+        return;
+    }
+    let result = outcome.unwrap();
+    assert!(result.result.is_valid_after());
+    let count: usize = result
+        .result
+        .fixing
+        .actions
+        .iter()
+        .filter(|action| action.kind == remus_heal::fix::RepairActionKind::DuplicateFaceRemoved)
+        .map(|action| action.count)
+        .sum();
+    assert_eq!(count, duplicates);
+    assert_eq!(solid_faces(&topo, solid).unwrap().len(), 12);
+    let expected = 488.0 * scale.powi(3);
+    let volume = remus_operations::measure::solid_volume(&topo, solid, 0.01 * scale).unwrap();
+    assert!((volume - expected).abs() < expected * 1e-6);
+    for (index, key) in keys
+        .iter()
+        .filter(|key| key.kind == EntityKind::Face)
+        .enumerate()
+    {
+        let resolution = resolve(
+            &topo,
+            &PersistentRef::operation_output(anchor, EntityKind::Face, index),
+        );
+        if removed.iter().any(|face| key.index == face.index()) {
+            assert!(matches!(resolution, Resolution::Dangling { .. }));
+        } else {
+            assert!(matches!(
+                resolution,
+                Resolution::Bound {
+                    provenance: Provenance::Construction,
+                    ..
+                }
+            ));
         }
     }
 }

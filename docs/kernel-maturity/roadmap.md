@@ -567,10 +567,13 @@ refuses a duplicate removal that would also remove the same face identity from
 another shell. The existing same-winding, straight-edge, unperforated-face
 eligibility and tolerances are unchanged.
 
-The failing cavity regression now repairs one duplicate. A three-scale hollow
-box produced by a contained cut passes verified journaled repair, retains its
-material volume, resolves surviving face references, and records the duplicate
-as deleted. Shared-identity refusal and all 151 healing tests pass. All 4,949
+The failing cavity regression now repairs one duplicate. A 54-cell native matrix
+crosses three scales, outer/cavity shells, zero/one/three duplicate faces, and
+Off/Auto/On policies. Accepted repairs retain material volume, disclose exact
+duplicate counts, resolve surviving face references, and record deletions. Off
+with duplicates produces a typed validation refusal and byte-identical arena
+and journal rollback. All 26 journal tests and scoped Clippy pass after this
+expansion. Shared-identity refusal and all 151 healing tests pass. All 4,949
 workspace tests pass (13 skipped); one harness leak warning does not reproduce
 in isolation. Optimized kernel/translator builds, smoke tests, installed-package
 consumers, lint, boundaries, census, rustdoc, doctests, and mdBook pass. B17 stays
