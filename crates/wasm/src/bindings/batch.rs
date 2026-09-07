@@ -276,6 +276,8 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "loftSmooth"
         | "circularPattern"
         | "gridPattern"
+        | "fixShapeWithConfigJournaled"
+        | "runHealPipelineJournaled"
         | "defeatureJournaled"
         | "defeature"
         | "copyWire"

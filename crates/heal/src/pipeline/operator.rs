@@ -37,4 +37,22 @@ pub trait HealOperator: std::fmt::Debug + Send + Sync {
         solid_id: SolidId,
         ctx: &mut HealContext,
     ) -> Result<(SolidId, FixResult), HealError>;
+
+    /// Execute a step and retain its explicit replacement records.
+    ///
+    /// Operators using a private context can override this without changing
+    /// the working context shared with subsequent pipeline steps.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::execute`].
+    fn execute_with_history(
+        &self,
+        topo: &mut Topology,
+        solid_id: SolidId,
+        ctx: &mut HealContext,
+    ) -> Result<(SolidId, FixResult, crate::reshape::ReShape), HealError> {
+        let (solid, report) = self.execute(topo, solid_id, ctx)?;
+        Ok((solid, report, ctx.reshape.clone()))
+    }
 }

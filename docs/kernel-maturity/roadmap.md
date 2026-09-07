@@ -385,6 +385,44 @@ circular rims use the same verified path.
 This qualification covers circular rims with or without one doubled pole
 seam; arbitrary non-circular trims are not included.
 
+
+### Healing entity history — qualification in progress
+
+The next B18 slice adds native `fix_shape_journaled` and
+`heal_pipeline_journaled`, plus direct/batch `fixShapeWithConfigJournaled`
+and `runHealPipelineJournaled`. Both JS calls return the existing verified
+repair report with an added journal `op`. Batch arguments are `solid` plus
+`configJson` (a JSON string) or `steps` (an array of operator names).
+
+Explicit `ReShape` replacements compose over each pipeline step's actual
+input/output entity scope. Identity survives only while the same entity is
+still reachable. Splits and converging replacements compose; explicit removal
+records deletion. Missing targets, unrecorded replacements, and newly created
+entities without construction records stay unresolved. Contradictory live-source
+claims and replacement cycles refuse transactionally. Repair reports, both
+validation gates, operator tolerances, and rollback remain authoritative.
+
+This does not complete the healing defect matrix or all operator attribution.
+`unify_same_domain`, `sew_shells`, `remove_internal_wires`, and
+`split_common_vertex` do not currently expose complete replacement records;
+their untracked changes remain unresolved. Geometry conversions preserve
+surviving identities. `fix_shape` exposes its private repair context separately
+so composing history does not change another operator's working tolerance.
+
+Native witnesses cover merged vertices, multi-step repair, later-step rollback,
+split/merge/delete composition, unknown history, and cycle refusal. Direct/batch
+binding witnesses preserve all entity references across three scales, arena
+restore into a populated kernel, and subsequent draft. The broad all-features
+run passes 4,926 tests (13 skipped). A subsequent compatibility fix restores the
+ordinary pipeline's original custom-operator dispatch; its 21 journal tests and
+full-workspace Clippy pass. Both final optimized packages pass smoke and
+installed-tarball consumer suites, including 12 damaged-box repair cells with
+reported actions, eight repaired vertices, persistent references, arena/STEP,
+and later draft. Final all-features affected qualification passes 113 tests. One process-leak
+warning in `model_owns_context_topology_and_journal` does not reproduce in its
+isolated check; the broad run has no leak warnings. This slice is not yet a
+merged claim.
+
 ## §B Bridge backlog — owned by neither program
 
 Ready items from the stabilization-plan residue, the capability-matrix
