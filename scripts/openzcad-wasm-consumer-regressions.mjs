@@ -262,6 +262,7 @@ export const runOpenZcadConsumerRegressions = (exports) => {
   runOffsetConeSphereRegression(exports);
   runOffsetSphereCylinderRegression(exports);
   runOffsetTorusSphereRegression(exports);
+  runBooleanScaleRegression(exports);
 };
 
 export const runWideSphereCapRegression = ({ BrepKernel, RemusIo }) => {
@@ -389,4 +390,33 @@ export const runOffsetTorusSphereRegression = ({ BrepKernel }) => {
     assert.ok(Math.abs(volume - expected) < expected * 0.001, `${operation}: ${volume} vs ${expected}`);
   }
   console.log('ok - offset torus/sphere: exact rotated fuse, cut, intersect against annulus-overlap oracle');
+};
+
+export const runBooleanScaleRegression = ({ BrepKernel }) => {
+  for (let exponent = -5; exponent <= 6; exponent += 1) {
+    const scale = 10 ** exponent;
+    for (const placed of [false, true]) {
+      for (const [operation, expected] of [['fuse', 1.16], ['cut', 0.84], ['intersect', 0.16]]) {
+        const kernel = new BrepKernel();
+        const blank = kernel.makeBox(scale, scale, scale);
+        const tool = kernel.makeBox(0.4 * scale, 0.4 * scale, 2 * scale);
+        kernel.transformSolid(tool, new Float64Array([1, 0, 0, 0.3 * scale, 0, 1, 0, 0.3 * scale, 0, 0, 1, -0.5 * scale, 0, 0, 0, 1]));
+        if (placed) {
+          const c = Math.cos(0.37);
+          const s = Math.sin(0.37);
+          const matrix = new Float64Array([c, 0, s, 17 * scale, 0, 1, 0, -23 * scale, -s, 0, c, 31 * scale, 0, 0, 0, 1]);
+          kernel.transformSolid(blank, matrix);
+          kernel.transformSolid(tool, matrix);
+        }
+        const result = kernel.booleanWithQuality(operation, blank, tool, true);
+        const label = `${operation} scale=${scale} placed=${placed}`;
+        assert.equal(result.quality, 'exact', label);
+        assert.equal(kernel.validateSolid(result.solid), 0, label);
+        const volume = kernel.volume(result.solid, 0.01 * scale) / scale ** 3;
+        assert.ok(Math.abs(volume - expected) / expected < 1e-6, `${label}: ${volume} vs ${expected}`);
+        kernel.free();
+      }
+    }
+  }
+  console.log('ok - 72 exact through-tool boolean cells across scales 1e-5..1e6 and rigid placement');
 };
