@@ -2649,6 +2649,14 @@ export class BrepKernel {
      */
     moveFaces(solid: number, faces: Uint32Array, distance: number): number;
     /**
+     * Move faces with construction history.
+     *
+     * Planar re-limitation and coaxial
+     * bore moves include edge and vertex history; blend-aware moves are faces-only.
+     * Returns JSON `{"solid", "op"}`.
+     */
+    moveFacesJournaled(solid: number, faces: Uint32Array, distance: number): string;
+    /**
      * Sweep through multiple section profiles along a spine, lofting the
      * rotation-minimizing-frame-placed profiles.
      *

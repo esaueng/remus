@@ -217,6 +217,7 @@ export const brepkernel_meshQuality: (a: number, b: number, c: number, d: number
 export const brepkernel_minkowskiSum: (a: number, b: number, c: number) => [number, number, number];
 export const brepkernel_mirror: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number];
 export const brepkernel_moveFaces: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
+export const brepkernel_moveFacesJournaled: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
 export const brepkernel_multiSectionSweep: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number) => [number, number, number];
 export const brepkernel_mutualTrimSheets: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
 export const brepkernel_new: () => number;
