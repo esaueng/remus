@@ -4384,25 +4384,58 @@ pub(super) fn tessellate_nonplanar_snap(
     merged: &mut TriangleMesh,
     point_to_global: &mut DetHashMap<(i64, i64, i64), u32>,
 ) -> Result<(), crate::OperationsError> {
-    let mut face_mesh = super::face::tessellate_with_uvs_floor(
-        topo,
-        face_id,
-        deflection,
-        angular_tol,
-        circle_floor,
-    )
-    .map(|uv| uv.mesh)?;
+    let shared_cylinder = matches!(face_data.surface(), FaceSurface::Cylinder(_))
+        && !face_data.inner_wires().is_empty();
+    let mut face_mesh = if let FaceSurface::Cylinder(cylinder) = face_data.surface()
+        && shared_cylinder
+    {
+        // Preserve seam splits from the shared pool instead of independently
+        // interpolating an off-curve crossing in the cylinder's UV chart.
+        let points = remus_topology::explorer::face_edges(topo, face_id)?
+            .into_iter()
+            .filter_map(|edge| {
+                edge_global_indices
+                    .get(&edge.index())
+                    .map(|ids| (edge.index(), ids))
+            })
+            .map(|(edge, ids)| {
+                (
+                    edge,
+                    ids.iter()
+                        .map(|&id| merged.positions[id as usize])
+                        .collect(),
+                )
+            })
+            .collect();
+        super::planar::tessellate_revolved_with_holes(
+            topo,
+            face_data,
+            cylinder,
+            cylinder.radius(),
+            deflection,
+            angular_tol,
+            Some(&points),
+        )?
+        .mesh
+    } else {
+        super::face::tessellate_with_uvs_floor(
+            topo,
+            face_id,
+            deflection,
+            angular_tol,
+            circle_floor,
+        )?
+        .mesh
+    };
 
-    // `tessellate()` already applies the `is_reversed` flip. The caller
-    // `tessellate_face_with_shared_edges` will apply its own flip, so undo
-    // the one from `tessellate()` to avoid a double-flip.
-    if face_data.is_reversed() {
-        let tri_count = face_mesh.indices.len() / 3;
-        for t in 0..tri_count {
-            face_mesh.indices.swap(t * 3 + 1, t * 3 + 2);
+    // The standalone face path applies reversal; the shared cylinder path
+    // and our caller leave that flip to tessellate_face_with_shared_edges.
+    if face_data.is_reversed() && !shared_cylinder {
+        for triangle in face_mesh.indices.chunks_exact_mut(3) {
+            triangle.swap(1, 2);
         }
-        for n in &mut face_mesh.normals {
-            *n = -*n;
+        for normal in &mut face_mesh.normals {
+            *normal = -*normal;
         }
     }
 
