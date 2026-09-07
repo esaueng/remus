@@ -1270,7 +1270,7 @@ pub(super) fn tessellate_face_with_shared_edges(
                         matches!(
                             e.curve(),
                             EdgeCurve::Line | EdgeCurve::Circle(_) | EdgeCurve::NurbsCurve(_)
-                        )
+                        ) || matches!(e.curve(),EdgeCurve::Ellipse(ellipse) if (ellipse.semi_major()-ellipse.semi_minor()).abs() <= ellipse.semi_major()*1e-10)
                     })
                 });
             (lc, be)
