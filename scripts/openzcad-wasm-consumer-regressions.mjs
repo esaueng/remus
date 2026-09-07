@@ -263,6 +263,7 @@ export const runOpenZcadConsumerRegressions = (exports) => {
   runOffsetSphereCylinderRegression(exports);
   runOffsetTorusSphereRegression(exports);
   runTorusNotchRegression(exports);
+  runTangencyBandRegression(exports);
   runBooleanScaleRegression(exports);
   runAnisotropicBooleanRegression(exports);
 };
@@ -516,4 +517,83 @@ export const runTorusNotchRegression = ({ BrepKernel }) => {
     }
   }
   console.log('ok - torus notch: 18 exact scale/placement cells through direct and batch APIs');
+};
+
+export const runTangencyBandRegression = ({ BrepKernel }) => {
+  const outcomes = new Map();
+  const totals = { exact: 0, refused: 0 };
+  for (const batch of [false, true]) for (const scale of [0.1, 1, 10]) {
+    for (const placed of [false, true]) for (const operation of ['fuse', 'cut', 'intersect']) {
+      for (const epsilon of [-1e-3, -1e-5, -1e-7, -1e-9, 0, 1e-9, 1e-7, 1e-5, 1e-3]) {
+        const kernel = new BrepKernel();
+        const label = `${operation} epsilon=${epsilon} scale=${scale} placed=${placed}`;
+        try {
+          const half = 4 + epsilon;
+          const cylinder = kernel.makeCylinder(4 * scale, 12 * scale);
+          const box = kernel.makeBox(2 * half * scale, 2 * half * scale, 8 * scale);
+          kernel.transformSolid(box, new Float64Array([1,0,0,-half*scale,0,1,0,-half*scale,0,0,1,6*scale,0,0,0,1]));
+          const c = Math.cos(0.37), s = Math.sin(0.37);
+          if (placed) for (const solid of [cylinder, box]) {
+            kernel.transformSolid(solid, new Float64Array([c,0,s,17*scale,0,1,0,-23*scale,-s,0,c,31*scale,0,0,0,1]));
+          }
+          const before = Uint8Array.from(kernel.serializeSolids(Uint32Array.of(cylinder, box)));
+          let result, refusal;
+          if (batch) {
+            const [response] = JSON.parse(kernel.executeBatchV2(JSON.stringify([{
+              op: 'booleanWithQuality', args: { operation, solidA: cylinder, solidB: box, exactOnly: true },
+            }])));
+            if (response.error) {
+              assert.equal(response.error.category, 'quality_refused', label);
+              assert.equal(response.error.details.kernelCode, 'exact_only_unattainable', label);
+              refusal = true;
+            } else result = response.ok;
+          } else {
+            try { result = kernel.booleanWithQuality(operation, cylinder, box, true); }
+            catch (error) {
+              assert.match(String(error), /exact-only policy: the exact boolean pipeline could not produce this result/, label);
+              refusal = true;
+            }
+          }
+          const outcome = refusal ? 'refused' : 'exact';
+          if (batch) assert.equal(outcome, outcomes.get(label), `${label}: direct/batch outcome`);
+          else outcomes.set(label, outcome);
+          totals[outcome] += 1;
+          if (refusal) {
+            assert.ok(epsilon !== 0 && Math.abs(epsilon) <= 1e-7, `${label}: mandatory exact cell refused`);
+            assert.deepEqual(kernel.serializeSolids(Uint32Array.of(cylinder, box)), before, `${label}: rollback`);
+            continue;
+          }
+          assert.equal(result.quality, 'exact', label);
+          assert.equal(kernel.validateSolid(result.solid), 0, label);
+          for (const face of kernel.getSolidFaces(result.solid)) {
+            assert.ok(['plane', 'cylinder'].includes(kernel.getSurfaceType(face)), `${label}: analytic carrier`);
+          }
+          const cap = epsilon < 0 ? 16 * Math.acos(half / 4) - half * Math.sqrt(16 - half * half) : 0;
+          const overlap = 6 * (16 * Math.PI - 4 * cap);
+          const expected = (operation === 'fuse' ? 192 * Math.PI + 32 * half * half - overlap
+            : operation === 'cut' ? 192 * Math.PI - overlap : overlap) * scale ** 3;
+          const volume = kernel.volume(result.solid, 0.005 * scale);
+          const budget = Math.max(expected * 1e-8, 512 * scale ** 2 * 1e-7);
+          assert.ok(Math.abs(volume - expected) <= budget, `${label}: volume ${volume} vs ${expected}`);
+          for (const [z, inside] of [[3, operation !== 'intersect'], [9, operation !== 'cut'], [13, operation === 'fuse']]) {
+            const point = placed ? [s*z*scale+17*scale, -23*scale, c*z*scale+31*scale] : [0,0,z*scale];
+            assert.equal(kernel.classifyPoint(result.solid, ...point, 1e-7), inside ? 'inside' : 'outside', `${label}: material z=${z}`);
+          }
+          if (epsilon * scale < -16e-7) {
+            const middle = (4 + half) * 0.5 * scale;
+            for (const [x, y] of [[middle,0],[-middle,0],[0,middle],[0,-middle]]) {
+              const z = 9 * scale;
+              const point = placed ? [c*x+s*z+17*scale, y-23*scale, -s*x+c*z+31*scale] : [x,y,z];
+              assert.equal(kernel.classifyPoint(result.solid, ...point, 1e-7), operation === 'intersect' ? 'outside' : 'inside', `${label}: thin cap ${x},${y}`);
+            }
+          }
+          for (const deflection of [0.005, 0.02]) {
+            const quality = JSON.parse(kernel.meshQuality(result.solid, deflection * scale));
+            assert.equal(quality.isWatertight, true, `${label}: mesh ${JSON.stringify(quality)}`);
+          }
+        } finally { kernel.free(); }
+      }
+    }
+  }
+  console.log(`ok - tangency direct/batch: ${totals.exact} exact, ${totals.refused} typed-policy refusals with rollback`);
 };

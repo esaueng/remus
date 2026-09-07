@@ -110,6 +110,83 @@ in a clean four-test rerun. An idle performance comparison remains pending
 because other browser jobs caused drift in the unchanged parent benchmark;
 this follow-up is not integrated.
 
+P-Class 2.7 is being qualified on `codex/tangency-band-qualification`.
+The unintegrated `pclass_tangency_band` regression covers 27 operation/offset
+groups, each at three scales and two placements. The current exact-or-typed
+contract passes all 162 cells: 120 verified exact results and 42
+`ExactOnlyUnattainable` refusals. Refusals are permitted only in the named
+nonzero 1e-7/1e-9 offset groups and preserve operand arena bytes and topology
+counts. Exact tangency and the larger offset groups must succeed. Every success
+checks strict topology, analytic carriers, planar circle-carrier residuals,
+independent circular-cap volume, material probes, and welded meshes at two
+deflections. The 42 refusals remain unqualified for exact construction; this
+matrix alone does not close the full tangency milestone.
+
+Retained candidates address distinct reproduced defects:
+
+- Use the transform's linear matrix for curve directions, preserving Circle
+  carriers under translated rotations.
+- Tighten straight-edge carrier and exact arrangement T-junction tests, and
+  coincident-vertex welding, without relaxing geometric acceptance.
+- Split co-endpoint section arcs against straight chords and subdivide cylinder
+  rim arrangements; keep selected planar regions inside their source polygon.
+- Reject circular section PaveBlocks that leave the receiving plane, including
+  extrema of their trimmed carrier rather than endpoints alone.
+- Use the guarded analytic face-volume route before whole-solid mesh fallback.
+- Exclude interior meshing-grid points on shared outer boundaries and route
+  stepped cylindrical faces through the boundary-aware CDT mesher.
+- Move full cylindrical-band classification samples off isolated plane contacts.
+- Share tangent circle samples with straight edges on the same planar face
+  before triangulation. This closes the six-edge exact-contact Fuse mesh gap
+  across all six scale/placement cases at both tested deflections.
+
+- Require the inner-wire term in both the pre-heal and final Euler acceptance
+  gates. A raw Euler count of two no longer admits a malformed holed face.
+- Keep CDT's collinearity distance at its existing vertex resolution rather
+  than growing it with constraint length. This preserves a distinct nearby
+  circle sample and the thin triangle between it and the straight boundary.
+  The new unit fails on the old predicate; all 21 CDT tests pass with the fix.
+
+Current focused checks pass the 162-cell tangency contract, 193 boolean units,
+eight corner-placement cases, eight parallel-boss cases, the cavity and
+multi-region checks, six import checks, the captured L-shaped lip cut, and
+three topsocket regressions. The cylinder boundary integral uses actual arc
+sweeps, including major arcs and stepped heights; its new measurement dispatch
+is restricted to planar/cylindrical bodies. The imported fillet plate uses an
+independent rounded-rectangle volume instead of the old chorded reference.
+The historical weld allowance is retained at NURBS surface/curve vertices;
+analytic-only vertices use the narrow merge band.
+
+The cone/box census regression is corrected by using the actual merge tolerance
+for line-refinement endpoint exclusion; its exact result passes independent
+volume and two-deflection mesh checks. All four cone/sphere qualification tests
+now pass after periodic-pocket clipping preserves exact chart intersections
+when deduplicating nearby fitted samples. This removes the seam slit exposed
+by the stricter CDT predicate.
+
+The pre-orientation-follow-up Clippy, layer boundaries, deterministic complexity
+guard, 52-row census, and both WASM packages passed. Each smoke/installed-package
+run checked 240 exact tangency results and 84 typed refusals through direct/batch
+APIs with rollback and matching outcomes. The broad native run completed with 4,868 passes, five failures, and 13 skips.
+Its measurement regressions were: a captured lip band, two analytic extrusions, and two
+partial-revolve checks. The cylinder integral now derives sweep handedness from
+the circle basis and normalizes the chart region independently of face reversal.
+Previously supported non-line/circle trims retain their existing measurement
+route; the new refinement requires authoritative line/circle boundaries.
+All 33 extrusion tests, the lip-band regression, all three revolve-orientation
+tests, and the 162-cell tangency matrix pass after these corrections. Refreshed
+Clippy, the 52-row census, and both rebuilt WASM packages with smoke/installed
+consumers pass; the corrected full-workspace run is in progress. No PR exists for this slice yet.
+
+Scheduled proof status checked during this qualification: Fuzz Smoke and Corpus
+Gauntlet passed on `cfb5c29e`; [Mutation Testing run 34017122331](https://github.com/esaueng/remus/actions/runs/34017122331)
+passed its unmutated baseline but exhausted the 150-minute budget with nine
+missed mutants and incomplete coverage. The missed cases span healing totals,
+sphere-loop area, fillets, loft bands, wire alignment, NURBS pole tessellation,
+and benchmark surface helpers. They require separate qualification follow-up;
+this tangency slice does not claim to clear that scheduled proof gate.
+
+
 OpenZCAD consumer-roadmap K-S4 (`approx_census` CI enforcement): **done (PR
 #140)**. Its authoritative disposition line remains in planning PR
 esaueng/OpenZCAD#140 so the two repositories retain separate commit streams.
