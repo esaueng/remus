@@ -110,7 +110,8 @@ in a clean four-test rerun. An idle performance comparison remains pending
 because other browser jobs caused drift in the unchanged parent benchmark;
 this follow-up is not integrated.
 
-P-Class 2.7 is being qualified on `codex/tangency-band-qualification`.
+P-Class 2.7 has bounded qualification in [PR #307](https://github.com/esaueng/remus/pull/307),
+which remains unintegrated.
 The unintegrated `pclass_tangency_band` regression covers 27 operation/offset
 groups, each at three scales and two placements. The current exact-or-typed
 contract passes all 162 cells: 120 verified exact results and 42
@@ -122,7 +123,7 @@ independent circular-cap volume, material probes, and welded meshes at two
 deflections. The 42 refusals remain unqualified for exact construction; this
 matrix alone does not close the full tangency milestone.
 
-Retained candidates address distinct reproduced defects:
+The changes address distinct reproduced defects:
 
 - Use the transform's linear matrix for curve directions, preserving Circle
   carriers under translated rotations.
@@ -164,19 +165,18 @@ now pass after periodic-pocket clipping preserves exact chart intersections
 when deduplicating nearby fitted samples. This removes the seam slit exposed
 by the stricter CDT predicate.
 
-The pre-orientation-follow-up Clippy, layer boundaries, deterministic complexity
-guard, 52-row census, and both WASM packages passed. Each smoke/installed-package
-run checked 240 exact tangency results and 84 typed refusals through direct/batch
-APIs with rollback and matching outcomes. The broad native run completed with 4,868 passes, five failures, and 13 skips.
-Its measurement regressions were: a captured lip band, two analytic extrusions, and two
-partial-revolve checks. The cylinder integral now derives sweep handedness from
-the circle basis and normalizes the chart region independently of face reversal.
-Previously supported non-line/circle trims retain their existing measurement
-route; the new refinement requires authoritative line/circle boundaries.
-All 33 extrusion tests, the lip-band regression, all three revolve-orientation
-tests, and the 162-cell tangency matrix pass after these corrections. Refreshed
-Clippy, the 52-row census, and both rebuilt WASM packages with smoke/installed
-consumers pass; the corrected full-workspace run is in progress. No PR exists for this slice yet.
+Validation: 4,873 native tests passed, 13 skipped. One passing captured
+halfsockets test reported a process-leak warning; its isolated rerun passed.
+All-target/all-feature Clippy, formatting, layer boundaries, the deterministic
+complexity guard, and the unchanged 52-row census pass. Both rebuilt WASM
+packages pass smoke and installed-package consumer tests, each checking 240
+exact tangency results and 84 typed refusals with direct/batch parity and
+operand rollback. The cylinder integral derives sweep handedness from the
+circle basis and normalizes wire traversal independently of face reversal;
+existing non-line/circle measurement dispatch remains available. All 33
+extrusion tests, the captured lip-band check, and all three revolve-orientation
+tests pass with those contracts. Hosted checks and exact-head review remain
+merge gates; these results do not claim general exact tangency or deployment.
 
 Scheduled proof status checked during this qualification: Fuzz Smoke and Corpus
 Gauntlet passed on `cfb5c29e`; [Mutation Testing run 34017122331](https://github.com/esaueng/remus/actions/runs/34017122331)
