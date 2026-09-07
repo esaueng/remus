@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788782475223,
+  "lastUpdate": 1788813637800,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -17575,6 +17575,222 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 87328,
             "range": "± 443",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3dde0179fdb3dad22a676fe6ea3d95ed59a0f645",
+          "message": "fix(kernel): preserve NURBS section anchors across scales (#304)\n\n* fix(kernel): qualify offset sphere-cylinder boolean seams\n\nSigned-off-by: Peter <171875562+petergstfsn@users.noreply.github.com>\n\n* fix(kernel): qualify offset torus-sphere boolean seams\n\nSigned-off-by: Peter <171875562+petergstfsn@users.noreply.github.com>\n\n* fix(kernel): preserve boolean material across model scales\n\nSigned-off-by: Peter <171875562+petergstfsn@users.noreply.github.com>\n\n* fix(kernel): use length units for straight-edge split bands\n\nSigned-off-by: Peter <171875562+petergstfsn@users.noreply.github.com>\n\n* test(kernel): qualify restored large-scale tangent booleans\n\nSigned-off-by: Peter <171875562+petergstfsn@users.noreply.github.com>\n\n* fix(kernel): retain small tools in anisotropic booleans\n\nSigned-off-by: Peter <171875562+petergstfsn@users.noreply.github.com>\n\n* fix(kernel): measure analytic arc split bands in model space\n\nSigned-off-by: Peter <171875562+petergstfsn@users.noreply.github.com>\n\n* fix(kernel): preserve NURBS section anchors across scales\n\nSigned-off-by: Peter <171875562+petergstfsn@users.noreply.github.com>\n\n* fix(kernel): reconcile planar NURBS coincidence partitions\n\nSigned-off-by: Peter <171875562+petergstfsn@users.noreply.github.com>\n\n* docs: drop duplicated roadmap paragraph from the merge\n\n---------\n\nSigned-off-by: Peter <171875562+petergstfsn@users.noreply.github.com>",
+          "timestamp": "2026-09-07T16:33:37-04:00",
+          "tree_id": "07d72e39bbce1e6bee0765961c4e72cd8ffec5dc",
+          "url": "https://github.com/esaueng/remus/commit/3dde0179fdb3dad22a676fe6ea3d95ed59a0f645"
+        },
+        "date": 1788813637032,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1145118,
+            "range": "± 17393",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1248648,
+            "range": "± 24202",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 26576,
+            "range": "± 191",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 1059184,
+            "range": "± 15238",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 17530409,
+            "range": "± 147316",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 30338192,
+            "range": "± 342097",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 39,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 108,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 65,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 230,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 155,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 840,
+            "range": "± 17",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 164,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 355,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 233,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 536,
+            "range": "± 13",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 705,
+            "range": "± 16",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 3449,
+            "range": "± 110",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 17,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 37,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 62,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 61,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 556900,
+            "range": "± 13110",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 11643980,
+            "range": "± 224878",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 169242,
+            "range": "± 3831",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 650482,
+            "range": "± 19227",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 126905,
+            "range": "± 2457",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 925877,
+            "range": "± 9007",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 10676616,
+            "range": "± 53717",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 762286,
+            "range": "± 9845",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 1101908,
+            "range": "± 15684",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 85793,
+            "range": "± 1238",
             "unit": "ns/iter"
           }
         ]
