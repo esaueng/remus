@@ -1102,11 +1102,10 @@ fn sphere_loop_interior(surface: &FaceSurface, edges: &[OrientedPCurveEdge]) -> 
 
 /// Interior point of a contractible closed loop on a sphere.
 ///
-/// Averaging samples around the loop cancels its in-plane component and leaves
-/// the direction of the spherical cap it bounds. Projecting that direction
-/// back onto the sphere avoids using the section circle's Euclidean centre,
-/// which lies inside the solid and can sit on the opposing face's boundary.
-fn sphere_closed_loop_interior(
+/// The average boundary direction places the chart pole away from the cap.
+/// Choosing a contained point in that chart also handles concave caps, where
+/// projecting the average direction alone can leave the bounded region.
+pub(super) fn sphere_closed_loop_interior(
     surface: &FaceSurface,
     edges: &[OrientedPCurveEdge],
 ) -> Option<Point3> {
@@ -1120,6 +1119,7 @@ fn sphere_closed_loop_interior(
     }
 
     let mut direction = Vec3::new(0.0, 0.0, 0.0);
+    let mut samples = Vec::new();
     for edge in edges {
         for sample in 0..32 {
             let fraction = (f64::from(sample) + 0.5) / 32.0;
@@ -1130,11 +1130,32 @@ fn sphere_closed_loop_interior(
                 edge.traversal_domain(),
                 fraction,
             );
-            direction += (point - sphere.center()).normalize().ok()?;
+            let radial = (point - sphere.center()).normalize().ok()?;
+            direction += radial;
+            samples.push(radial);
         }
     }
     let direction = direction.normalize().ok()?;
-    Some(sphere.center() + direction * sphere.radius())
+    // Longitude charts fold around the pole. A stereographic chart preserves
+    // this loop's interior, including concave caps whose average lies outside.
+    let frame = PlaneFrame::from_normal_and_point(direction, sphere.center());
+    let mut polygon = Vec::with_capacity(samples.len());
+    for sample in samples {
+        let denominator = 1.0 + sample.dot(direction);
+        if denominator <= 1e-12 {
+            return None;
+        }
+        polygon.push(frame.project(sphere.center() + sample * (1.0 / denominator)));
+    }
+    let point = super::super::classify_2d::sample_interior_point(&polygon);
+    if !super::super::classify_2d::point_in_polygon_2d(point, &polygon) {
+        return None;
+    }
+    let radial_squared = point.x() * point.x() + point.y() * point.y();
+    let planar = frame.evaluate(point.x(), point.y()) - sphere.center();
+    let radial =
+        (planar * 2.0 + direction * (1.0 - radial_squared)) * (1.0 / (1.0 + radial_squared));
+    Some(sphere.center() + radial * sphere.radius())
 }
 
 // ---------------------------------------------------------------------------

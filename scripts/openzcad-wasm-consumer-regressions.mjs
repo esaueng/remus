@@ -260,6 +260,7 @@ export const runOpenZcadConsumerRegressions = (exports) => {
   runOpenZcadCylindricalFaceResizeRegression(exports);
   runWideSphereCapRegression(exports);
   runOffsetConeSphereRegression(exports);
+  runOffsetSphereCylinderRegression(exports);
 };
 
 export const runWideSphereCapRegression = ({ BrepKernel, RemusIo }) => {
@@ -330,4 +331,31 @@ export const runOffsetConeSphereRegression = ({ BrepKernel }) => {
     );
   }
   console.log('ok - offset cone/sphere: exact fuse, cut, intersect against disk-overlap oracle');
+};
+
+export const runOffsetSphereCylinderRegression = ({ BrepKernel }) => {
+  // Independent horizontal-disk overlap integral, also pinned by the native matrix.
+  const overlap = 294.1884259241949;
+  for (const [operation, expected] of [
+    ['fuse', (288 + 180) * Math.PI - overlap],
+    ['cut', 288 * Math.PI - overlap],
+    ['intersect', overlap],
+  ]) {
+    const kernel = new BrepKernel();
+    const sphere = kernel.makeSphere(6, 24);
+    const cylinder = kernel.makeCylinder(3, 20);
+    kernel.transformSolid(
+      cylinder,
+      new Float64Array([1, 0, 0, 2, 0, 1, 0, 0, 0, 0, 1, -10, 0, 0, 0, 1]),
+    );
+    const result = kernel.booleanWithQuality(operation, sphere, cylinder, true);
+    assert.equal(result.quality, 'exact', `${operation}: exact seam result`);
+    assert.equal(kernel.validateSolid(result.solid), 0, `${operation}: valid shell`);
+    const volume = kernel.volume(result.solid, 0.01);
+    assert.ok(
+      Math.abs(volume - expected) < expected * 0.001,
+      `${operation}: ${volume} vs ${expected}`,
+    );
+  }
+  console.log('ok - offset sphere/cylinder: exact fuse, cut, intersect against disk-overlap oracle');
 };
