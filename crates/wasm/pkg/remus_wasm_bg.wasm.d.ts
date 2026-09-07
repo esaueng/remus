@@ -64,6 +64,7 @@ export const brepkernel_cutWithEntityEvolution: (a: number, b: number, c: number
 export const brepkernel_cutWithEvolution: (a: number, b: number, c: number) => [number, number, number];
 export const brepkernel_cutWithOptions: (a: number, b: number, c: number, d: number) => [number, number, number];
 export const brepkernel_defeature: (a: number, b: number, c: number, d: number) => [number, number, number];
+export const brepkernel_defeatureJournaled: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const brepkernel_deleteSolid: (a: number, b: number) => [number, number];
 export const brepkernel_deserializeSheet: (a: number, b: number, c: number) => [number, number, number];
 export const brepkernel_deserializeSheets: (a: number, b: number, c: number) => [number, number, number, number];

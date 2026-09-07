@@ -130,6 +130,7 @@ struct SharpResult {
     solid: SolidId,
     edges: Vec<EdgeId>,
     face_map: HashMap<usize, FaceId>,
+    boundary_history: Option<Vec<(EntityKey, Option<EntityKey>)>>,
 }
 
 #[derive(Debug)]
@@ -278,6 +279,7 @@ pub(crate) fn defeature_curved_band(
     Ok(Some(crate::defeature::DefeatureOutcome {
         solid: sharp.solid,
         face_map: sharp.face_map,
+        boundary_history: sharp.boundary_history,
     }))
 }
 
@@ -1746,6 +1748,7 @@ fn heal_planar_band(
         solid: outcome.solid,
         edges,
         face_map: outcome.face_map,
+        boundary_history: outcome.boundary_history,
     })
 }
 
@@ -1919,7 +1922,13 @@ fn heal_plane_cylinder_band(
         _ => return Err(reconstruction("support classification changed during heal")),
     };
 
-    let (copy, mut face_map_indices) = crate::copy::copy_solid_with_face_map(topo, solid)?;
+    let copied_entities = crate::copy::copy_solid_with_entity_map(topo, solid)?;
+    let copy = copied_entities.solid;
+    let mut face_map_indices: HashMap<_, _> = copied_entities
+        .face_map
+        .iter()
+        .map(|(&source, face)| (source, face.index()))
+        .collect();
     let copied = |map: &HashMap<usize, usize>, source: FaceId| {
         map.get(&source.index())
             .and_then(|index| topo.face_id_from_index(*index))
@@ -2072,10 +2081,47 @@ fn heal_plane_cylinder_band(
         .into_iter()
         .filter_map(|(source, result)| topo.face_id_from_index(result).map(|face| (source, face)))
         .collect();
+    let live_edges: HashSet<_> = remus_topology::explorer::solid_edges(topo, sharp_solid)?
+        .into_iter()
+        .collect();
+    let live_vertices: HashSet<_> = remus_topology::explorer::solid_vertices(topo, sharp_solid)?
+        .into_iter()
+        .collect();
+    let plane_contact_vertex = topo.edge(*plane_contact)?.start();
+    let mut boundary_history = Vec::new();
+    for (source, copied) in copied_entities.edge_map {
+        let target = if copied == *plane_contact || copied == *cylinder_contact {
+            sharp_edge
+        } else if copied == *old_seam {
+            sharp_seam
+        } else {
+            copied
+        };
+        boundary_history.push((
+            EntityKey::edge(source),
+            live_edges
+                .contains(&target)
+                .then_some(EntityKey::edge(target.index())),
+        ));
+    }
+    for (source, copied) in copied_entities.vertex_map {
+        let target = if copied == plane_contact_vertex || copied == old_contact_vertex {
+            sharp_vertex
+        } else {
+            copied
+        };
+        boundary_history.push((
+            EntityKey::vertex(source),
+            live_vertices
+                .contains(&target)
+                .then_some(EntityKey::vertex(target.index())),
+        ));
+    }
     Ok(SharpResult {
         solid: sharp_solid,
         edges: vec![sharp_edge],
         face_map,
+        boundary_history: Some(boundary_history),
     })
 }
 
@@ -2270,10 +2316,38 @@ fn rebuild_closed_periodic_support(
     far_vertex: remus_topology::vertex::VertexId,
     far_circles: &HashSet<EdgeId>,
     axis: Vec3,
-) -> Result<(), OperationsError> {
+) -> Result<(EdgeId, Option<(EdgeId, remus_topology::VertexId)>), OperationsError> {
     let (wire_id, old_wire) = contact_wire(topo, face, contacts)?;
     let forward = contact_direction(topo, &old_wire, contacts, axis)?;
     let far_boundary = ordered_circle_boundary(topo, &old_wire, far_circles, far_vertex)?;
+    let mut contact_vertices = HashSet::new();
+    for &contact in contacts {
+        let edge = topo.edge(contact)?;
+        contact_vertices.extend([edge.start(), edge.end()]);
+    }
+    let mut candidates = Vec::new();
+    for oriented in &old_wire {
+        let edge = topo.edge(oriented.edge())?;
+        if !matches!(edge.curve(), EdgeCurve::Line) {
+            continue;
+        }
+        let contact = if edge.start() == far_vertex && contact_vertices.contains(&edge.end()) {
+            Some(edge.end())
+        } else if edge.end() == far_vertex && contact_vertices.contains(&edge.start()) {
+            Some(edge.start())
+        } else {
+            None
+        };
+        if let Some(contact) = contact {
+            candidates.push((oriented.edge(), contact));
+        }
+    }
+    candidates.sort_unstable();
+    candidates.dedup();
+    let source = match candidates.as_slice() {
+        [source] => Some(*source),
+        _ => None,
+    };
     let seam = topo.add_edge(Edge::new(far_vertex, sharp_vertex, EdgeCurve::Line));
     let mut edges = Vec::with_capacity(far_boundary.len() + 3);
     edges.push(OrientedEdge::new(seam, true));
@@ -2281,7 +2355,8 @@ fn rebuild_closed_periodic_support(
     edges.push(OrientedEdge::new(seam, false));
     edges.extend(far_boundary);
     let new_wire = topo.add_wire(Wire::new(edges, true)?);
-    replace_face_wire(topo, face, wire_id, new_wire)
+    replace_face_wire(topo, face, wire_id, new_wire)?;
+    Ok((seam, source))
 }
 
 #[allow(clippy::too_many_lines)]
@@ -2309,7 +2384,13 @@ fn heal_cylinder_cone_band(
         _ => return Err(reconstruction("support classification changed during heal")),
     };
 
-    let (copy, mut face_map_indices) = crate::copy::copy_solid_with_face_map(topo, solid)?;
+    let copied_entities = crate::copy::copy_solid_with_entity_map(topo, solid)?;
+    let copy = copied_entities.solid;
+    let mut face_map_indices: HashMap<_, _> = copied_entities
+        .face_map
+        .iter()
+        .map(|(&source, face)| (source, face.index()))
+        .collect();
     let copied = |map: &HashMap<usize, usize>, source: FaceId| {
         map.get(&source.index())
             .and_then(|index| topo.face_id_from_index(*index))
@@ -2397,7 +2478,7 @@ fn heal_cylinder_cone_band(
     let circle = Circle3D::new_with_ref(center, axis, cylinder_surface.radius(), direction)
         .map_err(|error| reconstruction(format!("sharp circle failed: {error}")))?;
     let sharp_edge = add_certified_closed_circle_edge(topo, sharp_vertex, circle)?;
-    rebuild_closed_periodic_support(
+    let cylinder_history = rebuild_closed_periodic_support(
         topo,
         cylinder,
         &cylinder_contacts,
@@ -2407,7 +2488,7 @@ fn heal_cylinder_cone_band(
         &cylinder_far,
         axis,
     )?;
-    rebuild_closed_periodic_support(
+    let cone_history = rebuild_closed_periodic_support(
         topo,
         cone,
         &cone_contacts,
@@ -2433,10 +2514,47 @@ fn heal_cylinder_cone_band(
         .into_iter()
         .filter_map(|(source, result)| topo.face_id_from_index(result).map(|face| (source, face)))
         .collect();
+    let live_edges: HashSet<_> = remus_topology::explorer::solid_edges(topo, sharp_solid)?
+        .into_iter()
+        .collect();
+    let live_vertices: HashSet<_> = remus_topology::explorer::solid_vertices(topo, sharp_solid)?
+        .into_iter()
+        .collect();
+    let mut replaced_edges = HashMap::new();
+    let mut replaced_vertices = HashMap::new();
+    for &contact in cylinder_contacts.iter().chain(&cone_contacts) {
+        replaced_edges.insert(contact, sharp_edge);
+    }
+    for (seam, source) in [cylinder_history, cone_history] {
+        if let Some((old_seam, old_contact)) = source {
+            replaced_edges.insert(old_seam, seam);
+            replaced_vertices.insert(old_contact, sharp_vertex);
+        }
+    }
+    let mut boundary_history = Vec::new();
+    for (source, copied) in copied_entities.edge_map {
+        let target = replaced_edges.get(&copied).copied().unwrap_or(copied);
+        boundary_history.push((
+            EntityKey::edge(source),
+            live_edges
+                .contains(&target)
+                .then_some(EntityKey::edge(target.index())),
+        ));
+    }
+    for (source, copied) in copied_entities.vertex_map {
+        let target = replaced_vertices.get(&copied).copied().unwrap_or(copied);
+        boundary_history.push((
+            EntityKey::vertex(source),
+            live_vertices
+                .contains(&target)
+                .then_some(EntityKey::vertex(target.index())),
+        ));
+    }
     Ok(SharpResult {
         solid: sharp_solid,
         edges: vec![sharp_edge],
         face_map,
+        boundary_history: Some(boundary_history),
     })
 }
 
