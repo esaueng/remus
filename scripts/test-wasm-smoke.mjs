@@ -19,6 +19,7 @@ import {
   runOffsetConeSphereRegression,
   runOffsetSphereCylinderRegression,
   runOffsetTorusSphereRegression,
+  runBooleanScaleRegression,
 } from './openzcad-wasm-consumer-regressions.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -744,3 +745,4 @@ runOffsetConeSphereRegression({ BrepKernel });
 runOffsetSphereCylinderRegression({ BrepKernel });
 
 runOffsetTorusSphereRegression({ BrepKernel });
+runBooleanScaleRegression({ BrepKernel });
