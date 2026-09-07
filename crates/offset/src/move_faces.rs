@@ -1460,8 +1460,9 @@ fn validate_replacement_clearance<V: std::ops::Deref<Target = [FaceId]>>(
             }
             FaceSurface::Cylinder(cylinder) => match edge.curve() {
                 EdgeCurve::Line => {
-                    minimum_segment_axis_distance(start, end, cylinder)
-                        >= cylinder.radius() - linear
+                    // Tangency creates a new contact and cannot preserve the
+                    // source adjacency graph, even without crossing the edge.
+                    minimum_segment_axis_distance(start, end, cylinder) > cylinder.radius() + linear
                 }
                 other => {
                     return Err(OffsetError::TopologyChange {

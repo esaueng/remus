@@ -274,6 +274,30 @@ impl BrepKernel {
         }))
     }
 
+    fn resize_cylindrical_face_journaled_json(
+        &mut self,
+        solid: u32,
+        face: u32,
+        radius: f64,
+    ) -> Result<serde_json::Value, StructuredWasmError> {
+        crate::error::validate_positive(radius, "new_radius").map_err(StructuredWasmError::from)?;
+        let solid_id = self
+            .resolve_solid(solid)
+            .map_err(StructuredWasmError::from)?;
+        let face_id = self.resolve_face(face).map_err(StructuredWasmError::from)?;
+        let result = journal_ops::resize_cylindrical_face_journaled(
+            self.topo_mut(),
+            solid_id,
+            face_id,
+            radius,
+        )
+        .map_err(StructuredWasmError::from)?;
+        Ok(serde_json::json!({
+            "solid": crate::handles::solid_id_to_u32(result.solid),
+            "op": u32::try_from(result.op.value()).unwrap_or(u32::MAX),
+        }))
+    }
+
     fn replace_surface_journaled_json(
         &mut self,
         solid: u32,
@@ -428,6 +452,12 @@ impl BrepKernel {
             "imprint" => get_u32(args, "target").and_then(|target| {
                 get_u32(args, "tool").and_then(|tool| self.imprint_json(target, tool))
             }),
+            "resizeCylindricalFaceJournaled" => (|| {
+                let solid = get_u32(args, "solid")?;
+                let face = get_u32(args, "face")?;
+                let radius = get_f64(args, "radius")?;
+                self.resize_cylindrical_face_journaled_json(solid, face, radius)
+            })(),
             "replaceSurfaceJournaled" => (|| {
                 let solid = get_u32(args, "solid")?;
                 let face = get_u32(args, "face")?;
@@ -541,6 +571,24 @@ impl BrepKernel {
     #[wasm_bindgen(js_name = "imprint")]
     pub fn imprint_js(&mut self, target: u32, tool: u32) -> Result<String, JsError> {
         self.imprint_json(target, tool)
+            .map(|value| value.to_string())
+            .map_err(structured_to_js)
+    }
+
+    /// Resize a cylindrical wall and record its construction history.
+    ///
+    /// Returns JSON `{"solid", "op"}`. Qualified bore and quarter-wall
+    /// replacements retain all boundary identities. Boss edits track cap
+    /// subdivisions and their removal; ambiguous boundaries remain unresolved.
+    /// Batch calls pass the new radius as `args.radius`.
+    #[wasm_bindgen(js_name = "resizeCylindricalFaceJournaled")]
+    pub fn resize_cylindrical_face_journaled_js(
+        &mut self,
+        solid: u32,
+        face: u32,
+        radius: f64,
+    ) -> Result<String, JsError> {
+        self.resize_cylindrical_face_journaled_json(solid, face, radius)
             .map(|value| value.to_string())
             .map_err(structured_to_js)
     }
@@ -1019,6 +1067,108 @@ mod evolution_contract_tests {
         };
         assert!((replacement.x_axis() - source.x_axis()).length() < 1e-12);
         assert!((replacement.radius() - 2.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn cylindrical_radius_history_has_direct_batch_parity_and_rollback() {
+        use remus_math::{mat::Mat4, vec::Vec3};
+        use remus_operations::{
+            boolean::{BooleanOp, boolean},
+            primitives::{make_box, make_cylinder},
+            transform::transform_solid,
+        };
+        use remus_topology::{
+            explorer::solid_faces,
+            face::FaceSurface,
+            journal::{EntityKind, OpId},
+            naming::{PersistentRef, Provenance, Resolution, resolve},
+        };
+        let mut payloads = Vec::new();
+        for batch in [false, true] {
+            let mut kernel = BrepKernel::new();
+            let block = make_box(kernel.topo_mut(), 40.0, 40.0, 10.0).unwrap();
+            let drill = make_cylinder(kernel.topo_mut(), 3.0, 10.0).unwrap();
+            transform_solid(
+                kernel.topo_mut(),
+                drill,
+                &Mat4::translation(20.0, 20.0, 0.0),
+            )
+            .unwrap();
+            let source_id = boolean(kernel.topo_mut(), BooleanOp::Cut, block, drill).unwrap();
+            let wall = |kernel: &BrepKernel, solid| {
+                solid_faces(kernel.topo(), solid)
+                    .unwrap()
+                    .into_iter()
+                    .find(|&face| {
+                        matches!(
+                            kernel.topo().face(face).unwrap().surface(),
+                            FaceSurface::Cylinder(_)
+                        )
+                    })
+                    .unwrap()
+            };
+            let source = super::index_u32(source_id.index());
+            let face = super::index_u32(wall(&kernel, source_id).index());
+            let first = kernel
+                .resize_cylindrical_face_journaled_json(source, face, 5.0)
+                .unwrap();
+            let solid = u32::try_from(first["solid"].as_u64().unwrap()).unwrap();
+            let first_id = kernel.resolve_solid(solid).unwrap();
+            let keys =
+                remus_operations::journal_ops::solid_entity_keys(kernel.topo(), first_id).unwrap();
+            let anchor = OpId::from_value(first["op"].as_u64().unwrap());
+            let face = super::index_u32(wall(&kernel, first_id).index());
+            let second: serde_json::Value = if batch {
+                run(&mut kernel, serde_json::json!([{"op":"resizeCylindricalFaceJournaled", "args":{"solid":solid,"face":face,"radius":2.0}}])).remove(0)
+            } else {
+                serde_json::from_str(
+                    &kernel
+                        .resize_cylindrical_face_journaled_js(solid, face, 2.0)
+                        .unwrap(),
+                )
+                .unwrap()
+            };
+            let result = u32::try_from(second["solid"].as_u64().unwrap()).unwrap();
+            let result_id = kernel.resolve_solid(result).unwrap();
+            let live: std::collections::HashSet<_> =
+                remus_operations::journal_ops::solid_entity_keys(kernel.topo(), result_id)
+                    .unwrap()
+                    .into_iter()
+                    .collect();
+            let mut resolved = std::collections::HashSet::new();
+            for kind in [EntityKind::Face, EntityKind::Edge, EntityKind::Vertex] {
+                for index in 0..keys.iter().filter(|key| key.kind == kind).count() {
+                    let reference = PersistentRef::operation_output(anchor, kind, index);
+                    let Resolution::Bound {
+                        entity,
+                        provenance: Provenance::Construction,
+                    } = resolve(kernel.topo(), &reference)
+                    else {
+                        panic!("lost radius reference");
+                    };
+                    resolved.insert(entity);
+                }
+            }
+            assert_eq!(resolved, live);
+            let cylinder = wall(&kernel, result_id);
+            let FaceSurface::Cylinder(cylinder_data) =
+                kernel.topo().face(cylinder).unwrap().surface()
+            else {
+                unreachable!()
+            };
+            assert!((cylinder_data.radius() - 2.0).abs() < 1e-10);
+            assert!((cylinder_data.axis() - Vec3::new(0.0, 0.0, 1.0)).length() < 1e-10);
+            let before = kernel.topo().journal().snapshot();
+            let face = super::index_u32(cylinder.index());
+            let error = kernel
+                .resize_cylindrical_face_journaled_json(result, face, 25.0)
+                .unwrap_err();
+            let failed: serde_json::Value = serde_json::from_str(&kernel.execute_batch_v2(&serde_json::json!([{"op":"resizeCylindricalFaceJournaled", "args":{"solid":result,"face":face,"radius":25.0}}]).to_string())).unwrap();
+            assert_eq!(failed[0]["error"]["message"], error.message());
+            assert_eq!(kernel.topo().journal().snapshot(), before);
+            payloads.push(second);
+        }
+        assert_eq!(payloads[0], payloads[1]);
     }
 
     #[test]
