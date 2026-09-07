@@ -268,9 +268,9 @@ least two from the correctness family and one from the browser family.
 
 Direct-edit follow-up under [P-Class 6.5](p-class-status.md):
 [boundary-aware resizing of partial cylindrical faces](../roadmap/partial-cylinder-resize.md)
-is in implementation: native and packaged WASM quarter-wall resizing and refusal
-tests pass; full-workspace verification is pending. General partial
-walls and journaled direct-edit completion remain open.
+is implemented on its review branch: native and packaged WASM quarter-wall
+resizing/refusal checks pass, and the full workspace passes 4,882 tests.
+General partial walls and journaled direct-edit completion remain open.
 
 ### Correctness follow-up: curved hole winding (#278)
 
