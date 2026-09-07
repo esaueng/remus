@@ -35,8 +35,14 @@ pub fn fix_wireframe_with_history(
     topo: &mut Topology,
     shell_id: ShellId,
     ctx: &mut HealContext,
-    _config: &FixConfig,
+    config: &FixConfig,
 ) -> Result<(FixResult, crate::upgrade::shell_sewing::SewHistory), HealError> {
+    if config.fix_wireframe == super::config::FixMode::Off {
+        return Ok((
+            FixResult::ok(),
+            crate::upgrade::shell_sewing::SewHistory::default(),
+        ));
+    }
     let (report, history) =
         crate::upgrade::shell_sewing::sew_shell_with_history(topo, shell_id, ctx.tolerance.linear)?;
     let remaining: usize = crate::analysis::free_bounds::find_free_bounds(topo, shell_id)?
