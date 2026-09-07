@@ -2160,6 +2160,11 @@ pub(super) fn split_face_with_internal_loops(
         });
     }
 
+    let chain_tol = if matches!(surface, FaceSurface::Plane { .. }) {
+        super::boundary_weld_band(boundary_edges, tol_3d)
+    } else {
+        tol_3d * 100.0
+    };
     // Group edges into closed loops by chaining: edge.end_3d approx next.start_3d.
     let mut used = vec![false; forward_edges.len()];
     let mut loops: Vec<Vec<OrientedPCurveEdge>> = Vec::new();
@@ -2177,7 +2182,7 @@ pub(super) fn split_face_with_internal_loops(
 
             // Check if the loop is closed (includes single-edge circles
             // where start ~= end).
-            if (last_end - loop_start_3d).length() < tol_3d * 100.0 {
+            if (last_end - loop_start_3d).length() < chain_tol {
                 break;
             }
 
@@ -2188,9 +2193,9 @@ pub(super) fn split_face_with_internal_loops(
             let next = forward_edges.iter().enumerate().find_map(|(i, e)| {
                 if used[i] {
                     None
-                } else if (e.start_3d - last_end).length() < tol_3d * 100.0 {
+                } else if (e.start_3d - last_end).length() < chain_tol {
                     Some((i, false))
-                } else if (e.end_3d - last_end).length() < tol_3d * 100.0 {
+                } else if (e.end_3d - last_end).length() < chain_tol {
                     Some((i, true))
                 } else {
                     None
@@ -2214,7 +2219,7 @@ pub(super) fn split_face_with_internal_loops(
         // Accept only closed chains (single-edge circles or multi-edge
         // closed loops). Reject open chains from orphaned arcs.
         let chain_end = chain.last().map_or(loop_start_3d, |e| e.end_3d);
-        if !chain.is_empty() && (chain_end - loop_start_3d).length() < tol_3d * 100.0 {
+        if !chain.is_empty() && (chain_end - loop_start_3d).length() < chain_tol {
             loops.push(chain);
         }
     }
