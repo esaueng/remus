@@ -559,6 +559,23 @@ optimized packages with smoke and installed-tarball consumer checks. One
 nextest lingering-handle warning did not reproduce in an isolated rerun.
 This increment is not yet merged.
 
+### Cavity duplicate repair — qualification in progress
+
+The duplicate-face pass now compares eligible planar polygon faces within each
+outer or cavity shell. It preserves coincident faces in distinct shells and
+refuses a duplicate removal that would also remove the same face identity from
+another shell. The existing same-winding, straight-edge, unperforated-face
+eligibility and tolerances are unchanged.
+
+The failing cavity regression now repairs one duplicate. A three-scale hollow
+box produced by a contained cut passes verified journaled repair, retains its
+material volume, resolves surviving face references, and records the duplicate
+as deleted. Shared-identity refusal and all 151 healing tests pass. All 4,949
+workspace tests pass (13 skipped); one harness leak warning does not reproduce
+in isolation. Optimized kernel/translator builds, smoke tests, installed-package
+consumers, lint, boundaries, census, rustdoc, doctests, and mdBook pass. B17 stays
+open: this qualifies cavity duplicate repair, not the full defect matrix.
+
 ## §B Bridge backlog — owned by neither program
 
 Ready items from the stabilization-plan residue, the capability-matrix
