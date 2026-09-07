@@ -271,6 +271,14 @@ Direct-edit follow-up under [P-Class 6.5](p-class-status.md):
 is implemented on its review branch: native and packaged WASM quarter-wall
 resizing/refusal checks pass, and the full workspace passes 4,882 tests.
 General partial walls and journaled direct-edit completion remain open.
+The next slice retains exact edge/vertex correspondence for planar and
+coaxial-bore face moves, with `moveFacesJournaled` direct/batch surfacing.
+Native reference and connectivity regressions and both rebuilt-package suites
+pass. The unchanged parent fails the new reference witness at the first edge.
+Full workspace: 4,886 passed, 13 skipped. Clippy, rustdoc, and the unchanged
+52-row approximation census pass. One passing tessellation test emitted a
+nextest leak warning and passed cleanly in isolation. This does not close the
+blend-boundary, radius-edit, replacement, draft, or delete/heal history cells.
 
 ### Correctness follow-up: curved hole winding (#278)
 

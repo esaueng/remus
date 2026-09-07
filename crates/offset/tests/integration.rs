@@ -298,3 +298,81 @@ fn offset_torus_stays_analytic() {
         );
     }
 }
+
+#[test]
+fn direct_edit_entity_maps_preserve_boundary_incidence() {
+    use remus_topology::explorer::{face_wires, solid_edges, solid_faces, solid_vertices};
+    use remus_topology::face::FaceSurface;
+    use std::collections::BTreeSet;
+
+    for replacement in [false, true] {
+        let mut topo = Topology::new();
+        let source = make_box(&mut topo, 3.0, 5.0, 7.0).unwrap();
+        let faces = solid_faces(&topo, source).unwrap();
+        let selected = faces[0];
+        let result = if replacement {
+            let FaceSurface::Plane { normal, d } = *topo.face(selected).unwrap().surface() else {
+                unreachable!()
+            };
+            remus_offset::replace_surface_with_entity_map(
+                &mut topo,
+                source,
+                selected,
+                FaceSurface::Plane {
+                    normal,
+                    d: d + 0.25,
+                },
+            )
+            .unwrap()
+        } else {
+            remus_offset::move_faces_with_entity_map(&mut topo, source, &[selected], 0.25).unwrap()
+        };
+        let output_faces = solid_faces(&topo, result.solid).unwrap();
+        let output_edges = solid_edges(&topo, result.solid).unwrap();
+        let output_vertices = solid_vertices(&topo, result.solid).unwrap();
+        assert_eq!(result.face_map.len(), faces.len());
+        assert_eq!(
+            result.edge_map.len(),
+            solid_edges(&topo, source).unwrap().len()
+        );
+        assert_eq!(
+            result.vertex_map.len(),
+            solid_vertices(&topo, source).unwrap().len()
+        );
+        assert_eq!(
+            result.face_map.values().copied().collect::<BTreeSet<_>>(),
+            output_faces.into_iter().collect()
+        );
+        assert_eq!(
+            result.edge_map.values().copied().collect::<BTreeSet<_>>(),
+            output_edges.into_iter().collect()
+        );
+        assert_eq!(
+            result.vertex_map.values().copied().collect::<BTreeSet<_>>(),
+            output_vertices.into_iter().collect()
+        );
+        for source_edge in solid_edges(&topo, source).unwrap() {
+            let before = topo.edge(source_edge).unwrap();
+            let after = topo.edge(result.edge_map[&source_edge.index()]).unwrap();
+            assert_eq!(after.start(), result.vertex_map[&before.start().index()]);
+            assert_eq!(after.end(), result.vertex_map[&before.end().index()]);
+        }
+        for face in faces {
+            let before = face_wires(&topo, face).unwrap();
+            let after = face_wires(&topo, result.face_map[&face.index()]).unwrap();
+            assert_eq!(before.len(), after.len());
+            for (before_wire, after_wire) in before.into_iter().zip(after) {
+                let before_edges = topo.wire(before_wire).unwrap().edges();
+                let after_edges = topo.wire(after_wire).unwrap().edges();
+                assert_eq!(before_edges.len(), after_edges.len());
+                for (before_edge, after_edge) in before_edges.iter().zip(after_edges) {
+                    assert_eq!(
+                        after_edge.edge(),
+                        result.edge_map[&before_edge.edge().index()]
+                    );
+                    assert_eq!(before_edge.is_forward(), after_edge.is_forward());
+                }
+            }
+        }
+    }
+}

@@ -16,6 +16,7 @@ import {
   runOpenZcadAnalyticFlangeBooleanRegression,
   runOpenZcadCylindricalFaceResizeRegression,
   runPartialCylinderResizeRegression,
+  runDirectEditHistoryRegression,
   runWideSphereCapRegression,
   runOffsetConeSphereRegression,
   runOffsetSphereCylinderRegression,
@@ -750,6 +751,7 @@ runOffsetTorusSphereRegression({ BrepKernel });
 runTorusNotchRegression({ BrepKernel });
 runTangencyBandRegression({ BrepKernel });
 runPartialCylinderResizeRegression({ BrepKernel, RemusIo });
+runDirectEditHistoryRegression({ BrepKernel, RemusIo });
 runBooleanScaleRegression({ BrepKernel });
 runAnisotropicBooleanRegression({ BrepKernel });
 

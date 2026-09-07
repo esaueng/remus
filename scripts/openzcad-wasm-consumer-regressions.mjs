@@ -259,6 +259,7 @@ export const runOpenZcadConsumerRegressions = (exports) => {
   runOpenZcadAnalyticFlangeBooleanRegression(exports);
   runOpenZcadCylindricalFaceResizeRegression(exports);
   runPartialCylinderResizeRegression(exports);
+  runDirectEditHistoryRegression(exports);
   runWideSphereCapRegression(exports);
   runOffsetConeSphereRegression(exports);
   runOffsetSphereCylinderRegression(exports);
@@ -675,4 +676,56 @@ export const runPartialCylinderResizeRegression = ({ BrepKernel, RemusIo }) => {
     }
   } finally { io.free(); }
   console.log('ok - quarter-cylinder direct/batch: 8 exact resizes with STEP round trips, 4 collision refusals with rollback');
+};
+
+
+export const runDirectEditHistoryRegression = ({ BrepKernel }) => {
+  for (const batch of [false, true]) {
+    const kernel = new BrepKernel();
+    try {
+      const source = kernel.makeBox(3, 5, 7);
+      const edit = (solid, distance) => {
+        const faces = [kernel.getSolidFaces(solid)[0]];
+        if (!batch) return JSON.parse(kernel.moveFacesJournaled(solid, Uint32Array.from(faces), distance));
+        const [response] = JSON.parse(kernel.executeBatchV2(JSON.stringify([
+          { op: 'moveFacesJournaled', args: { solid, faces, distance } },
+        ])));
+        assert.equal(response.error, undefined, JSON.stringify(response));
+        return response.ok;
+      };
+      const first = edit(source, 0.25);
+      const second = edit(first.solid, -0.125);
+      for (const [kind, query, count] of [
+        ['face', 'getSolidFaces', 6], ['edge', 'getSolidEdges', 12], ['vertex', 'getSolidVertices', 8],
+      ]) {
+        const live = new Set(kernel[query](second.solid));
+        const resolved = new Set();
+        for (let index = 0; index < count; index++) {
+          const reference = JSON.parse(kernel.resolveOperationOutput(first.op, kind, index));
+          assert.equal(reference.status, 'bound', JSON.stringify(reference));
+          assert.equal(reference.provenance, 'construction');
+          assert.equal(reference.entities.length, 1);
+          assert.equal(reference.entities[0].kind, kind);
+          resolved.add(reference.entities[0].handle);
+        }
+        assert.deepEqual(resolved, live, `direct edit ${kind} refs, batch=${batch}`);
+      }
+      const before = kernel.journalSummary();
+      const bytes = Uint8Array.from(kernel.serializeSolids(Uint32Array.of(second.solid)));
+      const face = kernel.getSolidFaces(second.solid)[0];
+      if (batch) {
+        const [response] = JSON.parse(kernel.executeBatchV2(JSON.stringify([
+          { op: 'moveFacesJournaled', args: { solid: second.solid, faces: [face], distance: -100 } },
+        ])));
+        assert.ok(response.error, 'collapsing move must refuse');
+      } else {
+        assert.throws(() => kernel.moveFacesJournaled(second.solid, Uint32Array.of(face), -100));
+      }
+      assert.equal(kernel.journalSummary(), before, 'refusal restores history');
+      assert.deepEqual(kernel.serializeSolids(Uint32Array.of(second.solid)), bytes, 'refusal restores geometry');
+    } finally {
+      kernel.free();
+    }
+  }
+  console.log('ok - direct edit history: 26 references across two edits, direct/batch refusal rollback');
 };
