@@ -2971,6 +2971,15 @@ export class BrepKernel {
      */
     resizeCylindricalFace(solid: number, face: number, new_radius: number): number;
     /**
+     * Resize a cylindrical wall and record its construction history.
+     *
+     * Returns JSON `{"solid", "op"}`. Qualified bore and quarter-wall
+     * replacements retain all boundary identities. Boss edits track cap
+     * subdivisions and their removal; ambiguous boundaries remain unresolved.
+     * Batch calls pass the new radius as `args.radius`.
+     */
+    resizeCylindricalFaceJournaled(solid: number, face: number, radius: number): string;
+    /**
      * Resolves "the `index`-th `kind` output of journal operation `op`"
      * against the current model. Returns the resolution JSON (`status`
      * plus status-specific fields); severed references are data, not

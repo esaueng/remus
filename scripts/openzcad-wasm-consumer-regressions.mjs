@@ -261,6 +261,7 @@ export const runOpenZcadConsumerRegressions = (exports) => {
   runPartialCylinderResizeRegression(exports);
   runDirectEditHistoryRegression(exports);
   runSurfaceReplacementHistoryRegression(exports);
+  runCylindricalRadiusHistoryRegression(exports);
   runWideSphereCapRegression(exports);
   runOffsetConeSphereRegression(exports);
   runOffsetSphereCylinderRegression(exports);
@@ -932,4 +933,91 @@ export const runSurfaceReplacementHistoryRegression = ({ BrepKernel, RemusIo }) 
     }
   }
   console.log('ok - replacement history: plane and quarter-wall edits, all entity refs, arena/STEP round trips, rollback');
+};
+
+
+export const runCylindricalRadiusHistoryRegression = ({ BrepKernel, RemusIo }) => {
+  const kinds = [['face', 'getSolidFaces'], ['edge', 'getSolidEdges'], ['vertex', 'getSolidVertices']];
+  const wall = (kernel, solid) => Array.from(kernel.getSolidFaces(solid)).find(face => kernel.getSurfaceType(face) === 'cylinder');
+  const resize = (kernel, solid, radius, batch) => {
+    const face = wall(kernel, solid);
+    if (!batch) return JSON.parse(kernel.resizeCylindricalFaceJournaled(solid, face, radius));
+    const [response] = JSON.parse(kernel.executeBatchV2(JSON.stringify([{ op: 'resizeCylindricalFaceJournaled', args: { solid, face, radius } }])));
+    assert.equal(response.error, undefined, JSON.stringify(response));
+    return response.ok;
+  };
+  const references = (kernel, result) => kinds.flatMap(([kind, query]) => Array.from(kernel[query](result.solid), (_, index) => ({kind, reference: kernel.makeOperationOutputRef(result.op, kind, index)})));
+  const qualifyRefs = (kernel, solid, refs, complete) => {
+    for (const [kind, query] of kinds) {
+      const live = new Set(kernel[query](solid));
+      const resolved = new Set();
+      for (const item of refs.filter(item => item.kind === kind)) {
+        const result = JSON.parse(kernel.resolveRef(item.reference));
+        if (!complete && result.status === 'dangling') continue;
+        assert.ok(['bound', 'boundMany'].includes(result.status), JSON.stringify(result));
+        assert.equal(result.provenance, 'construction');
+        for (const entity of result.entities) {
+          assert.equal(entity.kind, kind);
+          assert.ok(live.has(entity.handle));
+          resolved.add(entity.handle);
+        }
+      }
+      if (complete) assert.deepEqual(resolved, live);
+    }
+  };
+  const qualify = (kernel, solid, expected) => {
+    assert.equal(kernel.validateSolid(solid), 0);
+    assert.ok(Math.abs(kernel.volume(solid, 0.005) - expected) < expected * 1e-5);
+    assert.equal(JSON.parse(kernel.meshQuality(solid, 0.005)).isWatertight, true);
+  };
+  const fixture = readFileSync(new URL('../crates/io/tests/data/jolly_fox_partial_cylinder.step', import.meta.url));
+  for (const batch of [false, true]) for (const [type, radius] of [['boss', 3], ['boss', 8], ['bore', 2], ['bore', 5], ['quarter', 22]]) {
+    const kernel = new BrepKernel();
+    const io = new RemusIo();
+    try {
+      let source;
+      if (type === 'quarter') [source] = kernel.deserializeSolids(io.importStep(fixture));
+      else {
+        const plate = kernel.makeBox(40, 40, 10);
+        const cylinder = kernel.makeCylinder(type === 'boss' ? 5 : 3, 10);
+        const z = type === 'boss' ? 10 : 0;
+        kernel.transformSolid(cylinder, new Float64Array([1,0,0,20,0,1,0,20,0,0,1,z,0,0,0,1]));
+        source = type === 'boss' ? kernel.fuse(plate, cylinder) : kernel.cut(plate, cylinder);
+      }
+      const expected = radius => type === 'quarter' ? 73 * 41 * 8 + 12 * 30.5 * 12 + Math.PI * radius ** 2 * 12 / 4 : 16000 + (type === 'boss' ? 1 : -1) * Math.PI * radius ** 2 * 10;
+      const sourceVolume = kernel.volume(source, 0.005);
+      const first = resize(kernel, source, radius, batch);
+      const firstRefs = references(kernel, first);
+      qualify(kernel, first.solid, expected(radius));
+      qualifyRefs(kernel, first.solid, firstRefs, true);
+      const finalRadius = type === 'quarter' ? 20 : type === 'boss' ? 5 : 3;
+      const second = resize(kernel, first.solid, finalRadius, batch);
+      const refs = references(kernel, second);
+      qualify(kernel, second.solid, expected(finalRadius));
+      qualifyRefs(kernel, second.solid, firstRefs, false);
+      qualifyRefs(kernel, second.solid, refs, true);
+      qualify(kernel, source, sourceVolume);
+      const restored = new BrepKernel();
+      try {
+        restored.makeBox(1, 1, 1);
+        const [solid] = restored.deserializeSolids(kernel.serializeSolids(Uint32Array.of(second.solid)));
+        qualify(restored, solid, expected(finalRadius));
+        qualifyRefs(restored, solid, refs, true);
+        qualifyRefs(restored, solid, firstRefs, false);
+      } finally { restored.free(); }
+      const roundTrip = new BrepKernel();
+      try {
+        const [solid] = roundTrip.deserializeSolids(io.importStep(io.exportStep(kernel.serializeSolids(Uint32Array.of(second.solid)))));
+        qualify(roundTrip, solid, expected(finalRadius));
+      } finally { roundTrip.free(); }
+      for (const invalid of type === 'bore' ? [0, 20, 25] : type === 'quarter' ? [0, 32] : [0]) {
+        const before = Uint8Array.from(kernel.serializeSolids(Uint32Array.of(second.solid)));
+        const journal = kernel.journalSummary();
+        assert.throws(() => resize(kernel, second.solid, invalid, batch));
+        assert.equal(kernel.journalSummary(), journal);
+        assert.deepEqual(kernel.serializeSolids(Uint32Array.of(second.solid)), before);
+      }
+    } finally { kernel.free(); io.free(); }
+  }
+  console.log('ok - cylindrical radius history: successive bore/boss/quarter edits, all output refs, arena/STEP, rollback');
 };

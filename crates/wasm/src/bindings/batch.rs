@@ -215,6 +215,7 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "chamferJournaled"
         | "linearPatternJournaled"
         | "imprint"
+        | "resizeCylindricalFaceJournaled"
         | "replaceSurfaceJournaled"
         | "moveFacesJournaled"
         | "offsetJournaled"

@@ -196,3 +196,59 @@ fn resized_mounting_bracket_step_round_trip_is_exact_and_deterministic() {
     assert_eq!(solids.len(), 1);
     assert_resized_geometry(&imported, solids[0], expected);
 }
+
+#[test]
+fn journaled_boss_and_bore_resize_round_trips_full_turn_pcurves() {
+    use remus_operations::journal_ops::resize_cylindrical_face_journaled;
+    for (bore, radius) in [(false, 3.0), (false, 8.0), (true, 2.0), (true, 5.0)] {
+        let mut topo = Topology::new();
+        let plate = make_box(&mut topo, 40.0, 40.0, 10.0).unwrap();
+        let cylinder = make_cylinder(&mut topo, if bore { 3.0 } else { 5.0 }, 10.0).unwrap();
+        transform_solid(
+            &mut topo,
+            cylinder,
+            &Mat4::translation(20.0, 20.0, if bore { 0.0 } else { 10.0 }),
+        )
+        .unwrap();
+        let source = boolean(
+            &mut topo,
+            if bore {
+                BooleanOp::Cut
+            } else {
+                BooleanOp::Fuse
+            },
+            plate,
+            cylinder,
+        )
+        .unwrap();
+        let wall = |topo: &Topology, solid| {
+            solid_faces(topo, solid)
+                .unwrap()
+                .into_iter()
+                .find(|&face| {
+                    matches!(topo.face(face).unwrap().surface(), FaceSurface::Cylinder(_))
+                })
+                .unwrap()
+        };
+        let face = wall(&topo, source);
+        let first = resize_cylindrical_face_journaled(&mut topo, source, face, radius).unwrap();
+        let face = wall(&topo, first.solid);
+        let final_radius = if bore { 3.0 } else { 5.0 };
+        let second =
+            resize_cylindrical_face_journaled(&mut topo, first.solid, face, final_radius).unwrap();
+        let step = remus_io::step::write_step(&topo, &[second.solid]).unwrap();
+        let mut restored = Topology::new();
+        let solids = remus_io::step::read_step(&step, &mut restored)
+            .unwrap_or_else(|error| panic!("bore {bore}, radius {radius}: {error}"));
+        assert_eq!(solids.len(), 1);
+        let expected =
+            16000.0 + if bore { -1.0 } else { 1.0 } * PI * final_radius * final_radius * 10.0;
+        let actual = solid_volume(&restored, solids[0], 0.005).unwrap();
+        assert!((actual - expected).abs() < expected * 1e-5);
+        assert!(
+            remus_operations::validate::validate_solid(&restored, solids[0])
+                .unwrap()
+                .is_valid()
+        );
+    }
+}
