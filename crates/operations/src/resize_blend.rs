@@ -764,13 +764,24 @@ fn move_planar_faces_with_blends_remove_rebuild(
 // determines one complete incidence isomorphism, including outer/hole loops.
 // Ambiguous seams retain faces-only history instead of guessed identities.
 #[allow(clippy::too_many_lines)]
-fn construction_boundary_pairs(
+pub(crate) fn construction_boundary_pairs(
     topo: &Topology,
     source: SolidId,
     result: SolidId,
     face_map: &HashMap<usize, FaceId>,
 ) -> Result<Vec<(EntityKey, EntityKey)>, OperationsError> {
-    use remus_topology::explorer::{edge_to_face_map, solid_edges, solid_vertices};
+    use remus_topology::explorer::{edge_to_face_map, solid_edges, solid_faces, solid_vertices};
+    let source_faces: HashSet<_> = solid_faces(topo, source)?
+        .iter()
+        .map(|face| face.index())
+        .collect();
+    let result_faces: HashSet<_> = solid_faces(topo, result)?.into_iter().collect();
+    if face_map.keys().copied().collect::<HashSet<_>>() != source_faces
+        || face_map.values().copied().collect::<HashSet<_>>() != result_faces
+        || face_map.len() != result_faces.len()
+    {
+        return Ok(Vec::new());
+    }
     let old_edges = edge_to_face_map(topo, source)?;
     let new_edges = edge_to_face_map(topo, result)?;
     let mut groups = BTreeMap::<Vec<usize>, Vec<usize>>::new();
@@ -2653,6 +2664,32 @@ mod tests {
         assert!(
             (moved_volume - expected).abs() < 1e-3 * expected,
             "moving the support by 1 must lengthen the filleted block: {moved_volume} vs {expected}"
+        );
+    }
+
+    #[test]
+    fn boundary_correspondence_requires_a_total_face_bijection() {
+        let mut topo = Topology::new();
+        let source = crate::primitives::make_box(&mut topo, 2.0, 3.0, 4.0).unwrap();
+        let faces = remus_topology::explorer::solid_faces(&topo, source).unwrap();
+        let mut map: HashMap<_, _> = faces.iter().map(|&face| (face.index(), face)).collect();
+        assert_eq!(
+            construction_boundary_pairs(&topo, source, source, &map)
+                .unwrap()
+                .len(),
+            20
+        );
+        map.remove(&faces[0].index());
+        assert!(
+            construction_boundary_pairs(&topo, source, source, &map)
+                .unwrap()
+                .is_empty()
+        );
+        map.insert(faces[0].index(), faces[1]);
+        assert!(
+            construction_boundary_pairs(&topo, source, source, &map)
+                .unwrap()
+                .is_empty()
         );
     }
 

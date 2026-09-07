@@ -1243,6 +1243,16 @@ export class BrepKernel {
      */
     draft(solid: number, face_handles: Uint32Array, pull_x: number, pull_y: number, pull_z: number, neutral_x: number, neutral_y: number, neutral_z: number, angle_degrees: number): number;
     /**
+     * Draft selected planar faces with construction history.
+     *
+     * `pull_direction` and `neutral_point` each have three components.
+     * The angle is in degrees for both direct and batch calls. Batch uses
+     * `faces`, `pullDirection`, `neutralPoint`, and `angleDegrees`.
+     * Returns JSON `{"solid", "op"}`. Boundary history requires a unique
+     * complete incidence correspondence; ambiguous boundaries stay unresolved.
+     */
+    draftJournaled(solid: number, faces: Uint32Array, pull_direction: Float64Array, neutral_point: Float64Array, angle_degrees: number): string;
+    /**
      * Compute the length of an edge.
      *
      * # Errors
