@@ -292,6 +292,16 @@ and collision rollback. The binding preserves the established topology-work
 limit. Final qualification: 4,894 workspace tests passed, 13 skipped; both
 rebuilt WASM package suites, Clippy, rustdoc, and the 52-row census pass.
 
+Blended-move boundary history is the next slice. Rigid translation retains the
+actual copy maps; sharp-support reconstruction emits boundary history only when
+construction face identities uniquely determine edges, vertices, and outer/hole
+wire cycles. Ambiguous periodic boundaries retain explicit unresolved history.
+The unchanged parent fails native and packaged reference witnesses. Successive
+bored-cap moves, both construction paths, and the periodic ambiguity refusal
+pass focused native tests. Final qualification: 4,896 workspace tests passed,
+13 skipped; both rebuilt WASM package suites, Clippy, rustdoc, and the unchanged
+52-row census pass.
+
 ### Correctness follow-up: curved hole winding (#278)
 
 Cut/intersect assembly now compares multi-opening cylinder wires in

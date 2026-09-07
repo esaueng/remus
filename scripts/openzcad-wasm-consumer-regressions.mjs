@@ -751,7 +751,66 @@ export const runDirectEditHistoryRegression = ({ BrepKernel }) => {
       }
     } finally { kernel.free(); }
   }
-  console.log('ok - direct edit history: 26 references across two edits, direct/batch rollback and work limits');
+  for (const batch of [false, true]) {
+    const kernel = new BrepKernel();
+    try {
+      const translated = (solid, x, y, z) => {
+        kernel.transformSolid(solid, new Float64Array([1,0,0,x,0,1,0,y,0,0,1,z,0,0,0,1]));
+        return solid;
+      };
+      const plate = kernel.makeBox(40, 40, 5);
+      const boss = translated(kernel.makeBox(16, 16, 10), 12, 12, 5);
+      const sharp = kernel.fuse(plate, boss);
+      const bored = kernel.cut(sharp, translated(kernel.makeCylinder(3, 17), 20, 20, -1));
+      const edge = Array.from(kernel.getSolidEdges(bored)).find(edge => {
+        const p = kernel.getEdgeVertices(edge);
+        return Math.abs(p[1] - 12) < 1e-8 && Math.abs(p[4] - 12) < 1e-8 &&
+          Math.abs(p[2] - 15) < 1e-8 && Math.abs(p[5] - 15) < 1e-8;
+      });
+      assert.notEqual(edge, undefined);
+      const source = kernel.filletV2(bored, Uint32Array.of(edge), 1);
+      const sourceVolume = kernel.volume(source, 0.001);
+      const top = solid => Array.from(kernel.getSolidFaces(solid))
+        .filter(face => JSON.parse(kernel.getAnalyticSurfaceParams(face)).type === 'plane' && kernel.getFaceNormal(face)[2] > 0.9)
+        .sort((a, b) => {
+          const height = face => Math.max(...Array.from(kernel.getFaceEdges(face))
+            .flatMap(edge => { const p = kernel.getEdgeVertices(edge); return [p[2], p[5]]; }));
+          return height(b) - height(a);
+        })[0];
+      const edit = (solid, distance) => {
+        const face = top(solid);
+        if (!batch) return JSON.parse(kernel.moveFacesJournaled(solid, Uint32Array.of(face), distance));
+        const [response] = JSON.parse(kernel.executeBatchV2(JSON.stringify([
+          {op: 'moveFacesJournaled', args: {solid, faces: [face], distance}},
+        ])));
+        assert.equal(response.error, undefined, JSON.stringify(response));
+        return response.ok;
+      };
+      const first = edit(source, 2);
+      const second = edit(first.solid, -1);
+      for (const [result, distance] of [[first, 2], [second, 1]]) {
+        assert.equal(kernel.validateSolid(result.solid), 0);
+        const expected = sourceVolume + distance * (256 - Math.PI * 9);
+        assert.ok(Math.abs(kernel.volume(result.solid, 0.001) - expected) <= Math.abs(expected) * 3e-4);
+        assert.equal(JSON.parse(kernel.meshQuality(result.solid, 0.01)).isWatertight, true);
+      }
+      for (const [kind, query] of [['face','getSolidFaces'], ['edge','getSolidEdges'], ['vertex','getSolidVertices']]) {
+        const actual = new Set();
+        for (let index = 0; index < kernel[query](first.solid).length; index++) {
+          const resolved = JSON.parse(kernel.resolveOperationOutput(first.op, kind, index));
+          assert.equal(resolved.status, 'bound', JSON.stringify(resolved));
+          assert.equal(resolved.provenance, 'construction');
+          assert.equal(resolved.entities.length, 1);
+          actual.add(resolved.entities[0].handle);
+        }
+        assert.deepEqual(actual, new Set(kernel[query](second.solid)), `blended ${kind}, batch=${batch}`);
+      }
+      const before = Uint8Array.from(kernel.serializeSolids(Uint32Array.of(second.solid)));
+      assert.throws(() => edit(second.solid, -100));
+      assert.deepEqual(kernel.serializeSolids(Uint32Array.of(second.solid)), before);
+    } finally { kernel.free(); }
+  }
+  console.log('ok - direct edit history: planar and blended references across successive edits, direct/batch rollback and work limits');
 };
 
 
