@@ -439,17 +439,24 @@ box-face witness preserves all surviving references and explicitly deletes four
 spokes and the unused center across three scales, populated arena restore,
 repeated unification, and a later draft.
 
-Multiple output faces from one merge group still need per-region contributor
-records and remain unresolved; this is not an all-to-all attribution claim.
-The unifier's existing outer-shell scope is unchanged. Cavity unification and
-that multi-region attribution remain open B18 cells. The compiled-package
-regression reproduces `unresolvedAcrossOperation` on the preceding package;
+A follow-on B18 increment traces multiple output regions through source-wire
+components and canceled shared edges. A pinched source can contribute to both
+regions while its neighbors contribute only to their own region; fully interior
+source faces inherit their connected region even without surviving boundary
+edges. The collector allocates no topology and requires complete boundary and
+component accounting. Pinched sources with holes remain unresolved until hole
+ownership is established. Low-level open repair fixtures cover this tracing and
+pipeline history; they do not qualify closed-solid acceptance. The unifier's
+existing outer-shell scope is
+unchanged; cavity unification and broader multi-region qualification remain
+open B18 cells. The compiled-package regression reproduces `unresolvedAcrossOperation` on the preceding package;
 both rebuilt optimized packages now pass smoke and installed-tarball consumer
 suites, including all six direct/batch unification cells. Workspace Clippy,
 rustdoc, doctests, mdBook, boundary checks, and the unchanged 52-row census pass.
-The full all-features native run passes 4,930 tests (13 skipped). One
-process-leak warning in `modeling_refusal_stays_typed_and_transactional` does not
-reproduce in isolation. This increment is qualified locally, not yet merged.
+The full all-features native run passes 4,932 tests (13 skipped), with no
+process-leak warnings. The final test-fixture boundary API correction also passes
+all 140 healing tests. The rebuilt kernel grows by 12,090 bytes; the translator
+binary is unchanged. This increment is qualified locally, not yet merged.
 
 ## §B Bridge backlog — owned by neither program
 
