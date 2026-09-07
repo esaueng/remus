@@ -509,6 +509,26 @@ crate boundaries, and the unchanged 52-row census pass. The kernel grows by
 4,937 tests (13 skipped), with no leak warnings. This increment is qualified
 locally, not yet merged.
 
+### Common-vertex split history — locally qualified
+
+The next B18 increment records the retained source and actual allocated vertices
+from `split_common_vertex`, including disconnected fans across cavity shells.
+An additive history API captures completed endpoint changes; its `ReShape`
+metadata does not redirect edges when applied. History traversal accepts direct
+self-retention in a split while rejecting cross-entity cycles and conflicting
+pending vertex actions. The existing split threshold and geometry are unchanged.
+
+Low-level pipeline tests cover all eleven descendants of an over-connected
+vertex, repeated no-op execution, and ordinary-operation count parity. Naming
+assembly returns all construction descendants and preserves them through a
+populated arena restore and later identity step. These fixtures exercise lineage;
+they do not establish a new closed-solid repair capability. Three-scale open-fan
+fixtures remain typed refusals at the verified boundary, with exact topology and
+journal rollback both after validation refusal and after a later operator fails.
+Six direct/batch compiled-package cells preserve those refusals. All 4,943 native tests pass (13 skipped), and both optimized WASM packages pass
+smoke and installed-tarball consumer checks. This increment is not yet merged
+and does not close the B17 repair matrix.
+
 ## §B Bridge backlog — owned by neither program
 
 Ready items from the stabilization-plan residue, the capability-matrix
