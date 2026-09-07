@@ -883,6 +883,24 @@ mod tests {
     }
 
     #[test]
+    fn disabled_wireframe_repair_preserves_disjoint_boundaries() {
+        let mut topo = Topology::new();
+        let shell = disjoint_cube_shell(&mut topo);
+        let mut ctx = crate::context::HealContext::new();
+        let config = crate::fix::config::FixConfig {
+            fix_wireframe: crate::fix::config::FixMode::Off,
+            ..Default::default()
+        };
+        let (result, history) =
+            crate::fix::wireframe::fix_wireframe_with_history(&mut topo, shell, &mut ctx, &config)
+                .unwrap();
+        assert_eq!(result.actions_taken, 0);
+        assert_eq!(free_edge_count(&topo, shell), 24);
+        assert!(history.edges.is_empty());
+        assert!(history.vertices.is_empty());
+    }
+
+    #[test]
     fn wireframe_repair_closes_a_disjoint_cube_shell() {
         let mut topo = Topology::new();
         let shell = disjoint_cube_shell(&mut topo);
