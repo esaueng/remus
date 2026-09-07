@@ -4590,8 +4590,10 @@ export class BrepKernel {
     /**
      * Move faces with construction history.
      *
-     * Planar re-limitation and coaxial
-     * bore moves include edge and vertex history; blend-aware moves are faces-only.
+     * Planar re-limitation and coaxial bore moves include edge and vertex
+     * history. Blend moves retain copy-derived history or a complete, unique
+     * boundary correspondence anchored on construction face identities.
+     * Ambiguous reconstructed boundaries retain faces-only history.
      * Returns JSON `{"solid", "op"}`.
      * @param {number} solid
      * @param {Uint32Array} faces
