@@ -75,6 +75,84 @@ fn entity_evolution_json(evolution: &EntityEvolution) -> serde_json::Value {
     serde_json::json!({ "faces": faces, "edges": edges, "vertices": vertices })
 }
 
+fn replacement_vector(
+    value: &serde_json::Value,
+    key: &str,
+) -> Result<remus_math::vec::Vec3, StructuredWasmError> {
+    let values = crate::helpers::get_f64_array(value, key)?;
+    let [x, y, z] = values.as_slice() else {
+        return Err(StructuredWasmError::invalid_argument(
+            format!("'{key}' must have exactly 3 components"),
+            Some(key),
+        ));
+    };
+    if values.iter().any(|component| !component.is_finite()) {
+        return Err(StructuredWasmError::invalid_argument(
+            format!("'{key}' must be finite"),
+            Some(key),
+        ));
+    }
+    Ok(remus_math::vec::Vec3::new(*x, *y, *z))
+}
+
+fn parse_replacement_surface(
+    value: &serde_json::Value,
+    source: &remus_topology::face::FaceSurface,
+) -> Result<remus_topology::face::FaceSurface, StructuredWasmError> {
+    use remus_topology::face::FaceSurface;
+    let object = value.as_object().ok_or_else(|| {
+        StructuredWasmError::invalid_argument(
+            "replacement must be a surface object",
+            Some("replacement"),
+        )
+    })?;
+    let kind = value["type"].as_str().ok_or_else(|| {
+        StructuredWasmError::invalid_argument(
+            "replacement requires a surface type",
+            Some("replacement.type"),
+        )
+    })?;
+    let fields: &[&str] = match kind {
+        "plane" => &["type", "normal", "d"],
+        "cylinder" => &["type", "origin", "axis", "radius"],
+        _ => {
+            return Err(StructuredWasmError::invalid_argument(
+                "replacement type must be plane or cylinder",
+                Some("replacement.type"),
+            ));
+        }
+    };
+    if let Some(key) = object.keys().find(|key| !fields.contains(&key.as_str())) {
+        return Err(StructuredWasmError::invalid_argument(
+            format!("unknown replacement field '{key}'"),
+            Some(key),
+        ));
+    }
+    if kind == "plane" {
+        return Ok(FaceSurface::Plane {
+            normal: replacement_vector(value, "normal")?,
+            d: get_f64(value, "d")?,
+        });
+    }
+    let origin = replacement_vector(value, "origin")?;
+    let origin = remus_math::vec::Point3::new(origin.x(), origin.y(), origin.z());
+    let axis = replacement_vector(value, "axis")?;
+    let radius = get_f64(value, "radius")?;
+    let cylinder = if let FaceSurface::Cylinder(source) = source {
+        // Changing the radius must not silently rotate the periodic parameter seam.
+        remus_math::surfaces::CylindricalSurface::with_ref_dir(
+            origin,
+            axis,
+            radius,
+            source.x_axis(),
+        )
+    } else {
+        remus_math::surfaces::CylindricalSurface::new(origin, axis, radius)
+    }
+    .map_err(StructuredWasmError::from)?;
+    Ok(FaceSurface::Cylinder(cylinder))
+}
+
 impl BrepKernel {
     fn boolean_entity_evolution_json(
         &mut self,
@@ -190,6 +268,33 @@ impl BrepKernel {
             .map_err(StructuredWasmError::from)?;
         let result = remus_operations::imprint::imprint(self.topo_mut(), target_id, tool_id)
             .map_err(StructuredWasmError::from)?;
+        Ok(serde_json::json!({
+            "solid": crate::handles::solid_id_to_u32(result.solid),
+            "op": u32::try_from(result.op.value()).unwrap_or(u32::MAX),
+        }))
+    }
+
+    fn replace_surface_journaled_json(
+        &mut self,
+        solid: u32,
+        face: u32,
+        replacement: &serde_json::Value,
+    ) -> Result<serde_json::Value, StructuredWasmError> {
+        let solid_id = self
+            .resolve_solid(solid)
+            .map_err(StructuredWasmError::from)?;
+        let face_id = self.resolve_face(face).map_err(StructuredWasmError::from)?;
+        let source = self
+            .topo()
+            .face(face_id)
+            .map_err(StructuredWasmError::from)?
+            .surface();
+        let replacement = parse_replacement_surface(replacement, source)?;
+        super::operations::validate_move_faces_topology_work(self.topo(), solid_id, &[face_id])
+            .map_err(StructuredWasmError::from)?;
+        let result =
+            journal_ops::replace_surface_journaled(self.topo_mut(), solid_id, face_id, replacement)
+                .map_err(StructuredWasmError::from)?;
         Ok(serde_json::json!({
             "solid": crate::handles::solid_id_to_u32(result.solid),
             "op": u32::try_from(result.op.value()).unwrap_or(u32::MAX),
@@ -323,6 +428,11 @@ impl BrepKernel {
             "imprint" => get_u32(args, "target").and_then(|target| {
                 get_u32(args, "tool").and_then(|tool| self.imprint_json(target, tool))
             }),
+            "replaceSurfaceJournaled" => (|| {
+                let solid = get_u32(args, "solid")?;
+                let face = get_u32(args, "face")?;
+                self.replace_surface_journaled_json(solid, face, &args["replacement"])
+            })(),
             "moveFacesJournaled" => (|| {
                 let solid = get_u32(args, "solid")?;
                 let faces = get_u32_array(args, "faces")?;
@@ -431,6 +541,28 @@ impl BrepKernel {
     #[wasm_bindgen(js_name = "imprint")]
     pub fn imprint_js(&mut self, target: u32, tool: u32) -> Result<String, JsError> {
         self.imprint_json(target, tool)
+            .map(|value| value.to_string())
+            .map_err(structured_to_js)
+    }
+
+    /// Replace a support surface with exact face, edge, and vertex history.
+    ///
+    /// `replacement` is JSON: `{type:"plane", normal:[x,y,z], d}` or
+    /// `{type:"cylinder", origin:[x,y,z], axis:[x,y,z], radius}`. Plane
+    /// coefficients represent `normal dot point = d`; cylinder replacements
+    /// retain the source parameter reference direction. Unknown fields refuse.
+    /// Returns JSON `{"solid", "op"}`. Batch calls pass the replacement object
+    /// directly as `args.replacement`.
+    #[wasm_bindgen(js_name = "replaceSurfaceJournaled")]
+    pub fn replace_surface_journaled_js(
+        &mut self,
+        solid: u32,
+        face: u32,
+        replacement: &str,
+    ) -> Result<String, JsError> {
+        let replacement = serde_json::from_str(replacement)
+            .map_err(|error| structured_to_js(StructuredWasmError::invalid_json(&error)))?;
+        self.replace_surface_journaled_json(solid, face, &replacement)
             .map(|value| value.to_string())
             .map_err(structured_to_js)
     }
@@ -649,6 +781,242 @@ mod evolution_contract_tests {
             "instance faces must inherit the original's name: {}",
             results[0]
         );
+    }
+
+    fn replacement_box() -> (BrepKernel, u32, u32) {
+        let mut kernel = BrepKernel::new();
+        let source = kernel.make_box_solid(3.0, 5.0, 7.0).unwrap();
+        let id = kernel.resolve_solid(source).unwrap();
+        let face = remus_topology::explorer::solid_faces(kernel.topo(), id)
+            .unwrap()
+            .into_iter()
+            .find(|&face| {
+                kernel
+                    .topo()
+                    .face(face)
+                    .unwrap()
+                    .effective_plane_normal()
+                    .is_some_and(|normal| normal.z() > 0.9)
+            })
+            .unwrap();
+        (kernel, source, super::index_u32(face.index()))
+    }
+
+    #[test]
+    fn replacement_history_has_direct_batch_reference_parity() {
+        use remus_topology::journal::{EntityKind, OpId};
+        use remus_topology::naming::{PersistentRef, Provenance, Resolution, resolve};
+        let mut results = Vec::new();
+        for batch in [false, true] {
+            let (mut kernel, source, face) = replacement_box();
+            let first = kernel
+                .replace_surface_journaled_json(
+                    source,
+                    face,
+                    &serde_json::json!({"type":"plane", "normal":[0,0,1], "d":8}),
+                )
+                .unwrap();
+            let anchor = OpId::from_value(first["op"].as_u64().unwrap());
+            let solid = u32::try_from(first["solid"].as_u64().unwrap()).unwrap();
+            let solid_id = kernel.resolve_solid(solid).unwrap();
+            let face = remus_topology::explorer::solid_faces(kernel.topo(), solid_id)
+                .unwrap()
+                .into_iter()
+                .find(|&face| {
+                    kernel
+                        .topo()
+                        .face(face)
+                        .unwrap()
+                        .effective_plane_normal()
+                        .is_some_and(|normal| normal.z() > 0.9)
+                })
+                .unwrap();
+            let face = super::index_u32(face.index());
+            let replacement = serde_json::json!({"type":"plane", "normal":[-0.1,0,1], "d":7.85});
+            let second = if batch {
+                run(&mut kernel, serde_json::json!([
+                    {"op":"replaceSurfaceJournaled", "args":{"solid":solid,"face":face,"replacement":replacement}}
+                ])).remove(0)
+            } else {
+                serde_json::from_str(
+                    &kernel
+                        .replace_surface_journaled_js(solid, face, &replacement.to_string())
+                        .unwrap(),
+                )
+                .unwrap()
+            };
+            let solid = u32::try_from(second["solid"].as_u64().unwrap()).unwrap();
+            assert!((kernel.volume(solid, 0.01).unwrap() - 120.0).abs() < 1e-8);
+            let solid_id = kernel.resolve_solid(solid).unwrap();
+            let live: std::collections::BTreeSet<_> =
+                remus_operations::journal_ops::solid_entity_keys(kernel.topo(), solid_id)
+                    .unwrap()
+                    .into_iter()
+                    .collect();
+            let mut resolved = std::collections::BTreeSet::new();
+            for (kind, count) in [
+                (EntityKind::Face, 6),
+                (EntityKind::Edge, 12),
+                (EntityKind::Vertex, 8),
+            ] {
+                for index in 0..count {
+                    let resolution = resolve(
+                        kernel.topo(),
+                        &PersistentRef::operation_output(anchor, kind, index),
+                    );
+                    let Resolution::Bound { entity, provenance } = resolution else {
+                        panic!("{resolution:?}")
+                    };
+                    assert_eq!(provenance, Provenance::Construction);
+                    assert!(resolved.insert(entity));
+                }
+            }
+            assert_eq!(resolved, live);
+            results.push(second);
+        }
+        assert_eq!(results[0], results[1]);
+    }
+
+    #[test]
+    fn replacement_refusals_have_matching_errors_and_restore_history() {
+        let (mut kernel, source, face) = replacement_box();
+        let first = kernel
+            .replace_surface_journaled_json(
+                source,
+                face,
+                &serde_json::json!({"type":"plane", "normal":[0,0,1], "d":8}),
+            )
+            .unwrap();
+        let source = u32::try_from(first["solid"].as_u64().unwrap()).unwrap();
+        let source_id = kernel.resolve_solid(source).unwrap();
+        let face = remus_topology::explorer::solid_faces(kernel.topo(), source_id)
+            .unwrap()
+            .into_iter()
+            .find(|&face| {
+                kernel
+                    .topo()
+                    .face(face)
+                    .unwrap()
+                    .effective_plane_normal()
+                    .is_some_and(|normal| normal.z() > 0.9)
+            })
+            .unwrap();
+        let face = super::index_u32(face.index());
+        let before = kernel.topo().journal().snapshot();
+        let counts = (
+            kernel.topo().num_vertices(),
+            kernel.topo().num_edges(),
+            kernel.topo().num_faces(),
+            kernel.topo().num_pcurves(),
+        );
+        for replacement in [
+            serde_json::json!(null),
+            serde_json::json!({}),
+            serde_json::json!({"type":"sphere"}),
+            serde_json::json!({"type":"plane", "normal":[0,0], "d":9}),
+            serde_json::json!({"type":"plane", "normal":[0,0,0], "d":9}),
+            serde_json::json!({"type":"plane", "normal":[0,0,1], "d":-1}),
+            serde_json::json!({"type":"plane", "normal":[0,0,1], "d":9, "offset":1}),
+            serde_json::json!({"type":"cylinder", "origin":[0,0,0], "axis":[0,0,1], "radius":1}),
+        ] {
+            let direct = serde_json::to_value(
+                kernel
+                    .replace_surface_journaled_json(source, face, &replacement)
+                    .unwrap_err(),
+            )
+            .unwrap();
+            let response: serde_json::Value = serde_json::from_str(&kernel.execute_batch_v2(&serde_json::json!([
+                {"op":"replaceSurfaceJournaled", "args":{"solid":source,"face":face,"replacement":replacement}}
+            ]).to_string())).unwrap();
+            let mut batch = response[0]["error"].clone();
+            let details = batch["details"].as_object_mut().unwrap();
+            assert_eq!(
+                details.remove("operation"),
+                Some(serde_json::json!("replaceSurfaceJournaled"))
+            );
+            assert_eq!(details.remove("operationIndex"), Some(serde_json::json!(0)));
+            assert_eq!(batch, direct);
+            assert_eq!(kernel.topo().journal().snapshot(), before);
+            assert_eq!(
+                (
+                    kernel.topo().num_vertices(),
+                    kernel.topo().num_edges(),
+                    kernel.topo().num_faces(),
+                    kernel.topo().num_pcurves()
+                ),
+                counts
+            );
+        }
+    }
+
+    #[test]
+    fn replacement_preserves_the_topology_work_budget() {
+        let mut kernel = BrepKernel::new();
+        let wire = kernel.make_regular_polygon_wire(10.0, 500).unwrap();
+        let profile = kernel.make_face_from_wire(wire).unwrap();
+        let source = kernel.extrude_face(profile, 0.0, 0.0, 1.0, 1.0).unwrap();
+        let id = kernel.resolve_solid(source).unwrap();
+        assert!(
+            remus_operations::validate::validate_solid(kernel.topo(), id)
+                .unwrap()
+                .is_valid()
+        );
+        let face = remus_topology::explorer::solid_faces(kernel.topo(), id)
+            .unwrap()
+            .into_iter()
+            .find(|&face| {
+                kernel
+                    .topo()
+                    .face(face)
+                    .unwrap()
+                    .effective_plane_normal()
+                    .is_some_and(|normal| normal.z() > 0.9)
+            })
+            .unwrap();
+        let face = super::index_u32(face.index());
+        let before = kernel.topo().journal().snapshot();
+        let replacement = serde_json::json!({"type":"plane","normal":[0,0,1],"d":1.25});
+        let error = kernel
+            .replace_surface_journaled_json(source, face, &replacement)
+            .unwrap_err();
+        assert!(
+            error
+                .message()
+                .contains("moveFaces topology work must be at most"),
+            "{}",
+            error.message()
+        );
+        let response: serde_json::Value = serde_json::from_str(&kernel.execute_batch_v2(&serde_json::json!([
+            {"op":"replaceSurfaceJournaled","args":{"solid":source,"face":face,"replacement":replacement}}
+        ]).to_string())).unwrap();
+        assert_eq!(response[0]["error"]["message"], error.message());
+        assert_eq!(kernel.topo().journal().snapshot(), before);
+    }
+
+    #[test]
+    fn replacement_cylinder_parser_preserves_the_source_parameter_direction() {
+        use remus_math::surfaces::CylindricalSurface;
+        use remus_math::vec::{Point3, Vec3};
+        use remus_topology::face::FaceSurface;
+        let source = CylindricalSurface::with_ref_dir(
+            Point3::new(3.0, 4.0, 5.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            1.0,
+            Vec3::new(0.0, 1.0, 0.0),
+        )
+        .unwrap();
+        let replacement = super::parse_replacement_surface(
+            &serde_json::json!({
+                "type":"cylinder", "origin":[3,4,5], "axis":[0,0,1], "radius":2
+            }),
+            &FaceSurface::Cylinder(source.clone()),
+        )
+        .unwrap();
+        let FaceSurface::Cylinder(replacement) = replacement else {
+            panic!("cylinder required")
+        };
+        assert!((replacement.x_axis() - source.x_axis()).length() < 1e-12);
+        assert!((replacement.radius() - 2.0).abs() < 1e-12);
     }
 
     #[test]
