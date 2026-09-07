@@ -1012,7 +1012,7 @@ pub fn record_barrier_over_solid(
 
 #[cfg(test)]
 mod healing_history_tests {
-    #![allow(clippy::unwrap_used)]
+    #![allow(clippy::unwrap_used, clippy::panic)]
 
     use super::*;
     use remus_heal::{pipeline::process::StepHistory, reshape::ReShape};
@@ -1048,6 +1048,129 @@ mod healing_history_tests {
             result: keys(result),
             replacements,
         }
+    }
+
+    #[test]
+    fn retained_vertex_history_binds_all_pieces_after_arena_restore() {
+        use remus_topology::naming::{PersistentRef, Provenance, Resolution, resolve};
+        let mut topo = Topology::new();
+        let solid = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+        let source = remus_topology::explorer::solid_vertices(&topo, solid).unwrap()[0];
+        let pending = begin_scoped(&mut topo, "vertex_fixture", &[solid]).unwrap();
+        let mut draft = EvolutionDraft::construction();
+        draft.push(
+            EntityKey::vertex(source.index()),
+            EventDraft::Generated {
+                sources: Vec::new(),
+            },
+        );
+        let anchor = topo.journal_record_evolution(pending, draft).unwrap();
+        let reference =
+            PersistentRef::operation_output(anchor, remus_topology::journal::EntityKind::Vertex, 0);
+        let sources = solid_entity_keys(&topo, solid).unwrap();
+        let pending = begin_scoped(&mut topo, "applied_vertex_split_fixture", &[solid]).unwrap();
+        let vertex = topo.vertex(source).unwrap().clone();
+        let child = topo.add_vertex(vertex);
+        // This isolates naming for an applied endpoint split; it is not a solid-validity test.
+        let edge = remus_topology::explorer::solid_edges(&topo, solid)
+            .unwrap()
+            .into_iter()
+            .find(|id| {
+                let edge = topo.edge(*id).unwrap();
+                edge.start() == source || edge.end() == source
+            })
+            .unwrap();
+        let edge = topo.edge_mut(edge).unwrap();
+        if edge.start() == source {
+            edge.set_start(child);
+        } else {
+            edge.set_end(child);
+        }
+        let mut history = ReShape::new();
+        history
+            .record_applied_vertex_split(source, vec![source, child])
+            .unwrap();
+        record_healing_history(&mut topo, pending, &sources, solid, &history).unwrap();
+        let Resolution::BoundMany {
+            entities,
+            provenance,
+        } = resolve(&topo, &reference)
+        else {
+            panic!("retained split must resolve to both construction descendants");
+        };
+        assert_eq!(provenance, Provenance::Construction);
+        assert_eq!(
+            entities,
+            vec![
+                EntityKey::vertex(source.index()),
+                EntityKey::vertex(child.index())
+            ]
+        );
+        let bytes = remus_io::arena_io::serialize_solids(&topo, &[solid]).unwrap();
+        let mut restored = Topology::new();
+        crate::primitives::make_box(&mut restored, 2.0, 2.0, 2.0).unwrap();
+        let result = remus_io::arena_io::deserialize_solids(&bytes, &mut restored).unwrap()[0];
+        let Resolution::BoundMany {
+            entities,
+            provenance,
+        } = resolve(&restored, &reference)
+        else {
+            panic!("arena restore lost retained split descendants");
+        };
+        assert_eq!(entities.len(), 2);
+        assert_eq!(provenance, Provenance::Construction);
+        let sources = solid_entity_keys(&restored, result).unwrap();
+        let pending = begin_scoped(&mut restored, "later_identity", &[result]).unwrap();
+        record_healing_history(&mut restored, pending, &sources, result, &ReShape::new()).unwrap();
+        assert_eq!(
+            resolve(&restored, &reference),
+            Resolution::BoundMany {
+                entities,
+                provenance
+            }
+        );
+    }
+
+    #[test]
+    fn healing_composes_retained_vertex_splits_through_later_steps() {
+        let mut topo = Topology::new();
+        let ids: Vec<_> = (0..3)
+            .map(|_| {
+                topo.add_vertex(Vertex::new(
+                    remus_math::vec::Point3::new(0.0, 0.0, 0.0),
+                    1e-7,
+                ))
+            })
+            .collect();
+        let keys: Vec<_> = ids.iter().map(|id| EntityKey::vertex(id.index())).collect();
+        let mut split = ReShape::new();
+        split
+            .record_applied_vertex_split(ids[0], vec![ids[0], ids[1]])
+            .unwrap();
+        let mut later = ReShape::new();
+        later.replace_vertex(ids[1], ids[2]);
+        let steps = vec![
+            StepHistory {
+                sources: vec![keys[0]],
+                result: keys[..2].to_vec(),
+                replacements: split,
+            },
+            StepHistory {
+                sources: keys[..2].to_vec(),
+                result: vec![keys[0], keys[2]],
+                replacements: later,
+            },
+        ];
+        assert_eq!(
+            compose_healing_history(&keys[..1], &steps).unwrap()[&keys[0]],
+            Some(vec![keys[0], keys[2]])
+        );
+        let mut incomplete = steps;
+        incomplete[0].result.pop();
+        assert_eq!(
+            compose_healing_history(&keys[..1], &incomplete).unwrap()[&keys[0]],
+            None
+        );
     }
 
     #[test]

@@ -72,6 +72,7 @@ pub enum ShellAction {
 #[derive(Debug, Default, Clone)]
 pub struct ReShape {
     vertices: HashMap<VertexId, VertexAction>,
+    applied_vertex_splits: HashMap<VertexId, Vec<VertexId>>,
     edges: HashMap<EdgeId, EdgeAction>,
     wires: HashMap<WireId, WireAction>,
     faces: HashMap<FaceId, FaceAction>,
@@ -85,6 +86,32 @@ impl ReShape {
         Self::default()
     }
 
+    /// Record descendants of a vertex split already applied to topology.
+    ///
+    /// The source must remain among the targets. This metadata never redirects
+    /// edges when [`Self::apply`] is called.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HealError::FixFailed`] if the retained source is absent or a
+    /// pending vertex action conflicts with the completed split.
+    pub fn record_applied_vertex_split(
+        &mut self,
+        source: VertexId,
+        targets: Vec<VertexId>,
+    ) -> Result<(), HealError> {
+        if !targets.contains(&source) || self.vertices.contains_key(&source) {
+            return Err(HealError::FixFailed(
+                "applied vertex split requires a retained source without a pending action".into(),
+            ));
+        }
+        let descendants = self.applied_vertex_splits.entry(source).or_default();
+        descendants.extend(targets);
+        descendants.sort_by_key(|id| id.index());
+        descendants.dedup();
+        Ok(())
+    }
+
     /// Resolve recorded vertex, edge, and face replacement chains.
     ///
     /// Only explicitly recorded sources are returned. Empty targets mean a
@@ -93,7 +120,8 @@ impl ReShape {
     ///
     /// # Errors
     ///
-    /// Returns [`HealError::FixFailed`] for cyclic replacement chains.
+    /// Returns [`HealError::FixFailed`] for cyclic replacement chains or a
+    /// pending vertex action conflicting with an applied split.
     pub fn entity_history(
         &self,
     ) -> Result<
@@ -109,6 +137,20 @@ impl ReShape {
                     VertexAction::Replace(target) => vec![EntityKey::vertex(target.index())],
                     VertexAction::Remove => Vec::new(),
                 },
+            );
+        }
+        for (&source, targets) in &self.applied_vertex_splits {
+            if self.vertices.contains_key(&source) {
+                return Err(HealError::FixFailed(
+                    "applied vertex split conflicts with a pending vertex action".into(),
+                ));
+            }
+            graph.insert(
+                EntityKey::vertex(source.index()),
+                targets
+                    .iter()
+                    .map(|id| EntityKey::vertex(id.index()))
+                    .collect(),
             );
         }
         for (&source, action) in &self.edges {
@@ -156,6 +198,11 @@ impl ReShape {
                 if exiting {
                     let mut leaves = BTreeSet::new();
                     for target in targets {
+                        // A direct self-target represents the retained split component.
+                        if *target == source {
+                            leaves.insert(source);
+                            continue;
+                        }
                         let known = resolved.get(target).ok_or_else(|| {
                             HealError::FixFailed("incomplete replacement history traversal".into())
                         })?;
@@ -170,7 +217,13 @@ impl ReShape {
                         )));
                     }
                     pending.push((source, true));
-                    pending.extend(targets.iter().rev().map(|&target| (target, false)));
+                    pending.extend(
+                        targets
+                            .iter()
+                            .rev()
+                            .filter(|&&target| target != source)
+                            .map(|&target| (target, false)),
+                    );
                 }
             }
         }
@@ -444,7 +497,9 @@ impl ReShape {
 
     // ── Apply ───────────────────────────────────────────────────────
 
-    /// Whether any replacements or removals have been recorded.
+    /// Whether pending replacements or removals have been recorded.
+    ///
+    /// Completed split metadata alone requires no topology application.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.vertices.is_empty()
@@ -697,6 +752,84 @@ mod tests {
     use remus_topology::wire::{OrientedEdge, Wire, WireId};
 
     use super::ReShape;
+
+    #[test]
+    fn applied_vertex_splits_compose_and_refuse_conflicting_actions() {
+        use remus_topology::journal::EntityKey;
+        let mut topo = Topology::new();
+        let ids: Vec<_> = (0..4)
+            .map(|_| topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7)))
+            .collect();
+        let mut history = ReShape::new();
+        assert!(
+            history
+                .record_applied_vertex_split(ids[0], vec![ids[1]])
+                .is_err()
+        );
+        history
+            .record_applied_vertex_split(ids[0], vec![ids[1], ids[0], ids[1]])
+            .unwrap();
+        history
+            .record_applied_vertex_split(ids[1], vec![ids[1], ids[2]])
+            .unwrap();
+        history.replace_vertex(ids[3], ids[0]);
+        let claims = history.entity_history().unwrap();
+        let expected: Vec<_> = ids[..3]
+            .iter()
+            .map(|id| EntityKey::vertex(id.index()))
+            .collect();
+        assert_eq!(claims[&EntityKey::vertex(ids[0].index())], expected);
+        assert_eq!(claims[&EntityKey::vertex(ids[3].index())], expected);
+        assert_eq!(history.resolve_vertex(ids[0]), ids[0]);
+        let mut conflicting = history.clone();
+        conflicting.remove_vertex(ids[0]);
+        assert!(conflicting.entity_history().is_err());
+        assert!(
+            conflicting
+                .record_applied_vertex_split(ids[0], vec![ids[0]])
+                .is_err()
+        );
+        history.replace_vertex(ids[2], ids[0]);
+        assert!(history.entity_history().is_err());
+    }
+
+    #[test]
+    fn entity_history_retains_split_components_without_accepting_cross_entity_cycles() {
+        use remus_topology::journal::EntityKey;
+        let mut topo = Topology::new();
+        let vertices: Vec<_> = (0..4)
+            .map(|i| topo.add_vertex(Vertex::new(Point3::new(f64::from(i), 0.0, 0.0), 1e-7)))
+            .collect();
+        let a = topo.add_edge(Edge::new(vertices[0], vertices[3], EdgeCurve::Line));
+        topo.edge_mut(a).unwrap().set_end(vertices[1]);
+        let b = topo.add_edge(Edge::new(vertices[1], vertices[3], EdgeCurve::Line));
+        topo.edge_mut(b).unwrap().set_end(vertices[2]);
+        let c = topo.add_edge(Edge::new(vertices[2], vertices[3], EdgeCurve::Line));
+        let mut history = ReShape::new();
+        history.split_edge(a, vec![a, b]);
+        history.split_edge(b, vec![b, c]);
+        let claims = history.entity_history().unwrap();
+        assert_eq!(
+            claims[&EntityKey::edge(a.index())],
+            vec![
+                EntityKey::edge(a.index()),
+                EntityKey::edge(b.index()),
+                EntityKey::edge(c.index())
+            ]
+        );
+        assert_eq!(
+            claims[&EntityKey::edge(b.index())],
+            vec![EntityKey::edge(b.index()), EntityKey::edge(c.index())]
+        );
+        history.replace_edge(c, a);
+        assert!(history.entity_history().is_err());
+        let mut identity = ReShape::new();
+        identity.split_edge(a, vec![a]);
+        assert_eq!(
+            identity.entity_history().unwrap()[&EntityKey::edge(a.index())],
+            vec![EntityKey::edge(a.index())]
+        );
+    }
 
     #[test]
     fn entity_history_composes_splits_merges_and_removals() {

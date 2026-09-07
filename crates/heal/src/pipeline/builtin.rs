@@ -454,6 +454,26 @@ impl HealOperator for SplitCommonVertexOp {
             crate::fix::split_vertex::fix_split_common_vertex(topo, solid_id, ctx, &config)?;
         Ok((solid_id, result))
     }
+
+    fn execute_with_history(
+        &self,
+        topo: &mut Topology,
+        solid_id: SolidId,
+        ctx: &mut HealContext,
+    ) -> Result<(SolidId, FixResult, crate::reshape::ReShape), HealError> {
+        let config = FixConfig {
+            fix_split_common_vertex: crate::fix::FixMode::On,
+            ..Default::default()
+        };
+        let (result, history) = crate::fix::split_vertex::fix_split_common_vertex_with_history(
+            topo, solid_id, ctx, &config,
+        )?;
+        let mut replacements = crate::reshape::ReShape::new();
+        for (source, targets) in history.vertices {
+            replacements.record_applied_vertex_split(source, targets)?;
+        }
+        Ok((solid_id, result, replacements))
+    }
 }
 
 /// Convert all geometry to B-Spline representation.
