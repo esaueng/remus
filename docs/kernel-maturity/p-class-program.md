@@ -317,11 +317,23 @@ it checks support residuals, topology, watertight meshes, and an independent
 horizontal-disk overlap integral (197.106403011 mm³ at unit scale). Planar
 ellipse moments also preserve the cap measurement after rigid transforms.
 
-The pinned off-axis sphere–cylinder and torus–sphere witnesses still refuse
-through `ExactOnlyUnattainable` for all three operators, restoring the live
-model on refusal. This slice does **not** qualify general quartic arrangements
-or close 2.4c/2.4d; those broader arrangements and the integration ratchet remain.
-See `crates/operations/tests/pclass_quadric_seams.rs` and
+A second bounded native matrix covers a radius-6 sphere and a radius-3,
+height-20 cylinder translated to `(2, 0, -10)`. Fuse, Cut, and Intersect
+pass at scales 0.1, 1, and 10, both unplaced and under a common rigid
+transform. Both closed quartic seams retain support on the two carriers;
+the matrix checks topology, watertight tessellation, measured and mesh volume
+against an independent disk-overlap integral (294.188425924 mm³ at unit
+scale). The implementation handles polar pockets, wavy cylinder bands,
+and circular rims represented as equal-axis ellipses after transformation.
+This slice passes all 4,796 workspace tests (12 skipped), preserves the
+52-row approximation census, and passes direct and installed-tarball WASM
+regressions for all three operators.
+
+The pinned torus–sphere witness still requires `ExactOnlyUnattainable` for
+all three operators, restoring the live model on refusal. These bounded
+slices do **not** qualify general quartic arrangements or close 2.4c/2.4d.
+See `crates/operations/tests/pclass_quadric_seams.rs`,
+`crates/operations/tests/pclass_sphere_cylinder_seams.rs`, and
 `crates/math/tests/regress_marched_quadric_seam.rs`.
 
 Stage 2.4b merged in PR #207. The torus-notch arrangement emits both

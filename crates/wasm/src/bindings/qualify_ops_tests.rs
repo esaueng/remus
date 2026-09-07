@@ -478,3 +478,46 @@ fn batch_offset_cone_sphere_boolean_retains_exact_carriers() {
         assert_eq!(result[0], 0);
     }
 }
+
+#[test]
+fn batch_offset_sphere_cylinder_boolean_retains_exact_carriers() {
+    let overlap = 294.188_425_924_194_9;
+    for (operation, expected) in [
+        ("fuse", (288.0 + 180.0) * std::f64::consts::PI - overlap),
+        ("cut", 288.0 * std::f64::consts::PI - overlap),
+        ("intersect", overlap),
+    ] {
+        let mut kernel = BrepKernel::new();
+        let inputs = run_all_ok(
+            &mut kernel,
+            &[
+                op("makeSphere", serde_json::json!({"radius":6,"segments":24})),
+                op("makeCylinder", serde_json::json!({"radius":3,"height":20})),
+            ],
+        );
+        let a = as_u32(&inputs[0]);
+        let b = as_u32(&inputs[1]);
+        run_all_ok(
+            &mut kernel,
+            &[op(
+                "transform",
+                serde_json::json!({"solid":b,"matrix":[1,0,0,2,0,1,0,0,0,0,1,-10,0,0,0,1]}),
+            )],
+        );
+        let result = run_all_ok(
+            &mut kernel,
+            &[op(
+                "booleanWithQuality",
+                serde_json::json!({"operation":operation,"solidA":a,"solidB":b,"exactOnly":true}),
+            )],
+        );
+        assert_eq!(result[0]["quality"], "exact");
+        let solid = as_u32(&result[0]["solid"]);
+        assert!((kernel_volume(&kernel, solid) - expected).abs() < expected * 0.001);
+        let result = run_all_ok(
+            &mut kernel,
+            &[op("validateSolid", serde_json::json!({"solid":solid}))],
+        );
+        assert_eq!(result[0], 0);
+    }
+}

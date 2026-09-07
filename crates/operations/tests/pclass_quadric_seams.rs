@@ -145,46 +145,39 @@ fn offset_cone_sphere_intersect_matches_disk_overlap() {
 }
 
 #[test]
-fn remaining_quartic_witnesses_refuse_without_mutating_operands() {
-    use remus_operations::primitives::{make_cylinder, make_torus};
-    for torus_pair in [false, true] {
-        for op in [BooleanOp::Fuse, BooleanOp::Cut, BooleanOp::Intersect] {
-            let mut topo = Topology::new();
-            let (a, b) = if torus_pair {
-                let a = make_torus(&mut topo, 6.0, 2.0, 32).unwrap();
-                let b = make_sphere(&mut topo, 3.0, 24).unwrap();
-                transform_solid(&mut topo, b, &Mat4::translation(5.0, 0.0, 1.0)).unwrap();
-                (a, b)
-            } else {
-                let a = make_sphere(&mut topo, 6.0, 24).unwrap();
-                let b = make_cylinder(&mut topo, 3.0, 20.0).unwrap();
-                transform_solid(&mut topo, b, &Mat4::translation(2.0, 0.0, -10.0)).unwrap();
-                (a, b)
-            };
-            let counts = |t: &Topology| {
-                (
-                    t.num_vertices(),
-                    t.num_edges(),
-                    t.num_wires(),
-                    t.num_faces(),
-                    t.num_shells(),
-                    t.num_solids(),
-                )
-            };
-            let before = counts(&topo);
-            let ctx = OperationContext::new().with_fallback(FallbackPolicy::ExactOnly);
-            assert!(matches!(
-                boolean_with_context(&mut topo, op, a, b, &ctx),
-                Err(remus_operations::OperationsError::ExactOnlyUnattainable)
-            ));
-            assert_eq!(counts(&topo), before);
-            for operand in [a, b] {
-                assert!(
-                    remus_operations::validate::validate_solid(&topo, operand)
-                        .unwrap()
-                        .is_valid()
-                );
-            }
+fn torus_sphere_witness_refuses_without_mutating_operands() {
+    use remus_operations::primitives::make_torus;
+    for op in [BooleanOp::Fuse, BooleanOp::Cut, BooleanOp::Intersect] {
+        let mut topo = Topology::new();
+        let (a, b) = {
+            let a = make_torus(&mut topo, 6.0, 2.0, 32).unwrap();
+            let b = make_sphere(&mut topo, 3.0, 24).unwrap();
+            transform_solid(&mut topo, b, &Mat4::translation(5.0, 0.0, 1.0)).unwrap();
+            (a, b)
+        };
+        let counts = |t: &Topology| {
+            (
+                t.num_vertices(),
+                t.num_edges(),
+                t.num_wires(),
+                t.num_faces(),
+                t.num_shells(),
+                t.num_solids(),
+            )
+        };
+        let before = counts(&topo);
+        let ctx = OperationContext::new().with_fallback(FallbackPolicy::ExactOnly);
+        assert!(matches!(
+            boolean_with_context(&mut topo, op, a, b, &ctx),
+            Err(remus_operations::OperationsError::ExactOnlyUnattainable)
+        ));
+        assert_eq!(counts(&topo), before);
+        for operand in [a, b] {
+            assert!(
+                remus_operations::validate::validate_solid(&topo, operand)
+                    .unwrap()
+                    .is_valid()
+            );
         }
     }
 }

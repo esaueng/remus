@@ -2,7 +2,7 @@
 #![allow(clippy::unwrap_used)]
 use remus_math::{
     analytic_intersection::{AnalyticSurface, intersect_analytic_analytic_bounded},
-    surfaces::{ConicalSurface, SphericalSurface},
+    surfaces::{ConicalSurface, CylindricalSurface, SphericalSurface},
     vec::{Point3, Vec3},
 };
 
@@ -49,6 +49,53 @@ fn cone_sphere_seam_is_closed_and_supported_in_both_operand_orders() {
                     cone_residual < 2e-9,
                     "cone residual={cone_residual}, scale={scale}, reverse={reverse}"
                 );
+            }
+        }
+    }
+}
+
+#[test]
+fn offset_sphere_cylinder_has_two_supported_closed_seams() {
+    for scale in [0.1, 1.0, 10.0] {
+        let sphere = SphericalSurface::new(Point3::new(0.0, 0.0, 0.0), 6.0 * scale).unwrap();
+        let cylinder = CylindricalSurface::new(
+            Point3::new(2.0 * scale, 0.0, -10.0 * scale),
+            Vec3::new(0.0, 0.0, 1.0),
+            3.0 * scale,
+        )
+        .unwrap();
+        for reverse in [false, true] {
+            let (a, b, va, vb) = if reverse {
+                (
+                    AnalyticSurface::Cylinder(&cylinder),
+                    AnalyticSurface::Sphere(&sphere),
+                    Some((0.0, 20.0 * scale)),
+                    None,
+                )
+            } else {
+                (
+                    AnalyticSurface::Sphere(&sphere),
+                    AnalyticSurface::Cylinder(&cylinder),
+                    None,
+                    Some((0.0, 20.0 * scale)),
+                )
+            };
+            let curves = intersect_analytic_analytic_bounded(a, b, 32, va, vb).unwrap();
+            assert_eq!(curves.len(), 2, "scale={scale}, reverse={reverse}");
+            for result in curves {
+                let curve = result.curve;
+                let (lo, hi) = curve.domain();
+                assert!((curve.evaluate(lo) - curve.evaluate(hi)).length() < 1e-9);
+                for i in 0..=4096 {
+                    let p = curve.evaluate((hi - lo).mul_add(f64::from(i) / 4096.0, lo));
+                    let sphere_error =
+                        ((p - Point3::new(0.0, 0.0, 0.0)).length() - 6.0 * scale).abs();
+                    let cylinder_error = ((p.x() - 2.0 * scale).hypot(p.y()) - 3.0 * scale).abs();
+                    assert!(
+                        sphere_error < 2e-9 && cylinder_error < 2e-9,
+                        "scale={scale}, reverse={reverse}, sphere={sphere_error}, cylinder={cylinder_error}"
+                    );
+                }
             }
         }
     }
