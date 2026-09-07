@@ -56,6 +56,26 @@ const HOLE_PROBE_SAMPLES: usize = 8;
 /// deciding whether a chord-crossing break point actually lies on the arc.
 const ARR_ARC_SAMPLES: usize = 32;
 
+/// Preserve the historical fit allowance until it can consume a local feature.
+fn local_weld_band(linear: f64, extent: f64) -> f64 {
+    (linear * 100.0).min(extent * 0.01).max(linear)
+}
+
+fn boundary_weld_band(edges: &[OrientedPCurveEdge], linear: f64) -> f64 {
+    // Endpoints bound a polygon; they do not bound a curved or closed carrier.
+    if edges
+        .iter()
+        .any(|edge| !matches!(edge.curve_3d, EdgeCurve::Line))
+    {
+        return linear * 100.0;
+    }
+    let extent = remus_math::aabb::Aabb3::try_from_points(
+        edges.iter().flat_map(|edge| [edge.start_3d, edge.end_3d]),
+    )
+    .map_or(0.0, |bounds| (bounds.max - bounds.min).length());
+    local_weld_band(linear, extent)
+}
+
 /// Parameter `t` in `(0,1)` along segment `a0->a1` where it crosses segment
 /// `b0->b1` in 2D, for a crossing strictly interior to `a` and within (or at
 /// the ends of) `b`. `None` if parallel or out of range.
@@ -2544,8 +2564,18 @@ fn arrangement_regions_from_inputs(
     // welds. So: input endpoints register FIRST (ground truth), and every
     // later point within the snap band adopts the earliest registered vertex
     // via a coarse hash (first-wins).
-    let endpoint_band = tol * 100.0;
-    let snap_band = tol * 1000.0;
+    let extent = if inputs.iter().all(|input| !input.is_arc) {
+        remus_math::aabb::Aabb3::try_from_points(
+            inputs
+                .iter()
+                .flat_map(|input| [input.edge.start_3d, input.edge.end_3d]),
+        )
+        .map_or(0.0, |bounds| (bounds.max - bounds.min).length())
+    } else {
+        f64::INFINITY
+    };
+    let endpoint_band = local_weld_band(tol, extent);
+    let snap_band = (tol * 1000.0).min(extent * 0.01).max(tol);
     let ckey = |p: Point2| -> (i64, i64) {
         (
             (p.x() / snap_band).round() as i64,
@@ -5708,7 +5738,7 @@ fn split_face_2d_impl(
     // moved endpoints so consumers re-derive them from the welded 3D.
     let welded_sections: Vec<SectionEdge>;
     let sections: &[SectionEdge] = if is_plane && !sections.is_empty() {
-        let weld = tol.linear * 100.0;
+        let weld = boundary_weld_band(&boundary_edges, tol.linear);
         let mut anchors: Vec<Point3> = boundary_edges
             .iter()
             .flat_map(|e| [e.start_3d, e.end_3d])
@@ -6344,7 +6374,7 @@ fn split_face_2d_impl(
     if is_plane && original_inner_wires.is_empty() {
         use remus_math::curves2d::{Curve2D, Line2D};
         use remus_math::vec::Vec2;
-        let weld = tol.linear * 100.0;
+        let weld = boundary_weld_band(&all_edges[..n_boundary_edges], tol.linear);
         let bridge_band = conversion::reconciliation_band(&wire_pts, weld);
         let isolation_band = conversion::reconciliation_band(&wire_pts, 0.0);
         let n_all = all_edges.len();
@@ -6587,7 +6617,7 @@ fn split_face_2d_impl(
         // piece (a self-split remnant ~fit-error long); real sliver edges
         // (corner lenses) are orders of magnitude longer.
         let n_b = n_boundary_edges;
-        let weld = tol.linear * 100.0;
+        let weld = boundary_weld_band(&all_edges[..n_boundary_edges], tol.linear);
         all_edges
             .into_iter()
             .enumerate()
@@ -7984,8 +8014,9 @@ fn plane_internal_line_loops(
         return None;
     }
 
+    let margin = boundary_weld_band(boundary_edges, tol_linear);
     let quant = |p: Point3| -> QPt {
-        let s = 1.0 / (tol_linear * 100.0);
+        let s = 1.0 / margin;
         (
             (p.x() * s).round() as i64,
             (p.y() * s).round() as i64,
@@ -7993,7 +8024,6 @@ fn plane_internal_line_loops(
         )
     };
 
-    let margin = tol_linear * 100.0;
     let on_plane = |p: Point3| {
         let uv = frame.project(p);
         (frame.evaluate(uv.x(), uv.y()) - p).length() <= margin

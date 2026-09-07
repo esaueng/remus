@@ -266,15 +266,9 @@ fn invalid_public_options_are_rejected_without_mutation() {
 }
 
 #[test]
-fn failed_exact_pipeline_rolls_back_all_live_topology() {
-    // The fixture needs a scale where GFA ASSEMBLES a result into the caller
-    // topology (so the attempt allocates) that the acceptance gate then
-    // rejects. 1e-4 stopped qualifying when the FF junction band's
-    // tolerance-scaled term was brought under the extent cap (the cut is
-    // exact there now), and below that GFA fails inside its own shape store
-    // without exporting. 1e6 is the remaining such scale: the through-cut
-    // assembles at the wrong volume and is rejected by the operand-bounds
-    // gate, so ExactOnly refuses after allocating.
+fn large_scale_exact_pipeline_preserves_material_and_operands() {
+    // Exact straight-edge projection replaces the fixed-iteration search
+    // that displaced large-model junctions and orphaned the tool walls.
     let scale = 1e6;
     let mut topo = Topology::new();
     let blank = make_box(&mut topo, scale, scale, scale).unwrap();
@@ -285,21 +279,16 @@ fn failed_exact_pipeline_rolls_back_all_live_topology() {
         &Mat4::translation(0.3 * scale, 0.3 * scale, -0.5 * scale),
     )
     .unwrap();
-    let before = live_counts(&topo);
-    let before_slots = topo.allocated_slot_count();
     let context = OperationContext::new().with_fallback(FallbackPolicy::ExactOnly);
-
-    let err = boolean_with_context(&mut topo, BooleanOp::Cut, blank, tool, &context).unwrap_err();
-    assert!(matches!(err, OperationsError::ExactOnlyUnattainable));
-    assert_eq!(
-        live_counts(&topo),
-        before,
-        "failed exact path must roll back"
-    );
-    assert!(topo.solid(blank).is_ok());
-    assert!(topo.solid(tool).is_ok());
-    assert!(
-        topo.allocated_slot_count() > before_slots,
-        "the exact attempt must allocate before its transactional refusal"
-    );
+    let result = boolean_with_context(&mut topo, BooleanOp::Cut, blank, tool, &context).unwrap();
+    assert!(matches!(result.quality, BooleanQuality::Exact));
+    for (solid, expected) in [(result.solid, 0.84), (blank, 1.0), (tool, 0.32)] {
+        let volume = solid_volume(&topo, solid, 0.01 * scale).unwrap() / scale.powi(3);
+        assert!((volume - expected).abs() < 1e-9);
+        assert!(
+            remus_operations::validate::validate_solid(&topo, solid)
+                .unwrap()
+                .is_valid()
+        );
+    }
 }

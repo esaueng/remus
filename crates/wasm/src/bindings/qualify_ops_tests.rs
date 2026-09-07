@@ -570,3 +570,69 @@ fn batch_offset_torus_sphere_boolean_retains_exact_carriers() {
         assert_eq!(result[0], 0);
     }
 }
+
+#[test]
+fn batch_through_tool_booleans_preserve_material_across_scales() {
+    for exponent in -5..=6 {
+        let scale = 10.0_f64.powi(exponent);
+        for placed in [false, true] {
+            for (operation, expected) in [("fuse", 1.16), ("cut", 0.84), ("intersect", 0.16)] {
+                let mut kernel = BrepKernel::new();
+                let inputs = run_all_ok(
+                    &mut kernel,
+                    &[
+                        op(
+                            "makeBox",
+                            serde_json::json!({"width":scale,"height":scale,"depth":scale}),
+                        ),
+                        op(
+                            "makeBox",
+                            serde_json::json!({"width":0.4*scale,"height":0.4*scale,"depth":2.0*scale}),
+                        ),
+                    ],
+                );
+                let blank = as_u32(&inputs[0]);
+                let tool = as_u32(&inputs[1]);
+                run_all_ok(
+                    &mut kernel,
+                    &[op(
+                        "transform",
+                        serde_json::json!({"solid":tool,"matrix":[1,0,0,0.3*scale,0,1,0,0.3*scale,0,0,1,-0.5*scale,0,0,0,1]}),
+                    )],
+                );
+                if placed {
+                    let c = 0.37_f64.cos();
+                    let s = 0.37_f64.sin();
+                    for solid in [blank, tool] {
+                        run_all_ok(
+                            &mut kernel,
+                            &[op(
+                                "transform",
+                                serde_json::json!({"solid":solid,"matrix":[c,0,s,17.0*scale,0,1,0,-23.0*scale,-s,0,c,31.0*scale,0,0,0,1]}),
+                            )],
+                        );
+                    }
+                }
+                let result = run_all_ok(
+                    &mut kernel,
+                    &[op(
+                        "booleanWithQuality",
+                        serde_json::json!({"operation":operation,"solidA":blank,"solidB":tool,"exactOnly":true}),
+                    )],
+                );
+                assert_eq!(result[0]["quality"], "exact");
+                let solid = as_u32(&result[0]["solid"]);
+                let volume = kernel_volume(&kernel, solid) / scale.powi(3);
+                assert!(
+                    (volume - expected).abs() / expected < 1e-6,
+                    "{operation} scale={scale:e} placed={placed}: {volume} vs {expected}"
+                );
+                let validation = run_all_ok(
+                    &mut kernel,
+                    &[op("validateSolid", serde_json::json!({"solid":solid}))],
+                );
+                assert_eq!(validation[0], 0);
+            }
+        }
+    }
+}
