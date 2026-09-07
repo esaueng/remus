@@ -1127,6 +1127,14 @@ export class BrepKernel {
      */
     defeature(solid: number, face_handles: Uint32Array): number;
     /**
+     * Remove selected feature faces with construction history.
+     *
+     * Returns JSON `{"solid", "op"}`. Capping retains copied boundary identities
+     * and records consumed boundaries as deleted. Unqualified reconstructed
+     * boundaries remain unresolved. Batch uses `solid` and `faces`.
+     */
+    defeatureJournaled(solid: number, faces: Uint32Array): string;
+    /**
      * Retire a solid handle and its unshared topology subtree.
      *
      * The handle becomes permanently invalid. This does not compact the
