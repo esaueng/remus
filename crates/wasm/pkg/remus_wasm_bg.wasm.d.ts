@@ -75,6 +75,7 @@ export const brepkernel_detectCoincidentFaces: (a: number, b: number, c: number)
 export const brepkernel_detectSmallFeatures: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const brepkernel_discardCheckpoint: (a: number, b: number) => [number, number];
 export const brepkernel_draft: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => [number, number, number];
+export const brepkernel_draftJournaled: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number, number, number];
 export const brepkernel_edgeLength: (a: number, b: number) => [number, number, number];
 export const brepkernel_edgeToFaceMap: (a: number, b: number) => [number, number, number, number];
 export const brepkernel_evaluateEdgeCurve: (a: number, b: number, c: number) => [number, number, number, number];

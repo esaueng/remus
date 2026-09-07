@@ -274,6 +274,52 @@ impl BrepKernel {
         }))
     }
 
+    fn draft_journaled_json(
+        &mut self,
+        solid: u32,
+        faces: &[u32],
+        pull_direction: &[f64],
+        neutral_point: &[f64],
+        angle_degrees: f64,
+    ) -> Result<serde_json::Value, StructuredWasmError> {
+        validate_finite(angle_degrees, "angleDegrees").map_err(StructuredWasmError::from)?;
+        let vector = |values: &[f64], name: &str| -> Result<[f64; 3], StructuredWasmError> {
+            let [x, y, z] = values else {
+                return Err(StructuredWasmError::invalid_argument(
+                    format!("'{name}' must have exactly 3 components"),
+                    Some(name),
+                ));
+            };
+            for &value in values {
+                validate_finite(value, name).map_err(StructuredWasmError::from)?;
+            }
+            Ok([*x, *y, *z])
+        };
+        let [dx, dy, dz] = vector(pull_direction, "pullDirection")?;
+        let [nx, ny, nz] = vector(neutral_point, "neutralPoint")?;
+        let solid_id = self
+            .resolve_solid(solid)
+            .map_err(StructuredWasmError::from)?;
+        let face_ids = faces
+            .iter()
+            .map(|&face| self.resolve_face(face))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(StructuredWasmError::from)?;
+        let result = journal_ops::draft_journaled(
+            self.topo_mut(),
+            solid_id,
+            &face_ids,
+            remus_math::vec::Vec3::new(dx, dy, dz),
+            remus_math::vec::Point3::new(nx, ny, nz),
+            angle_degrees.to_radians(),
+        )
+        .map_err(StructuredWasmError::from)?;
+        Ok(serde_json::json!({
+            "solid": crate::handles::solid_id_to_u32(result.solid),
+            "op": u32::try_from(result.op.value()).unwrap_or(u32::MAX),
+        }))
+    }
+
     fn resize_cylindrical_face_journaled_json(
         &mut self,
         solid: u32,
@@ -452,6 +498,14 @@ impl BrepKernel {
             "imprint" => get_u32(args, "target").and_then(|target| {
                 get_u32(args, "tool").and_then(|tool| self.imprint_json(target, tool))
             }),
+            "draftJournaled" => (|| {
+                let solid = get_u32(args, "solid")?;
+                let faces = get_u32_array(args, "faces")?;
+                let pull = crate::helpers::get_f64_array(args, "pullDirection")?;
+                let neutral = crate::helpers::get_f64_array(args, "neutralPoint")?;
+                let angle = get_f64(args, "angleDegrees")?;
+                self.draft_journaled_json(solid, &faces, &pull, &neutral, angle)
+            })(),
             "resizeCylindricalFaceJournaled" => (|| {
                 let solid = get_u32(args, "solid")?;
                 let face = get_u32(args, "face")?;
@@ -571,6 +625,27 @@ impl BrepKernel {
     #[wasm_bindgen(js_name = "imprint")]
     pub fn imprint_js(&mut self, target: u32, tool: u32) -> Result<String, JsError> {
         self.imprint_json(target, tool)
+            .map(|value| value.to_string())
+            .map_err(structured_to_js)
+    }
+
+    /// Draft selected planar faces with construction history.
+    ///
+    /// `pull_direction` and `neutral_point` each have three components.
+    /// The angle is in degrees for both direct and batch calls. Batch uses
+    /// `faces`, `pullDirection`, `neutralPoint`, and `angleDegrees`.
+    /// Returns JSON `{"solid", "op"}`. Boundary history requires a unique
+    /// complete incidence correspondence; ambiguous boundaries stay unresolved.
+    #[wasm_bindgen(js_name = "draftJournaled")]
+    pub fn draft_journaled_js(
+        &mut self,
+        solid: u32,
+        faces: &[u32],
+        pull_direction: &[f64],
+        neutral_point: &[f64],
+        angle_degrees: f64,
+    ) -> Result<String, JsError> {
+        self.draft_journaled_json(solid, faces, pull_direction, neutral_point, angle_degrees)
             .map(|value| value.to_string())
             .map_err(structured_to_js)
     }
@@ -1067,6 +1142,102 @@ mod evolution_contract_tests {
         };
         assert!((replacement.x_axis() - source.x_axis()).length() < 1e-12);
         assert!((replacement.radius() - 2.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn draft_history_has_degree_units_and_direct_batch_parity() {
+        use remus_operations::journal_ops;
+        use remus_topology::{
+            journal::{EntityKind, OpId},
+            naming::{PersistentRef, Provenance, Resolution, resolve},
+        };
+        let mut payloads = Vec::new();
+        for batch in [false, true] {
+            let mut kernel = BrepKernel::new();
+            let source = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
+            let wall = |kernel: &BrepKernel, solid| {
+                let id = kernel.resolve_solid(solid).unwrap();
+                super::index_u32(
+                    remus_topology::explorer::solid_faces(kernel.topo(), id)
+                        .unwrap()
+                        .into_iter()
+                        .find(|&face| {
+                            kernel
+                                .topo()
+                                .face(face)
+                                .unwrap()
+                                .effective_plane_normal()
+                                .is_some_and(|normal| normal.x() > 0.9)
+                        })
+                        .unwrap()
+                        .index(),
+                )
+            };
+            let face = wall(&kernel, source);
+            let first = kernel
+                .draft_journaled_json(source, &[face], &[0.0, 0.0, 1.0], &[0.0; 3], 5.0)
+                .unwrap();
+            let solid = u32::try_from(first["solid"].as_u64().unwrap()).unwrap();
+            let first_id = kernel.resolve_solid(solid).unwrap();
+            let volume =
+                remus_operations::measure::solid_volume(kernel.topo(), first_id, 0.01).unwrap();
+            let expected = 1000.0 + 500.0 * 5.0_f64.to_radians().tan();
+            assert!((volume - expected).abs() < 1e-6);
+            let keys = journal_ops::solid_entity_keys(kernel.topo(), first_id).unwrap();
+            let op = OpId::from_value(first["op"].as_u64().unwrap());
+            let face = wall(&kernel, solid);
+            let second: serde_json::Value = if batch {
+                run(&mut kernel, serde_json::json!([{"op":"draftJournaled", "args":{"solid":solid,"faces":[face],"pullDirection":[0,0,1],"neutralPoint":[0,0,0],"angleDegrees":-2.0}}])).remove(0)
+            } else {
+                serde_json::from_str(
+                    &kernel
+                        .draft_journaled_js(solid, &[face], &[0.0, 0.0, 1.0], &[0.0; 3], -2.0)
+                        .unwrap(),
+                )
+                .unwrap()
+            };
+            let result = u32::try_from(second["solid"].as_u64().unwrap()).unwrap();
+            let live: std::collections::BTreeSet<_> = journal_ops::solid_entity_keys(
+                kernel.topo(),
+                kernel.resolve_solid(result).unwrap(),
+            )
+            .unwrap()
+            .into_iter()
+            .collect();
+            let mut resolved = std::collections::BTreeSet::new();
+            for kind in [EntityKind::Face, EntityKind::Edge, EntityKind::Vertex] {
+                for index in 0..keys.iter().filter(|key| key.kind == kind).count() {
+                    let reference = PersistentRef::operation_output(op, kind, index);
+                    let outcome = resolve(kernel.topo(), &reference);
+                    let Resolution::Bound {
+                        entity,
+                        provenance: Provenance::Construction,
+                    } = outcome
+                    else {
+                        panic!("lost draft reference: {outcome:?}");
+                    };
+                    resolved.insert(entity);
+                }
+            }
+            assert_eq!(resolved, live);
+            let face = wall(&kernel, result);
+            let before = kernel.topo().journal().snapshot();
+            for (pull, neutral, angle) in [
+                (vec![0.0, 0.0], vec![0.0; 3], 5.0),
+                (vec![0.0, 0.0, 1.0], vec![0.0; 2], 5.0),
+                (vec![0.0, 0.0, 1.0], vec![0.0; 3], f64::NAN),
+                (vec![0.0, 0.0, 1.0], vec![0.0; 3], -80.0),
+            ] {
+                assert!(
+                    kernel
+                        .draft_journaled_json(result, &[face], &pull, &neutral, angle)
+                        .is_err()
+                );
+                assert_eq!(kernel.topo().journal().snapshot(), before);
+            }
+            payloads.push(second);
+        }
+        assert_eq!(payloads[0], payloads[1]);
     }
 
     #[test]

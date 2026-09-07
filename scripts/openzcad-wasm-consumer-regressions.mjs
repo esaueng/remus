@@ -262,6 +262,7 @@ export const runOpenZcadConsumerRegressions = (exports) => {
   runDirectEditHistoryRegression(exports);
   runSurfaceReplacementHistoryRegression(exports);
   runCylindricalRadiusHistoryRegression(exports);
+  runDraftHistoryRegression(exports);
   runWideSphereCapRegression(exports);
   runOffsetConeSphereRegression(exports);
   runOffsetSphereCylinderRegression(exports);
@@ -1020,4 +1021,99 @@ export const runCylindricalRadiusHistoryRegression = ({ BrepKernel, RemusIo }) =
     } finally { kernel.free(); io.free(); }
   }
   console.log('ok - cylindrical radius history: successive bore/boss/quarter edits, all output refs, arena/STEP, rollback');
+};
+
+
+export const runDraftHistoryRegression = ({ BrepKernel, RemusIo }) => {
+  const kinds = [['face','getSolidFaces'], ['edge','getSolidEdges'], ['vertex','getSolidVertices']];
+  const wall = (kernel, solid) => Array.from(kernel.getSolidFaces(solid)).find(face =>
+    kernel.getSurfaceType(face) === 'plane' && kernel.getFaceNormal(face)[0] > 0.9);
+  const edit = (kernel, solid, angleDegrees, batch) => {
+    const faces = [wall(kernel, solid)];
+    if (!batch) return JSON.parse(kernel.draftJournaled(solid, Uint32Array.from(faces), Float64Array.of(0,0,1), Float64Array.of(0,0,0), angleDegrees));
+    const [result] = JSON.parse(kernel.executeBatchV2(JSON.stringify([{op:'draftJournaled', args:{solid,faces,pullDirection:[0,0,1],neutralPoint:[0,0,0],angleDegrees}}])));
+    assert.equal(result.error, undefined, JSON.stringify(result));
+    return result.ok;
+  };
+  const references = (kernel, result) => kinds.flatMap(([kind, query]) => Array.from(kernel[query](result.solid), (_, index) => ({kind, reference:kernel.makeOperationOutputRef(result.op,kind,index)})));
+  const checkRefs = (kernel, solid, refs) => {
+    for (const [kind, query] of kinds) {
+      const resolved = new Set();
+      for (const item of refs.filter(item => item.kind === kind)) {
+        const result = JSON.parse(kernel.resolveRef(item.reference));
+        assert.equal(result.status,'bound',JSON.stringify(result));
+        assert.equal(result.provenance,'construction');
+        assert.equal(result.entities.length,1);
+        assert.equal(result.entities[0].kind,kind);
+        resolved.add(result.entities[0].handle);
+      }
+      assert.deepEqual(resolved,new Set(kernel[query](solid)));
+    }
+  };
+  const qualify = (kernel, solid, expected, scale) => {
+    assert.equal(kernel.validateSolid(solid),0);
+    const volume = kernel.volume(solid,0.005*scale);
+    assert.ok(Math.abs(volume-expected)<Math.abs(expected)*1e-5);
+    assert.equal(JSON.parse(kernel.meshQuality(solid,0.005*scale)).isWatertight,true);
+    const mesh = kernel.tessellateSolid(solid,0.005*scale);
+    const origin = mesh.positions.slice(0,3);
+    const point = index => [0,1,2].map(axis => mesh.positions[index*3+axis]-origin[axis]);
+    let independent = 0;
+    for(let i=0;i<mesh.indices.length;i+=3) {
+      const a=point(mesh.indices[i]), b=point(mesh.indices[i+1]), c=point(mesh.indices[i+2]);
+      independent += (a[0]*(b[1]*c[2]-b[2]*c[1])+a[1]*(b[2]*c[0]-b[0]*c[2])+a[2]*(b[0]*c[1]-b[1]*c[0]))/6;
+    }
+    assert.ok(Math.abs(independent-volume)<Math.abs(volume)*2e-3);
+  };
+  for (const batch of [false,true]) for (const bore of [false,true]) for (const scale of [0.001,1,1000]) {
+    const kernel = new BrepKernel();
+    const io = new RemusIo();
+    try {
+      let source = kernel.makeBox(10*scale,10*scale,10*scale);
+      if(bore) {
+        const tool=kernel.makeCylinder(scale,10*scale);
+        kernel.transformSolid(tool,new Float64Array([1,0,0,5*scale,0,1,0,5*scale,0,0,1,0,0,0,0,1]));
+        source=kernel.cut(source,tool);
+      }
+      const sourceVolume=(1000-(bore?Math.PI*10:0))*scale**3;
+      const first=edit(kernel,source,5,batch);
+      const refs=references(kernel,first);
+      qualify(kernel,first.solid,sourceVolume+500*scale**3*Math.tan(5*Math.PI/180),scale);
+      checkRefs(kernel,first.solid,refs);
+      const second=edit(kernel,first.solid,-2,batch);
+      const secondVolume=kernel.volume(second.solid,0.005*scale);
+      qualify(kernel,second.solid,secondVolume,scale);
+      qualify(kernel,source,sourceVolume,scale);
+      checkRefs(kernel,second.solid,refs);
+      const restored=new BrepKernel();
+      try {
+        restored.makeBox(1,1,1);
+        const [solid]=restored.deserializeSolids(kernel.serializeSolids(Uint32Array.of(second.solid)));
+        qualify(restored,solid,secondVolume,scale);
+        checkRefs(restored,solid,refs);
+      } finally { restored.free(); }
+      const roundTrip=new BrepKernel();
+      try {
+        const importSolid = solid => io.importStep(io.exportStep(kernel.serializeSolids(Uint32Array.of(solid))));
+        if (bore && scale === 1000) {
+          // The unchanged source also exceeds the importer's fixed circle-sampling budget.
+          const limit = /FACE_BOUND curve exceeds the adaptive planar-classification sampling limit/;
+          assert.throws(() => importSolid(source), limit);
+          assert.throws(() => importSolid(second.solid), limit);
+        } else {
+          const [solid]=roundTrip.deserializeSolids(importSolid(second.solid));
+          qualify(roundTrip,solid,secondVolume,scale);
+        }
+      } finally { roundTrip.free(); }
+      const before=Uint8Array.from(kernel.serializeSolids(Uint32Array.of(second.solid)));
+      const journal=kernel.journalSummary();
+      for(const angle of [0,-80]) {
+        assert.throws(()=>edit(kernel,second.solid,angle,batch));
+        assert.equal(kernel.journalSummary(),journal);
+        assert.deepEqual(kernel.serializeSolids(Uint32Array.of(second.solid)),before);
+        checkRefs(kernel,second.solid,refs);
+      }
+    } finally { kernel.free(); io.free(); }
+  }
+  console.log('ok - draft history: degree units, successive plain/bored edits at three scales, all refs, arena, qualified STEP or explicit large-bore sampling refusal, rollback');
 };
