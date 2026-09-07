@@ -86,6 +86,13 @@ Bridge rows closed since the draft: B1, B5, the B6 primitive family
 pocket-face orientation; B12 is partial (rectangular holes on sweep/pipe
 caps, PR #252). No `#[ignore]` pins a live engine defect.
 
+Current 2.4 qualification work covers bounded off-axis cone/sphere,
+sphere/cylinder, and torus/sphere matrices; integration remains pending.
+The torus/box notch Cut still needs a stricter orientation-validation
+qualification pass: a probe of the pre-change c1d8d211 package reports
+validation issues despite the existing analytic/manifold/volume test
+passing. See `campaign-history.md` for the measured distinction.
+
 OpenZCAD consumer-roadmap K-S4 (`approx_census` CI enforcement): **done (PR
 #140)**. Its authoritative disposition line remains in planning PR
 esaueng/OpenZCAD#140 so the two repositories retain separate commit streams.

@@ -145,14 +145,14 @@ fn offset_cone_sphere_intersect_matches_disk_overlap() {
 }
 
 #[test]
-fn torus_sphere_witness_refuses_without_mutating_operands() {
+fn torus_sphere_march_budget_refuses_without_mutating_operands() {
     use remus_operations::primitives::make_torus;
     for op in [BooleanOp::Fuse, BooleanOp::Cut, BooleanOp::Intersect] {
         let mut topo = Topology::new();
         let (a, b) = {
-            let a = make_torus(&mut topo, 6.0, 2.0, 32).unwrap();
-            let b = make_sphere(&mut topo, 3.0, 24).unwrap();
-            transform_solid(&mut topo, b, &Mat4::translation(5.0, 0.0, 1.0)).unwrap();
+            let a = make_torus(&mut topo, 6000.0, 2000.0, 32).unwrap();
+            let b = make_sphere(&mut topo, 3000.0, 24).unwrap();
+            transform_solid(&mut topo, b, &Mat4::translation(5000.0, 0.0, 1000.0)).unwrap();
             (a, b)
         };
         let counts = |t: &Topology| {
