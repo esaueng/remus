@@ -90,6 +90,52 @@ impl HealOperator for UnifySameDomainOp {
         ));
         Ok((new_solid, result))
     }
+
+    fn execute_with_history(
+        &self,
+        topo: &mut Topology,
+        solid_id: SolidId,
+        _ctx: &mut HealContext,
+    ) -> Result<(SolidId, FixResult, crate::reshape::ReShape), HealError> {
+        let (solid, unify, history) =
+            crate::upgrade::unify_same_domain::unify_same_domain_with_history(
+                topo,
+                solid_id,
+                &crate::upgrade::unify_same_domain::UnifyOptions::default(),
+            )?;
+        let mut replacements = crate::reshape::ReShape::new();
+        for (sources, targets) in history.face_groups {
+            // A disconnected group needs per-region contributors before it can
+            // assert which output inherited each source face.
+            if let [target] = targets.as_slice() {
+                for source in sources {
+                    replacements.replace_face(source, *target);
+                }
+            }
+        }
+        for (sources, target) in history.edge_runs {
+            for source in sources {
+                replacements.replace_edge(source, target);
+            }
+        }
+        for edge in history.removed_edges {
+            replacements.remove_edge(edge);
+        }
+        for vertex in history.removed_vertices {
+            replacements.remove_vertex(vertex);
+        }
+        let mut report = FixResult::changed(
+            crate::status::Status::DONE1,
+            crate::fix::RepairActionKind::SameDomainFaceUnified,
+            unify.faces_merged,
+        );
+        report.merge(&FixResult::changed(
+            crate::status::Status::DONE1,
+            crate::fix::RepairActionKind::SameDomainEdgeUnified,
+            unify.edges_merged,
+        ));
+        Ok((solid, report, replacements))
+    }
 }
 
 /// Orient all faces so normals point outward.
