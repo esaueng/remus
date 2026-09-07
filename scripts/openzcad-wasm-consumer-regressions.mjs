@@ -265,6 +265,7 @@ export const runOpenZcadConsumerRegressions = (exports) => {
   runDraftHistoryRegression(exports);
   runDefeatureHistoryRegression(exports);
   runHealingHistoryRegression(exports);
+  runUnifyHistoryRegression(exports);
   runWideSphereCapRegression(exports);
   runOffsetConeSphereRegression(exports);
   runOffsetSphereCylinderRegression(exports);
@@ -1303,4 +1304,74 @@ export const runHealingHistoryRegression = ({ BrepKernel, RemusIo }) => {
     } finally { kernel.free(); io.free(); restored.free(); imported.free(); }
   }
   console.log('ok - healing history: 12 direct/batch cells, repeated repairs, arena, later draft, STEP import, rollback');
+};
+
+export const runUnifyHistoryRegression = ({ BrepKernel }) => {
+  const kinds = [['face', 'getSolidFaces'], ['edge', 'getSolidEdges'], ['vertex', 'getSolidVertices']];
+  for (const scale of [0.001, 1, 10]) for (const batch of [false, true]) {
+    const kernel = new BrepKernel(), restored = new BrepKernel();
+    try {
+      const cube = kernel.makeBox(10 * scale, 10 * scale, 10 * scale);
+      const document = JSON.parse(new TextDecoder().decode(kernel.serializeSolids(Uint32Array.of(cube))));
+      const shell = document.shells[document.solids[document.solid_roots[0]].outer_shell];
+      const original = document.faces[shell.faces[0]], boundary = document.wires[original.outer_wire].edges;
+      const vertices = boundary.map(use => document.edges[use.edge][use.forward ? 'start' : 'end']);
+      const point = document.vertices[vertices[0]].point.map((v, i) => (v + document.vertices[vertices[2]].point[i]) / 2);
+      const center = document.vertices.push({ point, tolerance: 1e-7 }) - 1;
+      const spokes = vertices.map(vertex => document.edges.push({ start: center, end: vertex, curve: 'Line', tolerance: null }) - 1);
+      const triangles = boundary.map((use, i) => {
+        const wire = document.wires.push({ edges: [use, { edge: spokes[(i + 1) % 4], forward: false }, { edge: spokes[i], forward: true }], closed: true }) - 1;
+        return document.faces.push({ ...structuredClone(original), outer_wire: wire }) - 1;
+      });
+      shell.faces.splice(0, 1, ...triangles);
+      // Exercise the supported legacy reader, which reconstructs coedge authority.
+      document.version = 2;
+      document.pcurves = [];
+      delete document.boundary_authority;
+      delete document.journal;
+      delete document.attributes;
+      const [source] = kernel.deserializeSolids(new TextEncoder().encode(JSON.stringify(document)));
+      assert.equal(kernel.getSolidFaces(source).length, 9);
+      assert.equal(kernel.getSolidVertices(source).length, 9);
+      const anchor = JSON.parse(kernel.fixShapeWithConfigJournaled(source, '{}'));
+      assert.equal(kernel.getSolidFaces(anchor.solid).length, 9);
+      const refs = kinds.flatMap(([kind, query]) => Array.from(kernel[query](anchor.solid), (_, index) => ({ kind, ref: kernel.makeOperationOutputRef(anchor.op, kind, index) })));
+      const edit = (active, solid) => {
+        if (!batch) return JSON.parse(active.runHealPipelineJournaled(solid, ['unify_same_domain']));
+        const [response] = JSON.parse(active.executeBatchV2(JSON.stringify([{ op: 'runHealPipelineJournaled', args: { solid, steps: ['unify_same_domain'] } }])));
+        assert.equal(response.error, undefined, JSON.stringify(response));
+        return response.ok;
+      };
+      const result = edit(kernel, anchor.solid);
+      const check = (active, solid, expected) => {
+        let deleted = 0;
+        for (const [kind, query] of kinds) {
+          const bound = new Set();
+          for (const item of refs.filter(item => item.kind === kind)) {
+            const resolution = JSON.parse(active.resolveRef(item.ref));
+            if (resolution.status === 'dangling') { deleted++; continue; }
+            assert.equal(resolution.status, 'bound', JSON.stringify(resolution));
+            assert.equal(resolution.provenance, 'construction');
+            for (const entity of resolution.entities) bound.add(entity.handle);
+          }
+          assert.deepEqual(bound, new Set(active[query](solid)));
+        }
+        assert.equal(deleted, 5);
+        assert.equal(active.validateSolid(solid), 0);
+        assert.ok(Math.abs(active.volume(solid, 0.005 * scale) - expected) < expected * 1e-6);
+        assert.equal(JSON.parse(active.meshQuality(solid, 0.005 * scale)).isWatertight, true);
+      };
+      check(kernel, result.solid, 1000 * scale ** 3);
+      restored.makeBox(1, 1, 1);
+      const [copy] = restored.deserializeSolids(kernel.serializeSolids(Uint32Array.of(result.solid)));
+      const repeated = edit(restored, copy);
+      check(restored, repeated.solid, 1000 * scale ** 3);
+      const wall = Array.from(restored.getSolidFaces(repeated.solid)).find(face => restored.getFaceNormal(face)[0] > 0.9);
+      const drafted = JSON.parse(restored.draftJournaled(repeated.solid, Uint32Array.of(wall), Float64Array.of(0, 0, 1), Float64Array.of(0, 0, 0), 5));
+      check(restored, drafted.solid, (1000 + 500 * Math.tan(5 * Math.PI / 180)) * scale ** 3);
+    } catch (error) {
+      throw new Error(`unify history scale=${scale} batch=${batch}: ${error.message}`, { cause: error });
+    } finally { kernel.free(); restored.free(); }
+  }
+  console.log('ok - unify history: six direct/batch scale cells, merged/deleted references, legacy import, arena and later draft');
 };

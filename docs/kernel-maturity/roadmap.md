@@ -423,6 +423,34 @@ warning in `model_owns_context_topology_and_journal` does not reproduce in its
 isolated check; the broad run has no leak warnings. This slice is not yet a
 merged claim.
 
+### Same-domain unification history — qualification in progress
+
+The next B18 increment records actual source-face groups and ordered edge runs
+inside the existing healing unifier. `unify_same_domain_with_history` is additive;
+the ordinary API keeps its existing behavior and tolerances. Each rejected phase
+discards its own records. A closed split-box witness proves that the edge phase
+can revert while retaining the successful face merge and its history.
+
+The healing pipeline now attributes single-output merge groups and committed
+edge runs. Shared internal edges consumed by a face group are recorded as deleted
+only when no result-shell use remains. Vertices consumed by those edges or merged
+runs are deleted only when absent from the complete result solid. A four-triangle
+box-face witness preserves all surviving references and explicitly deletes four
+spokes and the unused center across three scales, populated arena restore,
+repeated unification, and a later draft.
+
+Multiple output faces from one merge group still need per-region contributor
+records and remain unresolved; this is not an all-to-all attribution claim.
+The unifier's existing outer-shell scope is unchanged. Cavity unification and
+that multi-region attribution remain open B18 cells. The compiled-package
+regression reproduces `unresolvedAcrossOperation` on the preceding package;
+both rebuilt optimized packages now pass smoke and installed-tarball consumer
+suites, including all six direct/batch unification cells. Workspace Clippy,
+rustdoc, doctests, mdBook, boundary checks, and the unchanged 52-row census pass.
+The full all-features native run passes 4,930 tests (13 skipped). One
+process-leak warning in `modeling_refusal_stays_typed_and_transactional` does not
+reproduce in isolation. This increment is qualified locally, not yet merged.
+
 ## §B Bridge backlog — owned by neither program
 
 Ready items from the stabilization-plan residue, the capability-matrix
