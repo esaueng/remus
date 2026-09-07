@@ -316,8 +316,9 @@ graph. STEP import now certifies a declared full-turn cylindrical p-curve
 against the authoritative 3D circle traversal, preserving periodic endpoints
 without accepting extra turns or mismatched curves. All 189 reader tests pass.
 Both rebuilt WASM package suites pass the new direct/batch bore, boss, and
-quarter-wall reference, arena, STEP, and rollback matrix. The final
-all-features workspace run is in progress; Clippy, rustdoc, mdBook,
+quarter-wall reference, arena, STEP, and rollback matrix. Final all-features
+qualification: 4,903 passed, 13 skipped; two process-leak warnings in existing
+facade tests did not reproduce in isolated checks. Clippy, rustdoc, mdBook,
 crate boundaries, and the unchanged 52-row census pass.
 
 ### Correctness follow-up: curved hole winding (#278)
