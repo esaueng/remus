@@ -486,6 +486,29 @@ all-features native run passes 4,935 tests (13 skipped), with no leak warnings.
 This increment is qualified locally, not yet merged. It does not extend sewing
 to cavity shells or close the broader B17 repair matrix.
 
+### Inner-wire removal history — qualification in progress
+
+The next B18 increment records boundary entities consumed by
+`remove_internal_wires`. The additive `remove_internal_wires_with_history` API
+captures candidates from the actual removed wires and excludes edges and vertices
+still reachable in any result shell. The journaled pipeline records the remaining
+entities as deleted. Shared boundaries and surviving faces retain their identity;
+the ordinary removal policy and cavity traversal are unchanged.
+
+A three-scale open-hole repair witness becomes a verified closed cube with eight
+explicitly deleted edge/vertex references and all 26 surviving references bound.
+Arena restore, repeated removal, later draft, and pipeline rollback retain that
+contract. Low-level tests cover cavity wires, shared edges and vertices, and
+ordinary-operation parity. Removing loops from a valid through-bore remains a
+typed refusal with unchanged topology and journal in six direct/batch scale cells.
+The preceding compiled package reproduces unresolved consumed references. Both
+rebuilt optimized packages pass smoke and installed-tarball consumer suites,
+including all six inner-wire cells. Workspace Clippy, rustdoc, doctests, mdBook,
+crate boundaries, and the unchanged 52-row census pass. The kernel grows by
+11,512 bytes; the translator is unchanged. The full all-features native run passes
+4,937 tests (13 skipped), with no leak warnings. This increment is qualified
+locally, not yet merged.
+
 ## §B Bridge backlog — owned by neither program
 
 Ready items from the stabilization-plan residue, the capability-matrix

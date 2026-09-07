@@ -314,6 +314,33 @@ impl HealOperator for RemoveInternalWiresOp {
             ),
         ))
     }
+    fn execute_with_history(
+        &self,
+        topo: &mut Topology,
+        solid_id: SolidId,
+        _ctx: &mut HealContext,
+    ) -> Result<(SolidId, FixResult, crate::reshape::ReShape), HealError> {
+        let (removed, history) =
+            crate::upgrade::remove_internal_wires::remove_internal_wires_with_history(
+                topo, solid_id,
+            )?;
+        let mut replacements = crate::reshape::ReShape::new();
+        for edge in history.edges {
+            replacements.remove_edge(edge);
+        }
+        for vertex in history.vertices {
+            replacements.remove_vertex(vertex);
+        }
+        Ok((
+            solid_id,
+            FixResult::changed(
+                crate::status::Status::DONE1,
+                crate::fix::RepairActionKind::InternalWireRemoved,
+                removed,
+            ),
+            replacements,
+        ))
+    }
 }
 
 /// Sew free boundaries in shells.

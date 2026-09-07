@@ -267,6 +267,7 @@ export const runOpenZcadConsumerRegressions = (exports) => {
   runHealingHistoryRegression(exports);
   runUnifyHistoryRegression(exports);
   runSewingHistoryRegression(exports);
+  runInnerWireHistoryRegression(exports);
   runWideSphereCapRegression(exports);
   runOffsetConeSphereRegression(exports);
   runOffsetSphereCylinderRegression(exports);
@@ -1464,4 +1465,101 @@ export const runSewingHistoryRegression = ({ BrepKernel }) => {
     } finally { kernel.free(); restored.free(); }
   }
   console.log('ok - sewing history: six direct/batch scale cells, merged edge/vertex references, legacy import, arena and later draft');
+};
+
+export const runInnerWireHistoryRegression = ({ BrepKernel }) => {
+  const kinds = [['face', 'getSolidFaces'], ['edge', 'getSolidEdges'], ['vertex', 'getSolidVertices']];
+  for (const scale of [0.001, 1, 10]) for (const batch of [false, true]) {
+    const kernel = new BrepKernel(), restored = new BrepKernel();
+    try {
+      const refusal = new BrepKernel();
+      try {
+        const box = refusal.makeBox(10 * scale, 10 * scale, 10 * scale), tool = refusal.makeCylinder(scale, 10 * scale);
+        refusal.transformSolid(tool, Float64Array.of(1,0,0,5*scale,0,1,0,5*scale,0,0,1,0,0,0,0,1));
+        const bore = refusal.cut(box, tool);
+        assert.equal(refusal.validateSolid(bore), 0);
+        const bytes = Uint8Array.from(refusal.serializeSolids(Uint32Array.of(bore))), journal = refusal.journalSummary();
+        if (batch) {
+          const [response] = JSON.parse(refusal.executeBatchV2(JSON.stringify([{ op: 'runHealPipelineJournaled', args: { solid: bore, steps: ['remove_internal_wires'] } }])));
+          assert.ok(response.error);
+          assert.match(JSON.stringify(response.error), /configured healing result refused/);
+        } else {
+          assert.throws(() => refusal.runHealPipelineJournaled(bore, ['remove_internal_wires']), /configured healing result refused/);
+        }
+        assert.equal(refusal.journalSummary(), journal);
+        assert.deepEqual(refusal.serializeSolids(Uint32Array.of(bore)), bytes);
+      } finally { refusal.free(); }
+      const cube = kernel.makeBox(10 * scale, 10 * scale, 10 * scale);
+      const document = JSON.parse(new TextDecoder().decode(kernel.serializeSolids(Uint32Array.of(cube))));
+      const shell = document.shells[document.solids[document.solid_roots[0]].outer_shell];
+      const face = document.faces[shell.faces[0]], boundary = document.wires[face.outer_wire].edges;
+      const points = boundary.map(use => document.vertices[document.edges[use.edge][use.forward ? 'start' : 'end']].point);
+      const vertices = [[.25,.25],[.25,.75],[.75,.75],[.75,.25]].map(([u,v]) => document.vertices.push({
+        point: points[0].map((p,i) => p + u * (points[1][i] - p) + v * (points[3][i] - p)), tolerance: 1e-7 }) - 1);
+      const edges = vertices.map((start,i) => ({ edge: document.edges.push({ start, end: vertices[(i+1)%4], curve: 'Line', tolerance: null }) - 1, forward: true }));
+      face.inner_wires.push(document.wires.push({ edges, closed: true }) - 1);
+      const sourceEdges = document.edges.map((_,i) => i), sourceVertices = document.vertices.map((_,i) => i);
+      // Exercise the supported legacy reader, which reconstructs coedge authority.
+      document.version = 2;
+      document.pcurves = [];
+      delete document.boundary_authority;
+      delete document.attributes;
+      // Explicit fixture construction anchors include the open-hole source entities.
+      // The repair boundary still has to independently verify the repaired solid.
+      const index = [['face', shell.faces], ['edge', sourceEdges], ['vertex', sourceVertices]]
+        .flatMap(([kind, locals]) => locals.map(local => ({ kind, local })))
+        .map((entry, ordinal) => ({ ...entry, ordinal }));
+      document.journal = { next_op: 1, next_ordinal: index.length, index,
+        entries: [{ op: 0, kind: 'open_hole_fixture', payload: 'Evolution', construction: true,
+          scope: index.map(entry => entry.ordinal), events: index.map(entry => [entry.ordinal, { event: 'Generated', sources: [] }]) }] };
+      const [source] = kernel.deserializeSolids(new TextEncoder().encode(JSON.stringify(document)));
+      assert.equal(kernel.getSolidFaces(source).length, 6);
+      assert.equal(kernel.getSolidEdges(source).length, 16);
+      assert.equal(kernel.getSolidVertices(source).length, 12);
+      const anchor = { solid: source, op: 0 };
+      const refs = kinds.flatMap(([kind, query]) => Array.from(kernel[query](anchor.solid), (_, index) => ({ kind, ref: kernel.makeOperationOutputRef(anchor.op, kind, index) })));
+      const edit = (active, solid) => {
+        if (!batch) return JSON.parse(active.runHealPipelineJournaled(solid, ['remove_internal_wires']));
+        const [response] = JSON.parse(active.executeBatchV2(JSON.stringify([{ op: 'runHealPipelineJournaled', args: { solid, steps: ['remove_internal_wires'] } }])));
+        assert.equal(response.error, undefined, JSON.stringify(response));
+        return response.ok;
+      };
+      const before = Uint8Array.from(kernel.serializeSolids(Uint32Array.of(source))), journal = kernel.journalSummary();
+      assert.throws(() => kernel.runHealPipelineJournaled(source, ['remove_internal_wires', 'missing']));
+      assert.equal(kernel.journalSummary(), journal);
+      assert.deepEqual(kernel.serializeSolids(Uint32Array.of(source)), before);
+      const result = edit(kernel, anchor.solid);
+      assert.equal(result.verified, true);
+      assert.equal(result.steps[0].actionsTaken, 1);
+      const check = (active, solid, expected) => {
+        let deleted = 0;
+        for (const [kind, query] of kinds) {
+          const bound = new Set();
+          for (const item of refs.filter(item => item.kind === kind)) {
+            const resolution = JSON.parse(active.resolveRef(item.ref));
+            if (resolution.status === 'dangling') { deleted++; continue; }
+            assert.equal(resolution.status, 'bound', JSON.stringify(resolution));
+            assert.equal(resolution.provenance, 'construction');
+            for (const entity of resolution.entities) bound.add(entity.handle);
+          }
+          assert.deepEqual(bound, new Set(active[query](solid)));
+        }
+        assert.equal(deleted, 8);
+        assert.equal(active.validateSolid(solid), 0);
+        assert.ok(Math.abs(active.volume(solid, 0.005 * scale) - expected) < expected * 1e-6);
+        assert.equal(JSON.parse(active.meshQuality(solid, 0.005 * scale)).isWatertight, true);
+      };
+      check(kernel, result.solid, 1000 * scale ** 3);
+      restored.makeBox(1, 1, 1);
+      const [copy] = restored.deserializeSolids(kernel.serializeSolids(Uint32Array.of(result.solid)));
+      const repeated = edit(restored, copy);
+      check(restored, repeated.solid, 1000 * scale ** 3);
+      const wall = Array.from(restored.getSolidFaces(repeated.solid)).find(face => restored.getFaceNormal(face)[0] > 0.9);
+      const drafted = JSON.parse(restored.draftJournaled(repeated.solid, Uint32Array.of(wall), Float64Array.of(0, 0, 1), Float64Array.of(0, 0, 0), 5));
+      check(restored, drafted.solid, (1000 + 500 * Math.tan(5 * Math.PI / 180)) * scale ** 3);
+    } catch (error) {
+      throw new Error(`inner-wire history scale=${scale} batch=${batch}: ${error.message}`, { cause: error });
+    } finally { kernel.free(); restored.free(); }
+  }
+  console.log('ok - inner-wire history: six direct/batch scale cells, deleted boundaries and preserved references, legacy import, arena and later draft');
 };
