@@ -232,6 +232,20 @@ pub(super) fn find_splits_on_line(
     splits
 }
 
+// Angular fractions have no fixed conversion to length, especially on an
+// ellipse. Endpoint coincidence uses the same model-space distance as vertices.
+fn arc_split_is_interior(
+    edge: &OrientedPCurveEdge,
+    point: Point3,
+    fraction: f64,
+    linear: f64,
+) -> bool {
+    fraction > 0.0
+        && fraction < 1.0
+        && (point - edge.start_3d).length() > linear
+        && (point - edge.end_3d).length() > linear
+}
+
 /// Find split parameters on a circle edge. Uses `Circle3D::project` for angular
 /// projection, then normalizes into the edge's `[0, 1]` parameter range.
 ///
@@ -330,13 +344,13 @@ pub(super) fn find_splits_on_circle(
         } else {
             normalize_angle_in_span(angle, t0, span)
         };
-        if t_norm <= tol || t_norm >= 1.0 - tol {
+        if !arc_split_is_interior(edge, closest, t_norm, tol) {
             continue;
         }
         splits.push((t_norm, closest));
     }
     splits.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-    splits.dedup_by(|a, b| (a.0 - b.0).abs() < tol);
+    splits.dedup_by(|a, b| (a.1 - b.1).length() < tol);
     // Only once the rim is actually being cut. An UNSPLIT closed rim is a full
     // circle, which `domain_with_endpoints` recovers from the curve's own
     // domain with no ambiguity to resolve — subdividing it would split every
@@ -562,13 +576,13 @@ pub(super) fn find_splits_on_section_arc(
             continue;
         }
         let t_norm = shorter_arc_delta(angle - a0) / delta;
-        if t_norm <= tol || t_norm >= 1.0 - tol {
+        if !arc_split_is_interior(edge, closest, t_norm, tol) {
             continue;
         }
         splits.push((t_norm, sp));
     }
     splits.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-    splits.dedup_by(|a, b| (a.0 - b.0).abs() < tol);
+    splits.dedup_by(|a, b| (a.1 - b.1).length() < tol);
     splits
 }
 
@@ -611,13 +625,13 @@ pub(super) fn find_splits_on_section_ellipse(
             continue;
         }
         let t_norm = shorter_arc_delta(angle - a0) / delta;
-        if t_norm <= tol || t_norm >= 1.0 - tol {
+        if !arc_split_is_interior(edge, closest, t_norm, tol) {
             continue;
         }
         splits.push((t_norm, sp));
     }
     splits.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-    splits.dedup_by(|a, b| (a.0 - b.0).abs() < tol);
+    splits.dedup_by(|a, b| (a.1 - b.1).length() < tol);
     splits
 }
 
@@ -642,13 +656,13 @@ pub(super) fn find_splits_on_ellipse(
             continue;
         }
         let t_norm = normalize_angle_in_span(angle, t0, span);
-        if t_norm <= tol || t_norm >= 1.0 - tol {
+        if !arc_split_is_interior(edge, closest, t_norm, tol) {
             continue;
         }
         splits.push((t_norm, sp));
     }
     splits.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-    splits.dedup_by(|a, b| (a.0 - b.0).abs() < tol);
+    splits.dedup_by(|a, b| (a.1 - b.1).length() < tol);
     splits
 }
 
@@ -1031,5 +1045,95 @@ mod tests {
                 assert!((*foot - expected).length() <= tol);
             }
         }
+    }
+
+    #[test]
+    fn analytic_arc_split_bands_have_length_units() {
+        use remus_math::{
+            curves::{Circle3D, Ellipse3D},
+            vec::Vec3,
+        };
+        let tol = 1e-7;
+        let mut failures = Vec::new();
+        for radius in [1e-4, 1.0, 1e6] {
+            let center = Point3::new(0.0, 0.0, 0.0);
+            let normal = Vec3::new(0.0, 0.0, 1.0);
+            let circle = Circle3D::new(center, normal, radius).unwrap();
+            let ellipse = Ellipse3D::new(center, normal, 2.0 * radius, radius).unwrap();
+            for kind in [
+                "circle-boundary",
+                "circle-section",
+                "ellipse-boundary",
+                "ellipse-section",
+            ] {
+                for forward in [true, false] {
+                    if kind.ends_with("boundary") && !forward {
+                        continue;
+                    }
+                    let circular = kind.starts_with("circle");
+                    let evaluate = |angle| {
+                        if circular {
+                            circle.evaluate(angle)
+                        } else {
+                            ellipse.evaluate(angle)
+                        }
+                    };
+                    let mut edge = ellipse_section_edge(&ellipse, 0.2, 1.0, forward);
+                    if circular {
+                        edge.curve_3d = EdgeCurve::Circle(circle.clone());
+                    }
+                    edge.start_3d = evaluate(if forward { 0.2 } else { 1.0 });
+                    edge.end_3d = evaluate(if forward { 1.0 } else { 0.2 });
+                    let split = |points: &[Point3]| match kind {
+                        "circle-boundary" => find_splits_on_circle(
+                            &circle,
+                            &edge,
+                            points,
+                            &FaceSurface::Plane { normal, d: 0.0 },
+                            tol,
+                        ),
+                        "circle-section" => find_splits_on_section_arc(&edge, points, tol),
+                        "ellipse-boundary" => find_splits_on_ellipse(&ellipse, &edge, points, tol),
+                        _ => find_splits_on_section_ellipse(&edge, points, tol),
+                    };
+                    let near = 0.1 * tol / (2.0 * radius);
+                    let endpoints = [evaluate(0.2 + near), evaluate(1.0 - near)];
+                    if !split(&endpoints).is_empty() {
+                        failures.push(format!(
+                            "{kind} radius={radius:e}: retained sub-tolerance endpoint pieces"
+                        ));
+                    }
+                    let duplicates = [evaluate(0.6), evaluate(0.6 + near)];
+                    if split(&duplicates).len() != 1 {
+                        failures.push(format!("{kind} radius={radius:e} forward={forward}: near-coincident anchors did not merge"));
+                    }
+                    let gap = 0.001_f64.min(radius * 0.05) / (2.0 * radius);
+                    let probes = [
+                        evaluate(0.2 + gap),
+                        evaluate(0.6),
+                        evaluate(0.6 + gap),
+                        evaluate(1.0 - gap),
+                    ];
+                    let actual = split(&probes);
+                    if probes.iter().any(|probe| {
+                        actual
+                            .iter()
+                            .all(|(_, point)| (*point - *probe).length() > tol)
+                    }) {
+                        failures.push(format!(
+                            "{kind} radius={radius:e} forward={forward}: missing geometric anchor"
+                        ));
+                    }
+                    if actual.len() != probes.len() {
+                        failures.push(format!(
+                            "{kind} radius={radius:e}: {} anchors, expected {}",
+                            actual.len(),
+                            probes.len()
+                        ));
+                    }
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 }
