@@ -9169,3 +9169,24 @@ fn cut_cylinder_by_tilted_slab_stays_exact_and_closed() {
         );
     }
 }
+
+#[test]
+fn fuse_acceptance_detects_small_tool_lost_from_long_blank() {
+    let mut topo = Topology::new();
+    let blank = crate::primitives::make_box(&mut topo, 1e6, 1.0, 1.0).unwrap();
+    let tool = crate::primitives::make_box(&mut topo, 0.1, 0.4, 2.0).unwrap();
+    crate::transform::transform_solid(
+        &mut topo,
+        tool,
+        &remus_math::mat::Mat4::translation(0.1, 0.3, -0.5),
+    )
+    .unwrap();
+    assert!(!operands_are_represented(
+        &topo,
+        BooleanOp::Fuse,
+        blank,
+        blank,
+        tool,
+        Tolerance::default()
+    ));
+}

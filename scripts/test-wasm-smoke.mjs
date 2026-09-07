@@ -20,6 +20,7 @@ import {
   runOffsetSphereCylinderRegression,
   runOffsetTorusSphereRegression,
   runBooleanScaleRegression,
+  runAnisotropicBooleanRegression,
 } from './openzcad-wasm-consumer-regressions.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -738,11 +739,12 @@ for (const operation of ['fillet', 'chamfer']) {
 // 15. OpenZCAD mounting-bracket cylindrical-face resize and STEP round trip.
 runOpenZcadCylindricalFaceResizeRegression({ BrepKernel, decodeEvolutionPayload, RemusIo });
 
-console.log('\nAll smoke tests passed');
-
 runWideSphereCapRegression({ BrepKernel, RemusIo });
 runOffsetConeSphereRegression({ BrepKernel });
 runOffsetSphereCylinderRegression({ BrepKernel });
 
 runOffsetTorusSphereRegression({ BrepKernel });
 runBooleanScaleRegression({ BrepKernel });
+runAnisotropicBooleanRegression({ BrepKernel });
+
+console.log('\nAll smoke tests passed');
