@@ -529,6 +529,25 @@ Six direct/batch compiled-package cells preserve those refusals. All 4,943 nativ
 smoke and installed-tarball consumer checks. This increment is not yet merged
 and does not close the B17 repair matrix.
 
+### Wireframe boundary repair — locally qualified
+
+The disconnected-cube regression reproduced `fix_wireframe` reporting twelve
+repairs while retaining all twenty-four free edges. The fixer now uses the
+existing shell-sewing candidate checks and boundary rewrites, and reports the
+actual remaining free edges. Coincident chord/arc endpoints and ambiguous
+partners remain refused. No tolerance changes are introduced; the existing
+interior-sampling criterion is retained and is not a universal curve-equality
+proof.
+
+The pipeline repairs outer and cavity shells separately and records committed
+edge/vertex replacements. Local tests cover closure, connected wire identities,
+repeated no-op execution, three-scale journal references, populated arena
+restore, later draft, and rollback after a subsequent refusal. The two-shell
+fixture isolates traversal and lineage rather than cavity containment.
+All 4,945 native tests pass (13 skipped), and both optimized WASM packages pass
+smoke and installed-tarball consumer checks, including twelve sewing/wireframe
+direct/batch scale cells. This increment is not yet merged. B17 stays open.
+
 ## §B Bridge backlog — owned by neither program
 
 Ready items from the stabilization-plan residue, the capability-matrix

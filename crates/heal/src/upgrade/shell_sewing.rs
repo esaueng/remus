@@ -855,6 +855,58 @@ mod tests {
     }
 
     #[test]
+    fn wireframe_pipeline_repairs_outer_and_inner_shells_with_history() {
+        let mut topo = Topology::new();
+        let outer = disjoint_cube_shell(&mut topo);
+        let inner = disjoint_cube_shell(&mut topo);
+        // Separate shell identities isolate traversal and lineage from cavity containment.
+        let solid = topo.add_solid(remus_topology::solid::Solid::new(outer, vec![inner]));
+        let mut process = crate::pipeline::process::HealProcess::new();
+        process.add_step("fix_wireframe");
+        process.add_step("fix_wireframe");
+        let (_, reports, history) = process.execute_with_history(&mut topo, solid).unwrap();
+        assert_eq!(reports[0].actions_taken, 24);
+        assert_eq!(reports[1].actions_taken, 0);
+        for shell in [outer, inner] {
+            assert_eq!(free_edge_count(&topo, shell), 0);
+            assert_wires_chain(&topo, shell);
+        }
+        let claims = history[0].replacements.entity_history().unwrap();
+        assert_eq!(claims.len(), 56);
+        assert!(
+            claims
+                .values()
+                .flatten()
+                .all(|key| history[0].result.contains(key))
+        );
+        assert!(history[1].replacements.entity_history().unwrap().is_empty());
+    }
+
+    #[test]
+    fn wireframe_repair_closes_a_disjoint_cube_shell() {
+        let mut topo = Topology::new();
+        let shell = disjoint_cube_shell(&mut topo);
+        assert_eq!(free_edge_count(&topo, shell), 24);
+        let report = crate::fix::wireframe::fix_wireframe(
+            &mut topo,
+            shell,
+            &mut crate::context::HealContext::new(),
+            &crate::fix::config::FixConfig::default(),
+        )
+        .unwrap();
+        let remaining = free_edge_count(&topo, shell);
+        assert_eq!(
+            remaining, 0,
+            "reported {} repairs but retained {remaining} free edges",
+            report.actions_taken
+        );
+        assert_eq!(report.actions_taken, 12);
+        remus_topology::validation::validate_shell_closed(topo.shell(shell).unwrap(), &topo)
+            .unwrap();
+        assert_wires_chain(&topo, shell);
+    }
+
+    #[test]
     fn sew_shell_closes_a_disjoint_cube_shell() {
         let mut topo = Topology::new();
         let shell_id = disjoint_cube_shell(&mut topo);
@@ -1134,6 +1186,16 @@ mod tests {
         let shell_id = topo.add_shell(Shell::new(vec![ft, fb]).unwrap());
 
         let before = free_edge_count(&topo, shell_id);
+        let wireframe = crate::fix::wireframe::fix_wireframe(
+            &mut topo,
+            shell_id,
+            &mut crate::context::HealContext::new(),
+            &crate::fix::config::FixConfig::default(),
+        )
+        .unwrap();
+        assert_eq!(wireframe.actions_taken, 0);
+        assert!(wireframe.status.contains(crate::status::Status::FAIL1));
+        assert_eq!(free_edge_count(&topo, shell_id), before);
         let (report, history) = sew_shell_with_history(&mut topo, shell_id, 1e-6).unwrap();
         assert!(history.edges.is_empty());
         assert!(history.vertices.is_empty());
@@ -1194,6 +1256,16 @@ mod tests {
         let shell_id = topo.add_shell(Shell::new(faces).unwrap());
 
         let before = free_edge_count(&topo, shell_id);
+        let wireframe = crate::fix::wireframe::fix_wireframe(
+            &mut topo,
+            shell_id,
+            &mut crate::context::HealContext::new(),
+            &crate::fix::config::FixConfig::default(),
+        )
+        .unwrap();
+        assert_eq!(wireframe.actions_taken, 0);
+        assert!(wireframe.status.contains(crate::status::Status::FAIL1));
+        assert_eq!(free_edge_count(&topo, shell_id), before);
         let (report, history) = sew_shell_with_history(&mut topo, shell_id, 1e-6).unwrap();
         assert!(history.edges.is_empty());
         assert!(history.vertices.is_empty());
