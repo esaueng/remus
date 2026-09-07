@@ -1323,3 +1323,178 @@ fn ordinary_verified_pipeline_does_not_invoke_custom_history_override() {
     assert!(error.to_string().contains("custom history refused"));
     assert_eq!(topo.journal().snapshot(), before);
 }
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn verified_unification_journals_merged_faces_and_consumed_center() {
+    use remus_topology::{
+        edge::{Edge, EdgeCurve},
+        face::Face,
+        shell::Shell,
+        vertex::Vertex,
+        wire::{OrientedEdge, Wire},
+    };
+    fn line(
+        topo: &mut Topology,
+        a: remus_topology::VertexId,
+        b: remus_topology::VertexId,
+    ) -> remus_topology::EdgeId {
+        topo.add_edge(Edge::new(a, b, EdgeCurve::Line))
+    }
+    for scale in [0.001, 1.0, 10.0] {
+        let mut topo = Topology::new();
+        let solid = make_box(&mut topo, 10.0 * scale, 10.0 * scale, 10.0 * scale).unwrap();
+        let shell = topo.solid(solid).unwrap().outer_shell();
+        let faces = topo.shell(shell).unwrap().faces().to_vec();
+        let original = topo.face(faces[0]).unwrap().clone();
+        let boundary = topo.wire(original.outer_wire()).unwrap().edges().to_vec();
+        let vertices: Vec<_> = boundary
+            .iter()
+            .map(|oe| oe.oriented_start(topo.edge(oe.edge()).unwrap()))
+            .collect();
+        let a = topo.vertex(vertices[0]).unwrap().point();
+        let b = topo.vertex(vertices[2]).unwrap().point();
+        let center = topo.add_vertex(Vertex::new(a + (b - a) * 0.5, 1e-7));
+        let spokes: Vec<_> = vertices
+            .iter()
+            .map(|&vertex| line(&mut topo, center, vertex))
+            .collect();
+        let mut triangles = Vec::new();
+        for i in 0..4 {
+            let wire = topo.add_wire(
+                Wire::new(
+                    vec![
+                        boundary[i],
+                        OrientedEdge::new(spokes[(i + 1) % 4], false),
+                        OrientedEdge::new(spokes[i], true),
+                    ],
+                    true,
+                )
+                .unwrap(),
+            );
+            let mut face = Face::new(wire, Vec::new(), original.surface().clone());
+            face.set_reversed(original.is_reversed());
+            triangles.push(topo.add_face(face));
+        }
+        let mut replacement = faces[1..].to_vec();
+        replacement.extend(triangles.iter().copied());
+        *topo.shell_mut(shell).unwrap() = Shell::new(replacement).unwrap();
+
+        let keys = remus_operations::journal_ops::solid_entity_keys(&topo, solid).unwrap();
+        let pending = begin_scoped(&mut topo, "triangulated_fixture", &[solid]).unwrap();
+        let mut draft = remus_topology::journal::EvolutionDraft::construction();
+        for &key in &keys {
+            draft.push(
+                key,
+                remus_topology::journal::EventDraft::Generated {
+                    sources: Vec::new(),
+                },
+            );
+        }
+        let anchor = topo.journal_record_evolution(pending, draft).unwrap();
+        let mut process = remus_heal::pipeline::process::HealProcess::new();
+        process.add_step("unify_same_domain");
+        let result =
+            remus_operations::journal_ops::heal_pipeline_journaled(&mut topo, solid, &process)
+                .unwrap();
+        assert!(result.result.is_valid_after());
+        assert_eq!(solid_faces(&topo, result.result.solid).unwrap().len(), 6);
+        let mut bound = std::collections::BTreeSet::new();
+        let mut deleted = 0;
+        for kind in [EntityKind::Face, EntityKind::Edge, EntityKind::Vertex] {
+            for index in 0..keys.iter().filter(|key| key.kind == kind).count() {
+                match resolve(&topo, &PersistentRef::operation_output(anchor, kind, index)) {
+                    Resolution::Bound {
+                        entity,
+                        provenance: Provenance::Construction,
+                    } => {
+                        bound.insert(entity);
+                    }
+                    Resolution::Dangling { deleted_at } => {
+                        assert_eq!(deleted_at, result.op);
+                        deleted += 1;
+                    }
+                    other => panic!("unification lost {kind:?}/{index}: {other:?}"),
+                }
+            }
+        }
+        assert_eq!(deleted, 5);
+        assert_eq!(
+            bound,
+            remus_operations::journal_ops::solid_entity_keys(&topo, result.result.solid)
+                .unwrap()
+                .into_iter()
+                .collect()
+        );
+        let volume =
+            remus_operations::measure::solid_volume(&topo, result.result.solid, 0.01 * scale)
+                .unwrap();
+        assert!((volume - 1000.0 * scale.powi(3)).abs() < 1e-6 * scale.powi(3));
+        let bytes = remus_io::arena_io::serialize_solids(&topo, &[result.result.solid]).unwrap();
+        let mut restored = Topology::new();
+        make_box(&mut restored, 1.0, 1.0, 1.0).unwrap();
+        let restored_solid =
+            remus_io::arena_io::deserialize_solids(&bytes, &mut restored).unwrap()[0];
+        let repeat = remus_operations::journal_ops::heal_pipeline_journaled(
+            &mut restored,
+            restored_solid,
+            &process,
+        )
+        .unwrap();
+        let wall = solid_faces(&restored, repeat.result.solid)
+            .unwrap()
+            .into_iter()
+            .find(|&face| {
+                restored
+                    .face(face)
+                    .unwrap()
+                    .effective_plane_normal()
+                    .is_some_and(|normal| normal.x() > 0.9)
+            })
+            .unwrap();
+        let drafted = remus_operations::journal_ops::draft_journaled(
+            &mut restored,
+            repeat.result.solid,
+            &[wall],
+            remus_math::vec::Vec3::new(0.0, 0.0, 1.0),
+            remus_math::vec::Point3::new(0.0, 0.0, 0.0),
+            0.05,
+        )
+        .unwrap();
+        let mut surviving = std::collections::BTreeSet::new();
+        let mut still_deleted = 0;
+        for kind in [EntityKind::Face, EntityKind::Edge, EntityKind::Vertex] {
+            for index in 0..keys.iter().filter(|key| key.kind == kind).count() {
+                match resolve(
+                    &restored,
+                    &PersistentRef::operation_output(anchor, kind, index),
+                ) {
+                    Resolution::Bound {
+                        entity,
+                        provenance: Provenance::Construction,
+                    } => {
+                        surviving.insert(entity);
+                    }
+                    Resolution::Dangling { deleted_at } => {
+                        assert_eq!(deleted_at, result.op);
+                        still_deleted += 1;
+                    }
+                    other => panic!("unify/arena/draft lost {kind:?}/{index}: {other:?}"),
+                }
+            }
+        }
+        assert_eq!(still_deleted, 5);
+        assert_eq!(
+            surviving,
+            remus_operations::journal_ops::solid_entity_keys(&restored, drafted.solid)
+                .unwrap()
+                .into_iter()
+                .collect()
+        );
+        let expected = (1000.0 + 500.0 * 0.05_f64.tan()) * scale.powi(3);
+        let actual =
+            remus_operations::measure::solid_volume(&restored, drafted.solid, 0.01 * scale)
+                .unwrap();
+        assert!((actual - expected).abs() < expected * 1e-6);
+    }
+}
