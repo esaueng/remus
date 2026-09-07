@@ -3051,8 +3051,8 @@ fn xform_from_canonical_z(
 /// * a **difference whose tool has interior in common with the blank removes
 ///   something**, so an untouched blank is a lost tool.
 ///
-/// The margin is relative to the result's own diagonal, so the test is
-/// scale-free. Intersect is not checked here: an empty or tolerance-thin
+/// Fuse bounds its margin by both the result and the operand being checked;
+/// Cut uses the result diagonal. Intersect is not checked here: an empty or tolerance-thin
 /// intersection is a legitimate outcome with no such lower bound.
 fn operands_are_represented(
     topo: &Topology,
@@ -3069,10 +3069,15 @@ fn operands_are_represented(
     let margin = (diag * 1e-6).max(tol.linear);
     match op {
         BooleanOp::Fuse => {
-            let grown = r_box.expanded(margin);
             [a, b].into_iter().all(|operand| {
-                crate::measure::solid_bounding_box(topo, operand)
-                    .is_ok_and(|ob| grown.contains_point(ob.min) && grown.contains_point(ob.max))
+                crate::measure::solid_bounding_box(topo, operand).is_ok_and(|ob| {
+                    // A long blank must not hide a smaller operand's missing
+                    // protrusion inside a margin derived from the blank alone.
+                    let operand_diag = (ob.max - ob.min).length();
+                    let local_margin = (diag.min(operand_diag) * 1e-6).max(tol.linear);
+                    let grown = r_box.expanded(local_margin);
+                    grown.contains_point(ob.min) && grown.contains_point(ob.max)
+                })
             })
         }
         BooleanOp::Cut => {
