@@ -1381,7 +1381,7 @@ export const runUnifyHistoryRegression = ({ BrepKernel }) => {
 
 export const runSewingHistoryRegression = ({ BrepKernel }) => {
   const kinds = [['face', 'getSolidFaces'], ['edge', 'getSolidEdges'], ['vertex', 'getSolidVertices']];
-  for (const scale of [0.001, 1, 10]) for (const batch of [false, true]) {
+  for (const operator of ['sew_shells', 'fix_wireframe']) for (const scale of [0.001, 1, 10]) for (const batch of [false, true]) {
     const kernel = new BrepKernel(), restored = new BrepKernel();
     try {
       const cube = kernel.makeBox(10 * scale, 10 * scale, 10 * scale);
@@ -1423,13 +1423,13 @@ export const runSewingHistoryRegression = ({ BrepKernel }) => {
       const anchor = { solid: source, op: 0 };
       const refs = kinds.flatMap(([kind, query]) => Array.from(kernel[query](anchor.solid), (_, index) => ({ kind, ref: kernel.makeOperationOutputRef(anchor.op, kind, index) })));
       const edit = (active, solid) => {
-        if (!batch) return JSON.parse(active.runHealPipelineJournaled(solid, ['sew_shells']));
-        const [response] = JSON.parse(active.executeBatchV2(JSON.stringify([{ op: 'runHealPipelineJournaled', args: { solid, steps: ['sew_shells'] } }])));
+        if (!batch) return JSON.parse(active.runHealPipelineJournaled(solid, [operator]));
+        const [response] = JSON.parse(active.executeBatchV2(JSON.stringify([{ op: 'runHealPipelineJournaled', args: { solid, steps: [operator] } }])));
         assert.equal(response.error, undefined, JSON.stringify(response));
         return response.ok;
       };
       const before = Uint8Array.from(kernel.serializeSolids(Uint32Array.of(source))), journal = kernel.journalSummary();
-      assert.throws(() => kernel.runHealPipelineJournaled(source, ['sew_shells', 'missing']));
+      assert.throws(() => kernel.runHealPipelineJournaled(source, [operator, 'missing']));
       assert.equal(kernel.journalSummary(), journal);
       assert.deepEqual(kernel.serializeSolids(Uint32Array.of(source)), before);
       const result = edit(kernel, anchor.solid);
@@ -1462,10 +1462,10 @@ export const runSewingHistoryRegression = ({ BrepKernel }) => {
       const drafted = JSON.parse(restored.draftJournaled(repeated.solid, Uint32Array.of(wall), Float64Array.of(0, 0, 1), Float64Array.of(0, 0, 0), 5));
       check(restored, drafted.solid, (1000 + 500 * Math.tan(5 * Math.PI / 180)) * scale ** 3);
     } catch (error) {
-      throw new Error(`sewing history scale=${scale} batch=${batch}: ${error.message}`, { cause: error });
+      throw new Error(`${operator} history scale=${scale} batch=${batch}: ${error.message}`, { cause: error });
     } finally { kernel.free(); restored.free(); }
   }
-  console.log('ok - sewing history: six direct/batch scale cells, merged edge/vertex references, legacy import, arena and later draft');
+  console.log('ok - sewing/wireframe history: twelve direct/batch scale cells, merged edge/vertex references, legacy import, arena and later draft');
 };
 
 export const runInnerWireHistoryRegression = ({ BrepKernel }) => {
