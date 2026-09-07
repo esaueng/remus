@@ -87,7 +87,9 @@ pocket-face orientation; B12 is partial (rectangular holes on sweep/pipe
 caps, PR #252). No `#[ignore]` pins a live engine defect.
 
 Current 2.4 qualification work covers bounded off-axis cone/sphere,
-sphere/cylinder, and torus/sphere matrices; integration remains pending.
+sphere/cylinder, and torus/sphere matrices; integration remains pending. The
+2.6 through-tool family now has a 72-cell exact scale/placement matrix;
+[remaining band audits](scale-band-audit.md) keep the broader item partial.
 The torus/box notch Cut still needs a stricter orientation-validation
 qualification pass: a probe of the pre-change c1d8d211 package reports
 validation issues despite the existing analytic/manifold/volume test
@@ -218,7 +220,7 @@ P-Class 2.3 · conic boolean cells = O2.2 · offset self-intersection = 5.7
 | ID | Item | Where | Size | Why it matters | State |
 |---|---|---|---|---|---|
 | B1 | **Healing disclosure typing** — the matrix's only named Unsupported-untyped cell: permissive healing can mask an invalid result as valid. Type every repair (report what changed, refuse to claim validity it didn't verify); both-sides tests. | `heal/src/fix/`, `check/src/validate/` | M | The last untyped silent-failure path in the kernel; highest correctness value per line. Do first in the qualification lane. | **Done (2026-09-03, PR #243):** fixer results enumerate counted repair kinds and typed declined repairs; L2 `OK` explicitly means only “no fixer action,” never validity. Operations, facade verified mode, configurable direct WASM, named pipelines, and additive detailed direct/batch WASM surfaces commit only after independent operations/check validation. Invalid and unverifiable results return stable typed refusals with attempted repairs and roll back. Native and WASM both-sides regressions pin verified success and refusal. |
-| B2 | **Boolean scale residuals** — 1e-5 fails closed (100·tol weld bands); raw-GFA 1e6 silently 0.9467 vs 0.8400 (ExactOnly refuses; measure + pin). | `algo` bands | M | Feeds P-Class 2.6 directly; the 1e6 cell is a possible silent-wrong class. Geometry lane. | Open |
+| B2 | **Boolean scale residuals** — the through-tool family now returns exact material at 1e-5 and 1e6; straight-edge refinement and local planar bands are qualified by 72 operator/scale/placement cells. | `algo` bands | M | Feeds P-Class 2.6; remaining dimensional and curved-band work is tracked in [the audit](scale-band-audit.md). | Partial — named matrix passes; broader audit remains |
 | B3 | **Closed-rim chamfers** — cone-frustum band mirroring the validated toroidal fillet assembler; closed-form volume oracle. Stabilization C1.2. | `blend`, `operations/src/chamfer.rs` | M | Exact surfaces, cheap, passes chase filter 1; unblocks resize_blend cylinder/cone (C2). | Open |
 | B4 | **v2 walking-trimmer completion** — the four named gaps: keep-side hint, shared contact edges, end-cap notch trim, chamfer external-tangent branch. Stabilization C1.3. | `blend/src/trimmer.rs` | M | Critical path for v2 walker parity → legacy engine retirement (M5 precondition). | Open |
 | B5 | **Offset face provenance** — offset derives faces 1:1 and discards the mapping; journal real evolution instead of a barrier. | `offset`, `operations/src/offset_v2.rs` | S | The last declared-barrier operation nobody owns; closes the B3-residual from stabilization. | **Done (2026-09-02, PR #224 (landed via #233)):** default intersection-joint V2 offsets retain and validate the total 1:1 construction map; native and direct/batch WASM journal wrappers record it transactionally. Closed-form plane/volume, persistent-reference, rollback, and WASM parity oracles pin the claim. Arc-joint and self-intersection-removal variants explicitly refuse this map because later face synthesis/replacement needs richer provenance. |

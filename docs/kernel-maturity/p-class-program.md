@@ -394,9 +394,15 @@ twins.
 Finish what the junction-band fixes started, systematically: sweep every
 absolute snap/weld/acceptance band in crates/algo and make each
 scale-relative (face-pair AABB or model diagonal), the same treatment the
-junction-snap band got. Known residuals: the 100·tol weld bands that keep
-1e-5 failing, and the silent 1e6 GFA case currently caught only by the
-operations bounds gate.
+junction-snap band got. The through-tool residuals at 1e-5 and 1e6 now
+produce correct exact results. A 72-cell native matrix covers all three
+operators, twelve decade scales, and two placements, with independent volume
+and watertightness oracles. Native batch coverage pins the same cells, and
+the packaged-WASM regression is part of smoke and installed-tarball testing.
+The large-scale rollback fixture is promoted to a correctness test, while
+the smaller 1e-6 through-cut remains a typed refusal. This closes the named
+scale witnesses, not the entire band inventory: see [the audit](scale-band-audit.md)
+for changed bands and remaining dimensional, curved, and anisotropic cases.
 
 > **Exit gate:** `boolean_scale_gap.rs` exact from 1e-5 to 1e6 — or a typed
 > refusal; never a silent wrong volume at any scale. The rollback fixture in
