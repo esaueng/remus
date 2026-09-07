@@ -25,6 +25,7 @@ import {
   runUnifyHistoryRegression,
   runSewingHistoryRegression,
   runInnerWireHistoryRegression,
+  runSplitVertexRefusalRegression,
   runWideSphereCapRegression,
   runOffsetConeSphereRegression,
   runOffsetSphereCylinderRegression,
@@ -768,6 +769,7 @@ runHealingHistoryRegression({ BrepKernel, RemusIo });
 runUnifyHistoryRegression({ BrepKernel });
 runSewingHistoryRegression({ BrepKernel });
 runInnerWireHistoryRegression({ BrepKernel });
+runSplitVertexRefusalRegression({ BrepKernel });
 runBooleanScaleRegression({ BrepKernel });
 runAnisotropicBooleanRegression({ BrepKernel });
 
