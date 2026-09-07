@@ -2227,6 +2227,34 @@ fn build_section_edges(
                     ))
                 })?;
 
+                // IN PaveBlocks can come from nearby curved rims. Projection
+                // supplies UV coordinates, not evidence that the arc lies on
+                // this plane; admitting an off-plane rim corrupts the wall.
+                if let (FaceSurface::Plane { normal, d }, EdgeCurve::Circle(circle)) =
+                    (face.surface(), edge.curve())
+                {
+                    let (start, end) = edge_domain;
+                    let (lo, hi) = (start.min(end), start.max(end));
+                    let cosine = normal.dot(circle.evaluate(0.0) - circle.center());
+                    let sine =
+                        normal.dot(circle.evaluate(std::f64::consts::FRAC_PI_2) - circle.center());
+                    let extremum = sine.atan2(cosine);
+                    let mut parameters = vec![lo, hi];
+                    for phase in [extremum, extremum + std::f64::consts::PI] {
+                        let parameter = lo + (phase - lo).rem_euclid(std::f64::consts::TAU);
+                        if parameter <= hi {
+                            parameters.push(parameter);
+                        }
+                    }
+                    let off_plane = parameters.into_iter().any(|parameter| {
+                        let point = circle.evaluate(parameter);
+                        (normal.dot(point - Point3::new(0.0, 0.0, 0.0)) - d).abs() > tol
+                    });
+                    if off_plane {
+                        continue;
+                    }
+                }
+
                 let intervals: Vec<(Point3, Point3)> =
                     if matches!(edge.curve(), remus_topology::edge::EdgeCurve::Line) {
                         let Some(clipped_list) =
