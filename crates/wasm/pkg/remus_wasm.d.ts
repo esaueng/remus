@@ -2917,6 +2917,17 @@ export class BrepKernel {
      */
     repairSolidDetailed(solid: number): any;
     /**
+     * Replace a support surface with exact face, edge, and vertex history.
+     *
+     * `replacement` is JSON: `{type:"plane", normal:[x,y,z], d}` or
+     * `{type:"cylinder", origin:[x,y,z], axis:[x,y,z], radius}`. Plane
+     * coefficients represent `normal dot point = d`; cylinder replacements
+     * retain the source parameter reference direction. Unknown fields refuse.
+     * Returns JSON `{"solid", "op"}`. Batch calls pass the replacement object
+     * directly as `args.replacement`.
+     */
+    replaceSurfaceJournaled(solid: number, face: number, replacement: string): string;
+    /**
      * Resize or remove an exact constant-radius analytic blend band.
      *
      * `face` is only a seed: the kernel re-derives the complete band, its
