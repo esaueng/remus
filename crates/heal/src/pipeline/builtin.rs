@@ -49,6 +49,15 @@ impl HealOperator for FixShapeOp {
         let (new_solid, result) = crate::fix::fix_shape(topo, solid_id, &config)?;
         Ok((new_solid, result))
     }
+
+    fn execute_with_history(
+        &self,
+        topo: &mut Topology,
+        solid_id: SolidId,
+        _ctx: &mut HealContext,
+    ) -> Result<(SolidId, FixResult, crate::reshape::ReShape), HealError> {
+        crate::fix::fix_shape_with_history(topo, solid_id, &FixConfig::default(), None)
+    }
 }
 
 /// Merge adjacent faces sharing the same surface.

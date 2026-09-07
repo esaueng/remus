@@ -715,6 +715,188 @@ pub fn defeature_journaled(
     })
 }
 
+/// A verified configured repair and its construction-history entry.
+pub struct JournaledFix {
+    /// Verified repair reports and resulting solid.
+    pub result: crate::heal::ConfiguredRepairReport,
+    /// The recorded operation.
+    pub op: OpId,
+}
+
+/// A verified healing pipeline and its construction-history entry.
+pub struct JournaledHealPipeline {
+    /// Verified pipeline reports and resulting solid.
+    pub result: crate::heal::PipelineRepairReport,
+    /// The recorded operation.
+    pub op: OpId,
+}
+
+/// Fix a shape with verified geometry and recorded replacement history.
+///
+/// # Errors
+///
+/// Returns the verified fixer's refusals or a history error. Every failure
+/// restores topology and journal state together.
+pub fn fix_shape_journaled(
+    topo: &mut Topology,
+    solid: SolidId,
+    config: &remus_heal::fix::FixConfig,
+    tolerance: Option<f64>,
+) -> Result<JournaledFix, OperationsError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let sources = solid_entity_keys(topo, solid)?;
+        let pending = begin_scoped(topo, "fix_shape", &[solid])?;
+        let (result, history) =
+            crate::heal::fix_shape_verified_with_history(topo, solid, config, tolerance)?;
+        let op = record_healing_history(topo, pending, &sources, result.solid, &history)?;
+        Ok(JournaledFix { result, op })
+    })
+}
+
+/// Run a verified healing pipeline with recorded replacement history.
+///
+/// # Errors
+///
+/// Returns the verified pipeline's refusals or a history error. Every failure
+/// restores topology and journal state together.
+pub fn heal_pipeline_journaled(
+    topo: &mut Topology,
+    solid: SolidId,
+    process: &remus_heal::pipeline::process::HealProcess,
+) -> Result<JournaledHealPipeline, OperationsError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let sources = solid_entity_keys(topo, solid)?;
+        let pending = begin_scoped(topo, "heal_pipeline", &[solid])?;
+        let (result, history) =
+            crate::heal::run_heal_pipeline_verified_with_history(topo, solid, process)?;
+        let replacements = compose_healing_history(&sources, &history)?;
+        let op = record_healing_replacements(topo, pending, &sources, result.solid, &replacements)?;
+        Ok(JournaledHealPipeline { result, op })
+    })
+}
+
+type HealingHistory = std::collections::BTreeMap<EntityKey, Option<Vec<EntityKey>>>;
+
+fn compose_healing_history(
+    sources: &[EntityKey],
+    steps: &[remus_heal::pipeline::process::StepHistory],
+) -> Result<HealingHistory, OperationsError> {
+    let mut composed: HealingHistory = sources.iter().map(|&key| (key, Some(vec![key]))).collect();
+    for step in steps {
+        let replacements = step.replacements.entity_history()?;
+        let live: std::collections::BTreeSet<_> = step.result.iter().copied().collect();
+        for targets in composed.values_mut() {
+            let Some(previous) = targets.as_ref() else {
+                continue;
+            };
+            let mut next = Vec::new();
+            let mut known = true;
+            for source in previous {
+                if !step.sources.contains(source) {
+                    known = false;
+                    break;
+                }
+                if let Some(outputs) = replacements.get(source) {
+                    if live.contains(source) && !outputs.contains(source) {
+                        return Err(OperationsError::InvalidInput {
+                            reason: format!(
+                                "healing history replaces {source:?} but the source remains in the result"
+                            ),
+                        });
+                    }
+                    if outputs.iter().any(|output| !live.contains(output)) {
+                        known = false;
+                        break;
+                    }
+                    next.extend(outputs.iter().copied());
+                } else if live.contains(source) {
+                    next.push(*source);
+                } else {
+                    known = false;
+                    break;
+                }
+            }
+            next.sort_unstable();
+            next.dedup();
+            *targets = known.then_some(next);
+        }
+    }
+    Ok(composed)
+}
+
+fn record_healing_history(
+    topo: &mut Topology,
+    pending: PendingOp,
+    sources: &[EntityKey],
+    result: SolidId,
+    history: &remus_heal::reshape::ReShape,
+) -> Result<OpId, OperationsError> {
+    let replacements = history
+        .entity_history()?
+        .into_iter()
+        .map(|(key, targets)| (key, Some(targets)))
+        .collect();
+    record_healing_replacements(topo, pending, sources, result, &replacements)
+}
+
+fn record_healing_replacements(
+    topo: &mut Topology,
+    pending: PendingOp,
+    sources: &[EntityKey],
+    result: SolidId,
+    replacements: &HealingHistory,
+) -> Result<OpId, OperationsError> {
+    use std::collections::{BTreeMap, BTreeSet};
+    let live: BTreeSet<_> = solid_entity_keys(topo, result)?.into_iter().collect();
+    let mut by_target: BTreeMap<EntityKey, Vec<EntityKey>> = BTreeMap::new();
+    let mut draft = EvolutionDraft::construction();
+    draft.add_scope(live.iter().copied());
+    for &source in sources {
+        if let Some(targets) = replacements.get(&source) {
+            let Some(targets) = targets else {
+                continue;
+            };
+            if live.contains(&source) && !targets.contains(&source) {
+                return Err(OperationsError::InvalidInput {
+                    reason: format!(
+                        "healing history replaces {source:?} but the source remains in the result"
+                    ),
+                });
+            }
+            if targets.iter().any(|target| !live.contains(target)) {
+                continue;
+            }
+            let mut retained = false;
+            for &target in targets {
+                by_target.entry(target).or_default().push(source);
+                retained = true;
+            }
+            if !retained {
+                draft.push(source, EventDraft::Deleted);
+            }
+        } else if live.contains(&source) {
+            by_target.entry(source).or_default().push(source);
+        }
+    }
+    for &target in &live {
+        let event = match by_target.remove(&target) {
+            Some(mut sources) => {
+                sources.sort_unstable();
+                sources.dedup();
+                match sources.as_slice() {
+                    [source] => EventDraft::Modified { from: *source },
+                    _ => EventDraft::Merged { from: sources },
+                }
+            }
+            None => EventDraft::Unresolved {
+                candidates: Vec::new(),
+            },
+        };
+        draft.push(target, event);
+    }
+    Ok(topo.journal_record_evolution(pending, draft)?)
+}
+
 /// Runs a shell (hollow) and journals its construction-derived face
 /// evolution as one entry (kind `shell`).
 ///
@@ -826,4 +1008,97 @@ pub fn record_barrier_over_solid(
             .map(|id| EntityKey::vertex(id.index())),
     );
     Ok(topo.journal_record_barrier(pending, affected))
+}
+
+#[cfg(test)]
+mod healing_history_tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+    use remus_heal::{pipeline::process::StepHistory, reshape::ReShape};
+    use remus_topology::{
+        EdgeId,
+        edge::{Edge, EdgeCurve},
+        vertex::Vertex,
+    };
+
+    fn edges() -> [EdgeId; 4] {
+        let mut topo = Topology::new();
+        let a = topo.add_vertex(Vertex::new(
+            remus_math::vec::Point3::new(0.0, 0.0, 0.0),
+            1e-7,
+        ));
+        let b = topo.add_vertex(Vertex::new(
+            remus_math::vec::Point3::new(1.0, 0.0, 0.0),
+            1e-7,
+        ));
+        std::array::from_fn(|_| topo.add_edge(Edge::new(a, b, EdgeCurve::Line)))
+    }
+
+    fn keys(edges: &[EdgeId]) -> Vec<EntityKey> {
+        edges
+            .iter()
+            .map(|edge| EntityKey::edge(edge.index()))
+            .collect()
+    }
+
+    fn step(sources: &[EdgeId], result: &[EdgeId], replacements: ReShape) -> StepHistory {
+        StepHistory {
+            sources: keys(sources),
+            result: keys(result),
+            replacements,
+        }
+    }
+
+    #[test]
+    fn healing_composes_split_convergence_and_explicit_deletion() {
+        let [a, b, c, d] = edges();
+        let mut split = ReShape::new();
+        split.split_edge(a, vec![b, c]);
+        let mut merge = ReShape::new();
+        merge.replace_edge(b, d);
+        merge.replace_edge(c, d);
+        let sources = keys(&[a]);
+        let mut steps = vec![step(&[a], &[b, c], split), step(&[b, c], &[d], merge)];
+        assert_eq!(
+            compose_healing_history(&sources, &steps).unwrap()[&sources[0]],
+            Some(keys(&[d]))
+        );
+        let mut remove = ReShape::new();
+        remove.remove_edge(d);
+        steps.push(step(&[d], &[], remove));
+        steps.push(step(&[], &[], ReShape::new()));
+        assert_eq!(
+            compose_healing_history(&sources, &steps).unwrap()[&sources[0]],
+            Some(Vec::new())
+        );
+    }
+
+    #[test]
+    fn healing_never_recovers_unknown_history_from_reappearing_handles() {
+        let [a, b, c, _] = edges();
+        let sources = keys(&[a]);
+        let mut partial = ReShape::new();
+        partial.split_edge(a, vec![b, c]);
+        for first in [step(&[a], &[b], partial), step(&[a], &[b], ReShape::new())] {
+            let steps = [first, step(&[b], &[a, b], ReShape::new())];
+            assert_eq!(
+                compose_healing_history(&sources, &steps).unwrap()[&sources[0]],
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn healing_rejects_contradictory_and_cyclic_replacements() {
+        let [a, b, _, _] = edges();
+        let sources = keys(&[a]);
+        let mut contradictory = ReShape::new();
+        contradictory.replace_edge(a, b);
+        assert!(compose_healing_history(&sources, &[step(&[a], &[a, b], contradictory)]).is_err());
+        let mut cycle = ReShape::new();
+        cycle.replace_edge(a, b);
+        cycle.replace_edge(b, a);
+        assert!(compose_healing_history(&sources, &[step(&[a], &[b], cycle)]).is_err());
+    }
 }
