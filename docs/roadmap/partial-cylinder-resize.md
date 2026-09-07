@@ -1,7 +1,7 @@
 # Boundary-aware resizing of partial cylindrical faces
 
-Status: implementation in progress; native and packaged WASM quarter-wall
-qualification pass. Full-workspace verification is pending.
+Status: implemented on the review branch; native, packaged WASM, and
+full-workspace qualification pass. Merge and consumer deployment are not claimed.
 
 ## Intended behavior
 
@@ -135,7 +135,14 @@ and four generalized move tests pass. Replacement p-curve assertions now use
 the canonical plane frame and oriented parameter intervals required by STEP;
 legacy blend-preserving projections retain their existing test convention.
 Workspace Clippy and the unchanged 52-row approximation census pass.
-Full-workspace verification must complete before this slice is ready. General angular trims, nonradial side
+The final full-workspace run passes all 4,882 tests, with 13 intentionally
+skipped. Nextest reported one passing facade test as leaky; the same test passed
+in an isolated nextest run without that warning. No failing test remains. General angular trims, nonradial side
 supports, inward partial bores, blend-adjacent walls, and topology-changing edits
 remain unqualified; journaled direct-edit completion is not claimed by this
 geometry slice.
+
+The existing WASM structured envelope currently reports these offset refusals
+as `operation_failed` with category `internal`, retaining the explicit native
+reason. A specialized failure-category projection is a separate remaining
+diagnostic task; the native offset variants remain typed.
