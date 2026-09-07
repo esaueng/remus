@@ -550,13 +550,14 @@ direct/batch scale cells. This increment is not yet merged. B17 stays open.
 
 ### Disabled repair modes — locally qualified
 
-The wireframe and common-vertex split APIs now honor their existing `Off`
+The wireframe, common-vertex split, and small-face removal APIs now honor their existing `Off`
 configuration, returning no repair actions or history. A disconnected-cube
 regression reproduced twelve wireframe repairs despite `Off`. Active repair
 behavior and the general orchestrator's enabled fix set are unchanged. Local
 healing tests pass, as do all 4,946 workspace tests (13 skipped) and both
-optimized packages with smoke and installed-tarball consumer checks. This
-increment is not yet merged.
+optimized packages with smoke and installed-tarball consumer checks. One
+nextest lingering-handle warning did not reproduce in an isolated rerun.
+This increment is not yet merged.
 
 ## §B Bridge backlog — owned by neither program
 
