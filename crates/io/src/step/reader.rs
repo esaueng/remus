@@ -4022,9 +4022,18 @@ impl<'a> StepBuilder<'a> {
         let (expected_start, expected_end) =
             lift_pcurve_endpoint_branches(surface, &curve, principal_start, principal_end);
         let range = match declared_range {
-            Some(range) => {
-                select_pcurve_range(&curve, range, expected_start, expected_end, pcurve_ref)?
-            }
+            Some(range) => match select_full_turn_cylinder_pcurve_range(
+                surface,
+                &curve,
+                edge,
+                coedge.is_forward(),
+                range,
+            ) {
+                Some(qualified) => qualified,
+                None => {
+                    select_pcurve_range(&curve, range, expected_start, expected_end, pcurve_ref)?
+                }
+            },
             None => derive_pcurve_range(
                 &curve,
                 edge,
@@ -6377,6 +6386,65 @@ fn pcurve_uv_tolerance(points: &[Point2]) -> f64 {
         .flat_map(|point| point.0)
         .fold(1.0_f64, |current, value| current.max(value.abs()));
     Tolerance::new().linear + 128.0 * f64::EPSILON * scale
+}
+
+// A full cylinder rim ends one UV period away from its start, despite
+// sharing a 3D vertex. Certify the one-turn analytic traversal against the
+// authoritative circle trim instead of collapsing both lifts to one branch.
+fn select_full_turn_cylinder_pcurve_range(
+    surface: &FaceSurface,
+    curve: &Curve2D,
+    edge: &Edge,
+    forward: bool,
+    range: (f64, f64),
+) -> Option<(f64, f64)> {
+    let (FaceSurface::Cylinder(cylinder), EdgeCurve::Circle(circle), Curve2D::Line(_)) =
+        (surface, edge.curve(), curve)
+    else {
+        return None;
+    };
+    if edge.start() != edge.end() {
+        return None;
+    }
+    let domain = edge.strict_domain().ok()?;
+    let angular = Tolerance::new().angular;
+    if ((domain.1 - domain.0).abs() - std::f64::consts::TAU).abs() > angular {
+        return None;
+    }
+    let first = curve.evaluate(range.0);
+    let last = curve.evaluate(range.1);
+    let uv_tolerance = pcurve_uv_tolerance(&[first, last]);
+    if !first
+        .0
+        .iter()
+        .chain(last.0.iter())
+        .all(|value| value.is_finite())
+        || ((last.x() - first.x()).abs() - std::f64::consts::TAU).abs() > angular
+        || (last.y() - first.y()).abs() > uv_tolerance
+    {
+        return None;
+    }
+    let (start, end) = if forward {
+        domain
+    } else {
+        (domain.1, domain.0)
+    };
+    [range, (range.1, range.0)].into_iter().find(|&(from, to)| {
+        [0.0, 0.25, 0.5, 0.75, 1.0].into_iter().all(|fraction| {
+            let uv = curve.evaluate((to - from).mul_add(fraction, from));
+            let actual = cylinder.evaluate(uv.x(), uv.y());
+            let expected = circle.evaluate((end - start).mul_add(fraction, start));
+            let scale = actual
+                .0
+                .iter()
+                .chain(expected.0.iter())
+                .fold(circle.radius().max(1.0), |scale, value| {
+                    scale.max(value.abs())
+                });
+            let tolerance = Tolerance::new().linear + 128.0 * f64::EPSILON * scale;
+            (actual - expected).length() <= tolerance
+        })
+    })
 }
 
 fn select_pcurve_range(
@@ -10835,6 +10903,56 @@ mod tests {
         assert_eq!(floats.len(), 3);
         assert!((floats[0] - 1.0).abs() < 1e-10);
         assert!((floats[1] - (-0.5)).abs() < 1e-10);
+    }
+
+    #[test]
+    fn full_turn_cylinder_pcurve_requires_one_matching_analytic_traversal() {
+        let cylinder = remus_math::surfaces::CylindricalSurface::with_ref_dir(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            3.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let circle = remus_math::curves::Circle3D::new_with_ref(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            3.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let mut topo = Topology::new();
+        let vertex = topo.add_vertex(Vertex::new(circle.evaluate(0.0), Tolerance::new().linear));
+        let mut edge = Edge::new(vertex, vertex, EdgeCurve::Circle(circle));
+        edge.set_trim(Some((0.0, std::f64::consts::TAU)));
+        let surface = FaceSurface::Cylinder(cylinder);
+        let curve = Curve2D::Line(Line2D::new(Point2::new(0.0, 0.0), Vec2::new(1.0, 0.0)).unwrap());
+        let range = (0.0, std::f64::consts::TAU);
+        assert_eq!(
+            select_full_turn_cylinder_pcurve_range(&surface, &curve, &edge, true, range),
+            Some(range)
+        );
+        assert_eq!(
+            select_full_turn_cylinder_pcurve_range(&surface, &curve, &edge, false, range),
+            Some((range.1, range.0))
+        );
+        for end in [std::f64::consts::PI, 2.0 * std::f64::consts::TAU, f64::NAN] {
+            assert!(
+                select_full_turn_cylinder_pcurve_range(&surface, &curve, &edge, true, (0.0, end))
+                    .is_none()
+            );
+        }
+        for origin in [Point2::new(0.0, 1.0), Point2::new(0.2, 0.0)] {
+            let wrong = Curve2D::Line(Line2D::new(origin, Vec2::new(1.0, 0.0)).unwrap());
+            assert!(
+                select_full_turn_cylinder_pcurve_range(&surface, &wrong, &edge, true, range)
+                    .is_none()
+            );
+        }
+        edge.set_trim(Some((0.0, std::f64::consts::PI)));
+        assert!(
+            select_full_turn_cylinder_pcurve_range(&surface, &curve, &edge, true, range).is_none()
+        );
     }
 
     #[test]

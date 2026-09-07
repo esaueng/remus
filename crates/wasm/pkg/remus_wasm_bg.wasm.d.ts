@@ -249,6 +249,7 @@ export const brepkernel_replaceSurfaceJournaled: (a: number, b: number, c: numbe
 export const brepkernel_resizeBlend: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
 export const brepkernel_resizeBlendWithEvolution: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
 export const brepkernel_resizeCylindricalFace: (a: number, b: number, c: number, d: number) => [number, number, number];
+export const brepkernel_resizeCylindricalFaceJournaled: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const brepkernel_resolveOperationOutput: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
 export const brepkernel_resolveRef: (a: number, b: number, c: number) => [number, number, number, number];
 export const brepkernel_resolveRefFaceAttributes: (a: number, b: number, c: number) => [number, number, number, number];

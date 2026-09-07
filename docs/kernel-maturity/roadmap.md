@@ -302,6 +302,24 @@ pass focused native tests. Final qualification: 4,896 workspace tests passed,
 13 skipped; both rebuilt WASM package suites, Clippy, rustdoc, and the unchanged
 52-row census pass.
 
+Cylindrical radius history is the current review slice. The native
+`resize_cylindrical_face_journaled` and direct/batch
+`resizeCylindricalFaceJournaled` entries preserve qualified bore and quarter-wall
+replacement maps. Boss edits compose Boolean and unification construction
+history, preserving cap splits, generated subdivision boundaries, and explicit
+deletions when a later edit consumes them. Unique oriented boundary
+correspondence is required; ambiguous or inferred lineage stays unresolved.
+Focused native tests pass for successive bore/boss edits, four rigid placements,
+small/large scales, every original and result entity reference, and rollback.
+A tangent bore is now refused because its new contact changes the adjacency
+graph. STEP import now certifies a declared full-turn cylindrical p-curve
+against the authoritative 3D circle traversal, preserving periodic endpoints
+without accepting extra turns or mismatched curves. All 189 reader tests pass.
+Both rebuilt WASM package suites pass the new direct/batch bore, boss, and
+quarter-wall reference, arena, STEP, and rollback matrix. The final
+all-features workspace run is in progress; Clippy, rustdoc, mdBook,
+crate boundaries, and the unchanged 52-row census pass.
+
 ### Correctness follow-up: curved hole winding (#278)
 
 Cut/intersect assembly now compares multi-opening cylinder wires in

@@ -272,6 +272,17 @@ fn record_entity_evolution(
     result_solids: &[SolidId],
     boundary_pairs: &[(EntityKey, EntityKey)],
 ) -> Result<OpId, OperationsError> {
+    record_entity_evolution_with_outputs(topo, pending, map, result_solids, boundary_pairs, &[])
+}
+
+fn record_entity_evolution_with_outputs(
+    topo: &mut Topology,
+    pending: PendingOp,
+    map: &EvolutionMap,
+    result_solids: &[SolidId],
+    boundary_pairs: &[(EntityKey, EntityKey)],
+    additional_outputs: &[(EntityKey, EventDraft)],
+) -> Result<OpId, OperationsError> {
     use std::collections::BTreeMap;
 
     let mut draft = if map.origin.is_exact() {
@@ -339,6 +350,10 @@ fn record_entity_evolution(
     pairs.sort_unstable();
     for (source, target) in pairs {
         draft.push(target, EventDraft::Modified { from: source });
+    }
+
+    for (target, event) in additional_outputs {
+        draft.push(*target, event.clone());
     }
 
     Ok(topo.journal_record_evolution(pending, draft)?)
@@ -505,6 +520,48 @@ pub fn move_faces_journaled(
             &result.evolution,
             &[result.solid],
             &boundary_pairs,
+        )?;
+        Ok(JournaledSolidOp {
+            solid: result.solid,
+            op,
+            map: result.evolution,
+        })
+    })
+}
+
+/// Resizes a cylindrical wall with construction-derived edit history.
+///
+/// Geometry validation and history recording form one transaction. Unsupported
+/// or ambiguous construction lineage remains explicitly unresolved.
+///
+/// # Errors
+///
+/// Returns a geometry refusal or an error recording the construction history.
+pub fn resize_cylindrical_face_journaled(
+    topo: &mut Topology,
+    solid: SolidId,
+    face: remus_topology::FaceId,
+    new_radius: f64,
+) -> Result<JournaledSolidOp, OperationsError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let pending = begin_scoped(topo, "resize_cylindrical_face", &[solid])?;
+        let (result, pairs) = crate::push_pull::resize_cylindrical_face_with_entity_evolution(
+            topo, solid, face, new_radius,
+        )?;
+        let additional = crate::push_pull::radius_subdivision_outputs(
+            topo,
+            solid,
+            result.solid,
+            &result.evolution,
+            &pairs,
+        )?;
+        let op = record_entity_evolution_with_outputs(
+            topo,
+            pending,
+            &result.evolution,
+            &[result.solid],
+            &pairs,
+            &additional,
         )?;
         Ok(JournaledSolidOp {
             solid: result.solid,

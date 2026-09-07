@@ -9,6 +9,7 @@
 //! seams the boolean leaves behind, and refuse to return a result whose shell
 //! is not closed.
 
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::f64::consts::PI;
 
 use remus_math::aabb::Aabb3;
@@ -811,6 +812,52 @@ pub fn resize_cylindrical_face(
     new_radius: f64,
 ) -> Result<SolidId, crate::OperationsError> {
     let tol = Tolerance::new();
+    let cyl = validate_cylindrical_resize(topo, solid, face, new_radius)?;
+
+    if !cylindrical_face_is_full_turn(topo, face, &cyl)? {
+        return resize_partial_cylindrical_face(topo, solid, face, &cyl, new_radius);
+    }
+
+    let axis = unit(cyl.axis())?;
+    if axis.dot(Vec3::new(0.0, 0.0, 1.0)) > 1.0 - tol.angular {
+        return resize_cylindrical_face_aligned(topo, solid, face, new_radius, false)
+            .map(|result| result.0.solid);
+    }
+
+    // The analytic boolean pipeline is most robust in its canonical +Z frame.
+    // Rigidly normalize a copied operand, perform the exact edit there, then
+    // return the result to world space. The face map keeps selection exact;
+    // no geometric re-matching is involved.
+    let (base, _) = axial_extent(topo, face, &cyl)?;
+    let seam_direction = cylinder_seam_direction(topo, face, &cyl)?;
+    let to_world = frame_matrix(base, axis, seam_direction)?;
+    let to_local = inverse_rigid_frame(&to_world);
+    let (local_solid, face_map) = copy_solid_with_face_map(topo, solid)?;
+    let local_face_index = face_map.get(&face.index()).copied().ok_or_else(|| {
+        crate::OperationsError::InvalidInput {
+            reason: format!("copied solid lost cylindrical face {}", face.index()),
+        }
+    })?;
+    let local_face = topo.face_id_from_index(local_face_index).ok_or_else(|| {
+        crate::OperationsError::InvalidInput {
+            reason: format!("copied cylindrical face {local_face_index} is unavailable"),
+        }
+    })?;
+    transform_solid(topo, local_solid, &to_local)?;
+    let result = resize_cylindrical_face_aligned(topo, local_solid, local_face, new_radius, false)?
+        .0
+        .solid;
+    transform_solid(topo, result, &to_world)?;
+    Ok(result)
+}
+
+fn validate_cylindrical_resize(
+    topo: &Topology,
+    solid: SolidId,
+    face: FaceId,
+    new_radius: f64,
+) -> Result<CylindricalSurface, crate::OperationsError> {
+    let tol = Tolerance::new();
     if !new_radius.is_finite() || new_radius <= tol.linear {
         return Err(crate::OperationsError::InvalidInput {
             reason: format!("cylinder radius must be positive, got {new_radius}"),
@@ -834,38 +881,168 @@ pub fn resize_cylindrical_face(
         });
     }
 
-    if !cylindrical_face_is_full_turn(topo, face, &cyl)? {
-        return resize_partial_cylindrical_face(topo, solid, face, &cyl, new_radius);
-    }
+    Ok(cyl)
+}
 
-    let axis = unit(cyl.axis())?;
-    if axis.dot(Vec3::new(0.0, 0.0, 1.0)) > 1.0 - tol.angular {
-        return resize_cylindrical_face_aligned(topo, solid, face, new_radius);
+pub(crate) fn resize_cylindrical_face_with_entity_evolution(
+    topo: &mut Topology,
+    solid: SolidId,
+    face: FaceId,
+    new_radius: f64,
+) -> Result<DirectEditEvolution, crate::OperationsError> {
+    let cylinder = validate_cylindrical_resize(topo, solid, face, new_radius)?;
+    let full_turn = cylindrical_face_is_full_turn(topo, face, &cylinder)?;
+    let reversed = topo.face(face)?.is_reversed();
+    if !full_turn && reversed {
+        return Err(remus_offset::OffsetError::UnsupportedMoveFace {
+            face, surface_type: "cylinder",
+            reason: "partial-cylinder resize currently requires an outward quarter wall with radial planar sides".into(),
+        }.into());
     }
-
-    // The analytic boolean pipeline is most robust in its canonical +Z frame.
-    // Rigidly normalize a copied operand, perform the exact edit there, then
-    // return the result to world space. The face map keeps selection exact;
-    // no geometric re-matching is involved.
-    let (base, _) = axial_extent(topo, face, &cyl)?;
-    let seam_direction = cylinder_seam_direction(topo, face, &cyl)?;
-    let to_world = frame_matrix(base, axis, seam_direction)?;
-    let to_local = inverse_rigid_frame(&to_world);
-    let (local_solid, face_map) = copy_solid_with_face_map(topo, solid)?;
-    let local_face_index = face_map.get(&face.index()).copied().ok_or_else(|| {
+    let source_faces = solid_faces(topo, solid)?;
+    let mut replacement_carriers = true;
+    for &source in &source_faces {
+        replacement_carriers &= matches!(
+            topo.face(source)?.surface(),
+            FaceSurface::Plane { .. } | FaceSurface::Cylinder(_)
+        );
+    }
+    if !full_turn || (reversed && replacement_carriers) {
+        let (base, height) = axial_extent(topo, face, &cylinder)?;
+        let before = solid_volume(topo, solid, verify_deflection(topo, solid))?;
+        let fraction = if full_turn { 1.0 } else { 0.25 };
+        let sleeve = fraction
+            * PI
+            * (new_radius * new_radius - cylinder.radius() * cylinder.radius())
+            * height;
+        let expected = if reversed {
+            before - sleeve
+        } else {
+            before + sleeve
+        };
+        let replacement = CylindricalSurface::with_ref_dir(
+            cylinder.origin(),
+            cylinder.axis(),
+            new_radius,
+            cylinder.x_axis(),
+        )?;
+        let result = crate::replace_surface::replace_surface_with_entity_map(
+            topo,
+            solid,
+            face,
+            FaceSurface::Cylinder(replacement),
+        )?;
+        ensure_closed_shell(topo, result.solid, "journaled cylindrical resize")?;
+        ensure_volume(topo, result.solid, expected, "journaled cylindrical resize")?;
+        ensure_resized_cylinder(
+            topo,
+            result.solid,
+            base,
+            cylinder.axis(),
+            height,
+            cylinder.radius(),
+            new_radius,
+        )?;
+        let pairs = boundary_entity_pairs(&result);
+        return Ok((
+            MoveFacesResult {
+                solid: result.solid,
+                evolution: exact_face_evolution(
+                    topo,
+                    &source_faces,
+                    result.solid,
+                    result.face_map,
+                )?,
+            },
+            pairs,
+        ));
+    }
+    let axis = unit(cylinder.axis())?;
+    if axis.dot(Vec3::new(0.0, 0.0, 1.0)) > 1.0 - Tolerance::new().angular {
+        return resize_cylindrical_face_aligned(topo, solid, face, new_radius, true);
+    }
+    let (base, _) = axial_extent(topo, face, &cylinder)?;
+    let seam = cylinder_seam_direction(topo, face, &cylinder)?;
+    let to_world = frame_matrix(base, axis, seam)?;
+    let snapshot = topo.clone();
+    let copied = crate::copy::copy_solid_between_with_entity_map(&snapshot, topo, solid)?;
+    let local_face = *copied.face_map.get(&face.index()).ok_or_else(|| {
         crate::OperationsError::InvalidInput {
-            reason: format!("copied solid lost cylindrical face {}", face.index()),
+            reason: "cylindrical resize copy lost its selected face".into(),
         }
     })?;
-    let local_face = topo.face_id_from_index(local_face_index).ok_or_else(|| {
-        crate::OperationsError::InvalidInput {
-            reason: format!("copied cylindrical face {local_face_index} is unavailable"),
+    transform_solid(topo, copied.solid, &inverse_rigid_frame(&to_world))?;
+    let (mut result, pairs) =
+        resize_cylindrical_face_aligned(topo, copied.solid, local_face, new_radius, true)?;
+    transform_solid(topo, result.solid, &to_world)?;
+    let face_sources: HashMap<_, _> = copied
+        .face_map
+        .into_iter()
+        .map(|(source, local)| (local.index(), source))
+        .collect();
+    result.evolution = remap_radius_history_sources(result.evolution, &face_sources)?;
+    let boundary_sources: HashMap<_, _> =
+        copied
+            .edge_map
+            .into_iter()
+            .map(|(source, local)| (EntityKey::edge(local.index()), EntityKey::edge(source)))
+            .chain(copied.vertex_map.into_iter().map(|(source, local)| {
+                (EntityKey::vertex(local.index()), EntityKey::vertex(source))
+            }))
+            .collect();
+    let pairs = pairs
+        .into_iter()
+        .map(|(local, target)| {
+            boundary_sources
+                .get(&local)
+                .copied()
+                .map(|source| (source, target))
+                .ok_or_else(|| crate::OperationsError::InvalidInput {
+                    reason: "cylindrical resize history names a boundary outside its copied source"
+                        .into(),
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((result, pairs))
+}
+
+fn remap_radius_history_sources(
+    history: EvolutionMap,
+    sources: &HashMap<usize, usize>,
+) -> Result<EvolutionMap, crate::OperationsError> {
+    let original = |source| {
+        sources
+            .get(&source)
+            .copied()
+            .ok_or_else(|| crate::OperationsError::InvalidInput {
+                reason: "cylindrical resize history names a face outside its copied source".into(),
+            })
+    };
+    let mut mapped = EvolutionMap::exact();
+    mapped.origin = history.origin;
+    for (source, outputs) in history.modified {
+        for output in outputs {
+            mapped.add_modified(original(source)?, output);
         }
-    })?;
-    transform_solid(topo, local_solid, &to_local)?;
-    let result = resize_cylindrical_face_aligned(topo, local_solid, local_face, new_radius)?;
-    transform_solid(topo, result, &to_world)?;
-    Ok(result)
+    }
+    for (source, outputs) in history.generated {
+        for output in outputs {
+            mapped.add_generated(original(source)?, output);
+        }
+    }
+    for source in history.deleted {
+        mapped.add_deleted(original(source)?);
+    }
+    for (output, candidates) in history.unresolved {
+        mapped.add_unresolved(
+            output,
+            candidates
+                .into_iter()
+                .filter_map(|source| sources.get(&source).copied())
+                .collect(),
+        );
+    }
+    Ok(mapped)
 }
 
 fn cylindrical_face_is_full_turn(
@@ -991,7 +1168,8 @@ fn resize_cylindrical_face_aligned(
     solid: SolidId,
     face: FaceId,
     new_radius: f64,
-) -> Result<SolidId, crate::OperationsError> {
+    track_history: bool,
+) -> Result<DirectEditEvolution, crate::OperationsError> {
     let tol = Tolerance::new();
 
     if !new_radius.is_finite() || new_radius <= tol.linear {
@@ -1092,14 +1270,563 @@ fn resize_cylindrical_face_aligned(
         ),
     };
 
-    let result = boolean(topo, op, solid, tool)?;
-    unify_faces(topo, result)?;
+    let source_faces = if track_history {
+        solid_faces(topo, solid)?
+    } else {
+        Vec::new()
+    };
+    let tool_sources = if track_history {
+        radius_tool_face_sources(topo, solid, face, tool, new_radius)?
+    } else {
+        HashMap::new()
+    };
+    let (result, boolean_history) = if track_history {
+        crate::boolean::boolean_with_evolution(topo, op, solid, tool)?
+    } else {
+        (boolean(topo, op, solid, tool)?, EvolutionMap::exact())
+    };
+    let unification = crate::heal::unify_faces_with_history(topo, result)?;
     drop_stranded_inner_wires(topo, result)?;
     ensure_closed_shell(topo, result, "cylindrical resize")?;
     repair_resized_cylinder_rim_orientation(topo, result, base, axis, height, new_radius)?;
     ensure_volume(topo, result, expected, "cylindrical resize")?;
     ensure_resized_cylinder(topo, result, base, axis, height, old_radius, new_radius)?;
-    Ok(result)
+    let evolution = if track_history {
+        radius_face_history(
+            topo,
+            &source_faces,
+            &tool_sources,
+            result,
+            &boolean_history,
+            &unification.modified,
+        )?
+    } else {
+        EvolutionMap::exact()
+    };
+    let boundary_pairs = if track_history {
+        radius_boundary_pairs(topo, solid, result, &evolution)?
+    } else {
+        Vec::new()
+    };
+    Ok((
+        MoveFacesResult {
+            solid: result,
+            evolution,
+        },
+        boundary_pairs,
+    ))
+}
+
+// A complete boundary correspondence proves that unmatched internal cap
+// boundaries were introduced by subdivision, rather than replacing old edges.
+pub(crate) fn radius_subdivision_outputs(
+    topo: &Topology,
+    source: SolidId,
+    result: SolidId,
+    history: &EvolutionMap,
+    pairs: &[(EntityKey, EntityKey)],
+) -> Result<Vec<(EntityKey, remus_topology::journal::EventDraft)>, crate::OperationsError> {
+    use remus_topology::explorer::{edge_to_face_map, solid_edges, solid_vertices};
+    use remus_topology::journal::EventDraft;
+    let mapped_sources: HashSet<_> = pairs.iter().map(|&(source, _)| source).collect();
+    let Some(supports) = radius_support_groups(topo, source, history)? else {
+        return Ok(Vec::new());
+    };
+    if pairs.is_empty() {
+        return Ok(Vec::new());
+    }
+    let source_adjacency = edge_to_face_map(topo, source)?;
+    let mut retired = Vec::new();
+    let mut retired_edges = HashSet::new();
+    let mut source_vertex_edges = BTreeMap::<usize, Vec<usize>>::new();
+    for edge in solid_edges(topo, source)? {
+        let data = topo.edge(edge)?;
+        for vertex in [data.start(), data.end()] {
+            source_vertex_edges
+                .entry(vertex.index())
+                .or_default()
+                .push(edge.index());
+        }
+        if mapped_sources.contains(&EntityKey::edge(edge.index())) {
+            continue;
+        }
+        let faces: HashSet<_> = source_adjacency[&edge.index()]
+            .iter()
+            .map(|face| face.index())
+            .collect();
+        let groups: HashSet<_> = faces.iter().map(|face| supports[face]).collect();
+        if faces.len() != 2
+            || groups.len() != 1
+            || !faces.iter().any(|face| history.deleted.contains(face))
+        {
+            return Ok(Vec::new());
+        }
+        retired_edges.insert(edge.index());
+        retired.push((EntityKey::edge(edge.index()), EventDraft::Deleted));
+    }
+    for vertex in solid_vertices(topo, source)? {
+        if mapped_sources.contains(&EntityKey::vertex(vertex.index())) {
+            continue;
+        }
+        if !source_vertex_edges
+            .get(&vertex.index())
+            .is_some_and(|edges| edges.iter().all(|edge| retired_edges.contains(edge)))
+        {
+            return Ok(Vec::new());
+        }
+        retired.push((EntityKey::vertex(vertex.index()), EventDraft::Deleted));
+    }
+    let mut parents = HashMap::new();
+    for (&source, images) in &history.modified {
+        for &image in images {
+            if parents.insert(image, source).is_some() {
+                return Ok(Vec::new());
+            }
+        }
+    }
+    let mapped_targets: HashSet<_> = pairs.iter().map(|&(_, target)| target).collect();
+    let adjacency = edge_to_face_map(topo, result)?;
+    let mut generated_edges = BTreeMap::new();
+    let mut vertex_edges = BTreeMap::<usize, Vec<usize>>::new();
+    for edge in solid_edges(topo, result)? {
+        let data = topo.edge(edge)?;
+        for vertex in [data.start(), data.end()] {
+            vertex_edges
+                .entry(vertex.index())
+                .or_default()
+                .push(edge.index());
+        }
+        if mapped_targets.contains(&EntityKey::edge(edge.index())) {
+            continue;
+        }
+        let faces: HashSet<_> = adjacency[&edge.index()]
+            .iter()
+            .map(|id| id.index())
+            .collect();
+        if faces.len() != 2 {
+            continue;
+        }
+        let Some(sources) = faces
+            .iter()
+            .map(|face| parents.get(face).copied())
+            .collect::<Option<HashSet<_>>>()
+        else {
+            continue;
+        };
+        if sources.len() == 1 {
+            generated_edges.insert(edge.index(), sources.into_iter().collect::<Vec<_>>());
+        }
+    }
+    let mut outputs: Vec<_> = generated_edges
+        .iter()
+        .map(|(&edge, sources)| {
+            (
+                EntityKey::edge(edge),
+                EventDraft::Generated {
+                    sources: sources.iter().copied().map(EntityKey::face).collect(),
+                },
+            )
+        })
+        .collect();
+    for (vertex, edges) in vertex_edges {
+        if mapped_targets.contains(&EntityKey::vertex(vertex)) {
+            continue;
+        }
+        if edges.iter().all(|edge| generated_edges.contains_key(edge)) {
+            let mut sources: Vec<_> = edges
+                .iter()
+                .flat_map(|edge| generated_edges[edge].iter().copied())
+                .collect();
+            sources.sort_unstable();
+            sources.dedup();
+            outputs.push((
+                EntityKey::vertex(vertex),
+                EventDraft::Generated {
+                    sources: sources.into_iter().map(EntityKey::face).collect(),
+                },
+            ));
+        }
+    }
+    outputs.extend(retired);
+    Ok(outputs)
+}
+
+// Deleted cap subdivisions may be absorbed into their one adjacent planar
+// support. This groups boundary roles only; the deleted face stays Deleted.
+fn radius_support_groups(
+    topo: &Topology,
+    source: SolidId,
+    history: &EvolutionMap,
+) -> Result<Option<HashMap<usize, usize>>, crate::OperationsError> {
+    let faces = solid_faces(topo, source)?;
+    if !history.origin.is_exact()
+        || !history.is_complete()
+        || history.modified.len() + history.deleted.len() != faces.len()
+    {
+        return Ok(None);
+    }
+    let adjacency = remus_topology::explorer::edge_to_face_map(topo, source)?;
+    let tolerance = Tolerance::new();
+    let mut groups = HashMap::new();
+    for face in faces {
+        if history
+            .modified
+            .get(&face.index())
+            .is_some_and(|images| !images.is_empty())
+        {
+            groups.insert(face.index(), face.index());
+            continue;
+        }
+        if !history.deleted.contains(&face.index()) {
+            return Ok(None);
+        }
+        let FaceSurface::Plane { normal, d } = topo.face(face)?.surface() else {
+            return Ok(None);
+        };
+        let mut candidates = HashSet::new();
+        for neighbor in adjacency
+            .values()
+            .filter(|uses| uses.contains(&face))
+            .flatten()
+        {
+            if !history.modified.contains_key(&neighbor.index()) {
+                continue;
+            }
+            let FaceSurface::Plane {
+                normal: other,
+                d: other_d,
+            } = topo.face(*neighbor)?.surface()
+            else {
+                continue;
+            };
+            let length = normal.length();
+            let other_length = other.length();
+            if length <= f64::EPSILON || other_length <= f64::EPSILON {
+                continue;
+            }
+            let dot = (*normal * (1.0 / length)).dot(*other * (1.0 / other_length));
+            if (dot.abs() - 1.0).abs() <= tolerance.angular
+                && (d / length - other_d / other_length * dot.signum()).abs() <= tolerance.linear
+            {
+                candidates.insert(neighbor.index());
+            }
+        }
+        if candidates.len() != 1 {
+            return Ok(None);
+        }
+        for candidate in candidates {
+            groups.insert(face.index(), candidate);
+        }
+    }
+    Ok(Some(groups))
+}
+
+// A cap may be rebuilt as several faces. Internal edges between those
+// construction images are new subdivisions, not the source wall boundary.
+// Require a unique boundary/vertex map and equal oriented aggregate loops.
+#[allow(clippy::too_many_lines)]
+fn radius_boundary_pairs(
+    topo: &Topology,
+    source: SolidId,
+    result: SolidId,
+    history: &EvolutionMap,
+) -> Result<Vec<(EntityKey, EntityKey)>, crate::OperationsError> {
+    use remus_topology::explorer::{edge_to_face_map, solid_edges};
+    let source_faces = solid_faces(topo, source)?;
+    let Some(supports) = radius_support_groups(topo, source, history)? else {
+        return Ok(Vec::new());
+    };
+    let mut face_sources = HashMap::new();
+    for (&source, images) in &history.modified {
+        for &image in images {
+            if face_sources
+                .insert(image, supports[&source])
+                .is_some_and(|old| old != supports[&source])
+            {
+                return Ok(Vec::new());
+            }
+        }
+    }
+    if solid_faces(topo, result)?
+        .iter()
+        .any(|face| !face_sources.contains_key(&face.index()))
+    {
+        return Ok(Vec::new());
+    }
+    let old_adjacency = edge_to_face_map(topo, source)?;
+    let new_adjacency = edge_to_face_map(topo, result)?;
+    let mut groups = BTreeMap::<Vec<usize>, Vec<usize>>::new();
+    for (&edge, faces) in &new_adjacency {
+        let Some(mut key) = faces
+            .iter()
+            .map(|face| face_sources.get(&face.index()).copied())
+            .collect::<Option<Vec<_>>>()
+        else {
+            return Ok(Vec::new());
+        };
+        key.sort_unstable();
+        key.dedup();
+        groups.entry(key).or_default().push(edge);
+    }
+    let mut edge_map = HashMap::new();
+    let mut used = HashSet::new();
+    for (&edge, faces) in &old_adjacency {
+        let mut key: Vec<_> = faces.iter().map(|face| supports[&face.index()]).collect();
+        let distinct: HashSet<_> = faces.iter().map(|face| face.index()).collect();
+        if distinct.len() > 1 && key.iter().all(|parent| *parent == key[0]) {
+            continue;
+        }
+        key.sort_unstable();
+        key.dedup();
+        let Some(candidates) = groups.get(&key) else {
+            return Ok(Vec::new());
+        };
+        let [target] = candidates.as_slice() else {
+            return Ok(Vec::new());
+        };
+        if !used.insert(*target) {
+            return Ok(Vec::new());
+        }
+        edge_map.insert(edge, *target);
+    }
+    let mut new_vertices = BTreeMap::<usize, Vec<usize>>::new();
+    for edge in solid_edges(topo, result)? {
+        if !used.contains(&edge.index()) {
+            continue;
+        }
+        let data = topo.edge(edge)?;
+        for vertex in [data.start(), data.end()] {
+            new_vertices
+                .entry(vertex.index())
+                .or_default()
+                .push(edge.index());
+        }
+    }
+    let mut vertex_groups = BTreeMap::<Vec<usize>, Vec<usize>>::new();
+    for (vertex, mut edges) in new_vertices {
+        edges.sort_unstable();
+        vertex_groups.entry(edges).or_default().push(vertex);
+    }
+    let mut old_vertices = BTreeMap::<usize, Vec<usize>>::new();
+    for edge in solid_edges(topo, source)? {
+        let Some(&mapped) = edge_map.get(&edge.index()) else {
+            continue;
+        };
+        let data = topo.edge(edge)?;
+        for vertex in [data.start(), data.end()] {
+            old_vertices.entry(vertex.index()).or_default().push(mapped);
+        }
+    }
+    let mut vertex_map = HashMap::new();
+    let mut used_vertices = HashSet::new();
+    for (vertex, mut edges) in old_vertices {
+        edges.sort_unstable();
+        let Some(candidates) = vertex_groups.get(&edges) else {
+            return Ok(Vec::new());
+        };
+        let [target] = candidates.as_slice() else {
+            return Ok(Vec::new());
+        };
+        if !used_vertices.insert(*target) {
+            return Ok(Vec::new());
+        }
+        vertex_map.insert(vertex, *target);
+    }
+    if used_vertices.len() != vertex_groups.values().map(Vec::len).sum::<usize>() {
+        return Ok(Vec::new());
+    }
+    let support_ids: HashSet<_> = supports.values().copied().collect();
+    for support in support_ids {
+        let mut expected = Vec::new();
+        for &source_face in source_faces
+            .iter()
+            .filter(|face| supports[&face.index()] == support)
+        {
+            let before = topo.face(source_face)?;
+            for wire in
+                std::iter::once(before.outer_wire()).chain(before.inner_wires().iter().copied())
+            {
+                for oriented in topo.wire(wire)?.edges() {
+                    let Some(&mapped_edge) = edge_map.get(&oriented.edge().index()) else {
+                        continue;
+                    };
+                    let edge = topo.edge(oriented.edge())?;
+                    let (start, end) = if oriented.is_forward() ^ before.is_reversed() {
+                        (edge.start(), edge.end())
+                    } else {
+                        (edge.end(), edge.start())
+                    };
+                    expected.push((
+                        mapped_edge,
+                        vertex_map[&start.index()],
+                        vertex_map[&end.index()],
+                    ));
+                }
+            }
+        }
+        let mut actual = Vec::new();
+        for (&image, _) in face_sources
+            .iter()
+            .filter(|(_, parent)| **parent == support)
+        {
+            let Some(id) = topo.face_id_from_index(image) else {
+                return Ok(Vec::new());
+            };
+            let face = topo.face(id)?;
+            for wire in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+            {
+                for oriented in topo.wire(wire)?.edges() {
+                    let adjacent = &new_adjacency[&oriented.edge().index()];
+                    let distinct: HashSet<_> = adjacent.iter().map(|face| face.index()).collect();
+                    if distinct.len() > 1
+                        && distinct
+                            .iter()
+                            .all(|face| face_sources.get(face) == Some(&support))
+                    {
+                        continue;
+                    }
+                    let edge = topo.edge(oriented.edge())?;
+                    let (start, end) = if oriented.is_forward() ^ face.is_reversed() {
+                        (edge.start(), edge.end())
+                    } else {
+                        (edge.end(), edge.start())
+                    };
+                    actual.push((oriented.edge().index(), start.index(), end.index()));
+                }
+            }
+        }
+        expected.sort_unstable();
+        actual.sort_unstable();
+        if expected != actual {
+            return Ok(Vec::new());
+        }
+    }
+    Ok(edge_map
+        .into_iter()
+        .map(|(from, to)| (EntityKey::edge(from), EntityKey::edge(to)))
+        .chain(
+            vertex_map
+                .into_iter()
+                .map(|(from, to)| (EntityKey::vertex(from), EntityKey::vertex(to))),
+        )
+        .collect())
+}
+
+// Tool caps extend the selected wall's existing planar supports. Their
+// source is fixed by that adjacency and the tool's construction plane, not
+// by matching finished result faces. Multiple eligible supports stay unknown.
+fn radius_tool_face_sources(
+    topo: &Topology,
+    solid: SolidId,
+    selected: FaceId,
+    tool: SolidId,
+    new_radius: f64,
+) -> Result<HashMap<usize, FaceId>, crate::OperationsError> {
+    let tolerance = Tolerance::new();
+    let adjacency = remus_topology::explorer::edge_to_face_map(topo, solid)?;
+    let supports: HashSet<_> = adjacency
+        .values()
+        .filter(|faces| faces.contains(&selected))
+        .flatten()
+        .copied()
+        .filter(|&face| face != selected)
+        .collect();
+    let mut origins = HashMap::new();
+    for face in solid_faces(topo, tool)? {
+        match topo.face(face)?.surface() {
+            FaceSurface::Cylinder(cylinder)
+                if (cylinder.radius() - new_radius).abs() <= tolerance.linear =>
+            {
+                origins.insert(face.index(), selected);
+            }
+            FaceSurface::Plane { normal, d } => {
+                let mut candidates = Vec::new();
+                for &support in &supports {
+                    let FaceSurface::Plane {
+                        normal: support_normal,
+                        d: support_d,
+                    } = topo.face(support)?.surface()
+                    else {
+                        continue;
+                    };
+                    let length = normal.length();
+                    let support_length = support_normal.length();
+                    if length <= f64::EPSILON || support_length <= f64::EPSILON {
+                        continue;
+                    }
+                    let dot =
+                        (*normal * (1.0 / length)).dot(*support_normal * (1.0 / support_length));
+                    if (dot.abs() - 1.0).abs() <= tolerance.angular
+                        && (d / length - support_d / support_length * dot.signum()).abs()
+                            <= tolerance.linear
+                    {
+                        candidates.push(support);
+                    }
+                }
+                if let [support] = candidates.as_slice() {
+                    origins.insert(face.index(), *support);
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(origins)
+}
+
+// The new-radius wall is a named construction role of the tool made above.
+// Compose only the boolean's construction claims and the actual unify groups;
+// a geometric fallback does not establish persistent source identities.
+fn radius_face_history(
+    topo: &Topology,
+    source_faces: &[FaceId],
+    tool_sources: &HashMap<usize, FaceId>,
+    result: SolidId,
+    boolean_history: &EvolutionMap,
+    unified: &[(FaceId, FaceId)],
+) -> Result<EvolutionMap, crate::OperationsError> {
+    let result_faces = solid_faces(topo, result)?;
+    let live: HashSet<_> = result_faces.iter().map(|face| face.index()).collect();
+    let remap: HashMap<_, _> = unified
+        .iter()
+        .map(|(before, after)| (before.index(), after.index()))
+        .collect();
+    let mut history = EvolutionMap::exact();
+    let mut claimed = HashSet::new();
+    if boolean_history.origin.is_exact() {
+        for &source in source_faces {
+            let inputs = std::iter::once(source.index())
+                .chain(
+                    tool_sources
+                        .iter()
+                        .filter_map(|(&tool, &support)| (support == source).then_some(tool)),
+                )
+                .collect::<Vec<_>>();
+            let mut outputs = inputs
+                .iter()
+                .filter_map(|input| boolean_history.modified.get(input))
+                .flatten()
+                .filter_map(|output| {
+                    let final_face = remap.get(output).copied().unwrap_or(*output);
+                    live.contains(&final_face).then_some(final_face)
+                })
+                .collect::<Vec<_>>();
+            outputs.sort_unstable();
+            outputs.dedup();
+            if outputs.is_empty() && boolean_history.deleted.contains(&source.index()) {
+                history.add_deleted(source.index());
+            }
+            for output in outputs {
+                history.add_modified(source.index(), output);
+                claimed.insert(output);
+            }
+        }
+    }
+    for face in result_faces {
+        if !claimed.contains(&face.index()) {
+            history.add_unresolved(face.index(), Vec::new());
+        }
+    }
+    Ok(history)
 }
 
 /// Require the resized wall to remain exact analytic cylinder geometry.
@@ -1954,6 +2681,256 @@ mod tests {
         assert_volume(&topo, out, 40.0f64.mul_add(40.0 * 10.0, -(PI * 4.0 * 10.0)));
         assert_watertight(&topo, out);
         assert_eq!(face_count(&topo, out, "cylinder"), 1);
+    }
+
+    #[test]
+    fn journaled_radius_covers_source_and_result_entities() {
+        use crate::journal_ops::{resize_cylindrical_face_journaled, solid_entity_keys};
+        use remus_topology::journal::{EntityKind, EventDraft, EvolutionDraft};
+        use remus_topology::naming::{PersistentRef, Provenance, Resolution, resolve};
+        for transform in [
+            Mat4::identity(),
+            Mat4::translation(12.0, -7.0, 5.0) * Mat4::rotation_y(std::f64::consts::FRAC_PI_2),
+            Mat4::translation(-9.0, 4.0, 13.0) * Mat4::rotation_x(0.7) * Mat4::rotation_y(-0.4),
+            Mat4::translation(3.0, 8.0, 21.0) * Mat4::rotation_x(PI),
+        ] {
+            for (bore, radius) in [(false, 3.0), (false, 8.0), (true, 2.0), (true, 5.0)] {
+                let mut topo = Topology::new();
+                let source = if bore {
+                    drilled_block(&mut topo)
+                } else {
+                    bossed_block(&mut topo)
+                };
+                transform_solid(&mut topo, source, &transform).unwrap();
+                let wall = only_cylinder(&topo, source);
+                let source_keys = solid_entity_keys(&topo, source).unwrap();
+                let pending = topo.journal_begin("radius_fixture");
+                let mut draft = EvolutionDraft::construction();
+                draft.add_scope(source_keys.iter().copied());
+                for &key in &source_keys {
+                    draft.push(
+                        key,
+                        EventDraft::Generated {
+                            sources: Vec::new(),
+                        },
+                    );
+                }
+                let anchor = topo.journal_record_evolution(pending, draft).unwrap();
+                let result = resize_cylindrical_face_journaled(&mut topo, source, wall, radius)
+                    .unwrap_or_else(|error| panic!("bore {bore}, radius {radius}: {error}"));
+                let result_keys: HashSet<_> = solid_entity_keys(&topo, result.solid)
+                    .unwrap()
+                    .into_iter()
+                    .collect();
+                for kind in [EntityKind::Face, EntityKind::Edge, EntityKind::Vertex] {
+                    for index in 0..source_keys.iter().filter(|key| key.kind == kind).count() {
+                        let reference = PersistentRef::operation_output(anchor, kind, index);
+                        match resolve(&topo, &reference) {
+                            Resolution::Bound {
+                                entity,
+                                provenance: Provenance::Construction,
+                            } => assert!(result_keys.contains(&entity)),
+                            Resolution::BoundMany {
+                                entities,
+                                provenance: Provenance::Construction,
+                            } => {
+                                assert_eq!(kind, EntityKind::Face);
+                                assert!(entities.iter().all(|entity| result_keys.contains(entity)));
+                            }
+                            other => panic!(
+                                "bore {bore}, radius {radius}, source {kind:?}/{index}: {other:?}"
+                            ),
+                        }
+                    }
+                    let mut recorded = HashSet::new();
+                    for index in 0..result_keys.iter().filter(|key| key.kind == kind).count() {
+                        let reference = PersistentRef::operation_output(result.op, kind, index);
+                        match resolve(&topo, &reference) {
+                            Resolution::Bound {
+                                entity,
+                                provenance: Provenance::Construction,
+                            } => {
+                                recorded.insert(entity);
+                            }
+                            other => panic!(
+                                "bore {bore}, radius {radius}, output {kind:?}/{index}: {other:?}"
+                            ),
+                        }
+                    }
+                    assert_eq!(
+                        recorded,
+                        result_keys
+                            .iter()
+                            .filter(|key| key.kind == kind)
+                            .copied()
+                            .collect()
+                    );
+                }
+                assert_watertight(&topo, result.solid);
+                let next_wall = only_cylinder(&topo, result.solid);
+                let next_radius = if bore { 3.0 } else { 5.0 };
+                let next = resize_cylindrical_face_journaled(
+                    &mut topo,
+                    result.solid,
+                    next_wall,
+                    next_radius,
+                )
+                .unwrap_or_else(|error| panic!("second bore {bore}, radius {radius}: {error}"));
+                for kind in [EntityKind::Face, EntityKind::Edge, EntityKind::Vertex] {
+                    for index in 0..source_keys.iter().filter(|key| key.kind == kind).count() {
+                        let reference = PersistentRef::operation_output(anchor, kind, index);
+                        assert!(
+                            matches!(
+                                resolve(&topo, &reference),
+                                Resolution::Bound {
+                                    provenance: Provenance::Construction,
+                                    ..
+                                } | Resolution::BoundMany {
+                                    provenance: Provenance::Construction,
+                                    ..
+                                }
+                            ),
+                            "second bore {bore}, radius {radius}, {kind:?}/{index}: {:?}; map {:?}",
+                            resolve(&topo, &reference),
+                            next.map
+                        );
+                    }
+                }
+                for kind in [EntityKind::Face, EntityKind::Edge, EntityKind::Vertex] {
+                    for index in 0..result_keys.iter().filter(|key| key.kind == kind).count() {
+                        let reference = PersistentRef::operation_output(result.op, kind, index);
+                        assert!(
+                            matches!(
+                                resolve(&topo, &reference),
+                                Resolution::Bound {
+                                    provenance: Provenance::Construction,
+                                    ..
+                                } | Resolution::BoundMany {
+                                    provenance: Provenance::Construction,
+                                    ..
+                                } | Resolution::Dangling { .. }
+                            ),
+                            "second output bore {bore}, radius {radius}, {kind:?}/{index}: {:?}",
+                            resolve(&topo, &reference)
+                        );
+                    }
+                }
+                assert_watertight(&topo, next.solid);
+            }
+        }
+    }
+
+    #[test]
+    fn journaled_radius_is_scale_aware() {
+        use crate::journal_ops::resize_cylindrical_face_journaled;
+        for scale in [1e-3_f64, 1e3] {
+            for bore in [false, true] {
+                let mut topo = Topology::new();
+                let source = if bore {
+                    drilled_block(&mut topo)
+                } else {
+                    bossed_block(&mut topo)
+                };
+                transform_solid(&mut topo, source, &Mat4::scale(scale, scale, scale)).unwrap();
+                let source_volume = solid_volume(&topo, source, DEFLECTION * scale).unwrap();
+                let first_wall = only_cylinder(&topo, source);
+                let first =
+                    resize_cylindrical_face_journaled(&mut topo, source, first_wall, 4.0 * scale)
+                        .unwrap();
+                let second_wall = only_cylinder(&topo, first.solid);
+                let second = resize_cylindrical_face_journaled(
+                    &mut topo,
+                    first.solid,
+                    second_wall,
+                    3.5 * scale,
+                )
+                .unwrap();
+                assert!(first.map.origin.is_exact() && first.map.is_complete());
+                assert!(second.map.origin.is_exact() && second.map.is_complete());
+                let expected = (16000.0
+                    + if bore { -1.0 } else { 1.0 } * PI * 3.5_f64.powi(2) * 10.0)
+                    * scale.powi(3);
+                let actual = solid_volume(&topo, second.solid, DEFLECTION * scale).unwrap();
+                assert!(
+                    (actual - expected).abs() <= expected.abs() * 1e-4,
+                    "bore {bore}, scale {scale}: {actual} != {expected}"
+                );
+                let unchanged = solid_volume(&topo, source, DEFLECTION * scale).unwrap();
+                assert!((unchanged - source_volume).abs() <= source_volume.abs() * 1e-12);
+                assert_watertight(&topo, second.solid);
+            }
+        }
+    }
+
+    #[test]
+    fn journaled_radius_refusals_restore_topology_and_history() {
+        use crate::journal_ops::resize_cylindrical_face_journaled;
+        for radius in [-1.0, 0.0, f64::NAN, f64::INFINITY, 20.0, 25.0] {
+            let mut topo = Topology::new();
+            let solid = drilled_block(&mut topo);
+            let face = only_cylinder(&topo, solid);
+            let before = topo.journal().snapshot();
+            let counts = |topo: &Topology| {
+                (
+                    topo.num_vertices(),
+                    topo.num_edges(),
+                    topo.num_wires(),
+                    topo.num_faces(),
+                    topo.num_shells(),
+                    topo.num_solids(),
+                    topo.num_pcurves(),
+                )
+            };
+            let before_counts = counts(&topo);
+            let volume = solid_volume(&topo, solid, DEFLECTION).unwrap();
+            assert!(
+                resize_cylindrical_face_journaled(&mut topo, solid, face, radius).is_err(),
+                "radius {radius}"
+            );
+            assert_eq!(topo.journal().snapshot(), before);
+            assert_eq!(counts(&topo), before_counts);
+            assert_volume(&topo, solid, volume);
+        }
+    }
+
+    #[test]
+    fn boss_radius_construction_history_covers_the_result() {
+        for radius in [3.0, 8.0] {
+            let mut topo = Topology::new();
+            let source = bossed_block(&mut topo);
+            let wall = only_cylinder(&topo, source);
+            let source_faces = solid_faces(&topo, source).unwrap();
+            let (result, pairs) =
+                resize_cylindrical_face_aligned(&mut topo, source, wall, radius, true).unwrap();
+            assert!(result.evolution.origin.is_exact());
+            let unresolved: Vec<_> = result
+                .evolution
+                .unresolved
+                .keys()
+                .map(|&index| {
+                    let face = topo.face(topo.face_id_from_index(index).unwrap()).unwrap();
+                    (index, face.surface().clone())
+                })
+                .collect();
+            assert!(
+                result.evolution.is_complete(),
+                "radius {radius}: {:?}; unresolved surfaces: {unresolved:?}",
+                result.evolution
+            );
+            assert_eq!(result.evolution.modified.len(), source_faces.len());
+            let counts = remus_topology::explorer::solid_entity_counts(&topo, source).unwrap();
+            assert_eq!(
+                pairs.len(),
+                counts.1 + counts.2,
+                "radius {radius}: every boundary needs history"
+            );
+            assert_volume(
+                &topo,
+                result.solid,
+                40.0f64.mul_add(40.0 * 10.0, PI * radius * radius * 10.0),
+            );
+            assert_watertight(&topo, result.solid);
+        }
     }
 
     #[test]
