@@ -1118,3 +1118,208 @@ fn cylinder_cone_defeature_preserves_construction_references() {
             < 1e-6
     );
 }
+
+#[test]
+fn verified_healing_preserves_in_place_references_through_vertex_merge() {
+    let mut topo = Topology::new();
+    let source = make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+    let edge = solid_edges(&topo, source).unwrap()[0];
+    let original = topo.edge(edge).unwrap().start();
+    let point = topo.vertex(original).unwrap().point();
+    let duplicate = topo.add_vertex(remus_topology::vertex::Vertex::new(point, 1e-7));
+    topo.edge_mut(edge).unwrap().set_start(duplicate);
+    let keys = remus_operations::journal_ops::solid_entity_keys(&topo, source).unwrap();
+    let pending = begin_scoped(&mut topo, "damaged_fixture", &[source]).unwrap();
+    let mut draft = remus_topology::journal::EvolutionDraft::construction();
+    for &key in &keys {
+        draft.push(
+            key,
+            remus_topology::journal::EventDraft::Generated {
+                sources: Vec::new(),
+            },
+        );
+    }
+    let anchor = topo.journal_record_evolution(pending, draft).unwrap();
+    let first = remus_operations::journal_ops::fix_shape_journaled(
+        &mut topo,
+        source,
+        &remus_heal::fix::FixConfig::default(),
+        None,
+    )
+    .unwrap();
+    assert_eq!(first.result.solid, source);
+    assert!(first.result.fixing.actions_taken > 0);
+    let second = remus_operations::journal_ops::fix_shape_journaled(
+        &mut topo,
+        source,
+        &remus_heal::fix::FixConfig::default(),
+        None,
+    )
+    .unwrap();
+    assert_ne!(first.op, second.op);
+    let mut resolved = std::collections::BTreeSet::new();
+    for kind in [EntityKind::Face, EntityKind::Edge, EntityKind::Vertex] {
+        for index in 0..keys.iter().filter(|key| key.kind == kind).count() {
+            match resolve(&topo, &PersistentRef::operation_output(anchor, kind, index)) {
+                Resolution::Bound {
+                    entity,
+                    provenance: Provenance::Construction,
+                } => {
+                    resolved.insert(entity);
+                }
+                other => panic!("healing lost {kind:?}/{index}: {other:?}"),
+            }
+        }
+    }
+    assert_eq!(
+        resolved,
+        remus_operations::journal_ops::solid_entity_keys(&topo, source)
+            .unwrap()
+            .into_iter()
+            .collect()
+    );
+    assert_eq!(solid_vertices(&topo, source).unwrap().len(), 8);
+    assert!(
+        (remus_operations::measure::solid_volume(&topo, source, 0.01).unwrap() - 1000.0).abs()
+            < 1e-6
+    );
+}
+
+#[test]
+fn verified_pipeline_preserves_references_across_private_fix_contexts() {
+    let mut topo = Topology::new();
+    let source = make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+    let edge = solid_edges(&topo, source).unwrap()[0];
+    let original = topo.edge(edge).unwrap().start();
+    let point = topo.vertex(original).unwrap().point();
+    let duplicate = topo.add_vertex(remus_topology::vertex::Vertex::new(point, 1e-7));
+    topo.edge_mut(edge).unwrap().set_start(duplicate);
+    let keys = remus_operations::journal_ops::solid_entity_keys(&topo, source).unwrap();
+    let pending = begin_scoped(&mut topo, "damaged_fixture", &[source]).unwrap();
+    let mut draft = remus_topology::journal::EvolutionDraft::construction();
+    for &key in &keys {
+        draft.push(
+            key,
+            remus_topology::journal::EventDraft::Generated {
+                sources: Vec::new(),
+            },
+        );
+    }
+    let anchor = topo.journal_record_evolution(pending, draft).unwrap();
+    let mut process = remus_heal::pipeline::process::HealProcess::new();
+    process.add_step("fix_shape");
+    process.add_step("merge_vertices");
+    process.add_step("fix_shape");
+    let first = remus_operations::journal_ops::heal_pipeline_journaled(&mut topo, source, &process)
+        .unwrap();
+    assert_eq!(first.result.solid, source);
+    let second =
+        remus_operations::journal_ops::heal_pipeline_journaled(&mut topo, source, &process)
+            .unwrap();
+    assert_ne!(first.op, second.op);
+    let mut resolved = std::collections::BTreeSet::new();
+    for kind in [EntityKind::Face, EntityKind::Edge, EntityKind::Vertex] {
+        for index in 0..keys.iter().filter(|key| key.kind == kind).count() {
+            match resolve(&topo, &PersistentRef::operation_output(anchor, kind, index)) {
+                Resolution::Bound {
+                    entity,
+                    provenance: Provenance::Construction,
+                } => {
+                    resolved.insert(entity);
+                }
+                other => panic!("healing lost {kind:?}/{index}: {other:?}"),
+            }
+        }
+    }
+    assert_eq!(
+        resolved,
+        remus_operations::journal_ops::solid_entity_keys(&topo, source)
+            .unwrap()
+            .into_iter()
+            .collect()
+    );
+    assert_eq!(solid_vertices(&topo, source).unwrap().len(), 8);
+    assert!(
+        (remus_operations::measure::solid_volume(&topo, source, 0.01).unwrap() - 1000.0).abs()
+            < 1e-6
+    );
+}
+
+#[test]
+fn verified_pipeline_rolls_back_a_repair_before_a_later_step_failure() {
+    let mut topo = Topology::new();
+    let source = make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+    let edge = solid_edges(&topo, source).unwrap()[0];
+    let original = topo.edge(edge).unwrap().start();
+    let point = topo.vertex(original).unwrap().point();
+    let duplicate = topo.add_vertex(remus_topology::vertex::Vertex::new(point, 1e-7));
+    topo.edge_mut(edge).unwrap().set_start(duplicate);
+    let before = remus_operations::journal_ops::solid_entity_keys(&topo, source).unwrap();
+    let history = topo.journal().snapshot();
+    let mut process = remus_heal::pipeline::process::HealProcess::new();
+    process.add_step("fix_shape");
+    process.add_step("missing_operator");
+    assert!(
+        remus_operations::journal_ops::heal_pipeline_journaled(&mut topo, source, &process)
+            .is_err()
+    );
+    assert_eq!(topo.edge(edge).unwrap().start(), duplicate);
+    assert_eq!(
+        remus_operations::journal_ops::solid_entity_keys(&topo, source).unwrap(),
+        before
+    );
+    assert_eq!(topo.journal().snapshot(), history);
+}
+
+#[test]
+fn ordinary_verified_pipeline_does_not_invoke_custom_history_override() {
+    #[derive(Debug)]
+    struct HistoryRefusal;
+    impl remus_heal::pipeline::operator::HealOperator for HistoryRefusal {
+        fn name(&self) -> &'static str {
+            "history_refusal"
+        }
+        fn execute(
+            &self,
+            _topo: &mut Topology,
+            solid: remus_topology::SolidId,
+            _ctx: &mut remus_heal::context::HealContext,
+        ) -> Result<(remus_topology::SolidId, remus_heal::fix::FixResult), remus_heal::HealError>
+        {
+            Ok((solid, remus_heal::fix::FixResult::ok()))
+        }
+        fn execute_with_history(
+            &self,
+            _topo: &mut Topology,
+            _solid: remus_topology::SolidId,
+            _ctx: &mut remus_heal::context::HealContext,
+        ) -> Result<
+            (
+                remus_topology::SolidId,
+                remus_heal::fix::FixResult,
+                remus_heal::reshape::ReShape,
+            ),
+            remus_heal::HealError,
+        > {
+            Err(remus_heal::HealError::FixFailed(
+                "custom history refused".into(),
+            ))
+        }
+    }
+    let mut topo = Topology::new();
+    let solid = make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+    let mut process = remus_heal::pipeline::process::HealProcess::new();
+    process
+        .registry_mut()
+        .register("history_refusal", Box::new(HistoryRefusal));
+    process.add_step("history_refusal");
+    let report =
+        remus_operations::heal::run_heal_pipeline_verified(&mut topo, solid, &process).unwrap();
+    assert!(report.is_valid_after());
+    let before = topo.journal().snapshot();
+    let error = remus_operations::journal_ops::heal_pipeline_journaled(&mut topo, solid, &process)
+        .err()
+        .unwrap();
+    assert!(error.to_string().contains("custom history refused"));
+    assert_eq!(topo.journal().snapshot(), before);
+}

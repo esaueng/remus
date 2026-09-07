@@ -11,6 +11,44 @@ use crate::HealError;
 use crate::context::HealContext;
 use crate::fix::FixResult;
 
+/// The entity scopes and explicit replacement records of one completed step.
+#[derive(Debug, Clone)]
+pub struct StepHistory {
+    /// Entities belonging to the step's input solid.
+    pub sources: Vec<remus_topology::journal::EntityKey>,
+    /// Entities belonging to its resulting solid.
+    pub result: Vec<remus_topology::journal::EntityKey>,
+    /// Replacement actions recorded by the operator.
+    pub replacements: crate::reshape::ReShape,
+}
+
+fn entity_keys(
+    topo: &Topology,
+    solid: SolidId,
+) -> Result<Vec<remus_topology::journal::EntityKey>, HealError> {
+    use remus_topology::explorer::{solid_edges, solid_faces, solid_vertices};
+    use remus_topology::journal::EntityKey;
+    let mut keys = Vec::new();
+    keys.extend(
+        solid_faces(topo, solid)?
+            .into_iter()
+            .map(|id| EntityKey::face(id.index())),
+    );
+    keys.extend(
+        solid_edges(topo, solid)?
+            .into_iter()
+            .map(|id| EntityKey::edge(id.index())),
+    );
+    keys.extend(
+        solid_vertices(topo, solid)?
+            .into_iter()
+            .map(|id| EntityKey::vertex(id.index())),
+    );
+    keys.sort_unstable();
+    keys.dedup();
+    Ok(keys)
+}
+
 /// A configurable sequence of healing operators.
 #[derive(Debug)]
 pub struct HealProcess {
@@ -55,6 +93,32 @@ impl HealProcess {
         let mut current = solid_id;
         let mut results = Vec::with_capacity(self.steps.len());
         let mut ctx = HealContext::new();
+        for step_name in &self.steps {
+            let op = self.registry.get(step_name).ok_or_else(|| {
+                HealError::InvalidConfig(format!("unknown operator: {step_name}"))
+            })?;
+            log::info!("heal pipeline: running '{step_name}'");
+            let (solid, report) = op.execute(topo, current, &mut ctx)?;
+            current = solid;
+            results.push(report);
+        }
+        Ok((current, results))
+    }
+
+    /// Execute the pipeline while retaining its recorded replacement actions.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same operator or configuration errors as [`Self::execute`].
+    pub fn execute_with_history(
+        &self,
+        topo: &mut Topology,
+        solid_id: SolidId,
+    ) -> Result<(SolidId, Vec<FixResult>, Vec<StepHistory>), HealError> {
+        let mut current = solid_id;
+        let mut results = Vec::with_capacity(self.steps.len());
+        let mut ctx = HealContext::new();
+        let mut history = Vec::with_capacity(self.steps.len());
 
         for step_name in &self.steps {
             let op = self.registry.get(step_name).ok_or_else(|| {
@@ -62,12 +126,19 @@ impl HealProcess {
             })?;
 
             log::info!("heal pipeline: running '{step_name}'");
-            let (new_solid, result) = op.execute(topo, current, &mut ctx)?;
+            let sources = entity_keys(topo, current)?;
+            let (new_solid, result, replacements) =
+                op.execute_with_history(topo, current, &mut ctx)?;
+            history.push(StepHistory {
+                sources,
+                result: entity_keys(topo, new_solid)?,
+                replacements,
+            });
             results.push(result);
             current = new_solid;
         }
 
-        Ok((current, results))
+        Ok((current, results, history))
     }
 }
 

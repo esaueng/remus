@@ -2024,6 +2024,34 @@ class BrepKernel {
         return takeFromExternrefTable0(ret[0]);
     }
     /**
+     * Run configured verified healing with entity history.
+     * Returns the `fixShapeWithConfig` report plus `op`. Untracked replacements
+     * remain unresolved. Batch uses `solid` and the JSON string `configJson`.
+     * @param {number} solid
+     * @param {string} config_json
+     * @returns {string}
+     */
+    fixShapeWithConfigJournaled(solid, config_json) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(config_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.brepkernel_fixShapeWithConfigJournaled(this.__wbg_ptr, solid, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
      * Reconstruct a solid from a BREP string.
      *
      * Accepts both STEP format (from `toBREP`) and JSON format (from
@@ -5638,6 +5666,34 @@ class BrepKernel {
             throw takeFromExternrefTable0(ret[1]);
         }
         return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Run verified healing steps with composed entity history.
+     * Returns the `runHealPipeline` report plus `op`. Topology and journal
+     * changes roll back together on failure. Batch uses `solid` and `steps`.
+     * @param {number} solid
+     * @param {string[]} steps
+     * @returns {string}
+     */
+    runHealPipelineJournaled(solid, steps) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passArrayJsValueToWasm0(steps, wasm.__wbindgen_malloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.brepkernel_runHealPipelineJournaled(this.__wbg_ptr, solid, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
     }
     /**
      * Span-true polyline of one edge at the given chordal deflection.

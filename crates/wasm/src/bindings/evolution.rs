@@ -274,6 +274,42 @@ impl BrepKernel {
         }))
     }
 
+    fn fix_shape_journaled_json(
+        &mut self,
+        solid: u32,
+        config: &str,
+    ) -> Result<serde_json::Value, StructuredWasmError> {
+        let (report, op) = self
+            .fix_shape_report_impl(solid, config, true)
+            .map_err(StructuredWasmError::from)?;
+        let mut value = serde_json::to_value(report)?;
+        value["op"] = serde_json::json!(
+            op.ok_or_else(|| StructuredWasmError::operation_failed(
+                "healing journal entry missing"
+            ))?
+            .value()
+        );
+        Ok(value)
+    }
+
+    fn heal_pipeline_journaled_json(
+        &mut self,
+        solid: u32,
+        steps: Vec<String>,
+    ) -> Result<serde_json::Value, StructuredWasmError> {
+        let (report, op) = self
+            .heal_pipeline_report_impl(solid, steps, true)
+            .map_err(StructuredWasmError::from)?;
+        let mut value = serde_json::to_value(report)?;
+        value["op"] = serde_json::json!(
+            op.ok_or_else(|| StructuredWasmError::operation_failed(
+                "healing journal entry missing"
+            ))?
+            .value()
+        );
+        Ok(value)
+    }
+
     fn defeature_journaled_json(
         &mut self,
         solid: u32,
@@ -519,6 +555,27 @@ impl BrepKernel {
             "imprint" => get_u32(args, "target").and_then(|target| {
                 get_u32(args, "tool").and_then(|tool| self.imprint_json(target, tool))
             }),
+            "fixShapeWithConfigJournaled" => (|| {
+                let solid = get_u32(args, "solid")?;
+                let config = args["configJson"].as_str().ok_or_else(|| {
+                    StructuredWasmError::invalid_argument(
+                        "'configJson' must be a JSON string",
+                        Some("configJson"),
+                    )
+                })?;
+                self.fix_shape_journaled_json(solid, config)
+            })(),
+            "runHealPipelineJournaled" => (|| {
+                let solid = get_u32(args, "solid")?;
+                let steps: Vec<String> =
+                    serde_json::from_value(args["steps"].clone()).map_err(|_| {
+                        StructuredWasmError::invalid_argument(
+                            "'steps' must be an array of operator names",
+                            Some("steps"),
+                        )
+                    })?;
+                self.heal_pipeline_journaled_json(solid, steps)
+            })(),
             "defeatureJournaled" => (|| {
                 let solid = get_u32(args, "solid")?;
                 let faces = get_u32_array(args, "faces")?;
@@ -651,6 +708,34 @@ impl BrepKernel {
     #[wasm_bindgen(js_name = "imprint")]
     pub fn imprint_js(&mut self, target: u32, tool: u32) -> Result<String, JsError> {
         self.imprint_json(target, tool)
+            .map(|value| value.to_string())
+            .map_err(structured_to_js)
+    }
+
+    /// Run configured verified healing with entity history.
+    /// Returns the `fixShapeWithConfig` report plus `op`. Untracked replacements
+    /// remain unresolved. Batch uses `solid` and the JSON string `configJson`.
+    #[wasm_bindgen(js_name = "fixShapeWithConfigJournaled")]
+    pub fn fix_shape_journaled_js(
+        &mut self,
+        solid: u32,
+        config_json: &str,
+    ) -> Result<String, JsError> {
+        self.fix_shape_journaled_json(solid, config_json)
+            .map(|value| value.to_string())
+            .map_err(structured_to_js)
+    }
+
+    /// Run verified healing steps with composed entity history.
+    /// Returns the `runHealPipeline` report plus `op`. Topology and journal
+    /// changes roll back together on failure. Batch uses `solid` and `steps`.
+    #[wasm_bindgen(js_name = "runHealPipelineJournaled")]
+    pub fn heal_pipeline_journaled_js(
+        &mut self,
+        solid: u32,
+        steps: Vec<String>,
+    ) -> Result<String, JsError> {
+        self.heal_pipeline_journaled_json(solid, steps)
             .map(|value| value.to_string())
             .map_err(structured_to_js)
     }
@@ -795,6 +880,223 @@ mod evolution_contract_tests {
                 entry["ok"].clone()
             })
             .collect()
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn journaled_healing_direct_and_batch_preserve_repaired_references() {
+        use remus_topology::{
+            explorer::solid_edges,
+            journal::{EntityKind, EventDraft, EvolutionDraft},
+            naming::{PersistentRef, Provenance, Resolution, resolve},
+            vertex::Vertex,
+        };
+        for scale in [0.1, 1.0, 10.0] {
+            for pipeline in [false, true] {
+                for batch in [false, true] {
+                    let mut kernel = BrepKernel::new();
+                    let solid = kernel
+                        .make_box_solid(10.0 * scale, 10.0 * scale, 10.0 * scale)
+                        .unwrap();
+                    let id = kernel.resolve_solid(solid).unwrap();
+                    let edge = solid_edges(kernel.topo(), id).unwrap()[0];
+                    let original = kernel.topo().edge(edge).unwrap().start();
+                    let point = kernel.topo().vertex(original).unwrap().point();
+                    let duplicate = kernel.topo_mut().add_vertex(Vertex::new(point, 1e-7));
+                    kernel
+                        .topo_mut()
+                        .edge_mut(edge)
+                        .unwrap()
+                        .set_start(duplicate);
+                    let keys = remus_operations::journal_ops::solid_entity_keys(kernel.topo(), id)
+                        .unwrap();
+                    let pending = remus_operations::journal_ops::begin_scoped(
+                        kernel.topo_mut(),
+                        "repair_fixture",
+                        &[id],
+                    )
+                    .unwrap();
+                    let mut draft = EvolutionDraft::construction();
+                    for &key in &keys {
+                        draft.push(
+                            key,
+                            EventDraft::Generated {
+                                sources: Vec::new(),
+                            },
+                        );
+                    }
+                    let anchor = kernel
+                        .topo_mut()
+                        .journal_record_evolution(pending, draft)
+                        .unwrap();
+                    let steps = vec![
+                        "fix_shape".to_string(),
+                        "merge_vertices".to_string(),
+                        "fix_shape".to_string(),
+                    ];
+                    let payload = if batch {
+                        let operation = if pipeline {
+                            "runHealPipelineJournaled"
+                        } else {
+                            "fixShapeWithConfigJournaled"
+                        };
+                        run(&mut kernel, serde_json::json!([{"op":operation,"args":{"solid":solid,"steps":steps,"configJson":"{}"}}])).remove(0)
+                    } else if pipeline {
+                        serde_json::from_str(
+                            &kernel.heal_pipeline_journaled_js(solid, steps).unwrap(),
+                        )
+                        .unwrap()
+                    } else {
+                        serde_json::from_str(&kernel.fix_shape_journaled_js(solid, "{}").unwrap())
+                            .unwrap()
+                    };
+                    assert_eq!(payload["verified"], true);
+                    assert!(payload["op"].as_u64().is_some());
+                    let mut resolved = std::collections::BTreeSet::new();
+                    for kind in [EntityKind::Face, EntityKind::Edge, EntityKind::Vertex] {
+                        for index in 0..keys.iter().filter(|key| key.kind == kind).count() {
+                            match resolve(
+                                kernel.topo(),
+                                &PersistentRef::operation_output(anchor, kind, index),
+                            ) {
+                                Resolution::Bound {
+                                    entity,
+                                    provenance: Provenance::Construction,
+                                } => {
+                                    resolved.insert(entity);
+                                }
+                                other => panic!(
+                                    "healing {scale}/{pipeline}/{batch} lost reference: {other:?}"
+                                ),
+                            }
+                        }
+                    }
+                    assert_eq!(
+                        resolved,
+                        remus_operations::journal_ops::solid_entity_keys(kernel.topo(), id)
+                            .unwrap()
+                            .into_iter()
+                            .collect()
+                    );
+                    let volume =
+                        remus_operations::measure::solid_volume(kernel.topo(), id, 0.01 * scale)
+                            .unwrap();
+                    assert!((volume - 1000.0 * scale.powi(3)).abs() < 1e-6 * scale.powi(3));
+                    let bytes = kernel.serialize_solids(&[solid]).unwrap();
+                    let mut restored = BrepKernel::new();
+                    restored.make_box_solid(1.0, 1.0, 1.0).unwrap();
+                    let restored_solid = restored.deserialize_solids(&bytes).unwrap()[0];
+                    let restored_id = restored.resolve_solid(restored_solid).unwrap();
+                    let wall = remus_topology::explorer::solid_faces(restored.topo(), restored_id)
+                        .unwrap()
+                        .into_iter()
+                        .find(|&face| {
+                            restored
+                                .topo()
+                                .face(face)
+                                .unwrap()
+                                .effective_plane_normal()
+                                .is_some_and(|normal| normal.x() > 0.9)
+                        })
+                        .unwrap();
+                    let edited = restored
+                        .draft_journaled_json(
+                            restored_solid,
+                            &[super::index_u32(wall.index())],
+                            &[0.0, 0.0, 1.0],
+                            &[0.0; 3],
+                            5.0,
+                        )
+                        .unwrap();
+                    let final_solid = restored
+                        .resolve_solid(u32::try_from(edited["solid"].as_u64().unwrap()).unwrap())
+                        .unwrap();
+                    let mut final_refs = std::collections::BTreeSet::new();
+                    for kind in [EntityKind::Face, EntityKind::Edge, EntityKind::Vertex] {
+                        for index in 0..keys.iter().filter(|key| key.kind == kind).count() {
+                            match resolve(
+                                restored.topo(),
+                                &PersistentRef::operation_output(anchor, kind, index),
+                            ) {
+                                Resolution::Bound {
+                                    entity,
+                                    provenance: Provenance::Construction,
+                                } => {
+                                    final_refs.insert(entity);
+                                }
+                                other => panic!(
+                                    "healing reference lost after arena and draft: {other:?}"
+                                ),
+                            }
+                        }
+                    }
+                    assert_eq!(
+                        final_refs,
+                        remus_operations::journal_ops::solid_entity_keys(
+                            restored.topo(),
+                            final_solid
+                        )
+                        .unwrap()
+                        .into_iter()
+                        .collect()
+                    );
+                    let expected = (1000.0 + 500.0 * 5.0_f64.to_radians().tan()) * scale.powi(3);
+                    let volume = remus_operations::measure::solid_volume(
+                        restored.topo(),
+                        final_solid,
+                        0.01 * scale,
+                    )
+                    .unwrap();
+                    assert!((volume - expected).abs() < expected * 1e-6);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn journaled_healing_batch_rejects_bad_inputs_without_history_changes() {
+        let mut kernel = BrepKernel::new();
+        let solid = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
+        let id = kernel.resolve_solid(solid).unwrap();
+        let keys = remus_operations::journal_ops::solid_entity_keys(kernel.topo(), id).unwrap();
+        let before = kernel.topo().journal().snapshot();
+        for (op, args) in [
+            (
+                "fixShapeWithConfigJournaled",
+                serde_json::json!({"solid":solid,"configJson":"{\"tolerance\":-1}"}),
+            ),
+            (
+                "fixShapeWithConfigJournaled",
+                serde_json::json!({"solid":solid,"configJson":{}}),
+            ),
+            (
+                "runHealPipelineJournaled",
+                serde_json::json!({"solid":solid,"steps":[]}),
+            ),
+            (
+                "runHealPipelineJournaled",
+                serde_json::json!({"solid":solid,"steps":["fix_shape","missing"]}),
+            ),
+            (
+                "runHealPipelineJournaled",
+                serde_json::json!({"solid":solid,"steps":[1]}),
+            ),
+            (
+                "runHealPipelineJournaled",
+                serde_json::json!({"solid":solid,"steps":vec!["fix_shape";33]}),
+            ),
+        ] {
+            let response: serde_json::Value = serde_json::from_str(
+                &kernel.execute_batch_v2(&serde_json::json!([{"op":op,"args":args}]).to_string()),
+            )
+            .unwrap();
+            assert!(response[0]["error"].is_object(), "{response}");
+            assert_eq!(kernel.topo().journal().snapshot(), before);
+            assert_eq!(
+                remus_operations::journal_ops::solid_entity_keys(kernel.topo(), id).unwrap(),
+                keys
+            );
+        }
     }
 
     fn assert_assembly_rebuilds_are_typed(evolution: &serde_json::Value) {

@@ -264,6 +264,7 @@ export const runOpenZcadConsumerRegressions = (exports) => {
   runCylindricalRadiusHistoryRegression(exports);
   runDraftHistoryRegression(exports);
   runDefeatureHistoryRegression(exports);
+  runHealingHistoryRegression(exports);
   runWideSphereCapRegression(exports);
   runOffsetConeSphereRegression(exports);
   runOffsetSphereCylinderRegression(exports);
@@ -1237,4 +1238,69 @@ export const runDefeatureHistoryRegression = ({BrepKernel, RemusIo}) => {
     finally {kernel.free();io.free();}
   }
   console.log('ok - defeature history: 30 direct/batch scale cells, retained/merged/deleted refs, arena/STEP, rollback');
+};
+
+export const runHealingHistoryRegression = ({ BrepKernel, RemusIo }) => {
+  const kinds = [['face', 'getSolidFaces'], ['edge', 'getSolidEdges'], ['vertex', 'getSolidVertices']];
+  const references = (kernel, result) => kinds.flatMap(([kind, query]) =>
+    Array.from(kernel[query](result.solid), (_, index) => ({ kind, ref: kernel.makeOperationOutputRef(result.op, kind, index) })));
+  const check = (kernel, solid, refs, expected, scale) => {
+    assert.equal(kernel.validateSolid(solid), 0);
+    assert.ok(Math.abs(kernel.volume(solid, 0.005 * scale) - expected) < expected * 1e-6);
+    assert.equal(JSON.parse(kernel.meshQuality(solid, 0.005 * scale)).isWatertight, true);
+    for (const [kind, query] of kinds) {
+      const bound = new Set();
+      for (const item of refs.filter(item => item.kind === kind)) {
+        const result = JSON.parse(kernel.resolveRef(item.ref));
+        assert.equal(result.status, 'bound', JSON.stringify(result));
+        assert.equal(result.provenance, 'construction');
+        for (const entity of result.entities) bound.add(entity.handle);
+      }
+      assert.deepEqual(bound, new Set(kernel[query](solid)));
+    }
+  };
+  for (const scale of [0.001, 1, 10]) for (const batch of [false, true]) for (const pipeline of [false, true]) {
+    const kernel = new BrepKernel(), io = new RemusIo(), restored = new BrepKernel(), imported = new BrepKernel();
+    try {
+      const source = kernel.makeBox(10 * scale, 10 * scale, 10 * scale);
+      const document = JSON.parse(new TextDecoder().decode(kernel.serializeSolids(Uint32Array.of(source))));
+      const edge = document.edges[0];
+      document.vertices.push(structuredClone(document.vertices[edge.start]));
+      edge.start = document.vertices.length - 1;
+      const [solid] = kernel.deserializeSolids(new TextEncoder().encode(JSON.stringify(document)));
+      assert.equal(kernel.getSolidVertices(solid).length, 9);
+      const edit = (active, solid) => {
+        const steps = ['fix_shape', 'merge_vertices', 'fix_shape'];
+        if (!batch) return JSON.parse(pipeline ? active.runHealPipelineJournaled(solid, steps) : active.fixShapeWithConfigJournaled(solid, '{}'));
+        const op = pipeline ? 'runHealPipelineJournaled' : 'fixShapeWithConfigJournaled';
+        const [response] = JSON.parse(active.executeBatchV2(JSON.stringify([{ op, args: { solid, steps, configJson: '{}' } }])));
+        assert.equal(response.error, undefined, JSON.stringify(response));
+        return response.ok;
+      };
+      const first = edit(kernel, solid), refs = references(kernel, first), expected = 1000 * scale ** 3;
+      assert.equal(first.verified, true);
+      assert.equal(kernel.getSolidVertices(first.solid).length, 8);
+      assert.ok(pipeline ? first.steps.some(step => step.actionsTaken > 0) : first.actionsTaken > 0);
+      assert.ok(Number.isSafeInteger(first.op));
+      const second = edit(kernel, first.solid);
+      check(kernel, second.solid, refs, expected, scale);
+      restored.makeBox(1, 1, 1);
+      const [copy] = restored.deserializeSolids(kernel.serializeSolids(Uint32Array.of(second.solid)));
+      check(restored, copy, refs, expected, scale);
+      const wall = Array.from(restored.getSolidFaces(copy)).find(face => restored.getFaceNormal(face)[0] > 0.9);
+      const drafted = JSON.parse(restored.draftJournaled(copy, Uint32Array.of(wall), Float64Array.of(0, 0, 1), Float64Array.of(0, 0, 0), 5));
+      check(restored, drafted.solid, refs, expected + 500 * scale ** 3 * Math.tan(5 * Math.PI / 180), scale);
+      const [stepSolid] = imported.deserializeSolids(io.importStep(io.exportStep(kernel.serializeSolids(Uint32Array.of(second.solid)))));
+      const healedImport = edit(imported, stepSolid);
+      check(imported, healedImport.solid, references(imported, healedImport), expected, scale);
+      const before = Uint8Array.from(kernel.serializeSolids(Uint32Array.of(second.solid))), journal = kernel.journalSummary();
+      assert.throws(() => kernel.fixShapeWithConfigJournaled(second.solid, '{"tolerance":-1}'));
+      assert.throws(() => kernel.runHealPipelineJournaled(second.solid, ['fix_shape', 'missing']));
+      assert.equal(kernel.journalSummary(), journal);
+      assert.deepEqual(kernel.serializeSolids(Uint32Array.of(second.solid)), before);
+    } catch (error) {
+      throw new Error(`healing history scale=${scale} batch=${batch} pipeline=${pipeline}: ${error.message}`, { cause: error });
+    } finally { kernel.free(); io.free(); restored.free(); imported.free(); }
+  }
+  console.log('ok - healing history: 12 direct/batch cells, repeated repairs, arena, later draft, STEP import, rollback');
 };
