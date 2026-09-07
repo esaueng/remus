@@ -40,8 +40,11 @@ pub fn fix_split_common_vertex_with_history(
     topo: &mut Topology,
     solid_id: SolidId,
     ctx: &mut HealContext,
-    _config: &FixConfig,
+    config: &FixConfig,
 ) -> Result<(FixResult, SplitVertexHistory), HealError> {
+    if config.fix_split_common_vertex == super::config::FixMode::Off {
+        return Ok((FixResult::ok(), SplitVertexHistory::default()));
+    }
     let mut history = SplitVertexHistory::default();
     let result = fix_split_common_vertex_impl(topo, solid_id, ctx, Some(&mut history))?;
     Ok((result, history))
@@ -62,8 +65,11 @@ pub fn fix_split_common_vertex(
     topo: &mut Topology,
     solid_id: SolidId,
     ctx: &mut HealContext,
-    _config: &FixConfig,
+    config: &FixConfig,
 ) -> Result<FixResult, HealError> {
+    if config.fix_split_common_vertex == super::config::FixMode::Off {
+        return Ok(FixResult::ok());
+    }
     fix_split_common_vertex_impl(topo, solid_id, ctx, None)
 }
 
@@ -336,6 +342,30 @@ mod tests {
         let inner = topo.add_shell(Shell::new(faces.split_off(6)).unwrap());
         let outer = topo.add_shell(Shell::new(faces).unwrap());
         let solid = topo.add_solid(Solid::new(outer, vec![inner]));
+        let disabled = FixConfig {
+            fix_split_common_vertex: super::super::config::FixMode::Off,
+            ..Default::default()
+        };
+        let before_vertices = remus_topology::explorer::solid_vertices(&topo, solid).unwrap();
+        let (disabled_result, disabled_history) = fix_split_common_vertex_with_history(
+            &mut topo,
+            solid,
+            &mut HealContext::new(),
+            &disabled,
+        )
+        .unwrap();
+        assert_eq!(disabled_result.actions_taken, 0);
+        assert!(disabled_history.vertices.is_empty());
+        assert_eq!(
+            fix_split_common_vertex(&mut topo, solid, &mut HealContext::new(), &disabled)
+                .unwrap()
+                .actions_taken,
+            0
+        );
+        assert_eq!(
+            remus_topology::explorer::solid_vertices(&topo, solid).unwrap(),
+            before_vertices
+        );
         let mut pipeline_topo = topo.clone();
         let mut process = crate::pipeline::process::HealProcess::new();
         process.add_step("split_common_vertex");
