@@ -268,6 +268,7 @@ export const runOpenZcadConsumerRegressions = (exports) => {
   runUnifyHistoryRegression(exports);
   runSewingHistoryRegression(exports);
   runInnerWireHistoryRegression(exports);
+  runSplitVertexRefusalRegression(exports);
   runWideSphereCapRegression(exports);
   runOffsetConeSphereRegression(exports);
   runOffsetSphereCylinderRegression(exports);
@@ -1562,4 +1563,52 @@ export const runInnerWireHistoryRegression = ({ BrepKernel }) => {
     } finally { kernel.free(); restored.free(); }
   }
   console.log('ok - inner-wire history: six direct/batch scale cells, deleted boundaries and preserved references, legacy import, arena and later draft');
+};
+
+
+export const runSplitVertexRefusalRegression = ({ BrepKernel }) => {
+  for (const scale of [0.001, 1, 10]) for (const batch of [false, true]) {
+    const kernel = new BrepKernel();
+    try {
+      const cube = kernel.makeBox(scale, scale, scale);
+      const document = JSON.parse(new TextDecoder().decode(kernel.serializeSolids(Uint32Array.of(cube))));
+      document.vertices = [{ point: [0, 0, 0], tolerance: 1e-7 }];
+      document.edges = []; document.wires = []; document.faces = [];
+      for (let i = 0; i < 11; i++) {
+        const a = document.vertices.push({ point: [(i+1)*scale, 0, 0], tolerance: 1e-7 }) - 1;
+        const b = document.vertices.push({ point: [(i+1)*scale, scale, 0], tolerance: 1e-7 }) - 1;
+        const edges = [[0,a],[a,b],[b,0]].map(([start,end]) => ({
+          edge: document.edges.push({ start, end, curve: 'Line', tolerance: null }) - 1, forward: true,
+        }));
+        const wire = document.wires.push({ edges, closed: true }) - 1;
+        document.faces.push({ outer_wire: wire, inner_wires: [], surface: { Plane: { normal: [0,0,1], d: 0 } }, reversed: false });
+      }
+      document.shells = [{ faces: document.faces.map((_,i) => i) }];
+      document.solids = [{ outer_shell: 0, inner_shells: [] }]; document.solid_roots = [0];
+      document.version = 2; document.pcurves = [];
+      delete document.boundary_authority; delete document.attributes;
+      const index = [['face', document.faces], ['edge', document.edges], ['vertex', document.vertices]]
+        .flatMap(([kind, entries]) => entries.map((_,local) => ({ kind, local })))
+        .map((entry, ordinal) => ({ ...entry, ordinal }));
+      document.journal = { next_op: 1, next_ordinal: index.length, index,
+        entries: [{ op: 0, kind: 'open_vertex_fans_fixture', payload: 'Evolution', construction: true,
+          scope: index.map(entry => entry.ordinal), events: index.map(entry => [entry.ordinal, { event: 'Generated', sources: [] }]) }] };
+      const [solid] = kernel.deserializeSolids(new TextEncoder().encode(JSON.stringify(document)));
+      assert.equal(kernel.getSolidVertices(solid).length, 23);
+      const bytes = Uint8Array.from(kernel.serializeSolids(Uint32Array.of(solid))), journal = kernel.journalSummary();
+      // These open fans must remain refused even though the splitter can separate their vertex uses.
+      for (const steps of [['split_common_vertex'], ['split_common_vertex', 'missing']]) {
+        const pattern = steps.length === 1 ? /configured healing result refused/ : /unknown operator/;
+        if (batch) {
+          const [response] = JSON.parse(kernel.executeBatchV2(JSON.stringify([{ op: 'runHealPipelineJournaled', args: { solid, steps } }])));
+          assert.ok(response.error);
+          assert.match(JSON.stringify(response.error), pattern);
+        } else {
+          assert.throws(() => kernel.runHealPipelineJournaled(solid, steps), pattern);
+        }
+        assert.equal(kernel.journalSummary(), journal);
+        assert.deepEqual(kernel.serializeSolids(Uint32Array.of(solid)), bytes);
+      }
+    } finally { kernel.free(); }
+  }
 };
