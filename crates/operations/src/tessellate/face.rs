@@ -154,6 +154,7 @@ pub(super) fn tessellate_with_uvs_floor(
                     cyl.radius(),
                     deflection,
                     angular_tol,
+                    None,
                 )
             } else if cylinder_has_non_standard_boundary(topo, face_data)? {
                 tessellate_analytic_with_boundary(topo, face_data, cyl, deflection, angular_tol)
@@ -243,6 +244,7 @@ pub(super) fn tessellate_with_uvs_floor(
                     radius,
                     deflection,
                     angular_tol,
+                    None,
                 )
             }
         }
