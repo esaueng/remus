@@ -32,6 +32,33 @@ pub struct MoveFacesResult {
     pub face_map: HashMap<usize, FaceId>,
 }
 
+/// A topology-preserving edit with construction-derived entity correspondence.
+#[derive(Debug)]
+pub struct MoveFacesEntityResult {
+    /// Edited solid.
+    pub solid: SolidId,
+    /// Source face index to its rebuilt face.
+    pub face_map: HashMap<usize, FaceId>,
+    /// Source edge index to its rebuilt edge.
+    pub edge_map: HashMap<usize, EdgeId>,
+    /// Source vertex index to its rebuilt vertex.
+    pub vertex_map: HashMap<usize, VertexId>,
+}
+
+impl From<MoveFacesEntityResult> for MoveFacesResult {
+    fn from(result: MoveFacesEntityResult) -> Self {
+        Self {
+            solid: result.solid,
+            face_map: result.face_map,
+        }
+    }
+}
+
+struct BoundaryMaps {
+    edges: HashMap<usize, EdgeId>,
+    vertices: HashMap<usize, VertexId>,
+}
+
 /// Move a coplanar group of planar faces by a signed distance along their
 /// common outward normal.
 ///
@@ -69,6 +96,20 @@ pub fn move_faces_with_face_map(
     faces: &[FaceId],
     distance: f64,
 ) -> Result<MoveFacesResult, OffsetError> {
+    move_faces_with_entity_map(topo, solid, faces, distance).map(Into::into)
+}
+
+/// [`move_faces`] with construction-derived face, edge, and vertex maps.
+///
+/// # Errors
+///
+/// Returns the same typed refusals as [`move_faces`].
+pub fn move_faces_with_entity_map(
+    topo: &mut Topology,
+    solid: SolidId,
+    faces: &[FaceId],
+    distance: f64,
+) -> Result<MoveFacesEntityResult, OffsetError> {
     let snapshot = topo.clone();
     let result = move_faces_impl(topo, solid, faces, distance);
     if result.is_err() {
@@ -96,6 +137,20 @@ pub fn replace_surface_with_face_map(
     face: FaceId,
     replacement: FaceSurface,
 ) -> Result<MoveFacesResult, OffsetError> {
+    replace_surface_with_entity_map(topo, solid, face, replacement).map(Into::into)
+}
+
+/// [`replace_surface_with_face_map`] with exact edge and vertex correspondence.
+///
+/// # Errors
+///
+/// Returns the same typed refusals as [`replace_surface_with_face_map`].
+pub fn replace_surface_with_entity_map(
+    topo: &mut Topology,
+    solid: SolidId,
+    face: FaceId,
+    replacement: FaceSurface,
+) -> Result<MoveFacesEntityResult, OffsetError> {
     let snapshot = topo.clone();
     let result = replace_surface_impl(topo, solid, face, replacement);
     if result.is_err() {
@@ -110,7 +165,7 @@ fn replace_surface_impl(
     solid: SolidId,
     face: FaceId,
     replacement: FaceSurface,
-) -> Result<MoveFacesResult, OffsetError> {
+) -> Result<MoveFacesEntityResult, OffsetError> {
     let options = OffsetOptions::default();
     let source_faces = solid_faces(topo, solid)?;
     if !source_faces.contains(&face) {
@@ -153,7 +208,7 @@ fn replace_surface_impl(
     crate::inter2d::intersect_pcurves_2d(topo, solid, &mut data)?;
     restore_exact_plane_cylinder_edges::<true>(topo, Vec3::new(0.0, 0.0, 0.0), 0.0, &mut data)?;
     validate_rebuilt_edges::<true, _>(topo, &source_edge_faces, &selected, &data)?;
-    build_topology_preserving_wires::<true, _>(
+    let boundary_maps = build_topology_preserving_wires::<true, _>(
         topo,
         solid,
         Vec3::new(0.0, 0.0, 0.0),
@@ -171,9 +226,11 @@ fn replace_surface_impl(
         source_counts,
         source_shell_sizes.as_slice(),
     )?;
-    Ok(MoveFacesResult {
+    Ok(MoveFacesEntityResult {
         solid: result.solid,
         face_map: result.face_map,
+        edge_map: boundary_maps.edges,
+        vertex_map: boundary_maps.vertices,
     })
 }
 
@@ -182,7 +239,7 @@ fn move_faces_impl(
     solid: SolidId,
     faces: &[FaceId],
     distance: f64,
-) -> Result<MoveFacesResult, OffsetError> {
+) -> Result<MoveFacesEntityResult, OffsetError> {
     let options = OffsetOptions::default();
     if !distance.is_finite() || distance.abs() <= options.tolerance.linear {
         return Err(OffsetError::InvalidInput {
@@ -252,7 +309,7 @@ fn move_faces_impl(
     crate::inter2d::intersect_pcurves_2d(topo, solid, &mut data)?;
     restore_exact_plane_cylinder_edges::<false>(topo, reference_normal, distance, &mut data)?;
     validate_rebuilt_edges::<false, _>(topo, &source_edge_faces, &selected, &data)?;
-    build_topology_preserving_wires::<false, _>(
+    let boundary_maps = build_topology_preserving_wires::<false, _>(
         topo,
         solid,
         reference_normal,
@@ -270,9 +327,11 @@ fn move_faces_impl(
         source_counts,
         source_shell_sizes.as_slice(),
     )?;
-    Ok(MoveFacesResult {
+    Ok(MoveFacesEntityResult {
         solid: result.solid,
         face_map: result.face_map,
+        edge_map: boundary_maps.edges,
+        vertex_map: boundary_maps.vertices,
     })
 }
 
@@ -727,7 +786,7 @@ fn build_topology_preserving_wires<
     distance: f64,
     source_edge_faces: &std::collections::BTreeMap<usize, V>,
     data: &mut OffsetData,
-) -> Result<(), OffsetError> {
+) -> Result<BoundaryMaps, OffsetError> {
     let source_edges = solid_edges(topo, solid)?;
     let source_vertices = solid_vertices(topo, solid)?;
     let mut preliminary = HashMap::new();
@@ -864,7 +923,10 @@ fn build_topology_preserving_wires<
         }
         data.face_wires.insert(face, rebuilt_wires);
     }
-    Ok(())
+    Ok(BoundaryMaps {
+        edges: edge_map,
+        vertices: vertex_map,
+    })
 }
 
 fn project_to_changed_surface<V: std::ops::Deref<Target = [FaceId]>>(

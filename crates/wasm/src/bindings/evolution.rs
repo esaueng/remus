@@ -196,6 +196,29 @@ impl BrepKernel {
         }))
     }
 
+    fn move_faces_journaled_json(
+        &mut self,
+        solid: u32,
+        faces: &[u32],
+        distance: f64,
+    ) -> Result<serde_json::Value, StructuredWasmError> {
+        let solid_id = self
+            .resolve_solid(solid)
+            .map_err(StructuredWasmError::from)?;
+        let face_ids = faces
+            .iter()
+            .map(|&handle| self.resolve_face(handle))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(StructuredWasmError::from)?;
+        let result =
+            journal_ops::move_faces_journaled(self.topo_mut(), solid_id, &face_ids, distance)
+                .map_err(StructuredWasmError::from)?;
+        Ok(serde_json::json!({
+            "solid": crate::handles::solid_id_to_u32(result.solid),
+            "op": u32::try_from(result.op.value()).unwrap_or(u32::MAX),
+        }))
+    }
+
     fn offset_journaled_json(
         &mut self,
         solid: u32,
@@ -295,6 +318,12 @@ impl BrepKernel {
             "imprint" => get_u32(args, "target").and_then(|target| {
                 get_u32(args, "tool").and_then(|tool| self.imprint_json(target, tool))
             }),
+            "moveFacesJournaled" => (|| {
+                let solid = get_u32(args, "solid")?;
+                let faces = get_u32_array(args, "faces")?;
+                let distance = get_f64(args, "distance")?;
+                self.move_faces_journaled_json(solid, &faces, distance)
+            })(),
             "offsetJournaled" => get_u32(args, "solid").and_then(|solid| {
                 get_f64(args, "distance")
                     .and_then(|distance| self.offset_journaled_json(solid, distance))
@@ -397,6 +426,24 @@ impl BrepKernel {
     #[wasm_bindgen(js_name = "imprint")]
     pub fn imprint_js(&mut self, target: u32, tool: u32) -> Result<String, JsError> {
         self.imprint_json(target, tool)
+            .map(|value| value.to_string())
+            .map_err(structured_to_js)
+    }
+
+    /// Move faces with construction history.
+    ///
+    /// Planar re-limitation and coaxial
+    /// bore moves include edge and vertex history; blend-aware moves are faces-only.
+    /// Returns JSON `{"solid", "op"}`.
+    #[wasm_bindgen(js_name = "moveFacesJournaled")]
+    pub fn move_faces_journaled_js(
+        &mut self,
+        solid: u32,
+        faces: &[u32],
+        distance: f64,
+    ) -> Result<String, JsError> {
+        validate_finite(distance, "distance")?;
+        self.move_faces_journaled_json(solid, faces, distance)
             .map(|value| value.to_string())
             .map_err(structured_to_js)
     }
@@ -597,6 +644,69 @@ mod evolution_contract_tests {
             "instance faces must inherit the original's name: {}",
             results[0]
         );
+    }
+
+    #[test]
+    fn move_faces_journaled_preserves_all_entity_refs_in_direct_and_batch_calls() {
+        use super::index_u32;
+        use remus_operations::journal_ops;
+        use remus_topology::journal::{EntityKind, OpId};
+        use remus_topology::naming::{PersistentRef, Provenance, Resolution, resolve};
+
+        let mut payloads = Vec::new();
+        for batch in [false, true] {
+            let mut kernel = BrepKernel::new();
+            let source = kernel.make_box_solid(3.0, 5.0, 7.0).unwrap();
+            let source_id = kernel.resolve_solid(source).unwrap();
+            let face = remus_topology::explorer::solid_faces(kernel.topo(), source_id).unwrap()[0];
+            let face = index_u32(face.index());
+            let first = kernel
+                .move_faces_journaled_json(source, &[face], 0.25)
+                .unwrap();
+            let solid = u32::try_from(first["solid"].as_u64().unwrap()).unwrap();
+            let anchor = OpId::from_value(first["op"].as_u64().unwrap());
+            let first_id = kernel.resolve_solid(solid).unwrap();
+            let face = remus_topology::explorer::solid_faces(kernel.topo(), first_id).unwrap()[0];
+            let face = index_u32(face.index());
+            let second = if batch {
+                run(&mut kernel, serde_json::json!([
+                    {"op": "moveFacesJournaled", "args": {"solid": solid, "faces": [face], "distance": -0.125}}
+                ])).remove(0)
+            } else {
+                serde_json::from_str(
+                    &kernel
+                        .move_faces_journaled_js(solid, &[face], -0.125)
+                        .unwrap(),
+                )
+                .unwrap()
+            };
+            let result = u32::try_from(second["solid"].as_u64().unwrap()).unwrap();
+            let result_id = kernel.resolve_solid(result).unwrap();
+            let live: std::collections::BTreeSet<_> =
+                journal_ops::solid_entity_keys(kernel.topo(), result_id)
+                    .unwrap()
+                    .into_iter()
+                    .collect();
+            let mut resolved = std::collections::BTreeSet::new();
+            for (kind, count) in [
+                (EntityKind::Face, 6),
+                (EntityKind::Edge, 12),
+                (EntityKind::Vertex, 8),
+            ] {
+                for index in 0..count {
+                    let reference = PersistentRef::operation_output(anchor, kind, index);
+                    let resolution = resolve(kernel.topo(), &reference);
+                    let Resolution::Bound { entity, provenance } = resolution else {
+                        panic!("lost direct-edit reference: {resolution:?}");
+                    };
+                    assert_eq!(provenance, Provenance::Construction);
+                    assert!(resolved.insert(entity));
+                }
+            }
+            assert_eq!(resolved, live);
+            payloads.push(second);
+        }
+        assert_eq!(payloads[0], payloads[1]);
     }
 
     #[test]

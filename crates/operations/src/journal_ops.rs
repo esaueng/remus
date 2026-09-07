@@ -262,6 +262,16 @@ pub fn record_face_evolution(
     map: &EvolutionMap,
     result_solids: &[SolidId],
 ) -> Result<OpId, OperationsError> {
+    record_entity_evolution(topo, pending, map, result_solids, &[])
+}
+
+fn record_entity_evolution(
+    topo: &mut Topology,
+    pending: PendingOp,
+    map: &EvolutionMap,
+    result_solids: &[SolidId],
+    boundary_pairs: &[(EntityKey, EntityKey)],
+) -> Result<OpId, OperationsError> {
     use std::collections::BTreeMap;
 
     let mut draft = if map.origin.is_exact() {
@@ -323,6 +333,12 @@ pub fn record_face_evolution(
                 candidates: candidates.iter().map(|&c| EntityKey::face(c)).collect(),
             },
         );
+    }
+
+    let mut pairs = boundary_pairs.to_vec();
+    pairs.sort_unstable();
+    for (source, target) in pairs {
+        draft.push(target, EventDraft::Modified { from: source });
     }
 
     Ok(topo.journal_record_evolution(pending, draft)?)
@@ -463,6 +479,10 @@ pub fn offset_journaled(
 /// Moves a supported face selection and journals its construction-derived
 /// face evolution as one entry (kind `move_faces`).
 ///
+/// Topology-preserving planar
+/// and coaxial bore moves also record their exact edge and vertex maps.
+/// Blend-aware moves remain faces-only and sever unrecorded boundary references.
+///
 /// The whole call is transactional: failed geometry, postconditions, or
 /// journal recording restore both topology and history.
 ///
@@ -477,8 +497,15 @@ pub fn move_faces_journaled(
 ) -> Result<JournaledSolidOp, OperationsError> {
     remus_topology::transaction::run_transacted(topo, |topo| {
         let pending = begin_scoped(topo, "move_faces", &[solid])?;
-        let result = crate::push_pull::move_faces_with_evolution(topo, solid, faces, distance)?;
-        let op = record_face_evolution(topo, pending, &result.evolution, &[result.solid])?;
+        let (result, boundary_pairs) =
+            crate::push_pull::move_faces_with_entity_evolution(topo, solid, faces, distance)?;
+        let op = record_entity_evolution(
+            topo,
+            pending,
+            &result.evolution,
+            &[result.solid],
+            &boundary_pairs,
+        )?;
         Ok(JournaledSolidOp {
             solid: result.solid,
             op,
