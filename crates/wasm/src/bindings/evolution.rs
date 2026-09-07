@@ -202,6 +202,9 @@ impl BrepKernel {
         faces: &[u32],
         distance: f64,
     ) -> Result<serde_json::Value, StructuredWasmError> {
+        let face_count = u32::try_from(faces.len()).unwrap_or(u32::MAX);
+        crate::error::validate_work_count(face_count, "faces")
+            .map_err(StructuredWasmError::from)?;
         let solid_id = self
             .resolve_solid(solid)
             .map_err(StructuredWasmError::from)?;
@@ -209,6 +212,8 @@ impl BrepKernel {
             .iter()
             .map(|&handle| self.resolve_face(handle))
             .collect::<Result<Vec<_>, _>>()
+            .map_err(StructuredWasmError::from)?;
+        super::operations::validate_move_faces_topology_work(self.topo(), solid_id, &face_ids)
             .map_err(StructuredWasmError::from)?;
         let result =
             journal_ops::move_faces_journaled(self.topo_mut(), solid_id, &face_ids, distance)
@@ -644,6 +649,74 @@ mod evolution_contract_tests {
             "instance faces must inherit the original's name: {}",
             results[0]
         );
+    }
+
+    #[test]
+    fn move_faces_journaled_preserves_the_face_count_budget() {
+        let mut kernel = BrepKernel::new();
+        let source = kernel.make_box_solid(3.0, 5.0, 7.0).unwrap();
+        let id = kernel.resolve_solid(source).unwrap();
+        let face = super::index_u32(
+            remus_topology::explorer::solid_faces(kernel.topo(), id).unwrap()[0].index(),
+        );
+        let faces = vec![face; crate::error::MAX_WASM_WORK_ITEMS as usize + 1];
+        let before = kernel.topo().journal().snapshot();
+        let error = kernel
+            .move_faces_journaled_json(source, &faces, 0.25)
+            .unwrap_err();
+        assert!(
+            error.message().contains("faces must be at most"),
+            "{}",
+            error.message()
+        );
+        let response: serde_json::Value = serde_json::from_str(&kernel.execute_batch_v2(&serde_json::json!([
+            {"op":"moveFacesJournaled", "args":{"solid":source,"faces":faces,"distance":0.25}}
+        ]).to_string())).unwrap();
+        assert_eq!(response[0]["error"]["message"], error.message());
+        assert_eq!(kernel.topo().journal().snapshot(), before);
+    }
+
+    #[test]
+    fn move_faces_journaled_preserves_the_topology_work_budget() {
+        let mut kernel = BrepKernel::new();
+        let wire = kernel.make_regular_polygon_wire(10.0, 500).unwrap();
+        let face = kernel.make_face_from_wire(wire).unwrap();
+        let source = kernel.extrude_face(face, 0.0, 0.0, 1.0, 1.0).unwrap();
+        let id = kernel.resolve_solid(source).unwrap();
+        assert!(
+            remus_operations::validate::validate_solid(kernel.topo(), id)
+                .unwrap()
+                .is_valid()
+        );
+        let face = remus_topology::explorer::solid_faces(kernel.topo(), id)
+            .unwrap()
+            .into_iter()
+            .find(|&face| {
+                kernel
+                    .topo()
+                    .face(face)
+                    .unwrap()
+                    .effective_plane_normal()
+                    .is_some_and(|normal| normal.z() > 0.9)
+            })
+            .unwrap();
+        let face = super::index_u32(face.index());
+        let before = kernel.topo().journal().snapshot();
+        let error = kernel
+            .move_faces_journaled_json(source, &[face], 0.25)
+            .unwrap_err();
+        assert!(
+            error
+                .message()
+                .contains("moveFaces topology work must be at most"),
+            "{}",
+            error.message()
+        );
+        let response: serde_json::Value = serde_json::from_str(&kernel.execute_batch_v2(&serde_json::json!([
+            {"op":"moveFacesJournaled", "args":{"solid":source,"faces":[face],"distance":0.25}}
+        ]).to_string())).unwrap();
+        assert_eq!(response[0]["error"]["message"], error.message());
+        assert_eq!(kernel.topo().journal().snapshot(), before);
     }
 
     #[test]
