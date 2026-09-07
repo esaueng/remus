@@ -561,13 +561,51 @@ impl HealOperator for FixWireframeOp {
         solid_id: SolidId,
         ctx: &mut HealContext,
     ) -> Result<(SolidId, FixResult), HealError> {
+        let (solid, report, _) = self.execute_with_history(topo, solid_id, ctx)?;
+        Ok((solid, report))
+    }
+
+    fn execute_with_history(
+        &self,
+        topo: &mut Topology,
+        solid_id: SolidId,
+        ctx: &mut HealContext,
+    ) -> Result<(SolidId, FixResult, crate::reshape::ReShape), HealError> {
+        use remus_topology::explorer::{solid_edges, solid_vertices};
         let config = FixConfig {
             fix_wireframe: crate::fix::FixMode::On,
             ..Default::default()
         };
-        let solid_data = topo.solid(solid_id)?;
-        let shell_id = solid_data.outer_shell();
-        let result = crate::fix::wireframe::fix_wireframe(topo, shell_id, ctx, &config)?;
-        Ok((solid_id, result))
+        let solid = topo.solid(solid_id)?;
+        let shells: Vec<_> = std::iter::once(solid.outer_shell())
+            .chain(solid.inner_shells().iter().copied())
+            .collect();
+        let mut result = FixResult::ok();
+        let mut histories = Vec::new();
+        for shell in shells {
+            let (report, history) =
+                crate::fix::wireframe::fix_wireframe_with_history(topo, shell, ctx, &config)?;
+            result.merge(&report);
+            histories.push(history);
+        }
+        let live_edges: std::collections::HashSet<_> =
+            solid_edges(topo, solid_id)?.into_iter().collect();
+        let live_vertices: std::collections::HashSet<_> =
+            solid_vertices(topo, solid_id)?.into_iter().collect();
+        let mut replacements = crate::reshape::ReShape::new();
+        for history in histories {
+            // A shell-local redirect does not consume identities retained by another shell.
+            for (source, target) in history.edges {
+                if !live_edges.contains(&source) {
+                    replacements.replace_edge(source, target);
+                }
+            }
+            for (source, target) in history.vertices {
+                if !live_vertices.contains(&source) {
+                    replacements.replace_vertex(source, target);
+                }
+            }
+        }
+        Ok((solid_id, result, replacements))
     }
 }

@@ -1528,7 +1528,10 @@ fn verified_sewing_preserves_all_references_through_arena_and_later_draft() {
         }
     }
 
-    for scale in [0.001, 1.0, 10.0] {
+    for (scale, operator) in [0.001, 1.0, 10.0]
+        .into_iter()
+        .flat_map(|scale| ["sew_shells", "fix_wireframe"].map(|operator| (scale, operator)))
+    {
         let mut topo = Topology::new();
         let solid = make_box(&mut topo, 10.0 * scale, 10.0 * scale, 10.0 * scale).unwrap();
         for face in solid_faces(&topo, solid).unwrap() {
@@ -1568,7 +1571,7 @@ fn verified_sewing_preserves_all_references_through_arena_and_later_draft() {
         failing
             .registry_mut()
             .register("refuse_after_sewing", Box::new(RefuseAfterSewing));
-        failing.add_step("sew_shells");
+        failing.add_step(operator);
         failing.add_step("refuse_after_sewing");
         let before = remus_io::arena_io::serialize_solids(&topo, &[solid]).unwrap();
         let journal_before = topo.journal().snapshot();
@@ -1583,7 +1586,7 @@ fn verified_sewing_preserves_all_references_through_arena_and_later_draft() {
             before
         );
         let mut process = remus_heal::pipeline::process::HealProcess::new();
-        process.add_step("sew_shells");
+        process.add_step(operator);
         let result =
             remus_operations::journal_ops::heal_pipeline_journaled(&mut topo, solid, &process)
                 .unwrap();
