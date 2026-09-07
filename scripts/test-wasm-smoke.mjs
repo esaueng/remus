@@ -20,6 +20,7 @@ import {
   runOffsetSphereCylinderRegression,
   runOffsetTorusSphereRegression,
   runTorusNotchRegression,
+  runTangencyBandRegression,
   runBooleanScaleRegression,
   runAnisotropicBooleanRegression,
 } from './openzcad-wasm-consumer-regressions.mjs';
@@ -746,6 +747,7 @@ runOffsetSphereCylinderRegression({ BrepKernel });
 
 runOffsetTorusSphereRegression({ BrepKernel });
 runTorusNotchRegression({ BrepKernel });
+runTangencyBandRegression({ BrepKernel });
 runBooleanScaleRegression({ BrepKernel });
 runAnisotropicBooleanRegression({ BrepKernel });
 
