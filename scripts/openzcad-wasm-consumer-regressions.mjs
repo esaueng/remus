@@ -727,5 +727,28 @@ export const runDirectEditHistoryRegression = ({ BrepKernel }) => {
       kernel.free();
     }
   }
-  console.log('ok - direct edit history: 26 references across two edits, direct/batch refusal rollback');
+  for (const batch of [false, true]) {
+    const kernel = new BrepKernel();
+    try {
+      const wire = kernel.makeRegularPolygonWire(10, 500);
+      const profile = kernel.makeFaceFromWire(wire);
+      const source = kernel.extrude(profile, 0, 0, 1, 1);
+      assert.equal(kernel.validateSolid(source), 0);
+      const face = Array.from(kernel.getSolidFaces(source)).find(face => kernel.getFaceNormal(face)[2] > 0.9);
+      const before = Uint8Array.from(kernel.serializeSolids(Uint32Array.of(source)));
+      for (const [faces, message] of [[Array(10001).fill(face), /faces must be at most/], [[face], /moveFaces topology work must be at most/]]) {
+        if (batch) {
+          const [response] = JSON.parse(kernel.executeBatchV2(JSON.stringify([
+            { op: 'moveFacesJournaled', args: { solid: source, faces, distance: 0.25 } },
+          ])));
+          assert.ok(response.error);
+          assert.match(response.error.message, message);
+        } else {
+          assert.throws(() => kernel.moveFacesJournaled(source, Uint32Array.from(faces), 0.25), message);
+        }
+        assert.deepEqual(kernel.serializeSolids(Uint32Array.of(source)), before);
+      }
+    } finally { kernel.free(); }
+  }
+  console.log('ok - direct edit history: 26 references across two edits, direct/batch rollback and work limits');
 };
