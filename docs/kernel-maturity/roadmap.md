@@ -321,6 +321,24 @@ qualification: 4,903 passed, 13 skipped; two process-leak warnings in existing
 facade tests did not reproduce in isolated checks. Clippy, rustdoc, mdBook,
 crate boundaries, and the unchanged 52-row census pass.
 
+Draft boundary history is the current qualification slice. The existing native
+`draft_journaled` now records a complete, unique construction boundary map and
+wraps geometry plus journal recording in one transaction. Plain and bored-box
+sequences retain every original entity reference at three scales and two rigid
+placements. Invalid and folding drafts restore state; a failed call also leaves
+an existing unjournaled mutation gap unpublished until the next successful
+operation. The additive `draftJournaled` JS API uses explicit degree units for
+both direct and batch calls (`angleDegrees` in batch). Both rebuilt-package
+suites pass reference retention, arena remapping, and rollback. STEP round trips
+pass except the 10,000 mm bored-box cells: their 1,000 mm circular rim exceeds
+the existing fixed importer sampling budget on both the unchanged source and
+drafted result. Those refusals are covered explicitly without changing import
+tolerances or resource limits. Final all-features workspace qualification passes
+4,907 tests with 13 skipped and no process-leak warnings; the subsequently added
+mutation-gap rollback regression also passes separately with all features.
+Clippy, rustdoc, doc tests, mdBook, and the unchanged 52-row census pass.
+Curved-face draft and ambiguous boundary correspondence remain separate open cells.
+
 ### Correctness follow-up: curved hole winding (#278)
 
 Cut/intersect assembly now compares multi-opening cylinder wires in
