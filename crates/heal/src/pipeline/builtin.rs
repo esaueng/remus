@@ -336,6 +336,47 @@ impl HealOperator for SewShellsOp {
         let report =
             crate::upgrade::shell_sewing::sew_shell_report(topo, shell_id, ctx.tolerance.linear)?;
 
+        Ok((solid_id, Self::report_result(report, ctx)))
+    }
+
+    fn execute_with_history(
+        &self,
+        topo: &mut Topology,
+        solid_id: SolidId,
+        ctx: &mut HealContext,
+    ) -> Result<(SolidId, FixResult, crate::reshape::ReShape), HealError> {
+        use remus_topology::explorer::{solid_edges, solid_vertices};
+        let shell = topo.solid(solid_id)?.outer_shell();
+        let (report, history) = crate::upgrade::shell_sewing::sew_shell_with_history(
+            topo,
+            shell,
+            ctx.tolerance.linear,
+        )?;
+        let live_edges: std::collections::HashSet<_> =
+            solid_edges(topo, solid_id)?.into_iter().collect();
+        let live_vertices: std::collections::HashSet<_> =
+            solid_vertices(topo, solid_id)?.into_iter().collect();
+        let mut replacements = crate::reshape::ReShape::new();
+        // A per-shell redirect does not consume a source still used by a cavity.
+        for (source, target) in history.edges {
+            if !live_edges.contains(&source) && live_edges.contains(&target) {
+                replacements.replace_edge(source, target);
+            }
+        }
+        for (source, target) in history.vertices {
+            if !live_vertices.contains(&source) && live_vertices.contains(&target) {
+                replacements.replace_vertex(source, target);
+            }
+        }
+        Ok((solid_id, Self::report_result(report, ctx), replacements))
+    }
+}
+
+impl SewShellsOp {
+    fn report_result(
+        report: crate::upgrade::shell_sewing::SewReport,
+        ctx: &mut HealContext,
+    ) -> FixResult {
         let mut result = FixResult::changed(
             crate::status::Status::DONE1,
             crate::fix::RepairActionKind::FreeEdgePairSewn,
@@ -359,7 +400,7 @@ impl HealOperator for SewShellsOp {
                 report.declined,
             ));
         }
-        Ok((solid_id, result))
+        result
     }
 }
 
