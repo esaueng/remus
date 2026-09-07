@@ -197,13 +197,15 @@ pub(super) fn find_splits_on_line(
     if edge_len_sq < tol * tol {
         return Vec::new();
     }
-    let weld = super::local_weld_band(tol, edge_len_sq.sqrt());
+    let edge_length = edge_len_sq.sqrt();
+    let endpoint_parameter_band = tol / edge_length;
+    let weld = super::local_weld_band(tol, edge_length);
     let mut splits = Vec::new();
     for &sp in split_pts_3d {
         crate::perf::bump_face_split_probe();
         let to_pt = sp - edge.start_3d;
         let t = to_pt.dot(edge_dir) / edge_len_sq;
-        if t <= tol || t >= 1.0 - tol {
+        if t <= endpoint_parameter_band || t >= 1.0 - endpoint_parameter_band {
             continue;
         }
         let closest = edge.start_3d + edge_dir * t;
@@ -223,11 +225,10 @@ pub(super) fn find_splits_on_line(
         }
     }
     splits.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-    // Weld-scale 3D dedup: two candidates within the weld band are copies of
-    // the SAME junction carrying different fit error (~1e-6); a parameter-only
-    // exact-tol dedup keeps both and mints an untrackable micro boundary piece
-    // between them.
-    splits.dedup_by(|a, b| (a.0 - b.0).abs() < tol || (a.1 - b.1).length() < weld);
+    // Fit-error copies of one junction must weld in model space. Comparing
+    // normalized fractions with a length tolerance also merges distinct
+    // anchors on long edges.
+    splits.dedup_by(|a, b| (a.1 - b.1).length() < weld);
     splits
 }
 
@@ -984,5 +985,51 @@ mod tests {
         // Beyond the weld band: rejected.
         let far = Point3::new(4.0, 200.0 * tol, 0.0);
         assert!(find_splits_on_line(&edge, &[far], tol).is_empty());
+    }
+
+    #[test]
+    fn line_split_endpoint_and_dedup_bands_have_length_units() {
+        let tol = 1e-7;
+        for length in [1e-4, 1.0, 1e6] {
+            let edge = OrientedPCurveEdge {
+                curve_3d: EdgeCurve::Line,
+                trim: None,
+                pcurve: Curve2D::Line(
+                    Line2D::new(Point2::new(0.0, 0.0), Vec2::new(1.0, 0.0)).unwrap(),
+                ),
+                start_uv: Point2::new(0.0, 0.0),
+                end_uv: Point2::new(length, 0.0),
+                start_3d: Point3::new(0.0, 0.0, 0.0),
+                end_3d: Point3::new(length, 0.0, 0.0),
+                forward: true,
+                source_edge_idx: None,
+                pave_block_id: None,
+                source_topo_edge: None,
+            };
+            let near_endpoints = [
+                Point3::new(0.5 * tol, 0.0, 0.0),
+                Point3::new(length - 0.5 * tol, 0.0, 0.0),
+            ];
+            assert!(
+                find_splits_on_line(&edge, &near_endpoints, tol).is_empty(),
+                "sub-tolerance endpoint pieces at length {length:e}"
+            );
+            let separation = 0.001_f64.min(length * 0.1);
+            let probes = [
+                Point3::new(separation, 0.0, 0.0),
+                Point3::new(length * 0.5, 0.0, 0.0),
+                Point3::new(length * 0.5 + separation, 0.0, 0.0),
+                Point3::new(length - separation, 0.0, 0.0),
+            ];
+            let splits = find_splits_on_line(&edge, &probes, tol);
+            assert_eq!(
+                splits.len(),
+                probes.len(),
+                "distinct anchors at length {length:e}"
+            );
+            for ((_, foot), expected) in splits.iter().zip(probes) {
+                assert!((*foot - expected).length() <= tol);
+            }
+        }
     }
 }
