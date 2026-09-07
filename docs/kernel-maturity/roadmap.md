@@ -97,6 +97,15 @@ qualification pass: a probe of the pre-change c1d8d211 package reports
 validation issues despite the existing analytic/manifold/volume test
 passing. See `campaign-history.md` for the measured distinction.
 
+Current 2.4 qualification work covers bounded off-axis cone/sphere,
+sphere/cylinder, and torus/sphere matrices; integration remains pending. The
+2.6 through-tool family now has a 72-cell exact scale/placement matrix;
+[remaining band audits](scale-band-audit.md) keep the broader item partial.
+The torus/box notch Cut still needs a stricter orientation-validation
+qualification pass: a probe of the pre-change c1d8d211 package reports
+validation issues despite the existing analytic/manifold/volume test
+passing. See `campaign-history.md` for the measured distinction.
+
 OpenZCAD consumer-roadmap K-S4 (`approx_census` CI enforcement): **done (PR
 #140)**. Its authoritative disposition line remains in planning PR
 esaueng/OpenZCAD#140 so the two repositories retain separate commit streams.
