@@ -339,6 +339,23 @@ mutation-gap rollback regression also passes separately with all features.
 Clippy, rustdoc, doc tests, mdBook, and the unchanged 52-row census pass.
 Curved-face draft and ambiguous boundary correspondence remain separate open cells.
 
+Defeature entity history is the next qualification slice. The existing native
+`defeature_journaled` wrapper now records retained, merged, and deleted boundary
+identities transactionally, with additive direct/batch `defeatureJournaled` JS
+bindings. Capping carries actual copy maps; planar reconstruction carries vertex
+source groups through collapsed corners and captures assembly allocations before
+refinement. Closed plane/cylinder and cylinder/cone bands carry explicit contact
+and seam replacement maps. Unqualified refinement or seam correspondence remains
+unresolved. Native reference, analytic-volume, and rollback witnesses pass. The focused
+packaged matrix passes 30 direct/batch cases, including STEP-imported sources,
+arena restoration, and subsequent draft edits. Existing fillet/chamfer journal
+anchors expose faces only; defeature output tests cover all entity kinds. The
+10x cylinder/cone input is an exact scaled unit fixture: direct creation of that
+fillet reproduces a wire self-intersection refusal on the unchanged parent and
+remains a separate geometry issue. Both complete rebuilt-package suites pass. Final all-features workspace
+qualification passes 4,914 tests with 13 skipped and no process-leak warnings.
+Clippy, rustdoc, doc tests, mdBook, boundaries, and the unchanged 52-row census pass. General healing pipeline history remains open.
+
 ### Correctness follow-up: curved hole winding (#278)
 
 Cut/intersect assembly now compares multi-opening cylinder wires in

@@ -346,10 +346,18 @@ fn record_entity_evolution_with_outputs(
         );
     }
 
-    let mut pairs = boundary_pairs.to_vec();
-    pairs.sort_unstable();
-    for (source, target) in pairs {
-        draft.push(target, EventDraft::Modified { from: source });
+    let mut boundary_sources: BTreeMap<EntityKey, Vec<EntityKey>> = BTreeMap::new();
+    for &(source, target) in boundary_pairs {
+        boundary_sources.entry(target).or_default().push(source);
+    }
+    for (target, mut sources) in boundary_sources {
+        sources.sort_unstable();
+        sources.dedup();
+        let event = match sources.as_slice() {
+            [source] => EventDraft::Modified { from: *source },
+            _ => EventDraft::Merged { from: sources },
+        };
+        draft.push(target, event);
     }
 
     for (target, event) in additional_outputs {
@@ -665,24 +673,45 @@ pub fn draft_journaled(
     })
 }
 
-/// Runs a defeature and journals its construction-derived face evolution
-/// as one entry (kind `defeature`).
+/// Runs a defeature and journals its construction-derived history.
+///
+/// Capping heals retain copied boundary identities and record consumed boundaries
+/// as deleted. Reconstructed boundaries without construction maps remain unresolved.
 ///
 /// # Errors
 ///
-/// Returns [`OperationsError`] if the defeature or the recording fails.
+/// Returns [`OperationsError`] if the defeature or recording fails; both topology
+/// and journal state are restored.
 pub fn defeature_journaled(
     topo: &mut Topology,
     solid: SolidId,
     faces_to_remove: &[remus_topology::FaceId],
 ) -> Result<JournaledSolidOp, OperationsError> {
-    let pending = begin_scoped(topo, "defeature", &[solid])?;
-    let (result, map) = crate::defeature::defeature_with_evolution(topo, solid, faces_to_remove)?;
-    let op = record_face_evolution(topo, pending, &map, &[result])?;
-    Ok(JournaledSolidOp {
-        solid: result,
-        op,
-        map,
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let pending = begin_scoped(topo, "defeature", &[solid])?;
+        let (result, map) = crate::defeature::defeature_with_history(topo, solid, faces_to_remove)?;
+        let mut pairs = Vec::new();
+        let mut deleted = Vec::new();
+        for (source, target) in result.boundary_history.into_iter().flatten() {
+            match target {
+                Some(target) => pairs.push((source, target)),
+                None => deleted.push((source, EventDraft::Deleted)),
+            }
+        }
+        deleted.sort_unstable_by_key(|(source, _)| *source);
+        let op = record_entity_evolution_with_outputs(
+            topo,
+            pending,
+            &map,
+            &[result.solid],
+            &pairs,
+            &deleted,
+        )?;
+        Ok(JournaledSolidOp {
+            solid: result.solid,
+            op,
+            map,
+        })
     })
 }
 

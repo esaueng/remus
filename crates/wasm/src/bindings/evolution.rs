@@ -274,6 +274,27 @@ impl BrepKernel {
         }))
     }
 
+    fn defeature_journaled_json(
+        &mut self,
+        solid: u32,
+        faces: &[u32],
+    ) -> Result<serde_json::Value, StructuredWasmError> {
+        let solid_id = self
+            .resolve_solid(solid)
+            .map_err(StructuredWasmError::from)?;
+        let face_ids = faces
+            .iter()
+            .map(|&face| self.resolve_face(face))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(StructuredWasmError::from)?;
+        let result = journal_ops::defeature_journaled(self.topo_mut(), solid_id, &face_ids)
+            .map_err(StructuredWasmError::from)?;
+        Ok(serde_json::json!({
+            "solid": crate::handles::solid_id_to_u32(result.solid),
+            "op": u32::try_from(result.op.value()).unwrap_or(u32::MAX),
+        }))
+    }
+
     fn draft_journaled_json(
         &mut self,
         solid: u32,
@@ -498,6 +519,11 @@ impl BrepKernel {
             "imprint" => get_u32(args, "target").and_then(|target| {
                 get_u32(args, "tool").and_then(|tool| self.imprint_json(target, tool))
             }),
+            "defeatureJournaled" => (|| {
+                let solid = get_u32(args, "solid")?;
+                let faces = get_u32_array(args, "faces")?;
+                self.defeature_journaled_json(solid, &faces)
+            })(),
             "draftJournaled" => (|| {
                 let solid = get_u32(args, "solid")?;
                 let faces = get_u32_array(args, "faces")?;
@@ -625,6 +651,18 @@ impl BrepKernel {
     #[wasm_bindgen(js_name = "imprint")]
     pub fn imprint_js(&mut self, target: u32, tool: u32) -> Result<String, JsError> {
         self.imprint_json(target, tool)
+            .map(|value| value.to_string())
+            .map_err(structured_to_js)
+    }
+
+    /// Remove selected feature faces with construction history.
+    ///
+    /// Returns JSON `{"solid", "op"}`. Capping retains copied boundary identities
+    /// and records consumed boundaries as deleted. Unqualified reconstructed
+    /// boundaries remain unresolved. Batch uses `solid` and `faces`.
+    #[wasm_bindgen(js_name = "defeatureJournaled")]
+    pub fn defeature_journaled_js(&mut self, solid: u32, faces: &[u32]) -> Result<String, JsError> {
+        self.defeature_journaled_json(solid, faces)
             .map(|value| value.to_string())
             .map_err(structured_to_js)
     }
@@ -1142,6 +1180,60 @@ mod evolution_contract_tests {
         };
         assert!((replacement.x_axis() - source.x_axis()).length() < 1e-12);
         assert!((replacement.radius() - 2.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn defeature_history_has_direct_batch_parity_and_rollback() {
+        let mut payloads = Vec::new();
+        for batch in [false, true] {
+            let mut kernel = BrepKernel::new();
+            let topo = kernel.topo_mut();
+            let cube = remus_operations::primitives::make_box(topo, 10.0, 10.0, 10.0).unwrap();
+            let tool = remus_operations::primitives::make_cylinder(topo, 1.0, 10.0).unwrap();
+            remus_operations::transform::transform_solid(
+                topo,
+                tool,
+                &remus_math::mat::Mat4::translation(5.0, 5.0, 0.0),
+            )
+            .unwrap();
+            let source = remus_operations::boolean::boolean(
+                topo,
+                remus_operations::boolean::BooleanOp::Cut,
+                cube,
+                tool,
+            )
+            .unwrap();
+            let faces: Vec<_> = remus_topology::explorer::solid_faces(topo, source)
+                .unwrap()
+                .into_iter()
+                .filter(|&face| {
+                    matches!(
+                        topo.face(face).unwrap().surface(),
+                        remus_topology::face::FaceSurface::Cylinder(_)
+                    )
+                })
+                .map(|face| super::index_u32(face.index()))
+                .collect();
+            assert_eq!(faces.len(), 1);
+            let solid = crate::handles::solid_id_to_u32(source);
+            let result: serde_json::Value = if batch {
+                run(&mut kernel, serde_json::json!([{"op":"defeatureJournaled", "args":{"solid":solid,"faces":faces}}])).remove(0)
+            } else {
+                serde_json::from_str(&kernel.defeature_journaled_js(solid, &faces).unwrap())
+                    .unwrap()
+            };
+            let handle = u32::try_from(result["solid"].as_u64().unwrap()).unwrap();
+            let result_id = kernel.resolve_solid(handle).unwrap();
+            let volume =
+                remus_operations::measure::solid_volume(kernel.topo(), result_id, 0.01).unwrap();
+            assert!((volume - 1000.0).abs() < 1e-6);
+            let before = kernel.topo().journal().snapshot();
+            assert!(kernel.defeature_journaled_json(handle, &[]).is_err());
+            assert!(kernel.defeature_journaled_json(handle, &faces).is_err());
+            assert_eq!(kernel.topo().journal().snapshot(), before);
+            payloads.push(result);
+        }
+        assert_eq!(payloads[0], payloads[1]);
     }
 
     #[test]

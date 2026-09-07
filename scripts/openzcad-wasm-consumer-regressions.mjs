@@ -263,6 +263,7 @@ export const runOpenZcadConsumerRegressions = (exports) => {
   runSurfaceReplacementHistoryRegression(exports);
   runCylindricalRadiusHistoryRegression(exports);
   runDraftHistoryRegression(exports);
+  runDefeatureHistoryRegression(exports);
   runWideSphereCapRegression(exports);
   runOffsetConeSphereRegression(exports);
   runOffsetSphereCylinderRegression(exports);
@@ -1116,4 +1117,124 @@ export const runDraftHistoryRegression = ({ BrepKernel, RemusIo }) => {
     } finally { kernel.free(); io.free(); }
   }
   console.log('ok - draft history: degree units, successive plain/bored edits at three scales, all refs, arena, qualified STEP or explicit large-bore sampling refusal, rollback');
+};
+
+export const runDefeatureHistoryRegression = ({BrepKernel, RemusIo}) => {
+  const kinds = [['face','getSolidFaces'],['edge','getSolidEdges'],['vertex','getSolidVertices']];
+  const refs = (kernel, result, selectedKinds=kinds) => selectedKinds.flatMap(([kind,query]) => Array.from(kernel[query](result.solid), (_,index) => ({kind,ref:kernel.makeOperationOutputRef(result.op,kind,index)})));
+  const checkRefs = (kernel, solid, references, allowDeleted, selectedKinds=kinds) => {
+    for (const [kind,query] of selectedKinds) {
+      const bound = new Set();
+      for (const item of references.filter(item=>item.kind===kind)) {
+        const resolution=JSON.parse(kernel.resolveRef(item.ref));
+        if(allowDeleted && resolution.status==='dangling') continue;
+        assert.equal(resolution.status,'bound',JSON.stringify(resolution));
+        assert.equal(resolution.provenance,'construction');
+        for(const entity of resolution.entities) {assert.equal(entity.kind,kind);bound.add(entity.handle);}
+      }
+      assert.deepEqual(bound,new Set(kernel[query](solid)));
+    }
+  };
+  const qualify = (kernel,solid,expected,scale) => {
+    assert.equal(kernel.validateSolid(solid),0);
+    assert.ok(Math.abs(kernel.volume(solid,0.005*scale)-expected)<Math.abs(expected)*1e-6);
+    assert.equal(JSON.parse(kernel.meshQuality(solid,0.005*scale)).isWatertight,true);
+  };
+  for(const batch of [false,true]) for(const type of ['bore','chamfer','fillet','rim','cone']) for(const scale of [0.001,1,10]) {
+    const kernel=new BrepKernel(), io=new RemusIo();
+    try {
+      const move=(solid,x,y,z)=>{kernel.transformSolid(solid,new Float64Array([1,0,0,x,0,1,0,y,0,0,1,z,0,0,0,1]));return solid;};
+      let source, anchor, expected;
+      if(type==='bore') {
+        source=kernel.cut(kernel.makeBox(10*scale,10*scale,10*scale),move(kernel.makeCylinder(scale,10*scale),5*scale,5*scale,0));
+        expected=1000*scale**3;
+      } else {
+        let sharp,height,radius;
+        if(type==='cone') {
+          sharp=kernel.fuse(kernel.makeCylinder(3,5),move(kernel.makeCone(3,1,4),0,0,5));
+          height=5;radius=0.25;expected=Math.PI*187/3*scale**3;
+        } else if(type==='rim') {
+          sharp=kernel.makeCylinder(10*scale,20*scale);height=20*scale;radius=2*scale;expected=Math.PI*2000*scale**3;
+        } else {
+          sharp=kernel.makeBox(10*scale,10*scale,10*scale);height=10*scale;radius=2*scale;expected=1000*scale**3;
+        }
+        const edge=Array.from(kernel.getSolidEdges(sharp)).find(edge=>{
+          const p=kernel.getEdgeVertices(edge);
+          return Math.abs(p[2]-height)<1e-7*scale && Math.abs(p[5]-height)<1e-7*scale;
+        });
+        assert.notEqual(edge,undefined);
+        anchor=JSON.parse(type==='chamfer'?kernel.chamferJournaled(sharp,Uint32Array.of(edge),radius,radius):kernel.filletJournaled(sharp,Uint32Array.of(edge),radius));
+        assert.equal(anchor.isPartial,false);
+        source=anchor.solid;
+        if(type==='cone' && scale!==1) {
+          // Direct fillet creation at 10x fails on the unchanged parent; scale the exact valid fixture.
+          kernel.transformSolid(source,new Float64Array([scale,0,0,0,0,scale,0,0,0,0,scale,0,0,0,0,1]));
+          anchor=null;
+        }
+      }
+      const oldRefs=anchor?refs(kernel,anchor,kinds.slice(0,1)):null;
+      const faces=Array.from(kernel.getSolidFaces(source)).filter(face=>{
+        const carrier=kernel.getSurfaceType(face);
+        if(type==='chamfer') return carrier==='plane' && Array.from(kernel.getFaceNormal(face)).filter(value=>Math.abs(value)>1e-6).length>1;
+        return carrier===(type==='bore'||type==='fillet'?'cylinder':'torus');
+      });
+      assert.equal(faces.length,1);
+      const sourceVolume=kernel.volume(source,0.005*scale);
+      const edit=(solid,faces,active=kernel)=>{
+        if(!batch)return JSON.parse(active.defeatureJournaled(solid,Uint32Array.from(faces)));
+        const [response]=JSON.parse(active.executeBatchV2(JSON.stringify([{op:'defeatureJournaled',args:{solid,faces}}])));
+        assert.equal(response.error,undefined,JSON.stringify(response));return response.ok;
+      };
+      const result=edit(source,faces);
+      qualify(kernel,result.solid,expected,scale);
+      assert.ok(Math.abs(kernel.volume(source,0.005*scale)-sourceVolume)<Math.abs(sourceVolume)*1e-10);
+      if(oldRefs)checkRefs(kernel,result.solid,oldRefs,true,kinds.slice(0,1));
+      const outputRefs=refs(kernel,result);
+      checkRefs(kernel,result.solid,outputRefs,false);
+      if(['bore','chamfer','fillet'].includes(type)) {
+        const draftKernel=new BrepKernel();
+        try {
+          const [solid]=draftKernel.deserializeSolids(kernel.serializeSolids(Uint32Array.of(result.solid)));
+          const wall=Array.from(draftKernel.getSolidFaces(solid)).find(face=>draftKernel.getFaceNormal(face)[0]>0.9);
+          const next=JSON.parse(draftKernel.draftJournaled(solid,Uint32Array.of(wall),Float64Array.of(0,0,1),Float64Array.of(0,0,0),5));
+          qualify(draftKernel,next.solid,expected+500*scale**3*Math.tan(5*Math.PI/180),scale);
+          checkRefs(draftKernel,next.solid,outputRefs,false);
+        } finally {draftKernel.free();}
+      }
+      const restored=new BrepKernel();
+      try {
+        restored.makeBox(1,1,1);
+        const [solid]=restored.deserializeSolids(kernel.serializeSolids(Uint32Array.of(result.solid)));
+        qualify(restored,solid,expected,scale);
+        checkRefs(restored,solid,outputRefs,false);
+        if(oldRefs)checkRefs(restored,solid,oldRefs,true,kinds.slice(0,1));
+      } finally {restored.free();}
+      const roundTrip=new BrepKernel();
+      try {
+        const [solid]=roundTrip.deserializeSolids(io.importStep(io.exportStep(kernel.serializeSolids(Uint32Array.of(result.solid)))));
+        qualify(roundTrip,solid,expected,scale);
+      } finally {roundTrip.free();}
+      const imported=new BrepKernel();
+      try {
+        const [solid]=imported.deserializeSolids(io.importStep(io.exportStep(kernel.serializeSolids(Uint32Array.of(source)))));
+        const selection=Array.from(imported.getSolidFaces(solid)).filter(face=>{
+          const carrier=imported.getSurfaceType(face);
+          if(type==='chamfer')return carrier==='plane' && Array.from(imported.getFaceNormal(face)).filter(value=>Math.abs(value)>1e-6).length>1;
+          return carrier===(type==='bore'||type==='fillet'?'cylinder':'torus');
+        });
+        assert.equal(selection.length,1);
+        const healed=edit(solid,selection,imported);
+        qualify(imported,healed.solid,expected,scale);
+        checkRefs(imported,healed.solid,refs(imported,healed),false);
+      } finally {imported.free();}
+      const before=Uint8Array.from(kernel.serializeSolids(Uint32Array.of(result.solid))), journal=kernel.journalSummary();
+      for(const invalid of [[],faces,Array.from(kernel.getSolidFaces(result.solid))]) {
+        assert.throws(()=>edit(result.solid,invalid));
+        assert.equal(kernel.journalSummary(),journal);
+        assert.deepEqual(kernel.serializeSolids(Uint32Array.of(result.solid)),before);
+      }
+    } catch(error) {throw new Error(`defeature ${type} batch=${batch} scale=${scale}: ${error.message}`,{cause:error});}
+    finally {kernel.free();io.free();}
+  }
+  console.log('ok - defeature history: 30 direct/batch scale cells, retained/merged/deleted refs, arena/STEP, rollback');
 };
