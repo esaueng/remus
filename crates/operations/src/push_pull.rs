@@ -19,6 +19,7 @@ use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
 use remus_topology::explorer::solid_faces;
 use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::journal::EntityKey;
 use remus_topology::solid::SolidId;
 
 use crate::boolean::{BooleanOp, boolean};
@@ -95,8 +96,20 @@ pub fn move_faces_with_evolution(
     faces: &[FaceId],
     distance: f64,
 ) -> Result<MoveFacesResult, crate::OperationsError> {
+    Ok(move_faces_with_entity_evolution(topo, solid, faces, distance)?.0)
+}
+
+pub(crate) type DirectEditEvolution = (MoveFacesResult, Vec<(EntityKey, EntityKey)>);
+
+pub(crate) fn move_faces_with_entity_evolution(
+    topo: &mut Topology,
+    solid: SolidId,
+    faces: &[FaceId],
+    distance: f64,
+) -> Result<DirectEditEvolution, crate::OperationsError> {
     let snapshot = topo.clone();
-    let outcome = (|| -> Result<MoveFacesResult, crate::OperationsError> {
+    let outcome = (|| -> Result<DirectEditEvolution, crate::OperationsError> {
+        let mut boundary_pairs = Vec::new();
         let source_faces = solid_faces(topo, solid)?;
         let result = if let Some((face, new_radius)) =
             cylindrical_bore_move_request(topo, solid, faces, distance)?
@@ -119,12 +132,13 @@ pub fn move_faces_with_evolution(
                 new_radius,
                 cylinder.x_axis(),
             )?;
-            let replaced = crate::replace_surface::replace_surface(
+            let replaced = crate::replace_surface::replace_surface_with_entity_map(
                 topo,
                 solid,
                 face,
                 FaceSurface::Cylinder(replacement),
             )?;
+            boundary_pairs = boundary_entity_pairs(&replaced);
             let result_counts =
                 remus_topology::explorer::solid_entity_counts(topo, replaced.solid)?;
             if result_counts != source_counts {
@@ -152,8 +166,9 @@ pub fn move_faces_with_evolution(
             result
         } else {
             refuse_swept_face_intersections(topo, solid, faces, distance)?;
-            let moved = remus_offset::move_faces_with_face_map(topo, solid, faces, distance)?;
+            let moved = remus_offset::move_faces_with_entity_map(topo, solid, faces, distance)?;
 
+            boundary_pairs = boundary_entity_pairs(&moved);
             if move_is_prismatic(topo, solid, faces)? {
                 let deflection = verify_deflection(topo, solid);
                 let before = solid_volume(topo, solid, deflection)?;
@@ -199,13 +214,26 @@ pub fn move_faces_with_evolution(
             .into());
         }
 
-        Ok(result)
+        Ok((result, boundary_pairs))
     })();
 
     if outcome.is_err() {
         topo.restore_preserving_handle_slots(&snapshot);
     }
     outcome
+}
+
+fn boundary_entity_pairs(
+    result: &remus_offset::MoveFacesEntityResult,
+) -> Vec<(EntityKey, EntityKey)> {
+    result
+        .edge_map
+        .iter()
+        .map(|(&source, target)| (EntityKey::edge(source), EntityKey::edge(target.index())))
+        .chain(result.vertex_map.iter().map(|(&source, target)| {
+            (EntityKey::vertex(source), EntityKey::vertex(target.index()))
+        }))
+        .collect()
 }
 
 pub(crate) fn exact_face_evolution(
