@@ -402,3 +402,227 @@ fn transacted_rollback_truncates_journal_without_reusing_op_ids() {
         "a clean rollback must not read as an unjournaled gap"
     );
 }
+
+#[test]
+fn successive_draft_preserves_all_original_entity_references() {
+    use remus_math::mat::Mat4;
+    use remus_math::vec::Point3;
+    use remus_topology::journal::{EventDraft, EvolutionDraft};
+    for scale in [1e-3_f64, 1.0, 1e3] {
+        for rotation in [0.0, 0.7] {
+            for bore in [false, true] {
+                let mut topo = Topology::new();
+                let source = make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+                let source = if bore {
+                    let tool =
+                        remus_operations::primitives::make_cylinder(&mut topo, 1.0, 10.0).unwrap();
+                    remus_operations::transform::transform_solid(
+                        &mut topo,
+                        tool,
+                        &remus_math::mat::Mat4::translation(5.0, 5.0, 0.0),
+                    )
+                    .unwrap();
+                    remus_operations::boolean::boolean(
+                        &mut topo,
+                        remus_operations::boolean::BooleanOp::Cut,
+                        source,
+                        tool,
+                    )
+                    .unwrap()
+                } else {
+                    source
+                };
+
+                let neutral = Point3::new(123.0 * scale, -57.0 * scale, 31.0 * scale);
+                let frame = Mat4::rotation_x(rotation);
+                let transform = Mat4::translation(neutral.x(), neutral.y(), neutral.z())
+                    * frame
+                    * Mat4::scale(scale, scale, scale);
+                remus_operations::transform::transform_solid(&mut topo, source, &transform)
+                    .unwrap();
+                let pull = frame.mul_point(Point3::new(0.0, 0.0, 1.0)) - Point3::new(0.0, 0.0, 0.0);
+                let source_volume =
+                    remus_operations::measure::solid_volume(&topo, source, 0.01 * scale).unwrap();
+                let keys = remus_operations::journal_ops::solid_entity_keys(&topo, source).unwrap();
+                let pending = topo.journal_begin("draft_fixture");
+                let mut draft = EvolutionDraft::construction();
+                draft.add_scope(keys.iter().copied());
+                for &key in &keys {
+                    draft.push(
+                        key,
+                        EventDraft::Generated {
+                            sources: Vec::new(),
+                        },
+                    );
+                }
+                let anchor = topo.journal_record_evolution(pending, draft).unwrap();
+                let mut solid = source;
+                for (step, angle) in [0.05, -0.02].into_iter().enumerate() {
+                    let face = solid_faces(&topo, solid)
+                        .unwrap()
+                        .into_iter()
+                        .find(|&face| {
+                            topo.face(face)
+                                .unwrap()
+                                .effective_plane_normal()
+                                .is_some_and(|normal| normal.x() > 0.9)
+                        })
+                        .unwrap();
+                    let result = remus_operations::journal_ops::draft_journaled(
+                        &mut topo,
+                        solid,
+                        &[face],
+                        pull,
+                        neutral,
+                        angle,
+                    )
+                    .unwrap();
+                    solid = result.solid;
+                    if step == 0 {
+                        let expected = source_volume + 500.0 * scale.powi(3) * angle.tan();
+                        let actual =
+                            remus_operations::measure::solid_volume(&topo, solid, 0.01 * scale)
+                                .unwrap();
+                        assert!(
+                            (actual - expected).abs() <= expected.abs() * 1e-5,
+                            "scale {scale}, rotation {rotation}, bore {bore}: {actual} != {expected}"
+                        );
+                    }
+                    let unchanged =
+                        remus_operations::measure::solid_volume(&topo, source, 0.01 * scale)
+                            .unwrap();
+                    assert!((unchanged - source_volume).abs() <= source_volume.abs() * 1e-12);
+
+                    let live: std::collections::BTreeSet<_> =
+                        remus_operations::journal_ops::solid_entity_keys(&topo, solid)
+                            .unwrap()
+                            .into_iter()
+                            .collect();
+                    let mut resolved = std::collections::BTreeSet::new();
+                    for kind in [EntityKind::Face, EntityKind::Edge, EntityKind::Vertex] {
+                        for index in 0..keys.iter().filter(|key| key.kind == kind).count() {
+                            let reference = PersistentRef::operation_output(anchor, kind, index);
+                            let outcome = resolve(&topo, &reference);
+                            let Resolution::Bound {
+                                entity,
+                                provenance: Provenance::Construction,
+                            } = outcome
+                            else {
+                                panic!("draft angle {angle}, {kind:?}/{index}: {outcome:?}");
+                            };
+                            assert!(resolved.insert(entity));
+                        }
+                    }
+                    assert_eq!(resolved, live);
+                    assert!(
+                        remus_operations::validate::validate_solid(&topo, solid)
+                            .unwrap()
+                            .is_valid()
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn journaled_draft_refusals_restore_topology_and_history() {
+    use remus_math::vec::{Point3, Vec3};
+    for angle in [0.0, -1.4, f64::NAN, f64::INFINITY] {
+        let mut topo = Topology::new();
+        let source = make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+        let face = solid_faces(&topo, source)
+            .unwrap()
+            .into_iter()
+            .find(|&face| {
+                topo.face(face)
+                    .unwrap()
+                    .effective_plane_normal()
+                    .is_some_and(|normal| normal.x() > 0.9)
+            })
+            .unwrap();
+        let counts = |topo: &Topology| {
+            (
+                topo.num_vertices(),
+                topo.num_edges(),
+                topo.num_wires(),
+                topo.num_faces(),
+                topo.num_shells(),
+                topo.num_solids(),
+                topo.num_pcurves(),
+            )
+        };
+        let before_counts = counts(&topo);
+        let before_history = topo.journal().snapshot();
+        let error = remus_operations::journal_ops::draft_journaled(
+            &mut topo,
+            source,
+            &[face],
+            Vec3::new(0.0, 0.0, 1.0),
+            Point3::new(0.0, 0.0, 0.0),
+            angle,
+        )
+        .expect_err("invalid or folding draft must refuse");
+        assert!(!error.to_string().is_empty());
+        assert_eq!(counts(&topo), before_counts, "angle {angle}");
+        assert_eq!(topo.journal().snapshot(), before_history, "angle {angle}");
+        assert!(
+            (remus_operations::measure::solid_volume(&topo, source, 0.01).unwrap() - 1000.0).abs()
+                < 1e-6
+        );
+    }
+}
+
+#[test]
+fn failed_draft_does_not_publish_a_preexisting_mutation_gap() {
+    use remus_math::vec::{Point3, Vec3};
+    let mut topo = Topology::new();
+    let source = make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+    let pending = topo.journal_begin("source_fixture");
+    record_barrier_over_solid(&mut topo, pending, source).unwrap();
+    let unrelated = make_box(&mut topo, 2.0, 3.0, 4.0).unwrap();
+    let face = solid_faces(&topo, source)
+        .unwrap()
+        .into_iter()
+        .find(|&face| {
+            topo.face(face)
+                .unwrap()
+                .effective_plane_normal()
+                .is_some_and(|normal| normal.x() > 0.9)
+        })
+        .unwrap();
+    let before = topo.journal().snapshot();
+    assert!(
+        remus_operations::journal_ops::draft_journaled(
+            &mut topo,
+            source,
+            &[face],
+            Vec3::new(0.0, 0.0, 1.0),
+            Point3::new(0.0, 0.0, 0.0),
+            0.0
+        )
+        .is_err()
+    );
+    let after = topo.journal().snapshot();
+    assert_eq!(after.entries, before.entries);
+    assert_eq!(after.index, before.index);
+    assert_eq!(after.next_ordinal, before.next_ordinal);
+    assert!(after.next_op >= before.next_op);
+    let result = remus_operations::journal_ops::draft_journaled(
+        &mut topo,
+        source,
+        &[face],
+        Vec3::new(0.0, 0.0, 1.0),
+        Point3::new(0.0, 0.0, 0.0),
+        0.05,
+    )
+    .unwrap();
+    let entries = topo.journal().entries();
+    assert_eq!(entries.len(), before.entries.len() + 2);
+    assert_eq!(entries[entries.len() - 2].kind(), UNJOURNALED_MUTATIONS);
+    assert_eq!(entries.last().unwrap().op(), result.op);
+    assert!(
+        (remus_operations::measure::solid_volume(&topo, unrelated, 0.01).unwrap() - 24.0).abs()
+            < 1e-6
+    );
+}
