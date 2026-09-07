@@ -1460,12 +1460,18 @@ pub fn intersect_analytic_analytic_bounded(
     let v_range_b = v_range_hint_b.unwrap_or(default_v_b);
 
     // Compute characteristic surface dimensions for adaptive parameters.
-    let diag_a = {
+    let diag_a = if let AnalyticSurface::Torus(torus) = a {
+        // Both parameter periods close at the same point, so their corner
+        // diagonal is zero even for a large torus. Use its physical diameter.
+        2.0 * (torus.major_radius() + torus.minor_radius())
+    } else {
         let p00 = surf_a(u_range_a.0, v_range_a.0);
         let p11 = surf_a(u_range_a.1, v_range_a.1);
         (p00 - p11).length()
     };
-    let diag_b = {
+    let diag_b = if let AnalyticSurface::Torus(torus) = b {
+        2.0 * (torus.major_radius() + torus.minor_radius())
+    } else {
         let p00 = surf_b(u_range_b.0, v_range_b.0);
         let p11 = surf_b(u_range_b.1, v_range_b.1);
         (p00 - p11).length()
@@ -1577,7 +1583,7 @@ pub fn intersect_analytic_analytic_bounded(
             march_step,
             is_u_periodic(&a),
             is_u_periodic(&b),
-        );
+        )?;
 
         if march_result.len() >= 2 {
             for (sj, other) in unique_seeds.iter().enumerate() {
@@ -1602,8 +1608,10 @@ pub fn intersect_analytic_analytic_bounded(
                 let curve = interpolate(&fit_points, 3.min(fit_points.len() - 1))?;
                 let params = crate::nurbs::fitting::chord_length_params(&fit_points);
                 let mut splits = Vec::with_capacity(params.len() - 1);
+                let mut hard_splits = Vec::with_capacity(params.len() - 1);
                 for ts in params.windows(2) {
                     let mut bad = false;
+                    let mut hard_bad = false;
                     for fraction in [0.25, 0.5, 0.75] {
                         let p = curve.evaluate((ts[1] - ts[0]).mul_add(fraction, ts[0]));
                         let (ua, va) = project_analytic(&a, p, u_range_a, v_range_a);
@@ -1614,8 +1622,10 @@ pub fn intersect_analytic_analytic_bounded(
                         max_residual = max_residual.max(residual);
                         // Leave margin for interpolation changes in adjacent spans.
                         bad |= residual > 0.25e-9;
+                        hard_bad |= residual > 1e-9;
                     }
                     splits.push(bad);
+                    hard_splits.push(hard_bad);
                 }
                 let accepted = max_residual <= 1e-9;
                 if accepted {
@@ -1630,6 +1640,20 @@ pub fn intersect_analytic_analytic_bounded(
                     curves.push(IntersectionCurve { curve, points });
                     fitted = true;
                     break;
+                }
+                let neighborhood_count = |mask: &[bool]| {
+                    (0..mask.len())
+                        .filter(|&i| {
+                            mask[i]
+                                || (i > 0 && mask[i - 1])
+                                || mask.get(i + 1).copied().unwrap_or(false)
+                        })
+                        .count()
+                };
+                // Near the point budget, reserve refinement for spans that
+                // actually fail support rather than consuming it on margin.
+                if fit_points.len() + neighborhood_count(&splits) > 2048 {
+                    splits = hard_splits;
                 }
                 let mut refined = Vec::with_capacity(fit_points.len());
                 for (i, ts) in params.windows(2).enumerate() {
@@ -1658,7 +1682,7 @@ pub fn intersect_analytic_analytic_bounded(
                         ));
                     }
                 }
-                if refined.len() > 2048 {
+                if refined.len() + 1 > 2048 {
                     break;
                 }
                 if let Some(last) = fit_points.last() {
@@ -3310,7 +3334,7 @@ fn march_analytic_intersection(
     initial_step: f64,
     u_periodic_a: bool,
     u_periodic_b: bool,
-) -> Vec<Point3> {
+) -> Result<Vec<Point3>, MathError> {
     let seed = correct_to_intersection(
         a, b, surf_a, norm_a, surf_b, norm_b, seed, u_range_a, v_range_a, u_range_b, v_range_b, 20,
     );
@@ -3334,6 +3358,7 @@ fn march_analytic_intersection(
         let mut current = seed;
         let mut h = initial_step;
         let mut prev_tangent: Option<Vec3> = None;
+        let mut reached_end = false;
 
         for _ in 0..max_steps {
             let (ua, va) = project_analytic(a, current, u_range_a, v_range_a);
@@ -3345,6 +3370,7 @@ fn march_analytic_intersection(
             let tangent = na.cross(nb);
             let t_len = tangent.length();
             if t_len < 1e-10 {
+                reached_end = true;
                 break;
             }
             let t_dir = tangent * (direction / t_len);
@@ -3398,6 +3424,7 @@ fn march_analytic_intersection(
                 || vb2 >= v_range_b.1;
 
             if out_a || out_b {
+                reached_end = true;
                 break;
             }
 
@@ -3409,11 +3436,18 @@ fn march_analytic_intersection(
                 let mut closed = vec![seed];
                 closed.append(points);
                 closed.push(seed);
-                return closed;
+                return Ok(closed);
             }
 
             points.push(mid);
             current = mid;
+        }
+        // An exhausted trace is not a bounded section. Fitting the prefix
+        // would silently certify an incomplete intersection as exact.
+        if !reached_end {
+            return Err(MathError::ConvergenceFailure {
+                iterations: max_steps,
+            });
         }
     }
 
@@ -3431,7 +3465,7 @@ fn march_analytic_intersection(
         );
     }
 
-    result
+    Ok(result)
 }
 
 /// Project a 3D point onto an analytic surface using the surface's
