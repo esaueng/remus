@@ -74,4 +74,13 @@ if [[ $publish_gate_count -ne 3 ]]; then
   exit 1
 fi
 
+if [[ $(grep -Fc 'ref: ${{ github.sha }}' "$PUBLISH_WORKFLOW") -ne 2 ]]; then
+  echo "both package jobs must check out the exact build source"
+  exit 1
+fi
+if grep -Fq 'HEAD:main' "$PUBLISH_WORKFLOW"; then
+  echo "package refresh must use a reviewed PR"
+  exit 1
+fi
+python3 "$SCRIPT_DIR/test-package-refresh-pr.py"
 echo "Publish credential contract OK."

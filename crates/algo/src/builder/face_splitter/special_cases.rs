@@ -442,7 +442,12 @@ fn split_noseam_by_arrangement(
         let is_collar = Some(index) == collar_idx;
         result.push(SplitSubFace {
             surface: surface.clone(),
-            precomputed_interior: if is_collar {
+            precomputed_interior: if is_collar
+                && (!region_holes.is_empty()
+                    || !region
+                        .iter()
+                        .any(|edge| matches!(edge.curve_3d, EdgeCurve::NurbsCurve(_))))
+            {
                 Some(collar_interior)
             } else {
                 sphere_loop_interior(surface, &region)
@@ -632,12 +637,11 @@ fn sphere_boundary_normal(edges: &[OrientedPCurveEdge]) -> Option<remus_math::ve
     normal.normalize().ok()
 }
 
-/// Twice the signed area of a circle-bounded loop after orthographic
-/// projection onto a plane with `normal`.
+/// Twice the signed area of a loop after orthographic projection onto `normal`.
 ///
-/// The line integral is analytic, so the sign is independent of how phase FF
-/// subdivided the sphere/sphere circle.  A positive result is the sphere's
-/// outward boundary winding in the source hemisphere chart.
+/// Circle integrals are analytic; marched NURBS spans use Gaussian quadrature.
+/// A positive result is the sphere's outward boundary winding in the source
+/// hemisphere chart, independent of the section's topological subdivision.
 fn sphere_loop_projected_area(
     edges: &[OrientedPCurveEdge],
     normal: remus_math::vec::Vec3,
@@ -665,6 +669,29 @@ fn sphere_loop_projected_area(
             }
             EdgeCurve::Line => {
                 integral += (edge.start_3d - origin).cross(edge.end_3d - origin);
+            }
+            EdgeCurve::NurbsCurve(curve) => {
+                // The sign determines which arrangement cells survive. Integrate
+                // on knot spans so a marched seam is not discarded merely for
+                // lacking an analytic circle carrier.
+                let (start, end) = edge.traversal_domain();
+                let lo = start.min(end);
+                let hi = start.max(end);
+                let sign = (end - start).signum();
+                for span in curve.knots().windows(2) {
+                    let a = span[0].max(lo);
+                    let b = span[1].min(hi);
+                    if b <= a {
+                        continue;
+                    }
+                    let half = (b - a) * 0.5;
+                    let mid = f64::midpoint(a, b);
+                    for point in remus_math::quadrature::gauss_legendre_points(8) {
+                        let parameter = half.mul_add(point.x, mid);
+                        let derivatives = curve.derivatives(parameter, 1);
+                        integral += derivatives[0].cross(derivatives[1]) * (sign * half * point.w);
+                    }
+                }
             }
             _ => return None,
         }
@@ -1079,6 +1106,12 @@ fn arc_covers_segment(arc: &OrientedPCurveEdge, segment: &OrientedPCurveEdge, to
 /// non-sphere surfaces (callers fall back to UV-based interior sampling).
 fn sphere_loop_interior(surface: &FaceSurface, edges: &[OrientedPCurveEdge]) -> Option<Point3> {
     use remus_math::vec::Vec3;
+    if edges
+        .iter()
+        .any(|edge| matches!(edge.curve_3d, EdgeCurve::NurbsCurve(_)))
+    {
+        return sphere_closed_loop_interior(surface, edges);
+    }
     let FaceSurface::Sphere(s) = surface else {
         return None;
     };
@@ -1102,11 +1135,10 @@ fn sphere_loop_interior(surface: &FaceSurface, edges: &[OrientedPCurveEdge]) -> 
 
 /// Interior point of a contractible closed loop on a sphere.
 ///
-/// Averaging samples around the loop cancels its in-plane component and leaves
-/// the direction of the spherical cap it bounds. Projecting that direction
-/// back onto the sphere avoids using the section circle's Euclidean centre,
-/// which lies inside the solid and can sit on the opposing face's boundary.
-fn sphere_closed_loop_interior(
+/// The average boundary direction places the chart pole away from the cap.
+/// Choosing a contained point in that chart also handles concave caps, where
+/// projecting the average direction alone can leave the bounded region.
+pub(super) fn sphere_closed_loop_interior(
     surface: &FaceSurface,
     edges: &[OrientedPCurveEdge],
 ) -> Option<Point3> {
@@ -1120,6 +1152,7 @@ fn sphere_closed_loop_interior(
     }
 
     let mut direction = Vec3::new(0.0, 0.0, 0.0);
+    let mut samples = Vec::new();
     for edge in edges {
         for sample in 0..32 {
             let fraction = (f64::from(sample) + 0.5) / 32.0;
@@ -1130,11 +1163,32 @@ fn sphere_closed_loop_interior(
                 edge.traversal_domain(),
                 fraction,
             );
-            direction += (point - sphere.center()).normalize().ok()?;
+            let radial = (point - sphere.center()).normalize().ok()?;
+            direction += radial;
+            samples.push(radial);
         }
     }
     let direction = direction.normalize().ok()?;
-    Some(sphere.center() + direction * sphere.radius())
+    // Longitude charts fold around the pole. A stereographic chart preserves
+    // this loop's interior, including concave caps whose average lies outside.
+    let frame = PlaneFrame::from_normal_and_point(direction, sphere.center());
+    let mut polygon = Vec::with_capacity(samples.len());
+    for sample in samples {
+        let denominator = 1.0 + sample.dot(direction);
+        if denominator <= 1e-12 {
+            return None;
+        }
+        polygon.push(frame.project(sphere.center() + sample * (1.0 / denominator)));
+    }
+    let point = super::super::classify_2d::sample_interior_point(&polygon);
+    if !super::super::classify_2d::point_in_polygon_2d(point, &polygon) {
+        return None;
+    }
+    let radial_squared = point.x() * point.x() + point.y() * point.y();
+    let planar = frame.evaluate(point.x(), point.y()) - sphere.center();
+    let radial =
+        (planar * 2.0 + direction * (1.0 - radial_squared)) * (1.0 / (1.0 + radial_squared));
+    Some(sphere.center() + radial * sphere.radius())
 }
 
 // ---------------------------------------------------------------------------
@@ -1945,13 +1999,13 @@ pub(super) fn split_torus_band_by_arrangement(
     let net_phi = |l: &[OrientedPCurveEdge]| -> f64 {
         let mut phis: Vec<f64> = Vec::new();
         for e in l {
-            let (_, v) = torus.project_point(e.start_3d);
-            phis.push(v);
-            let (_, vm) = torus.project_point(
-                e.curve_3d
-                    .evaluate_with_endpoints(0.5, e.start_3d, e.end_3d),
-            );
-            phis.push(vm);
+            let (t0, t1) = e.traversal_domain();
+            for k in 0..8 {
+                let t = t0 + (t1 - t0) * f64::from(k) / 8.0;
+                let (_, v) = torus
+                    .project_point(e.curve_3d.evaluate_with_endpoints(t, e.start_3d, e.end_3d));
+                phis.push(v);
+            }
         }
         let mut acc = 0.0;
         for i in 0..phis.len() {
@@ -2016,14 +2070,23 @@ pub(super) fn split_torus_band_by_arrangement(
         )
     };
 
-    // A periodic annulus has no planar nesting relation between these two
-    // separators. Keep their already-oriented traversals and swap only the
-    // stored outer/inner roles to distinguish the complementary u-bands.
+    // Complementary bands traverse each shared separator in opposite senses.
+    // For a positive-u interval, its lower-u rim runs down v and its upper
+    // rim runs up v, independent of the section chain's initial direction.
+    let orient = |index: usize, positive: bool| {
+        if (net_phi(&loops[index]) > 0.0) == positive {
+            loops[index].clone()
+        } else {
+            reverse_loop(&loops[index])
+        }
+    };
+    let long_outer = orient(1, fwd >= PI);
+    let long_inner = orient(0, fwd < PI);
     Ok(Some(vec![
         SplitSubFace {
             surface: surface.clone(),
-            outer_wire: reverse_loop(&loops[1]),
-            inner_wires: vec![loops[0].clone()],
+            outer_wire: long_outer.clone(),
+            inner_wires: vec![long_inner.clone()],
             reversed,
             parent: face_id,
             rank,
@@ -2031,8 +2094,8 @@ pub(super) fn split_torus_band_by_arrangement(
         },
         SplitSubFace {
             surface: surface.clone(),
-            outer_wire: loops[0].clone(),
-            inner_wires: vec![reverse_loop(&loops[1])],
+            outer_wire: reverse_loop(&long_inner),
+            inner_wires: vec![reverse_loop(&long_outer)],
             reversed,
             parent: face_id,
             rank,
@@ -2106,6 +2169,11 @@ pub(super) fn split_face_with_internal_loops(
         });
     }
 
+    let chain_tol = if matches!(surface, FaceSurface::Plane { .. }) {
+        super::boundary_weld_band(boundary_edges, tol_3d)
+    } else {
+        tol_3d * 100.0
+    };
     // Group edges into closed loops by chaining: edge.end_3d approx next.start_3d.
     let mut used = vec![false; forward_edges.len()];
     let mut loops: Vec<Vec<OrientedPCurveEdge>> = Vec::new();
@@ -2123,7 +2191,7 @@ pub(super) fn split_face_with_internal_loops(
 
             // Check if the loop is closed (includes single-edge circles
             // where start ~= end).
-            if (last_end - loop_start_3d).length() < tol_3d * 100.0 {
+            if (last_end - loop_start_3d).length() < chain_tol {
                 break;
             }
 
@@ -2134,9 +2202,9 @@ pub(super) fn split_face_with_internal_loops(
             let next = forward_edges.iter().enumerate().find_map(|(i, e)| {
                 if used[i] {
                     None
-                } else if (e.start_3d - last_end).length() < tol_3d * 100.0 {
+                } else if (e.start_3d - last_end).length() < chain_tol {
                     Some((i, false))
-                } else if (e.end_3d - last_end).length() < tol_3d * 100.0 {
+                } else if (e.end_3d - last_end).length() < chain_tol {
                     Some((i, true))
                 } else {
                     None
@@ -2160,7 +2228,7 @@ pub(super) fn split_face_with_internal_loops(
         // Accept only closed chains (single-edge circles or multi-edge
         // closed loops). Reject open chains from orphaned arcs.
         let chain_end = chain.last().map_or(loop_start_3d, |e| e.end_3d);
-        if !chain.is_empty() && (chain_end - loop_start_3d).length() < tol_3d * 100.0 {
+        if !chain.is_empty() && (chain_end - loop_start_3d).length() < chain_tol {
             loops.push(chain);
         }
     }
@@ -2534,9 +2602,188 @@ pub(super) fn split_face_with_internal_loops(
     {
         remainder.precomputed_interior = cylinder_cone_remainder_interior(&remainder);
     }
+    if matches!(remainder.surface, FaceSurface::Torus(_))
+        && remainder.outer_wire.iter().all(|edge| {
+            matches!(edge.curve_3d, EdgeCurve::Line)
+                && (edge.start_3d - edge.end_3d).length() < tol_3d
+        })
+        && !remainder.inner_wires.is_empty()
+    {
+        remainder.precomputed_interior = torus_remainder_interior(&remainder);
+        if let Some(boundary) = torus_remainder_seams(&remainder)? {
+            remainder.outer_wire = boundary;
+        }
+    }
     result.push(remainder);
 
     Ok(result)
+}
+
+/// A full torus's seam point is not an interior witness after a pocket is cut.
+/// Search the doubly periodic carrier outside every contractible hole instead.
+fn torus_remainder_interior(remainder: &SplitSubFace) -> Option<Point3> {
+    use std::f64::consts::{PI, TAU};
+    let mut polygons = Vec::new();
+    let mut boundary = Vec::new();
+    for hole in &remainder.inner_wires {
+        let mut points = Vec::new();
+        for edge in hole {
+            for k in 0..32 {
+                let p = super::super::pcurve_compute::evaluate_edge_at_t(
+                    &edge.curve_3d,
+                    edge.start_3d,
+                    edge.end_3d,
+                    edge.traversal_domain(),
+                    f64::from(k) / 32.0,
+                );
+                let (u, v) = remainder.surface.project_point(p)?;
+                points.push(Point2::new(u, v));
+                boundary.push(p);
+            }
+        }
+        points.push(*points.first()?);
+        super::super::pcurve_compute::unwrap_periodic_params_pub(&mut points, Some(TAU), Some(TAU));
+        let first = points[0];
+        let last = *points.last()?;
+        if (last.x() - first.x()).abs() > PI || (last.y() - first.y()).abs() > PI {
+            return None;
+        }
+        let center = Point2::new(
+            f64::midpoint(
+                points.iter().map(|p| p.x()).fold(f64::INFINITY, f64::min),
+                points
+                    .iter()
+                    .map(|p| p.x())
+                    .fold(f64::NEG_INFINITY, f64::max),
+            ),
+            f64::midpoint(
+                points.iter().map(|p| p.y()).fold(f64::INFINITY, f64::min),
+                points
+                    .iter()
+                    .map(|p| p.y())
+                    .fold(f64::NEG_INFINITY, f64::max),
+            ),
+        );
+        polygons.push((points, center));
+    }
+    let mut best: Option<(f64, Point3)> = None;
+    for iu in 0..24 {
+        for iv in 0..24 {
+            let u = TAU * (f64::from(iu) + 0.5) / 24.0;
+            let v = TAU * (f64::from(iv) + 0.5) / 24.0;
+            if polygons.iter().any(|(polygon, center)| {
+                let query = Point2::new(
+                    u + TAU * ((center.x() - u) / TAU).round(),
+                    v + TAU * ((center.y() - v) / TAU).round(),
+                );
+                super::super::classify_2d::point_in_polygon_2d(query, polygon)
+            }) {
+                continue;
+            }
+            let point = remainder.surface.evaluate(u, v)?;
+            let clearance = boundary
+                .iter()
+                .map(|&p| (p - point).length())
+                .fold(f64::INFINITY, f64::min);
+            if best.is_none_or(|(distance, _)| clearance > distance) {
+                best = Some((clearance, point));
+            }
+        }
+    }
+    best.map(|(_, point)| point)
+}
+
+/// Give the fundamental polygon real circular seams so sliver cleanup cannot
+/// discard a torus remainder. Quarter arcs keep opposite arcs distinguishable
+/// under the assembler's endpoint-based edge sharing.
+fn torus_remainder_seams(
+    remainder: &SplitSubFace,
+) -> Result<Option<Vec<OrientedPCurveEdge>>, AlgoError> {
+    use std::f64::consts::{FRAC_PI_2, TAU};
+    let FaceSurface::Torus(torus) = &remainder.surface else {
+        return Ok(None);
+    };
+    let mut us = Vec::new();
+    let mut vs = Vec::new();
+    for edge in remainder.inner_wires.iter().flatten() {
+        for k in 0..32 {
+            let point = super::super::pcurve_compute::evaluate_edge_at_t(
+                &edge.curve_3d,
+                edge.start_3d,
+                edge.end_3d,
+                edge.traversal_domain(),
+                f64::from(k) / 32.0,
+            );
+            let (u, v) = torus.project_point(point);
+            us.push(u);
+            vs.push(v);
+        }
+    }
+    if us.is_empty() {
+        return Ok(None);
+    }
+    let (u_min, u_span) = covered_u_interval(&us);
+    let (v_min, v_span) = covered_u_interval(&vs);
+    if u_span >= TAU - 1e-4 || v_span >= TAU - 1e-4 {
+        return Ok(None);
+    }
+    let u = u_min + (u_span + TAU) * 0.5;
+    let v = v_min + (v_span + TAU) * 0.5;
+    let radial = torus.x_axis() * u.cos() + torus.y_axis() * u.sin();
+    let axis = torus.z_axis();
+    let major = remus_math::curves::Circle3D::new_with_ref(
+        torus.center() + axis * (torus.minor_radius() * v.sin()),
+        axis,
+        torus.major_radius() + torus.minor_radius() * v.cos(),
+        radial,
+    )?;
+    let minor = remus_math::curves::Circle3D::new_with_ref(
+        torus.center() + radial * torus.major_radius(),
+        radial.cross(axis),
+        torus.minor_radius(),
+        radial * v.cos() + axis * v.sin(),
+    )?;
+    let mut rings = Vec::new();
+    for circle in [major, minor] {
+        let mut ring = Vec::new();
+        for i in 0..4 {
+            let start = f64::from(i) * FRAC_PI_2;
+            let end = f64::from(i + 1) * FRAC_PI_2;
+            let start_3d = circle.evaluate(start);
+            let end_3d = circle.evaluate(end);
+            let curve = EdgeCurve::Circle(circle.clone());
+            let pcurve = super::super::pcurve_compute::compute_pcurve_on_surface_in_domain(
+                &curve,
+                start_3d,
+                end_3d,
+                (start, end),
+                &remainder.surface,
+                &[],
+                None,
+            )?;
+            let (su, sv) = torus.project_point(start_3d);
+            let (eu, ev) = torus.project_point(end_3d);
+            ring.push(OrientedPCurveEdge {
+                curve_3d: curve,
+                trim: Some((start, end)),
+                pcurve,
+                start_uv: Point2::new(su, sv),
+                end_uv: Point2::new(eu, ev),
+                start_3d,
+                end_3d,
+                forward: true,
+                source_edge_idx: None,
+                pave_block_id: None,
+                source_topo_edge: None,
+            });
+        }
+        rings.push(ring);
+    }
+    let mut boundary = rings[0].clone();
+    boundary.extend(rings[1].clone());
+    boundary.extend(reverse_loop(&rings[0]));
+    boundary.extend(reverse_loop(&rings[1]));
+    Ok(Some(boundary))
 }
 
 /// True when an internal section loop and a pre-existing inner wire (both
@@ -4049,6 +4296,33 @@ mod tests {
             source_edge_idx: None,
             pave_block_id: None,
             source_topo_edge: None,
+        }
+    }
+
+    #[test]
+    fn projected_area_retains_trimmed_nurbs_cells_in_both_directions() {
+        for shift in [Vec3::new(0.0, 0.0, 0.0), Vec3::new(17.0, -23.0, 31.0)] {
+            let origin = Point3::new(0.0, 0.0, 0.0) + shift;
+            let a = Point3::new(1.0, 0.0, 0.0) + shift;
+            let b = Point3::new(0.0, 1.0, 0.0) + shift;
+            let curve = remus_math::nurbs::curve::NurbsCurve::new(
+                2,
+                vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+                vec![a, Point3::new(1.0, 1.0, 0.0) + shift, b],
+                vec![1.0; 3],
+            )
+            .unwrap();
+            let mut arc = line_chord(a, b);
+            arc.curve_3d = EdgeCurve::NurbsCurve(curve);
+            arc.trim = Some((0.0, 1.0));
+            let region = vec![arc, line_chord(b, origin), line_chord(origin, a)];
+            let normal = Vec3::new(0.0, 0.0, 1.0);
+            // Green's theorem on x=1-t², y=2t-t² gives twice-area 5/3.
+            let area = super::sphere_loop_projected_area(&region, normal).unwrap();
+            assert!((area - 5.0 / 3.0).abs() < 1e-11);
+            let reversed = super::reverse_loop(&region);
+            let area = super::sphere_loop_projected_area(&reversed, normal).unwrap();
+            assert!((area + 5.0 / 3.0).abs() < 1e-11);
         }
     }
 

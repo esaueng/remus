@@ -772,9 +772,8 @@ impl Builder {
         );
         if op == BooleanOp::Fuse {
             orient_selected_fuse_analytic_holes(&mut self.topo, &self.sub_faces, &selected);
-        } else {
-            builder_solid::orient_cylinder_face_wires(&mut self.topo, &selected)?;
         }
+        builder_solid::orient_revolved_face_wires(&mut self.topo, &selected)?;
         log_subfaces_in_box(&self.topo, &self.sub_faces, &selected)?;
         log_source_face_partition(&self.topo, &self.sub_faces, &selected);
         let cap_planes = self.partial_overlap_cap_planes(&selected);
@@ -811,9 +810,8 @@ impl Builder {
         );
         if op == BooleanOp::Fuse {
             orient_selected_fuse_analytic_holes(&mut self.topo, &self.sub_faces, &selected);
-        } else {
-            builder_solid::orient_cylinder_face_wires(&mut self.topo, &selected)?;
         }
+        builder_solid::orient_revolved_face_wires(&mut self.topo, &selected)?;
         log_subfaces_in_box(&self.topo, &self.sub_faces, &selected)?;
         log_source_face_partition(&self.topo, &self.sub_faces, &selected);
         let cap_planes = self.partial_overlap_cap_planes(&selected);
@@ -853,9 +851,8 @@ impl Builder {
         );
         if op == BooleanOp::Fuse {
             orient_selected_fuse_analytic_holes(&mut self.topo, &self.sub_faces, &selected);
-        } else {
-            builder_solid::orient_cylinder_face_wires(&mut self.topo, &selected)?;
         }
+        builder_solid::orient_revolved_face_wires(&mut self.topo, &selected)?;
         log_subfaces_in_box(&self.topo, &self.sub_faces, &selected)?;
         log_source_face_partition(&self.topo, &self.sub_faces, &selected);
         let cap_planes = self.partial_overlap_cap_planes(&selected);
@@ -1083,6 +1080,14 @@ impl Builder {
 
             match sample {
                 Ok(point) => {
+                    let point = sample_full_cylinder_away_from_plane_contacts(
+                        &self.topo,
+                        sf.face_id,
+                        opposing_solid,
+                        point,
+                        self.tol,
+                    )?
+                    .unwrap_or(point);
                     // Coincident-coplanar fast path: a planar sub-face lying in
                     // a plane coincident with an opposing-solid face cannot be
                     // classified by ray-cast — its interior point sits on the
@@ -1387,6 +1392,14 @@ fn orient_selected_fuse_analytic_holes(
         {
             continue;
         }
+        if builder_solid::torus_wire_wraps_tube(topo, face.outer_wire(), face.surface())
+            && face
+                .inner_wires()
+                .iter()
+                .all(|&wire| builder_solid::torus_wire_wraps_tube(topo, wire, face.surface()))
+        {
+            continue;
+        }
         let inner_wires = face.inner_wires().to_vec();
         let outer_wire = face.outer_wire();
         let mut replacements = Vec::with_capacity(inner_wires.len());
@@ -1417,26 +1430,108 @@ fn orient_selected_fuse_analytic_holes(
     }
 }
 
-/// Sample a point in the interior of a face.
-///
-/// Uses the midpoint of the first boundary edge, then offsets slightly
-/// inward along (edge_tangent x face_normal) to get a point that is
-/// reliably inside the face — unlike a vertex centroid, which can fall
-/// outside non-convex faces.
-///
-/// The offset distance is scaled relative to the face's bounding box
-/// diagonal to handle both very small and very large faces correctly.
-/// Sample a planar face that has holes, as deep into the material as possible.
-///
-/// Returns the candidate whose smallest distance to ANY rim (outer or hole) is
-/// greatest — the middle of the annulus on a bored cap, rather than a point
-/// hugging one of the rims where every containment test against a polygonised
-/// opposing hole is a coin flip.
-///
-/// Candidates are the midpoints between each outer-rim sample and its nearest
-/// hole-rim sample (which is exactly mid-material for an annulus), plus the
-/// centroid. Returns `None` if none of them lands in the material, leaving the
-/// caller's generic path in charge.
+/// Move a full cylindrical band's classification sample off isolated plane contacts.
+/// Both complete rims and axial sides are required so angular resampling stays
+/// inside the same unsplit face region.
+fn sample_full_cylinder_away_from_plane_contacts(
+    topo: &Topology,
+    face_id: FaceId,
+    opposing: SolidId,
+    sample: Point3,
+    tol: Tolerance,
+) -> Result<Option<Point3>, AlgoError> {
+    use remus_topology::edge::EdgeCurve;
+    use remus_topology::face::FaceSurface;
+    let face = topo.face(face_id)?;
+    let FaceSurface::Cylinder(cylinder) = face.surface() else {
+        return Ok(None);
+    };
+    if !face.inner_wires().is_empty() {
+        return Ok(None);
+    }
+    let mut planes = Vec::new();
+    for fid in remus_topology::explorer::solid_faces(topo, opposing)? {
+        let FaceSurface::Plane { normal, d } = topo.face(fid)?.surface() else {
+            return Ok(None);
+        };
+        planes.push((*normal, *d));
+    }
+    let clearance = |p: Point3| {
+        planes
+            .iter()
+            .map(|(n, d)| (n.dot(p - Point3::new(0.0, 0.0, 0.0)) - d).abs())
+            .fold(f64::INFINITY, f64::min)
+    };
+    if clearance(sample) > tol.linear {
+        return Ok(None);
+    }
+    let mut rims: Vec<(f64, f64)> = Vec::new();
+    for oe in topo.wire(face.outer_wire())?.edges() {
+        let edge = topo.edge(oe.edge())?;
+        match edge.curve() {
+            EdgeCurve::Line => {
+                let start = topo.vertex(edge.start())?.point();
+                let end = topo.vertex(edge.end())?.point();
+                if (end - start).cross(cylinder.axis()).length() > tol.linear {
+                    return Ok(None);
+                }
+            }
+            EdgeCurve::Circle(circle) => {
+                if circle.normal().cross(cylinder.axis()).length() > tol.angular {
+                    return Ok(None);
+                }
+                let delta = circle.center() - cylinder.origin();
+                let level = delta.dot(cylinder.axis());
+                if (delta - cylinder.axis() * level).length() > tol.linear
+                    || (circle.radius() - cylinder.radius()).abs() > tol.linear
+                {
+                    return Ok(None);
+                }
+
+                let Some((lo, hi)) = edge.trim() else {
+                    return Ok(None);
+                };
+                let winding = (hi - lo)
+                    * circle.normal().dot(cylinder.axis()).signum()
+                    * if oe.is_forward() { 1.0 } else { -1.0 };
+                if let Some(rim) = rims
+                    .iter_mut()
+                    .find(|rim| (rim.0 - level).abs() <= tol.linear)
+                {
+                    rim.1 += winding;
+                } else {
+                    rims.push((level, winding));
+                }
+            }
+            _ => return Ok(None),
+        }
+    }
+    if rims.len() != 2
+        || rims
+            .iter()
+            .any(|rim| (rim.1.abs() - std::f64::consts::TAU).abs() > tol.angular)
+    {
+        return Ok(None);
+    }
+    let (u, v) = cylinder.project_point(sample);
+    if v <= rims[0].0.min(rims[1].0) + tol.linear || v >= rims[0].0.max(rims[1].0) - tol.linear {
+        return Ok(None);
+    }
+    // A full band permits every angular sample at this axial height. Choose
+    // clearance from opposing planes, avoiding an isolated tangent generator.
+    let mut best = sample;
+    let mut distance = clearance(sample);
+    for index in 1..17 {
+        let candidate = cylinder.evaluate(u + std::f64::consts::TAU * f64::from(index) / 17.0, v);
+        let candidate_distance = clearance(candidate);
+        if candidate_distance > distance {
+            best = candidate;
+            distance = candidate_distance;
+        }
+    }
+    Ok((distance > tol.linear).then_some(best))
+}
+
 /// Sample a planar face whose outer boundary is built from closed curves.
 ///
 /// Such a face (a disc bounded by one circular edge) has fewer boundary

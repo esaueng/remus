@@ -827,3 +827,30 @@ fn cdt_collinear_constraint_splitting() {
     let tris = cdt.triangles();
     assert!(!tris.is_empty());
 }
+
+#[test]
+fn constraint_collinearity_preserves_resolved_offsets_on_long_segments() {
+    for length in [1.0, 1000.0] {
+        for offset in [0.0, 1e-7] {
+            let mut cdt = Cdt::new((
+                Point2::new(-length, -length),
+                Point2::new(2.0 * length, 2.0 * length),
+            ));
+            let start = cdt.insert_point(Point2::new(0.0, 0.0)).unwrap();
+            let end = cdt.insert_point(Point2::new(length, 0.0)).unwrap();
+            let near = cdt.insert_point(Point2::new(length * 0.5, offset)).unwrap();
+            cdt.insert_constraint(start, end).unwrap();
+            if offset > 0.0 {
+                assert!(
+                    cdt.constraints.contains(&sorted_pair(start, end)),
+                    "length={length}: constraint bent through a distinct near vertex"
+                );
+                assert!(!cdt.constraints.contains(&sorted_pair(start, near)));
+                assert!(!cdt.constraints.contains(&sorted_pair(near, end)));
+            } else {
+                assert!(cdt.constraints.contains(&sorted_pair(start, near)));
+                assert!(cdt.constraints.contains(&sorted_pair(near, end)));
+            }
+        }
+    }
+}

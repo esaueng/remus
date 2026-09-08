@@ -1501,6 +1501,13 @@ fn cut_torus_by_box_notch_is_analytic_watertight() {
     .unwrap();
     let result = boolean(&mut topo, BooleanOp::Cut, tor, bx).unwrap();
 
+    let report = crate::validate::validate_solid(&topo, result).unwrap();
+    assert!(
+        report.is_valid(),
+        "torus notch validation: {:?}",
+        report.issues
+    );
+
     let face_ids = remus_topology::explorer::solid_faces(&topo, result).unwrap();
     let (mut planes, mut tori, mut others) = (0usize, 0usize, 0usize);
     for fid in &face_ids {
@@ -9168,4 +9175,25 @@ fn cut_cylinder_by_tilted_slab_stays_exact_and_closed() {
             "{p:?}"
         );
     }
+}
+
+#[test]
+fn fuse_acceptance_detects_small_tool_lost_from_long_blank() {
+    let mut topo = Topology::new();
+    let blank = crate::primitives::make_box(&mut topo, 1e6, 1.0, 1.0).unwrap();
+    let tool = crate::primitives::make_box(&mut topo, 0.1, 0.4, 2.0).unwrap();
+    crate::transform::transform_solid(
+        &mut topo,
+        tool,
+        &remus_math::mat::Mat4::translation(0.1, 0.3, -0.5),
+    )
+    .unwrap();
+    assert!(!operands_are_represented(
+        &topo,
+        BooleanOp::Fuse,
+        blank,
+        blank,
+        tool,
+        Tolerance::default()
+    ));
 }

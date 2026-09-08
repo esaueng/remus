@@ -2283,6 +2283,7 @@ name = "remus-wasm"
 version = "2.130.0"
 dependencies = [
  "log",
+ "remus",
  "remus-algo",
  "remus-check",
  "remus-geometry",
