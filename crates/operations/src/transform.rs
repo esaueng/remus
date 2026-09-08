@@ -815,9 +815,15 @@ pub(crate) fn transform_edge_curve_with_trim(
     trim: Option<(f64, f64)>,
     matrix: &Mat4,
 ) -> Result<TransformedEdgeCurve, crate::OperationsError> {
-    let origin = matrix.mul_point(remus_math::vec::Point3::new(0.0, 0.0, 0.0));
+    // Translation must not participate in direction arithmetic: subtracting
+    // translated points can make a rigid image falsely appear anisotropic.
     let transform_dir = |d: Vec3| -> Vec3 {
-        matrix.mul_point(remus_math::vec::Point3::new(d.x(), d.y(), d.z())) - origin
+        let m = &matrix.0;
+        Vec3::new(
+            m[0][0].mul_add(d.x(), m[0][1].mul_add(d.y(), m[0][2] * d.z())),
+            m[1][0].mul_add(d.x(), m[1][1].mul_add(d.y(), m[1][2] * d.z())),
+            m[2][0].mul_add(d.x(), m[2][1].mul_add(d.y(), m[2][2] * d.z())),
+        )
     };
     let (new_curve, new_trim) = match curve {
         EdgeCurve::Line => (None, None),

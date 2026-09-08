@@ -1999,13 +1999,13 @@ pub(super) fn split_torus_band_by_arrangement(
     let net_phi = |l: &[OrientedPCurveEdge]| -> f64 {
         let mut phis: Vec<f64> = Vec::new();
         for e in l {
-            let (_, v) = torus.project_point(e.start_3d);
-            phis.push(v);
-            let (_, vm) = torus.project_point(
-                e.curve_3d
-                    .evaluate_with_endpoints(0.5, e.start_3d, e.end_3d),
-            );
-            phis.push(vm);
+            let (t0, t1) = e.traversal_domain();
+            for k in 0..8 {
+                let t = t0 + (t1 - t0) * f64::from(k) / 8.0;
+                let (_, v) = torus
+                    .project_point(e.curve_3d.evaluate_with_endpoints(t, e.start_3d, e.end_3d));
+                phis.push(v);
+            }
         }
         let mut acc = 0.0;
         for i in 0..phis.len() {
@@ -2070,14 +2070,23 @@ pub(super) fn split_torus_band_by_arrangement(
         )
     };
 
-    // A periodic annulus has no planar nesting relation between these two
-    // separators. Keep their already-oriented traversals and swap only the
-    // stored outer/inner roles to distinguish the complementary u-bands.
+    // Complementary bands traverse each shared separator in opposite senses.
+    // For a positive-u interval, its lower-u rim runs down v and its upper
+    // rim runs up v, independent of the section chain's initial direction.
+    let orient = |index: usize, positive: bool| {
+        if (net_phi(&loops[index]) > 0.0) == positive {
+            loops[index].clone()
+        } else {
+            reverse_loop(&loops[index])
+        }
+    };
+    let long_outer = orient(1, fwd >= PI);
+    let long_inner = orient(0, fwd < PI);
     Ok(Some(vec![
         SplitSubFace {
             surface: surface.clone(),
-            outer_wire: reverse_loop(&loops[1]),
-            inner_wires: vec![loops[0].clone()],
+            outer_wire: long_outer.clone(),
+            inner_wires: vec![long_inner.clone()],
             reversed,
             parent: face_id,
             rank,
@@ -2085,8 +2094,8 @@ pub(super) fn split_torus_band_by_arrangement(
         },
         SplitSubFace {
             surface: surface.clone(),
-            outer_wire: loops[0].clone(),
-            inner_wires: vec![reverse_loop(&loops[1])],
+            outer_wire: reverse_loop(&long_inner),
+            inner_wires: vec![reverse_loop(&long_outer)],
             reversed,
             parent: face_id,
             rank,

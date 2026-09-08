@@ -163,6 +163,36 @@ fn split_sections_at_t_junctions(
             }
         }
     }
+    // The generic NURBS chart has no plane-arrangement rescue. Interior
+    // crossings of straight carriers must join the endpoint split set too.
+    if matches!(surface, FaceSurface::Nurbs(_)) {
+        let straight: Vec<_> = all_edges[section_start..]
+            .iter()
+            .filter(|e| e.forward && edge_curve_is_straight(&e.curve_3d))
+            .collect();
+        for (i, a) in straight.iter().enumerate() {
+            for b in &straight[i + 1..] {
+                let da = a.end_3d - a.start_3d;
+                let db = b.end_3d - b.start_3d;
+                let normal = da.cross(db);
+                let denom = normal.dot(normal);
+                if !denom.is_finite() || denom <= f64::MIN_POSITIVE {
+                    continue;
+                }
+                let delta = b.start_3d - a.start_3d;
+                let ta = delta.cross(db).dot(normal) / denom;
+                let tb = delta.cross(da).dot(normal) / denom;
+                if !(0.0..=1.0).contains(&ta) || !(0.0..=1.0).contains(&tb) {
+                    continue;
+                }
+                let pa = a.start_3d + da * ta;
+                let pb = b.start_3d + db * tb;
+                if (pa - pb).length() <= tol {
+                    endpoints.push(pa + (pb - pa) * 0.5);
+                }
+            }
+        }
+    }
     // Coarse query grid: cell sized to the mean section length so a section
     // spans O(1) cells. Each endpoint is stored once.
     let coarse = if len_cnt > 0.0 {
@@ -552,9 +582,9 @@ fn edge_curve_is_straight(curve: &EdgeCurve) -> bool {
             }
             pts.iter().all(|p| {
                 let v = *p - *first;
-                let along = v.dot(chord) / len;
-                let dev_sq = along.mul_add(-along, v.dot(v));
-                dev_sq < 1e-14
+                // Subtracting squared lengths loses the tiny perpendicular
+                // residual on long collinear control polygons.
+                v.cross(chord).length() / len < 1e-7
             })
         }
         // An unbounded conic is never a straight segment. (Also unreachable
@@ -2216,8 +2246,9 @@ struct ArrInput {
 /// Split co-endpoint SECTION arc pairs in an arrangement's input list at
 /// their geometric midpoints (see the call site in
 /// [`split_plane_face_by_arrangement`]). Only section arcs with a colliding
-/// unordered chord-endpoint pair AND distinct midpoints are split; boundary
-/// edges and identical duplicates are left untouched.
+/// unordered chord-endpoint pair AND distinct midpoints are split. Straight
+/// inputs participate in collision detection so a section arc stays distinct
+/// from its chord; only section arcs are split, leaving boundaries unchanged.
 fn split_coendpoint_section_arc_inputs(inputs: &mut Vec<ArrInput>, frame: &PlaneFrame, tol: f64) {
     use std::collections::HashMap;
     type Q2 = (i64, i64);
@@ -2246,12 +2277,14 @@ fn split_coendpoint_section_arc_inputs(inputs: &mut Vec<ArrInput>, frame: &Plane
     };
     let mut pair_mids: HashMap<(Q2, Q2), Vec<Q2>> = HashMap::new();
     for inp in inputs.iter() {
-        if !(inp.is_section && inp.is_arc) {
-            continue;
-        }
-        let Some(mid) = arc_mid(&inp.edge) else {
-            continue;
+        let mid = if inp.is_section && inp.is_arc {
+            arc_mid(&inp.edge)
+        } else if matches!(inp.edge.curve_3d, EdgeCurve::Line) {
+            Some(inp.edge.start_3d + (inp.edge.end_3d - inp.edge.start_3d) * 0.5)
+        } else {
+            None
         };
+        let Some(mid) = mid else { continue };
         let (a, b) = (q2(inp.a), q2(inp.b));
         let key = if a <= b { (a, b) } else { (b, a) };
         pair_mids
@@ -2947,15 +2980,23 @@ fn arrangement_regions_from_inputs(
             // Other chord's endpoints landing on this chord's interior
             // (T-junctions where a section merely touches another). The break
             // registers with the ENDPOINT itself as the exact vertex UV —
-            // weld-scale band, not the vertex tolerance: a marched section's
-            // endpoint (curve-fit error ~1e-6) landing on a boundary or
-            // section chord is a REAL T-junction; at 1e-7 it is missed, the
-            // chord dangles as a pendant, and the face tracer walks it twice.
+            // Fitted NURBS endpoints retain their historical fit-error band.
+            // Exact analytic inputs must use the vertex tolerance: a nearby
+            // arc midpoint is not a T-junction on its straight chord.
             for bp in [b0, b1] {
                 let w = (bp - a0).dot(d) / (len * len);
                 if w > 1e-6 && w < 1.0 - 1e-6 {
                     let on = a0 + d * w;
-                    if (on - bp).length() < tol * 100.0 && (!i_is_arc || chord_break_on_arc(i, bp))
+                    let endpoint_tolerance =
+                        if matches!(inputs[i].edge.curve_3d, EdgeCurve::NurbsCurve(_))
+                            || matches!(inputs[j].edge.curve_3d, EdgeCurve::NurbsCurve(_))
+                        {
+                            tol * 100.0
+                        } else {
+                            tol
+                        };
+                    if (on - bp).length() < endpoint_tolerance
+                        && (!i_is_arc || chord_break_on_arc(i, bp))
                     {
                         ts.push((w, Some(bp)));
                     }
@@ -3995,20 +4036,15 @@ fn split_cylinder_band_by_arrangement(
         // closed, valid shell 35 % light (exact mass 28 550 against a
         // 44 365 tessellation for a boss standing on the base with its axis
         // in the seam plane).
-        // Only the rings the rescue draws itself are refined: the frame
-        // rims are the face's own boundary, shared with the cap across
-        // them, and a vertex minted here alone would leave that cap's rim
-        // un-split against it.
-        let interior_level = v > v_bottom + tol && v < v_top - tol;
+        // Boundary arcs also need distinct endpoint pairs from their straight
+        // chords. The global arc refinement propagates these vertices to the
+        // adjacent cap before endpoint-keyed edge merging.
         let mut refined: Vec<f64> = Vec::with_capacity(breaks.len() * 2);
         for w in breaks.windows(2) {
             refined.push(w[0]);
-            if !interior_level {
-                continue;
-            }
             let span = w[1] - w[0];
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            let n = (span / (std::f64::consts::PI * 0.999)).ceil().max(1.0) as usize;
+            let n = (span / (std::f64::consts::PI * 0.999)).ceil().max(2.0) as usize;
             for k in 1..n {
                 #[allow(clippy::cast_precision_loss)]
                 refined.push(w[0] + span * k as f64 / n as f64);
@@ -6876,6 +6912,27 @@ fn split_face_2d_impl(
             tol.linear,
             split_registry,
         )?;
+        // Sections can trace bounded regions outside the source face. With an
+        // exact polygon boundary, retain only regions whose interior belongs
+        // to it before classifying against the opposing solid.
+        let arr = if boundary
+            .iter()
+            .all(|e| matches!(e.curve_3d, EdgeCurve::Line))
+        {
+            let polygon: Vec<_> = boundary.iter().map(|e| frame.project(e.start_3d)).collect();
+            arr.map(|mut faces| {
+                faces.retain(|f| {
+                    super::classify_2d::point_in_polygon_2d(
+                        frame.project(interior_point_3d(f, Some(frame))),
+                        &polygon,
+                    )
+                });
+                faces
+            })
+            .filter(|faces| !faces.is_empty())
+        } else {
+            arr
+        };
         if let Some(result) = arr
             && (result.len() > loops.len()
                 || wire_loops_self_cross(&loops, tol.linear)
@@ -8185,6 +8242,82 @@ mod tests {
     use remus_math::curves2d::Line2D;
     use remus_math::vec::Vec2;
     use remus_topology::test_utils::make_unit_square_face;
+
+    #[test]
+    fn straight_nurbs_crossings_split_both_traversals_without_projecting_skew_lines() {
+        use remus_math::nurbs::{fitting::interpolate, surface::NurbsSurface};
+        let surface = FaceSurface::Nurbs(
+            NurbsSurface::new(
+                1,
+                1,
+                vec![0.0, 0.0, 1.0, 1.0],
+                vec![0.0, 0.0, 1.0, 1.0],
+                vec![
+                    vec![Point3::new(0.0, 0.0, 0.0), Point3::new(0.0, 1.0, 0.0)],
+                    vec![Point3::new(1.0, 0.0, 0.0), Point3::new(1.0, 1.0, 0.0)],
+                ],
+                vec![vec![1.0; 2]; 2],
+            )
+            .unwrap(),
+        );
+        let crossing = Point3::new(0.6, 0.4, 0.0);
+        for (z, expected) in [(0.0, 8), (0.001, 4)] {
+            let mut edges = Vec::new();
+            for (source, (a, b)) in [
+                (Point3::new(0.1, 0.4, 0.0), Point3::new(0.9, 0.4, 0.0)),
+                (Point3::new(0.6, 0.1, z), Point3::new(0.6, 0.9, z)),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let curve = interpolate(&[a, b], 1).unwrap();
+                for forward in [true, false] {
+                    let (start, end) = if forward { (a, b) } else { (b, a) };
+                    edges.push(OrientedPCurveEdge {
+                        curve_3d: EdgeCurve::NurbsCurve(curve.clone()),
+                        trim: Some(curve.domain()),
+                        pcurve: dummy_pcurve(),
+                        start_uv: Point2::new(start.x(), start.y()),
+                        end_uv: Point2::new(end.x(), end.y()),
+                        start_3d: start,
+                        end_3d: end,
+                        forward,
+                        source_edge_idx: Some(source),
+                        pave_block_id: None,
+                        source_topo_edge: None,
+                    });
+                }
+            }
+            split_sections_at_t_junctions(&mut edges, 0, &surface, None, &[], 1e-7, None).unwrap();
+            assert_eq!(edges.len(), expected);
+            for edge in &edges {
+                assert!(matches!(edge.curve_3d, EdgeCurve::NurbsCurve(_)));
+                let (a, b) = edge.traversal_domain();
+                assert!(
+                    (edge
+                        .curve_3d
+                        .evaluate_with_endpoints(a, edge.start_3d, edge.end_3d)
+                        - edge.start_3d)
+                        .length()
+                        < 1e-7
+                );
+                assert!(
+                    (edge
+                        .curve_3d
+                        .evaluate_with_endpoints(b, edge.start_3d, edge.end_3d)
+                        - edge.end_3d)
+                        .length()
+                        < 1e-7
+                );
+                if expected == 8 {
+                    assert!(
+                        (edge.start_3d - crossing).length() < 1e-7
+                            || (edge.end_3d - crossing).length() < 1e-7
+                    );
+                }
+            }
+        }
+    }
 
     fn dummy_pcurve() -> remus_math::curves2d::Curve2D {
         remus_math::curves2d::Curve2D::Line(
