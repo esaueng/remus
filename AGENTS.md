@@ -298,6 +298,7 @@ Quick reference — find the right file for any task:
 | Self-intersection removal (BOP-based) | `self_int.rs` |
 | Cavity (inner shell) extent checks | `cavity.rs` |
 | Topology-preserving planar face moves | `move_faces.rs` |
+| Quarter-cylinder replacement clearance | `move_faces/quarter_cylinder.rs` |
 
 ### L2: sketch (`crates/sketch/src/`)
 | Task | File(s) |
