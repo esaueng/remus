@@ -11,18 +11,18 @@ front of the Linux checks, and no routing HTTP request from Actions.
 
 Only the approved owner's open, same-repository PR merge refs are eligible.
 Main pushes and manual dispatches also require protected main. Scheduled
-auxiliary jobs additionally require protected main and the approved actor. Repository name
-and numeric identity, PR author, event actor and rerun actor are checked in the
+auxiliary jobs additionally require protected main and the approved actor.
+Repository name and numeric identity, PR author, event actor and rerun actor are checked in the
 immutable workflow. Forks and other authors remain hosted. The runner group
 must separately restrict the exact repository and immutable workflow revision;
 a label or repository variable does not grant execution authority.
 
 `CI_FLEET_ENABLED=true` opts in. `CI_FLEET_TARGET` accepts only
-`ci-server-jane`, `ci-server-john`, or `github-hosted`. An external controller can publish this variable after checking fresh collector
-health and GitHub runner connectivity. A manually selected target stays fixed
+`ci-server-jane`, `ci-server-john`, or `github-hosted`. An external controller
+can publish this variable after checking fresh collector health and GitHub runner connectivity. A manually selected target stays fixed
 until an administrator or controller updates it; GitHub does not automatically
-switch hosts when that server goes offline. Jane is primary, John the first backup, and GitHub-hosted
-the second. Busy Jane remains available; jobs queue for either of her two slots.
+switch hosts when that server goes offline. The preferred order is Jane, then
+John, then GitHub-hosted. Busy Jane remains available; jobs queue for either of her two slots.
 Missing/invalid configuration selects hosted. Hosted fallback still depends on
 GitHub billing and capacity.
 
@@ -30,6 +30,9 @@ Before checkout, self-hosted jobs verify the non-root identity, protected runner
 files, NoNewPrivileges, fresh storage, empty rootless Docker state, mount options
 and exact cgroup limits. Jane slots each have six CPU equivalents and 6 GiB RAM;
 John has one CPU equivalent and 3 GiB. Guard failure fails the job.
+Rust build and registry caches are restored from GitHub after the isolation
+check; only main saves them. Runner homes and workspaces are still erased
+between jobs. This reuses build artifacts without retaining a local workspace.
 Browser suites hold a shared host lock while using fixed localhost test ports.
 Browser/native OS dependencies must be installed by the host administrator;
 workflow jobs install browser binaries without sudo.
@@ -72,8 +75,8 @@ Cargo Deny uses the same 0.20.2 CLI and all-feature checks directly. OSV uses
 the same 2.5.1 scanner/reporter image, pinned by digest and started with
 `docker run` after the guard. Docker actions would prepare images before the
 empty-Docker check and fail it on an otherwise clean runner.
-The macOS platform job remains hosted and required by `checks / CI Pass`. Jane and John
-cannot replace macOS capacity. Release workflows are unchanged.
+The macOS platform job remains hosted and required by `checks / CI Pass`.
+Jane and John cannot replace macOS capacity. Release workflows are unchanged.
 
 Policy verification: `python3 scripts/test-direct-fleet.py`,
 `python3 scripts/test-owner-pr-routing.py`, the existing owner policy tests,
