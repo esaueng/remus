@@ -763,7 +763,9 @@ fn simple_cylinder_cap_position(
 /// Works for both a bore (material outside the cylinder) and a boss (material
 /// inside it); the concavity is read from the face's own orientation. The
 /// cylinder's axial extent is taken from the face, so the caps at either end
-/// are preserved and only the wall moves.
+/// are preserved and only the wall moves. Outward quarter walls with radial
+/// planar sides and perpendicular planar caps are re-limited exactly; other
+/// partial-wall configurations return a typed refusal.
 ///
 /// # Errors
 ///
@@ -800,6 +802,10 @@ pub fn resize_cylindrical_face(
         });
     }
 
+    if !cylindrical_face_is_full_turn(topo, face, &cyl)? {
+        return resize_partial_cylindrical_face(topo, solid, face, &cyl, new_radius);
+    }
+
     let axis = unit(cyl.axis())?;
     if axis.dot(Vec3::new(0.0, 0.0, 1.0)) > 1.0 - tol.angular {
         return resize_cylindrical_face_aligned(topo, solid, face, new_radius);
@@ -828,6 +834,122 @@ pub fn resize_cylindrical_face(
     let result = resize_cylindrical_face_aligned(topo, local_solid, local_face, new_radius)?;
     transform_solid(topo, result, &to_world)?;
     Ok(result)
+}
+
+fn cylindrical_face_is_full_turn(
+    topo: &Topology,
+    face: FaceId,
+    cylinder: &remus_math::surfaces::CylindricalSurface,
+) -> Result<bool, crate::OperationsError> {
+    use remus_topology::edge::EdgeCurve;
+    let tolerance = Tolerance::new();
+    let face = topo.face(face)?;
+    let mut rims: Vec<(f64, f64, f64)> = Vec::new();
+    for wire_id in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+        for oriented in topo.wire(wire_id)?.edges() {
+            let edge = topo.edge(oriented.edge())?;
+            match edge.curve() {
+                EdgeCurve::Line => {
+                    let direction =
+                        topo.vertex(edge.end())?.point() - topo.vertex(edge.start())?.point();
+                    if direction.cross(cylinder.axis()).length() > tolerance.linear {
+                        return Ok(false);
+                    }
+                }
+                EdgeCurve::Circle(circle) => {
+                    let delta = circle.center() - cylinder.origin();
+                    let level = delta.dot(cylinder.axis());
+                    if circle.normal().cross(cylinder.axis()).length() > tolerance.angular
+                        || (delta - cylinder.axis() * level).length() > tolerance.linear
+                        || (circle.radius() - cylinder.radius()).abs() > tolerance.linear
+                    {
+                        return Ok(false);
+                    }
+                    let span = if let Some((lo, hi)) = edge.trim() {
+                        hi - lo
+                    } else if edge.start() == edge.end() {
+                        std::f64::consts::TAU
+                    } else {
+                        return Ok(false);
+                    };
+                    let winding = span
+                        * circle
+                            .u_axis()
+                            .cross(circle.v_axis())
+                            .dot(cylinder.axis())
+                            .signum()
+                        * if oriented.is_forward() { 1.0 } else { -1.0 };
+                    if let Some(rim) = rims
+                        .iter_mut()
+                        .find(|rim| (rim.0 - level).abs() <= tolerance.linear)
+                    {
+                        rim.1 += winding;
+                        rim.2 += span.abs();
+                    } else {
+                        rims.push((level, winding, span.abs()));
+                    }
+                }
+                _ => return Ok(false),
+            }
+        }
+    }
+    Ok(rims.len() == 2
+        && rims.iter().all(|rim| {
+            (rim.1.abs() - std::f64::consts::TAU).abs() <= tolerance.angular
+                && (rim.2 - std::f64::consts::TAU).abs() <= tolerance.angular
+        }))
+}
+
+fn resize_partial_cylindrical_face(
+    topo: &mut Topology,
+    solid: SolidId,
+    face: FaceId,
+    cylinder: &remus_math::surfaces::CylindricalSurface,
+    new_radius: f64,
+) -> Result<SolidId, crate::OperationsError> {
+    if topo.face(face)?.is_reversed() {
+        return Err(remus_offset::OffsetError::UnsupportedMoveFace {
+            face,
+            surface_type: "cylinder",
+            reason: "partial-cylinder resize currently requires an outward quarter wall with radial planar sides".into(),
+        }.into());
+    }
+    let (base, height) = axial_extent(topo, face, cylinder)?;
+    let before = solid_volume(topo, solid, verify_deflection(topo, solid))?;
+    let replacement = remus_math::surfaces::CylindricalSurface::with_ref_dir(
+        cylinder.origin(),
+        cylinder.axis(),
+        new_radius,
+        cylinder.x_axis(),
+    )?;
+    remus_topology::transaction::run_transacted(topo, |topo| -> Result<_, crate::OperationsError> {
+        // The replacement layer certifies radial quarter-sector supports and
+        // clearance before rebuilding their shared edges and cap boundaries.
+        let result = crate::replace_surface::replace_surface(
+            topo,
+            solid,
+            face,
+            FaceSurface::Cylinder(replacement),
+        )?
+        .solid;
+        let expected = before
+            + 0.25
+                * PI
+                * (new_radius * new_radius - cylinder.radius() * cylinder.radius())
+                * height;
+        ensure_closed_shell(topo, result, "partial cylindrical resize")?;
+        ensure_volume(topo, result, expected, "partial cylindrical resize")?;
+        ensure_resized_cylinder(
+            topo,
+            result,
+            base,
+            cylinder.axis(),
+            height,
+            cylinder.radius(),
+            new_radius,
+        )?;
+        Ok(result)
+    })
 }
 
 /// [`resize_cylindrical_face`] after any required rigid normalization has put
