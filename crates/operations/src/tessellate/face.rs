@@ -64,6 +64,29 @@ pub(super) fn cylinder_has_non_standard_boundary(
     Ok(has_nurbs || has_ellipse || (all_line && wire.edges().len() > 4))
 }
 
+fn cylinder_has_stepped_rims(
+    topo: &Topology,
+    face: &remus_topology::face::Face,
+    cylinder: &remus_math::surfaces::CylindricalSurface,
+) -> Result<bool, crate::OperationsError> {
+    let tolerance = remus_math::tolerance::Tolerance::default().linear;
+    let mut levels = Vec::<f64>::new();
+    for oriented in topo.wire(face.outer_wire())?.edges() {
+        if let EdgeCurve::Circle(circle) = topo.edge(oriented.edge())?.curve() {
+            let level = (circle.center() - cylinder.origin()).dot(cylinder.axis());
+            if !levels
+                .iter()
+                .any(|&existing| (existing - level).abs() <= tolerance)
+            {
+                levels.push(level);
+            }
+        }
+    }
+    // A rectangular parameter band has two rim levels; extra levels bound a
+    // step that its angular/axial bounding rectangle would silently fill.
+    Ok(levels.len() > 2)
+}
+
 /// Tessellate a face and return mesh with per-vertex UV coordinates.
 ///
 /// UV coordinates are the parametric (u, v) values of the surface at each
@@ -156,6 +179,32 @@ pub(super) fn tessellate_with_uvs_floor(
                     angular_tol,
                     None,
                 )
+            } else if cylinder_has_stepped_rims(topo, face_data, cyl)? {
+                let mut mesh = super::TriangleMesh::default();
+                super::nonplanar::tessellate_nonplanar_cdt(
+                    topo,
+                    face,
+                    face_data,
+                    deflection,
+                    angular_tol,
+                    false,
+                    &remus_math::det_hash::DetHashMap::default(),
+                    &mut mesh,
+                    &mut remus_math::det_hash::DetHashMap::default(),
+                )?;
+                let uvs = mesh
+                    .positions
+                    .iter()
+                    .map(|&p| {
+                        let (u, v) = cyl.project_point(p);
+                        [u, v]
+                    })
+                    .collect();
+                for (normal, &point) in mesh.normals.iter_mut().zip(&mesh.positions) {
+                    let (u, v) = cyl.project_point(point);
+                    *normal = cyl.normal(u, v);
+                }
+                Ok(TriangleMeshUV { mesh, uvs })
             } else if cylinder_has_non_standard_boundary(topo, face_data)? {
                 tessellate_analytic_with_boundary(topo, face_data, cyl, deflection, angular_tol)
             } else {

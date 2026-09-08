@@ -1,6 +1,7 @@
 # Boundary-aware resizing of partial cylindrical faces
 
-Status: planned; investigation and acceptance criteria only, with no target date.
+Status: implemented on the review branch; native, packaged WASM, and
+full-workspace qualification pass. Merge and consumer deployment are not claimed.
 
 ## Intended behavior
 
@@ -18,7 +19,10 @@ adjoining planar faces. The reported kernel is Remus 2.130.0 at
 - Selected radius: 20.5 mm (diameter 41 mm); axis +Z; origin (61, 41, 0) mm.
 - Wall area: 386.4158963915445 mm², consistent with a 90° wall, 12 mm high.
 - STEP import: one solid, zero validation errors or warnings.
-- Original volume: 32296.13970707588 mm³.
+- Original reported volume in Remus 2.130.0: 32296.13970707588 mm³.
+- Current exact reference volume: 32296.762938013333 mm³, independently
+  decomposed as `73*41*8 + 12*30.5*12 + PI*20.5²*12/4`. The earlier value
+  used a chorded boundary approximation and is not the acceptance oracle.
 
 Running the supplied `repro.cjs` against the supplied packaged WASM on
 2026-09-06 reproduced these results from independent imports:
@@ -37,8 +41,9 @@ The local evidence bundle contains `Jolly-Fox.step`,
 `openzcad-interaction-log-2026-09-06.json` (captured attempts), and `repro.cjs`.
 The STEP SHA-256 is
 `cc8984c9d485f6ee050b54b29112caf0b2dbeaca9ff577eee4c2227f2dbf2267`.
-These files are not committed by this roadmap change; retaining the model as a
-regression fixture is part of the implementation work.
+The STEP is retained unchanged as
+`crates/io/tests/data/jolly_fox_partial_cylinder.step`; diagnostic/history files
+are not needed by the regression and are not committed.
 
 ## Investigation and scope
 
@@ -46,10 +51,9 @@ In `crates/operations/src/push_pull.rs`,
 `resize_cylindrical_face_aligned` constructs a full cylinder or tube boolean
 tool. Its signed expected volume change uses
 `PI * (new_radius² - old_radius²) * height`, assuming a complete 360° wall.
-This matches the reported source-level finding and is also present in the
-checkout inspected for this entry. Neither assumption respects this face's
-angular trims. The precise cause of each boolean topology failure remains
-unresolved.
+Those assumptions do not respect this face's angular trims. The implementation
+now routes partial walls to support-surface re-limitation before the full-turn
+boolean path; the full-turn path remains for qualified complete boss/bore walls.
 
 Implementation must:
 
@@ -90,3 +94,55 @@ Implementation must:
 - Preserve full-cylinder boss and bore resize behavior, including existing
   inward/outward, repeated-edit, rotated-axis, scale, and collision regressions
   in `push_pull.rs` and the bracket cylindrical-resize regression.
+
+
+## Implemented contract and current qualification
+
+The initial supported partial family is an outward quarter-cylinder with two
+coaxial authoritative quarter-circle rims, two axial sides, four distinct planar
+supports, perpendicular caps, and radial side planes through the cylinder axis.
+The rest of the source solid must have planar faces with straight boundaries.
+The clearance proof projects each nonadjacent face into the quarter-sector
+frame and conservatively excludes its entire bounding box from the swept
+annulus, including face interiors. Possible contact is a typed topology-change
+refusal. Unsupported carriers or boundary families refuse explicitly.
+
+The replacement engine reconstructs shared intersection edges and cap wires.
+Persistent plane p-curves use canonical surface frames; circular rim p-curves
+use angular spans and coedge direction. These are required for exact STEP
+round trips. Closed-shell, volume, analytic-radius, axis, and axial-extent
+checks remain enabled, with transactional rollback on any failure.
+
+`crates/io/tests/partial_cylinder_resize.rs` currently passes eight native test
+groups. They cover independent r20/r21 resizes and direct support replacement;
+r20/r21/r22/r28 across scales 0.1/1/10 and rigid placements; shoulder contact at
+r30.5 and collision at r32; a collision with the interior of a nonadjacent
+planar face; and explicit refusal of a valid half-cylinder with unsupported
+boundary curves. Success checks include strict validation, independent volume,
+material probes, analytic radius, fixed axis and z8..20 extent, wall area,
+watertight meshes at two deflections, and STEP round trips. Refusals preserve
+serialized source geometry and arena allocation counts.
+
+An offset-layer witness uses a validated quarter prism and a planar obstacle
+whose entire boundary is outside the swept wall. The larger radius refuses on
+face-interior contact; a smaller radius succeeds. The public fixture separately
+pins transactional collision refusal on a connected solid.
+
+Both rebuilt WASM packages pass smoke and installed-tarball consumer suites,
+including eight exact direct/batch resizes with STEP round trips and four
+collision refusals. All 20 existing push/pull tests, six replacement tests,
+and four generalized move tests pass. Replacement p-curve assertions now use
+the canonical plane frame and oriented parameter intervals required by STEP;
+legacy blend-preserving projections retain their existing test convention.
+Workspace Clippy and the unchanged 52-row approximation census pass.
+The final full-workspace run passes all 4,882 tests, with 13 intentionally
+skipped. Nextest reported one passing facade test as leaky; the same test passed
+in an isolated nextest run without that warning. No failing test remains. General angular trims, nonradial side
+supports, inward partial bores, blend-adjacent walls, and topology-changing edits
+remain unqualified; journaled direct-edit completion is not claimed by this
+geometry slice.
+
+The existing WASM structured envelope currently reports these offset refusals
+as `operation_failed` with category `internal`, retaining the explicit native
+reason. A specialized failure-category projection is a separate remaining
+diagnostic task; the native offset variants remain typed.

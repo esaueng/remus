@@ -1297,3 +1297,135 @@ fn closed_edge_centroid_is_the_centre_for_circle_and_ellipse() {
         }
     }
 }
+
+#[test]
+fn complementary_coplanar_pieces_each_receive_cross_rank_selection() {
+    let mut topo = Topology::new();
+    let a = rect_sub_face(
+        &mut topo,
+        0.0,
+        2.0,
+        0.0,
+        1.0,
+        Rank::A,
+        Point3::new(1.0, 0.5, 0.0),
+    );
+    let b = rect_sub_face(
+        &mut topo,
+        0.0,
+        1.0,
+        0.0,
+        1.0,
+        Rank::B,
+        Point3::new(0.5, 0.5, 0.0),
+    );
+    let mut c = rect_sub_face(
+        &mut topo,
+        1.0,
+        2.0,
+        0.0,
+        1.0,
+        Rank::B,
+        Point3::new(1.5, 0.5, 0.0),
+    );
+    c.source_face = b.source_face;
+    let faces = vec![a, b, c];
+    let result = detect_same_domain(
+        &topo,
+        &GfaArena::new(),
+        &faces,
+        &HashMap::new(),
+        Tolerance::new(),
+    );
+    assert_eq!(result.pairs.len(), 2);
+    assert!(result.within_rank_dups.is_empty());
+    let fuse = crate::bop::select_faces(
+        &faces,
+        crate::bop::BooleanOp::Fuse,
+        &result.pairs,
+        &result.within_rank_dups,
+    );
+    assert_eq!(fuse.len(), 1);
+    assert_eq!(fuse[0].face_id, faces[0].face_id);
+    let intersection = crate::bop::select_faces(
+        &faces,
+        crate::bop::BooleanOp::Intersect,
+        &result.pairs,
+        &result.within_rank_dups,
+    );
+    assert_eq!(intersection.len(), 2);
+    assert!(
+        intersection
+            .iter()
+            .all(|f| f.face_id == faces[1].face_id || f.face_id == faces[2].face_id)
+    );
+    let cut = crate::bop::select_faces(
+        &faces,
+        crate::bop::BooleanOp::Cut,
+        &result.pairs,
+        &result.within_rank_dups,
+    );
+    assert!(cut.is_empty());
+}
+
+#[test]
+fn planar_nurbs_support_participates_in_containment_without_carrier_replacement() {
+    use remus_math::nurbs::surface::NurbsSurface;
+    let mut topo = Topology::new();
+    let a = rect_sub_face(
+        &mut topo,
+        0.0,
+        2.0,
+        0.0,
+        2.0,
+        Rank::A,
+        Point3::new(1.0, 1.0, 0.0),
+    );
+    let b = rect_sub_face(
+        &mut topo,
+        0.5,
+        1.5,
+        0.5,
+        1.5,
+        Rank::B,
+        Point3::new(1.0, 1.0, 0.0),
+    );
+    let surface = |lift| {
+        FaceSurface::Nurbs(
+            NurbsSurface::new(
+                1,
+                1,
+                vec![0.0, 0.0, 1.0, 1.0],
+                vec![0.0, 0.0, 1.0, 1.0],
+                vec![
+                    vec![Point3::new(0.0, 0.0, 0.0), Point3::new(0.0, 2.0, 0.0)],
+                    vec![Point3::new(2.0, 0.0, 0.0), Point3::new(2.0, 2.0, lift)],
+                ],
+                vec![vec![1.0; 2]; 2],
+            )
+            .unwrap(),
+        )
+    };
+    topo.face_mut(b.face_id).unwrap().set_surface(surface(0.0));
+    let faces = vec![a, b];
+    let result = detect_same_domain(
+        &topo,
+        &GfaArena::new(),
+        &faces,
+        &HashMap::new(),
+        Tolerance::new(),
+    );
+    assert_eq!(result.pairs.len(), 1);
+    assert!(matches!(
+        topo.face(faces[1].face_id).unwrap().surface(),
+        FaceSurface::Nurbs(_)
+    ));
+    assert!(
+        surfaces_same_domain(
+            topo.face(faces[0].face_id).unwrap().surface(),
+            &surface(0.01),
+            Tolerance::new()
+        )
+        .is_none()
+    );
+}
