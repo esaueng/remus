@@ -78,12 +78,9 @@ fn solid_has_scalloped_sphere_collar(
     Ok(false)
 }
 
-/// Whether the solid has a torus notch band (torus − box: a kept toroidal patch
-/// bounded by two tube-angle(`v`)-WRAPPING seam-arc loops, NOT constant-`v`
-/// latitude circles). Its per-face analytic tessellation can't be sampled
-/// watertight in isolation (the band wraps `v` and shares vertices with the
-/// notch walls), and there is no closed-form volume — so the volume is taken off
-/// the (watertight) whole-solid mesh instead, like the box ∩ sphere collar.
+/// Whether a solid contains a torus band bounded by tube-wrapping rims.
+/// Qualified monotone rims use oriented quadrature; unsupported trims retain
+/// the shared-vertex whole-solid tessellation fallback.
 fn solid_has_torus_notch_band(topo: &Topology, solid: SolidId) -> bool {
     let Ok(faces) = remus_topology::explorer::solid_faces(topo, solid) else {
         return false;
@@ -1489,13 +1486,33 @@ pub fn solid_volume(
         // than return a leaky volume.
     }
 
-    // A torus notch band (torus − box) likewise has no closed-form volume and
-    // can't be per-face tessellated watertight (the band wraps the tube and
-    // shares vertices with the notch walls). The whole-solid mesh IS watertight
-    // (the structured notch-band tessellator), so take the divergence-theorem
-    // volume off it. Per-face summation would under-count (the band's own per-
-    // face mesh isn't closed).
+    // Qualified two-rim torus bands integrate over their retained surface.
+    // Unsupported trims still need the shared-vertex, whole-solid mesh path.
     if solid_has_torus_notch_band(topo, solid) {
+        let mut integral = Some(0.0);
+        for face_id in remus_topology::explorer::solid_faces(topo, solid)? {
+            let contribution = match topo.face(face_id)?.surface() {
+                FaceSurface::Torus(_) => {
+                    remus_check::properties::face_integrator::integrate_torus_band_face(
+                        topo, face_id, 8,
+                    )
+                    .ok()
+                    .flatten()
+                }
+                FaceSurface::Plane { .. } => {
+                    remus_check::properties::face_integrator::integrate_face(topo, face_id, 8).ok()
+                }
+                _ => None,
+            };
+            let Some(contribution) = contribution else {
+                integral = None;
+                break;
+            };
+            integral = integral.map(|volume| volume + contribution.volume);
+        }
+        if let Some(volume) = integral {
+            return Ok(volume.abs());
+        }
         let mesh = tessellate::tessellate_solid(topo, solid, deflection)?;
         if !mesh.indices.is_empty() && mesh_boundary_edge_count(&mesh) == 0 {
             return Ok(signed_volume_from_mesh(&mesh));
