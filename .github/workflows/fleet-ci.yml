@@ -259,7 +259,6 @@ jobs:
           persist-credentials: false
       - *fleet-rust
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
-        if: runner.environment != 'self-hosted'
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo clippy --all-targets --all-features -- -D warnings
@@ -277,7 +276,6 @@ jobs:
           persist-credentials: false
       - *fleet-rust
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
-        if: runner.environment != 'self-hosted'
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@742a3317eac7bd62f91cd888b4eead5e784ba833 # v2.62.30
@@ -305,7 +303,6 @@ jobs:
           persist-credentials: false
       - *fleet-rust
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
-        if: runner.environment != 'self-hosted'
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Test census contract
@@ -325,7 +322,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
-        if: runner.environment != 'self-hosted'
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@742a3317eac7bd62f91cd888b4eead5e784ba833 # v2.87.1
         with:
           tool: nextest
@@ -349,7 +347,6 @@ jobs:
           persist-credentials: false
       - *fleet-rust
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
-        if: runner.environment != 'self-hosted'
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@742a3317eac7bd62f91cd888b4eead5e784ba833 # v2.62.30
@@ -383,8 +380,8 @@ jobs:
         with:
           toolchain: "1.88.0"
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
-        if: runner.environment != 'self-hosted'
         with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           key: msrv
       - run: cargo check --workspace --all-features
   wasm-no-io:
@@ -400,7 +397,6 @@ jobs:
           persist-credentials: false
       - *fleet-rust
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
-        if: runner.environment != 'self-hosted'
         with:
           key: wasm-no-io
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -426,7 +422,6 @@ jobs:
         with:
           node-version: 24
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
-        if: runner.environment != 'self-hosted'
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@742a3317eac7bd62f91cd888b4eead5e784ba833 # v2.62.30
@@ -480,7 +475,8 @@ jobs:
           persist-credentials: false
       - *fleet-rust
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
-        if: runner.environment != 'self-hosted'
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo check --manifest-path fuzz/Cargo.toml --bins
   render:
     name: Software Rendering
@@ -498,7 +494,8 @@ jobs:
           persist-credentials: false
       - *fleet-rust
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
-        if: runner.environment != 'self-hosted'
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install Mesa lavapipe
         run: |
           if [ "${{ runner.environment }}" != self-hosted ]; then
@@ -554,7 +551,6 @@ jobs:
           persist-credentials: false
       - *fleet-rust
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
-        if: runner.environment != 'self-hosted'
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo doc --no-deps --all-features
