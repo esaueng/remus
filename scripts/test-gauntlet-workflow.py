@@ -14,8 +14,10 @@ WORKFLOW = ROOT / ".github" / "workflows" / "gauntlet.yml"
 class GauntletWorkflowTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.text = WORKFLOW.read_text(encoding="utf-8")
-        cls.run_job, cls.publish_job = cls.text.split("\n  publish:\n", maxsplit=1)
+        caller = WORKFLOW.read_text(encoding="utf-8")
+        callee = WORKFLOW.with_name("fleet-gauntlet.yml").read_text(encoding="utf-8")
+        cls.text = caller + "\n" + callee
+        cls.run_job, cls.publish_job = callee.split("\n  publish:\n", maxsplit=1)
 
     def test_declares_daily_smoke_and_weekly_abc_schedules(self) -> None:
         self.assertIn('- cron: "17 3 * * *"', self.text)
