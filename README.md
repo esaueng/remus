@@ -41,6 +41,7 @@ assert!(step.starts_with("ISO-10303-21;"));
 
 ```js
 import { BrepKernel } from 'remus-wasm';
+import { RemusIo } from 'remus-wasm-io';
 
 const kernel = new BrepKernel();
 
@@ -49,10 +50,12 @@ const kernel = new BrepKernel();
 const block = kernel.makeBox(30, 20, 10);
 const cutter = kernel.makeCylinder(5, 15);
 const notched = kernel.cut(block, cutter);
-
-// Measure and export
 const vol = kernel.volume(notched, 0.1);
-const step = kernel.exportStep(notched); // Uint8Array
+
+// File formats live in a separate translator module, loaded only around
+// import and export. Bodies cross between the two as exact arena documents.
+const io = new RemusIo();
+const step = io.exportStep(kernel.serializeSolids(Uint32Array.of(notched))); // Uint8Array
 ```
 
 ## Why a CAD kernel?
@@ -108,6 +111,10 @@ feature label.
 - **[Stabilization plan](docs/kernel-maturity/stabilization-plan.md)** — the
   working plan for promoting every Beta/Experimental row below to Stable,
   sequenced under the capability-matrix promotion rules.
+- **[Unified roadmap](docs/kernel-maturity/roadmap.md)** — the live work
+  queue across the correctness program ([P-Class](docs/kernel-maturity/p-class-status.md))
+  and the adoption program ([Open Kernel](docs/kernel-maturity/open-kernel-status.md)),
+  each with a status ledger updated in the PR that changes it.
 - **[Industrial parity overlay](docs/kernel-maturity/industrial-parity.md)** —
   where each capability stands against the incumbent open-source reference
   kernel, on a competitive axis kept separate from the contract states
@@ -129,11 +136,12 @@ make a failing case pass.
 
 ## Status
 
-Remus is in active development. Core modeling is solid. Each feature below is
-marked stable, beta, planned, or experimental;
-[Known Limitations](#known-limitations) covers the gaps, and the
-[stability matrix](docs/production-readiness/stability-matrix.md) records what
-evidence each label currently rests on.
+Remus is in active development. Core modeling is solid. Each feature below
+carries the label the
+[stability matrix](docs/production-readiness/stability-matrix.md) assigns it
+(stable, beta, experimental, or partial, with any declared domain in
+parentheses), and that matrix records what evidence each label currently rests
+on. [Known Limitations](#known-limitations) covers the gaps.
 
 | Category                | Feature                                                                      | Status       |
 | ----------------------- | ---------------------------------------------------------------------------- | ------------ |
@@ -142,8 +150,14 @@ evidence each label currently rests on.
 | **Booleans**            | Union, cut, intersect on plane, cylinder, cone, sphere, NURBS                | Stable       |
 | **Booleans**            | Batch fuse-all (disjoint-aware union)                                        | Stable       |
 | **Booleans**            | Torus booleans (box ± torus, coaxial torus)                                  | Beta         |
+| **Booleans**            | Cellular and Compound operands (severing planar cuts, disjoint fuses)        | Experimental |
 | **Modifiers**           | Validated planar fillet/chamfer and axisymmetric closed-rim fillet; other curved blend geometry (experimental assembly) | Stable / Experimental |
+| **Modifiers**           | Fillet overflow: transactional stop-at-cliff refusal (rollover unqualified)  | Stable       |
+| **Modifiers**           | Variable-radius, curved-support, and N-way vertex blends                     | Experimental |
+| **Modifiers**           | Face-face blend sheets and hold lines                                        | Experimental |
 | **Modifiers**           | Resize or remove an analytic blend band (`resize_blend`)                     | Experimental |
+| **Modifiers**           | Push/pull and move face (analytic cylinder caps, holed planar boss supports) | Stable (declared domain) |
+| **Modifiers**           | Replace surface (plane, coaxial bore cylinder)                               | Experimental |
 | **Modifiers**           | Shell (hollow solid)                                                         | Stable       |
 | **Modifiers**           | Offset face, offset solid, thicken, mirror, pattern                          | Stable       |
 | **Modifiers**           | Draft (planar faces)                                                         | Stable       |
@@ -151,36 +165,43 @@ evidence each label currently rests on.
 | **Sweeps**              | Revolve, sweep, loft, pipe (planar profiles)                                 | Stable       |
 | **Sweeps**              | Helical sweep                                                                | Stable       |
 | **Sweeps**              | Non-planar profiles for loft, sweep, pipe, revolve                           | Stable       |
+| **Sweeps**              | First-class wire bodies as sweep profiles                                    | Experimental |
 | **Construction**        | Coons-patch face fill, sew, untrim                                           | Stable       |
 | **Sectioning**          | Cross-section faces, split by plane                                          | Stable       |
+| **Sectioning**          | Sheet split/trim and planar solid imprint                                    | Experimental |
 | **Measurement**         | Bounding box, area, volume, center of mass, inertia tensor + principal axes  | Stable       |
 | **Measurement**         | Point-to-solid, solid-to-solid distance, point classification                | Stable       |
+| **Measurement**         | Sheet area, bounds, and centroid; wire length                                | Experimental |
 | **Drawing**             | Hidden-line edge projection                                                  | Stable       |
 | **Geometry**            | NURBS evaluation, derivatives, knot ops, fitting, projection                 | Stable       |
 | **Geometry**            | Analytic intersections (plane × cylinder, cone, sphere exact; torus sampled) | Stable       |
 | **Geometry**            | Surface-surface intersection (analytic + marching)                           | Stable       |
 | **Geometry**            | Curve-curve intersection (Bezier clipping)                                   | Stable       |
 | **Tessellation**        | Adaptive deflection, CDT, analytic-surface optimization                      | Stable       |
+| **Tessellation**        | Open sheet bodies                                                            | Experimental |
 | **Repair**              | Shape healing (wire, face, shell fixes), sewing, validation                  | Stable       |
 | **I/O**                 | STEP import/export (analytic-preserving round-trip)                          | Stable       |
 | **I/O**                 | STL, 3MF, OBJ, PLY, glTF (`.glb`) import/export                              | Stable       |
 | **I/O**                 | IGES import/export                                                           | Experimental |
+| **I/O**                 | Sheet and wire bodies in arena documents; STEP sheet models                  | Experimental |
 | **Sketching**           | 2D constraint solver (DogLeg)                                                | Stable       |
 | **Feature Recognition** | Holes, pockets, chamfers, fillets                                            | Stable       |
 | **Assemblies**          | Hierarchy, transforms, bill of materials                                     | Stable       |
-| **Evolution**           | Face provenance (booleans, blends, patterns, draft, defeature, split, shell) | Stable       |
+| **Evolution**           | Face provenance (booleans, blends, direct moves, offset, patterns, draft, defeature, split, shell) | Stable (declared coverage) |
 | **Defeaturing**         | Remove planar faces                                                          | Stable       |
+| **Defeaturing**         | Curved rim-band removal                                                      | Partial      |
 | **Rendering**           | Offscreen wgpu render to image plus face-id buffer (`remus-render`)        | Experimental |
 
 ## Known Limitations
 
 A few areas are still maturing. Worth knowing before you build on them:
 
-- **Boolean fallback.** Most booleans run on an exact path that preserves analytic and NURBS surfaces. Hard configurations may use a bounded mesh-based fallback, which tessellates curved faces. If its input/work budgets are exceeded or the welded result is open, non-manifold, or invalid, the operation returns an error instead of a partial solid. Exact tangency and sliver crossings are the two contact configurations that still fall over to that path rather than being answered analytically.
-- **Walking fillet/chamfer and offset.** The v2 modifier APIs validate completed topology and reject partial results. Unsupported/no-op trimming and offsetting a solid that already contains cavity shells return explicit errors; they do not silently drop faces or cavities. Radii the rolling ball cannot fit are refused as typed errors naming the edge and the limit, not delivered as a partial result.
-- **Torus booleans.** Box-with-torus, coaxial-torus, plane-through-centre, and coaxial-cylinder cases give correct volumes, and coaxial torus×cylinder / axis-centred torus×sphere sections are exact circles. Carving a closed torus face into tube bands is not implemented yet, so those configurations resolve through the bounded mesh fallback (torus×sphere fuse currently refuses on its work budget); general torus-to-torus intersections have known gaps.
+- **Boolean fallback.** Most booleans run on an exact path that preserves analytic and NURBS surfaces. Hard configurations may use a bounded mesh-based fallback, which tessellates curved faces. If its input/work budgets are exceeded or the welded result is open, non-manifold, or invalid, the operation returns an error instead of a partial solid. Bounded off-axis cone-sphere, sphere-cylinder, and torus-sphere configurations are now exact for fuse, cut, and intersect across three scales and rigid placement, but general quartic seam arrangements are not. Exact tangency and sliver crossings are the two contact configurations that still fall over to that path rather than being answered analytically.
+- **Walking fillet/chamfer and offset.** The v2 modifier APIs validate completed topology and reject partial results. Unsupported/no-op trimming and offsetting a solid that already contains cavity shells return explicit errors; they do not silently drop faces or cavities. Radii the rolling ball cannot fit are refused as typed errors naming the edge and the limit, not delivered as a partial result. Constant-radius closed rims on cylinder/cone, cylinder/sphere, and cone/cone supports assemble; the cross-drilled cylinder/cylinder rim refuses rather than adding material on the wrong side, and correct-side assembly there is still unqualified.
+- **Torus booleans.** Box-with-torus, coaxial-torus, plane-through-centre, and coaxial-cylinder cases give correct volumes; coaxial torus×cylinder / axis-centred torus×sphere sections are exact circles; a box notch partitions the torus into winding-correct annuli; and a bounded off-axis torus×sphere matrix is exact for fuse, cut, and intersect across three scales and two placements. Broader quartic torus pairs and tangent contacts are unqualified and resolve through the bounded mesh fallback, an oversized torus×sphere witness refuses on its march budget, and general torus-to-torus intersections have known gaps.
 - **Non-planar profiles.** Loft, sweep, and pipe close non-planar section boundaries with bilinear (4-sided) or Coons (5-or-more-sided) caps whose boundary iso-curves are exactly the ring chords. Sweep and pipe also preserve disjoint rectangular iso-parametric holes on a 4-sided bilinear cap; off-surface, curved, touching/overlapping, and n-sided holed trims refuse typed. Loft profiles with holes now refuse instead of discarding their inner wires. Revolve accepts non-planar profile surfaces; a full revolution takes any boundary, and a partial revolution closes non-planar polygonal boundaries with the same caps (curved-edge non-planar boundaries and holes stay typed refusals). Only the miter-corner sweep variant still requires planar profiles (its bisector-plane joint faces would otherwise be non-planar).
-- **Evolution coverage.** Face provenance is exact and construction-derived for booleans, the walking and planar blend builders, patterns, draft, defeature, plane split, and shell. Offset and direct edits still journal as explicit barriers, and edge/vertex provenance beyond the boolean path is roadmap work.
+- **Evolution coverage.** Face provenance is exact and construction-derived for booleans, the walking and planar blend builders, qualified direct face moves, the default offset builder, patterns, draft, defeature, plane split, and shell. Arc-joint and self-intersection-removal offsets and direct edits outside the qualified cells still journal as explicit barriers, and edge/vertex provenance beyond the boolean path is roadmap work.
+- **Sheet and wire bodies.** Standalone sheets and wires are first-class bodies ([RFC 0005](docs/design/rfc-0005-body-taxonomy.md)) with declared bounds: a validated closed planar wire sweeps to a solid, planar sheets split and trim solids and each other, and trimmed NURBS sheets measure and tessellate. Open or non-planar wire profiles and configurations outside those cells refuse with typed errors.
 - **IGES is experimental.** Export writes planar and NURBS surfaces but skips analytic surfaces and approximates circular and elliptical edges as polylines. Import reconstructs planar placeholder faces only. Use STEP for B-Rep exchange.
 - **Declared domains.** Feature recognition claims only its declared feature set (holes, rectangular pockets, chamfers, curved fillet bands) — outside it, absence of a claim is the contract. Defeaturing removes features whose wound lies on planar kept faces (the removed feature itself may be curved); draft targets planar faces. Each refuses outside its domain by name.
 
@@ -216,6 +237,7 @@ and CI enforces the boundaries with `scripts/check-boundaries.sh`.
 | L3    | `remus-operations` | Booleans, fillet, chamfer, extrude, revolve, sweep, loft, shell, offset, measure, tessellation      |
 | L3    | `remus-io`         | Import and export: STEP, IGES, STL, 3MF, OBJ, PLY, glTF                                             |
 | L4    | `remus-wasm`       | JavaScript API via wasm-bindgen, with batch execution, checkpoint/restore, and reproduction bundles |
+| L4    | `remus-wasm-io`    | JavaScript file-format translators as a separate module; bodies cross to and from the kernel as exact arena documents |
 | L4    | `remus-render`     | Offscreen wgpu rendering to a color image plus a face-id buffer. Optional, nothing depends on it    |
 | L5    | `remus`            | Native Rust facade: owned model session, explicit operation policy, curated modeling and I/O API  |
 
@@ -274,6 +296,12 @@ surfaces are preserved too, as are line, circle, ellipse, and NURBS edges.
 Mesh formats export tessellated triangles. glTF is binary `.glb`, with no
 materials or scene graph. IGES is experimental, as described in
 [Known Limitations](#known-limitations).
+
+In the browser, every format lives in the `remus-wasm-io` translator module
+rather than the kernel package, so applications that never touch files do not
+pay for the readers and writers. The kernel serialises bodies to exact arena
+documents (`serializeSolids`) and the translator consumes those; imports flow
+back through `deserializeSolids`.
 
 All Rust importer entry points apply production defaults through
 `ImportLimits`: 256 MiB encoded input, 256 MiB for the uncompressed 3MF model
@@ -355,9 +383,9 @@ python3 scripts/check-apache-replay-provenance.py   # provenance ledger integrit
 
 | Where | What |
 | --- | --- |
-| [`book/`](book/src) | Task-oriented guide: getting started, concepts, tolerances, data exchange, WASM, rendering, troubleshooting |
-| [`docs/kernel-maturity/`](docs/kernel-maturity) | The maturity contract: target, capability matrix, operation contract, failure taxonomy, testing strategy |
-| [`docs/design/`](docs/design) | RFCs and design research, including operation context (0001) and coedge architecture (0002) |
+| [`book/`](book/src) | Task-oriented guide: getting started, architecture, concepts, operation reference, tolerances, data exchange, WASM, rendering, troubleshooting |
+| [`docs/kernel-maturity/`](docs/kernel-maturity) | The maturity contract (target, capability matrix, operation contract, failure taxonomy, testing strategy), the unified roadmap, and the P-Class and Open Kernel program plans and status ledgers |
+| [`docs/design/`](docs/design) | RFCs and design research: operation context (0001), coedge architecture (0002), persistent naming (0003), tolerant modeling (0004), body taxonomy (0005), swept analytic surfaces (0006) |
 | [`docs/production-readiness/`](docs/production-readiness) | Audit, stability matrix, coverage, release checklist, fork maintenance, Apache replay provenance |
 | [`AGENTS.md`](AGENTS.md) | Working guide: module map, ripple-effect checklists, common pitfalls |
 | [`CHANGELOG.md`](CHANGELOG.md) | Full history, including the pre-fork series |
@@ -371,8 +399,10 @@ authority to publish.
 
 ## Roadmap
 
-Priorities, not dates. Planning is by dependency and acceptance gate; see the
-[kernel maturity target](docs/kernel-maturity/target.md) for the full program.
+Priorities, not dates. Planning is by dependency and acceptance gate; the
+[unified roadmap](docs/kernel-maturity/roadmap.md) is the live queue, and the
+[kernel maturity target](docs/kernel-maturity/target.md) describes the full
+program.
 
 **P0 — foundations and correctness.** Capability and failure contracts across
 every operation family; the reproduction and regression corpus; first-class
@@ -385,7 +415,7 @@ mixed-surface cases); transactional topology mutation; kernel-wide diagnostics.
 evolution with persistent topological naming; general blends, offsets,
 shelling, sweeps, and lofts — including the miter-corner sweep, boundaries with
 more than four edges, and partial revolutions with non-planar boundaries;
-direct face editing; attribute propagation; broad STEP round-trip behavior with
+direct face editing, including [boundary-aware partial-cylinder resizing](docs/roadmap/partial-cylinder-resize.md); attribute propagation; broad STEP round-trip behavior with
 topology attributes; memory compaction and session lifecycle.
 
 **P2 — extended scope.** General and non-manifold bodies; mixed B-rep and facet
@@ -421,7 +451,7 @@ in an auditable ledger — see
 [Apache contribution provenance](docs/production-readiness/apache-replay-provenance.md).
 
 The project's use of AI tooling is disclosed in
-[AI-DISCLOSURE.md](./AI-DISCLOSURE.md).
+[AI-DISCLOSURE-ETHICS.md](./AI-DISCLOSURE-ETHICS.md).
 
 ## License
 

@@ -399,6 +399,215 @@ fn tessellate_plain_cylinder_watertight() {
     );
 }
 
+/// Regression for issue #262: the non-planar CDT sized its global-id map by
+/// the insert-time vertex count, but constraint recovery can Steiner-split a
+/// constraint (a self-crossing UV boundary forces exactly that), growing the
+/// triangulation. When the face is too thin to seed an interior grid, no
+/// later insertion resizes the map past the Steiner id, and triangle
+/// emission indexed past it — a panic a library caller cannot catch (WASM
+/// aborts).
+#[test]
+fn nonplanar_cdt_survives_steiner_split_boundary() {
+    use remus_math::surfaces::CylindricalSurface;
+
+    let mut topo = Topology::new();
+    // A cylinder wall whose UV boundary is a thin self-crossing strip. This
+    // exact polygon panicked the pre-fix code: its CDT constraint recovery
+    // splits constraints, adding vertices past the insert-time count, and
+    // the thin winding-cancelling strip seeds no interior grid points that
+    // would resize the id map. (Found by a randomized search over
+    // self-crossing strips on the pre-fix code.)
+    let at = |u: f64, v: f64| Point3::new(u.cos(), u.sin(), v);
+    let uv_corners = [
+        (0.000_788_218_993_877_111_8, 0.009_383_163_975_873_769),
+        (0.130_133_586_779_733_58, 0.005_392_273_633_133_684),
+        (0.110_856_525_625_767_31, 0.023_939_619_358_614_93),
+        (0.133_070_708_656_001_54, 0.024_304_387_712_456_38),
+        (0.128_310_713_574_362_6, 0.020_766_784_802_723_395),
+        (0.158_756_814_375_230_32, 0.010_184_544_897_681_23),
+    ];
+    let vids: Vec<_> = uv_corners
+        .iter()
+        .map(|&(u, v)| topo.add_vertex(Vertex::new(at(u, v), 1e-7)))
+        .collect();
+    let mut edge_ids = Vec::new();
+    let mut oes = Vec::new();
+    let n = uv_corners.len();
+    for i in 0..n {
+        let e = topo.add_edge(Edge::new(vids[i], vids[(i + 1) % n], EdgeCurve::Line));
+        edge_ids.push(e);
+        oes.push(OrientedEdge::new(e, true));
+    }
+    let wire = topo.add_wire(Wire::new(oes, true).unwrap());
+    let face = topo.add_face(Face::new(
+        wire,
+        vec![],
+        FaceSurface::Cylinder(
+            CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0)
+                .unwrap(),
+        ),
+    ));
+
+    // Minimal shared pool: the two endpoints of each line edge.
+    let mut merged = TriangleMesh::default();
+    let mut edge_global_indices = DetHashMap::default();
+    let mut point_to_global = DetHashMap::default();
+    for &e in &edge_ids {
+        let edge = topo.edge(e).unwrap();
+        let mut ids = Vec::new();
+        for vid in [edge.start(), edge.end()] {
+            let p = topo.vertex(vid).unwrap().point();
+            let idx = u32::try_from(merged.positions.len()).unwrap();
+            merged.positions.push(p);
+            merged.normals.push(Vec3::new(0.0, 0.0, 0.0));
+            ids.push(idx);
+        }
+        edge_global_indices.insert(e.index(), ids);
+    }
+
+    // The self-crossing boundary makes the mesh geometrically meaningless
+    // either way; the contract here is only "no panic, no out-of-bounds
+    // index".
+    let result = super::nonplanar::tessellate_nonplanar_cdt(
+        &topo,
+        face,
+        topo.face(face).unwrap(),
+        0.1,
+        remus_math::chord::DEFAULT_ANGULAR_TOL,
+        false,
+        &edge_global_indices,
+        &mut merged,
+        &mut point_to_global,
+    );
+    if result.is_ok() {
+        for &i in &merged.indices {
+            assert!(
+                (i as usize) < merged.positions.len(),
+                "triangle index {i} out of bounds (len {})",
+                merged.positions.len()
+            );
+        }
+    }
+}
+
+/// Issue #264: a capped cylinder whose wall is the two-ring representation —
+/// the wall face's outer wire is one rim circle and its inner wire is the
+/// other, with no seam edge anywhere — used to validate clean but tessellate
+/// to a fraction of the volume (the periodic CDT fallbacks mis-triangulate
+/// the ring boundaries). The wall must take the structured two-rim band path.
+///
+/// Builds the solid directly in the arena with shared rim edges, the way
+/// importers and direct face-construction consumers do.
+#[test]
+fn tessellate_two_ring_cylinder_band_watertight() {
+    use remus_math::curves::Circle3D;
+
+    let mut topo = Topology::new();
+    let (radius, height) = (1.0, 2.0);
+
+    let v_bot = topo.add_vertex(Vertex::new(Point3::new(radius, 0.0, 0.0), 1e-7));
+    let v_top = topo.add_vertex(Vertex::new(Point3::new(radius, 0.0, height), 1e-7));
+    let bot_circle =
+        Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), radius).unwrap();
+    let top_circle = Circle3D::new(
+        Point3::new(0.0, 0.0, height),
+        Vec3::new(0.0, 0.0, 1.0),
+        radius,
+    )
+    .unwrap();
+    let mut bot_edge = Edge::new(v_bot, v_bot, EdgeCurve::Circle(bot_circle.clone()));
+    let bot_start = bot_circle.project(topo.vertex(v_bot).unwrap().point());
+    bot_edge.set_trim(Some((bot_start, bot_start + std::f64::consts::TAU)));
+    let e_bot = topo.add_edge(bot_edge);
+    let mut top_edge = Edge::new(v_top, v_top, EdgeCurve::Circle(top_circle.clone()));
+    let top_start = top_circle.project(topo.vertex(v_top).unwrap().point());
+    top_edge.set_trim(Some((top_start, top_start + std::f64::consts::TAU)));
+    let e_top = topo.add_edge(top_edge);
+
+    // Wall: outer wire is the bottom rim, inner wire is the top rim wound
+    // opposite (the two-ring band convention), no seam edge.
+    let wall_outer = topo.add_wire(Wire::new(vec![OrientedEdge::new(e_bot, true)], true).unwrap());
+    let wall_inner = topo.add_wire(Wire::new(vec![OrientedEdge::new(e_top, false)], true).unwrap());
+    let wall = topo.add_face(Face::new(
+        wall_outer,
+        vec![wall_inner],
+        FaceSurface::Cylinder(
+            remus_math::surfaces::CylindricalSurface::new(
+                Point3::new(0.0, 0.0, 0.0),
+                Vec3::new(0.0, 0.0, 1.0),
+                radius,
+            )
+            .unwrap(),
+        ),
+    ));
+
+    // Caps share the rim edges, as in `make_cylinder`.
+    let bot_cap_wire =
+        topo.add_wire(Wire::new(vec![OrientedEdge::new(e_bot, false)], true).unwrap());
+    let bot_cap = topo.add_face(Face::new(
+        bot_cap_wire,
+        vec![],
+        FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, -1.0),
+            d: 0.0,
+        },
+    ));
+    let top_cap_wire =
+        topo.add_wire(Wire::new(vec![OrientedEdge::new(e_top, true)], true).unwrap());
+    let top_cap = topo.add_face(Face::new(
+        top_cap_wire,
+        vec![],
+        FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: height,
+        },
+    ));
+
+    let shell = topo.add_shell(Shell::new(vec![wall, bot_cap, top_cap]).unwrap());
+    let solid = topo.add_solid(Solid::new(shell, vec![]));
+
+    // The canonical doubled-seam cylinder is the reference: the two-ring
+    // representation must mesh to the same polygon volume, and the analytic
+    // check catches the original "fraction of the volume" regression.
+    let canonical = crate::primitives::make_cylinder(&mut topo, radius, height).unwrap();
+    let mesh_volume = |solid, deflection| -> f64 {
+        let mesh = tessellate_solid(&topo, solid, deflection).unwrap();
+        mesh.indices
+            .chunks_exact(3)
+            .map(|tri| {
+                let a = mesh.positions[tri[0] as usize];
+                let b = mesh.positions[tri[1] as usize];
+                let c = mesh.positions[tri[2] as usize];
+                (a.x() * (b.y() * c.z() - b.z() * c.y())
+                    + a.y() * (b.z() * c.x() - b.x() * c.z())
+                    + a.z() * (b.x() * c.y() - b.y() * c.x()))
+                    / 6.0
+            })
+            .sum::<f64>()
+            .abs()
+    };
+
+    let analytic = std::f64::consts::PI * radius * radius * height;
+    for deflection in [0.1, 0.02] {
+        let reference = mesh_volume(canonical, deflection);
+        let mesh = tessellate_solid(&topo, solid, deflection).unwrap();
+        assert_eq!(
+            boundary_edge_count(&mesh),
+            0,
+            "two-ring cylinder band must be watertight (deflection {deflection})"
+        );
+        let volume = mesh_volume(solid, deflection);
+        assert!(
+            (volume - reference).abs() / reference < 0.01,
+            "two-ring band volume {volume} should match the canonical band's {reference}"
+        );
+        assert!(
+            (volume - analytic).abs() / analytic < 0.05,
+            "two-ring band volume {volume} should be within 5% of analytic {analytic}"
+        );
+    }
+}
+
 /// Regression for issue #696: dovetail-style fuse where a small tongue protrudes
 /// into two adjacent slabs. The downstream consumer (gridfinity-layout-tool)
 /// adds a TONGUE_PROTRUSION specifically to avoid coplanar fuse residue, but
@@ -700,6 +909,153 @@ fn tessellate_drilled_hole_watertight_across_radii() {
             );
         }
     }
+}
+
+/// Issue #265: a NURBS boundary chain that winds a full turn but wanders
+/// along the wall (an interpolated tangent-contact polyline) must not be
+/// swept as a rim band — the band does not exist in the model. Only rims in
+/// a plane perpendicular to the axis may be swept; a fitted NURBS circle rim
+/// (flat) must keep the structured path.
+#[test]
+fn nurbs_rim_must_be_planar_perpendicular_to_axis() {
+    use remus_math::nurbs::fitting::interpolate;
+    use remus_math::surfaces::CylindricalSurface;
+
+    // Build a cylinder wall face whose outer wire is the doubled-seam band
+    // with the TOP rim replaced by two NURBS arcs forming a full ring at
+    // mean z=1 with axial wander amplitude `wander`.
+    let build_wall = |topo: &mut Topology, wander: f64| {
+        let v_bot = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
+        let v_a = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 1.0), 1e-7));
+        let v_b = topo.add_vertex(Vertex::new(Point3::new(-1.0, 0.0, 1.0), 1e-7));
+
+        let bot_circle = remus_math::curves::Circle3D::new(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            1.0,
+        )
+        .unwrap();
+        let mut bot_edge = Edge::new(v_bot, v_bot, EdgeCurve::Circle(bot_circle.clone()));
+        let bot_start = bot_circle.project(topo.vertex(v_bot).unwrap().point());
+        bot_edge.set_trim(Some((bot_start, bot_start + std::f64::consts::TAU)));
+        let e_bot = topo.add_edge(bot_edge);
+
+        // Two NURBS arcs: u ∈ [0, π] and u ∈ [π, 2π], z = 1 + wander·sin(3u).
+        let ring_point = |u: f64| Point3::new(u.cos(), u.sin(), 1.0 + wander * (3.0 * u).sin());
+        let pts1: Vec<_> = (0..=4)
+            .map(|k| ring_point(std::f64::consts::PI * (k as f64) / 4.0))
+            .collect();
+        let pts2: Vec<_> = (0..=4)
+            .map(|k| ring_point(std::f64::consts::PI * (1.0 + (k as f64) / 4.0)))
+            .collect();
+        let mut arc1 = Edge::new(
+            v_a,
+            v_b,
+            EdgeCurve::NurbsCurve(interpolate(&pts1, 3).unwrap()),
+        );
+        let mut arc2 = Edge::new(
+            v_b,
+            v_a,
+            EdgeCurve::NurbsCurve(interpolate(&pts2, 3).unwrap()),
+        );
+        for arc in [&mut arc1, &mut arc2] {
+            let domain = match arc.curve() {
+                EdgeCurve::NurbsCurve(nc) => nc.domain(),
+                _ => unreachable!(),
+            };
+            arc.set_trim(Some(domain));
+        }
+        let e_arc1 = topo.add_edge(arc1);
+        let e_arc2 = topo.add_edge(arc2);
+
+        let e_seam_up = topo.add_edge(Edge::new(v_bot, v_a, EdgeCurve::Line));
+        let e_seam_down = topo.add_edge(Edge::new(v_a, v_bot, EdgeCurve::Line));
+
+        let wire = topo.add_wire(
+            Wire::new(
+                vec![
+                    OrientedEdge::new(e_bot, true),
+                    OrientedEdge::new(e_seam_up, true),
+                    OrientedEdge::new(e_arc1, true),
+                    OrientedEdge::new(e_arc2, true),
+                    OrientedEdge::new(e_seam_down, true),
+                ],
+                true,
+            )
+            .unwrap(),
+        );
+        let face = topo.add_face(Face::new(
+            wire,
+            vec![],
+            FaceSurface::Cylinder(
+                CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0)
+                    .unwrap(),
+            ),
+        ));
+        (face, vec![e_bot, e_seam_up, e_arc1, e_arc2, e_seam_down])
+    };
+
+    let mut topo = Topology::new();
+    let (face, edge_ids) = build_wall(&mut topo, 0.4);
+
+    // Shared pool from the same sampler the solid path uses.
+    let mut merged = TriangleMesh::default();
+    let mut edge_global_indices = DetHashMap::default();
+    for &e in &edge_ids {
+        let edge_data = topo.edge(e).unwrap();
+        let pts = super::edge_sampling::sample_edge(&topo, edge_data, 0.05, 0.35, false).unwrap();
+        let mut ids = Vec::new();
+        for p in pts {
+            let idx = u32::try_from(merged.positions.len()).unwrap();
+            merged.positions.push(p);
+            merged.normals.push(Vec3::new(0.0, 0.0, 0.0));
+            ids.push(idx);
+        }
+        edge_global_indices.insert(e.index(), ids);
+    }
+
+    let face_data = topo.face(face).unwrap();
+    let handled = super::nonplanar::tessellate_revolution_band_shared(
+        &topo,
+        face_data,
+        &edge_global_indices,
+        &mut merged,
+    )
+    .unwrap();
+    assert!(
+        !handled,
+        "a rim wandering ±0.4 along the wall must decline the band sweep"
+    );
+
+    // Same construction with a flat NURBS ring keeps the structured band.
+    let mut topo = Topology::new();
+    let (face, edge_ids) = build_wall(&mut topo, 0.0);
+    let mut merged = TriangleMesh::default();
+    let mut edge_global_indices = DetHashMap::default();
+    for &e in &edge_ids {
+        let edge_data = topo.edge(e).unwrap();
+        let pts = super::edge_sampling::sample_edge(&topo, edge_data, 0.05, 0.35, false).unwrap();
+        let mut ids = Vec::new();
+        for p in pts {
+            let idx = u32::try_from(merged.positions.len()).unwrap();
+            merged.positions.push(p);
+            merged.normals.push(Vec3::new(0.0, 0.0, 0.0));
+            ids.push(idx);
+        }
+        edge_global_indices.insert(e.index(), ids);
+    }
+    let face_data = topo.face(face).unwrap();
+    let handled = super::nonplanar::tessellate_revolution_band_shared(
+        &topo,
+        face_data,
+        &edge_global_indices,
+        &mut merged,
+    )
+    .unwrap();
+    assert!(
+        handled,
+        "a flat fitted NURBS ring must keep the structured band path"
+    );
 }
 
 /// Issue #696 end-to-end: a gridfinity-style tile (pocketed slab + four magnet
