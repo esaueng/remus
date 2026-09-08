@@ -116,8 +116,33 @@ corrupted references. Its byte-identity oracle pinned the serde_json
 `float_roundtrip` feature as load-bearing for exact f64 replay.
 `arena_reader` and `wasm_batch` currently compile in PR CI but are not
 scheduled; curve-intersection, offset, GCS, and tessellation fuzzing remain
-outstanding and are owned by bridge row B19, which also fixes the stale
-CDT glob in `mutants.toml`.
+outstanding and are owned by bridge row B19.
+
+B19's mutation-scope slice moves the config to `.cargo/mutants.toml`, the
+location cargo-mutants 27.0.0 actually discovers. The previous root-level
+file was ignored by the weekly command; loading it explicitly also exposed
+its stale `cdt.rs` glob. The corrected `cdt/**` glob selects 846 mutants
+across all five production CDT modules (at source `f4d03b76`), preserves the
+existing NURBS/predicate/hull scope, and excludes unrelated math and test
+files. `python3 scripts/test-mutants-scope.py` exercises real default
+selection and rejects both missing-config and stale-glob negative controls.
+The Mutation Scope workflow runs that contract with the weekly job's pinned
+tool version whenever its config, math sources, or workflow changes.
+
+A bounded execution check used cargo-mutants 27.0.0 and Rust 1.96.0:
+
+```bash
+cargo mutants --package remus-math --re sorted_pair --jobs 1 \
+  --output /tmp/remus-cdt-mutants -- --lib cdt::tests
+```
+
+The unmutated baseline passed; all five selected CDT mutants were examined,
+four were caught and one survived: `replace <= with > in sorted_pair`.
+The command correctly exited 2 and retained that survivor in `missed.txt`
+and `outcomes.json`; no mutant was suppressed. Reversing the pair ordering
+still provides a consistent undirected key, but this bounded run does not
+claim mutation completeness or close the remaining B19 fuzz work. The
+weekly changed-lines filter and mutation-result failure policy are unchanged.
 
 ## Corpus
 

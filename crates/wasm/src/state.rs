@@ -5,7 +5,7 @@ use std::rc::Rc;
 use remus_topology::Topology;
 
 /// A saved snapshot of the kernel state that can be restored.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Checkpoint {
     pub topo: Rc<Topology>,
     pub assemblies: Vec<remus_operations::assembly::Assembly>,
@@ -20,7 +20,7 @@ pub struct Checkpoint {
 /// generational handles. Removed entities leave a stale entry in their
 /// table; the generational arena rejects stale handles, so reuse after
 /// removal surfaces as a typed error instead of aliasing.
-#[derive(Default, Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct GcsSketchState {
     /// The persistent constraint system.
     pub sys: remus_sketch::GcsSystem,
@@ -40,7 +40,7 @@ pub struct GcsSketchState {
 ///
 /// Stores points and constraints for the legacy index-based JS API.
 /// A `GcsSystem` is created on-the-fly during `sketch_solve`.
-#[derive(Default, Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct SketchState {
     /// Legacy point/constraint storage for backward-compat API.
     pub points: Vec<remus_operations::sketch::SketchPoint>,

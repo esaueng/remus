@@ -203,6 +203,9 @@ pub fn intersect_surfaces(
             AnalyticSurface::Sphere(sphere) => Ok(plane_sphere(p, sphere, tol)),
             AnalyticSurface::Cylinder(cyl) => plane_cylinder(p, cyl, tol),
             AnalyticSurface::Cone(_) | AnalyticSurface::Torus(_) => legacy_plane_analytic(p, s),
+            AnalyticSurface::Plane { normal, d } => {
+                Ok(plane_plane(p, PlaneOperand { normal, d }, tol))
+            }
         },
         (SurfaceOperand::Analytic(sa), SurfaceOperand::Analytic(sb)) => match (sa, sb) {
             (AnalyticSurface::Sphere(s1), AnalyticSurface::Sphere(s2)) => {
@@ -375,6 +378,15 @@ fn plane_cylinder(
                     kind: ContactKind::Unclassified,
                     quality: ResultQuality::Unresolved,
                     method: SourceMethod::LegacyAnalytic,
+                },
+                ExactIntersectionCurve::Line { point, direction } => QualifiedCurve {
+                    geometry: CurveGeometry::Line {
+                        origin: point,
+                        direction,
+                    },
+                    kind: ContactKind::Transversal,
+                    quality: ResultQuality::Exact,
+                    method: SourceMethod::ClosedForm,
                 },
             })
         })
@@ -571,6 +583,10 @@ fn legacy_plane_analytic(
             .map(|c| match c {
                 ExactIntersectionCurve::Circle(c) => CurveGeometry::Circle(c),
                 ExactIntersectionCurve::Ellipse(e) => CurveGeometry::Ellipse(e),
+                ExactIntersectionCurve::Line { point, direction } => CurveGeometry::Line {
+                    origin: point,
+                    direction,
+                },
                 ExactIntersectionCurve::Points(pts) => CurveGeometry::Sampled(pts),
             })
             .collect(),

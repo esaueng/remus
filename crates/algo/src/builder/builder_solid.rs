@@ -262,15 +262,15 @@ fn retain_aligned<T, U>(
     });
 }
 
-/// Restore the stored winding convention on cylinder faces before edge merge.
+/// Restore the stored winding convention on cylinder and cone faces before edge merge.
 ///
 /// Splitter loops are geometrically closed but can arrive wound with an outer
-/// loop opposing the stored cylinder normal, or an inner loop following it.
+/// loop opposing the stored surface normal, or an inner loop following it.
 /// That makes every merged edge on a cut/intersect pocket disagree with its
 /// adjacent face even though the selected surfaces and volumes are correct.
-/// Multi-opening periodic walls are deliberately left unchanged: independent
-/// 3D Newell projections cannot establish a shared ordering between holes.
-pub(super) fn orient_cylinder_face_wires(
+/// Multi-opening walls compare contractible loops in seam-unwrapped UV so
+/// opposite sides of the carrier use the same orientation reference.
+pub(super) fn orient_revolved_face_wires(
     topo: &mut Topology,
     selected: &[SelectedFace],
 ) -> Result<(), AlgoError> {
@@ -282,7 +282,13 @@ pub(super) fn orient_cylinder_face_wires(
         }
         let (surface, outer, inners) = {
             let face = topo.face(face_id)?;
-            if !matches!(face.surface(), FaceSurface::Cylinder(_)) {
+            if !matches!(
+                face.surface(),
+                FaceSurface::Cylinder(_)
+                    | FaceSurface::Cone(_)
+                    | FaceSurface::Sphere(_)
+                    | FaceSurface::Torus(_)
+            ) {
                 continue;
             }
             (
@@ -291,17 +297,57 @@ pub(super) fn orient_cylinder_face_wires(
                 face.inner_wires().to_vec(),
             )
         };
-        let (oriented_outer, outer_changed) = orient_wire_to_surface(topo, outer, &surface, true)?;
+        let (oriented_outer, outer_changed) = if matches!(surface, FaceSurface::Torus(_)) {
+            match revolved_wire_uv_area(topo, outer, &surface)? {
+                Some(area) if area < 0.0 => (reverse_wire(topo, outer)?, true),
+                _ => (outer, false),
+            }
+        } else if matches!(surface, FaceSurface::Sphere(_)) && !inners.is_empty() {
+            (outer, false)
+        } else if matches!(surface, FaceSurface::Cylinder(_) | FaceSurface::Cone(_))
+            && let Some(area) = revolved_wire_uv_area(topo, outer, &surface)?
+        {
+            if area < 0.0 {
+                (reverse_wire(topo, outer)?, true)
+            } else {
+                (outer, false)
+            }
+        } else {
+            orient_wire_to_surface(topo, outer, &surface, true)?
+        };
         let mut changed = outer_changed;
         let mut oriented_inners = Vec::with_capacity(inners.len());
-        // B15 is the single-pocket case. Do not guess how separately projected
-        // loops on a multi-opening periodic wall should be ordered.
-        if inners.len() == 1 {
+        if matches!(surface, FaceSurface::Torus(_)) {
+            for &inner in &inners {
+                if revolved_wire_uv_area(topo, inner, &surface)?.is_some_and(|area| area > 0.0) {
+                    oriented_inners.push(reverse_wire(topo, inner)?);
+                    changed = true;
+                } else {
+                    oriented_inners.push(inner);
+                }
+            }
+        } else if matches!(surface, FaceSurface::Sphere(_)) {
+            for &inner in &inners {
+                let (inner, inner_changed) = orient_wire_to_surface(topo, inner, &surface, false)?;
+                changed |= inner_changed;
+                oriented_inners.push(inner);
+            }
+        } else if inners.len() == 1 && matches!(surface, FaceSurface::Cylinder(_)) {
             let (inner, inner_changed) = orient_wire_to_surface(topo, inners[0], &surface, false)?;
             changed |= inner_changed;
             oriented_inners.push(inner);
-        } else {
-            oriented_inners.extend(inners.iter().copied());
+        } else if !inners.is_empty() {
+            let outer_area = revolved_wire_uv_area(topo, oriented_outer, &surface)?;
+            for &inner in &inners {
+                let inner_area = revolved_wire_uv_area(topo, inner, &surface)?;
+                if matches!((outer_area, inner_area), (Some(a), Some(b)) if a.is_sign_positive() == b.is_sign_positive())
+                {
+                    oriented_inners.push(reverse_wire(topo, inner)?);
+                    changed = true;
+                } else {
+                    oriented_inners.push(inner);
+                }
+            }
         }
         if changed {
             let mut carried_pcurves = Vec::new();
@@ -382,6 +428,10 @@ fn orient_wire_to_surface(
     if (same_direction && alignment > 0.0) || (!same_direction && alignment < 0.0) {
         return Ok((wire_id, false));
     }
+    Ok((reverse_wire(topo, wire_id)?, true))
+}
+
+fn reverse_wire(topo: &mut Topology, wire_id: WireId) -> Result<WireId, AlgoError> {
     let wire = topo.wire(wire_id)?;
     let closed = wire.is_closed();
     // A rotation of a closed loop does not change its winding. Keep the same
@@ -399,7 +449,120 @@ fn orient_wire_to_surface(
         edges.rotate_left(position);
     }
     let wire = remus_topology::wire::Wire::new(edges, closed)?;
-    Ok((topo.add_wire(wire), true))
+    Ok(topo.add_wire(wire))
+}
+
+/// A tube-wrapping rim bounds an annulus, so it is not a contractible hole.
+pub(super) fn torus_wire_wraps_tube(
+    topo: &Topology,
+    wire_id: WireId,
+    surface: &FaceSurface,
+) -> bool {
+    let FaceSurface::Torus(torus) = surface else {
+        return false;
+    };
+    let Ok(wire) = topo.wire(wire_id) else {
+        return false;
+    };
+    let mut phis = Vec::new();
+    for oriented in wire.edges() {
+        let Ok(edge) = topo.edge(oriented.edge()) else {
+            return false;
+        };
+        let (Ok(start), Ok(end), Ok(domain)) = (
+            topo.vertex(edge.start()),
+            topo.vertex(edge.end()),
+            edge.strict_domain(),
+        ) else {
+            return false;
+        };
+        let mut points = Vec::new();
+        super::pcurve_compute::sample_edge_uniform(
+            edge.curve(),
+            start.point(),
+            end.point(),
+            domain,
+            32,
+            oriented.is_forward(),
+            &mut points,
+        );
+        phis.extend(points.into_iter().map(|point| torus.project_point(point).1));
+    }
+    if phis.len() < 3 {
+        return false;
+    }
+    phis.push(phis[0]);
+    let winding: f64 = phis
+        .windows(2)
+        .map(|pair| {
+            let delta = pair[1] - pair[0];
+            (delta + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU) - std::f64::consts::PI
+        })
+        .sum();
+    (winding.abs() - std::f64::consts::TAU).abs() < 1e-6
+}
+
+/// Full rings have no enclosed UV area; only contractible boundaries can be compared.
+fn revolved_wire_uv_area(
+    topo: &Topology,
+    wire_id: WireId,
+    surface: &FaceSurface,
+) -> Result<Option<f64>, AlgoError> {
+    use remus_math::vec::Point2;
+    let mut points = Vec::new();
+    for oriented in topo.wire(wire_id)?.edges() {
+        let edge = topo.edge(oriented.edge())?;
+        let domain = edge.strict_domain().map_err(|error| {
+            AlgoError::AssemblyFailed(format!("cannot orient cylinder wire: {error}"))
+        })?;
+        super::pcurve_compute::sample_edge_uniform(
+            edge.curve(),
+            topo.vertex(edge.start())?.point(),
+            topo.vertex(edge.end())?.point(),
+            domain,
+            32,
+            oriented.is_forward(),
+            &mut points,
+        );
+    }
+    let Some(mut uv) = points
+        .iter()
+        .map(|&point| surface.project_point(point).map(|(u, v)| Point2::new(u, v)))
+        .collect::<Option<Vec<_>>>()
+    else {
+        return Ok(None);
+    };
+    if uv.len() < 3 {
+        return Ok(None);
+    }
+    uv.push(uv[0]);
+    let (u_period, v_period) = super::pcurve_compute::surface_periods(surface);
+    super::pcurve_compute::unwrap_periodic_params_pub(&mut uv, u_period, v_period);
+    let last = uv[uv.len() - 1];
+    if u_period.is_some_and(|period| (last.x() - uv[0].x()).abs() > period * 0.5)
+        || v_period.is_some_and(|period| (last.y() - uv[0].y()).abs() > period * 0.5)
+    {
+        return Ok(None);
+    }
+    // Translate before summing to avoid cancellation on axially translated parts.
+    let origin = uv[0];
+    let area: f64 = uv
+        .windows(2)
+        .map(|pair| {
+            let a = pair[0] - origin;
+            let b = pair[1] - origin;
+            a.x() * b.y() - b.x() * a.y()
+        })
+        .sum();
+    let magnitude: f64 = uv
+        .windows(2)
+        .map(|pair| {
+            let a = pair[0] - origin;
+            let b = pair[1] - origin;
+            (a.x() * b.y()).abs() + (b.x() * a.y()).abs()
+        })
+        .sum();
+    Ok((area.abs() > remus_math::tolerance::Tolerance::new().relative * magnitude).then_some(area))
 }
 
 fn wire_surface_alignment(
@@ -752,6 +915,90 @@ fn face_normal_at(topo: &Topology, face_id: FaceId, point: Point3) -> Option<Vec
 
 // ── Phase 3 ──────────────────────────────────────────────────────────
 
+/// Equatorial boundaries enclose a hemisphere even though their latitude span
+/// vanishes. Integrate its solid angle and subtract the sampled polar pockets.
+fn spherical_hemisphere_flux(topo: &Topology, face: &Face) -> Option<f64> {
+    let FaceSurface::Sphere(sphere) = face.surface() else {
+        return None;
+    };
+    let outer = topo.wire(face.outer_wire()).ok()?;
+    let mut points = Vec::new();
+    for oe in outer.edges() {
+        let edge = topo.edge(oe.edge()).ok()?;
+        if !matches!(edge.curve(), EdgeCurve::Line) {
+            return None;
+        }
+        points.push(
+            (topo.vertex(oe.oriented_start(edge)).ok()?.point() - sphere.center())
+                .normalize()
+                .ok()?,
+        );
+    }
+    if points.len() < 3 {
+        return None;
+    }
+    let mut area_axis = Vec3::new(0.0, 0.0, 0.0);
+    for i in 0..points.len() {
+        area_axis += points[i].cross(points[(i + 1) % points.len()]);
+    }
+    let axis = area_axis.normalize().ok()?;
+    if points.iter().any(|p| p.dot(axis).abs() > 1e-9) {
+        return None;
+    }
+    let mut omega = std::f64::consts::TAU;
+    let mut vector_area = axis * std::f64::consts::PI;
+    for &wid in face.inner_wires() {
+        let wire = topo.wire(wid).ok()?;
+        let mut ring = Vec::new();
+        for oe in wire.edges() {
+            let edge = topo.edge(oe.edge()).ok()?;
+            let sp = topo.vertex(edge.start()).ok()?.point();
+            let ep = topo.vertex(edge.end()).ok()?.point();
+            let (lo, hi) = edge.strict_domain().ok()?;
+            for k in 0..128 {
+                let f = f64::from(k) / 128.0;
+                let f = if oe.is_forward() { f } else { 1.0 - f };
+                let p = edge
+                    .curve()
+                    .evaluate_with_endpoints((hi - lo).mul_add(f, lo), sp, ep);
+                let direction = (p - sphere.center()).normalize().ok()?;
+                if direction.dot(axis) < -1e-9 {
+                    return None;
+                }
+                ring.push(direction);
+            }
+        }
+        let center = ring
+            .iter()
+            .copied()
+            .fold(Vec3::new(0.0, 0.0, 0.0), |sum, p| sum + p)
+            .normalize()
+            .ok()?;
+        let mut hole_omega = 0.0;
+        let mut hole_area = Vec3::new(0.0, 0.0, 0.0);
+        for i in 0..ring.len() {
+            let a = ring[i];
+            let b = ring[(i + 1) % ring.len()];
+            let cross = a.cross(b);
+            hole_omega += 2.0
+                * center
+                    .dot(cross)
+                    .atan2(1.0 + center.dot(a) + a.dot(b) + b.dot(center));
+            let length = cross.length();
+            if length > 1e-15 {
+                hole_area += cross * (0.5 * length.atan2(a.dot(b)) / length);
+            }
+        }
+        omega -= hole_omega.abs();
+        vector_area -= hole_area * hole_omega.signum();
+    }
+    let center = sphere.center();
+    let radius = sphere.radius();
+    let flux = radius.powi(3) * omega
+        + radius.powi(2) * Vec3::new(center.x(), center.y(), center.z()).dot(vector_area);
+    Some(if face.is_reversed() { -flux } else { flux })
+}
+
 /// Robust outward-orientation test for a closed shell, independent of face
 /// curvature and wire winding.
 ///
@@ -776,7 +1023,10 @@ fn shell_is_outward_oriented(topo: &Topology, faces: &[FaceId]) -> Option<bool> 
         let flux_before = if trace { flux } else { 0.0 };
         let Ok(face) = topo.face(fid) else { continue };
         let surface = face.surface();
-        if let FaceSurface::Plane { .. } = surface {
+        if let Some(contribution) = spherical_hemisphere_flux(topo, face) {
+            flux += contribution;
+            any = true;
+        } else if let FaceSurface::Plane { .. } = surface {
             // Planar: corner fan from sampled boundary points is exact.
             let Ok(wire) = topo.wire(face.outer_wire()) else {
                 continue;
@@ -790,10 +1040,17 @@ fn shell_is_outward_oriented(topo: &Topology, faces: &[FaceId]) -> Option<bool> 
                     continue;
                 };
                 let (sp, ep) = (sv.point(), ev.point());
+                let Ok((lo, hi)) = edge.strict_domain() else {
+                    continue;
+                };
                 for k in 0..4 {
                     let f = f64::from(k) / 4.0;
                     let f = if oe.is_forward() { f } else { 1.0 - f };
-                    pts.push(edge.curve().evaluate_with_endpoints(f, sp, ep));
+                    pts.push(edge.curve().evaluate_with_endpoints(
+                        (hi - lo).mul_add(f, lo),
+                        sp,
+                        ep,
+                    ));
                 }
             }
             if pts.len() < 3 {
@@ -815,11 +1072,14 @@ fn shell_is_outward_oriented(topo: &Topology, faces: &[FaceId]) -> Option<bool> 
             any = true;
         } else {
             // Curved: integrate over the boundary's (u, v) parameter box.
-            let Ok(wire) = topo.wire(face.outer_wire()) else {
-                continue;
-            };
             let mut uvs: Vec<(f64, f64)> = Vec::new();
-            for oe in wire.edges() {
+            // A periodic band can use its outer and inner wires for opposite
+            // rims. Either rim alone misses most of the retained carrier.
+            let boundary_edges = std::iter::once(face.outer_wire())
+                .chain(face.inner_wires().iter().copied())
+                .filter_map(|wire| topo.wire(wire).ok())
+                .flat_map(remus_topology::wire::Wire::edges);
+            for oe in boundary_edges {
                 let Ok(edge) = topo.edge(oe.edge()) else {
                     continue;
                 };
@@ -827,9 +1087,14 @@ fn shell_is_outward_oriented(topo: &Topology, faces: &[FaceId]) -> Option<bool> 
                     continue;
                 };
                 let (sp, ep) = (sv.point(), ev.point());
+                let Ok((lo, hi)) = edge.strict_domain() else {
+                    continue;
+                };
                 for k in 0..=8 {
                     let f = f64::from(k) / 8.0;
-                    let p = edge.curve().evaluate_with_endpoints(f, sp, ep);
+                    let p = edge
+                        .curve()
+                        .evaluate_with_endpoints((hi - lo).mul_add(f, lo), sp, ep);
                     if let Some((u, v)) = surface.project_point(p) {
                         uvs.push((u, v));
                     }
@@ -2167,7 +2432,7 @@ fn is_degenerate_line_sliver(topo: &Topology, fid: FaceId) -> bool {
 /// tolerance onto a single canonical vertex, then rebuild any touched wire.
 ///
 /// Quantization-based merging (`merge_duplicate_edges`) keys on `MERGE_TOL`
-/// cells, so two vertices a few ULPs apart but within `snap` (10·`MERGE_TOL`)
+/// cells, so two vertices a few ULPs apart but within `MERGE_TOL`
 /// land in different cells and are never recognized as the same point. This
 /// pass clusters by actual distance (a coarse spatial hash bounds the
 /// neighbour search) so coincident-but-displaced intersection vertices share
@@ -2186,19 +2451,26 @@ fn weld_coincident_vertices(
     use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
     use remus_topology::vertex::VertexId;
 
-    // Keep the weld band narrow: widening this to 100x merges distinct
-    // boss/wall junction vertices and changes the resulting solid volume.
+    // Keep the historical assembly allowance at NURBS surface/curve vertices.
+    // Analytic-only contacts use the actual merge tolerance so a resolved
+    // rim-to-wall gap cannot collapse onto a different carrier.
     let snap = MERGE_TOL * 10.0;
 
     // Collect distinct vertices (id + position) referenced by the faces.
     let mut seen: HashSet<VertexId> = HashSet::new();
     let mut verts: Vec<(VertexId, Point3)> = Vec::new();
+    let mut nurbs_vertices = HashSet::new();
     for &fid in face_ids.iter() {
         let face = topo.face(fid)?;
         for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
             for oe in topo.wire(wid)?.edges() {
                 let edge = topo.edge(oe.edge())?;
                 for vid in [edge.start(), edge.end()] {
+                    if matches!(face.surface(), FaceSurface::Nurbs(_))
+                        || matches!(edge.curve(), EdgeCurve::NurbsCurve(_))
+                    {
+                        nurbs_vertices.insert(vid);
+                    }
                     if seen.insert(vid) {
                         verts.push((vid, topo.vertex(vid)?.point()));
                     }
@@ -2235,7 +2507,13 @@ fn weld_coincident_vertices(
                     let nc = (c.0 + dx, c.1 + dy, c.2 + dz);
                     if let Some(list) = buckets.get(&nc) {
                         for &(cid, cp) in list {
-                            if (cp - p).length() <= snap
+                            let allowance =
+                                if nurbs_vertices.contains(&vid) || nurbs_vertices.contains(&cid) {
+                                    snap
+                                } else {
+                                    MERGE_TOL
+                                };
+                            if (cp - p).length() <= allowance
                                 && canonical.is_none_or(|b| cid.index() < b.index())
                             {
                                 canonical = Some(cid);
@@ -2479,7 +2757,7 @@ fn split_edges_at_collinear_vertices(
         let mut cuts: Vec<(f64, VertexId)> = Vec::new();
         for ci in grid.segment_candidates(sp, ep, snap) {
             let (vid, p) = verts[ci];
-            if (p - sp).length() < snap || (p - ep).length() < snap {
+            if (p - sp).length() < tol || (p - ep).length() < tol {
                 continue;
             }
             let t = (p - sp).dot(dir) / len2;
@@ -2487,7 +2765,9 @@ fn split_edges_at_collinear_vertices(
                 continue;
             }
             let foot = sp + dir * t;
-            if (p - foot).length() > snap {
+            // A wider search band must not bend a straight carrier across a
+            // resolved gap and attach a separate hole to its outer boundary.
+            if (p - foot).length() > tol {
                 continue;
             }
             cuts.push((t, vid));
@@ -4028,6 +4308,77 @@ mod tests {
             Some(true),
             "a standard outward cube shell must read outward (growth)"
         );
+    }
+
+    #[test]
+    fn line_refinement_preserves_a_separated_analytic_hole() {
+        use remus_math::curves::Circle3D;
+        use remus_topology::{
+            edge::{Edge, EdgeCurve},
+            face::{Face, FaceSurface},
+            vertex::Vertex,
+            wire::Wire,
+        };
+
+        for gap in [0.0, 0.5 * MERGE_TOL, 5.0 * MERGE_TOL] {
+            let mut topo = Topology::new();
+            let points = [
+                Point3::new(0.0, -2.0, 0.0),
+                Point3::new(2.0, -2.0, 0.0),
+                Point3::new(2.0, 2.0, 0.0),
+                Point3::new(0.0, 2.0, 0.0),
+            ];
+            let vertices: Vec<_> = points
+                .into_iter()
+                .map(|p| topo.add_vertex(Vertex::new(p, MERGE_TOL)))
+                .collect();
+            let edges: Vec<_> = (0..4)
+                .map(|i| {
+                    let id = topo.add_edge(Edge::new(
+                        vertices[i],
+                        vertices[(i + 1) % 4],
+                        EdgeCurve::Line,
+                    ));
+                    OrientedEdge::new(id, true)
+                })
+                .collect();
+            let outer = topo.add_wire(Wire::new(edges, true).unwrap());
+            let circle = Circle3D::new(
+                Point3::new(0.5 + gap, 0.0, 0.0),
+                Vec3::new(0.0, 0.0, 1.0),
+                0.5,
+            )
+            .unwrap();
+            let seam_point = Point3::new(gap, 0.0, 0.0);
+            let seam = topo.add_vertex(Vertex::new(seam_point, MERGE_TOL));
+            let start = circle.project(seam_point);
+            let mut edge = Edge::new(seam, seam, EdgeCurve::Circle(circle));
+            edge.set_trim(Some((start, start + std::f64::consts::TAU)));
+            let edge = topo.add_edge(edge);
+            let inner =
+                topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap());
+            let face = topo.add_face(Face::new(
+                outer,
+                vec![inner],
+                FaceSurface::Plane {
+                    normal: Vec3::new(0.0, 0.0, 1.0),
+                    d: 0.0,
+                },
+            ));
+            let mut faces = [face];
+            split_edges_at_collinear_vertices(
+                &mut topo,
+                &mut faces,
+                &mut super::super::split_types::EdgeLineageLog::default(),
+            )
+            .unwrap();
+            let count = topo
+                .wire(topo.face(faces[0]).unwrap().outer_wire())
+                .unwrap()
+                .edges()
+                .len();
+            assert_eq!(count, if gap <= MERGE_TOL { 5 } else { 4 }, "gap={gap:e}");
+        }
     }
 
     #[test]

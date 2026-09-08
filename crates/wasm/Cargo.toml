@@ -17,6 +17,8 @@ wasm-opt = ["-Oz", "--enable-simd"]
 
 [features]
 default = ["io"]
+# Diagnostic-only build; never enabled in the shipped package.
+workflow-probes = []
 # Bundle the file-format translators into the kernel module. The shipped
 # browser package builds WITHOUT this (see `cargo xtask wasm-build`): the
 # translators ship as the separate `remus-wasm-io` module and bodies cross
@@ -41,6 +43,13 @@ serde_json.workspace = true
 thiserror.workspace = true
 tsify.workspace = true
 wasm-bindgen.workspace = true
+
+[[example]]
+name = "w9-native"
+required-features = ["workflow-probes"]
+
+[dev-dependencies]
+remus = {path = "../remus"}
 
 [lints]
 workspace = true

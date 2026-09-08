@@ -305,7 +305,7 @@ fn build_sd_grouping(
         let mut planar_aabbs: Vec<(usize, remus_math::aabb::Aabb3)> = Vec::new();
         let mut planar_obbs: Vec<Option<remus_math::obb::Obb3>> = vec![None; n];
         for (idx, surf) in surfaces.iter().enumerate() {
-            let Some(FaceSurface::Plane { normal, .. }) = surf else {
+            let Some((normal, _)) = surf.and_then(|s| planar_support(s, tol)) else {
                 continue;
             };
             let pts = face_outer_wire_points(topo, sub_faces[idx].face_id);
@@ -314,7 +314,7 @@ fn build_sd_grouping(
             }
             // Thickness axis pinned to the plane normal, in-plane axes from PCA,
             // expanded by tol so a boundary-coincident pair still passes.
-            let mut obb = remus_math::obb::Obb3::from_slice_with_normal(&pts, *normal);
+            let mut obb = remus_math::obb::Obb3::from_slice_with_normal(&pts, normal);
             for e in &mut obb.half_extents {
                 *e += tol.linear;
             }
@@ -602,6 +602,25 @@ pub fn detect_same_domain_with_shells<S: BuildHasher>(
                         idx_b
                     };
                     if !is_residue(idx, rep) {
+                        // Complementary pieces are not duplicates, but each
+                        // proven cross-rank overlap still needs SD selection.
+                        let (a, b) = if sub_faces[idx].rank == Rank::A {
+                            (idx, idx_b)
+                        } else {
+                            (idx_a, idx)
+                        };
+                        let key = (a.min(b), a.max(b));
+                        if let Some(&orientation) = pair_data.get(&key) {
+                            let aa = repr_face_area(topo, sub_faces[a].face_id).unwrap_or(0.0);
+                            let ab = repr_face_area(topo, sub_faces[b].face_id).unwrap_or(0.0);
+                            pairs.push(SameDomainPair {
+                                idx_a: a,
+                                idx_b: b,
+                                same_orientation: orientation,
+                                geometric_overlap,
+                                representative: if ab > aa { b } else { a },
+                            });
+                        }
                         continue;
                     }
                     within_rank_dups.push(WithinRankDuplicate {
@@ -1017,10 +1036,7 @@ fn planar_faces_overlap(
     let Ok(face_j) = topo.face(sub_faces[j].face_id) else {
         return false;
     };
-    let FaceSurface::Plane {
-        normal: normal_i, ..
-    } = *face_i.surface()
-    else {
+    let Some((normal_i, _)) = planar_support(face_i.surface(), tol) else {
         return false;
     };
 
@@ -2004,6 +2020,29 @@ fn same_source_complementary_split(
     }
 }
 
+// Positive NURBS weights keep the whole surface in its control-point hull;
+// coplanar controls prove support coincidence without replacing the carrier.
+fn planar_support(surface: &FaceSurface, tol: Tolerance) -> Option<(remus_math::vec::Vec3, f64)> {
+    use remus_math::vec::Point3;
+    match surface {
+        FaceSurface::Plane { normal, d } => Some((*normal, *d)),
+        FaceSurface::Nurbs(n) => {
+            let u = n.domain_u();
+            let v = n.domain_v();
+            let u = f64::midpoint(u.0, u.1);
+            let v = f64::midpoint(v.0, v.1);
+            let point = n.evaluate(u, v);
+            let normal = n.normal(u, v).ok()?;
+            n.control_points()
+                .iter()
+                .flatten()
+                .all(|p| ((*p - point).dot(normal)).abs() <= tol.linear)
+                .then(|| (normal, normal.dot(point - Point3::new(0.0, 0.0, 0.0))))
+        }
+        _ => None,
+    }
+}
+
 /// Check if two surfaces represent the same geometric domain.
 ///
 /// Returns `Some(true)` for same-direction normals (CoplanarSame),
@@ -2022,6 +2061,16 @@ pub(crate) fn surfaces_same_domain(
     tol: Tolerance,
 ) -> Option<bool> {
     match (a, b) {
+        (FaceSurface::Nurbs(_), FaceSurface::Plane { .. } | FaceSurface::Nurbs(_))
+        | (FaceSurface::Plane { .. }, FaceSurface::Nurbs(_)) => {
+            let (na, da) = planar_support(a, tol)?;
+            let (nb, db) = planar_support(b, tol)?;
+            surfaces_same_domain(
+                &FaceSurface::Plane { normal: na, d: da },
+                &FaceSurface::Plane { normal: nb, d: db },
+                tol,
+            )
+        }
         (FaceSurface::Plane { normal: na, d: da }, FaceSurface::Plane { normal: nb, d: db }) => {
             let dot = na.dot(*nb);
             if dot > 1.0 - tol.angular {

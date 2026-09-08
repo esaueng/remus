@@ -78,12 +78,9 @@ fn solid_has_scalloped_sphere_collar(
     Ok(false)
 }
 
-/// Whether the solid has a torus notch band (torus − box: a kept toroidal patch
-/// bounded by two tube-angle(`v`)-WRAPPING seam-arc loops, NOT constant-`v`
-/// latitude circles). Its per-face analytic tessellation can't be sampled
-/// watertight in isolation (the band wraps `v` and shares vertices with the
-/// notch walls), and there is no closed-form volume — so the volume is taken off
-/// the (watertight) whole-solid mesh instead, like the box ∩ sphere collar.
+/// Whether a solid contains a torus band bounded by tube-wrapping rims.
+/// Qualified monotone rims use oriented quadrature; unsupported trims retain
+/// the shared-vertex whole-solid tessellation fallback.
 fn solid_has_torus_notch_band(topo: &Topology, solid: SolidId) -> bool {
     let Ok(faces) = remus_topology::explorer::solid_faces(topo, solid) else {
         return false;
@@ -1489,13 +1486,33 @@ pub fn solid_volume(
         // than return a leaky volume.
     }
 
-    // A torus notch band (torus − box) likewise has no closed-form volume and
-    // can't be per-face tessellated watertight (the band wraps the tube and
-    // shares vertices with the notch walls). The whole-solid mesh IS watertight
-    // (the structured notch-band tessellator), so take the divergence-theorem
-    // volume off it. Per-face summation would under-count (the band's own per-
-    // face mesh isn't closed).
+    // Qualified two-rim torus bands integrate over their retained surface.
+    // Unsupported trims still need the shared-vertex, whole-solid mesh path.
     if solid_has_torus_notch_band(topo, solid) {
+        let mut integral = Some(0.0);
+        for face_id in remus_topology::explorer::solid_faces(topo, solid)? {
+            let contribution = match topo.face(face_id)?.surface() {
+                FaceSurface::Torus(_) => {
+                    remus_check::properties::face_integrator::integrate_torus_band_face(
+                        topo, face_id, 8,
+                    )
+                    .ok()
+                    .flatten()
+                }
+                FaceSurface::Plane { .. } => {
+                    remus_check::properties::face_integrator::integrate_face(topo, face_id, 8).ok()
+                }
+                _ => None,
+            };
+            let Some(contribution) = contribution else {
+                integral = None;
+                break;
+            };
+            integral = integral.map(|volume| volume + contribution.volume);
+        }
+        if let Some(volume) = integral {
+            return Ok(volume.abs());
+        }
         let mesh = tessellate::tessellate_solid(topo, solid, deflection)?;
         if !mesh.indices.is_empty() && mesh_boundary_edge_count(&mesh) == 0 {
             return Ok(signed_volume_from_mesh(&mesh));
@@ -1612,6 +1629,27 @@ pub fn solid_volume(
             }
         }
         return volume_from_direct_face_tessellation(topo, solid, deflection);
+    }
+
+    let faces = remus_topology::explorer::solid_faces(topo, solid)?;
+    let surfaces: Vec<_> = faces
+        .iter()
+        .map(|&face| topo.face(face).map(remus_topology::face::Face::surface))
+        .collect::<Result<_, _>>()?;
+    // This refinement is qualified for planar faces and line/circle-trimmed
+    // cylinders. Other quadrics retain their existing measurement dispatch.
+    if surfaces
+        .iter()
+        .any(|surface| matches!(surface, FaceSurface::Cylinder(_)))
+        && surfaces.iter().all(|surface| {
+            matches!(
+                surface,
+                FaceSurface::Plane { .. } | FaceSurface::Cylinder(_)
+            )
+        })
+        && let Some(volume) = exact_analytic_face_volume(topo, solid, deflection, true)
+    {
+        return Ok(volume);
     }
 
     // Try watertight tessellation -- gives correct volume via signed tetrahedra
@@ -1744,10 +1782,80 @@ fn volume_from_per_face_tessellation(
 /// where `ox = O.ex`, `oy = O.ey`, `h = v2 - v1`.
 ///
 /// For a reversed face the contribution is negated.
+fn line_circle_cylinder_signed_volume(topo: &Topology, face_id: FaceId) -> Option<f64> {
+    let face = topo.face(face_id).ok()?;
+    let FaceSurface::Cylinder(cylinder) = face.surface() else {
+        return None;
+    };
+    if !face.inner_wires().is_empty() {
+        return None;
+    }
+    let tolerance = remus_math::tolerance::Tolerance::new();
+    let origin = cylinder.origin() - Point3::new(0.0, 0.0, 0.0);
+    let ox = origin.dot(cylinder.x_axis());
+    let oy = origin.dot(cylinder.y_axis());
+    let mut boundary_integral = 0.0;
+    let mut signed_chart_area = 0.0;
+    let mut circles = 0;
+    for oriented in topo.wire(face.outer_wire()).ok()?.edges() {
+        let edge = topo.edge(oriented.edge()).ok()?;
+        match edge.curve() {
+            EdgeCurve::Line => {
+                let start = topo.vertex(edge.start()).ok()?.point();
+                let end = topo.vertex(edge.end()).ok()?.point();
+                if (end - start).cross(cylinder.axis()).length() > tolerance.linear {
+                    return None;
+                }
+            }
+            EdgeCurve::Circle(circle) => {
+                let delta = circle.center() - cylinder.origin();
+                let v = delta.dot(cylinder.axis());
+                if circle.normal().cross(cylinder.axis()).length() > tolerance.angular
+                    || (delta - cylinder.axis() * v).length() > tolerance.linear
+                    || (circle.radius() - cylinder.radius()).abs() > tolerance.linear
+                {
+                    return None;
+                }
+                let (lo, hi) = edge.trim()?;
+                let direction = if oriented.is_forward() { 1.0 } else { -1.0 };
+                let sweep = (hi - lo)
+                    * circle
+                        .u_axis()
+                        .cross(circle.v_axis())
+                        .dot(cylinder.axis())
+                        .signum()
+                    * direction;
+                let start = circle.evaluate(if oriented.is_forward() { lo } else { hi });
+                let (u0, _) = cylinder.project_point(start);
+                let u1 = u0 + sweep;
+                boundary_integral -= v
+                    * (ox * (u1.sin() - u0.sin())
+                        + oy * (u0.cos() - u1.cos())
+                        + cylinder.radius() * sweep);
+                signed_chart_area -= v * sweep;
+                circles += 1;
+            }
+            _ => return None,
+        }
+    }
+    if circles == 0 || signed_chart_area.abs() <= tolerance.linear * tolerance.angular {
+        return None;
+    }
+    // Wire traversal may run either way independently of the face reversal.
+    // Integrate the positive parameter region, then apply the surface orientation.
+    let volume = cylinder.radius() * boundary_integral * signed_chart_area.signum() / 3.0;
+    Some(if face.is_reversed() { -volume } else { volume })
+}
+
 fn analytic_cylinder_signed_volume(
     topo: &Topology,
     face_id: FaceId,
 ) -> Result<f64, crate::OperationsError> {
+    // Green's theorem integrates the actual rim sweeps, including major arcs
+    // and stepped heights; an endpoint bounding rectangle cannot do that.
+    if let Some(volume) = line_circle_cylinder_signed_volume(topo, face_id) {
+        return Ok(volume);
+    }
     let face = topo.face(face_id)?;
     let cyl = match face.surface() {
         FaceSurface::Cylinder(c) => c,
@@ -2532,7 +2640,12 @@ fn analytic_torus_signed_volume(
 ///     [`planar_face_signed_volume`] applies, and
 ///   * every planar face's closed form AGREES with the area of its own mesh to
 ///     within the chord budget — see [`planar_face_area_is_consistent`].
-fn exact_analytic_face_volume(topo: &Topology, solid: SolidId, deflection: f64) -> Option<f64> {
+fn exact_analytic_face_volume(
+    topo: &Topology,
+    solid: SolidId,
+    deflection: f64,
+    require_cylinder_trim_authority: bool,
+) -> Option<f64> {
     // Cavity faces are boundary too, and their stored reversal makes each one's
     // signed contribution subtract. Enumerating only the outer shell would
     // integrate the un-hollowed body.
@@ -2555,7 +2668,11 @@ fn exact_analytic_face_volume(topo: &Topology, solid: SolidId, deflection: f64) 
                 exact.volume
             }
             FaceSurface::Cylinder(_) if !holed => {
-                analytic_cylinder_signed_volume(topo, fid).ok()?
+                if require_cylinder_trim_authority {
+                    line_circle_cylinder_signed_volume(topo, fid)?
+                } else {
+                    analytic_cylinder_signed_volume(topo, fid).ok()?
+                }
             }
             FaceSurface::Cone(_) if !holed => analytic_cone_signed_volume(topo, fid).ok()?,
             FaceSurface::Sphere(_) if !holed => analytic_sphere_signed_volume(topo, fid).ok()?,
@@ -2644,7 +2761,7 @@ pub fn volume_from_direct_face_tessellation(
     deflection: f64,
 ) -> Result<f64, crate::OperationsError> {
     // Exact whenever the whole boundary integrates in closed form.
-    if let Some(v) = exact_analytic_face_volume(topo, solid, deflection) {
+    if let Some(v) = exact_analytic_face_volume(topo, solid, deflection, false) {
         return Ok(v);
     }
 
