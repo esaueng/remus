@@ -11,7 +11,7 @@ on:
         type: boolean
     outputs:
       trusted:
-        value: ${{ jobs.select.outputs.trusted }}
+        value: ${{ jobs.select.outputs.trusted == 'true' && contains(fromJSON('["ci-small","ci-server-jane","ci-server-john"]'), jobs.route.outputs.target) }}
 
 permissions:
   contents: read
@@ -126,13 +126,22 @@ jobs:
               main()
           PY
 
-  rust:
-    name: Native Rust on VPS
+  route:
     needs: select
-    if: needs.select.outputs.trusted == 'true' && (inputs.heavy || inputs.docs)
+    if: needs.select.outputs.trusted == 'true'
+    permissions:
+      id-token: write
+    uses: esaueng/remus/.github/workflows/select-runner.yml@d7168a6576f078f6128191f5b37ac38068c8f0af
+    with:
+      enabled: ${{ vars.CI_FLEET_ENABLED == 'true' }}
+
+  rust:
+    name: Native Rust on trusted fleet
+    needs: [select, route]
+    if: needs.select.outputs.trusted == 'true' && needs.route.outputs.target != 'github-hosted' && (inputs.heavy || inputs.docs)
     runs-on:
       group: ci-trusted-main
-      labels: ci-small
+      labels: ${{ needs.route.outputs.target }}
     timeout-minutes: 90
     env:
       CARGO_TERM_COLOR: always
@@ -148,7 +157,10 @@ jobs:
       - name: Verify runner isolation and fresh storage
         run: |
           set -euo pipefail
-          test "$RUNNER_NAME" = ci-vm-1441561
+          case "$RUNNER_NAME" in
+            ci-vm-1441561|ci-server-jane|ci-server-john) ;;
+            *) echo 'Unknown trusted runner' >&2; exit 1 ;;
+          esac
           test "$(id -un)" = ci-runner
           test "$(id -u)" != 0
           test "$HOME" = /srv/ci/home
