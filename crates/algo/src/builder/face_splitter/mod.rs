@@ -2246,8 +2246,9 @@ struct ArrInput {
 /// Split co-endpoint SECTION arc pairs in an arrangement's input list at
 /// their geometric midpoints (see the call site in
 /// [`split_plane_face_by_arrangement`]). Only section arcs with a colliding
-/// unordered chord-endpoint pair AND distinct midpoints are split; boundary
-/// edges and identical duplicates are left untouched.
+/// unordered chord-endpoint pair AND distinct midpoints are split. Straight
+/// inputs participate in collision detection so a section arc stays distinct
+/// from its chord; only section arcs are split, leaving boundaries unchanged.
 fn split_coendpoint_section_arc_inputs(inputs: &mut Vec<ArrInput>, frame: &PlaneFrame, tol: f64) {
     use std::collections::HashMap;
     type Q2 = (i64, i64);
@@ -2276,12 +2277,14 @@ fn split_coendpoint_section_arc_inputs(inputs: &mut Vec<ArrInput>, frame: &Plane
     };
     let mut pair_mids: HashMap<(Q2, Q2), Vec<Q2>> = HashMap::new();
     for inp in inputs.iter() {
-        if !(inp.is_section && inp.is_arc) {
-            continue;
-        }
-        let Some(mid) = arc_mid(&inp.edge) else {
-            continue;
+        let mid = if inp.is_section && inp.is_arc {
+            arc_mid(&inp.edge)
+        } else if matches!(inp.edge.curve_3d, EdgeCurve::Line) {
+            Some(inp.edge.start_3d + (inp.edge.end_3d - inp.edge.start_3d) * 0.5)
+        } else {
+            None
         };
+        let Some(mid) = mid else { continue };
         let (a, b) = (q2(inp.a), q2(inp.b));
         let key = if a <= b { (a, b) } else { (b, a) };
         pair_mids
@@ -2977,15 +2980,23 @@ fn arrangement_regions_from_inputs(
             // Other chord's endpoints landing on this chord's interior
             // (T-junctions where a section merely touches another). The break
             // registers with the ENDPOINT itself as the exact vertex UV —
-            // weld-scale band, not the vertex tolerance: a marched section's
-            // endpoint (curve-fit error ~1e-6) landing on a boundary or
-            // section chord is a REAL T-junction; at 1e-7 it is missed, the
-            // chord dangles as a pendant, and the face tracer walks it twice.
+            // Fitted NURBS endpoints retain their historical fit-error band.
+            // Exact analytic inputs must use the vertex tolerance: a nearby
+            // arc midpoint is not a T-junction on its straight chord.
             for bp in [b0, b1] {
                 let w = (bp - a0).dot(d) / (len * len);
                 if w > 1e-6 && w < 1.0 - 1e-6 {
                     let on = a0 + d * w;
-                    if (on - bp).length() < tol * 100.0 && (!i_is_arc || chord_break_on_arc(i, bp))
+                    let endpoint_tolerance =
+                        if matches!(inputs[i].edge.curve_3d, EdgeCurve::NurbsCurve(_))
+                            || matches!(inputs[j].edge.curve_3d, EdgeCurve::NurbsCurve(_))
+                        {
+                            tol * 100.0
+                        } else {
+                            tol
+                        };
+                    if (on - bp).length() < endpoint_tolerance
+                        && (!i_is_arc || chord_break_on_arc(i, bp))
                     {
                         ts.push((w, Some(bp)));
                     }
@@ -4025,20 +4036,15 @@ fn split_cylinder_band_by_arrangement(
         // closed, valid shell 35 % light (exact mass 28 550 against a
         // 44 365 tessellation for a boss standing on the base with its axis
         // in the seam plane).
-        // Only the rings the rescue draws itself are refined: the frame
-        // rims are the face's own boundary, shared with the cap across
-        // them, and a vertex minted here alone would leave that cap's rim
-        // un-split against it.
-        let interior_level = v > v_bottom + tol && v < v_top - tol;
+        // Boundary arcs also need distinct endpoint pairs from their straight
+        // chords. The global arc refinement propagates these vertices to the
+        // adjacent cap before endpoint-keyed edge merging.
         let mut refined: Vec<f64> = Vec::with_capacity(breaks.len() * 2);
         for w in breaks.windows(2) {
             refined.push(w[0]);
-            if !interior_level {
-                continue;
-            }
             let span = w[1] - w[0];
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            let n = (span / (std::f64::consts::PI * 0.999)).ceil().max(1.0) as usize;
+            let n = (span / (std::f64::consts::PI * 0.999)).ceil().max(2.0) as usize;
             for k in 1..n {
                 #[allow(clippy::cast_precision_loss)]
                 refined.push(w[0] + span * k as f64 / n as f64);
@@ -6906,6 +6912,27 @@ fn split_face_2d_impl(
             tol.linear,
             split_registry,
         )?;
+        // Sections can trace bounded regions outside the source face. With an
+        // exact polygon boundary, retain only regions whose interior belongs
+        // to it before classifying against the opposing solid.
+        let arr = if boundary
+            .iter()
+            .all(|e| matches!(e.curve_3d, EdgeCurve::Line))
+        {
+            let polygon: Vec<_> = boundary.iter().map(|e| frame.project(e.start_3d)).collect();
+            arr.map(|mut faces| {
+                faces.retain(|f| {
+                    super::classify_2d::point_in_polygon_2d(
+                        frame.project(interior_point_3d(f, Some(frame))),
+                        &polygon,
+                    )
+                });
+                faces
+            })
+            .filter(|faces| !faces.is_empty())
+        } else {
+            arr
+        };
         if let Some(result) = arr
             && (result.len() > loops.len()
                 || wire_loops_self_cross(&loops, tol.linear)
