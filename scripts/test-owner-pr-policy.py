@@ -147,7 +147,7 @@ class OwnerPolicyTests(unittest.TestCase):
         self.assertIn("  workflow_call:\n", TEXT)
         self.assertIn("group: ci-trusted-main", TEXT)
         self.assertIn("labels: ${{ needs.route.outputs.target }}", TEXT)
-        self.assertIn("needs.route.outputs.target != 'github-hosted'", TEXT)
+        self.assertIn("contains(fromJSON('[\"ci-server-jane\",\"ci-server-john\"]'), needs.route.outputs.target)", TEXT)
         for reference in re.findall(r"uses: (\S+)", TEXT):
             self.assertRegex(reference, r"@[0-9a-f]{40}$")
         self.assertIn('CARGO_BUILD_JOBS: "1"', TEXT)
