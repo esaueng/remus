@@ -1,0 +1,97 @@
+name: Trusted OSV scan
+on:
+  workflow_call:
+permissions:
+  contents: read
+  pull-requests: read
+  actions: read
+  security-events: write
+env:
+  OSV_IMAGE: ghcr.io/google/osv-scanner-action@sha256:dcd947131d8d11b8d0964de6590661fb921a4ecbd7b90a7cb21083acfc3fd8cc
+jobs:
+  scan:
+    name: OSV Scan
+    runs-on: ${{ fromJSON((vars.CI_FLEET_ENABLED == 'true' || (vars.CI_FLEET_VALIDATION_REF != '' && vars.CI_FLEET_VALIDATION_REF == github.ref)) && (github.repository == 'esaueng/remus' && github.repository_id == '1334765869' && github.actor == 'petergstfsn' && github.actor_id == '171875562' && github.triggering_actor == 'petergstfsn' && ((github.event_name == 'pull_request' && github.event.pull_request.state == 'open' && github.event.pull_request.user.login == 'petergstfsn' && github.event.pull_request.user.id == 171875562 && github.event.pull_request.head.repo.id == 1334765869 && github.event.pull_request.base.repo.id == 1334765869 && github.event.pull_request.head.repo.fork == false && github.event.pull_request.base.repo.fork == false && github.event.pull_request.base.ref == 'main' && github.ref == format('refs/pull/{0}/merge', github.event.pull_request.number)) || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') && github.ref == 'refs/heads/main' && github.ref_protected == true))) && (vars.CI_FLEET_TARGET == 'ci-server-jane' && '{"group":"ci-trusted-main","labels":"ci-server-jane"}' || vars.CI_FLEET_TARGET == 'ci-server-john' && '{"group":"ci-trusted-main","labels":"ci-server-john"}') || '"ubuntu-latest"') }}
+    steps:
+      - uses: esaueng/remus/.github/actions/fleet-guard@29779e3185e8582b59bf58692a307b1018a98e68
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Select PR base for comparison
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: git checkout --detach "$BASE_SHA"
+      - name: Scan PR base
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        run: |
+          docker run --rm \
+            --volume "$GITHUB_WORKSPACE:/github/workspace" --workdir /github/workspace \
+            --env GOTOOLCHAIN=auto --env GITHUB_ACTIONS --env CI \
+            --env GITHUB_WORKSPACE=/github/workspace --env GITHUB_REPOSITORY \
+            --env GITHUB_SHA --env GITHUB_REF --env GITHUB_SERVER_URL \
+            --entrypoint /root/osv-scanner "$OSV_IMAGE" \
+            --format=json \
+            --output=old-results.json \
+            --lockfile=Cargo.lock \
+            --lockfile=package-lock.json
+      - name: Select tested commit
+        run: git checkout --force --detach "$GITHUB_SHA"
+      - name: Scan tested commit
+        continue-on-error: true
+        run: |
+          docker run --rm \
+            --volume "$GITHUB_WORKSPACE:/github/workspace" --workdir /github/workspace \
+            --env GOTOOLCHAIN=auto --env GITHUB_ACTIONS --env CI \
+            --env GITHUB_WORKSPACE=/github/workspace --env GITHUB_REPOSITORY \
+            --env GITHUB_SHA --env GITHUB_REF --env GITHUB_SERVER_URL \
+            --entrypoint /root/osv-scanner "$OSV_IMAGE" \
+            --format=json \
+            --output=new-results.json \
+            --lockfile=Cargo.lock \
+            --lockfile=package-lock.json
+      - name: Report new PR vulnerabilities
+        if: github.event_name == 'pull_request'
+        run: |
+          docker run --rm \
+            --volume "$GITHUB_WORKSPACE:/github/workspace" --workdir /github/workspace \
+            --env GOTOOLCHAIN=auto --env GITHUB_ACTIONS --env CI \
+            --env GITHUB_WORKSPACE=/github/workspace --env GITHUB_REPOSITORY \
+            --env GITHUB_SHA --env GITHUB_REF --env GITHUB_SERVER_URL \
+            --entrypoint /root/osv-reporter "$OSV_IMAGE" \
+            --output=results.sarif \
+            --old=old-results.json \
+            --new=new-results.json \
+            --gh-annotations=true \
+            --fail-on-vuln=true
+      - name: Report main vulnerabilities
+        if: github.event_name != 'pull_request'
+        run: |
+          docker run --rm \
+            --volume "$GITHUB_WORKSPACE:/github/workspace" --workdir /github/workspace \
+            --env GOTOOLCHAIN=auto --env GITHUB_ACTIONS --env CI \
+            --env GITHUB_WORKSPACE=/github/workspace --env GITHUB_REPOSITORY \
+            --env GITHUB_SHA --env GITHUB_REF --env GITHUB_SERVER_URL \
+            --entrypoint /root/osv-reporter "$OSV_IMAGE" \
+            --output=results.sarif \
+            --new=new-results.json \
+            --gh-annotations=false \
+            --fail-on-vuln=true
+      - name: Preserve scan evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: osv-results
+          path: |
+            results.sarif
+            old-results.json
+            new-results.json
+          if-no-files-found: error
+          retention-days: 5
+      - name: Upload code scanning results
+        if: ${{ !cancelled() }}
+        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3
+        with:
+          sarif_file: results.sarif
