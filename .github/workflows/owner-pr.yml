@@ -11,7 +11,7 @@ on:
         type: boolean
     outputs:
       trusted:
-        value: ${{ jobs.select.outputs.trusted == 'true' && contains(fromJSON('["ci-small","ci-server-jane","ci-server-john"]'), jobs.route.outputs.target) }}
+        value: ${{ jobs.select.outputs.trusted == 'true' && contains(fromJSON('["ci-server-jane","ci-server-john"]'), jobs.route.outputs.target) }}
 
 permissions:
   contents: read
@@ -120,7 +120,7 @@ jobs:
                                           get(f"commits/{sha}"), sha)
               with open(os.environ["GITHUB_OUTPUT"], "a") as output:
                   output.write(f"trusted={str(trusted).lower()}\n")
-              print("Owner PR authorized for VPS" if trusted else "Use hosted CI")
+              print("Owner PR authorized for trusted fleet" if trusted else "Use hosted CI")
           
           if __name__ == "__main__":
               main()
@@ -131,14 +131,14 @@ jobs:
     if: needs.select.outputs.trusted == 'true'
     permissions:
       id-token: write
-    uses: esaueng/remus/.github/workflows/select-runner.yml@d7168a6576f078f6128191f5b37ac38068c8f0af
+    uses: esaueng/remus/.github/workflows/select-runner.yml@8cf263108cef108a72156268f0de2db019127de2
     with:
       enabled: ${{ vars.CI_FLEET_ENABLED == 'true' }}
 
   rust:
     name: Native Rust on trusted fleet
     needs: [select, route]
-    if: needs.select.outputs.trusted == 'true' && needs.route.outputs.target != 'github-hosted' && (inputs.heavy || inputs.docs)
+    if: needs.select.outputs.trusted == 'true' && contains(fromJSON('["ci-server-jane","ci-server-john"]'), needs.route.outputs.target) && (inputs.heavy || inputs.docs)
     runs-on:
       group: ci-trusted-main
       labels: ${{ needs.route.outputs.target }}
@@ -173,6 +173,8 @@ jobs:
           test "$(id -un)" = "$CI_USER"
           test "$(id -u)" != 0
           test "$HOME" = "$CI_STORAGE/home"
+          test -f "/opt/$CI_USER/bin/Runner.Listener"
+          test -f "/etc/systemd/system/$CI_USER.service"
           test ! -w "/opt/$CI_USER/bin/Runner.Listener"
           test ! -w "/etc/systemd/system/$CI_USER.service"
           test "$(awk '/^NoNewPrivs:/ {print $2}' /proc/self/status)" = 1
