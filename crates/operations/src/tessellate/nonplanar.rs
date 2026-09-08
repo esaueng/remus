@@ -2680,24 +2680,28 @@ pub(super) fn tessellate_nonplanar_cdt(
 
         let boundary_uv_ref = &boundary_uv;
         let hole_uvs_ref = &hole_uvs;
-        let on_hole_boundary = |point: Point2| {
-            hole_uvs_ref.iter().any(|hole| {
-                (0..hole.len()).any(|index| {
-                    let (ax, ay) = hole[index];
-                    let (bx, by) = hole[(index + 1) % hole.len()];
-                    let a = Point2::new(ax, ay);
-                    let b = Point2::new(bx, by);
-                    let edge = b - a;
-                    let length_sq = edge.dot(edge);
-                    let fraction = if length_sq > 1e-30 {
-                        ((point - a).dot(edge) / length_sq).clamp(0.0, 1.0)
-                    } else {
-                        0.0
-                    };
-                    let nearest = a + edge * fraction;
-                    (point - nearest).length() <= 1e-10 * du.max(dv).max(1.0)
+        // Grid points on a shared boundary would create face-local subdivisions
+        // absent from its neighbor, even though both start with the same rim.
+        let on_boundary = |point: Point2| {
+            std::iter::once(boundary_uv_ref)
+                .chain(hole_uvs_ref.iter())
+                .any(|hole| {
+                    (0..hole.len()).any(|index| {
+                        let (ax, ay) = hole[index];
+                        let (bx, by) = hole[(index + 1) % hole.len()];
+                        let a = Point2::new(ax, ay);
+                        let b = Point2::new(bx, by);
+                        let edge = b - a;
+                        let length_sq = edge.dot(edge);
+                        let fraction = if length_sq > 1e-30 {
+                            ((point - a).dot(edge) / length_sq).clamp(0.0, 1.0)
+                        } else {
+                            0.0
+                        };
+                        let nearest = a + edge * fraction;
+                        (point - nearest).length() <= 1e-10 * du.max(dv).max(1.0)
+                    })
                 })
-            })
         };
         let has_ellipse_wire = wire.edges().iter().any(|oriented| {
             topo.edge(oriented.edge())
@@ -2713,7 +2717,7 @@ pub(super) fn tessellate_nonplanar_cdt(
                         && hole_uvs_ref
                             .iter()
                             .all(|hole| !point_in_polygon_2d(hole, point))
-                        && !on_hole_boundary(point))
+                        && !on_boundary(point))
                     .then(|| to_cdt(u, v))
                 })
             })

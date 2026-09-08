@@ -135,9 +135,12 @@ fn openzcad_analytic_fillet_plate_imports_as_one_valid_analytic_solid() {
     let second = write_step(&round_topo, &[round_solid]).expect("write second STEP");
     assert_eq!(second, first, "write/read/write must be deterministic");
 
+    // The four radius-3 corners remove four square-minus-quarter-disc prisms
+    // from the 40 by 24 by 10 plate; the old reference was a chorded mesh value.
+    let exact_volume = 40.0 * 24.0 * 10.0 - (4.0 - std::f64::consts::PI) * 3.0_f64.powi(2) * 10.0;
     assert_valid_round_trip(
         FILLETED_PLATE,
-        9_522.606_928_409_188,
+        exact_volume,
         &[("cylinder", 4), ("plane", 6)],
     );
 }

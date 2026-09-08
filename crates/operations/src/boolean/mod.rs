@@ -1343,7 +1343,8 @@ fn boolean_with_context_impl(
                 // N-piece result, so widening the bound here would change which
                 // multi-region results get unified — a separate question from
                 // acceptance, and one the calibrated foils cover.
-                let euler_balanced_pre = euler_pre2 - inner_shell_surplus == 2
+                let euler_balanced_pre = (euler_pre2 - inner_shell_surplus == 2
+                    && inner_wire_count_pre == 0)
                     || euler_balanced(euler_pre2 - inner_shell_surplus, inner_wire_count_pre, 1);
 
                 // Run unify_faces if the (hole-aware) Euler is off OR if the
@@ -1444,7 +1445,7 @@ fn boolean_with_context_impl(
                 let hollow_ok = inner_shell_surplus == 0 || closed_manifold;
                 let euler_eff = euler - inner_shell_surplus;
                 let euler_ok = hollow_ok
-                    && (euler_eff == 2
+                    && ((euler_eff == 2 && inner_wire_count == 0)
                         || (euler_balanced(euler_eff, inner_wire_count, 1) && closed_manifold));
                 if euler_ok
                     && open_shell_ok
