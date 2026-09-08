@@ -16,12 +16,14 @@ on:
   push:
     branches: [main]
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
+  workflow_dispatch:
 
 # Least privilege by default; each job opts into exactly what it needs.
 permissions: {}
 
 concurrency:
-  group: benchmark-${{ github.ref }}
+  group: benchmark-${{ github.ref }}-${{ github.event.action == 'labeled' && github.event.label.name != 'ci:benchmark' && github.run_id || 'selected' }}
   # Supersede an in-flight run on a PR (only the latest commit matters), but let
   # every push to main finish so the baseline trend has no gaps.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -29,6 +31,10 @@ concurrency:
 jobs:
   bench:
     name: Kernel perf
+    if: >-
+      github.event_name != 'pull_request' ||
+      (contains(github.event.pull_request.labels.*.name, 'ci:benchmark') &&
+       (github.event.action != 'labeled' || github.event.label.name == 'ci:benchmark'))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
