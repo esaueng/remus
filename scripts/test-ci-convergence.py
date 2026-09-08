@@ -128,6 +128,14 @@ class ConvergenceTests(unittest.TestCase):
         self.assertIn("workflow_dispatch:", BENCH)
         self.assertIn("test(scaling_)", JOBS["test"])
 
+    def test_advisory_size_report_cannot_block_required_gate(self):
+        self.assertNotIn("wasm-size", JOBS)
+        caller_jobs = jobs(CALLER)
+        self.assertIn("needs: checks", caller_jobs["wasm-size"])
+        self.assertIn("needs.checks.outputs.heavy == 'true'", caller_jobs["wasm-size"])
+        self.assertNotIn("wasm-size", caller_jobs["ci-pass"])
+        self.assertIn("pull-requests: read", caller_jobs["checks"])
+
     def test_queue_configuration_preserves_every_merge_validation(self):
         config = json.loads((ROOT / ".github/merge-queue-ruleset.json").read_text())
         self.assertEqual(config["enforcement"], "disabled")
