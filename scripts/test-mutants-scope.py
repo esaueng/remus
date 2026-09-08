@@ -60,7 +60,7 @@ def rejects(mutants, label):
 
 
 def main():
-    weekly = (ROOT / ".github/workflows/mutants.yml").read_text()
+    weekly = (ROOT / ".github/workflows/fleet-mutants.yml").read_text()
     versions = re.findall(r"cargo-mutants@([0-9.]+)", weekly)
     version = subprocess.run(
         ["cargo", "mutants", "--version"], cwd=ROOT, check=True,
