@@ -41,6 +41,13 @@ def evaluate(expression, github, variables):
 
 
 class DirectFleetTests(unittest.TestCase):
+    def test_additional_ubuntu_workflows(self):
+        result = subprocess.run(
+            ["python3", str(ROOT / "scripts/test-ubuntu-ci-routing.py")],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def setUp(self):
         repo = {"id": REPO_ID, "fork": False}
         self.github = {
