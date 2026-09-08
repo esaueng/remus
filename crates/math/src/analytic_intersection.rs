@@ -1042,7 +1042,9 @@ pub fn intersect_plane_torus(
             let last = chain[chain.len() - 1];
             let last_pt = crossing_pts[last].2;
             let mut best_idx = None;
-            let mut best_dist = 1.0_f64;
+            // The grid is angular: its physical spacing scales with the tube.
+            // A fixed length joins separate small lobes and fragments large ones.
+            let mut best_dist = torus.minor_radius() / 3.0;
 
             for (j, &is_used) in used.iter().enumerate() {
                 if is_used {
@@ -3862,6 +3864,29 @@ mod tests {
                         "off-surface point {p:?} implicit={}",
                         torus_implicit(p, major, minor)
                     );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn plane_torus_lobes_close_across_model_scales() {
+        use crate::traits::ParametricCurve;
+        for scale in [0.1, 1.0, 10.0] {
+            let torus = ToroidalSurface::new(Point3::new(0.0, 0.0, 0.0), 10.0 * scale, 3.0 * scale)
+                .unwrap();
+            for (normal, distance) in [
+                (Vec3::new(0.0, -1.0, 0.0), 4.0 * scale),
+                (Vec3::new(-1.0, 0.0, 0.0), -6.0 * scale),
+            ] {
+                let curves = intersect_plane_torus(&torus, normal, distance).unwrap();
+                assert_eq!(curves.len(), 2, "scale={scale}, normal={normal:?}");
+                for curve in curves {
+                    let (lo, hi) = curve.curve.domain();
+                    let gap = (ParametricCurve::evaluate(&curve.curve, lo)
+                        - ParametricCurve::evaluate(&curve.curve, hi))
+                    .length();
+                    assert!(gap <= 1e-7, "scale={scale}: closure gap={gap}");
                 }
             }
         }
