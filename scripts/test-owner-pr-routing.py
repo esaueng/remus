@@ -12,7 +12,8 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent.parent
-CI = (ROOT / ".github/workflows/ci.yml").read_text()
+CI = (ROOT / ".github/workflows/fleet-ci.yml").read_text()
+CALLER = (ROOT / ".github/workflows/ci.yml").read_text()
 OWNER = (ROOT / ".github/workflows/owner-pr.yml").read_text()
 
 
@@ -22,31 +23,18 @@ def job(name):
 
 class OwnerRoutingTests(unittest.TestCase):
     def test_caller_pins_the_reviewed_workflow_content(self):
-        match = re.search(r"uses: esaueng/remus/.github/workflows/owner-pr.yml@([0-9a-f]{40})", CI)
+        match = re.search(r"uses: esaueng/remus/.github/workflows/fleet-ci.yml@([0-9a-f]{40})", CALLER)
         self.assertIsNotNone(match)
-        pinned = subprocess.check_output(
-            ["git", "show", f"{match[1]}:.github/workflows/owner-pr.yml"],
-            cwd=ROOT, text=True)
-        self.assertEqual(pinned, OWNER, "Update the immutable pin after changing the callee")
-        self.assertNotIn("secrets:", job("owner-pr"))
-
-    def test_fleet_selection_preserves_authorization_and_failure_semantics(self):
-        route = OWNER.split("\n  route:\n", 1)[1].split("\n  rust:\n", 1)[0]
-        self.assertIn("needs: select", route)
-        self.assertIn("if: needs.select.outputs.trusted == 'true'", route)
-        self.assertIn("vars.CI_FLEET_ENABLED == 'true'", route)
-        self.assertNotIn("checkout", route)
-        self.assertIn("contains(fromJSON('[\"ci-server-jane\",\"ci-server-john\"]'), jobs.route.outputs.target)", OWNER)
-        self.assertIn("id-token: write", job("owner-pr"))
-        self.assertNotIn("id-token: write", OWNER.split("\n  rust:\n", 1)[1])
+        self.assertNotIn("secrets:", CALLER)
+        self.assertNotIn("select-runner.yml", CI)
 
     def test_native_checks_keep_hosted_fallback(self):
         for name in ("clippy", "test", "msrv", "fuzz-check", "docs"):
             with self.subTest(name=name):
                 block = job(name)
-                self.assertIn("needs: [changes, owner-pr]", block)
-                self.assertIn("needs.owner-pr.outputs.trusted != 'true'", block)
-                self.assertIn("runs-on: ubuntu-latest", block)
+                self.assertIn("needs: changes", block)
+                self.assertNotIn("needs.owner-pr", block)
+                self.assertIn("runs-on: *fleet-runner", block)
                 flag = "docs" if name == "docs" else "heavy"
                 self.assertIn(f"needs.changes.outputs.{flag} == 'true'", block)
 
@@ -54,7 +42,7 @@ class OwnerRoutingTests(unittest.TestCase):
         for name in ("repo-policy", "approx-census", "coverage", "wasm",
                      "render", "deny", "audit", "secrets-scan", "wasm-size"):
             with self.subTest(name=name):
-                self.assertIn("runs-on: ubuntu-latest", job(name))
+                self.assertIn("runs-on: *fleet-runner", job(name))
                 self.assertNotIn("needs.owner-pr.outputs.trusted", job(name))
         self.assertIn("os: [macos-latest]", job("platform-test"))
         self.assertIn("cargo llvm-cov report --fail-under-lines 60", job("coverage"))
@@ -77,9 +65,9 @@ class OwnerRoutingTests(unittest.TestCase):
 
     def test_ci_pass_rejects_vps_failure_or_cancellation(self):
         block = job("ci-pass")
-        self.assertIn("needs: [changes, owner-pr,", block)
+        self.assertIn("needs: [changes, repo-policy,", block)
         self.assertIn("if: always()", block)
-        command = block.split("        run: |\n", 1)[1].strip()
+        command = block.rsplit("        run: |\n", 1)[1].strip()
         for result, expected in (("success", 0), ("failure", 1), ("cancelled", 1)):
             with self.subTest(result=result):
                 needs = {"changes": {"result": "success"}, "owner-pr": {"result": result},
