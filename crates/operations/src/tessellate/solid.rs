@@ -616,6 +616,42 @@ fn tessellate_faces_core(
     {
         let tol_linear = remus_math::tolerance::Tolerance::new().linear;
         let refine_tol = tol_linear * 10.0;
+        let mut line_contacts: DetHashMap<usize, DetHashSet<u32>> = DetHashMap::default();
+        for &face_id in all_faces {
+            let face = topo.face(face_id)?;
+            if !matches!(face.surface(), FaceSurface::Plane { .. }) {
+                continue;
+            }
+            let mut lines = Vec::new();
+            let mut curved_samples = Vec::new();
+            for wire_id in
+                std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+            {
+                for oriented in topo.wire(wire_id)?.edges() {
+                    let edge = topo.edge(oriented.edge())?;
+                    let index = oriented.edge().index();
+                    if matches!(edge.curve(), EdgeCurve::Line) {
+                        lines.push(index);
+                    } else if matches!(edge.curve(), EdgeCurve::Circle(_)) {
+                        curved_samples.extend(
+                            edge_global_indices
+                                .get(&index)
+                                .into_iter()
+                                .flatten()
+                                .copied(),
+                        );
+                    }
+                }
+            }
+            if !curved_samples.is_empty() {
+                for index in lines {
+                    line_contacts
+                        .entry(index)
+                        .or_default()
+                        .extend(curved_samples.iter().copied());
+                }
+            }
+        }
 
         for &edge_idx in &edge_indices {
             let Some(edge_id) = topo.edge_id_from_index(edge_idx) else {
@@ -624,6 +660,47 @@ fn tessellate_faces_core(
             let Ok(edge_data) = topo.edge(edge_id) else {
                 continue;
             };
+            if matches!(edge_data.curve(), EdgeCurve::Line) {
+                let Some(candidates) = line_contacts.get(&edge_idx) else {
+                    continue;
+                };
+                // CDT subdivides a straight constraint at an existing tangent
+                // boundary sample. Share that subdivision with every edge user.
+                let start = topo.vertex(edge_data.start())?.point();
+                let end = topo.vertex(edge_data.end())?.point();
+                let direction = end - start;
+                let length_squared = direction.length_squared();
+                let boundary_tol = 1e-10;
+                if length_squared > boundary_tol * boundary_tol {
+                    let mut samples: Vec<(f64, u32)> = edge_global_indices
+                        .get(&edge_idx)
+                        .into_iter()
+                        .flatten()
+                        .map(|&gid| {
+                            (
+                                (merged.positions[gid as usize] - start).dot(direction)
+                                    / length_squared,
+                                gid,
+                            )
+                        })
+                        .collect();
+                    for &gid in candidates {
+                        let point = merged.positions[gid as usize];
+                        let t = (point - start).dot(direction) / length_squared;
+                        if t > 0.0
+                            && t < 1.0
+                            && (point - (start + direction * t)).length() < boundary_tol
+                        {
+                            samples.push((t, gid));
+                        }
+                    }
+                    samples.sort_by(|a, b| a.0.total_cmp(&b.0));
+                    samples.dedup_by_key(|sample| sample.1);
+                    edge_global_indices
+                        .insert(edge_idx, samples.into_iter().map(|(_, gid)| gid).collect());
+                }
+                continue;
+            }
             let EdgeCurve::Circle(circle) = edge_data.curve() else {
                 continue;
             };

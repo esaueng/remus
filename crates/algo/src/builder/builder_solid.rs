@@ -2432,7 +2432,7 @@ fn is_degenerate_line_sliver(topo: &Topology, fid: FaceId) -> bool {
 /// tolerance onto a single canonical vertex, then rebuild any touched wire.
 ///
 /// Quantization-based merging (`merge_duplicate_edges`) keys on `MERGE_TOL`
-/// cells, so two vertices a few ULPs apart but within `snap` (10·`MERGE_TOL`)
+/// cells, so two vertices a few ULPs apart but within `MERGE_TOL`
 /// land in different cells and are never recognized as the same point. This
 /// pass clusters by actual distance (a coarse spatial hash bounds the
 /// neighbour search) so coincident-but-displaced intersection vertices share
@@ -2451,19 +2451,26 @@ fn weld_coincident_vertices(
     use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
     use remus_topology::vertex::VertexId;
 
-    // Keep the weld band narrow: widening this to 100x merges distinct
-    // boss/wall junction vertices and changes the resulting solid volume.
+    // Keep the historical assembly allowance at NURBS surface/curve vertices.
+    // Analytic-only contacts use the actual merge tolerance so a resolved
+    // rim-to-wall gap cannot collapse onto a different carrier.
     let snap = MERGE_TOL * 10.0;
 
     // Collect distinct vertices (id + position) referenced by the faces.
     let mut seen: HashSet<VertexId> = HashSet::new();
     let mut verts: Vec<(VertexId, Point3)> = Vec::new();
+    let mut nurbs_vertices = HashSet::new();
     for &fid in face_ids.iter() {
         let face = topo.face(fid)?;
         for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
             for oe in topo.wire(wid)?.edges() {
                 let edge = topo.edge(oe.edge())?;
                 for vid in [edge.start(), edge.end()] {
+                    if matches!(face.surface(), FaceSurface::Nurbs(_))
+                        || matches!(edge.curve(), EdgeCurve::NurbsCurve(_))
+                    {
+                        nurbs_vertices.insert(vid);
+                    }
                     if seen.insert(vid) {
                         verts.push((vid, topo.vertex(vid)?.point()));
                     }
@@ -2500,7 +2507,13 @@ fn weld_coincident_vertices(
                     let nc = (c.0 + dx, c.1 + dy, c.2 + dz);
                     if let Some(list) = buckets.get(&nc) {
                         for &(cid, cp) in list {
-                            if (cp - p).length() <= snap
+                            let allowance =
+                                if nurbs_vertices.contains(&vid) || nurbs_vertices.contains(&cid) {
+                                    snap
+                                } else {
+                                    MERGE_TOL
+                                };
+                            if (cp - p).length() <= allowance
                                 && canonical.is_none_or(|b| cid.index() < b.index())
                             {
                                 canonical = Some(cid);
@@ -2744,7 +2757,7 @@ fn split_edges_at_collinear_vertices(
         let mut cuts: Vec<(f64, VertexId)> = Vec::new();
         for ci in grid.segment_candidates(sp, ep, snap) {
             let (vid, p) = verts[ci];
-            if (p - sp).length() < snap || (p - ep).length() < snap {
+            if (p - sp).length() < tol || (p - ep).length() < tol {
                 continue;
             }
             let t = (p - sp).dot(dir) / len2;
@@ -2752,7 +2765,9 @@ fn split_edges_at_collinear_vertices(
                 continue;
             }
             let foot = sp + dir * t;
-            if (p - foot).length() > snap {
+            // A wider search band must not bend a straight carrier across a
+            // resolved gap and attach a separate hole to its outer boundary.
+            if (p - foot).length() > tol {
                 continue;
             }
             cuts.push((t, vid));
@@ -4293,6 +4308,77 @@ mod tests {
             Some(true),
             "a standard outward cube shell must read outward (growth)"
         );
+    }
+
+    #[test]
+    fn line_refinement_preserves_a_separated_analytic_hole() {
+        use remus_math::curves::Circle3D;
+        use remus_topology::{
+            edge::{Edge, EdgeCurve},
+            face::{Face, FaceSurface},
+            vertex::Vertex,
+            wire::Wire,
+        };
+
+        for gap in [0.0, 0.5 * MERGE_TOL, 5.0 * MERGE_TOL] {
+            let mut topo = Topology::new();
+            let points = [
+                Point3::new(0.0, -2.0, 0.0),
+                Point3::new(2.0, -2.0, 0.0),
+                Point3::new(2.0, 2.0, 0.0),
+                Point3::new(0.0, 2.0, 0.0),
+            ];
+            let vertices: Vec<_> = points
+                .into_iter()
+                .map(|p| topo.add_vertex(Vertex::new(p, MERGE_TOL)))
+                .collect();
+            let edges: Vec<_> = (0..4)
+                .map(|i| {
+                    let id = topo.add_edge(Edge::new(
+                        vertices[i],
+                        vertices[(i + 1) % 4],
+                        EdgeCurve::Line,
+                    ));
+                    OrientedEdge::new(id, true)
+                })
+                .collect();
+            let outer = topo.add_wire(Wire::new(edges, true).unwrap());
+            let circle = Circle3D::new(
+                Point3::new(0.5 + gap, 0.0, 0.0),
+                Vec3::new(0.0, 0.0, 1.0),
+                0.5,
+            )
+            .unwrap();
+            let seam_point = Point3::new(gap, 0.0, 0.0);
+            let seam = topo.add_vertex(Vertex::new(seam_point, MERGE_TOL));
+            let start = circle.project(seam_point);
+            let mut edge = Edge::new(seam, seam, EdgeCurve::Circle(circle));
+            edge.set_trim(Some((start, start + std::f64::consts::TAU)));
+            let edge = topo.add_edge(edge);
+            let inner =
+                topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap());
+            let face = topo.add_face(Face::new(
+                outer,
+                vec![inner],
+                FaceSurface::Plane {
+                    normal: Vec3::new(0.0, 0.0, 1.0),
+                    d: 0.0,
+                },
+            ));
+            let mut faces = [face];
+            split_edges_at_collinear_vertices(
+                &mut topo,
+                &mut faces,
+                &mut super::super::split_types::EdgeLineageLog::default(),
+            )
+            .unwrap();
+            let count = topo
+                .wire(topo.face(faces[0]).unwrap().outer_wire())
+                .unwrap()
+                .edges()
+                .len();
+            assert_eq!(count, if gap <= MERGE_TOL { 5 } else { 4 }, "gap={gap:e}");
+        }
     }
 
     #[test]
