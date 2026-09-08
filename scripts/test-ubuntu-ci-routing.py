@@ -141,6 +141,19 @@ class UbuntuRoutingTests(unittest.TestCase):
         self.assertIn("ghcr.io/google/osv-scanner-action@sha256:", osv)
         self.assertLess(osv.index("fleet-guard@"), osv.index("docker run --rm"))
 
+    def test_rust_caches_restore_after_isolation_and_only_main_saves(self):
+        for path in [WORKFLOWS / "fleet-ci.yml", *FILES]:
+            for name, block in jobs(path.read_text()).items():
+                if "Swatinem/rust-cache@" not in block:
+                    continue
+                cache = block.split("      - uses: Swatinem/rust-cache@", 1)[1].split("      - ", 1)[0]
+                with self.subTest(file=path.name, job=name):
+                    self.assertNotIn("runner.environment != 'self-hosted'", cache)
+                    self.assertIn("save-if: ${{ github.ref == 'refs/heads/main' }}", cache)
+                    if name != "platform-test":
+                        guard = "*fleet-isolation" if path.name == "fleet-ci.yml" else "fleet-guard@"
+                        self.assertLess(block.index(guard), block.index("Swatinem/rust-cache@"))
+
     def test_macos_stays_required_and_publish_credentials_stay_separate(self):
         fleet = jobs((WORKFLOWS / "fleet-ci.yml").read_text())
         self.assertIn("os: [macos-latest]", fleet["platform-test"])
