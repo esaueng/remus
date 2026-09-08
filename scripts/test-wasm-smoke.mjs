@@ -15,6 +15,7 @@ import { fileURLToPath } from 'node:url';
 import {
   runOpenZcadAnalyticFlangeBooleanRegression,
   runOpenZcadCylindricalFaceResizeRegression,
+  runPartialCylinderResizeRegression,
   runWideSphereCapRegression,
   runOffsetConeSphereRegression,
   runOffsetSphereCylinderRegression,
@@ -748,6 +749,7 @@ runOffsetSphereCylinderRegression({ BrepKernel });
 runOffsetTorusSphereRegression({ BrepKernel });
 runTorusNotchRegression({ BrepKernel });
 runTangencyBandRegression({ BrepKernel });
+runPartialCylinderResizeRegression({ BrepKernel, RemusIo });
 runBooleanScaleRegression({ BrepKernel });
 runAnisotropicBooleanRegression({ BrepKernel });
 
