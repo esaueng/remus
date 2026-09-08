@@ -37,6 +37,7 @@ use crate::state::{Checkpoint, GcsSketchState, SketchState};
 ///
 /// Owns all topological state. JavaScript holds this reference and
 /// invokes methods to create, transform, and query geometry.
+#[cfg_attr(feature = "workflow-probes", derive(Debug))]
 #[wasm_bindgen]
 pub struct BrepKernel {
     pub(crate) topo: Rc<Topology>,
@@ -2089,6 +2090,57 @@ mod json_brep_trim_tests {
             assert!(matches!(edge.curve(), EdgeCurve::Line));
             assert_eq!(edge.trim(), None);
             assert_eq!(edge.strict_domain().unwrap(), (0.0, 1.0));
+        }
+    }
+}
+
+#[cfg(feature = "workflow-probes")]
+mod workflow_probes {
+    use wasm_bindgen::prelude::*;
+
+    use crate::kernel::BrepKernel;
+
+    #[wasm_bindgen]
+    impl BrepKernel {
+        /// Snapshot every logical session field, including vacant handle slots,
+        /// sketches, assemblies, checkpoints, and the poison flag.
+        ///
+        /// Compare only within one live process and one build. Debug formatting
+        /// is deliberately not a portable serialization format or a public API.
+        #[wasm_bindgen(js_name = "workflowStateSnapshot")]
+        #[must_use]
+        pub fn workflow_state_snapshot(&self) -> String {
+            format!("{self:?}")
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::state::{GcsSketchState, SketchState};
+
+        #[test]
+        fn snapshot_detects_non_geometry_state_changes() {
+            let mut kernel = BrepKernel::new();
+            let mut before = kernel.workflow_state_snapshot();
+            kernel.sketches.push(SketchState::default());
+            let mut after = kernel.workflow_state_snapshot();
+            assert_ne!(before, after);
+            before = after;
+            kernel.gcs_sketches.push(GcsSketchState::default());
+            after = kernel.workflow_state_snapshot();
+            assert_ne!(before, after);
+            before = after;
+            kernel.assembly_new("sentinel");
+            after = kernel.workflow_state_snapshot();
+            assert_ne!(before, after);
+            before = after;
+            kernel.checkpoint();
+            after = kernel.workflow_state_snapshot();
+            assert_ne!(before, after);
+            before = after;
+            kernel.poisoned = true;
+            assert_ne!(before, kernel.workflow_state_snapshot());
         }
     }
 }

@@ -131,8 +131,9 @@ that does not exist yet; without it, stop.
 
 ## Open items with a repro
 
-The `#[ignore]` inventory (regenerated 2026-09-04) holds no open engine defects.
-The remaining ignores are
+The `#[ignore]` inventory (regenerated 2026-09-06) has one open engine witness:
+`qualify_boolean_anisotropic.rs::anisotropic_world_volume_resolves_small_feature_scale`.
+The remaining twelve ignores are
 two fork-policy pins blocked on the trim-contract reconciliation
 (`crates/operations/tests/regress_chamfer_obtuse_ridge.rs`,
 `regress_fillet_concave_notch.rs`, see PR #126), one ~2 min perf run
@@ -191,6 +192,7 @@ harness's own option-honoured floor misreading a correct 0.05 fillet on an
   depth by geometric containment (stored winding cannot classify them).
 - **A wire with no angular gap is a wrapped face;** any consumer that
   polygon-approximates it inherits the parity flip.
+- **Two tube-wrapping torus rims bound an oriented band, not ordinary holes;** preserve opposite traversal through Fuse and integrate the retained side (`pclass_torus_notch_orientation.rs`).
 - **Full mesh area + zero boundary/non-manifold edges + volume deficit + zero
   inverted normals = sparse-interior deep chords, not winding.**
 - **When a range and a mask disagree, instrument both before blaming either**

@@ -256,14 +256,7 @@ fn check_periodic_inner_wire_orientation(
         if same_wound {
             issues.push(ValidationIssue {
                 check: CheckId::FaceOrientationConsistency,
-                // Warning, not Error: the boolean emitter has never normalized
-                // inner-wire winding on curved faces (the splitter-side
-                // normalization covers planar faces only), so kernel-produced
-                // solids — e.g. a cross-drilled cylinder wall — currently trip
-                // this. Surface the defect without failing otherwise-functional
-                // geometry; promote to Error once the emitter normalizes
-                // curved-face winding the way the planar path does.
-                severity: Severity::Warning,
+                severity: Severity::Error,
                 entity: EntityRef::Wire(wire_id),
                 description: format!(
                     "inner wire {} on periodic face {} has the same winding as its outer wire",
@@ -493,9 +486,7 @@ mod tests {
             1,
             "same-wound hole on a cylinder must fire: {issues:?}"
         );
-        // Warning while the boolean emitter still ships same-wound inner
-        // wires on curved faces; see the check body's severity note.
-        assert_eq!(issues[0].severity, Severity::Warning);
+        assert_eq!(issues[0].severity, Severity::Error);
         assert!(issues[0].description.contains("same winding"));
 
         let mut topo = Topology::new();

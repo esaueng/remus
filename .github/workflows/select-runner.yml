@@ -1,0 +1,92 @@
+name: Select trusted CI runner
+
+on:
+  workflow_call:
+    inputs:
+      enabled:
+        type: boolean
+        default: false
+    outputs:
+      target:
+        value: ${{ jobs.select.outputs.target }}
+
+permissions: {}
+
+jobs:
+  select:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      id-token: write
+    outputs:
+      target: ${{ steps.route.outputs.target }}
+    steps:
+      - name: Select by availability
+        id: route
+        env:
+          FLEET_ENABLED: ${{ inputs.enabled }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import time
+          import urllib.parse
+          import urllib.request
+
+          ENDPOINT = "https://ci.esau.app/routing/v1/target"
+          TARGETS = {"ci-server-jane", "ci-server-john", "github-hosted"}
+
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl):
+                  return None
+
+          def request_json(url, token, method="GET"):
+              request = urllib.request.Request(url, method=method, headers={
+                  "Authorization": f"Bearer {token}", "Accept": "application/json",
+              })
+              with urllib.request.build_opener(NoRedirect).open(request, timeout=15) as response:
+                  body = response.read(16385)
+                  if len(body) > 16384:
+                      raise ValueError("response too large")
+                  return json.loads(body)
+
+          def valid_target(result, now):
+              if not isinstance(result, dict) or result.get("policy") != "unavailable-only":
+                  return "github-hosted"
+              target = result.get("target")
+              generated = result.get("generated_at")
+              expires = result.get("expires_at")
+              if (not isinstance(target, str) or target not in TARGETS
+                      or type(generated) is not int or type(expires) is not int
+                      or not now - 30 <= generated <= now + 5
+                      or not now < expires <= generated + 30):
+                  return "github-hosted"
+              return target
+
+          def choose(enabled, request=request_json, now=time.time):
+              if not enabled:
+                  return "github-hosted"
+              try:
+                  url = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
+                  separator = "&" if "?" in url else "?"
+                  identity = request(url + separator + urllib.parse.urlencode({"audience": ENDPOINT}),
+                                     os.environ["ACTIONS_ID_TOKEN_REQUEST_TOKEN"])
+                  token = identity["value"]
+                  if not isinstance(token, str) or not token or len(token) > 16384:
+                      raise ValueError("invalid identity")
+                  result = request(ENDPOINT, token, "POST")
+                  return valid_target(result, int(now()))
+              except Exception:
+                  # A routing outage must not strand trusted work on a dead host.
+                  print("Fleet selection unavailable; using hosted CI")
+                  return "github-hosted"
+
+          def main():
+              target = choose(os.environ.get("FLEET_ENABLED") == "true")
+              with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+                  output.write(f"target={target}\n")
+              print(f"CI target: {target}")
+
+          if __name__ == "__main__":
+              main()
+          PY

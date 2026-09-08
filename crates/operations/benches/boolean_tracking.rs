@@ -23,7 +23,7 @@ use criterion::{Criterion, criterion_group, criterion_main};
 
 use remus_math::mat::Mat4;
 use remus_operations::boolean::{BooleanOp, boolean};
-use remus_operations::primitives::{make_box, make_cylinder};
+use remus_operations::primitives::{make_box, make_cylinder, make_torus};
 use remus_operations::transform::transform_solid;
 use remus_topology::Topology;
 use remus_topology::shell::Shell;
@@ -73,6 +73,22 @@ fn bench_booleans(c: &mut Criterion) {
         });
     }
 
+    for (name, operation) in [
+        ("torus_notch_cut", BooleanOp::Cut),
+        ("torus_notch_fuse", BooleanOp::Fuse),
+        ("torus_notch_intersect", BooleanOp::Intersect),
+    ] {
+        group.bench_function(name, |bencher| {
+            bencher.iter(|| {
+                let mut topo = Topology::new();
+                let torus = make_torus(&mut topo, 10.0, 3.0, 32).unwrap();
+                let tool = make_box(&mut topo, 8.0, 8.0, 8.0).unwrap();
+                transform_solid(&mut topo, tool, &Mat4::translation(6.0, -4.0, -4.0)).unwrap();
+                black_box(boolean(&mut topo, operation, torus, tool).unwrap())
+            });
+        });
+    }
+
     group.bench_function("cut_cylinder_through_box", |bencher| {
         bencher.iter(|| {
             let mut topo = Topology::new();
@@ -80,6 +96,22 @@ fn bench_booleans(c: &mut Criterion) {
             let cyl = make_cylinder(&mut topo, 1.0, 6.0).unwrap();
             transform_solid(&mut topo, cyl, &Mat4::translation(2.0, 2.0, -2.0)).unwrap();
             black_box(boolean(&mut topo, BooleanOp::Cut, box_id, cyl).unwrap())
+        });
+    });
+
+    group.bench_function("cross_drilled_cylinder", |bencher| {
+        bencher.iter(|| {
+            let mut topo = Topology::new();
+            let shaft = make_cylinder(&mut topo, 3.0, 12.0).unwrap();
+            let tool = make_cylinder(&mut topo, 1.0, 10.0).unwrap();
+            transform_solid(
+                &mut topo,
+                tool,
+                &Mat4::rotation_y(std::f64::consts::FRAC_PI_2),
+            )
+            .unwrap();
+            transform_solid(&mut topo, tool, &Mat4::translation(-5.0, 0.0, 6.0)).unwrap();
+            black_box(boolean(&mut topo, BooleanOp::Cut, shaft, tool).unwrap())
         });
     });
 

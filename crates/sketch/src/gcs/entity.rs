@@ -61,6 +61,7 @@ impl<T> Handle<T> {
 }
 
 /// Slot in the generational arena — either occupied or free.
+#[derive(Debug)]
 enum Entry<T> {
     Occupied {
         value: T,
@@ -76,6 +77,7 @@ enum Entry<T> {
 ///
 /// Removed slots are recycled via a free list. Each slot has a generation
 /// counter that is bumped on removal, so stale handles are detected.
+#[derive(Debug)]
 pub struct GenArena<T> {
     entries: Vec<Entry<T>>,
     free_head: Option<u32>,
