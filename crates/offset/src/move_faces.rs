@@ -1,5 +1,7 @@
 //! Topology-preserving planar face moves.
 
+mod quarter_cylinder;
+
 use std::collections::{HashMap, HashSet};
 
 use remus_math::analytic_intersection::{
@@ -1314,12 +1316,12 @@ fn validate_replacement_clearance<V: std::ops::Deref<Target = [FaceId]>>(
         .into_iter()
         .map(VertexId::index)
         .collect();
-    if matches!(replacement, FaceSurface::Cylinder(_)) && !selected_face.is_reversed() {
-        return Err(OffsetError::UnsupportedMoveFace {
-            face: selected,
-            surface_type: "cylinder",
-            reason: "qualified cylinder replacement is limited to inward-facing bore walls".into(),
-        });
+    if let FaceSurface::Cylinder(cylinder) = replacement
+        && !selected_face.is_reversed()
+    {
+        return quarter_cylinder::validate_clearance(
+            topo, selected, cylinder, edge_faces, tolerance,
+        );
     }
 
     for (&edge_index, faces) in edge_faces {
