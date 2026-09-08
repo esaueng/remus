@@ -1,0 +1,118 @@
+name: Trusted mutants
+on:
+  workflow_call:
+permissions:
+  contents: read
+  pull-requests: read
+env:
+  CARGO_TERM_COLOR: always
+jobs:
+  mutants:
+    name: Cargo Mutants
+    runs-on: ${{ fromJSON((vars.CI_FLEET_ENABLED == 'true' || (vars.CI_FLEET_VALIDATION_REF != '' && vars.CI_FLEET_VALIDATION_REF == github.ref)) && (github.repository == 'esaueng/remus' && github.repository_id == '1334765869' && github.actor == 'petergstfsn' && github.actor_id == '171875562' && github.triggering_actor == 'petergstfsn' && ((github.event_name == 'pull_request' && github.event.pull_request.state == 'open' && github.event.pull_request.user.login == 'petergstfsn' && github.event.pull_request.user.id == 171875562 && github.event.pull_request.head.repo.id == 1334765869 && github.event.pull_request.base.repo.id == 1334765869 && github.event.pull_request.head.repo.fork == false && github.event.pull_request.base.repo.fork == false && github.event.pull_request.base.ref == 'main' && github.ref == format('refs/pull/{0}/merge', github.event.pull_request.number)) || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') && github.ref == 'refs/heads/main' && github.ref_protected == true))) && (vars.CI_FLEET_TARGET == 'ci-server-jane' && '{"group":"ci-trusted-main","labels":"ci-server-jane"}' || vars.CI_FLEET_TARGET == 'ci-server-john' && '{"group":"ci-trusted-main","labels":"ci-server-john"}') || '"ubuntu-latest"') }}
+    # The examined surface (math subset, algo, blend, offset, operations) holds
+    # ~54k mutants — far more than any weekly budget can test, so each run is
+    # scoped to the code that changed on main in the last seven days and is
+    # stopped by `timeout` before this limit so the incrementally written
+    # outcome files are still published. The 180-minute budget is the ceiling
+    # the results must fit under, not an estimate of the run.
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: esaueng/remus/.github/actions/fleet-guard@29779e3185e8582b59bf58692a307b1018a98e68
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Install pinned Rust on disposable runners
+        if: runner.environment == 'self-hosted'
+        uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
+        with:
+          toolchain: "1.96.0"
+          components: clippy,rustfmt,rust-src
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        if: runner.environment != 'self-hosted'
+      - uses: taiki-e/install-action@742a3317eac7bd62f91cd888b4eead5e784ba833 # v2.62.30
+        with:
+          tool: nextest,cargo-mutants@27.0.0
+      - name: Scope to the week's changes
+        run: |
+          since=$(git rev-list -1 --before="7 days ago" HEAD)
+          if [ -z "$since" ]; then
+            since=$(git rev-list --max-parents=0 HEAD | tail -1)
+          fi
+          git diff "$since" HEAD -- crates/ > week.diff
+          echo "Mutating changes since $since ($(git log -1 --format=%cs "$since")): $(wc -l < week.diff) diff lines"
+      # The package list and mutants.toml's examine_globs INTERSECT: a glob for
+      # a package not named here is silently inert. Adding the engine crates to
+      # mutants.toml alone would have changed nothing.
+      #
+      # No fixed --timeout: it also capped the unmutated baseline, whose test
+      # run for these five packages exceeds 120s, so the job died on "baseline
+      # TIMEOUT" before testing a single mutant. cargo-mutants derives the
+      # per-mutant timeout from the measured baseline instead.
+      #
+      # A busy week still yields a few thousand mutants (3,328 for the week
+      # ending 2026-09-01), more than the budget tests, so the list is shuffled:
+      # a run cut off by `timeout` then reports a random sample rather than the
+      # same head of the path-sorted list every week.
+      #
+      # Exit codes 2 (missed) and 3 (timed-out mutants) are evaluated from the
+      # outcome files below so the summary is always written first; 124 is
+      # `timeout` reaching the budget, which leaves partial-but-valid results.
+      - name: Run mutation testing on the week's changes
+        run: |
+          set +e
+          timeout --foreground --signal=INT --kill-after=2m 150m \
+            cargo mutants \
+              --test-tool=nextest \
+              --in-diff week.diff \
+              --shuffle \
+              --jobs 2 \
+              --package remus-math \
+              --package remus-algo \
+              --package remus-blend \
+              --package remus-offset \
+              --package remus-operations \
+              -e 'tests/**' \
+              -e 'benches/**' \
+              -e 'examples/**' \
+              --output=mutants-output
+          rc=$?
+          set -e
+          case "$rc" in
+            0|2|3) ;;
+            124) echo "::warning::Mutation budget (150 min) reached; results are partial" ;;
+            *) echo "::error::cargo mutants failed with exit code $rc (4 = baseline failed, 5/6 = bad --in-diff, 70 = internal)"; exit "$rc" ;;
+          esac
+      - name: Publish mutation summary
+        if: always()
+        run: |
+          out=mutants-output/mutants.out
+          count() { if [ -f "$out/$1.txt" ]; then wc -l < "$out/$1.txt" | tr -d ' '; else echo 0; fi; }
+          {
+            echo "## Mutation testing"
+            echo
+            echo "| Outcome | Count |"
+            echo "| --- | ---: |"
+            for outcome in caught missed timeout unviable; do
+              echo "| ${outcome} | $(count "$outcome") |"
+            done
+            echo
+            echo "Scope: mutants overlapping the last seven days of changes under \`crates/\`."
+            echo "Missed and timed-out mutants fail this workflow and must be reviewed in the attached report."
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$(count missed)" != 0 ] || [ "$(count timeout)" != 0 ]; then
+            echo "::error::$(count missed) missed and $(count timeout) timed-out mutants"
+            exit 1
+          fi
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mutants-report
+          path: mutants-output/
+          retention-days: 30
