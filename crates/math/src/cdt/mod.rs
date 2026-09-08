@@ -330,7 +330,10 @@ impl Cdt {
                 }
                 let cross = px * dy - py * dx;
                 let dist_sq = cross * cross / seg_len_sq;
-                if dist_sq < 1e-12 * seg_len_sq {
+                // Constraint insertion must not bend a long boundary through
+                // a distinct nearby vertex. Use the same linear resolution as
+                // vertex insertion, independent of the constraint's length.
+                if dist_sq < DUP_TOL * DUP_TOL {
                     collinear.push((t, vi));
                 }
             }

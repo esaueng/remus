@@ -22,6 +22,14 @@ pub enum ExactIntersectionCurve {
     Circle(Circle3D),
     /// An ellipse (plane oblique to cylinder/cone axis).
     Ellipse(Ellipse3D),
+    /// A straight line (plane/plane intersection, or a plane parallel to a
+    /// cylinder/cone axis): a point and a unit direction.
+    Line {
+        /// A point on the line.
+        point: Point3,
+        /// Unit direction along the line.
+        direction: Vec3,
+    },
     /// Fallback to sampled point chain (torus, degenerate cases).
     Points(Vec<Point3>),
 }
@@ -71,6 +79,16 @@ pub fn exact_plane_analytic_bounded(
                 .into_iter()
                 .map(ExactIntersectionCurve::Points)
                 .collect())
+        }
+        AnalyticSurface::Plane { normal, d } => {
+            // Plane × plane: the exact intersection line, or nothing when
+            // the planes are parallel or coincident.
+            Ok(
+                crate::plane::plane_plane_intersection(normal, d, plane_normal, plane_d, 1e-12)
+                    .into_iter()
+                    .map(|(point, direction)| ExactIntersectionCurve::Line { point, direction })
+                    .collect(),
+            )
         }
     }
 }
@@ -312,6 +330,122 @@ pub enum AnalyticSurface<'a> {
     Sphere(&'a SphericalSurface),
     /// Toroidal surface reference.
     Torus(&'a ToroidalSurface),
+    /// A plane by unit normal and signed offset: `normal · p = d`. Carried by
+    /// value (no heap-allocated plane type exists); the lifetime parameter is
+    /// unused for this variant.
+    Plane {
+        /// Unit plane normal.
+        normal: Vec3,
+        /// Signed offset along the normal.
+        d: f64,
+    },
+}
+
+/// Convert an exact plane/plane or plane/quadric result to the marcher's
+/// sampled-curve type. Circles and ellipses are sampled densely and refit;
+/// a line is a degree-1 NURBS over `±line_half_extent` (the marcher-API
+/// convention is that consumers re-trim against face bounds downstream).
+fn exact_to_marched(
+    exact: &ExactIntersectionCurve,
+    line_half_extent: f64,
+) -> Result<Option<IntersectionCurve>, MathError> {
+    match exact {
+        ExactIntersectionCurve::Circle(circle) => {
+            let n_samples = 33;
+            let mut positions = Vec::with_capacity(n_samples);
+            let mut points = Vec::with_capacity(n_samples);
+            #[allow(clippy::cast_precision_loss)]
+            for i in 0..n_samples {
+                let theta = TAU * i as f64 / (n_samples - 1) as f64;
+                let pt = crate::traits::ParametricCurve::evaluate(circle, theta);
+                positions.push(pt);
+                points.push(IntersectionPoint {
+                    point: pt,
+                    param1: (0.0, 0.0),
+                    param2: (0.0, 0.0),
+                });
+            }
+            let degree = 3.min(positions.len() - 1);
+            let curve = interpolate(&positions, degree)?;
+            Ok(Some(IntersectionCurve { curve, points }))
+        }
+        ExactIntersectionCurve::Ellipse(ellipse) => {
+            let n_samples = 33;
+            let mut positions = Vec::with_capacity(n_samples);
+            let mut points = Vec::with_capacity(n_samples);
+            #[allow(clippy::cast_precision_loss)]
+            for i in 0..n_samples {
+                let theta = TAU * i as f64 / (n_samples - 1) as f64;
+                let pt = crate::traits::ParametricCurve::evaluate(ellipse, theta);
+                positions.push(pt);
+                points.push(IntersectionPoint {
+                    point: pt,
+                    param1: (0.0, 0.0),
+                    param2: (0.0, 0.0),
+                });
+            }
+            let degree = 3.min(positions.len() - 1);
+            let curve = interpolate(&positions, degree)?;
+            Ok(Some(IntersectionCurve { curve, points }))
+        }
+        ExactIntersectionCurve::Line { point, direction } => {
+            let endpoints = [
+                *point - *direction * line_half_extent,
+                *point + *direction * line_half_extent,
+            ];
+            let points = endpoints
+                .iter()
+                .map(|&pt| IntersectionPoint {
+                    point: pt,
+                    param1: (0.0, 0.0),
+                    param2: (0.0, 0.0),
+                })
+                .collect();
+            let curve = interpolate(&endpoints, 1)?;
+            Ok(Some(IntersectionCurve { curve, points }))
+        }
+        ExactIntersectionCurve::Points(pts) => {
+            // Sampled chains (plane × torus): refit to NURBS like the
+            // boolean engine's Points arm — deduplicate first, since a
+            // tangential contact can sample as one point repeated N times
+            // and interpolation through duplicates is singular.
+            let mut dedup: Vec<Point3> = Vec::with_capacity(pts.len());
+            for &p in pts {
+                if dedup.last().is_none_or(|&q| (p - q).length() > 1e-10) {
+                    dedup.push(p);
+                }
+            }
+            if dedup.len() < 3 {
+                return Ok(None);
+            }
+            let curve = interpolate(&dedup, 3.min(dedup.len() - 1))?;
+            let points = dedup
+                .iter()
+                .map(|&pt| IntersectionPoint {
+                    point: pt,
+                    param1: (0.0, 0.0),
+                    param2: (0.0, 0.0),
+                })
+                .collect();
+            Ok(Some(IntersectionCurve { curve, points }))
+        }
+    }
+}
+
+/// Convert exact intersection results to the marcher's sampled-curve type.
+/// Sampled-point chains are refit to NURBS (a tangential contact collapsing
+/// to a point is dropped, matching the boolean engine's Points arm).
+fn exacts_to_marched(
+    exacts: &[ExactIntersectionCurve],
+    line_half_extent: f64,
+) -> Result<Vec<IntersectionCurve>, MathError> {
+    let mut curves = Vec::new();
+    for exact in exacts {
+        if let Some(curve) = exact_to_marched(exact, line_half_extent)? {
+            curves.push(curve);
+        }
+    }
+    Ok(curves)
 }
 
 /// Compute `n . p` treating a `Point3` as a position vector.
@@ -336,6 +470,22 @@ pub fn intersect_plane_analytic(
         AnalyticSurface::Cone(cone) => intersect_plane_cone(cone, normal, d),
         AnalyticSurface::Sphere(sphere) => intersect_plane_sphere(sphere, normal, d),
         AnalyticSurface::Torus(torus) => intersect_plane_torus(torus, normal, d),
+        AnalyticSurface::Plane {
+            normal: plane_n,
+            d: plane_d,
+        } => {
+            // Plane × plane: the exact line (nothing when parallel).
+            let exacts = exact_plane_analytic_bounded(
+                AnalyticSurface::Plane {
+                    normal: plane_n,
+                    d: plane_d,
+                },
+                normal,
+                d,
+                None,
+            )?;
+            exacts_to_marched(&exacts, 1.0)
+        }
     }
 }
 
@@ -359,6 +509,19 @@ pub fn sample_plane_analytic(
         AnalyticSurface::Cone(cone) => sample_plane_cone(cone, normal, d, None),
         AnalyticSurface::Sphere(sphere) => sample_plane_sphere(sphere, normal, d),
         AnalyticSurface::Torus(torus) => sample_plane_torus(torus, normal, d),
+        AnalyticSurface::Plane {
+            normal: plane_n,
+            d: plane_d,
+        } => {
+            // Plane × plane: a two-point chain along the intersection line
+            // (nothing when parallel).
+            Ok(
+                crate::plane::plane_plane_intersection(plane_n, plane_d, normal, d, 1e-12)
+                    .into_iter()
+                    .map(|(point, direction)| vec![point - direction, point + direction])
+                    .collect(),
+            )
+        }
     }
 }
 
@@ -879,7 +1042,9 @@ pub fn intersect_plane_torus(
             let last = chain[chain.len() - 1];
             let last_pt = crossing_pts[last].2;
             let mut best_idx = None;
-            let mut best_dist = 1.0_f64;
+            // The grid is angular: its physical spacing scales with the tube.
+            // A fixed length joins separate small lobes and fragments large ones.
+            let mut best_dist = torus.minor_radius() / 3.0;
 
             for (j, &is_used) in used.iter().enumerate() {
                 if is_used {
@@ -1297,12 +1462,18 @@ pub fn intersect_analytic_analytic_bounded(
     let v_range_b = v_range_hint_b.unwrap_or(default_v_b);
 
     // Compute characteristic surface dimensions for adaptive parameters.
-    let diag_a = {
+    let diag_a = if let AnalyticSurface::Torus(torus) = a {
+        // Both parameter periods close at the same point, so their corner
+        // diagonal is zero even for a large torus. Use its physical diameter.
+        2.0 * (torus.major_radius() + torus.minor_radius())
+    } else {
         let p00 = surf_a(u_range_a.0, v_range_a.0);
         let p11 = surf_a(u_range_a.1, v_range_a.1);
         (p00 - p11).length()
     };
-    let diag_b = {
+    let diag_b = if let AnalyticSurface::Torus(torus) = b {
+        2.0 * (torus.major_radius() + torus.minor_radius())
+    } else {
         let p00 = surf_b(u_range_b.0, v_range_b.0);
         let p11 = surf_b(u_range_b.1, v_range_b.1);
         (p00 - p11).length()
@@ -1335,10 +1506,8 @@ pub fn intersect_analytic_analytic_bounded(
             let dist = (pa - pb).length();
 
             if dist < seed_threshold {
-                // Use the coarse seed directly. The marching algorithm
-                // corrects positions at each step via projection, so seeds
-                // don't need to be on the exact intersection — they just
-                // need to be close enough for the marcher to converge.
+                // Seed collection is deliberately coarse; correction before
+                // deduplication puts different guesses onto the same seam.
                 let mid = Point3::new(
                     (pa.x() + pb.x()) * 0.5,
                     (pa.y() + pb.y()) * 0.5,
@@ -1359,7 +1528,30 @@ pub fn intersect_analytic_analytic_bounded(
     let march_step = (char_size * 0.02).clamp(0.005, 0.5);
     let dedup_radius = march_step * 10.0;
     let mut unique_seeds = Vec::new();
-    for seed in &seeds {
+    for coarse in &seeds {
+        let point = correct_to_intersection(
+            &a,
+            &b,
+            surf_a.as_ref(),
+            norm_a.as_ref(),
+            surf_b.as_ref(),
+            norm_b.as_ref(),
+            coarse.0,
+            u_range_a,
+            v_range_a,
+            u_range_b,
+            v_range_b,
+            20,
+        );
+        let pa = project_analytic(&a, point, u_range_a, v_range_a);
+        let pb = project_analytic(&b, point, u_range_b, v_range_b);
+        let tolerance = Tolerance::new().linear;
+        if (point - surf_a(pa.0, pa.1)).length() > tolerance
+            || (point - surf_b(pb.0, pb.1)).length() > tolerance
+        {
+            continue;
+        }
+        let seed = &(point, pa, pb);
         let dominated = unique_seeds
             .iter()
             .any(|s: &(Point3, (f64, f64), (f64, f64))| (s.0 - seed.0).length() < dedup_radius);
@@ -1393,7 +1585,7 @@ pub fn intersect_analytic_analytic_bounded(
             march_step,
             is_u_periodic(&a),
             is_u_periodic(&b),
-        );
+        )?;
 
         if march_result.len() >= 2 {
             for (sj, other) in unique_seeds.iter().enumerate() {
@@ -1406,21 +1598,102 @@ pub fn intersect_analytic_analytic_bounded(
                 }
             }
 
-            let ipts: Vec<IntersectionPoint> = march_result
-                .iter()
-                .map(|&pt| IntersectionPoint {
-                    point: pt,
-                    param1: (0.0, 0.0),
-                    param2: (0.0, 0.0),
-                })
-                .collect();
-
-            let degree = 3.min(march_result.len() - 1);
-            if let Ok(curve) = interpolate(&march_result, degree) {
-                curves.push(IntersectionCurve {
-                    curve,
-                    points: ipts,
-                });
+            // Interpolating on-carrier samples does not keep the spline on
+            // either carrier between them. Refine offending spans to a tighter
+            // residual than topology welding, so trimming and tessellation use
+            // the same geometric seam. Refuse the whole intersection if the
+            // bounded refinement cannot qualify every branch.
+            let mut fit_points = march_result;
+            let mut fitted = false;
+            for _ in 0..12 {
+                let mut max_residual = 0.0_f64;
+                let curve = interpolate(&fit_points, 3.min(fit_points.len() - 1))?;
+                let params = crate::nurbs::fitting::chord_length_params(&fit_points);
+                let mut splits = Vec::with_capacity(params.len() - 1);
+                let mut hard_splits = Vec::with_capacity(params.len() - 1);
+                for ts in params.windows(2) {
+                    let mut bad = false;
+                    let mut hard_bad = false;
+                    for fraction in [0.25, 0.5, 0.75] {
+                        let p = curve.evaluate((ts[1] - ts[0]).mul_add(fraction, ts[0]));
+                        let (ua, va) = project_analytic(&a, p, u_range_a, v_range_a);
+                        let (ub, vb) = project_analytic(&b, p, u_range_b, v_range_b);
+                        let residual = (p - surf_a(ua, va))
+                            .length()
+                            .max((p - surf_b(ub, vb)).length());
+                        max_residual = max_residual.max(residual);
+                        // Leave margin for interpolation changes in adjacent spans.
+                        bad |= residual > 0.25e-9;
+                        hard_bad |= residual > 1e-9;
+                    }
+                    splits.push(bad);
+                    hard_splits.push(hard_bad);
+                }
+                let accepted = max_residual <= 1e-9;
+                if accepted {
+                    let points = fit_points
+                        .iter()
+                        .map(|&point| IntersectionPoint {
+                            point,
+                            param1: (0.0, 0.0),
+                            param2: (0.0, 0.0),
+                        })
+                        .collect();
+                    curves.push(IntersectionCurve { curve, points });
+                    fitted = true;
+                    break;
+                }
+                let neighborhood_count = |mask: &[bool]| {
+                    (0..mask.len())
+                        .filter(|&i| {
+                            mask[i]
+                                || (i > 0 && mask[i - 1])
+                                || mask.get(i + 1).copied().unwrap_or(false)
+                        })
+                        .count()
+                };
+                // Near the point budget, reserve refinement for spans that
+                // actually fail support rather than consuming it on margin.
+                if fit_points.len() + neighborhood_count(&splits) > 2048 {
+                    splits = hard_splits;
+                }
+                let mut refined = Vec::with_capacity(fit_points.len());
+                for (i, ts) in params.windows(2).enumerate() {
+                    refined.push(fit_points[i]);
+                    // A new interpolation sample changes neighboring spline
+                    // spans too. Refining that neighborhood avoids repeatedly
+                    // moving a just-over-tolerance error to the next span.
+                    if splits[i]
+                        || (i > 0 && splits[i - 1])
+                        || splits.get(i + 1).copied().unwrap_or(false)
+                    {
+                        let p = curve.evaluate(f64::midpoint(ts[0], ts[1]));
+                        refined.push(correct_to_intersection(
+                            &a,
+                            &b,
+                            surf_a.as_ref(),
+                            norm_a.as_ref(),
+                            surf_b.as_ref(),
+                            norm_b.as_ref(),
+                            p,
+                            u_range_a,
+                            v_range_a,
+                            u_range_b,
+                            v_range_b,
+                            20,
+                        ));
+                    }
+                }
+                if refined.len() + 1 > 2048 {
+                    break;
+                }
+                if let Some(last) = fit_points.last() {
+                    refined.push(*last);
+                }
+                fit_points = refined;
+            }
+            if !fitted {
+                return Err(MathError::ConvergenceFailure { iterations: 12 });
             }
         }
     }
@@ -1491,7 +1764,45 @@ fn try_algebraic_intersection(
         (AnalyticSurface::Torus(t), AnalyticSurface::Sphere(s))
         | (AnalyticSurface::Sphere(s), AnalyticSurface::Torus(t)) => algebraic_torus_sphere(t, s),
         (AnalyticSurface::Cone(c1), AnalyticSurface::Cone(c2)) => algebraic_cone_cone(c1, c2),
-        _ => Ok(None),
+        // Coaxial torus-torus, torus-cone, and cone-sphere: exact rings via
+        // the meridian circle-circle / line-circle reduction (issue #260);
+        // non-coaxial configurations defer to the marcher (`None`).
+        (AnalyticSurface::Torus(t1), AnalyticSurface::Torus(t2)) => algebraic_torus_torus(t1, t2),
+        (AnalyticSurface::Torus(t), AnalyticSurface::Cone(c))
+        | (AnalyticSurface::Cone(c), AnalyticSurface::Torus(t)) => algebraic_torus_cone(t, c),
+        (AnalyticSurface::Cone(c), AnalyticSurface::Sphere(s))
+        | (AnalyticSurface::Sphere(s), AnalyticSurface::Cone(c)) => algebraic_cone_sphere(c, s),
+        // Plane pairs: exact closed forms, never the marcher.
+        (
+            AnalyticSurface::Plane { normal: n1, d: d1 },
+            AnalyticSurface::Plane { normal: n2, d: d2 },
+        ) => {
+            let exacts = exact_plane_analytic_bounded(
+                AnalyticSurface::Plane {
+                    normal: *n1,
+                    d: *d1,
+                },
+                *n2,
+                *d2,
+                None,
+            )?;
+            Ok(Some(exacts_to_marched(&exacts, 1.0)?))
+        }
+        (AnalyticSurface::Plane { normal, d }, other)
+        | (other, AnalyticSurface::Plane { normal, d }) => {
+            // Plane × quadric: the exact conic routes. A line (plane parallel
+            // to a cylinder/cone axis) spans the partner's v extent; the
+            // marcher-API convention re-trims downstream anyway.
+            let v_extent = match other {
+                AnalyticSurface::Cylinder(_) | AnalyticSurface::Cone(_) => v_range_a
+                    .or(v_range_b)
+                    .map_or(2.0, |(lo, hi)| (hi - lo).abs().max(1.0)),
+                _ => 1.0,
+            };
+            let exacts = exact_plane_analytic_bounded(*other, *normal, *d, None)?;
+            Ok(Some(exacts_to_marched(&exacts, v_extent / 2.0)?))
+        } // Every pair of the five variants has an arm above; a future variant
+          // is flagged here by the compiler instead of silently marching.
     }
 }
 
@@ -1972,6 +2283,236 @@ pub fn exact_torus_sphere(
     Ok(Some(circles))
 }
 
+/// Shared coaxiality test for the exact ring routes: the axes must be
+/// parallel and `point_b` must lie on the axis line through `point_a` (the
+/// surfaces may still be offset ALONG the shared axis). Returns the common
+/// unit axis when coaxial.
+fn coaxial_axis(axis_a: Vec3, point_a: Point3, axis_b: Vec3, point_b: Point3) -> Option<Vec3> {
+    if axis_a.dot(axis_b).abs() < 1.0 - 1e-10 {
+        return None;
+    }
+    let delta = point_b - point_a;
+    let along = delta.dot(axis_a);
+    if (delta - axis_a * along).length() > 1e-8 {
+        return None;
+    }
+    Some(axis_a)
+}
+
+/// Exact coaxial torus–torus intersection: the shared ring(s).
+///
+/// Two tori sharing an axis meet where their meridian circles cross. In the
+/// (ρ, z) meridian half-plane — ρ the radial distance from the shared axis,
+/// z the axial coordinate measured from the first torus's centre — each
+/// torus is the circle `(ρ − Rᵢ)² + (z − zᵢ)² = rᵢ²`, and the two circles
+/// cross in zero, one (tangent), or two points. Each crossing with ρ > 0 is
+/// a ring around the axis, an exact [`Circle3D`]. A crossing with ρ ≈ 0 is a
+/// pole contact (a point, not a curve) and one with ρ < 0 lies off the
+/// physical tube; both are dropped.
+///
+/// Returns `None` (defer to the marcher) for non-coaxial tori and for the
+/// coincident-torus overlap.
+///
+/// # Errors
+///
+/// Returns [`MathError`] if a shared `Circle3D` cannot be constructed.
+pub fn exact_torus_torus(
+    t1: &ToroidalSurface,
+    t2: &ToroidalSurface,
+) -> Result<Option<Vec<ExactIntersectionCurve>>, MathError> {
+    let Some(axis) = coaxial_axis(t1.z_axis(), t1.center(), t2.z_axis(), t2.center()) else {
+        return Ok(None);
+    };
+    let d = (t2.center() - t1.center()).dot(axis);
+    let (big_r1, r1) = (t1.major_radius(), t1.minor_radius());
+    let (big_r2, r2) = (t2.major_radius(), t2.minor_radius());
+
+    // Meridian circles: A centred (R1, 0) with radius r1, B at (R2, d) with
+    // radius r2 — a 2D circle-circle crossing.
+    let (dx, dz) = (big_r2 - big_r1, d);
+    let dd = dx.hypot(dz);
+    if dd < 1e-12 {
+        // Concentric meridian circles: coincident tori (defer to the
+        // same-domain handling) or a contact-free concentric pair.
+        return Ok(None);
+    }
+    if dd > r1 + r2 + 1e-12 || dd < (r1 - r2).abs() - 1e-12 {
+        return Ok(Some(vec![])); // separate or contained tubes — no contact
+    }
+    // Distance from A's centre to the radical chord, along A→B.
+    let a = (dd.mul_add(dd, r1.mul_add(r1, -(r2 * r2)))) / (2.0 * dd);
+    let h_sq = r1.mul_add(r1, -(a * a));
+    let h = h_sq.max(0.0).sqrt();
+    let (ux, uz) = (dx / dd, dz / dd);
+    let (mx, mz) = (a.mul_add(ux, big_r1), a * uz);
+    let mut circles = Vec::new();
+    let c0 = t1.center();
+    let mut emit = |rho: f64, z: f64| -> Result<(), MathError> {
+        if rho > 1e-9 {
+            circles.push(ExactIntersectionCurve::Circle(Circle3D::new(
+                Point3::new(
+                    axis.x().mul_add(z, c0.x()),
+                    axis.y().mul_add(z, c0.y()),
+                    axis.z().mul_add(z, c0.z()),
+                ),
+                axis,
+                rho,
+            )?));
+        }
+        Ok(())
+    };
+    if h < 1e-10 {
+        emit(mx, mz)?; // tangent tubes — one shared ring
+    } else {
+        emit(h.mul_add(-uz, mx), h.mul_add(ux, mz))?;
+        emit(h.mul_add(uz, mx), h.mul_add(-ux, mz))?;
+    }
+    Ok(Some(circles))
+}
+
+/// Exact coaxial torus–cone intersection: the shared ring(s).
+///
+/// With the cone's apex as the origin of the axial coordinate `t` along the
+/// shared axis, the cone's meridian line is `ρ = m·t` with
+/// `m = cot(half_angle)`, and the torus's meridian circle is
+/// `(ρ − R)² + (t − t₀)² = r²` with `t₀` the torus centre's axial offset.
+/// Substituting the line into the circle gives one quadratic in `t`; each
+/// root with `m·t > 0` (a real ring on the cone's own nappe) is an exact
+/// [`Circle3D`].
+///
+/// Returns `None` (defer to the marcher) for non-coaxial axes or a
+/// near-flat / near-axial cone.
+///
+/// # Errors
+///
+/// Returns [`MathError`] if a shared `Circle3D` cannot be constructed.
+pub fn exact_torus_cone(
+    torus: &ToroidalSurface,
+    cone: &ConicalSurface,
+) -> Result<Option<Vec<ExactIntersectionCurve>>, MathError> {
+    let Some(axis) = coaxial_axis(cone.axis(), cone.apex(), torus.z_axis(), torus.center()) else {
+        return Ok(None);
+    };
+    let s = cone.half_angle().sin();
+    if s.abs() < 1e-12 {
+        return Ok(None); // near-flat cone
+    }
+    let m = cone.half_angle().cos() / s;
+    if m.abs() < 1e-12 {
+        return Ok(None); // near-axial cone: radius ~constant
+    }
+    let t0 = (torus.center() - cone.apex()).dot(axis);
+    let big_r = torus.major_radius();
+    let r = torus.minor_radius();
+
+    // (m·t − R)² + (t − t₀)² = r²  →  (m²+1)·t² − 2(mR + t₀)·t + (R² + t₀² − r²) = 0
+    let qa = m.mul_add(m, 1.0);
+    let qb = -2.0 * m.mul_add(big_r, t0);
+    let qc = big_r.mul_add(big_r, t0.mul_add(t0, -(r * r)));
+    let disc = qb.mul_add(qb, -4.0 * qa * qc);
+    if disc < -1e-12 {
+        return Ok(Some(vec![])); // the cone misses the tube entirely
+    }
+    let apex = cone.apex();
+    let mut circles = Vec::new();
+    let mut emit = |t: f64| -> Result<(), MathError> {
+        let rho = m * t;
+        if rho > 1e-9 {
+            circles.push(ExactIntersectionCurve::Circle(Circle3D::new(
+                Point3::new(
+                    axis.x().mul_add(t, apex.x()),
+                    axis.y().mul_add(t, apex.y()),
+                    axis.z().mul_add(t, apex.z()),
+                ),
+                axis,
+                rho,
+            )?));
+        }
+        Ok(())
+    };
+    if disc <= 0.0 {
+        emit(-qb / (2.0 * qa))?; // tangent cone — one shared ring
+    } else {
+        let root = disc.sqrt();
+        emit((-qb + root) / (2.0 * qa))?;
+        emit((-qb - root) / (2.0 * qa))?;
+    }
+    Ok(Some(circles))
+}
+
+/// Exact cone–sphere intersection for a sphere centred on the cone's axis:
+/// the shared ring(s).
+///
+/// With the cone's apex as the origin of the axial coordinate `t`, the cone
+/// is `ρ = m·t` (`m = cot(half_angle)`) and the sphere is
+/// `ρ² + (t − tₛ)² = rₛ²` with `tₛ` the sphere centre's axial offset.
+/// Substituting gives one quadratic in `t`; each root with `m·t > 0` is an
+/// exact [`Circle3D`] ring.
+///
+/// Returns `None` (defer to the marcher) when the sphere centre lies off the
+/// cone's axis or the cone is near-flat / near-axial.
+///
+/// # Errors
+///
+/// Returns [`MathError`] if a shared `Circle3D` cannot be constructed.
+pub fn exact_cone_sphere(
+    cone: &ConicalSurface,
+    sphere: &SphericalSurface,
+) -> Result<Option<Vec<ExactIntersectionCurve>>, MathError> {
+    let axis = cone.axis();
+    // A sphere has no axis of its own: coaxial means its centre lies on the
+    // cone's axis line.
+    let delta = sphere.center() - cone.apex();
+    let along = delta.dot(axis);
+    if (delta - axis * along).length() > 1e-8 {
+        return Ok(None);
+    }
+    let s = cone.half_angle().sin();
+    if s.abs() < 1e-12 {
+        return Ok(None); // near-flat cone
+    }
+    let m = cone.half_angle().cos() / s;
+    if m.abs() < 1e-12 {
+        return Ok(None); // near-axial cone
+    }
+    let ts = along;
+    let r_s = sphere.radius();
+
+    // m²t² + (t − tₛ)² = rₛ²  →  (m²+1)·t² − 2·tₛ·t + (tₛ² − rₛ²) = 0
+    let qa = m.mul_add(m, 1.0);
+    let qb = -2.0 * ts;
+    let qc = ts.mul_add(ts, -(r_s * r_s));
+    let disc = qb.mul_add(qb, -4.0 * qa * qc);
+    if disc < -1e-12 {
+        return Ok(Some(vec![])); // the sphere misses the cone entirely
+    }
+    let apex = cone.apex();
+    let mut circles = Vec::new();
+    let mut emit = |t: f64| -> Result<(), MathError> {
+        let rho = m * t;
+        if rho > 1e-9 {
+            circles.push(ExactIntersectionCurve::Circle(Circle3D::new(
+                Point3::new(
+                    axis.x().mul_add(t, apex.x()),
+                    axis.y().mul_add(t, apex.y()),
+                    axis.z().mul_add(t, apex.z()),
+                ),
+                axis,
+                rho,
+            )?));
+        }
+        Ok(())
+    };
+    if disc <= 0.0 {
+        emit(-qb / (2.0 * qa))?; // tangent — one shared ring
+    } else {
+        let root = disc.sqrt();
+        emit((-qb + root) / (2.0 * qa))?;
+        emit((-qb - root) / (2.0 * qa))?;
+    }
+    Ok(Some(circles))
+}
+
 /// Algebraic axis-centred torus-sphere intersection (NURBS form for the
 /// general bounded path). Delegates to [`exact_torus_sphere`]; phase FF
 /// prefers the exact circle form directly.
@@ -2006,6 +2547,74 @@ fn algebraic_torus_sphere(
         curves.push(IntersectionCurve { curve, points });
     }
     Ok(Some(curves))
+}
+
+/// Sample exact ring circles into interpolated NURBS `IntersectionCurve`s
+/// for the general bounded path; phase FF prefers the exact circle form
+/// directly.
+fn exact_rings_to_marched(
+    exacts: &[ExactIntersectionCurve],
+) -> Result<Vec<IntersectionCurve>, MathError> {
+    let mut curves = Vec::new();
+    for exact in exacts {
+        let ExactIntersectionCurve::Circle(circle) = exact else {
+            continue;
+        };
+        let n_samples = 33;
+        let mut points = Vec::with_capacity(n_samples);
+        let mut positions = Vec::with_capacity(n_samples);
+        #[allow(clippy::cast_precision_loss)]
+        for i in 0..n_samples {
+            let theta = TAU * i as f64 / (n_samples - 1) as f64;
+            let pt = crate::traits::ParametricCurve::evaluate(circle, theta);
+            positions.push(pt);
+            points.push(IntersectionPoint {
+                point: pt,
+                param1: (0.0, 0.0),
+                param2: (0.0, 0.0),
+            });
+        }
+        let degree = 3.min(positions.len() - 1);
+        let curve = interpolate(&positions, degree)?;
+        curves.push(IntersectionCurve { curve, points });
+    }
+    Ok(curves)
+}
+
+/// Algebraic coaxial torus-torus intersection (NURBS form for the general
+/// bounded path). Delegates to [`exact_torus_torus`].
+fn algebraic_torus_torus(
+    t1: &ToroidalSurface,
+    t2: &ToroidalSurface,
+) -> Result<Option<Vec<IntersectionCurve>>, MathError> {
+    let Some(exacts) = exact_torus_torus(t1, t2)? else {
+        return Ok(None);
+    };
+    Ok(Some(exact_rings_to_marched(&exacts)?))
+}
+
+/// Algebraic coaxial torus-cone intersection (NURBS form for the general
+/// bounded path). Delegates to [`exact_torus_cone`].
+fn algebraic_torus_cone(
+    torus: &ToroidalSurface,
+    cone: &ConicalSurface,
+) -> Result<Option<Vec<IntersectionCurve>>, MathError> {
+    let Some(exacts) = exact_torus_cone(torus, cone)? else {
+        return Ok(None);
+    };
+    Ok(Some(exact_rings_to_marched(&exacts)?))
+}
+
+/// Algebraic cone-sphere intersection for an axis-centred sphere (NURBS form
+/// for the general bounded path). Delegates to [`exact_cone_sphere`].
+fn algebraic_cone_sphere(
+    cone: &ConicalSurface,
+    sphere: &SphericalSurface,
+) -> Result<Option<Vec<IntersectionCurve>>, MathError> {
+    let Some(exacts) = exact_cone_sphere(cone, sphere)? else {
+        return Ok(None);
+    };
+    Ok(Some(exact_rings_to_marched(&exacts)?))
 }
 
 /// Algebraic coaxial torus-cylinder intersection (NURBS form for the
@@ -2644,7 +3253,7 @@ fn correct_to_intersection(
         let da = (pv - Vec3::new(pa.x(), pa.y(), pa.z())).dot(na);
         let db = (pv - Vec3::new(pb.x(), pb.y(), pb.z())).dot(nb);
 
-        if da.abs() < 1e-7 && db.abs() < 1e-7 {
+        if da.abs() < 1e-11 && db.abs() < 1e-11 {
             break;
         }
 
@@ -2727,7 +3336,10 @@ fn march_analytic_intersection(
     initial_step: f64,
     u_periodic_a: bool,
     u_periodic_b: bool,
-) -> Vec<Point3> {
+) -> Result<Vec<Point3>, MathError> {
+    let seed = correct_to_intersection(
+        a, b, surf_a, norm_a, surf_b, norm_b, seed, u_range_a, v_range_a, u_range_b, v_range_b, 20,
+    );
     let max_steps = 500;
     let h_min = 1e-6;
     let h_max = initial_step * 4.0;
@@ -2748,6 +3360,7 @@ fn march_analytic_intersection(
         let mut current = seed;
         let mut h = initial_step;
         let mut prev_tangent: Option<Vec3> = None;
+        let mut reached_end = false;
 
         for _ in 0..max_steps {
             let (ua, va) = project_analytic(a, current, u_range_a, v_range_a);
@@ -2759,6 +3372,7 @@ fn march_analytic_intersection(
             let tangent = na.cross(nb);
             let t_len = tangent.length();
             if t_len < 1e-10 {
+                reached_end = true;
                 break;
             }
             let t_dir = tangent * (direction / t_len);
@@ -2786,10 +3400,23 @@ fn march_analytic_intersection(
 
             let pa = surf_a(ua2, va2);
             let pb = surf_b(ub2, vb2);
-            let mid = Point3::new(
-                (pa.x() + pb.x()) * 0.5,
-                (pa.y() + pb.y()) * 0.5,
-                (pa.z() + pb.z()) * 0.5,
+            let mid = correct_to_intersection(
+                a,
+                b,
+                surf_a,
+                norm_a,
+                surf_b,
+                norm_b,
+                Point3::new(
+                    (pa.x() + pb.x()) * 0.5,
+                    (pa.y() + pb.y()) * 0.5,
+                    (pa.z() + pb.z()) * 0.5,
+                ),
+                u_range_a,
+                v_range_a,
+                u_range_b,
+                v_range_b,
+                10,
             );
             let out_a = (!u_periodic_a && (ua2 <= u_range_a.0 || ua2 >= u_range_a.1))
                 || va2 <= v_range_a.0
@@ -2799,6 +3426,7 @@ fn march_analytic_intersection(
                 || vb2 >= v_range_b.1;
 
             if out_a || out_b {
+                reached_end = true;
                 break;
             }
 
@@ -2807,12 +3435,21 @@ fn march_analytic_intersection(
             // Require ≥10 steps to avoid premature closure near the seed.
             let dist_to_seed = (mid - seed).length();
             if points.len() > 10 && dist_to_seed < closure_dist {
-                points.push(seed);
-                break;
+                let mut closed = vec![seed];
+                closed.append(points);
+                closed.push(seed);
+                return Ok(closed);
             }
 
             points.push(mid);
             current = mid;
+        }
+        // An exhausted trace is not a bounded section. Fitting the prefix
+        // would silently certify an incomplete intersection as exact.
+        if !reached_end {
+            return Err(MathError::ConvergenceFailure {
+                iterations: max_steps,
+            });
         }
     }
 
@@ -2830,7 +3467,7 @@ fn march_analytic_intersection(
         );
     }
 
-    result
+    Ok(result)
 }
 
 /// Project a 3D point onto an analytic surface using the surface's
@@ -2859,12 +3496,27 @@ fn project_analytic(
             let (u, v) = torus.project_point(point);
             (u.clamp(u_range.0, u_range.1), v.clamp(v_range.0, v_range.1))
         }
+        AnalyticSurface::Plane { normal, d } => {
+            // Orthogonal projection onto the plane, expressed in the same
+            // frame `surface_closures` builds for it.
+            let origin = Point3::new(normal.x() * d, normal.y() * d, normal.z() * d);
+            let frame = Frame3::from_normal(origin, *normal);
+            let Ok(frame) = frame else {
+                return (0.0, 0.0);
+            };
+            let along = dot_np(*normal, point) - d;
+            let q = point - *normal * along;
+            let dq = q - frame.origin;
+            (
+                dq.dot(frame.x).clamp(u_range.0, u_range.1),
+                dq.dot(frame.y).clamp(v_range.0, v_range.1),
+            )
+        }
     }
 }
 
 /// Returns `true` if the surface's u-parameter is periodic (wraps around 2π).
-/// All current `AnalyticSurface` variants have periodic u — this is trivially
-/// true today but exists as a guard for future non-periodic analytic types.
+/// All quadric `AnalyticSurface` variants have periodic u; a plane does not.
 fn is_u_periodic(surface: &AnalyticSurface<'_>) -> bool {
     matches!(
         surface,
@@ -2910,11 +3562,32 @@ fn surface_closures<'a>(
             (0.0, TAU),
             (0.0, TAU),
         ),
+        AnalyticSurface::Plane { normal, d } => {
+            // Plane pairs are decided exactly before the marcher runs; these
+            // arms exist for exhaustiveness. The frame is deterministic given
+            // the plane, so `project_analytic`'s arm agrees with it.
+            let (normal, d) = (*normal, *d);
+            let origin = Point3::new(normal.x() * d, normal.y() * d, normal.z() * d);
+            let frame = Frame3::from_normal(origin, normal).unwrap_or_else(|_| Frame3 {
+                // A zero-normal plane is malformed; give a harmless frame.
+                origin,
+                x: Vec3::new(1.0, 0.0, 0.0),
+                y: Vec3::new(0.0, 1.0, 0.0),
+                z: Vec3::new(0.0, 0.0, 1.0),
+            });
+            let (x, y) = (frame.x, frame.y);
+            (
+                Box::new(move |u, v| origin + x * u + y * v),
+                Box::new(move |_, _| normal),
+                (-1.0, 1.0),
+                (-1.0, 1.0),
+            )
+        }
     }
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::tolerance::Tolerance;
@@ -3191,6 +3864,29 @@ mod tests {
                         "off-surface point {p:?} implicit={}",
                         torus_implicit(p, major, minor)
                     );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn plane_torus_lobes_close_across_model_scales() {
+        use crate::traits::ParametricCurve;
+        for scale in [0.1, 1.0, 10.0] {
+            let torus = ToroidalSurface::new(Point3::new(0.0, 0.0, 0.0), 10.0 * scale, 3.0 * scale)
+                .unwrap();
+            for (normal, distance) in [
+                (Vec3::new(0.0, -1.0, 0.0), 4.0 * scale),
+                (Vec3::new(-1.0, 0.0, 0.0), -6.0 * scale),
+            ] {
+                let curves = intersect_plane_torus(&torus, normal, distance).unwrap();
+                assert_eq!(curves.len(), 2, "scale={scale}, normal={normal:?}");
+                for curve in curves {
+                    let (lo, hi) = curve.curve.domain();
+                    let gap = (ParametricCurve::evaluate(&curve.curve, lo)
+                        - ParametricCurve::evaluate(&curve.curve, hi))
+                    .length();
+                    assert!(gap <= 1e-7, "scale={scale}: closure gap={gap}");
                 }
             }
         }
@@ -3814,6 +4510,9 @@ mod tests {
                 .map(|i| ParametricCurve::evaluate(e, TAU * f64::from(i) / 64.0))
                 .collect(),
             ExactIntersectionCurve::Points(pts) => pts.clone(),
+            ExactIntersectionCurve::Line { point, direction } => (-4..=4)
+                .map(|i| *point + *direction * f64::from(i))
+                .collect(),
         }
     }
 
@@ -4001,6 +4700,303 @@ mod tests {
                         "bore r={bore_r}: breakout point at radius {radius} is off the r=3 shaft"
                     );
                 }
+            }
+        }
+    }
+
+    // ── Coaxial exact ring routes (issue #260) ───────────────────────────
+
+    /// Collect (radius, z) of every exact ring in a result.
+    fn rings(curves: &[ExactIntersectionCurve]) -> Vec<(f64, f64)> {
+        curves
+            .iter()
+            .filter_map(|c| match c {
+                ExactIntersectionCurve::Circle(c) => Some((c.radius(), c.center().z())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn coaxial_torus_torus_gives_exact_rings() {
+        // t1: R=3, r=1 at the origin; t2: R=2.5, r=1 at z=0.5.
+        // Meridian circles (ρ−3)²+z²=1 and (ρ−2.5)²+(z−0.5)²=1 cross at
+        // ρ≈2.0886, z≈−0.4114 and ρ≈3.4114, z≈0.9114 (z = ρ − 2.5).
+        let t1 = ToroidalSurface::new(Point3::new(0.0, 0.0, 0.0), 3.0, 1.0).unwrap();
+        let t2 = ToroidalSurface::new(Point3::new(0.0, 0.0, 0.5), 2.5, 1.0).unwrap();
+        let rings = rings(&exact_torus_torus(&t1, &t2).unwrap().unwrap());
+        assert_eq!(rings.len(), 2, "two crossings: {rings:?}");
+        // Closed form: midpoint (2.75, 0.25) ± √(7/8)·(∓√2/2, ±√2/2).
+        let h = 0.875_f64.sqrt();
+        let s = 0.5_f64.sqrt();
+        let expected = [(2.75 - h * s, 0.25 - h * s), (2.75 + h * s, 0.25 + h * s)];
+        for &(er, ez) in &expected {
+            assert!(
+                rings
+                    .iter()
+                    .any(|&(r, z)| (r - er).abs() < 1e-9 && (z - ez).abs() < 1e-9),
+                "expected ring radius={er} z={ez} in {rings:?}"
+            );
+        }
+
+        // Every ring point must lie on both tori.
+        let curves = exact_torus_torus(&t1, &t2).unwrap().unwrap();
+        for c in &curves {
+            let ExactIntersectionCurve::Circle(circle) = c else {
+                continue;
+            };
+            for i in 0..16 {
+                #[allow(clippy::cast_precision_loss)]
+                let t = TAU * f64::from(i) / 16.0;
+                let p = crate::traits::ParametricCurve::evaluate(circle, t);
+                let (rho, z) = (p.x().hypot(p.y()), p.z());
+                let e1 = ((rho - 3.0).powi(2) + z * z).sqrt() - 1.0;
+                let e2 = ((rho - 2.5).powi(2) + (z - 0.5).powi(2)).sqrt() - 1.0;
+                assert!(
+                    e1.abs() < 1e-9 && e2.abs() < 1e-9,
+                    "point {p:?} off a torus"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn non_coaxial_torus_torus_defers() {
+        let t1 = ToroidalSurface::new(Point3::new(0.0, 0.0, 0.0), 3.0, 1.0).unwrap();
+        let t2 = ToroidalSurface::new(Point3::new(0.5, 0.0, 0.0), 2.5, 1.0).unwrap();
+        assert!(exact_torus_torus(&t1, &t2).unwrap().is_none());
+    }
+
+    #[test]
+    fn coaxial_torus_cone_gives_exact_rings() {
+        // Torus R=2, r=1 at the origin; cone apex (0,0,−1), axis +z, 45°
+        // half-angle (m = 1): (t−2)²+(t−1)²=1 → t=1 (ring ρ=1 at z=0) and
+        // t=2 (ring ρ=2 at z=1).
+        let torus = ToroidalSurface::new(Point3::new(0.0, 0.0, 0.0), 2.0, 1.0).unwrap();
+        let cone = ConicalSurface::new(
+            Point3::new(0.0, 0.0, -1.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            std::f64::consts::FRAC_PI_4,
+        )
+        .unwrap();
+        let rings = rings(&exact_torus_cone(&torus, &cone).unwrap().unwrap());
+        assert_eq!(rings.len(), 2, "two crossings: {rings:?}");
+        for &(er, ez) in &[(1.0_f64, 0.0_f64), (2.0_f64, 1.0_f64)] {
+            assert!(
+                rings
+                    .iter()
+                    .any(|&(r, z)| (r - er).abs() < 1e-9 && (z - ez).abs() < 1e-9),
+                "expected ring radius={er} z={ez} in {rings:?}"
+            );
+        }
+
+        // Off-axis cone defers to the marcher.
+        let cone_off = ConicalSurface::new(
+            Point3::new(0.5, 0.0, -1.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            std::f64::consts::FRAC_PI_4,
+        )
+        .unwrap();
+        assert!(exact_torus_cone(&torus, &cone_off).unwrap().is_none());
+    }
+
+    #[test]
+    fn cone_sphere_axis_centred_gives_exact_rings() {
+        // Cone apex at the origin, axis +z, 45° half-angle (m = 1); sphere
+        // centre (0,0,3), radius 2.5: t²+(t−3)²=6.25 → 2t²−6t+2.75=0 →
+        // t = (6±√14)/4 ≈ 2.4354 or 0.5646.
+        let cone = ConicalSurface::new(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            std::f64::consts::FRAC_PI_4,
+        )
+        .unwrap();
+        let sphere = SphericalSurface::new(Point3::new(0.0, 0.0, 3.0), 2.5).unwrap();
+        let rings = rings(&exact_cone_sphere(&cone, &sphere).unwrap().unwrap());
+        assert_eq!(rings.len(), 2, "two crossings: {rings:?}");
+        let expected = [(6.0 + 14.0_f64.sqrt()) / 4.0, (6.0 - 14.0_f64.sqrt()) / 4.0];
+        for &et in &expected {
+            assert!(
+                rings
+                    .iter()
+                    .any(|&(r, z)| (r - et).abs() < 1e-9 && (z - et).abs() < 1e-9),
+                "expected ring radius=z={et} in {rings:?}"
+            );
+        }
+
+        // Sphere centre off the cone axis defers.
+        let sphere_off = SphericalSurface::new(Point3::new(0.5, 0.0, 3.0), 2.5).unwrap();
+        assert!(exact_cone_sphere(&cone, &sphere_off).unwrap().is_none());
+    }
+
+    #[test]
+    fn unified_entry_uses_exact_torus_torus_route() {
+        // The marcher entry must pick up the exact rings (the NURBS refit of
+        // each circle), not a fragmented march.
+        let t1 = ToroidalSurface::new(Point3::new(0.0, 0.0, 0.0), 3.0, 1.0).unwrap();
+        let t2 = ToroidalSurface::new(Point3::new(0.0, 0.0, 0.5), 2.5, 1.0).unwrap();
+        let curves = intersect_analytic_analytic(
+            AnalyticSurface::Torus(&t1),
+            AnalyticSurface::Torus(&t2),
+            16,
+        )
+        .unwrap();
+        assert_eq!(curves.len(), 2, "two exact rings: {:?}", curves.len());
+        for c in &curves {
+            let (t0, t1) = c.curve.domain();
+            for i in 0..=32 {
+                #[allow(clippy::cast_precision_loss)]
+                let t = t0 + (t1 - t0) * (i as f64) / 32.0;
+                let p = crate::traits::ParametricCurve::evaluate(&c.curve, t);
+                let (rho, z) = (p.x().hypot(p.y()), p.z());
+                let e1 = ((rho - 3.0).powi(2) + z * z).sqrt() - 1.0;
+                let e2 = ((rho - 2.5).powi(2) + (z - 0.5).powi(2)).sqrt() - 1.0;
+                assert!(
+                    e1.abs() < 1e-3 && e2.abs() < 1e-3,
+                    "refit ring point {p:?} off a torus"
+                );
+            }
+        }
+    }
+
+    // ── Plane variant routing (issues #258, #259) ────────────────────────
+
+    #[test]
+    fn plane_plane_returns_exact_line_variant() {
+        // z=0 plane × y=0 plane → the x-axis.
+        let curves = exact_plane_analytic_bounded(
+            AnalyticSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+            Vec3::new(0.0, 1.0, 0.0),
+            0.0,
+            None,
+        )
+        .unwrap();
+        assert_eq!(curves.len(), 1, "crossing planes give one line");
+        let ExactIntersectionCurve::Line { point, direction } = &curves[0] else {
+            panic!("expected a Line, got {:?}", curves[0]);
+        };
+        assert!(
+            direction.x().abs() > 1.0 - 1e-9,
+            "the line runs along x: {direction:?}"
+        );
+        assert!(
+            point.y().abs() < 1e-12 && point.z().abs() < 1e-12,
+            "the line lies in both planes: {point:?}"
+        );
+    }
+
+    #[test]
+    fn parallel_planes_return_no_curve() {
+        let curves = exact_plane_analytic_bounded(
+            AnalyticSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+            Vec3::new(0.0, 0.0, 1.0),
+            2.0,
+            None,
+        )
+        .unwrap();
+        assert!(curves.is_empty(), "parallel planes do not intersect");
+    }
+
+    #[test]
+    fn unified_entry_routes_plane_plane_exactly() {
+        use crate::traits::ParametricCurve;
+        // The marcher entry must not march a plane pair: one straight
+        // degree-1 segment comes back.
+        let curves = intersect_analytic_analytic(
+            AnalyticSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+            AnalyticSurface::Plane {
+                normal: Vec3::new(0.0, 1.0, 0.0),
+                d: 0.0,
+            },
+            8,
+        )
+        .unwrap();
+        assert_eq!(curves.len(), 1);
+        let (t0, t1) = curves[0].curve.domain();
+        let p0 = ParametricCurve::evaluate(&curves[0].curve, t0);
+        let p1 = ParametricCurve::evaluate(&curves[0].curve, t1);
+        let dir = (p1 - p0).normalize().unwrap();
+        assert!(
+            dir.x().abs() > 1.0 - 1e-6,
+            "the unified entry's plane/plane curve is the x-axis line: {dir:?}"
+        );
+    }
+
+    #[test]
+    fn unified_entry_routes_plane_cylinder_exactly() {
+        use crate::traits::ParametricCurve;
+        // z = 3 plane across an r=2 z-axis cylinder → exact circle, no march.
+        let cyl =
+            CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 2.0)
+                .unwrap();
+        let curves = intersect_analytic_analytic(
+            AnalyticSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 3.0,
+            },
+            AnalyticSurface::Cylinder(&cyl),
+            8,
+        )
+        .unwrap();
+        assert_eq!(curves.len(), 1);
+        let (t0, t1) = curves[0].curve.domain();
+        // The unified entry returns the sampled (refit) form; the exact
+        // circle is available through `exact_plane_analytic_bounded`.
+        for i in 0..=64 {
+            #[allow(clippy::cast_precision_loss)]
+            let t = t0 + (t1 - t0) * (i as f64) / 64.0;
+            let p = ParametricCurve::evaluate(&curves[0].curve, t);
+            assert!(
+                ((p.x().hypot(p.y()) - 2.0).abs() < 1e-4) && (p.z() - 3.0).abs() < 1e-6,
+                "point {p:?} must lie on both the cylinder and the plane"
+            );
+        }
+    }
+
+    #[test]
+    fn unified_entry_routes_plane_torus_to_sampled_curves() {
+        use crate::traits::ParametricCurve;
+
+        // z = 0 plane through the tube centre of an R=3, r=1 torus → the two
+        // circles of radius R−r and R+r, kept as refit sampled chains.
+        let torus = ToroidalSurface::new(Point3::new(0.0, 0.0, 0.0), 3.0, 1.0).unwrap();
+        let curves = intersect_analytic_analytic(
+            AnalyticSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+            AnalyticSurface::Torus(&torus),
+            12,
+        )
+        .unwrap();
+        assert!(
+            !curves.is_empty(),
+            "plane through the tube must yield section curves"
+        );
+        for c in &curves {
+            let (t0, t1) = c.curve.domain();
+            for i in 0..=32 {
+                #[allow(clippy::cast_precision_loss)]
+                let t = t0 + (t1 - t0) * (i as f64) / 32.0;
+                let p = ParametricCurve::evaluate(&c.curve, t);
+                assert!(
+                    p.z().abs() < 1e-4,
+                    "plane×torus point {p:?} must lie on the plane"
+                );
+                let on_torus = ((p.x().hypot(p.y()) - 3.0).powi(2) + p.z().powi(2)).sqrt() - 1.0;
+                assert!(
+                    on_torus.abs() < 1e-3,
+                    "plane×torus point {p:?} must lie on the torus"
+                );
             }
         }
     }

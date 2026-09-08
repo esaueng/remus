@@ -307,6 +307,50 @@ reviewable stages:
    operator census and parity matrix, and reconcile the capability/stability
    ledgers without weakening typed refusal or fallback disclosure.
 
+Stage 2.4c now has a bounded cone–sphere qualification slice. A radius-4
+sphere centred at `(2, 0, 6)` protrudes from a height-12, radius-6-to-2 cone.
+The old Fuse could return the unchanged cone as an exact result. The repaired
+seam closes on both carriers, clips at hemisphere boundaries, and retains the
+proper complementary regions for Fuse, Cut, and Intersect. The native matrix
+covers scales 0.1, 1, and 10, with and without a common rotation/translation;
+it checks support residuals, topology, watertight meshes, and an independent
+horizontal-disk overlap integral (197.106403011 mm³ at unit scale). Planar
+ellipse moments also preserve the cap measurement after rigid transforms.
+
+A second bounded native matrix covers a radius-6 sphere and a radius-3,
+height-20 cylinder translated to `(2, 0, -10)`. Fuse, Cut, and Intersect
+pass at scales 0.1, 1, and 10, both unplaced and under a common rigid
+transform. Both closed quartic seams retain support on the two carriers;
+the matrix checks topology, watertight tessellation, measured and mesh volume
+against an independent disk-overlap integral (294.188425924 mm³ at unit
+scale). The implementation handles polar pockets, wavy cylinder bands,
+and circular rims represented as equal-axis ellipses after transformation.
+This slice passes all 4,796 workspace tests (12 skipped), preserves the
+52-row approximation census, and passes direct and installed-tarball WASM
+regressions for all three operators.
+
+A third bounded matrix covers a major-radius-6, minor-radius-2 torus and a
+radius-3 sphere centred at `(5, 0, 1)`. All three operators pass at scales
+0.1, 1, and 10, both unplaced and under a common rotation/translation.
+The independent horizontal annulus/disk integral gives 56.270214830 mm³
+intersection volume at unit scale. The matrix checks carrier support below
+2e-9, valid topology, watertight tessellation, measured volume within 0.1%,
+and mesh volume within 1%. Direct and installed-tarball WASM tests cover the
+rotated witness; a native batch binding test covers all three operators.
+
+This slice repairs conservative closed-carrier bounds, the torus marcher's
+physical step scale, NURBS sphere arrangement cells, and contractible holes
+in a torus fundamental polygon. Rigid transforms preserve the torus carrier
+frame for both solids and standalone faces. The 500-step march limit and
+2,048-point fit limit remain bounded; an oversized torus/sphere witness
+requires `ExactOnlyUnattainable` for all three operators and restores every
+live topology count. These bounded slices do **not** qualify arbitrary
+quartic arrangements; 2.4d still requires integration of the preceding heads.
+See `crates/operations/tests/pclass_quadric_seams.rs`,
+`crates/operations/tests/pclass_sphere_cylinder_seams.rs`,
+`crates/operations/tests/pclass_torus_sphere_seams.rs`, and
+`crates/math/tests/regress_marched_quadric_seam.rs`.
+
 Stage 2.4b merged in PR #207. The torus-notch arrangement emits both
 complementary annular `u`-bands with distinct interior witnesses and
 winding-correct outer/inner roles. Operator-neutral classification retains the
@@ -350,9 +394,19 @@ twins.
 Finish what the junction-band fixes started, systematically: sweep every
 absolute snap/weld/acceptance band in crates/algo and make each
 scale-relative (face-pair AABB or model diagonal), the same treatment the
-junction-snap band got. Known residuals: the 100·tol weld bands that keep
-1e-5 failing, and the silent 1e6 GFA case currently caught only by the
-operations bounds gate.
+junction-snap band got. The through-tool residuals at 1e-5 and 1e6 now
+produce correct exact results. A 72-cell native matrix covers all three
+operators, twelve decade scales, and two placements, with independent volume
+and watertightness oracles. Native batch coverage pins the same cells, and
+the packaged-WASM regression is part of smoke and installed-tarball testing.
+The large-scale rollback fixture is promoted to a correctness test, while
+the smaller 1e-6 through-cut remains a typed refusal. This closes the named
+scale witnesses, not the entire band inventory: see [the audit](scale-band-audit.md)
+for changed bands and remaining dimensional, curved, and anisotropic cases.
+The additional 36-cell anisotropic box/tool matrix preserves small-feature
+material under rigid placement through point, local-volume, and watertightness
+oracles. The stricter world-volume precision target for rotated long bodies
+remains an explicit runnable measurement regression.
 
 > **Exit gate:** `boolean_scale_gap.rs` exact from 1e-5 to 1e6 — or a typed
 > refusal; never a silent wrong volume at any scale. The rollback fixture in
