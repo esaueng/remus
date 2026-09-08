@@ -4,6 +4,12 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      runner:
+        description: Trusted runner to validate
+        type: choice
+        default: ci-small
+        options: [ci-small, ci-vm-1441561, ci-server-jane]
 
 permissions:
   contents: read
@@ -25,12 +31,11 @@ jobs:
       vars.REMUS_TRUSTED_VPS_ENABLED == 'true'
     runs-on:
       group: ci-trusted-main
-      labels: ci-small
+      labels: ${{ inputs.runner || 'ci-small' }}
     timeout-minutes: 5
     strategy:
       fail-fast: false
-      # Both are eligible together; the machine's single listener must serialize
-      # them. A workflow-local limit would hide an accidental second runner.
+      # Target a specific host to prove that its single listener serializes jobs.
       max-parallel: 2
       matrix:
         probe: [1, 2]
@@ -39,12 +44,13 @@ jobs:
         shell: bash
     steps:
       - name: Verify runner isolation and fresh storage
-        env:
-          EXPECTED_RUNNER: ci-vm-1441561
         run: |
           set -euo pipefail
           date -u +%FT%TZ
-          test "$RUNNER_NAME" = "$EXPECTED_RUNNER"
+          case "$RUNNER_NAME" in
+            ci-vm-1441561|ci-server-jane) ;;
+            *) echo 'Unknown trusted runner' >&2; exit 1 ;;
+          esac
           test "$(id -un)" = ci-runner
           test "$(id -u)" != 0
           test "$HOME" = /srv/ci/home

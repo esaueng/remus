@@ -148,7 +148,10 @@ jobs:
       - name: Verify runner isolation and fresh storage
         run: |
           set -euo pipefail
-          test "$RUNNER_NAME" = ci-vm-1441561
+          case "$RUNNER_NAME" in
+            ci-vm-1441561|ci-server-jane) ;;
+            *) echo 'Unknown trusted runner' >&2; exit 1 ;;
+          esac
           test "$(id -un)" = ci-runner
           test "$(id -u)" != 0
           test "$HOME" = /srv/ci/home
