@@ -19,21 +19,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  route:
-    if: >-
-      github.repository == 'esaueng/remus' &&
-      github.ref == 'refs/heads/main' &&
-      github.ref_protected &&
-      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
-      vars.REMUS_TRUSTED_VPS_ENABLED == 'true'
-    permissions:
-      id-token: write
-    uses: esaueng/remus/.github/workflows/select-runner.yml@8cf263108cef108a72156268f0de2db019127de2
-    with:
-      enabled: ${{ vars.CI_FLEET_ENABLED == 'true' }}
-
   policy:
-    needs: route
     name: Fleet policy probe (${{ matrix.probe }})
     # The variable is an activation switch, not an access control. The runner
     # group must separately allow this repository and this workflow on main.
@@ -43,10 +29,10 @@ jobs:
       github.ref_protected &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       vars.REMUS_TRUSTED_VPS_ENABLED == 'true' &&
-      (contains(fromJSON('["ci-server-jane","ci-server-john"]'), needs.route.outputs.target) || contains(fromJSON('["ci-server-jane","ci-server-jane-1","ci-server-jane-2","ci-server-john"]'), inputs.runner))
+      ((vars.CI_FLEET_ENABLED == 'true' && contains(fromJSON('["ci-server-jane","ci-server-john"]'), vars.CI_FLEET_TARGET)) || contains(fromJSON('["ci-server-jane","ci-server-jane-1","ci-server-jane-2","ci-server-john"]'), inputs.runner))
     runs-on:
       group: ci-trusted-main
-      labels: ${{ contains(fromJSON('["ci-server-jane","ci-server-jane-1","ci-server-jane-2","ci-server-john"]'), inputs.runner) && inputs.runner || needs.route.outputs.target }}
+      labels: ${{ contains(fromJSON('["ci-server-jane","ci-server-jane-1","ci-server-jane-2","ci-server-john"]'), inputs.runner) && inputs.runner || vars.CI_FLEET_TARGET }}
     timeout-minutes: 5
     strategy:
       fail-fast: false
