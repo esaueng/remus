@@ -218,6 +218,7 @@ fn sample_cylinder_wire(
     cyl: &impl remus_math::traits::ParametricSurface,
     deflection: f64,
     angular_tol: f64,
+    edge_points: Option<&DetHashMap<usize, Vec<Point3>>>,
 ) -> Result<CylinderLoop, crate::OperationsError> {
     let tol_dup = remus_math::tolerance::Tolerance::default().linear;
     let mut positions = Vec::new();
@@ -225,7 +226,11 @@ fn sample_cylinder_wire(
 
     for oe in wire.edges() {
         let edge = topo.edge(oe.edge())?;
-        let pts = super::edge_sampling::sample_edge(topo, edge, deflection, angular_tol, false)?;
+        let pts = if let Some(points) = edge_points.and_then(|pool| pool.get(&oe.edge().index())) {
+            points.clone()
+        } else {
+            super::edge_sampling::sample_edge(topo, edge, deflection, angular_tol, false)?
+        };
         let ordered: Vec<Point3> = if oe.is_forward() {
             pts
         } else {
@@ -431,13 +436,14 @@ pub(super) fn tessellate_revolved_with_holes(
     radius: f64,
     deflection: f64,
     angular_tol: f64,
+    edge_points: Option<&DetHashMap<usize, Vec<Point3>>>,
 ) -> Result<TriangleMeshUV, crate::OperationsError> {
     use remus_math::cdt::Cdt;
     use remus_math::vec::Point2;
 
     let outer_wire = topo.wire(face_data.outer_wire())?;
     let (mut all_positions, outer_uvs) =
-        sample_cylinder_wire(topo, outer_wire, cyl, deflection, angular_tol)?;
+        sample_cylinder_wire(topo, outer_wire, cyl, deflection, angular_tol, edge_points)?;
     if outer_uvs.len() < 3 {
         return Ok(TriangleMeshUV::default());
     }
@@ -455,7 +461,7 @@ pub(super) fn tessellate_revolved_with_holes(
     for &wire_id in face_data.inner_wires() {
         let wire = topo.wire(wire_id)?;
         let (mut positions, mut uvs) =
-            sample_cylinder_wire(topo, wire, cyl, deflection, angular_tol)?;
+            sample_cylinder_wire(topo, wire, cyl, deflection, angular_tol, edge_points)?;
         let winding = cylinder_loop_winding(&uvs);
         let wraps = winding.abs() >= std::f64::consts::TAU - 1e-6;
         if wraps {
