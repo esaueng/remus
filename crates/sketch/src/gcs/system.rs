@@ -19,6 +19,7 @@ use super::solver::{self, SolveResult};
 ///
 /// Owns all entities (points, lines, circles) and constraints.
 /// Provides CRUD operations and orchestrates the solver.
+#[derive(Debug)]
 pub struct GcsSystem {
     points: GenArena<PointData>,
     lines: GenArena<LineData>,

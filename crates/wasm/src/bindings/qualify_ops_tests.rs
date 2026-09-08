@@ -372,3 +372,267 @@ fn direct_and_batch_defeature_restore_curved_rim() {
     assert!((direct_volume - expected).abs() < expected * 1e-4);
     assert_eq!(direct_volume.to_bits(), batch_volume.to_bits());
 }
+
+#[test]
+fn direct_and_batch_defeature_restore_curved_wall_boss() {
+    let fixture = |kernel: &mut BrepKernel| {
+        let topo = kernel.topo_mut();
+        let base = make_cylinder(topo, 10.0, 20.0).unwrap();
+        let boss = make_box(topo, 5.0, 4.0, 4.0).unwrap();
+        transform_solid(topo, boss, &Mat4::translation(8.0, -2.0, 8.0)).unwrap();
+        let outcome = remus_operations::boolean::boolean_with_context(
+            topo,
+            BooleanOp::Fuse,
+            base,
+            boss,
+            &remus_math::context::OperationContext::new()
+                .with_fallback(remus_math::context::FallbackPolicy::ExactOnly),
+        )
+        .unwrap();
+        assert_eq!(
+            outcome.quality,
+            remus_operations::boolean::BooleanQuality::Exact
+        );
+        let input = outcome.solid;
+        let selected: Vec<_> = solid_faces(topo, input)
+            .unwrap()
+            .into_iter()
+            .filter(|&face| {
+                matches!(
+                    topo.face(face).unwrap().surface(),
+                    remus_topology::face::FaceSurface::Plane { .. }
+                ) && face_vertices(topo, face).unwrap().iter().all(|&vertex| {
+                    let z = topo.vertex(vertex).unwrap().point().z();
+                    z > 7.0 && z < 13.0
+                })
+            })
+            .map(crate::handles::face_id_to_u32)
+            .collect();
+        assert_eq!(selected.len(), 5);
+        (crate::handles::solid_id_to_u32(input), selected)
+    };
+    let mut direct = BrepKernel::new();
+    let (input, faces) = fixture(&mut direct);
+    let result = direct.defeature(input, faces).unwrap();
+    let direct_volume = kernel_volume(&direct, result);
+    let mut batch = BrepKernel::new();
+    let (input, faces) = fixture(&mut batch);
+    let result = run_all_ok(
+        &mut batch,
+        &[op(
+            "defeature",
+            serde_json::json!({"solid": input, "faces": faces}),
+        )],
+    );
+    let batch_volume = kernel_volume(&batch, as_u32(&result[0]));
+    let expected = std::f64::consts::PI * 2000.0;
+    assert!((direct_volume - expected).abs() < expected * 1e-4);
+    assert_eq!(direct_volume.to_bits(), batch_volume.to_bits());
+}
+
+#[test]
+fn batch_offset_cone_sphere_boolean_retains_exact_carriers() {
+    let overlap = 197.106_403_011_067_53;
+    for (operation, expected) in [
+        (
+            "fuse",
+            (208.0 + 256.0 / 3.0) * std::f64::consts::PI - overlap,
+        ),
+        ("cut", 208.0 * std::f64::consts::PI - overlap),
+        ("intersect", overlap),
+    ] {
+        let mut kernel = BrepKernel::new();
+        let inputs = run_all_ok(
+            &mut kernel,
+            &[
+                op(
+                    "makeCone",
+                    serde_json::json!({"bottomRadius":6,"topRadius":2,"height":12}),
+                ),
+                op("makeSphere", serde_json::json!({"radius":4,"segments":24})),
+            ],
+        );
+        let a = as_u32(&inputs[0]);
+        let b = as_u32(&inputs[1]);
+        run_all_ok(
+            &mut kernel,
+            &[op(
+                "transform",
+                serde_json::json!({"solid":b,"matrix":[1,0,0,2,0,1,0,0,0,0,1,6,0,0,0,1]}),
+            )],
+        );
+        let result = run_all_ok(
+            &mut kernel,
+            &[op(
+                "booleanWithQuality",
+                serde_json::json!({"operation":operation,"solidA":a,"solidB":b,"exactOnly":true}),
+            )],
+        );
+        assert_eq!(result[0]["quality"], "exact");
+        let solid = as_u32(&result[0]["solid"]);
+        assert!((kernel_volume(&kernel, solid) - expected).abs() < expected * 0.001);
+        let result = run_all_ok(
+            &mut kernel,
+            &[op("validateSolid", serde_json::json!({"solid":solid}))],
+        );
+        assert_eq!(result[0], 0);
+    }
+}
+
+#[test]
+fn batch_offset_sphere_cylinder_boolean_retains_exact_carriers() {
+    let overlap = 294.188_425_924_194_9;
+    for (operation, expected) in [
+        ("fuse", (288.0 + 180.0) * std::f64::consts::PI - overlap),
+        ("cut", 288.0 * std::f64::consts::PI - overlap),
+        ("intersect", overlap),
+    ] {
+        let mut kernel = BrepKernel::new();
+        let inputs = run_all_ok(
+            &mut kernel,
+            &[
+                op("makeSphere", serde_json::json!({"radius":6,"segments":24})),
+                op("makeCylinder", serde_json::json!({"radius":3,"height":20})),
+            ],
+        );
+        let a = as_u32(&inputs[0]);
+        let b = as_u32(&inputs[1]);
+        run_all_ok(
+            &mut kernel,
+            &[op(
+                "transform",
+                serde_json::json!({"solid":b,"matrix":[1,0,0,2,0,1,0,0,0,0,1,-10,0,0,0,1]}),
+            )],
+        );
+        let result = run_all_ok(
+            &mut kernel,
+            &[op(
+                "booleanWithQuality",
+                serde_json::json!({"operation":operation,"solidA":a,"solidB":b,"exactOnly":true}),
+            )],
+        );
+        assert_eq!(result[0]["quality"], "exact");
+        let solid = as_u32(&result[0]["solid"]);
+        assert!((kernel_volume(&kernel, solid) - expected).abs() < expected * 0.001);
+        let result = run_all_ok(
+            &mut kernel,
+            &[op("validateSolid", serde_json::json!({"solid":solid}))],
+        );
+        assert_eq!(result[0], 0);
+    }
+}
+
+#[test]
+fn batch_offset_torus_sphere_boolean_retains_exact_carriers() {
+    let overlap = 56.270_214_829_835_2;
+    for (operation, expected) in [
+        (
+            "fuse",
+            48.0 * std::f64::consts::PI.powi(2) + 36.0 * std::f64::consts::PI - overlap,
+        ),
+        ("cut", 48.0 * std::f64::consts::PI.powi(2) - overlap),
+        ("intersect", overlap),
+    ] {
+        let mut kernel = BrepKernel::new();
+        let inputs = run_all_ok(
+            &mut kernel,
+            &[
+                op(
+                    "makeTorus",
+                    serde_json::json!({"majorRadius":6,"minorRadius":2,"segments":32}),
+                ),
+                op("makeSphere", serde_json::json!({"radius":3,"segments":24})),
+            ],
+        );
+        let a = as_u32(&inputs[0]);
+        let b = as_u32(&inputs[1]);
+        run_all_ok(
+            &mut kernel,
+            &[op(
+                "transform",
+                serde_json::json!({"solid":b,"matrix":[1,0,0,5,0,1,0,0,0,0,1,1,0,0,0,1]}),
+            )],
+        );
+        let result = run_all_ok(
+            &mut kernel,
+            &[op(
+                "booleanWithQuality",
+                serde_json::json!({"operation":operation,"solidA":a,"solidB":b,"exactOnly":true}),
+            )],
+        );
+        assert_eq!(result[0]["quality"], "exact");
+        let solid = as_u32(&result[0]["solid"]);
+        assert!((kernel_volume(&kernel, solid) - expected).abs() < expected * 0.001);
+        let result = run_all_ok(
+            &mut kernel,
+            &[op("validateSolid", serde_json::json!({"solid":solid}))],
+        );
+        assert_eq!(result[0], 0);
+    }
+}
+
+#[test]
+fn batch_through_tool_booleans_preserve_material_across_scales() {
+    for exponent in -5..=6 {
+        let scale = 10.0_f64.powi(exponent);
+        for placed in [false, true] {
+            for (operation, expected) in [("fuse", 1.16), ("cut", 0.84), ("intersect", 0.16)] {
+                let mut kernel = BrepKernel::new();
+                let inputs = run_all_ok(
+                    &mut kernel,
+                    &[
+                        op(
+                            "makeBox",
+                            serde_json::json!({"width":scale,"height":scale,"depth":scale}),
+                        ),
+                        op(
+                            "makeBox",
+                            serde_json::json!({"width":0.4*scale,"height":0.4*scale,"depth":2.0*scale}),
+                        ),
+                    ],
+                );
+                let blank = as_u32(&inputs[0]);
+                let tool = as_u32(&inputs[1]);
+                run_all_ok(
+                    &mut kernel,
+                    &[op(
+                        "transform",
+                        serde_json::json!({"solid":tool,"matrix":[1,0,0,0.3*scale,0,1,0,0.3*scale,0,0,1,-0.5*scale,0,0,0,1]}),
+                    )],
+                );
+                if placed {
+                    let c = 0.37_f64.cos();
+                    let s = 0.37_f64.sin();
+                    for solid in [blank, tool] {
+                        run_all_ok(
+                            &mut kernel,
+                            &[op(
+                                "transform",
+                                serde_json::json!({"solid":solid,"matrix":[c,0,s,17.0*scale,0,1,0,-23.0*scale,-s,0,c,31.0*scale,0,0,0,1]}),
+                            )],
+                        );
+                    }
+                }
+                let result = run_all_ok(
+                    &mut kernel,
+                    &[op(
+                        "booleanWithQuality",
+                        serde_json::json!({"operation":operation,"solidA":blank,"solidB":tool,"exactOnly":true}),
+                    )],
+                );
+                assert_eq!(result[0]["quality"], "exact");
+                let solid = as_u32(&result[0]["solid"]);
+                let volume = kernel_volume(&kernel, solid) / scale.powi(3);
+                assert!(
+                    (volume - expected).abs() / expected < 1e-6,
+                    "{operation} scale={scale:e} placed={placed}: {volume} vs {expected}"
+                );
+                let validation = run_all_ok(
+                    &mut kernel,
+                    &[op("validateSolid", serde_json::json!({"solid":solid}))],
+                );
+                assert_eq!(validation[0], 0);
+            }
+        }
+    }
+}

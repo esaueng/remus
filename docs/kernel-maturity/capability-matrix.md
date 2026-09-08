@@ -229,8 +229,10 @@ does not itself promote or demote anything.
   local-limit boundaries, an analytic ruled-surface plus closed-form linear
   volume oracle, and sampled S-curve radius/incidence/tangency invariants.
   In-review PR #228 qualifies constant-radius closed curved-support assembly
-  for coaxial cylinder/cone, cylinder/sphere, cone/cone, and the segmented
-  orthogonal cylinder/cylinder rim of a cross-drilled shaft. The analytic
+  for coaxial cylinder/cone, cylinder/sphere, and cone/cone. The segmented
+  orthogonal cylinder/cylinder rim of a cross-drilled shaft now refuses
+  wrong-side material addition: correcting #278's malformed input winding
+  restores the volume-sign gate. Correct-side assembly remains unqualified. The analytic
   cylinder/cone cell is recovered as an exact torus; other closed walks use a
   periodic degree-1 NURBS band tessellated from shared contact-edge vertices.
   The native matrix pins solid validation, zero free/non-manifold edges,
@@ -609,6 +611,12 @@ does not itself promote or demote anything.
   three-face cylindrical body (`resize_blend.rs` integration tests). Rim
   deletion has exact face history, scale/translation and direct/batch WASM
   coverage. Selection must equal the complete band.
+- Curved-wall capping: a rectangular boss wholly within a cylindrical wall
+  leaves a complete wound inner wire on that cylinder. Removing its five
+  exposed faces restores the cylinder with exact-only fixture construction,
+  analytic/mesh volume, watertightness, transformed scale coverage, complete
+  face history, input preservation, selection rollback, and direct/batch WASM
+  parity (`qualify_curved_boss_heal.rs`). This qualifies the existing cap heal.
 - Unsupported-typed cells: cavity solids, general wounds crossing curved
   kept faces, partial bands, over-removal, empty/foreign selections. Planar
   extension requires four retained faces; capping requires three.

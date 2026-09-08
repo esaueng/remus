@@ -60,6 +60,64 @@ pub fn make_sheet_body(
     )
 }
 
+/// Construct a solid from faces that already share edges and vertices,
+/// preserving every curve and hole exactly as authored.
+///
+/// Unlike [`sew_faces`], which merges coincident endpoints and rebuilds each
+/// boundary as fresh line edges (dropping inner wires), this constructor
+/// takes the face set as-is: no geometry is rebuilt, merged, or
+/// re-approximated. It exists for callers that build consistent shared
+/// topology directly in the arena and want the shell/solid assembly plus the
+/// sanity checks a hand-rolled `Shell::new`/`Solid::new` bypasses (issue
+/// #263).
+///
+/// The constructor commits only when the assembled solid passes the full
+/// validation profile at error severity: every edge shared by exactly two
+/// faces in opposite orientations, closed shell, Euler-consistent, all
+/// wire/edge/face geometry checks. Failed construction rolls back without
+/// leaving allocations behind.
+///
+/// # Errors
+///
+/// Returns an error if fewer than 2 faces are provided, the faces reference
+/// missing topology, or the assembled solid fails validation.
+pub fn make_solid_from_shared_faces(
+    topo: &mut Topology,
+    faces: &[FaceId],
+) -> Result<SolidId, crate::OperationsError> {
+    remus_topology::transaction::run_validated(
+        topo,
+        |topo| -> Result<_, crate::OperationsError> {
+            if faces.len() < 2 {
+                return Err(crate::OperationsError::InvalidInput {
+                    reason: "a solid needs at least 2 faces".into(),
+                });
+            }
+            for &face in faces {
+                topo.face(face)?;
+            }
+            let shell = Shell::new(faces.to_vec())?;
+            let shell_id = topo.add_shell(shell);
+            Ok(topo.add_solid(Solid::new(shell_id, vec![])))
+        },
+        |topo, solid| {
+            let report = remus_check::validate::validate_solid(
+                topo,
+                *solid,
+                &remus_check::validate::ValidateOptions::default(),
+            )?;
+            if report.is_valid() {
+                Ok(())
+            } else {
+                Err(crate::OperationsError::BodyValidationFailed {
+                    body_class: BodyClass::Solid.as_str(),
+                    error_count: report.error_count(),
+                })
+            }
+        },
+    )
+}
+
 /// Sew a set of loose faces into a solid.
 ///
 /// Finds geometrically coincident edges between faces (within
@@ -582,5 +640,214 @@ mod tests {
                 actual: "solid",
             }
         ));
+    }
+
+    /// Issue #263: faces with shared curved edges and holes assemble into a
+    /// solid with the geometry preserved — no line rebuilding, no dropped
+    /// inner wires.
+    #[test]
+    fn shared_faces_preserve_curves_and_holes() {
+        use remus_math::surfaces::CylindricalSurface;
+
+        let mut topo = Topology::new();
+        let (radius, height) = (1.0_f64, 2.0_f64);
+
+        // Two-ring wall: outer wire is the bottom rim circle, inner wire is
+        // the top rim circle (reversed), no seam edge.
+        let v_bot = topo.add_vertex(Vertex::new(Point3::new(radius, 0.0, 0.0), 1e-7));
+        let v_top = topo.add_vertex(Vertex::new(Point3::new(radius, 0.0, height), 1e-7));
+        let bot_circle = remus_math::curves::Circle3D::new(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            radius,
+        )
+        .unwrap();
+        let top_circle = remus_math::curves::Circle3D::new(
+            Point3::new(0.0, 0.0, height),
+            Vec3::new(0.0, 0.0, 1.0),
+            radius,
+        )
+        .unwrap();
+        let mut bot_edge = Edge::new(v_bot, v_bot, EdgeCurve::Circle(bot_circle.clone()));
+        let bot_start = bot_circle.project(Point3::new(radius, 0.0, 0.0));
+        bot_edge.set_trim(Some((bot_start, bot_start + std::f64::consts::TAU)));
+        let e_bot = topo.add_edge(bot_edge);
+        let mut top_edge = Edge::new(v_top, v_top, EdgeCurve::Circle(top_circle.clone()));
+        let top_start = top_circle.project(Point3::new(radius, 0.0, height));
+        top_edge.set_trim(Some((top_start, top_start + std::f64::consts::TAU)));
+        let e_top = topo.add_edge(top_edge);
+
+        let wall_outer =
+            topo.add_wire(Wire::new(vec![OrientedEdge::new(e_bot, true)], true).unwrap());
+        let wall_inner =
+            topo.add_wire(Wire::new(vec![OrientedEdge::new(e_top, false)], true).unwrap());
+        let wall = topo.add_face(Face::new(
+            wall_outer,
+            vec![wall_inner],
+            FaceSurface::Cylinder(
+                CylindricalSurface::new(
+                    Point3::new(0.0, 0.0, 0.0),
+                    Vec3::new(0.0, 0.0, 1.0),
+                    radius,
+                )
+                .unwrap(),
+            ),
+        ));
+        let bot_cap_wire =
+            topo.add_wire(Wire::new(vec![OrientedEdge::new(e_bot, false)], true).unwrap());
+        let bot_cap = topo.add_face(Face::new(
+            bot_cap_wire,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, -1.0),
+                d: 0.0,
+            },
+        ));
+        let top_cap_wire =
+            topo.add_wire(Wire::new(vec![OrientedEdge::new(e_top, true)], true).unwrap());
+        let top_cap = topo.add_face(Face::new(
+            top_cap_wire,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: height,
+            },
+        ));
+
+        let solid = make_solid_from_shared_faces(&mut topo, &[wall, bot_cap, top_cap]).unwrap();
+
+        // The rim edges keep their Circle curves — sew_faces would have
+        // rebuilt them as lines.
+        for eid in [e_bot, e_top] {
+            let edge = topo.edge(eid).unwrap();
+            assert!(
+                matches!(edge.curve(), EdgeCurve::Circle(_)),
+                "rim edge must stay a circle"
+            );
+        }
+        // The wall's inner wire (the top rim) survives.
+        assert_eq!(topo.face(wall).unwrap().inner_wires().len(), 1);
+
+        // And the result is a real solid: closed, manifold, right volume.
+        let volume = crate::measure::solid_volume(&topo, solid, 0.001).unwrap();
+        let expected = std::f64::consts::PI * radius * radius * height;
+        assert!(
+            (volume - expected).abs() / expected < 1e-3,
+            "volume {volume} vs analytic {expected}"
+        );
+    }
+
+    /// A face set that does not close (a box missing its top) must be
+    /// rejected — the constructor's validation gate is the point.
+    #[test]
+    fn shared_faces_reject_an_open_shell() {
+        let mut topo = Topology::new();
+        let mut quad = |pts: [Point3; 4], normal: Vec3, d: f64| {
+            let v: Vec<_> = pts
+                .into_iter()
+                .map(|p| topo.add_vertex(Vertex::new(p, 1e-7)))
+                .collect();
+            let e: Vec<_> = (0..4)
+                .map(|i| topo.add_edge(Edge::new(v[i], v[(i + 1) % 4], EdgeCurve::Line)))
+                .collect();
+            let wire = Wire::new(
+                e.iter().map(|&e| OrientedEdge::new(e, true)).collect(),
+                true,
+            )
+            .unwrap();
+            let wid = topo.add_wire(wire);
+            topo.add_face(Face::new(wid, vec![], FaceSurface::Plane { normal, d }))
+        };
+        // Five faces of a unit cube — the top is missing.
+        let bottom = quad(
+            [
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(1.0, 0.0, 0.0),
+                Point3::new(1.0, 1.0, 0.0),
+                Point3::new(0.0, 1.0, 0.0),
+            ],
+            Vec3::new(0.0, 0.0, -1.0),
+            0.0,
+        );
+        let front = quad(
+            [
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(1.0, 0.0, 0.0),
+                Point3::new(1.0, 0.0, 1.0),
+                Point3::new(0.0, 0.0, 1.0),
+            ],
+            Vec3::new(0.0, -1.0, 0.0),
+            0.0,
+        );
+        let back = quad(
+            [
+                Point3::new(0.0, 1.0, 0.0),
+                Point3::new(1.0, 1.0, 0.0),
+                Point3::new(1.0, 1.0, 1.0),
+                Point3::new(0.0, 1.0, 1.0),
+            ],
+            Vec3::new(0.0, 1.0, 0.0),
+            1.0,
+        );
+        let left = quad(
+            [
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(0.0, 1.0, 0.0),
+                Point3::new(0.0, 1.0, 1.0),
+                Point3::new(0.0, 0.0, 1.0),
+            ],
+            Vec3::new(-1.0, 0.0, 0.0),
+            0.0,
+        );
+        let right = quad(
+            [
+                Point3::new(1.0, 0.0, 0.0),
+                Point3::new(1.0, 1.0, 0.0),
+                Point3::new(1.0, 1.0, 1.0),
+                Point3::new(1.0, 0.0, 1.0),
+            ],
+            Vec3::new(1.0, 0.0, 0.0),
+            1.0,
+        );
+        assert!(
+            make_solid_from_shared_faces(&mut topo, &[bottom, front, back, left, right]).is_err()
+        );
+    }
+
+    /// A shared edge used in the SAME direction by two faces is an
+    /// orientation defect and must be rejected.
+    #[test]
+    fn shared_faces_reject_same_direction_sharing() {
+        let mut topo = Topology::new();
+        // Two triangles sharing edge e0, both using it forward.
+        let v0 = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
+        let v1 = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
+        let v2 = topo.add_vertex(Vertex::new(Point3::new(0.0, 1.0, 0.0), 1e-7));
+        let v3 = topo.add_vertex(Vertex::new(Point3::new(1.0, 1.0, 0.0), 1e-7));
+        let e_shared = topo.add_edge(Edge::new(v0, v3, EdgeCurve::Line));
+        let e1 = topo.add_edge(Edge::new(v3, v2, EdgeCurve::Line));
+        let e2 = topo.add_edge(Edge::new(v2, v0, EdgeCurve::Line));
+        let e3 = topo.add_edge(Edge::new(v1, v0, EdgeCurve::Line));
+        let e4 = topo.add_edge(Edge::new(v3, v1, EdgeCurve::Line));
+        let tri = |topo: &mut Topology, edges: [EdgeId; 3]| {
+            let wire = Wire::new(
+                edges.iter().map(|&e| OrientedEdge::new(e, true)).collect(),
+                true,
+            )
+            .unwrap();
+            let wid = topo.add_wire(wire);
+            topo.add_face(Face::new(
+                wid,
+                vec![],
+                FaceSurface::Plane {
+                    normal: Vec3::new(0.0, 0.0, 1.0),
+                    d: 0.0,
+                },
+            ))
+        };
+        // Both triangles use the shared edge FORWARD — an orientation defect.
+        let f0 = tri(&mut topo, [e_shared, e1, e2]);
+        let f1 = tri(&mut topo, [e4, e3, e_shared]);
+        assert!(make_solid_from_shared_faces(&mut topo, &[f0, f1]).is_err());
     }
 }

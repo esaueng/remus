@@ -84,7 +84,108 @@ Open Kernel Wave A rows still unclaimed are O4.4, O5.1a–c, O6.1, and O6.4.
 Bridge rows closed since the draft: B1, B5, the B6 primitive family
 (including ellipsoid), the B11 STEP-ordering item, B13 void export, and B15
 pocket-face orientation; B12 is partial (rectangular holes on sweep/pipe
-caps, PR #252). No `#[ignore]` pins a live engine defect.
+caps, PR #252). The ignore inventory now includes the explicit unresolved
+[anisotropic world-volume precision witness](scale-band-audit.md); the
+remaining diagnostic, slow, and fork-policy skips retain their stated scope.
+
+Current 2.4 qualification work covers bounded off-axis cone/sphere,
+sphere/cylinder, and torus/sphere matrices; integration remains pending. The
+2.6 through-tool family now has a 72-cell exact scale/placement matrix;
+[remaining band audits](scale-band-audit.md) keep the broader item partial.
+The torus/box notch follow-up now passes the 18-cell exact-only matrix in
+`pclass_torus_notch_orientation`: three operations, scales 0.1/1/10, and origin
+or rotated/translated placement. Gates include strict orientation/manifold
+validation, analytic carriers, fitted-seam residual within linear tolerance,
+watertight tessellation, volume within 0.1% of independent annular-section
+quadrature, and signed mesh volume within 1%. Fixes cover complementary rim
+traversal, carried trim domains, scale-relative march/branch distances, bounded
+seam refitting, Fuse rim preservation, and oriented band integration. The new
+public `integrate_torus_band_face` query lets measurement retain its fallback
+for unsupported trims. Workspace Clippy, layer boundaries, warnings-denied docs,
+and the unchanged 52-row census pass. Both WASM packages, smoke/installed
+consumers (all 18 cells through direct and batch APIs), workspace doctests,
+and the deterministic complexity guard pass. Full workspace: 4,842 passed,
+13 skipped; a process-leak warning on the passing honeycomb case did not recur
+in a clean four-test rerun. An idle performance comparison remains pending
+because other browser jobs caused drift in the unchanged parent benchmark;
+this follow-up is not integrated.
+
+P-Class 2.7 has bounded qualification in [PR #307](https://github.com/esaueng/remus/pull/307),
+which remains unintegrated.
+The unintegrated `pclass_tangency_band` regression covers 27 operation/offset
+groups, each at three scales and two placements. The current exact-or-typed
+contract passes all 162 cells: 120 verified exact results and 42
+`ExactOnlyUnattainable` refusals. Refusals are permitted only in the named
+nonzero 1e-7/1e-9 offset groups and preserve operand arena bytes and topology
+counts. Exact tangency and the larger offset groups must succeed. Every success
+checks strict topology, analytic carriers, planar circle-carrier residuals,
+independent circular-cap volume, material probes, and welded meshes at two
+deflections. The 42 refusals remain unqualified for exact construction; this
+matrix alone does not close the full tangency milestone.
+
+The changes address distinct reproduced defects:
+
+- Use the transform's linear matrix for curve directions, preserving Circle
+  carriers under translated rotations.
+- Tighten straight-edge carrier and exact arrangement T-junction tests, and
+  coincident-vertex welding, without relaxing geometric acceptance.
+- Split co-endpoint section arcs against straight chords and subdivide cylinder
+  rim arrangements; keep selected planar regions inside their source polygon.
+- Reject circular section PaveBlocks that leave the receiving plane, including
+  extrema of their trimmed carrier rather than endpoints alone.
+- Use the guarded analytic face-volume route before whole-solid mesh fallback.
+- Exclude interior meshing-grid points on shared outer boundaries and route
+  stepped cylindrical faces through the boundary-aware CDT mesher.
+- Move full cylindrical-band classification samples off isolated plane contacts.
+- Share tangent circle samples with straight edges on the same planar face
+  before triangulation. This closes the six-edge exact-contact Fuse mesh gap
+  across all six scale/placement cases at both tested deflections.
+
+- Require the inner-wire term in both the pre-heal and final Euler acceptance
+  gates. A raw Euler count of two no longer admits a malformed holed face.
+- Keep CDT's collinearity distance at its existing vertex resolution rather
+  than growing it with constraint length. This preserves a distinct nearby
+  circle sample and the thin triangle between it and the straight boundary.
+  The new unit fails on the old predicate; all 21 CDT tests pass with the fix.
+
+Current focused checks pass the 162-cell tangency contract, 193 boolean units,
+eight corner-placement cases, eight parallel-boss cases, the cavity and
+multi-region checks, six import checks, the captured L-shaped lip cut, and
+three topsocket regressions. The cylinder boundary integral uses actual arc
+sweeps, including major arcs and stepped heights; its new measurement dispatch
+is restricted to planar/cylindrical bodies. The imported fillet plate uses an
+independent rounded-rectangle volume instead of the old chorded reference.
+The historical weld allowance is retained at NURBS surface/curve vertices;
+analytic-only vertices use the narrow merge band.
+
+The cone/box census regression is corrected by using the actual merge tolerance
+for line-refinement endpoint exclusion; its exact result passes independent
+volume and two-deflection mesh checks. All four cone/sphere qualification tests
+now pass after periodic-pocket clipping preserves exact chart intersections
+when deduplicating nearby fitted samples. This removes the seam slit exposed
+by the stricter CDT predicate.
+
+Validation: 4,873 native tests passed, 13 skipped. One passing captured
+halfsockets test reported a process-leak warning; its isolated rerun passed.
+All-target/all-feature Clippy, formatting, layer boundaries, the deterministic
+complexity guard, and the unchanged 52-row census pass. Both rebuilt WASM
+packages pass smoke and installed-package consumer tests, each checking 240
+exact tangency results and 84 typed refusals with direct/batch parity and
+operand rollback. The cylinder integral derives sweep handedness from the
+circle basis and normalizes wire traversal independently of face reversal;
+existing non-line/circle measurement dispatch remains available. All 33
+extrusion tests, the captured lip-band check, and all three revolve-orientation
+tests pass with those contracts. Hosted checks and exact-head review remain
+merge gates; these results do not claim general exact tangency or deployment.
+
+Scheduled proof status checked during this qualification: Fuzz Smoke and Corpus
+Gauntlet passed on `cfb5c29e`; [Mutation Testing run 34017122331](https://github.com/esaueng/remus/actions/runs/34017122331)
+passed its unmutated baseline but exhausted the 150-minute budget with nine
+missed mutants and incomplete coverage. The missed cases span healing totals,
+sphere-loop area, fillets, loft bands, wire alignment, NURBS pole tessellation,
+and benchmark surface helpers. They require separate qualification follow-up;
+this tangency slice does not claim to clear that scheduled proof gate.
+
 
 OpenZCAD consumer-roadmap K-S4 (`approx_census` CI enforcement): **done (PR
 #140)**. Its authoritative disposition line remains in planning PR
@@ -165,6 +266,40 @@ leadership discipline (stable corpus, equivalent quality, pinned
 baseline, repeatable results, published losses, always-on gate), at
 least two from the correctness family and one from the browser family.
 
+Direct-edit follow-up under [P-Class 6.5](p-class-status.md):
+[boundary-aware resizing of partial cylindrical faces](../roadmap/partial-cylinder-resize.md)
+is planned; the Jolly Fox reproduction, scope, and acceptance criteria are recorded,
+with implementation still pending.
+
+### Correctness follow-up: curved hole winding (#278)
+
+Cut/intersect assembly now compares multi-opening cylinder wires in
+seam-unwrapped UV and preserves reversed coedge p-curves. Periodic
+same-wound holes are validation errors. The cross-drilled shaft regression
+covers raw GFA and public booleans across scales and bore angles, STEP
+round trips, and the WASM render/measure matrix.
+
+This exposed a false success in the cross-drilled rim fillet: its convex
+edge received added material, and the malformed input had suppressed the
+volume-sign gate. The corrected input now receives a transactional refusal.
+Correct-side curved rim assembly remains B4/M5 work; this case is not a
+qualified blend success.
+
+### Correctness follow-up: wide spherical caps (#285)
+
+Exact circular rims now enable the shared latitude-cap tessellator without
+requiring a second trimmed face on the same sphere. Rim traversal selects
+the retained pole, including caps larger than a hemisphere. The primitive
+polygon-equator path stays unchanged. `regress_wide_sphere_cap.rs` checks
+small and large caps, the radius-9/cut-7.5 ball-stud case, scales, rigid
+transforms, two deflections, manifold meshes, closed-form volume, standalone
+face area, and STEP. The packaged WASM consumer replays the generated
+wide-cap STEP fixtures through the translator and kernel, checking
+volume and direct/batch mesh quality, including the explicit doubled pole seam. Equal-axis ellipse representations of
+circular rims use the same verified path.
+This qualification covers circular rims with or without one doubled pole
+seam; arbitrary non-circular trims are not included.
+
 ## §B Bridge backlog — owned by neither program
 
 Ready items from the stabilization-plan residue, the capability-matrix
@@ -177,7 +312,7 @@ P-Class 2.3 · conic boolean cells = O2.2 · offset self-intersection = 5.7
 | ID | Item | Where | Size | Why it matters | State |
 |---|---|---|---|---|---|
 | B1 | **Healing disclosure typing** — the matrix's only named Unsupported-untyped cell: permissive healing can mask an invalid result as valid. Type every repair (report what changed, refuse to claim validity it didn't verify); both-sides tests. | `heal/src/fix/`, `check/src/validate/` | M | The last untyped silent-failure path in the kernel; highest correctness value per line. Do first in the qualification lane. | **Done (2026-09-03, PR #243):** fixer results enumerate counted repair kinds and typed declined repairs; L2 `OK` explicitly means only “no fixer action,” never validity. Operations, facade verified mode, configurable direct WASM, named pipelines, and additive detailed direct/batch WASM surfaces commit only after independent operations/check validation. Invalid and unverifiable results return stable typed refusals with attempted repairs and roll back. Native and WASM both-sides regressions pin verified success and refusal. |
-| B2 | **Boolean scale residuals** — 1e-5 fails closed (100·tol weld bands); raw-GFA 1e6 silently 0.9467 vs 0.8400 (ExactOnly refuses; measure + pin). | `algo` bands | M | Feeds P-Class 2.6 directly; the 1e6 cell is a possible silent-wrong class. Geometry lane. | Open |
+| B2 | **Boolean scale residuals** — the through-tool family now returns exact material at 1e-5 and 1e6; straight-edge refinement and local planar bands are qualified by 72 operator/scale/placement cells. | `algo` bands | M | Feeds P-Class 2.6; remaining dimensional and curved-band work is tracked in [the audit](scale-band-audit.md). | Partial — named matrix passes; broader audit remains |
 | B3 | **Closed-rim chamfers** — cone-frustum band mirroring the validated toroidal fillet assembler; closed-form volume oracle. Stabilization C1.2. | `blend`, `operations/src/chamfer.rs` | M | Exact surfaces, cheap, passes chase filter 1; unblocks resize_blend cylinder/cone (C2). | Open |
 | B4 | **v2 walking-trimmer completion** — the four named gaps: keep-side hint, shared contact edges, end-cap notch trim, chamfer external-tangent branch. Stabilization C1.3. | `blend/src/trimmer.rs` | M | Critical path for v2 walker parity → legacy engine retirement (M5 precondition). | Open |
 | B5 | **Offset face provenance** — offset derives faces 1:1 and discards the mapping; journal real evolution instead of a barrier. | `offset`, `operations/src/offset_v2.rs` | S | The last declared-barrier operation nobody owns; closes the B3-residual from stabilization. | **Done (2026-09-02, PR #224 (landed via #233)):** default intersection-joint V2 offsets retain and validate the total 1:1 construction map; native and direct/batch WASM journal wrappers record it transactionally. Closed-form plane/volume, persistent-reference, rollback, and WASM parity oracles pin the claim. Arc-joint and self-intersection-removal variants explicitly refuse this map because later face synthesis/replacement needs richer provenance. |
@@ -194,7 +329,7 @@ P-Class 2.3 · conic boolean cells = O2.2 · offset self-intersection = 5.7
 | B16 | **Consumer topology-query API set** — one binding per OpenZCAD heuristic it currently reimplements (its roadmap C2): trimmed edge parameter domain, face material sense, ordered wire traversal, per-edge convexity, sphere-patch identity, seam-edge parity, `maxFilletRadius(solid, edges)`, batched `classifyPoint`, per-edge ids in `meshEdgesAll`; plus the GCS qualification matrix (constraint type × system state × scale, nonconvergence budget) from the P-Class §6 inherited queue. Each: exact, typed refusal on foreign handles, direct + batch WASM, contract test. Added 2026-09-04 by the [industrial-parity overlay](industrial-parity.md) (rows IP-15.9, IP-9.3, IP-10.3, IP-13.1/13.4). | `wasm/bindings/query.rs`, `batch.rs`, `operations/src/query.rs`, `sketch/`, `operations/tests/qualify_gcs.rs` (new) | S each | Every row retires an adapter-side heuristic; highest OpenZCAD impact per line. Exit: the named heuristic deleted from the consumer's adapter (recorded in the PR), matrix green. | Open |
 | B17 | **Healing defect-class qualification matrix** — a generated defect class × severity × repair policy × scale matrix per fixer (wire order/closure/gaps/small edges, face orientation/small faces, seams, shell orientation/sewing/free bounds, duplicates, continuity splits, representation conversion), plus an operand self-interference report for booleans and the faceted-import sew/unify contract (issue #244). Every cell: verified repair with counted disclosure, or typed refusal; both sides. Added 2026-09-04 by the overlay (rows IP-8.3, IP-3.8, IP-8.6). | `heal/`, `operations/src/heal.rs`, `operations/tests/qualify_heal.rs` (new), `stl/import.rs` | M (S per fixer) | The family is Qualified only at the B1 boundary; the reference kernel's healing breadth is its strongest documented area. Exit: every fixer has a matrix; #244 fixture green; self-interference report typed on a self-touching corpus. | Open |
 | B18 | **Evolution completeness audit** — every topology-producing family reports total attribution or a typed unresolved record: unify same-domain (`unify_with_evolution`, OpenZCAD C1's top ask), sew, sweep/loft/revolve/extrude caps, arc-joint and self-intersection-removal offsets, section/split edges, direct edits (with 6.5), edge/vertex events beyond booleans. Added 2026-09-04 by the overlay (rows IP-3.6, IP-5.7, IP-12.1; leadership claim LC3). | `journal_ops.rs`, `evolution.rs`, `qualify_evolution_coverage.rs`, per-op modules | M (S per family) | Absolute gate §3.4 item 8; unblocks OpenZCAD's adoption order boolean → pattern → chamfer → shell/offset → direct edits. Exit: the coverage fixture claims every result face of every family exactly once or pins its typed unresolved; no `record_barrier_over_solid` call remains for a family that can construct its map. | Open |
-| B19 | **Remaining fuzz slices and the mutants glob** — curve-intersection, offset, GCS, and tessellation fuzz targets with independent oracles on the weekly schedule; fix the stale `crates/math/src/cdt.rs` glob in `mutants.toml` (CDT is a directory now). Added 2026-09-04 by the overlay (row IP-16.4; LC13). | `fuzz/fuzz_targets/`, `mutants.toml`, `.github/workflows/fuzz.yml` | S each | The S4 follow-ups have had no ID since PR #173; the mutants glob silently examines nothing for CDT. Exit: four targets scheduled with committed seeds; mutants report shows CDT mutants examined. | Open |
+| B19 | **Remaining fuzz slices and mutation scope** — curve-intersection, offset, GCS, and tessellation fuzz targets with independent oracles on the weekly schedule. The mutation-scope slice moves the previously undiscovered root config to `.cargo/mutants.toml` and selects the current CDT directory. | `fuzz/fuzz_targets/`, `.cargo/mutants.toml`, `.github/workflows/fuzz.yml` | S each | Exit: four targets scheduled with committed seeds; mutants report shows CDT mutants examined. Scope regression checks reject ignored config and the stale CDT file glob; the bounded five-mutant sample caught four and retained one survivor for review. | Partial — mutation scope verified; four fuzz slices remain open. Evidence: `scripts/test-mutants-scope.py`, `docs/kernel-maturity/testing-strategy.md` |
 | B20 | **Exact measurement completion (K-S2 remainder)** — ellipse, hyperbola, and NURBS planar boundaries; general curved-face area; deflection-independent curved-body volume, centroid, and inertia by Gauss quadrature over exact geometry with a stated bound; direct + batch WASM; scale matrix. Added 2026-09-04 by the overlay (row IP-10.1). | `check/src/properties/`, `operations/src/measure/` | M | OpenZCAD S2 measures 0.2–3.5 % volume error on filleted parts at its display deflection; the reference kernel integrates surfaces directly. Exit: relative error ≤ 1e-6 against closed forms on filleted and cavity primitives at 1e-3/1/1e3, independent of caller deflection; ledger row loses its "incomplete" caveat. | Open |
 
 **Explicitly not queued** (decided or terminal — do not re-open without
