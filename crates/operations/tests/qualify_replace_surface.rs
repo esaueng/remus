@@ -262,25 +262,23 @@ fn tilted_bored_cap_relimits_lines_and_circle_to_an_ellipse() {
     assert!(((range.1 - range.0).abs() - TAU).abs() < 1e-9);
 
     let top = topo.face(result_top).expect("result top");
-    let FaceSurface::Plane { normal, .. } = top.surface() else {
+    let FaceSurface::Plane { normal, d } = top.surface() else {
         unreachable!();
     };
-    let frame_points: Vec<_> = topo
-        .wire(top.outer_wire())
-        .expect("outer wire")
-        .edges()
-        .iter()
-        .map(|oriented| {
-            let edge = topo.edge(oriented.edge()).expect("outer edge");
-            topo.vertex(edge.start()).expect("outer vertex").point()
-        })
-        .collect();
-    let frame = PlaneFrame::from_plane_face(*normal, &frame_points);
+    let frame = PlaneFrame::from_normal_and_point(
+        *normal,
+        Point3::new(normal.x() * d, normal.y() * d, normal.z() * d),
+    );
     let top_pcurve = topo
         .pcurve_oriented(rim_use.edge(), result_top, rim_use.is_forward())
         .expect("ellipse p-curve on tilted cap");
     for fraction in [0.0, 0.25, 0.5, 0.75, 1.0] {
-        let t3 = (range.1 - range.0).mul_add(fraction, range.0);
+        let fraction3 = if rim_use.is_forward() {
+            fraction
+        } else {
+            1.0 - fraction
+        };
+        let t3 = (range.1 - range.0).mul_add(fraction3, range.0);
         let t2 =
             (top_pcurve.t_end() - top_pcurve.t_start()).mul_add(fraction, top_pcurve.t_start());
         let from_pcurve = top_pcurve.evaluate(t2);
@@ -310,7 +308,12 @@ fn tilted_bored_cap_relimits_lines_and_circle_to_an_ellipse() {
         unreachable!();
     };
     for fraction in [0.0, 0.25, 0.5, 0.75, 1.0] {
-        let t3 = (range.1 - range.0).mul_add(fraction, range.0);
+        let fraction3 = if cylinder_use.1 {
+            fraction
+        } else {
+            1.0 - fraction
+        };
+        let t3 = (range.1 - range.0).mul_add(fraction3, range.0);
         let t2 = (cylinder_use.2.t_end() - cylinder_use.2.t_start())
             .mul_add(fraction, cylinder_use.2.t_start());
         let uv = cylinder_use.2.evaluate(t2);
