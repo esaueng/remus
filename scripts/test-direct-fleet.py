@@ -151,6 +151,25 @@ class DirectFleetTests(unittest.TestCase):
                 self.assertLess(job.index(guard), job.index("actions/checkout@"))
                 self.assertIn("persist-credentials: false", job)
 
+    def test_disposable_runners_install_required_toolchains(self):
+        jobs = dict(re.findall(r"^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)", TEXT, re.M | re.S))
+        for name in ("repo-policy", "clippy", "test", "approx-census", "coverage",
+                     "wasm", "fuzz-check", "render", "audit", "docs"):
+            block = jobs[name]
+            marker = "&fleet-rust" if name == "repo-policy" else "*fleet-rust"
+            self.assertLess(block.index("actions/checkout@"), block.index(marker))
+            for tool in ("Swatinem/rust-cache@", "taiki-e/install-action@", "rustsec/audit-check@", "run: cargo"):
+                if tool in block:
+                    self.assertLess(block.index(marker), block.index(tool))
+        setup = jobs["repo-policy"].split("&fleet-rust", 1)[1].split("      - ", 1)[0]
+        version = re.search(r'channel = "([^" ]+)"', (ROOT / "rust-toolchain.toml").read_text())[1]
+        self.assertIn(f'toolchain: "{version}"', setup)
+        self.assertIn("if: runner.environment == 'self-hosted'", setup)
+        self.assertIn("components: clippy,rustfmt,rust-src", setup)
+        self.assertIn("targets: wasm32-unknown-unknown", setup)
+        self.assertIn('toolchain: "1.88.0"', jobs["msrv"])
+        self.assertLess(jobs["wasm"].index("actions/setup-node@"), jobs["wasm"].index("npm pack"))
+
     def test_embedded_shell_syntax(self):
         for block in re.findall(r"        run: \|\n((?:          [^\n]*\n|\n)+)", TEXT):
             script = "\n".join(

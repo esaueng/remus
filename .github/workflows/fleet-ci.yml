@@ -200,6 +200,14 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
+      - &fleet-rust
+        name: Install pinned Rust on disposable runners
+        if: runner.environment == 'self-hosted'
+        uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
+        with:
+          toolchain: "1.96.0"
+          components: clippy,rustfmt,rust-src
+          targets: wasm32-unknown-unknown
       - uses: taiki-e/install-action@742a3317eac7bd62f91cd888b4eead5e784ba833 # v2.87.1
         with:
           tool: cargo-machete@0.9.1,taplo-cli@0.9.3
@@ -244,6 +252,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - *fleet-rust
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         if: runner.environment != 'self-hosted'
         with:
@@ -261,6 +270,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - *fleet-rust
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         if: runner.environment != 'self-hosted'
         with:
@@ -288,6 +298,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - *fleet-rust
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         if: runner.environment != 'self-hosted'
         with:
@@ -332,6 +343,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - *fleet-rust
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         if: runner.environment != 'self-hosted'
         with:
@@ -382,6 +394,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - *fleet-rust
+      - name: Install Node for WASM package validation
+        if: runner.environment == 'self-hosted'
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         if: runner.environment != 'self-hosted'
         with:
@@ -439,6 +457,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - *fleet-rust
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         if: runner.environment != 'self-hosted'
       - run: cargo check --manifest-path fuzz/Cargo.toml --bins
@@ -456,6 +475,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - *fleet-rust
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         if: runner.environment != 'self-hosted'
       - name: Install Mesa lavapipe
@@ -570,6 +590,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - *fleet-rust
       # Audit the committed Cargo.lock — the resolution consumers actually
       # build — so a new dep release cannot fail an unrelated PR. New
       # advisories against the pinned versions still fail (the advisory DB
@@ -588,6 +609,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - *fleet-rust
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         if: runner.environment != 'self-hosted'
         with:
