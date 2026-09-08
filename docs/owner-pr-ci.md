@@ -70,8 +70,9 @@ The caller cancels superseded runs only for the same ref. Its reusable `checks`
 job also uses the repository-wide `remus-ci-suite` concurrency group with
 `queue: max`. One complete suite runs at a time, with its jobs still parallel;
 up to 100 pending suites wait without evicting one another. A larger backlog
-exceeds GitHub's queue limit and needs a fresh run. The advisory WASM size report runs outside the reusable suite, so reporting
-failures cannot block its required checks. The final `CI Pass` wrapper
+exceeds GitHub's queue limit and needs a fresh run. The advisory WASM size
+report runs outside the reusable suite, so reporting failures cannot block
+its required checks. The final `CI Pass` wrapper
 is hosted and can still wait for hosted capacity, but never holds a fleet slot
 while waiting for the suite. Existing PR branches must pick up this caller
 before their runs participate in the admission queue.
