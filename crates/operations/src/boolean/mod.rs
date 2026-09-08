@@ -1343,7 +1343,8 @@ fn boolean_with_context_impl(
                 // N-piece result, so widening the bound here would change which
                 // multi-region results get unified — a separate question from
                 // acceptance, and one the calibrated foils cover.
-                let euler_balanced_pre = euler_pre2 - inner_shell_surplus == 2
+                let euler_balanced_pre = (euler_pre2 - inner_shell_surplus == 2
+                    && inner_wire_count_pre == 0)
                     || euler_balanced(euler_pre2 - inner_shell_surplus, inner_wire_count_pre, 1);
 
                 // Run unify_faces if the (hole-aware) Euler is off OR if the
@@ -1444,7 +1445,7 @@ fn boolean_with_context_impl(
                 let hollow_ok = inner_shell_surplus == 0 || closed_manifold;
                 let euler_eff = euler - inner_shell_surplus;
                 let euler_ok = hollow_ok
-                    && (euler_eff == 2
+                    && ((euler_eff == 2 && inner_wire_count == 0)
                         || (euler_balanced(euler_eff, inner_wire_count, 1) && closed_manifold));
                 if euler_ok
                     && open_shell_ok
@@ -3051,8 +3052,8 @@ fn xform_from_canonical_z(
 /// * a **difference whose tool has interior in common with the blank removes
 ///   something**, so an untouched blank is a lost tool.
 ///
-/// The margin is relative to the result's own diagonal, so the test is
-/// scale-free. Intersect is not checked here: an empty or tolerance-thin
+/// Fuse bounds its margin by both the result and the operand being checked;
+/// Cut uses the result diagonal. Intersect is not checked here: an empty or tolerance-thin
 /// intersection is a legitimate outcome with no such lower bound.
 fn operands_are_represented(
     topo: &Topology,
@@ -3069,10 +3070,15 @@ fn operands_are_represented(
     let margin = (diag * 1e-6).max(tol.linear);
     match op {
         BooleanOp::Fuse => {
-            let grown = r_box.expanded(margin);
             [a, b].into_iter().all(|operand| {
-                crate::measure::solid_bounding_box(topo, operand)
-                    .is_ok_and(|ob| grown.contains_point(ob.min) && grown.contains_point(ob.max))
+                crate::measure::solid_bounding_box(topo, operand).is_ok_and(|ob| {
+                    // A long blank must not hide a smaller operand's missing
+                    // protrusion inside a margin derived from the blank alone.
+                    let operand_diag = (ob.max - ob.min).length();
+                    let local_margin = (diag.min(operand_diag) * 1e-6).max(tol.linear);
+                    let grown = r_box.expanded(local_margin);
+                    grown.contains_point(ob.min) && grown.contains_point(ob.max)
+                })
             })
         }
         BooleanOp::Cut => {

@@ -9,6 +9,27 @@ TERMINAL list, acceptance bar) is the skill. Every entry here is history:
 "closed", "deferred", and "next step" are as of the date written, and the
 tool-side scores refer to a harness retired on 2026-08-20.
 
+## Off-axis torus/sphere qualification (2026-09-06)
+
+The R6/r2 torus with a radius-3 sphere at (5,0,1) previously refused all
+three exact-only booleans. The bounded matrix now covers all three operators
+at scales 0.1/1/10 and two placements, against an independent annulus/disk
+volume integral. See `pclass_torus_sphere_seams.rs` and P-Class 2.4 for scope.
+The roots were incomplete closed-carrier broad-phase bounds, a zero torus
+parameter-corner diameter starving the marcher, discarded NURBS sphere
+arrangement cells, and missing torus-pocket chart/winding handling. The
+placed matrix additionally exposed transforms rebuilding torus carriers
+with a default axis; both solid and standalone-face paths now preserve it.
+
+Sampling real edge trim domains in the shell flux check initially regressed
+the existing torus/box Cut census row. Its two winding rims live in outer
+and inner wires; using both restores the retained band's extent. The
+existing `cut_torus_by_box_notch_is_analytic_watertight` test guards this.
+A stricter diagnostic also found orientation validation issues in that
+older notch result. The pre-change package at c1d8d211 reproduces them
+(`validateSolid` reports two issues); this is a separate remaining
+qualification gap, not a newly closed part of the torus/sphere matrix.
+
 ## Tool retirement and campaign summary (from the skill's north-star section)
 
 **TOOL RETIREMENT (2026-08-20, maintainer decision):** the gridfinity layout tool

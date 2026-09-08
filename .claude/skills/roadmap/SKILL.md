@@ -131,8 +131,9 @@ that does not exist yet; without it, stop.
 
 ## Open items with a repro
 
-The `#[ignore]` inventory (regenerated 2026-09-04) holds no open engine defects.
-The remaining ignores are
+The `#[ignore]` inventory (regenerated 2026-09-06) has one open engine witness:
+`qualify_boolean_anisotropic.rs::anisotropic_world_volume_resolves_small_feature_scale`.
+The remaining twelve ignores are
 two fork-policy pins blocked on the trim-contract reconciliation
 (`crates/operations/tests/regress_chamfer_obtuse_ridge.rs`,
 `regress_fillet_concave_notch.rs`, see PR #126), one ~2 min perf run
@@ -150,6 +151,7 @@ harness's own option-honoured floor misreading a correct 0.05 fillet on an
 
 ## Durable lessons (one line each; the story is in `campaign-history.md`)
 
+- **cargo-mutants 27 discovers `.cargo/mutants.toml`, not a root-level config;** verify real default selection and stale-path refusals with `scripts/test-mutants-scope.py` before claiming mutation scope (B19).
 - **Deterministic STEP emission sorts unordered face, void-shell, and hole-loop aggregates by arena ID but never sorts coedges;** coedge sequence carries boundary traversal semantics (`crates/io/src/step/writer.rs`).
 - **Public profile construction must use the strict wire-to-face path;** the low-level plane-from-points builder is not a collinearity validity gate (`crates/remus/src/model.rs`, PR #225).
 - **Performance baselines start from measured stack families, not a guessed loop list;** O3.1's 3% census and native-only Criterion map live in `docs/kernel-maturity/o31-inner-loop-baseline.md`.
@@ -190,6 +192,7 @@ harness's own option-honoured floor misreading a correct 0.05 fillet on an
   depth by geometric containment (stored winding cannot classify them).
 - **A wire with no angular gap is a wrapped face;** any consumer that
   polygon-approximates it inherits the parity flip.
+- **Two tube-wrapping torus rims bound an oriented band, not ordinary holes;** preserve opposite traversal through Fuse and integrate the retained side (`pclass_torus_notch_orientation.rs`).
 - **Full mesh area + zero boundary/non-manifold edges + volume deficit + zero
   inverted normals = sparse-interior deep chords, not winding.**
 - **When a range and a mask disagree, instrument both before blaming either**

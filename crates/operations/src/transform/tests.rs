@@ -1425,3 +1425,29 @@ fn north_hemisphere_patch_survives_negative_roundoff_in_v_min() {
         );
     }
 }
+
+#[test]
+fn translated_rotation_preserves_circle_carrier_and_trim() {
+    use remus_math::curves::Circle3D;
+    use remus_topology::edge::EdgeCurve;
+
+    let circle = Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 40.0).unwrap();
+    let trim = Some((0.0, std::f64::consts::TAU));
+    for shift in [1.0, 10.0, 1e6] {
+        let matrix =
+            Mat4::translation(17.0 * shift, -23.0 * shift, 31.0 * shift) * Mat4::rotation_y(0.37);
+        let (image, image_trim) =
+            transform_edge_curve_with_trim(&EdgeCurve::Circle(circle.clone()), trim, &matrix)
+                .unwrap();
+        let Some(EdgeCurve::Circle(image)) = image else {
+            panic!("rigid transform changed the circle carrier at shift={shift}: {image:?}");
+        };
+        assert!((image.radius() - circle.radius()).abs() < 1e-12);
+        let (start, end) = image_trim.unwrap();
+        assert!(start.abs() < 1e-14);
+        assert!((end - std::f64::consts::TAU).abs() < 1e-14);
+        for t in [0.0, 0.7, 2.1, 4.8] {
+            assert!((image.evaluate(t) - matrix.mul_point(circle.evaluate(t))).length() < 1e-7);
+        }
+    }
+}

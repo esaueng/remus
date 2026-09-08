@@ -52,11 +52,11 @@ pub struct FaceContribution {
 /// For planar faces, evaluates via polygon fan triangulation. For
 /// parametric surfaces (analytic and NURBS), evaluates the surface and its
 /// partial derivatives on a Gauss-point grid over the UV domain derived
-/// from the face's boundary vertices.
+/// from the face's sampled boundary curves.
 ///
 /// # Accuracy
 ///
-/// * **Planar faces** bounded entirely by lines and circular arcs are exact:
+/// * **Planar faces** bounded entirely by lines, circular arcs, and ellipses are exact:
 ///   `integrate_planar_face_exact` integrates the boundary in closed form by
 ///   Green's theorem, holes included. Any other edge type on any of the face's
 ///   wires drops the whole face to the chord-polygon fan path, which
@@ -79,9 +79,9 @@ pub struct FaceContribution {
 /// are one such pair. A wrapping hole that instead CAPS the wall, leaving the
 /// outer wire at a single `v`, clips the `v` range rather than masking, as a
 /// drilled tunnel's rim does on a sphere — see `full_revolution_hole_vs`. A
-/// wrapping hole on a torus is still not subtracted: the tube is periodic in
-/// BOTH parameters, so it has neither an "above" nor a far end to clip, and
-/// callers that can meet one defer the whole solid rather than measure it here.
+/// torus with two monotone tube-wrapping rims uses their oriented material
+/// interval instead. Other wrapping torus trims remain outside that qualified
+/// family; callers can use [`integrate_torus_band_face`] to detect this limit.
 ///
 /// A face whose whole boundary is ONE closed edge has a single boundary
 /// vertex, so it cannot bound its own domain out of the surface's analytic
@@ -143,6 +143,54 @@ pub fn integrate_face(
             ))
         }
         FaceSurface::Sphere(s) => {
+            let mut framed = None;
+            for oriented in topo.wire(face.outer_wire())?.edges() {
+                let (center, axis, radius) = match topo.edge(oriented.edge())?.curve() {
+                    EdgeCurve::Circle(c) => (c.center(), c.normal(), c.radius()),
+                    EdgeCurve::Ellipse(c)
+                        if (c.semi_major() - c.semi_minor()).abs() <= s.radius() * 1e-10 =>
+                    {
+                        (c.center(), c.normal(), c.semi_major())
+                    }
+                    _ => continue,
+                };
+                if (center - s.center()).length() <= s.radius() * 1e-10
+                    && (radius - s.radius()).abs() <= s.radius() * 1e-10
+                {
+                    framed = Some(remus_math::surfaces::SphericalSurface::with_axis(
+                        s.center(),
+                        s.radius(),
+                        axis,
+                    )?);
+                    break;
+                }
+            }
+            if framed.is_none()
+                && topo.wire(face.outer_wire())?.edges().iter().all(|oe| {
+                    topo.edge(oe.edge())
+                        .is_ok_and(|edge| matches!(edge.curve(), EdgeCurve::Line))
+                })
+            {
+                let mut points = Vec::new();
+                for oe in topo.wire(face.outer_wire())?.edges() {
+                    let edge = topo.edge(oe.edge())?;
+                    points.push(topo.vertex(oe.oriented_start(edge))?.point() - s.center());
+                }
+                let mut axis = Vec3::new(0.0, 0.0, 0.0);
+                for i in 0..points.len() {
+                    axis += points[i].cross(points[(i + 1) % points.len()]);
+                }
+                if let Ok(axis) = axis.normalize()
+                    && points.iter().all(|p| p.dot(axis).abs() < s.radius() * 1e-9)
+                {
+                    framed = Some(remus_math::surfaces::SphericalSurface::with_axis(
+                        s.center(),
+                        s.radius(),
+                        axis,
+                    )?);
+                }
+            }
+            let s = framed.as_ref().unwrap_or(s);
             let full = (
                 (0.0, std::f64::consts::TAU),
                 (-std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_2),
@@ -150,6 +198,137 @@ pub fn integrate_face(
             let (u_range, v_range) = face_uv_bounds(topo, face_id, s, true, false, full)?;
             let mut uv = build_face_uv(topo, face_id, |p| s.project_point(p), true, false, false)?;
             uv.hole_vs = full_revolution_hole_vs(topo, face_id, s);
+            for hole in crate::util::face_hole_polygons_curve_sampled(
+                topo,
+                face_id,
+                TRIM_SAMPLES,
+                TRIM_SAMPLES,
+            )? {
+                let mut band = UvLoop::new(
+                    hole.iter()
+                        .map(|&p| {
+                            let (u, v) = s.project_point(p);
+                            Point2::new(u, v)
+                        })
+                        .collect(),
+                    true,
+                    false,
+                );
+                let winding = band.u_winding();
+                let lo = band
+                    .points
+                    .iter()
+                    .map(|p| p.y())
+                    .fold(f64::INFINITY, f64::min);
+                let hi = band
+                    .points
+                    .iter()
+                    .map(|p| p.y())
+                    .fold(f64::NEG_INFINITY, f64::max);
+                if winding.abs() >= std::f64::consts::TAU - WRAP_EPS
+                    && hi - lo > 1e-9
+                    && let Some(first) = band.points.first().copied()
+                {
+                    let end = first.x() + winding;
+                    let pole = if winding < 0.0 { full.1.1 } else { full.1.0 };
+                    band.points.push(Point2::new(end, first.y()));
+                    band.points.push(Point2::new(end, pole));
+                    band.points.push(Point2::new(first.x(), pole));
+                    let low = band
+                        .points
+                        .iter()
+                        .map(|p| p.x())
+                        .fold(f64::INFINITY, f64::min);
+                    let high = band
+                        .points
+                        .iter()
+                        .map(|p| p.x())
+                        .fold(f64::NEG_INFINITY, f64::max);
+                    band.u_center = f64::midpoint(low, high);
+                    uv.pockets.push(band);
+                }
+            }
+            let winding = uv.boundary.u_winding();
+            let latitude_span = uv
+                .boundary
+                .points
+                .iter()
+                .map(|p| p.y())
+                .fold(f64::NEG_INFINITY, f64::max)
+                - uv.boundary
+                    .points
+                    .iter()
+                    .map(|p| p.y())
+                    .fold(f64::INFINITY, f64::min);
+            if winding.abs() >= std::f64::consts::TAU - WRAP_EPS && latitude_span > 1e-9 {
+                // Choose a cut away from a longitude reversal. Closing the
+                // first arbitrary sample to the pole can create a crossing
+                // polygon when a seam curls across that same meridian.
+                let original = &uv.boundary.points;
+                let mut suffix = vec![(f64::INFINITY, f64::NEG_INFINITY); original.len() + 1];
+                for i in (0..original.len()).rev() {
+                    suffix[i] = (
+                        suffix[i + 1].0.min(original[i].x()),
+                        suffix[i + 1].1.max(original[i].x()),
+                    );
+                }
+                let (mut prefix_min, mut prefix_max) = (f64::INFINITY, f64::NEG_INFINITY);
+                let mut cut = None;
+                for (i, point) in original.iter().enumerate() {
+                    let lo = suffix[i].0.min(prefix_min + winding);
+                    let hi = suffix[i].1.max(prefix_max + winding);
+                    if hi - lo <= std::f64::consts::TAU {
+                        cut = Some(i);
+                        break;
+                    }
+                    prefix_min = prefix_min.min(point.x());
+                    prefix_max = prefix_max.max(point.x());
+                }
+                let cut = cut.ok_or_else(|| {
+                    CheckError::IntegrationFailed(
+                        "polar boundary cannot be represented in one longitude chart".into(),
+                    )
+                })?;
+                uv.boundary = UvLoop::new(
+                    original[cut..]
+                        .iter()
+                        .chain(&original[..cut])
+                        .copied()
+                        .collect(),
+                    true,
+                    false,
+                );
+                if let Some(first) = uv.boundary.points.first().copied() {
+                    let end_u = first.x() + winding;
+                    let pole = if winding > 0.0 { full.1.1 } else { full.1.0 };
+                    uv.boundary.points.push(Point2::new(end_u, first.y()));
+                    uv.boundary.points.push(Point2::new(end_u, pole));
+                    uv.boundary.points.push(Point2::new(first.x(), pole));
+                    let u_min = uv
+                        .boundary
+                        .points
+                        .iter()
+                        .map(|p| p.x())
+                        .fold(f64::INFINITY, f64::min);
+                    let u_max = uv
+                        .boundary
+                        .points
+                        .iter()
+                        .map(|p| p.x())
+                        .fold(f64::NEG_INFINITY, f64::max);
+                    uv.boundary.u_center = f64::midpoint(u_min, u_max);
+                    uv.u_periodic = false;
+                    return Ok(integrate_parametric(
+                        s,
+                        (u_min, u_max),
+                        full.1,
+                        gauss_order,
+                        sign,
+                        &UvTrim::boundary_of(&uv),
+                        PatchScale::ANGULAR,
+                    ));
+                }
+            }
             Ok(integrate_with_trimming(
                 s,
                 u_range,
@@ -161,6 +340,9 @@ pub fn integrate_face(
             ))
         }
         FaceSurface::Torus(s) => {
+            if let Some(band) = integrate_torus_tube_band(topo, face_id, s, gauss_order, sign)? {
+                return Ok(band);
+            }
             let full = ((0.0, std::f64::consts::TAU), (0.0, std::f64::consts::TAU));
             let (u_range, v_range) = face_uv_bounds(topo, face_id, s, true, true, full)?;
             // A torus is periodic in `v` as well, so the trimming boundary has
@@ -300,6 +482,151 @@ fn face_boundary_v_extent<S: ParametricSurface>(
             "face boundary has no finite extent on its surface".into(),
         ))
     }
+}
+
+/// Integrate a torus face bounded by two monotone tube-wrapping rims.
+///
+/// Returns `None` when the boundary is outside this qualified band family.
+/// This lets measurement callers retain their fallback for unsupported trims.
+///
+/// # Errors
+/// Returns an error for missing topology or an exceeded trim-sampling budget.
+pub fn integrate_torus_band_face(
+    topo: &Topology,
+    face_id: FaceId,
+    gauss_order: usize,
+) -> Result<Option<FaceContribution>, CheckError> {
+    let face = topo.face(face_id)?;
+    let FaceSurface::Torus(torus) = face.surface() else {
+        return Ok(None);
+    };
+    integrate_torus_tube_band(
+        topo,
+        face_id,
+        torus,
+        gauss_order,
+        if face.is_reversed() { -1.0 } else { 1.0 },
+    )
+}
+
+/// Integrate between two tube-wrapping rims using their oriented material side.
+#[allow(clippy::too_many_lines, clippy::cast_precision_loss)]
+fn integrate_torus_tube_band(
+    topo: &Topology,
+    face_id: FaceId,
+    torus: &remus_math::surfaces::ToroidalSurface,
+    order: usize,
+    sign: f64,
+) -> Result<Option<FaceContribution>, CheckError> {
+    use std::f64::consts::{PI, TAU};
+    let face = topo.face(face_id)?;
+    if face.inner_wires().len() != 1 {
+        return Ok(None);
+    }
+    let edge_count = topo
+        .wire(face.outer_wire())?
+        .edges()
+        .len()
+        .saturating_add(topo.wire(face.inner_wires()[0])?.edges().len());
+    if edge_count.saturating_mul(TRIM_SAMPLES) > MAX_TRIM_POINTS {
+        return Err(CheckError::IntegrationFailed(format!(
+            "face trim exceeds the {MAX_TRIM_POINTS}-point integration budget"
+        )));
+    }
+    let mut rings = Vec::new();
+    let mut windings = Vec::new();
+    for wire in [face.outer_wire(), face.inner_wires()[0]] {
+        let points =
+            crate::util::wire_polygon_curve_sampled(topo, wire, TRIM_SAMPLES, TRIM_SAMPLES)?;
+        if points.len() < 3 {
+            return Ok(None);
+        }
+        let mut uv: Vec<_> = points.into_iter().map(|p| torus.project_point(p)).collect();
+        uv.push(uv[0]);
+        let mut winding = 0.0;
+        for pair in uv.windows(2) {
+            let delta = (pair[1].1 - pair[0].1 + PI).rem_euclid(TAU) - PI;
+            winding += delta;
+        }
+        if (winding.abs() - TAU).abs() > 1e-6 {
+            return Ok(None);
+        }
+        // A folded rim is not a single-valued u(v) graph.
+        if uv.windows(2).any(|pair| {
+            let delta = (pair[1].1 - pair[0].1 + PI).rem_euclid(TAU) - PI;
+            delta * winding < -1e-10
+        }) {
+            return Ok(None);
+        }
+        uv.pop();
+        let mut ring: Vec<_> = uv
+            .into_iter()
+            .map(|(u, v)| (v.rem_euclid(TAU), u))
+            .collect();
+        ring.sort_by(|a, b| a.0.total_cmp(&b.0));
+        if ring.windows(2).any(|pair| {
+            (pair[1].0 - pair[0].0).abs() < 1e-12
+                && ((pair[1].1 - pair[0].1 + PI).rem_euclid(TAU) - PI).abs() > 1e-8
+        }) {
+            return Ok(None);
+        }
+        ring.dedup_by(|a, b| (a.0 - b.0).abs() < 1e-12);
+        if ring.len() < 3 {
+            return Ok(None);
+        }
+        rings.push(ring);
+        windings.push(winding);
+    }
+    if windings[0] * windings[1] >= 0.0 {
+        return Ok(None);
+    }
+    let at = |ring: &[(f64, f64)], v: f64| {
+        let index = ring.partition_point(|point| point.0 <= v);
+        let (a, b) = if index == 0 {
+            (
+                (ring[ring.len() - 1].0 - TAU, ring[ring.len() - 1].1),
+                ring[0],
+            )
+        } else if index == ring.len() {
+            (ring[index - 1], (ring[0].0 + TAU, ring[0].1))
+        } else {
+            (ring[index - 1], ring[index])
+        };
+        let delta = (b.1 - a.1 + PI).rem_euclid(TAU) - PI;
+        a.1 + delta * (v - a.0) / (b.0 - a.0)
+    };
+    let mut breaks = vec![0.0, TAU];
+    for ring in &rings {
+        breaks.extend(ring.iter().map(|point| point.0));
+    }
+    breaks.sort_by(f64::total_cmp);
+    breaks.dedup_by(|a, b| (*a - *b).abs() < 1e-12);
+    let gauss = gauss_legendre_points(order);
+    let mut acc = Accumulator::default();
+    for interval in breaks.windows(2) {
+        let v_scale = (interval[1] - interval[0]) / 2.0;
+        let v_mid = f64::midpoint(interval[0], interval[1]);
+        for gv in gauss {
+            let v = v_scale.mul_add(gv.x, v_mid);
+            let a = at(&rings[0], v);
+            let b = at(&rings[1], v);
+            let span = if windings[0] < 0.0 {
+                (b - a).rem_euclid(TAU)
+            } else {
+                -(a - b).rem_euclid(TAU)
+            };
+            let patches = patch_count(span.abs(), PatchScale::ANGULAR.u);
+            let step = span / patches as f64;
+            for patch in 0..patches {
+                let mid = a + (patch as f64 + 0.5) * step;
+                for gu in gauss {
+                    let u = (step / 2.0).mul_add(gu.x, mid);
+                    acc.add(torus, u, v, gu.w * gv.w * step.abs() / 2.0 * v_scale);
+                }
+            }
+        }
+    }
+    Ok(Some(acc.finish(sign)))
 }
 
 /// A face boundary loop projected into its surface's UV domain.
@@ -850,14 +1177,32 @@ fn face_uv_bounds<S: ParametricSurface>(
     full_domain: UvBounds,
 ) -> Result<UvBounds, CheckError> {
     let face = topo.face(face_id)?;
-    let wire = topo.wire(face.outer_wire())?;
-
     let mut uvs = Vec::new();
-    for oe in wire.edges() {
-        let edge = topo.edge(oe.edge())?;
-        let vid = oe.oriented_start(edge);
-        let pt = topo.vertex(vid)?.point();
-        uvs.push(surface.project_point(pt));
+    if matches!(
+        face.surface(),
+        FaceSurface::Sphere(_) | FaceSurface::Cone(_)
+    ) || (matches!(
+        face.surface(),
+        FaceSurface::Cylinder(_) | FaceSurface::Torus(_)
+    ) && topo.wire(face.outer_wire())?.edges().iter().any(|oe| {
+        topo.edge(oe.edge())
+            .is_ok_and(|e| matches!(e.curve(), EdgeCurve::NurbsCurve(_)))
+    })) {
+        // A quadric section can bulge far beyond its edge endpoints.
+        let points = crate::util::wire_polygon_curve_sampled(
+            topo,
+            face.outer_wire(),
+            TRIM_SAMPLES,
+            TRIM_SAMPLES,
+        )?;
+        uvs.extend(points.into_iter().map(|point| surface.project_point(point)));
+    } else {
+        let wire = topo.wire(face.outer_wire())?;
+        for oe in wire.edges() {
+            let edge = topo.edge(oe.edge())?;
+            let point = topo.vertex(oe.oriented_start(edge))?.point();
+            uvs.push(surface.project_point(point));
+        }
     }
 
     if uvs.is_empty() {
@@ -905,6 +1250,9 @@ fn face_uv_bounds<S: ParametricSurface>(
         v_max = v_min + (full_domain.1.1 - full_domain.1.0);
     }
 
+    if matches!(face.surface(), FaceSurface::Sphere(_)) && v_max - v_min < 1e-9 {
+        return Ok(full_domain);
+    }
     if u_min >= u_max || v_min >= v_max {
         // A degenerate projection (e.g. all boundary vertices on a sphere's
         // pole seam) does not mean an empty face — it means the boundary failed
@@ -1202,8 +1550,6 @@ fn planar_wire_monomial_moments(
                 );
             }
             EdgeCurve::Circle(c) => {
-                // Angular arc span from the edge's own endpoints; the
-                // derivative magnitude is the radius.
                 let (t0, t1) = edge
                     .strict_domain()
                     .map_err(crate::error::edge_domain_validation)?;
@@ -1222,6 +1568,30 @@ fn planar_wire_monomial_moments(
                         16,
                         dir_sign,
                         |u| (c.evaluate(u), c.tangent(u) * r),
+                        origin,
+                        e1,
+                        e2,
+                    );
+                }
+            }
+            EdgeCurve::Ellipse(c) => {
+                let (t0, t1) = edge
+                    .strict_domain()
+                    .map_err(crate::error::edge_domain_validation)?;
+                // Split the span so each chunk is ≤ π/2; 16-point Gauss on
+                // a ≤ π/2 trig span of frequency ≤ 5 is exact to machine
+                // precision.
+                let chunks =
+                    (((t1 - t0).abs() / std::f64::consts::FRAC_PI_2).ceil() as usize).clamp(1, 8);
+                let dt = (t1 - t0) / chunks as f64;
+                for i in 0..chunks {
+                    let a = dt.mul_add(i as f64, t0);
+                    accumulate_green_segment(
+                        &mut moments,
+                        (a, a + dt),
+                        16,
+                        dir_sign,
+                        |u| (c.evaluate(u), c.tangent(u)),
                         origin,
                         e1,
                         e2,
@@ -1254,7 +1624,7 @@ fn planar_wire_monomial_moments(
             // for it the way it is for circles and parabolas. Returning
             // `None` routes the whole face to the sampled fallback rather
             // than reporting a quadrature error as an exact result.
-            EdgeCurve::Hyperbola(_) | EdgeCurve::Ellipse(_) | EdgeCurve::NurbsCurve(_) => {
+            EdgeCurve::Hyperbola(_) | EdgeCurve::NurbsCurve(_) => {
                 return Ok(None);
             }
         }
@@ -1368,6 +1738,16 @@ fn wire_newell_normal(
                     pts.push(c.evaluate((to - from).mul_add(f, from)));
                 }
             }
+            EdgeCurve::Ellipse(c) => {
+                let (t0, t1) = edge
+                    .strict_domain()
+                    .map_err(crate::error::edge_domain_validation)?;
+                let (from, to) = if forward { (t0, t1) } else { (t1, t0) };
+                for k in 0..ARC_SAMPLES {
+                    let f = k as f64 / ARC_SAMPLES as f64;
+                    pts.push(c.evaluate((to - from).mul_add(f, from)));
+                }
+            }
             EdgeCurve::Parabola(p) => {
                 let (t0, t1) = edge
                     .strict_domain()
@@ -1381,7 +1761,7 @@ fn wire_newell_normal(
             // Matches the refusal in `planar_wire_monomial_moments`: the
             // exact path does not handle these edge types, so the normal it
             // would produce is never used.
-            EdgeCurve::Hyperbola(_) | EdgeCurve::Ellipse(_) | EdgeCurve::NurbsCurve(_) => {
+            EdgeCurve::Hyperbola(_) | EdgeCurve::NurbsCurve(_) => {
                 return Ok(None);
             }
         }
@@ -1407,7 +1787,7 @@ fn wire_newell_normal(
 /// Exact planar-face integration via Green's-theorem boundary integrals.
 ///
 /// Returns `Ok(None)` when any wire contains an edge type the exact path
-/// does not handle (ellipse or NURBS), or when the boundary is too
+/// does not handle (hyperbola or NURBS), or when the boundary is too
 /// degenerate to determine its plane; the caller then falls back to the
 /// chord-polygon fan path for the whole face.
 fn integrate_planar_face_exact(
@@ -1741,8 +2121,8 @@ fn integrate_parametric<S: ParametricSurface>(
 /// trims it.
 ///
 /// The dense boundary polygon is the reliable signal for a face's true
-/// parametric extent: `face_uv_bounds` samples only sparse edge endpoints and
-/// under-spans full-revolution faces (a cone's lateral face reports a narrow
+/// parametric extent: sparse edge endpoints can
+/// under-span full-revolution faces (a cone's lateral face reports a narrow
 /// u-range though its boundary wraps the full 2pi). A face that wraps the
 /// full period in u, or whose boundary collapses onto a seam or pole, cannot
 /// be trimmed by a UV polygon — the apex/pole/seam folds the polygon and the
@@ -1907,6 +2287,73 @@ mod tests {
         let canonical = UvLoop::new(pts, true, false);
         assert!(!canonical.encloses(deg(180.0), deg(300.0), true));
         assert!(canonical.encloses(deg(180.0), deg(180.0), true));
+    }
+
+    #[test]
+    fn torus_tube_bands_integrate_complementary_regions_after_translation() {
+        use remus_math::{curves::Circle3D, surfaces::ToroidalSurface};
+        use remus_topology::{
+            edge::Edge,
+            face::Face,
+            vertex::Vertex,
+            wire::{OrientedEdge, Wire},
+        };
+        use std::f64::consts::{PI, TAU};
+        let center = Point3::new(13.0, -7.0, 5.0);
+        let torus = ToroidalSurface::new(center, 10.0, 3.0).unwrap();
+        let mut topo = Topology::new();
+        let mut edges = Vec::new();
+        for u in [0.2_f64, 1.2] {
+            let radial = Vec3::new(u.cos(), u.sin(), 0.0);
+            let circle = Circle3D::new_with_ref(
+                center + radial * 10.0,
+                Vec3::new(u.sin(), -u.cos(), 0.0),
+                3.0,
+                radial,
+            )
+            .unwrap();
+            let vertex = topo.add_vertex(Vertex::new(center + radial * 13.0, 1e-7));
+            let mut edge = Edge::new(vertex, vertex, EdgeCurve::Circle(circle));
+            edge.set_trim(Some((0.0, TAU)));
+            edges.push(topo.add_edge(edge));
+        }
+        let mut contributions = Vec::new();
+        for complement in [false, true] {
+            let outer = topo
+                .add_wire(Wire::new(vec![OrientedEdge::new(edges[0], complement)], true).unwrap());
+            let inner = topo
+                .add_wire(Wire::new(vec![OrientedEdge::new(edges[1], !complement)], true).unwrap());
+            let face = topo.add_face(Face::new(
+                outer,
+                vec![inner],
+                FaceSurface::Torus(torus.clone()),
+            ));
+            let contribution = integrate_face(&topo, face, 8).unwrap();
+            let qualified = integrate_torus_band_face(&topo, face, 8).unwrap().unwrap();
+            assert!((qualified.volume - contribution.volume).abs() < 1e-10);
+            let unsupported =
+                topo.add_face(Face::new(outer, vec![], FaceSurface::Torus(torus.clone())));
+            assert!(
+                integrate_torus_band_face(&topo, unsupported, 8)
+                    .unwrap()
+                    .is_none()
+            );
+            let same_winding = topo.add_face(Face::new(
+                outer,
+                vec![outer],
+                FaceSurface::Torus(torus.clone()),
+            ));
+            assert!(
+                integrate_torus_band_face(&topo, same_winding, 8)
+                    .unwrap()
+                    .is_none()
+            );
+            let span = if complement { TAU - 1.0 } else { 1.0 };
+            assert!((contribution.area - span * 60.0 * PI).abs() < 1e-7);
+            contributions.push(contribution);
+        }
+        let volume: f64 = contributions.iter().map(|part| part.volume).sum();
+        assert!((volume - 180.0 * PI * PI).abs() < 1e-7);
     }
 
     #[test]
