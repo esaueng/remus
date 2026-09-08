@@ -1,4 +1,4 @@
-name: Trusted main VPS pilot
+name: Trusted fleet validation
 
 on:
   push:
@@ -8,8 +8,8 @@ on:
       runner:
         description: Trusted runner to validate
         type: choice
-        default: ci-small
-        options: [ci-small, ci-vm-1441561, ci-server-jane, ci-server-jane-1, ci-server-jane-2, ci-server-john]
+        default: auto
+        options: [auto, ci-server-jane, ci-server-jane-1, ci-server-jane-2, ci-server-john]
 
 permissions:
   contents: read
@@ -28,13 +28,13 @@ jobs:
       vars.REMUS_TRUSTED_VPS_ENABLED == 'true'
     permissions:
       id-token: write
-    uses: esaueng/remus/.github/workflows/select-runner.yml@d7168a6576f078f6128191f5b37ac38068c8f0af
+    uses: esaueng/remus/.github/workflows/select-runner.yml@8cf263108cef108a72156268f0de2db019127de2
     with:
       enabled: ${{ vars.CI_FLEET_ENABLED == 'true' }}
 
   policy:
     needs: route
-    name: VPS policy probe (${{ matrix.probe }})
+    name: Fleet policy probe (${{ matrix.probe }})
     # The variable is an activation switch, not an access control. The runner
     # group must separately allow this repository and this workflow on main.
     if: >-
@@ -43,10 +43,10 @@ jobs:
       github.ref_protected &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       vars.REMUS_TRUSTED_VPS_ENABLED == 'true' &&
-      (needs.route.outputs.target != 'github-hosted' || (inputs.runner && inputs.runner != 'ci-small'))
+      (contains(fromJSON('["ci-server-jane","ci-server-john"]'), needs.route.outputs.target) || contains(fromJSON('["ci-server-jane","ci-server-jane-1","ci-server-jane-2","ci-server-john"]'), inputs.runner))
     runs-on:
       group: ci-trusted-main
-      labels: ${{ (inputs.runner && inputs.runner != 'ci-small') && inputs.runner || needs.route.outputs.target }}
+      labels: ${{ contains(fromJSON('["ci-server-jane","ci-server-jane-1","ci-server-jane-2","ci-server-john"]'), inputs.runner) && inputs.runner || needs.route.outputs.target }}
     timeout-minutes: 5
     strategy:
       fail-fast: false
@@ -78,6 +78,8 @@ jobs:
           test "$(id -un)" = "$CI_USER"
           test "$(id -u)" != 0
           test "$HOME" = "$CI_STORAGE/home"
+          test -f "/opt/$CI_USER/bin/Runner.Listener"
+          test -f "/etc/systemd/system/$CI_USER.service"
           test ! -w "/opt/$CI_USER/bin/Runner.Listener"
           test "$(awk '/^NoNewPrivs:/ {print $2}' /proc/self/status)" = 1
           test ! -e "$HOME/.remus-ci-sentinel"
