@@ -65,7 +65,7 @@ jobs:
 
           def choose(enabled, request=request_json, now=time.time):
               if not enabled:
-                  return "ci-small"
+                  return "github-hosted"
               try:
                   url = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
                   separator = "&" if "?" in url else "?"
