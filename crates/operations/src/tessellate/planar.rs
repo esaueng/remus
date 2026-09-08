@@ -303,11 +303,24 @@ fn clip_cylinder_pocket(
     }
 
     let tol_dup = remus_math::tolerance::Tolerance::default().linear;
-    clipped.dedup_by(|a, b| (a.0 - b.0).length() < tol_dup);
+    clipped.dedup_by(|a, b| {
+        if (a.0 - b.0).length() >= tol_dup {
+            return false;
+        }
+        // Keep the chart intersection when a fitted boundary sample is within
+        // tolerance: retaining its off-seam UV leaves a slit in the pocket.
+        if (a.1.0 - boundary_u).abs() < (b.1.0 - boundary_u).abs() {
+            *b = *a;
+        }
+        true
+    });
     if clipped.len() > 2
         && let (Some(first), Some(last)) = (clipped.first(), clipped.last())
         && (first.0 - last.0).length() < tol_dup
     {
+        if (last.1.0 - boundary_u).abs() < (first.1.0 - boundary_u).abs() {
+            clipped[0] = *last;
+        }
         clipped.pop();
     }
     clipped

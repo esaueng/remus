@@ -2082,12 +2082,10 @@ fn trim_torus_oval_to_box_face(
         return None;
     }
 
-    // Exact box-edge ∩ torus crossings that lie ON the edge segment AND ON the
-    // oval. The crossing point is EXACT; `on_oval_tol` only has to confirm the
-    // crossing belongs to THIS oval (vs a different oval branch on the same
-    // plane, which is ≳1 mm away) — so it must exceed the MARCHED oval's
-    // approximation error (~0.1 mm), well below the inter-branch separation.
-    let on_oval_tol = 0.3_f64;
+    // Branch membership uses a coarse sampled distance, whose spacing scales
+    // with the tube. A fixed length merges small branches or misses crossings
+    // on large ones; the emitted fit is separately checked at linear tolerance.
+    let on_oval_tol = torus.minor_radius() * 0.1;
     let dedup_tol = tol.linear * 100.0;
     let mut crossings: Vec<Point3> = Vec::new();
     for &(s, en) in &box_edges {
@@ -2218,17 +2216,88 @@ fn trim_torus_oval_to_box_face(
     // arc is emitted as ONE shared FF section, so BOTH consumers — the kept
     // toroidal band and the box-wall sub-face — see the same midpoint vertex and
     // stay watertight. Geometry is unchanged (the two halves retrace the arc).
+    // Refitting sampled ovals preserves their interpolation error unless the
+    // samples are first corrected onto both supports. Refine only spans whose
+    // interior residual still exceeds the operation's length tolerance.
+    let FaceSurface::Plane { normal, d } = topo.face(plane_face).ok()?.surface() else {
+        return None;
+    };
+    let residual = |point: Point3| {
+        let (u, v) = torus.project_point(point);
+        (point - torus.evaluate(u, v))
+            .length()
+            .max((normal.dot(point - Point3::new(0.0, 0.0, 0.0)) - d).abs())
+    };
+    let correct = |mut point: Point3| -> Option<Point3> {
+        for _ in 0..16 {
+            let (u, v) = torus.project_point(point);
+            let on_torus = torus.evaluate(u, v);
+            let n = torus.normal(u, v);
+            let a = n.dot(point - on_torus);
+            let b = normal.dot(point - Point3::new(0.0, 0.0, 0.0)) - d;
+            if residual(point) <= tol.linear * 0.01 {
+                return Some(point);
+            }
+            let dot = n.dot(*normal);
+            let det = 1.0 - dot * dot;
+            if det <= 1e-12 {
+                return None;
+            }
+            point = point - n * ((a - dot * b) / det) - *normal * ((b - dot * a) / det);
+        }
+        (residual(point) <= tol.linear * 0.01).then_some(point)
+    };
     let fit = |seg: &[Point3]| -> Option<RawCurve> {
-        let curve = remus_math::nurbs::fitting::interpolate(seg, 3.min(seg.len() - 1)).ok()?;
-        let dom = curve.domain();
-        let bbox = Aabb3::try_from_points(seg.iter().copied())?;
-        Some(RawCurve {
-            curve: EdgeCurve::NurbsCurve(curve),
-            bbox,
-            t_range: dom,
-            p_start: seg[0],
-            p_end: seg[seg.len() - 1],
-        })
+        let mut points = seg
+            .iter()
+            .copied()
+            .map(correct)
+            .collect::<Option<Vec<_>>>()?;
+        for _ in 0..9 {
+            let curve =
+                remus_math::nurbs::fitting::interpolate(&points, 3.min(points.len() - 1)).ok()?;
+            let mut parameters = vec![0.0];
+            for pair in points.windows(2) {
+                parameters.push(parameters[parameters.len() - 1] + (pair[1] - pair[0]).length());
+            }
+            let total = *parameters.last()?;
+            if total <= tol.linear {
+                return None;
+            }
+            for value in &mut parameters {
+                *value /= total;
+            }
+            let mut refined = Vec::with_capacity(points.len() * 2);
+            let mut passed = true;
+            for (index, range) in parameters.windows(2).enumerate() {
+                refined.push(points[index]);
+                let bad = [0.25, 0.5, 0.75].into_iter().any(|fraction| {
+                    residual(curve.evaluate(range[0] + (range[1] - range[0]) * fraction))
+                        > tol.linear * 0.25
+                });
+                if bad {
+                    passed = false;
+                    refined.push(correct(curve.evaluate(f64::midpoint(range[0], range[1])))?);
+                }
+            }
+            refined.push(*points.last()?);
+            if passed {
+                let dom = curve.domain();
+                let bbox = Aabb3::try_from_points(curve.control_points().iter().copied())?;
+                return Some(RawCurve {
+                    curve: EdgeCurve::NurbsCurve(curve),
+                    bbox,
+                    t_range: dom,
+                    p_start: points[0],
+                    p_end: *points.last()?,
+                });
+            }
+            if refined.len() > 2048 {
+                return None;
+            }
+            points = refined;
+        }
+        None
     };
     let mut out_arcs = Vec::new();
     for pts in &arc_point_sets {
@@ -4224,7 +4293,15 @@ fn compute_raw_curves(
 
         (FaceSurface::Plane { normal, d }, FaceSurface::Nurbs(nurbs))
         | (FaceSurface::Nurbs(nurbs), FaceSurface::Plane { normal, d }) => {
-            plane_nurbs_intersection(*normal, *d, nurbs)
+            // A coincident surface has a two-dimensional intersection. Sampling
+            // its roundoff as a zero-crossing field invents section curves.
+            if nurbs.control_points().iter().flatten().all(|p| {
+                (normal.dot(*p - Point3::new(0.0, 0.0, 0.0)) - *d).abs() <= context.tolerance.linear
+            }) {
+                Ok(Vec::new())
+            } else {
+                plane_nurbs_intersection(*normal, *d, nurbs)
+            }
         }
 
         (analytic_surf, FaceSurface::Nurbs(nurbs)) if analytic_surf.as_analytic().is_some() => {
@@ -7421,6 +7498,53 @@ mod context_budget_tests {
             vec![vec![1.0, 1.0], vec![1.0, 1.0]],
         )
         .unwrap()
+    }
+
+    #[test]
+    fn coplanar_nurbs_does_not_emit_noise_sections_but_transverse_patch_does() {
+        use remus_math::aabb::Aabb3;
+        use remus_math::vec::Vec3;
+        use remus_topology::face::FaceSurface;
+        let near = NurbsSurface::new(
+            1,
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![
+                vec![Point3::new(0.0, 0.0, -1e-12), Point3::new(0.0, 1.0, -1e-12)],
+                vec![Point3::new(1.0, 0.0, 1e-12), Point3::new(1.0, 1.0, 1e-12)],
+            ],
+            vec![vec![1.0; 2]; 2],
+        )
+        .unwrap();
+        let plane = FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: 0.0,
+        };
+        let bbox = Aabb3 {
+            min: Point3::new(-1.0, -1.0, -1.0),
+            max: Point3::new(2.0, 2.0, 1.0),
+        };
+        for (surface, coincident) in [
+            (flat_surface(), true),
+            (near, true),
+            (tilted_surface(), false),
+        ] {
+            let surface = FaceSurface::Nurbs(surface);
+            for (a, b) in [(&plane, &surface), (&surface, &plane)] {
+                let curves = super::compute_raw_curves(
+                    a,
+                    b,
+                    &bbox,
+                    &bbox,
+                    None,
+                    None,
+                    &OperationContext::default(),
+                )
+                .unwrap();
+                assert_eq!(curves.is_empty(), coincident);
+            }
+        }
     }
 
     fn control_point_count(curves: &[super::RawCurve]) -> usize {

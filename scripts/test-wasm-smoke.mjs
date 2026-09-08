@@ -15,11 +15,14 @@ import { fileURLToPath } from 'node:url';
 import {
   runOpenZcadAnalyticFlangeBooleanRegression,
   runOpenZcadCylindricalFaceResizeRegression,
+  runPartialCylinderResizeRegression,
   runWideSphereCapRegression,
   runSphereCylinderWallRegression,
   runOffsetConeSphereRegression,
   runOffsetSphereCylinderRegression,
   runOffsetTorusSphereRegression,
+  runTorusNotchRegression,
+  runTangencyBandRegression,
   runBooleanScaleRegression,
   runAnisotropicBooleanRegression,
 } from './openzcad-wasm-consumer-regressions.mjs';
@@ -746,6 +749,9 @@ runOffsetConeSphereRegression({ BrepKernel });
 runOffsetSphereCylinderRegression({ BrepKernel });
 
 runOffsetTorusSphereRegression({ BrepKernel });
+runTorusNotchRegression({ BrepKernel });
+runTangencyBandRegression({ BrepKernel });
+runPartialCylinderResizeRegression({ BrepKernel, RemusIo });
 runBooleanScaleRegression({ BrepKernel });
 runAnisotropicBooleanRegression({ BrepKernel });
 

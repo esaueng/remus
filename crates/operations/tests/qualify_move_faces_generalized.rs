@@ -247,11 +247,26 @@ fn assert_trim_and_pcurve_authority(
     faces: &[FaceId],
     scale: f64,
 ) -> (usize, usize) {
+    assert_trim_and_pcurve_authority_in_frame(topo, faces, scale, false)
+}
+
+fn assert_trim_and_pcurve_authority_in_frame(
+    topo: &Topology,
+    faces: &[FaceId],
+    scale: f64,
+    canonical: bool,
+) -> (usize, usize) {
     let mut uses = 0;
     let mut present = 0;
     for &face_id in faces {
         let face = topo.face(face_id).expect("pcurve face");
         let plane_frame = match face.surface() {
+            FaceSurface::Plane { normal, d } if canonical => {
+                Some(PlaneFrame::from_normal_and_point(
+                    *normal,
+                    Point3::new(normal.x() * d, normal.y() * d, normal.z() * d),
+                ))
+            }
             FaceSurface::Plane { normal, .. } => {
                 let points = topo
                     .wire(face.outer_wire())
@@ -296,8 +311,17 @@ fn assert_trim_and_pcurve_authority(
                         },
                         |frame| frame.evaluate(uv.x(), uv.y()),
                     );
-                    let edge_t = (edge_end - edge_start).mul_add(fraction, edge_start);
-                    let on_edge = closest_on_edge(edge.curve(), start, end, on_surface, edge_t);
+                    let edge_fraction = if canonical && !oriented.is_forward() {
+                        1.0 - fraction
+                    } else {
+                        fraction
+                    };
+                    let edge_t = (edge_end - edge_start).mul_add(edge_fraction, edge_start);
+                    let on_edge = if canonical {
+                        edge.curve().evaluate_with_endpoints(edge_t, start, end)
+                    } else {
+                        closest_on_edge(edge.curve(), start, end, on_surface, edge_t)
+                    };
                     let residual = (on_surface - on_edge).length();
                     assert!(
                         residual <= scale.mul_add(2e-5, 1e-10),
@@ -561,7 +585,9 @@ fn inward_bore_move_reuses_replace_surface_and_reports_total_evolution() {
         })
         .expect("result bore");
     assert!(Tolerance::new().approx_eq(radius, 2.0));
-    let coverage = assert_trim_and_pcurve_authority(&topo, &result_faces, 1.0);
+    // Replacement regenerates canonical, oriented p-curves; the blend-preserving
+    // cases above retain their pre-existing face-local projections.
+    let coverage = assert_trim_and_pcurve_authority_in_frame(&topo, &result_faces, 1.0, true);
     assert_eq!(
         coverage.0, coverage.1,
         "replacement must write every pcurve"
