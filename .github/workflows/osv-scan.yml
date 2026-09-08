@@ -19,28 +19,10 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
-  scan-pr:
-    name: OSV Scan (report-only)
-    if: github.event_name == 'pull_request'
-    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable-pr.yml@6e4298ebc4db23e847df9b2e2de2939d6f066c67 # v2.5.1
-    with:
-      scan-args: |-
-        --lockfile=Cargo.lock
-        --lockfile=package-lock.json
+  scan:
+    uses: esaueng/remus/.github/workflows/fleet-osv.yml@6da8b6a0777bd3e4e9248397626dce0636dce4c7
     permissions:
-      actions: read
       contents: read
-      security-events: write
-
-  scan-main:
-    name: OSV Scan (blocking)
-    if: github.event_name != 'pull_request'
-    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@6e4298ebc4db23e847df9b2e2de2939d6f066c67 # v2.5.1
-    with:
-      scan-args: |-
-        --lockfile=Cargo.lock
-        --lockfile=package-lock.json
-    permissions:
+      pull-requests: read
       actions: read
-      contents: read
       security-events: write
