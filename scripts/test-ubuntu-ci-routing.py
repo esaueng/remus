@@ -151,6 +151,32 @@ class UbuntuRoutingTests(unittest.TestCase):
             self.assertNotIn("contents: write", blocks[run])
             self.assertIn("contents: write", blocks["publish"])
 
+    def test_main_probe_has_no_hosted_bootstrap(self):
+        text = (WORKFLOWS / "trusted-vps.yml").read_text()
+        self.assertNotIn("select-runner.yml", text)
+        self.assertNotIn("ubuntu-latest", text)
+        block = jobs(text)["policy"]
+        condition = block.split("    if: >-\n", 1)[1].split("    runs-on:", 1)[0]
+        condition = " ".join(condition.split()).replace("&&", " and ").replace("||", " or ")
+        github = dict(self.github, ref="refs/heads/main", event_name="workflow_dispatch")
+        variables = dict(self.variables, REMUS_TRUSTED_VPS_ENABLED="true")
+        for runner, enabled, protected, target, expected in (
+            ("auto", "true", True, "ci-server-jane", True),
+            ("auto", "false", True, "ci-server-jane", False),
+            ("ci-server-jane-1", "false", True, "ci-server-jane", True),
+            ("auto", "true", False, "ci-server-jane", False),
+            ("unknown", "false", True, "ci-server-jane", False),
+            ("auto", "true", True, "unknown", False),
+        ):
+            github["ref_protected"] = protected
+            variables.update(CI_FLEET_ENABLED=enabled, CI_FLEET_TARGET=target)
+            result = eval(condition, {"__builtins__": {}}, {
+                "github": DIRECT.Context(github), "vars": DIRECT.Context(variables),
+                "inputs": DIRECT.Context({"runner": runner}),
+                "fromJSON": DIRECT.json.loads, "contains": lambda values, item: item in values,
+            })
+            self.assertEqual(bool(result), expected)
+
 
 if __name__ == "__main__":
     unittest.main()
