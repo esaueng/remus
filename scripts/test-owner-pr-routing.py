@@ -25,6 +25,10 @@ class OwnerRoutingTests(unittest.TestCase):
     def test_caller_pins_the_reviewed_workflow_content(self):
         match = re.search(r"uses: esaueng/remus/.github/workflows/fleet-ci.yml@([0-9a-f]{40})", CALLER)
         self.assertIsNotNone(match)
+        pinned = subprocess.check_output(
+            ["git", "show", f"{match[1]}:.github/workflows/fleet-ci.yml"],
+            cwd=ROOT, text=True)
+        self.assertEqual(pinned, CI, "Update the immutable pin after changing the callee")
         self.assertNotIn("secrets:", CALLER)
         self.assertNotIn("select-runner.yml", CI)
 
