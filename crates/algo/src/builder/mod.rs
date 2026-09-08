@@ -1384,6 +1384,14 @@ fn orient_selected_fuse_analytic_holes(
         {
             continue;
         }
+        if builder_solid::torus_wire_wraps_tube(topo, face.outer_wire(), face.surface())
+            && face
+                .inner_wires()
+                .iter()
+                .all(|&wire| builder_solid::torus_wire_wraps_tube(topo, wire, face.surface()))
+        {
+            continue;
+        }
         let inner_wires = face.inner_wires().to_vec();
         let outer_wire = face.outer_wire();
         let mut replacements = Vec::with_capacity(inner_wires.len());

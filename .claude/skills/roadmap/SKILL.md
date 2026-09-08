@@ -191,6 +191,7 @@ harness's own option-honoured floor misreading a correct 0.05 fillet on an
   depth by geometric containment (stored winding cannot classify them).
 - **A wire with no angular gap is a wrapped face;** any consumer that
   polygon-approximates it inherits the parity flip.
+- **Two tube-wrapping torus rims bound an oriented band, not ordinary holes;** preserve opposite traversal through Fuse and integrate the retained side (`pclass_torus_notch_orientation.rs`).
 - **Full mesh area + zero boundary/non-manifold edges + volume deficit + zero
   inverted normals = sparse-interior deep chords, not winding.**
 - **When a range and a mask disagree, instrument both before blaming either**
