@@ -452,6 +452,56 @@ fn reverse_wire(topo: &mut Topology, wire_id: WireId) -> Result<WireId, AlgoErro
     Ok(topo.add_wire(wire))
 }
 
+/// A tube-wrapping rim bounds an annulus, so it is not a contractible hole.
+pub(super) fn torus_wire_wraps_tube(
+    topo: &Topology,
+    wire_id: WireId,
+    surface: &FaceSurface,
+) -> bool {
+    let FaceSurface::Torus(torus) = surface else {
+        return false;
+    };
+    let Ok(wire) = topo.wire(wire_id) else {
+        return false;
+    };
+    let mut phis = Vec::new();
+    for oriented in wire.edges() {
+        let Ok(edge) = topo.edge(oriented.edge()) else {
+            return false;
+        };
+        let (Ok(start), Ok(end), Ok(domain)) = (
+            topo.vertex(edge.start()),
+            topo.vertex(edge.end()),
+            edge.strict_domain(),
+        ) else {
+            return false;
+        };
+        let mut points = Vec::new();
+        super::pcurve_compute::sample_edge_uniform(
+            edge.curve(),
+            start.point(),
+            end.point(),
+            domain,
+            32,
+            oriented.is_forward(),
+            &mut points,
+        );
+        phis.extend(points.into_iter().map(|point| torus.project_point(point).1));
+    }
+    if phis.len() < 3 {
+        return false;
+    }
+    phis.push(phis[0]);
+    let winding: f64 = phis
+        .windows(2)
+        .map(|pair| {
+            let delta = pair[1] - pair[0];
+            (delta + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU) - std::f64::consts::PI
+        })
+        .sum();
+    (winding.abs() - std::f64::consts::TAU).abs() < 1e-6
+}
+
 /// Full rings have no enclosed UV area; only contractible boundaries can be compared.
 fn revolved_wire_uv_area(
     topo: &Topology,
