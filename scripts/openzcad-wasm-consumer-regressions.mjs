@@ -268,6 +268,7 @@ export const runOpenZcadConsumerRegressions = (exports) => {
   runUnifyHistoryRegression(exports);
   runSewingHistoryRegression(exports);
   runWideSphereCapRegression(exports);
+  runSphereCylinderWallRegression(exports);
   runOffsetConeSphereRegression(exports);
   runOffsetSphereCylinderRegression(exports);
   runOffsetTorusSphereRegression(exports);
@@ -480,6 +481,77 @@ export const runAnisotropicBooleanRegression = ({ BrepKernel }) => {
     }
   }
   console.log('ok - 36 anisotropic boolean cells in direct and batch APIs retain local material');
+};
+
+export const runSphereCylinderWallRegression = ({ BrepKernel, RemusIo }) => {
+  const kernel = new BrepKernel();
+  const io = new RemusIo();
+  try {
+    const cylinder = kernel.makeCylinder(15, 60);
+    const sphere = kernel.makeSphere(7.5, 24);
+    kernel.transformSolid(
+      sphere,
+      new Float64Array([1, 0, 0, 15, 0, 1, 0, 0, 0, 0, 1, 30, 0, 0, 0, 1]),
+    );
+    const result = kernel.booleanWithQuality('fuse', cylinder, sphere, true);
+    assert.equal(result.quality, 'exact');
+    const step = io.exportStep(kernel.serializeSolids(new Uint32Array([result.solid])));
+    const imported = Array.from(kernel.deserializeSolids(io.importStep(step)));
+    assert.equal(imported.length, 1);
+    for (const solid of [result.solid, imported[0]]) {
+      assert.equal(kernel.validateSolid(solid), 0);
+      const surfaces = Array.from(kernel.getSolidFaces(solid), (face) =>
+        kernel.getSurfaceType(face),
+      );
+      assert.ok(surfaces.includes('sphere') && surfaces.includes('cylinder'));
+      for (const deflection of [0.1, 0.01]) {
+        const mesh = kernel.tessellateSolid(solid, deflection);
+        const positions = mesh.positions;
+        const indices = mesh.indices;
+        // Match the consumer's float32 weld at one part per million of the 60 mm extent.
+        const key = (id) =>
+          [0, 1, 2].map((axis) => Math.round(positions[id * 3 + axis] / 0.00006)).join(',');
+        const edges = new Map();
+        let volume = 0;
+        for (let i = 0; i < indices.length; i += 3) {
+          const ids = Array.from(indices.subarray(i, i + 3));
+          const keys = ids.map(key);
+          if (new Set(keys).size !== 3) continue;
+          for (const [a, b] of [
+            [keys[0], keys[1]],
+            [keys[1], keys[2]],
+            [keys[2], keys[0]],
+          ]) {
+            const edge = a < b ? `${a}|${b}` : `${b}|${a}`;
+            const use = edges.get(edge) ?? [0, 0];
+            use[0]++;
+            use[1] += a < b ? 1 : -1;
+            edges.set(edge, use);
+          }
+          const [a, b, c] = ids.map((id) => id * 3);
+          volume +=
+            (positions[a] *
+              (positions[b + 1] * positions[c + 2] - positions[b + 2] * positions[c + 1]) +
+              positions[a + 1] *
+                (positions[b + 2] * positions[c] - positions[b] * positions[c + 2]) +
+              positions[a + 2] *
+                (positions[b] * positions[c + 1] - positions[b + 1] * positions[c])) /
+            6;
+        }
+        assert.ok(
+          [...edges.values()].every(([count, balance]) => count === 2 && balance === 0),
+          `sphere-cylinder mesh closure/winding at ${deflection}`,
+        );
+        assert.ok(Math.abs(volume - 43378.347939725434) / 43378.347939725434 < 0.01);
+      }
+    }
+  } finally {
+    kernel.free();
+    io.free();
+  }
+  console.log(
+    'ok - sphere on cylinder wall retains analytic surfaces and a closed oriented mesh through STEP',
+  );
 };
 
 export const runTorusNotchRegression = ({ BrepKernel }) => {
