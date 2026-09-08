@@ -665,7 +665,7 @@ covered. Each domain has two tables: **A** (identity and status) and **B**
 | IP-16.1 | No crash, panic, UB, or partial mutation on untrusted input | Exceptions; consumers wrap in guards | In-scope | Qualified (lint-denied unsafe/panic; `io::limits`; transactional rollback) | Lead (LC1) pending harness publication | audit IO-003; fuzz.yml | done; O1.2 publication |
 | IP-16.2 | Hard memory, entity, iteration, and time budgets | Progress/cancel in some algorithms | In-scope | Partial (import limits, batch caps, six SSI budgets; no memory/time budget in context) | Lead candidate | 2.8 partial | 2.8 |
 | IP-16.3 | Deterministic reproduction bundles | Draw scripts | In-scope | Qualified (schema 1, 12 bundles, native + WASM replay) | Lead | `repro.rs` | done; O4.6 schema policy |
-| IP-16.4 | Fuzzing; property and metamorphic testing; mutation testing; corpus regression | GTest suites (current reference release) | In-scope | Qualified (17 fuzz targets, weekly; `mutants.toml`; proptest; gauntlet); curve-intersection, offset, GCS, tessellation fuzz slices outstanding; `mutants.toml` `cdt.rs` glob is stale (CDT is a directory) | Lead (LC13) with the outstanding slices owned | testing strategy; audit item 13 | B19 → new |
+| IP-16.4 | Fuzzing; property and metamorphic testing; mutation testing; corpus regression | GTest suites (current reference release) | In-scope | Qualified (17 fuzz targets, weekly; `.cargo/mutants.toml`; proptest; gauntlet); curve-intersection, offset, GCS, tessellation fuzz slices outstanding; mutation config discovery and CDT directory scope verified by B19; bounded sample retains one surviving mutant | Lead (LC13) with the outstanding slices owned | testing strategy; audit item 13 | B19 → new |
 | IP-16.5 | Native/WASM parity; cross-platform determinism | Not claimed | In-scope | Partial (per-op contract tests; no systematic per-operation invariant harness; platform matrix pending) | Lead candidate (LC8) | testing strategy "CI growth path" | O1.5 → new |
 | IP-16.6 | Supply-chain and release provenance | Signed releases | In-scope | Partial (deny, OSV, RustSec, lockfiles; SBOM/attestation pending; no publish) | Gap-measured | audit CI row | O4.2b |
 | IP-16.7 | Public, reproducible benchmark evidence | Not published | In-scope | Absent (harness pending) | Gap-measured | O1.2 pending | O1.2a–f |
@@ -675,7 +675,7 @@ covered. Each domain has two tables: **A** (identity and status) and **B**
 | ID | Gap / dependency | Footprint | Surfaces | Policy & oracle | Matrix / boundary / perf | Exit gate | Lead |
 |---|---|---|---|---|---|---|---|
 | IP-16.2 | memory/time budgets | `math/src/context.rs` | N · W · Wb | typed `resource_limit` | overrun refusal per family | 2.8 gate (extended) | LC9 |
-| IP-16.4 | remaining fuzz slices; mutants glob fix | `fuzz/fuzz_targets/`, `mutants.toml` | N | invariant oracles per slice | weekly schedule; seeds committed | B19 gate | LC13 |
+| IP-16.4 | remaining fuzz slices; mutation-scope slice verified | `fuzz/fuzz_targets/`, `.cargo/mutants.toml` | N | invariant oracles per slice | weekly schedule; seeds committed | B19 gate | LC13 |
 | IP-16.5 | per-operation differential harness native vs WASM over the batch op list | `tools/parity/` (new) or `crates/wasm/tests/` | N · W · Wb | invariant equality (volume, census, diagnostics codes) | every batch op × fixture; platform matrix | O1.5 gate | LC8 |
 | IP-16.6 | SBOM + attestation in the release workflow | `.github/workflows/publish.yml` | — | — | dry-run proven | O4.2b gate | — |
 
