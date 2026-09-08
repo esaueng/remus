@@ -13,6 +13,9 @@ on:
       - ".cargo/**"
       - ".github/workflows/publish.yml"
       - "crates/**"
+      - "!crates/wasm/pkg/**"
+      - "!crates/wasm-io/pkg/**"
+      - "scripts/publish-wasm-package-pr.py"
       - "xtask/**"
       - "Cargo.toml"
       - "LICENSE-APACHE"
@@ -42,14 +45,8 @@ jobs:
   build-committed-package:
     name: Build committed WASM package
     runs-on: ubuntu-latest
-    # Skip the bot's own commit so this cannot loop. `[skip ci]` in the commit
-    # message already suppresses the re-run; this is the belt-and-braces half.
-    #
-    # Also runnable on demand: GitHub does not raise workflow runs for a push
-    # that edits files under .github/workflows, so a change to this file only
-    # takes effect on the NEXT ordinary commit. Without a manual trigger there
-    # is no way to refresh the package — or to prove a change here works —
-    # until some unrelated PR happens to land.
+    # Package-only PR merges are excluded by the path filter above.
+    # A manual run is restricted to main; both jobs check out its exact event SHA.
     if: >-
       ${{ (github.event_name == 'push'
            && !contains(github.event.head_commit.message, '[skip ci]'))
@@ -63,7 +60,7 @@ jobs:
         with:
           # A dispatch can select another ref in the UI; always build the
           # Apache staging branch selected by the job guard above.
-          ref: main
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -108,15 +105,15 @@ jobs:
           if-no-files-found: error
 
   sync-committed-package:
-    name: Commit refreshed WASM package
+    name: Propose refreshed WASM package
     needs: [build-committed-package]
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: main
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -158,7 +155,7 @@ jobs:
           app-id: ${{ vars.REMUS_BOT_APP_ID }}
           private-key: ${{ secrets.REMUS_BOT_PRIVATE_KEY }}
 
-      - name: Commit refreshed package
+      - name: Open package refresh PR
         if: ${{ steps.package-diff.outputs.needs_publish == 'true' }}
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -167,14 +164,4 @@ jobs:
           GIT_CONFIG_COUNT: 1
           GIT_CONFIG_KEY_0: core.hooksPath
           GIT_CONFIG_VALUE_0: /dev/null
-        run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          VERSION=$(jq -r .version crates/wasm/pkg/package.json)
-          git commit -m "chore(wasm): refresh committed package to v${VERSION} from ${GITHUB_SHA:0:7} [skip ci]"
-          remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-          # Never rebase an artifact generated from an older source commit onto
-          # a newer branch head. A concurrent source push makes this push fail;
-          # that newer push starts its own refresh from the correct source.
-          git push "$remote" HEAD:main
-          echo "::notice::Committed remus-wasm and remus-wasm-io ${VERSION}; consumers on #main pick them up on the next install."
+        run: python3 scripts/publish-wasm-package-pr.py
