@@ -558,7 +558,45 @@ fn tessellate_faces_core(
                         let t = a / (a - b);
                         let va = cyl.project_point(pts[i]).1;
                         let vb = cyl.project_point(pts[i + 1]).1;
-                        let crossing = cyl.evaluate(seam_u, (vb - va).mul_add(t, va));
+                        let crossing =
+                            if let EdgeCurve::NurbsCurve(curve) = topo.edge(oe.edge())?.curve() {
+                                let project = |point| {
+                                    remus_math::nurbs::projection::project_point_to_curve(
+                                        curve, point, 1e-10,
+                                    )
+                                };
+                                let mut lo = project(pts[i])?.parameter;
+                                let mut hi = project(pts[i + 1])?.parameter;
+                                let (start, end) = curve.domain();
+                                let period = end - start;
+                                let closed = topo.edge(oe.edge())?.is_closed();
+                                if closed && (hi - lo).abs() > period * 0.5 {
+                                    hi -= period * (hi - lo).signum();
+                                }
+                                let evaluate = |parameter: f64| {
+                                    curve.evaluate(if closed {
+                                        start + (parameter - start).rem_euclid(period)
+                                    } else {
+                                        parameter
+                                    })
+                                };
+                                // Interpolating height in the cylinder chart moves
+                                // this shared vertex off the other support surface.
+                                // Solve on the intersection curve, including across
+                                // the parameter origin of a closed edge.
+                                for _ in 0..60 {
+                                    let mid = f64::midpoint(lo, hi);
+                                    let offset = meridian_offset(evaluate(mid));
+                                    if offset.signum() == a.signum() {
+                                        lo = mid;
+                                    } else {
+                                        hi = mid;
+                                    }
+                                }
+                                evaluate(f64::midpoint(lo, hi))
+                            } else {
+                                cyl.evaluate(seam_u, (vb - va).mul_add(t, va))
+                            };
                         if (crossing - pts[i]).length() < refine_tol
                             || (crossing - pts[i + 1]).length() < refine_tol
                         {
