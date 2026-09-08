@@ -11,7 +11,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 CALLER = (ROOT / ".github/workflows/ci.yml").read_text()
 FLEET = (ROOT / ".github/workflows/fleet-ci.yml").read_text()
-BENCH = (ROOT / ".github/workflows/benchmark.yml").read_text()
+BENCH = (ROOT / ".github/workflows/fleet-benchmark.yml").read_text()
+BENCH_CALLER = (ROOT / ".github/workflows/benchmark.yml").read_text()
 
 
 def jobs(text):
@@ -36,11 +37,11 @@ class ConvergenceTests(unittest.TestCase):
     def success(self):
         return {name: {"result": "success"} for name in HEAVY | ALWAYS | {"docs"}}
 
-    def test_queue_preserves_other_prs_and_supersedes_only_same_ref(self):
+    def test_independent_refs_can_run_and_only_same_ref_is_superseded(self):
         self.assertIn("group: ci-${{ github.ref }}\n  cancel-in-progress: true", CALLER)
         admission = jobs(CALLER)["checks"]
-        self.assertIn("group: remus-ci-suite\n      queue: max", admission)
-        self.assertNotIn("cancel-in-progress", admission)
+        self.assertNotIn("concurrency:", admission)
+        self.assertNotIn("remus-ci-suite", CALLER)
         self.assertNotIn("concurrency:", FLEET)
 
     def test_expensive_jobs_wait_for_both_early_gates(self):
@@ -84,16 +85,13 @@ class ConvergenceTests(unittest.TestCase):
         for heavy, docs in (("", "true"), ("true", ""), ("invalid", "false")):
             self.assertNotEqual(self.complete(self.success(), heavy, docs), 0)
 
-    def test_required_check_name_survives_reusable_workflow(self):
-        gate = jobs(CALLER)["ci-pass"]
+    def test_required_completion_runs_in_the_trusted_suite(self):
+        gate = JOBS["ci-pass"]
         self.assertIn("name: CI Pass", gate)
-        self.assertIn("needs: checks", gate)
         self.assertIn("if: always()", gate)
-        command = gate.split("        run: ", 1)[1].strip()
-        for result in ("success", "failure", "cancelled", "skipped", ""):
-            run = subprocess.run(["bash", "-c", command],
-                                 env=dict(os.environ, RESULT=result))
-            self.assertEqual(run.returncode == 0, result == "success")
+        self.assertIn("runs-on: *fleet-runner", gate)
+        self.assertNotIn("ci-pass", jobs(CALLER))
+        self.assertIn("checks / CI Pass", (ROOT / "docs/owner-pr-ci.md").read_text())
 
     def test_merge_groups_use_all_changes_against_queue_base(self):
         self.assertIn("merge_group:\n    types: [checks_requested]", CALLER)
@@ -125,7 +123,7 @@ class ConvergenceTests(unittest.TestCase):
         self.assertIn("github.event_name != 'pull_request' ||", bench)
         self.assertIn("contains(github.event.pull_request.labels.*.name, 'ci:benchmark')", bench)
         self.assertIn("github.event.label.name == 'ci:benchmark'", bench)
-        self.assertIn("workflow_dispatch:", BENCH)
+        self.assertIn("workflow_dispatch:", BENCH_CALLER)
         self.assertIn("test(scaling_)", JOBS["test"])
 
     def test_advisory_size_report_cannot_block_required_gate(self):
@@ -133,7 +131,7 @@ class ConvergenceTests(unittest.TestCase):
         caller_jobs = jobs(CALLER)
         self.assertIn("needs: checks", caller_jobs["wasm-size"])
         self.assertIn("needs.checks.outputs.heavy == 'true'", caller_jobs["wasm-size"])
-        self.assertNotIn("wasm-size", caller_jobs["ci-pass"])
+        self.assertNotIn("wasm-size", JOBS["ci-pass"])
         self.assertIn("pull-requests: read", caller_jobs["checks"])
 
     def test_queue_configuration_preserves_every_merge_validation(self):
