@@ -72,3 +72,13 @@ cargo xtask wasm-build
   authorized maintainer outside this review workflow.
 - [ ] After a future authorized publish, install into disposable browser and
   Node consumers, repeat the smoke flow, and retain the results with the tag.
+
+## Committed WASM package refresh
+
+The staging refresh builds from the exact triggering commit and opens a ready
+PR containing only generated package files. It never pushes to protected `main`
+or merges automatically. Package-only merges do not trigger another refresh.
+The existing bot app needs repository contents and pull-request write permission;
+the workflow does not grant those permissions or bypass protection. Check the
+recorded source SHA before merging a refresh PR. If package-producing source
+has changed, rebuild from that source instead of transplanting older output.
