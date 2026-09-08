@@ -32,8 +32,13 @@ fn write_box_step(path: &Path) {
 }
 
 fn sha256(contents: &[u8]) -> String {
+    use std::fmt::Write;
     let digest = Sha256::digest(contents);
-    format!("{digest:x}")
+    let mut hex = String::with_capacity(64);
+    for byte in digest {
+        write!(hex, "{byte:02x}").unwrap();
+    }
+    hex
 }
 
 #[test]
