@@ -14,7 +14,7 @@ class FleetRunnerPolicy(unittest.TestCase):
         for workflow in ('owner-pr.yml', 'trusted-vps.yml'):
             text = (ROOT / '.github/workflows' / workflow).read_text()
             guard = re.search(r'case "\$RUNNER_NAME" in\n.*?\besac', text, re.S).group()
-            for name, allowed in [('ci-vm-1441561', True), ('ci-server-jane', True),
+            for name, allowed in [('ci-vm-1441561', True), ('ci-server-jane', True), ('ci-server-john', True),
                                   ('', False), ('ci-server-jane-extra', False), ('unknown', False)]:
                 with self.subTest(workflow=workflow, runner=name):
                     result = subprocess.run(['bash', '-c', guard], env=dict(os.environ, RUNNER_NAME=name),

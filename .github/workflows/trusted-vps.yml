@@ -9,7 +9,7 @@ on:
         description: Trusted runner to validate
         type: choice
         default: ci-small
-        options: [ci-small, ci-vm-1441561, ci-server-jane]
+        options: [ci-small, ci-vm-1441561, ci-server-jane, ci-server-john]
 
 permissions:
   contents: read
@@ -48,7 +48,7 @@ jobs:
           set -euo pipefail
           date -u +%FT%TZ
           case "$RUNNER_NAME" in
-            ci-vm-1441561|ci-server-jane) ;;
+            ci-vm-1441561|ci-server-jane|ci-server-john) ;;
             *) echo 'Unknown trusted runner' >&2; exit 1 ;;
           esac
           test "$(id -un)" = ci-runner

@@ -62,6 +62,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+      id-token: write
     # The runner group permits only this immutable callee, never PR workflow refs.
     uses: esaueng/remus/.github/workflows/owner-pr.yml@7a01810e722ecec2298318729ef9a6c0038e0fbb
     with:
@@ -101,6 +102,7 @@ jobs:
           check "Publish workflow contract" ./scripts/test-publish-credentials.sh
           check "Gauntlet workflow contract" python3 scripts/test-gauntlet-workflow.py
           check "Owner PR policy tests" python3 scripts/test-owner-pr-policy.py
+          check "Fleet selector tests" python3 scripts/test-fleet-selector.py
           check "Fleet runner policy tests" python3 scripts/test-fleet-runner-policy.py
           check "Owner PR routing tests" python3 scripts/test-owner-pr-routing.py
           check "CI classifier tests" python3 scripts/test-classify-ci-changes.py

@@ -132,7 +132,7 @@ class OwnerPolicyTests(unittest.TestCase):
         self.assertNotIn("actions/checkout@", gate)
         self.assertNotIn("inputs.ref", TEXT)
         self.assertNotIn("inputs.repository", TEXT)
-        self.assertIn("needs: select", rust)
+        self.assertIn("needs: [select, route]", rust)
         self.assertIn("needs.select.outputs.trusted == 'true'", rust)
         self.assertIn("ref: ${{ github.sha }}", rust)
         self.assertIn("persist-credentials: false", rust)
@@ -145,7 +145,8 @@ class OwnerPolicyTests(unittest.TestCase):
     def test_workflow_and_actions_have_fixed_access_boundaries(self):
         self.assertIn("  workflow_call:\n", TEXT)
         self.assertIn("group: ci-trusted-main", TEXT)
-        self.assertIn("labels: ci-small", TEXT)
+        self.assertIn("labels: ${{ needs.route.outputs.target }}", TEXT)
+        self.assertIn("needs.route.outputs.target != 'github-hosted'", TEXT)
         for reference in re.findall(r"uses: (\S+)", TEXT):
             self.assertRegex(reference, r"@[0-9a-f]{40}$")
         self.assertIn('CARGO_BUILD_JOBS: "1"', TEXT)

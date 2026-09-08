@@ -30,6 +30,17 @@ class OwnerRoutingTests(unittest.TestCase):
         self.assertEqual(pinned, OWNER, "Update the immutable pin after changing the callee")
         self.assertNotIn("secrets:", job("owner-pr"))
 
+    def test_fleet_selection_preserves_authorization_and_failure_semantics(self):
+        route = OWNER.split("\n  route:\n", 1)[1].split("\n  rust:\n", 1)[0]
+        self.assertIn("needs: select", route)
+        self.assertIn("if: needs.select.outputs.trusted == 'true'", route)
+        self.assertIn("vars.CI_FLEET_ENABLED == 'true'", route)
+        self.assertNotIn("checkout", route)
+        self.assertIn("jobs.route.result == 'success'", OWNER)
+        self.assertIn("jobs.route.outputs.target != 'github-hosted'", OWNER)
+        self.assertIn("id-token: write", job("owner-pr"))
+        self.assertNotIn("id-token: write", OWNER.split("\n  rust:\n", 1)[1])
+
     def test_native_checks_keep_hosted_fallback(self):
         for name in ("clippy", "test", "msrv", "fuzz-check", "docs"):
             with self.subTest(name=name):
