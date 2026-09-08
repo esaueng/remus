@@ -1,0 +1,88 @@
+name: Trusted wasm-size
+on:
+  workflow_call:
+permissions:
+  contents: read
+  pull-requests: read
+env:
+  CARGO_TERM_COLOR: always
+jobs:
+  wasm-size:
+    name: WASM Size Report
+    runs-on: ${{ fromJSON((vars.CI_FLEET_ENABLED == 'true' || (vars.CI_FLEET_VALIDATION_REF != '' && vars.CI_FLEET_VALIDATION_REF == github.ref)) && (github.repository == 'esaueng/remus' && github.repository_id == '1334765869' && github.actor == 'petergstfsn' && github.actor_id == '171875562' && github.triggering_actor == 'petergstfsn' && ((github.event_name == 'pull_request' && github.event.pull_request.state == 'open' && github.event.pull_request.user.login == 'petergstfsn' && github.event.pull_request.user.id == 171875562 && github.event.pull_request.head.repo.id == 1334765869 && github.event.pull_request.base.repo.id == 1334765869 && github.event.pull_request.head.repo.fork == false && github.event.pull_request.base.repo.fork == false && github.event.pull_request.base.ref == 'main' && github.ref == format('refs/pull/{0}/merge', github.event.pull_request.number)) || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') && github.ref == 'refs/heads/main' && github.ref_protected == true))) && (vars.CI_FLEET_TARGET == 'ci-server-jane' && '{"group":"ci-trusted-main","labels":"ci-server-jane"}' || vars.CI_FLEET_TARGET == 'ci-server-john' && '{"group":"ci-trusted-main","labels":"ci-server-john"}') || '"ubuntu-latest"') }}
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: esaueng/remus/.github/actions/fleet-guard@29779e3185e8582b59bf58692a307b1018a98e68
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.base.sha }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: wasm-size-pr
+          path: ${{ runner.temp }}/wasm-size
+      - name: Measure both modules against the committed base packages
+        run: |
+          # The base checkout holds the committed packages; a module with no
+          # committed base yet (first PR that adds it) reports as new.
+          rows=""
+          kernel_delta=0
+          for stem in remus_wasm remus_wasm_io; do
+            case "$stem" in
+              remus_wasm) crate_dir=crates/wasm ;;
+              remus_wasm_io) crate_dir=crates/wasm-io ;;
+            esac
+            pr_size=$(stat --printf="%s" "$RUNNER_TEMP/wasm-size/pr-${stem}.wasm")
+            pr_mb=$(echo "scale=2; $pr_size / 1048576" | bc)
+            base_file="$crate_dir/pkg/${stem}_bg.wasm"
+            if [ -f "$base_file" ]; then
+              base_size=$(stat --printf="%s" "$base_file")
+              base_mb=$(echo "scale=2; $base_size / 1048576" | bc)
+              delta=$(( pr_size - base_size ))
+              pct=$(echo "scale=1; $delta * 100 / $base_size" | bc)
+              delta_kb=$(echo "scale=1; $delta / 1024" | bc)
+              sign=""; [ "$delta" -gt 0 ] && sign="+"
+              rows="$rows| \`${stem}_bg.wasm\` | ${base_mb} MB | ${pr_mb} MB | ${sign}${delta_kb} KB (${sign}${pct}%) |"$'\n'
+            else
+              delta=$pr_size
+              rows="$rows| \`${stem}_bg.wasm\` | (new) | ${pr_mb} MB | new module |"$'\n'
+            fi
+            [ "$stem" = remus_wasm ] && kernel_delta=$delta
+          done
+          {
+            echo "COMMENT_BODY<<WASM_EOF"
+            echo "## WASM Binary Size"
+            echo ""
+            echo "| File | main | PR | Delta |"
+            echo "|------|------|----|-------|"
+            printf '%s' "$rows"
+            echo ""
+            # Only the kernel module counts against the consumer's size policy;
+            # the translator module loads lazily around import and export.
+            if [ "$kernel_delta" -gt 51200 ]; then
+              echo "⚠️ Kernel module grew by >50 KB. Please verify this is expected."
+            elif [ "$kernel_delta" -gt 0 ]; then
+              echo "⚠️ Kernel module grew slightly."
+            elif [ "$kernel_delta" -eq 0 ]; then
+              echo "✅ Kernel module unchanged."
+            else
+              echo "✅ Kernel module shrank — nice!"
+            fi
+            echo "WASM_EOF"
+          } >> "$GITHUB_ENV"
+      - name: Find existing comment
+        uses: peter-evans/find-comment@b30e6a3c0ed37e7c023ccd3f1db5c6c0b0c23aad # v4.0.0
+        id: fc
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          comment-author: github-actions[bot]
+          body-includes: "## WASM Binary Size"
+      - name: Post or update comment
+        uses: peter-evans/create-or-update-comment@e8674b075228eee787fea43ef493e45ece1004c9 # v5.0.0
+        with:
+          comment-id: ${{ steps.fc.outputs.comment-id }}
+          issue-number: ${{ github.event.pull_request.number }}
+          body: ${{ env.COMMENT_BODY }}
+          edit-mode: replace
