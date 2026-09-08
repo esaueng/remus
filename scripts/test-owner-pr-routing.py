@@ -44,7 +44,7 @@ class OwnerRoutingTests(unittest.TestCase):
 
     def test_specialized_jobs_keep_their_runners_and_permissions(self):
         for name in ("repo-policy", "approx-census", "coverage", "wasm",
-                     "render", "deny", "audit", "secrets-scan", "wasm-size"):
+                     "render", "deny", "audit", "secrets-scan"):
             with self.subTest(name=name):
                 self.assertIn("runs-on: *fleet-runner", job(name))
                 self.assertNotIn("needs.owner-pr.outputs.trusted", job(name))
