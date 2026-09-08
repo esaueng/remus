@@ -4,6 +4,12 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      runner:
+        description: Trusted runner to validate
+        type: choice
+        default: ci-small
+        options: [ci-small, ci-vm-1441561, ci-server-jane, ci-server-john]
 
 permissions:
   contents: read
@@ -13,7 +19,21 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  route:
+    if: >-
+      github.repository == 'esaueng/remus' &&
+      github.ref == 'refs/heads/main' &&
+      github.ref_protected &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      vars.REMUS_TRUSTED_VPS_ENABLED == 'true'
+    permissions:
+      id-token: write
+    uses: esaueng/remus/.github/workflows/select-runner.yml@d7168a6576f078f6128191f5b37ac38068c8f0af
+    with:
+      enabled: ${{ vars.CI_FLEET_ENABLED == 'true' }}
+
   policy:
+    needs: route
     name: VPS policy probe (${{ matrix.probe }})
     # The variable is an activation switch, not an access control. The runner
     # group must separately allow this repository and this workflow on main.
@@ -22,15 +42,15 @@ jobs:
       github.ref == 'refs/heads/main' &&
       github.ref_protected &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
-      vars.REMUS_TRUSTED_VPS_ENABLED == 'true'
+      vars.REMUS_TRUSTED_VPS_ENABLED == 'true' &&
+      (needs.route.outputs.target != 'github-hosted' || (inputs.runner && inputs.runner != 'ci-small'))
     runs-on:
       group: ci-trusted-main
-      labels: ci-small
+      labels: ${{ (inputs.runner && inputs.runner != 'ci-small') && inputs.runner || needs.route.outputs.target }}
     timeout-minutes: 5
     strategy:
       fail-fast: false
-      # Both are eligible together; the machine's single listener must serialize
-      # them. A workflow-local limit would hide an accidental second runner.
+      # Target a specific host to prove that its single listener serializes jobs.
       max-parallel: 2
       matrix:
         probe: [1, 2]
@@ -39,12 +59,13 @@ jobs:
         shell: bash
     steps:
       - name: Verify runner isolation and fresh storage
-        env:
-          EXPECTED_RUNNER: ci-vm-1441561
         run: |
           set -euo pipefail
           date -u +%FT%TZ
-          test "$RUNNER_NAME" = "$EXPECTED_RUNNER"
+          case "$RUNNER_NAME" in
+            ci-vm-1441561|ci-server-jane|ci-server-john) ;;
+            *) echo 'Unknown trusted runner' >&2; exit 1 ;;
+          esac
           test "$(id -un)" = ci-runner
           test "$(id -u)" != 0
           test "$HOME" = /srv/ci/home
