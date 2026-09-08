@@ -19,7 +19,21 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  route:
+    if: >-
+      github.repository == 'esaueng/remus' &&
+      github.ref == 'refs/heads/main' &&
+      github.ref_protected &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      vars.REMUS_TRUSTED_VPS_ENABLED == 'true'
+    permissions:
+      id-token: write
+    uses: esaueng/remus/.github/workflows/select-runner.yml@d7168a6576f078f6128191f5b37ac38068c8f0af
+    with:
+      enabled: ${{ vars.CI_FLEET_ENABLED == 'true' }}
+
   policy:
+    needs: route
     name: VPS policy probe (${{ matrix.probe }})
     # The variable is an activation switch, not an access control. The runner
     # group must separately allow this repository and this workflow on main.
@@ -28,10 +42,11 @@ jobs:
       github.ref == 'refs/heads/main' &&
       github.ref_protected &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
-      vars.REMUS_TRUSTED_VPS_ENABLED == 'true'
+      vars.REMUS_TRUSTED_VPS_ENABLED == 'true' &&
+      (needs.route.outputs.target != 'github-hosted' || (inputs.runner && inputs.runner != 'ci-small'))
     runs-on:
       group: ci-trusted-main
-      labels: ${{ inputs.runner || 'ci-small' }}
+      labels: ${{ (inputs.runner && inputs.runner != 'ci-small') && inputs.runner || needs.route.outputs.target }}
     timeout-minutes: 5
     strategy:
       fail-fast: false
