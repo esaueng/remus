@@ -1,6 +1,6 @@
 //! Exact support-surface replacement with topology-preserving re-limitation.
 
-use remus_algo::compute_pcurve_on_surface_in_domain;
+use remus_algo::{PlaneFrame, compute_pcurve_on_surface_in_domain};
 use remus_math::curves2d::Curve2D;
 use remus_math::det_hash::DetHashMap;
 use remus_math::vec::Point3;
@@ -84,6 +84,16 @@ fn register_fresh_pcurves(topo: &mut Topology, faces: &[FaceId]) -> Result<(), O
             })
             .collect::<Result<_, remus_topology::TopologyError>>()?;
 
+        // Persistent plane p-curves use the surface's canonical origin. A
+        // face-local first-vertex frame cannot be reconstructed by STEP I/O.
+        let plane_frame = if let FaceSurface::Plane { normal, d } = &surface {
+            Some(PlaneFrame::from_normal_and_point(
+                *normal,
+                Point3::new(normal.x() * d, normal.y() * d, normal.z() * d),
+            ))
+        } else {
+            None
+        };
         for wire_id in wire_ids {
             let uses = topo.wire(wire_id)?.edges().to_vec();
             for oriented in uses {
@@ -105,12 +115,22 @@ fn register_fresh_pcurves(topo: &mut Topology, faces: &[FaceId]) -> Result<(), O
                     domain,
                     &surface,
                     &wire_points,
-                    None,
+                    plane_frame.as_ref(),
                 )?;
-                let (start_parameter, end_parameter) = match &curve {
-                    Curve2D::Line(_) if edge.start() == edge.end() => (0.0, std::f64::consts::TAU),
-                    Curve2D::Line(_) => (0.0, (end - start).length()),
-                    Curve2D::Circle(_) | Curve2D::Ellipse(_) | Curve2D::Nurbs(_) => (0.0, 1.0),
+                let end_parameter = match &curve {
+                    Curve2D::Line(_) => match (&surface, edge.curve()) {
+                        (FaceSurface::Cylinder(_), remus_topology::edge::EdgeCurve::Circle(_)) => {
+                            (domain.1 - domain.0).abs()
+                        }
+                        (_, _) if edge.start() == edge.end() => std::f64::consts::TAU,
+                        _ => (end - start).length(),
+                    },
+                    Curve2D::Circle(_) | Curve2D::Ellipse(_) | Curve2D::Nurbs(_) => 1.0,
+                };
+                let (start_parameter, end_parameter) = if oriented.is_forward() {
+                    (0.0, end_parameter)
+                } else {
+                    (end_parameter, 0.0)
                 };
                 let pcurve = PCurve::new(curve, start_parameter, end_parameter);
                 topo.set_pcurve_oriented(edge_id, face_id, oriented.is_forward(), pcurve)?;
