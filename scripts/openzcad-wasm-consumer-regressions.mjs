@@ -258,6 +258,7 @@ export const runOpenZcadCylindricalFaceResizeRegression = ({
 export const runOpenZcadConsumerRegressions = (exports) => {
   runOpenZcadAnalyticFlangeBooleanRegression(exports);
   runOpenZcadCylindricalFaceResizeRegression(exports);
+  runPartialCylinderResizeRegression(exports);
   runWideSphereCapRegression(exports);
   runOffsetConeSphereRegression(exports);
   runOffsetSphereCylinderRegression(exports);
@@ -596,4 +597,82 @@ export const runTangencyBandRegression = ({ BrepKernel }) => {
     }
   }
   console.log(`ok - tangency direct/batch: ${totals.exact} exact, ${totals.refused} typed-policy refusals with rollback`);
+};
+
+
+export const runPartialCylinderResizeRegression = ({ BrepKernel, RemusIo }) => {
+  const fixture = readFileSync(new URL('../crates/io/tests/data/jolly_fox_partial_cylinder.step', import.meta.url));
+  const expectedVolume = (radius) => 73 * 41 * 8 + 12 * 30.5 * 12 + Math.PI * radius ** 2 * 12 / 4;
+  const io = new RemusIo();
+  const qualify = (kernel, solid, radius, label) => {
+    const validation = JSON.parse(kernel.validateSolidDetailed(solid));
+    assert.equal(validation.errorCount, 0, label);
+    assert.equal(validation.warningCount, 0, label);
+    assert.ok(Math.abs(kernel.volume(solid, 0.01) - expectedVolume(radius)) < 1e-6, `${label}: volume`);
+    const cylinders = Array.from(kernel.getSolidFaces(solid)).filter(face => kernel.getSurfaceType(face) === 'cylinder');
+    assert.equal(cylinders.length, 1, `${label}: one analytic wall`);
+    const wall = cylinders[0];
+    const params = JSON.parse(kernel.getAnalyticSurfaceParams(wall));
+    assert.ok(Math.abs(params.radius - radius) < 1e-9, `${label}: radius`);
+    for (const [key, expected] of [['origin', [61, 41, 0]], ['axis', [0, 0, 1]]]) {
+      params[key].forEach((value, index) => assert.ok(Math.abs(value - expected[index]) < 1e-9, `${label}: ${key}`));
+    }
+    assert.ok(Math.abs(kernel.faceArea(wall, 0.005) - Math.PI * radius * 12 / 2) < 1e-6, `${label}: wall area`);
+    const levels = Array.from(kernel.getFaceEdges(wall)).flatMap(edge => {
+      const vertices = kernel.getEdgeVertices(edge);
+      return [vertices[2], vertices[5]];
+    });
+    assert.ok(Math.abs(Math.min(...levels) - 8) < 1e-9 && Math.abs(Math.max(...levels) - 20) < 1e-9, `${label}: axial extent`);
+    for (const deflection of [0.005, 0.02]) {
+      const quality = JSON.parse(kernel.meshQuality(solid, deflection));
+      assert.equal(quality.isWatertight, true, `${label}: ${JSON.stringify(quality)}`);
+    }
+    return wall;
+  };
+  try {
+    for (const batch of [false, true]) for (const radius of [20, 21, 22, 28, 30.5, 32]) {
+      const kernel = new BrepKernel();
+      const label = `quarter cylinder r=${radius} batch=${batch}`;
+      try {
+        const solids = Array.from(kernel.deserializeSolids(io.importStep(fixture)));
+        assert.equal(solids.length, 1, label);
+        const source = solids[0];
+        const face = qualify(kernel, source, 20.5, `${label} source`);
+        const before = Uint8Array.from(kernel.serializeSolids(Uint32Array.of(source)));
+        const counts = Array.from(kernel.getEntityCounts(source));
+        let result;
+        if (batch) {
+          const [response] = JSON.parse(kernel.executeBatchV2(JSON.stringify([{
+            op: 'resizeCylindricalFace', args: { solid: source, face, radius },
+          }])));
+          if (radius >= 30.5) {
+            assert.ok(response.error, `${label}: must refuse`);
+            assert.match(JSON.stringify(response.error), /quarter-wall sweep may contact a nonadjacent source face/, label);
+          } else {
+            assert.equal(response.error, undefined, `${label}: ${JSON.stringify(response)}`);
+            result = response.ok;
+          }
+        } else if (radius >= 30.5) {
+          assert.throws(() => kernel.resizeCylindricalFace(source, face, radius), /quarter-wall sweep may contact a nonadjacent source face/, label);
+        } else result = kernel.resizeCylindricalFace(source, face, radius);
+        assert.deepEqual(kernel.serializeSolids(Uint32Array.of(source)), before, `${label}: source preserved`);
+        assert.deepEqual(Array.from(kernel.getEntityCounts(source)), counts, `${label}: source topology`);
+        if (radius >= 30.5) continue;
+        qualify(kernel, result, radius, label);
+        for (const [point, inside] of [
+          [[10, 10, 4], true], [[67, 20, 14], true], [[10, 10, 14], false],
+          [[50, 45, 14], false], [[50, 30, 22], false],
+          [[61 - (radius + 20.5) / (2 * Math.SQRT2), 41 - (radius + 20.5) / (2 * Math.SQRT2), 14], radius > 20.5],
+        ]) assert.equal(kernel.classifyPoint(result, ...point, 1e-7), inside ? 'inside' : 'outside', label);
+        const step = io.exportStep(kernel.serializeSolids(Uint32Array.of(result)));
+        const round = new BrepKernel();
+        try {
+          const roundSolids = Array.from(round.deserializeSolids(io.importStep(step)));
+          assert.equal(roundSolids.length, 1, label);
+          qualify(round, roundSolids[0], radius, `${label} STEP`);
+        } finally { round.free(); }
+      } finally { kernel.free(); }
+    }
+  } finally { io.free(); }
+  console.log('ok - quarter-cylinder direct/batch: 8 exact resizes with STEP round trips, 4 collision refusals with rollback');
 };
