@@ -23,6 +23,7 @@ import {
   runDefeatureHistoryRegression,
   runHealingHistoryRegression,
   runWideSphereCapRegression,
+  runSphereCylinderWallRegression,
   runOffsetConeSphereRegression,
   runOffsetSphereCylinderRegression,
   runOffsetTorusSphereRegression,
@@ -749,6 +750,7 @@ for (const operation of ['fillet', 'chamfer']) {
 runOpenZcadCylindricalFaceResizeRegression({ BrepKernel, decodeEvolutionPayload, RemusIo });
 
 runWideSphereCapRegression({ BrepKernel, RemusIo });
+runSphereCylinderWallRegression({ BrepKernel, RemusIo });
 runOffsetConeSphereRegression({ BrepKernel });
 runOffsetSphereCylinderRegression({ BrepKernel });
 
