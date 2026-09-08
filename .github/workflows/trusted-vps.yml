@@ -4,6 +4,12 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      runner:
+        description: Trusted runner to validate
+        type: choice
+        default: ci-small
+        options: [ci-small, ci-vm-1441561, ci-server-jane, ci-server-jane-1, ci-server-jane-2, ci-server-john]
 
 permissions:
   contents: read
@@ -13,7 +19,21 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  route:
+    if: >-
+      github.repository == 'esaueng/remus' &&
+      github.ref == 'refs/heads/main' &&
+      github.ref_protected &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      vars.REMUS_TRUSTED_VPS_ENABLED == 'true'
+    permissions:
+      id-token: write
+    uses: esaueng/remus/.github/workflows/select-runner.yml@d7168a6576f078f6128191f5b37ac38068c8f0af
+    with:
+      enabled: ${{ vars.CI_FLEET_ENABLED == 'true' }}
+
   policy:
+    needs: route
     name: VPS policy probe (${{ matrix.probe }})
     # The variable is an activation switch, not an access control. The runner
     # group must separately allow this repository and this workflow on main.
@@ -22,15 +42,15 @@ jobs:
       github.ref == 'refs/heads/main' &&
       github.ref_protected &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
-      vars.REMUS_TRUSTED_VPS_ENABLED == 'true'
+      vars.REMUS_TRUSTED_VPS_ENABLED == 'true' &&
+      (needs.route.outputs.target != 'github-hosted' || (inputs.runner && inputs.runner != 'ci-small'))
     runs-on:
       group: ci-trusted-main
-      labels: ci-small
+      labels: ${{ (inputs.runner && inputs.runner != 'ci-small') && inputs.runner || needs.route.outputs.target }}
     timeout-minutes: 5
     strategy:
       fail-fast: false
-      # Both are eligible together; the machine's single listener must serialize
-      # them. A workflow-local limit would hide an accidental second runner.
+      # The shared Jane label exercises both independent slots concurrently.
       max-parallel: 2
       matrix:
         probe: [1, 2]
@@ -39,33 +59,51 @@ jobs:
         shell: bash
     steps:
       - name: Verify runner isolation and fresh storage
-        env:
-          EXPECTED_RUNNER: ci-vm-1441561
         run: |
           set -euo pipefail
           date -u +%FT%TZ
-          test "$RUNNER_NAME" = "$EXPECTED_RUNNER"
-          test "$(id -un)" = ci-runner
+          case "$RUNNER_NAME" in
+            ci-vm-1441561|ci-server-jane|ci-server-john)
+              CI_USER=ci-runner CI_STORAGE=/srv/ci CI_SLICE=ci.slice
+              CI_DOCKER=ci-docker CI_MEMORY=3221225472 CI_CPUS=1
+              CARGO_BUILD_JOBS=1 RUST_TEST_THREADS=1 ;;
+            ci-server-jane-1|ci-server-jane-2)
+              slot=${RUNNER_NAME##*-}
+              CI_USER=ci-slot$slot CI_STORAGE=/srv/ci-slot$slot CI_SLICE=cislot$slot.slice
+              CI_DOCKER=ci-slot$slot-docker CI_MEMORY=6442450944 CI_CPUS=6
+              CARGO_BUILD_JOBS=3 RUST_TEST_THREADS=6 ;;
+            *) echo 'Unknown trusted runner' >&2; exit 1 ;;
+          esac
+          CI_CGROUP=/sys/fs/cgroup/$CI_SLICE
+          test "$(id -un)" = "$CI_USER"
           test "$(id -u)" != 0
-          test "$HOME" = /srv/ci/home
-          test ! -w /opt/ci-runner/bin/Runner.Listener
+          test "$HOME" = "$CI_STORAGE/home"
+          test ! -w "/opt/$CI_USER/bin/Runner.Listener"
           test "$(awk '/^NoNewPrivs:/ {print $2}' /proc/self/status)" = 1
           test ! -e "$HOME/.remus-ci-sentinel"
-          test ! -e /srv/ci/work/.remus-ci-sentinel
-          touch "$HOME/.remus-ci-sentinel" /srv/ci/work/.remus-ci-sentinel
-          test "$DOCKER_HOST" = unix:///run/ci-docker/docker.sock
+          test ! -e "$CI_STORAGE/work/.remus-ci-sentinel"
+          touch "$HOME/.remus-ci-sentinel" "$CI_STORAGE/work/.remus-ci-sentinel"
+          test "$DOCKER_HOST" = "unix:///run/$CI_DOCKER/docker.sock"
           docker info --format '{{json .SecurityOptions}}' | jq -e 'index("name=rootless") != null'
           test -z "$(docker ps --all --quiet)"
           test -z "$(docker image ls --quiet)"
-          test "$(cat /sys/fs/cgroup/ci.slice/memory.max)" = 3221225472
-          test "$(cat /sys/fs/cgroup/ci.slice/memory.swap.max)" = 0
-          awk '{exit !($1 == $2)}' /sys/fs/cgroup/ci.slice/cpu.max
-          grep -Fx '0::/ci.slice/ci-runner.service' /proc/self/cgroup
+          test "$(cat "$CI_CGROUP/memory.max")" = "$CI_MEMORY"
+          test "$(cat "$CI_CGROUP/memory.swap.max")" = 0
+          awk -v cpus="$CI_CPUS" '{exit !($1 == $2 * cpus)}' "$CI_CGROUP/cpu.max"
+          grep -Fx "0::/$CI_SLICE/$CI_USER.service" /proc/self/cgroup
+          case ",$(findmnt -n -o OPTIONS --mountpoint "$CI_STORAGE")," in
+            *,nosuid,*) ;; *) exit 1 ;; esac
+          {
+            echo "CI_CGROUP=$CI_CGROUP"
+            echo "CI_STORAGE=$CI_STORAGE"
+            echo "CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS"
+            echo "RUST_TEST_THREADS=$RUST_TEST_THREADS"
+          } >> "$GITHUB_ENV"
           cat /proc/self/cgroup
           git --version
           python3 --version
           /usr/bin/time --version
-          df -h /srv/ci
+          df -h "$CI_STORAGE"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
@@ -74,6 +112,9 @@ jobs:
         run: /usr/bin/time -v ./scripts/check-boundaries.sh
       - name: CI classifier unit tests
         run: /usr/bin/time -v python3 scripts/test-classify-ci-changes.py
+      - name: Allow concurrent slot observation
+        if: github.event_name == 'workflow_dispatch' && inputs.runner == 'ci-server-jane'
+        run: sleep 30
       - name: Record capacity evidence
         if: always()
         run: |
@@ -85,8 +126,8 @@ jobs:
             echo 'CI slice counters below may include earlier jobs; inspect host cleanup after completion.'
             for metric in memory.current memory.peak memory.events; do
               echo "$metric"
-              cat "/sys/fs/cgroup/ci.slice/$metric"
+              cat "$CI_CGROUP/$metric"
             done
             du -sh "$HOME" "$GITHUB_WORKSPACE"
-            df -h /srv/ci
+            df -h "$CI_STORAGE"
           } | tee -a "$GITHUB_STEP_SUMMARY"
