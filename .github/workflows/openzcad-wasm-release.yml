@@ -7,47 +7,8 @@ permissions:
   contents: read
 
 jobs:
-  package:
-    name: Build fork package
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 24
-
-      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
-
-      - uses: taiki-e/install-action@742a3317eac7bd62f91cd888b4eead5e784ba833 # v2.87.1
-        with:
-          tool: wasm-pack
-
-      - name: Build and validate WASM packages
-        run: cargo xtask wasm-build
-
-      - name: Stamp fork provenance
-        run: |
-          for pkg in crates/wasm/pkg crates/wasm-io/pkg; do
-            npm --prefix "$pkg" pkg set \
-              repository.type=git \
-              repository.url=git+https://github.com/esaueng/remus.git \
-              homepage=https://github.com/esaueng/remus \
-              remusSourceCommit="$GITHUB_SHA"
-          done
-
-      - name: Pack npm-compatible artifacts
-        id: pack
-        run: |
-          mkdir -p "$RUNNER_TEMP/packed"
-          for pkg in crates/wasm/pkg crates/wasm-io/pkg; do
-            (cd "$pkg" && npm pack --pack-destination "$RUNNER_TEMP/packed")
-          done
-          echo "path=$RUNNER_TEMP/packed" >> "$GITHUB_OUTPUT"
-
-      - name: Upload validation artifacts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: remus-wasm-candidate-${{ github.sha }}
-          path: ${{ steps.pack.outputs.path }}/*.tgz
-          if-no-files-found: error
+  checks:
+    uses: esaueng/remus/.github/workflows/fleet-wasm-candidate.yml@6d8b64129c5d77748f089451450452d277892b37
+    permissions:
+      contents: read
+      pull-requests: read
