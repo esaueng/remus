@@ -197,12 +197,15 @@ pub(super) fn find_splits_on_line(
     if edge_len_sq < tol * tol {
         return Vec::new();
     }
+    let edge_length = edge_len_sq.sqrt();
+    let endpoint_parameter_band = tol / edge_length;
+    let weld = super::local_weld_band(tol, edge_length);
     let mut splits = Vec::new();
     for &sp in split_pts_3d {
         crate::perf::bump_face_split_probe();
         let to_pt = sp - edge.start_3d;
         let t = to_pt.dot(edge_dir) / edge_len_sq;
-        if t <= tol || t >= 1.0 - tol {
+        if t <= endpoint_parameter_band || t >= 1.0 - endpoint_parameter_band {
             continue;
         }
         let closest = edge.start_3d + edge_dir * t;
@@ -214,7 +217,7 @@ pub(super) fn find_splits_on_line(
         // pendant the arrangement rightly refuses, so the face under-splits
         // and the fuse aborts on an open growth shell. The split point uses
         // the foot on the line, so boundary pieces stay exact.
-        if dist < tol * 100.0 {
+        if dist < weld {
             // Return the FOOT, not the raw candidate: the candidate may sit
             // anywhere in the weld band, and consumers thread the returned
             // point into wires (section T-junction splits use it verbatim).
@@ -222,12 +225,25 @@ pub(super) fn find_splits_on_line(
         }
     }
     splits.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-    // Weld-scale 3D dedup: two candidates within the weld band are copies of
-    // the SAME junction carrying different fit error (~1e-6); a parameter-only
-    // exact-tol dedup keeps both and mints an untrackable micro boundary piece
-    // between them.
-    splits.dedup_by(|a, b| (a.0 - b.0).abs() < tol || (a.1 - b.1).length() < tol * 100.0);
+    // Fit-error copies of one junction must weld in model space. Comparing
+    // normalized fractions with a length tolerance also merges distinct
+    // anchors on long edges.
+    splits.dedup_by(|a, b| (a.1 - b.1).length() < weld);
     splits
+}
+
+// Angular fractions have no fixed conversion to length, especially on an
+// ellipse. Endpoint coincidence uses the same model-space distance as vertices.
+fn arc_split_is_interior(
+    edge: &OrientedPCurveEdge,
+    point: Point3,
+    fraction: f64,
+    linear: f64,
+) -> bool {
+    fraction > 0.0
+        && fraction < 1.0
+        && (point - edge.start_3d).length() > linear
+        && (point - edge.end_3d).length() > linear
 }
 
 /// Find split parameters on a circle edge. Uses `Circle3D::project` for angular
@@ -328,13 +344,13 @@ pub(super) fn find_splits_on_circle(
         } else {
             normalize_angle_in_span(angle, t0, span)
         };
-        if t_norm <= tol || t_norm >= 1.0 - tol {
+        if !arc_split_is_interior(edge, closest, t_norm, tol) {
             continue;
         }
         splits.push((t_norm, closest));
     }
     splits.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-    splits.dedup_by(|a, b| (a.0 - b.0).abs() < tol);
+    splits.dedup_by(|a, b| (a.1 - b.1).length() < tol);
     // Only once the rim is actually being cut. An UNSPLIT closed rim is a full
     // circle, which `domain_with_endpoints` recovers from the curve's own
     // domain with no ambiguity to resolve — subdividing it would split every
@@ -444,23 +460,21 @@ pub(super) fn circle_edge_is_iso_v_rim(
 /// The chord-based `find_splits_on_line` misses a junction point that lies on
 /// the CURVE but off its chord (a plane×cone conic bulges millimetres past the
 /// chord), so a section chain meeting the conic mid-span never splits it and
-/// the weave breaks (the dovetail tongue-relief cone cap). Parameters use the
-/// same normalized-[0,1]-over-`domain_with_endpoints` convention as
-/// `evaluate_edge_at_t`'s NURBS arm, returned in order ALONG THE EDGE
-/// (descending `t` when the stored curve runs `end_3d` → `start_3d`).
+/// the weave breaks. Returned fractions follow the carried traversal domain,
+/// matching the child-trim construction at both splitting call sites.
 pub(super) fn find_splits_on_nurbs_section(
     edge: &OrientedPCurveEdge,
     split_pts_3d: &[Point3],
     tol: f64,
 ) -> Vec<(f64, Point3)> {
+    let EdgeCurve::NurbsCurve(curve) = &edge.curve_3d else {
+        return Vec::new();
+    };
+    let bounds = curve.aabb().expanded(tol);
     let n_samples = 64usize;
-    // Hoist the domain: `evaluate_edge_at_t` re-derives `domain_with_endpoints`
-    // on EVERY call, and for a trimmed NURBS sub-span that is two iterative
-    // point-to-curve projections per evaluation — this finder makes ~115
-    // evaluations per candidate point, which turned each pad-fuse face split
-    // into ~700ms (the lite magnet scenarios' timeout class). One domain
-    // computation per edge, then direct parametric evaluation.
-    let (dom0, dom1) = edge.domain();
+    // Hoist the carried domain: reconstructing it at every evaluation repeats
+    // endpoint projections and loses the trim and reverse-twin orientation.
+    let (dom0, dom1) = edge.traversal_domain();
     let dom_span = dom1 - dom0;
     let eval_at = |t: f64| -> Point3 {
         edge.curve_3d
@@ -475,8 +489,12 @@ pub(super) fn find_splits_on_nurbs_section(
     let mut splits: Vec<(f64, Point3)> = Vec::new();
     for &sp in split_pts_3d {
         crate::perf::bump_face_split_probe();
-        // Nearest sample, then ternary-refine the distance over the two
-        // neighbouring segments.
+        // A distant sample cannot reject an on-curve point between samples;
+        // only the conservative control-polygon bound supports early rejection.
+        if !bounds.contains_point(sp) {
+            continue;
+        }
+        // Nearest sample, then refine within its two neighbouring segments.
         let (mut best_i, mut best_d) = (0usize, f64::MAX);
         for (i, s) in samples.iter().enumerate() {
             let d = (*s - sp).length();
@@ -485,41 +503,58 @@ pub(super) fn find_splits_on_nurbs_section(
                 best_i = i;
             }
         }
-        if best_d > tol * 100.0 {
-            continue;
-        }
         #[allow(clippy::cast_precision_loss)]
         let (mut lo, mut hi) = (
             best_i.saturating_sub(1) as f64 / n_samples as f64,
             (best_i + 1).min(n_samples) as f64 / n_samples as f64,
         );
-        for _ in 0..50 {
-            let m1 = lo + (hi - lo) / 3.0;
-            let m2 = hi - (hi - lo) / 3.0;
-            if (eval_at(m1) - sp).length() < (eval_at(m2) - sp).length() {
-                hi = m2;
-            } else {
-                lo = m1;
+        #[allow(clippy::cast_precision_loss)]
+        let mut t = best_i as f64 / n_samples as f64;
+        // Tangent projection usually resolves an on-curve anchor in a few
+        // steps; keep it inside the sampled bracket and verify in model space.
+        for _ in 0..12 {
+            let residual = eval_at(t) - sp;
+            if residual.length() <= tol * 0.1 {
+                break;
             }
+            let tangent = curve.derivatives(t.mul_add(dom_span, dom0), 1)[1] * dom_span;
+            let speed_squared = tangent.dot(tangent);
+            if !speed_squared.is_finite() || speed_squared <= f64::MIN_POSITIVE {
+                break;
+            }
+            let candidate = (t - residual.dot(tangent) / speed_squared).clamp(lo, hi);
+            if (candidate - t).abs() <= f64::EPSILON {
+                break;
+            }
+            t = candidate;
         }
-        let t = f64::midpoint(lo, hi);
+        if (eval_at(t) - sp).length() > tol {
+            // Refine to floating-point resolution rather than a fixed parameter
+            // accuracy that expands into a large model-space error.
+            for _ in 0..96 {
+                let m1 = lo + (hi - lo) / 3.0;
+                let m2 = hi - (hi - lo) / 3.0;
+                if m1 <= lo || m2 >= hi {
+                    break;
+                }
+                if (eval_at(m1) - sp).length() < (eval_at(m2) - sp).length() {
+                    hi = m2;
+                } else {
+                    lo = m1;
+                }
+            }
+            t = f64::midpoint(lo, hi);
+        }
         if (eval_at(t) - sp).length() > tol {
             continue;
         }
-        if t <= tol || t >= 1.0 - tol {
+        if !arc_split_is_interior(edge, sp, t, tol) {
             continue;
         }
         splits.push((t, sp));
     }
     splits.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-    splits.dedup_by(|a, b| (a.0 - b.0).abs() < tol);
-    // `t` runs over the natural knot domain, which for the REVERSE twin of a
-    // section pair runs end→start relative to the edge. The piece-building
-    // loop walks `start_3d` → `end_3d`, so hand it splits in EDGE order —
-    // ascending-t pieces on a reversed twin overlap once there are ≥2 splits.
-    if (samples[n_samples] - edge.start_3d).length() < (samples[0] - edge.start_3d).length() {
-        splits.reverse();
-    }
+    splits.dedup_by(|a, b| (a.1 - b.1).length() < tol);
     splits
 }
 
@@ -560,13 +595,13 @@ pub(super) fn find_splits_on_section_arc(
             continue;
         }
         let t_norm = shorter_arc_delta(angle - a0) / delta;
-        if t_norm <= tol || t_norm >= 1.0 - tol {
+        if !arc_split_is_interior(edge, closest, t_norm, tol) {
             continue;
         }
         splits.push((t_norm, sp));
     }
     splits.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-    splits.dedup_by(|a, b| (a.0 - b.0).abs() < tol);
+    splits.dedup_by(|a, b| (a.1 - b.1).length() < tol);
     splits
 }
 
@@ -609,13 +644,13 @@ pub(super) fn find_splits_on_section_ellipse(
             continue;
         }
         let t_norm = shorter_arc_delta(angle - a0) / delta;
-        if t_norm <= tol || t_norm >= 1.0 - tol {
+        if !arc_split_is_interior(edge, closest, t_norm, tol) {
             continue;
         }
         splits.push((t_norm, sp));
     }
     splits.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-    splits.dedup_by(|a, b| (a.0 - b.0).abs() < tol);
+    splits.dedup_by(|a, b| (a.1 - b.1).length() < tol);
     splits
 }
 
@@ -640,13 +675,13 @@ pub(super) fn find_splits_on_ellipse(
             continue;
         }
         let t_norm = normalize_angle_in_span(angle, t0, span);
-        if t_norm <= tol || t_norm >= 1.0 - tol {
+        if !arc_split_is_interior(edge, closest, t_norm, tol) {
             continue;
         }
         splits.push((t_norm, sp));
     }
     splits.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-    splits.dedup_by(|a, b| (a.0 - b.0).abs() < tol);
+    splits.dedup_by(|a, b| (a.1 - b.1).length() < tol);
     splits
 }
 
@@ -671,15 +706,16 @@ mod tests {
         } else {
             (pts[0], pts[8])
         };
+        let domain = nurbs.domain();
         OrientedPCurveEdge {
             curve_3d: EdgeCurve::NurbsCurve(nurbs),
-            trim: None,
+            trim: Some(domain),
             pcurve: Curve2D::Line(Line2D::new(Point2::new(0.0, 0.0), Vec2::new(1.0, 0.0)).unwrap()),
             start_uv: Point2::new(0.0, 0.0),
             end_uv: Point2::new(1.0, 0.0),
             start_3d,
             end_3d,
-            forward: true,
+            forward: !reversed,
             source_edge_idx: None,
             pave_block_id: None,
             source_topo_edge: None,
@@ -927,10 +963,8 @@ mod tests {
 
     #[test]
     fn nurbs_section_splits_ordered_along_reversed_twin() {
-        // The reverse twin stores the SAME curve but swapped endpoints, so
-        // ascending natural-domain `t` runs end→start; the splits must come
-        // back ordered from `start_3d` (nearest first) or the piece-building
-        // loop emits overlapping pieces.
+        // The reverse twin shares its native trim but traverses it backwards;
+        // returned fractions must tile children from start to end.
         let edge = parabola_section_edge(true);
         let eval = |t: f64| {
             evaluate_edge_at_t(
@@ -944,8 +978,8 @@ mod tests {
         let (sp_a, sp_b) = (eval(0.3), eval(0.7));
         let splits = find_splits_on_nurbs_section(&edge, &[sp_a, sp_b], 1e-3);
         assert_eq!(splits.len(), 2);
-        assert!((splits[0].1 - sp_b).length() < 1e-6);
-        assert!((splits[1].1 - sp_a).length() < 1e-6);
+        assert!((splits[0].1 - sp_a).length() < 1e-6);
+        assert!((splits[1].1 - sp_b).length() < 1e-6);
         let d0 = (splits[0].1 - edge.start_3d).length();
         let d1 = (splits[1].1 - edge.start_3d).length();
         assert!(d0 < d1, "splits must walk start_3d → end_3d");
@@ -983,5 +1017,223 @@ mod tests {
         // Beyond the weld band: rejected.
         let far = Point3::new(4.0, 200.0 * tol, 0.0);
         assert!(find_splits_on_line(&edge, &[far], tol).is_empty());
+    }
+
+    #[test]
+    fn line_split_endpoint_and_dedup_bands_have_length_units() {
+        let tol = 1e-7;
+        for length in [1e-4, 1.0, 1e6] {
+            let edge = OrientedPCurveEdge {
+                curve_3d: EdgeCurve::Line,
+                trim: None,
+                pcurve: Curve2D::Line(
+                    Line2D::new(Point2::new(0.0, 0.0), Vec2::new(1.0, 0.0)).unwrap(),
+                ),
+                start_uv: Point2::new(0.0, 0.0),
+                end_uv: Point2::new(length, 0.0),
+                start_3d: Point3::new(0.0, 0.0, 0.0),
+                end_3d: Point3::new(length, 0.0, 0.0),
+                forward: true,
+                source_edge_idx: None,
+                pave_block_id: None,
+                source_topo_edge: None,
+            };
+            let near_endpoints = [
+                Point3::new(0.5 * tol, 0.0, 0.0),
+                Point3::new(length - 0.5 * tol, 0.0, 0.0),
+            ];
+            assert!(
+                find_splits_on_line(&edge, &near_endpoints, tol).is_empty(),
+                "sub-tolerance endpoint pieces at length {length:e}"
+            );
+            let separation = 0.001_f64.min(length * 0.1);
+            let probes = [
+                Point3::new(separation, 0.0, 0.0),
+                Point3::new(length * 0.5, 0.0, 0.0),
+                Point3::new(length * 0.5 + separation, 0.0, 0.0),
+                Point3::new(length - separation, 0.0, 0.0),
+            ];
+            let splits = find_splits_on_line(&edge, &probes, tol);
+            assert_eq!(
+                splits.len(),
+                probes.len(),
+                "distinct anchors at length {length:e}"
+            );
+            for ((_, foot), expected) in splits.iter().zip(probes) {
+                assert!((*foot - expected).length() <= tol);
+            }
+        }
+    }
+
+    #[test]
+    fn analytic_arc_split_bands_have_length_units() {
+        use remus_math::{
+            curves::{Circle3D, Ellipse3D},
+            vec::Vec3,
+        };
+        let tol = 1e-7;
+        let mut failures = Vec::new();
+        for radius in [1e-4, 1.0, 1e6] {
+            let center = Point3::new(0.0, 0.0, 0.0);
+            let normal = Vec3::new(0.0, 0.0, 1.0);
+            let circle = Circle3D::new(center, normal, radius).unwrap();
+            let ellipse = Ellipse3D::new(center, normal, 2.0 * radius, radius).unwrap();
+            for kind in [
+                "circle-boundary",
+                "circle-section",
+                "ellipse-boundary",
+                "ellipse-section",
+            ] {
+                for forward in [true, false] {
+                    if kind.ends_with("boundary") && !forward {
+                        continue;
+                    }
+                    let circular = kind.starts_with("circle");
+                    let evaluate = |angle| {
+                        if circular {
+                            circle.evaluate(angle)
+                        } else {
+                            ellipse.evaluate(angle)
+                        }
+                    };
+                    let mut edge = ellipse_section_edge(&ellipse, 0.2, 1.0, forward);
+                    if circular {
+                        edge.curve_3d = EdgeCurve::Circle(circle.clone());
+                    }
+                    edge.start_3d = evaluate(if forward { 0.2 } else { 1.0 });
+                    edge.end_3d = evaluate(if forward { 1.0 } else { 0.2 });
+                    let split = |points: &[Point3]| match kind {
+                        "circle-boundary" => find_splits_on_circle(
+                            &circle,
+                            &edge,
+                            points,
+                            &FaceSurface::Plane { normal, d: 0.0 },
+                            tol,
+                        ),
+                        "circle-section" => find_splits_on_section_arc(&edge, points, tol),
+                        "ellipse-boundary" => find_splits_on_ellipse(&ellipse, &edge, points, tol),
+                        _ => find_splits_on_section_ellipse(&edge, points, tol),
+                    };
+                    let near = 0.1 * tol / (2.0 * radius);
+                    let endpoints = [evaluate(0.2 + near), evaluate(1.0 - near)];
+                    if !split(&endpoints).is_empty() {
+                        failures.push(format!(
+                            "{kind} radius={radius:e}: retained sub-tolerance endpoint pieces"
+                        ));
+                    }
+                    let duplicates = [evaluate(0.6), evaluate(0.6 + near)];
+                    if split(&duplicates).len() != 1 {
+                        failures.push(format!("{kind} radius={radius:e} forward={forward}: near-coincident anchors did not merge"));
+                    }
+                    let gap = 0.001_f64.min(radius * 0.05) / (2.0 * radius);
+                    let probes = [
+                        evaluate(0.2 + gap),
+                        evaluate(0.6),
+                        evaluate(0.6 + gap),
+                        evaluate(1.0 - gap),
+                    ];
+                    let actual = split(&probes);
+                    if probes.iter().any(|probe| {
+                        actual
+                            .iter()
+                            .all(|(_, point)| (*point - *probe).length() > tol)
+                    }) {
+                        failures.push(format!(
+                            "{kind} radius={radius:e} forward={forward}: missing geometric anchor"
+                        ));
+                    }
+                    if actual.len() != probes.len() {
+                        failures.push(format!(
+                            "{kind} radius={radius:e}: {} anchors, expected {}",
+                            actual.len(),
+                            probes.len()
+                        ));
+                    }
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
+    fn nurbs_sections_project_default_tolerance_anchors_in_traversal_order() {
+        let mut failures = Vec::new();
+        for scale in [1e-4, 1.0, 1e6] {
+            let points: Vec<_> = (0..=8)
+                .map(|i| {
+                    let x = -2.0 + 0.5 * f64::from(i);
+                    Point3::new(scale * x, scale * x * x, 0.0)
+                })
+                .collect();
+            let curve = interpolate(&points, 3).unwrap();
+            let domain = curve.domain();
+            for trimmed in [false, true] {
+                let interval = if trimmed {
+                    (
+                        domain.0 + 0.2 * (domain.1 - domain.0),
+                        domain.0 + 0.8 * (domain.1 - domain.0),
+                    )
+                } else {
+                    domain
+                };
+                for forward in [true, false] {
+                    let mut edge = parabola_section_edge(false);
+                    edge.curve_3d = EdgeCurve::NurbsCurve(curve.clone());
+                    edge.trim = Some(interval);
+                    edge.forward = forward;
+                    edge.start_3d = curve.evaluate(if forward { interval.0 } else { interval.1 });
+                    edge.end_3d = curve.evaluate(if forward { interval.1 } else { interval.0 });
+                    let (u0, u1) = edge.traversal_domain();
+                    let distinct_gap = (1e-4_f64 / scale).min(0.05);
+                    let probes: Vec<_> = [0.123, 0.3, 0.3 + distinct_gap, 0.7, 0.876]
+                        .into_iter()
+                        .map(|f| curve.evaluate((u1 - u0).mul_add(f, u0)))
+                        .collect();
+                    let result = find_splits_on_nurbs_section(&edge, &probes, 1e-7);
+                    let label = format!("scale={scale:e} trimmed={trimmed} forward={forward}");
+                    if result.len() != probes.len() {
+                        failures.push(format!(
+                            "{label}: {} anchors vs {}",
+                            result.len(),
+                            probes.len()
+                        ));
+                    }
+                    for (i, &(fraction, point)) in result.iter().enumerate() {
+                        let evaluated = curve.evaluate((u1 - u0).mul_add(fraction, u0));
+                        if (evaluated - point).length() > 1e-7
+                            || (point - probes[i]).length() > 1e-7
+                        {
+                            failures.push(format!(
+                                "{label}: anchor {i} parameter does not follow traversal"
+                            ));
+                        }
+                    }
+                    let off_curve = Point3::new(0.1 * scale, scale, 0.0);
+                    if !find_splits_on_nurbs_section(&edge, &[off_curve], 1e-7).is_empty() {
+                        failures.push(format!("{label}: accepted an off-curve point"));
+                    }
+                    let tiny_fraction = 1e-9 / scale;
+                    let endpoint_probes = [tiny_fraction, 1.0 - tiny_fraction]
+                        .map(|f| curve.evaluate((u1 - u0).mul_add(f, u0)));
+                    if !find_splits_on_nurbs_section(&edge, &endpoint_probes, 1e-7).is_empty() {
+                        failures.push(format!("{label}: retained sub-tolerance endpoint pieces"));
+                    }
+                    let duplicates = [0.3, 0.3 + tiny_fraction]
+                        .map(|f| curve.evaluate((u1 - u0).mul_add(f, u0)));
+                    if find_splits_on_nurbs_section(&edge, &duplicates, 1e-7).len() != 1 {
+                        failures.push(format!("{label}: near-coincident anchors did not merge"));
+                    }
+                    if trimmed {
+                        let outside = curve.evaluate(domain.0 + 0.05 * (domain.1 - domain.0));
+                        if !find_splits_on_nurbs_section(&edge, &[outside], 1e-7).is_empty() {
+                            failures.push(format!(
+                                "{label}: accepted a point outside the carried trim"
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 }

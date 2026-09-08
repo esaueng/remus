@@ -300,10 +300,12 @@ pub fn transform_solid(
                     let new_center = matrix.mul_point(tor.center());
                     let m = &matrix.0;
                     let sx = (m[0][0] * m[0][0] + m[1][0] * m[1][0] + m[2][0] * m[2][0]).sqrt();
-                    let new_tor = remus_math::surfaces::ToroidalSurface::new(
+                    let new_tor = remus_math::surfaces::ToroidalSurface::with_axis_and_ref_dir(
                         new_center,
                         tor.major_radius() * sx,
                         tor.minor_radius() * sx,
+                        transform_direction(matrix, tor.z_axis())?,
+                        transform_direction(matrix, tor.x_axis())?,
                     )?;
                     topo.face_mut(fid)?.set_surface(FaceSurface::Torus(new_tor));
                 } else {
@@ -611,10 +613,12 @@ pub(crate) fn transform_face_surface(
                 let new_center = matrix.mul_point(tor.center());
                 let m = &matrix.0;
                 let sx = (m[0][0] * m[0][0] + m[1][0] * m[1][0] + m[2][0] * m[2][0]).sqrt();
-                let new_tor = remus_math::surfaces::ToroidalSurface::new(
+                let new_tor = remus_math::surfaces::ToroidalSurface::with_axis_and_ref_dir(
                     new_center,
                     tor.major_radius() * sx,
                     tor.minor_radius() * sx,
+                    transform_direction(matrix, tor.z_axis())?,
+                    transform_direction(matrix, tor.x_axis())?,
                 )?;
                 topo.face_mut(fid)?.set_surface(FaceSurface::Torus(new_tor));
             } else {
@@ -811,9 +815,15 @@ pub(crate) fn transform_edge_curve_with_trim(
     trim: Option<(f64, f64)>,
     matrix: &Mat4,
 ) -> Result<TransformedEdgeCurve, crate::OperationsError> {
-    let origin = matrix.mul_point(remus_math::vec::Point3::new(0.0, 0.0, 0.0));
+    // Translation must not participate in direction arithmetic: subtracting
+    // translated points can make a rigid image falsely appear anisotropic.
     let transform_dir = |d: Vec3| -> Vec3 {
-        matrix.mul_point(remus_math::vec::Point3::new(d.x(), d.y(), d.z())) - origin
+        let m = &matrix.0;
+        Vec3::new(
+            m[0][0].mul_add(d.x(), m[0][1].mul_add(d.y(), m[0][2] * d.z())),
+            m[1][0].mul_add(d.x(), m[1][1].mul_add(d.y(), m[1][2] * d.z())),
+            m[2][0].mul_add(d.x(), m[2][1].mul_add(d.y(), m[2][2] * d.z())),
+        )
     };
     let (new_curve, new_trim) = match curve {
         EdgeCurve::Line => (None, None),

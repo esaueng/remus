@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 const DEFLECTION = 0.1;
 
@@ -257,4 +258,342 @@ export const runOpenZcadCylindricalFaceResizeRegression = ({
 export const runOpenZcadConsumerRegressions = (exports) => {
   runOpenZcadAnalyticFlangeBooleanRegression(exports);
   runOpenZcadCylindricalFaceResizeRegression(exports);
+  runWideSphereCapRegression(exports);
+  runOffsetConeSphereRegression(exports);
+  runOffsetSphereCylinderRegression(exports);
+  runOffsetTorusSphereRegression(exports);
+  runTorusNotchRegression(exports);
+  runTangencyBandRegression(exports);
+  runBooleanScaleRegression(exports);
+  runAnisotropicBooleanRegression(exports);
+};
+
+export const runWideSphereCapRegression = ({ BrepKernel, RemusIo }) => {
+  for (const fixture of ['wide_sphere_cap.step', 'wide_sphere_cap_with_seam.step']) {
+    const kernel = new BrepKernel();
+    const io = new RemusIo();
+    const step = readFileSync(new URL(`../crates/io/tests/data/${fixture}`, import.meta.url));
+    const solids = Array.from(kernel.deserializeSolids(io.importStep(step)));
+    assert.equal(solids.length, 1);
+    const solid = solids[0];
+    assert.equal(kernel.getSolidFaces(solid).length, 2);
+    const expected = (Math.PI * 16.5 ** 2 * (27 - 16.5)) / 3;
+    for (const deflection of [0.045, 0.0045]) {
+      const mesh = kernel.tessellateSolid(solid, deflection);
+      let volume = 0;
+      for (let i = 0; i < mesh.indices.length; i += 3) {
+        const a = mesh.indices[i] * 3;
+        const b = mesh.indices[i + 1] * 3;
+        const c = mesh.indices[i + 2] * 3;
+        const p = mesh.positions;
+        volume +=
+          (p[a] * (p[b + 1] * p[c + 2] - p[b + 2] * p[c + 1]) +
+            p[a + 1] * (p[b + 2] * p[c] - p[b] * p[c + 2]) +
+            p[a + 2] * (p[b] * p[c + 1] - p[b + 1] * p[c])) /
+          6;
+      }
+      assert.ok(
+        Math.abs(volume - expected) / expected < 0.01,
+        `wide spherical cap volume ${volume} vs ${expected}`,
+      );
+      const direct = JSON.parse(kernel.meshQuality(solid, deflection));
+      assert.equal(direct.isWatertight, true);
+      assert.equal(direct.boundaryEdges, 0);
+      assert.equal(direct.nonManifoldEdges, 0);
+      const [batch] = JSON.parse(
+        kernel.executeBatch(JSON.stringify([{ op: 'meshQuality', args: { solid, deflection } }])),
+      );
+      assert.deepEqual(batch.ok, direct);
+    }
+    kernel.free();
+    io.free();
+  }
+  console.log('ok - wide spherical cap preserves closed-form volume and direct/batch mesh quality');
+};
+
+export const runOffsetConeSphereRegression = ({ BrepKernel }) => {
+  // Independent horizontal-disk overlap integral, also pinned by the native matrix.
+  const overlap = 197.10640301106753;
+  for (const [operation, expected] of [
+    ['fuse', (208 + 256 / 3) * Math.PI - overlap],
+    ['cut', 208 * Math.PI - overlap],
+    ['intersect', overlap],
+  ]) {
+    const kernel = new BrepKernel();
+    const cone = kernel.makeCone(6, 2, 12);
+    const sphere = kernel.makeSphere(4, 24);
+    kernel.transformSolid(
+      sphere,
+      new Float64Array([1, 0, 0, 2, 0, 1, 0, 0, 0, 0, 1, 6, 0, 0, 0, 1]),
+    );
+    const result = kernel.booleanWithQuality(operation, cone, sphere, true);
+    assert.equal(result.quality, 'exact', `${operation}: exact seam result`);
+    assert.equal(kernel.validateSolid(result.solid), 0, `${operation}: valid shell`);
+    const volume = kernel.volume(result.solid, 0.01);
+    assert.ok(
+      Math.abs(volume - expected) < expected * 0.001,
+      `${operation}: ${volume} vs ${expected}`,
+    );
+  }
+  console.log('ok - offset cone/sphere: exact fuse, cut, intersect against disk-overlap oracle');
+};
+
+export const runOffsetSphereCylinderRegression = ({ BrepKernel }) => {
+  // Independent horizontal-disk overlap integral, also pinned by the native matrix.
+  const overlap = 294.1884259241949;
+  for (const [operation, expected] of [
+    ['fuse', (288 + 180) * Math.PI - overlap],
+    ['cut', 288 * Math.PI - overlap],
+    ['intersect', overlap],
+  ]) {
+    const kernel = new BrepKernel();
+    const sphere = kernel.makeSphere(6, 24);
+    const cylinder = kernel.makeCylinder(3, 20);
+    kernel.transformSolid(
+      cylinder,
+      new Float64Array([1, 0, 0, 2, 0, 1, 0, 0, 0, 0, 1, -10, 0, 0, 0, 1]),
+    );
+    const result = kernel.booleanWithQuality(operation, sphere, cylinder, true);
+    assert.equal(result.quality, 'exact', `${operation}: exact seam result`);
+    assert.equal(kernel.validateSolid(result.solid), 0, `${operation}: valid shell`);
+    const volume = kernel.volume(result.solid, 0.01);
+    assert.ok(
+      Math.abs(volume - expected) < expected * 0.001,
+      `${operation}: ${volume} vs ${expected}`,
+    );
+  }
+  console.log('ok - offset sphere/cylinder: exact fuse, cut, intersect against disk-overlap oracle');
+};
+
+
+export const runOffsetTorusSphereRegression = ({ BrepKernel }) => {
+  // Independent annulus/disk overlap integral from the native qualification matrix.
+  const overlap = 56.2702148298352;
+  for (const [operation, expected] of [
+    ['fuse', 48 * Math.PI ** 2 + 36 * Math.PI - overlap],
+    ['cut', 48 * Math.PI ** 2 - overlap],
+    ['intersect', overlap],
+  ]) {
+    const kernel = new BrepKernel();
+    const torus = kernel.makeTorus(6, 2, 32);
+    const sphere = kernel.makeSphere(3, 24);
+    kernel.transformSolid(
+      sphere,
+      new Float64Array([1, 0, 0, 5, 0, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 1]),
+    );
+    const c = Math.cos(0.37);
+    const s = Math.sin(0.37);
+    const placement = new Float64Array([c, 0, s, 17, 0, 1, 0, -23, -s, 0, c, 31, 0, 0, 0, 1]);
+    kernel.transformSolid(torus, placement);
+    kernel.transformSolid(sphere, placement);
+    const result = kernel.booleanWithQuality(operation, torus, sphere, true);
+    assert.equal(result.quality, 'exact', `${operation}: exact torus seam result`);
+    assert.equal(kernel.validateSolid(result.solid), 0, `${operation}: valid torus seam shell`);
+    const volume = kernel.volume(result.solid, 0.01);
+    assert.ok(Math.abs(volume - expected) < expected * 0.001, `${operation}: ${volume} vs ${expected}`);
+  }
+  console.log('ok - offset torus/sphere: exact rotated fuse, cut, intersect against annulus-overlap oracle');
+};
+
+export const runBooleanScaleRegression = ({ BrepKernel }) => {
+  for (let exponent = -5; exponent <= 6; exponent += 1) {
+    const scale = 10 ** exponent;
+    for (const placed of [false, true]) {
+      for (const [operation, expected] of [['fuse', 1.16], ['cut', 0.84], ['intersect', 0.16]]) {
+        const kernel = new BrepKernel();
+        const blank = kernel.makeBox(scale, scale, scale);
+        const tool = kernel.makeBox(0.4 * scale, 0.4 * scale, 2 * scale);
+        kernel.transformSolid(tool, new Float64Array([1, 0, 0, 0.3 * scale, 0, 1, 0, 0.3 * scale, 0, 0, 1, -0.5 * scale, 0, 0, 0, 1]));
+        if (placed) {
+          const c = Math.cos(0.37);
+          const s = Math.sin(0.37);
+          const matrix = new Float64Array([c, 0, s, 17 * scale, 0, 1, 0, -23 * scale, -s, 0, c, 31 * scale, 0, 0, 0, 1]);
+          kernel.transformSolid(blank, matrix);
+          kernel.transformSolid(tool, matrix);
+        }
+        const result = kernel.booleanWithQuality(operation, blank, tool, true);
+        const label = `${operation} scale=${scale} placed=${placed}`;
+        assert.equal(result.quality, 'exact', label);
+        assert.equal(kernel.validateSolid(result.solid), 0, label);
+        const volume = kernel.volume(result.solid, 0.01 * scale) / scale ** 3;
+        assert.ok(Math.abs(volume - expected) / expected < 1e-6, `${label}: ${volume} vs ${expected}`);
+        kernel.free();
+      }
+    }
+  }
+  console.log('ok - 72 exact through-tool boolean cells across scales 1e-5..1e6 and rigid placement');
+};
+
+
+export const runAnisotropicBooleanRegression = ({ BrepKernel }) => {
+  for (const batch of [false, true]) {
+    for (const length of [1, 1e3, 1e6]) for (const width of [0.1, 0.001]) {
+      for (const placed of [false, true]) for (const operation of ['fuse', 'cut', 'intersect']) {
+        const kernel = new BrepKernel();
+        try {
+          const invoke = (op, args) => {
+            const [result] = JSON.parse(kernel.executeBatch(JSON.stringify([{ op, args }])));
+            assert.ok(Object.hasOwn(result, 'ok'), JSON.stringify(result));
+            return result.ok;
+          };
+          const box = (x, y, z) => batch ? invoke('makeBox', { width: x, height: y, depth: z }) : kernel.makeBox(x, y, z);
+          const transform = (solid, matrix) => batch ? invoke('transform', { solid, matrix }) : kernel.transformSolid(solid, new Float64Array(matrix));
+          const boolean = (op, a, b) => batch ? invoke('booleanWithQuality', { operation: op, solidA: a, solidB: b, exactOnly: true }) : kernel.booleanWithQuality(op, a, b, true);
+          const blank = box(length, 1, 1);
+          const tool = box(width, 0.4, 2);
+          transform(tool, [1,0,0,width,0,1,0,0.3,0,0,1,-0.5,0,0,0,1]);
+          const c = Math.cos(0.37), s = Math.sin(0.37);
+          const placement = [c,0,s,17,0,1,0,-23,-s,0,c,31,0,0,0,1];
+          if (placed) for (const solid of [blank, tool]) transform(solid, placement);
+          const result = boolean(operation, blank, tool);
+          const label = `${operation} length=${length} width=${width} placed=${placed} batch=${batch}`;
+          assert.equal(result.quality, 'exact', label);
+          assert.equal(kernel.validateSolid(result.solid), 0, label);
+          const overlap = width * 0.4;
+          const expected = operation === 'fuse' ? length + overlap : operation === 'cut' ? length - overlap : overlap;
+          const tolerance = placed ? Math.max(expected * 1e-9, overlap * 1e-5) : overlap * 1e-5;
+          assert.ok(Math.abs(kernel.volume(result.solid, 0.001) - expected) <= tolerance, `${label}: world volume`);
+          for (const z of [-0.25, 0.5, 1.25]) {
+            const x = 1.5 * width;
+            const point = placed ? [c*x+s*z+17, -22.5, -s*x+c*z+31] : [x,0.5,z];
+            const inside = z === 0.5 ? operation !== 'cut' : operation === 'fuse';
+            assert.equal(kernel.classifyPoint(result.solid, ...point, 1e-7), inside ? 'inside' : 'outside', `${label}: point z=${z}`);
+          }
+          const crop = box(3 * width, 1, 2);
+          transform(crop, [1,0,0,0,0,1,0,0,0,0,1,-0.5,0,0,0,1]);
+          if (placed) transform(crop, placement);
+          const local = boolean('intersect', result.solid, crop);
+          assert.equal(local.quality, 'exact', label);
+          const expectedLocal = operation === 'fuse' ? 3*width+overlap : operation === 'cut' ? 3*width-overlap : overlap;
+          assert.ok(Math.abs(kernel.volume(local.solid, 0.001) - expectedLocal) / overlap <= 1e-5, `${label}: local material volume`);
+        } finally { kernel.free(); }
+      }
+    }
+  }
+  console.log('ok - 36 anisotropic boolean cells in direct and batch APIs retain local material');
+};
+
+export const runTorusNotchRegression = ({ BrepKernel }) => {
+  // Independent annular-section quadrature, recomputed in the native matrix.
+  const overlap = 233.17975756277542;
+  const torusVolume = 180 * Math.PI ** 2;
+  for (const batch of [false, true]) for (const scale of [0.1, 1, 10]) {
+    for (const placed of [false, true]) for (const operation of ['fuse', 'cut', 'intersect']) {
+      const kernel = new BrepKernel();
+      try {
+        const invoke = (op, args) => {
+          const [result] = JSON.parse(kernel.executeBatch(JSON.stringify([{ op, args }])));
+          assert.ok(Object.hasOwn(result, 'ok'), JSON.stringify(result));
+          return result.ok;
+        };
+        const transform = (solid, matrix) => batch
+          ? invoke('transform', { solid, matrix })
+          : kernel.transformSolid(solid, new Float64Array(matrix));
+        const torus = batch
+          ? invoke('makeTorus', { majorRadius: 10 * scale, minorRadius: 3 * scale, segments: 32 })
+          : kernel.makeTorus(10 * scale, 3 * scale, 32);
+        const box = batch
+          ? invoke('makeBox', { width: 8 * scale, height: 8 * scale, depth: 8 * scale })
+          : kernel.makeBox(8 * scale, 8 * scale, 8 * scale);
+        transform(box, [1,0,0,6*scale,0,1,0,-4*scale,0,0,1,-4*scale,0,0,0,1]);
+        if (placed) {
+          const c = Math.cos(0.37), s = Math.sin(0.37);
+          const matrix = [c,0,s,17*scale,0,1,0,-23*scale,-s,0,c,31*scale,0,0,0,1];
+          for (const solid of [torus, box]) transform(solid, matrix);
+        }
+        const result = batch
+          ? invoke('booleanWithQuality', { operation, solidA: torus, solidB: box, exactOnly: true })
+          : kernel.booleanWithQuality(operation, torus, box, true);
+        const label = `${operation} scale=${scale} placed=${placed} batch=${batch}`;
+        assert.equal(result.quality, 'exact', label);
+        assert.equal(kernel.validateSolid(result.solid), 0, label);
+        const expected = operation === 'fuse' ? torusVolume + 512 - overlap
+          : operation === 'cut' ? torusVolume - overlap : overlap;
+        const volume = kernel.volume(result.solid, 0.01 * scale) / scale ** 3;
+        assert.ok(Math.abs(volume - expected) / expected < 0.001, `${label}: ${volume} vs ${expected}`);
+      } finally {
+        kernel.free();
+      }
+    }
+  }
+  console.log('ok - torus notch: 18 exact scale/placement cells through direct and batch APIs');
+};
+
+export const runTangencyBandRegression = ({ BrepKernel }) => {
+  const outcomes = new Map();
+  const totals = { exact: 0, refused: 0 };
+  for (const batch of [false, true]) for (const scale of [0.1, 1, 10]) {
+    for (const placed of [false, true]) for (const operation of ['fuse', 'cut', 'intersect']) {
+      for (const epsilon of [-1e-3, -1e-5, -1e-7, -1e-9, 0, 1e-9, 1e-7, 1e-5, 1e-3]) {
+        const kernel = new BrepKernel();
+        const label = `${operation} epsilon=${epsilon} scale=${scale} placed=${placed}`;
+        try {
+          const half = 4 + epsilon;
+          const cylinder = kernel.makeCylinder(4 * scale, 12 * scale);
+          const box = kernel.makeBox(2 * half * scale, 2 * half * scale, 8 * scale);
+          kernel.transformSolid(box, new Float64Array([1,0,0,-half*scale,0,1,0,-half*scale,0,0,1,6*scale,0,0,0,1]));
+          const c = Math.cos(0.37), s = Math.sin(0.37);
+          if (placed) for (const solid of [cylinder, box]) {
+            kernel.transformSolid(solid, new Float64Array([c,0,s,17*scale,0,1,0,-23*scale,-s,0,c,31*scale,0,0,0,1]));
+          }
+          const before = Uint8Array.from(kernel.serializeSolids(Uint32Array.of(cylinder, box)));
+          let result, refusal;
+          if (batch) {
+            const [response] = JSON.parse(kernel.executeBatchV2(JSON.stringify([{
+              op: 'booleanWithQuality', args: { operation, solidA: cylinder, solidB: box, exactOnly: true },
+            }])));
+            if (response.error) {
+              assert.equal(response.error.category, 'quality_refused', label);
+              assert.equal(response.error.details.kernelCode, 'exact_only_unattainable', label);
+              refusal = true;
+            } else result = response.ok;
+          } else {
+            try { result = kernel.booleanWithQuality(operation, cylinder, box, true); }
+            catch (error) {
+              assert.match(String(error), /exact-only policy: the exact boolean pipeline could not produce this result/, label);
+              refusal = true;
+            }
+          }
+          const outcome = refusal ? 'refused' : 'exact';
+          if (batch) assert.equal(outcome, outcomes.get(label), `${label}: direct/batch outcome`);
+          else outcomes.set(label, outcome);
+          totals[outcome] += 1;
+          if (refusal) {
+            assert.ok(epsilon !== 0 && Math.abs(epsilon) <= 1e-7, `${label}: mandatory exact cell refused`);
+            assert.deepEqual(kernel.serializeSolids(Uint32Array.of(cylinder, box)), before, `${label}: rollback`);
+            continue;
+          }
+          assert.equal(result.quality, 'exact', label);
+          assert.equal(kernel.validateSolid(result.solid), 0, label);
+          for (const face of kernel.getSolidFaces(result.solid)) {
+            assert.ok(['plane', 'cylinder'].includes(kernel.getSurfaceType(face)), `${label}: analytic carrier`);
+          }
+          const cap = epsilon < 0 ? 16 * Math.acos(half / 4) - half * Math.sqrt(16 - half * half) : 0;
+          const overlap = 6 * (16 * Math.PI - 4 * cap);
+          const expected = (operation === 'fuse' ? 192 * Math.PI + 32 * half * half - overlap
+            : operation === 'cut' ? 192 * Math.PI - overlap : overlap) * scale ** 3;
+          const volume = kernel.volume(result.solid, 0.005 * scale);
+          const budget = Math.max(expected * 1e-8, 512 * scale ** 2 * 1e-7);
+          assert.ok(Math.abs(volume - expected) <= budget, `${label}: volume ${volume} vs ${expected}`);
+          for (const [z, inside] of [[3, operation !== 'intersect'], [9, operation !== 'cut'], [13, operation === 'fuse']]) {
+            const point = placed ? [s*z*scale+17*scale, -23*scale, c*z*scale+31*scale] : [0,0,z*scale];
+            assert.equal(kernel.classifyPoint(result.solid, ...point, 1e-7), inside ? 'inside' : 'outside', `${label}: material z=${z}`);
+          }
+          if (epsilon * scale < -16e-7) {
+            const middle = (4 + half) * 0.5 * scale;
+            for (const [x, y] of [[middle,0],[-middle,0],[0,middle],[0,-middle]]) {
+              const z = 9 * scale;
+              const point = placed ? [c*x+s*z+17*scale, y-23*scale, -s*x+c*z+31*scale] : [x,y,z];
+              assert.equal(kernel.classifyPoint(result.solid, ...point, 1e-7), operation === 'intersect' ? 'outside' : 'inside', `${label}: thin cap ${x},${y}`);
+            }
+          }
+          for (const deflection of [0.005, 0.02]) {
+            const quality = JSON.parse(kernel.meshQuality(result.solid, deflection * scale));
+            assert.equal(quality.isWatertight, true, `${label}: mesh ${JSON.stringify(quality)}`);
+          }
+        } finally { kernel.free(); }
+      }
+    }
+  }
+  console.log(`ok - tangency direct/batch: ${totals.exact} exact, ${totals.refused} typed-policy refusals with rollback`);
 };
