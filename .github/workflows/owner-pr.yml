@@ -11,7 +11,7 @@ on:
         type: boolean
     outputs:
       trusted:
-        value: ${{ jobs.select.outputs.trusted == 'true' && jobs.route.result == 'success' && jobs.route.outputs.target != 'github-hosted' }}
+        value: ${{ jobs.select.outputs.trusted == 'true' && contains(fromJSON('["ci-small","ci-server-jane","ci-server-john"]'), jobs.route.outputs.target) }}
 
 permissions:
   contents: read

@@ -36,8 +36,7 @@ class OwnerRoutingTests(unittest.TestCase):
         self.assertIn("if: needs.select.outputs.trusted == 'true'", route)
         self.assertIn("vars.CI_FLEET_ENABLED == 'true'", route)
         self.assertNotIn("checkout", route)
-        self.assertIn("jobs.route.result == 'success'", OWNER)
-        self.assertIn("jobs.route.outputs.target != 'github-hosted'", OWNER)
+        self.assertIn("contains(fromJSON('[\"ci-small\",\"ci-server-jane\",\"ci-server-john\"]'), jobs.route.outputs.target)", OWNER)
         self.assertIn("id-token: write", job("owner-pr"))
         self.assertNotIn("id-token: write", OWNER.split("\n  rust:\n", 1)[1])
 
