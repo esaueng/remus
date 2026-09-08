@@ -64,7 +64,7 @@ jobs:
       pull-requests: read
       id-token: write
     # The runner group permits only this immutable callee, never PR workflow refs.
-    uses: esaueng/remus/.github/workflows/owner-pr.yml@855aa9a3f6b8438d95a4cbbc244e58fa9f411bf4
+    uses: esaueng/remus/.github/workflows/owner-pr.yml@8916716d8ba6b20a1d7a6ab79c4c4b8ea068adfd
     with:
       heavy: ${{ needs.changes.outputs.heavy == 'true' }}
       docs: ${{ needs.changes.outputs.docs == 'true' }}
