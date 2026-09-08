@@ -1,90 +1,125 @@
-# Owner PR CI on the VPS
+# Trusted owner CI fleet
 
-Native Rust checks use the VPS only for same-repository PRs to `main` opened
-by GitHub account `petergstfsn` (user ID `171875562`), with that account also
-being the event actor, sender, and rerun actor. Forks, other authors, bots,
-pushes, and other event types retain GitHub-hosted checks.
+Linux CI jobs and their completion gates live in `fleet-ci.yml`, called at an
+immutable commit from `ci.yml`. GitHub evaluates the runner expression before
+scheduling each job. There is no GitHub-hosted authorization or routing job in
+front of the Linux checks, and no routing HTTP request from Actions.
 
-The migrated checks are Clippy, workspace tests, doc tests, complexity
-guards, fuzz-target compilation, documentation/book builds, and Rust 1.88
-compatibility. They run sequentially in one job to reuse the downloaded
-toolchain and compiled dependencies before the host clears job storage.
-No tests or thresholds are removed. Compilation and test concurrency are
-limited to one; the combined job has a 90-minute timeout.
+Only the approved owner's open, same-repository PR merge refs are eligible.
+Main pushes and manual dispatches also require protected main. Repository name
+and numeric identity, PR author, event actor and rerun actor are checked in the
+immutable workflow. Forks and other authors remain hosted. The runner group
+must separately restrict the exact repository and immutable workflow revision;
+a label or repository variable does not grant execution authority.
 
-Repository policy, coverage, approximation census, WASM, software rendering,
-security scans, benchmarks, and macOS tests remain hosted. Release workflows
-are unchanged. This is a native Rust migration, not proof that the VPS can
-replace every hosted workload.
+`CI_FLEET_ENABLED=true` opts in. `CI_FLEET_TARGET` accepts only
+`ci-server-jane`, `ci-server-john`, or `github-hosted`. A controller outside
+Actions publishes this variable after checking fresh collector health and GitHub
+runner connectivity. Jane is primary, John the first backup, and GitHub-hosted
+the second. Busy Jane remains available; jobs queue for either of her two slots.
+Missing/invalid configuration selects hosted. Hosted fallback still depends on
+GitHub billing and capacity.
 
-## Access boundary
-
-`.github/workflows/ci.yml` calls `owner-pr.yml` at an immutable commit SHA.
-The organization runner group must authorize exactly that reusable workflow
-and SHA. Never allow `owner-pr.yml@main`, wildcard workflow refs, or PR merge
-refs. Only jobs defined inside the allowlisted callee can reach the VPS;
-editing a caller's author check or `runs-on` does not grant runner access.
-
-The hosted authorization job executes the policy embedded in that pinned
-workflow before checking out code. It verifies repository and user IDs,
-rejects forks, fetches the current PR through GitHub's API, and compares the
-PR head/base with the event. It verifies the exact two parents of the
-GitHub-generated merge commit. The VPS checks out only that event's SHA
-with `persist-credentials: false`; callers cannot supply a source ref,
-repository, shell command, or runner.
-
-Authorization API failures fail the workflow. Ineligible or stale events
-select hosted fallback. A failed or cancelled VPS job fails `CI Pass`;
-hosted jobs skipped after successful VPS execution do not hide its failure.
-
-The callee receives a read-only repository token and no inherited secrets,
-deployment credentials, OIDC access, or cross-job Rust caches. Before source
-execution it verifies the expected non-root runner, rootless Docker, fresh
-storage sentinels, one CPU, 3 GiB CI memory, and no swap. The host owns cleanup
-between listener sessions. These controls limit access and resources;
-the persistent host still trusts code in the owner's eligible PRs and its
-dependencies. This is not an isolation boundary for hostile code.
+Before checkout, self-hosted jobs verify the non-root identity, protected runner
+files, NoNewPrivileges, fresh storage, empty rootless Docker state, mount options
+and exact cgroup limits. Jane slots each have six CPU equivalents and 6 GiB RAM;
+John has one CPU equivalent and 3 GiB. Guard failure fails the job.
+Browser suites hold a shared host lock while using fixed localhost test ports.
+Browser/native OS dependencies must be installed by the host administrator;
+workflow jobs install browser binaries without sudo.
 
 ## Activation and rollback
 
-Verify the live runner-group configuration before activation:
+Approve the exact immutable `fleet-ci.yml` runner-group entry without removing
+existing restrictions. Configure the external controller's selected repository
+identities and dedicated GitHub credential, then validate both hosts. The
+caller retains the required `CI Pass` check and accepts only a successful
+reusable workflow. Do not change required check names or review requirements.
 
-1. Repository access is `selected`, and includes only the intended repositories.
-2. Workflow access is restricted. Preserve existing entries and add only
-   `esaueng/remus/.github/workflows/owner-pr.yml@<SHA from ci.yml>`.
-3. Remus (`1334765869`) is selected, and the single intended runner is online.
-4. Set repository Actions variable `REMUS_OWNER_PR_VPS_ENABLED` to exactly
-   `true`. Missing, false, or other values select hosted fallback.
+Run an authorized real application job on each Jane slot, verify cleanup and
+unavailable-only selection, then enable normal routing. Code merge alone does
+not activate the runner group, repository variables, or controller.
 
-The workflow and allowlist must use the same SHA. After changing the callee,
-commit it, update the caller pin in a subsequent commit, test both, and
-authorize only the new reviewed SHA. Do not rewrite history to manufacture
-a self-referencing pin. `scripts/test-owner-pr-routing.py` checks the pinned
-file equals the reviewed file in the checkout.
+Already queued jobs keep their assignment. A host failure after selection needs
+a fresh run; this change does not automatically cancel or retry queued jobs.
+Controller failure preserves the last target and is shown as stale in the
+monitor. A failing build is not an availability outage.
 
-Set `REMUS_OWNER_PR_VPS_ENABLED=false` for hosted fallback on subsequent
-runs. Cancel any existing queued/running VPS run separately if needed.
-Removing repository access or the immutable allowlist entry prevents new
-VPS jobs but can leave an already-selected job queued; disable the variable
-before rerunning CI.
+`CI_FLEET_ENABLED=false` returns subsequent jobs to hosted runners. Let active
+jobs finish and rerun stranded jobs. Revert workflow pins through a PR. Production
+credentials and deployment jobs stay outside the home runners; existing
+main-merge deployment integrations still require their normal authorization.
 
-## Verification
+Remus additionally revalidates live PR identity and the event merge commit's two
+parents before self-hosted checkout. An API error or stale PR fails the job;
+no contributor code runs first. The event sender is also checked here.
 
-```sh
-python3 scripts/test-owner-pr-policy.py
-python3 scripts/test-owner-pr-routing.py
-python3 scripts/test-classify-ci-changes.py
-actionlint .github/workflows/owner-pr.yml
-git diff --check
+Native Rust, repository policy, coverage, WASM, rendering, security and
+documentation jobs retain their individual commands and dependency gates.
+The macOS platform job remains hosted and required by CI Pass. Jane and John
+cannot replace macOS capacity. Release workflows are unchanged.
+
+Policy verification: `python3 scripts/test-direct-fleet.py`,
+`python3 scripts/test-owner-pr-routing.py`, the existing owner policy tests,
+and `actionlint`. The historical `owner-pr.yml` remains unchanged for old
+immutable callers; new callers use `fleet-ci.yml`.
+
+## Convergence and merge queues
+
+The caller cancels superseded runs only for the same ref. Its reusable `checks`
+job also uses the repository-wide `remus-ci-suite` concurrency group with
+`queue: max`. One complete suite runs at a time, with its jobs still parallel;
+up to 100 pending suites wait without evicting one another. A larger backlog
+exceeds GitHub's queue limit and needs a fresh run. The final `CI Pass` wrapper
+is hosted and can still wait for hosted capacity, but never holds a fleet slot
+while waiting for the suite. Existing PR branches must pick up this caller
+before their runs participate in the admission queue.
+
+Repository Policy and Secrets Scan run before any expensive checks. CI Pass
+requires both to succeed, requires the classifier outputs to be valid, and
+rejects unexpectedly skipped selected checks. Documentation-only selection
+still skips the heavy suite. Optimized coverage uses the existing `ci-test`
+profile for running and reporting, with coverage artifacts cleaned first; it retains the entire workspace,
+test assertions and the 60% line threshold. WASM optional-I/O clippy and native
+tests run as a separate required job. Package validation, optimization, tarball
+consumers and W9 preflight remain in the main WASM job.
+
+PR benchmarks run only with the `ci:benchmark` label. Adding the label starts
+a run; subsequent pushes keep benchmarking while the label remains. Main
+baseline tracking and manual workflow dispatch remain available. Unrelated
+label events cannot cancel an active benchmark. Deterministic complexity
+regression tests remain required for every full CI suite.
+
+`merge_group: checks_requested` validates the actual merge-group SHA against
+`merge_group.base_sha`, including changes from every PR in the group. Merge
+groups always use hosted runners: the owner-only single-PR authorization does
+not authorize a group containing other contributors' code.
+
+`.github/merge-queue-ruleset.json` is an initially disabled, additive ruleset.
+It limits speculative merge builds to two, requires every group's PR merge
+commit to pass (`ALLGREEN`), and adds no bypass actor. It neither replaces
+existing branch protection nor changes review requirements. Do not enable it
+until the caller, pinned callee and passing exact-head CI are on main. Creating
+or enabling the rule does not itself enqueue PRs; enqueuing a PR authorizes its
+automatic merge and still requires the maintainer's merge approval.
+
+After that approval and workflow merge, create the disabled rule with:
+
+```bash
+gh api --method POST repos/esaueng/remus/rulesets \
+  --input .github/merge-queue-ruleset.json
 ```
 
-Policy tests exercise the embedded authorization code, including forks,
-other authors/actors, reruns, alternate events, stale head/base commits,
-merge-parent substitution, and malformed identity/ref fields. Routing tests
-check immutable content, hosted fallback, retained workloads, and failure
-propagation through the actual `CI Pass` shell command.
+Inspect the returned ID and existing rules before updating, to avoid duplicate
+rules. Activate this exact rule, verify it is active on main, then change only
+`strict` to `false` under the existing required-status-check protection. Keep
+`CI Pass`, its GitHub Actions app identity, and every review/protection setting.
+This ordering leaves protection in place throughout and lets the merge queue
+validate against current main without requiring manual branch updates. For
+rollback, restore `strict: true` before disabling the queue rule.
 
-Live validation must identify the assigned runner, full check result,
-elapsed time, memory/OOM counters, disk use, and cleanup after completion.
-A policy test or runner registration alone does not establish workload
-capacity.
+Validate with the policy tests and actionlint. Actionlint 1.7.12 predates
+GitHub's `concurrency.queue` key; until its parser supports it, ignore only the
+specific `unexpected key "queue" for "concurrency" section` diagnostic and
+confirm server acceptance in a real Actions run. Never suppress other syntax
+or expression errors. The convergence tests also enforce the queue contract.
