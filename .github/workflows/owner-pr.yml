@@ -146,7 +146,7 @@ jobs:
     env:
       CARGO_TERM_COLOR: always
       RUSTFLAGS: -Dwarnings
-      # Bound build and test concurrency within the existing host budget.
+      # Conservative defaults; the verified slot profile sets build/test concurrency.
       CARGO_BUILD_JOBS: "1"
       RUST_TEST_THREADS: "1"
       CARGO_INCREMENTAL: "0"
@@ -158,27 +158,44 @@ jobs:
         run: |
           set -euo pipefail
           case "$RUNNER_NAME" in
-            ci-vm-1441561|ci-server-jane|ci-server-john) ;;
+            ci-vm-1441561|ci-server-jane|ci-server-john)
+              CI_USER=ci-runner CI_STORAGE=/srv/ci CI_SLICE=ci.slice
+              CI_DOCKER=ci-docker CI_MEMORY=3221225472 CI_CPUS=1
+              CARGO_BUILD_JOBS=1 RUST_TEST_THREADS=1 ;;
+            ci-server-jane-1|ci-server-jane-2)
+              slot=${RUNNER_NAME##*-}
+              CI_USER=ci-slot$slot CI_STORAGE=/srv/ci-slot$slot CI_SLICE=cislot$slot.slice
+              CI_DOCKER=ci-slot$slot-docker CI_MEMORY=6442450944 CI_CPUS=6
+              CARGO_BUILD_JOBS=3 RUST_TEST_THREADS=6 ;;
             *) echo 'Unknown trusted runner' >&2; exit 1 ;;
           esac
-          test "$(id -un)" = ci-runner
+          CI_CGROUP=/sys/fs/cgroup/$CI_SLICE
+          test "$(id -un)" = "$CI_USER"
           test "$(id -u)" != 0
-          test "$HOME" = /srv/ci/home
-          test ! -w /opt/ci-runner/bin/Runner.Listener
-          test ! -w /etc/systemd/system/ci-runner.service
+          test "$HOME" = "$CI_STORAGE/home"
+          test ! -w "/opt/$CI_USER/bin/Runner.Listener"
+          test ! -w "/etc/systemd/system/$CI_USER.service"
           test "$(awk '/^NoNewPrivs:/ {print $2}' /proc/self/status)" = 1
           test ! -e "$HOME/.remus-pr-sentinel"
-          test ! -e /srv/ci/work/.remus-pr-sentinel
-          touch "$HOME/.remus-pr-sentinel" /srv/ci/work/.remus-pr-sentinel
-          test "$DOCKER_HOST" = unix:///run/ci-docker/docker.sock
+          test ! -e "$CI_STORAGE/work/.remus-pr-sentinel"
+          touch "$HOME/.remus-pr-sentinel" "$CI_STORAGE/work/.remus-pr-sentinel"
+          test "$DOCKER_HOST" = "unix:///run/$CI_DOCKER/docker.sock"
           docker info --format '{{json .SecurityOptions}}' | jq -e 'index("name=rootless") != null'
           test -z "$(docker ps --all --quiet)"
           test -z "$(docker image ls --quiet)"
-          test "$(cat /sys/fs/cgroup/ci.slice/memory.max)" = 3221225472
-          test "$(cat /sys/fs/cgroup/ci.slice/memory.swap.max)" = 0
-          awk '{exit !($1 == $2)}' /sys/fs/cgroup/ci.slice/cpu.max
-          grep -Fx '0::/ci.slice/ci-runner.service' /proc/self/cgroup
-          cat /sys/fs/cgroup/ci.slice/memory.events > "$RUNNER_TEMP/memory-events-before"
+          test "$(cat "$CI_CGROUP/memory.max")" = "$CI_MEMORY"
+          test "$(cat "$CI_CGROUP/memory.swap.max")" = 0
+          awk -v cpus="$CI_CPUS" '{exit !($1 == $2 * cpus)}' "$CI_CGROUP/cpu.max"
+          grep -Fx "0::/$CI_SLICE/$CI_USER.service" /proc/self/cgroup
+          case ",$(findmnt -n -o OPTIONS --mountpoint "$CI_STORAGE")," in
+            *,nosuid,*) ;; *) exit 1 ;; esac
+          {
+            echo "CI_CGROUP=$CI_CGROUP"
+            echo "CI_STORAGE=$CI_STORAGE"
+            echo "CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS"
+            echo "RUST_TEST_THREADS=$RUST_TEST_THREADS"
+          } >> "$GITHUB_ENV"
+          cat "$CI_CGROUP/memory.events" > "$RUNNER_TEMP/memory-events-before"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: esaueng/remus
@@ -198,13 +215,13 @@ jobs:
         run: /usr/bin/time -v cargo clippy --all-targets --all-features -- -D warnings
       - name: Test
         if: inputs.heavy
-        run: /usr/bin/time -v cargo nextest run --workspace --cargo-profile ci-test --test-threads 1
+        run: /usr/bin/time -v cargo nextest run --workspace --cargo-profile ci-test --test-threads "$RUST_TEST_THREADS"
       - name: Documentation tests
         if: inputs.heavy
         run: /usr/bin/time -v cargo test --workspace --profile ci-test --doc
       - name: Complexity guards
         if: inputs.heavy
-        run: /usr/bin/time -v cargo nextest run -p remus-operations --features perf-counters --cargo-profile ci-test --test-threads 1 -E 'test(scaling_)'
+        run: /usr/bin/time -v cargo nextest run -p remus-operations --features perf-counters --cargo-profile ci-test --test-threads "$RUST_TEST_THREADS" -E 'test(scaling_)'
       - name: Fuzz Targets Compile
         if: inputs.heavy
         run: /usr/bin/time -v cargo check --manifest-path fuzz/Cargo.toml --bins
@@ -236,9 +253,9 @@ jobs:
             echo 'Before job:'
             cat "$RUNNER_TEMP/memory-events-before"
             echo 'After job (cgroup counters are cumulative):'
-            cat /sys/fs/cgroup/ci.slice/memory.events
-            cat /sys/fs/cgroup/ci.slice/memory.peak
+            cat "$CI_CGROUP/memory.events"
+            cat "$CI_CGROUP/memory.peak"
             du -sh "$HOME" "$GITHUB_WORKSPACE"
-            df -h /srv/ci
+            df -h "$CI_STORAGE"
           } >> "$GITHUB_STEP_SUMMARY"
 
