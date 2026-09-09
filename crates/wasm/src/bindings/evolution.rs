@@ -807,8 +807,9 @@ impl BrepKernel {
 
     /// Resize one cylindrical blend between planar supports with total history.
     ///
-    /// Returns JSON `{"solid", "op"}`. Removal and ambiguous correspondence
-    /// refuse atomically. Batch arguments use `expectedRadius` and `newRadius`.
+    /// Returns JSON `{"solid", "op"}`. Zero removes the band with explicit
+    /// merges and deletions; ambiguous correspondence refuses atomically.
+    /// Batch arguments use `expectedRadius` and `newRadius`.
     #[wasm_bindgen(js_name = "resizeBlendJournaled")]
     pub fn resize_blend_journaled_js(
         &mut self,
@@ -1789,6 +1790,59 @@ mod evolution_contract_tests {
             assert_eq!(after.entries, before.entries);
             assert_eq!(after.index, before.index);
             outputs.push(serde_json::json!(error.message()));
+            let removed: serde_json::Value = if batch {
+                run(&mut kernel, serde_json::json!([{"op":"resizeBlendJournaled","args":{"solid":source,"face":face,"expectedRadius":radius,"newRadius":0.0}}])).remove(0)
+            } else {
+                serde_json::from_str(
+                    &kernel
+                        .resize_blend_journaled_js(source, face, radius, 0.0)
+                        .unwrap(),
+                )
+                .unwrap()
+            };
+            let result_id = kernel
+                .resolve_solid(u32::try_from(removed["solid"].as_u64().unwrap()).unwrap())
+                .unwrap();
+            let removal_op =
+                remus_topology::journal::OpId::from_value(removed["op"].as_u64().unwrap());
+            let mut found = std::collections::BTreeSet::new();
+            let mut deleted = 0;
+            for kind in [EntityKind::Face, EntityKind::Edge, EntityKind::Vertex] {
+                for index in 0..keys.iter().filter(|key| key.kind == kind).count() {
+                    match resolve(
+                        kernel.topo(),
+                        &PersistentRef::operation_output(anchor, kind, index),
+                    ) {
+                        Resolution::Bound {
+                            entity,
+                            provenance: Provenance::Construction,
+                        } => {
+                            found.insert(entity);
+                        }
+                        Resolution::Dangling { deleted_at } => {
+                            assert_eq!(deleted_at, removal_op);
+                            deleted += 1;
+                        }
+                        other => panic!("lost removal reference: {other:?}"),
+                    }
+                }
+            }
+            assert_eq!(deleted, 3);
+            assert_eq!(
+                found,
+                solid_entity_keys(kernel.topo(), result_id)
+                    .unwrap()
+                    .into_iter()
+                    .collect()
+            );
+            assert!(
+                (remus_operations::measure::solid_volume(kernel.topo(), result_id, 0.01).unwrap()
+                    - 1000.0)
+                    .abs()
+                    < 1e-6
+            );
+            outputs.push(removed);
+
             payloads.push(outputs);
         }
         assert_eq!(payloads[0], payloads[1]);
