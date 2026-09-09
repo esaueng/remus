@@ -5406,6 +5406,35 @@ class BrepKernel {
         return ret[0] >>> 0;
     }
     /**
+     * Resize one cylindrical blend between planar supports with total history.
+     *
+     * Returns JSON `{"solid", "op"}`. Removal and ambiguous correspondence
+     * refuse atomically. Batch arguments use `expectedRadius` and `newRadius`.
+     * @param {number} solid
+     * @param {number} face
+     * @param {number} expected_radius
+     * @param {number} new_radius
+     * @returns {string}
+     */
+    resizeBlendJournaled(solid, face, expected_radius, new_radius) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.brepkernel_resizeBlendJournaled(this.__wbg_ptr, solid, face, expected_radius, new_radius);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
      * [`Self::resize_blend_binding`] with versioned face evolution.
      *
      * The payload uses the existing [`FaceEvolutionPayloadV1`] schema. New

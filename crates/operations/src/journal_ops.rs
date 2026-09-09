@@ -625,6 +625,42 @@ pub fn replace_surface_journaled(
     })
 }
 
+/// Resize one cylindrical blend between planar supports with total entity history.
+///
+/// Positive radii preserve uniquely proven face, edge and vertex correspondence.
+/// Removal, multi-face regions and ambiguous boundaries refuse atomically. Use
+/// [`crate::resize_blend::resize_blend`] for the broader geometry-only operation.
+///
+/// # Errors
+///
+/// Returns the underlying resize error or refuses an unproven correspondence;
+/// topology and unpublished journal history are restored together.
+pub fn resize_blend_journaled(
+    topo: &mut Topology,
+    solid: SolidId,
+    face: remus_topology::FaceId,
+    expected_radius: f64,
+    new_radius: f64,
+) -> Result<JournaledSolidOp, OperationsError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let pending = begin_scoped(topo, "resize_blend", &[solid])?;
+        let (result, pairs) = crate::resize_blend::resize_blend_with_entity_evolution(
+            topo,
+            solid,
+            face,
+            expected_radius,
+            new_radius,
+        )?;
+        let op =
+            record_entity_evolution(topo, pending, &result.evolution, &[result.solid], &pairs)?;
+        Ok(JournaledSolidOp {
+            solid: result.solid,
+            op,
+            map: result.evolution,
+        })
+    })
+}
+
 /// Applies a planar draft with construction-derived face and boundary history.
 ///
 /// Geometry and journal recording form one transaction. Boundary identities

@@ -2970,6 +2970,13 @@ export class BrepKernel {
      */
     resizeBlend(solid: number, face: number, expected_radius: number, new_radius: number): number;
     /**
+     * Resize one cylindrical blend between planar supports with total history.
+     *
+     * Returns JSON `{"solid", "op"}`. Removal and ambiguous correspondence
+     * refuse atomically. Batch arguments use `expectedRadius` and `newRadius`.
+     */
+    resizeBlendJournaled(solid: number, face: number, expected_radius: number, new_radius: number): string;
+    /**
      * [`Self::resize_blend_binding`] with versioned face evolution.
      *
      * The payload uses the existing [`FaceEvolutionPayloadV1`] schema. New
