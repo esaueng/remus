@@ -1127,6 +1127,14 @@ export class BrepKernel {
      */
     defeature(solid: number, face_handles: Uint32Array): number;
     /**
+     * Remove selected feature faces with construction history.
+     *
+     * Returns JSON `{"solid", "op"}`. Capping retains copied boundary identities
+     * and records consumed boundaries as deleted. Unqualified reconstructed
+     * boundaries remain unresolved. Batch uses `solid` and `faces`.
+     */
+    defeatureJournaled(solid: number, faces: Uint32Array): string;
+    /**
      * Retire a solid handle and its unshared topology subtree.
      *
      * The handle becomes permanently invalid. This does not compact the
@@ -1242,6 +1250,16 @@ export class BrepKernel {
      * Returns an error if angle is zero or faces are invalid.
      */
     draft(solid: number, face_handles: Uint32Array, pull_x: number, pull_y: number, pull_z: number, neutral_x: number, neutral_y: number, neutral_z: number, angle_degrees: number): number;
+    /**
+     * Draft selected planar faces with construction history.
+     *
+     * `pull_direction` and `neutral_point` each have three components.
+     * The angle is in degrees for both direct and batch calls. Batch uses
+     * `faces`, `pullDirection`, `neutralPoint`, and `angleDegrees`.
+     * Returns JSON `{"solid", "op"}`. Boundary history requires a unique
+     * complete incidence correspondence; ambiguous boundaries stay unresolved.
+     */
+    draftJournaled(solid: number, faces: Uint32Array, pull_direction: Float64Array, neutral_point: Float64Array, angle_degrees: number): string;
     /**
      * Compute the length of an edge.
      *
@@ -1472,6 +1490,12 @@ export class BrepKernel {
      * committed only after both validators accept the result.
      */
     fixShapeWithConfig(solid: number, config_json: string): any;
+    /**
+     * Run configured verified healing with entity history.
+     * Returns the `fixShapeWithConfig` report plus `op`. Untracked replacements
+     * remain unresolved. Batch uses `solid` and the JSON string `configJson`.
+     */
+    fixShapeWithConfigJournaled(solid: number, config_json: string): string;
     /**
      * Reconstruct a solid from a BREP string.
      *
@@ -2649,6 +2673,16 @@ export class BrepKernel {
      */
     moveFaces(solid: number, faces: Uint32Array, distance: number): number;
     /**
+     * Move faces with construction history.
+     *
+     * Planar re-limitation and coaxial bore moves include edge and vertex
+     * history. Blend moves retain copy-derived history or a complete, unique
+     * boundary correspondence anchored on construction face identities.
+     * Ambiguous reconstructed boundaries retain faces-only history.
+     * Returns JSON `{"solid", "op"}`.
+     */
+    moveFacesJournaled(solid: number, faces: Uint32Array, distance: number): string;
+    /**
      * Sweep through multiple section profiles along a spine, lofting the
      * rotation-minimizing-frame-placed profiles.
      *
@@ -2909,6 +2943,17 @@ export class BrepKernel {
      */
     repairSolidDetailed(solid: number): any;
     /**
+     * Replace a support surface with exact face, edge, and vertex history.
+     *
+     * `replacement` is JSON: `{type:"plane", normal:[x,y,z], d}` or
+     * `{type:"cylinder", origin:[x,y,z], axis:[x,y,z], radius}`. Plane
+     * coefficients represent `normal dot point = d`; cylinder replacements
+     * retain the source parameter reference direction. Unknown fields refuse.
+     * Returns JSON `{"solid", "op"}`. Batch calls pass the replacement object
+     * directly as `args.replacement`.
+     */
+    replaceSurfaceJournaled(solid: number, face: number, replacement: string): string;
+    /**
      * Resize or remove an exact constant-radius analytic blend band.
      *
      * `face` is only a seed: the kernel re-derives the complete band, its
@@ -2949,6 +2994,15 @@ export class BrepKernel {
      * the edit does not produce a valid solid.
      */
     resizeCylindricalFace(solid: number, face: number, new_radius: number): number;
+    /**
+     * Resize a cylindrical wall and record its construction history.
+     *
+     * Returns JSON `{"solid", "op"}`. Qualified bore and quarter-wall
+     * replacements retain all boundary identities. Boss edits track cap
+     * subdivisions and their removal; ambiguous boundaries remain unresolved.
+     * Batch calls pass the new radius as `args.radius`.
+     */
+    resizeCylindricalFaceJournaled(solid: number, face: number, radius: number): string;
     /**
      * Resolves "the `index`-th `kind` output of journal operation `op`"
      * against the current model. Returns the resolution JSON (`status`
@@ -3030,6 +3084,12 @@ export class BrepKernel {
      * accept the result.
      */
     runHealPipeline(solid: number, steps: string[]): any;
+    /**
+     * Run verified healing steps with composed entity history.
+     * Returns the `runHealPipeline` report plus `op`. Topology and journal
+     * changes roll back together on failure. Batch uses `solid` and `steps`.
+     */
+    runHealPipelineJournaled(solid: number, steps: string[]): string;
     /**
      * Span-true polyline of one edge at the given chordal deflection.
      *

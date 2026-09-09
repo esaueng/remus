@@ -459,6 +459,8 @@ fn build_inner_wires(
 pub(crate) struct MixedAssemblyResult {
     pub(crate) solid: SolidId,
     pub(crate) faces_by_spec: Vec<Option<FaceId>>,
+    pub(crate) vertices_by_spec: Vec<Vec<Vec<Option<VertexId>>>>,
+    pub(crate) boundary_edges: HashMap<(usize, usize), EdgeId>,
 }
 
 /// Analytic geometry for a positional face-spec boundary that would otherwise
@@ -506,6 +508,24 @@ pub(crate) fn assemble_solid_mixed_with_history_and_curves(
     face_specs: &[FaceSpec],
     boundary_curves: &[BoundaryCurveOverride],
     tol: Tolerance,
+) -> Result<MixedAssemblyResult, crate::OperationsError> {
+    assemble_solid_mixed_traced(topo, face_specs, boundary_curves, tol, false)
+}
+
+pub(crate) fn assemble_solid_mixed_with_boundary_history(
+    topo: &mut Topology,
+    face_specs: &[FaceSpec],
+    tol: Tolerance,
+) -> Result<MixedAssemblyResult, crate::OperationsError> {
+    assemble_solid_mixed_traced(topo, face_specs, &[], tol, true)
+}
+
+fn assemble_solid_mixed_traced(
+    topo: &mut Topology,
+    face_specs: &[FaceSpec],
+    boundary_curves: &[BoundaryCurveOverride],
+    tol: Tolerance,
+    capture_boundaries: bool,
 ) -> Result<MixedAssemblyResult, crate::OperationsError> {
     // Pre-allocate topology arenas based on expected output size.
     // Typical face → ~2 unique vertices, ~3 edges, 1 wire, 1 face.
@@ -963,6 +983,34 @@ pub(crate) fn assemble_solid_mixed_with_history_and_curves(
         });
     }
 
+    // Snapshot the actual allocation pool before refinement changes boundaries.
+    // Consumers must check that each captured handle still belongs to the result.
+    let vertices_by_spec = if capture_boundaries {
+        face_specs
+            .iter()
+            .map(|spec| {
+                std::iter::once(spec.vertices())
+                    .chain(spec.inner_wires().iter().map(Vec::as_slice))
+                    .map(|points| {
+                        points
+                            .iter()
+                            .map(|&point| {
+                                vertex_map.get(&quantize_point(point, resolution)).copied()
+                            })
+                            .collect()
+                    })
+                    .collect()
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let boundary_edges = if capture_boundaries {
+        edge_map.clone()
+    } else {
+        HashMap::new()
+    };
+
     // Post-assembly edge refinement: split long boundary edges at
     // intermediate collinear vertices so adjacent faces can share edges.
     // Pass precomputed vertex positions from assembly to avoid redundant
@@ -1021,6 +1069,8 @@ pub(crate) fn assemble_solid_mixed_with_history_and_curves(
     Ok(MixedAssemblyResult {
         solid,
         faces_by_spec,
+        vertices_by_spec,
+        boundary_edges,
     })
 }
 
