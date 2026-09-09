@@ -85,8 +85,9 @@ runs before claiming new work.
 remaining band and anisotropic precision audit. 2.7 now has a merged bounded
 162-cell exact-or-typed contract, including 42 explicit refusals; this does not
 qualify general exact tangency. 6.5 has qualified direct-edit and healing
-history, but analytic blend resize, ambiguous boundaries, and later direct-edit
-geometry still prevent full closure. B18 also retains faces-only and unjournaled
+history, now including journaled single-cylinder blend resize on planar supports.
+Broader blend resize, ambiguous boundaries, and later direct-edit geometry still
+prevent full closure. B18 also retains faces-only and unjournaled
 families. Native journaled shell/split and boolean/pattern refusals now restore
 unpublished history; scope preflight validates operands before publishing a
 gap. See the audit's reproducing regressions.

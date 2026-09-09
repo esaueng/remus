@@ -377,6 +377,31 @@ impl BrepKernel {
         }))
     }
 
+    fn resize_blend_journaled_json(
+        &mut self,
+        solid: u32,
+        face: u32,
+        expected_radius: f64,
+        new_radius: f64,
+    ) -> Result<serde_json::Value, StructuredWasmError> {
+        let solid_id = self
+            .resolve_solid(solid)
+            .map_err(StructuredWasmError::from)?;
+        let face_id = self.resolve_face(face).map_err(StructuredWasmError::from)?;
+        let result = journal_ops::resize_blend_journaled(
+            self.topo_mut(),
+            solid_id,
+            face_id,
+            expected_radius,
+            new_radius,
+        )
+        .map_err(StructuredWasmError::from)?;
+        Ok(serde_json::json!({
+            "solid": crate::handles::solid_id_to_u32(result.solid),
+            "op": u32::try_from(result.op.value()).unwrap_or(u32::MAX),
+        }))
+    }
+
     fn resize_cylindrical_face_journaled_json(
         &mut self,
         solid: u32,
@@ -589,6 +614,13 @@ impl BrepKernel {
                 let angle = get_f64(args, "angleDegrees")?;
                 self.draft_journaled_json(solid, &faces, &pull, &neutral, angle)
             })(),
+            "resizeBlendJournaled" => (|| {
+                let solid = get_u32(args, "solid")?;
+                let face = get_u32(args, "face")?;
+                let expected = get_f64(args, "expectedRadius")?;
+                let radius = get_f64(args, "newRadius")?;
+                self.resize_blend_journaled_json(solid, face, expected, radius)
+            })(),
             "resizeCylindricalFaceJournaled" => (|| {
                 let solid = get_u32(args, "solid")?;
                 let face = get_u32(args, "face")?;
@@ -769,6 +801,23 @@ impl BrepKernel {
         angle_degrees: f64,
     ) -> Result<String, JsError> {
         self.draft_journaled_json(solid, faces, pull_direction, neutral_point, angle_degrees)
+            .map(|value| value.to_string())
+            .map_err(structured_to_js)
+    }
+
+    /// Resize one cylindrical blend between planar supports with total history.
+    ///
+    /// Returns JSON `{"solid", "op"}`. Removal and ambiguous correspondence
+    /// refuse atomically. Batch arguments use `expectedRadius` and `newRadius`.
+    #[wasm_bindgen(js_name = "resizeBlendJournaled")]
+    pub fn resize_blend_journaled_js(
+        &mut self,
+        solid: u32,
+        face: u32,
+        expected_radius: f64,
+        new_radius: f64,
+    ) -> Result<String, JsError> {
+        self.resize_blend_journaled_json(solid, face, expected_radius, new_radius)
             .map(|value| value.to_string())
             .map_err(structured_to_js)
     }
@@ -1630,6 +1679,117 @@ mod evolution_contract_tests {
                 assert_eq!(kernel.topo().journal().snapshot(), before);
             }
             payloads.push(second);
+        }
+        assert_eq!(payloads[0], payloads[1]);
+    }
+
+    #[test]
+    fn blend_resize_history_has_direct_batch_parity_and_rollback() {
+        use remus_operations::{
+            blend_ops::fillet_v2, journal_ops::solid_entity_keys, primitives::make_box,
+        };
+        use remus_topology::{
+            explorer::{solid_edges, solid_faces},
+            face::FaceSurface,
+            journal::{EntityKind, EventDraft, EvolutionDraft},
+            naming::{PersistentRef, Provenance, Resolution, resolve},
+        };
+        let mut payloads = Vec::new();
+        for batch in [false, true] {
+            let mut kernel = BrepKernel::new();
+            let sharp = make_box(kernel.topo_mut(), 10.0, 10.0, 10.0).unwrap();
+            let edge = solid_edges(kernel.topo(), sharp).unwrap()[0];
+            let mut solid = fillet_v2(kernel.topo_mut(), sharp, &[edge], 1.0)
+                .unwrap()
+                .solid;
+            let keys = solid_entity_keys(kernel.topo(), solid).unwrap();
+            let pending = kernel.topo_mut().journal_begin("blend_fixture");
+            let mut draft = EvolutionDraft::construction();
+            draft.add_scope(keys.iter().copied());
+            for &key in &keys {
+                draft.push(key, EventDraft::Generated { sources: vec![] });
+            }
+            let anchor = kernel
+                .topo_mut()
+                .journal_record_evolution(pending, draft)
+                .unwrap();
+            let mut radius = 1.0;
+            let mut outputs = Vec::new();
+            for next in [2.0, 0.75] {
+                let face = solid_faces(kernel.topo(), solid)
+                    .unwrap()
+                    .into_iter()
+                    .find(|&face| {
+                        matches!(
+                            kernel.topo().face(face).unwrap().surface(),
+                            FaceSurface::Cylinder(_)
+                        )
+                    })
+                    .unwrap();
+                let source = super::index_u32(solid.index());
+                let face = super::index_u32(face.index());
+                let output: serde_json::Value = if batch {
+                    run(&mut kernel, serde_json::json!([{"op":"resizeBlendJournaled","args":{"solid":source,"face":face,"expectedRadius":radius,"newRadius":next}}])).remove(0)
+                } else {
+                    serde_json::from_str(
+                        &kernel
+                            .resize_blend_journaled_js(source, face, radius, next)
+                            .unwrap(),
+                    )
+                    .unwrap()
+                };
+                solid = kernel
+                    .resolve_solid(u32::try_from(output["solid"].as_u64().unwrap()).unwrap())
+                    .unwrap();
+                let mut found = std::collections::BTreeSet::new();
+                for kind in [EntityKind::Face, EntityKind::Edge, EntityKind::Vertex] {
+                    for index in 0..keys.iter().filter(|key| key.kind == kind).count() {
+                        let Resolution::Bound {
+                            entity,
+                            provenance: Provenance::Construction,
+                        } = resolve(
+                            kernel.topo(),
+                            &PersistentRef::operation_output(anchor, kind, index),
+                        )
+                        else {
+                            panic!("lost blend reference");
+                        };
+                        assert!(found.insert(entity));
+                    }
+                }
+                assert_eq!(
+                    found,
+                    solid_entity_keys(kernel.topo(), solid)
+                        .unwrap()
+                        .into_iter()
+                        .collect()
+                );
+                radius = next;
+                outputs.push(output);
+            }
+            let face = solid_faces(kernel.topo(), solid)
+                .unwrap()
+                .into_iter()
+                .find(|&face| {
+                    matches!(
+                        kernel.topo().face(face).unwrap().surface(),
+                        FaceSurface::Cylinder(_)
+                    )
+                })
+                .unwrap();
+            let source = super::index_u32(solid.index());
+            let face = super::index_u32(face.index());
+            let before = kernel.topo().journal().snapshot();
+            let error = kernel
+                .resize_blend_journaled_json(source, face, radius, 50.0)
+                .unwrap_err();
+            let failed: serde_json::Value = serde_json::from_str(&kernel.execute_batch_v2(&serde_json::json!([{"op":"resizeBlendJournaled","args":{"solid":source,"face":face,"expectedRadius":radius,"newRadius":50.0}}]).to_string())).unwrap();
+            assert_eq!(failed[0]["error"]["message"], error.message());
+            let after = kernel.topo().journal().snapshot();
+            assert_eq!(after.entries, before.entries);
+            assert_eq!(after.index, before.index);
+            outputs.push(serde_json::json!(error.message()));
+            payloads.push(outputs);
         }
         assert_eq!(payloads[0], payloads[1]);
     }
