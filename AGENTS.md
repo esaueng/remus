@@ -715,6 +715,9 @@ Changed distributable bytes or exports advance the patch version from the commit
 packages; identical output keeps its version. The matching WASM Cargo versions
 provide the minimum release version and can explicitly advance major/minor releases.
 The build runs `scripts/test-version-wasm-packages.mjs` before assigning the version.
+The WASM version guard checks PR and merge-group package changes against their base.
+The package publisher also checks the staged artifacts before any push; changed
+packages cannot reuse or lower the shared version.
 
 ### Profiling
 
