@@ -352,9 +352,9 @@ impl HealOperator for SewShellsOp {
             shell,
             ctx.tolerance.linear,
         )?;
-        let live_edges: std::collections::HashSet<_> =
+        let live_edges: std::collections::BTreeSet<_> =
             solid_edges(topo, solid_id)?.into_iter().collect();
-        let live_vertices: std::collections::HashSet<_> =
+        let live_vertices: std::collections::BTreeSet<_> =
             solid_vertices(topo, solid_id)?.into_iter().collect();
         let mut replacements = crate::reshape::ReShape::new();
         // A per-shell redirect does not consume a source still used by a cavity.
