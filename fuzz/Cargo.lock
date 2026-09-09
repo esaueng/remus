@@ -450,7 +450,7 @@ dependencies = [
 
 [[package]]
 name = "remus-wasm"
-version = "2.130.0"
+version = "2.130.1"
 dependencies = [
  "log",
  "remus-algo",
