@@ -25,10 +25,11 @@ class PackageRefreshTests(unittest.TestCase):
         subprocess.run(['git', 'init', '--bare', str(self.root / 'remote.git')],
                        check=True, capture_output=True)
         self.git('init', '-b', 'main')
-        package = self.repo / 'crates/wasm/pkg'
-        package.mkdir(parents=True)
-        (package / 'package.json').write_text('{"version":"1.2.3"}')
-        (package / 'kernel.wasm').write_bytes(b'baseline')
+        for root in ('crates/wasm/pkg', 'crates/wasm-io/pkg'):
+            package = self.repo / root
+            package.mkdir(parents=True)
+            (package / 'package.json').write_text('{"version":"1.2.3"}')
+            (package / 'kernel.wasm').write_bytes(b'baseline')
         self.git('add', '.')
         self.git('commit', '-m', 'fixture')
         self.source = self.git('rev-parse', 'HEAD')
@@ -53,7 +54,9 @@ class PackageRefreshTests(unittest.TestCase):
 
     def stage(self, content=b'generated'):
         (self.repo / 'crates/wasm/pkg/kernel.wasm').write_bytes(content)
-        self.git('add', 'crates/wasm/pkg')
+        for root in ('crates/wasm/pkg', 'crates/wasm-io/pkg'):
+            (self.repo / root / 'package.json').write_text('{"version":"1.2.4"}')
+        self.git('add', 'crates/wasm/pkg', 'crates/wasm-io/pkg')
 
     def publish(self):
         return subprocess.run(['python3', str(SCRIPT)], cwd=self.repo,
