@@ -42,8 +42,21 @@ pub fn replace_surface(
     face: FaceId,
     replacement: FaceSurface,
 ) -> Result<ReplaceSurfaceResult, OperationsError> {
+    let result = replace_surface_with_entity_map(topo, solid, face, replacement)?;
+    Ok(ReplaceSurfaceResult {
+        solid: result.solid,
+        face_map: result.face_map.into_iter().collect(),
+    })
+}
+
+pub(crate) fn replace_surface_with_entity_map(
+    topo: &mut Topology,
+    solid: SolidId,
+    face: FaceId,
+    replacement: FaceSurface,
+) -> Result<remus_offset::MoveFacesEntityResult, OperationsError> {
     remus_topology::transaction::run_transacted(topo, |topo| {
-        let result = remus_offset::replace_surface_with_face_map(topo, solid, face, replacement)?;
+        let result = remus_offset::replace_surface_with_entity_map(topo, solid, face, replacement)?;
         let result_faces = solid_faces(topo, result.solid)?;
         register_fresh_pcurves(topo, &result_faces)?;
 
@@ -59,10 +72,7 @@ pub fn replace_surface(
             }
             .into());
         }
-        Ok(ReplaceSurfaceResult {
-            solid: result.solid,
-            face_map: result.face_map.into_iter().collect(),
-        })
+        Ok(result)
     })
 }
 

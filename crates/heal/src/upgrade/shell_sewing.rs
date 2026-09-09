@@ -41,6 +41,18 @@ pub struct SewReport {
     pub declined: usize,
 }
 
+/// Committed replacements within the sewn shell.
+///
+/// Entities may still be used outside that shell; these records do not assert
+/// that their source handles were globally deleted.
+#[derive(Debug, Clone, Default)]
+pub struct SewHistory {
+    /// Dropped boundary edge and the retained edge used in its place.
+    pub edges: Vec<(EdgeId, EdgeId)>,
+    /// Merged vertex and its final representative after all seam joins.
+    pub vertices: Vec<(VertexId, VertexId)>,
+}
+
 /// Sew coincident free boundary edges in a shell.
 ///
 /// Returns the number of edges sewn — that is, the number of free-edge pairs
@@ -80,6 +92,32 @@ pub fn sew_shell_report(
     shell_id: ShellId,
     tolerance: f64,
 ) -> Result<SewReport, HealError> {
+    sew_shell_impl(topo, shell_id, tolerance, None)
+}
+
+/// Sew a shell and retain the replacements committed by the sewing pass.
+///
+/// Uses the same candidate checks, tolerance, and rollback as [`sew_shell_report`].
+///
+/// # Errors
+///
+/// Returns [`HealError`] if entity lookups or boundary updates fail.
+pub fn sew_shell_with_history(
+    topo: &mut Topology,
+    shell_id: ShellId,
+    tolerance: f64,
+) -> Result<(SewReport, SewHistory), HealError> {
+    let mut history = SewHistory::default();
+    let report = sew_shell_impl(topo, shell_id, tolerance, Some(&mut history))?;
+    Ok((report, history))
+}
+
+fn sew_shell_impl(
+    topo: &mut Topology,
+    shell_id: ShellId,
+    tolerance: f64,
+    history: Option<&mut SewHistory>,
+) -> Result<SewReport, HealError> {
     let (wire_ids, usage) = survey_shell(topo, shell_id)?;
 
     let mut free_ids: Vec<EdgeId> = usage
@@ -110,7 +148,7 @@ pub fn sew_shell_report(
     }
 
     let snapshot = topo.clone();
-    if let Err(error) = apply_merges(topo, shell_id, &wire_ids, &plans) {
+    if let Err(error) = apply_merges(topo, shell_id, &wire_ids, &plans, history) {
         topo.restore_for_rollback(&snapshot);
         return Err(error);
     }
@@ -324,6 +362,7 @@ fn apply_merges(
     shell_id: ShellId,
     wire_ids: &[WireId],
     plans: &[Merge],
+    history: Option<&mut SewHistory>,
 ) -> Result<(), HealError> {
     // Snapshot authority before replacing wires retires the dropped coedges.
     // The retained edge is not yet a use of the dropped edge's face, so the
@@ -430,6 +469,15 @@ fn apply_merges(
         }
     }
 
+    if let Some(history) = history {
+        history.edges = plans.iter().map(|merge| (merge.drop, merge.keep)).collect();
+        history.vertices = vertex_map
+            .keys()
+            .map(|&source| (source, resolve_vertex(&vertex_map, source)))
+            .collect();
+        history.edges.sort_by_key(|(source, _)| source.index());
+        history.vertices.sort_by_key(|(source, _)| source.index());
+    }
     Ok(())
 }
 
@@ -679,6 +727,201 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn sewing_history_maps_every_consumed_edge_and_vertex_to_its_live_representative() {
+        let mut topo = Topology::new();
+        let shell = disjoint_cube_shell(&mut topo);
+        let (_, before) = survey_shell(&topo, shell).unwrap();
+        let vertices: HashSet<_> = before
+            .keys()
+            .flat_map(|&id| {
+                let edge = topo.edge(id).unwrap();
+                [edge.start(), edge.end()]
+            })
+            .collect();
+        let mut ordinary = topo.clone();
+        let ordinary_report = sew_shell_report(&mut ordinary, shell, 1e-6).unwrap();
+        let (report, history) = sew_shell_with_history(&mut topo, shell, 1e-6).unwrap();
+        assert_eq!(report, ordinary_report);
+        assert_eq!(report.sewn, 12);
+        assert_eq!(history.edges.len(), 12);
+        assert_eq!(history.vertices.len(), 16);
+        let (_, live) = survey_shell(&topo, shell).unwrap();
+        let live_vertices: HashSet<_> = live
+            .keys()
+            .flat_map(|&id| {
+                let edge = topo.edge(id).unwrap();
+                [edge.start(), edge.end()]
+            })
+            .collect();
+        for source in before.keys() {
+            let target = history
+                .edges
+                .iter()
+                .find(|(from, _)| from == source)
+                .map_or(*source, |(_, target)| *target);
+            assert!(live.contains_key(&target));
+            if target != *source {
+                assert!(!live.contains_key(source));
+            }
+        }
+        for source in vertices {
+            let target = history
+                .vertices
+                .iter()
+                .find(|(from, _)| *from == source)
+                .map_or(source, |(_, target)| *target);
+            assert!(live_vertices.contains(&target));
+            if target != source {
+                assert!(!live_vertices.contains(&source));
+            }
+        }
+        assert_eq!(topo.allocated_slot_count(), ordinary.allocated_slot_count());
+        let (wires, _) = survey_shell(&topo, shell).unwrap();
+        for wire in wires {
+            assert_eq!(
+                topo.wire(wire)
+                    .unwrap()
+                    .edges()
+                    .iter()
+                    .map(|oe| (oe.edge(), oe.is_forward()))
+                    .collect::<Vec<_>>(),
+                ordinary
+                    .wire(wire)
+                    .unwrap()
+                    .edges()
+                    .iter()
+                    .map(|oe| (oe.edge(), oe.is_forward()))
+                    .collect::<Vec<_>>()
+            );
+        }
+        assert_eq!(free_edge_count(&topo, shell), 0);
+        let (repeat, repeated_history) = sew_shell_with_history(&mut topo, shell, 1e-6).unwrap();
+        assert_eq!(repeat.sewn, 0);
+        assert!(repeated_history.edges.is_empty());
+        assert!(repeated_history.vertices.is_empty());
+    }
+
+    #[test]
+    fn sewing_pipeline_keeps_sources_still_referenced_by_another_shell() {
+        use remus_topology::journal::EntityKey;
+        for retain_sources in [false, true] {
+            let mut topo = Topology::new();
+            let shell = disjoint_cube_shell(&mut topo);
+            let mut inner = Vec::new();
+            if retain_sources {
+                // An open inner patch isolates shared-entity identity semantics;
+                // this fixture is not a closed-solid qualification witness.
+                let source = topo
+                    .face(*topo.shell(shell).unwrap().faces().last().unwrap())
+                    .unwrap()
+                    .clone();
+                let wire = topo.wire(source.outer_wire()).unwrap().clone();
+                let wire = topo.add_wire(wire);
+                let face = topo.add_face(Face::new(wire, Vec::new(), source.surface().clone()));
+                inner.push(topo.add_shell(Shell::new(vec![face]).unwrap()));
+            }
+            let solid = topo.add_solid(remus_topology::solid::Solid::new(shell, inner));
+            let mut direct = topo.clone();
+            let (_, raw) = sew_shell_with_history(&mut direct, shell, 1e-7).unwrap();
+            let mut process = crate::pipeline::process::HealProcess::new();
+            process.add_step("sew_shells");
+            let (_, reports, steps) = process.execute_with_history(&mut topo, solid).unwrap();
+            assert_eq!(reports[0].actions_taken, 12);
+            let claims = steps[0].replacements.entity_history().unwrap();
+            let mut retained = 0;
+            let pairs = raw
+                .edges
+                .iter()
+                .map(|(from, to)| (EntityKey::edge(from.index()), EntityKey::edge(to.index())))
+                .chain(raw.vertices.iter().map(|(from, to)| {
+                    (
+                        EntityKey::vertex(from.index()),
+                        EntityKey::vertex(to.index()),
+                    )
+                }));
+            for (source, target) in pairs {
+                if steps[0].result.contains(&source) {
+                    assert!(!claims.contains_key(&source));
+                    retained += 1;
+                } else {
+                    assert_eq!(claims[&source], vec![target]);
+                }
+            }
+            assert_eq!(retained > 0, retain_sources);
+        }
+    }
+
+    #[test]
+    fn wireframe_pipeline_repairs_outer_and_inner_shells_with_history() {
+        let mut topo = Topology::new();
+        let outer = disjoint_cube_shell(&mut topo);
+        let inner = disjoint_cube_shell(&mut topo);
+        // Separate shell identities isolate traversal and lineage from cavity containment.
+        let solid = topo.add_solid(remus_topology::solid::Solid::new(outer, vec![inner]));
+        let mut process = crate::pipeline::process::HealProcess::new();
+        process.add_step("fix_wireframe");
+        process.add_step("fix_wireframe");
+        let (_, reports, history) = process.execute_with_history(&mut topo, solid).unwrap();
+        assert_eq!(reports[0].actions_taken, 24);
+        assert_eq!(reports[1].actions_taken, 0);
+        for shell in [outer, inner] {
+            assert_eq!(free_edge_count(&topo, shell), 0);
+            assert_wires_chain(&topo, shell);
+        }
+        let claims = history[0].replacements.entity_history().unwrap();
+        assert_eq!(claims.len(), 56);
+        assert!(
+            claims
+                .values()
+                .flatten()
+                .all(|key| history[0].result.contains(key))
+        );
+        assert!(history[1].replacements.entity_history().unwrap().is_empty());
+    }
+
+    #[test]
+    fn disabled_wireframe_repair_preserves_disjoint_boundaries() {
+        let mut topo = Topology::new();
+        let shell = disjoint_cube_shell(&mut topo);
+        let mut ctx = crate::context::HealContext::new();
+        let config = crate::fix::config::FixConfig {
+            fix_wireframe: crate::fix::config::FixMode::Off,
+            ..Default::default()
+        };
+        let (result, history) =
+            crate::fix::wireframe::fix_wireframe_with_history(&mut topo, shell, &mut ctx, &config)
+                .unwrap();
+        assert_eq!(result.actions_taken, 0);
+        assert_eq!(free_edge_count(&topo, shell), 24);
+        assert!(history.edges.is_empty());
+        assert!(history.vertices.is_empty());
+    }
+
+    #[test]
+    fn wireframe_repair_closes_a_disjoint_cube_shell() {
+        let mut topo = Topology::new();
+        let shell = disjoint_cube_shell(&mut topo);
+        assert_eq!(free_edge_count(&topo, shell), 24);
+        let report = crate::fix::wireframe::fix_wireframe(
+            &mut topo,
+            shell,
+            &mut crate::context::HealContext::new(),
+            &crate::fix::config::FixConfig::default(),
+        )
+        .unwrap();
+        let remaining = free_edge_count(&topo, shell);
+        assert_eq!(
+            remaining, 0,
+            "reported {} repairs but retained {remaining} free edges",
+            report.actions_taken
+        );
+        assert_eq!(report.actions_taken, 12);
+        remus_topology::validation::validate_shell_closed(topo.shell(shell).unwrap(), &topo)
+            .unwrap();
+        assert_wires_chain(&topo, shell);
     }
 
     #[test]
@@ -961,7 +1204,19 @@ mod tests {
         let shell_id = topo.add_shell(Shell::new(vec![ft, fb]).unwrap());
 
         let before = free_edge_count(&topo, shell_id);
-        let report = sew_shell_report(&mut topo, shell_id, 1e-6).unwrap();
+        let wireframe = crate::fix::wireframe::fix_wireframe(
+            &mut topo,
+            shell_id,
+            &mut crate::context::HealContext::new(),
+            &crate::fix::config::FixConfig::default(),
+        )
+        .unwrap();
+        assert_eq!(wireframe.actions_taken, 0);
+        assert!(wireframe.status.contains(crate::status::Status::FAIL1));
+        assert_eq!(free_edge_count(&topo, shell_id), before);
+        let (report, history) = sew_shell_with_history(&mut topo, shell_id, 1e-6).unwrap();
+        assert!(history.edges.is_empty());
+        assert!(history.vertices.is_empty());
 
         assert_eq!(
             report,
@@ -1019,7 +1274,19 @@ mod tests {
         let shell_id = topo.add_shell(Shell::new(faces).unwrap());
 
         let before = free_edge_count(&topo, shell_id);
-        let report = sew_shell_report(&mut topo, shell_id, 1e-6).unwrap();
+        let wireframe = crate::fix::wireframe::fix_wireframe(
+            &mut topo,
+            shell_id,
+            &mut crate::context::HealContext::new(),
+            &crate::fix::config::FixConfig::default(),
+        )
+        .unwrap();
+        assert_eq!(wireframe.actions_taken, 0);
+        assert!(wireframe.status.contains(crate::status::Status::FAIL1));
+        assert_eq!(free_edge_count(&topo, shell_id), before);
+        let (report, history) = sew_shell_with_history(&mut topo, shell_id, 1e-6).unwrap();
+        assert!(history.edges.is_empty());
+        assert!(history.vertices.is_empty());
 
         assert_eq!(report.sewn, 0, "an ambiguous junction must not be sewn");
         assert_eq!(report.declined, 1);

@@ -170,6 +170,15 @@ fn positional_edge_health(positions: &[Point3], indices: &[u32]) -> (usize, usiz
 }
 
 fn assert_qualified_result(topo: &Topology, solid: SolidId, expected_volume: f64) {
+    assert_qualified_result_with_prior_pcurves(topo, solid, expected_volume, 0);
+}
+
+fn assert_qualified_result_with_prior_pcurves(
+    topo: &Topology,
+    solid: SolidId,
+    expected_volume: f64,
+    prior_pcurves: usize,
+) {
     let report = validate_solid(topo, solid).expect("strict validation");
     assert!(report.is_valid(), "validation: {:?}", report.issues);
     let edge_faces = edge_to_face_map(topo, solid).expect("edge adjacency");
@@ -223,7 +232,7 @@ fn assert_qualified_result(topo: &Topology, solid: SolidId, expected_volume: f64
         .sum::<usize>();
     assert_eq!(
         topo.num_pcurves(),
-        use_count,
+        prior_pcurves + use_count,
         "every result coedge must carry a freshly derived p-curve"
     );
 }
@@ -530,4 +539,172 @@ fn replacement_cells_are_scale_and_translation_stable() {
             scale,
         );
     }
+}
+
+fn anchor_all_entities(
+    topo: &mut Topology,
+    solid: SolidId,
+) -> Vec<(
+    remus_topology::journal::EntityKey,
+    remus_topology::naming::PersistentRef,
+)> {
+    use remus_operations::journal_ops::solid_entity_keys;
+    use remus_topology::journal::{EntityKind, EventDraft, EvolutionDraft};
+    use remus_topology::naming::{PersistentRef, Resolution, resolve};
+    let pending = topo.journal_begin("replacement_fixture");
+    let keys = solid_entity_keys(topo, solid).unwrap();
+    let mut draft = EvolutionDraft::construction();
+    draft.add_scope(keys.iter().copied());
+    for key in &keys {
+        draft.push(
+            *key,
+            EventDraft::Generated {
+                sources: Vec::new(),
+            },
+        );
+    }
+    let op = topo.journal_record_evolution(pending, draft).unwrap();
+    let mut references = Vec::new();
+    for kind in [EntityKind::Face, EntityKind::Edge, EntityKind::Vertex] {
+        for index in 0..keys.iter().filter(|key| key.kind == kind).count() {
+            let reference = PersistentRef::operation_output(op, kind, index);
+            let Resolution::Bound { entity, .. } = resolve(topo, &reference) else {
+                panic!("fixture reference must bind");
+            };
+            references.push((entity, reference));
+        }
+    }
+    references
+}
+
+fn assert_reference_incidence(
+    topo: &Topology,
+    result: SolidId,
+    references: &[(
+        remus_topology::journal::EntityKey,
+        remus_topology::naming::PersistentRef,
+    )],
+) {
+    use remus_operations::journal_ops::solid_entity_keys;
+    use remus_topology::journal::{EntityKey, EntityKind};
+    use remus_topology::naming::{Provenance, Resolution, resolve};
+    use std::collections::{BTreeMap, BTreeSet};
+    let mapped: BTreeMap<_, _> = references
+        .iter()
+        .map(|(source, reference)| {
+            let resolution = resolve(topo, reference);
+            let Resolution::Bound { entity, provenance } = resolution else {
+                panic!("replacement lost {reference:?}: {resolution:?}");
+            };
+            assert_eq!(provenance, Provenance::Construction);
+            (*source, entity)
+        })
+        .collect();
+    assert_eq!(mapped.len(), references.len());
+    let live: BTreeSet<_> = solid_entity_keys(topo, result)
+        .unwrap()
+        .into_iter()
+        .collect();
+    assert_eq!(mapped.values().copied().collect::<BTreeSet<_>>(), live);
+    for (source, target) in &mapped {
+        if source.kind != EntityKind::Edge {
+            continue;
+        }
+        let before = topo
+            .edge(topo.edge_id_from_index(source.index).unwrap())
+            .unwrap();
+        let after = topo
+            .edge(topo.edge_id_from_index(target.index).unwrap())
+            .unwrap();
+        assert_eq!(
+            after.start().index(),
+            mapped[&EntityKey::vertex(before.start().index())].index
+        );
+        assert_eq!(
+            after.end().index(),
+            mapped[&EntityKey::vertex(before.end().index())].index
+        );
+    }
+}
+
+#[test]
+fn journaled_replacement_keeps_all_references_through_tilt_and_bore_resize() {
+    use remus_operations::journal_ops::replace_surface_journaled;
+    let mut topo = Topology::new();
+    let source = bored_block(&mut topo);
+    let references = anchor_all_entities(&mut topo, source);
+    let top = top_face(&topo, source);
+    let normal = Vec3::new(-0.1, 0.0, 1.0).normalize().unwrap();
+    let d = normal.dot(Vec3::new(BORE_X, BORE_Y, DZ));
+    let tilted =
+        replace_surface_journaled(&mut topo, source, top, FaceSurface::Plane { normal, d })
+            .unwrap();
+    assert_reference_incidence(&topo, tilted.solid, &references);
+    assert_qualified_result(&topo, tilted.solid, DX * DY * DZ - PI * DZ);
+    let bore = bore_face(&topo, tilted.solid);
+    let FaceSurface::Cylinder(cylinder) = topo.face(bore).unwrap().surface() else {
+        unreachable!()
+    };
+    let replacement = CylindricalSurface::with_ref_dir(
+        cylinder.origin(),
+        cylinder.axis(),
+        1.5,
+        cylinder.x_axis(),
+    )
+    .unwrap();
+    let prior_pcurves = topo.num_pcurves();
+    let resized = replace_surface_journaled(
+        &mut topo,
+        tilted.solid,
+        bore,
+        FaceSurface::Cylinder(replacement),
+    )
+    .unwrap();
+    assert_reference_incidence(&topo, resized.solid, &references);
+    assert_qualified_result_with_prior_pcurves(
+        &topo,
+        resized.solid,
+        DX * DY * DZ - PI * 1.5_f64.powi(2) * DZ,
+        prior_pcurves,
+    );
+}
+
+#[test]
+fn journaled_replacement_refusal_preserves_history_and_references() {
+    use remus_operations::journal_ops::replace_surface_journaled;
+    use remus_topology::naming::resolve;
+    let mut topo = Topology::new();
+    let source = bored_block(&mut topo);
+    let references = anchor_all_entities(&mut topo, source);
+    let before_refs: Vec<_> = references
+        .iter()
+        .map(|(_, reference)| resolve(&topo, reference))
+        .collect();
+    let before_counts = live_counts(&topo);
+    let before_journal = topo.journal().snapshot();
+    let bore = bore_face(&topo, source);
+    let FaceSurface::Cylinder(cylinder) = topo.face(bore).unwrap().surface() else {
+        unreachable!()
+    };
+    let replacement = CylindricalSurface::with_ref_dir(
+        cylinder.origin(),
+        cylinder.axis(),
+        5.0,
+        cylinder.x_axis(),
+    )
+    .unwrap();
+    assert!(
+        replace_surface_journaled(&mut topo, source, bore, FaceSurface::Cylinder(replacement))
+            .is_err()
+    );
+    assert_eq!(live_counts(&topo), before_counts);
+    assert_eq!(topo.journal().snapshot(), before_journal);
+    assert_eq!(
+        references
+            .iter()
+            .map(|(_, reference)| resolve(&topo, reference))
+            .collect::<Vec<_>>(),
+        before_refs
+    );
+    assert_scaled_result(&topo, source, DX * DY * DZ - PI * DZ, 1.0);
 }

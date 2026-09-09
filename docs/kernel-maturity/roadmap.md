@@ -271,6 +271,90 @@ Direct-edit follow-up under [P-Class 6.5](p-class-status.md):
 is implemented on its review branch: native and packaged WASM quarter-wall
 resizing/refusal checks pass, and the full workspace passes 4,882 tests.
 General partial walls and journaled direct-edit completion remain open.
+The next slice retains exact edge/vertex correspondence for planar and
+coaxial-bore face moves, with `moveFacesJournaled` direct/batch surfacing.
+Native reference and connectivity regressions and both rebuilt-package suites
+pass. The unchanged parent fails the new reference witness at the first edge.
+Full workspace: 4,888 passed, 13 skipped. Clippy, rustdoc, and the unchanged
+52-row approximation census pass. The journaled binding
+now applies the same face-count and topology-work preflights as `moveFaces`;
+regressions cover over-limit selections and a valid 500-sided prism. Both rebuilt WASM
+package suites and the full native suite pass with these preflights. This does not close the
+blend-boundary, radius-edit, replacement, draft, or delete/heal history cells.
+
+Surface-replacement history is the next review slice: `replace_surface_journaled`
+and direct/batch `replaceSurfaceJournaled` retain construction face, edge, and
+vertex identities through planar and qualified coaxial-cylinder replacements.
+Native tilt-then-bore composition and refusal tests pass. Rebuilt-package tests
+preserve every reference through plane and imported quarter-wall sequences,
+including arena save/restore with handle remapping, STEP geometry round trips,
+and collision rollback. The binding preserves the established topology-work
+limit. Final qualification: 4,894 workspace tests passed, 13 skipped; both
+rebuilt WASM package suites, Clippy, rustdoc, and the 52-row census pass.
+
+Blended-move boundary history is the next slice. Rigid translation retains the
+actual copy maps; sharp-support reconstruction emits boundary history only when
+construction face identities uniquely determine edges, vertices, and outer/hole
+wire cycles. Ambiguous periodic boundaries retain explicit unresolved history.
+The unchanged parent fails native and packaged reference witnesses. Successive
+bored-cap moves, both construction paths, and the periodic ambiguity refusal
+pass focused native tests. Final qualification: 4,896 workspace tests passed,
+13 skipped; both rebuilt WASM package suites, Clippy, rustdoc, and the unchanged
+52-row census pass.
+
+Cylindrical radius history is the current review slice. The native
+`resize_cylindrical_face_journaled` and direct/batch
+`resizeCylindricalFaceJournaled` entries preserve qualified bore and quarter-wall
+replacement maps. Boss edits compose Boolean and unification construction
+history, preserving cap splits, generated subdivision boundaries, and explicit
+deletions when a later edit consumes them. Unique oriented boundary
+correspondence is required; ambiguous or inferred lineage stays unresolved.
+Focused native tests pass for successive bore/boss edits, four rigid placements,
+small/large scales, every original and result entity reference, and rollback.
+A tangent bore is now refused because its new contact changes the adjacency
+graph. STEP import now certifies a declared full-turn cylindrical p-curve
+against the authoritative 3D circle traversal, preserving periodic endpoints
+without accepting extra turns or mismatched curves. All 189 reader tests pass.
+Both rebuilt WASM package suites pass the new direct/batch bore, boss, and
+quarter-wall reference, arena, STEP, and rollback matrix. Final all-features
+qualification: 4,903 passed, 13 skipped; two process-leak warnings in existing
+facade tests did not reproduce in isolated checks. Clippy, rustdoc, mdBook,
+crate boundaries, and the unchanged 52-row census pass.
+
+Draft boundary history is the current qualification slice. The existing native
+`draft_journaled` now records a complete, unique construction boundary map and
+wraps geometry plus journal recording in one transaction. Plain and bored-box
+sequences retain every original entity reference at three scales and two rigid
+placements. Invalid and folding drafts restore state; a failed call also leaves
+an existing unjournaled mutation gap unpublished until the next successful
+operation. The additive `draftJournaled` JS API uses explicit degree units for
+both direct and batch calls (`angleDegrees` in batch). Both rebuilt-package
+suites pass reference retention, arena remapping, and rollback. STEP round trips
+pass except the 10,000 mm bored-box cells: their 1,000 mm circular rim exceeds
+the existing fixed importer sampling budget on both the unchanged source and
+drafted result. Those refusals are covered explicitly without changing import
+tolerances or resource limits. Final all-features workspace qualification passes
+4,907 tests with 13 skipped and no process-leak warnings; the subsequently added
+mutation-gap rollback regression also passes separately with all features.
+Clippy, rustdoc, doc tests, mdBook, and the unchanged 52-row census pass.
+Curved-face draft and ambiguous boundary correspondence remain separate open cells.
+
+Defeature entity history is the next qualification slice. The existing native
+`defeature_journaled` wrapper now records retained, merged, and deleted boundary
+identities transactionally, with additive direct/batch `defeatureJournaled` JS
+bindings. Capping carries actual copy maps; planar reconstruction carries vertex
+source groups through collapsed corners and captures assembly allocations before
+refinement. Closed plane/cylinder and cylinder/cone bands carry explicit contact
+and seam replacement maps. Unqualified refinement or seam correspondence remains
+unresolved. Native reference, analytic-volume, and rollback witnesses pass. The focused
+packaged matrix passes 30 direct/batch cases, including STEP-imported sources,
+arena restoration, and subsequent draft edits. Existing fillet/chamfer journal
+anchors expose faces only; defeature output tests cover all entity kinds. The
+10x cylinder/cone input is an exact scaled unit fixture: direct creation of that
+fillet reproduces a wire self-intersection refusal on the unchanged parent and
+remains a separate geometry issue. Both complete rebuilt-package suites pass. Final all-features workspace
+qualification passes 4,914 tests with 13 skipped and no process-leak warnings.
+Clippy, rustdoc, doc tests, mdBook, boundaries, and the unchanged 52-row census pass. General healing pipeline history remains open.
 
 ### Correctness follow-up: curved hole winding (#278)
 
@@ -300,6 +384,200 @@ volume and direct/batch mesh quality, including the explicit doubled pole seam. 
 circular rims use the same verified path.
 This qualification covers circular rims with or without one doubled pole
 seam; arbitrary non-circular trims are not included.
+
+
+### Healing entity history — qualification in progress
+
+The next B18 slice adds native `fix_shape_journaled` and
+`heal_pipeline_journaled`, plus direct/batch `fixShapeWithConfigJournaled`
+and `runHealPipelineJournaled`. Both JS calls return the existing verified
+repair report with an added journal `op`. Batch arguments are `solid` plus
+`configJson` (a JSON string) or `steps` (an array of operator names).
+
+Explicit `ReShape` replacements compose over each pipeline step's actual
+input/output entity scope. Identity survives only while the same entity is
+still reachable. Splits and converging replacements compose; explicit removal
+records deletion. Missing targets, unrecorded replacements, and newly created
+entities without construction records stay unresolved. Contradictory live-source
+claims and replacement cycles refuse transactionally. Repair reports, both
+validation gates, operator tolerances, and rollback remain authoritative.
+
+This does not complete the healing defect matrix or all operator attribution.
+`unify_same_domain`, `sew_shells`, `remove_internal_wires`, and
+`split_common_vertex` do not currently expose complete replacement records;
+their untracked changes remain unresolved. Geometry conversions preserve
+surviving identities. `fix_shape` exposes its private repair context separately
+so composing history does not change another operator's working tolerance.
+
+Native witnesses cover merged vertices, multi-step repair, later-step rollback,
+split/merge/delete composition, unknown history, and cycle refusal. Direct/batch
+binding witnesses preserve all entity references across three scales, arena
+restore into a populated kernel, and subsequent draft. The broad all-features
+run passes 4,926 tests (13 skipped). A subsequent compatibility fix restores the
+ordinary pipeline's original custom-operator dispatch; its 21 journal tests and
+full-workspace Clippy pass. Both final optimized packages pass smoke and
+installed-tarball consumer suites, including 12 damaged-box repair cells with
+reported actions, eight repaired vertices, persistent references, arena/STEP,
+and later draft. Final all-features affected qualification passes 113 tests. One process-leak
+warning in `model_owns_context_topology_and_journal` does not reproduce in its
+isolated check; the broad run has no leak warnings. This slice is not yet a
+merged claim.
+
+### Same-domain unification history — qualification in progress
+
+The next B18 increment records actual source-face groups and ordered edge runs
+inside the existing healing unifier. `unify_same_domain_with_history` is additive;
+the ordinary API keeps its existing behavior and tolerances. Each rejected phase
+discards its own records. A closed split-box witness proves that the edge phase
+can revert while retaining the successful face merge and its history.
+
+The healing pipeline now attributes single-output merge groups and committed
+edge runs. Shared internal edges consumed by a face group are recorded as deleted
+only when no result-shell use remains. Vertices consumed by those edges or merged
+runs are deleted only when absent from the complete result solid. A four-triangle
+box-face witness preserves all surviving references and explicitly deletes four
+spokes and the unused center across three scales, populated arena restore,
+repeated unification, and a later draft.
+
+A follow-on B18 increment traces multiple output regions through source-wire
+components and canceled shared edges. A pinched source can contribute to both
+regions while its neighbors contribute only to their own region; fully interior
+source faces inherit their connected region even without surviving boundary
+edges. The collector allocates no topology and requires complete boundary and
+component accounting. Pinched sources with holes remain unresolved until hole
+ownership is established. Low-level open repair fixtures cover this tracing and
+pipeline history; they do not qualify closed-solid acceptance. The unifier's
+existing outer-shell scope is
+unchanged; cavity unification and broader multi-region qualification remain
+open B18 cells. The compiled-package regression reproduces `unresolvedAcrossOperation` on the preceding package;
+both rebuilt optimized packages now pass smoke and installed-tarball consumer
+suites, including all six direct/batch unification cells. Workspace Clippy,
+rustdoc, doctests, mdBook, boundary checks, and the unchanged 52-row census pass.
+The full all-features native run passes 4,932 tests (13 skipped), with no
+process-leak warnings. The final test-fixture boundary API correction also passes
+all 140 healing tests. The rebuilt kernel grows by 12,090 bytes; the translator
+binary is unchanged. This increment is qualified locally, not yet merged.
+
+### Sewing entity history — qualification in progress
+
+The next B18 increment records the edge redirects and final vertex representatives
+committed by shell sewing. `sew_shell_with_history` returns a `SewHistory` alongside
+the existing counted report; the ordinary API keeps its geometry, tolerances,
+curve-agreement checks, ambiguity refusals, and rollback. Records are produced
+only after boundary and vertex updates succeed. The pipeline attributes consumed
+sources only when they are absent from the complete result solid; sources still
+used by another shell retain their live identity.
+
+Native witnesses cover all 12 edge joins and 16 vertex joins of a disjoint-face
+cube, ordinary-operation parity, repeated no-op sewing, and refusal without
+replacement claims for mismatched curves or ambiguous partners. A shared-inner-
+patch fixture tests retained-source identity without claiming closed-solid
+qualification. A separate verified three-scale box witness preserves every
+reference through sewing, populated arena restore, and later draft; a deliberately
+failing later operator proves topology and journal rollback after sewing.
+
+The direct/batch WASM regression uses explicit construction anchors in a legacy
+arena fixture and reproduces `unresolvedAcrossOperation` on the preceding package.
+Both rebuilt optimized packages pass smoke and installed-tarball consumer
+suites, including all six direct/batch sewing cells. Workspace Clippy, rustdoc,
+doctests, mdBook, boundary checks, and the unchanged 52-row census pass. The
+kernel grows by 12,122 bytes; the translator binary is unchanged. The full
+all-features native run passes 4,935 tests (13 skipped), with no leak warnings.
+This increment is qualified locally, not yet merged. It does not extend sewing
+to cavity shells or close the broader B17 repair matrix.
+
+### Inner-wire removal history — qualification in progress
+
+The next B18 increment records boundary entities consumed by
+`remove_internal_wires`. The additive `remove_internal_wires_with_history` API
+captures candidates from the actual removed wires and excludes edges and vertices
+still reachable in any result shell. The journaled pipeline records the remaining
+entities as deleted. Shared boundaries and surviving faces retain their identity;
+the ordinary removal policy and cavity traversal are unchanged.
+
+A three-scale open-hole repair witness becomes a verified closed cube with eight
+explicitly deleted edge/vertex references and all 26 surviving references bound.
+Arena restore, repeated removal, later draft, and pipeline rollback retain that
+contract. Low-level tests cover cavity wires, shared edges and vertices, and
+ordinary-operation parity. Removing loops from a valid through-bore remains a
+typed refusal with unchanged topology and journal in six direct/batch scale cells.
+The preceding compiled package reproduces unresolved consumed references. Both
+rebuilt optimized packages pass smoke and installed-tarball consumer suites,
+including all six inner-wire cells. Workspace Clippy, rustdoc, doctests, mdBook,
+crate boundaries, and the unchanged 52-row census pass. The kernel grows by
+11,512 bytes; the translator is unchanged. The full all-features native run passes
+4,937 tests (13 skipped), with no leak warnings. This increment is qualified
+locally, not yet merged.
+
+### Common-vertex split history — locally qualified
+
+The next B18 increment records the retained source and actual allocated vertices
+from `split_common_vertex`, including disconnected fans across cavity shells.
+An additive history API captures completed endpoint changes; its `ReShape`
+metadata does not redirect edges when applied. History traversal accepts direct
+self-retention in a split while rejecting cross-entity cycles and conflicting
+pending vertex actions. The existing split threshold and geometry are unchanged.
+
+Low-level pipeline tests cover all eleven descendants of an over-connected
+vertex, repeated no-op execution, and ordinary-operation count parity. Naming
+assembly returns all construction descendants and preserves them through a
+populated arena restore and later identity step. These fixtures exercise lineage;
+they do not establish a new closed-solid repair capability. Three-scale open-fan
+fixtures remain typed refusals at the verified boundary, with exact topology and
+journal rollback both after validation refusal and after a later operator fails.
+Six direct/batch compiled-package cells preserve those refusals. All 4,943 native tests pass (13 skipped), and both optimized WASM packages pass
+smoke and installed-tarball consumer checks. This increment is not yet merged
+and does not close the B17 repair matrix.
+
+### Wireframe boundary repair — locally qualified
+
+The disconnected-cube regression reproduced `fix_wireframe` reporting twelve
+repairs while retaining all twenty-four free edges. The fixer now uses the
+existing shell-sewing candidate checks and boundary rewrites, and reports the
+actual remaining free edges. Coincident chord/arc endpoints and ambiguous
+partners remain refused. No tolerance changes are introduced; the existing
+interior-sampling criterion is retained and is not a universal curve-equality
+proof.
+
+The pipeline repairs outer and cavity shells separately and records committed
+edge/vertex replacements. Local tests cover closure, connected wire identities,
+repeated no-op execution, three-scale journal references, populated arena
+restore, later draft, and rollback after a subsequent refusal. The two-shell
+fixture isolates traversal and lineage rather than cavity containment.
+All 4,945 native tests pass (13 skipped), and both optimized WASM packages pass
+smoke and installed-tarball consumer checks, including twelve sewing/wireframe
+direct/batch scale cells. This increment is not yet merged. B17 stays open.
+
+### Disabled repair modes — locally qualified
+
+The wireframe, common-vertex split, and small-face removal APIs now honor their existing `Off`
+configuration, returning no repair actions or history. A disconnected-cube
+regression reproduced twelve wireframe repairs despite `Off`. Active repair
+behavior and the general orchestrator's enabled fix set are unchanged. Local
+healing tests pass, as do all 4,946 workspace tests (13 skipped) and both
+optimized packages with smoke and installed-tarball consumer checks. One
+nextest lingering-handle warning did not reproduce in an isolated rerun.
+This increment is not yet merged.
+
+### Cavity duplicate repair — qualification in progress
+
+The duplicate-face pass now compares eligible planar polygon faces within each
+outer or cavity shell. It preserves coincident faces in distinct shells and
+refuses a duplicate removal that would also remove the same face identity from
+another shell. The existing same-winding, straight-edge, unperforated-face
+eligibility and tolerances are unchanged.
+
+The failing cavity regression now repairs one duplicate. A 54-cell native matrix
+crosses three scales, outer/cavity shells, zero/one/three duplicate faces, and
+Off/Auto/On policies. Accepted repairs retain material volume, disclose exact
+duplicate counts, resolve surviving face references, and record deletions. Off
+with duplicates produces a typed validation refusal and byte-identical arena
+and journal rollback. All 26 journal tests and scoped Clippy pass after this
+expansion. Shared-identity refusal and all 151 healing tests pass. All 4,949
+workspace tests pass (13 skipped); one harness leak warning does not reproduce
+in isolation. Optimized kernel/translator builds, smoke tests, installed-package
+consumers, lint, boundaries, census, rustdoc, doctests, and mdBook pass. B17 stays
+open: this qualifies cavity duplicate repair, not the full defect matrix.
 
 ## §B Bridge backlog — owned by neither program
 

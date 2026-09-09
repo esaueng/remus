@@ -55,6 +55,23 @@ pub struct UnifyResult {
     pub status: Status,
 }
 
+/// Construction contributors retained by a successful unification pass.
+#[derive(Debug, Clone, Default)]
+pub struct UnifyHistory {
+    /// Source and result faces grouped by the actual surface merge.
+    /// A multi-result group does not assert a pairwise correspondence.
+    pub face_groups: Vec<(Vec<FaceId>, Vec<FaceId>)>,
+    /// Proven source-to-region assignments for multi-result face groups.
+    /// Absent assignments remain unresolved.
+    pub face_regions: Vec<(FaceId, Vec<FaceId>)>,
+    /// Ordered source-edge runs and the edge constructed from each run.
+    pub edge_runs: Vec<(Vec<remus_topology::EdgeId>, remus_topology::EdgeId)>,
+    /// Shared interior edges consumed by committed face merges.
+    pub removed_edges: Vec<remus_topology::EdgeId>,
+    /// Consumed boundary vertices with no remaining use in the result solid.
+    pub removed_vertices: Vec<remus_topology::VertexId>,
+}
+
 struct UnionFind {
     parent: Vec<usize>,
     rank: Vec<u8>,
@@ -103,6 +120,31 @@ pub fn unify_same_domain(
     topo: &mut Topology,
     solid_id: SolidId,
     options: &UnifyOptions,
+) -> Result<(SolidId, UnifyResult), HealError> {
+    unify_same_domain_impl(topo, solid_id, options, None)
+}
+
+/// Unify while retaining construction contributors from committed phases.
+///
+/// # Errors
+///
+/// Returns the same lookup and construction errors as [`unify_same_domain`].
+pub fn unify_same_domain_with_history(
+    topo: &mut Topology,
+    solid_id: SolidId,
+    options: &UnifyOptions,
+) -> Result<(SolidId, UnifyResult, UnifyHistory), HealError> {
+    let mut history = UnifyHistory::default();
+    let (solid, report) = unify_same_domain_impl(topo, solid_id, options, Some(&mut history))?;
+    Ok((solid, report, history))
+}
+
+#[allow(clippy::too_many_lines)]
+fn unify_same_domain_impl(
+    topo: &mut Topology,
+    solid_id: SolidId,
+    options: &UnifyOptions,
+    mut history: Option<&mut UnifyHistory>,
 ) -> Result<(SolidId, UnifyResult), HealError> {
     if !options.unify_faces {
         return Ok((
@@ -230,6 +272,16 @@ pub fn unify_same_domain(
         for &fid in &group_face_ids {
             faces_to_remove.insert(fid);
         }
+        if let Some(history) = history.as_deref_mut() {
+            if new_face_ids.len() > 1
+                && let Some(regions) = trace_face_regions(topo, &group_face_ids, &new_face_ids)?
+            {
+                history.face_regions.extend(regions);
+            }
+            history
+                .face_groups
+                .push((group_face_ids.clone(), new_face_ids.clone()));
+        }
         total_merged += group_face_ids.len() - new_face_ids.len();
         new_faces_to_add.extend(new_face_ids);
     }
@@ -261,6 +313,10 @@ pub fn unify_same_domain(
         // from the arena, so restoring that list is a complete revert.
         bad_after_faces = unpaired_edge_count(topo, &final_faces)?;
         if bad_after_faces > bad_before {
+            if let Some(history) = history.as_deref_mut() {
+                history.face_groups.clear();
+                history.face_regions.clear();
+            }
             log::warn!(
                 "unify_same_domain: skipping merge of {total_merged} faces — unpaired edges would rise {bad_before} -> {bad_after_faces}"
             );
@@ -290,7 +346,16 @@ pub fn unify_same_domain(
         }
 
         for &(wid, _) in &wire_snapshots {
-            total_edges_merged += merge_collinear_edges(topo, wid, options)?;
+            total_edges_merged += if let Some(history) = history.as_deref_mut() {
+                merge_collinear_edges_with_history(
+                    topo,
+                    wid,
+                    options,
+                    Some(&mut history.edge_runs),
+                )?
+            } else {
+                merge_collinear_edges(topo, wid, options)?
+            };
         }
 
         if total_edges_merged > 0 {
@@ -304,8 +369,15 @@ pub fn unify_same_domain(
                     topo.replace_boundary_wire(wid, original)?;
                 }
                 total_edges_merged = 0;
+                if let Some(history) = history.as_deref_mut() {
+                    history.edge_runs.clear();
+                }
             }
         }
+    }
+
+    if let Some(history) = history {
+        record_consumed_boundaries(topo, solid_id, history)?;
     }
 
     let status = if total_merged > 0 || total_edges_merged > 0 {
@@ -322,6 +394,50 @@ pub fn unify_same_domain(
             status,
         },
     ))
+}
+
+fn record_consumed_boundaries(
+    topo: &Topology,
+    solid: SolidId,
+    history: &mut UnifyHistory,
+) -> Result<(), HealError> {
+    use remus_topology::explorer::{solid_edges, solid_vertices};
+    let live_edges: HashSet<_> = solid_edges(topo, solid)?.into_iter().collect();
+    let live_vertices: HashSet<_> = solid_vertices(topo, solid)?.into_iter().collect();
+    let mut candidates = HashSet::new();
+    for (sources, _) in &history.face_groups {
+        let mut incidence: HashMap<remus_topology::EdgeId, HashSet<FaceId>> = HashMap::new();
+        for &source in sources {
+            let face = topo.face(source)?;
+            for wire in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+            {
+                for edge in topo.wire(wire)?.edges() {
+                    incidence.entry(edge.edge()).or_default().insert(source);
+                }
+            }
+        }
+        for (edge, faces) in incidence {
+            if faces.len() == 2 && !live_edges.contains(&edge) {
+                history.removed_edges.push(edge);
+                let edge = topo.edge(edge)?;
+                candidates.extend([edge.start(), edge.end()]);
+            }
+        }
+    }
+    for (sources, _) in &history.edge_runs {
+        for &source in sources {
+            let edge = topo.edge(source)?;
+            candidates.extend([edge.start(), edge.end()]);
+        }
+    }
+    history.removed_edges.sort_unstable();
+    history.removed_edges.dedup();
+    history.removed_vertices = candidates
+        .into_iter()
+        .filter(|vertex| !live_vertices.contains(vertex))
+        .collect();
+    history.removed_vertices.sort_unstable();
+    Ok(())
 }
 
 /// Count edges of `faces` that are NOT shared by exactly two of them.
@@ -405,6 +521,123 @@ struct LoopInfo {
     edge_indices: Vec<usize>,
     uv_points: Vec<(f64, f64)>,
     signed_area: f64,
+}
+
+/// Trace material components through canceled edges, never through pinch vertices.
+#[allow(clippy::too_many_lines, clippy::type_complexity)]
+fn trace_face_regions(
+    topo: &Topology,
+    sources: &[FaceId],
+    targets: &[FaceId],
+) -> Result<Option<Vec<(FaceId, Vec<FaceId>)>>, HealError> {
+    use super::split_self_intersecting_wires::try_split_wire;
+
+    let mut components = Vec::new();
+    let mut owners = Vec::new();
+    for &source in sources {
+        let face = topo.face(source)?;
+        for wire in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+            let wire = topo.wire(wire)?;
+            if !wire.is_closed() || wire.edges().is_empty() {
+                return Ok(None);
+            }
+            for (current, next) in wire.edges().iter().zip(wire.edges().iter().cycle().skip(1)) {
+                if current.oriented_end(topo.edge(current.edge())?)
+                    != next.oriented_start(topo.edge(next.edge())?)
+                {
+                    return Ok(None);
+                }
+            }
+        }
+        let mut cycles = match try_split_wire(topo, face.outer_wire())? {
+            Some(cycles) => cycles,
+            None => vec![topo.wire(face.outer_wire())?.edges().to_vec()],
+        };
+        // A hole on a pinched source needs explicit ownership before its rim
+        // can connect a filled neighbor to one particular material component.
+        if cycles.len() > 1 && !face.inner_wires().is_empty() {
+            return Ok(None);
+        }
+        for &wire in face.inner_wires() {
+            cycles[0].extend_from_slice(topo.wire(wire)?.edges());
+        }
+        for cycle in cycles {
+            if cycle.is_empty() {
+                return Ok(None);
+            }
+            components.push(cycle);
+            owners.push(source);
+        }
+    }
+    let mut uses: HashMap<_, Vec<(usize, bool)>> = HashMap::new();
+    for (component, edges) in components.iter().enumerate() {
+        for oe in edges {
+            uses.entry(oe.edge())
+                .or_default()
+                .push((component, oe.is_forward()));
+        }
+    }
+    let mut connected = UnionFind::new(components.len());
+    for edge_uses in uses.values() {
+        match edge_uses.as_slice() {
+            [_] => {}
+            [(a, forward_a), (b, forward_b)]
+                if a != b && owners[*a] != owners[*b] && forward_a != forward_b =>
+            {
+                connected.union(*a, *b);
+            }
+            _ => return Ok(None),
+        }
+    }
+    let mut labels = HashMap::new();
+    let mut accounted = HashSet::new();
+    for &target in targets {
+        let face = topo.face(target)?;
+        for wire in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+            for oe in topo.wire(wire)?.edges() {
+                let Some(edge_uses) = uses.get(&oe.edge()) else {
+                    return Ok(None);
+                };
+                let [(component, _)] = edge_uses.as_slice() else {
+                    return Ok(None);
+                };
+                if !accounted.insert(oe.edge()) {
+                    return Ok(None);
+                }
+                let root = connected.find(*component);
+                if labels
+                    .insert(root, target)
+                    .is_some_and(|previous| previous != target)
+                {
+                    return Ok(None);
+                }
+            }
+        }
+    }
+    if uses
+        .iter()
+        .any(|(edge, edge_uses)| edge_uses.len() == 1 && !accounted.contains(edge))
+    {
+        return Ok(None);
+    }
+    let mut regions = Vec::new();
+    for &source in sources {
+        let mut inherited = Vec::new();
+        for (component, &owner) in owners.iter().enumerate() {
+            if owner != source {
+                continue;
+            }
+            let Some(&target) = labels.get(&connected.find(component)) else {
+                return Ok(None);
+            };
+            if !inherited.contains(&target) {
+                inherited.push(target);
+            }
+        }
+        inherited.sort_by_key(|target| target.index());
+        regions.push((source, inherited));
+    }
+    Ok(Some(regions))
 }
 
 /// Merge a planar group, preserving holes.
@@ -794,6 +1027,16 @@ fn merge_collinear_edges(
     wire_id: WireId,
     options: &UnifyOptions,
 ) -> Result<usize, HealError> {
+    merge_collinear_edges_with_history(topo, wire_id, options, None)
+}
+
+#[allow(clippy::too_many_lines)]
+fn merge_collinear_edges_with_history(
+    topo: &mut Topology,
+    wire_id: WireId,
+    options: &UnifyOptions,
+    mut history: Option<&mut Vec<(Vec<remus_topology::EdgeId>, remus_topology::EdgeId)>>,
+) -> Result<usize, HealError> {
     use remus_math::curves::{Circle3D, Ellipse3D};
 
     /// Curve-kind snapshot used to decide whether two consecutive edges live
@@ -1058,6 +1301,12 @@ fn merge_collinear_edges(
             }
         }
         let new_edge_id = topo.add_edge(new_edge);
+        if let Some(history) = history.as_deref_mut() {
+            history.push((
+                data[i..j].iter().map(|edge| edge.oe.edge()).collect(),
+                new_edge_id,
+            ));
+        }
         new_edges.push(OrientedEdge::new(new_edge_id, true));
         merged_count += run_length - 1;
         i = j;
@@ -1108,6 +1357,404 @@ mod hole_merge_tests {
             normal: Vec3::new(0.0, 0.0, 1.0),
             d: 0.0,
         }
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn pinched_source_group_rebuilds_two_separate_regions() {
+        let mut topo = Topology::new();
+        let mut vertices = std::collections::HashMap::new();
+        let mut edges = std::collections::HashMap::new();
+        let mut polygon = |points: &[(i32, i32)]| {
+            let ids: Vec<_> = points
+                .iter()
+                .map(|&(x, y)| {
+                    *vertices
+                        .entry((x, y))
+                        .or_insert_with(|| add_vertex(&mut topo, f64::from(x), f64::from(y)))
+                })
+                .collect();
+            let mut uses = Vec::new();
+            for i in 0..ids.len() {
+                let a = ids[i];
+                let b = ids[(i + 1) % ids.len()];
+                let (low, high) = if a.index() < b.index() {
+                    (a, b)
+                } else {
+                    (b, a)
+                };
+                let edge = *edges
+                    .entry((low, high))
+                    .or_insert_with(|| line(&mut topo, low, high));
+                uses.push(OrientedEdge::new(edge, a == low));
+            }
+            let wire = topo.add_wire(Wire::new(uses, true).unwrap());
+            topo.add_face(Face::new(wire, Vec::new(), plane_z0()))
+        };
+        let pinched = polygon(&[
+            (0, 0),
+            (0, 1),
+            (-1, 1),
+            (-1, 0),
+            (0, 0),
+            (0, -1),
+            (1, -1),
+            (1, 0),
+        ]);
+        let left = polygon(&[(-1, 0), (-1, 1), (-2, 1), (-2, 0)]);
+        let right = polygon(&[(1, 0), (1, -1), (2, -1), (2, 0)]);
+        let shell = topo.add_shell(Shell::new(vec![pinched, left, right]).unwrap());
+        let solid = topo.add_solid(Solid::new(shell, Vec::new()));
+        let mut pipeline_topo = topo.clone();
+        let mut ordinary = topo.clone();
+        let options = UnifyOptions {
+            unify_edges: false,
+            ..Default::default()
+        };
+        super::unify_same_domain(&mut ordinary, solid, &options).unwrap();
+        let (_, report, history) =
+            super::unify_same_domain_with_history(&mut topo, solid, &options).unwrap();
+        assert_eq!(report.faces_merged, 1);
+        assert_eq!(history.face_groups.len(), 1);
+        assert_eq!(history.face_groups[0].0, vec![pinched, left, right]);
+        assert_eq!(history.face_groups[0].1.len(), 2);
+        assert_eq!(topo.shell(shell).unwrap().faces().len(), 2);
+        assert_eq!(history.face_regions.len(), 3);
+        assert_eq!(history.face_regions[0].0, pinched);
+        assert_eq!(history.face_regions[0].1.len(), 2);
+        assert_eq!(history.face_regions[1].0, left);
+        assert_eq!(history.face_regions[1].1.len(), 1);
+        assert_eq!(history.face_regions[2].0, right);
+        assert_eq!(history.face_regions[2].1.len(), 1);
+        assert_ne!(history.face_regions[1].1, history.face_regions[2].1);
+        assert_eq!(
+            topo.shell(shell).unwrap().faces(),
+            ordinary.shell(shell).unwrap().faces()
+        );
+        assert_eq!(topo.allocated_slot_count(), ordinary.allocated_slot_count());
+        let mut process = crate::pipeline::process::HealProcess::new();
+        process.add_step("unify_same_domain");
+        let (_, _, steps) = process
+            .execute_with_history(&mut pipeline_topo, solid)
+            .unwrap();
+        let claims = steps[0].replacements.entity_history().unwrap();
+        for (source, targets) in &history.face_regions {
+            assert_eq!(
+                claims[&remus_topology::journal::EntityKey::face(source.index())],
+                targets
+                    .iter()
+                    .map(|target| remus_topology::journal::EntityKey::face(target.index()))
+                    .collect::<Vec<_>>()
+            );
+        }
+        for (source, inherited) in &history.face_regions[1..] {
+            let outer = topo.face(*source).unwrap().outer_wire();
+            let output = topo.face(inherited[0]).unwrap().outer_wire();
+            assert!(topo.wire(outer).unwrap().edges().iter().any(|edge| {
+                topo.wire(output)
+                    .unwrap()
+                    .edges()
+                    .iter()
+                    .any(|result| result.edge() == edge.edge())
+            }));
+        }
+        assert!(
+            super::trace_face_regions(&topo, &[pinched, left, right], &history.face_regions[1].1)
+                .unwrap()
+                .is_none()
+        );
+        let hole_vertices = [(-0.75, 0.25), (-0.75, 0.75), (-0.25, 0.75), (-0.25, 0.25)]
+            .map(|(x, y)| add_vertex(&mut topo, x, y));
+        let hole_edges = (0..4)
+            .map(|i| {
+                OrientedEdge::new(
+                    line(&mut topo, hole_vertices[i], hole_vertices[(i + 1) % 4]),
+                    true,
+                )
+            })
+            .collect();
+        let hole = topo.add_wire(Wire::new(hole_edges, true).unwrap());
+        let outer = topo.face(pinched).unwrap().outer_wire();
+        topo.set_face_boundary_wires(pinched, outer, vec![hole])
+            .unwrap();
+        assert!(
+            super::trace_face_regions(&topo, &[pinched, left, right], &history.face_groups[0].1)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn region_history_reaches_sources_with_no_surviving_boundary() {
+        let mut topo = Topology::new();
+        let mut vertices = std::collections::HashMap::new();
+        let mut edges = std::collections::HashMap::new();
+        let mut polygon = |points: &[(i32, i32)]| {
+            let ids: Vec<_> = points
+                .iter()
+                .map(|&(x, y)| {
+                    *vertices
+                        .entry((x, y))
+                        .or_insert_with(|| add_vertex(&mut topo, f64::from(x), f64::from(y)))
+                })
+                .collect();
+            let mut uses = Vec::new();
+            for i in 0..ids.len() {
+                let a = ids[i];
+                let b = ids[(i + 1) % ids.len()];
+                let (low, high) = if a.index() < b.index() {
+                    (a, b)
+                } else {
+                    (b, a)
+                };
+                let edge = *edges
+                    .entry((low, high))
+                    .or_insert_with(|| line(&mut topo, low, high));
+                uses.push(OrientedEdge::new(edge, a == low));
+            }
+            let wire = topo.add_wire(Wire::new(uses, true).unwrap());
+            topo.add_face(Face::new(wire, Vec::new(), plane_z0()))
+        };
+        let pinched = polygon(&[
+            (0, 0),
+            (0, 3),
+            (-1, 3),
+            (-1, 2),
+            (-1, 1),
+            (-1, 0),
+            (0, 0),
+            (0, -1),
+            (1, -1),
+            (1, 0),
+        ]);
+        let mut left = Vec::new();
+        for x in -4..-1 {
+            for y in 0..3 {
+                left.push(polygon(&[(x, y), (x + 1, y), (x + 1, y + 1), (x, y + 1)]));
+            }
+        }
+        let right = polygon(&[(1, 0), (1, -1), (2, -1), (2, 0)]);
+        let sources: Vec<_> = std::iter::once(pinched)
+            .chain(left.iter().copied())
+            .chain([right])
+            .collect();
+        let shell = topo.add_shell(Shell::new(sources.clone()).unwrap());
+        let solid = topo.add_solid(Solid::new(shell, Vec::new()));
+        let (_, _, history) = super::unify_same_domain_with_history(
+            &mut topo,
+            solid,
+            &UnifyOptions {
+                unify_edges: false,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(history.face_groups.len(), 1);
+        assert_eq!(history.face_groups[0].1.len(), 2);
+        assert_eq!(history.face_regions.len(), sources.len());
+        let region = &history.face_regions[1].1;
+        assert_eq!(region.len(), 1);
+        for (_, targets) in &history.face_regions[1..10] {
+            assert_eq!(targets, region);
+        }
+        assert_ne!(&history.face_regions[10].1, region);
+        let center = topo.wire(topo.face(left[4]).unwrap().outer_wire()).unwrap();
+        let output = topo
+            .wire(topo.face(region[0]).unwrap().outer_wire())
+            .unwrap();
+        assert!(center.edges().iter().all(|edge| {
+            output
+                .edges()
+                .iter()
+                .all(|result| edge.edge() != result.edge())
+        }));
+    }
+
+    #[test]
+    fn face_merge_records_consumed_spokes_and_center_vertex() {
+        let mut topo = Topology::new();
+        let solid = remus_topology::test_utils::make_unit_cube_manifold(&mut topo);
+        let shell = topo.solid(solid).unwrap().outer_shell();
+        let faces = topo.shell(shell).unwrap().faces().to_vec();
+        let original = topo.face(faces[0]).unwrap().clone();
+        let boundary = topo.wire(original.outer_wire()).unwrap().edges().to_vec();
+        let vertices: Vec<_> = boundary
+            .iter()
+            .map(|oe| oe.oriented_start(topo.edge(oe.edge()).unwrap()))
+            .collect();
+        let a = topo.vertex(vertices[0]).unwrap().point();
+        let b = topo.vertex(vertices[2]).unwrap().point();
+        let center = topo.add_vertex(Vertex::new(a + (b - a) * 0.5, 1e-7));
+        let spokes: Vec<_> = vertices
+            .iter()
+            .map(|&vertex| line(&mut topo, center, vertex))
+            .collect();
+        let mut triangles = Vec::new();
+        for i in 0..4 {
+            let wire = topo.add_wire(
+                Wire::new(
+                    vec![
+                        boundary[i],
+                        OrientedEdge::new(spokes[(i + 1) % 4], false),
+                        OrientedEdge::new(spokes[i], true),
+                    ],
+                    true,
+                )
+                .unwrap(),
+            );
+            let mut face = Face::new(wire, Vec::new(), original.surface().clone());
+            face.set_reversed(original.is_reversed());
+            triangles.push(topo.add_face(face));
+        }
+        let mut replacement = faces[1..].to_vec();
+        replacement.extend(triangles.iter().copied());
+        *topo.shell_mut(shell).unwrap() = Shell::new(replacement).unwrap();
+        assert_eq!(
+            super::unpaired_edge_count(&topo, topo.shell(shell).unwrap().faces()).unwrap(),
+            0
+        );
+        let (_, report, history) =
+            super::unify_same_domain_with_history(&mut topo, solid, &UnifyOptions::default())
+                .unwrap();
+        assert_eq!(report.faces_merged, 3);
+        assert_eq!(history.face_groups[0].0, triangles);
+        assert_eq!(history.removed_edges, spokes);
+        assert_eq!(history.removed_vertices, vec![center]);
+        assert_eq!(
+            super::unpaired_edge_count(&topo, topo.shell(shell).unwrap().faces()).unwrap(),
+            0
+        );
+        assert_eq!(
+            remus_topology::explorer::solid_vertices(&topo, solid)
+                .unwrap()
+                .len(),
+            8
+        );
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn edge_phase_rollback_retains_only_committed_face_history() {
+        let mut topo = Topology::new();
+        let solid = remus_topology::test_utils::make_unit_cube_manifold(&mut topo);
+        let shell = topo.solid(solid).unwrap().outer_shell();
+        let faces = topo.shell(shell).unwrap().faces().to_vec();
+        let selected = faces[0];
+        let original = topo.face(selected).unwrap().clone();
+        let boundary = topo.wire(original.outer_wire()).unwrap().edges().to_vec();
+        let mut midpoints = Vec::new();
+        for index in [0, 2] {
+            let use_edge = boundary[index];
+            let edge = topo.edge(use_edge.edge()).unwrap();
+            let start = use_edge.oriented_start(edge);
+            let end = use_edge.oriented_end(edge);
+            let a = topo.vertex(start).unwrap().point();
+            let b = topo.vertex(end).unwrap().point();
+            let middle = topo.add_vertex(Vertex::new(a + (b - a) * 0.5, 1e-7));
+            midpoints.push(middle);
+            let first = line(&mut topo, start, middle);
+            let second = line(&mut topo, middle, end);
+            for &face in &faces {
+                let wire = topo.face(face).unwrap().outer_wire();
+                let old = topo.wire(wire).unwrap().edges().to_vec();
+                let mut replacement = Vec::new();
+                for oe in old {
+                    if oe.edge() != use_edge.edge() {
+                        replacement.push(oe);
+                    } else if oe.is_forward() == use_edge.is_forward() {
+                        replacement.extend([
+                            OrientedEdge::new(first, true),
+                            OrientedEdge::new(second, true),
+                        ]);
+                    } else {
+                        replacement.extend([
+                            OrientedEdge::new(second, false),
+                            OrientedEdge::new(first, false),
+                        ]);
+                    }
+                }
+                topo.replace_boundary_wire(wire, Wire::new(replacement, true).unwrap())
+                    .unwrap();
+            }
+        }
+        let boundary = topo.wire(original.outer_wire()).unwrap().edges().to_vec();
+        let diagonal = line(&mut topo, midpoints[0], midpoints[1]);
+        let loops = [
+            vec![
+                boundary[1],
+                boundary[2],
+                boundary[3],
+                OrientedEdge::new(diagonal, false),
+            ],
+            vec![
+                boundary[4],
+                boundary[5],
+                boundary[0],
+                OrientedEdge::new(diagonal, true),
+            ],
+        ];
+        let mut halves = Vec::new();
+        for edges in loops {
+            let wire = topo.add_wire(Wire::new(edges, true).unwrap());
+            let mut face = Face::new(wire, Vec::new(), original.surface().clone());
+            face.set_reversed(original.is_reversed());
+            halves.push(topo.add_face(face));
+        }
+        let mut split_faces: Vec<_> = faces.into_iter().filter(|&face| face != selected).collect();
+        split_faces.extend(halves.iter().copied());
+        *topo.shell_mut(shell).unwrap() = Shell::new(split_faces.clone()).unwrap();
+        assert_eq!(super::unpaired_edge_count(&topo, &split_faces).unwrap(), 0);
+        let mut pipeline_topo = topo.clone();
+        let (_, result, history) =
+            super::unify_same_domain_with_history(&mut topo, solid, &UnifyOptions::default())
+                .unwrap();
+        assert_eq!(result.faces_merged, 1);
+        assert_eq!(result.edges_merged, 0);
+        assert!(history.edge_runs.is_empty());
+        assert_eq!(history.face_groups.len(), 1);
+        assert_eq!(history.face_groups[0].0, halves);
+        let merged_face = history.face_groups[0].1[0];
+        let mut process = crate::pipeline::process::HealProcess::new();
+        process.add_step("unify_same_domain");
+        let (_, reports, steps) = process
+            .execute_with_history(&mut pipeline_topo, solid)
+            .unwrap();
+        assert!(reports[0].actions_taken > 0);
+        assert_eq!(
+            pipeline_topo.shell(shell).unwrap().faces(),
+            topo.shell(shell).unwrap().faces()
+        );
+        let claims = steps[0].replacements.entity_history().unwrap();
+        assert_eq!(claims.len(), 3);
+        assert!(claims[&remus_topology::journal::EntityKey::edge(diagonal.index())].is_empty());
+        assert_eq!(history.removed_edges, vec![diagonal]);
+        assert!(history.removed_vertices.is_empty());
+        for &source in &halves {
+            assert_eq!(
+                claims[&remus_topology::journal::EntityKey::face(source.index())],
+                vec![remus_topology::journal::EntityKey::face(
+                    merged_face.index()
+                )]
+            );
+        }
+
+        let merged_wire = topo.face(merged_face).unwrap().outer_wire();
+        assert_eq!(topo.wire(merged_wire).unwrap().edges().len(), 6);
+        assert_eq!(
+            super::unpaired_edge_count(&topo, topo.shell(shell).unwrap().faces()).unwrap(),
+            0
+        );
+        let mut attempted = Vec::new();
+        let merged = super::merge_collinear_edges_with_history(
+            &mut topo,
+            merged_wire,
+            &UnifyOptions::default(),
+            Some(&mut attempted),
+        )
+        .unwrap();
+        assert_eq!(merged, 1);
+        assert_eq!(attempted.len(), 1);
+        assert!(super::unpaired_edge_count(&topo, topo.shell(shell).unwrap().faces()).unwrap() > 0);
     }
 
     #[test]
@@ -1166,7 +1813,26 @@ mod hole_merge_tests {
             unify_edges: false,
             ..UnifyOptions::default()
         };
-        let (_, result) = unify_same_domain(&mut topo, solid_id, &opts).unwrap();
+        let mut control = topo.clone();
+        let (_, ordinary) = unify_same_domain(&mut control, solid_id, &opts).unwrap();
+        let (_, result, history) =
+            super::unify_same_domain_with_history(&mut topo, solid_id, &opts).unwrap();
+        assert_eq!(ordinary.faces_merged, result.faces_merged);
+        assert_eq!(ordinary.edges_merged, result.edges_merged);
+        assert_eq!(
+            control.shell(shell_id).unwrap().faces(),
+            topo.shell(shell_id).unwrap().faces()
+        );
+        assert_eq!(
+            history.face_groups,
+            vec![(
+                vec![left_face, right_face],
+                topo.shell(shell_id).unwrap().faces().to_vec()
+            )]
+        );
+        assert!(history.edge_runs.is_empty());
+        assert_eq!(history.removed_edges, vec![e_mid]);
+        assert!(history.removed_vertices.is_empty());
 
         assert_eq!(result.faces_merged, 1, "two faces collapse to one");
 
@@ -1364,7 +2030,18 @@ mod merge_tests {
         let e2 = curved_edge(&mut topo, v2, v0, EdgeCurve::Circle(circle.clone()));
         let wire = build_wire_from_edges(&mut topo, &[e0, e1, e2], true);
 
-        let merged = merge_collinear_edges(&mut topo, wire, &UnifyOptions::default()).unwrap();
+        let mut history = Vec::new();
+        let merged = merge_collinear_edges_with_history(
+            &mut topo,
+            wire,
+            &UnifyOptions::default(),
+            Some(&mut history),
+        )
+        .unwrap();
+        assert_eq!(
+            history,
+            vec![(vec![e0, e1, e2], topo.wire(wire).unwrap().edges()[0].edge())]
+        );
         assert_eq!(merged, 2, "three arcs → one merged edge means 2 merges");
 
         let new_wire = topo.wire(wire).unwrap();
