@@ -26,7 +26,7 @@ that an original reference remains Bound. Test paths are repository-relative.
 
 | Family | Merged construction history | Evidence | Remaining gate |
 |---|---|---|---|
-| Exact booleans | F/E/V events from GFA, scoped over both inputs and output | `crates/operations/tests/journal.rs`: `journaled_boolean_records_total_construction_history`; `regress_evolution_completeness.rs` in the same directory | Broader geometry qualification; audit native whole-call transactionality separately from WASM rollback |
+| Exact booleans | F/E/V events from GFA, scoped over both inputs and output | `crates/operations/tests/journal.rs`: `journaled_boolean_records_total_construction_history`; `regress_evolution_completeness.rs` in the same directory | Broader geometry qualification; native whole-call rollback now covered by the continuation regressions below |
 | Planar/coaxial-bore move and support replacement | F/E/V construction maps; replacement direct/batch API | `crates/operations/tests/qualify_replace_surface.rs`: `journaled_replacement_keeps_all_references_through_tilt_and_bore_resize`; `crates/wasm/src/bindings/evolution.rs` move/replacement contracts | Rotation, lateral moves, surface-type changes, and unrestricted supports remain unqualified |
 | Move through analytic blends | Copy maps or uniquely proven boundary incidence; periodic ambiguity remains unresolved | `crates/operations/tests/qualify_move_faces_generalized.rs`: `blended_cap_moves_preserve_every_entity_reference_and_incidence` | Ambiguous periodic/complex boundaries; this is not general blend-resize history |
 | Cylindrical radius edits | Qualified construction maps through `resize_cylindrical_face_journaled` | `crates/wasm/src/bindings/evolution.rs` radius direct/batch contracts; `scripts/openzcad-wasm-consumer-regressions.mjs` | General partial walls and topology-changing correspondences |
@@ -36,7 +36,7 @@ that an original reference remains Bound. Test paths are repository-relative.
 | Unify / healing sewing / inner-wire removal | Qualified merge, replacement and consumed-entity history through healing pipelines | `crates/operations/tests/journal.rs`: `verified_unification_journals_merged_faces_and_consumed_center`, `verified_sewing_preserves_all_references_through_arena_and_later_draft`, `verified_inner_wire_removal_deletes_consumed_references_and_preserves_survivors` | General standalone sewing and every upgrade variant; pipeline evidence does not certify all construction APIs |
 | Fillet / chamfer creation | Faces only, with unresolved output claims retained | `crates/operations/tests/journal.rs`: `blend_face_evolution_journals_with_unresolved_claims_intact`; WASM `chamfer_journaled_severs_edge_refs_like_any_faces_only_entry` | Edge/vertex construction maps |
 | Analytic blend-band resize | `ResizeBlendResult::evolution` is a face map; `resizeBlendWithEvolution` exposes it | `crates/operations/src/resize_blend.rs`, `crates/wasm/src/bindings/operations.rs` | No dedicated journaled blend-resize wrapper or complete boundary correspondence |
-| Linear pattern | Face map over instances | `crates/operations/src/journal_ops.rs`: `linear_pattern_journaled` | Edge/vertex maps and native whole-call transaction audit |
+| Linear pattern | Face map over instances | `crates/operations/src/journal_ops.rs`: `linear_pattern_journaled` | Edge/vertex maps; native whole-call rollback now covered below |
 | Default V2 offset | One-to-one face construction map | `crates/operations/tests/journal.rs`: `journaled_offsets_carry_face_references_through_exact_evolution` | Boundary maps, arc-joint and self-intersection-removal provenance |
 | Shell / plane split | Face maps, including explicitly unresolved generated caps/rims | `crates/operations/tests/qualify_evolution_coverage.rs` | Edge/vertex maps; whole-call rollback repaired by this audit's regression slice |
 | Extrude / revolve / sweep / loft / section | No family-wide total journal coverage established by this audit | Construction modules in `crates/operations/src/` | Construction attribution for caps, side faces and boundary entities; one family per slice |
@@ -65,6 +65,32 @@ exactly once on the next successful operation. Op IDs retain their monotonic
 high-water semantics. This repair adds no boundary-provenance claim. It adds an outer topology
 snapshot to each native wrapper; the existing geometry transaction remains.
 Large-arena snapshot cost is not benchmarked by this qualification slice.
+
+## Boolean and pattern rollback continuation
+
+The same unpublished-history defect reproduced in `boolean_journaled` and
+`linear_pattern_journaled` on `e49ef5ba`. A retired boolean operand, a disjoint
+intersection, invalid pattern spacing, and overlapping pattern instances all
+refused after publishing a global history barrier. The overlapping pattern
+allocates copies before its geometry-level transaction refuses and retires them.
+
+Both wrappers now enclose scope creation, geometry and history recording in one
+transaction. `begin_scoped` also collects and validates every operand scope
+before calling `journal_begin`, so a retired operand cannot publish a barrier
+or consume an operation ID even when the helper is called directly.
+
+Three regressions in `crates/operations/tests/journal.rs` pin this extension:
+`invalid_scope_does_not_publish_a_mutation_gap`,
+`refused_journaled_boolean_preserves_history_and_operands`, and
+`refused_journaled_pattern_preserves_history_after_copying`. They reproduce
+failures on the previous source and check unpublished history, live topology
+counts including compounds/loops/coedges, unchanged STEP geometry,
+retained and retired handles, operand volume, and the next successful
+operation's single gap publication. The pattern
+case requires allocated-slot growth to prove refusal happened after copying;
+rolled-back slots remain retired. The two wrappers add an outer snapshot;
+large-arena overhead remains unbenchmarked. Boolean evolution remains F/E/V,
+and pattern evolution remains faces-only.
 
 ## Hosted proof snapshot
 
@@ -102,8 +128,10 @@ This slice neither bypasses the failing test nor changes CI routing.
 
 ## Next bounded slices
 
-1. Finish the native transaction audit for boolean and linear-pattern
-   wrappers; prove failures against unpublished history and after allocations.
+1. **Done for the covered wrappers:** native boolean/pattern refusal and scope
+   preflight now preserve unpublished history, including pattern copy rollback.
+   The regressions above carry the evidence; this does not expand geometry or
+   provenance coverage.
 2. Add a journaled analytic blend-resize path only after construction boundary
    correspondence is available; do not relabel a face map as total history.
 3. Extend one B18 family at a time: shell/offset boundary maps, split/section
