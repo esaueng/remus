@@ -737,7 +737,15 @@ fn move_planar_faces_with_blends_remove_rebuild(
     let result_faces = remus_topology::explorer::solid_faces(topo, current_solid)?;
     let boundary_pairs =
         if lineage_is_exact && lineage_is_total(&source_faces, &result_faces, &construction_map) {
-            construction_boundary_pairs(topo, solid, current_solid, &construction_map)?
+            construction_boundary_pairs(
+                topo,
+                solid,
+                current_solid,
+                &construction_map
+                    .iter()
+                    .map(|(&source, &target)| (source, target))
+                    .collect(),
+            )?
         } else {
             Vec::new()
         };
@@ -768,7 +776,7 @@ pub(crate) fn construction_boundary_pairs(
     topo: &Topology,
     source: SolidId,
     result: SolidId,
-    face_map: &HashMap<usize, FaceId>,
+    face_map: &BTreeMap<usize, FaceId>,
 ) -> Result<Vec<(EntityKey, EntityKey)>, OperationsError> {
     use remus_topology::explorer::{edge_to_face_map, solid_edges, solid_faces, solid_vertices};
     let source_faces: HashSet<_> = solid_faces(topo, source)?
@@ -2672,7 +2680,7 @@ mod tests {
         let mut topo = Topology::new();
         let source = crate::primitives::make_box(&mut topo, 2.0, 3.0, 4.0).unwrap();
         let faces = remus_topology::explorer::solid_faces(&topo, source).unwrap();
-        let mut map: HashMap<_, _> = faces.iter().map(|&face| (face.index(), face)).collect();
+        let mut map: BTreeMap<_, _> = faces.iter().map(|&face| (face.index(), face)).collect();
         assert_eq!(
             construction_boundary_pairs(&topo, source, source, &map)
                 .unwrap()
