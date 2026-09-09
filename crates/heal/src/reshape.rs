@@ -7,7 +7,7 @@
 //!
 //! Modelled after industry-standard B-Rep reshape utilities.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use remus_topology::Topology;
 use remus_topology::edge::EdgeId;
@@ -72,6 +72,7 @@ pub enum ShellAction {
 #[derive(Debug, Default, Clone)]
 pub struct ReShape {
     vertices: HashMap<VertexId, VertexAction>,
+    applied_vertex_splits: HashMap<VertexId, Vec<VertexId>>,
     edges: HashMap<EdgeId, EdgeAction>,
     wires: HashMap<WireId, WireAction>,
     faces: HashMap<FaceId, FaceAction>,
@@ -85,11 +86,169 @@ impl ReShape {
         Self::default()
     }
 
+    /// Record descendants of a vertex split already applied to topology.
+    ///
+    /// The source must remain among the targets. This metadata never redirects
+    /// edges when [`Self::apply`] is called.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HealError::FixFailed`] if the retained source is absent or a
+    /// pending vertex action conflicts with the completed split.
+    pub fn record_applied_vertex_split(
+        &mut self,
+        source: VertexId,
+        targets: Vec<VertexId>,
+    ) -> Result<(), HealError> {
+        if !targets.contains(&source) || self.vertices.contains_key(&source) {
+            return Err(HealError::FixFailed(
+                "applied vertex split requires a retained source without a pending action".into(),
+            ));
+        }
+        let descendants = self.applied_vertex_splits.entry(source).or_default();
+        descendants.extend(targets);
+        descendants.sort_by_key(|id| id.index());
+        descendants.dedup();
+        Ok(())
+    }
+
+    /// Resolve recorded vertex, edge, and face replacement chains.
+    ///
+    /// Only explicitly recorded sources are returned. Empty targets mean a
+    /// recorded removal; absent sources carry no replacement claim. Shared
+    /// split targets are deduplicated without confusing convergence with cycles.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HealError::FixFailed`] for cyclic replacement chains or a
+    /// pending vertex action conflicting with an applied split.
+    pub fn entity_history(
+        &self,
+    ) -> Result<
+        BTreeMap<remus_topology::journal::EntityKey, Vec<remus_topology::journal::EntityKey>>,
+        HealError,
+    > {
+        use remus_topology::journal::EntityKey;
+        let mut graph = BTreeMap::new();
+        for (&source, action) in &self.vertices {
+            graph.insert(
+                EntityKey::vertex(source.index()),
+                match action {
+                    VertexAction::Replace(target) => vec![EntityKey::vertex(target.index())],
+                    VertexAction::Remove => Vec::new(),
+                },
+            );
+        }
+        for (&source, targets) in &self.applied_vertex_splits {
+            if self.vertices.contains_key(&source) {
+                return Err(HealError::FixFailed(
+                    "applied vertex split conflicts with a pending vertex action".into(),
+                ));
+            }
+            graph.insert(
+                EntityKey::vertex(source.index()),
+                targets
+                    .iter()
+                    .map(|id| EntityKey::vertex(id.index()))
+                    .collect(),
+            );
+        }
+        for (&source, action) in &self.edges {
+            graph.insert(
+                EntityKey::edge(source.index()),
+                match action {
+                    EdgeAction::Replace(target) => vec![EntityKey::edge(target.index())],
+                    EdgeAction::Split(targets) => targets
+                        .iter()
+                        .map(|target| EntityKey::edge(target.index()))
+                        .collect(),
+                    EdgeAction::Remove => Vec::new(),
+                },
+            );
+        }
+        for (&source, action) in &self.faces {
+            graph.insert(
+                EntityKey::face(source.index()),
+                match action {
+                    FaceAction::Replace(target) => vec![EntityKey::face(target.index())],
+                    FaceAction::Split(targets) => targets
+                        .iter()
+                        .map(|target| EntityKey::face(target.index()))
+                        .collect(),
+                    FaceAction::Remove => Vec::new(),
+                },
+            );
+        }
+        let mut resolved: BTreeMap<EntityKey, Vec<EntityKey>> = BTreeMap::new();
+        let mut active = BTreeSet::new();
+        for &root in graph.keys() {
+            let mut pending = vec![(root, false)];
+            while let Some((source, exiting)) = pending.pop() {
+                if resolved.contains_key(&source) {
+                    continue;
+                }
+                let Some(targets) = graph.get(&source) else {
+                    resolved.insert(source, vec![source]);
+                    continue;
+                };
+                if targets.as_slice() == [source] {
+                    resolved.insert(source, vec![source]);
+                    continue;
+                }
+                if exiting {
+                    let mut leaves = BTreeSet::new();
+                    for target in targets {
+                        // A direct self-target represents the retained split component.
+                        if *target == source {
+                            leaves.insert(source);
+                            continue;
+                        }
+                        let known = resolved.get(target).ok_or_else(|| {
+                            HealError::FixFailed("incomplete replacement history traversal".into())
+                        })?;
+                        leaves.extend(known.iter().copied());
+                    }
+                    resolved.insert(source, leaves.into_iter().collect());
+                    active.remove(&source);
+                } else {
+                    if !active.insert(source) {
+                        return Err(HealError::FixFailed(format!(
+                            "cyclic replacement history at {source:?}"
+                        )));
+                    }
+                    pending.push((source, true));
+                    pending.extend(
+                        targets
+                            .iter()
+                            .rev()
+                            .filter(|&&target| target != source)
+                            .map(|&target| (target, false)),
+                    );
+                }
+            }
+        }
+        resolved.retain(|source, _| graph.contains_key(source));
+        Ok(resolved)
+    }
+
     // ── Vertex operations ───────────────────────────────────────────
 
     /// Record that `from` should be replaced by `to`.
     pub fn replace_vertex(&mut self, from: VertexId, to: VertexId) {
-        self.vertices.insert(from, VertexAction::Replace(to));
+        if from == to {
+            return;
+        }
+        let source_root = self.resolve_vertex(from);
+        let target_root = self.resolve_vertex(to);
+        // Later repair passes may choose an earlier alias as the retained vertex.
+        // Reroot that equivalence class before joining it to avoid reverse cycles.
+        self.vertices.remove(&to);
+        if target_root != to {
+            self.vertices.insert(target_root, VertexAction::Replace(to));
+        }
+        if source_root != to {
+            self.vertices.insert(source_root, VertexAction::Replace(to));
+        }
     }
 
     /// Record that a vertex should be removed.
@@ -100,13 +259,12 @@ impl ReShape {
     /// Resolve a vertex through the replacement chain.
     #[must_use]
     pub fn resolve_vertex(&self, mut id: VertexId) -> VertexId {
-        let mut depth = 0;
-        while let Some(VertexAction::Replace(target)) = self.vertices.get(&id) {
+        let mut seen = HashSet::new();
+        while seen.insert(id) {
+            let Some(VertexAction::Replace(target)) = self.vertices.get(&id) else {
+                break;
+            };
             id = *target;
-            depth += 1;
-            if depth > 100 {
-                break; // prevent infinite loops
-            }
         }
         id
     }
@@ -339,7 +497,9 @@ impl ReShape {
 
     // ── Apply ───────────────────────────────────────────────────────
 
-    /// Whether any replacements or removals have been recorded.
+    /// Whether pending replacements or removals have been recorded.
+    ///
+    /// Completed split metadata alone requires no topology application.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.vertices.is_empty()
@@ -592,6 +752,194 @@ mod tests {
     use remus_topology::wire::{OrientedEdge, Wire, WireId};
 
     use super::ReShape;
+
+    #[test]
+    fn applied_vertex_splits_compose_and_refuse_conflicting_actions() {
+        use remus_topology::journal::EntityKey;
+        let mut topo = Topology::new();
+        let ids: Vec<_> = (0..4)
+            .map(|_| topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7)))
+            .collect();
+        let mut history = ReShape::new();
+        assert!(
+            history
+                .record_applied_vertex_split(ids[0], vec![ids[1]])
+                .is_err()
+        );
+        history
+            .record_applied_vertex_split(ids[0], vec![ids[1], ids[0], ids[1]])
+            .unwrap();
+        history
+            .record_applied_vertex_split(ids[1], vec![ids[1], ids[2]])
+            .unwrap();
+        history.replace_vertex(ids[3], ids[0]);
+        let claims = history.entity_history().unwrap();
+        let expected: Vec<_> = ids[..3]
+            .iter()
+            .map(|id| EntityKey::vertex(id.index()))
+            .collect();
+        assert_eq!(claims[&EntityKey::vertex(ids[0].index())], expected);
+        assert_eq!(claims[&EntityKey::vertex(ids[3].index())], expected);
+        assert_eq!(history.resolve_vertex(ids[0]), ids[0]);
+        let mut conflicting = history.clone();
+        conflicting.remove_vertex(ids[0]);
+        assert!(conflicting.entity_history().is_err());
+        assert!(
+            conflicting
+                .record_applied_vertex_split(ids[0], vec![ids[0]])
+                .is_err()
+        );
+        history.replace_vertex(ids[2], ids[0]);
+        assert!(history.entity_history().is_err());
+    }
+
+    #[test]
+    fn entity_history_retains_split_components_without_accepting_cross_entity_cycles() {
+        use remus_topology::journal::EntityKey;
+        let mut topo = Topology::new();
+        let vertices: Vec<_> = (0..4)
+            .map(|i| topo.add_vertex(Vertex::new(Point3::new(f64::from(i), 0.0, 0.0), 1e-7)))
+            .collect();
+        let a = topo.add_edge(Edge::new(vertices[0], vertices[3], EdgeCurve::Line));
+        topo.edge_mut(a).unwrap().set_end(vertices[1]);
+        let b = topo.add_edge(Edge::new(vertices[1], vertices[3], EdgeCurve::Line));
+        topo.edge_mut(b).unwrap().set_end(vertices[2]);
+        let c = topo.add_edge(Edge::new(vertices[2], vertices[3], EdgeCurve::Line));
+        let mut history = ReShape::new();
+        history.split_edge(a, vec![a, b]);
+        history.split_edge(b, vec![b, c]);
+        let claims = history.entity_history().unwrap();
+        assert_eq!(
+            claims[&EntityKey::edge(a.index())],
+            vec![
+                EntityKey::edge(a.index()),
+                EntityKey::edge(b.index()),
+                EntityKey::edge(c.index())
+            ]
+        );
+        assert_eq!(
+            claims[&EntityKey::edge(b.index())],
+            vec![EntityKey::edge(b.index()), EntityKey::edge(c.index())]
+        );
+        history.replace_edge(c, a);
+        assert!(history.entity_history().is_err());
+        let mut identity = ReShape::new();
+        identity.split_edge(a, vec![a]);
+        assert_eq!(
+            identity.entity_history().unwrap()[&EntityKey::edge(a.index())],
+            vec![EntityKey::edge(a.index())]
+        );
+    }
+
+    #[test]
+    fn entity_history_composes_splits_merges_and_removals() {
+        use remus_topology::journal::EntityKey;
+        let mut topo = Topology::new();
+        let vertices: Vec<_> = (0..4)
+            .map(|i| topo.add_vertex(Vertex::new(Point3::new(f64::from(i), 0.0, 0.0), 1e-7)))
+            .collect();
+        let edges: Vec<_> = (0..5)
+            .map(|_| topo.add_edge(Edge::new(vertices[0], vertices[1], EdgeCurve::Line)))
+            .collect();
+        let wire = add_wire(&mut topo, edges[0]);
+        let faces: Vec<_> = (0..4).map(|_| add_face(&mut topo, wire)).collect();
+        let mut reshape = ReShape::new();
+        reshape.replace_vertex(vertices[0], vertices[1]);
+        reshape.replace_vertex(vertices[1], vertices[2]);
+        reshape.remove_vertex(vertices[3]);
+        reshape.split_edge(edges[0], vec![edges[1], edges[2]]);
+        reshape.replace_edge(edges[1], edges[3]);
+        reshape.split_edge(edges[2], vec![edges[3], edges[4]]);
+        reshape.remove_edge(edges[4]);
+        reshape.split_face(faces[0], vec![faces[1], faces[2]]);
+        reshape.replace_face(faces[1], faces[3]);
+        reshape.remove_face(faces[2]);
+        let history = reshape.entity_history().unwrap();
+        assert_eq!(
+            history[&EntityKey::vertex(vertices[0].index())],
+            vec![EntityKey::vertex(vertices[2].index())]
+        );
+        assert!(history[&EntityKey::vertex(vertices[3].index())].is_empty());
+        assert_eq!(
+            history[&EntityKey::edge(edges[0].index())],
+            vec![EntityKey::edge(edges[3].index())]
+        );
+        assert!(!history.contains_key(&EntityKey::edge(edges[3].index())));
+        assert_eq!(
+            history[&EntityKey::face(faces[0].index())],
+            vec![EntityKey::face(faces[3].index())]
+        );
+        assert!(history[&EntityKey::face(faces[2].index())].is_empty());
+    }
+
+    #[test]
+    fn entity_history_refuses_cycles_without_confusing_identity() {
+        let mut topo = Topology::new();
+        let a = add_edge(
+            &mut topo,
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+        );
+        let b = add_edge(
+            &mut topo,
+            Point3::new(0.0, 1.0, 0.0),
+            Point3::new(1.0, 1.0, 0.0),
+        );
+        let mut reshape = ReShape::new();
+        reshape.replace_edge(a, a);
+        assert!(reshape.entity_history().is_ok());
+        reshape.replace_edge(a, b);
+        reshape.replace_edge(b, a);
+        assert!(
+            matches!(reshape.entity_history(),Err(crate::HealError::FixFailed(reason)) if reason.contains("cyclic replacement history"))
+        );
+    }
+
+    #[test]
+    fn successive_vertex_merges_reroot_existing_aliases() {
+        let mut topo = Topology::new();
+        let vertices: Vec<_> = (0..4)
+            .map(|i| topo.add_vertex(Vertex::new(Point3::new(f64::from(i), 0.0, 0.0), 1e-7)))
+            .collect();
+        let mut reshape = ReShape::new();
+        reshape.replace_vertex(vertices[0], vertices[1]);
+        reshape.replace_vertex(vertices[1], vertices[0]);
+        assert_eq!(reshape.resolve_vertex(vertices[1]), vertices[0]);
+        reshape.replace_vertex(vertices[1], vertices[2]);
+        reshape.replace_vertex(vertices[3], vertices[1]);
+        for &vertex in &vertices {
+            assert_eq!(reshape.resolve_vertex(vertex), vertices[1]);
+        }
+        assert!(reshape.entity_history().is_ok());
+    }
+
+    #[test]
+    fn entity_history_resolves_long_chains_without_truncation() {
+        use remus_topology::journal::EntityKey;
+        let mut topo = Topology::new();
+        let vertices: Vec<_> = (0..1024)
+            .map(|i| topo.add_vertex(Vertex::new(Point3::new(f64::from(i), 0.0, 0.0), 1e-7)))
+            .collect();
+        let mut reshape = ReShape::new();
+        for pair in vertices.windows(2) {
+            reshape.replace_vertex(pair[0], pair[1]);
+        }
+        let last = *vertices.last().unwrap();
+        let history = reshape.entity_history().unwrap();
+        assert_eq!(
+            history[&EntityKey::vertex(vertices[0].index())],
+            vec![EntityKey::vertex(last.index())]
+        );
+        assert_eq!(reshape.resolve_vertex(vertices[0]), last);
+        reshape.remove_vertex(last);
+        assert!(
+            reshape
+                .entity_history()
+                .unwrap()
+                .values()
+                .all(Vec::is_empty)
+        );
+    }
 
     fn add_edge(topo: &mut Topology, start: Point3, end: Point3) -> EdgeId {
         let start = topo.add_vertex(Vertex::new(start, 1e-7));

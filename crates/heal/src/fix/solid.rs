@@ -78,7 +78,7 @@ pub fn fix_solid(
 /// orientations: `1 - cos θ ≈ θ²/2`, so 1e-6 ≈ 0.08°.
 const NORMAL_PARALLEL_COS_TOL: f64 = 1e-6;
 
-/// Detect and remove geometrically duplicate faces in a solid's outer shell.
+/// Detect and remove geometrically duplicate faces within each shell of a solid.
 ///
 /// This conservative pass only compares unperforated planar polygon faces.
 /// Their ordered outer-boundary vertices must coincide with the same winding
@@ -88,18 +88,43 @@ const NORMAL_PARALLEL_COS_TOL: f64 = 1e-6;
 /// surfaces, NURBS, and perforated faces are skipped because proving their
 /// trimmed regions equal requires a parameter-space comparison.
 ///
-/// This must be a solid-scoped pass: a duplicate can only be found by comparing
-/// a face against the others, so a per-face fix (which sees one face in
-/// isolation) is structurally unable to detect it.
+/// Comparisons stay within each shell: coincident boundaries in different
+/// shells do not establish that either face use can be removed.
 fn fix_duplicate_faces(
     topo: &Topology,
     solid_id: SolidId,
     ctx: &mut HealContext,
 ) -> Result<FixResult, HealError> {
-    let tol = ctx.tolerance.linear;
+    let solid = topo.solid(solid_id)?;
+    let shells: Vec<_> = std::iter::once(solid.outer_shell())
+        .chain(solid.inner_shells().iter().copied())
+        .collect();
+    let mut face_shell_uses = HashMap::new();
+    for &shell in &shells {
+        for &face in topo.shell(shell)?.faces() {
+            *face_shell_uses.entry(face).or_insert(0usize) += 1;
+        }
+    }
+    let mut result = FixResult::ok();
+    for shell in shells {
+        result.merge(&fix_shell_duplicate_faces(
+            topo,
+            shell,
+            &face_shell_uses,
+            ctx,
+        )?);
+    }
+    Ok(result)
+}
 
-    let solid_data = topo.solid(solid_id)?;
-    let shell = topo.shell(solid_data.outer_shell())?;
+fn fix_shell_duplicate_faces(
+    topo: &Topology,
+    shell_id: remus_topology::shell::ShellId,
+    face_shell_uses: &HashMap<FaceId, usize>,
+    ctx: &mut HealContext,
+) -> Result<FixResult, HealError> {
+    let tol = ctx.tolerance.linear;
+    let shell = topo.shell(shell_id)?;
     let face_ids: Vec<_> = shell.faces().to_vec();
 
     // (face, plane normal, ordered outer-boundary vertices).
@@ -159,6 +184,16 @@ fn fix_duplicate_faces(
 
     if duplicates.is_empty() {
         return Ok(FixResult::ok());
+    }
+
+    // ReShape removals are global to this solid; a shared use cannot be dropped locally.
+    if face_ids
+        .iter()
+        .any(|id| duplicates.contains(&id.index()) && face_shell_uses[id] > 1)
+    {
+        return Err(HealError::FixFailed(
+            "duplicate face is shared by multiple shells".into(),
+        ));
     }
 
     // The first non-NURBS face is always the outer-loop anchor (`i`) and is
@@ -365,6 +400,66 @@ mod tests {
                 d: 0.0,
             },
         ))
+    }
+
+    #[test]
+    fn duplicate_repair_refuses_removal_of_a_shared_face_identity() {
+        let mut topo = Topology::new();
+        let mut faces = Vec::new();
+        for _ in 0..2 {
+            faces.push(add_triangle(
+                &mut topo,
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(1.0, 0.0, 0.0),
+                Point3::new(0.0, 1.0, 0.0),
+            ));
+        }
+        let outer = topo.add_shell(Shell::new(vec![faces[1]]).unwrap());
+        let inner = topo.add_shell(Shell::new(faces).unwrap());
+        let solid = topo.add_solid(Solid::new(outer, vec![inner]));
+        let mut ctx = HealContext::new();
+        let error = fix_duplicate_faces(&topo, solid, &mut ctx).unwrap_err();
+        assert!(error.to_string().contains("shared by multiple shells"));
+        assert!(ctx.reshape.is_empty());
+    }
+
+    #[test]
+    fn duplicate_repair_visits_cavities_without_merging_across_shells() {
+        let mut topo = Topology::new();
+        let mut triangles = Vec::new();
+        for _ in 0..3 {
+            triangles.push(add_triangle(
+                &mut topo,
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(1.0, 0.0, 0.0),
+                Point3::new(0.0, 1.0, 0.0),
+            ));
+        }
+        // Coincident shell-local fixtures isolate duplicate scope, not cavity containment.
+        let outer = topo.add_shell(Shell::new(vec![triangles[0]]).unwrap());
+        let inner = topo.add_shell(Shell::new(vec![triangles[1], triangles[2]]).unwrap());
+        let solid = topo.add_solid(Solid::new(outer, vec![inner]));
+        let mut ctx = HealContext::new();
+        let report = fix_duplicate_faces(&topo, solid, &mut ctx).unwrap();
+        assert_eq!(report.actions_taken, 1);
+        assert!(!ctx.reshape.is_face_removed(triangles[0]));
+        assert!(!ctx.reshape.is_face_removed(triangles[1]));
+        assert!(ctx.reshape.is_face_removed(triangles[2]));
+        ctx.reshape.apply(&mut topo, solid).unwrap();
+        assert_eq!(
+            topo.shell(topo.solid(solid).unwrap().outer_shell())
+                .unwrap()
+                .faces()
+                .len(),
+            1
+        );
+        assert_eq!(
+            topo.shell(topo.solid(solid).unwrap().inner_shells()[0])
+                .unwrap()
+                .faces()
+                .len(),
+            1
+        );
     }
 
     #[test]

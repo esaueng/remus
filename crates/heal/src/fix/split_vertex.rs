@@ -24,6 +24,32 @@ use crate::status::Status;
 /// it is flagged as over-connected.
 const MAX_VERTEX_EDGES: usize = 20;
 
+/// Vertex descendants allocated by completed common-vertex splits.
+#[derive(Debug, Default)]
+pub struct SplitVertexHistory {
+    /// Each retained source and all of its resulting vertex identities.
+    pub vertices: Vec<(VertexId, Vec<VertexId>)>,
+}
+
+/// Split common vertices and retain the actual allocated descendants.
+///
+/// # Errors
+///
+/// Returns [`HealError`] if entity lookups fail.
+pub fn fix_split_common_vertex_with_history(
+    topo: &mut Topology,
+    solid_id: SolidId,
+    ctx: &mut HealContext,
+    config: &FixConfig,
+) -> Result<(FixResult, SplitVertexHistory), HealError> {
+    if config.fix_split_common_vertex == super::config::FixMode::Off {
+        return Ok((FixResult::ok(), SplitVertexHistory::default()));
+    }
+    let mut history = SplitVertexHistory::default();
+    let result = fix_split_common_vertex_impl(topo, solid_id, ctx, Some(&mut history))?;
+    Ok((result, history))
+}
+
 /// Split vertices that are shared by too many non-adjacent edges.
 ///
 /// For each over-connected vertex (more than `MAX_VERTEX_EDGES` edge
@@ -39,7 +65,19 @@ pub fn fix_split_common_vertex(
     topo: &mut Topology,
     solid_id: SolidId,
     ctx: &mut HealContext,
-    _config: &FixConfig,
+    config: &FixConfig,
+) -> Result<FixResult, HealError> {
+    if config.fix_split_common_vertex == super::config::FixMode::Off {
+        return Ok(FixResult::ok());
+    }
+    fix_split_common_vertex_impl(topo, solid_id, ctx, None)
+}
+
+fn fix_split_common_vertex_impl(
+    topo: &mut Topology,
+    solid_id: SolidId,
+    ctx: &mut HealContext,
+    mut history: Option<&mut SplitVertexHistory>,
 ) -> Result<FixResult, HealError> {
     // Walk outer + inner (cavity) shells. Over-connection counting
     // is solid-scoped: a vertex can be over-connected via a mix of
@@ -89,7 +127,7 @@ pub fn fix_split_common_vertex(
     let mut total_splits = 0usize;
 
     for &vertex_id in &over_connected {
-        let splits = split_vertex(topo, vertex_id, solid_id, ctx)?;
+        let splits = split_vertex(topo, vertex_id, solid_id, ctx, history.as_deref_mut())?;
         total_splits += splits;
     }
 
@@ -124,6 +162,7 @@ fn split_vertex(
     vertex_id: VertexId,
     solid_id: SolidId,
     ctx: &mut HealContext,
+    history: Option<&mut SplitVertexHistory>,
 ) -> Result<usize, HealError> {
     // Walk outer + inner (cavity) shells (see top-level comment in
     // `fix_split_common_vertex`).
@@ -231,6 +270,7 @@ fn split_vertex(
             .push((eid, is_start, is_end));
     }
 
+    let mut descendants = vec![vertex_id];
     let mut new_vertices_created = 0usize;
     for edges in group_edges.values() {
         let new_vid = topo.add_vertex(Vertex::new(position, vtx_tolerance));
@@ -245,6 +285,7 @@ fn split_vertex(
             }
         }
 
+        descendants.push(new_vid);
         new_vertices_created += 1;
     }
 
@@ -255,5 +296,152 @@ fn split_vertex(
         new_vertices_created
     ));
 
+    if let Some(history) = history {
+        descendants.sort_by_key(|id| id.index());
+        history.vertices.push((vertex_id, descendants));
+    }
     Ok(new_vertices_created)
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::*;
+    use remus_math::vec::{Point3, Vec3};
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::face::{Face, FaceSurface};
+    use remus_topology::shell::Shell;
+    use remus_topology::solid::Solid;
+    use remus_topology::wire::{OrientedEdge, Wire};
+
+    #[test]
+    fn completed_splits_record_actual_descendants_across_shells() {
+        // Disconnected triangle fans exercise lineage, not closed-solid validity.
+        let mut topo = Topology::new();
+        let source = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
+        let mut faces = Vec::new();
+        for i in 0..11 {
+            let x = f64::from(i + 1);
+            let a = topo.add_vertex(Vertex::new(Point3::new(x, 0.0, 0.0), 1e-7));
+            let b = topo.add_vertex(Vertex::new(Point3::new(x, 1.0, 0.0), 1e-7));
+            let mut edges = Vec::new();
+            for (start, end) in [(source, a), (a, b), (b, source)] {
+                let edge = topo.add_edge(Edge::new(start, end, EdgeCurve::Line));
+                edges.push(OrientedEdge::new(edge, true));
+            }
+            let wire = topo.add_wire(Wire::new(edges, true).unwrap());
+            faces.push(topo.add_face(Face::new(
+                wire,
+                vec![],
+                FaceSurface::Plane {
+                    normal: Vec3::new(0.0, 0.0, 1.0),
+                    d: 0.0,
+                },
+            )));
+        }
+        let inner = topo.add_shell(Shell::new(faces.split_off(6)).unwrap());
+        let outer = topo.add_shell(Shell::new(faces).unwrap());
+        let solid = topo.add_solid(Solid::new(outer, vec![inner]));
+        let disabled = FixConfig {
+            fix_split_common_vertex: super::super::config::FixMode::Off,
+            ..Default::default()
+        };
+        let before_vertices = remus_topology::explorer::solid_vertices(&topo, solid).unwrap();
+        let (disabled_result, disabled_history) = fix_split_common_vertex_with_history(
+            &mut topo,
+            solid,
+            &mut HealContext::new(),
+            &disabled,
+        )
+        .unwrap();
+        assert_eq!(disabled_result.actions_taken, 0);
+        assert!(disabled_history.vertices.is_empty());
+        assert_eq!(
+            fix_split_common_vertex(&mut topo, solid, &mut HealContext::new(), &disabled)
+                .unwrap()
+                .actions_taken,
+            0
+        );
+        assert_eq!(
+            remus_topology::explorer::solid_vertices(&topo, solid).unwrap(),
+            before_vertices
+        );
+        let mut pipeline_topo = topo.clone();
+        let mut process = crate::pipeline::process::HealProcess::new();
+        process.add_step("split_common_vertex");
+        process.add_step("split_common_vertex");
+        let (_, reports, steps) = process
+            .execute_with_history(&mut pipeline_topo, solid)
+            .unwrap();
+        assert_eq!(reports[0].actions_taken, 10);
+        assert_eq!(reports[1].actions_taken, 0);
+        let key = remus_topology::journal::EntityKey::vertex(source.index());
+        let claims = steps[0].replacements.entity_history().unwrap();
+        assert_eq!(claims[&key].len(), 11);
+        assert!(claims[&key].contains(&key));
+        assert!(
+            claims[&key]
+                .iter()
+                .all(|target| steps[0].result.contains(target))
+        );
+        assert!(steps[1].replacements.entity_history().unwrap().is_empty());
+        let mut ordinary_topo = topo.clone();
+        let (_, ordinary_reports) = process.execute(&mut ordinary_topo, solid).unwrap();
+        assert_eq!(ordinary_reports[0].actions_taken, reports[0].actions_taken);
+        assert_eq!(
+            remus_topology::explorer::solid_vertices(&ordinary_topo, solid)
+                .unwrap()
+                .len(),
+            remus_topology::explorer::solid_vertices(&pipeline_topo, solid)
+                .unwrap()
+                .len(),
+        );
+        let (report, history) = fix_split_common_vertex_with_history(
+            &mut topo,
+            solid,
+            &mut HealContext::new(),
+            &FixConfig::default(),
+        )
+        .unwrap();
+        assert_eq!(report.actions_taken, 10);
+        assert_eq!(history.vertices.len(), 1);
+        let (original, targets) = &history.vertices[0];
+        assert_eq!(*original, source);
+        assert_eq!(targets.len(), 11);
+        assert!(targets.contains(&source));
+        let live = remus_topology::explorer::solid_vertices(&topo, solid).unwrap();
+        for target in targets {
+            assert!(live.contains(target));
+            assert_eq!(
+                topo.vertex(*target).unwrap().point(),
+                topo.vertex(source).unwrap().point()
+            );
+        }
+        let mut records = crate::reshape::ReShape::new();
+        records
+            .record_applied_vertex_split(source, targets.clone())
+            .unwrap();
+        let before: Vec<_> = remus_topology::explorer::solid_edges(&topo, solid)
+            .unwrap()
+            .iter()
+            .map(|id| {
+                let edge = topo.edge(*id).unwrap();
+                (*id, edge.start(), edge.end())
+            })
+            .collect();
+        records.apply(&mut topo, solid).unwrap();
+        for (id, start, end) in before {
+            let edge = topo.edge(id).unwrap();
+            assert_eq!((edge.start(), edge.end()), (start, end));
+        }
+        let (repeat, history) = fix_split_common_vertex_with_history(
+            &mut topo,
+            solid,
+            &mut HealContext::new(),
+            &FixConfig::default(),
+        )
+        .unwrap();
+        assert_eq!(repeat.actions_taken, 0);
+        assert!(history.vertices.is_empty());
+    }
 }

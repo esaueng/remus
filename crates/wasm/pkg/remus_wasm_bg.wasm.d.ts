@@ -64,6 +64,7 @@ export const brepkernel_cutWithEntityEvolution: (a: number, b: number, c: number
 export const brepkernel_cutWithEvolution: (a: number, b: number, c: number) => [number, number, number];
 export const brepkernel_cutWithOptions: (a: number, b: number, c: number, d: number) => [number, number, number];
 export const brepkernel_defeature: (a: number, b: number, c: number, d: number) => [number, number, number];
+export const brepkernel_defeatureJournaled: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const brepkernel_deleteSolid: (a: number, b: number) => [number, number];
 export const brepkernel_deserializeSheet: (a: number, b: number, c: number) => [number, number, number];
 export const brepkernel_deserializeSheets: (a: number, b: number, c: number) => [number, number, number, number];
@@ -75,6 +76,7 @@ export const brepkernel_detectCoincidentFaces: (a: number, b: number, c: number)
 export const brepkernel_detectSmallFeatures: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const brepkernel_discardCheckpoint: (a: number, b: number) => [number, number];
 export const brepkernel_draft: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => [number, number, number];
+export const brepkernel_draftJournaled: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number, number, number];
 export const brepkernel_edgeLength: (a: number, b: number) => [number, number, number];
 export const brepkernel_edgeToFaceMap: (a: number, b: number) => [number, number, number, number];
 export const brepkernel_evaluateEdgeCurve: (a: number, b: number, c: number) => [number, number, number, number];
@@ -98,6 +100,7 @@ export const brepkernel_filletVariable: (a: number, b: number, c: number, d: num
 export const brepkernel_filletWithEvolution: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
 export const brepkernel_fixFaceOrientations: (a: number, b: number) => [number, number, number];
 export const brepkernel_fixShapeWithConfig: (a: number, b: number, c: number, d: number) => [number, number, number];
+export const brepkernel_fixShapeWithConfigJournaled: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const brepkernel_fromBREP: (a: number, b: number, c: number) => [number, number, number];
 export const brepkernel_fuse: (a: number, b: number, c: number) => [number, number, number];
 export const brepkernel_fuseAll: (a: number, b: number, c: number) => [number, number, number];
@@ -217,6 +220,7 @@ export const brepkernel_meshQuality: (a: number, b: number, c: number, d: number
 export const brepkernel_minkowskiSum: (a: number, b: number, c: number) => [number, number, number];
 export const brepkernel_mirror: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number];
 export const brepkernel_moveFaces: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
+export const brepkernel_moveFacesJournaled: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
 export const brepkernel_multiSectionSweep: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number) => [number, number, number];
 export const brepkernel_mutualTrimSheets: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
 export const brepkernel_new: () => number;
@@ -244,9 +248,11 @@ export const brepkernel_removeDegenerateEdges: (a: number, b: number, c: number)
 export const brepkernel_removeHolesFromFace: (a: number, b: number) => [number, number, number];
 export const brepkernel_repairSolid: (a: number, b: number) => [number, number, number];
 export const brepkernel_repairSolidDetailed: (a: number, b: number) => [number, number, number];
+export const brepkernel_replaceSurfaceJournaled: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
 export const brepkernel_resizeBlend: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
 export const brepkernel_resizeBlendWithEvolution: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
 export const brepkernel_resizeCylindricalFace: (a: number, b: number, c: number, d: number) => [number, number, number];
+export const brepkernel_resizeCylindricalFaceJournaled: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const brepkernel_resolveOperationOutput: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
 export const brepkernel_resolveRef: (a: number, b: number, c: number) => [number, number, number, number];
 export const brepkernel_resolveRefFaceAttributes: (a: number, b: number, c: number) => [number, number, number, number];
@@ -254,6 +260,7 @@ export const brepkernel_restore: (a: number, b: number) => [number, number];
 export const brepkernel_reverseShape: (a: number, b: number) => [number, number, number];
 export const brepkernel_revolve: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number, number];
 export const brepkernel_runHealPipeline: (a: number, b: number, c: number, d: number) => [number, number, number];
+export const brepkernel_runHealPipelineJournaled: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const brepkernel_sampleEdge: (a: number, b: number, c: number) => [number, number, number, number];
 export const brepkernel_section: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number, number];
 export const brepkernel_serializeSheet: (a: number, b: number) => [number, number, number, number];

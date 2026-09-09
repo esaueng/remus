@@ -435,3 +435,115 @@ fn names_ride_construction_lineage_through_a_real_boolean() {
         "attributes must be readable through persistent references"
     );
 }
+
+#[test]
+fn direct_face_moves_keep_every_boundary_reference_through_successive_edits() {
+    use remus_operations::journal_ops::{move_faces_journaled, solid_entity_keys};
+    use remus_topology::journal::{EventDraft, EvolutionDraft};
+
+    let mut topo = Topology::new();
+    let pending = topo.journal_begin("box");
+    let source = make_box(&mut topo, 3.0, 5.0, 7.0).unwrap();
+    let keys = solid_entity_keys(&topo, source).unwrap();
+    let mut draft = EvolutionDraft::construction();
+    draft.add_scope(keys.iter().copied());
+    for key in &keys {
+        draft.push(
+            *key,
+            EventDraft::Generated {
+                sources: Vec::new(),
+            },
+        );
+    }
+    let anchor = topo.journal_record_evolution(pending, draft).unwrap();
+    let references: Vec<_> = [EntityKind::Face, EntityKind::Edge, EntityKind::Vertex]
+        .into_iter()
+        .flat_map(|kind| {
+            (0..keys.iter().filter(|key| key.kind == kind).count())
+                .map(move |index| PersistentRef::operation_output(anchor, kind, index))
+        })
+        .collect();
+    assert_eq!(references.len(), 26);
+    let mut solid = source;
+    for distance in [0.25, -0.125] {
+        let selected = remus_topology::explorer::solid_faces(&topo, solid).unwrap()[0];
+        let result = move_faces_journaled(&mut topo, solid, &[selected], distance).unwrap();
+        let live: std::collections::BTreeSet<_> = solid_entity_keys(&topo, result.solid)
+            .unwrap()
+            .into_iter()
+            .collect();
+        let mut resolved = std::collections::BTreeSet::new();
+        for reference in &references {
+            let resolution = resolve(&topo, reference);
+            let Resolution::Bound { entity, provenance } = resolution else {
+                panic!("direct edit lost {reference:?}: {resolution:?}");
+            };
+            assert_eq!(provenance, Provenance::Construction);
+            assert!(live.contains(&entity));
+            assert!(resolved.insert(entity));
+        }
+        assert_eq!(resolved, live);
+        solid = result.solid;
+    }
+}
+
+#[test]
+fn coaxial_bore_move_retains_every_construction_reference() {
+    use remus_math::mat::Mat4;
+    use remus_operations::journal_ops::{move_faces_journaled, solid_entity_keys};
+    use remus_operations::primitives::make_cylinder;
+    use remus_topology::face::FaceSurface;
+    use remus_topology::journal::{EventDraft, EvolutionDraft};
+
+    let mut topo = Topology::new();
+    let block = make_box(&mut topo, 10.0, 8.0, 4.0).unwrap();
+    let drill = make_cylinder(&mut topo, 1.0, 8.0).unwrap();
+    remus_operations::transform::transform_solid(
+        &mut topo,
+        drill,
+        &Mat4::translation(5.0, 4.0, -2.0),
+    )
+    .unwrap();
+    let source = remus_operations::boolean::boolean(
+        &mut topo,
+        remus_operations::boolean::BooleanOp::Cut,
+        block,
+        drill,
+    )
+    .unwrap();
+    let pending = topo.journal_begin("bored_block");
+    let keys = solid_entity_keys(&topo, source).unwrap();
+    let mut draft = EvolutionDraft::construction();
+    draft.add_scope(keys.iter().copied());
+    for key in &keys {
+        draft.push(
+            *key,
+            EventDraft::Generated {
+                sources: Vec::new(),
+            },
+        );
+    }
+    let anchor = topo.journal_record_evolution(pending, draft).unwrap();
+    let bore = remus_topology::explorer::solid_faces(&topo, source)
+        .unwrap()
+        .into_iter()
+        .find(|&face| matches!(topo.face(face).unwrap().surface(), FaceSurface::Cylinder(_)))
+        .unwrap();
+    let result = move_faces_journaled(&mut topo, source, &[bore], 0.25).unwrap();
+    let live: std::collections::BTreeSet<_> = solid_entity_keys(&topo, result.solid)
+        .unwrap()
+        .into_iter()
+        .collect();
+    let mut resolved = std::collections::BTreeSet::new();
+    for kind in [EntityKind::Face, EntityKind::Edge, EntityKind::Vertex] {
+        for index in 0..keys.iter().filter(|key| key.kind == kind).count() {
+            let resolution = resolve(&topo, &PersistentRef::operation_output(anchor, kind, index));
+            let Resolution::Bound { entity, provenance } = resolution else {
+                panic!("lost bore reference: {resolution:?}");
+            };
+            assert_eq!(provenance, Provenance::Construction);
+            assert!(resolved.insert(entity));
+        }
+    }
+    assert_eq!(resolved, live);
+}

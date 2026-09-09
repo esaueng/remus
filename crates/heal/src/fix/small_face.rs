@@ -42,8 +42,11 @@ pub fn fix_small_faces(
     topo: &mut Topology,
     solid_id: SolidId,
     ctx: &mut HealContext,
-    _config: &FixConfig,
+    config: &FixConfig,
 ) -> Result<FixResult, HealError> {
+    if config.fix_small_faces == super::config::FixMode::Off {
+        return Ok(FixResult::ok());
+    }
     let solid_data = topo.solid(solid_id)?;
     let shell_ids: Vec<ShellId> = std::iter::once(solid_data.outer_shell())
         .chain(solid_data.inner_shells().iter().copied())
@@ -231,6 +234,13 @@ mod tests {
         let solid_id = topo.add_solid(Solid::new(outer_shell, vec![inner_shell]));
 
         let mut ctx = HealContext::new();
+        let disabled = FixConfig {
+            fix_small_faces: super::super::config::FixMode::Off,
+            ..Default::default()
+        };
+        let result = fix_small_faces(&mut topo, solid_id, &mut ctx, &disabled).unwrap();
+        assert_eq!(result.actions_taken, 0);
+        assert!(ctx.reshape.is_empty());
         let result = fix_small_faces(&mut topo, solid_id, &mut ctx, &FixConfig::default()).unwrap();
 
         assert_eq!(

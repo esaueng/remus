@@ -262,6 +262,27 @@ pub fn record_face_evolution(
     map: &EvolutionMap,
     result_solids: &[SolidId],
 ) -> Result<OpId, OperationsError> {
+    record_entity_evolution(topo, pending, map, result_solids, &[])
+}
+
+fn record_entity_evolution(
+    topo: &mut Topology,
+    pending: PendingOp,
+    map: &EvolutionMap,
+    result_solids: &[SolidId],
+    boundary_pairs: &[(EntityKey, EntityKey)],
+) -> Result<OpId, OperationsError> {
+    record_entity_evolution_with_outputs(topo, pending, map, result_solids, boundary_pairs, &[])
+}
+
+fn record_entity_evolution_with_outputs(
+    topo: &mut Topology,
+    pending: PendingOp,
+    map: &EvolutionMap,
+    result_solids: &[SolidId],
+    boundary_pairs: &[(EntityKey, EntityKey)],
+    additional_outputs: &[(EntityKey, EventDraft)],
+) -> Result<OpId, OperationsError> {
     use std::collections::BTreeMap;
 
     let mut draft = if map.origin.is_exact() {
@@ -323,6 +344,24 @@ pub fn record_face_evolution(
                 candidates: candidates.iter().map(|&c| EntityKey::face(c)).collect(),
             },
         );
+    }
+
+    let mut boundary_sources: BTreeMap<EntityKey, Vec<EntityKey>> = BTreeMap::new();
+    for &(source, target) in boundary_pairs {
+        boundary_sources.entry(target).or_default().push(source);
+    }
+    for (target, mut sources) in boundary_sources {
+        sources.sort_unstable();
+        sources.dedup();
+        let event = match sources.as_slice() {
+            [source] => EventDraft::Modified { from: *source },
+            _ => EventDraft::Merged { from: sources },
+        };
+        draft.push(target, event);
+    }
+
+    for (target, event) in additional_outputs {
+        draft.push(*target, event.clone());
     }
 
     Ok(topo.journal_record_evolution(pending, draft)?)
@@ -463,6 +502,10 @@ pub fn offset_journaled(
 /// Moves a supported face selection and journals its construction-derived
 /// face evolution as one entry (kind `move_faces`).
 ///
+/// Topology-preserving planar
+/// and coaxial bore moves also record their exact edge and vertex maps.
+/// Blend-aware moves remain faces-only and sever unrecorded boundary references.
+///
 /// The whole call is transactional: failed geometry, postconditions, or
 /// journal recording restore both topology and history.
 ///
@@ -477,8 +520,15 @@ pub fn move_faces_journaled(
 ) -> Result<JournaledSolidOp, OperationsError> {
     remus_topology::transaction::run_transacted(topo, |topo| {
         let pending = begin_scoped(topo, "move_faces", &[solid])?;
-        let result = crate::push_pull::move_faces_with_evolution(topo, solid, faces, distance)?;
-        let op = record_face_evolution(topo, pending, &result.evolution, &[result.solid])?;
+        let (result, boundary_pairs) =
+            crate::push_pull::move_faces_with_entity_evolution(topo, solid, faces, distance)?;
+        let op = record_entity_evolution(
+            topo,
+            pending,
+            &result.evolution,
+            &[result.solid],
+            &boundary_pairs,
+        )?;
         Ok(JournaledSolidOp {
             solid: result.solid,
             op,
@@ -487,12 +537,98 @@ pub fn move_faces_journaled(
     })
 }
 
-/// Runs a draft and journals its construction-derived face evolution as
-/// one entry (kind `draft`).
+/// Resizes a cylindrical wall with construction-derived edit history.
+///
+/// Geometry validation and history recording form one transaction. Unsupported
+/// or ambiguous construction lineage remains explicitly unresolved.
 ///
 /// # Errors
 ///
-/// Returns [`OperationsError`] if the draft or the recording fails.
+/// Returns a geometry refusal or an error recording the construction history.
+pub fn resize_cylindrical_face_journaled(
+    topo: &mut Topology,
+    solid: SolidId,
+    face: remus_topology::FaceId,
+    new_radius: f64,
+) -> Result<JournaledSolidOp, OperationsError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let pending = begin_scoped(topo, "resize_cylindrical_face", &[solid])?;
+        let (result, pairs) = crate::push_pull::resize_cylindrical_face_with_entity_evolution(
+            topo, solid, face, new_radius,
+        )?;
+        let additional = crate::push_pull::radius_subdivision_outputs(
+            topo,
+            solid,
+            result.solid,
+            &result.evolution,
+            &pairs,
+        )?;
+        let op = record_entity_evolution_with_outputs(
+            topo,
+            pending,
+            &result.evolution,
+            &[result.solid],
+            &pairs,
+            &additional,
+        )?;
+        Ok(JournaledSolidOp {
+            solid: result.solid,
+            op,
+            map: result.evolution,
+        })
+    })
+}
+
+/// Replaces a support surface with exact face, edge, and vertex history.
+///
+/// Every rebuilt entity records its construction source. Geometry,
+/// postconditions, and journal recording form one transaction.
+///
+/// # Errors
+///
+/// Returns the same geometry refusals as [`crate::replace_surface::replace_surface`]
+/// or an error if the construction history cannot be recorded.
+pub fn replace_surface_journaled(
+    topo: &mut Topology,
+    solid: SolidId,
+    face: remus_topology::FaceId,
+    replacement: remus_topology::face::FaceSurface,
+) -> Result<JournaledSolidOp, OperationsError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let pending = begin_scoped(topo, "replace_surface", &[solid])?;
+        let source_faces = solid_faces(topo, solid)?;
+        let result = crate::replace_surface::replace_surface_with_entity_map(
+            topo,
+            solid,
+            face,
+            replacement,
+        )?;
+        let boundary_pairs = crate::push_pull::boundary_entity_pairs(&result);
+        let map = crate::push_pull::exact_face_evolution(
+            topo,
+            &source_faces,
+            result.solid,
+            result.face_map,
+        )?;
+        let op = record_entity_evolution(topo, pending, &map, &[result.solid], &boundary_pairs)?;
+        Ok(JournaledSolidOp {
+            solid: result.solid,
+            op,
+            map,
+        })
+    })
+}
+
+/// Applies a planar draft with construction-derived face and boundary history.
+///
+/// Geometry and journal recording form one transaction. Boundary identities
+/// require a total one-to-one face map and a unique incidence correspondence,
+/// including every outer and inner wire. Ambiguous boundaries remain unresolved.
+///
+/// # Errors
+///
+/// Returns the geometry refusals of [`crate::draft::draft`] or an error recording
+/// the construction history; either failure restores topology and history.
 pub fn draft_journaled(
     topo: &mut Topology,
     solid: SolidId,
@@ -501,42 +637,264 @@ pub fn draft_journaled(
     neutral_point: remus_math::vec::Point3,
     angle_radians: f64,
 ) -> Result<JournaledSolidOp, OperationsError> {
-    let pending = begin_scoped(topo, "draft", &[solid])?;
-    let (result, map) = crate::draft::draft_with_evolution(
-        topo,
-        solid,
-        draft_faces,
-        pull_direction,
-        neutral_point,
-        angle_radians,
-    )?;
-    let op = record_face_evolution(topo, pending, &map, &[result])?;
-    Ok(JournaledSolidOp {
-        solid: result,
-        op,
-        map,
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let pending = begin_scoped(topo, "draft", &[solid])?;
+        let (result, map) = crate::draft::draft_with_evolution(
+            topo,
+            solid,
+            draft_faces,
+            pull_direction,
+            neutral_point,
+            angle_radians,
+        )?;
+        let face_map = map
+            .modified
+            .iter()
+            .map(|(&source, outputs)| {
+                let [output] = outputs.as_slice() else {
+                    return None;
+                };
+                topo.face_id_from_index(*output)
+                    .map(|target| (source, target))
+            })
+            .collect::<Option<std::collections::BTreeMap<_, _>>>();
+        let pairs = match face_map {
+            Some(face_map) if map.origin.is_exact() && map.is_complete() => {
+                crate::resize_blend::construction_boundary_pairs(topo, solid, result, &face_map)?
+            }
+            _ => Vec::new(),
+        };
+        let op = record_entity_evolution(topo, pending, &map, &[result], &pairs)?;
+        Ok(JournaledSolidOp {
+            solid: result,
+            op,
+            map,
+        })
     })
 }
 
-/// Runs a defeature and journals its construction-derived face evolution
-/// as one entry (kind `defeature`).
+/// Runs a defeature and journals its construction-derived history.
+///
+/// Capping heals retain copied boundary identities and record consumed boundaries
+/// as deleted. Reconstructed boundaries without construction maps remain unresolved.
 ///
 /// # Errors
 ///
-/// Returns [`OperationsError`] if the defeature or the recording fails.
+/// Returns [`OperationsError`] if the defeature or recording fails; both topology
+/// and journal state are restored.
 pub fn defeature_journaled(
     topo: &mut Topology,
     solid: SolidId,
     faces_to_remove: &[remus_topology::FaceId],
 ) -> Result<JournaledSolidOp, OperationsError> {
-    let pending = begin_scoped(topo, "defeature", &[solid])?;
-    let (result, map) = crate::defeature::defeature_with_evolution(topo, solid, faces_to_remove)?;
-    let op = record_face_evolution(topo, pending, &map, &[result])?;
-    Ok(JournaledSolidOp {
-        solid: result,
-        op,
-        map,
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let pending = begin_scoped(topo, "defeature", &[solid])?;
+        let (result, map) = crate::defeature::defeature_with_history(topo, solid, faces_to_remove)?;
+        let mut pairs = Vec::new();
+        let mut deleted = Vec::new();
+        for (source, target) in result.boundary_history.into_iter().flatten() {
+            match target {
+                Some(target) => pairs.push((source, target)),
+                None => deleted.push((source, EventDraft::Deleted)),
+            }
+        }
+        deleted.sort_unstable_by_key(|(source, _)| *source);
+        let op = record_entity_evolution_with_outputs(
+            topo,
+            pending,
+            &map,
+            &[result.solid],
+            &pairs,
+            &deleted,
+        )?;
+        Ok(JournaledSolidOp {
+            solid: result.solid,
+            op,
+            map,
+        })
     })
+}
+
+/// A verified configured repair and its construction-history entry.
+pub struct JournaledFix {
+    /// Verified repair reports and resulting solid.
+    pub result: crate::heal::ConfiguredRepairReport,
+    /// The recorded operation.
+    pub op: OpId,
+}
+
+/// A verified healing pipeline and its construction-history entry.
+pub struct JournaledHealPipeline {
+    /// Verified pipeline reports and resulting solid.
+    pub result: crate::heal::PipelineRepairReport,
+    /// The recorded operation.
+    pub op: OpId,
+}
+
+/// Fix a shape with verified geometry and recorded replacement history.
+///
+/// # Errors
+///
+/// Returns the verified fixer's refusals or a history error. Every failure
+/// restores topology and journal state together.
+pub fn fix_shape_journaled(
+    topo: &mut Topology,
+    solid: SolidId,
+    config: &remus_heal::fix::FixConfig,
+    tolerance: Option<f64>,
+) -> Result<JournaledFix, OperationsError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let sources = solid_entity_keys(topo, solid)?;
+        let pending = begin_scoped(topo, "fix_shape", &[solid])?;
+        let (result, history) =
+            crate::heal::fix_shape_verified_with_history(topo, solid, config, tolerance)?;
+        let op = record_healing_history(topo, pending, &sources, result.solid, &history)?;
+        Ok(JournaledFix { result, op })
+    })
+}
+
+/// Run a verified healing pipeline with recorded replacement history.
+///
+/// # Errors
+///
+/// Returns the verified pipeline's refusals or a history error. Every failure
+/// restores topology and journal state together.
+pub fn heal_pipeline_journaled(
+    topo: &mut Topology,
+    solid: SolidId,
+    process: &remus_heal::pipeline::process::HealProcess,
+) -> Result<JournaledHealPipeline, OperationsError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let sources = solid_entity_keys(topo, solid)?;
+        let pending = begin_scoped(topo, "heal_pipeline", &[solid])?;
+        let (result, history) =
+            crate::heal::run_heal_pipeline_verified_with_history(topo, solid, process)?;
+        let replacements = compose_healing_history(&sources, &history)?;
+        let op = record_healing_replacements(topo, pending, &sources, result.solid, &replacements)?;
+        Ok(JournaledHealPipeline { result, op })
+    })
+}
+
+type HealingHistory = std::collections::BTreeMap<EntityKey, Option<Vec<EntityKey>>>;
+
+fn compose_healing_history(
+    sources: &[EntityKey],
+    steps: &[remus_heal::pipeline::process::StepHistory],
+) -> Result<HealingHistory, OperationsError> {
+    let mut composed: HealingHistory = sources.iter().map(|&key| (key, Some(vec![key]))).collect();
+    for step in steps {
+        let replacements = step.replacements.entity_history()?;
+        let live: std::collections::BTreeSet<_> = step.result.iter().copied().collect();
+        for targets in composed.values_mut() {
+            let Some(previous) = targets.as_ref() else {
+                continue;
+            };
+            let mut next = Vec::new();
+            let mut known = true;
+            for source in previous {
+                if step.sources.binary_search(source).is_err() {
+                    known = false;
+                    break;
+                }
+                if let Some(outputs) = replacements.get(source) {
+                    if live.contains(source) && !outputs.contains(source) {
+                        return Err(OperationsError::InvalidInput {
+                            reason: format!(
+                                "healing history replaces {source:?} but the source remains in the result"
+                            ),
+                        });
+                    }
+                    if outputs.iter().any(|output| !live.contains(output)) {
+                        known = false;
+                        break;
+                    }
+                    next.extend(outputs.iter().copied());
+                } else if live.contains(source) {
+                    next.push(*source);
+                } else {
+                    known = false;
+                    break;
+                }
+            }
+            next.sort_unstable();
+            next.dedup();
+            *targets = known.then_some(next);
+        }
+    }
+    Ok(composed)
+}
+
+fn record_healing_history(
+    topo: &mut Topology,
+    pending: PendingOp,
+    sources: &[EntityKey],
+    result: SolidId,
+    history: &remus_heal::reshape::ReShape,
+) -> Result<OpId, OperationsError> {
+    let replacements = history
+        .entity_history()?
+        .into_iter()
+        .map(|(key, targets)| (key, Some(targets)))
+        .collect();
+    record_healing_replacements(topo, pending, sources, result, &replacements)
+}
+
+fn record_healing_replacements(
+    topo: &mut Topology,
+    pending: PendingOp,
+    sources: &[EntityKey],
+    result: SolidId,
+    replacements: &HealingHistory,
+) -> Result<OpId, OperationsError> {
+    use std::collections::{BTreeMap, BTreeSet};
+    let live: BTreeSet<_> = solid_entity_keys(topo, result)?.into_iter().collect();
+    let mut by_target: BTreeMap<EntityKey, Vec<EntityKey>> = BTreeMap::new();
+    let mut draft = EvolutionDraft::construction();
+    draft.add_scope(live.iter().copied());
+    for &source in sources {
+        if let Some(targets) = replacements.get(&source) {
+            let Some(targets) = targets else {
+                continue;
+            };
+            if live.contains(&source) && !targets.contains(&source) {
+                return Err(OperationsError::InvalidInput {
+                    reason: format!(
+                        "healing history replaces {source:?} but the source remains in the result"
+                    ),
+                });
+            }
+            if targets.iter().any(|target| !live.contains(target)) {
+                continue;
+            }
+            let mut retained = false;
+            for &target in targets {
+                by_target.entry(target).or_default().push(source);
+                retained = true;
+            }
+            if !retained {
+                draft.push(source, EventDraft::Deleted);
+            }
+        } else if live.contains(&source) {
+            by_target.entry(source).or_default().push(source);
+        }
+    }
+    for &target in &live {
+        let event = match by_target.remove(&target) {
+            Some(mut sources) => {
+                sources.sort_unstable();
+                sources.dedup();
+                match sources.as_slice() {
+                    [source] => EventDraft::Modified { from: *source },
+                    _ => EventDraft::Merged { from: sources },
+                }
+            }
+            None => EventDraft::Unresolved {
+                candidates: Vec::new(),
+            },
+        };
+        draft.push(target, event);
+    }
+    Ok(topo.journal_record_evolution(pending, draft)?)
 }
 
 /// Runs a shell (hollow) and journals its construction-derived face
@@ -650,4 +1008,260 @@ pub fn record_barrier_over_solid(
             .map(|id| EntityKey::vertex(id.index())),
     );
     Ok(topo.journal_record_barrier(pending, affected))
+}
+
+#[cfg(test)]
+mod healing_history_tests {
+    #![allow(clippy::unwrap_used, clippy::panic)]
+
+    use super::*;
+    use remus_heal::{pipeline::process::StepHistory, reshape::ReShape};
+    use remus_topology::{
+        EdgeId,
+        edge::{Edge, EdgeCurve},
+        vertex::Vertex,
+    };
+
+    #[test]
+    fn healing_unknown_or_retired_targets_sever_source_references() {
+        use remus_topology::journal::EntityKind;
+        use remus_topology::naming::{PersistentRef, Resolution, resolve};
+
+        for retired_target in [false, true] {
+            let mut topo = Topology::new();
+            let source = crate::primitives::make_box(&mut topo, 2.0, 3.0, 4.0).unwrap();
+            let result = crate::primitives::make_box(&mut topo, 2.0, 3.0, 4.0).unwrap();
+            let sources = solid_entity_keys(&topo, source).unwrap();
+            let pending = begin_scoped(&mut topo, "anchor", &[source]).unwrap();
+            let mut draft = EvolutionDraft::construction();
+            for &key in &sources {
+                draft.push(
+                    key,
+                    EventDraft::Generated {
+                        sources: Vec::new(),
+                    },
+                );
+            }
+            let anchor = topo.journal_record_evolution(pending, draft).unwrap();
+            let replacements = sources
+                .iter()
+                .map(|&key| (key, retired_target.then_some(vec![key])))
+                .collect();
+            let pending = begin_scoped(&mut topo, "heal_unknown", &[source]).unwrap();
+            let op =
+                record_healing_replacements(&mut topo, pending, &sources, result, &replacements)
+                    .unwrap();
+            for kind in [EntityKind::Face, EntityKind::Edge, EntityKind::Vertex] {
+                for index in 0..sources.iter().filter(|key| key.kind == kind).count() {
+                    assert!(matches!(
+                        resolve(&topo, &PersistentRef::operation_output(anchor, kind, index)),
+                        Resolution::UnresolvedAcrossOperation { op: actual, .. } if actual == op
+                    ));
+                }
+            }
+        }
+    }
+
+    fn edges() -> [EdgeId; 4] {
+        let mut topo = Topology::new();
+        let a = topo.add_vertex(Vertex::new(
+            remus_math::vec::Point3::new(0.0, 0.0, 0.0),
+            1e-7,
+        ));
+        let b = topo.add_vertex(Vertex::new(
+            remus_math::vec::Point3::new(1.0, 0.0, 0.0),
+            1e-7,
+        ));
+        std::array::from_fn(|_| topo.add_edge(Edge::new(a, b, EdgeCurve::Line)))
+    }
+
+    fn keys(edges: &[EdgeId]) -> Vec<EntityKey> {
+        edges
+            .iter()
+            .map(|edge| EntityKey::edge(edge.index()))
+            .collect()
+    }
+
+    fn step(sources: &[EdgeId], result: &[EdgeId], replacements: ReShape) -> StepHistory {
+        StepHistory {
+            sources: keys(sources),
+            result: keys(result),
+            replacements,
+        }
+    }
+
+    #[test]
+    fn retained_vertex_history_binds_all_pieces_after_arena_restore() {
+        use remus_topology::naming::{PersistentRef, Provenance, Resolution, resolve};
+        let mut topo = Topology::new();
+        let solid = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+        let source = remus_topology::explorer::solid_vertices(&topo, solid).unwrap()[0];
+        let pending = begin_scoped(&mut topo, "vertex_fixture", &[solid]).unwrap();
+        let mut draft = EvolutionDraft::construction();
+        draft.push(
+            EntityKey::vertex(source.index()),
+            EventDraft::Generated {
+                sources: Vec::new(),
+            },
+        );
+        let anchor = topo.journal_record_evolution(pending, draft).unwrap();
+        let reference =
+            PersistentRef::operation_output(anchor, remus_topology::journal::EntityKind::Vertex, 0);
+        let sources = solid_entity_keys(&topo, solid).unwrap();
+        let pending = begin_scoped(&mut topo, "applied_vertex_split_fixture", &[solid]).unwrap();
+        let vertex = topo.vertex(source).unwrap().clone();
+        let child = topo.add_vertex(vertex);
+        // This isolates naming for an applied endpoint split; it is not a solid-validity test.
+        let edge = remus_topology::explorer::solid_edges(&topo, solid)
+            .unwrap()
+            .into_iter()
+            .find(|id| {
+                let edge = topo.edge(*id).unwrap();
+                edge.start() == source || edge.end() == source
+            })
+            .unwrap();
+        let edge = topo.edge_mut(edge).unwrap();
+        if edge.start() == source {
+            edge.set_start(child);
+        } else {
+            edge.set_end(child);
+        }
+        let mut history = ReShape::new();
+        history
+            .record_applied_vertex_split(source, vec![source, child])
+            .unwrap();
+        record_healing_history(&mut topo, pending, &sources, solid, &history).unwrap();
+        let Resolution::BoundMany {
+            entities,
+            provenance,
+        } = resolve(&topo, &reference)
+        else {
+            panic!("retained split must resolve to both construction descendants");
+        };
+        assert_eq!(provenance, Provenance::Construction);
+        assert_eq!(
+            entities,
+            vec![
+                EntityKey::vertex(source.index()),
+                EntityKey::vertex(child.index())
+            ]
+        );
+        let bytes = remus_io::arena_io::serialize_solids(&topo, &[solid]).unwrap();
+        let mut restored = Topology::new();
+        crate::primitives::make_box(&mut restored, 2.0, 2.0, 2.0).unwrap();
+        let result = remus_io::arena_io::deserialize_solids(&bytes, &mut restored).unwrap()[0];
+        let Resolution::BoundMany {
+            entities,
+            provenance,
+        } = resolve(&restored, &reference)
+        else {
+            panic!("arena restore lost retained split descendants");
+        };
+        assert_eq!(entities.len(), 2);
+        assert_eq!(provenance, Provenance::Construction);
+        let sources = solid_entity_keys(&restored, result).unwrap();
+        let pending = begin_scoped(&mut restored, "later_identity", &[result]).unwrap();
+        record_healing_history(&mut restored, pending, &sources, result, &ReShape::new()).unwrap();
+        assert_eq!(
+            resolve(&restored, &reference),
+            Resolution::BoundMany {
+                entities,
+                provenance
+            }
+        );
+    }
+
+    #[test]
+    fn healing_composes_retained_vertex_splits_through_later_steps() {
+        let mut topo = Topology::new();
+        let ids: Vec<_> = (0..3)
+            .map(|_| {
+                topo.add_vertex(Vertex::new(
+                    remus_math::vec::Point3::new(0.0, 0.0, 0.0),
+                    1e-7,
+                ))
+            })
+            .collect();
+        let keys: Vec<_> = ids.iter().map(|id| EntityKey::vertex(id.index())).collect();
+        let mut split = ReShape::new();
+        split
+            .record_applied_vertex_split(ids[0], vec![ids[0], ids[1]])
+            .unwrap();
+        let mut later = ReShape::new();
+        later.replace_vertex(ids[1], ids[2]);
+        let steps = vec![
+            StepHistory {
+                sources: vec![keys[0]],
+                result: keys[..2].to_vec(),
+                replacements: split,
+            },
+            StepHistory {
+                sources: keys[..2].to_vec(),
+                result: vec![keys[0], keys[2]],
+                replacements: later,
+            },
+        ];
+        assert_eq!(
+            compose_healing_history(&keys[..1], &steps).unwrap()[&keys[0]],
+            Some(vec![keys[0], keys[2]])
+        );
+        let mut incomplete = steps;
+        incomplete[0].result.pop();
+        assert_eq!(
+            compose_healing_history(&keys[..1], &incomplete).unwrap()[&keys[0]],
+            None
+        );
+    }
+
+    #[test]
+    fn healing_composes_split_convergence_and_explicit_deletion() {
+        let [a, b, c, d] = edges();
+        let mut split = ReShape::new();
+        split.split_edge(a, vec![b, c]);
+        let mut merge = ReShape::new();
+        merge.replace_edge(b, d);
+        merge.replace_edge(c, d);
+        let sources = keys(&[a]);
+        let mut steps = vec![step(&[a], &[b, c], split), step(&[b, c], &[d], merge)];
+        assert_eq!(
+            compose_healing_history(&sources, &steps).unwrap()[&sources[0]],
+            Some(keys(&[d]))
+        );
+        let mut remove = ReShape::new();
+        remove.remove_edge(d);
+        steps.push(step(&[d], &[], remove));
+        steps.push(step(&[], &[], ReShape::new()));
+        assert_eq!(
+            compose_healing_history(&sources, &steps).unwrap()[&sources[0]],
+            Some(Vec::new())
+        );
+    }
+
+    #[test]
+    fn healing_never_recovers_unknown_history_from_reappearing_handles() {
+        let [a, b, c, _] = edges();
+        let sources = keys(&[a]);
+        let mut partial = ReShape::new();
+        partial.split_edge(a, vec![b, c]);
+        for first in [step(&[a], &[b], partial), step(&[a], &[b], ReShape::new())] {
+            let steps = [first, step(&[b], &[a, b], ReShape::new())];
+            assert_eq!(
+                compose_healing_history(&sources, &steps).unwrap()[&sources[0]],
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn healing_rejects_contradictory_and_cyclic_replacements() {
+        let [a, b, _, _] = edges();
+        let sources = keys(&[a]);
+        let mut contradictory = ReShape::new();
+        contradictory.replace_edge(a, b);
+        assert!(compose_healing_history(&sources, &[step(&[a], &[a, b], contradictory)]).is_err());
+        let mut cycle = ReShape::new();
+        cycle.replace_edge(a, b);
+        cycle.replace_edge(b, a);
+        assert!(compose_healing_history(&sources, &[step(&[a], &[b], cycle)]).is_err());
+    }
 }
