@@ -1,0 +1,25 @@
+name: WASM version guard
+
+on:
+  pull_request:
+  merge_group:
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    name: Changed kernel requires a new version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check version guard regressions
+        run: python3 scripts/test-wasm-version-guard.py
+      - name: Check committed package versions against the integration base
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          python3 scripts/check-wasm-version.py --base "$BASE_SHA" --head HEAD
