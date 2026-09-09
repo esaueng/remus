@@ -182,6 +182,93 @@ pub fn resize_blend(
     })
 }
 
+pub(crate) fn resize_blend_with_entity_evolution(
+    topo: &mut Topology,
+    solid: SolidId,
+    face: FaceId,
+    expected_radius: f64,
+    new_radius: f64,
+) -> Result<(ResizeBlendResult, Vec<(EntityKey, EntityKey)>), OperationsError> {
+    let band = describe_band(topo, solid, face)?;
+    if band.faces != [face]
+        || !matches!(topo.face(face)?.surface(), FaceSurface::Cylinder(_))
+        || band.supports.len() != 2
+        || band.supports.iter().any(|&support| {
+            !topo
+                .face(support)
+                .is_ok_and(|data| data.surface().is_planar())
+        })
+        || !new_radius.is_finite()
+        || new_radius <= Tolerance::new().linear
+    {
+        return Err(reconstruction(
+            "journaled resize requires one cylindrical band, two planar supports and a positive radius",
+        ));
+    }
+    let mut result = resize_blend(topo, solid, face, expected_radius, new_radius)?;
+    let mut map = result.evolution.clone();
+    if map.deleted.contains(&face.index()) {
+        // The rebuilt band's generating supports identify its predecessor only
+        // when one output has exactly this band's two construction supports.
+        let mut origins = BTreeMap::<usize, Vec<usize>>::new();
+        for (&source, outputs) in &map.generated {
+            for &output in outputs {
+                origins.entry(output).or_default().push(source);
+            }
+        }
+        let supports = canonical_faces(&band.supports);
+        let candidates: Vec<_> = origins
+            .iter()
+            .filter_map(|(&output, sources)| {
+                let mut sources = sources.clone();
+                sources.sort_unstable();
+                sources.dedup();
+                (sources == supports).then_some(output)
+            })
+            .collect();
+        let [target] = candidates.as_slice() else {
+            return Err(reconstruction(
+                "resized band has no unique construction successor",
+            ));
+        };
+        map.generated
+            .values_mut()
+            .for_each(|outputs| outputs.retain(|output| output != target));
+        map.generated.retain(|_, outputs| !outputs.is_empty());
+        map.deleted.remove(&face.index());
+        map.add_modified(face.index(), *target);
+    }
+    if !map.origin.is_exact()
+        || !map.is_complete()
+        || !map.generated.is_empty()
+        || !map.deleted.is_empty()
+    {
+        return Err(reconstruction(
+            "resized band does not have total one-to-one face history",
+        ));
+    }
+    let face_map = map
+        .modified
+        .iter()
+        .map(|(&source, outputs)| {
+            let [output] = outputs.as_slice() else {
+                return None;
+            };
+            topo.face_id_from_index(*output)
+                .map(|target| (source, target))
+        })
+        .collect::<Option<BTreeMap<_, _>>>()
+        .ok_or_else(|| reconstruction("resized band has ambiguous face history"))?;
+    let pairs = construction_boundary_pairs(topo, solid, result.solid, &face_map)?;
+    if pairs.is_empty() {
+        return Err(reconstruction(
+            "resized band has ambiguous boundary history",
+        ));
+    }
+    result.evolution = map;
+    Ok((result, pairs))
+}
+
 fn resize_blend_impl(
     topo: &mut Topology,
     solid: SolidId,
