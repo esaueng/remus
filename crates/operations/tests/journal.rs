@@ -203,6 +203,238 @@ fn failed_journaled_offset_rolls_back_topology_and_history() {
 }
 
 #[test]
+fn failed_journaled_shell_preserves_unpublished_history() {
+    assert_failed_history_is_atomic(true);
+}
+
+#[test]
+fn failed_journaled_split_preserves_unpublished_history() {
+    assert_failed_history_is_atomic(false);
+}
+
+fn assert_failed_history_is_atomic(shell: bool) {
+    use remus_math::vec::{Point3, Vec3};
+    use remus_operations::journal_ops::{shell_journaled, split_journaled};
+
+    let mut topo = Topology::new();
+    let source = make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+    let pending = topo.journal_begin("source_fixture");
+    record_barrier_over_solid(&mut topo, pending, source).unwrap();
+    let unrelated = make_box(&mut topo, 2.0, 3.0, 4.0).unwrap();
+    let before = topo.journal().snapshot();
+    let source_keys = remus_operations::journal_ops::solid_entity_keys(&topo, source).unwrap();
+    let counts = (
+        topo.num_vertices(),
+        topo.num_edges(),
+        topo.num_wires(),
+        topo.num_faces(),
+        topo.num_shells(),
+        topo.num_solids(),
+        topo.num_loops(),
+        topo.num_coedges(),
+    );
+
+    for late_refusal in [false, true] {
+        let failed = if shell {
+            shell_journaled(&mut topo, source, if late_refusal { 5.0 } else { 0.0 }, &[])
+                .map(|_| ())
+        } else {
+            split_journaled(
+                &mut topo,
+                source,
+                Point3::new(0.0, 0.0, 20.0),
+                Vec3::new(0.0, 0.0, if late_refusal { 1.0 } else { 0.0 }),
+            )
+            .map(|_| ())
+        };
+        assert!(failed.is_err());
+        let after = topo.journal().snapshot();
+        assert_eq!(after.entries, before.entries, "refusal published history");
+        assert_eq!(after.index, before.index);
+        assert_eq!(after.next_ordinal, before.next_ordinal);
+        assert!(after.next_op >= before.next_op);
+        assert_eq!(
+            (
+                topo.num_vertices(),
+                topo.num_edges(),
+                topo.num_wires(),
+                topo.num_faces(),
+                topo.num_shells(),
+                topo.num_solids(),
+                topo.num_loops(),
+                topo.num_coedges()
+            ),
+            counts
+        );
+        assert_eq!(
+            remus_operations::journal_ops::solid_entity_keys(&topo, source).unwrap(),
+            source_keys
+        );
+    }
+
+    let op = if shell {
+        shell_journaled(&mut topo, source, 1.0, &[]).unwrap().op
+    } else {
+        split_journaled(
+            &mut topo,
+            source,
+            Point3::new(0.0, 0.0, 5.0),
+            Vec3::new(0.0, 0.0, 1.0),
+        )
+        .unwrap()
+        .op
+    };
+    let entries = topo.journal().entries();
+    assert_eq!(entries.len(), before.entries.len() + 2);
+    assert_eq!(entries[entries.len() - 2].kind(), UNJOURNALED_MUTATIONS);
+    assert_eq!(entries.last().unwrap().op(), op);
+    for (solid, volume) in [(source, 1000.0), (unrelated, 24.0)] {
+        assert!(
+            (remus_operations::measure::solid_volume(&topo, solid, 0.01).unwrap() - volume).abs()
+                < 1e-6
+        );
+    }
+}
+
+#[test]
+fn invalid_scope_does_not_publish_a_mutation_gap() {
+    let mut topo = Topology::new();
+    let source = make_box(&mut topo, 2.0, 3.0, 4.0).unwrap();
+    let pending = topo.journal_begin("source_fixture");
+    record_barrier_over_solid(&mut topo, pending, source).unwrap();
+    let retired = make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+    topo.delete_solid(retired).unwrap();
+    let before = topo.journal().snapshot();
+    assert!(begin_scoped(&mut topo, "invalid_scope", &[source, retired]).is_err());
+    let after = topo.journal().snapshot();
+    assert_eq!(
+        after.entries, before.entries,
+        "invalid scope published history"
+    );
+    assert_eq!(after.index, before.index);
+    assert_eq!(after.next_ordinal, before.next_ordinal);
+    assert_eq!(after.next_op, before.next_op);
+}
+
+#[test]
+fn refused_journaled_boolean_preserves_history_and_operands() {
+    assert_boolean_or_pattern_refusal_is_atomic(false);
+}
+
+#[test]
+fn refused_journaled_pattern_preserves_history_after_copying() {
+    assert_boolean_or_pattern_refusal_is_atomic(true);
+}
+
+fn assert_boolean_or_pattern_refusal_is_atomic(pattern: bool) {
+    use remus_math::mat::Mat4;
+    use remus_math::vec::Vec3;
+    use remus_operations::journal_ops::linear_pattern_journaled;
+
+    for geometric_refusal in [true, false] {
+        let mut topo = Topology::new();
+        let source = make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+        let other = make_box(&mut topo, 2.0, 3.0, 4.0).unwrap();
+        remus_operations::transform::transform_solid(
+            &mut topo,
+            other,
+            &Mat4::translation(20.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let pending = topo.journal_begin("source_fixture");
+        record_barrier_over_solid(&mut topo, pending, source).unwrap();
+        let retired = make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+        topo.delete_solid(retired).unwrap();
+        let before = topo.journal().snapshot();
+        let source_keys = remus_operations::journal_ops::solid_entity_keys(&topo, source).unwrap();
+        let other_keys = remus_operations::journal_ops::solid_entity_keys(&topo, other).unwrap();
+        let geometry = geometry_document(&topo, &[source, other]);
+        let counts = topology_counts(&topo);
+        let slots = topo.allocated_slot_count();
+        let failed = if pattern {
+            linear_pattern_journaled(
+                &mut topo,
+                source,
+                Vec3::new(1.0, 0.0, 0.0),
+                if geometric_refusal { 5.0 } else { 0.0 },
+                2,
+            )
+            .map(|_| ())
+        } else {
+            boolean_journaled(
+                &mut topo,
+                BooleanOp::Intersect,
+                source,
+                if geometric_refusal { other } else { retired },
+            )
+            .map(|_| ())
+        };
+        assert!(failed.is_err(), "fixture must exercise a refusal");
+        let after = topo.journal().snapshot();
+        assert_eq!(after.entries, before.entries, "refusal published history");
+        assert_eq!(after.index, before.index);
+        assert_eq!(after.next_ordinal, before.next_ordinal);
+        assert!(after.next_op >= before.next_op);
+        assert_eq!(topology_counts(&topo), counts);
+        assert_eq!(geometry_document(&topo, &[source, other]), geometry);
+        assert_eq!(
+            remus_operations::journal_ops::solid_entity_keys(&topo, source).unwrap(),
+            source_keys
+        );
+        assert_eq!(
+            remus_operations::journal_ops::solid_entity_keys(&topo, other).unwrap(),
+            other_keys
+        );
+        assert!(topo.solid(retired).is_err());
+        if pattern && geometric_refusal {
+            assert!(
+                topo.allocated_slot_count() > slots,
+                "overlap refusal must follow copied topology"
+            );
+        }
+        let op = if pattern {
+            linear_pattern_journaled(&mut topo, source, Vec3::new(1.0, 0.0, 0.0), 12.0, 2)
+                .unwrap()
+                .op
+        } else {
+            boolean_journaled(&mut topo, BooleanOp::Fuse, source, other)
+                .unwrap()
+                .op
+        };
+        let entries = topo.journal().entries();
+        assert_eq!(entries.len(), before.entries.len() + 2);
+        assert_eq!(entries[entries.len() - 2].kind(), UNJOURNALED_MUTATIONS);
+        assert_eq!(entries.last().unwrap().op(), op);
+        for (solid, volume) in [(source, 1000.0), (other, 24.0)] {
+            assert!(
+                (remus_operations::measure::solid_volume(&topo, solid, 0.01).unwrap() - volume)
+                    .abs()
+                    < 1e-6
+            );
+        }
+    }
+}
+
+fn geometry_document(topo: &Topology, solids: &[remus_topology::SolidId]) -> String {
+    // STEP compares operand geometry without journal IDs, which are never reused after rollback.
+    remus_io::step::writer::write_step(topo, solids).unwrap()
+}
+
+fn topology_counts(topo: &Topology) -> [usize; 9] {
+    [
+        topo.num_vertices(),
+        topo.num_edges(),
+        topo.num_wires(),
+        topo.num_faces(),
+        topo.num_shells(),
+        topo.num_solids(),
+        topo.num_loops(),
+        topo.num_coedges(),
+        topo.num_compounds(),
+    ]
+}
+
+#[test]
 fn unjournaled_operation_surfaces_as_a_global_barrier() {
     let mut topo = Topology::new();
     let (a, b) = two_overlapping_boxes(&mut topo);

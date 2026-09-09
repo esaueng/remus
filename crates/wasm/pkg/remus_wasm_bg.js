@@ -5404,6 +5404,36 @@ export class BrepKernel {
         return ret[0] >>> 0;
     }
     /**
+     * Resize one cylindrical blend between planar supports with total history.
+     *
+     * Returns JSON `{"solid", "op"}`. Zero removes the band with explicit
+     * merges and deletions; ambiguous correspondence refuses atomically.
+     * Batch arguments use `expectedRadius` and `newRadius`.
+     * @param {number} solid
+     * @param {number} face
+     * @param {number} expected_radius
+     * @param {number} new_radius
+     * @returns {string}
+     */
+    resizeBlendJournaled(solid, face, expected_radius, new_radius) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.brepkernel_resizeBlendJournaled(this.__wbg_ptr, solid, face, expected_radius, new_radius);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
      * [`Self::resize_blend_binding`] with versioned face evolution.
      *
      * The payload uses the existing [`FaceEvolutionPayloadV1`] schema. New
@@ -7426,10 +7456,10 @@ export function __wbg___wbindgen_string_get_b0ca35b86a603356(arg0, arg1) {
 export function __wbg___wbindgen_throw_344f42d3211c4765(arg0, arg1) {
     throw new Error(getStringFromWasm0(arg0, arg1));
 }
-export function __wbg_error_f67034c0dd91a329(arg0, arg1) {
+export function __wbg_error_67ab20296d6e9e37(arg0, arg1) {
     console.error(getStringFromWasm0(arg0, arg1));
 }
-export function __wbg_log_c78a05fdbacaff1e(arg0, arg1) {
+export function __wbg_log_40af9390d44e90d0(arg0, arg1) {
     console.log(getStringFromWasm0(arg0, arg1));
 }
 export function __wbg_new_32b398fb48b6d94a() {
@@ -7446,7 +7476,7 @@ export function __wbg_set_6be42768c690e380(arg0, arg1, arg2) {
 export function __wbg_set_8a16b38e4805b298(arg0, arg1, arg2) {
     arg0[arg1 >>> 0] = arg2;
 }
-export function __wbg_warn_c9ba254f212fd59a(arg0, arg1) {
+export function __wbg_warn_e27e1e6b6230986e(arg0, arg1) {
     console.warn(getStringFromWasm0(arg0, arg1));
 }
 export function __wbindgen_cast_0000000000000001(arg0) {
