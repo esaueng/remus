@@ -2972,8 +2972,9 @@ export class BrepKernel {
     /**
      * Resize one cylindrical blend between planar supports with total history.
      *
-     * Returns JSON `{"solid", "op"}`. Removal and ambiguous correspondence
-     * refuse atomically. Batch arguments use `expectedRadius` and `newRadius`.
+     * Returns JSON `{"solid", "op"}`. Zero removes the band with explicit
+     * merges and deletions; ambiguous correspondence refuses atomically.
+     * Batch arguments use `expectedRadius` and `newRadius`.
      */
     resizeBlendJournaled(solid: number, face: number, expected_radius: number, new_radius: number): string;
     /**

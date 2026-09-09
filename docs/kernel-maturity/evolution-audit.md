@@ -35,7 +35,7 @@ that an original reference remains Bound. Test paths are repository-relative.
 | Verified fix and healing pipelines | Replacement composition; unsupported/retired mappings remain unresolved rather than stale or falsely deleted | `crates/operations/tests/journal.rs` verified healing/pipeline tests; `crates/operations/src/journal_ops.rs` healing-history unit tests | Total correspondence for every fixer, all defect classes and custom operators is not established |
 | Unify / healing sewing / inner-wire removal | Qualified merge, replacement and consumed-entity history through healing pipelines | `crates/operations/tests/journal.rs`: `verified_unification_journals_merged_faces_and_consumed_center`, `verified_sewing_preserves_all_references_through_arena_and_later_draft`, `verified_inner_wire_removal_deletes_consumed_references_and_preserves_survivors` | General standalone sewing and every upgrade variant; pipeline evidence does not certify all construction APIs |
 | Fillet / chamfer creation | Faces only, with unresolved output claims retained | `crates/operations/tests/journal.rs`: `blend_face_evolution_journals_with_unresolved_claims_intact`; WASM `chamfer_journaled_severs_edge_refs_like_any_faces_only_entry` | Edge/vertex construction maps |
-| Analytic blend-band resize | New journaled single-cylinder/planar-support path retains F/E/V through uniquely proven construction correspondence; legacy resize remains faces-only | `crates/operations/tests/journal_resize_blend.rs`; WASM `blend_resize_history_has_direct_batch_parity_and_rollback`; packaged consumer regression | Removal, multi-face regions, curved supports and ambiguous boundaries remain outside the journaled path |
+| Analytic blend-band resize | Journaled single-cylinder/planar-support path retains F/E/V on resize and records complete merges/deletions on removal; legacy resize remains faces-only | `crates/operations/tests/journal_resize_blend.rs`; WASM `blend_resize_history_has_direct_batch_parity_and_rollback`; packaged consumer regression | Multi-face regions, curved supports and ambiguous boundaries remain outside the journaled path |
 | Linear pattern | Face map over instances | `crates/operations/src/journal_ops.rs`: `linear_pattern_journaled` | Edge/vertex maps; native whole-call rollback now covered below |
 | Default V2 offset | One-to-one face construction map | `crates/operations/tests/journal.rs`: `journaled_offsets_carry_face_references_through_exact_evolution` | Boundary maps, arc-joint and self-intersection-removal provenance |
 | Shell / plane split | Face maps, including explicitly unresolved generated caps/rims | `crates/operations/tests/qualify_evolution_coverage.rs` | Edge/vertex maps; whole-call rollback repaired by this audit's regression slice |
@@ -96,7 +96,7 @@ and pattern evolution remains faces-only.
 
 `resize_blend_journaled` and the additive `resizeBlendJournaled` direct/batch
 WASM API qualify one cylindrical band between two planar supports, at positive
-radii above the kernel linear tolerance. The builder's generating support pair
+radii above the kernel linear tolerance, or zero to remove the band. The builder's generating support pair
 must identify exactly one successor band. The complete face map must then induce
 one edge/vertex incidence isomorphism, including wire cycles; ambiguous maps
 refuse rather than bind a guessed entity. Journal setup, reconstruction and
@@ -113,9 +113,19 @@ while its legacy geometry-only resize remains available. Direct/batch parity,
 reference resolution and rollback are also exercised in native WASM contracts and
 `scripts/openzcad-wasm-consumer-regressions.mjs` against packaged WASM.
 
-This is a bounded 6.5/B18 extension, not general blend-history closure. Zero-radius
-removal, multiple bands/corners, curved supports and ambiguous periodic boundaries
-need separate attribution. The wrapper adds a whole-topology snapshot; large-arena
+Zero-radius removal uses the sharp reconstruction's boundary history. Every source
+boundary must have exactly one construction disposition (successor or deletion),
+and all result boundaries must be covered with matching entity kinds. Surviving
+faces must map bijectively. Missing or ambiguous records refuse atomically.
+The single-band box fixture records deletion of the band face and two arc edges;
+merged vertices and edges retain all incoming references. Native/STEP-imported
+fixtures at scales 0.1, 1 and 10 qualify resize-then-remove, analytic box geometry,
+unchanged operands, arena remap and a subsequent draft edit. The direct/batch
+WASM and installed-package contracts also exercise removal history.
+
+This is a bounded 6.5/B18 extension, not general blend-history closure. Multiple
+bands/corners, curved supports and ambiguous periodic boundaries need separate
+attribution. The wrapper adds a whole-topology snapshot; large-arena
 performance is not qualified here.
 
 ## Hosted proof snapshot
@@ -159,8 +169,9 @@ This slice neither bypasses the failing test nor changes CI routing.
    The regressions above carry the evidence; this does not expand geometry or
    provenance coverage.
 2. **Done for one bounded case:** journaled positive-radius resizing of a single
-   cylindrical band between planar supports. Extend removal, multi-face regions
-   and curved supports only with construction boundary correspondence.
+   cylindrical band between planar supports, including zero-radius removal with
+   complete merge/deletion history. Extend multi-face regions and curved supports
+   only with construction boundary correspondence.
 3. Extend one B18 family at a time: shell/offset boundary maps, split/section
    boundaries, then sweep-family cap attribution. Preserve explicit unresolved
    records outside each qualified domain.
