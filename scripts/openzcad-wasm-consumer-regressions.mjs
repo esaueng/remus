@@ -1742,7 +1742,7 @@ export const runBlendResizeHistoryRegression = ({ BrepKernel, RemusIo }) => {
         assert.ok(Math.abs(roundtrip.volume(copy, 0.01) - kernel.volume(solid, 0.01)) < 1e-5);
         assert.equal(roundtrip.validateSolid(copy), 0);
       } finally { roundtrip.free(); }
-      for (const invalid of [0, -1, 50]) {
+      for (const invalid of [-1, 50]) {
         const geometry = io.exportStep(kernel.serializeSolids(Uint32Array.of(solid)));
         const summary = kernel.journalSummary();
         assert.throws(() => edit(kernel, solid, radius, invalid, batch));
@@ -1750,7 +1750,36 @@ export const runBlendResizeHistoryRegression = ({ BrepKernel, RemusIo }) => {
         assert.deepEqual(io.exportStep(kernel.serializeSolids(Uint32Array.of(solid))), geometry);
         checkRefs(kernel, solid, refs);
       }
+      const removed = edit(kernel, solid, radius, 0, batch);
+      const checkRemoval = (target, result) => {
+        let deleted = 0;
+        for (const [kind, query] of kinds) {
+          const found = new Set();
+          for (const item of refs.filter(item => item.kind === kind)) {
+            const resolution = JSON.parse(target.resolveRef(item.reference));
+            if (resolution.status === 'dangling') { deleted++; continue; }
+            assert.equal(resolution.status, 'bound', JSON.stringify(resolution));
+            assert.equal(resolution.provenance, 'construction');
+            assert.equal(resolution.entities.length, 1);
+            found.add(resolution.entities[0].handle);
+          }
+          assert.deepEqual(found, new Set(target[query](result)));
+        }
+        assert.equal(deleted, 3);
+        assert.equal(target.getSolidFaces(result).length, 6);
+        assert.ok(Array.from(target.getSolidFaces(result)).every(face => target.getSurfaceType(face) === 'plane'));
+        assert.ok(Math.abs(target.volume(result, 0.01) - 1000) < 1e-6);
+        assert.equal(target.validateSolid(result), 0);
+        assert.equal(JSON.parse(target.meshQuality(result, 0.01)).isWatertight, true);
+      };
+      checkRemoval(kernel, removed.solid);
+      const afterRemoval = new BrepKernel();
+      try {
+        afterRemoval.makeBox(1, 1, 1);
+        const [copy] = afterRemoval.deserializeSolids(kernel.serializeSolids(Uint32Array.of(removed.solid)));
+        checkRemoval(afterRemoval, copy);
+      } finally { afterRemoval.free(); }
     } finally { kernel.free(); io.free(); }
   }
-  console.log('ok - cylindrical blend resize history: all entity refs, direct/batch, arena/STEP, rollback');
+  console.log('ok - cylindrical blend resize history: all entity refs, direct/batch, arena/STEP, removal, rollback');
 };

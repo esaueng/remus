@@ -182,13 +182,15 @@ pub fn resize_blend(
     })
 }
 
+type BlendBoundaryHistory = Vec<(EntityKey, Option<EntityKey>)>;
+
 pub(crate) fn resize_blend_with_entity_evolution(
     topo: &mut Topology,
     solid: SolidId,
     face: FaceId,
     expected_radius: f64,
     new_radius: f64,
-) -> Result<(ResizeBlendResult, Vec<(EntityKey, EntityKey)>), OperationsError> {
+) -> Result<(ResizeBlendResult, BlendBoundaryHistory), OperationsError> {
     let band = describe_band(topo, solid, face)?;
     if band.faces != [face]
         || !matches!(topo.face(face)?.surface(), FaceSurface::Cylinder(_))
@@ -199,11 +201,15 @@ pub(crate) fn resize_blend_with_entity_evolution(
                 .is_ok_and(|data| data.surface().is_planar())
         })
         || !new_radius.is_finite()
-        || new_radius <= Tolerance::new().linear
+        || new_radius < 0.0
+        || (new_radius > 0.0 && new_radius <= Tolerance::new().linear)
     {
         return Err(reconstruction(
-            "journaled resize requires one cylindrical band, two planar supports and a positive radius",
+            "journaled resize requires one cylindrical band, two planar supports and a zero or supported positive radius",
         ));
+    }
+    if new_radius <= 0.0 {
+        return remove_blend_with_entity_evolution(topo, solid, face, expected_radius, &band);
     }
     let mut result = resize_blend(topo, solid, face, expected_radius, new_radius)?;
     let mut map = result.evolution.clone();
@@ -266,7 +272,86 @@ pub(crate) fn resize_blend_with_entity_evolution(
         ));
     }
     result.evolution = map;
-    Ok((result, pairs))
+    Ok((
+        result,
+        pairs
+            .into_iter()
+            .map(|(source, target)| (source, Some(target)))
+            .collect(),
+    ))
+}
+
+fn remove_blend_with_entity_evolution(
+    topo: &mut Topology,
+    solid: SolidId,
+    face: FaceId,
+    expected_radius: f64,
+    band: &BandDescription,
+) -> Result<(ResizeBlendResult, BlendBoundaryHistory), OperationsError> {
+    if !expected_radius.is_finite() || expected_radius <= 0.0 {
+        return Err(invalid("expected_radius must be finite and positive"));
+    }
+    if !remus_topology::explorer::solid_faces(topo, solid)?.contains(&face) {
+        return Err(invalid("blend face is not part of the input solid"));
+    }
+    if !Tolerance::new().approx_eq(expected_radius, band.radius) {
+        return Err(ResizeBlendError::RadiusMismatch {
+            expected: expected_radius,
+            actual: band.radius,
+        }
+        .into());
+    }
+    let input_volume = crate::measure::solid_volume(topo, solid, 0.05)?;
+    let sharp = remove_blend_region(topo, solid, band)?;
+    validate_exact_result(topo, sharp.solid, "journaled sharp support reconstruction")?;
+    let sharp_volume = crate::measure::solid_volume(topo, sharp.solid, 0.05)?;
+    validate_volume_progress(input_volume, sharp_volume, sharp_volume, band.radius, 0.0)?;
+    let history = sharp
+        .boundary_history
+        .ok_or_else(|| reconstruction("blend removal has no construction boundary history"))?;
+    let source_faces: HashSet<_> = remus_topology::explorer::solid_faces(topo, solid)?
+        .into_iter()
+        .filter(|source| *source != face)
+        .map(remus_topology::arena::Id::index)
+        .collect();
+    let target_faces: HashSet<_> = remus_topology::explorer::solid_faces(topo, sharp.solid)?
+        .into_iter()
+        .collect();
+    if sharp.face_map.keys().copied().collect::<HashSet<_>>() != source_faces
+        || sharp.face_map.values().copied().collect::<HashSet<_>>() != target_faces
+        || sharp.face_map.len() != target_faces.len()
+    {
+        return Err(reconstruction(
+            "blend removal has incomplete surviving face history",
+        ));
+    }
+    let boundaries = |solid| -> Result<HashSet<EntityKey>, OperationsError> {
+        Ok(crate::journal_ops::solid_entity_keys(topo, solid)?
+            .into_iter()
+            .filter(|key| key.kind != remus_topology::journal::EntityKind::Face)
+            .collect())
+    };
+    let sources: HashSet<_> = history.iter().map(|(source, _)| *source).collect();
+    let targets: HashSet<_> = history.iter().filter_map(|(_, target)| *target).collect();
+    // Partial construction records must not silently sever a surviving boundary.
+    if sources.len() != history.len()
+        || sources != boundaries(solid)?
+        || targets != boundaries(sharp.solid)?
+        || history
+            .iter()
+            .any(|(source, target)| target.is_some_and(|target| target.kind != source.kind))
+    {
+        return Err(reconstruction(
+            "blend removal has incomplete or ambiguous boundary history",
+        ));
+    }
+    Ok((
+        ResizeBlendResult {
+            solid: sharp.solid,
+            evolution: heal_evolution(&sharp.face_map, &band.faces),
+        },
+        history,
+    ))
 }
 
 fn resize_blend_impl(
