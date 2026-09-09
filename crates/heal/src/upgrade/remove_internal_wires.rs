@@ -54,8 +54,8 @@ fn remove_internal_wires_impl(
     solid_id: SolidId,
     history: Option<&mut RemovedWireHistory>,
 ) -> Result<usize, HealError> {
-    let mut edges = std::collections::HashSet::new();
-    let mut vertices = std::collections::HashSet::new();
+    let mut edges = std::collections::BTreeSet::new();
+    let mut vertices = std::collections::BTreeSet::new();
     let face_ids = solid_faces(topo, solid_id)?;
 
     let mut removed = 0;
