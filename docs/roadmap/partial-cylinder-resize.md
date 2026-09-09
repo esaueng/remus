@@ -1,7 +1,9 @@
 # Boundary-aware resizing of partial cylindrical faces
 
-Status: implemented on the review branch; native, packaged WASM, and
-full-workspace qualification pass. Merge and consumer deployment are not claimed.
+Status: merged (#308, integrated with #338; journaled cylindrical blend
+resize followed in #346). Quarter-wall resizing/refusal is qualified natively
+and in the packaged WASM. General partial walls remain open under P-Class 6.5;
+consumer deployment is tracked by the committed-package channel, not here.
 
 ## Intended behavior
 
