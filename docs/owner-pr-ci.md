@@ -117,7 +117,37 @@ runners. Untrusted PRs and merge groups remain hosted.
 Repository Policy and Secrets Scan run before any expensive checks. CI Pass
 requires both to succeed, requires the classifier outputs to be valid, and
 rejects unexpectedly skipped selected checks. Documentation-only selection
-still skips the heavy suite. Optimized coverage uses the existing `ci-test`
+still skips the heavy suite.
+
+### Tiers
+
+The classifier (`scripts/classify-ci-changes.py`) selects jobs in tiers so a
+kernel PR waits only for the checks that can fail on its diff:
+
+- **Tier 1** (`heavy`, every source change): Test (clippy, nextest, doc
+  tests, complexity guards in one job), Approximation Census, WASM without
+  optional I/O. Roughly 12 minutes of runner time.
+- **Tier 2** (`full`): Coverage, macOS, MSRV, Fuzz Targets Compile,
+  Software Rendering, Cargo Deny, Security Audit. Selected for every main
+  push, merge group and dispatch, and for a PR only while it carries the
+  `ci:full` label (label it, then re-run or push).
+- **Package build** (`wasm`): WASM Build & Validate and the advisory size
+  report. Selected with tier 2, and on any PR whose diff touches
+  `crates/wasm*`, `xtask`, `tools/vs-bench`, the WASM scripts, `Cargo.lock`,
+  `Cargo.toml`, or `rust-toolchain.toml`. A kernel-only PR does not rebuild
+  the distributable packages; the main push and the publisher's refresh PR
+  cover that.
+- **Package refresh** (`package`): a diff confined to `crates/wasm/pkg` and
+  `crates/wasm-io/pkg` (the publisher's refresh PR) runs only Repository
+  Policy, Secrets Scan and the separate WASM version guard. Its bytes were
+  built and smoke-tested by `cargo xtask wasm-build` from a main commit that
+  already passed the full suite.
+- **Docs** (`docs`) and **agent instructions** (`.claude/`) stay lightweight.
+
+CI Pass accepts a skipped job only when its tier flag is false, and rejects
+a tier-2 or package selection without a heavy selection. Every main push
+runs the full suite, and the caller cancels superseded runs only for
+`pull_request` events, so each merge commit keeps a completed verdict. Optimized coverage uses the existing `ci-test`
 profile for running and reporting, with coverage artifacts cleaned first; it retains the entire workspace,
 test assertions and the 60% line threshold. WASM optional-I/O clippy and native
 tests run as a separate required job. Package validation, optimization, tarball

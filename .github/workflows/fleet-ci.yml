@@ -4,6 +4,10 @@ on:
     outputs:
       heavy:
         value: ${{ jobs.changes.outputs.heavy }}
+      full:
+        value: ${{ jobs.changes.outputs.full }}
+      wasm:
+        value: ${{ jobs.changes.outputs.wasm }}
 permissions:
   contents: read
   pull-requests: read
@@ -17,6 +21,8 @@ jobs:
     outputs:
       heavy: ${{ steps.classify.outputs.heavy }}
       docs: ${{ steps.classify.outputs.docs }}
+      full: ${{ steps.classify.outputs.full }}
+      wasm: ${{ steps.classify.outputs.wasm }}
       mode: ${{ steps.classify.outputs.mode }}
     steps:
       - &fleet-source
@@ -178,6 +184,10 @@ jobs:
           PR_BASE: ${{ github.event.pull_request.base.sha }}
           PUSH_BASE: ${{ github.event.before }}
           MERGE_BASE: ${{ github.event.merge_group.base_sha }}
+          # The second tier (coverage, macOS, MSRV, fuzz compile, render,
+          # deny, audit, package build) runs for every main push, merge
+          # group and dispatch, and for PRs only with the `ci:full` label.
+          FORCE_FULL: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full') }}
         run: |
           base="${MERGE_BASE:-$PR_BASE}"
           if [ -z "$base" ]; then
@@ -186,9 +196,13 @@ jobs:
           if [ -z "$base" ] || [[ "$base" =~ ^0+$ ]]; then
             base=$(git rev-parse HEAD^)
           fi
+          full_flag=""
+          if [ "$FORCE_FULL" = "true" ]; then
+            full_flag="--full"
+          fi
           python3 scripts/classify-ci-changes.py \
             --base "$base" \
-            --head "$GITHUB_SHA" | tee -a "$GITHUB_OUTPUT"
+            --head "$GITHUB_SHA" $full_flag | tee -a "$GITHUB_OUTPUT"
       - name: Summarize selection
         env:
           MODE: ${{ steps.classify.outputs.mode }}
@@ -246,22 +260,6 @@ jobs:
           check "Unused dependencies" cargo machete
           check "TOML format" taplo fmt --check
           exit "$status"
-  clippy:
-    name: Clippy
-    needs: [changes, repo-policy, secrets-scan]
-    if: needs.changes.outputs.heavy == 'true'
-    runs-on: *fleet-runner
-    steps:
-      - *fleet-source
-      - *fleet-isolation
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - *fleet-rust
-      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
-        with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo clippy --all-targets --all-features -- -D warnings
   test:
     name: Test
     needs: [changes, repo-policy, secrets-scan]
@@ -281,6 +279,9 @@ jobs:
       - uses: taiki-e/install-action@742a3317eac7bd62f91cd888b4eead5e784ba833 # v2.62.30
         with:
           tool: nextest
+      # Lint first: a clippy failure is cheaper to report than a test run,
+      # and both share the restored target directory on one runner slot.
+      - run: cargo clippy --all-targets --all-features -- -D warnings
       - run: cargo nextest run --workspace --cargo-profile ci-test --test-threads "${RUST_TEST_THREADS:-num-cpus}"
       # nextest doesn't run doc tests, so run them separately
       - run: cargo test --workspace --profile ci-test --doc
@@ -312,7 +313,7 @@ jobs:
   platform-test:
     name: Test (${{ matrix.os }})
     needs: [changes, repo-policy, secrets-scan]
-    if: needs.changes.outputs.heavy == 'true'
+    if: needs.changes.outputs.full == 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -331,7 +332,7 @@ jobs:
   coverage:
     name: Coverage
     needs: [changes, repo-policy, secrets-scan]
-    if: needs.changes.outputs.heavy == 'true'
+    if: needs.changes.outputs.full == 'true'
     runs-on: *fleet-runner
     env:
       CARGO_INCREMENTAL: "0"
@@ -366,7 +367,7 @@ jobs:
   msrv:
     name: MSRV (1.88)
     needs: [changes, repo-policy, secrets-scan]
-    if: needs.changes.outputs.heavy == 'true'
+    if: needs.changes.outputs.full == 'true'
     runs-on: *fleet-runner
     steps:
       - *fleet-source
@@ -407,7 +408,7 @@ jobs:
   wasm:
     name: WASM Build & Validate
     needs: [changes, repo-policy, secrets-scan]
-    if: needs.changes.outputs.heavy == 'true'
+    if: needs.changes.outputs.wasm == 'true'
     runs-on: *fleet-runner
     steps:
       - *fleet-source
@@ -465,7 +466,7 @@ jobs:
   fuzz-check:
     name: Fuzz Targets Compile
     needs: [changes, repo-policy, secrets-scan]
-    if: needs.changes.outputs.heavy == 'true'
+    if: needs.changes.outputs.full == 'true'
     runs-on: *fleet-runner
     steps:
       - *fleet-source
@@ -481,7 +482,7 @@ jobs:
   render:
     name: Software Rendering
     needs: [changes, repo-policy, secrets-scan]
-    if: needs.changes.outputs.heavy == 'true'
+    if: needs.changes.outputs.full == 'true'
     runs-on: *fleet-runner
     env:
       WGPU_BACKEND: vulkan
@@ -506,7 +507,7 @@ jobs:
   deny:
     name: Cargo Deny
     needs: [changes, repo-policy, secrets-scan]
-    if: needs.changes.outputs.heavy == 'true'
+    if: needs.changes.outputs.full == 'true'
     runs-on: *fleet-runner
     steps:
       - *fleet-source
@@ -522,7 +523,7 @@ jobs:
   audit:
     name: Security Audit
     needs: [changes, repo-policy, secrets-scan]
-    if: needs.changes.outputs.heavy == 'true'
+    if: needs.changes.outputs.full == 'true'
     runs-on: *fleet-runner
     steps:
       - *fleet-source
@@ -589,7 +590,7 @@ jobs:
   ci-pass:
     name: CI Pass
     if: always()
-    needs: [changes, repo-policy, clippy, test, approx-census, platform-test, coverage, msrv, wasm, wasm-no-io, fuzz-check, render, deny, audit, docs, secrets-scan]
+    needs: [changes, repo-policy, test, approx-census, platform-test, coverage, msrv, wasm, wasm-no-io, fuzz-check, render, deny, audit, docs, secrets-scan]
     runs-on: *fleet-runner
     steps:
       - *fleet-source
@@ -599,15 +600,27 @@ jobs:
           NEEDS: ${{ toJSON(needs) }}
           HEAVY: ${{ needs.changes.outputs.heavy }}
           DOCS: ${{ needs.changes.outputs.docs }}
+          FULL: ${{ needs.changes.outputs.full }}
+          WASM: ${{ needs.changes.outputs.wasm }}
         run: |
-          echo "$NEEDS" | jq -e --arg heavy "$HEAVY" --arg docs "$DOCS" '
+          # A skipped job passes only when the classifier deselected its
+          # tier: docs by `docs`, the package build by `wasm`, the second
+          # tier by `full`, and the PR tier by `heavy`.
+          echo "$NEEDS" | jq -e --arg heavy "$HEAVY" --arg docs "$DOCS" --arg full "$FULL" --arg wasm "$WASM" '
             ($heavy == "true" or $heavy == "false") and
             ($docs == "true" or $docs == "false") and
+            ($full == "true" or $full == "false") and
+            ($wasm == "true" or $wasm == "false") and
+            (($heavy == "true") or ($full == "false" and $wasm == "false")) and
             (.changes.result == "success") and
             (."repo-policy".result == "success") and
             (."secrets-scan".result == "success") and
             (to_entries | all(
               .value.result == "success" or
               (.value.result == "skipped" and
-               (if .key == "docs" then $docs == "false" else $heavy == "false" end))
+               (.key as $job |
+                if $job == "docs" then $docs == "false"
+                elif $job == "wasm" then $wasm == "false"
+                elif (["platform-test", "coverage", "msrv", "fuzz-check", "render", "deny", "audit"] | index($job)) != null then $full == "false"
+                else $heavy == "false" end))
             ))' > /dev/null
