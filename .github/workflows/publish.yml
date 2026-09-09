@@ -16,6 +16,8 @@ on:
       - "!crates/wasm/pkg/**"
       - "!crates/wasm-io/pkg/**"
       - "scripts/publish-wasm-package-pr.py"
+      - "scripts/version-wasm-packages.mjs"
+      - "scripts/test-version-wasm-packages.mjs"
       - "xtask/**"
       - "Cargo.toml"
       - "LICENSE-APACHE"

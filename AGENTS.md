@@ -710,6 +710,12 @@ cargo xtask wasm-build                     # kernel + translator packages, valid
 ./scripts/check-doc-paths.sh               # Verify doc file paths still resolve
 ```
 
+The two npm packages receive one shared version during `cargo xtask wasm-build`.
+Changed distributable bytes or exports advance the patch version from the committed
+packages; identical output keeps its version. The matching WASM Cargo versions
+provide the minimum release version and can explicitly advance major/minor releases.
+The build runs `scripts/test-version-wasm-packages.mjs` before assigning the version.
+
 ### Profiling
 
 The `[profile.profiling]` block in `Cargo.toml` inherits from release with debug symbols and no LTO for fast builds with full symbol resolution.
