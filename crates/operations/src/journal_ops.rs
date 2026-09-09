@@ -628,7 +628,8 @@ pub fn replace_surface_journaled(
 /// Resize one cylindrical blend between planar supports with total entity history.
 ///
 /// Positive radii preserve uniquely proven face, edge and vertex correspondence.
-/// Removal, multi-face regions and ambiguous boundaries refuse atomically. Use
+/// Zero removes the band with explicit merges and deletions. Multi-face regions
+/// and ambiguous boundaries refuse atomically. Use
 /// [`crate::resize_blend::resize_blend`] for the broader geometry-only operation.
 ///
 /// # Errors
@@ -644,15 +645,30 @@ pub fn resize_blend_journaled(
 ) -> Result<JournaledSolidOp, OperationsError> {
     remus_topology::transaction::run_transacted(topo, |topo| {
         let pending = begin_scoped(topo, "resize_blend", &[solid])?;
-        let (result, pairs) = crate::resize_blend::resize_blend_with_entity_evolution(
+        let (result, history) = crate::resize_blend::resize_blend_with_entity_evolution(
             topo,
             solid,
             face,
             expected_radius,
             new_radius,
         )?;
-        let op =
-            record_entity_evolution(topo, pending, &result.evolution, &[result.solid], &pairs)?;
+        let mut pairs = Vec::new();
+        let mut deleted = Vec::new();
+        for (source, target) in history {
+            match target {
+                Some(target) => pairs.push((source, target)),
+                None => deleted.push((source, EventDraft::Deleted)),
+            }
+        }
+        deleted.sort_unstable_by_key(|(source, _)| *source);
+        let op = record_entity_evolution_with_outputs(
+            topo,
+            pending,
+            &result.evolution,
+            &[result.solid],
+            &pairs,
+            &deleted,
+        )?;
         Ok(JournaledSolidOp {
             solid: result.solid,
             op,
