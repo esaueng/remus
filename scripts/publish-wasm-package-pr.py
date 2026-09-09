@@ -22,9 +22,8 @@ def publish():
         return
     if any(not p.startswith(('crates/wasm/pkg/', 'crates/wasm-io/pkg/')) for p in paths):
         raise RuntimeError('Only generated package files may be published')
-    version = json.loads(Path('crates/wasm/pkg/package.json').read_text())['version']
-    if not re.fullmatch(r'\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?', version):
-        raise RuntimeError('Invalid package version')
+    run('python3', str(Path(__file__).with_name('check-wasm-version.py')), '--base', source)
+    version = json.loads(run('git', 'show', ':crates/wasm/pkg/package.json'))['version']
     branch = 'codex/wasm-refresh-' + source
     tree = run('git', 'write-tree')
     auth = ['git', '-c', 'credential.helper=!gh auth git-credential']
