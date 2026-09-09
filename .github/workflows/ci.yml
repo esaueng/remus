@@ -9,7 +9,10 @@ on:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # Supersede only PR runs. Every main push keeps its run so each merge
+  # commit gets a completed verdict instead of being cancelled by the next
+  # merge in a burst.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -34,7 +37,7 @@ jobs:
 
   wasm-size:
     needs: checks
-    if: github.event_name == 'pull_request' && needs.checks.outputs.heavy == 'true'
+    if: github.event_name == 'pull_request' && needs.checks.outputs.wasm == 'true'
     uses: esaueng/remus/.github/workflows/fleet-wasm-size.yml@6da8b6a0777bd3e4e9248397626dce0636dce4c7
     permissions:
       contents: read
