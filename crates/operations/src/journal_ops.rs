@@ -792,7 +792,7 @@ fn compose_healing_history(
             let mut next = Vec::new();
             let mut known = true;
             for source in previous {
-                if !step.sources.contains(source) {
+                if step.sources.binary_search(source).is_err() {
                     known = false;
                     break;
                 }
@@ -1021,6 +1021,46 @@ mod healing_history_tests {
         edge::{Edge, EdgeCurve},
         vertex::Vertex,
     };
+
+    #[test]
+    fn healing_unknown_or_retired_targets_sever_source_references() {
+        use remus_topology::journal::EntityKind;
+        use remus_topology::naming::{PersistentRef, Resolution, resolve};
+
+        for retired_target in [false, true] {
+            let mut topo = Topology::new();
+            let source = crate::primitives::make_box(&mut topo, 2.0, 3.0, 4.0).unwrap();
+            let result = crate::primitives::make_box(&mut topo, 2.0, 3.0, 4.0).unwrap();
+            let sources = solid_entity_keys(&topo, source).unwrap();
+            let pending = begin_scoped(&mut topo, "anchor", &[source]).unwrap();
+            let mut draft = EvolutionDraft::construction();
+            for &key in &sources {
+                draft.push(
+                    key,
+                    EventDraft::Generated {
+                        sources: Vec::new(),
+                    },
+                );
+            }
+            let anchor = topo.journal_record_evolution(pending, draft).unwrap();
+            let replacements = sources
+                .iter()
+                .map(|&key| (key, retired_target.then_some(vec![key])))
+                .collect();
+            let pending = begin_scoped(&mut topo, "heal_unknown", &[source]).unwrap();
+            let op =
+                record_healing_replacements(&mut topo, pending, &sources, result, &replacements)
+                    .unwrap();
+            for kind in [EntityKind::Face, EntityKind::Edge, EntityKind::Vertex] {
+                for index in 0..sources.iter().filter(|key| key.kind == kind).count() {
+                    assert!(matches!(
+                        resolve(&topo, &PersistentRef::operation_output(anchor, kind, index)),
+                        Resolution::UnresolvedAcrossOperation { op: actual, .. } if actual == op
+                    ));
+                }
+            }
+        }
+    }
 
     fn edges() -> [EdgeId; 4] {
         let mut topo = Topology::new();
