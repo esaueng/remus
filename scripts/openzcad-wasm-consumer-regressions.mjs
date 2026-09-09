@@ -262,6 +262,7 @@ export const runOpenZcadConsumerRegressions = (exports) => {
   runDirectEditHistoryRegression(exports);
   runSurfaceReplacementHistoryRegression(exports);
   runCylindricalRadiusHistoryRegression(exports);
+  runBlendResizeHistoryRegression(exports);
   runDraftHistoryRegression(exports);
   runDefeatureHistoryRegression(exports);
   runHealingHistoryRegression(exports);
@@ -1683,4 +1684,73 @@ export const runSplitVertexRefusalRegression = ({ BrepKernel }) => {
       }
     } finally { kernel.free(); }
   }
+};
+
+export const runBlendResizeHistoryRegression = ({ BrepKernel, RemusIo }) => {
+  const kinds = [['face', 'getSolidFaces'], ['edge', 'getSolidEdges'], ['vertex', 'getSolidVertices']];
+  const band = (kernel, solid) => Array.from(kernel.getSolidFaces(solid)).find(face => kernel.getSurfaceType(face) === 'cylinder');
+  const edit = (kernel, solid, expectedRadius, newRadius, batch) => {
+    const face = band(kernel, solid);
+    if (!batch) return JSON.parse(kernel.resizeBlendJournaled(solid, face, expectedRadius, newRadius));
+    const [response] = JSON.parse(kernel.executeBatchV2(JSON.stringify([{ op: 'resizeBlendJournaled', args: { solid, face, expectedRadius, newRadius } }])));
+    assert.equal(response.error, undefined, JSON.stringify(response));
+    return response.ok;
+  };
+  const checkRefs = (kernel, solid, refs) => {
+    for (const [kind, query] of kinds) {
+      const found = new Set();
+      for (const item of refs.filter(item => item.kind === kind)) {
+        const result = JSON.parse(kernel.resolveRef(item.reference));
+        assert.equal(result.status, 'bound', JSON.stringify(result));
+        assert.equal(result.provenance, 'construction');
+        assert.equal(result.entities.length, 1);
+        assert.equal(result.entities[0].kind, kind);
+        assert.ok(!found.has(result.entities[0].handle));
+        found.add(result.entities[0].handle);
+      }
+      assert.deepEqual(found, new Set(kernel[query](solid)));
+    }
+  };
+  for (const batch of [false, true]) {
+    const kernel = new BrepKernel(), io = new RemusIo();
+    try {
+      const box = kernel.makeBox(10, 10, 10);
+      const fillet = kernel.filletWithEvolution(box, Uint32Array.of(kernel.getSolidEdges(box)[0]), 1);
+      const first = edit(kernel, fillet.result.solid, 1, 1, batch);
+      const refs = kinds.flatMap(([kind, query]) => Array.from(kernel[query](first.solid), (_, index) => ({ kind, reference: kernel.makeOperationOutputRef(first.op, kind, index) })));
+      let solid = first.solid, radius = 1;
+      for (const next of [2, 0.75]) {
+        ({ solid } = edit(kernel, solid, radius, next, batch));
+        radius = next;
+        checkRefs(kernel, solid, refs);
+        assert.equal(kernel.validateSolid(solid), 0);
+        assert.equal(kernel.getSolidFaces(solid).length, 7);
+        const expected = 1000 - 10 * radius ** 2 * (1 - Math.PI / 4);
+        assert.ok(Math.abs(kernel.volume(solid, 0.01) - expected) < expected * 1e-6);
+        assert.equal(JSON.parse(kernel.meshQuality(solid, 0.01)).isWatertight, true);
+      }
+      const restored = new BrepKernel();
+      try {
+        restored.makeBox(1, 1, 1);
+        const [copy] = restored.deserializeSolids(kernel.serializeSolids(Uint32Array.of(solid)));
+        const next = edit(restored, copy, radius, 1.25, batch);
+        checkRefs(restored, next.solid, refs);
+      } finally { restored.free(); }
+      const roundtrip = new BrepKernel();
+      try {
+        const [copy] = roundtrip.deserializeSolids(io.importStep(io.exportStep(kernel.serializeSolids(Uint32Array.of(solid)))));
+        assert.ok(Math.abs(roundtrip.volume(copy, 0.01) - kernel.volume(solid, 0.01)) < 1e-5);
+        assert.equal(roundtrip.validateSolid(copy), 0);
+      } finally { roundtrip.free(); }
+      for (const invalid of [0, -1, 50]) {
+        const geometry = io.exportStep(kernel.serializeSolids(Uint32Array.of(solid)));
+        const summary = kernel.journalSummary();
+        assert.throws(() => edit(kernel, solid, radius, invalid, batch));
+        assert.equal(kernel.journalSummary(), summary);
+        assert.deepEqual(io.exportStep(kernel.serializeSolids(Uint32Array.of(solid))), geometry);
+        checkRefs(kernel, solid, refs);
+      }
+    } finally { kernel.free(); io.free(); }
+  }
+  console.log('ok - cylindrical blend resize history: all entity refs, direct/batch, arena/STEP, rollback');
 };
