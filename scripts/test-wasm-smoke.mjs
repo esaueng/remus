@@ -19,6 +19,7 @@ import {
   runDirectEditHistoryRegression,
   runSurfaceReplacementHistoryRegression,
   runCylindricalRadiusHistoryRegression,
+  runBlendResizeHistoryRegression,
   runDraftHistoryRegression,
   runDefeatureHistoryRegression,
   runHealingHistoryRegression,
@@ -765,6 +766,7 @@ runPartialCylinderResizeRegression({ BrepKernel, RemusIo });
 runDirectEditHistoryRegression({ BrepKernel, RemusIo });
 runSurfaceReplacementHistoryRegression({ BrepKernel, RemusIo });
 runCylindricalRadiusHistoryRegression({ BrepKernel, RemusIo });
+runBlendResizeHistoryRegression({ BrepKernel, RemusIo });
 runDraftHistoryRegression({ BrepKernel, RemusIo });
 runDefeatureHistoryRegression({ BrepKernel, RemusIo });
 runHealingHistoryRegression({ BrepKernel, RemusIo });
