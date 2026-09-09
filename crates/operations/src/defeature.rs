@@ -1204,6 +1204,96 @@ mod tests {
     use remus_topology::vertex::Vertex;
 
     #[test]
+    fn stale_assembly_boundary_maps_leave_references_unresolved() {
+        use crate::journal_ops::{begin_scoped, solid_entity_keys};
+        use remus_topology::explorer::{solid_edges, solid_faces, solid_vertices};
+        use remus_topology::journal::{EntityKind, EventDraft, EvolutionDraft};
+        use remus_topology::naming::{PersistentRef, Resolution, resolve};
+
+        for stale_vertices in [false, true] {
+            let mut topo = Topology::new();
+            let source = make_box(&mut topo, 2.0, 3.0, 4.0).unwrap();
+            let result = make_box(&mut topo, 2.0, 3.0, 4.0).unwrap();
+            let vertices = solid_vertices(&topo, source).unwrap();
+            let result_vertices = solid_vertices(&topo, result).unwrap();
+            let edges = solid_edges(&topo, source).unwrap();
+            let mapping: BTreeMap<_, _> = vertices
+                .iter()
+                .copied()
+                .zip(result_vertices.iter().copied())
+                .collect();
+            let mut boundary_edges = HashMap::new();
+            for &id in &edges {
+                let edge = topo.edge(id).unwrap();
+                let a = mapping[&edge.start()].index();
+                let b = mapping[&edge.end()].index();
+                // Refinement retired the captured edge while keeping its endpoint pair.
+                boundary_edges.insert((a.min(b), a.max(b)), id);
+            }
+            let assembly = crate::boolean::assembly::MixedAssemblyResult {
+                solid: result,
+                faces_by_spec: Vec::new(),
+                vertices_by_spec: vec![vec![
+                    vertices
+                        .iter()
+                        .map(|v| Some(if stale_vertices { *v } else { mapping[v] }))
+                        .collect(),
+                ]],
+                boundary_edges,
+            };
+            let groups = vec![vec![vertices.iter().map(|&v| vec![v]).collect()]];
+            let history = extended_boundary_history(
+                &topo,
+                &solid_faces(&topo, source).unwrap(),
+                &groups,
+                &edges.iter().copied().collect(),
+                &assembly,
+            )
+            .unwrap();
+            assert!(history.iter().all(|(key, _)| key.kind != EntityKind::Edge));
+            if stale_vertices {
+                assert!(history.is_empty());
+            }
+
+            let keys = solid_entity_keys(&topo, source).unwrap();
+            let pending = begin_scoped(&mut topo, "anchor", &[source]).unwrap();
+            let mut draft = EvolutionDraft::construction();
+            for &key in &keys {
+                draft.push(
+                    key,
+                    EventDraft::Generated {
+                        sources: Vec::new(),
+                    },
+                );
+            }
+            let anchor = topo.journal_record_evolution(pending, draft).unwrap();
+            let pending = begin_scoped(&mut topo, "defeature", &[source]).unwrap();
+            let mut draft = EvolutionDraft::construction();
+            draft.add_scope(solid_entity_keys(&topo, result).unwrap());
+            for (source, target) in history {
+                match target {
+                    Some(target) => draft.push(target, EventDraft::Modified { from: source }),
+                    None => draft.push(source, EventDraft::Deleted),
+                }
+            }
+            let op = topo.journal_record_evolution(pending, draft).unwrap();
+            for kind in [EntityKind::Edge, EntityKind::Vertex] {
+                if kind == EntityKind::Vertex && !stale_vertices {
+                    continue;
+                }
+                for index in 0..keys.iter().filter(|key| key.kind == kind).count() {
+                    assert!(matches!(
+                        resolve(&topo, &PersistentRef::operation_output(anchor, kind, index)),
+                        Resolution::UnresolvedAcrossOperation { op: actual, .. } if actual == op
+                    ));
+                }
+            }
+            assert!(topo.edge(edges[0]).is_ok());
+            assert!(!solid_edges(&topo, result).unwrap().contains(&edges[0]));
+        }
+    }
+
+    #[test]
     fn defeature_refuses_to_leave_an_open_shell() {
         let mut topo = Topology::new();
         let solid = make_box(&mut topo, 2.0, 2.0, 2.0).unwrap();
