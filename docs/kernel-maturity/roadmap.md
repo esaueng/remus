@@ -87,8 +87,9 @@ remaining band and anisotropic precision audit. 2.7 now has a merged bounded
 qualify general exact tangency. 6.5 has qualified direct-edit and healing
 history, but analytic blend resize, ambiguous boundaries, and later direct-edit
 geometry still prevent full closure. B18 also retains faces-only and unjournaled
-families. Native journaled shell/split refusal now restores unpublished history;
-see the audit's reproducing regressions.
+families. Native journaled shell/split and boolean/pattern refusals now restore
+unpublished history; scope preflight validates operands before publishing a
+gap. See the audit's reproducing regressions.
 
 Corpus and fuzz passes are on older source. The mutation report has nine
 survivors requiring current-source triage; latest-baseline CI was pending.
