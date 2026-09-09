@@ -649,7 +649,7 @@ pub fn draft_journaled(
                 topo.face_id_from_index(*output)
                     .map(|target| (source, target))
             })
-            .collect::<Option<std::collections::HashMap<_, _>>>();
+            .collect::<Option<std::collections::BTreeMap<_, _>>>();
         let pairs = match face_map {
             Some(face_map) if map.origin.is_exact() && map.is_complete() => {
                 crate::resize_blend::construction_boundary_pairs(topo, solid, result, &face_map)?
