@@ -104,7 +104,7 @@ pub fn split_self_intersecting_inner_wires(
 /// the wire has no pinches (no work needed); `Some(cycles)` otherwise,
 /// where each `cycles` entry is a simple sub-cycle (a `Vec<OrientedEdge>`
 /// suitable for `Wire::new(_, closed = true)`).
-fn try_split_wire(
+pub(super) fn try_split_wire(
     topo: &Topology,
     wid: WireId,
 ) -> Result<Option<Vec<Vec<OrientedEdge>>>, HealError> {

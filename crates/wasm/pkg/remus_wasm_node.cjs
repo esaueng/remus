@@ -1197,6 +1197,36 @@ class BrepKernel {
         return ret[0] >>> 0;
     }
     /**
+     * Remove selected feature faces with construction history.
+     *
+     * Returns JSON `{"solid", "op"}`. Capping retains copied boundary identities
+     * and records consumed boundaries as deleted. Unqualified reconstructed
+     * boundaries remain unresolved. Batch uses `solid` and `faces`.
+     * @param {number} solid
+     * @param {Uint32Array} faces
+     * @returns {string}
+     */
+    defeatureJournaled(solid, faces) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passArray32ToWasm0(faces, wasm.__wbindgen_malloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.brepkernel_defeatureJournaled(this.__wbg_ptr, solid, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
      * Retire a solid handle and its unshared topology subtree.
      *
      * The handle becomes permanently invalid. This does not compact the
@@ -1439,6 +1469,45 @@ class BrepKernel {
             throw takeFromExternrefTable0(ret[1]);
         }
         return ret[0] >>> 0;
+    }
+    /**
+     * Draft selected planar faces with construction history.
+     *
+     * `pull_direction` and `neutral_point` each have three components.
+     * The angle is in degrees for both direct and batch calls. Batch uses
+     * `faces`, `pullDirection`, `neutralPoint`, and `angleDegrees`.
+     * Returns JSON `{"solid", "op"}`. Boundary history requires a unique
+     * complete incidence correspondence; ambiguous boundaries stay unresolved.
+     * @param {number} solid
+     * @param {Uint32Array} faces
+     * @param {Float64Array} pull_direction
+     * @param {Float64Array} neutral_point
+     * @param {number} angle_degrees
+     * @returns {string}
+     */
+    draftJournaled(solid, faces, pull_direction, neutral_point, angle_degrees) {
+        let deferred5_0;
+        let deferred5_1;
+        try {
+            const ptr0 = passArray32ToWasm0(faces, wasm.__wbindgen_malloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passArrayF64ToWasm0(pull_direction, wasm.__wbindgen_malloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ptr2 = passArrayF64ToWasm0(neutral_point, wasm.__wbindgen_malloc);
+            const len2 = WASM_VECTOR_LEN;
+            const ret = wasm.brepkernel_draftJournaled(this.__wbg_ptr, solid, ptr0, len0, ptr1, len1, ptr2, len2, angle_degrees);
+            var ptr4 = ret[0];
+            var len4 = ret[1];
+            if (ret[3]) {
+                ptr4 = 0; len4 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred5_0 = ptr4;
+            deferred5_1 = len4;
+            return getStringFromWasm0(ptr4, len4);
+        } finally {
+            wasm.__wbindgen_free(deferred5_0, deferred5_1, 1);
+        }
     }
     /**
      * Compute the length of an edge.
@@ -1953,6 +2022,34 @@ class BrepKernel {
             throw takeFromExternrefTable0(ret[1]);
         }
         return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Run configured verified healing with entity history.
+     * Returns the `fixShapeWithConfig` report plus `op`. Untracked replacements
+     * remain unresolved. Batch uses `solid` and the JSON string `configJson`.
+     * @param {number} solid
+     * @param {string} config_json
+     * @returns {string}
+     */
+    fixShapeWithConfigJournaled(solid, config_json) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(config_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.brepkernel_fixShapeWithConfigJournaled(this.__wbg_ptr, solid, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
     }
     /**
      * Reconstruct a solid from a BREP string.
@@ -4590,6 +4687,39 @@ class BrepKernel {
         return ret[0] >>> 0;
     }
     /**
+     * Move faces with construction history.
+     *
+     * Planar re-limitation and coaxial bore moves include edge and vertex
+     * history. Blend moves retain copy-derived history or a complete, unique
+     * boundary correspondence anchored on construction face identities.
+     * Ambiguous reconstructed boundaries retain faces-only history.
+     * Returns JSON `{"solid", "op"}`.
+     * @param {number} solid
+     * @param {Uint32Array} faces
+     * @param {number} distance
+     * @returns {string}
+     */
+    moveFacesJournaled(solid, faces, distance) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passArray32ToWasm0(faces, wasm.__wbindgen_malloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.brepkernel_moveFacesJournaled(this.__wbg_ptr, solid, ptr0, len0, distance);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
      * Sweep through multiple section profiles along a spine, lofting the
      * rotation-minimizing-frame-placed profiles.
      *
@@ -5215,6 +5345,40 @@ class BrepKernel {
         return takeFromExternrefTable0(ret[0]);
     }
     /**
+     * Replace a support surface with exact face, edge, and vertex history.
+     *
+     * `replacement` is JSON: `{type:"plane", normal:[x,y,z], d}` or
+     * `{type:"cylinder", origin:[x,y,z], axis:[x,y,z], radius}`. Plane
+     * coefficients represent `normal dot point = d`; cylinder replacements
+     * retain the source parameter reference direction. Unknown fields refuse.
+     * Returns JSON `{"solid", "op"}`. Batch calls pass the replacement object
+     * directly as `args.replacement`.
+     * @param {number} solid
+     * @param {number} face
+     * @param {string} replacement
+     * @returns {string}
+     */
+    replaceSurfaceJournaled(solid, face, replacement) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(replacement, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.brepkernel_replaceSurfaceJournaled(this.__wbg_ptr, solid, face, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
      * Resize or remove an exact constant-radius analytic blend band.
      *
      * `face` is only a seed: the kernel re-derives the complete band, its
@@ -5286,6 +5450,36 @@ class BrepKernel {
             throw takeFromExternrefTable0(ret[1]);
         }
         return ret[0] >>> 0;
+    }
+    /**
+     * Resize a cylindrical wall and record its construction history.
+     *
+     * Returns JSON `{"solid", "op"}`. Qualified bore and quarter-wall
+     * replacements retain all boundary identities. Boss edits track cap
+     * subdivisions and their removal; ambiguous boundaries remain unresolved.
+     * Batch calls pass the new radius as `args.radius`.
+     * @param {number} solid
+     * @param {number} face
+     * @param {number} radius
+     * @returns {string}
+     */
+    resizeCylindricalFaceJournaled(solid, face, radius) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.brepkernel_resizeCylindricalFaceJournaled(this.__wbg_ptr, solid, face, radius);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
     }
     /**
      * Resolves "the `index`-th `kind` output of journal operation `op`"
@@ -5472,6 +5666,34 @@ class BrepKernel {
             throw takeFromExternrefTable0(ret[1]);
         }
         return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Run verified healing steps with composed entity history.
+     * Returns the `runHealPipeline` report plus `op`. Topology and journal
+     * changes roll back together on failure. Batch uses `solid` and `steps`.
+     * @param {number} solid
+     * @param {string[]} steps
+     * @returns {string}
+     */
+    runHealPipelineJournaled(solid, steps) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passArrayJsValueToWasm0(steps, wasm.__wbindgen_malloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.brepkernel_runHealPipelineJournaled(this.__wbg_ptr, solid, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
     }
     /**
      * Span-true polyline of one edge at the given chordal deflection.

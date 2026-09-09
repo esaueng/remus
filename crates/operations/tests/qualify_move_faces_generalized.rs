@@ -593,3 +593,113 @@ fn inward_bore_move_reuses_replace_surface_and_reports_total_evolution() {
         "replacement must write every pcurve"
     );
 }
+
+fn anchor_all_entities(
+    topo: &mut Topology,
+    solid: SolidId,
+) -> Vec<(
+    remus_topology::journal::EntityKey,
+    remus_topology::naming::PersistentRef,
+)> {
+    use remus_operations::journal_ops::solid_entity_keys;
+    use remus_topology::journal::{EntityKind, EventDraft, EvolutionDraft};
+    use remus_topology::naming::{PersistentRef, Resolution, resolve};
+    let pending = topo.journal_begin("blend_history_fixture");
+    let keys = solid_entity_keys(topo, solid).unwrap();
+    let mut draft = EvolutionDraft::construction();
+    draft.add_scope(keys.iter().copied());
+    for key in &keys {
+        draft.push(
+            *key,
+            EventDraft::Generated {
+                sources: Vec::new(),
+            },
+        );
+    }
+    let op = topo.journal_record_evolution(pending, draft).unwrap();
+    let mut references = Vec::new();
+    for kind in [EntityKind::Face, EntityKind::Edge, EntityKind::Vertex] {
+        for index in 0..keys.iter().filter(|key| key.kind == kind).count() {
+            let reference = PersistentRef::operation_output(op, kind, index);
+            let Resolution::Bound { entity, .. } = resolve(topo, &reference) else {
+                panic!("fixture reference must bind");
+            };
+            references.push((entity, reference));
+        }
+    }
+    references
+}
+
+fn assert_reference_incidence(
+    topo: &Topology,
+    result: SolidId,
+    references: &[(
+        remus_topology::journal::EntityKey,
+        remus_topology::naming::PersistentRef,
+    )],
+) {
+    use remus_operations::journal_ops::solid_entity_keys;
+    use remus_topology::journal::{EntityKey, EntityKind};
+    use remus_topology::naming::{Provenance, Resolution, resolve};
+    use std::collections::{BTreeMap, BTreeSet};
+    let mapped: BTreeMap<_, _> = references
+        .iter()
+        .map(|(source, reference)| {
+            let resolution = resolve(topo, reference);
+            let Resolution::Bound { entity, provenance } = resolution else {
+                panic!("blend move lost {reference:?}: {resolution:?}");
+            };
+            assert_eq!(provenance, Provenance::Construction);
+            (*source, entity)
+        })
+        .collect();
+    assert_eq!(mapped.len(), references.len());
+    let live: BTreeSet<_> = solid_entity_keys(topo, result)
+        .unwrap()
+        .into_iter()
+        .collect();
+    assert_eq!(mapped.values().copied().collect::<BTreeSet<_>>(), live);
+    for (source, target) in &mapped {
+        if source.kind != EntityKind::Edge {
+            continue;
+        }
+        let before = topo
+            .edge(topo.edge_id_from_index(source.index).unwrap())
+            .unwrap();
+        let after = topo
+            .edge(topo.edge_id_from_index(target.index).unwrap())
+            .unwrap();
+        assert_eq!(
+            BTreeSet::from([after.start().index(), after.end().index()]),
+            BTreeSet::from([
+                mapped[&EntityKey::vertex(before.start().index())].index,
+                mapped[&EntityKey::vertex(before.end().index())].index,
+            ]),
+        );
+    }
+}
+
+#[test]
+fn blended_cap_moves_preserve_every_entity_reference_and_incidence() {
+    let mut topo = Topology::new();
+    let (source, _) = boss_on_plate(&mut topo, 1.0, Vec3::new(0.0, 0.0, 0.0));
+    let references = anchor_all_entities(&mut topo, source);
+    let source_volume = solid_volume(&topo, source, 0.001).unwrap();
+    let area = 16.0 * 16.0 - std::f64::consts::PI * 3.0 * 3.0;
+    let mut current = source;
+    let mut displacement = 0.0;
+    for distance in [2.0, -1.0] {
+        let cap = top_holed_face(&topo, current);
+        let moved = move_faces_journaled(&mut topo, current, &[cap], distance).unwrap();
+        displacement += distance;
+        assert!(validate_solid(&topo, moved.solid).unwrap().is_valid());
+        assert_close(
+            solid_volume(&topo, moved.solid, 0.001).unwrap(),
+            source_volume + displacement * area,
+            3e-4,
+            "composed blend-move volume",
+        );
+        assert_reference_incidence(&topo, moved.solid, &references);
+        current = moved.solid;
+    }
+}

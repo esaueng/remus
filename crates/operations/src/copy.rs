@@ -173,6 +173,22 @@ pub(crate) fn copy_solid_between_with_face_map(
     destination: &mut Topology,
     solid_id: SolidId,
 ) -> Result<(SolidId, HashMap<usize, FaceId>), crate::OperationsError> {
+    let copied = copy_solid_between_with_entity_map(source, destination, solid_id)?;
+    Ok((copied.solid, copied.face_map))
+}
+
+pub(crate) struct CopiedSolidEntities {
+    pub solid: SolidId,
+    pub face_map: HashMap<usize, FaceId>,
+    pub edge_map: HashMap<usize, remus_topology::EdgeId>,
+    pub vertex_map: HashMap<usize, VertexId>,
+}
+
+pub(crate) fn copy_solid_between_with_entity_map(
+    source: &Topology,
+    destination: &mut Topology,
+    solid_id: SolidId,
+) -> Result<CopiedSolidEntities, crate::OperationsError> {
     let solid = source.solid(solid_id)?;
     let solid_attributes = source.attributes().solid(solid_id).cloned();
     let shell_ids: Vec<_> = std::iter::once(solid.outer_shell())
@@ -328,7 +344,12 @@ pub(crate) fn copy_solid_between_with_face_map(
     if let Some(attributes) = solid_attributes {
         destination.set_solid_attributes(copied, attributes)?;
     }
-    Ok((copied, face_map))
+    Ok(CopiedSolidEntities {
+        solid: copied,
+        face_map,
+        edge_map,
+        vertex_map,
+    })
 }
 
 /// Create a deep copy of a solid and all its topology.
@@ -364,6 +385,22 @@ pub fn copy_solid_with_face_map(
     topo: &mut Topology,
     solid_id: SolidId,
 ) -> Result<(SolidId, HashMap<usize, usize>), crate::OperationsError> {
+    let copied = copy_solid_with_entity_map(topo, solid_id)?;
+    Ok((
+        copied.solid,
+        copied
+            .face_map
+            .into_iter()
+            .map(|(source, face)| (source, face.index()))
+            .collect(),
+    ))
+}
+
+#[allow(clippy::too_many_lines)]
+pub(crate) fn copy_solid_with_entity_map(
+    topo: &mut Topology,
+    solid_id: SolidId,
+) -> Result<CopiedSolidEntities, crate::OperationsError> {
     let solid = topo.solid(solid_id)?;
     let solid_attributes = topo.attributes().solid(solid_id).cloned();
     let outer_shell_id = solid.outer_shell();
@@ -505,7 +542,6 @@ pub fn copy_solid_with_face_map(
     }
 
     let mut new_shell_ids = Vec::new();
-    let mut face_map: HashMap<usize, usize> = HashMap::new();
     let mut copied_face_ids: HashMap<usize, FaceId> = HashMap::new();
     for ssnap in &shell_snaps {
         let mut new_face_ids = Vec::new();
@@ -525,7 +561,6 @@ pub fn copy_solid_with_face_map(
             if let Some(attributes) = fsnap.attributes.clone() {
                 topo.set_face_attributes(new_fid, attributes)?;
             }
-            face_map.insert(fsnap.old_index, new_fid.index());
             copied_face_ids.insert(fsnap.old_index, new_fid);
             new_face_ids.push(new_fid);
         }
@@ -545,7 +580,12 @@ pub fn copy_solid_with_face_map(
     if let Some(attributes) = solid_attributes {
         topo.set_solid_attributes(new_solid, attributes)?;
     }
-    Ok((new_solid, face_map))
+    Ok(CopiedSolidEntities {
+        solid: new_solid,
+        face_map: copied_face_ids,
+        edge_map,
+        vertex_map,
+    })
 }
 
 /// Create a deep copy of a solid with a simultaneous affine transform.

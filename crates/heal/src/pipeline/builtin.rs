@@ -49,6 +49,15 @@ impl HealOperator for FixShapeOp {
         let (new_solid, result) = crate::fix::fix_shape(topo, solid_id, &config)?;
         Ok((new_solid, result))
     }
+
+    fn execute_with_history(
+        &self,
+        topo: &mut Topology,
+        solid_id: SolidId,
+        _ctx: &mut HealContext,
+    ) -> Result<(SolidId, FixResult, crate::reshape::ReShape), HealError> {
+        crate::fix::fix_shape_with_history(topo, solid_id, &FixConfig::default(), None)
+    }
 }
 
 /// Merge adjacent faces sharing the same surface.
@@ -80,6 +89,55 @@ impl HealOperator for UnifySameDomainOp {
             unify.edges_merged,
         ));
         Ok((new_solid, result))
+    }
+
+    fn execute_with_history(
+        &self,
+        topo: &mut Topology,
+        solid_id: SolidId,
+        _ctx: &mut HealContext,
+    ) -> Result<(SolidId, FixResult, crate::reshape::ReShape), HealError> {
+        let (solid, unify, history) =
+            crate::upgrade::unify_same_domain::unify_same_domain_with_history(
+                topo,
+                solid_id,
+                &crate::upgrade::unify_same_domain::UnifyOptions::default(),
+            )?;
+        let mut replacements = crate::reshape::ReShape::new();
+        for (sources, targets) in history.face_groups {
+            // A disconnected group needs per-region contributors before it can
+            // assert which output inherited each source face.
+            if let [target] = targets.as_slice() {
+                for source in sources {
+                    replacements.replace_face(source, *target);
+                }
+            }
+        }
+        for (source, targets) in history.face_regions {
+            replacements.split_face(source, targets);
+        }
+        for (sources, target) in history.edge_runs {
+            for source in sources {
+                replacements.replace_edge(source, target);
+            }
+        }
+        for edge in history.removed_edges {
+            replacements.remove_edge(edge);
+        }
+        for vertex in history.removed_vertices {
+            replacements.remove_vertex(vertex);
+        }
+        let mut report = FixResult::changed(
+            crate::status::Status::DONE1,
+            crate::fix::RepairActionKind::SameDomainFaceUnified,
+            unify.faces_merged,
+        );
+        report.merge(&FixResult::changed(
+            crate::status::Status::DONE1,
+            crate::fix::RepairActionKind::SameDomainEdgeUnified,
+            unify.edges_merged,
+        ));
+        Ok((solid, report, replacements))
     }
 }
 
@@ -256,6 +314,33 @@ impl HealOperator for RemoveInternalWiresOp {
             ),
         ))
     }
+    fn execute_with_history(
+        &self,
+        topo: &mut Topology,
+        solid_id: SolidId,
+        _ctx: &mut HealContext,
+    ) -> Result<(SolidId, FixResult, crate::reshape::ReShape), HealError> {
+        let (removed, history) =
+            crate::upgrade::remove_internal_wires::remove_internal_wires_with_history(
+                topo, solid_id,
+            )?;
+        let mut replacements = crate::reshape::ReShape::new();
+        for edge in history.edges {
+            replacements.remove_edge(edge);
+        }
+        for vertex in history.vertices {
+            replacements.remove_vertex(vertex);
+        }
+        Ok((
+            solid_id,
+            FixResult::changed(
+                crate::status::Status::DONE1,
+                crate::fix::RepairActionKind::InternalWireRemoved,
+                removed,
+            ),
+            replacements,
+        ))
+    }
 }
 
 /// Sew free boundaries in shells.
@@ -278,6 +363,47 @@ impl HealOperator for SewShellsOp {
         let report =
             crate::upgrade::shell_sewing::sew_shell_report(topo, shell_id, ctx.tolerance.linear)?;
 
+        Ok((solid_id, Self::report_result(report, ctx)))
+    }
+
+    fn execute_with_history(
+        &self,
+        topo: &mut Topology,
+        solid_id: SolidId,
+        ctx: &mut HealContext,
+    ) -> Result<(SolidId, FixResult, crate::reshape::ReShape), HealError> {
+        use remus_topology::explorer::{solid_edges, solid_vertices};
+        let shell = topo.solid(solid_id)?.outer_shell();
+        let (report, history) = crate::upgrade::shell_sewing::sew_shell_with_history(
+            topo,
+            shell,
+            ctx.tolerance.linear,
+        )?;
+        let live_edges: std::collections::BTreeSet<_> =
+            solid_edges(topo, solid_id)?.into_iter().collect();
+        let live_vertices: std::collections::BTreeSet<_> =
+            solid_vertices(topo, solid_id)?.into_iter().collect();
+        let mut replacements = crate::reshape::ReShape::new();
+        // A per-shell redirect does not consume a source still used by a cavity.
+        for (source, target) in history.edges {
+            if !live_edges.contains(&source) && live_edges.contains(&target) {
+                replacements.replace_edge(source, target);
+            }
+        }
+        for (source, target) in history.vertices {
+            if !live_vertices.contains(&source) && live_vertices.contains(&target) {
+                replacements.replace_vertex(source, target);
+            }
+        }
+        Ok((solid_id, Self::report_result(report, ctx), replacements))
+    }
+}
+
+impl SewShellsOp {
+    fn report_result(
+        report: crate::upgrade::shell_sewing::SewReport,
+        ctx: &mut HealContext,
+    ) -> FixResult {
         let mut result = FixResult::changed(
             crate::status::Status::DONE1,
             crate::fix::RepairActionKind::FreeEdgePairSewn,
@@ -301,7 +427,7 @@ impl HealOperator for SewShellsOp {
                 report.declined,
             ));
         }
-        Ok((solid_id, result))
+        result
     }
 }
 
@@ -327,6 +453,26 @@ impl HealOperator for SplitCommonVertexOp {
         let result =
             crate::fix::split_vertex::fix_split_common_vertex(topo, solid_id, ctx, &config)?;
         Ok((solid_id, result))
+    }
+
+    fn execute_with_history(
+        &self,
+        topo: &mut Topology,
+        solid_id: SolidId,
+        ctx: &mut HealContext,
+    ) -> Result<(SolidId, FixResult, crate::reshape::ReShape), HealError> {
+        let config = FixConfig {
+            fix_split_common_vertex: crate::fix::FixMode::On,
+            ..Default::default()
+        };
+        let (result, history) = crate::fix::split_vertex::fix_split_common_vertex_with_history(
+            topo, solid_id, ctx, &config,
+        )?;
+        let mut replacements = crate::reshape::ReShape::new();
+        for (source, targets) in history.vertices {
+            replacements.record_applied_vertex_split(source, targets)?;
+        }
+        Ok((solid_id, result, replacements))
     }
 }
 
@@ -415,13 +561,51 @@ impl HealOperator for FixWireframeOp {
         solid_id: SolidId,
         ctx: &mut HealContext,
     ) -> Result<(SolidId, FixResult), HealError> {
+        let (solid, report, _) = self.execute_with_history(topo, solid_id, ctx)?;
+        Ok((solid, report))
+    }
+
+    fn execute_with_history(
+        &self,
+        topo: &mut Topology,
+        solid_id: SolidId,
+        ctx: &mut HealContext,
+    ) -> Result<(SolidId, FixResult, crate::reshape::ReShape), HealError> {
+        use remus_topology::explorer::{solid_edges, solid_vertices};
         let config = FixConfig {
             fix_wireframe: crate::fix::FixMode::On,
             ..Default::default()
         };
-        let solid_data = topo.solid(solid_id)?;
-        let shell_id = solid_data.outer_shell();
-        let result = crate::fix::wireframe::fix_wireframe(topo, shell_id, ctx, &config)?;
-        Ok((solid_id, result))
+        let solid = topo.solid(solid_id)?;
+        let shells: Vec<_> = std::iter::once(solid.outer_shell())
+            .chain(solid.inner_shells().iter().copied())
+            .collect();
+        let mut result = FixResult::ok();
+        let mut histories = Vec::new();
+        for shell in shells {
+            let (report, history) =
+                crate::fix::wireframe::fix_wireframe_with_history(topo, shell, ctx, &config)?;
+            result.merge(&report);
+            histories.push(history);
+        }
+        let live_edges: std::collections::BTreeSet<_> =
+            solid_edges(topo, solid_id)?.into_iter().collect();
+        let live_vertices: std::collections::BTreeSet<_> =
+            solid_vertices(topo, solid_id)?.into_iter().collect();
+        let mut replacements = crate::reshape::ReShape::new();
+        for history in histories {
+            // A shell-local redirect does not consume identities retained by another shell.
+            for (source, target) in history.edges {
+                if !live_edges.contains(&source) {
+                    replacements.replace_edge(source, target);
+                }
+            }
+            for (source, target) in history.vertices {
+                if !live_vertices.contains(&source) {
+                    replacements.replace_vertex(source, target);
+                }
+            }
+        }
+        Ok((solid_id, result, replacements))
     }
 }

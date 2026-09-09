@@ -16,6 +16,7 @@ use remus_math::vec::Vec3;
 use remus_topology::Topology;
 use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
 use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::journal::EntityKey;
 use remus_topology::shell::Shell;
 use remus_topology::solid::{Solid, SolidId};
 use remus_topology::vertex::Vertex;
@@ -129,6 +130,7 @@ struct SharpResult {
     solid: SolidId,
     edges: Vec<EdgeId>,
     face_map: HashMap<usize, FaceId>,
+    boundary_history: Option<Vec<(EntityKey, Option<EntityKey>)>>,
 }
 
 #[derive(Debug)]
@@ -277,6 +279,7 @@ pub(crate) fn defeature_curved_band(
     Ok(Some(crate::defeature::DefeatureOutcome {
         solid: sharp.solid,
         face_map: sharp.face_map,
+        boundary_history: sharp.boundary_history,
     }))
 }
 
@@ -551,6 +554,12 @@ fn describe_band(
     })
 }
 
+pub(crate) struct BlendMoveEntities {
+    pub solid: SolidId,
+    pub evolution: EvolutionMap,
+    pub boundary_pairs: Vec<(EntityKey, EntityKey)>,
+}
+
 /// Move planar support faces through their tangent analytic blend neighborhood.
 ///
 /// The primary path temporarily restores every incident sharp edge, moves the
@@ -566,7 +575,7 @@ pub(crate) fn move_planar_faces_with_blends(
     solid: SolidId,
     faces: &[FaceId],
     distance: f64,
-) -> Result<Option<crate::push_pull::MoveFacesResult>, OperationsError> {
+) -> Result<Option<BlendMoveEntities>, OperationsError> {
     if adjacent_analytic_blend_seed(topo, solid, faces)?.is_none() {
         return Ok(None);
     }
@@ -594,7 +603,7 @@ fn move_planar_faces_with_blends_remove_rebuild(
     solid: SolidId,
     faces: &[FaceId],
     distance: f64,
-) -> Result<Option<crate::push_pull::MoveFacesResult>, OperationsError> {
+) -> Result<Option<BlendMoveEntities>, OperationsError> {
     if faces.is_empty() {
         return Ok(None);
     }
@@ -728,6 +737,20 @@ fn move_planar_faces_with_blends_remove_rebuild(
     )?;
 
     let result_faces = remus_topology::explorer::solid_faces(topo, current_solid)?;
+    let boundary_pairs =
+        if lineage_is_exact && lineage_is_total(&source_faces, &result_faces, &construction_map) {
+            construction_boundary_pairs(
+                topo,
+                solid,
+                current_solid,
+                &construction_map
+                    .iter()
+                    .map(|(&source, &target)| (source, target))
+                    .collect(),
+            )?
+        } else {
+            Vec::new()
+        };
     let evolution =
         if lineage_is_exact && lineage_is_total(&source_faces, &result_faces, &construction_map) {
             crate::push_pull::exact_face_evolution(
@@ -740,10 +763,193 @@ fn move_planar_faces_with_blends_remove_rebuild(
             conservative_move_evolution(&source_faces, &result_faces, &construction_map)
         };
 
-    Ok(Some(crate::push_pull::MoveFacesResult {
+    Ok(Some(BlendMoveEntities {
         solid: current_solid,
         evolution,
+        boundary_pairs,
     }))
+}
+
+// Rebuilt boundaries are attributable only when the construction face map
+// determines one complete incidence isomorphism, including outer/hole loops.
+// Ambiguous seams retain faces-only history instead of guessed identities.
+#[allow(clippy::too_many_lines)]
+pub(crate) fn construction_boundary_pairs(
+    topo: &Topology,
+    source: SolidId,
+    result: SolidId,
+    face_map: &BTreeMap<usize, FaceId>,
+) -> Result<Vec<(EntityKey, EntityKey)>, OperationsError> {
+    use remus_topology::explorer::{edge_to_face_map, solid_edges, solid_faces, solid_vertices};
+    let source_faces: HashSet<_> = solid_faces(topo, source)?
+        .iter()
+        .map(|face| face.index())
+        .collect();
+    let result_faces: HashSet<_> = solid_faces(topo, result)?.into_iter().collect();
+    if face_map.keys().copied().collect::<HashSet<_>>() != source_faces
+        || face_map.values().copied().collect::<HashSet<_>>() != result_faces
+        || face_map.len() != result_faces.len()
+    {
+        return Ok(Vec::new());
+    }
+    let old_edges = edge_to_face_map(topo, source)?;
+    let new_edges = edge_to_face_map(topo, result)?;
+    let mut groups = BTreeMap::<Vec<usize>, Vec<usize>>::new();
+    for (edge, faces) in &new_edges {
+        let mut key: Vec<_> = faces.iter().map(|face| face.index()).collect();
+        key.sort_unstable();
+        key.dedup();
+        groups.entry(key).or_default().push(*edge);
+    }
+    let mut edge_map = HashMap::new();
+    let mut used_edges = HashSet::new();
+    for (edge, faces) in &old_edges {
+        let Some(mut key) = faces
+            .iter()
+            .map(|face| face_map.get(&face.index()).map(|id| id.index()))
+            .collect::<Option<Vec<_>>>()
+        else {
+            return Ok(Vec::new());
+        };
+        key.sort_unstable();
+        key.dedup();
+        let Some(candidates) = groups.get(&key) else {
+            return Ok(Vec::new());
+        };
+        let [target] = candidates.as_slice() else {
+            return Ok(Vec::new());
+        };
+        if !used_edges.insert(*target) {
+            return Ok(Vec::new());
+        }
+        edge_map.insert(*edge, *target);
+    }
+    if used_edges.len() != new_edges.len() {
+        return Ok(Vec::new());
+    }
+
+    let mut target_vertices = BTreeMap::<usize, Vec<usize>>::new();
+    for edge in solid_edges(topo, result)? {
+        let data = topo.edge(edge)?;
+        for vertex in [data.start(), data.end()] {
+            target_vertices
+                .entry(vertex.index())
+                .or_default()
+                .push(edge.index());
+        }
+    }
+    let mut vertex_groups = BTreeMap::<Vec<usize>, Vec<usize>>::new();
+    for (vertex, mut edges) in target_vertices {
+        edges.sort_unstable();
+        vertex_groups.entry(edges).or_default().push(vertex);
+    }
+    let mut source_vertices = BTreeMap::<usize, Vec<usize>>::new();
+    for edge in solid_edges(topo, source)? {
+        let Some(&target) = edge_map.get(&edge.index()) else {
+            return Ok(Vec::new());
+        };
+        let data = topo.edge(edge)?;
+        for vertex in [data.start(), data.end()] {
+            source_vertices
+                .entry(vertex.index())
+                .or_default()
+                .push(target);
+        }
+    }
+    let mut vertex_map = HashMap::new();
+    let mut used_vertices = HashSet::new();
+    for (vertex, mut edges) in source_vertices {
+        edges.sort_unstable();
+        let Some(candidates) = vertex_groups.get(&edges) else {
+            return Ok(Vec::new());
+        };
+        let [target] = candidates.as_slice() else {
+            return Ok(Vec::new());
+        };
+        if !used_vertices.insert(*target) {
+            return Ok(Vec::new());
+        }
+        vertex_map.insert(vertex, *target);
+    }
+    if used_vertices.len() != solid_vertices(topo, result)?.len() {
+        return Ok(Vec::new());
+    }
+    for (&source_face, &result_face) in face_map {
+        let Some(source_face) = topo.face_id_from_index(source_face) else {
+            return Ok(Vec::new());
+        };
+        let before = topo.face(source_face)?;
+        let after = topo.face(result_face)?;
+        if mapped_wire_cycle(topo, before.outer_wire(), Some(&edge_map))?
+            != mapped_wire_cycle(topo, after.outer_wire(), None)?
+        {
+            return Ok(Vec::new());
+        }
+        let mut before_holes = before
+            .inner_wires()
+            .iter()
+            .map(|&wire| mapped_wire_cycle(topo, wire, Some(&edge_map)))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut after_holes = after
+            .inner_wires()
+            .iter()
+            .map(|&wire| mapped_wire_cycle(topo, wire, None))
+            .collect::<Result<Vec<_>, _>>()?;
+        before_holes.sort_unstable();
+        after_holes.sort_unstable();
+        if before_holes != after_holes {
+            return Ok(Vec::new());
+        }
+    }
+    Ok(edge_map
+        .into_iter()
+        .map(|(source, target)| (EntityKey::edge(source), EntityKey::edge(target)))
+        .chain(
+            vertex_map
+                .into_iter()
+                .map(|(source, target)| (EntityKey::vertex(source), EntityKey::vertex(target))),
+        )
+        .collect())
+}
+
+fn mapped_wire_cycle(
+    topo: &Topology,
+    wire: WireId,
+    edge_map: Option<&HashMap<usize, usize>>,
+) -> Result<Vec<usize>, OperationsError> {
+    let edges =
+        topo.wire(wire)?
+            .edges()
+            .iter()
+            .map(|edge| {
+                let index = edge.edge().index();
+                match edge_map {
+                    Some(map) => map.get(&index).copied().ok_or_else(|| {
+                        reconstruction("boundary correspondence omitted a wire edge")
+                    }),
+                    None => Ok(index),
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+    let Some(&minimum) = edges.iter().min() else {
+        return Ok(edges);
+    };
+    let mut candidates = Vec::new();
+    for (position, &edge) in edges.iter().enumerate() {
+        if edge == minimum {
+            candidates.push(
+                (0..edges.len())
+                    .map(|offset| edges[(position + offset) % edges.len()])
+                    .collect::<Vec<_>>(),
+            );
+            candidates.push(
+                (0..edges.len())
+                    .map(|offset| edges[(position + edges.len() - offset) % edges.len()])
+                    .collect::<Vec<_>>(),
+            );
+        }
+    }
+    Ok(candidates.into_iter().min().unwrap_or_default())
 }
 
 fn adjacent_blend_seed(
@@ -1002,7 +1208,7 @@ fn move_translation_invariant_blend_region(
     solid: SolidId,
     faces: &[FaceId],
     distance: f64,
-) -> Result<crate::push_pull::MoveFacesResult, OperationsError> {
+) -> Result<BlendMoveEntities, OperationsError> {
     if !distance.is_finite() || distance.abs() <= Tolerance::new().linear {
         return Err(remus_offset::OffsetError::InvalidInput {
             reason: "move-face distance must be non-zero and finite".into(),
@@ -1171,11 +1377,27 @@ fn move_translation_invariant_blend_region(
         )));
     }
 
-    let (result, face_map) = crate::copy::copy_solid_between_with_face_map(&work, topo, solid)?;
+    let copied = crate::copy::copy_solid_between_with_entity_map(&work, topo, solid)?;
+    let result = copied.solid;
     validate_exact_result(topo, result, "accepted blend-aware planar move")?;
-    Ok(crate::push_pull::MoveFacesResult {
+    let boundary_pairs =
+        copied
+            .edge_map
+            .into_iter()
+            .map(|(source, target)| (EntityKey::edge(source), EntityKey::edge(target.index())))
+            .chain(copied.vertex_map.into_iter().map(|(source, target)| {
+                (EntityKey::vertex(source), EntityKey::vertex(target.index()))
+            }))
+            .collect();
+    Ok(BlendMoveEntities {
         solid: result,
-        evolution: crate::push_pull::exact_face_evolution(topo, &source_faces, result, face_map)?,
+        evolution: crate::push_pull::exact_face_evolution(
+            topo,
+            &source_faces,
+            result,
+            copied.face_map,
+        )?,
+        boundary_pairs,
     })
 }
 
@@ -1534,6 +1756,7 @@ fn heal_planar_band(
         solid: outcome.solid,
         edges,
         face_map: outcome.face_map,
+        boundary_history: outcome.boundary_history,
     })
 }
 
@@ -1707,7 +1930,13 @@ fn heal_plane_cylinder_band(
         _ => return Err(reconstruction("support classification changed during heal")),
     };
 
-    let (copy, mut face_map_indices) = crate::copy::copy_solid_with_face_map(topo, solid)?;
+    let copied_entities = crate::copy::copy_solid_with_entity_map(topo, solid)?;
+    let copy = copied_entities.solid;
+    let mut face_map_indices: HashMap<_, _> = copied_entities
+        .face_map
+        .iter()
+        .map(|(&source, face)| (source, face.index()))
+        .collect();
     let copied = |map: &HashMap<usize, usize>, source: FaceId| {
         map.get(&source.index())
             .and_then(|index| topo.face_id_from_index(*index))
@@ -1860,10 +2089,47 @@ fn heal_plane_cylinder_band(
         .into_iter()
         .filter_map(|(source, result)| topo.face_id_from_index(result).map(|face| (source, face)))
         .collect();
+    let live_edges: HashSet<_> = remus_topology::explorer::solid_edges(topo, sharp_solid)?
+        .into_iter()
+        .collect();
+    let live_vertices: HashSet<_> = remus_topology::explorer::solid_vertices(topo, sharp_solid)?
+        .into_iter()
+        .collect();
+    let plane_contact_vertex = topo.edge(*plane_contact)?.start();
+    let mut boundary_history = Vec::new();
+    for (source, copied) in copied_entities.edge_map {
+        let target = if copied == *plane_contact || copied == *cylinder_contact {
+            sharp_edge
+        } else if copied == *old_seam {
+            sharp_seam
+        } else {
+            copied
+        };
+        boundary_history.push((
+            EntityKey::edge(source),
+            live_edges
+                .contains(&target)
+                .then_some(EntityKey::edge(target.index())),
+        ));
+    }
+    for (source, copied) in copied_entities.vertex_map {
+        let target = if copied == plane_contact_vertex || copied == old_contact_vertex {
+            sharp_vertex
+        } else {
+            copied
+        };
+        boundary_history.push((
+            EntityKey::vertex(source),
+            live_vertices
+                .contains(&target)
+                .then_some(EntityKey::vertex(target.index())),
+        ));
+    }
     Ok(SharpResult {
         solid: sharp_solid,
         edges: vec![sharp_edge],
         face_map,
+        boundary_history: Some(boundary_history),
     })
 }
 
@@ -2058,10 +2324,38 @@ fn rebuild_closed_periodic_support(
     far_vertex: remus_topology::vertex::VertexId,
     far_circles: &HashSet<EdgeId>,
     axis: Vec3,
-) -> Result<(), OperationsError> {
+) -> Result<(EdgeId, Option<(EdgeId, remus_topology::VertexId)>), OperationsError> {
     let (wire_id, old_wire) = contact_wire(topo, face, contacts)?;
     let forward = contact_direction(topo, &old_wire, contacts, axis)?;
     let far_boundary = ordered_circle_boundary(topo, &old_wire, far_circles, far_vertex)?;
+    let mut contact_vertices = HashSet::new();
+    for &contact in contacts {
+        let edge = topo.edge(contact)?;
+        contact_vertices.extend([edge.start(), edge.end()]);
+    }
+    let mut candidates = Vec::new();
+    for oriented in &old_wire {
+        let edge = topo.edge(oriented.edge())?;
+        if !matches!(edge.curve(), EdgeCurve::Line) {
+            continue;
+        }
+        let contact = if edge.start() == far_vertex && contact_vertices.contains(&edge.end()) {
+            Some(edge.end())
+        } else if edge.end() == far_vertex && contact_vertices.contains(&edge.start()) {
+            Some(edge.start())
+        } else {
+            None
+        };
+        if let Some(contact) = contact {
+            candidates.push((oriented.edge(), contact));
+        }
+    }
+    candidates.sort_unstable();
+    candidates.dedup();
+    let source = match candidates.as_slice() {
+        [source] => Some(*source),
+        _ => None,
+    };
     let seam = topo.add_edge(Edge::new(far_vertex, sharp_vertex, EdgeCurve::Line));
     let mut edges = Vec::with_capacity(far_boundary.len() + 3);
     edges.push(OrientedEdge::new(seam, true));
@@ -2069,7 +2363,8 @@ fn rebuild_closed_periodic_support(
     edges.push(OrientedEdge::new(seam, false));
     edges.extend(far_boundary);
     let new_wire = topo.add_wire(Wire::new(edges, true)?);
-    replace_face_wire(topo, face, wire_id, new_wire)
+    replace_face_wire(topo, face, wire_id, new_wire)?;
+    Ok((seam, source))
 }
 
 #[allow(clippy::too_many_lines)]
@@ -2097,7 +2392,13 @@ fn heal_cylinder_cone_band(
         _ => return Err(reconstruction("support classification changed during heal")),
     };
 
-    let (copy, mut face_map_indices) = crate::copy::copy_solid_with_face_map(topo, solid)?;
+    let copied_entities = crate::copy::copy_solid_with_entity_map(topo, solid)?;
+    let copy = copied_entities.solid;
+    let mut face_map_indices: HashMap<_, _> = copied_entities
+        .face_map
+        .iter()
+        .map(|(&source, face)| (source, face.index()))
+        .collect();
     let copied = |map: &HashMap<usize, usize>, source: FaceId| {
         map.get(&source.index())
             .and_then(|index| topo.face_id_from_index(*index))
@@ -2185,7 +2486,7 @@ fn heal_cylinder_cone_band(
     let circle = Circle3D::new_with_ref(center, axis, cylinder_surface.radius(), direction)
         .map_err(|error| reconstruction(format!("sharp circle failed: {error}")))?;
     let sharp_edge = add_certified_closed_circle_edge(topo, sharp_vertex, circle)?;
-    rebuild_closed_periodic_support(
+    let cylinder_history = rebuild_closed_periodic_support(
         topo,
         cylinder,
         &cylinder_contacts,
@@ -2195,7 +2496,7 @@ fn heal_cylinder_cone_band(
         &cylinder_far,
         axis,
     )?;
-    rebuild_closed_periodic_support(
+    let cone_history = rebuild_closed_periodic_support(
         topo,
         cone,
         &cone_contacts,
@@ -2221,10 +2522,47 @@ fn heal_cylinder_cone_band(
         .into_iter()
         .filter_map(|(source, result)| topo.face_id_from_index(result).map(|face| (source, face)))
         .collect();
+    let live_edges: HashSet<_> = remus_topology::explorer::solid_edges(topo, sharp_solid)?
+        .into_iter()
+        .collect();
+    let live_vertices: HashSet<_> = remus_topology::explorer::solid_vertices(topo, sharp_solid)?
+        .into_iter()
+        .collect();
+    let mut replaced_edges = HashMap::new();
+    let mut replaced_vertices = HashMap::new();
+    for &contact in cylinder_contacts.iter().chain(&cone_contacts) {
+        replaced_edges.insert(contact, sharp_edge);
+    }
+    for (seam, source) in [cylinder_history, cone_history] {
+        if let Some((old_seam, old_contact)) = source {
+            replaced_edges.insert(old_seam, seam);
+            replaced_vertices.insert(old_contact, sharp_vertex);
+        }
+    }
+    let mut boundary_history = Vec::new();
+    for (source, copied) in copied_entities.edge_map {
+        let target = replaced_edges.get(&copied).copied().unwrap_or(copied);
+        boundary_history.push((
+            EntityKey::edge(source),
+            live_edges
+                .contains(&target)
+                .then_some(EntityKey::edge(target.index())),
+        ));
+    }
+    for (source, copied) in copied_entities.vertex_map {
+        let target = replaced_vertices.get(&copied).copied().unwrap_or(copied);
+        boundary_history.push((
+            EntityKey::vertex(source),
+            live_vertices
+                .contains(&target)
+                .then_some(EntityKey::vertex(target.index())),
+        ));
+    }
     Ok(SharpResult {
         solid: sharp_solid,
         edges: vec![sharp_edge],
         face_map,
+        boundary_history: Some(boundary_history),
     })
 }
 
@@ -2416,6 +2754,30 @@ mod tests {
         let moved = move_planar_faces_with_blends_remove_rebuild(&mut topo, solid, &[support], 1.0)
             .unwrap()
             .unwrap();
+        let translated =
+            move_translation_invariant_blend_region(&mut topo, solid, &[support], 1.0).unwrap();
+        for result in [&moved, &translated] {
+            assert_eq!(
+                result.boundary_pairs.len(),
+                source_counts.1 + source_counts.2
+            );
+            let mapped: BTreeMap<_, _> = result.boundary_pairs.iter().copied().collect();
+            for edge in solid_edges(&topo, solid).unwrap() {
+                let source_edge = topo.edge(edge).unwrap();
+                let target = mapped[&EntityKey::edge(edge.index())];
+                let target_edge = topo
+                    .edge(topo.edge_id_from_index(target.index).unwrap())
+                    .unwrap();
+                let expected: HashSet<_> = [source_edge.start(), source_edge.end()]
+                    .into_iter()
+                    .map(|vertex| mapped[&EntityKey::vertex(vertex.index())].index)
+                    .collect();
+                let actual: HashSet<_> = [target_edge.start().index(), target_edge.end().index()]
+                    .into_iter()
+                    .collect();
+                assert_eq!(actual, expected);
+            }
+        }
 
         assert_eq!(
             solid_entity_counts(&topo, moved.solid).unwrap(),
@@ -2428,6 +2790,45 @@ mod tests {
         assert!(
             (moved_volume - expected).abs() < 1e-3 * expected,
             "moving the support by 1 must lengthen the filleted block: {moved_volume} vs {expected}"
+        );
+    }
+
+    #[test]
+    fn boundary_correspondence_requires_a_total_face_bijection() {
+        let mut topo = Topology::new();
+        let source = crate::primitives::make_box(&mut topo, 2.0, 3.0, 4.0).unwrap();
+        let faces = remus_topology::explorer::solid_faces(&topo, source).unwrap();
+        let mut map: BTreeMap<_, _> = faces.iter().map(|&face| (face.index(), face)).collect();
+        assert_eq!(
+            construction_boundary_pairs(&topo, source, source, &map)
+                .unwrap()
+                .len(),
+            20
+        );
+        map.remove(&faces[0].index());
+        assert!(
+            construction_boundary_pairs(&topo, source, source, &map)
+                .unwrap()
+                .is_empty()
+        );
+        map.insert(faces[0].index(), faces[1]);
+        assert!(
+            construction_boundary_pairs(&topo, source, source, &map)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn boundary_correspondence_refuses_ambiguous_periodic_edges() {
+        let mut topo = Topology::new();
+        let solid = crate::primitives::make_torus(&mut topo, 5.0, 1.0, 32).unwrap();
+        let faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
+        let map = faces.into_iter().map(|face| (face.index(), face)).collect();
+        assert!(
+            construction_boundary_pairs(&topo, solid, solid, &map)
+                .unwrap()
+                .is_empty()
         );
     }
 
