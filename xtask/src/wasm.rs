@@ -579,6 +579,18 @@ fn validate_package_json(
     }
 }
 
+/// Assign one increasing npm version to changed distributable output.
+pub fn version_packages() -> Result<()> {
+    run_cmd(
+        Command::new("node")
+            .arg("--test")
+            .arg(project_root()?.join("scripts/test-version-wasm-packages.mjs")),
+    )
+    .context("testing package versioning")?;
+    run_cmd(Command::new("node").arg(project_root()?.join("scripts/version-wasm-packages.mjs")))
+        .context("versioning WASM packages")
+}
+
 /// Run the Node.js smoke test.
 pub fn run_smoke_test() -> Result<()> {
     println!("\nRunning smoke test...");
