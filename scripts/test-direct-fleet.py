@@ -161,7 +161,7 @@ class DirectFleetTests(unittest.TestCase):
 
     def test_disposable_runners_install_required_toolchains(self):
         jobs = dict(re.findall(r"^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)", TEXT, re.M | re.S))
-        for name in ("repo-policy", "clippy", "test", "approx-census", "coverage",
+        for name in ("repo-policy", "test", "approx-census", "coverage",
                      "wasm", "wasm-no-io", "fuzz-check", "render", "audit", "docs"):
             block = jobs[name]
             marker = "&fleet-rust" if name == "repo-policy" else "*fleet-rust"

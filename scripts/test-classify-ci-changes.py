@@ -20,20 +20,81 @@ SPEC.loader.exec_module(MODULE)
 
 
 class ClassifyCiChangesTests(unittest.TestCase):
-    def test_source_change_runs_everything(self) -> None:
+    def test_source_change_on_a_pr_runs_the_pr_tier(self) -> None:
         result = MODULE.classify_paths(["crates/math/src/lib.rs"])
         self.assertTrue(result.heavy)
         self.assertTrue(result.docs)
+        self.assertFalse(result.full)
+        self.assertFalse(result.wasm)
+        self.assertEqual(result.mode, "pr")
+
+    def test_source_change_with_full_runs_everything(self) -> None:
+        result = MODULE.classify_paths(["crates/math/src/lib.rs"], force_full=True)
+        self.assertTrue(result.heavy)
+        self.assertTrue(result.full)
+        self.assertTrue(result.wasm)
         self.assertEqual(result.mode, "full")
 
-    def test_unknown_path_fails_closed(self) -> None:
-        result = MODULE.classify_paths(["rust-toolchain.toml"])
+    def test_wasm_affecting_paths_select_the_package_build(self) -> None:
+        for path in (
+            "crates/wasm/src/kernel.rs",
+            "crates/wasm-io/Cargo.toml",
+            "xtask/src/wasm.rs",
+            "tools/vs-bench/workflows/w9-preflight.mjs",
+            "scripts/test-wasm-smoke.mjs",
+            "scripts/test-w9-preflight.sh",
+            "Cargo.lock",
+            "rust-toolchain.toml",
+        ):
+            with self.subTest(path=path):
+                result = MODULE.classify_paths([path])
+                self.assertTrue(result.heavy)
+                self.assertTrue(result.wasm)
+                self.assertFalse(result.full)
+
+    def test_kernel_only_change_does_not_select_the_package_build(self) -> None:
+        result = MODULE.classify_paths(["crates/operations/src/boolean/mod.rs"])
         self.assertTrue(result.heavy)
-        self.assertEqual(result.mode, "full")
+        self.assertFalse(result.wasm)
+
+    def test_committed_package_refresh_is_lightweight(self) -> None:
+        result = MODULE.classify_paths(
+            ["crates/wasm/pkg/remus_wasm_bg.wasm", "crates/wasm-io/pkg/package.json"]
+        )
+        self.assertFalse(result.heavy)
+        self.assertFalse(result.docs)
+        self.assertFalse(result.wasm)
+        self.assertEqual(result.mode, "package")
+
+    def test_package_refresh_with_source_change_is_heavy(self) -> None:
+        result = MODULE.classify_paths(
+            ["crates/wasm/pkg/remus_wasm_bg.wasm", "crates/wasm/src/kernel.rs"]
+        )
+        self.assertTrue(result.heavy)
+        self.assertTrue(result.wasm)
+        self.assertEqual(result.mode, "pr")
+
+    def test_agent_instructions_stay_lightweight(self) -> None:
+        result = MODULE.classify_paths([".claude/skills/roadmap/SKILL.md", "CLAUDE.md"])
+        self.assertFalse(result.heavy)
+        self.assertTrue(result.docs)
+        self.assertEqual(result.mode, "docs")
+        result = MODULE.classify_paths([".claude/settings.json"])
+        self.assertFalse(result.heavy)
+        self.assertFalse(result.docs)
+        self.assertEqual(result.mode, "ci-only")
+
+    def test_unknown_path_fails_closed(self) -> None:
+        result = MODULE.classify_paths(["deny.toml"])
+        self.assertTrue(result.heavy)
+        self.assertEqual(result.mode, "pr")
+        self.assertEqual(MODULE.classify_paths(["deny.toml"], force_full=True).mode, "full")
 
     def test_empty_diff_fails_closed(self) -> None:
         result = MODULE.classify_paths([])
         self.assertTrue(result.heavy)
+        self.assertTrue(result.full)
+        self.assertTrue(result.wasm)
         self.assertEqual(result.mode, "full")
 
     def test_docs_only_builds_docs_without_heavy_jobs(self) -> None:
@@ -46,7 +107,7 @@ class ClassifyCiChangesTests(unittest.TestCase):
         result = MODULE.classify_paths([".github/workflows/ci.yml"])
         self.assertTrue(result.heavy)
         self.assertTrue(result.docs)
-        self.assertEqual(result.mode, "full")
+        self.assertEqual(result.mode, "pr")
 
     def test_github_metadata_only_skips_docs_and_heavy_jobs(self) -> None:
         result = MODULE.classify_paths([".github/dependabot.yml"])
