@@ -16,6 +16,7 @@ on:
       - "!crates/wasm/pkg/**"
       - "!crates/wasm-io/pkg/**"
       - "scripts/publish-wasm-package-pr.py"
+      - "scripts/check-wasm-version.py"
       - "scripts/version-wasm-packages.mjs"
       - "scripts/test-version-wasm-packages.mjs"
       - "xtask/**"
@@ -140,6 +141,7 @@ jobs:
             echo "needs_publish=false" >> "$GITHUB_OUTPUT"
             echo "::notice::Committed package already matches this build — nothing to publish."
           else
+            python3 scripts/check-wasm-version.py --base "$GITHUB_SHA"
             echo "needs_publish=true" >> "$GITHUB_OUTPUT"
           fi
 
