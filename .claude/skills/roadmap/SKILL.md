@@ -151,7 +151,7 @@ harness's own option-honoured floor misreading a correct 0.05 fillet on an
 
 ## Durable lessons (one line each; the story is in `campaign-history.md`)
 
-- **Blend resize identity requires construction support lineage plus a complete unique boundary incidence map:** a rebuilt band is not automatically a preserved face (`crates/operations/tests/journal_resize_blend.rs`); broader regions refuse the journaled path.
+- **Blend resize identity requires construction support lineage plus a complete unique boundary incidence map:** a rebuilt band is not automatically a preserved face (`crates/operations/tests/journal_resize_blend.rs`); removal additionally requires complete boundary merge/deletion coverage, and broader regions refuse the journaled path.
 
 - **Journal setup belongs inside the operation transaction:** `journal_begin` can publish an outstanding global barrier before geometry runs; refusal must restore it (`crates/operations/tests/journal.rs`, shell/split and boolean/pattern unpublished-history regressions).
 
