@@ -16,6 +16,16 @@ import {
   runOpenZcadAnalyticFlangeBooleanRegression,
   runOpenZcadCylindricalFaceResizeRegression,
   runPartialCylinderResizeRegression,
+  runDirectEditHistoryRegression,
+  runSurfaceReplacementHistoryRegression,
+  runCylindricalRadiusHistoryRegression,
+  runDraftHistoryRegression,
+  runDefeatureHistoryRegression,
+  runHealingHistoryRegression,
+  runUnifyHistoryRegression,
+  runSewingHistoryRegression,
+  runInnerWireHistoryRegression,
+  runSplitVertexRefusalRegression,
   runWideSphereCapRegression,
   runSphereCylinderWallRegression,
   runOffsetConeSphereRegression,
@@ -752,6 +762,16 @@ runOffsetTorusSphereRegression({ BrepKernel });
 runTorusNotchRegression({ BrepKernel });
 runTangencyBandRegression({ BrepKernel });
 runPartialCylinderResizeRegression({ BrepKernel, RemusIo });
+runDirectEditHistoryRegression({ BrepKernel, RemusIo });
+runSurfaceReplacementHistoryRegression({ BrepKernel, RemusIo });
+runCylindricalRadiusHistoryRegression({ BrepKernel, RemusIo });
+runDraftHistoryRegression({ BrepKernel, RemusIo });
+runDefeatureHistoryRegression({ BrepKernel, RemusIo });
+runHealingHistoryRegression({ BrepKernel, RemusIo });
+runUnifyHistoryRegression({ BrepKernel });
+runSewingHistoryRegression({ BrepKernel });
+runInnerWireHistoryRegression({ BrepKernel });
+runSplitVertexRefusalRegression({ BrepKernel });
 runBooleanScaleRegression({ BrepKernel });
 runAnisotropicBooleanRegression({ BrepKernel });
 

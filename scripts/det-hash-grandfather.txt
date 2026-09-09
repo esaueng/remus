@@ -40,7 +40,6 @@ crates/heal/src/fix/shell.rs
 crates/heal/src/fix/solid.rs
 crates/heal/src/fix/split_vertex.rs
 crates/heal/src/fix/wire.rs
-crates/heal/src/fix/wireframe.rs
 crates/heal/src/pipeline/registry.rs
 crates/heal/src/reshape.rs
 crates/heal/src/upgrade/collapse_collinear_vertices.rs

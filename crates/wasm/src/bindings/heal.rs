@@ -538,6 +538,22 @@ impl BrepKernel {
         solid: u32,
         config_json: &str,
     ) -> Result<crate::types::HealFixResult, crate::error::WasmError> {
+        self.fix_shape_report_impl(solid, config_json, false)
+            .map(|(report, _)| report)
+    }
+
+    pub(crate) fn fix_shape_report_impl(
+        &mut self,
+        solid: u32,
+        config_json: &str,
+        journaled: bool,
+    ) -> Result<
+        (
+            crate::types::HealFixResult,
+            Option<remus_topology::journal::OpId>,
+        ),
+        crate::error::WasmError,
+    > {
         let (config, tolerance) = parse_heal_config(config_json)?;
         let solid_id =
             self.resolve_solid(solid)
@@ -545,21 +561,37 @@ impl BrepKernel {
                     entity: "solid",
                     index: solid as usize,
                 })?;
-        let report = remus_operations::heal::fix_shape_verified(
-            self.topo_mut(),
-            solid_id,
-            &config,
-            tolerance,
-        )?;
+        let (report, op) = if journaled {
+            let result = remus_operations::journal_ops::fix_shape_journaled(
+                self.topo_mut(),
+                solid_id,
+                &config,
+                tolerance,
+            )?;
+            (result.result, Some(result.op))
+        } else {
+            (
+                remus_operations::heal::fix_shape_verified(
+                    self.topo_mut(),
+                    solid_id,
+                    &config,
+                    tolerance,
+                )?,
+                None,
+            )
+        };
         #[allow(clippy::cast_possible_truncation)]
-        Ok(crate::types::HealFixResult {
-            solid: solid_id_to_u32(report.solid),
-            actions_taken: report.fixing.actions_taken as u32,
-            done: report.fixing.status.is_done(),
-            failed: false,
-            repairs: fixer_repairs(&report.fixing),
-            verified: report.is_valid_after(),
-        })
+        Ok((
+            crate::types::HealFixResult {
+                solid: solid_id_to_u32(report.solid),
+                actions_taken: report.fixing.actions_taken as u32,
+                done: report.fixing.status.is_done(),
+                failed: false,
+                repairs: fixer_repairs(&report.fixing),
+                verified: report.is_valid_after(),
+            },
+            op,
+        ))
     }
 
     #[allow(clippy::needless_pass_by_value)]
@@ -568,6 +600,23 @@ impl BrepKernel {
         solid: u32,
         steps: Vec<String>,
     ) -> Result<crate::types::HealPipelineResult, crate::error::WasmError> {
+        self.heal_pipeline_report_impl(solid, steps, false)
+            .map(|(report, _)| report)
+    }
+
+    #[allow(clippy::needless_pass_by_value)]
+    pub(crate) fn heal_pipeline_report_impl(
+        &mut self,
+        solid: u32,
+        steps: Vec<String>,
+        journaled: bool,
+    ) -> Result<
+        (
+            crate::types::HealPipelineResult,
+            Option<remus_topology::journal::OpId>,
+        ),
+        crate::error::WasmError,
+    > {
         const MAX_HEAL_PIPELINE_STEPS: usize = 32;
         if steps.is_empty() {
             return Err(crate::error::WasmError::InvalidInput {
@@ -599,27 +648,42 @@ impl BrepKernel {
         for step in &steps {
             process.add_step(step);
         }
-        let report = remus_operations::heal::run_heal_pipeline_verified(
-            self.topo_mut(),
-            solid_id,
-            &process,
-        )?;
+        let (report, op) = if journaled {
+            let result = remus_operations::journal_ops::heal_pipeline_journaled(
+                self.topo_mut(),
+                solid_id,
+                &process,
+            )?;
+            (result.result, Some(result.op))
+        } else {
+            (
+                remus_operations::heal::run_heal_pipeline_verified(
+                    self.topo_mut(),
+                    solid_id,
+                    &process,
+                )?,
+                None,
+            )
+        };
         #[allow(clippy::cast_possible_truncation)]
-        Ok(crate::types::HealPipelineResult {
-            solid: solid_id_to_u32(report.solid),
-            steps: steps
-                .iter()
-                .zip(report.steps.iter())
-                .map(|(name, r)| crate::types::HealStepResult {
-                    step: name.clone(),
-                    actions_taken: r.actions_taken as u32,
-                    done: r.status.is_done(),
-                    failed: false,
-                    repairs: fixer_repairs(r),
-                })
-                .collect(),
-            verified: report.is_valid_after(),
-        })
+        Ok((
+            crate::types::HealPipelineResult {
+                solid: solid_id_to_u32(report.solid),
+                steps: steps
+                    .iter()
+                    .zip(report.steps.iter())
+                    .map(|(name, r)| crate::types::HealStepResult {
+                        step: name.clone(),
+                        actions_taken: r.actions_taken as u32,
+                        done: r.status.is_done(),
+                        failed: false,
+                        repairs: fixer_repairs(r),
+                    })
+                    .collect(),
+                verified: report.is_valid_after(),
+            },
+            op,
+        ))
     }
 }
 

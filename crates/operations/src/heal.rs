@@ -129,13 +129,18 @@ pub fn fix_shape_verified(
     config: &remus_heal::fix::FixConfig,
     tolerance: Option<f64>,
 ) -> Result<ConfiguredRepairReport, crate::OperationsError> {
+    fix_shape_verified_with_history(topo, solid, config, tolerance).map(|(report, _)| report)
+}
+
+pub(crate) fn fix_shape_verified_with_history(
+    topo: &mut Topology,
+    solid: SolidId,
+    config: &remus_heal::fix::FixConfig,
+    tolerance: Option<f64>,
+) -> Result<(ConfiguredRepairReport, remus_heal::reshape::ReShape), crate::OperationsError> {
     remus_topology::transaction::run_transacted(topo, |topo| {
-        let (new_solid, fixing) = match tolerance {
-            Some(tolerance) => {
-                remus_heal::fix::fix_shape_with_tolerance(topo, solid, config, tolerance)
-            }
-            None => remus_heal::fix::fix_shape(topo, solid, config),
-        }?;
+        let (new_solid, fixing, history) =
+            remus_heal::fix::fix_shape_with_history(topo, solid, config, tolerance)?;
 
         if !fixing.refusals.is_empty() || fixing.status.is_fail() {
             return Err(crate::OperationsError::HealingRepairRefused {
@@ -146,12 +151,15 @@ pub fn fix_shape_verified(
         }
 
         let (after, check_after) = verify_configured_healing(topo, new_solid, &fixing)?;
-        Ok(ConfiguredRepairReport {
-            solid: new_solid,
-            fixing,
-            after,
-            check_after,
-        })
+        Ok((
+            ConfiguredRepairReport {
+                solid: new_solid,
+                fixing,
+                after,
+                check_after,
+            },
+            history,
+        ))
     })
 }
 
@@ -167,8 +175,37 @@ pub fn run_heal_pipeline_verified(
     solid: SolidId,
     process: &remus_heal::pipeline::process::HealProcess,
 ) -> Result<PipelineRepairReport, crate::OperationsError> {
+    verify_heal_pipeline_execution(topo, |topo| {
+        process
+            .execute(topo, solid)
+            .map(|(solid, steps)| (solid, steps, ()))
+    })
+    .map(|(report, ())| report)
+}
+
+pub(crate) fn run_heal_pipeline_verified_with_history(
+    topo: &mut Topology,
+    solid: SolidId,
+    process: &remus_heal::pipeline::process::HealProcess,
+) -> Result<
+    (
+        PipelineRepairReport,
+        Vec<remus_heal::pipeline::process::StepHistory>,
+    ),
+    crate::OperationsError,
+> {
+    verify_heal_pipeline_execution(topo, |topo| process.execute_with_history(topo, solid))
+}
+
+fn verify_heal_pipeline_execution<H>(
+    topo: &mut Topology,
+    execute: impl FnOnce(
+        &mut Topology,
+    )
+        -> Result<(SolidId, Vec<remus_heal::fix::FixResult>, H), remus_heal::HealError>,
+) -> Result<(PipelineRepairReport, H), crate::OperationsError> {
     remus_topology::transaction::run_transacted(topo, |topo| {
-        let (new_solid, steps) = process.execute(topo, solid)?;
+        let (new_solid, steps, history) = execute(topo)?;
         let mut aggregate = remus_heal::fix::FixResult::ok();
         for step in &steps {
             aggregate.merge(step);
@@ -181,12 +218,15 @@ pub fn run_heal_pipeline_verified(
             });
         }
         let (after, check_after) = verify_configured_healing(topo, new_solid, &aggregate)?;
-        Ok(PipelineRepairReport {
-            solid: new_solid,
-            steps,
-            after,
-            check_after,
-        })
+        Ok((
+            PipelineRepairReport {
+                solid: new_solid,
+                steps,
+                after,
+                check_after,
+            },
+            history,
+        ))
     })
 }
 
