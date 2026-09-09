@@ -94,17 +94,19 @@ pub fn solid_entity_keys(
 /// # Errors
 ///
 /// Returns [`OperationsError`] if a solid's topology tree contains an
-/// invalid handle; nothing is journaled (the begin gap-check has already
-/// run, which is harmless).
+/// invalid handle; all scopes are validated before the journal gap-check,
+/// so an invalid operand cannot publish history or consume an operation ID.
 pub fn begin_scoped(
     topo: &mut Topology,
     kind: &str,
     solids: &[SolidId],
 ) -> Result<PendingOp, OperationsError> {
-    let mut pending = topo.journal_begin(kind);
+    let mut scope = Vec::new();
     for &solid in solids {
-        pending.add_scope(solid_entity_keys(topo, solid)?);
+        scope.extend(solid_entity_keys(topo, solid)?);
     }
+    let mut pending = topo.journal_begin(kind);
+    pending.add_scope(scope);
     Ok(pending)
 }
 
@@ -119,24 +121,25 @@ pub fn begin_scoped(
 ///
 /// # Errors
 ///
-/// Returns [`OperationsError`] if the boolean fails (nothing is recorded;
-/// the failed operation's partial mutations surface as a global barrier at
-/// the next [`Topology::journal_begin`]) or if the evolution record is
-/// malformed (duplicate claims — a kernel defect, refused whole).
+/// Returns [`OperationsError`] if the boolean fails or its evolution record is
+/// malformed. Scope creation, geometry export and history recording share one
+/// transaction, so refusal restores topology and unpublished history together.
 pub fn boolean_journaled(
     topo: &mut Topology,
     op: BooleanOp,
     solid_a: SolidId,
     solid_b: SolidId,
 ) -> Result<JournaledBoolean, OperationsError> {
-    // Pre-operation scope: both operands' entities, so an operand entity
-    // the boolean consumed without a record (the GFA does not record face
-    // deletions) severs instead of resolving to a retired handle.
-    let pending = begin_scoped(topo, boolean_kind(op), &[solid_a, solid_b])?;
-    let (solid, evolution) = gfa::boolean_with_entity_evolution(topo, op, solid_a, solid_b)?;
-    let draft = draft_from_entity_evolution(&evolution);
-    let op = topo.journal_record_evolution(pending, draft)?;
-    Ok(JournaledBoolean { solid, op })
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        // Pre-operation scope: both operands' entities, so an operand entity
+        // the boolean consumed without a record (the GFA does not record face
+        // deletions) severs instead of resolving to a retired handle.
+        let pending = begin_scoped(topo, boolean_kind(op), &[solid_a, solid_b])?;
+        let (solid, evolution) = gfa::boolean_with_entity_evolution(topo, op, solid_a, solid_b)?;
+        let draft = draft_from_entity_evolution(&evolution);
+        let op = topo.journal_record_evolution(pending, draft)?;
+        Ok(JournaledBoolean { solid, op })
+    })
 }
 
 /// Runs a journaled exact boolean using the operations-layer boolean enum.
@@ -445,7 +448,8 @@ pub struct JournaledPattern {
 ///
 /// # Errors
 ///
-/// Returns [`OperationsError`] if the pattern or the recording fails.
+/// Returns [`OperationsError`] if the pattern or recording fails; topology and
+/// history roll back together, including unpublished mutation gaps.
 pub fn linear_pattern_journaled(
     topo: &mut Topology,
     solid: SolidId,
@@ -453,12 +457,14 @@ pub fn linear_pattern_journaled(
     spacing: f64,
     count: usize,
 ) -> Result<JournaledPattern, OperationsError> {
-    let pending = begin_scoped(topo, "linear_pattern", &[solid])?;
-    let (compound, map) =
-        crate::pattern::linear_pattern_with_evolution(topo, solid, direction, spacing, count)?;
-    let members = topo.compound(compound)?.solids().to_vec();
-    let op = record_face_evolution(topo, pending, &map, &members)?;
-    Ok(JournaledPattern { compound, op, map })
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let pending = begin_scoped(topo, "linear_pattern", &[solid])?;
+        let (compound, map) =
+            crate::pattern::linear_pattern_with_evolution(topo, solid, direction, spacing, count)?;
+        let members = topo.compound(compound)?.solids().to_vec();
+        let op = record_face_evolution(topo, pending, &map, &members)?;
+        Ok(JournaledPattern { compound, op, map })
+    })
 }
 
 /// A journaled single-solid operation's result.
@@ -902,20 +908,24 @@ fn record_healing_replacements(
 ///
 /// # Errors
 ///
-/// Returns [`OperationsError`] if the shell or the recording fails.
+/// Returns [`OperationsError`] if the shell or recording fails; topology and
+/// journal state are restored together, including unpublished mutation gaps.
 pub fn shell_journaled(
     topo: &mut Topology,
     solid: SolidId,
     thickness: f64,
     open_faces: &[remus_topology::FaceId],
 ) -> Result<JournaledSolidOp, OperationsError> {
-    let pending = begin_scoped(topo, "shell", &[solid])?;
-    let (result, map) = crate::shell_op::shell_with_evolution(topo, solid, thickness, open_faces)?;
-    let op = record_face_evolution(topo, pending, &map, &[result])?;
-    Ok(JournaledSolidOp {
-        solid: result,
-        op,
-        map,
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let pending = begin_scoped(topo, "shell", &[solid])?;
+        let (result, map) =
+            crate::shell_op::shell_with_evolution(topo, solid, thickness, open_faces)?;
+        let op = record_face_evolution(topo, pending, &map, &[result])?;
+        Ok(JournaledSolidOp {
+            solid: result,
+            op,
+            map,
+        })
     })
 }
 
@@ -938,37 +948,41 @@ pub struct JournaledSplit {
 ///
 /// # Errors
 ///
-/// Returns [`OperationsError`] if the split or the recording fails.
+/// Returns [`OperationsError`] if the split or recording fails; topology and
+/// journal state are restored together, including unpublished mutation gaps.
 pub fn split_journaled(
     topo: &mut Topology,
     solid: SolidId,
     plane_point: remus_math::vec::Point3,
     plane_normal: remus_math::vec::Vec3,
 ) -> Result<JournaledSplit, OperationsError> {
-    let pending = begin_scoped(topo, "split", &[solid])?;
-    let (result, evo) = crate::split::split_with_evolution(topo, solid, plane_point, plane_normal)?;
-    let mut combined = EvolutionMap::exact();
-    for map in [&evo.positive, &evo.negative] {
-        for (&input, outputs) in &map.modified {
-            for &output in outputs {
-                combined.add_modified(input, output);
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let pending = begin_scoped(topo, "split", &[solid])?;
+        let (result, evo) =
+            crate::split::split_with_evolution(topo, solid, plane_point, plane_normal)?;
+        let mut combined = EvolutionMap::exact();
+        for map in [&evo.positive, &evo.negative] {
+            for (&input, outputs) in &map.modified {
+                for &output in outputs {
+                    combined.add_modified(input, output);
+                }
+            }
+            for (&output, candidates) in &map.unresolved {
+                combined.add_unresolved(output, candidates.clone());
             }
         }
-        for (&output, candidates) in &map.unresolved {
-            combined.add_unresolved(output, candidates.clone());
-        }
-    }
-    let op = record_face_evolution(
-        topo,
-        pending,
-        &combined,
-        &[result.positive, result.negative],
-    )?;
-    Ok(JournaledSplit {
-        result,
-        op,
-        positive_map: evo.positive,
-        negative_map: evo.negative,
+        let op = record_face_evolution(
+            topo,
+            pending,
+            &combined,
+            &[result.positive, result.negative],
+        )?;
+        Ok(JournaledSplit {
+            result,
+            op,
+            positive_map: evo.positive,
+            negative_map: evo.negative,
+        })
     })
 }
 
