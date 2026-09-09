@@ -250,6 +250,7 @@ export const brepkernel_repairSolid: (a: number, b: number) => [number, number, 
 export const brepkernel_repairSolidDetailed: (a: number, b: number) => [number, number, number];
 export const brepkernel_replaceSurfaceJournaled: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
 export const brepkernel_resizeBlend: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
+export const brepkernel_resizeBlendJournaled: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
 export const brepkernel_resizeBlendWithEvolution: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
 export const brepkernel_resizeCylindricalFace: (a: number, b: number, c: number, d: number) => [number, number, number];
 export const brepkernel_resizeCylindricalFaceJournaled: (a: number, b: number, c: number, d: number) => [number, number, number, number];
