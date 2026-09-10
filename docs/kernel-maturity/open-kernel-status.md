@@ -57,7 +57,7 @@ are indexed there; this ledger is their only state of record.
 | O4.4 Stable error-code registry (e5b) | A | Pending | — |
 | O4.5 Stable C ABI decision record | owner-gated | Pending — added 2026-09-04 by the industrial-parity overlay (row IP-15.4) | — |
 | O4.6 Serialization compatibility and migration policy | A | Pending — added 2026-09-04 by the industrial-parity overlay (rows IP-2.7, IP-12.5, IP-12.7) | — |
-| O4.7 Typed direct-method WASM results | A | Pending — added 2026-09-04 by the industrial-parity overlay (row IP-15.2; OpenZCAD roadmap W6) | — |
+| O4.7 Typed direct-method WASM results | A | Partial — additive typed result envelopes cover the README's two-solid boolean family (`fuseDetailed`, `cutDetailed`, `intersectDetailed`) with direct/`executeBatchV2` code parity and unchanged legacy methods; remaining mutating families, the generated twin-coverage gate, typed replacements for 13 JSON-string returns, and the OpenZCAD regex acceptance list remain pending | `crates/wasm/src/bindings/booleans.rs` |
 | O5.1a STEP assembly reader | A | Pending | — |
 | O5.1b STEP assembly writer | A | Pending | — |
 | O5.1c Assembly WASM + batch | A | Pending | — |
