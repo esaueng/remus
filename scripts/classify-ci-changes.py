@@ -37,9 +37,8 @@ DOC_FILENAMES = {
 # Agent instructions and skills: text read by tooling, never compiled.
 AGENT_DIRECTORIES = (".claude/",)
 # The committed distributable packages. A diff confined to them is the
-# publisher's refresh PR: its bytes were built and smoke-tested by
-# `cargo xtask wasm-build` from an already-validated main commit, and the
-# separate WASM version guard checks the version bump.
+# package paths alone do not establish trusted build provenance. Always run
+# the full suite, including when --full was explicitly requested.
 PACKAGE_DIRECTORIES = ("crates/wasm/pkg/", "crates/wasm-io/pkg/")
 # Paths whose change can alter the distributable WASM binaries or their
 # packaging in a way the native suite does not exercise.
@@ -99,7 +98,7 @@ def classify_paths(paths: list[str], force_full: bool = False) -> Classification
         return Classification(heavy=True, docs=True, full=True, wasm=True, mode="full")
 
     if all(is_committed_package(path) for path in paths):
-        return Classification(heavy=False, docs=False, full=False, wasm=False, mode="package")
+        return Classification(heavy=True, docs=True, full=True, wasm=True, mode="full")
 
     has_docs = any(is_documentation(path) for path in paths)
     lightweight = all(
