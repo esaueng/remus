@@ -41,6 +41,7 @@ BASELINE_PRESERVATION_MANIFEST = """409e26059e7657d1 4fcd3d400dabcb8c 7eb3fdf95e
 # allowing their implementation identity to move. Keys and values stay exact;
 # aggregate-count substitution is not accepted.
 BASELINE_PRESERVATION_REPLACEMENTS = {
+    "409e26059e7657d1": "4e21f84bd25b7047",
     "d6672a48aeae38c1": "efe8e8c8ecccf2c6",
     "f36ef17e09585a9d": "744a329cf5b02ebf",
 }
@@ -113,7 +114,13 @@ FIXED_PATH_WRITER_IDENTITIES: dict[str, tuple[str, ...]] = {
 DOMAIN_PATTERN = re.compile(r"domain_with_endpoints\s*\(")
 BOUNDARY_PATTERN = re.compile(r"\.(?:wire_mut|inner_wires_mut|set_outer_wire)\s*\(")
 REQUIRED_BOUNDARY_APIS = ("replace_boundary_wire", "set_face_boundary_wires")
-PRESERVATION_PATTERN = re.compile(r"\.set_trim\s*\(")
+PRESERVATION_PATTERN = re.compile(
+    r"\.set_trim\s*\("
+    r"|let\s+mut\s+(?P<clone>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*"
+    r"[A-Za-z_][A-Za-z0-9_]*\.clone\(\)\s*;\s*"
+    r"(?P=clone)\.set_start\s*\([^;]+\)\s*;\s*"
+    r"(?P=clone)\.set_end\s*\("
+)
 FUNCTION_PATTERN = re.compile(
     r"^\s*(?:pub(?:\s*\([^)]*\))?\s+)?(?:async\s+)?"
     r"fn\s+([A-Za-z_][A-Za-z0-9_]*)"
@@ -318,6 +325,15 @@ def validate_static_configuration() -> bool:
         valid = False
     if not DOMAIN_PATTERN.search("fn domain_with_endpoints\n("):
         fail("whitespace-tolerant domain scanner self-test failed")
+        valid = False
+    clone_rebind = """let mut rebuilt = source.clone();
+rebuilt.set_start(new_start);
+rebuilt.set_end(new_end);"""
+    if not PRESERVATION_PATTERN.search(clone_rebind):
+        fail("clone-and-rebind trim-preservation scanner self-test failed")
+        valid = False
+    if PRESERVATION_PATTERN.search("let mut rebuilt = source.clone();"):
+        fail("bare clone must not satisfy trim-preservation scanner self-test")
         valid = False
     topology_source = (CRATES / "topology/src/topology.rs").read_text(encoding="utf-8")
     for method in REQUIRED_BOUNDARY_APIS:
