@@ -838,6 +838,24 @@ pub struct HealPipelineResult {
     pub verified: bool,
 }
 
+/// Typed result for `unifyFacesChecked`: the face merge plus the strict
+/// validations `unifyFaces` performs on its input and its candidate, so a
+/// caller gating a boolean result does not validate the same solid again.
+#[derive(Debug, serde::Serialize, Tsify)]
+#[serde(rename_all = "camelCase")]
+pub struct UnifyFacesDetailedResult {
+    /// Faces removed by unification (zero when nothing merged or reverted).
+    pub faces_merged: u32,
+    /// Strict validation error count of the solid before unification.
+    pub input_errors: u32,
+    /// Strict validation error count of the solid after the call: the merged
+    /// candidate when kept, the unchanged input when reverted.
+    pub result_errors: u32,
+    /// The merge was rolled back because the candidate failed strict
+    /// validation while the input had passed it.
+    pub reverted: bool,
+}
+
 /// Typed result for `healSolidDetailed`.
 #[derive(Debug, serde::Serialize, Tsify)]
 #[serde(rename_all = "camelCase")]

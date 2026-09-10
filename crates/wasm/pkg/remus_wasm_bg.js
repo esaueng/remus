@@ -6789,6 +6789,30 @@ export class BrepKernel {
         return ret[0] >>> 0;
     }
     /**
+     * `unifyFaces` that also reports the strict validations it performs.
+     *
+     * Same merge, acceptance rule and tolerances as `unifyFaces`. Returns a
+     * JSON string of `UnifyFacesDetailedResult`: `facesMerged`,
+     * `inputErrors` (strict error count before), `resultErrors` (strict
+     * error count of the solid the caller now holds) and `reverted`. A
+     * caller that would otherwise validate the raw and the unified solid
+     * again can read both verdicts here instead.
+     *
+     * # Errors
+     *
+     * Returns an error if the solid handle is invalid or topology lookups
+     * fail.
+     * @param {number} solid
+     * @returns {any}
+     */
+    unifyFacesChecked(solid) {
+        const ret = wasm.brepkernel_unifyFacesChecked(this.__wbg_ptr, solid);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
      * Untrim a NURBS face by fitting a new surface to the trimmed region.
      *
      * Returns a new face handle.
