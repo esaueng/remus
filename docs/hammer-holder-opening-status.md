@@ -154,6 +154,29 @@ and source immutability. Remaining openings surround a sloped planar face and
 the rear blend. This remains partial candidate coverage, not acceptance of
 the complete 46 -> 50 mm operation.
 
+## Scaled plane equations in coincident-face matching
+
+The imported sloped plane stores rounded direction ratios, with normal length
+squared 0.99999999947236395. Its translated copy has a unit normal. The old
+same-domain comparison took their raw dot product against a unit-normal
+threshold, so it missed the coincident plane and discarded both candidates.
+
+Same-domain plane matching now normalizes both the normal and offset of each
+`n.p = d` equation. This preserves the plane itself, handles either orientation,
+and keeps the existing angular and linear thresholds. Regression coverage uses
+the fixture's rounded direction ratios, positive and negative equation scales,
+and genuinely separated and tilted planes. It fails on the previous code.
+
+The raw hammer candidate now has 104 faces and seven free boundary edges,
+down from 11. The sloped boundary is paired; the fixture checks its presence
+and edge incidence alongside the bottom, upper round and lettering. The
+remaining openings are at the rear blend. The full opening edit still fails
+strict acceptance.
+
+Normalizing the earlier coplanar section-generation phase was tested separately
+but exposed a carried-circle endpoint mismatch. That change is excluded from
+this repair; the stricter arc check remains intact.
+
 ## Next acceptance gate
 
 Repair the remaining holder-to-holder boolean, then complete both symmetric
