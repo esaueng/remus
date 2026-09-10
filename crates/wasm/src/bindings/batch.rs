@@ -3738,6 +3738,43 @@ mod batch_contract_tests {
     }
 
     #[test]
+    fn plain_batch_booleans_refuse_instead_of_silently_approximating() {
+        // B21: `fuse`, `cut`, `intersect`, and the `*WithOptions` /
+        // `*WithEvolution` forms return a bare handle, so they can never
+        // disclose a mesh fallback. On the tangent-boss pair they must refuse
+        // with the typed exact-only code and leave the operands untouched;
+        // `booleanWithQuality` remains the opt-in, disclosed path.
+        for op in [
+            r#"{"op":"fuse","args":{"solidA":0,"solidB":1}}"#,
+            r#"{"op":"fuseWithOptions","args":{"solidA":0,"solidB":1,"unifyFaces":false}}"#,
+            r#"{"op":"fuseWithEvolution","args":{"solidA":0,"solidB":1}}"#,
+        ] {
+            let mut kernel = BrepKernel::new();
+            let response = parse(&kernel.execute_batch_v2(&format!(
+                r#"[
+                    {{"op":"makeBox","args":{{"width":60,"height":40,"depth":8}}}},
+                    {{"op":"makeCylinder","args":{{"radius":10,"height":16}}}},
+                    {{"op":"transform","args":{{"solid":1,"matrix":[1,0,0,9.999,0,1,0,20,0,0,1,0,0,0,0,1]}}}},
+                    {op},
+                    {{"op":"volume","args":{{"solid":0,"deflection":0.01}}}},
+                    {{"op":"booleanWithQuality","args":{{"operation":"fuse","solidA":0,"solidB":1}}}}
+                ]"#
+            )));
+            assert_eq!(
+                response[3]["error"]["code"], "operation_failed",
+                "{op}: {response}"
+            );
+            assert_eq!(response[3]["error"]["category"], "quality_refused", "{op}");
+            assert_eq!(
+                response[3]["error"]["details"]["kernelCode"], "exact_only_unattainable",
+                "{op}"
+            );
+            assert_eq!(response[4]["ok"], 19_200.0, "{op}: refusal must roll back");
+            assert_eq!(response[5]["ok"]["quality"], "approximate", "{op}");
+        }
+    }
+
+    #[test]
     fn tangent_boss_batch_contract_refuses_exact_or_discloses_approximation() {
         let mut kernel = BrepKernel::new();
         let response = parse(&kernel.execute_batch_v2(
