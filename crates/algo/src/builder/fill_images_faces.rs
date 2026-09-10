@@ -361,10 +361,29 @@ pub fn fill_images_faces<S: BuildHasher, S2: BuildHasher>(
             .face(face_id)
             .map(|f| matches!(f.surface(), remus_topology::face::FaceSurface::Plane { .. }))
             .unwrap_or(false);
-        let sections = if !is_plane_face && !section_split_registry.is_empty() {
-            presplit_sections_at_registry(&sections, &section_split_registry, tol.linear)
-        } else {
+        // A curved face's own boundary vertices are split points too: a
+        // section that passes THROUGH an existing wire vertex (the deepened
+        // notch's cone chord runs from the new wall bottom, through the old
+        // floor-bite corner, and on over the old wall arc for a 0.01 sliver)
+        // leaves that vertex mid-edge in the arrangement and the face never
+        // splits. The planar neighbours used to register that point by
+        // accident, because their over-long wall sections crossed the chord
+        // there; a section clipped to the opposing face's true extent ends
+        // ON the chord instead and registers nothing.
+        let sections = if is_plane_face {
             sections
+        } else {
+            let boundary_vertices = face_wire_vertex_positions(topo, face_id);
+            if section_split_registry.is_empty() && boundary_vertices.is_empty() {
+                sections
+            } else {
+                presplit_sections_at_registry(
+                    &sections,
+                    &section_split_registry,
+                    &boundary_vertices,
+                    tol.linear,
+                )
+            }
         };
         let sections = if winding_loop_cuts.is_empty() {
             sections
@@ -2193,9 +2212,8 @@ fn build_section_edges(
                 });
             }
             SectionSource::PaveBlock(pb_id, opposing_face) => {
-                // Individual PaveBlock edge — use the old Line2D pcurve approach.
-                // This preserves the existing behavior for Line section edges
-                // that the face splitter already handles correctly.
+                // Individual PaveBlock edge. Preserve its curved carrier and
+                // stored domain when constructing the face-space curve.
                 let pb = match arena.pave_blocks.get(*pb_id) {
                     Some(pb) => pb,
                     None => continue,
@@ -2296,9 +2314,9 @@ fn build_section_edges(
                         // as-is.
                         let mut finals = Vec::new();
                         for (cs, ce) in clipped_list {
-                            match opposing_face
-                                .and_then(|of| clip_line_to_face_boundary(topo, of, cs, ce, tol))
-                            {
+                            match opposing_face.and_then(|of| {
+                                clip_line_to_face_extent(topo, of, cs, ce, tol, false)
+                            }) {
                                 Some(subs) => {
                                     let n = subs.len();
                                     for (i, (ss, ee)) in subs.into_iter().enumerate() {
@@ -2378,10 +2396,14 @@ fn build_section_edges(
                     }
 
                     let pcurve = super::pcurve_compute::compute_pcurve_on_surface_in_domain(
-                        &EdgeCurve::Line,
+                        edge.curve(),
                         start,
                         end,
-                        (0.0, 1.0),
+                        if matches!(edge.curve(), EdgeCurve::Line) {
+                            (0.0, 1.0)
+                        } else {
+                            edge_domain
+                        },
                         face.surface(),
                         &wire_pts,
                         None,
@@ -3246,6 +3268,17 @@ fn clip_line_to_face_boundary(
     line_end: Point3,
     tol: f64,
 ) -> Option<Vec<(Point3, Point3)>> {
+    clip_line_to_face_extent(topo, face_id, line_start, line_end, tol, true)
+}
+
+fn clip_line_to_face_extent(
+    topo: &Topology,
+    face_id: FaceId,
+    line_start: Point3,
+    line_end: Point3,
+    tol: f64,
+    discard_boundary_retraces: bool,
+) -> Option<Vec<(Point3, Point3)>> {
     let face = topo.face(face_id).ok()?;
     let wire = topo.wire(face.outer_wire()).ok()?;
 
@@ -3577,13 +3610,38 @@ fn clip_line_to_face_boundary(
         for (seg_start, seg_end) in &boundary_segments {
             let start_dist = point_to_segment_dist_3d(clipped_start, *seg_start, *seg_end);
             let end_dist = point_to_segment_dist_3d(clipped_end, *seg_start, *seg_end);
-            if start_dist < tol && end_dist < tol {
+            if discard_boundary_retraces && start_dist < tol && end_dist < tol {
                 continue 'interval;
             }
         }
         out.push((clipped_start, clipped_end));
     }
     if out.is_empty() { None } else { Some(out) }
+}
+
+/// Positions of every vertex on a face's outer and inner wires (empty when
+/// the face or a wire cannot be resolved).
+fn face_wire_vertex_positions(topo: &Topology, face_id: FaceId) -> Vec<Point3> {
+    let Ok(face) = topo.face(face_id) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+        let Ok(wire) = topo.wire(wid) else {
+            continue;
+        };
+        for oe in wire.edges() {
+            let Ok(edge) = topo.edge(oe.edge()) else {
+                continue;
+            };
+            for vid in [edge.start(), edge.end()] {
+                if let Ok(v) = topo.vertex(vid) {
+                    out.push(v.point());
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Distance from a 3D point to a line segment.
@@ -4339,6 +4397,7 @@ fn canonicalize_carried_trim(curve: &EdgeCurve, trim: (f64, f64)) -> Result<(f64
 fn presplit_sections_at_registry(
     sections: &[crate::builder::split_types::SectionEdge],
     registry: &std::collections::HashMap<usize, Vec<remus_math::vec::Point3>>,
+    boundary_vertices: &[remus_math::vec::Point3],
     tol: f64,
 ) -> Vec<crate::builder::split_types::SectionEdge> {
     // Match only points registered for the same pave block. A point splits a
@@ -4349,7 +4408,15 @@ fn presplit_sections_at_registry(
     // Sections on curved faces arrive WITHOUT pave-block ids; those keep the
     // historical geometric matching against every registered point — scoping
     // them away drops real splits and un-pairs the emitted edges.
-    let all_points: Vec<remus_math::vec::Point3> = registry.values().flatten().copied().collect();
+    //
+    // The face's own boundary vertices split every section regardless of
+    // pave block: a section through an existing vertex must break there.
+    let all_points: Vec<remus_math::vec::Point3> = registry
+        .values()
+        .flatten()
+        .chain(boundary_vertices)
+        .copied()
+        .collect();
     let weld = tol * 100.0;
     let on_curve =
         |s: &crate::builder::split_types::SectionEdge, p: remus_math::vec::Point3| -> bool {
@@ -4390,8 +4457,18 @@ fn presplit_sections_at_registry(
     let mut out = Vec::with_capacity(sections.len());
     for s in sections {
         let parent_trim = s.trim.unwrap_or_else(|| s.domain());
+        let scoped: Vec<remus_math::vec::Point3>;
         let points: &[remus_math::vec::Point3] = match s.pave_block_id {
-            Some(pb_id) => registry.get(&pb_id).map_or(&[], Vec::as_slice),
+            Some(pb_id) => {
+                scoped = registry
+                    .get(&pb_id)
+                    .map_or(&[][..], Vec::as_slice)
+                    .iter()
+                    .chain(boundary_vertices)
+                    .copied()
+                    .collect();
+                &scoped
+            }
             None => &all_points,
         };
         let chord = s.end - s.start;
@@ -4549,6 +4626,160 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use remus_math::curves::{Circle3D, Ellipse3D, Hyperbola3D, Parabola3D};
+
+    #[test]
+    fn opposing_face_extent_keeps_its_boundary_interval() {
+        let mut topo = Topology::new();
+        let points = [
+            Point3::new(-10.0, -10.0, 0.0),
+            Point3::new(10.0, -10.0, 0.0),
+            Point3::new(10.0, 10.0, 0.0),
+            Point3::new(-10.0, 10.0, 0.0),
+        ];
+        let vertices = points.map(|p| topo.add_vertex(Vertex::new(p, 1e-7)));
+        let edges = (0..4)
+            .map(|i| {
+                OrientedEdge::new(
+                    topo.add_edge(Edge::new(
+                        vertices[i],
+                        vertices[(i + 1) % 4],
+                        EdgeCurve::Line,
+                    )),
+                    true,
+                )
+            })
+            .collect();
+        let wire = topo.add_wire(Wire::new(edges, true).unwrap());
+        let normal = Vec3::new(0.0, 0.0, 1.0);
+        let face = topo.add_face(Face::new(
+            wire,
+            vec![],
+            FaceSurface::Plane { normal, d: 0.0 },
+        ));
+        let start = Point3::new(-20.0, -10.0, 0.0);
+        let end = Point3::new(20.0, -10.0, 0.0);
+        // A retrace contributes no split on this face, but defines the valid
+        // section extent for the opposing face.
+        assert!(clip_line_to_face_boundary(&topo, face, start, end, 1e-7).is_none());
+        let clipped = clip_line_to_face_extent(&topo, face, start, end, 1e-7, false).unwrap();
+        assert_eq!(clipped.len(), 1);
+        assert!((clipped[0].0 - points[0]).length() < 1e-7);
+        assert!((clipped[0].1 - points[1]).length() < 1e-7);
+
+        // Exercise the section-builder call site: this perpendicular face is
+        // wider, and its intersection must stop at the partner's boundary.
+        let own_points = [
+            Point3::new(-20.0, -10.0, -5.0),
+            Point3::new(20.0, -10.0, -5.0),
+            Point3::new(20.0, -10.0, 5.0),
+            Point3::new(-20.0, -10.0, 5.0),
+        ];
+        let own_vertices = own_points.map(|p| topo.add_vertex(Vertex::new(p, 1e-7)));
+        let own_edges = (0..4)
+            .map(|i| {
+                OrientedEdge::new(
+                    topo.add_edge(Edge::new(
+                        own_vertices[i],
+                        own_vertices[(i + 1) % 4],
+                        EdgeCurve::Line,
+                    )),
+                    true,
+                )
+            })
+            .collect();
+        let own_wire = topo.add_wire(Wire::new(own_edges, true).unwrap());
+        let own_face = topo.add_face(Face::new(
+            own_wire,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 1.0, 0.0),
+                d: -10.0,
+            },
+        ));
+        let va = topo.add_vertex(Vertex::new(start, 1e-7));
+        let vb = topo.add_vertex(Vertex::new(end, 1e-7));
+        let mut edge = Edge::new(va, vb, EdgeCurve::Line);
+        edge.set_trim(Some((0.0, 1.0)));
+        let eid = topo.add_edge(edge);
+        let mut arena = GfaArena::new();
+        let mut pb = crate::ds::PaveBlock::new(
+            eid,
+            crate::ds::Pave::new(va, 0.0),
+            crate::ds::Pave::new(vb, 1.0),
+        );
+        pb.split_edge = Some(eid);
+        let pid = arena.pave_blocks.alloc(pb);
+        let sources = HashMap::from([(own_face, vec![SectionSource::PaveBlock(pid, Some(face))])]);
+        let sections =
+            build_section_edges(&topo, &arena, own_face, &sources, &BTreeMap::new(), 1e-7).unwrap();
+        assert_eq!(sections.len(), 1);
+        assert!((sections[0].start - points[0]).length() < 1e-7);
+        assert!((sections[0].end - points[1]).length() < 1e-7);
+    }
+
+    #[test]
+    fn curved_pave_block_preserves_its_face_space_arc() {
+        use crate::ds::{Pave, PaveBlock};
+        let mut topo = Topology::new();
+        let points = [
+            Point3::new(-10.0, -10.0, 0.0),
+            Point3::new(10.0, -10.0, 0.0),
+            Point3::new(10.0, 10.0, 0.0),
+            Point3::new(-10.0, 10.0, 0.0),
+        ];
+        let vertices = points.map(|p| topo.add_vertex(Vertex::new(p, 1e-7)));
+        let edges = (0..4)
+            .map(|i| {
+                OrientedEdge::new(
+                    topo.add_edge(Edge::new(
+                        vertices[i],
+                        vertices[(i + 1) % 4],
+                        EdgeCurve::Line,
+                    )),
+                    true,
+                )
+            })
+            .collect();
+        let wire = topo.add_wire(Wire::new(edges, true).unwrap());
+        let normal = Vec3::new(0.0, 0.0, 1.0);
+        let face = topo.add_face(Face::new(
+            wire,
+            vec![],
+            FaceSurface::Plane { normal, d: 0.0 },
+        ));
+        let circle = Circle3D::new(Point3::new(0.0, 0.0, 0.0), normal, 3.0).unwrap();
+        let frame = super::super::plane_frame::PlaneFrame::from_plane_face(normal, &points);
+        // Include a descending interval and a branch crossing the periodic seam.
+        for trim in [(0.2, 2.0), (2.0, 0.2), (5.5, 7.0)] {
+            let mut arena = GfaArena::new();
+            let a = circle.evaluate(trim.0);
+            let b = circle.evaluate(trim.1);
+            let va = topo.add_vertex(Vertex::new(a, 1e-7));
+            let vb = topo.add_vertex(Vertex::new(b, 1e-7));
+            let mut edge = Edge::new(va, vb, EdgeCurve::Circle(circle.clone()));
+            edge.set_trim(Some(trim));
+            let eid = topo.add_edge(edge);
+            let mut pb = PaveBlock::new(eid, Pave::new(va, trim.0), Pave::new(vb, trim.1));
+            pb.split_edge = Some(eid);
+            let pid = arena.pave_blocks.alloc(pb);
+            let sources = HashMap::from([(face, vec![SectionSource::PaveBlock(pid, None)])]);
+            let result =
+                build_section_edges(&topo, &arena, face, &sources, &BTreeMap::new(), 1e-7).unwrap();
+            assert_eq!(result.len(), 1);
+            let section = &result[0];
+            assert_eq!(section.trim, Some(trim));
+            assert_eq!(section.pave_block_id, Some(pid.index()));
+            assert!(!matches!(section.pcurve_a, Curve2D::Line(_)));
+            let expected = frame.project(circle.evaluate((trim.0 + trim.1) * 0.5));
+            for pcurve in [&section.pcurve_a, &section.pcurve_b] {
+                let actual = pcurve.evaluate(0.5);
+                assert!(
+                    (actual - expected).length() < 1e-7,
+                    "{actual:?} != {expected:?}"
+                );
+            }
+        }
+    }
 
     /// Mutation testing found `radius - SEAM_ON_CIRCLE_TOL` survives
     /// `radius / SEAM_ON_CIRCLE_TOL` (a disc a million times too wide): the
@@ -4986,7 +5217,7 @@ mod tests {
             (99, vec![Point3::new(0.25, 0.0, 0.0)]),
         ]);
 
-        let pieces = presplit_sections_at_registry(&[section], &registry, 1e-7);
+        let pieces = presplit_sections_at_registry(&[section], &registry, &[], 1e-7);
 
         assert_eq!(pieces.len(), 2);
         assert!((pieces[0].end - Point3::new(0.5, 0.0, 0.0)).length() < 1e-9);
@@ -5021,7 +5252,7 @@ mod tests {
         };
         let registry = std::collections::HashMap::from([(3, vec![ellipse.evaluate(cut)])]);
 
-        let pieces = presplit_sections_at_registry(&[section], &registry, 1e-7);
+        let pieces = presplit_sections_at_registry(&[section], &registry, &[], 1e-7);
 
         assert_eq!(pieces.len(), 2);
         assert_eq!(pieces[0].trim, Some((trim.0, cut)));
