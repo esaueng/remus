@@ -44,6 +44,26 @@ use remus_topology::Topology;
 use remus_topology::face::FaceSurface;
 use remus_topology::solid::SolidId;
 
+/// This configuration reaches the mesh fallback. The plain entry point
+/// refuses it by design (B21: a bare handle cannot disclose an
+/// approximation), so the test takes the disclosed permissive path and keeps
+/// checking the geometry it always checked.
+fn boolean_allowing_fallback(
+    topo: &mut Topology,
+    op: BooleanOp,
+    a: SolidId,
+    b: SolidId,
+) -> Result<SolidId, remus_operations::OperationsError> {
+    remus_operations::boolean::boolean_with_context(
+        topo,
+        op,
+        a,
+        b,
+        &remus_math::context::OperationContext::new(),
+    )
+    .map(|outcome| outcome.solid)
+}
+
 const PLATE_X: f64 = 60.0;
 const PLATE_Y: f64 = 40.0;
 const PLATE_Z: f64 = 8.0;
@@ -324,7 +344,7 @@ fn every_crossing_depth_is_at_least_close() {
         for d in FULL_SWEEP {
             let mut topo = Topology::new();
             let (plate, boss) = build(&mut topo, d);
-            let result = boolean(&mut topo, op, plate, boss)
+            let result = boolean_allowing_fallback(&mut topo, op, plate, boss)
                 .unwrap_or_else(|e| panic!("{name} at d={d}: {e}"));
             let what = format!("{name} at d={d}");
             assert_watertight(&topo, result, &what);

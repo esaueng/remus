@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use remus_io::step::reader::read_step;
 use remus_io::step::writer::write_step;
 use remus_math::mat::Mat4;
-use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::boolean::BooleanOp;
 use remus_operations::measure::solid_volume;
 use remus_operations::primitives::{make_box, make_cylinder};
 use remus_operations::transform::transform_solid;
@@ -17,6 +17,26 @@ use remus_topology::explorer::solid_faces;
 use remus_topology::face::FaceSurface;
 use remus_topology::solid::SolidId;
 use remus_topology::validation::validate_shell_closed;
+
+/// This configuration reaches the mesh fallback. The plain entry point
+/// refuses it by design (B21: a bare handle cannot disclose an
+/// approximation), so the test takes the disclosed permissive path and keeps
+/// checking the geometry it always checked.
+fn boolean_allowing_fallback(
+    topo: &mut Topology,
+    op: BooleanOp,
+    a: SolidId,
+    b: SolidId,
+) -> Result<SolidId, remus_operations::OperationsError> {
+    remus_operations::boolean::boolean_with_context(
+        topo,
+        op,
+        a,
+        b,
+        &remus_math::context::OperationContext::new(),
+    )
+    .map(|outcome| outcome.solid)
+}
 
 fn assert_one_closed_valid_solid(topo: &Topology, solid: SolidId) {
     let shell = topo
@@ -49,10 +69,12 @@ fn build_walkthrough_bracket() -> (Topology, SolidId) {
 
     let boss = make_cylinder(&mut topo, 12.0, 24.0).expect("boss");
     transform_solid(&mut topo, boss, &Mat4::translation(0.0, 8.0, 0.0)).expect("place boss");
-    let bossed = boolean(&mut topo, BooleanOp::Fuse, plate, boss).expect("fuse boss");
+    let bossed =
+        boolean_allowing_fallback(&mut topo, BooleanOp::Fuse, plate, boss).expect("fuse boss");
 
     let bore = make_cylinder(&mut topo, 6.0, 48.0).expect("bore");
-    let bracket = boolean(&mut topo, BooleanOp::Cut, bossed, bore).expect("drill bracket");
+    let bracket =
+        boolean_allowing_fallback(&mut topo, BooleanOp::Cut, bossed, bore).expect("drill bracket");
     (topo, bracket)
 }
 
