@@ -813,7 +813,19 @@ for (const operation of ['fillet', 'chamfer']) {
   const shiftedVolume = kernel.volume(shiftedCommon.solid, 0.01);
   assert.ok(shiftedVolume > 0 && shiftedVolume < kernel.volume(common.solid, 0.01));
   assert.ok(Math.abs(kernel.volume(restoredShifted, 0.01) - shiftedVolume) < shiftedVolume * 1e-6);
-  console.log('ok - hammer cut and both intersections preserve exact topology and STEP round trips');
+  const fused = kernel.booleanWithQuality('fuse', result.solid, shiftedCommon.solid, true);
+  assert.equal(fused.quality, 'exact');
+  assert.deepEqual(kernel.serializeSolids(new Uint32Array([source])), sourceBytes);
+  const fusedStep = io.exportStep(kernel.serializeSolids(new Uint32Array([fused.solid])));
+  const [restoredFuse] = Array.from(kernel.deserializeSolids(io.importStep(fusedStep)));
+  for (const solid of [fused.solid, restoredFuse]) {
+    assert.equal(Array.from(kernel.getSolidFaces(solid)).length, 177);
+    assertCut(solid);
+  }
+  const fusedVolume = kernel.volume(fused.solid, 0.01);
+  assert.ok(Math.abs(fusedVolume - kernel.volume(result.solid, 0.01) - shiftedVolume) < fusedVolume * 1e-5);
+  assert.ok(Math.abs(kernel.volume(restoredFuse, 0.01) - fusedVolume) < fusedVolume * 1e-6);
+  console.log('ok - hammer left partition and reassembly preserve exact topology and STEP round trips');
 }
 
 // 15. OpenZCAD mounting-bracket cylindrical-face resize and STEP round trip.
