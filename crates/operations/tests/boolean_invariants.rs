@@ -18,6 +18,26 @@ use remus_topology::solid::SolidId;
 use remus_topology::test_utils::make_unit_cube_manifold_at;
 use remus_topology::validation::validate_shell_manifold;
 
+/// This configuration reaches the mesh fallback. The plain entry point
+/// refuses it by design (B21: a bare handle cannot disclose an
+/// approximation), so the test takes the disclosed permissive path and keeps
+/// checking the geometry it always checked.
+fn boolean_allowing_fallback(
+    topo: &mut Topology,
+    op: BooleanOp,
+    a: SolidId,
+    b: SolidId,
+) -> Result<SolidId, remus_operations::OperationsError> {
+    remus_operations::boolean::boolean_with_context(
+        topo,
+        op,
+        a,
+        b,
+        &remus_math::context::OperationContext::new(),
+    )
+    .map(|outcome| outcome.solid)
+}
+
 const DEFLECTION: f64 = 0.1;
 
 fn vol(topo: &Topology, solid: SolidId) -> f64 {
@@ -338,7 +358,7 @@ fn fuse_edge_on_edge_boxes() {
     let b = make_unit_cube_manifold_at(&mut topo, 1.0, 1.0, 0.0);
 
     assert!(matches!(
-        boolean(&mut topo, BooleanOp::Fuse, a, b),
+        boolean_allowing_fallback(&mut topo, BooleanOp::Fuse, a, b),
         Err(OperationsError::NonManifoldResult)
     ));
 }
@@ -586,15 +606,15 @@ fn fuse_thin_shell_with_containing_solid_preserves_larger_volume() {
     let b = make_box(&mut topo, 0.5, 0.5, 0.5).unwrap();
     let vol_a = vol(&topo, a);
 
-    let diff = boolean(&mut topo, BooleanOp::Cut, a, b).unwrap();
+    let diff = boolean_allowing_fallback(&mut topo, BooleanOp::Cut, a, b).unwrap();
     let vol_diff = vol(&topo, diff);
 
     let a2 = make_box(&mut topo, 0.500_1, 0.500_1, 0.500_1).unwrap();
     let b2 = make_box(&mut topo, 0.5, 0.5, 0.5).unwrap();
-    let inter = boolean(&mut topo, BooleanOp::Intersect, a2, b2).unwrap();
+    let inter = boolean_allowing_fallback(&mut topo, BooleanOp::Intersect, a2, b2).unwrap();
     let vol_inter = vol(&topo, inter);
 
-    let fused = boolean(&mut topo, BooleanOp::Fuse, diff, inter).unwrap();
+    let fused = boolean_allowing_fallback(&mut topo, BooleanOp::Fuse, diff, inter).unwrap();
     let vol_fused = vol(&topo, fused);
 
     // diff ⊂ inter (≈ A), so Fuse should return ≈ A.
