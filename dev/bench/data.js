@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789080162053,
+  "lastUpdate": 1789081603066,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -28051,6 +28051,240 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 84424,
             "range": "± 6588",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "721490f9f216f43ef8b36f8c485c471b5fd2ed40",
+          "message": "perf(math): cache the NURBS weight scale and share partial evaluations (#389)\n\n`NurbsSurface::derivatives` and `NurbsCurve::derivatives` rescanned every\ncontrol-point weight on every call to find the scale that keeps the\nperspective divide stable (2204 weights per evaluation on a 38x58 patch),\nand allocated nested `Vec`s for the homogeneous derivative table. Both\nstructs are immutable after construction, so the maximum weight is now\ncomputed once (`OnceLock`, filled in `new`, lazily after deserialization,\nexcluded from `PartialEq` and from the serde format) and the table lives in\na stack buffer for orders up to `MAX_STACK_OUTPUT`.\n\n`ParametricSurface` gains `partials(u, v)`, defaulting to the two separate\npartial calls; the NURBS override takes both from one `derivatives(u, v, 1)`,\nand the Gauss face integrator behind strict `validate_solid`'s inside-out\ncheck and `mass_properties` uses it. Every result is bit-identical to before:\nthe scale is the same global maximum, the summation order is unchanged, and\nthe two partials are the same table entries the separate calls returned.\n\nMeasured on the shipped Shapr3D hammer-holder fixture (42 NURBS faces), new\ncriterion bench `nurbs_properties` in `remus-io`:\nvalidate_solid strict 3.163 s -> 0.974 s (-69 %),\nmass_properties 7.875 s -> 2.250 s (-71 %).\nThe 3-way GFA fuse of the OpenZCAD growing-holder operands at a 16.1 mm\nopening, dominated by NURBS projections, drops 5.25 s -> 3.42 s.\n\nCo-authored-by: Claude Fable 5.1 <noreply@anthropic.com>",
+          "timestamp": "2026-09-10T19:00:19-04:00",
+          "tree_id": "2b462c8648a6997db24657338256f2167a9de0ee",
+          "url": "https://github.com/esaueng/remus/commit/721490f9f216f43ef8b36f8c485c471b5fd2ed40"
+        },
+        "date": 1789081601818,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1020402,
+            "range": "± 1246",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1098419,
+            "range": "± 1673",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 21407,
+            "range": "± 33",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 9601152,
+            "range": "± 12032",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 9599358,
+            "range": "± 8994",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 9236073,
+            "range": "± 6326",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 877004,
+            "range": "± 17005",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 14628271,
+            "range": "± 24242",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 26138298,
+            "range": "± 603103",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 28,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 83,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 48,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 176,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 127,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 592,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 123,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 261,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 168,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 401,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 614,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 2597,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 16,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 28,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 52,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 52,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 450780,
+            "range": "± 1907",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 8955558,
+            "range": "± 19157",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 132920,
+            "range": "± 239",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 486353,
+            "range": "± 797",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 107306,
+            "range": "± 135",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 759101,
+            "range": "± 21795",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 8906262,
+            "range": "± 9852",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 626182,
+            "range": "± 5455",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 941249,
+            "range": "± 1206",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 82468,
+            "range": "± 776",
             "unit": "ns/iter"
           }
         ]
