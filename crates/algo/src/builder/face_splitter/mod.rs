@@ -5054,14 +5054,11 @@ fn split_face_2d_impl(
         } else {
             boundary_edges_to_pcurve(topo, iw_id, &surface, &iw_pts, None)?
         };
-        // A hole bounded by closed curved edges (e.g. a single full
-        // circle) has fewer than 3 distinct wire points but is a valid
-        // inner wire; only polyline-style wires need 3+ points.
-        let has_closed_curve = edges.iter().any(|e| {
-            !matches!(e.curve_3d, EdgeCurve::Line)
-                && (e.start_3d - e.end_3d).length() < tol.linear * 100.0
-        });
-        if !edges.is_empty() && (iw_pts.len() >= 3 || has_closed_curve) {
+        // Curved holes can enclose area with fewer than three vertices:
+        // one closed circle or two complementary NURBS branches. Only
+        // all-line loops require three distinct points.
+        let has_curved_boundary = edges.iter().any(|e| !matches!(e.curve_3d, EdgeCurve::Line));
+        if !edges.is_empty() && (iw_pts.len() >= 3 || has_curved_boundary) {
             original_inner_wires.push(edges);
         }
     }
@@ -8829,5 +8826,69 @@ mod tests {
         let out = split_loop_at_pinch_vertices(&wire, 1e-7);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].len(), 4);
+    }
+    #[test]
+    fn two_nurbs_edges_preserve_a_planar_hole() {
+        use remus_math::nurbs::curve::NurbsCurve;
+        use remus_topology::{
+            edge::{Edge, EdgeId},
+            face::Face,
+            vertex::Vertex,
+            wire::{OrientedEdge, Wire},
+        };
+        let mut topo = Topology::new();
+        let outer = remus_topology::builder::make_polygon_wire(
+            &mut topo,
+            &[
+                Point3::new(-3.0, -3.0, 0.0),
+                Point3::new(3.0, -3.0, 0.0),
+                Point3::new(3.0, 3.0, 0.0),
+                Point3::new(-3.0, 3.0, 0.0),
+            ],
+            1e-7,
+        )
+        .unwrap();
+        let a = Point3::new(-1.0, 0.0, 0.0);
+        let b = Point3::new(1.0, 0.0, 0.0);
+        let va = topo.add_vertex(Vertex::new(a, 1e-7));
+        let vb = topo.add_vertex(Vertex::new(b, 1e-7));
+        let mut edges = Vec::new();
+        for y in [1.0, -1.0] {
+            let curve = NurbsCurve::new(
+                2,
+                vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+                vec![a, Point3::new(0.0, y, 0.0), b],
+                vec![1.0; 3],
+            )
+            .unwrap();
+            let mut edge = Edge::new(va, vb, EdgeCurve::NurbsCurve(curve));
+            edge.set_trim(Some((0.0, 1.0)));
+            edges.push(OrientedEdge::new(topo.add_edge(edge), y > 0.0));
+        }
+        let hole = topo.add_wire(Wire::new(edges, true).unwrap());
+        let face = topo.add_face(Face::new(
+            outer,
+            vec![hole],
+            FaceSurface::Plane {
+                normal: remus_math::vec::Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+        let images = std::collections::HashMap::<EdgeId, Vec<EdgeId>>::new();
+        let split = split_face_2d(
+            &topo,
+            face,
+            &[],
+            Rank::A,
+            &remus_math::tolerance::Tolerance::default(),
+            None,
+            None,
+            &images,
+            None,
+        )
+        .unwrap();
+        assert_eq!(split.len(), 1);
+        assert_eq!(split[0].inner_wires.len(), 1);
+        assert_eq!(split[0].inner_wires[0].len(), 2);
     }
 }

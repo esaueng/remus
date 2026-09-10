@@ -114,6 +114,10 @@ pub fn winding_number(
 ) -> Result<f64, OperationsError> {
     let mesh = crate::tessellate::tessellate_solid(topo, solid, deflection)?;
 
+    Ok(mesh_winding_number(&mesh, point))
+}
+
+fn mesh_winding_number(mesh: &crate::tessellate::TriangleMesh, point: Point3) -> f64 {
     let mut total = 0.0;
     for tri in mesh.indices.chunks_exact(3) {
         let (a, b, c) = (
@@ -124,7 +128,7 @@ pub fn winding_number(
         total += solid_angle(point, a, b, c);
     }
 
-    Ok(total / (4.0 * PI))
+    total / (4.0 * PI)
 }
 
 /// Classifies a point using generalized winding numbers.
@@ -169,18 +173,70 @@ pub fn classify_point_robust(
     deflection: f64,
     tolerance: f64,
 ) -> Result<PointClassification, OperationsError> {
-    if remus_check::classify::is_point_on_boundary(topo, solid, point, tolerance)? {
-        return Ok(PointClassification::OnBoundary);
+    RobustClassifier::new(topo, solid, deflection, tolerance).classify(point)
+}
+
+/// Reuses one immutable operand tessellation across a batch of point queries.
+/// Boundary checks and ambiguous winding fallback retain the scalar contract.
+pub(crate) struct RobustClassifier<'a> {
+    topo: &'a Topology,
+    solid: SolidId,
+    deflection: f64,
+    tolerance: f64,
+    mesh: Option<crate::tessellate::TriangleMesh>,
+}
+
+impl<'a> RobustClassifier<'a> {
+    pub(crate) const fn new(
+        topo: &'a Topology,
+        solid: SolidId,
+        deflection: f64,
+        tolerance: f64,
+    ) -> Self {
+        Self {
+            topo,
+            solid,
+            deflection,
+            tolerance,
+            mesh: None,
+        }
     }
 
-    let w = winding_number(topo, solid, point, deflection)?;
-    if w > INSIDE_THRESHOLD + AMBIGUOUS_BAND {
-        return Ok(PointClassification::Inside);
+    pub(crate) fn classify(
+        &mut self,
+        point: Point3,
+    ) -> Result<PointClassification, OperationsError> {
+        if remus_check::classify::is_point_on_boundary(
+            self.topo,
+            self.solid,
+            point,
+            self.tolerance,
+        )? {
+            return Ok(PointClassification::OnBoundary);
+        }
+        let mesh = match &mut self.mesh {
+            Some(mesh) => mesh,
+            slot @ None => slot.insert(crate::tessellate::tessellate_solid(
+                self.topo,
+                self.solid,
+                self.deflection,
+            )?),
+        };
+        let w = mesh_winding_number(mesh, point);
+        if w > INSIDE_THRESHOLD + AMBIGUOUS_BAND {
+            return Ok(PointClassification::Inside);
+        }
+        if w < INSIDE_THRESHOLD - AMBIGUOUS_BAND {
+            return Ok(PointClassification::Outside);
+        }
+        classify_point(
+            self.topo,
+            self.solid,
+            point,
+            self.deflection,
+            self.tolerance,
+        )
     }
-    if w < INSIDE_THRESHOLD - AMBIGUOUS_BAND {
-        return Ok(PointClassification::Outside);
-    }
-    classify_point(topo, solid, point, deflection, tolerance)
 }
 
 /// Signed solid angle subtended by triangle `(a, b, c)` at `p`, in steradians.
@@ -220,6 +276,29 @@ mod tests {
     use crate::primitives::{self, make_box, make_cone, make_cylinder, make_sphere, make_torus};
     use remus_math::vec::Vec3;
     use remus_topology::face::FaceSurface;
+
+    #[test]
+    fn batch_robust_classification_retains_curved_boundary_and_interior_semantics() {
+        let mut topo = Topology::new();
+        let cylinder = make_cylinder(&mut topo, 10.0, 20.0).unwrap();
+        let mut classifier = RobustClassifier::new(&topo, cylinder, 0.05, 1e-6);
+        for (point, expected) in [
+            (
+                Point3::new(10.0, 0.0, 10.0),
+                PointClassification::OnBoundary,
+            ),
+            (Point3::new(0.0, 0.0, 10.0), PointClassification::Inside),
+            (Point3::new(11.0, 0.0, 10.0), PointClassification::Outside),
+            (Point3::new(0.0, 0.0, 20.0), PointClassification::OnBoundary),
+            (Point3::new(0.0, -9.0, 19.0), PointClassification::Inside),
+        ] {
+            assert_eq!(classifier.classify(point).unwrap(), expected);
+            assert_eq!(
+                classify_point_robust(&topo, cylinder, point, 0.05, 1e-6).unwrap(),
+                expected
+            );
+        }
+    }
 
     #[test]
     fn point_inside_box() {
