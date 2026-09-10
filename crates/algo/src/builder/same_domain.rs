@@ -2084,7 +2084,16 @@ pub(crate) fn surfaces_same_domain(
             )
         }
         (FaceSurface::Plane { normal: na, d: da }, FaceSurface::Plane { normal: nb, d: db }) => {
-            let dot = na.dot(*nb);
+            // n.p = d is unchanged when both coefficients are divided by
+            // |n|. Imported planes need not have exactly unit normals.
+            let da = da / na.length();
+            let db = db / nb.length();
+            let na = na.normalize().ok()?;
+            let nb = nb.normalize().ok()?;
+            if !da.is_finite() || !db.is_finite() {
+                return None;
+            }
+            let dot = na.dot(nb);
             if dot > 1.0 - tol.angular {
                 // Same direction — check distance
                 if (da - db).abs() < tol.linear {
