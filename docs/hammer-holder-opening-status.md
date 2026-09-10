@@ -76,6 +76,24 @@ An equivalent subtraction construction was also examined:
 `current - (mask - translated_source)`. Its first tool cut fails strict sphere
 inner-wire orientation checks, so it is not a supported alternative.
 
+## Shifted-intersection investigation
+
+A focused regression exposed a separate coplanar clipping defect: when a line
+crossed both arms of a concave U-shaped face, the clipper joined disconnected
+inside intervals into one section through the opening. Its early return also
+accepted such a crossing whenever both endpoints were inside. The clipper now
+emits separate connected sections, preserving traversal direction and the
+existing tolerance. The regression covers outside endpoints, inside endpoints,
+and reversed traversal; it fails on the previous implementation.
+
+This correction alone does **not** repair the shifted-holder intersection.
+Replaying the same raw GFA candidate still produces 100 faces with 30 free
+boundary edges. The source-partition trace also shows incomplete face splits:
+the shifted bottom plane produces only one sub-face, while the partition's
+bottom plane retains boundaries outside the shifted holder. Curved boundary
+sections and the coplanar split remain the next investigation target. This is
+diagnostic evidence, not permission to accept an open candidate.
+
 ## Next acceptance gate
 
 Repair the remaining holder-to-holder boolean, then complete both symmetric
