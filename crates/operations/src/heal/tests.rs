@@ -1160,3 +1160,57 @@ fn healing_report_total_sums_every_category_once() {
     assert_eq!(report.total(), 63);
     assert_eq!(report.changes().iter().map(|c| c.count).sum::<usize>(), 63);
 }
+
+#[test]
+fn unify_faces_checked_reports_the_validations_it_runs() {
+    // Same L-shape fuse as `unify_boolean_box_reduces_faces`: coplanar z-face
+    // fragments that unify, on a strictly valid input.
+    let mut topo = Topology::new();
+    let box1 = crate::primitives::make_box(&mut topo, 3.0, 1.0, 1.0).unwrap();
+    let box2 = crate::primitives::make_box(&mut topo, 1.0, 3.0, 1.0).unwrap();
+    let opts = crate::boolean::BooleanOptions {
+        unify_faces: false,
+        ..Default::default()
+    };
+    let fused = crate::boolean::boolean_with_options(
+        &mut topo,
+        crate::boolean::BooleanOp::Fuse,
+        box1,
+        box2,
+        opts,
+    )
+    .unwrap();
+    let twin = crate::copy::copy_solid(&mut topo, fused).unwrap();
+
+    let expected_merged = unify_faces(&mut topo, twin).unwrap();
+    let report = unify_faces_checked(&mut topo, fused).unwrap();
+
+    assert_eq!(report.faces_merged, expected_merged);
+    assert!(report.faces_merged > 0);
+    assert_eq!(report.input_errors, 0);
+    assert_eq!(report.result_errors, 0);
+    assert!(!report.reverted);
+    // The report's verdicts are the strict validator's verdicts on the solid
+    // the caller now holds.
+    let strict = crate::validate::validate_solid(&topo, fused).unwrap();
+    assert_eq!(strict.error_count(), report.result_errors);
+    let (f_fused, _, _) = remus_topology::explorer::solid_entity_counts(&topo, fused).unwrap();
+    let (f_twin, _, _) = remus_topology::explorer::solid_entity_counts(&topo, twin).unwrap();
+    assert_eq!(f_fused, f_twin);
+}
+
+#[test]
+fn unify_faces_checked_on_a_clean_box_reports_no_merge_and_no_errors() {
+    let mut topo = Topology::new();
+    let solid = crate::primitives::make_box(&mut topo, 2.0, 2.0, 2.0).unwrap();
+    let report = unify_faces_checked(&mut topo, solid).unwrap();
+    assert_eq!(
+        report,
+        UnifyFacesReport {
+            faces_merged: 0,
+            input_errors: 0,
+            result_errors: 0,
+            reverted: false,
+        }
+    );
+}

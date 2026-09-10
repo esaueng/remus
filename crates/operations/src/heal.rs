@@ -1489,6 +1489,47 @@ pub fn unify_faces(topo: &mut Topology, solid: SolidId) -> Result<usize, crate::
     Ok(unify_faces_with_history(topo, solid)?.faces_merged)
 }
 
+/// What [`unify_faces_checked`] learned about the solid while unifying it.
+///
+/// `unify_faces` already runs the strict validator on its input (to decide
+/// whether a merge may be rejected) and on its merged candidate (to decide
+/// whether to keep it). Callers that need those verdicts — a boolean gate
+/// that would otherwise validate the same solid again — read them here
+/// instead of paying for a third and fourth strict validation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnifyFacesReport {
+    /// Faces removed by unification; zero when nothing merged or the merge
+    /// was reverted.
+    pub faces_merged: usize,
+    /// Strict validation error count of the solid before unification.
+    pub input_errors: usize,
+    /// Strict validation error count of the solid as it stands after the
+    /// call: the merged candidate when it was kept, the unchanged input when
+    /// the merge was reverted.
+    pub result_errors: usize,
+    /// A merge was computed but rolled back because the merged candidate
+    /// failed strict validation while the input had passed it.
+    pub reverted: bool,
+}
+
+/// [`unify_faces`] that also reports the strict validations it performs.
+///
+/// Same merge, same acceptance rule and same tolerances as [`unify_faces`];
+/// the only addition is that an input that already fails strict validation
+/// has its merged result validated too, so `result_errors` is always the
+/// verdict on the solid the caller is left holding.
+///
+/// # Errors
+///
+/// Returns an error if topology lookups fail.
+pub fn unify_faces_checked(
+    topo: &mut Topology,
+    solid: SolidId,
+) -> Result<UnifyFacesReport, crate::OperationsError> {
+    let (_, report) = unify_faces_with_report(topo, solid)?;
+    Ok(report)
+}
+
 /// Construction history for [`unify_faces`].
 pub(crate) struct FaceUnifyHistory {
     pub(crate) faces_merged: usize,
@@ -1520,25 +1561,44 @@ pub(crate) fn unify_faces_with_history(
     topo: &mut Topology,
     solid: SolidId,
 ) -> Result<FaceUnifyHistory, crate::OperationsError> {
-    let input_was_valid = crate::validate::validate_solid(topo, solid)?.is_valid();
+    let (history, _) = unify_faces_with_report(topo, solid)?;
+    Ok(history)
+}
+
+/// The shared implementation behind [`unify_faces`],
+/// [`unify_faces_with_history`] and [`unify_faces_checked`]: one strict
+/// validation of the input, the transacted merge, one strict validation of
+/// the candidate, and the revert rule.
+fn unify_faces_with_report(
+    topo: &mut Topology,
+    solid: SolidId,
+) -> Result<(FaceUnifyHistory, UnifyFacesReport), crate::OperationsError> {
+    let input_errors = crate::validate::validate_solid(topo, solid)?.error_count();
+    let input_was_valid = input_errors == 0;
     let original_faces = {
         let shell_id = topo.solid(solid)?.outer_shell();
         topo.shell(shell_id)?.faces().to_vec()
     };
     match remus_topology::transaction::run_transacted(topo, |topo| {
         let result = unify_faces_with_history_impl(topo, solid)?;
-        if input_was_valid {
-            let validation = crate::validate::validate_solid(topo, solid)?;
-            if !validation.is_valid() {
-                return Err(UnifyTransactionError::InvalidCandidate {
-                    faces_merged: result.faces_merged,
-                    error_count: validation.error_count(),
-                });
-            }
+        let validation = crate::validate::validate_solid(topo, solid)?;
+        if input_was_valid && !validation.is_valid() {
+            return Err(UnifyTransactionError::InvalidCandidate {
+                faces_merged: result.faces_merged,
+                error_count: validation.error_count(),
+            });
         }
-        Ok(result)
+        Ok((result, validation.error_count()))
     }) {
-        Ok(result) => Ok(result),
+        Ok((history, result_errors)) => {
+            let report = UnifyFacesReport {
+                faces_merged: history.faces_merged,
+                input_errors,
+                result_errors,
+                reverted: false,
+            };
+            Ok((history, report))
+        }
         Err(UnifyTransactionError::InvalidCandidate {
             faces_merged,
             error_count,
@@ -1548,10 +1608,17 @@ pub(crate) fn unify_faces_with_history(
                 faces_merged,
                 error_count
             );
-            Ok(FaceUnifyHistory {
+            let history = FaceUnifyHistory {
                 faces_merged: 0,
                 modified: original_faces.iter().map(|&face| (face, face)).collect(),
-            })
+            };
+            let report = UnifyFacesReport {
+                faces_merged: 0,
+                input_errors,
+                result_errors: input_errors,
+                reverted: true,
+            };
+            Ok((history, report))
         }
         Err(UnifyTransactionError::Operation(error)) => Err(error),
     }
