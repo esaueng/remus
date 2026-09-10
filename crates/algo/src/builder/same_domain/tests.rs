@@ -9,6 +9,49 @@ use remus_math::vec::{Point3, Vec3};
 use remus_topology::builder::{make_face_from_wire, make_polygon_wire};
 
 #[test]
+#[allow(clippy::approx_constant)] // Preserve the rounded direction ratios in the imported fixture.
+fn plane_coincidence_is_invariant_under_equation_scaling() {
+    let normal = Vec3::new(0.0, -0.707_106_781, 0.707_106_781);
+    let d = 13.435_028_839;
+    let unit = normal.normalize().unwrap();
+    let distance = d / normal.length();
+    let reference = FaceSurface::Plane {
+        normal: unit,
+        d: distance,
+    };
+    for scale in [0.1, 1.0, 2.0, 10.0, -0.1, -2.0] {
+        let scaled = FaceSurface::Plane {
+            normal: normal * scale,
+            d: d * scale,
+        };
+        assert_eq!(
+            surfaces_same_domain(&reference, &scaled, Tolerance::default()),
+            Some(scale > 0.0)
+        );
+        assert_eq!(
+            surfaces_same_domain(&scaled, &reference, Tolerance::default()),
+            Some(scale > 0.0)
+        );
+        let separated = FaceSurface::Plane {
+            normal: normal * scale,
+            d: (distance + 2.0 * Tolerance::default().linear) * normal.length() * scale,
+        };
+        assert_eq!(
+            surfaces_same_domain(&reference, &separated, Tolerance::default()),
+            None
+        );
+    }
+    let tilted = FaceSurface::Plane {
+        normal: Vec3::new(0.001, unit.y(), unit.z()),
+        d: distance,
+    };
+    assert_eq!(
+        surfaces_same_domain(&reference, &tilted, Tolerance::default()),
+        None
+    );
+}
+
+#[test]
 fn overlap_candidates_stream_dense_pairs_in_order() {
     const FACE_COUNT: usize = 256;
     let bb = Aabb3 {
