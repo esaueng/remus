@@ -358,6 +358,71 @@ fn hammer_left_reassembly_and_right_partition_are_strictly_valid() {
         remus_io::arena_io::serialize_solid(&topo, source).expect("source after right cut"),
         original
     );
+    let right_inside = boolean_with_context(
+        &mut topo,
+        BooleanOp::Intersect,
+        fused.solid,
+        right_mask,
+        &context,
+    )
+    .expect("right intersection")
+    .solid;
+    let shifted_right = remus_operations::copy::copy_solid(&mut topo, source).expect("right copy");
+    transform_solid(&mut topo, shifted_right, &Mat4::translation(2.0, 0.0, 0.0))
+        .expect("right shift");
+    // Candidate-only checkpoint: the point-contact pairs must not send the
+    // marcher into a convergence failure, but the missing bottom remains an
+    // explicit rejection. This is not acceptance of the shifted intersection.
+    let candidate = remus_algo::gfa::boolean(
+        &mut topo,
+        remus_algo::bop::BooleanOp::Intersect,
+        right_inside,
+        shifted_right,
+    )
+    .expect("right candidate must finish tracing");
+    assert_eq!(
+        remus_topology::explorer::solid_faces(&topo, candidate)
+            .expect("candidate faces")
+            .len(),
+        35
+    );
+    let report = validate_solid(&topo, candidate, &ValidateOptions::default())
+        .expect("candidate validation");
+    assert!(
+        !report.is_valid(),
+        "the incomplete candidate must remain rejected"
+    );
+    let mut uses = std::collections::BTreeMap::new();
+    for fid in remus_topology::explorer::solid_faces(&topo, candidate).expect("candidate faces") {
+        let f = topo.face(fid).expect("face");
+        for wid in std::iter::once(f.outer_wire()).chain(f.inner_wires().iter().copied()) {
+            for oe in topo.wire(wid).expect("wire").edges() {
+                *uses.entry(oe.edge()).or_insert(0usize) += 1;
+            }
+        }
+    }
+    let mut free = 0;
+    for (eid, count) in uses {
+        assert!(count <= 2, "non-manifold candidate edge");
+        if count == 1 {
+            free += 1;
+            let edge = topo.edge(eid).expect("edge");
+            for v in [edge.start(), edge.end()] {
+                let p = topo.vertex(v).expect("vertex").point();
+                assert!(
+                    (p.z() - 4.5).abs() < 1e-7
+                        && (10.999_999..=40.000_001).contains(&p.x())
+                        && (6.499_999..=43.000_001).contains(&p.y()),
+                    "unexpected free boundary {p:?}"
+                );
+            }
+        }
+    }
+    assert_eq!(free, 9, "only the missing bottom boundary remains open");
+    assert_eq!(
+        remus_io::arena_io::serialize_solid(&topo, source).expect("source after candidate"),
+        original
+    );
 }
 
 #[test]
