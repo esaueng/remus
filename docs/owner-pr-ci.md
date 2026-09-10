@@ -137,12 +137,10 @@ kernel PR waits only for the checks that can fail on its diff:
   `Cargo.toml`, or `rust-toolchain.toml`. A kernel-only PR does not rebuild
   the distributable packages; the main push and the publisher's refresh PR
   cover that.
-- **Package refresh** (`package`): a diff confined to `crates/wasm/pkg` and
-  `crates/wasm-io/pkg` (the publisher's refresh PR) runs only Repository
-  Policy, Secrets Scan and the separate WASM version guard. Its bytes were
-  built and smoke-tested by `cargo xtask wasm-build` from a main commit that
-  already passed the full suite.
-- **Docs** (`docs`) and **agent instructions** (`.claude/`) stay lightweight.
+- **Package refresh**: a diff confined to `crates/wasm/pkg` and
+  `crates/wasm-io/pkg` runs the full suite. Paths alone do not prove that the
+  committed bytes came from a trusted build; no package-only validation bypass
+  is enabled.
 
 CI Pass accepts a skipped job only when its tier flag is false, and rejects
 a tier-2 or package selection without a heavy selection. Every main push
