@@ -49,7 +49,11 @@ const kernel = new BrepKernel();
 // block's corner. Use `transformSolid` to place it somewhere else.
 const block = kernel.makeBox(30, 20, 10);
 const cutter = kernel.makeCylinder(5, 15);
-const notched = kernel.cut(block, cutter);
+const cut = kernel.cutDetailed(block, cutter);
+if (cut.status === 'error') {
+  throw new Error(`${cut.code}: ${cut.details.message}`);
+}
+const notched = cut.value;
 const vol = kernel.volume(notched, 0.1);
 
 // File formats live in a separate translator module, loaded only around
