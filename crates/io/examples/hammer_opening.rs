@@ -1,9 +1,9 @@
 //! Replay the exact-only 46 -> 50 mm hammer-holder opening experiment.
 //!
 //! This is a diagnostic, not a supported modeling feature. The current kernel
-//! passes the left reconstruction, right-side cut and first right intersection.
-//! The shifted right-partition intersection still fails strict closure: its
-//! bottom face is missing.
+//! completes both side reconstructions with exact booleans and strict validation.
+//! Fixture tests additionally check dimensions, mounting bores, mesh closure and
+//! STEP round trips. Application parameterization is not yet enabled.
 //! No approximate fallback is enabled.
 //!
 //! Run with `cargo run --profile ci-test -p remus-io --example hammer_opening`.
