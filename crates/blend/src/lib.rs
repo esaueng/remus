@@ -223,6 +223,23 @@ pub struct BlendFaceOrigins {
     pub created_unattributed: Vec<FaceId>,
 }
 
+/// The engine that produced a [`BlendResult`].
+///
+/// Disclosed so a consumer can tell an analytic walking-builder result from a
+/// rolling-ball rebuild or a planar bevel without inspecting the geometry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlendEngine {
+    /// The walking builder in this crate (`FilletBuilder` / `ChamferBuilder`).
+    Walking,
+    /// The operations-layer rolling-ball rebuild.
+    RollingBall,
+    /// The operations-layer planar bevel (chamfer only).
+    PlanarBevel,
+    /// A multi-feature selection whose features were blended on different
+    /// engines.
+    Mixed,
+}
+
 /// Result of a blend operation.
 pub struct BlendResult {
     /// The resulting solid.
@@ -237,4 +254,6 @@ pub struct BlendResult {
     /// report it. `None` means the caller must fall back to matching geometry —
     /// and must say so to its own consumer.
     pub face_origins: Option<BlendFaceOrigins>,
+    /// The engine that produced `solid`.
+    pub engine: BlendEngine,
 }

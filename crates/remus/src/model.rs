@@ -246,18 +246,25 @@ impl Model {
         )
     }
 
-    /// Fillets selected edges with the v2 validated blend engine.
+    /// Fillets selected edges through the kernel's one fillet cascade.
+    ///
+    /// The walking engine runs first, then the rolling-ball rebuild; the
+    /// engine that produced the result is disclosed in
+    /// [`BlendResult::engine`]. This is the same policy the WASM `fillet`
+    /// binding runs, so both surfaces return the same geometry for the same
+    /// request.
     ///
     /// # Errors
     ///
-    /// Returns [`OperationsError`] for invalid or unsupported blends.
+    /// Returns [`OperationsError`] for invalid or unsupported blends; a
+    /// refusal leaves the topology unchanged.
     pub fn fillet(
         &mut self,
         solid: SolidId,
         edges: &[EdgeId],
         radius: f64,
     ) -> Result<BlendResult, OperationsError> {
-        remus_operations::blend_ops::fillet_v2(&mut self.topology, solid, edges, radius)
+        remus_operations::blend_ops::fillet_cascade(&mut self.topology, solid, edges, radius)
     }
 
     /// Chamfers selected edges with the v2 validated blend engine.
@@ -682,6 +689,20 @@ mod tests {
                 .unwrap()
                 .starts_with("ISO-10303-21;")
         );
+    }
+
+    #[test]
+    fn fillet_runs_the_shared_cascade_and_discloses_its_engine() {
+        let mut model = Model::new();
+        let solid = model.make_box(10.0, 10.0, 10.0).unwrap();
+        let edges = remus_topology::explorer::solid_edges(model.topology(), solid).unwrap();
+        let result = model.fillet(solid, &edges[..1], 1.0).unwrap();
+        assert_eq!(
+            result.engine,
+            remus_operations::blend_ops::BlendEngine::RollingBall
+        );
+        let volume = model.volume(result.solid, 0.05).unwrap();
+        assert!(volume < 1000.0 && volume > 990.0, "{volume}");
     }
 
     #[test]

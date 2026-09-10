@@ -20,20 +20,19 @@ There are three fillet code paths and two chamfer paths. "v1 vs v2" is a simplif
 
 ### The dispatcher
 
-`crates/wasm/src/helpers.rs`, `pub fn try_fillet` (carries `#[allow(deprecated)]`). Tries engines in preference order and accepts the first whose outer shell passes `validate_shell_closed`:
+`crates/operations/src/blend_ops.rs`, `pub fn fillet_cascade` (B23). One policy for every handle-returning surface. Tries, each inside a transaction and each under the complete-blend, volume, and `validate_shell_closed` guards:
 
-1. `fillet::fillet_rolling_ball`
-2. `blend_ops::fillet_v2`
-3. `fillet::fillet`
+1. `blend_ops::fillet_v2` (which for planar-line selections runs `planar_fillet_result`, the rolling-ball rebuild, before the walking builder)
+2. `planar_fillet_result` on its own
 
-If `filter_filletable_edges` drops all edges, or no engine yields a closed shell, it returns `Ok(solid_id)` unchanged. That unchanged return is Layer A of the silent no-op trap.
+The flat bevel `fillet::fillet` is not consulted for a fillet request. When both fail, the walking engine's typed error is returned and the input is untouched. `BlendResult::engine` discloses the engine that produced the result. The wasm helper `try_fillet` (`crates/wasm/src/helpers.rs`) only drops tangent/degenerate edges via `filter_filletable_edges` and calls the cascade.
 
 ### Public wasm bindings (`crates/wasm/src/bindings/operations.rs`)
 
 | JS name | Rust fn | Engine |
 |---|---|---|
-| `fillet` | `fillet_solid` | `try_fillet` chain (rolling-ball → v2 → bevel) |
-| `filletWithEvolution` | `fillet_with_evolution` | `try_fillet` (same chain) |
+| `fillet` | `fillet_solid` | `fillet_cascade` (v2 → rolling-ball) |
+| `filletWithEvolution` | `fillet_with_evolution` | `fillet_cascade` (same policy) |
 | `filletVariable` | `fillet_variable` | v1 `fillet::fillet_variable` |
 | `chamfer` | `chamfer_solid` → `chamfer::chamfer` | flat-bevel chamfer (planar-only) |
 | `filletV2` | `fillet_v2` | v2 `blend_ops::fillet_v2` |
