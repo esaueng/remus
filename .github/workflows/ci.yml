@@ -9,7 +9,10 @@ on:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # Supersede only PR runs. Every main push keeps its run so each merge
+  # commit gets a completed verdict instead of being cancelled by the next
+  # merge in a burst.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -30,11 +33,11 @@ jobs:
       id-token: write
       contents: read
       pull-requests: read
-    uses: esaueng/remus/.github/workflows/fleet-ci.yml@09e36ffc3695ff74744f9b338cae26b515bc7666
+    uses: esaueng/remus/.github/workflows/fleet-ci.yml@39ddcfb5950c0973312ff18bd95b6a8e1a653696
 
   wasm-size:
     needs: checks
-    if: github.event_name == 'pull_request' && needs.checks.outputs.heavy == 'true'
+    if: github.event_name == 'pull_request' && needs.checks.outputs.wasm == 'true'
     uses: esaueng/remus/.github/workflows/fleet-wasm-size.yml@09e36ffc3695ff74744f9b338cae26b515bc7666
     permissions:
       contents: read

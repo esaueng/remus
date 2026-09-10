@@ -1,5 +1,18 @@
 #!/usr/bin/env python3
-"""Classify a Git diff for CI without changing required check names."""
+"""Classify a Git diff for CI without changing required check names.
+
+Outputs (all lowercase booleans except ``mode``):
+
+* ``heavy`` — source changed: build, lint, and test the workspace.
+* ``docs`` — documentation changed: build rustdoc and the book.
+* ``full`` — run the second tier (coverage, macOS, MSRV, fuzz compile,
+  render, deny, audit). True only for heavy changes on non-PR events or PRs
+  carrying the ``ci:full`` label (``--full``).
+* ``wasm`` — build and validate the distributable WASM packages. True for
+  heavy changes when ``full`` is set or the diff touches a WASM-affecting
+  path.
+* ``mode`` — ``full``, ``pr``, ``docs``, ``package``, or ``ci-only``.
+"""
 
 from __future__ import annotations
 
@@ -21,12 +34,24 @@ DOC_FILENAMES = {
     "README",
     "README.md",
 }
+# Agent instructions and skills: text read by tooling, never compiled.
+AGENT_DIRECTORIES = (".claude/",)
+# The committed distributable packages. A diff confined to them is the
+# package paths alone do not establish trusted build provenance. Always run
+# the full suite, including when --full was explicitly requested.
+PACKAGE_DIRECTORIES = ("crates/wasm/pkg/", "crates/wasm-io/pkg/")
+# Paths whose change can alter the distributable WASM binaries or their
+# packaging in a way the native suite does not exercise.
+WASM_DIRECTORIES = ("crates/wasm/", "crates/wasm-io/", "xtask/", "tools/vs-bench/")
+WASM_FILENAMES = {"Cargo.lock", "Cargo.toml", "rust-toolchain.toml"}
 
 
 @dataclass(frozen=True)
 class Classification:
     heavy: bool
     docs: bool
+    full: bool
+    wasm: bool
     mode: str
 
 
@@ -49,22 +74,54 @@ def is_lightweight_github_metadata(path: str) -> bool:
     )
 
 
-def classify_paths(paths: list[str]) -> Classification:
+def is_agent_instruction(path: str) -> bool:
+    return PurePosixPath(path).as_posix().startswith(AGENT_DIRECTORIES)
+
+
+def is_committed_package(path: str) -> bool:
+    return PurePosixPath(path).as_posix().startswith(PACKAGE_DIRECTORIES)
+
+
+def affects_wasm(path: str) -> bool:
+    normalized = PurePosixPath(path).as_posix()
+    name = PurePosixPath(normalized).name
+    return (
+        normalized.startswith(WASM_DIRECTORIES)
+        or normalized in WASM_FILENAMES
+        or (normalized.startswith("scripts/") and ("wasm" in name or "w9" in name))
+    )
+
+
+def classify_paths(paths: list[str], force_full: bool = False) -> Classification:
     # An empty or unrecognized diff must receive the complete suite.
     if not paths:
-        return Classification(heavy=True, docs=True, mode="full")
+        return Classification(heavy=True, docs=True, full=True, wasm=True, mode="full")
+
+    if all(is_committed_package(path) for path in paths):
+        return Classification(heavy=True, docs=True, full=True, wasm=True, mode="full")
 
     has_docs = any(is_documentation(path) for path in paths)
     lightweight = all(
-        is_documentation(path) or is_lightweight_github_metadata(path)
+        is_documentation(path)
+        or is_lightweight_github_metadata(path)
+        or is_agent_instruction(path)
         for path in paths
     )
     if not lightweight:
-        return Classification(heavy=True, docs=True, mode="full")
+        wasm = force_full or any(affects_wasm(path) for path in paths)
+        return Classification(
+            heavy=True,
+            docs=True,
+            full=force_full,
+            wasm=wasm,
+            mode="full" if force_full else "pr",
+        )
 
     return Classification(
         heavy=False,
         docs=has_docs,
+        full=False,
+        wasm=False,
         mode="docs" if has_docs else "ci-only",
     )
 
@@ -86,15 +143,22 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base", required=True)
     parser.add_argument("--head", required=True)
+    parser.add_argument(
+        "--full",
+        action="store_true",
+        help="select the second tier for heavy changes (main pushes, ci:full label)",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     paths = changed_paths(args.base, args.head)
-    result = classify_paths(paths)
+    result = classify_paths(paths, force_full=args.full)
     print(f"heavy={str(result.heavy).lower()}")
     print(f"docs={str(result.docs).lower()}")
+    print(f"full={str(result.full).lower()}")
+    print(f"wasm={str(result.wasm).lower()}")
     print(f"mode={result.mode}")
     print(f"changed_count={len(paths)}")
 
