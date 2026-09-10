@@ -1002,6 +1002,25 @@ fn expand_edge<S: BuildHasher>(
     }
 }
 
+// Equal endpoints do not identify a curved branch: complementary half-circle
+// rims have the same endpoints. Never replace one by the other's CommonBlock.
+fn cb_edge_matches_branch(topo: &Topology, a: EdgeId, b: EdgeId, tolerance: f64) -> bool {
+    let sample = |id| {
+        let edge = topo.edge(id).ok()?;
+        let (lo, hi) = edge.strict_domain().ok()?;
+        let start = topo.vertex(edge.start()).ok()?.point();
+        let end = topo.vertex(edge.end()).ok()?.point();
+        Some(
+            edge.curve()
+                .evaluate_with_endpoints(f64::midpoint(lo, hi), start, end),
+        )
+    };
+    match (sample(a), sample(b)) {
+        (Some(a), Some(b)) => (a - b).length() <= tolerance,
+        _ => false,
+    }
+}
+
 /// Rebuild an unsplit face replacing boundary edges with CommonBlock shared edges.
 ///
 /// For each boundary edge of the face, checks if its PaveBlock belongs to a
@@ -1017,7 +1036,7 @@ fn rebuild_face_with_cb_edges(
     face_id: FaceId,
     cb_qpair_edges: &HashMap<CbEdgeKey, remus_topology::edge::EdgeId>,
     vv_vertex_seed: &std::collections::BTreeMap<(i64, i64, i64), remus_topology::vertex::VertexId>,
-    _tol: Tolerance,
+    tol: Tolerance,
 ) -> Option<FaceId> {
     if cb_qpair_edges.is_empty() && vv_vertex_seed.is_empty() {
         return None;
@@ -1063,6 +1082,7 @@ fn rebuild_face_with_cb_edges(
                 let key = if qs <= qe { (qs, qe) } else { (qe, qs) };
                 if let Some(&cb_edge) = cb_qpair_edges.get(&key)
                     && cb_edge != oe.edge()
+                    && cb_edge_matches_branch(topo, oe.edge(), cb_edge, tol.linear)
                 {
                     return true;
                 }
@@ -1174,6 +1194,7 @@ fn rebuild_face_with_cb_edges(
             let key = if qs <= qe { (qs, qe) } else { (qe, qs) };
             if let Some(&cb_edge) = cb_qpair_edges.get(&key)
                 && cb_edge != eid
+                && cb_edge_matches_branch(topo, eid, cb_edge, tol.linear)
             {
                 let oriented_start_q = if fwd { qs } else { qe };
                 // If we can't look up the CB edge's start position,
@@ -3874,7 +3895,8 @@ fn build_topology_face(
         .iter()
         .chain(split.inner_wires.iter().flatten())
     {
-        preflight_wire_edge(edge, tol.linear)?;
+        let source_tolerance = carried_edge_tolerance(topo, edge, tol.linear)?;
+        preflight_wire_edge(edge, (tol.linear * 100.0).max(source_tolerance))?;
     }
 
     // Step 1: Create/find vertices for each unique 3D endpoint.
@@ -3949,7 +3971,7 @@ fn build_topology_face(
         return Ok(None);
     }
 
-    orient_planar_outer_wire(topo, &split.surface, split.reversed, &mut oriented_edges)?;
+    orient_planar_outer_wire(topo, &split.surface, &mut oriented_edges)?;
 
     // Step 3: Build wire.
     let Some(wire) = Wire::new(oriented_edges, true).ok() else {
@@ -3998,7 +4020,11 @@ fn build_topology_face(
     Ok(Some(face_id))
 }
 
-/// Orient a planar outer wire to agree with the face's effective normal.
+/// Orient a planar outer wire to agree with the stored surface normal.
+///
+/// The face reversal is applied by consumers to both the surface normal and
+/// edge uses. Applying it here too reverses split boundaries twice and breaks
+/// their orientation against adjacent unsplit faces.
 ///
 /// The planar arrangement may emit a geometrically correct loop with the
 /// opposite 3D winding when its local frame has a reversed axis. Sampling the
@@ -4006,13 +4032,11 @@ fn build_topology_face(
 fn orient_planar_outer_wire(
     topo: &Topology,
     surface: &FaceSurface,
-    reversed: bool,
     oriented_edges: &mut [OrientedEdge],
 ) -> Result<(), AlgoError> {
     let FaceSurface::Plane { normal, .. } = surface else {
         return Ok(());
     };
-    let effective_normal = if reversed { -*normal } else { *normal };
     let mut points = Vec::with_capacity(oriented_edges.len() * 4);
 
     for oriented in oriented_edges.iter() {
@@ -4061,7 +4085,7 @@ fn orient_planar_outer_wire(
         );
     }
 
-    if winding.dot(effective_normal) < 0.0 {
+    if winding.dot(*normal) < 0.0 {
         oriented_edges.reverse();
         for oriented in oriented_edges.iter_mut() {
             *oriented = OrientedEdge::new(oriented.edge(), !oriented.is_forward());
@@ -4084,7 +4108,8 @@ fn instantiate_wire_edge(
     pcurve_edge: &super::split_types::OrientedPCurveEdge,
     tolerance: f64,
 ) -> Result<(remus_topology::edge::EdgeId, bool), AlgoError> {
-    let orientation = preflight_wire_edge(pcurve_edge, tolerance)?;
+    let stored_tolerance = carried_edge_tolerance(topo, pcurve_edge, tolerance)?;
+    let orientation = preflight_wire_edge(pcurve_edge, (tolerance * 100.0).max(stored_tolerance))?;
     let is_line = matches!(pcurve_edge.curve_3d, EdgeCurve::Line);
     let (storage_start, storage_end) = if orientation.reverse_storage {
         (end_vid, start_vid)
@@ -4095,7 +4120,7 @@ fn instantiate_wire_edge(
         storage_start,
         storage_end,
         pcurve_edge.curve_3d.clone(),
-        Some(tolerance),
+        Some(stored_tolerance),
     );
     if !is_line {
         edge.set_trim(orientation.trim);
@@ -4108,6 +4133,27 @@ fn instantiate_wire_edge(
     }
     let edge_id = topo.add_edge(edge);
     Ok((edge_id, orientation.forward))
+}
+
+// Splitting an imported boundary must retain its existing tolerance contract.
+// Generated section edges have no source and keep the operation tolerance.
+fn carried_edge_tolerance(
+    topo: &Topology,
+    edge: &super::split_types::OrientedPCurveEdge,
+    operation_tolerance: f64,
+) -> Result<f64, AlgoError> {
+    let Some(index) = edge.source_topo_edge else {
+        return Ok(operation_tolerance);
+    };
+    let id = topo
+        .edge_id_from_index(index)
+        .ok_or_else(|| AlgoError::FaceSplitFailed(format!("missing source edge {index}")))?;
+    let source = topo.edge(id)?;
+    let vertex_tolerance = topo
+        .vertex(source.start())?
+        .tolerance()
+        .max(topo.vertex(source.end())?.tolerance());
+    Ok(operation_tolerance.max(source.effective_tolerance(vertex_tolerance)))
 }
 
 #[derive(Clone, Copy)]
@@ -4147,7 +4193,7 @@ fn preflight_wire_edge(
         ))
     })?;
     let trim = canonicalize_carried_trim(&pcurve_edge.curve_3d, trim)?;
-    let guard = tolerance * 100.0;
+    let guard = tolerance;
     let curve_start = pcurve_edge.curve_3d.evaluate_with_endpoints(
         trim.0,
         pcurve_edge.start_3d,
@@ -4172,8 +4218,12 @@ fn preflight_wire_edge(
         && reverse_end_distance <= guard;
     if !direct && !reversed {
         return Err(AlgoError::FaceSplitFailed(format!(
-            "carried {} range endpoints do not match the wire edge",
-            pcurve_edge.curve_3d.type_tag()
+            "carried {} range endpoints do not match the wire edge: trim={trim:?} start={:?} end={:?} curve_start={curve_start:?} curve_end={curve_end:?} guard={guard} source={:?} block={:?}",
+            pcurve_edge.curve_3d.type_tag(),
+            pcurve_edge.start_3d,
+            pcurve_edge.end_3d,
+            pcurve_edge.source_topo_edge,
+            pcurve_edge.pave_block_id
         )));
     }
 
@@ -5041,5 +5091,45 @@ mod tests {
 
         assert_eq!(hits.len(), 1);
         assert!((hits[0].0 - expected).length() < 1e-7);
+    }
+    #[test]
+    fn copied_boundary_retains_source_tolerance_without_inflating_it() {
+        let curve = interpolate(
+            &[
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(0.5, 0.2, 0.0),
+                Point3::new(1.0, 0.0, 0.0),
+            ],
+            2,
+        )
+        .unwrap();
+        let start = Point3::new(0.0, 4e-5, 0.0);
+        let end = Point3::new(1.0, 0.0, 0.0);
+        let mut topo = Topology::new();
+        let a = topo.add_vertex(Vertex::new(start, 1e-7));
+        let b = topo.add_vertex(Vertex::new(end, 1e-7));
+        let mut source =
+            Edge::with_tolerance(a, b, EdgeCurve::NurbsCurve(curve.clone()), Some(5e-5));
+        source.set_trim(Some((0.0, 1.0)));
+        let source_id = topo.add_edge(source);
+        let mut transient = super::super::split_types::OrientedPCurveEdge {
+            curve_3d: EdgeCurve::NurbsCurve(curve),
+            trim: Some((0.0, 1.0)),
+            pcurve: Curve2D::Line(Line2D::new(Point2::new(0.0, 0.0), Vec2::new(1.0, 0.0)).unwrap()),
+            start_uv: Point2::new(0.0, 0.0),
+            end_uv: Point2::new(1.0, 0.0),
+            start_3d: start,
+            end_3d: end,
+            forward: true,
+            source_edge_idx: None,
+            pave_block_id: None,
+            source_topo_edge: None,
+        };
+        assert!(instantiate_test_edge(&mut topo, &transient).is_err());
+        transient.source_topo_edge = Some(source_id.index());
+        let (id, _) = instantiate_test_edge(&mut topo, &transient).unwrap();
+        assert_eq!(topo.edge(id).unwrap().tolerance(), Some(5e-5));
+        transient.start_3d = Point3::new(0.0, 6e-5, 0.0);
+        assert!(instantiate_test_edge(&mut topo, &transient).is_err());
     }
 }

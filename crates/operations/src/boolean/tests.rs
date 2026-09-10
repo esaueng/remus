@@ -9218,3 +9218,33 @@ fn fuse_acceptance_detects_small_tool_lost_from_long_blank() {
         Tolerance::default()
     ));
 }
+
+#[test]
+fn intersection_audit_uses_the_trimmed_torus_boundary() {
+    let mut topo = Topology::new();
+    let torus = crate::primitives::make_torus(&mut topo, 10.0, 3.0, 32).unwrap();
+    let mask = crate::primitives::make_box(&mut topo, 8.0, 8.0, 8.0).unwrap();
+    crate::transform::transform_solid(
+        &mut topo,
+        mask,
+        &remus_math::mat::Mat4::translation(6.0, -4.0, -4.0),
+    )
+    .unwrap();
+    let result = boolean(&mut topo, BooleanOp::Intersect, torus, mask).unwrap();
+    let samples = intersection_boundary_samples(&topo, result).unwrap();
+    assert!(!samples.is_empty());
+    let in_mask = |p: &Point3| {
+        p.x() >= 6.0 - 1e-7
+            && p.x() <= 14.0 + 1e-7
+            && p.y().abs() <= 4.0 + 1e-7
+            && p.z().abs() <= 4.0 + 1e-7
+    };
+    assert!(samples.iter().all(in_mask));
+    // Full-carrier samples would extend outside the requested intersection.
+    assert!(
+        intersection_boundary_samples(&topo, torus)
+            .unwrap()
+            .iter()
+            .any(|p| !in_mask(p))
+    );
+}

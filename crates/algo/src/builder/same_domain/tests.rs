@@ -1429,3 +1429,50 @@ fn planar_nurbs_support_participates_in_containment_without_carrier_replacement(
         .is_none()
     );
 }
+
+#[test]
+fn planar_sampling_respects_descending_nurbs_trim() {
+    use remus_math::nurbs::curve::NurbsCurve;
+    use remus_topology::{
+        edge::Edge,
+        face::Face,
+        vertex::Vertex,
+        wire::{OrientedEdge, Wire},
+    };
+    let mut topo = Topology::new();
+    let a = Point3::new(-1.0, 0.0, 0.0);
+    let b = Point3::new(1.0, 0.0, 0.0);
+    let va = topo.add_vertex(Vertex::new(a, 1e-7));
+    let vb = topo.add_vertex(Vertex::new(b, 1e-7));
+    let mut edges = Vec::new();
+    for y in [1.0, -1.0] {
+        let curve = NurbsCurve::new(
+            2,
+            vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            vec![a, Point3::new(0.0, y, 0.0), b],
+            vec![1.0; 3],
+        )
+        .unwrap();
+        let (start, end, trim) = if y > 0.0 {
+            (va, vb, (0.0, 1.0))
+        } else {
+            (vb, va, (1.0, 0.0))
+        };
+        let mut edge = Edge::new(start, end, EdgeCurve::NurbsCurve(curve));
+        edge.set_trim(Some(trim));
+        edges.push(OrientedEdge::new(topo.add_edge(edge), true));
+    }
+    let wire = topo.add_wire(Wire::new(edges, true).unwrap());
+    let face = topo.add_face(Face::new(
+        wire,
+        vec![],
+        FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: 0.0,
+        },
+    ));
+    let area = planar_face_area(&topo, face).unwrap();
+    // Eight samples per edge approximate the analytic 4/3 area. Reversing
+    // the lower curve's carried range folds the polygon to zero area.
+    assert!((1.3..1.34).contains(&area), "{area}");
+}

@@ -751,6 +751,53 @@ for (const operation of ['fillet', 'chamfer']) {
   console.log('ok - real Shapr3D connected-blend refusal is exact and transactional');
 }
 
+// The opening experiment's first cut and intersection preserve mounting-hole
+// rims, planar winding and complementary NURBS lettering branches. The full
+// 46 -> 50 mm reconstruction remains a separate acceptance gate.
+{
+  const kernel = new BrepKernel();
+  const step = readFileSync(resolve(projectRoot, 'crates/io/tests/data/shapr3d_hammer_holder.step'));
+  const [source] = Array.from(kernel.deserializeSolids(io.importStep(step)));
+  const sourceBytes = kernel.serializeSolids(new Uint32Array([source]));
+  const mask = kernel.makeBox(29, 53, 70);
+  kernel.transformSolid(mask, new Float64Array([1, 0, 0, -18, 0, 1, 0, -10, 0, 0, 1, 0, 0, 0, 0, 1]));
+  const result = kernel.booleanWithQuality('cut', source, mask, true);
+  assert.equal(result.quality, 'exact');
+  assert.deepEqual(kernel.serializeSolids(new Uint32Array([source])), sourceBytes);
+  const assertCut = (solid) => {
+    const strict = JSON.parse(kernel.validateSolidDetailed(solid));
+    assert.equal(strict.errorCount, 0);
+    const quality = JSON.parse(kernel.meshQuality(solid, 0.05, 0.1));
+    assert.equal(quality.boundaryEdges, 0);
+    assert.equal(quality.nonManifoldEdges, 0);
+    assert.equal(quality.isWatertight, true);
+    const bores = Array.from(kernel.getSolidFaces(solid))
+      .map((face) => JSON.parse(kernel.getAnalyticSurfaceParams(face)))
+      .filter((surface) => surface.type === 'cylinder' && Math.abs(surface.radius - 2.5) < 1e-7);
+    assert.equal(bores.length, 2);
+  };
+  assertCut(result.solid);
+  const exported = io.exportStep(kernel.serializeSolids(new Uint32Array([result.solid])));
+  const imported = Array.from(kernel.deserializeSolids(io.importStep(exported)));
+  assert.equal(imported.length, 1);
+  assertCut(imported[0]);
+  const common = kernel.booleanWithQuality('intersect', source, mask, true);
+  assert.equal(common.quality, 'exact');
+  assert.deepEqual(kernel.serializeSolids(new Uint32Array([source])), sourceBytes);
+  const commonStep = io.exportStep(kernel.serializeSolids(new Uint32Array([common.solid])));
+  const [restoredCommon] = Array.from(kernel.deserializeSolids(io.importStep(commonStep)));
+  for (const solid of [common.solid, restoredCommon]) {
+    assert.equal(Array.from(kernel.getSolidFaces(solid)).length, 101,
+      'both complementary lettering branches and the enclosed planar faces must survive');
+    assert.equal(JSON.parse(kernel.validateSolidDetailed(solid)).errorCount, 0);
+    const mesh = JSON.parse(kernel.meshQuality(solid, 0.05, 0.1));
+    assert.equal(mesh.boundaryEdges, 0);
+    assert.equal(mesh.nonManifoldEdges, 0);
+    assert.equal(mesh.isWatertight, true);
+  }
+  console.log('ok - hammer cut and intersection preserve exact topology, lettering, bores and STEP round trips');
+}
+
 // 15. OpenZCAD mounting-bracket cylindrical-face resize and STEP round trip.
 runOpenZcadCylindricalFaceResizeRegression({ BrepKernel, decodeEvolutionPayload, RemusIo });
 
