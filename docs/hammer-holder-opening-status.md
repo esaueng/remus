@@ -69,9 +69,10 @@ The diagnostic now passes the first cut, both left-partition intersections,
 the left-side fuse, the right-side cut and the first right-side intersection.
 The 177-face left fuse and 162-face right cut pass strict validation, mesh
 closure, bore preservation and STEP round-trip checks. The next intersection,
-between the 33-face right partition and the source shifted +2 mm in X, refuses
-with `Newton iteration did not converge after 12 iterations`. The replay stops
-at that failure. No approximate fallback is permitted. The sections below
+between the 33-face right partition and the source shifted +2 mm in X, now
+finishes tracing but produces an invalid 35-face candidate with nine free edges
+outlining its missing bottom face. The operations API rejects it and the replay
+stops there. No approximate fallback is permitted. The sections below
 record the successive repair checkpoints.
 
 An equivalent subtraction construction was also examined:
@@ -286,5 +287,30 @@ positive reduced volume and STEP round-trip validation/volume. Focused tests
 cover a concave two-section chain at three scales, face reversal, conservation
 of outer area, preservation of both circular holes, and rejection of crossing
 or tangent sections by the bounded fallback. The complete replay now reaches
-the shifted right-partition intersection, whose numerical convergence failure
-is the next kernel repair target. No application editing feature is enabled.
+the shifted right-partition intersection. Its numerical refusal was the next
+checkpoint, addressed below. No application editing feature is enabled.
+
+## Upper-round point contacts before shifted right intersection
+
+Two upper-round cylinder/torus face pairs meet only at a common end plane.
+Their trimmed patches occupy opposite sides of that plane, and their circular
+sections have different centers. Their intersection therefore consists of at
+most isolated points, not a curve. Marching the unbounded carriers attempted
+to fit a curve outside the actual face patches and failed refinement.
+
+A bounded analytic check now recognizes this case for rectangular ring-torus
+patches and cylindrical faces bounded by lines and perpendicular circle
+sections. The existing vertex/edge interference stages remain in place. Only
+the face-face curve calculation is skipped. Coincident circles, genuine axial
+overlap, tilted planes and unsupported trims retain the existing path. No
+solver iteration limit, residual tolerance or validation rule changes.
+
+Focused tests cover rotated carriers, three scales, shifted angular windows,
+coincident circles, different radii, real overlap, same-side patches and tilted
+axes. The native hammer regression reaches the raw 35-face candidate without
+a convergence failure, requires every remaining free edge to lie on the
+missing bottom at z = 4.5 mm, checks that no edge has more than two face uses,
+and preserves the source. This is candidate-only coverage: nine free edges
+remain, and strict validation must reject it. Browser WASM coverage retains the
+successful partition checks and verifies that the incomplete intersection is
+refused under exact-only policy. Full opening parameterization is not enabled.

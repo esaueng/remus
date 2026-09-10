@@ -2,7 +2,8 @@
 //!
 //! This is a diagnostic, not a supported modeling feature. The current kernel
 //! passes the left reconstruction, right-side cut and first right intersection.
-//! The shifted right-partition intersection still fails numerical convergence.
+//! The shifted right-partition intersection still fails strict closure: its
+//! bottom face is missing.
 //! No approximate fallback is enabled.
 //!
 //! Run with `cargo run --profile ci-test -p remus-io --example hammer_opening`.
