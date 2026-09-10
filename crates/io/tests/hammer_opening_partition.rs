@@ -176,7 +176,7 @@ fn hammer_intersection_preserves_the_closed_lettering_loops() {
 /// Partial candidate regression, not acceptance of the complete opening edit.
 /// The raw GFA candidate still has unrelated open boundaries above its base.
 #[test]
-fn hammer_shifted_intersection_pairs_bottom_round_and_lettering_boundaries() {
+fn hammer_shifted_intersection_pairs_repaired_boundaries() {
     let mut topo = Topology::new();
     let source =
         read_step(include_str!("data/shapr3d_hammer_holder.step"), &mut topo).expect("import")[0];
@@ -208,10 +208,22 @@ fn hammer_shifted_intersection_pairs_bottom_round_and_lettering_boundaries() {
     let mut bottom_edges = 0;
     let mut round_edges = 0;
     let mut lettering_edges = 0;
+    let mut slope_edges = 0;
     for (eid, count) in uses {
         let edge = topo.edge(eid).expect("edge");
         let a = topo.vertex(edge.start()).expect("start").point();
         let b = topo.vertex(edge.end()).expect("end").point();
+        let slope = |p: remus_math::vec::Point3| {
+            p.x() >= -18.000_001
+                && p.x() <= -16.999_999
+                && p.y() >= 30.378_678
+                && p.y() <= 36.621_322
+                && (p.z() - p.y() - 19.0).abs() < 1e-7
+        };
+        if slope(a) && slope(b) {
+            slope_edges += 1;
+            assert_eq!(count, 2, "unpaired sloped edge: {a:?} -> {b:?}");
+        }
         let upper_round = |p: remus_math::vec::Point3| {
             p.x() >= -17.000_001
                 && p.x() <= -13.999_999
@@ -242,6 +254,10 @@ fn hammer_shifted_intersection_pairs_bottom_round_and_lettering_boundaries() {
     assert!(
         bottom_edges > 0,
         "candidate must retain its bottom boundary"
+    );
+    assert!(
+        slope_edges >= 4,
+        "candidate must retain its sloped boundary"
     );
     assert!(round_edges >= 4, "candidate must retain its upper round");
     assert!(lettering_edges > 0, "candidate must retain its lettering");
