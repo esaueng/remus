@@ -10,6 +10,92 @@ use remus_topology::Topology;
 use super::*;
 
 #[test]
+fn scaling_unify_group_edge_visits_are_linear() {
+    for groups in [16_u32, 64, 256] {
+        let mut topo = Topology::new();
+        let mut faces = Vec::new();
+        for i in 0..groups {
+            let solid = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+            crate::transform::transform_solid(
+                &mut topo,
+                solid,
+                &remus_math::mat::Mat4::translation(3.0 * f64::from(i), 0.0, 0.0),
+            )
+            .unwrap();
+            let mut box_faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
+            let face = topo.face(box_faces.remove(0)).unwrap().clone();
+            let edges = topo.wire(face.outer_wire()).unwrap().edges().to_vec();
+            let a = edges[0].oriented_start(topo.edge(edges[0].edge()).unwrap());
+            let b = edges[2].oriented_start(topo.edge(edges[2].edge()).unwrap());
+            let diagonal = topo.add_edge(Edge::new(a, b, EdgeCurve::Line));
+            for boundary in [
+                vec![edges[0], edges[1], OrientedEdge::new(diagonal, false)],
+                vec![OrientedEdge::new(diagonal, true), edges[2], edges[3]],
+            ] {
+                let wire = topo.add_wire(Wire::new(boundary, true).unwrap());
+                let triangle = if face.is_reversed() {
+                    Face::new_reversed(wire, Vec::new(), face.surface().clone())
+                } else {
+                    Face::new(wire, Vec::new(), face.surface().clone())
+                };
+                box_faces.push(topo.add_face(triangle));
+            }
+            faces.extend(box_faces);
+        }
+        // Disconnected boxes isolate the grouping work; closed-solid behavior
+        // is covered by regress_unify_scaling's connected corrugated prism.
+        let shell = topo.add_shell(Shell::new(faces).unwrap());
+        let solid = topo.add_solid(remus_topology::solid::Solid::new(shell, Vec::new()));
+        let edge_count = remus_topology::explorer::edge_to_face_map(&topo, solid)
+            .unwrap()
+            .len();
+        UNIFY_EDGE_VISITS.with(|count| count.set(0));
+        assert_eq!(
+            unify_faces_with_history_impl(&mut topo, solid)
+                .unwrap()
+                .faces_merged,
+            groups as usize
+        );
+        let visits = UNIFY_EDGE_VISITS.with(std::cell::Cell::get);
+        assert!(visits >= edge_count, "counter must cover the index pass");
+        assert!(
+            visits <= 3 * edge_count,
+            "{groups} groups: {visits} visits for {edge_count} edges"
+        );
+    }
+}
+
+#[test]
+fn unify_edge_index_preserves_seams_order_and_group_boundaries() {
+    let mut topo = Topology::new();
+    let solid = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+    let faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
+    let groups = HashMap::from([(faces[0], 0), (faces[1], 0), (faces[2], 1), (faces[3], 1)]);
+    let uses = [
+        vec![faces[2], faces[2]],
+        vec![faces[0], faces[1]],
+        vec![faces[0], faces[2]],
+        vec![faces[0], faces[4]],
+        vec![faces[0], faces[0]],
+        vec![faces[2], faces[3]],
+        vec![faces[1]],
+        vec![faces[0], faces[1], faces[0]],
+        vec![faces[4], faces[4]],
+    ];
+    let indexed = index_unify_group_edges(
+        uses.iter()
+            .enumerate()
+            .map(|(edge, faces)| (edge, faces.as_slice())),
+        &groups,
+        2,
+    );
+    assert_eq!(
+        indexed,
+        vec![vec![(1, false), (4, true)], vec![(0, true), (5, false)]]
+    );
+}
+
+#[test]
 fn strip_wire_spurs_cancels_nested_wraparound_pairs() {
     let mut topo = Topology::new();
     let solid = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
