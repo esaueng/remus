@@ -167,6 +167,7 @@ harness's own option-honoured floor misreading a correct 0.05 fillet on an
 - **Performance baselines start from measured stack families, not a guessed loop list;** O3.1's 3% census and native-only Criterion map live in `docs/kernel-maturity/o31-inner-loop-baseline.md`.
 - **Exact rational conic twins do not preserve angle-linear parameter speed;** compare positions after projection plus tangent direction and curvature, and use a deterministic one-sided radial derivative at revolution poles (`crates/math/src/surfaces/swept/tests.rs`, PR #189).
 
+- **Tightening a section to its opposing face's true extent exposes arrangement gaps the overlong section masked;** a curved face must pre-split sections at its own wire vertices, and a section arc's endpoint-T test must use the true curve, not its chord (deepened-notch foil, PR #363).
 - **Replay a fuzz artifact natively and print BOTH measurements before believing its message;** an assertion that formats one reading twice reads exactly like a no-op that never happened (`modifier_ops`, 2026-09-02).
 - **Not every scenario failure is a boolean fallback.** Tessellation density,
   shared-rim meshing, and face orientation produced whole failure families with
