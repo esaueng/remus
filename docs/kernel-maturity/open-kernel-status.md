@@ -29,7 +29,7 @@ are indexed there; this ledger is their only state of record.
 | O1.3b Fillet torture publication | C | Pending | — |
 | O1.4a STEP validation properties | A | Complete — opt-in CAx-IF validation properties round-trip aggregate and per-solid area, volume, centroid, and bounding boxes with derived units; malformed properties refuse transactionally with stable diagnostics, and direct/batch WASM contracts preserve import diagnostics | [#180](https://github.com/esaueng/remus/pull/180) |
 | O1.4b CAx-IF test-round manifest | B | Pending | — |
-| O1.5 Native/WASM per-operation parity harness | A | Pending — added 2026-09-04 by the industrial-parity overlay (row IP-16.5) | — |
+| O1.5 Native/WASM per-operation parity harness | A | Partial — the first 54-cell matrix generates cone/sphere, sphere/cylinder, and torus/sphere fuse/cut/intersect bundles across three scales and two placements, executes each through native and npm-installed release WASM `executeBatchV2`, oracle-checks exact quality and geometry on both, and diffs diagnostics, census, analytic carriers, mesh quality, volume, and serialized-byte SHA-256. Semantic invariants pass all 54 cells; raw arena bytes differ in all 54 and remain a visible non-gating exit gap. Full batch-op coverage, byte identity, failure/evolution fixtures, nightly registration, and the platform matrix remain. | `tools/parity/`, `scripts/test-o15-parity.sh` |
 | O2.1a RFC 0006 swept analytic surfaces | A | Complete — the accepted design preserves STEP parameterization with self-contained math-layer profiles, checked projection, exact lowering/recognition, typed unsupported paths, staged R8 contracts, and a measured disposition for all 92 production `FaceSurface` wildcard matches | [#183](https://github.com/esaueng/remus/pull/183) |
 | O2.1b Revolution/extrusion math substrate | A | Complete — self-contained swept profiles plus revolution and linear-extrusion carriers provide checked evaluation/projection, exact first and second derivatives, curvature, explicit periods, and exact directed finite-span rational NURBS lowering; scale, seam, pole, reversed-span, success, and typed-refusal properties pin all six profile variants without adding topology variants | [#189](https://github.com/esaueng/remus/pull/189) |
 | O2.1c FaceSurface variants + site audit | B | Pending | — |
@@ -57,7 +57,7 @@ are indexed there; this ledger is their only state of record.
 | O4.4 Stable error-code registry (e5b) | A | Pending | — |
 | O4.5 Stable C ABI decision record | owner-gated | Pending — added 2026-09-04 by the industrial-parity overlay (row IP-15.4) | — |
 | O4.6 Serialization compatibility and migration policy | A | Pending — added 2026-09-04 by the industrial-parity overlay (rows IP-2.7, IP-12.5, IP-12.7) | — |
-| O4.7 Typed direct-method WASM results | A | Pending — added 2026-09-04 by the industrial-parity overlay (row IP-15.2; OpenZCAD roadmap W6) | — |
+| O4.7 Typed direct-method WASM results | A | Partial — additive typed result envelopes cover the README's two-solid boolean family (`fuseDetailed`, `cutDetailed`, `intersectDetailed`) with direct/`executeBatchV2` code parity and unchanged legacy methods; remaining mutating families, the generated twin-coverage gate, typed replacements for 13 JSON-string returns, and the OpenZCAD regex acceptance list remain pending | `crates/wasm/src/bindings/booleans.rs` |
 | O5.1a STEP assembly reader | A | Pending | — |
 | O5.1b STEP assembly writer | A | Pending | — |
 | O5.1c Assembly WASM + batch | A | Pending | — |
