@@ -751,6 +751,39 @@ for (const operation of ['fillet', 'chamfer']) {
   console.log('ok - real Shapr3D connected-blend refusal is exact and transactional');
 }
 
+// The opening experiment's first partition must preserve both mounting-hole
+// rims and the stored winding of reversed planar faces. This proves the cut,
+// not the still-unsupported complete 46 -> 50 mm reconstruction.
+{
+  const kernel = new BrepKernel();
+  const step = readFileSync(resolve(projectRoot, 'crates/io/tests/data/shapr3d_hammer_holder.step'));
+  const [source] = Array.from(kernel.deserializeSolids(io.importStep(step)));
+  const sourceBytes = kernel.serializeSolids(new Uint32Array([source]));
+  const mask = kernel.makeBox(29, 53, 70);
+  kernel.transformSolid(mask, new Float64Array([1, 0, 0, -18, 0, 1, 0, -10, 0, 0, 1, 0, 0, 0, 0, 1]));
+  const result = kernel.booleanWithQuality('cut', source, mask, true);
+  assert.equal(result.quality, 'exact');
+  assert.deepEqual(kernel.serializeSolids(new Uint32Array([source])), sourceBytes);
+  const assertCut = (solid) => {
+    const strict = JSON.parse(kernel.validateSolidDetailed(solid));
+    assert.equal(strict.errorCount, 0);
+    const quality = JSON.parse(kernel.meshQuality(solid, 0.05, 0.1));
+    assert.equal(quality.boundaryEdges, 0);
+    assert.equal(quality.nonManifoldEdges, 0);
+    assert.equal(quality.isWatertight, true);
+    const bores = Array.from(kernel.getSolidFaces(solid))
+      .map((face) => JSON.parse(kernel.getAnalyticSurfaceParams(face)))
+      .filter((surface) => surface.type === 'cylinder' && Math.abs(surface.radius - 2.5) < 1e-7);
+    assert.equal(bores.length, 2);
+  };
+  assertCut(result.solid);
+  const exported = io.exportStep(kernel.serializeSolids(new Uint32Array([result.solid])));
+  const imported = Array.from(kernel.deserializeSolids(io.importStep(exported)));
+  assert.equal(imported.length, 1);
+  assertCut(imported[0]);
+  console.log('ok - hammer opening partition preserves exact topology, bores, mesh and STEP round trip');
+}
+
 // 15. OpenZCAD mounting-bracket cylindrical-face resize and STEP round trip.
 runOpenZcadCylindricalFaceResizeRegression({ BrepKernel, decodeEvolutionPayload, RemusIo });
 
