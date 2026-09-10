@@ -1,9 +1,9 @@
 //! Replay the exact-only 46 -> 50 mm hammer-holder opening experiment.
 //!
 //! This is a diagnostic, not a supported modeling feature. The current kernel
-//! passes the cut, both left-partition intersections and left-side fuse. The
-//! following right-side cut still fails exact acceptance. No approximate
-//! fallback is enabled.
+//! passes the left reconstruction, right-side cut and first right intersection.
+//! The shifted right-partition intersection still fails numerical convergence.
+//! No approximate fallback is enabled.
 //!
 //! Run with `cargo run --profile ci-test -p remus-io --example hammer_opening`.
 

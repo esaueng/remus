@@ -37,5 +37,5 @@
   ],
   "type": "module",
   "types": "remus_wasm_io.d.ts",
-  "version": "2.130.17"
+  "version": "2.130.18"
 }
