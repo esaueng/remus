@@ -26,11 +26,16 @@ thiserror.workspace = true
 zip = {workspace = true, optional = true}
 
 [dev-dependencies]
+criterion.workspace = true
 log.workspace = true
 proptest.workspace = true
 remus-algo.workspace = true
 remus-check.workspace = true
 remus-topology = {workspace = true, features = ["test-utils"]}
+
+[[bench]]
+harness = false
+name = "nurbs_properties"
 
 [lints]
 workspace = true
