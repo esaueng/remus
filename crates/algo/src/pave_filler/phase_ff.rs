@@ -447,6 +447,9 @@ pub fn perform_with_context(
 
             let v_range_a = v_ranges_a[idx_a];
             let v_range_b = v_ranges_b[idx_b];
+            if torus_cylinder_faces_have_only_point_contact(topo, fa, fb, tol)? {
+                continue;
+            }
             let mut raw_curves = compute_raw_curves(
                 surf_a, surf_b, bbox_a, bbox_b, v_range_a, v_range_b, context,
             )?;
@@ -3954,6 +3957,100 @@ fn compute_face_bboxes(
     Ok(bboxes)
 }
 
+/// A rectangular ring-torus patch can end at a cylinder's axial end plane.
+/// If the patches lie on opposite sides and their section circles differ,
+/// their common set has at most two points, never a face-splitting curve.
+fn torus_cylinder_faces_have_only_point_contact(
+    topo: &Topology,
+    fa: FaceId,
+    fb: FaceId,
+    tol: Tolerance,
+) -> Result<bool, AlgoError> {
+    let (tf, cf, torus, cylinder) = match (topo.face(fa)?.surface(), topo.face(fb)?.surface()) {
+        (FaceSurface::Torus(t), FaceSurface::Cylinder(c)) => (fa, fb, t, c),
+        (FaceSurface::Cylinder(c), FaceSurface::Torus(t)) => (fb, fa, t, c),
+        _ => return Ok(false),
+    };
+    let Some(((u0, span), _)) = crate::classifier::rectangular_torus_domain(topo, tf, tol) else {
+        return Ok(false);
+    };
+    let face = topo.face(cf)?;
+    if !face.inner_wires().is_empty() {
+        return Ok(false);
+    }
+    // Axial bounds are exact for lines and circle sections perpendicular to
+    // the cylinder axis. Other boundary carriers retain the marching path.
+    for oe in topo.wire(face.outer_wire())?.edges() {
+        match topo.edge(oe.edge())?.curve() {
+            EdgeCurve::Line => {}
+            EdgeCurve::Circle(c)
+                if c.normal().cross(cylinder.axis()).length() * c.radius() <= tol.linear => {}
+            _ => return Ok(false),
+        }
+    }
+    let Some(range) = face_v_range(topo, cf, face.surface())? else {
+        return Ok(false);
+    };
+    Ok(torus_cylinder_opposed_end_planes(
+        torus,
+        (u0, span),
+        cylinder,
+        range,
+        tol,
+    ))
+}
+
+fn torus_cylinder_opposed_end_planes(
+    torus: &remus_math::surfaces::ToroidalSurface,
+    u: (f64, f64),
+    cylinder: &remus_math::surfaces::CylindricalSurface,
+    v: (f64, f64),
+    tol: Tolerance,
+) -> bool {
+    let axis = cylinder.axis();
+    if torus.major_radius() <= torus.minor_radius()
+        || u.1 <= tol.angular
+        || u.1 >= std::f64::consts::PI - tol.angular
+        || axis.dot(torus.z_axis()).abs() * torus.minor_radius() > tol.linear
+    {
+        return false;
+    }
+    let radial = |angle: f64| torus.x_axis() * angle.cos() + torus.y_axis() * angle.sin();
+    let offset = (cylinder.origin() - torus.center()).dot(axis);
+    for end in [u.0, u.0 + u.1] {
+        let r = radial(end);
+        if r.dot(axis).abs() * (torus.major_radius() + torus.minor_radius()) > tol.linear {
+            continue;
+        }
+        let side = radial(u.0 + 0.5 * u.1).dot(axis);
+        // The radial factor R+r*cos(v) is positive for a ring torus, so
+        // the whole minor-angle band is on this same side of the end plane.
+        let station = if side > tol.angular
+            && (offset + v.1).abs() <= tol.linear
+            && offset + v.0 < -tol.linear
+        {
+            v.1
+        } else if side < -tol.angular
+            && (offset + v.0).abs() <= tol.linear
+            && offset + v.1 > tol.linear
+        {
+            v.0
+        } else {
+            continue;
+        };
+        let torus_center = torus.center() + r * torus.major_radius();
+        let cylinder_center = cylinder.origin() + axis * station;
+        // Coincident section circles can share a real arc and must keep the
+        // existing intersection and boundary-section recovery paths.
+        if (torus_center - cylinder_center).length() > tol.linear
+            || (torus.minor_radius() - cylinder.radius()).abs() > tol.linear
+        {
+            return true;
+        }
+    }
+    false
+}
+
 /// Compute the v-parameter range of a face by projecting boundary vertices.
 /// Returns `None` for planes (which have no UV parameterization) or if projection fails.
 fn face_v_range(
@@ -6486,6 +6583,93 @@ fn clip_line_to_polygon_general(
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
+
+    #[test]
+    fn opposed_torus_cylinder_end_planes_preserve_real_curves_and_overlap() {
+        use remus_math::surfaces::{CylindricalSurface, ToroidalSurface};
+        for scale in [0.1, 1.0, 100.0] {
+            for direction in [Vec3::new(0.0, 0.0, 1.0), Vec3::new(1.0, 2.0, 3.0)] {
+                let torus = ToroidalSurface::with_axis(
+                    Point3::new(3.0, -2.0, 5.0),
+                    12.0 * scale,
+                    3.0 * scale,
+                    direction,
+                )
+                .unwrap();
+                let axis = -torus.y_axis();
+                let centre = torus.center() + torus.x_axis() * torus.major_radius();
+                let tol = Tolerance::default();
+                let u = (0.0, std::f64::consts::FRAC_PI_2);
+                for (shift, radius_delta, expected) in
+                    [(2.0, 0.0, true), (0.0, 0.0, false), (0.0, 0.5, true)]
+                {
+                    let cylinder = CylindricalSurface::new(
+                        centre + torus.z_axis() * (shift * scale),
+                        axis,
+                        (3.0 + radius_delta) * scale,
+                    )
+                    .unwrap();
+                    assert_eq!(
+                        torus_cylinder_opposed_end_planes(
+                            &torus,
+                            u,
+                            &cylinder,
+                            (0.0, 4.0 * scale),
+                            tol
+                        ),
+                        expected
+                    );
+                    // Any real axial overlap must retain the intersection path.
+                    assert!(!torus_cylinder_opposed_end_planes(
+                        &torus,
+                        u,
+                        &cylinder,
+                        (-1e-4 * scale, 4.0 * scale),
+                        tol
+                    ));
+                    // Patches on the same side are not separated by this plane.
+                    assert!(!torus_cylinder_opposed_end_planes(
+                        &torus,
+                        u,
+                        &cylinder,
+                        (-4.0 * scale, 0.0),
+                        tol
+                    ));
+                }
+                let cylinder =
+                    CylindricalSurface::new(centre + torus.z_axis() * scale, axis, 3.0 * scale)
+                        .unwrap();
+                // A periodic shift of the angular window describes the same patch.
+                assert!(torus_cylinder_opposed_end_planes(
+                    &torus,
+                    (std::f64::consts::TAU, u.1),
+                    &cylinder,
+                    (0.0, 4.0 * scale),
+                    tol
+                ));
+                assert!(!torus_cylinder_opposed_end_planes(
+                    &torus,
+                    (0.0, std::f64::consts::PI),
+                    &cylinder,
+                    (0.0, 4.0 * scale),
+                    tol
+                ));
+                let tilted = CylindricalSurface::new(
+                    centre + torus.z_axis() * scale,
+                    axis + torus.z_axis() * 0.001,
+                    3.0 * scale,
+                )
+                .unwrap();
+                assert!(!torus_cylinder_opposed_end_planes(
+                    &torus,
+                    u,
+                    &tilted,
+                    (0.0, 4.0 * scale),
+                    tol
+                ));
+            }
+        }
+    }
 
     #[test]
     fn convex_sphere_patch_rejects_only_proven_outside_circles() {
