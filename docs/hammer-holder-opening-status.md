@@ -94,6 +94,41 @@ bottom plane retains boundaries outside the shifted holder. Curved boundary
 sections and the coplanar split remain the next investigation target. This is
 diagnostic evidence, not permission to accept an open candidate.
 
+## Curved sections and opposing-face extents
+
+The next repair preserves a curved PaveBlock's actual carrier and stored trim
+when computing its face-space curve. Previously this path always constructed
+a straight 2D curve, even when the 3D edge was circular. Focused coverage checks
+midpoints, descending trims and a trim crossing the periodic seam.
+
+When clipping a section to its opposing face, a boundary-coincident interval
+must be retained: it defines that face's extent even though it contributes no
+new split on that face itself. Previously the helper discarded the interval,
+and the caller then retained the overlong original section. The regression
+exercises the complete section-building call with perpendicular faces of
+different widths.
+
+Clipping to the opposing face's true extent exposed two arrangement gaps
+that the overlong sections had been papering over (the snapClip deepened-notch
+fixture, `crates/io/tests/snapclip_deepened_notch_inmem.rs`, regressed to eight
+unpaired edges). First, a curved face only pre-split its section curves at
+points other faces had registered; the countersink's chord runs through the
+old floor-bite corner, an existing vertex of the cone face, and that corner
+was registered only because the overlong wall section happened to cross the
+chord there. Curved faces now also pre-split their sections at their own
+wire vertices. Second, the planar arrangement tested an endpoint T-junction
+against a section arc's chord; the tightened wall-floor line ends on the
+true conic a sagitta away from the chord, so the line dangled and the wall
+below the old floor was never split off. Section arcs now measure the
+endpoint against the true curve (boundary arcs keep the chord test).
+
+Together these changes reduce the shifted-holder raw candidate from 30 free
+boundary edges to 23, still with 100 faces. The bottom boundary is now paired;
+a dedicated fixture regression checks every bottom edge and source immutability.
+This is partial candidate coverage, not full acceptance. Open boundaries remain
+around upper rounds, lettering and the rear blend. Strict exact-only acceptance
+is unchanged; the full opening edit remains unsupported.
+
 ## Next acceptance gate
 
 Repair the remaining holder-to-holder boolean, then complete both symmetric
