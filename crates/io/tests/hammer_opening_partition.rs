@@ -173,9 +173,9 @@ fn hammer_intersection_preserves_the_closed_lettering_loops() {
     assert!(remus_operations::tessellate::welded_mesh_quality(&mesh).is_watertight());
 }
 
-/// Qualify the shifted intersection and its reassembly with the outside partition.
+/// Qualify the left reconstruction and subsequent right-side cut.
 #[test]
-fn hammer_shifted_intersection_and_left_fuse_are_strictly_valid() {
+fn hammer_left_reassembly_and_right_partition_are_strictly_valid() {
     let mut topo = Topology::new();
     let source =
         read_step(include_str!("data/shapr3d_hammer_holder.step"), &mut topo).expect("import")[0];
@@ -326,6 +326,36 @@ fn hammer_shifted_intersection_and_left_fuse_are_strictly_valid() {
     assert!((round_trip_volume - fused_volume).abs() < fused_volume * 1e-6);
     assert_eq!(
         remus_io::arena_io::serialize_solid(&topo, source).expect("source after fuse"),
+        original
+    );
+    let right_mask = make_box(&mut topo, 29.0, 53.0, 70.0).expect("right mask");
+    transform_solid(&mut topo, right_mask, &Mat4::translation(11.0, -10.0, 0.0))
+        .expect("place right mask");
+    let right_cut =
+        boolean_with_context(&mut topo, BooleanOp::Cut, fused.solid, right_mask, &context)
+            .expect("right partition");
+    assert_eq!(right_cut.quality, BooleanQuality::Exact);
+    assert_eq!(
+        remus_topology::explorer::solid_faces(&topo, right_cut.solid)
+            .expect("right faces")
+            .len(),
+        162
+    );
+    assert_valid_mesh(&topo, right_cut.solid);
+    let step = remus_io::step::writer::write_step(&topo, &[right_cut.solid]).expect("right export");
+    let mut restored = Topology::new();
+    let restored_solids = read_step(&step, &mut restored).expect("right reimport");
+    assert_eq!(restored_solids.len(), 1);
+    assert_valid_mesh(&restored, restored_solids[0]);
+    let cut_volume = remus_operations::measure::solid_volume(&topo, right_cut.solid, 0.01)
+        .expect("right volume");
+    let restored_volume =
+        remus_operations::measure::solid_volume(&restored, restored_solids[0], 0.01)
+            .expect("restored right volume");
+    assert!(cut_volume > 0.0 && cut_volume < fused_volume);
+    assert!((restored_volume - cut_volume).abs() < cut_volume * 1e-6);
+    assert_eq!(
+        remus_io::arena_io::serialize_solid(&topo, source).expect("source after right cut"),
         original
     );
 }

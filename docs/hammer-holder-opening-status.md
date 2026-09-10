@@ -66,13 +66,13 @@ cargo run --profile ci-test -p remus-io --example hammer_opening
 ```
 
 The diagnostic now passes the first cut, both left-partition intersections,
-and the left-side fuse, including the holder translated by -2 mm in X. The
-fuse has 177 faces and passes strict validation, mesh closure, bore preservation
-and STEP round-trip checks. The next operation, cutting the right mask from
-that result, still refuses a 162-face candidate with seven free boundary edges
-and one non-manifold edge. The replay stops at that failure. No approximate
-fallback is permitted. The sections below record the successive repair
-checkpoints.
+the left-side fuse, the right-side cut and the first right-side intersection.
+The 177-face left fuse and 162-face right cut pass strict validation, mesh
+closure, bore preservation and STEP round-trip checks. The next intersection,
+between the 33-face right partition and the source shifted +2 mm in X, refuses
+with `Newton iteration did not converge after 12 iterations`. The replay stops
+at that failure. No approximate fallback is permitted. The sections below
+record the successive repair checkpoints.
 
 An equivalent subtraction construction was also examined:
 `current - (mask - translated_source)`. Its first tool cut fails strict sphere
@@ -261,4 +261,30 @@ The left reassembly has 177 faces and passes strict validation, native and
 browser WASM mesh closure, both mounting-bore checks, source immutability,
 partition-volume additivity and STEP round-trip validation/volume checks.
 An existing Euler-characteristic warning remains; it is not suppressed.
-The full reconstruction is still blocked at the following right-side cut.
+At this checkpoint, the full reconstruction was still blocked at the following
+right-side cut; that cut is repaired below.
+
+
+## Right-side cut: concave corner with untouched mounting holes
+
+The bottom face contained the two correct cut sections, but its angular wire
+tracer followed the original outline past a concave corner. It returned one
+unsplit face spanning both sides of the mask, creating seven free edges and
+one edge shared by three faces in the cut result.
+
+For a planar face whose straight sections are analytically separated from its
+complete circular holes, the splitter now consults its existing half-edge
+subdivision tracer. It adopts only a strict refinement without degenerate,
+self-crossing or nested outer loops. The original analytic hole wires pass
+through the existing hole distribution. Crossing or tangent sections and
+unsupported hole/section shapes retain their previous path. Geometry and
+validation tolerances are unchanged.
+
+The native and WASM contracts check the right cut's 162 faces, strict validation,
+watertight and manifold meshes, both mounting bores, source preservation,
+positive reduced volume and STEP round-trip validation/volume. Focused tests
+cover a concave two-section chain at three scales, face reversal, conservation
+of outer area, preservation of both circular holes, and rejection of crossing
+or tangent sections by the bounded fallback. The complete replay now reaches
+the shifted right-partition intersection, whose numerical convergence failure
+is the next kernel repair target. No application editing feature is enabled.
