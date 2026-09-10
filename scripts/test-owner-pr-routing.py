@@ -39,7 +39,7 @@ class OwnerRoutingTests(unittest.TestCase):
                 block = job(name)
                 self.assertIn("needs: [changes, repo-policy, secrets-scan]", block)
                 self.assertNotIn("needs.owner-pr", block)
-                self.assertIn("runs-on: *fleet-runner", block)
+                self.assertRegex(block, r"runs-on: [*&]fleet(?:-light)?-runner")
                 self.assertIn(f"needs.changes.outputs.{flag} == 'true'", block)
         self.assertIn("cargo clippy --all-targets --all-features -- -D warnings", job("test"))
 
@@ -47,7 +47,7 @@ class OwnerRoutingTests(unittest.TestCase):
         for name in ("repo-policy", "approx-census", "coverage", "wasm",
                      "render", "deny", "audit", "secrets-scan"):
             with self.subTest(name=name):
-                self.assertIn("runs-on: *fleet-runner", job(name))
+                self.assertRegex(job(name), r"runs-on: [*&]fleet(?:-light)?-runner")
                 self.assertNotIn("needs.owner-pr.outputs.trusted", job(name))
         self.assertIn("os: [macos-latest]", job("platform-test"))
         self.assertIn("cargo llvm-cov report --profile ci-test --fail-under-lines 60", job("coverage"))

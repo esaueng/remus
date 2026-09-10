@@ -17,7 +17,7 @@ env:
 jobs:
   changes:
     name: Classify Changes
-    runs-on: &fleet-runner ${{ fromJSON((vars.CI_FLEET_ENABLED == 'true' || (vars.CI_FLEET_VALIDATION_REF != '' && vars.CI_FLEET_VALIDATION_REF == github.ref)) && (github.repository == 'esaueng/remus' && github.repository_id == '1334765869' && github.actor == 'petergstfsn' && github.actor_id == '171875562' && github.triggering_actor == 'petergstfsn' && ((github.event_name == 'pull_request' && github.event.pull_request.state == 'open' && github.event.pull_request.user.login == 'petergstfsn' && github.event.pull_request.user.id == 171875562 && github.event.pull_request.head.repo.id == 1334765869 && github.event.pull_request.base.repo.id == 1334765869 && github.event.pull_request.head.repo.fork == false && github.event.pull_request.base.repo.fork == false && github.event.pull_request.base.ref == 'main' && github.ref == format('refs/pull/{0}/merge', github.event.pull_request.number)) || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && github.ref_protected == true))) && (vars.CI_FLEET_TARGET == 'ci-server-jane' && '{"group":"ci-trusted-main","labels":"ci-server-jane"}' || vars.CI_FLEET_TARGET == 'ci-server-john' && '{"group":"ci-trusted-main","labels":"ci-server-john"}') || '"ubuntu-latest"') }}
+    runs-on: &fleet-light-runner ${{ fromJSON((vars.CI_FLEET_ENABLED == 'true' || (vars.CI_FLEET_VALIDATION_REF != '' && vars.CI_FLEET_VALIDATION_REF == github.ref)) && (github.repository == 'esaueng/remus' && github.repository_id == '1334765869' && github.actor == 'petergstfsn' && github.actor_id == '171875562' && github.triggering_actor == 'petergstfsn' && ((github.event_name == 'pull_request' && github.event.pull_request.state == 'open' && github.event.pull_request.user.login == 'petergstfsn' && github.event.pull_request.user.id == 171875562 && github.event.pull_request.head.repo.id == 1334765869 && github.event.pull_request.base.repo.id == 1334765869 && github.event.pull_request.head.repo.fork == false && github.event.pull_request.base.repo.fork == false && github.event.pull_request.base.ref == 'main' && github.ref == format('refs/pull/{0}/merge', github.event.pull_request.number)) || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && github.ref_protected == true))) && (vars.CI_FLEET_LIGHT_POOL_ENABLED == 'true' && (vars.CI_FLEET_TARGET == 'ci-server-jane' || vars.CI_FLEET_TARGET == 'ci-server-john') && '{"group":"ci-trusted-main","labels":["self-hosted","Linux","X64","ci-remus-light"]}' || vars.CI_FLEET_TARGET == 'ci-server-jane' && '{"group":"ci-trusted-main","labels":"ci-server-jane"}' || vars.CI_FLEET_TARGET == 'ci-server-john' && '{"group":"ci-trusted-main","labels":"ci-server-john"}') || '"ubuntu-latest"') }}
     outputs:
       heavy: ${{ steps.classify.outputs.heavy }}
       docs: ${{ steps.classify.outputs.docs }}
@@ -210,7 +210,7 @@ jobs:
         run: echo "CI mode is ${MODE} for ${CHANGED_COUNT} changed path(s)." >> "$GITHUB_STEP_SUMMARY"
   repo-policy:
     name: Repository Policy
-    runs-on: *fleet-runner
+    runs-on: *fleet-light-runner
     steps:
       - *fleet-source
       - *fleet-isolation
@@ -264,7 +264,7 @@ jobs:
     name: Test
     needs: [changes, repo-policy, secrets-scan]
     if: needs.changes.outputs.heavy == 'true'
-    runs-on: *fleet-runner
+    runs-on: &fleet-runner ${{ fromJSON((vars.CI_FLEET_ENABLED == 'true' || (vars.CI_FLEET_VALIDATION_REF != '' && vars.CI_FLEET_VALIDATION_REF == github.ref)) && (github.repository == 'esaueng/remus' && github.repository_id == '1334765869' && github.actor == 'petergstfsn' && github.actor_id == '171875562' && github.triggering_actor == 'petergstfsn' && ((github.event_name == 'pull_request' && github.event.pull_request.state == 'open' && github.event.pull_request.user.login == 'petergstfsn' && github.event.pull_request.user.id == 171875562 && github.event.pull_request.head.repo.id == 1334765869 && github.event.pull_request.base.repo.id == 1334765869 && github.event.pull_request.head.repo.fork == false && github.event.pull_request.base.repo.fork == false && github.event.pull_request.base.ref == 'main' && github.ref == format('refs/pull/{0}/merge', github.event.pull_request.number)) || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && github.ref_protected == true))) && (vars.CI_FLEET_TARGET == 'ci-server-jane' && '{"group":"ci-trusted-main","labels":"ci-server-jane"}' || vars.CI_FLEET_TARGET == 'ci-server-john' && '{"group":"ci-trusted-main","labels":"ci-server-john"}') || '"ubuntu-latest"') }}
     timeout-minutes: 30
     steps:
       - *fleet-source
@@ -508,7 +508,7 @@ jobs:
     name: Cargo Deny
     needs: [changes, repo-policy, secrets-scan]
     if: needs.changes.outputs.full == 'true'
-    runs-on: *fleet-runner
+    runs-on: *fleet-light-runner
     steps:
       - *fleet-source
       - *fleet-isolation
@@ -524,7 +524,7 @@ jobs:
     name: Security Audit
     needs: [changes, repo-policy, secrets-scan]
     if: needs.changes.outputs.full == 'true'
-    runs-on: *fleet-runner
+    runs-on: *fleet-light-runner
     steps:
       - *fleet-source
       - *fleet-isolation
@@ -543,7 +543,7 @@ jobs:
     name: Documentation
     needs: [changes, repo-policy, secrets-scan]
     if: needs.changes.outputs.docs == 'true'
-    runs-on: *fleet-runner
+    runs-on: *fleet-light-runner
     steps:
       - *fleet-source
       - *fleet-isolation
@@ -563,7 +563,7 @@ jobs:
       - run: mdbook build book
   secrets-scan:
     name: Secrets Scan
-    runs-on: *fleet-runner
+    runs-on: *fleet-light-runner
     steps:
       - *fleet-source
       - *fleet-isolation
@@ -591,7 +591,7 @@ jobs:
     name: CI Pass
     if: always()
     needs: [changes, repo-policy, test, approx-census, platform-test, coverage, msrv, wasm, wasm-no-io, fuzz-check, render, deny, audit, docs, secrets-scan]
-    runs-on: *fleet-runner
+    runs-on: *fleet-light-runner
     steps:
       - *fleet-source
       - *fleet-isolation
