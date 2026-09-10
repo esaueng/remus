@@ -18,6 +18,11 @@ use crate::error::AlgoError;
 
 /// Per-face geometry used for ray crossing tests.
 enum FaceGeom {
+    /// Exact torus crossings restricted by a sampled local trim in UV space.
+    TrimmedTorus {
+        surface: remus_math::surfaces::ToroidalSurface,
+        trim: super::torus_patch::TorusTrim,
+    },
     /// A planar (or planar-approximated) face: boundary polygon, hole
     /// polygons, and the supporting plane.
     Planar {
@@ -309,6 +314,7 @@ fn votes_from_geoms(
                         }
                         FaceGeom::Cone { .. } => "Cone".into(),
                         FaceGeom::Torus { .. } => "Torus".into(),
+                        FaceGeom::TrimmedTorus { .. } => "TrimmedTorus".into(),
                     };
                     log::debug!(
                         "RAYTRACE   {label} dir=({:.1},{:.1},{:.1}) geom={kind} c={c} s={s}",
@@ -675,6 +681,15 @@ fn collect_face_geoms(topo: &Topology, solid: SolidId) -> Result<Vec<FaceGeom>, 
                 });
                 continue;
             }
+            if let Some(trim) =
+                super::torus_patch::trimmed_torus_polygon(topo, fid, Tolerance::default())
+            {
+                result.push(FaceGeom::TrimmedTorus {
+                    surface: t.clone(),
+                    trim,
+                });
+                continue;
+            }
             let verts = wire_polygon(topo, face.outer_wire())?;
             if verts.len() < 3 {
                 // Degenerate boundary: the untrimmed whole torus.
@@ -862,6 +877,39 @@ fn ray_geom_crossings(
             v_max,
             u_gap,
         } => ray_cone_crossings(origin, ray_dir, surface, (*v_min, *v_max), *u_gap, tol),
+        FaceGeom::TrimmedTorus { surface, trim } => {
+            let Ok(dir) = ray_dir.normalize() else {
+                return (0, false);
+            };
+            let roots =
+                remus_math::analytic_intersection::intersect_line_torus(surface, origin, dir);
+            let mut count = 0;
+            let mut suspicious = false;
+            let near = 10.0 * tol.linear;
+            for (index, &t) in roots.iter().enumerate() {
+                if t <= tol.linear {
+                    continue;
+                }
+                suspicious |= roots[index + 1..]
+                    .iter()
+                    .any(|other| (other - t).abs() <= near);
+                let (mut u, mut v) = surface.project_point(origin + dir * t);
+                let tau = std::f64::consts::TAU;
+                u += tau * ((trim.centre.x() - u) / tau).round();
+                v += tau * ((trim.centre.y() - v) / tau).round();
+                let p = Point2::new(u, v);
+                let metric = surface
+                    .minor_radius()
+                    .min(surface.major_radius() - surface.minor_radius());
+                suspicious |=
+                    crate::builder::classify_2d::distance_to_polygon_boundary(p, &trim.polygon)
+                        <= trim.margin + near / metric;
+                if crate::builder::classify_2d::point_in_polygon_2d(p, &trim.polygon) {
+                    count += 1;
+                }
+            }
+            (count, suspicious)
+        }
         FaceGeom::Torus {
             surface,
             v_band,
@@ -1451,6 +1499,54 @@ mod tests {
                     ),
                     (2, false)
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn torus_crossings_follow_a_nonrectangular_trim() {
+        use super::super::torus_patch::TorusTrim;
+        use remus_math::surfaces::ToroidalSurface;
+        for scale in [0.01, 1.0, 100.0] {
+            let surface = ToroidalSurface::with_axis(
+                Point3::new(2.0, -3.0, 4.0),
+                12.0 * scale,
+                3.0 * scale,
+                Vec3::new(1.0, 2.0, 3.0),
+            )
+            .unwrap();
+            for anchor in [0.8, 6.3] {
+                for shift in [0.0, std::f64::consts::TAU] {
+                    let polygon = vec![
+                        Point2::new(anchor - 0.4, 1.0 + shift),
+                        Point2::new(anchor + 0.4, 1.0 + shift),
+                        Point2::new(anchor - 0.4, 2.0 + shift),
+                    ];
+                    for winding in [polygon.clone(), polygon.into_iter().rev().collect()] {
+                        let geom = FaceGeom::TrimmedTorus {
+                            surface: surface.clone(),
+                            trim: TorusTrim {
+                                polygon: winding,
+                                centre: Point2::new(anchor, 1.5 + shift),
+                                margin: 1e-8,
+                            },
+                        };
+                        for (u, expected) in [(anchor - 0.2, 1), (anchor + 0.2, 0)] {
+                            let radial = surface.x_axis() * u.cos() + surface.y_axis() * u.sin();
+                            let origin = surface.center() + radial * surface.major_radius()
+                                - surface.z_axis() * (10.0 * scale);
+                            assert_eq!(
+                                ray_geom_crossings(
+                                    origin,
+                                    surface.z_axis(),
+                                    &geom,
+                                    Tolerance::default()
+                                ),
+                                (expected, false)
+                            );
+                        }
+                    }
+                }
             }
         }
     }

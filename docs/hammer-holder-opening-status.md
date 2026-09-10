@@ -186,3 +186,28 @@ manifold geometry, and an exact STEP round trip. Repeat at the original and
 nearby edited dimensions. Only then expose a replayable document parameter,
 undo/redo and the existing AI command path in OpenZCAD. Remus remains the sole
 production geometry kernel.
+
+## Nonrectangular rear torus classification
+
+The remaining original rear torus was incorrectly retained: the ray classifier
+substituted a flat polygon for the shifted holder's nonrectangular torus patch.
+Several points in the opening consequently classified as inside the holder.
+
+Local, hole-free ring-torus patches spanning less than half a revolution in
+each angle now use exact torus ray intersections filtered by an adaptively
+sampled UV trim. Only trim membership is approximated. Sampling uses stored
+edge parameter ranges, unwraps both periodic angles, and has bounded point and
+recursion budgets. The uncertainty band includes observed projection error
+from imported space curves; near-trim hits remain suspicious under the existing
+ray-voting rules. Edge tolerances and strict geometry acceptance are unchanged.
+Unsupported or non-closing trims retain the previous classifier path.
+
+The hammer point-classification regression fails with the previous classifier.
+Focused tests cover nonrectangular crossing membership, split arcs, reversed
+winding, rotations, scale changes and both periodic seams. The raw shifted
+intersection now has 103 faces and four free edges, all outlining the missing
+cylindrical strip at x = [-9, -7], y = [39.5, 42.5], z = [9.5, 12.5] mm.
+The fixture regression permits open boundaries only within that strip while
+retaining the previous bottom, upper-round, lettering, slope and source
+immutability checks. This is still a partial repair: the whole candidate
+remains invalid and the complete opening edit is not enabled.
