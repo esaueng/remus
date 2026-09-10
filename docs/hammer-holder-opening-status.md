@@ -65,12 +65,13 @@ Run:
 cargo run --profile ci-test -p remus-io --example hammer_opening
 ```
 
-The diagnostic passes the first cut and intersection, then exits with
-`ExactOnlyUnattainable` when intersecting that partition with the holder
-translated by -2 mm in X. The candidate still has open boundaries and fails
-strict acceptance. The failure spans coplanar overlap selection and curved
-boundaries; preserving the lettering holes alone does not qualify the result.
-No candidate is accepted by relaxing checks or permitting a mesh fallback.
+The diagnostic now passes the first cut and both left-partition intersections,
+including the holder translated by -2 mm in X. The subsequent fuse returns an
+exact-quality 179-face candidate, but independent validation rejects it: two
+shared edges have inconsistent orientations and two wires self-intersect. The
+replay stops at that failure. No candidate is accepted by relaxing checks or
+permitting a mesh fallback. The sections below record the earlier repair
+checkpoints and the newly qualified shifted intersection.
 
 An equivalent subtraction construction was also examined:
 `current - (mask - translated_source)`. Its first tool cut fails strict sphere
@@ -211,3 +212,28 @@ The fixture regression permits open boundaries only within that strip while
 retaining the previous bottom, upper-round, lettering, slope and source
 immutability checks. This is still a partial repair: the whole candidate
 remains invalid and the complete opening edit is not enabled.
+
+
+## Recovered tangency circles and closed shifted intersection
+
+The final four free edges outlined a 2 mm cylindrical strip. A torus/cylinder
+intersection marcher produced an approximate arc that stopped short of its
+endpoint, even though the torus boundary already contained the exact circle.
+The face-intersection stage now supplements the marched curves with that
+stored circular arc when analytic carrier checks establish it as a torus
+minor circle and a coaxial section of the partner cylinder. Other marched
+curves remain available. Existing face-extent filters and splitting rules
+still apply; no endpoint or validation tolerances are widened.
+
+The shifted intersection now returns exact quality through the operations API:
+104 faces, zero free edges, valid topology and watertight meshes before and
+after STEP export/reimport. The fixture also checks volume preservation across
+the round trip, reduction from its operand, all previously repaired boundaries,
+and source immutability. The browser WASM smoke contract exercises the same
+intersection and round-trip checks. Unit coverage includes rotated and scaled
+carriers, both operand orders, reversed parameter ranges, periodic seams, and
+near-miss carriers that must not emit a section.
+
+This qualifies the shifted intersection, not the complete 46 -> 50 mm edit.
+The subsequent fuse is the next repair target, as described above. OpenZCAD's
+production kernel pin and AI parameterization features remain unchanged.

@@ -795,7 +795,25 @@ for (const operation of ['fillet', 'chamfer']) {
     assert.equal(mesh.nonManifoldEdges, 0);
     assert.equal(mesh.isWatertight, true);
   }
-  console.log('ok - hammer cut and intersection preserve exact topology, lettering, bores and STEP round trips');
+  const [shifted] = Array.from(kernel.deserializeSolids(sourceBytes));
+  kernel.transformSolid(shifted, new Float64Array([1, 0, 0, -2, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]));
+  const shiftedCommon = kernel.booleanWithQuality('intersect', common.solid, shifted, true);
+  assert.equal(shiftedCommon.quality, 'exact');
+  assert.deepEqual(kernel.serializeSolids(new Uint32Array([source])), sourceBytes);
+  const shiftedStep = io.exportStep(kernel.serializeSolids(new Uint32Array([shiftedCommon.solid])));
+  const [restoredShifted] = Array.from(kernel.deserializeSolids(io.importStep(shiftedStep)));
+  for (const solid of [shiftedCommon.solid, restoredShifted]) {
+    assert.equal(Array.from(kernel.getSolidFaces(solid)).length, 104);
+    assert.equal(JSON.parse(kernel.validateSolidDetailed(solid)).errorCount, 0);
+    const mesh = JSON.parse(kernel.meshQuality(solid, 0.05, 0.1));
+    assert.equal(mesh.boundaryEdges, 0);
+    assert.equal(mesh.nonManifoldEdges, 0);
+    assert.equal(mesh.isWatertight, true);
+  }
+  const shiftedVolume = kernel.volume(shiftedCommon.solid, 0.01);
+  assert.ok(shiftedVolume > 0 && shiftedVolume < kernel.volume(common.solid, 0.01));
+  assert.ok(Math.abs(kernel.volume(restoredShifted, 0.01) - shiftedVolume) < shiftedVolume * 1e-6);
+  console.log('ok - hammer cut and both intersections preserve exact topology and STEP round trips');
 }
 
 // 15. OpenZCAD mounting-bracket cylindrical-face resize and STEP round trip.
