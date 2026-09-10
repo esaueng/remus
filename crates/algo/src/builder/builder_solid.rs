@@ -2448,7 +2448,7 @@ fn weld_coincident_vertices(
     face_ids: &mut [FaceId],
     lineage: &mut super::split_types::EdgeLineageLog,
 ) -> Result<(), AlgoError> {
-    use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
+    use remus_topology::edge::{EdgeCurve, EdgeId};
     use remus_topology::vertex::VertexId;
 
     // Keep the historical assembly allowance at NURBS surface/curve vertices.
@@ -2581,7 +2581,6 @@ fn weld_coincident_vertices(
                 }
                 let edge = topo.edge(eid)?;
                 let curve = edge.curve().clone();
-                let trim = edge.trim();
                 let (ov0, ov1) = (edge.start(), edge.end());
                 let nv0 = resolve(ov0);
                 let nv1 = resolve(ov1);
@@ -2600,8 +2599,9 @@ fn weld_coincident_vertices(
                     // Welding only substitutes coincident vertices; the curve
                     // and its parameterization are unchanged, so the trim
                     // stays valid on the rebuilt edge.
-                    let mut welded = Edge::new(nv0, nv1, curve);
-                    welded.set_trim(trim);
+                    let mut welded = edge.clone();
+                    welded.set_start(nv0);
+                    welded.set_end(nv1);
                     let new_eid = topo.add_edge(welded);
                     // Construction lineage: the welded edge IS the source
                     // edge with coincident vertices substituted (Issue 12
@@ -3400,6 +3400,40 @@ fn project_angle_on_curve(curve: &remus_topology::edge::EdgeCurve, p: Point3) ->
     }
 }
 
+fn point_on_edge_branch(
+    topo: &Topology,
+    edge: &remus_topology::edge::Edge,
+    point: Point3,
+    tol: f64,
+) -> Result<bool, AlgoError> {
+    let start = topo.vertex(edge.start())?.point();
+    let end = topo.vertex(edge.end())?.point();
+    let closest = match edge.curve() {
+        EdgeCurve::Line => {
+            let delta = end - start;
+            let length_sq = delta.dot(delta);
+            if length_sq == 0.0 {
+                start
+            } else {
+                start + delta * ((point - start).dot(delta) / length_sq).clamp(0.0, 1.0)
+            }
+        }
+        EdgeCurve::NurbsCurve(curve) => {
+            let Ok((a, b)) = edge.strict_domain() else {
+                return Ok(false);
+            };
+            let projection =
+                remus_math::nurbs::projection::project_point_to_curve(curve, point, tol)?;
+            if projection.parameter < a.min(b) || projection.parameter > a.max(b) {
+                return Ok(false);
+            }
+            projection.point
+        }
+        _ => return Ok(false),
+    };
+    Ok((point - closest).length() <= tol)
+}
+
 /// Merge duplicate edges across selected faces by quantized endpoint position.
 ///
 /// For each group of edges with the same quantized start/end positions,
@@ -3453,88 +3487,107 @@ fn merge_duplicate_edges(topo: &mut Topology, face_ids: &mut [FaceId]) -> Result
             continue; // Only one unique edge — no merge needed
         }
 
-        // Pick the first (lowest index) as canonical
-        let canonical = unique[0];
-        let canon_start = topo.edge(canonical)?.start();
-        let canon_end = topo.edge(canonical)?.end();
-        let canon_qs = quantize_point(topo.vertex(canon_start)?.point(), tol);
-        let canon_qe = quantize_point(topo.vertex(canon_end)?.point(), tol);
+        // Each distinct curved branch needs its own canonical representative.
+        while unique.len() > 1 {
+            let canonical = unique[0];
+            let canon_start = topo.edge(canonical)?.start();
+            let canon_end = topo.edge(canonical)?.end();
+            let canon_qs = quantize_point(topo.vertex(canon_start)?.point(), tol);
+            let canon_qe = quantize_point(topo.vertex(canon_end)?.point(), tol);
 
-        for &dup in &unique[1..] {
-            let dup_edge = topo.edge(dup)?;
-            let canon_edge = topo.edge(canonical)?;
-            let both_analytic_conics = matches!(
-                (canon_edge.curve(), dup_edge.curve()),
-                (EdgeCurve::Circle(_), EdgeCurve::Circle(_))
-                    | (EdgeCurve::Ellipse(_), EdgeCurve::Ellipse(_))
-            );
-            if both_analytic_conics {
-                if !conics_share_support(canon_edge.curve(), dup_edge.curve(), tol) {
-                    continue;
-                }
-                let midpoint = |edge: &remus_topology::edge::Edge| {
-                    let (t0, t1) = match edge.strict_domain() {
-                        Ok(domain) => domain,
-                        // Compatibility-only transients that predate stored
-                        // authority retain the historical support+endpoint
-                        // merge. Every new sphere section carries a strict
-                        // range and therefore takes the branch check below.
-                        Err(EdgeDomainError::Missing { .. }) => return Ok(None),
-                        Err(error) => {
-                            return Err(AlgoError::AssemblyFailed(format!(
-                                "cannot merge curved edge with invalid range: {error}"
-                            )));
-                        }
-                    };
-                    let start = topo.vertex(edge.start())?.point();
-                    let end = topo.vertex(edge.end())?.point();
-                    Ok::<Option<Point3>, AlgoError>(Some(edge.curve().evaluate_with_endpoints(
-                        t0 + (t1 - t0) * 0.5,
-                        start,
-                        end,
-                    )))
-                };
-                let canon_midpoint = midpoint(canon_edge)?;
-                let dup_midpoint = midpoint(dup_edge)?;
-                if let (Some(canon_midpoint), Some(dup_midpoint)) = (canon_midpoint, dup_midpoint)
-                    && (canon_midpoint - dup_midpoint).length() > tol
+            for &dup in &unique[1..] {
+                let dup_edge = topo.edge(dup)?;
+                let canon_edge = topo.edge(canonical)?;
+                let both_analytic_conics = matches!(
+                    (canon_edge.curve(), dup_edge.curve()),
+                    (EdgeCurve::Circle(_), EdgeCurve::Circle(_))
+                        | (EdgeCurve::Ellipse(_), EdgeCurve::Ellipse(_))
+                );
+                if both_analytic_conics
+                    || matches!(
+                        (canon_edge.curve(), dup_edge.curve()),
+                        (EdgeCurve::NurbsCurve(_), EdgeCurve::NurbsCurve(_))
+                    )
                 {
-                    continue;
+                    if both_analytic_conics
+                        && !conics_share_support(canon_edge.curve(), dup_edge.curve(), tol)
+                    {
+                        continue;
+                    }
+                    let midpoint = |edge: &remus_topology::edge::Edge| {
+                        let (t0, t1) = match edge.strict_domain() {
+                            Ok(domain) => domain,
+                            // Compatibility-only transients that predate stored
+                            // authority retain the historical support+endpoint
+                            // merge. Every new sphere section carries a strict
+                            // range and therefore takes the branch check below.
+                            Err(EdgeDomainError::Missing { .. }) => return Ok(None),
+                            Err(error) => {
+                                return Err(AlgoError::AssemblyFailed(format!(
+                                    "cannot merge curved edge with invalid range: {error}"
+                                )));
+                            }
+                        };
+                        let start = topo.vertex(edge.start())?.point();
+                        let end = topo.vertex(edge.end())?.point();
+                        Ok::<Option<Point3>, AlgoError>(Some(edge.curve().evaluate_with_endpoints(
+                            t0 + (t1 - t0) * 0.5,
+                            start,
+                            end,
+                        )))
+                    };
+                    let canon_midpoint = midpoint(canon_edge)?;
+                    let dup_midpoint = midpoint(dup_edge)?;
+                    if let (Some(canon_midpoint), Some(dup_midpoint)) =
+                        (canon_midpoint, dup_midpoint)
+                        && (canon_midpoint - dup_midpoint).length() > tol
+                    {
+                        // NURBS parameter speed can differ for coincident curves
+                        // (including a spline representing a straight loft rim).
+                        // Compare geometric membership before refusing a merge.
+                        if both_analytic_conics
+                            || !point_on_edge_branch(topo, canon_edge, dup_midpoint, tol)?
+                            || !point_on_edge_branch(topo, dup_edge, canon_midpoint, tol)?
+                        {
+                            continue;
+                        }
+                    }
                 }
+                let dup_qs = quantize_point(topo.vertex(dup_edge.start())?.point(), tol);
+                let dup_qe = quantize_point(topo.vertex(dup_edge.end())?.point(), tol);
+                // Detect reversed traversal. For open edges the vertex order tells;
+                // for closed edges (start == end) both quantized endpoints
+                // coincide, so endpoint order says nothing — but the two curves
+                // can still be parameterized in opposite directions (two operands'
+                // coincident rim circles wound about opposite normals). Compare
+                // curve tangents at the shared seam vertex instead: coincident
+                // closed curves in one group share their seam position, so
+                // opposite tangents there mean opposite traversal.
+                let is_closed = canon_qs == canon_qe;
+                let needs_flip = if is_closed {
+                    use remus_topology::edge::EdgeCurve;
+                    // A closed curve's traversal direction is its plane normal
+                    // (CCW-about-normal); tangent evaluation is unusable here
+                    // because `domain_with_endpoints` anchors a closed curve to
+                    // the CURVE's own start parameter, not the seam vertex.
+                    match (canon_edge.curve(), dup_edge.curve()) {
+                        (EdgeCurve::Circle(a), EdgeCurve::Circle(b)) => {
+                            a.normal().dot(b.normal()) < 0.0
+                        }
+                        (EdgeCurve::Ellipse(a), EdgeCurve::Ellipse(b)) => {
+                            a.normal().dot(b.normal()) < 0.0
+                        }
+                        // Mixed or free-form closed pairs: no reliable direction
+                        // probe without a seam-anchored parameterization; keep
+                        // the pre-existing no-flip behavior.
+                        _ => false,
+                    }
+                } else {
+                    dup_qs == canon_qe && dup_qe == canon_qs
+                };
+                replacements.insert(dup, (canonical, needs_flip));
             }
-            let dup_qs = quantize_point(topo.vertex(dup_edge.start())?.point(), tol);
-            let dup_qe = quantize_point(topo.vertex(dup_edge.end())?.point(), tol);
-            // Detect reversed traversal. For open edges the vertex order tells;
-            // for closed edges (start == end) both quantized endpoints
-            // coincide, so endpoint order says nothing — but the two curves
-            // can still be parameterized in opposite directions (two operands'
-            // coincident rim circles wound about opposite normals). Compare
-            // curve tangents at the shared seam vertex instead: coincident
-            // closed curves in one group share their seam position, so
-            // opposite tangents there mean opposite traversal.
-            let is_closed = canon_qs == canon_qe;
-            let needs_flip = if is_closed {
-                use remus_topology::edge::EdgeCurve;
-                // A closed curve's traversal direction is its plane normal
-                // (CCW-about-normal); tangent evaluation is unusable here
-                // because `domain_with_endpoints` anchors a closed curve to
-                // the CURVE's own start parameter, not the seam vertex.
-                match (canon_edge.curve(), dup_edge.curve()) {
-                    (EdgeCurve::Circle(a), EdgeCurve::Circle(b)) => {
-                        a.normal().dot(b.normal()) < 0.0
-                    }
-                    (EdgeCurve::Ellipse(a), EdgeCurve::Ellipse(b)) => {
-                        a.normal().dot(b.normal()) < 0.0
-                    }
-                    // Mixed or free-form closed pairs: no reliable direction
-                    // probe without a seam-anchored parameterization; keep
-                    // the pre-existing no-flip behavior.
-                    _ => false,
-                }
-            } else {
-                dup_qs == canon_qe && dup_qe == canon_qs
-            };
-            replacements.insert(dup, (canonical, needs_flip));
+            unique.retain(|id| *id != canonical && !replacements.contains_key(id));
         }
     }
 
@@ -4815,5 +4868,144 @@ mod tests {
                 "omit={omit}: a 5-face open shell must abort assembly, got {err:?}"
             );
         }
+    }
+    #[test]
+    fn duplicate_edge_merge_preserves_complementary_nurbs_branches() {
+        use remus_math::nurbs::curve::NurbsCurve;
+        use remus_topology::edge::Edge;
+        use remus_topology::face::{Face, FaceSurface};
+        use remus_topology::vertex::Vertex;
+        use remus_topology::wire::Wire;
+        let mut topo = Topology::new();
+        let a = Point3::new(-1.0, 0.0, 0.0);
+        let b = Point3::new(1.0, 0.0, 0.0);
+        let va = topo.add_vertex(Vertex::new(a, 1e-7));
+        let vb = topo.add_vertex(Vertex::new(b, 1e-7));
+        let mut faces = Vec::new();
+        for _ in 0..2 {
+            let mut edges = Vec::new();
+            for y in [1.0, -1.0] {
+                let curve = NurbsCurve::new(
+                    2,
+                    vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+                    vec![a, Point3::new(0.0, y, 0.0), b],
+                    vec![1.0; 3],
+                )
+                .unwrap();
+                let mut edge = Edge::new(va, vb, EdgeCurve::NurbsCurve(curve));
+                edge.set_trim(Some((0.0, 1.0)));
+                edges.push(OrientedEdge::new(topo.add_edge(edge), y > 0.0));
+            }
+            let wire = topo.add_wire(Wire::new(edges, true).unwrap());
+            faces.push(topo.add_face(Face::new(
+                wire,
+                vec![],
+                FaceSurface::Plane {
+                    normal: Vec3::new(0.0, 0.0, 1.0),
+                    d: 0.0,
+                },
+            )));
+        }
+        merge_duplicate_edges(&mut topo, &mut faces).unwrap();
+        let wire_a = topo
+            .wire(topo.face(faces[0]).unwrap().outer_wire())
+            .unwrap();
+        let wire_b = topo
+            .wire(topo.face(faces[1]).unwrap().outer_wire())
+            .unwrap();
+        assert_ne!(wire_a.edges()[0].edge(), wire_a.edges()[1].edge());
+        assert_eq!(wire_a.edges()[0].edge(), wire_b.edges()[0].edge());
+        assert_eq!(wire_a.edges()[1].edge(), wire_b.edges()[1].edge());
+    }
+
+    #[test]
+    fn branch_check_accepts_different_parameter_speeds_on_the_same_segment() {
+        use remus_math::nurbs::curve::NurbsCurve;
+        use remus_topology::{edge::Edge, vertex::Vertex};
+        let mut topo = Topology::new();
+        let a = Point3::new(0.0, 0.0, 0.0);
+        let b = Point3::new(1.0, 0.0, 0.0);
+        let va = topo.add_vertex(Vertex::new(a, 1e-7));
+        let vb = topo.add_vertex(Vertex::new(b, 1e-7));
+        let curve = NurbsCurve::new(
+            2,
+            vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            vec![a, a, b],
+            vec![1.0; 3],
+        )
+        .unwrap();
+        let mut spline = Edge::new(va, vb, EdgeCurve::NurbsCurve(curve));
+        spline.set_trim(Some((0.0, 1.0)));
+        assert!(point_on_edge_branch(&topo, &spline, Point3::new(0.5, 0.0, 0.0), 1e-7).unwrap());
+        assert!(!point_on_edge_branch(&topo, &spline, Point3::new(0.5, 0.1, 0.0), 1e-7).unwrap());
+    }
+    #[test]
+    fn vertex_welding_preserves_the_source_edge_tolerance() {
+        use remus_math::nurbs::curve::NurbsCurve;
+        use remus_topology::{
+            edge::Edge,
+            face::{Face, FaceSurface},
+            vertex::Vertex,
+            wire::Wire,
+        };
+        let mut topo = Topology::new();
+        let points = [
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(0.0, 1.0, 0.0),
+        ];
+        let mut faces = Vec::new();
+        for duplicate in [false, true] {
+            let vertices = points.map(|p| topo.add_vertex(Vertex::new(p, 1e-7)));
+            let mut edges = Vec::new();
+            for i in 0..3 {
+                let mut edge = if duplicate && i == 0 {
+                    let curve = NurbsCurve::new(
+                        2,
+                        vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+                        vec![
+                            Point3::new(0.0, 4e-5, 0.0),
+                            Point3::new(0.5, 0.0, 0.0),
+                            points[1],
+                        ],
+                        vec![1.0; 3],
+                    )
+                    .unwrap();
+                    Edge::with_tolerance(
+                        vertices[i],
+                        vertices[(i + 1) % 3],
+                        EdgeCurve::NurbsCurve(curve),
+                        Some(5e-5),
+                    )
+                } else {
+                    Edge::new(vertices[i], vertices[(i + 1) % 3], EdgeCurve::Line)
+                };
+                if duplicate && i == 0 {
+                    edge.set_trim(Some((0.0, 1.0)));
+                }
+                edges.push(OrientedEdge::new(topo.add_edge(edge), true));
+            }
+            let wire = topo.add_wire(Wire::new(edges, true).unwrap());
+            faces.push(topo.add_face(Face::new(
+                wire,
+                vec![],
+                FaceSurface::Plane {
+                    normal: Vec3::new(0.0, 0.0, 1.0),
+                    d: 0.0,
+                },
+            )));
+        }
+        weld_coincident_vertices(
+            &mut topo,
+            &mut faces,
+            &mut crate::builder::split_types::EdgeLineageLog::default(),
+        )
+        .unwrap();
+        let wire = topo
+            .wire(topo.face(faces[1]).unwrap().outer_wire())
+            .unwrap();
+        let edge = topo.edge(wire.edges()[0].edge()).unwrap();
+        assert_eq!(edge.tolerance(), Some(5e-5));
+        assert_eq!(edge.strict_domain().unwrap(), (0.0, 1.0));
     }
 }

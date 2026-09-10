@@ -481,7 +481,7 @@ pub fn boolean_transacted(
     a: SolidId,
     b: SolidId,
 ) -> Result<SolidId, crate::OperationsError> {
-    let context = remus_math::context::OperationContext::new();
+    let context = exact_only_context();
     let opts = BooleanOptions::default();
     remus_topology::transaction::run_validated(
         topo,
@@ -506,27 +506,42 @@ pub fn boolean_transacted(
     )
 }
 
-/// Perform a boolean operation on two solids.
+/// The context every plain (handle-returning) boolean entry point runs under.
 ///
-/// Uses the GFA pipeline as the primary engine, with mesh boolean
-/// (co-refinement) as a fallback when GFA fails or produces invalid results.
-/// The fallback is not disclosed in the return value: it logs a `warn` on
-/// the `remus_approx` target. Callers that need to know, or to refuse it,
-/// use [`boolean_with_context`] with an explicit
-/// [`FallbackPolicy`](remus_math::context::FallbackPolicy).
+/// A result that cannot be produced exactly is refused with
+/// [`OperationsError::ExactOnlyUnattainable`](crate::OperationsError::ExactOnlyUnattainable)
+/// rather than degraded to a mesh: a bare `SolidId` has nowhere to carry
+/// the disclosure, so the only honest answers are "exact" or "no".
+fn exact_only_context() -> remus_math::context::OperationContext {
+    remus_math::context::OperationContext::new()
+        .with_fallback(remus_math::context::FallbackPolicy::ExactOnly)
+}
+
+/// Perform an exact boolean operation on two solids.
+///
+/// Runs the GFA pipeline (and its exact fast paths) only. When the exact
+/// pipeline cannot produce the result, this returns
+/// [`OperationsError::ExactOnlyUnattainable`](crate::OperationsError::ExactOnlyUnattainable)
+/// instead of falling over to the mesh (co-refinement) boolean: a bare
+/// handle cannot disclose an approximation, so this entry point never
+/// produces one. Callers that accept an approximate result use
+/// [`boolean_with_context`] with a permissive
+/// [`FallbackPolicy`](remus_math::context::FallbackPolicy) and read the
+/// disclosed [`BooleanQuality`] from the outcome.
 ///
 /// # Errors
 ///
-/// Returns an error if either solid is invalid or the operation produces
-/// an empty or non-manifold result. Every error restores the topology's live
-/// entities to their pre-operation state.
+/// Returns an error if either solid is invalid, the operation produces an
+/// empty or non-manifold result, or the exact pipeline cannot handle the
+/// pair. Every error restores the topology's live entities to their
+/// pre-operation state.
 pub fn boolean(
     topo: &mut Topology,
     op: BooleanOp,
     a: SolidId,
     b: SolidId,
 ) -> Result<SolidId, crate::OperationsError> {
-    let context = remus_math::context::OperationContext::new();
+    let context = exact_only_context();
     let opts = BooleanOptions::default();
     remus_topology::transaction::run_transacted(topo, |topo| {
         let mut used_fallback = false;
@@ -1687,14 +1702,20 @@ fn run_mesh_fallback(
 /// Perform a boolean operation with custom options.
 ///
 /// Runs the standard boolean pipeline under a context derived from `opts`,
-/// then applies the requested post-processing. `deflection` is the mesh
-/// fallback budget, `tolerance` reaches exact and approximate paths,
-/// `unify_faces` controls same-domain post-processing, and
+/// then applies the requested post-processing. `tolerance` reaches the exact
+/// paths, `unify_faces` controls same-domain post-processing, and
 /// `heal_after_boolean` runs the full operations-layer healing pass.
+///
+/// Like [`boolean`], this entry point is exact-only: `deflection` is
+/// validated but never reached, and a pair the exact pipeline cannot handle
+/// returns
+/// [`OperationsError::ExactOnlyUnattainable`](crate::OperationsError::ExactOnlyUnattainable).
+/// To combine post-processing with a permissive fallback policy, use
+/// [`boolean_outcome_with_options`], which discloses the result quality.
 ///
 /// # Errors
 ///
-/// Returns the same errors as [`boolean`].
+/// Returns the same errors as [`boolean`], or an invalid-options error.
 pub fn boolean_with_options(
     topo: &mut Topology,
     op: BooleanOp,
@@ -1702,13 +1723,65 @@ pub fn boolean_with_options(
     b: SolidId,
     opts: BooleanOptions,
 ) -> Result<SolidId, crate::OperationsError> {
-    let context = operation_context_from_options(&opts);
-    validate_operation_context(&context)?;
+    // Validate the option-derived context (tolerance, deflection) before
+    // pinning the policy to exact-only.
+    validate_operation_context(&operation_context_from_options(&opts))?;
+    let context = operation_context_from_options(&opts)
+        .with_fallback(remus_math::context::FallbackPolicy::ExactOnly);
     remus_topology::transaction::run_transacted(topo, |topo| {
         let mut used_fallback = false;
         let result =
             boolean_with_operation_context(topo, op, a, b, &context, &opts, &mut used_fallback)?;
         apply_boolean_options(topo, result, &opts)
+    })
+}
+
+/// Perform a boolean with post-processing options under an explicit
+/// operation context, disclosing the result quality.
+///
+/// This is [`boolean_with_options`] for callers that accept an approximate
+/// result: the context's
+/// [`FallbackPolicy`](remus_math::context::FallbackPolicy) decides whether
+/// the mesh fallback may run, and the returned [`BooleanOutcome`] reports
+/// whether it did. `opts.deflection` and `opts.tolerance` are ignored in
+/// favour of the context's budget and tolerance; `unify_faces` and
+/// `heal_after_boolean` apply after the boolean exactly as in
+/// [`boolean_with_options`].
+///
+/// # Errors
+///
+/// Returns [`boolean_with_context`]'s errors, including the typed exact-only
+/// refusal, or a post-processing failure. Every error rolls back.
+pub fn boolean_outcome_with_options(
+    topo: &mut Topology,
+    op: BooleanOp,
+    a: SolidId,
+    b: SolidId,
+    opts: &BooleanOptions,
+    context: &remus_math::context::OperationContext,
+) -> Result<BooleanOutcome, crate::OperationsError> {
+    validate_operation_context(context)?;
+    let opts = BooleanOptions {
+        unify_faces: opts.unify_faces,
+        heal_after_boolean: opts.heal_after_boolean,
+        ..boolean_options_from_context(context)
+    };
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let mut used_fallback = false;
+        let result =
+            boolean_with_operation_context(topo, op, a, b, context, &opts, &mut used_fallback)?;
+        let solid = apply_boolean_options(topo, result, &opts)?;
+        let quality = if used_fallback {
+            BooleanQuality::Approximate {
+                deflection: context
+                    .fallback
+                    .budget()
+                    .unwrap_or(remus_math::context::DEFAULT_APPROXIMATION_BUDGET),
+            }
+        } else {
+            BooleanQuality::Exact
+        };
+        Ok(BooleanOutcome { solid, quality })
     })
 }
 
@@ -1881,13 +1954,10 @@ pub(crate) fn fuse_cluster(
     topo: &mut Topology,
     cluster: &[SolidId],
 ) -> Result<SolidId, crate::OperationsError> {
+    // Handle-returning like `boolean`: exact or the typed refusal, never a
+    // silently mesh-approximated cluster.
     let opts = BooleanOptions::default();
-    fuse_cluster_with_context(
-        topo,
-        cluster,
-        &remus_math::context::OperationContext::new(),
-        &opts,
-    )
+    fuse_cluster_with_context(topo, cluster, &exact_only_context(), &opts)
 }
 
 fn fuse_cluster_with_context(
@@ -1980,10 +2050,28 @@ fn cluster_tools_by_aabb(
 /// [`EvolutionOrigin::Construction`](crate::evolution::EvolutionOrigin::Construction),
 /// the fallback [`EvolutionOrigin::Geometry`](crate::evolution::EvolutionOrigin::Geometry).
 ///
+/// Both paths are exact-only, like [`boolean`]: a pair the exact pipeline
+/// cannot handle is refused with the typed exact-only error rather than
+/// approximated.
+///
 /// # Errors
 ///
 /// Returns the same errors as [`boolean`].
 pub fn boolean_with_evolution(
+    topo: &mut Topology,
+    op: BooleanOp,
+    a: SolidId,
+    b: SolidId,
+) -> Result<(SolidId, crate::evolution::EvolutionMap), crate::OperationsError> {
+    // The faithful GFA attempt below allocates result topology before it
+    // decides whether to trust it; one transaction around both attempts
+    // keeps a refusal from leaving those entities behind.
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        boolean_with_evolution_impl(topo, op, a, b)
+    })
+}
+
+fn boolean_with_evolution_impl(
     topo: &mut Topology,
     op: BooleanOp,
     a: SolidId,
@@ -3804,34 +3892,9 @@ fn intersect_multi_region_semantically_safe(
     b: SolidId,
     tol: remus_math::tolerance::Tolerance,
 ) -> bool {
-    const MAX_BOUNDARY_SAMPLES: usize = 100_000;
-
-    let Ok(faces) = remus_topology::explorer::solid_faces(topo, result) else {
+    let Some(samples) = intersection_boundary_samples(topo, result) else {
         return false;
     };
-    let mut samples = Vec::new();
-    for fid in faces {
-        let Ok(mesh) = crate::tessellate::tessellate(topo, fid, 0.05) else {
-            return false;
-        };
-        for tri in mesh.indices.chunks_exact(3) {
-            let (Some(&p0), Some(&p1), Some(&p2)) = (
-                mesh.positions.get(tri[0] as usize),
-                mesh.positions.get(tri[1] as usize),
-                mesh.positions.get(tri[2] as usize),
-            ) else {
-                return false;
-            };
-            // Tessellator vertices lie on the exact face surface. Triangle
-            // centroids generally lie on the inward chord of a curved face,
-            // so classifying them would test the approximation rather than
-            // the analytic result boundary.
-            samples.extend([p0, p1, p2]);
-            if samples.len() > MAX_BOUNDARY_SAMPLES {
-                return false;
-            }
-        }
-    }
     let classify_tol = tol.linear * 100.0;
     let Ok(a_faces) = remus_topology::explorer::solid_faces(topo, a) else {
         return false;
@@ -3840,10 +3903,13 @@ fn intersect_multi_region_semantically_safe(
         return false;
     };
     let mut distance_checks = 0_usize;
+    let mut classifiers = [
+        crate::classify::RobustClassifier::new(topo, a, 0.05, classify_tol),
+        crate::classify::RobustClassifier::new(topo, b, 0.05, classify_tol),
+    ];
     for &point in &samples {
-        for operand in [a, b] {
-            let classification =
-                crate::classify::classify_point_robust(topo, operand, point, 0.05, classify_tol);
+        for (operand, classifier) in [a, b].into_iter().zip(&mut classifiers) {
+            let classification = classifier.classify(point);
             if matches!(
                 classification,
                 Ok(crate::classify::PointClassification::Inside
@@ -3870,7 +3936,7 @@ fn intersect_multi_region_semantically_safe(
             });
             if !on_trimmed_boundary {
                 log::debug!(
-                    "multi-region Intersect boundary verification failed at {point:?} against {}: {classification:?}",
+                    "multi-region Intersect boundary verification failed at {point:?} against {}: {classification:?} distance_checks={distance_checks}",
                     operand.index()
                 );
                 return false;
@@ -3894,7 +3960,9 @@ fn intersect_multi_region_semantically_safe(
         ))
     })();
     let Ok((result_volume, from_a, from_b)) = volume_audit else {
-        log::debug!("multi-region Intersect volume verification could not be computed");
+        log::debug!(
+            "multi-region Intersect volume verification could not be computed: {volume_audit:?}"
+        );
         return false;
     };
     let result_convergence = (result_volume.0 - result_volume.1).abs();
@@ -3910,6 +3978,35 @@ fn intersect_multi_region_semantically_safe(
     );
     (result_volume.1 - from_a.1).abs() <= allowed_from_a
         && (result_volume.1 - from_b.1).abs() <= allowed_from_b
+}
+
+fn intersection_boundary_samples(topo: &Topology, result: SolidId) -> Option<Vec<Point3>> {
+    const MAX_BOUNDARY_SAMPLES: usize = 100_000;
+
+    // Use the owning-solid tessellator so curved faces retain their trimming
+    // wires. Standalone analytic tessellation can cover the entire carrier
+    // (for example the full tube of a partial toroidal blend).
+    let Ok(mesh) = crate::tessellate::tessellate_solid_with_tolerance(topo, result, 0.05, 0.1)
+    else {
+        return None;
+    };
+    let mut samples = Vec::new();
+    let mut visited = vec![false; mesh.positions.len()];
+    for &index in &mesh.indices {
+        let index = index as usize;
+        let (Some(&point), Some(seen)) = (mesh.positions.get(index), visited.get_mut(index)) else {
+            return None;
+        };
+        if *seen {
+            continue;
+        }
+        *seen = true;
+        samples.push(point);
+        if samples.len() > MAX_BOUNDARY_SAMPLES {
+            return None;
+        }
+    }
+    Some(samples)
 }
 
 type CoarseFineVolume = (f64, f64);
@@ -3932,7 +4029,12 @@ fn intersection_audit_mesh_volumes(
             || !crate::tessellate::is_watertight(&mesh)
         {
             return Err(crate::OperationsError::InvalidInput {
-                reason: "intersection volume audit requires a bounded watertight mesh".into(),
+                reason: format!(
+                    "intersection volume audit requires a bounded watertight mesh: solid {} deflection {deflection} triangles {} quality {:?}",
+                    solid.index(),
+                    mesh.indices.len() / 3,
+                    crate::tessellate::welded_mesh_quality(&mesh)
+                ),
             });
         }
         let origin =
