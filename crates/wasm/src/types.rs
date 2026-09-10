@@ -6,7 +6,73 @@
 use std::collections::HashSet;
 
 use remus_operations::evolution::{EvolutionMap, EvolutionOrigin};
+use serde_json::{Map, Value};
 use tsify::Tsify;
+
+use crate::error::StructuredWasmError;
+
+/// Typed direct-method result for a mutating operation that returns a solid.
+///
+/// O4.7 adds these envelopes alongside the legacy throwing methods. A failure
+/// carries the same native registry code as `executeBatchV2`'s `kernelCode`,
+/// falling back to its stable wire code when no finer native code exists.
+#[derive(Debug, serde::Serialize, Tsify)]
+#[serde(tag = "status", rename_all = "camelCase")]
+#[tsify(hashmap_as_object, missing_as_null)]
+pub enum SolidOperationDetailedResult {
+    /// The operation committed a solid result.
+    Ok {
+        /// No failure code is present on success.
+        #[tsify(type = "null")]
+        code: Option<String>,
+        /// No failure category is present on success.
+        #[tsify(type = "null")]
+        category: Option<String>,
+        /// Reserved structured context; empty on success.
+        #[tsify(type = "Record<string, unknown>")]
+        details: Map<String, Value>,
+        /// Handle of the committed solid.
+        value: u32,
+    },
+    /// The operation refused or failed without committing a result.
+    Error {
+        /// Stable native kernel code, or the stable batch-v2 wire code when
+        /// the failure has no finer native registry entry.
+        code: String,
+        /// Kernel-wide failure category.
+        #[tsify(
+            type = "\"invalid_input\" | \"invalid_topology\" | \"unsupported\" | \"nonconvergence\" | \"resource_limit\" | \"tolerance_violation\" | \"quality_refused\" | \"cancelled\" | \"internal\""
+        )]
+        category: String,
+        /// Structured context, including the human-readable `message`.
+        #[tsify(type = "Record<string, unknown>")]
+        details: Map<String, Value>,
+        /// Always `null` on failure.
+        #[tsify(type = "null")]
+        value: Option<u32>,
+    },
+}
+
+impl SolidOperationDetailedResult {
+    pub(crate) fn success(value: u32) -> Self {
+        Self::Ok {
+            code: None,
+            category: None,
+            details: Map::new(),
+            value,
+        }
+    }
+
+    pub(crate) fn error(error: StructuredWasmError) -> Self {
+        let (code, category, details) = error.into_direct_parts();
+        Self::Error {
+            code,
+            category: category.to_string(),
+            details,
+            value: None,
+        }
+    }
+}
 
 /// Typed result for `tessellateSolidGrouped`.
 #[derive(serde::Serialize, Tsify)]

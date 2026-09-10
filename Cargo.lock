@@ -2241,6 +2241,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "remus-parity"
+version = "0.1.0"
+dependencies = [
+ "remus-wasm",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "remus-render"
 version = "0.1.0"
 dependencies = [

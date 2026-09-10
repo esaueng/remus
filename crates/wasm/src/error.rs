@@ -74,6 +74,23 @@ pub(crate) enum WasmErrorCode {
 }
 
 impl WasmErrorCode {
+    /// Stable wire spelling used when no finer native kernel code exists.
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::InvalidJson => "invalid_json",
+            Self::BatchLimitExceeded => "batch_limit_exceeded",
+            Self::MissingOperation => "missing_operation",
+            Self::UnknownOperation => "unknown_operation",
+            Self::InvalidArgument => "invalid_argument",
+            Self::InvalidHandle => "invalid_handle",
+            Self::TopologyError => "topology_error",
+            Self::OperationFailed => "operation_failed",
+            Self::Cancelled => "cancelled",
+            Self::ResourceLimitExceeded => "resource_limit_exceeded",
+            Self::InternalError => "internal_error",
+        }
+    }
+
     /// The kernel-wide failure category this wire code projects
     /// (`remus_math::diagnostic::FailureCategory`). Explicit per code:
     /// never derived from names.
@@ -243,6 +260,30 @@ impl StructuredWasmError {
         self.details
             .insert("operation".to_string(), Value::from(operation));
         self
+    }
+
+    /// Attach operation context for a direct method, which has no batch index.
+    pub(crate) fn with_direct_operation(mut self, operation: &'static str) -> Self {
+        self.details
+            .insert("operation".to_string(), Value::from(operation));
+        self
+    }
+
+    /// Project this batch-compatible error into an O4.7 direct-method result.
+    ///
+    /// Native registry codes are more specific than the WASM wire code, so
+    /// they win when present. Errors without a native code retain the stable
+    /// batch-v2 code. The human message stays data rather than becoming a
+    /// thrown exception.
+    pub(crate) fn into_direct_parts(mut self) -> (String, &'static str, Map<String, Value>) {
+        let code = self
+            .details
+            .get("kernelCode")
+            .and_then(Value::as_str)
+            .map_or_else(|| self.code.as_str().to_string(), str::to_string);
+        self.details
+            .insert("message".to_string(), Value::from(self.message));
+        (code, self.category, self.details)
     }
 
     pub(crate) fn message(&self) -> &str {
@@ -862,10 +903,29 @@ mod work_limit_tests {
     #![allow(clippy::unwrap_used)]
 
     use super::{
-        MAX_MOVE_FACES_TOPOLOGY_WORK, MAX_WASM_FACE_PAIR_FACES, MAX_WASM_WORK_ITEMS,
+        MAX_MOVE_FACES_TOPOLOGY_WORK, MAX_WASM_FACE_PAIR_FACES, MAX_WASM_WORK_ITEMS, WasmErrorCode,
         validate_face_pair_count, validate_move_faces_work, validate_work_count,
         validate_work_product,
     };
+
+    #[test]
+    fn direct_fallback_codes_match_batch_v2_serialization() {
+        for code in [
+            WasmErrorCode::InvalidJson,
+            WasmErrorCode::BatchLimitExceeded,
+            WasmErrorCode::MissingOperation,
+            WasmErrorCode::UnknownOperation,
+            WasmErrorCode::InvalidArgument,
+            WasmErrorCode::InvalidHandle,
+            WasmErrorCode::TopologyError,
+            WasmErrorCode::OperationFailed,
+            WasmErrorCode::Cancelled,
+            WasmErrorCode::ResourceLimitExceeded,
+            WasmErrorCode::InternalError,
+        ] {
+            assert_eq!(serde_json::to_value(code).unwrap(), code.as_str());
+        }
+    }
 
     #[test]
     fn move_faces_work_is_bounded_by_topology_and_incident_edges() {
