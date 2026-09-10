@@ -81,3 +81,60 @@ fn tolerance_bearing_document_round_trips_byte_identically() {
         "legacy documents are byte-stable across arena round trips"
     );
 }
+
+#[test]
+fn translated_certified_endpoint_survives_strict_arena_transfer() {
+    use remus_math::{mat::Mat4, nurbs::curve::NurbsCurve, vec::Point3};
+    use remus_topology::edge::EdgeCurve;
+    let mut source = Topology::new();
+    let solid = remus_operations::primitives::make_box(&mut source, 10.0, 20.0, 30.0).unwrap();
+    let edge_id = remus_topology::explorer::solid_edges(&source, solid)
+        .unwrap()
+        .into_iter()
+        .find(|id| {
+            source
+                .vertex(source.edge(*id).unwrap().start())
+                .unwrap()
+                .point()
+                .x()
+                == 0.0
+        })
+        .unwrap();
+    let edge = source.edge(edge_id).unwrap();
+    let p = source.vertex(edge.start()).unwrap().point();
+    let q = source.vertex(edge.end()).unwrap().point();
+    let gap = 0.00004;
+    let curve = NurbsCurve::new(
+        1,
+        vec![0.0, 0.0, 1.0, 1.0],
+        vec![Point3::new(p.x() + gap, p.y(), p.z()), q],
+        vec![1.0, 1.0],
+    )
+    .unwrap();
+    let edge = source.edge_mut(edge_id).unwrap();
+    edge.set_curve(EdgeCurve::NurbsCurve(curve));
+    edge.set_trim(Some((0.0, 1.0)));
+    edge.set_tolerance(Some(gap)).unwrap();
+    let before = serialize_solids(&source, &[solid]).unwrap();
+    deserialize_solids(&before, &mut Topology::new()).unwrap();
+    let copied = remus_operations::copy::copy_and_transform_solid(
+        &mut source,
+        solid,
+        &Mat4::translation(4.5, 0.0, 0.0),
+    )
+    .unwrap();
+    let copy_bytes = serialize_solids(&source, &[copied]).unwrap();
+    deserialize_solids(&copy_bytes, &mut Topology::new()).unwrap();
+    assert_eq!(serialize_solids(&source, &[solid]).unwrap(), before);
+    remus_operations::transform::transform_solid(
+        &mut source,
+        solid,
+        &Mat4::translation(4.5, 0.0, 0.0),
+    )
+    .unwrap();
+    let after = serialize_solids(&source, &[solid]).unwrap();
+    let mut restored = Topology::new();
+    let solids = deserialize_solids(&after, &mut restored).unwrap();
+    assert_eq!(serialize_solids(&restored, &solids).unwrap(), after);
+    assert!(source.edge(edge_id).unwrap().tolerance().unwrap() - gap < 1e-15);
+}
