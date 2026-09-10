@@ -137,7 +137,7 @@ class ConvergenceTests(unittest.TestCase):
         gate = JOBS["ci-pass"]
         self.assertIn("name: CI Pass", gate)
         self.assertIn("if: always()", gate)
-        self.assertIn("runs-on: *fleet-runner", gate)
+        self.assertIn("runs-on: *fleet-light-runner", gate)
         self.assertNotIn("ci-pass", jobs(CALLER))
         self.assertIn("checks / CI Pass", (ROOT / "docs/owner-pr-ci.md").read_text())
 
