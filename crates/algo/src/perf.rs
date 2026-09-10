@@ -34,6 +34,7 @@ std::thread_local! {
     static RAY_GEOM_BUILDS: Cell<u64> = const { Cell::new(0) };
     static FACE_SPLIT_PROBES: Cell<u64> = const { Cell::new(0) };
     static LOCAL_VERTEX_INSERTS: Cell<u64> = const { Cell::new(0) };
+    static EF_NURBS_PAIR_PROBES: Cell<u64> = const { Cell::new(0) };
 }
 
 #[cfg(feature = "perf-counters")]
@@ -52,6 +53,15 @@ pub(crate) fn bump_pave_vertex_probe() {
 
 /// Count one same-domain polygon-intersection clip (the expensive narrow-phase
 /// in `planar_faces_overlap`). Crate-internal, like `bump_pave_vertex_probe`.
+/// One edge x NURBS-face pair that survived the conservative box gate in
+/// the edge-face interference phase and goes on to project edge samples
+/// onto the surface.
+#[inline]
+pub(crate) fn bump_ef_nurbs_pair_probe() {
+    #[cfg(feature = "perf-counters")]
+    increment(&EF_NURBS_PAIR_PROBES);
+}
+
 #[inline]
 #[allow(dead_code)]
 pub(crate) fn bump_sd_poly_clip() {
@@ -110,6 +120,9 @@ pub struct PerfSnapshot {
     pub face_split_probes: u64,
     /// Sub-face-local vertex materializations in `build_topology_face`.
     pub local_vertex_inserts: u64,
+    /// Edge x NURBS-face pairs that reached surface projection in the
+    /// edge-face interference phase (after the conservative box gate).
+    pub ef_nurbs_pair_probes: u64,
 }
 
 /// Reset all counters to zero. Only available with `perf-counters`.
@@ -120,6 +133,7 @@ pub fn reset() {
     RAY_GEOM_BUILDS.set(0);
     FACE_SPLIT_PROBES.set(0);
     LOCAL_VERTEX_INSERTS.set(0);
+    EF_NURBS_PAIR_PROBES.set(0);
 }
 
 /// Every work counter since the last [`reset`]. Only available with
@@ -133,6 +147,7 @@ pub fn snapshot() -> PerfSnapshot {
         ray_geom_builds: RAY_GEOM_BUILDS.get(),
         face_split_probes: FACE_SPLIT_PROBES.get(),
         local_vertex_inserts: LOCAL_VERTEX_INSERTS.get(),
+        ef_nurbs_pair_probes: EF_NURBS_PAIR_PROBES.get(),
     }
 }
 
