@@ -19,8 +19,8 @@ the *queue*; the narrative behind closed rows is `campaign-history.md`. All
 are living documents: update the relevant row in the same PR that changes
 its state. Before claiming anything: `gh pr list --state open` (R6).
 
-- **Drafted:** 2026-08-29. **Last reconciled:** 2026-09-09 against `main` @
-  `936e7b1` (regenerate with `git rev-parse --short origin/main` when touching
+- **Drafted:** 2026-08-29. **Last reconciled:** 2026-09-10 against `main` @
+  `63e388c` (regenerate with `git rev-parse --short origin/main` when touching
   §H0; do not hand-type a baseline older than the section it heads).
 - **External K-S1 disposition — tangent-boss operand drop: done (PR #143,
   2026-08-30).** The historical pre-fix sequence returned the unchanged plate
@@ -76,13 +76,22 @@ its state. Before claiming anything: `gh pr list --state open` (R6).
 
 ### H0 — in flight (verify before duplicating)
 
-Reconciled 2026-09-09 UTC at `936e7b1` (merges through #349). No PRs were
-open at inspection. The bounded quadric, scale, tangency (#307), quarter-wall
-(#308), seam (#312), persistent edit/healing integration (#338), cylindrical
-blend resize (#346), and zero-radius blend removal (#348) work is merged.
-The detailed [6.5/B18 audit](evolution-audit.md) records source/test
-evidence and remaining history gaps. Recheck live PRs and runs before
-claiming new work.
+Reconciled 2026-09-10 UTC at `63e388c` (merges through #374 and #381).
+Open at inspection: #382 (translation round-off certificate, the author's
+follow-on to the hammer stack) and the package bot's refresh for the
+current head. Since the previous reconciliation the contract lane closed
+(B21 #356, B22 #350, B23 #359), typed binary boolean results (#354) and the
+native/wasm quadric parity matrix (#355) landed, and the hammer-holder
+opening stack merged as a linear train (#363, #375, #366, #367, #368, #370,
+#371, #373, #374; see B27). #363's opposing-face clip regressed the
+deepened-notch fixture to eight unpaired edges and was fixed in-branch
+before the train (two arrangement gaps, recorded in the skill's lessons).
+The 2026-09-06 mutation survivors are triaged (#381). The bounded quadric,
+scale, tangency (#307), quarter-wall (#308), seam (#312), persistent
+edit/healing integration (#338), cylindrical blend resize (#346), and
+zero-radius blend removal (#348) work remains merged. The detailed
+[6.5/B18 audit](evolution-audit.md) records source/test evidence and
+remaining history gaps. Recheck live PRs and runs before claiming new work.
 
 **Proof gates, as of the reconciliation (verified, not inherited):**
 
@@ -186,7 +195,7 @@ number, not the adjective.
 | Exit benchmarks | P-Class B1–B5 green as permanent tests | 0 / 5 |
 | Scoreboard | Open Kernel S1–S7 claims live | 0 / 7 |
 | Capability matrix | cells listed under "Known Unsupported-untyped / Partial cells" in [capability-matrix.md](capability-matrix.md) | 2 named families (plane/cylinder tangency, sliver crossings) |
-| Bridge backlog | §B rows not Done or explicitly re-triaged | 22 of 26 |
+| Bridge backlog | §B rows not Done or explicitly re-triaged | 20 of 27 (2026-09-10) |
 
 Anything short of all four at zero/full publishes as 0.x. Gate 3 was
 previously worded "zero Unsupported-untyped cells" while B1 claimed to be
@@ -275,6 +284,7 @@ P-Class 2.3 · conic boolean cells = O2.2 · offset self-intersection = 5.7
 | B23 | **One fillet cascade policy** — WASM `fillet` runs v2 → rolling-ball → bevel (`wasm/src/helpers.rs::try_fillet`), `blend_ops.rs::planar_fillet_result` orders a legacy attempt first for concave edges, and the facade `Model::fillet` is v2-only; the deprecated v1 engines are reached in production through `#[allow(deprecated)]`. Move the cascade into `operations` behind one function both surfaces call, with the engine that produced the result disclosed in the outcome. Does NOT decide v1 retirement (owner's product decision, still "not queued"). | `wasm/src/helpers.rs`, `operations/src/blend_ops.rs`, `operations/src/fillet/`, `remus/src/model.rs` | M | Rust and JS callers get different geometry for the same request today; a rejected attempt can leave the input partly filleted unless rollback is explicit (documented trap). Precondition for honest M5 parity numbers. | **Done (2026-09-10):** `blend_ops::fillet_cascade` is the one policy — walking engine (`fillet_v2`, which already tries the rolling-ball rebuild first for planar-line selections), then the guarded rolling-ball rebuild, each transactional; the flat bevel is no longer a fillet fallback. WASM `fillet` / `filletWithEvolution` / batch `fillet`, the facade `Model::fillet`, and `fillet_with_evolution` all call it, and `BlendResult::engine` discloses which engine produced the result. v1 retirement is still not decided. |
 | B24 | **Wildcard-arm audit and gate** — ~180 `_ =>` arms over `EdgeCurve`/`FaceSurface` (densest: `measure/volume.rs` 16, `pave_filler/phase_ff.rs` 13, `tessellate/nonplanar.rs` 12, `resize_blend.rs` 11). A new variant compiles clean and silently takes the approximate branch in volume, meshing, and GFA splitting. Convert the four densest files to exhaustive matches; add a `scripts/check-wildcard-arms.sh` ratchet (count per file, no growth) to the `repo-policy` job, same pattern as `check-det-hash.sh`. Companion to RFC 0006 (face-surface wildcard audit). | `operations/src/measure/volume.rs`, `algo/src/pave_filler/phase_ff.rs`, `operations/src/tessellate/nonplanar.rs`, `operations/src/resize_blend.rs`, `scripts/` | M | The only current defence is `approx_census`, which detects drift after the fact. RFC 0006 swept-analytic surfaces will add a variant and hit every one of these. | Open |
 | B25 | **Offset path consolidation** — `offset_v2` (wrapper over `remus-offset`), sampled `offset_face` (public `samples: u32` knob), and `offset_trim` are all exposed independently through WASM (`bindings/operations.rs`, `batch.rs`), and `shell_op.rs` still calls the sampled `offset_face` internally. Route `shell_op` through the exact offset where the face family allows it and mark the sampled binding as approximate in its result/type, or fold it. | `operations/src/offset_face.rs`, `offset_trim.rs`, `shell_op.rs`, `wasm/src/bindings/operations.rs` | M | A discretization knob on the public API contradicts the exact-kernel contract; three ways to offset is a support burden for the adapter. | Open |
+| B27 | **Hammer-holder opening edit (OpenZCAD consumer case)** — imported Shapr3D holder, 46 → 50 mm opening by a mask cut, shifted-source intersection, and fuse. Not a §B chase by filter 2 (a general NURBS-import boolean chain), queued here because ten merged PRs of geometry-lane work had no owner row. Status doc: [hammer-holder-opening-status.md](../hammer-holder-opening-status.md); fixtures `crates/io/tests/hammer_opening_partition.rs`, diagnostic `crates/io/examples/hammer_opening.rs`. | `algo/builder/fill_images_faces.rs`, `face_splitter/`, `pave_filler/phase_ff.rs` | L | The first consumer-driven imported-model edit to complete exact-only end to end; every repair on the way (branch retention, tolerance carry-through, curved sections, torus-patch classification, concave subdivision) is generic. Its residual risk is the calibration web: every PR in the stack touched the section/clip/arrangement path, and the deepened-notch foil caught one regression. | **Partial (2026-09-10, #357, #361, #363–#375):** the specific replay completes all eight exact-only booleans natively (36-face shifted intersection, 194-face fuse, dimensions/bores/lettering preserved, strict validation, watertight mesh, STEP round trip) and through the WASM smoke path. Not qualified: general parameter ranges, OpenZCAD parameter/history references, AI editing path, and any second imported model. |
 | B26 | **Boolean and mesh invariant proptests** — the workspace has 15 proptest blocks (13 in `math`) and 8 golden files against ~445k lines, while roughly half of `scripts/` tests the CI policy itself. Add property tests over random primitive pairs and rigid transforms: inclusion–exclusion volume identity (A ∪ B + A ∩ B = A + B), fuse/cut complement, translation invariance of `solid_volume` (the doubled-boundary detector), watertight/manifold mesh, exact-only path stability under 1e-13 nudges. | `operations/tests/prop_boolean_invariants.rs` (new), `operations/src/boolean/tests.rs` | S–M | Cheapest broad oracle the kernel lacks; every lesson in the roadmap skill about doubled boundaries and translation-variant volume is a property nobody generates. Rides B19's schedule for the slow variants. | Open |
 
 **Explicitly not queued** (decided or terminal — do not re-open without
