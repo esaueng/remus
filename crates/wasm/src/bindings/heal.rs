@@ -128,6 +128,27 @@ impl BrepKernel {
         Ok(removed as u32)
     }
 
+    /// `unifyFaces` that also reports the strict validations it performs.
+    ///
+    /// Same merge, acceptance rule and tolerances as `unifyFaces`. Returns a
+    /// JSON string of `UnifyFacesDetailedResult`: `facesMerged`,
+    /// `inputErrors` (strict error count before), `resultErrors` (strict
+    /// error count of the solid the caller now holds) and `reverted`. A
+    /// caller that would otherwise validate the raw and the unified solid
+    /// again can read both verdicts here instead.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the solid handle is invalid or topology lookups
+    /// fail.
+    #[wasm_bindgen(js_name = "unifyFacesChecked")]
+    pub fn unify_faces_checked(&mut self, solid: u32) -> Result<JsValue, JsError> {
+        let result = self.unify_faces_checked_impl(solid)?;
+        Ok(serde_json::to_string(&result)
+            .map_err(|error| JsError::new(&error.to_string()))?
+            .into())
+    }
+
     /// Convert all analytic geometry in a solid to NURBS representation.
     ///
     /// Replaces planes, cylinders, cones, spheres, tori with NURBS surfaces and
@@ -306,6 +327,37 @@ impl BrepKernel {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use crate::kernel::BrepKernel;
+
+    #[test]
+    fn unify_faces_checked_reports_merge_and_validations() {
+        let mut k = BrepKernel::new();
+        // L-shaped fuse of two corner-sharing boxes leaves coplanar z-face
+        // fragments that unify (see operations::heal tests).
+        let r = k.execute_batch(
+            r#"[
+                {"op": "makeBox", "args": {"width": 3, "height": 1, "depth": 1}},
+                {"op": "makeBox", "args": {"width": 1, "height": 3, "depth": 1}},
+                {"op": "fuseWithOptions", "args": {"solidA": 0, "solidB": 1, "unifyFaces": false}}
+            ]"#,
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&r).unwrap();
+        assert!(parsed[2]["ok"].is_u64(), "fuse failed: {r}");
+        let fused = parsed[2]["ok"].as_u64().unwrap();
+        #[allow(clippy::cast_possible_truncation)]
+        let fused = fused as u32;
+        let faces_before = k.get_solid_faces(fused).unwrap().len();
+
+        let report = k.unify_faces_checked_impl(fused).unwrap();
+        let faces_after = k.get_solid_faces(fused).unwrap().len();
+
+        assert!(report.faces_merged > 0, "expected a merge: {report:?}");
+        assert_eq!(faces_before - faces_after, report.faces_merged as usize);
+        assert_eq!(report.input_errors, 0);
+        assert_eq!(report.result_errors, 0);
+        assert!(!report.reverted);
+        assert_eq!(k.validate_solid(fused).unwrap(), report.result_errors);
+        assert!(k.unify_faces_checked_impl(9_999).is_err());
+    }
 
     #[test]
     fn convert_to_bspline_returns_count_and_solid() {
@@ -508,6 +560,26 @@ impl BrepKernel {
             repairs: healing_repairs(&report),
             total_repairs: report.total() as u32,
             verified: true,
+        })
+    }
+
+    pub(crate) fn unify_faces_checked_impl(
+        &mut self,
+        solid: u32,
+    ) -> Result<crate::types::UnifyFacesDetailedResult, crate::error::WasmError> {
+        let solid_id =
+            self.resolve_solid(solid)
+                .map_err(|_| crate::error::WasmError::InvalidHandle {
+                    entity: "solid",
+                    index: solid as usize,
+                })?;
+        let report = remus_operations::heal::unify_faces_checked(self.topo_mut(), solid_id)?;
+        #[allow(clippy::cast_possible_truncation)]
+        Ok(crate::types::UnifyFacesDetailedResult {
+            faces_merged: report.faces_merged as u32,
+            input_errors: report.input_errors as u32,
+            result_errors: report.result_errors as u32,
+            reverted: report.reverted,
         })
     }
 
