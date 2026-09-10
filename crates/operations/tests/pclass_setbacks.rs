@@ -289,3 +289,50 @@ fn nonstationary_corner_law_refuses_instead_of_building_a_g0_cap() {
     assert_eq!(blend_failure_code(&error), "unsupported-setback-corner");
     assert_eq!(topo.num_solids(), before);
 }
+
+/// Mutation survivor (2026-09-06): the corner-radius agreement band
+/// `max(tol, |r| · 1e-8)` became `|r| / 1e-8` and no test noticed, because
+/// every declared-setback fixture agrees at the corner. Constant laws that
+/// differ by 1 % must be refused with the common-corner-radius reason and
+/// leave the topology untouched.
+#[test]
+fn mismatched_corner_radii_refuse_before_building_the_corner_ball() {
+    let mut topo = Topology::new();
+    let input = make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+    let selected = origin_edges(&topo, input);
+    assert_eq!(selected.len(), 3);
+    let specs: Vec<_> = selected
+        .iter()
+        .enumerate()
+        .map(|(index, &(edge, origin_is_start, _))| FilletEdgeSetback {
+            edge,
+            law: FilletRadiusLaw::Constant(if index == 0 { 1.01 } else { 1.0 }),
+            start_setback: if origin_is_start { 1.0 } else { 0.0 },
+            end_setback: if origin_is_start { 0.0 } else { 1.0 },
+        })
+        .collect();
+    let before = (
+        topo.num_vertices(),
+        topo.num_edges(),
+        topo.num_wires(),
+        topo.num_faces(),
+        topo.num_shells(),
+        topo.num_solids(),
+    );
+    let error = fillet_variable_with_setbacks(&mut topo, input, &specs).unwrap_err();
+    assert!(
+        error.to_string().contains("one common corner radius"),
+        "unexpected refusal: {error}"
+    );
+    assert_eq!(
+        before,
+        (
+            topo.num_vertices(),
+            topo.num_edges(),
+            topo.num_wires(),
+            topo.num_faces(),
+            topo.num_shells(),
+            topo.num_solids(),
+        )
+    );
+}

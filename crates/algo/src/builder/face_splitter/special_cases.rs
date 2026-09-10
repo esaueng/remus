@@ -4326,6 +4326,30 @@ mod tests {
         }
     }
 
+    /// Mutation survivor (2026-09-06): the circle arm's `v`-axis term in
+    /// `sphere_loop_projected_area` flipped sign unnoticed. It only matters
+    /// when the circle is off the origin, where `(center − origin) × Δ`
+    /// carries the endpoint delta: a quarter sector of radius 2 must
+    /// integrate to twice its area, 2π, in both traversal directions.
+    #[test]
+    fn projected_area_of_an_off_origin_circular_sector_uses_both_circle_axes() {
+        let shift = Vec3::new(17.0, -23.0, 31.0);
+        let center = Point3::new(0.0, 0.0, 0.0) + shift;
+        let normal = Vec3::new(0.0, 0.0, 1.0);
+        let circle = Circle3D::new(center, normal, 2.0).unwrap();
+        let a = circle.evaluate(0.0);
+        let b = circle.evaluate(PI / 2.0);
+        let mut arc = line_chord(a, b);
+        arc.curve_3d = EdgeCurve::Circle(circle);
+        arc.trim = Some((0.0, PI / 2.0));
+        let region = vec![arc, line_chord(b, center), line_chord(center, a)];
+        let area = super::sphere_loop_projected_area(&region, normal).unwrap();
+        assert!((area - 2.0 * PI).abs() < 1e-9, "{area}");
+        let reversed = super::reverse_loop(&region);
+        let area = super::sphere_loop_projected_area(&reversed, normal).unwrap();
+        assert!((area + 2.0 * PI).abs() < 1e-9, "{area}");
+    }
+
     #[test]
     fn arc_covers_chord_within_270_degree_span() {
         // A 270° arc (0 → 3π/2, CCW). A chord whose endpoints lie within

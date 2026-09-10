@@ -4363,6 +4363,82 @@ mod tests {
         );
     }
 
+    /// Mutation survivor (2026-09-06): the `points.len() < 3` guard in
+    /// `wire_surface_alignment` flipped to `>` and no algo-package test
+    /// noticed, because the only coverage was an operations fixture. A
+    /// quarter cylinder patch must get a signed alignment that negates
+    /// under wire reversal, and a lone line edge must decline.
+    #[test]
+    fn wire_surface_alignment_signs_a_cylinder_patch_and_declines_under_three_samples() {
+        use remus_math::curves::Circle3D;
+        use remus_math::surfaces::CylindricalSurface;
+        use remus_topology::{edge::Edge, vertex::Vertex, wire::Wire};
+
+        let mut topo = Topology::new();
+        let axis = Vec3::new(0.0, 0.0, 1.0);
+        let surface = FaceSurface::Cylinder(
+            CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), axis, 1.0).unwrap(),
+        );
+        let bottom = Circle3D::new(Point3::new(0.0, 0.0, 0.0), axis, 1.0).unwrap();
+        let top = Circle3D::new(Point3::new(0.0, 0.0, 2.0), axis, 1.0).unwrap();
+        let p00 = bottom.evaluate(0.0);
+        let p10 = bottom.evaluate(std::f64::consts::FRAC_PI_2);
+        let p01 = top.evaluate(0.0);
+        let p11 = top.evaluate(std::f64::consts::FRAC_PI_2);
+        let [v00, v10, v01, v11] =
+            [p00, p10, p01, p11].map(|p| topo.add_vertex(Vertex::new(p, MERGE_TOL)));
+        let arc = |topo: &mut Topology, a, b, circle: &Circle3D| {
+            let mut edge = Edge::new(a, b, EdgeCurve::Circle(circle.clone()));
+            edge.set_trim(Some((0.0, std::f64::consts::FRAC_PI_2)));
+            topo.add_edge(edge)
+        };
+        let line = |topo: &mut Topology, a, b| {
+            let mut edge = Edge::new(a, b, EdgeCurve::Line);
+            edge.set_trim(Some((0.0, 1.0)));
+            topo.add_edge(edge)
+        };
+        let e_bottom = arc(&mut topo, v00, v10, &bottom);
+        let e_right = line(&mut topo, v10, v11);
+        let e_top = arc(&mut topo, v01, v11, &top);
+        let e_left = line(&mut topo, v00, v01);
+        let forward = topo.add_wire(
+            Wire::new(
+                vec![
+                    OrientedEdge::new(e_bottom, true),
+                    OrientedEdge::new(e_right, true),
+                    OrientedEdge::new(e_top, false),
+                    OrientedEdge::new(e_left, false),
+                ],
+                true,
+            )
+            .unwrap(),
+        );
+        let reversed = topo.add_wire(
+            Wire::new(
+                vec![
+                    OrientedEdge::new(e_left, true),
+                    OrientedEdge::new(e_top, true),
+                    OrientedEdge::new(e_right, false),
+                    OrientedEdge::new(e_bottom, false),
+                ],
+                true,
+            )
+            .unwrap(),
+        );
+        let a = wire_surface_alignment(&topo, forward, &surface)
+            .unwrap()
+            .expect("a quarter patch has a signed alignment");
+        let b = wire_surface_alignment(&topo, reversed, &surface)
+            .unwrap()
+            .expect("the reversed patch has a signed alignment");
+        assert!(a.abs() > 1e-6, "{a}");
+        assert!((a + b).abs() <= 1e-9 * a.abs(), "{a} vs {b}");
+
+        let lone = line(&mut topo, v00, v01);
+        let open = topo.add_wire(Wire::new(vec![OrientedEdge::new(lone, true)], false).unwrap());
+        assert_eq!(wire_surface_alignment(&topo, open, &surface).unwrap(), None);
+    }
+
     #[test]
     fn line_refinement_preserves_a_separated_analytic_hole() {
         use remus_math::curves::Circle3D;
