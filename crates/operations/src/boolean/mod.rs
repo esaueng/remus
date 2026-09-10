@@ -481,7 +481,7 @@ pub fn boolean_transacted(
     a: SolidId,
     b: SolidId,
 ) -> Result<SolidId, crate::OperationsError> {
-    let context = remus_math::context::OperationContext::new();
+    let context = exact_only_context();
     let opts = BooleanOptions::default();
     remus_topology::transaction::run_validated(
         topo,
@@ -506,27 +506,42 @@ pub fn boolean_transacted(
     )
 }
 
-/// Perform a boolean operation on two solids.
+/// The context every plain (handle-returning) boolean entry point runs under.
 ///
-/// Uses the GFA pipeline as the primary engine, with mesh boolean
-/// (co-refinement) as a fallback when GFA fails or produces invalid results.
-/// The fallback is not disclosed in the return value: it logs a `warn` on
-/// the `remus_approx` target. Callers that need to know, or to refuse it,
-/// use [`boolean_with_context`] with an explicit
-/// [`FallbackPolicy`](remus_math::context::FallbackPolicy).
+/// A result that cannot be produced exactly is refused with
+/// [`OperationsError::ExactOnlyUnattainable`](crate::OperationsError::ExactOnlyUnattainable)
+/// rather than degraded to a mesh: a bare `SolidId` has nowhere to carry
+/// the disclosure, so the only honest answers are "exact" or "no".
+fn exact_only_context() -> remus_math::context::OperationContext {
+    remus_math::context::OperationContext::new()
+        .with_fallback(remus_math::context::FallbackPolicy::ExactOnly)
+}
+
+/// Perform an exact boolean operation on two solids.
+///
+/// Runs the GFA pipeline (and its exact fast paths) only. When the exact
+/// pipeline cannot produce the result, this returns
+/// [`OperationsError::ExactOnlyUnattainable`](crate::OperationsError::ExactOnlyUnattainable)
+/// instead of falling over to the mesh (co-refinement) boolean: a bare
+/// handle cannot disclose an approximation, so this entry point never
+/// produces one. Callers that accept an approximate result use
+/// [`boolean_with_context`] with a permissive
+/// [`FallbackPolicy`](remus_math::context::FallbackPolicy) and read the
+/// disclosed [`BooleanQuality`] from the outcome.
 ///
 /// # Errors
 ///
-/// Returns an error if either solid is invalid or the operation produces
-/// an empty or non-manifold result. Every error restores the topology's live
-/// entities to their pre-operation state.
+/// Returns an error if either solid is invalid, the operation produces an
+/// empty or non-manifold result, or the exact pipeline cannot handle the
+/// pair. Every error restores the topology's live entities to their
+/// pre-operation state.
 pub fn boolean(
     topo: &mut Topology,
     op: BooleanOp,
     a: SolidId,
     b: SolidId,
 ) -> Result<SolidId, crate::OperationsError> {
-    let context = remus_math::context::OperationContext::new();
+    let context = exact_only_context();
     let opts = BooleanOptions::default();
     remus_topology::transaction::run_transacted(topo, |topo| {
         let mut used_fallback = false;
@@ -1687,14 +1702,20 @@ fn run_mesh_fallback(
 /// Perform a boolean operation with custom options.
 ///
 /// Runs the standard boolean pipeline under a context derived from `opts`,
-/// then applies the requested post-processing. `deflection` is the mesh
-/// fallback budget, `tolerance` reaches exact and approximate paths,
-/// `unify_faces` controls same-domain post-processing, and
+/// then applies the requested post-processing. `tolerance` reaches the exact
+/// paths, `unify_faces` controls same-domain post-processing, and
 /// `heal_after_boolean` runs the full operations-layer healing pass.
+///
+/// Like [`boolean`], this entry point is exact-only: `deflection` is
+/// validated but never reached, and a pair the exact pipeline cannot handle
+/// returns
+/// [`OperationsError::ExactOnlyUnattainable`](crate::OperationsError::ExactOnlyUnattainable).
+/// To combine post-processing with a permissive fallback policy, use
+/// [`boolean_outcome_with_options`], which discloses the result quality.
 ///
 /// # Errors
 ///
-/// Returns the same errors as [`boolean`].
+/// Returns the same errors as [`boolean`], or an invalid-options error.
 pub fn boolean_with_options(
     topo: &mut Topology,
     op: BooleanOp,
@@ -1702,13 +1723,65 @@ pub fn boolean_with_options(
     b: SolidId,
     opts: BooleanOptions,
 ) -> Result<SolidId, crate::OperationsError> {
-    let context = operation_context_from_options(&opts);
-    validate_operation_context(&context)?;
+    // Validate the option-derived context (tolerance, deflection) before
+    // pinning the policy to exact-only.
+    validate_operation_context(&operation_context_from_options(&opts))?;
+    let context = operation_context_from_options(&opts)
+        .with_fallback(remus_math::context::FallbackPolicy::ExactOnly);
     remus_topology::transaction::run_transacted(topo, |topo| {
         let mut used_fallback = false;
         let result =
             boolean_with_operation_context(topo, op, a, b, &context, &opts, &mut used_fallback)?;
         apply_boolean_options(topo, result, &opts)
+    })
+}
+
+/// Perform a boolean with post-processing options under an explicit
+/// operation context, disclosing the result quality.
+///
+/// This is [`boolean_with_options`] for callers that accept an approximate
+/// result: the context's
+/// [`FallbackPolicy`](remus_math::context::FallbackPolicy) decides whether
+/// the mesh fallback may run, and the returned [`BooleanOutcome`] reports
+/// whether it did. `opts.deflection` and `opts.tolerance` are ignored in
+/// favour of the context's budget and tolerance; `unify_faces` and
+/// `heal_after_boolean` apply after the boolean exactly as in
+/// [`boolean_with_options`].
+///
+/// # Errors
+///
+/// Returns [`boolean_with_context`]'s errors, including the typed exact-only
+/// refusal, or a post-processing failure. Every error rolls back.
+pub fn boolean_outcome_with_options(
+    topo: &mut Topology,
+    op: BooleanOp,
+    a: SolidId,
+    b: SolidId,
+    opts: &BooleanOptions,
+    context: &remus_math::context::OperationContext,
+) -> Result<BooleanOutcome, crate::OperationsError> {
+    validate_operation_context(context)?;
+    let opts = BooleanOptions {
+        unify_faces: opts.unify_faces,
+        heal_after_boolean: opts.heal_after_boolean,
+        ..boolean_options_from_context(context)
+    };
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let mut used_fallback = false;
+        let result =
+            boolean_with_operation_context(topo, op, a, b, context, &opts, &mut used_fallback)?;
+        let solid = apply_boolean_options(topo, result, &opts)?;
+        let quality = if used_fallback {
+            BooleanQuality::Approximate {
+                deflection: context
+                    .fallback
+                    .budget()
+                    .unwrap_or(remus_math::context::DEFAULT_APPROXIMATION_BUDGET),
+            }
+        } else {
+            BooleanQuality::Exact
+        };
+        Ok(BooleanOutcome { solid, quality })
     })
 }
 
@@ -1881,13 +1954,10 @@ pub(crate) fn fuse_cluster(
     topo: &mut Topology,
     cluster: &[SolidId],
 ) -> Result<SolidId, crate::OperationsError> {
+    // Handle-returning like `boolean`: exact or the typed refusal, never a
+    // silently mesh-approximated cluster.
     let opts = BooleanOptions::default();
-    fuse_cluster_with_context(
-        topo,
-        cluster,
-        &remus_math::context::OperationContext::new(),
-        &opts,
-    )
+    fuse_cluster_with_context(topo, cluster, &exact_only_context(), &opts)
 }
 
 fn fuse_cluster_with_context(
@@ -1980,10 +2050,28 @@ fn cluster_tools_by_aabb(
 /// [`EvolutionOrigin::Construction`](crate::evolution::EvolutionOrigin::Construction),
 /// the fallback [`EvolutionOrigin::Geometry`](crate::evolution::EvolutionOrigin::Geometry).
 ///
+/// Both paths are exact-only, like [`boolean`]: a pair the exact pipeline
+/// cannot handle is refused with the typed exact-only error rather than
+/// approximated.
+///
 /// # Errors
 ///
 /// Returns the same errors as [`boolean`].
 pub fn boolean_with_evolution(
+    topo: &mut Topology,
+    op: BooleanOp,
+    a: SolidId,
+    b: SolidId,
+) -> Result<(SolidId, crate::evolution::EvolutionMap), crate::OperationsError> {
+    // The faithful GFA attempt below allocates result topology before it
+    // decides whether to trust it; one transaction around both attempts
+    // keeps a refusal from leaving those entities behind.
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        boolean_with_evolution_impl(topo, op, a, b)
+    })
+}
+
+fn boolean_with_evolution_impl(
     topo: &mut Topology,
     op: BooleanOp,
     a: SolidId,

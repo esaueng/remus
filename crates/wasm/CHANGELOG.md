@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### ⚠ BREAKING CHANGES
+
+* `fuse`, `cut`, `intersect`, `fuseAll`, `fuseWithOptions` /
+  `cutWithOptions` / `intersectWithOptions`, `fuseWithEvolution` /
+  `cutWithEvolution` / `intersectWithEvolution`, and the matching
+  `executeBatch` ops are exact-only. A pair the exact engine cannot handle
+  now fails with category `quality_refused` and
+  `details.kernelCode = "exact_only_unattainable"` (rolling back) instead of
+  returning a handle to a silently mesh-approximated solid. Use
+  `booleanWithQuality` (or batch `booleanWithQuality`) without `exactOnly`
+  to accept an approximation; its result discloses `quality` and
+  `deflection`.
+
+* `fillet`, `filletWithEvolution`, and batch `fillet` no longer fall back to
+  the flat bevel. They run the kernel's one fillet cascade (walking engine,
+  then the rolling-ball rebuild, each rolled back on rejection); a selection
+  only the bevel could satisfy now fails with the walking engine's typed
+  error instead of returning a chamfer-shaped solid. `chamfer` is unchanged.
+
 ### Features
 
 * Add `offsetJournaled` to the direct and `executeBatch` APIs, returning the

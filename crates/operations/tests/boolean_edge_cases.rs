@@ -25,6 +25,26 @@ use remus_topology::Topology;
 use remus_topology::solid::SolidId;
 use remus_topology::validation::validate_shell_manifold;
 
+/// This configuration reaches the mesh fallback. The plain entry point
+/// refuses it by design (B21: a bare handle cannot disclose an
+/// approximation), so the test takes the disclosed permissive path and keeps
+/// checking the geometry it always checked.
+fn boolean_allowing_fallback(
+    topo: &mut Topology,
+    op: BooleanOp,
+    a: SolidId,
+    b: SolidId,
+) -> Result<SolidId, remus_operations::OperationsError> {
+    remus_operations::boolean::boolean_with_context(
+        topo,
+        op,
+        a,
+        b,
+        &remus_math::context::OperationContext::new(),
+    )
+    .map(|outcome| outcome.solid)
+}
+
 const DEFLECTION: f64 = 0.1;
 
 fn vol(topo: &Topology, solid: SolidId) -> f64 {
@@ -86,7 +106,7 @@ fn test_two_spheres_tangent() {
     let s2 = make_sphere(&mut topo, 1.0, 16).unwrap();
     transform_solid(&mut topo, s2, &Mat4::translation(2.0, 0.0, 0.0)).unwrap();
 
-    let result = boolean(&mut topo, BooleanOp::Fuse, s1, s2);
+    let result = boolean_allowing_fallback(&mut topo, BooleanOp::Fuse, s1, s2);
     match result {
         Ok(fused) => {
             let expected = 2.0 * 4.0 * PI / 3.0;
@@ -424,7 +444,7 @@ fn test_boolean_shared_edge() {
     transform_solid(&mut topo, b, &Mat4::translation(1.0, 1.0, 0.0)).unwrap();
 
     assert!(matches!(
-        boolean(&mut topo, BooleanOp::Fuse, a, b),
+        boolean_allowing_fallback(&mut topo, BooleanOp::Fuse, a, b),
         Err(OperationsError::NonManifoldResult)
     ));
 }
@@ -437,7 +457,7 @@ fn test_boolean_shared_vertex() {
     let b = make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
     transform_solid(&mut topo, b, &Mat4::translation(1.0, 1.0, 1.0)).unwrap();
 
-    let result = boolean(&mut topo, BooleanOp::Fuse, a, b);
+    let result = boolean_allowing_fallback(&mut topo, BooleanOp::Fuse, a, b);
     match result {
         Ok(fused) => {
             let v = vol(&topo, fused);
