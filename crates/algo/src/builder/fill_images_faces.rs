@@ -361,10 +361,29 @@ pub fn fill_images_faces<S: BuildHasher, S2: BuildHasher>(
             .face(face_id)
             .map(|f| matches!(f.surface(), remus_topology::face::FaceSurface::Plane { .. }))
             .unwrap_or(false);
-        let sections = if !is_plane_face && !section_split_registry.is_empty() {
-            presplit_sections_at_registry(&sections, &section_split_registry, tol.linear)
-        } else {
+        // A curved face's own boundary vertices are split points too: a
+        // section that passes THROUGH an existing wire vertex (the deepened
+        // notch's cone chord runs from the new wall bottom, through the old
+        // floor-bite corner, and on over the old wall arc for a 0.01 sliver)
+        // leaves that vertex mid-edge in the arrangement and the face never
+        // splits. The planar neighbours used to register that point by
+        // accident, because their over-long wall sections crossed the chord
+        // there; a section clipped to the opposing face's true extent ends
+        // ON the chord instead and registers nothing.
+        let sections = if is_plane_face {
             sections
+        } else {
+            let boundary_vertices = face_wire_vertex_positions(topo, face_id);
+            if section_split_registry.is_empty() && boundary_vertices.is_empty() {
+                sections
+            } else {
+                presplit_sections_at_registry(
+                    &sections,
+                    &section_split_registry,
+                    &boundary_vertices,
+                    tol.linear,
+                )
+            }
         };
         let sections = if winding_loop_cuts.is_empty() {
             sections
@@ -3600,6 +3619,31 @@ fn clip_line_to_face_extent(
     if out.is_empty() { None } else { Some(out) }
 }
 
+/// Positions of every vertex on a face's outer and inner wires (empty when
+/// the face or a wire cannot be resolved).
+fn face_wire_vertex_positions(topo: &Topology, face_id: FaceId) -> Vec<Point3> {
+    let Ok(face) = topo.face(face_id) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+        let Ok(wire) = topo.wire(wid) else {
+            continue;
+        };
+        for oe in wire.edges() {
+            let Ok(edge) = topo.edge(oe.edge()) else {
+                continue;
+            };
+            for vid in [edge.start(), edge.end()] {
+                if let Ok(v) = topo.vertex(vid) {
+                    out.push(v.point());
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Distance from a 3D point to a line segment.
 fn point_to_segment_dist_3d(pt: Point3, a: Point3, b: Point3) -> f64 {
     let ab = b - a;
@@ -4353,6 +4397,7 @@ fn canonicalize_carried_trim(curve: &EdgeCurve, trim: (f64, f64)) -> Result<(f64
 fn presplit_sections_at_registry(
     sections: &[crate::builder::split_types::SectionEdge],
     registry: &std::collections::HashMap<usize, Vec<remus_math::vec::Point3>>,
+    boundary_vertices: &[remus_math::vec::Point3],
     tol: f64,
 ) -> Vec<crate::builder::split_types::SectionEdge> {
     // Match only points registered for the same pave block. A point splits a
@@ -4363,7 +4408,15 @@ fn presplit_sections_at_registry(
     // Sections on curved faces arrive WITHOUT pave-block ids; those keep the
     // historical geometric matching against every registered point — scoping
     // them away drops real splits and un-pairs the emitted edges.
-    let all_points: Vec<remus_math::vec::Point3> = registry.values().flatten().copied().collect();
+    //
+    // The face's own boundary vertices split every section regardless of
+    // pave block: a section through an existing vertex must break there.
+    let all_points: Vec<remus_math::vec::Point3> = registry
+        .values()
+        .flatten()
+        .chain(boundary_vertices)
+        .copied()
+        .collect();
     let weld = tol * 100.0;
     let on_curve =
         |s: &crate::builder::split_types::SectionEdge, p: remus_math::vec::Point3| -> bool {
@@ -4404,8 +4457,18 @@ fn presplit_sections_at_registry(
     let mut out = Vec::with_capacity(sections.len());
     for s in sections {
         let parent_trim = s.trim.unwrap_or_else(|| s.domain());
+        let scoped: Vec<remus_math::vec::Point3>;
         let points: &[remus_math::vec::Point3] = match s.pave_block_id {
-            Some(pb_id) => registry.get(&pb_id).map_or(&[], Vec::as_slice),
+            Some(pb_id) => {
+                scoped = registry
+                    .get(&pb_id)
+                    .map_or(&[][..], Vec::as_slice)
+                    .iter()
+                    .chain(boundary_vertices)
+                    .copied()
+                    .collect();
+                &scoped
+            }
             None => &all_points,
         };
         let chord = s.end - s.start;
@@ -5154,7 +5217,7 @@ mod tests {
             (99, vec![Point3::new(0.25, 0.0, 0.0)]),
         ]);
 
-        let pieces = presplit_sections_at_registry(&[section], &registry, 1e-7);
+        let pieces = presplit_sections_at_registry(&[section], &registry, &[], 1e-7);
 
         assert_eq!(pieces.len(), 2);
         assert!((pieces[0].end - Point3::new(0.5, 0.0, 0.0)).length() < 1e-9);
@@ -5189,7 +5252,7 @@ mod tests {
         };
         let registry = std::collections::HashMap::from([(3, vec![ellipse.evaluate(cut)])]);
 
-        let pieces = presplit_sections_at_registry(&[section], &registry, 1e-7);
+        let pieces = presplit_sections_at_registry(&[section], &registry, &[], 1e-7);
 
         assert_eq!(pieces.len(), 2);
         assert_eq!(pieces[0].trim, Some((trim.0, cut)));
