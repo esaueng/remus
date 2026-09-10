@@ -1087,6 +1087,23 @@ export class BrepKernel {
         return ret[0] >>> 0;
     }
     /**
+     * Cut solid `b` from solid `a` and return success or failure as typed
+     * data.
+     *
+     * Additive twin of [`cut`](Self::cut); the legacy method keeps its
+     * existing return value and thrown-error behavior.
+     * @param {number} a
+     * @param {number} b
+     * @returns {SolidOperationDetailedResult}
+     */
+    cutDetailed(a, b) {
+        const ret = wasm.brepkernel_cutDetailed(this.__wbg_ptr, a, b);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
      * Cut solid `b` from `a` with journaled construction history.
      * @param {number} a
      * @param {number} b
@@ -2126,6 +2143,22 @@ export class BrepKernel {
             throw takeFromExternrefTable0(ret[1]);
         }
         return ret[0] >>> 0;
+    }
+    /**
+     * Fuse two solids and return success or failure as typed data.
+     *
+     * Additive twin of [`fuse`](Self::fuse); the legacy method keeps its
+     * existing return value and thrown-error behavior.
+     * @param {number} a
+     * @param {number} b
+     * @returns {SolidOperationDetailedResult}
+     */
+    fuseDetailed(a, b) {
+        const ret = wasm.brepkernel_fuseDetailed(this.__wbg_ptr, a, b);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
     }
     /**
      * Fuse two solids with journaled construction history.
@@ -3420,6 +3453,23 @@ export class BrepKernel {
             throw takeFromExternrefTable0(ret[1]);
         }
         return ret[0] >>> 0;
+    }
+    /**
+     * Intersect two solids and return success or failure as typed data.
+     *
+     * Additive twin of [`intersect_solids`](Self::intersect_solids); the
+     * legacy method keeps its existing return value and thrown-error
+     * behavior.
+     * @param {number} a
+     * @param {number} b
+     * @returns {SolidOperationDetailedResult}
+     */
+    intersectDetailed(a, b) {
+        const ret = wasm.brepkernel_intersectDetailed(this.__wbg_ptr, a, b);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
     }
     /**
      * Intersect two solids with journaled construction history.
@@ -7452,6 +7502,10 @@ export function __wbg___wbindgen_debug_string_c25d447a39f5578f(arg0, arg1) {
     getDataViewMemory0().setInt32(arg0 + 4 * 1, len1, true);
     getDataViewMemory0().setInt32(arg0 + 4 * 0, ptr1, true);
 }
+export function __wbg___wbindgen_is_string_ea5e6cc2e4141dfe(arg0) {
+    const ret = typeof(arg0) === 'string';
+    return ret;
+}
 export function __wbg___wbindgen_string_get_b0ca35b86a603356(arg0, arg1) {
     const obj = arg1;
     const ret = typeof(obj) === 'string' ? obj : undefined;
@@ -7473,8 +7527,16 @@ export function __wbg_new_32b398fb48b6d94a() {
     const ret = new Array();
     return ret;
 }
+export function __wbg_new_7796ffc7ed656783() {
+    const ret = new Map();
+    return ret;
+}
 export function __wbg_new_da52cf8fe3429cb2() {
     const ret = new Object();
+    return ret;
+}
+export function __wbg_set_575dd786d51585f8(arg0, arg1, arg2) {
+    const ret = arg0.set(arg1, arg2);
     return ret;
 }
 export function __wbg_set_6be42768c690e380(arg0, arg1, arg2) {
@@ -7491,9 +7553,19 @@ export function __wbindgen_cast_0000000000000001(arg0) {
     const ret = arg0;
     return ret;
 }
-export function __wbindgen_cast_0000000000000002(arg0, arg1) {
+export function __wbindgen_cast_0000000000000002(arg0) {
+    // Cast intrinsic for `I64 -> Externref`.
+    const ret = arg0;
+    return ret;
+}
+export function __wbindgen_cast_0000000000000003(arg0, arg1) {
     // Cast intrinsic for `Ref(String) -> Externref`.
     const ret = getStringFromWasm0(arg0, arg1);
+    return ret;
+}
+export function __wbindgen_cast_0000000000000004(arg0) {
+    // Cast intrinsic for `U64 -> Externref`.
+    const ret = BigInt.asUintN(64, arg0);
     return ret;
 }
 export function __wbindgen_init_externref_table() {
