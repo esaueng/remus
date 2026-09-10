@@ -751,9 +751,9 @@ for (const operation of ['fillet', 'chamfer']) {
   console.log('ok - real Shapr3D connected-blend refusal is exact and transactional');
 }
 
-// The opening experiment's first partition must preserve both mounting-hole
-// rims and the stored winding of reversed planar faces. This proves the cut,
-// not the still-unsupported complete 46 -> 50 mm reconstruction.
+// The opening experiment's first cut and intersection preserve mounting-hole
+// rims, planar winding and complementary NURBS lettering branches. The full
+// 46 -> 50 mm reconstruction remains a separate acceptance gate.
 {
   const kernel = new BrepKernel();
   const step = readFileSync(resolve(projectRoot, 'crates/io/tests/data/shapr3d_hammer_holder.step'));
@@ -781,7 +781,21 @@ for (const operation of ['fillet', 'chamfer']) {
   const imported = Array.from(kernel.deserializeSolids(io.importStep(exported)));
   assert.equal(imported.length, 1);
   assertCut(imported[0]);
-  console.log('ok - hammer opening partition preserves exact topology, bores, mesh and STEP round trip');
+  const common = kernel.booleanWithQuality('intersect', source, mask, true);
+  assert.equal(common.quality, 'exact');
+  assert.deepEqual(kernel.serializeSolids(new Uint32Array([source])), sourceBytes);
+  const commonStep = io.exportStep(kernel.serializeSolids(new Uint32Array([common.solid])));
+  const [restoredCommon] = Array.from(kernel.deserializeSolids(io.importStep(commonStep)));
+  for (const solid of [common.solid, restoredCommon]) {
+    assert.equal(Array.from(kernel.getSolidFaces(solid)).length, 101,
+      'both complementary lettering branches and the enclosed planar faces must survive');
+    assert.equal(JSON.parse(kernel.validateSolidDetailed(solid)).errorCount, 0);
+    const mesh = JSON.parse(kernel.meshQuality(solid, 0.05, 0.1));
+    assert.equal(mesh.boundaryEdges, 0);
+    assert.equal(mesh.nonManifoldEdges, 0);
+    assert.equal(mesh.isWatertight, true);
+  }
+  console.log('ok - hammer cut and intersection preserve exact topology, lettering, bores and STEP round trips');
 }
 
 // 15. OpenZCAD mounting-bracket cylindrical-face resize and STEP round trip.
