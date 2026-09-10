@@ -172,3 +172,55 @@ fn hammer_intersection_preserves_the_closed_lettering_loops() {
     .expect("restored mesh");
     assert!(remus_operations::tessellate::welded_mesh_quality(&mesh).is_watertight());
 }
+
+/// Partial candidate regression, not acceptance of the complete opening edit.
+/// The raw GFA candidate still has unrelated open boundaries above its base.
+#[test]
+fn hammer_shifted_intersection_closes_the_bottom_boundary() {
+    let mut topo = Topology::new();
+    let source =
+        read_step(include_str!("data/shapr3d_hammer_holder.step"), &mut topo).expect("import")[0];
+    let original = remus_io::arena_io::serialize_solid(&topo, source).expect("source");
+    let mask = make_box(&mut topo, 29.0, 53.0, 70.0).expect("mask");
+    transform_solid(&mut topo, mask, &Mat4::translation(-18.0, -10.0, 0.0)).expect("place");
+    let context = OperationContext::new().with_fallback(FallbackPolicy::ExactOnly);
+    let inside = boolean_with_context(&mut topo, BooleanOp::Intersect, source, mask, &context)
+        .expect("first intersection")
+        .solid;
+    let shifted = remus_operations::copy::copy_solid(&mut topo, source).expect("copy");
+    transform_solid(&mut topo, shifted, &Mat4::translation(-2.0, 0.0, 0.0)).expect("shift");
+    let candidate = remus_algo::gfa::boolean(
+        &mut topo,
+        remus_algo::bop::BooleanOp::Intersect,
+        inside,
+        shifted,
+    )
+    .expect("raw candidate");
+    let mut uses = std::collections::BTreeMap::new();
+    for fid in remus_topology::explorer::solid_faces(&topo, candidate).expect("faces") {
+        let face = topo.face(fid).expect("face");
+        for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+            for oe in topo.wire(wid).expect("wire").edges() {
+                *uses.entry(oe.edge()).or_insert(0usize) += 1;
+            }
+        }
+    }
+    let mut bottom_edges = 0;
+    for (eid, count) in uses {
+        let edge = topo.edge(eid).expect("edge");
+        let a = topo.vertex(edge.start()).expect("start").point();
+        let b = topo.vertex(edge.end()).expect("end").point();
+        if (a.z() - 4.5).abs() < 1e-7 && (b.z() - 4.5).abs() < 1e-7 {
+            bottom_edges += 1;
+            assert_eq!(count, 2, "unpaired bottom edge: {a:?} -> {b:?}");
+        }
+    }
+    assert!(
+        bottom_edges > 0,
+        "candidate must retain its bottom boundary"
+    );
+    assert_eq!(
+        remus_io::arena_io::serialize_solid(&topo, source).expect("source after"),
+        original
+    );
+}
