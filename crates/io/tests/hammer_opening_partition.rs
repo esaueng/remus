@@ -173,10 +173,9 @@ fn hammer_intersection_preserves_the_closed_lettering_loops() {
     assert!(remus_operations::tessellate::welded_mesh_quality(&mesh).is_watertight());
 }
 
-/// Partial candidate regression, not acceptance of the complete opening edit.
-/// The raw GFA candidate still has unrelated open boundaries above its base.
+/// The shifted intersection is qualified independently of the later fuse.
 #[test]
-fn hammer_shifted_intersection_pairs_repaired_boundaries() {
+fn hammer_shifted_intersection_is_strictly_valid() {
     let mut topo = Topology::new();
     let source =
         read_step(include_str!("data/shapr3d_hammer_holder.step"), &mut topo).expect("import")[0];
@@ -189,13 +188,39 @@ fn hammer_shifted_intersection_pairs_repaired_boundaries() {
         .solid;
     let shifted = remus_operations::copy::copy_solid(&mut topo, source).expect("copy");
     transform_solid(&mut topo, shifted, &Mat4::translation(-2.0, 0.0, 0.0)).expect("shift");
-    let candidate = remus_algo::gfa::boolean(
-        &mut topo,
-        remus_algo::bop::BooleanOp::Intersect,
-        inside,
-        shifted,
+    let result = boolean_with_context(&mut topo, BooleanOp::Intersect, inside, shifted, &context)
+        .expect("shifted intersection");
+    assert_eq!(result.quality, BooleanQuality::Exact);
+    let candidate = result.solid;
+    let report =
+        validate_solid(&topo, candidate, &ValidateOptions::default()).expect("validate candidate");
+    assert!(report.is_valid(), "{:?}", report.issues);
+    let mesh =
+        remus_operations::tessellate::tessellate_solid_with_tolerance(&topo, candidate, 0.05, 0.1)
+            .expect("candidate mesh");
+    assert!(remus_operations::tessellate::welded_mesh_quality(&mesh).is_watertight());
+    let step = remus_io::step::writer::write_step(&topo, &[candidate]).expect("candidate export");
+    let mut restored = Topology::new();
+    let solids = read_step(&step, &mut restored).expect("candidate reimport");
+    assert_eq!(solids.len(), 1);
+    let report = validate_solid(&restored, solids[0], &ValidateOptions::default())
+        .expect("round trip validation");
+    assert!(report.is_valid(), "{:?}", report.issues);
+
+    let mesh = remus_operations::tessellate::tessellate_solid_with_tolerance(
+        &restored, solids[0], 0.05, 0.1,
     )
-    .expect("raw candidate");
+    .expect("restored mesh");
+    assert!(remus_operations::tessellate::welded_mesh_quality(&mesh).is_watertight());
+    let volume =
+        remus_operations::measure::solid_volume(&topo, candidate, 0.01).expect("candidate volume");
+    let restored_volume = remus_operations::measure::solid_volume(&restored, solids[0], 0.01)
+        .expect("restored volume");
+    let inside_volume =
+        remus_operations::measure::solid_volume(&topo, inside, 0.01).expect("partition volume");
+    assert!(volume > 0.0 && volume < inside_volume);
+    assert!((restored_volume - volume).abs() < volume * 1e-6);
+
     let mut uses = std::collections::BTreeMap::new();
     for fid in remus_topology::explorer::solid_faces(&topo, candidate).expect("faces") {
         let face = topo.face(fid).expect("face");
@@ -213,19 +238,7 @@ fn hammer_shifted_intersection_pairs_repaired_boundaries() {
         let edge = topo.edge(eid).expect("edge");
         let a = topo.vertex(edge.start()).expect("start").point();
         let b = topo.vertex(edge.end()).expect("end").point();
-        if count != 2 {
-            // Partial checkpoint: only the still-missing cylindrical strip may
-            // remain open. A future fully closed candidate also satisfies this.
-            let rear_strip = |p: remus_math::vec::Point3| {
-                (-9.000_001..=-6.999_999).contains(&p.x())
-                    && (39.499_999..=42.500_001).contains(&p.y())
-                    && (9.499_999..=12.500_001).contains(&p.z())
-            };
-            assert!(
-                rear_strip(a) && rear_strip(b),
-                "open boundary outside rear strip: {a:?} -> {b:?}"
-            );
-        }
+        assert_eq!(count, 2, "unpaired candidate edge: {a:?} -> {b:?}");
         let slope = |p: remus_math::vec::Point3| {
             p.x() >= -18.000_001
                 && p.x() <= -16.999_999
