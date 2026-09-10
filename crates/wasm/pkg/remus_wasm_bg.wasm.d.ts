@@ -314,6 +314,7 @@ export const brepkernel_transformWire: (a: number, b: number, c: number, d: numb
 export const brepkernel_trimSheetBySheet: (a: number, b: number, c: number, d: number) => [number, number, number];
 export const brepkernel_trimSheetBySolid: (a: number, b: number, c: number, d: number) => [number, number, number];
 export const brepkernel_unifyFaces: (a: number, b: number) => [number, number, number];
+export const brepkernel_unifyFacesChecked: (a: number, b: number) => [number, number, number];
 export const brepkernel_untrimFace: (a: number, b: number, c: number, d: number) => [number, number, number];
 export const brepkernel_validateSheetBody: (a: number, b: number) => [number, number, number];
 export const brepkernel_validateSolid: (a: number, b: number) => [number, number, number];

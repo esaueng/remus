@@ -598,6 +598,32 @@ export interface UvMeshResult {
 }
 
 /**
+ * Typed result for `unifyFacesChecked`: the face merge plus the strict
+ * validations `unifyFaces` performs on its input and its candidate, so a
+ * caller gating a boolean result does not validate the same solid again.
+ */
+export interface UnifyFacesDetailedResult {
+    /**
+     * Faces removed by unification (zero when nothing merged or reverted).
+     */
+    facesMerged: number;
+    /**
+     * Strict validation error count of the solid before unification.
+     */
+    inputErrors: number;
+    /**
+     * Strict validation error count of the solid after the call: the merged
+     * candidate when kept, the unchanged input when reverted.
+     */
+    resultErrors: number;
+    /**
+     * The merge was rolled back because the candidate failed strict
+     * validation while the input had passed it.
+     */
+    reverted: boolean;
+}
+
+/**
  * Typed result for `validateSolidDetailed` and
  * `validateSolidDetailedWithOptions`.
  */
@@ -3607,6 +3633,22 @@ export class BrepKernel {
      * Returns the number of faces removed.
      */
     unifyFaces(solid: number): number;
+    /**
+     * `unifyFaces` that also reports the strict validations it performs.
+     *
+     * Same merge, acceptance rule and tolerances as `unifyFaces`. Returns a
+     * JSON string of `UnifyFacesDetailedResult`: `facesMerged`,
+     * `inputErrors` (strict error count before), `resultErrors` (strict
+     * error count of the solid the caller now holds) and `reverted`. A
+     * caller that would otherwise validate the raw and the unified solid
+     * again can read both verdicts here instead.
+     *
+     * # Errors
+     *
+     * Returns an error if the solid handle is invalid or topology lookups
+     * fail.
+     */
+    unifyFacesChecked(solid: number): any;
     /**
      * Untrim a NURBS face by fitting a new surface to the trimmed region.
      *
