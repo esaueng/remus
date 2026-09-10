@@ -447,9 +447,10 @@ pub fn perform_with_context(
 
             let v_range_a = v_ranges_a[idx_a];
             let v_range_b = v_ranges_b[idx_b];
-            let raw_curves = compute_raw_curves(
+            let mut raw_curves = compute_raw_curves(
                 surf_a, surf_b, bbox_a, bbox_b, v_range_a, v_range_b, context,
             )?;
+            raw_curves.extend(tangent_torus_boundary_sections(topo, fa, fb, tol)?);
             // Intersection implementations are allowed to refuse, never to
             // smuggle an invalid parameter span into a sampler that would
             // quietly classify every NaN point as outside and drop the curve.
@@ -3915,6 +3916,55 @@ struct RawCurve {
     p_end: Point3,
 }
 
+/// Recover an existing minor-circle boundary when a torus/cylinder tangency
+/// loses or truncates its marched section. Analytic carrier checks prove the whole circle
+/// lies on both surfaces; the normal face filters still trim its stored arc.
+fn tangent_torus_boundary_sections(
+    topo: &Topology,
+    fa: FaceId,
+    fb: FaceId,
+    tol: Tolerance,
+) -> Result<Vec<RawCurve>, AlgoError> {
+    let (fid, torus, cylinder) = match (topo.face(fa)?.surface(), topo.face(fb)?.surface()) {
+        (FaceSurface::Torus(t), FaceSurface::Cylinder(c)) => (fa, t, c),
+        (FaceSurface::Cylinder(c), FaceSurface::Torus(t)) => (fb, t, c),
+        _ => return Ok(Vec::new()),
+    };
+    let mut sections = Vec::new();
+    for oe in topo.wire(topo.face(fid)?.outer_wire())?.edges() {
+        let edge = topo.edge(oe.edge())?;
+        let EdgeCurve::Circle(circle) = edge.curve() else {
+            continue;
+        };
+        let radial = circle.center() - torus.center();
+        let delta = circle.center() - cylinder.origin();
+        if (circle.radius() - torus.minor_radius()).abs() > tol.linear
+            || (circle.radius() - cylinder.radius()).abs() > tol.linear
+            || (radial.length() - torus.major_radius()).abs() > tol.linear
+            || radial.dot(torus.z_axis()).abs() > tol.linear
+            || radial.dot(circle.normal()).abs() > tol.linear
+            || circle.normal().dot(torus.z_axis()).abs() > tol.angular
+            || circle.normal().cross(cylinder.axis()).length() > tol.angular
+            || (delta - cylinder.axis() * delta.dot(cylinder.axis())).length() > tol.linear
+        {
+            continue;
+        }
+        let domain =
+            super::helpers::authoritative_edge_domain(edge, oe.edge(), "tangent torus boundary")?;
+        let domain = (domain.0.min(domain.1), domain.0.max(domain.1));
+        let p_start = circle.evaluate(domain.0);
+        let p_end = circle.evaluate(domain.1);
+        sections.push(RawCurve {
+            curve: edge.curve().clone(),
+            bbox: circle_bbox(circle),
+            t_range: domain,
+            p_start,
+            p_end,
+        });
+    }
+    Ok(sections)
+}
+
 /// Compute raw intersection curves between two surfaces.
 ///
 /// Dispatches by surface type pair. Raw curves are returned without
@@ -6343,6 +6393,82 @@ fn clip_line_to_polygon_general(
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
+
+    #[test]
+    fn tangent_torus_boundary_keeps_exact_arc_and_rejects_near_misses() {
+        use remus_math::{
+            curves::Circle3D,
+            surfaces::{CylindricalSurface, ToroidalSurface},
+        };
+        use remus_topology::{
+            face::Face,
+            wire::{OrientedEdge, Wire},
+        };
+        for scale in [0.01, 1.0, 100.0] {
+            let torus = ToroidalSurface::with_axis(
+                Point3::new(2.0, -3.0, 4.0),
+                8.0 * scale,
+                3.0 * scale,
+                Vec3::new(1.0, 2.0, 3.0),
+            )
+            .unwrap();
+            let radial = torus.x_axis();
+            let centre = torus.center() + radial * torus.major_radius();
+            let axis = radial.cross(torus.z_axis());
+            let circle =
+                Circle3D::new_with_ref(centre, axis, torus.minor_radius(), radial).unwrap();
+            for domain in [(1.6, 3.1), (6.0, 6.8), (3.1, 1.6)] {
+                let mut topo = Topology::new();
+                let start = topo.add_vertex(Vertex::new(circle.evaluate(domain.0), 1e-7));
+                let end = topo.add_vertex(Vertex::new(circle.evaluate(domain.1), 1e-7));
+                let mut edge = Edge::new(start, end, EdgeCurve::Circle(circle.clone()));
+                edge.set_trim(Some(domain));
+                let eid = topo.add_edge(edge);
+                // Only the source boundary arc and partner carrier are needed
+                // by this helper; the full face splitting is covered by STEP.
+                let wire =
+                    topo.add_wire(Wire::new(vec![OrientedEdge::new(eid, true)], false).unwrap());
+                let fa = topo.add_face(Face::new(wire, vec![], FaceSurface::Torus(torus.clone())));
+                for (offset, radius_delta, expected) in
+                    [(0.0, 0.0, 1), (1e-5, 0.0, 0), (0.0, 1e-5, 0)]
+                {
+                    let cylinder = CylindricalSurface::new(
+                        centre + torus.z_axis() * offset,
+                        axis,
+                        torus.minor_radius() + radius_delta,
+                    )
+                    .unwrap();
+                    let fb =
+                        topo.add_face(Face::new(wire, vec![], FaceSurface::Cylinder(cylinder)));
+                    for (a, b) in [(fa, fb), (fb, fa)] {
+                        let sections =
+                            tangent_torus_boundary_sections(&topo, a, b, Tolerance::default())
+                                .unwrap();
+                        assert_eq!(sections.len(), expected);
+                        for section in sections {
+                            assert!(matches!(section.curve, EdgeCurve::Circle(_)));
+                            assert_eq!(
+                                section.t_range,
+                                (domain.0.min(domain.1), domain.0.max(domain.1))
+                            );
+                            for t in [
+                                section.t_range.0,
+                                f64::midpoint(section.t_range.0, section.t_range.1),
+                                section.t_range.1,
+                            ] {
+                                let p = section.curve.evaluate_with_endpoints(
+                                    t,
+                                    section.p_start,
+                                    section.p_end,
+                                );
+                                assert!((p - circle.evaluate(t)).length() < 1e-7);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     fn square_plane_face(topo: &mut Topology, half_extent: f64) -> FaceId {
         use remus_topology::face::Face;
