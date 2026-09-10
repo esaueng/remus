@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### ⚠ BREAKING CHANGES
+
+* `fuse`, `cut`, `intersect`, `fuseAll`, `fuseWithOptions` /
+  `cutWithOptions` / `intersectWithOptions`, `fuseWithEvolution` /
+  `cutWithEvolution` / `intersectWithEvolution`, and the matching
+  `executeBatch` ops are exact-only. A pair the exact engine cannot handle
+  now fails with category `quality_refused` and
+  `details.kernelCode = "exact_only_unattainable"` (rolling back) instead of
+  returning a handle to a silently mesh-approximated solid. Use
+  `booleanWithQuality` (or batch `booleanWithQuality`) without `exactOnly`
+  to accept an approximation; its result discloses `quality` and
+  `deflection`.
+
 ### Features
 
 * Add `offsetJournaled` to the direct and `executeBatch` APIs, returning the

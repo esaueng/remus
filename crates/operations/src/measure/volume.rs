@@ -3339,8 +3339,16 @@ mod regression_tests {
         .unwrap();
         crate::transform::transform_solid(&mut topo, c2, &Mat4::translation(-1.0, 0.0, 0.0))
             .unwrap();
-        let res =
-            crate::boolean::boolean(&mut topo, crate::boolean::BooleanOp::Fuse, c1, c2).unwrap();
+        // This pair needs the mesh fallback; the plain entry point refuses it.
+        let res = crate::boolean::boolean_with_context(
+            &mut topo,
+            crate::boolean::BooleanOp::Fuse,
+            c1,
+            c2,
+            &remus_math::context::OperationContext::new(),
+        )
+        .unwrap()
+        .solid;
         let faces = remus_topology::explorer::solid_faces(&topo, res).unwrap();
         assert!(
             !solid_is_steinmetz_lens_fuse(&topo, &faces),

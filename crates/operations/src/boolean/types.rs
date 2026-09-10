@@ -209,7 +209,10 @@ pub struct BooleanOptions {
     /// Tessellation deflection for the mesh fallback, in model units.
     ///
     /// Lower values produce more triangles (more accurate but slower).
-    /// Default: 0.1.
+    /// Only reached under a context that permits approximation
+    /// ([`boolean_outcome_with_options`](crate::boolean::boolean_outcome_with_options));
+    /// the plain [`boolean_with_options`](crate::boolean::boolean_with_options)
+    /// is exact-only and never runs the mesh path. Default: 0.1.
     pub deflection: f64,
     /// Tolerance for geometric comparisons.
     ///
