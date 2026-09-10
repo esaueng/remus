@@ -15,6 +15,12 @@
   to accept an approximation; its result discloses `quality` and
   `deflection`.
 
+* `fillet`, `filletWithEvolution`, and batch `fillet` no longer fall back to
+  the flat bevel. They run the kernel's one fillet cascade (walking engine,
+  then the rolling-ball rebuild, each rolled back on rejection); a selection
+  only the bevel could satisfy now fails with the walking engine's typed
+  error instead of returning a chamfer-shaped solid. `chamfer` is unchanged.
+
 ### Features
 
 * Add `offsetJournaled` to the direct and `executeBatch` APIs, returning the
