@@ -840,7 +840,17 @@ for (const operation of ['fillet', 'chamfer']) {
   const rightVolume = kernel.volume(rightCut.solid, 0.01);
   assert.ok(rightVolume > 0 && rightVolume < fusedVolume);
   assert.ok(Math.abs(kernel.volume(restoredRight[0], 0.01) - rightVolume) < rightVolume * 1e-6);
-  console.log('ok - hammer left reassembly and right cut preserve exact topology and STEP round trips');
+  const rightInside = kernel.booleanWithQuality('intersect', fused.solid, rightMask, true);
+  assert.equal(rightInside.quality, 'exact');
+  assert.equal(Array.from(kernel.getSolidFaces(rightInside.solid)).length, 33);
+  assert.equal(JSON.parse(kernel.validateSolidDetailed(rightInside.solid)).errorCount, 0);
+  const [shiftedRight] = Array.from(kernel.deserializeSolids(sourceBytes));
+  kernel.transformSolid(shiftedRight, new Float64Array([1, 0, 0, 2, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]));
+  // The native raw-candidate test qualifies the point-contact repair. The
+  // public API must still refuse its open bottom rather than return a solid.
+  assert.throws(() => kernel.booleanWithQuality('intersect', rightInside.solid, shiftedRight, true), /exact-only policy/);
+  assert.deepEqual(kernel.serializeSolids(new Uint32Array([source])), sourceBytes);
+  console.log('ok - hammer partitions preserve exact topology; incomplete right intersection stays rejected');
 }
 
 // 15. OpenZCAD mounting-bracket cylindrical-face resize and STEP round trip.
