@@ -1002,6 +1002,25 @@ fn expand_edge<S: BuildHasher>(
     }
 }
 
+// Equal endpoints do not identify a curved branch: complementary half-circle
+// rims have the same endpoints. Never replace one by the other's CommonBlock.
+fn cb_edge_matches_branch(topo: &Topology, a: EdgeId, b: EdgeId, tolerance: f64) -> bool {
+    let sample = |id| {
+        let edge = topo.edge(id).ok()?;
+        let (lo, hi) = edge.strict_domain().ok()?;
+        let start = topo.vertex(edge.start()).ok()?.point();
+        let end = topo.vertex(edge.end()).ok()?.point();
+        Some(
+            edge.curve()
+                .evaluate_with_endpoints(f64::midpoint(lo, hi), start, end),
+        )
+    };
+    match (sample(a), sample(b)) {
+        (Some(a), Some(b)) => (a - b).length() <= tolerance,
+        _ => false,
+    }
+}
+
 /// Rebuild an unsplit face replacing boundary edges with CommonBlock shared edges.
 ///
 /// For each boundary edge of the face, checks if its PaveBlock belongs to a
@@ -1017,7 +1036,7 @@ fn rebuild_face_with_cb_edges(
     face_id: FaceId,
     cb_qpair_edges: &HashMap<CbEdgeKey, remus_topology::edge::EdgeId>,
     vv_vertex_seed: &std::collections::BTreeMap<(i64, i64, i64), remus_topology::vertex::VertexId>,
-    _tol: Tolerance,
+    tol: Tolerance,
 ) -> Option<FaceId> {
     if cb_qpair_edges.is_empty() && vv_vertex_seed.is_empty() {
         return None;
@@ -1063,6 +1082,7 @@ fn rebuild_face_with_cb_edges(
                 let key = if qs <= qe { (qs, qe) } else { (qe, qs) };
                 if let Some(&cb_edge) = cb_qpair_edges.get(&key)
                     && cb_edge != oe.edge()
+                    && cb_edge_matches_branch(topo, oe.edge(), cb_edge, tol.linear)
                 {
                     return true;
                 }
@@ -1174,6 +1194,7 @@ fn rebuild_face_with_cb_edges(
             let key = if qs <= qe { (qs, qe) } else { (qe, qs) };
             if let Some(&cb_edge) = cb_qpair_edges.get(&key)
                 && cb_edge != eid
+                && cb_edge_matches_branch(topo, eid, cb_edge, tol.linear)
             {
                 let oriented_start_q = if fwd { qs } else { qe };
                 // If we can't look up the CB edge's start position,
@@ -3949,7 +3970,7 @@ fn build_topology_face(
         return Ok(None);
     }
 
-    orient_planar_outer_wire(topo, &split.surface, split.reversed, &mut oriented_edges)?;
+    orient_planar_outer_wire(topo, &split.surface, &mut oriented_edges)?;
 
     // Step 3: Build wire.
     let Some(wire) = Wire::new(oriented_edges, true).ok() else {
@@ -3998,7 +4019,11 @@ fn build_topology_face(
     Ok(Some(face_id))
 }
 
-/// Orient a planar outer wire to agree with the face's effective normal.
+/// Orient a planar outer wire to agree with the stored surface normal.
+///
+/// The face reversal is applied by consumers to both the surface normal and
+/// edge uses. Applying it here too reverses split boundaries twice and breaks
+/// their orientation against adjacent unsplit faces.
 ///
 /// The planar arrangement may emit a geometrically correct loop with the
 /// opposite 3D winding when its local frame has a reversed axis. Sampling the
@@ -4006,13 +4031,11 @@ fn build_topology_face(
 fn orient_planar_outer_wire(
     topo: &Topology,
     surface: &FaceSurface,
-    reversed: bool,
     oriented_edges: &mut [OrientedEdge],
 ) -> Result<(), AlgoError> {
     let FaceSurface::Plane { normal, .. } = surface else {
         return Ok(());
     };
-    let effective_normal = if reversed { -*normal } else { *normal };
     let mut points = Vec::with_capacity(oriented_edges.len() * 4);
 
     for oriented in oriented_edges.iter() {
@@ -4061,7 +4084,7 @@ fn orient_planar_outer_wire(
         );
     }
 
-    if winding.dot(effective_normal) < 0.0 {
+    if winding.dot(*normal) < 0.0 {
         oriented_edges.reverse();
         for oriented in oriented_edges.iter_mut() {
             *oriented = OrientedEdge::new(oriented.edge(), !oriented.is_forward());
