@@ -825,7 +825,22 @@ for (const operation of ['fillet', 'chamfer']) {
   const fusedVolume = kernel.volume(fused.solid, 0.01);
   assert.ok(Math.abs(fusedVolume - kernel.volume(result.solid, 0.01) - shiftedVolume) < fusedVolume * 1e-5);
   assert.ok(Math.abs(kernel.volume(restoredFuse, 0.01) - fusedVolume) < fusedVolume * 1e-6);
-  console.log('ok - hammer left partition and reassembly preserve exact topology and STEP round trips');
+  const rightMask = kernel.makeBox(29, 53, 70);
+  kernel.transformSolid(rightMask, new Float64Array([1, 0, 0, 11, 0, 1, 0, -10, 0, 0, 1, 0, 0, 0, 0, 1]));
+  const rightCut = kernel.booleanWithQuality('cut', fused.solid, rightMask, true);
+  assert.equal(rightCut.quality, 'exact');
+  assert.deepEqual(kernel.serializeSolids(new Uint32Array([source])), sourceBytes);
+  const rightStep = io.exportStep(kernel.serializeSolids(new Uint32Array([rightCut.solid])));
+  const restoredRight = Array.from(kernel.deserializeSolids(io.importStep(rightStep)));
+  assert.equal(restoredRight.length, 1);
+  for (const solid of [rightCut.solid, restoredRight[0]]) {
+    assert.equal(Array.from(kernel.getSolidFaces(solid)).length, 162);
+    assertCut(solid);
+  }
+  const rightVolume = kernel.volume(rightCut.solid, 0.01);
+  assert.ok(rightVolume > 0 && rightVolume < fusedVolume);
+  assert.ok(Math.abs(kernel.volume(restoredRight[0], 0.01) - rightVolume) < rightVolume * 1e-6);
+  console.log('ok - hammer left reassembly and right cut preserve exact topology and STEP round trips');
 }
 
 // 15. OpenZCAD mounting-bracket cylindrical-face resize and STEP round trip.
