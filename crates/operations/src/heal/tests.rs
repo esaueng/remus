@@ -1143,3 +1143,20 @@ fn convert_to_elementary_idempotent_on_clean_solid() {
         "all-analytic solid shouldn't convert anything, got {count}"
     );
 }
+
+/// Mutation survivor (2026-09-06): `+` → `*` on the last category of
+/// `HealingReport::total` was never observed. Distinct powers of two make
+/// every operator substitution and every dropped category visible.
+#[test]
+fn healing_report_total_sums_every_category_once() {
+    let report = HealingReport {
+        vertices_merged: 1,
+        degenerate_edges_removed: 2,
+        orientations_fixed: 4,
+        wire_gaps_closed: 8,
+        small_faces_removed: 16,
+        duplicate_faces_removed: 32,
+    };
+    assert_eq!(report.total(), 63);
+    assert_eq!(report.changes().iter().map(|c| c.count).sum::<usize>(), 63);
+}
