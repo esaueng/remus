@@ -1436,6 +1436,37 @@ fn uf_union(parent: &mut [usize], a: usize, b: usize) {
     }
 }
 
+/// Partition two-use edges in input order, retaining doubled seams separately
+/// from internal edges. Cross-group and non-manifold edges remain boundaries.
+fn index_unify_group_edges<'a>(
+    edges: impl Iterator<Item = (usize, &'a [FaceId])>,
+    face_groups: &HashMap<FaceId, usize>,
+    group_count: usize,
+) -> Vec<Vec<(usize, bool)>> {
+    let mut grouped = vec![Vec::new(); group_count];
+    for (edge, faces) in edges {
+        count_unify_edge_visit();
+        let [a, b] = faces else { continue };
+        if let (Some(&ga), Some(&gb)) = (face_groups.get(a), face_groups.get(b))
+            && ga == gb
+        {
+            grouped[ga].push((edge, a == b));
+        }
+    }
+    grouped
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static UNIFY_EDGE_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[inline]
+fn count_unify_edge_visit() {
+    #[cfg(test)]
+    UNIFY_EDGE_VISITS.with(|count| count.set(count.get() + 1));
+}
+
 /// Unify adjacent faces that lie on the same geometric surface.
 ///
 /// This merges co-surface face fragments produced by boolean operations
@@ -1794,10 +1825,25 @@ fn unify_faces_with_history_impl(
 
     let mut group_data: Vec<MergeGroupData> = Vec::new();
 
-    for group in &merge_groups {
+    // Index once: rescanning every edge for every group is quadratic on
+    // triangulated solids with many small coplanar regions.
+    let mut face_groups = HashMap::new();
+    for (group, faces) in merge_groups.iter().enumerate() {
+        for &i in faces {
+            face_groups.insert(all_face_ids[i], group);
+        }
+    }
+    let group_edges = index_unify_group_edges(
+        edge_face_map
+            .iter()
+            .map(|(&edge, faces)| (edge, faces.as_slice())),
+        &face_groups,
+        merge_groups.len(),
+    );
+
+    for (group, shared_edges) in merge_groups.iter().zip(&group_edges) {
         let group_face_ids: Vec<FaceId> = group.iter().map(|&i| all_face_ids[i]).collect();
 
-        let group_set: HashSet<usize> = group_face_ids.iter().map(|f| f.index()).collect();
         let mut internal_edges: HashSet<usize> = HashSet::new();
 
         // The seam meridian of a periodic group surface, as the `u` of a
@@ -1834,10 +1880,11 @@ fn unify_faces_with_history_impl(
             let du = (us - ue).rem_euclid(std::f64::consts::TAU);
             (du.min(std::f64::consts::TAU - du) < 1e-6).then_some(us)
         };
-        let seam_u: Option<f64> = edge_face_map
+        let seam_u: Option<f64> = shared_edges
             .iter()
-            .filter(|(_, faces)| {
-                faces.len() == 2 && faces[0] == faces[1] && group_set.contains(&faces[0].index())
+            .filter(|(_, is_seam)| {
+                count_unify_edge_visit();
+                *is_seam
             })
             .find_map(|(edge_idx, _)| line_meridian(*edge_idx));
         let on_seam = |edge_idx: usize| -> bool {
@@ -1848,20 +1895,16 @@ fn unify_faces_with_history_impl(
             du.min(std::f64::consts::TAU - du) < 1e-6
         };
 
-        for (edge_idx, faces) in &edge_face_map {
+        for &(edge_idx, is_seam) in shared_edges {
+            count_unify_edge_visit();
             // Two face-uses from the SAME face is a seam, not a shared edge:
             // `edge_to_face_map` records a seam twice because it appears twice
             // in one face's wire. Dropping it as internal deletes the seam of
             // every cylinder/cone/sphere in the group — two stacked coaxial
             // bore bands then merge into a pair of disjoint rim circles, which
             // reassemble as an outer wire plus a bogus inner wire.
-            if faces.len() == 2
-                && faces[0] != faces[1]
-                && group_set.contains(&faces[0].index())
-                && group_set.contains(&faces[1].index())
-                && !on_seam(*edge_idx)
-            {
-                internal_edges.insert(*edge_idx);
+            if !is_seam && !on_seam(edge_idx) {
+                internal_edges.insert(edge_idx);
             }
         }
 
