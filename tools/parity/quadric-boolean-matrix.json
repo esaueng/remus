@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "operations": ["fuse", "cut", "intersect"],
+  "scales": [0.1, 1.0, 10.0],
+  "placements": ["origin", "rigid"],
+  "volume_relative_tolerance": 0.001,
+  "surface_volume_relative_tolerance": 5e-8,
+  "families": [
+    {
+      "id": "cone-sphere",
+      "lhs": {
+        "op": "makeCone",
+        "args": {"bottomRadius": 6.0, "topRadius": 2.0, "height": 12.0},
+        "scale_fields": ["bottomRadius", "topRadius", "height"]
+      },
+      "rhs": {
+        "op": "makeSphere",
+        "args": {"radius": 4.0, "segments": 24},
+        "scale_fields": ["radius"]
+      },
+      "rhs_translation": [2.0, 0.0, 6.0],
+      "lhs_volume": {"coefficient": 208.0, "pi_power": 1},
+      "rhs_volume": {"coefficient": 85.33333333333333, "pi_power": 1},
+      "intersection_volume": 197.10640301106753,
+      "allowed_surface_types": ["plane", "cone", "sphere"],
+      "required_surface_types": ["cone", "sphere"]
+    },
+    {
+      "id": "sphere-cylinder",
+      "lhs": {
+        "op": "makeSphere",
+        "args": {"radius": 6.0, "segments": 24},
+        "scale_fields": ["radius"]
+      },
+      "rhs": {
+        "op": "makeCylinder",
+        "args": {"radius": 3.0, "height": 20.0},
+        "scale_fields": ["radius", "height"]
+      },
+      "rhs_translation": [2.0, 0.0, -10.0],
+      "lhs_volume": {"coefficient": 288.0, "pi_power": 1},
+      "rhs_volume": {"coefficient": 180.0, "pi_power": 1},
+      "intersection_volume": 294.1884259241949,
+      "allowed_surface_types": ["plane", "sphere", "cylinder"],
+      "required_surface_types": ["sphere", "cylinder"]
+    },
+    {
+      "id": "torus-sphere",
+      "lhs": {
+        "op": "makeTorus",
+        "args": {"majorRadius": 6.0, "minorRadius": 2.0, "segments": 32},
+        "scale_fields": ["majorRadius", "minorRadius"]
+      },
+      "rhs": {
+        "op": "makeSphere",
+        "args": {"radius": 3.0, "segments": 24},
+        "scale_fields": ["radius"]
+      },
+      "rhs_translation": [5.0, 0.0, 1.0],
+      "lhs_volume": {"coefficient": 48.0, "pi_power": 2},
+      "rhs_volume": {"coefficient": 36.0, "pi_power": 1},
+      "intersection_volume": 56.2702148298352,
+      "allowed_surface_types": ["torus", "sphere"],
+      "required_surface_types": ["torus", "sphere"]
+    }
+  ]
+}
