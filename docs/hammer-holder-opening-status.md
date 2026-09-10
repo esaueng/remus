@@ -108,6 +108,20 @@ and the caller then retained the overlong original section. The regression
 exercises the complete section-building call with perpendicular faces of
 different widths.
 
+Clipping to the opposing face's true extent exposed two arrangement gaps
+that the overlong sections had been papering over (the snapClip deepened-notch
+fixture, `crates/io/tests/snapclip_deepened_notch_inmem.rs`, regressed to eight
+unpaired edges). First, a curved face only pre-split its section curves at
+points other faces had registered; the countersink's chord runs through the
+old floor-bite corner, an existing vertex of the cone face, and that corner
+was registered only because the overlong wall section happened to cross the
+chord there. Curved faces now also pre-split their sections at their own
+wire vertices. Second, the planar arrangement tested an endpoint T-junction
+against a section arc's chord; the tightened wall-floor line ends on the
+true conic a sagitta away from the chord, so the line dangled and the wall
+below the old floor was never split off. Section arcs now measure the
+endpoint against the true curve (boundary arcs keep the chord test).
+
 Together these changes reduce the shifted-holder raw candidate from 30 free
 boundary edges to 23, still with 100 faces. The bottom boundary is now paired;
 a dedicated fixture regression checks every bottom edge and source immutability.
