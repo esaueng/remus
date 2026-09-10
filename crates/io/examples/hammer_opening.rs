@@ -1,7 +1,8 @@
 //! Replay the exact-only 46 -> 50 mm hammer-holder opening experiment.
 //!
 //! This is a diagnostic, not a supported modeling feature. The current kernel
-//! passes the first cut but refuses the following intersection. Errors remain
+//! passes the first cut and intersection, then refuses the shifted-holder
+//! intersection. Errors remain
 //! errors: no approximate fallback or relaxed validation is enabled.
 //!
 //! Run with `cargo run --profile ci-test -p remus-io --example hammer_opening`.
@@ -42,6 +43,21 @@ fn checked(
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    struct Logger;
+    impl log::Log for Logger {
+        fn enabled(&self, _: &log::Metadata) -> bool {
+            true
+        }
+        fn log(&self, r: &log::Record) {
+            let s = r.args().to_string();
+            if s.contains("GFA") || s.contains("multi-region") {
+                println!("{s}");
+            }
+        }
+        fn flush(&self) {}
+    }
+    let _ = log::set_logger(&Logger);
+    log::set_max_level(log::LevelFilter::Debug);
     let mut topo = Topology::new();
     let solids = remus_io::step::reader::read_step(
         include_str!("../tests/data/shapr3d_hammer_holder.step"),

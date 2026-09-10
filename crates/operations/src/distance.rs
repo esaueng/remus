@@ -377,13 +377,19 @@ pub(crate) fn point_to_face_distance(
         FaceSurface::Sphere(sph) => Some(point_to_sphere(point, sph)),
         FaceSurface::Torus(tor) => Some(point_to_torus(point, tor)),
     };
-    if let Some((distance, closest)) = projection
+    // Imported trimming curves may deviate from their carrier within the
+    // source's tolerance. A valid carrier projection is therefore a candidate,
+    // not proof that no boundary curve is closer to the query point.
+    let mut best = if let Some((distance, closest)) = projection
         && remus_check::classify::surface_point_in_face(topo, face_id, closest)?
     {
-        return Ok(Some((distance, closest)));
+        Some((distance, closest))
+    } else {
+        None
+    };
+    if best.is_some_and(|(distance, _)| distance <= tol.linear) {
+        return Ok(best);
     }
-
-    let mut best: Option<(f64, Point3)> = None;
     for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
         for oriented in topo.wire(wid)?.edges() {
             let candidate = closest_boundary_point(topo, point, oriented.edge())?;
@@ -437,7 +443,16 @@ fn closest_boundary_point(
         }
         EdgeCurve::Line => closest_point_on_segment(point, start, end),
     };
-    Ok(((point - closest).length(), closest))
+    // Topological vertices are part of the trimmed boundary even when an
+    // imported curve endpoint differs within the source's sewing tolerance.
+    let mut best = ((point - closest).length(), closest);
+    for vertex in [start, end] {
+        let distance = (point - vertex).length();
+        if distance < best.0 {
+            best = (distance, vertex);
+        }
+    }
+    Ok(best)
 }
 
 struct BoundaryCurve<'a> {

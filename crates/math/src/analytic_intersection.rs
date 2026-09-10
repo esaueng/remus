@@ -2158,7 +2158,8 @@ fn algebraic_sphere_cylinder(
 /// proper crossing yields two circles, tangency (`|r_c − R| = r_t`) one,
 /// and a cylinder outside the tube's radial reach none — all exact, so the
 /// quartic marcher (and its NURBS fits) never runs for this configuration.
-/// Non-coaxial pairs defer (`None`).
+/// Perpendicular pairs with disjoint or merely touching axial slabs have no
+/// intersection curves. Other non-coaxial pairs defer (`None`).
 ///
 /// # Errors
 ///
@@ -2169,6 +2170,15 @@ pub fn exact_torus_cylinder(
 ) -> Result<Option<Vec<ExactIntersectionCurve>>, MathError> {
     let axis_t = torus.z_axis();
     let axis_c = cyl.axis();
+    // With perpendicular axes, both carriers lie in bounded slabs along
+    // the torus axis. Disjoint slabs have no intersection; touching slabs
+    // meet at isolated tangent points (a cylinder generator against the
+    // torus's extreme latitude circle), never a one-dimensional curve.
+    // Do not march a near-tangent cloud into a spurious fitted loop.
+    let slab_separation = (torus.center() - cyl.origin()).dot(axis_t).abs();
+    if axis_t.dot(axis_c) == 0.0 && slab_separation >= torus.minor_radius() + cyl.radius() {
+        return Ok(Some(vec![]));
+    }
     if axis_t.dot(axis_c).abs() < 1.0 - 1e-10 {
         return Ok(None);
     }
@@ -3591,6 +3601,41 @@ fn surface_closures<'a>(
 mod tests {
     use super::*;
     use crate::tolerance::Tolerance;
+
+    #[test]
+    fn perpendicular_cylinder_torus_tangency_has_no_spurious_curve() {
+        let torus = ToroidalSurface::new(Point3::new(-9.0, 34.5, 9.5), 8.0, 3.0).unwrap();
+        for z in [20.5, 20.6, -1.5, -1.6] {
+            let cylinder =
+                CylindricalSurface::new(Point3::new(41.0, 37.5, z), Vec3::new(-1.0, 0.0, 0.0), 8.0)
+                    .unwrap();
+            assert!(
+                exact_torus_cylinder(&torus, &cylinder)
+                    .unwrap()
+                    .unwrap()
+                    .is_empty()
+            );
+            for (a, b) in [
+                (
+                    AnalyticSurface::Cylinder(&cylinder),
+                    AnalyticSurface::Torus(&torus),
+                ),
+                (
+                    AnalyticSurface::Torus(&torus),
+                    AnalyticSurface::Cylinder(&cylinder),
+                ),
+            ] {
+                assert!(intersect_analytic_analytic(a, b, 16).unwrap().is_empty());
+            }
+        }
+        // Even a small true overlap must retain the general intersection path.
+        for z in [20.5 - 1e-8, -1.5 + 1e-8] {
+            let cylinder =
+                CylindricalSurface::new(Point3::new(41.0, 37.5, z), Vec3::new(-1.0, 0.0, 0.0), 8.0)
+                    .unwrap();
+            assert!(exact_torus_cylinder(&torus, &cylinder).unwrap().is_none());
+        }
+    }
 
     #[test]
     fn plane_cylinder_perpendicular() {
