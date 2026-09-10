@@ -2806,6 +2806,38 @@ fn arrangement_regions_from_inputs(
             .map(|(_, p)| (d.x().mul_add(p.y() - a.y(), -(d.y() * (p.x() - a.x()))) / len).abs())
             .fold(0.0, f64::max)
     };
+    // Distance from a UV point to the TRUE arc of input `ai`: the nearest
+    // sampled vertex locates the span, a ternary refine on the native
+    // parameter over its two neighbouring spans certifies the distance.
+    let arc_point_distance = |ai: usize, uv: Point2| -> Option<f64> {
+        let poly = arc_polys[ai].as_ref()?;
+        let e = &inputs[ai].edge;
+        let dist_at = |t: f64| -> f64 {
+            (frame.project(e.curve_3d.evaluate_with_endpoints(t, e.start_3d, e.end_3d)) - uv)
+                .length()
+        };
+        let best_k = poly
+            .iter()
+            .enumerate()
+            .map(|(k, (_, p))| (k, (*p - uv).length()))
+            .fold(
+                (0usize, f64::MAX),
+                |acc, x| if x.1 < acc.1 { x } else { acc },
+            )
+            .0;
+        let mut lo = poly[best_k.saturating_sub(1)].0;
+        let mut hi = poly[(best_k + 1).min(poly.len() - 1)].0;
+        for _ in 0..60 {
+            let m1 = lo + (hi - lo) / 3.0;
+            let m2 = hi - (hi - lo) / 3.0;
+            if dist_at(m1) < dist_at(m2) {
+                hi = m2;
+            } else {
+                lo = m1;
+            }
+        }
+        Some(dist_at(0.5 * (lo + hi)))
+    };
     let line_arc_crossings = |la: Point2, lb: Point2, ai: usize| -> Vec<Point2> {
         let Some(poly) = arc_polys[ai].as_ref() else {
             return Vec::new();
@@ -2983,6 +3015,15 @@ fn arrangement_regions_from_inputs(
             // Fitted NURBS endpoints retain their historical fit-error band.
             // Exact analytic inputs must use the vertex tolerance: a nearby
             // arc midpoint is not a T-junction on its straight chord.
+            //
+            // A SECTION arc is measured against its true curve, not its
+            // chord: a line section clipped to its opposing face's real
+            // extent ends ON the plane×cone conic (the deepened notch's
+            // wall-floor line meets the countersink arc at the old floor-bite
+            // corner), a sagitta away from the chord. Missing that T leaves
+            // the line dangling, the tracer prunes it, and the wall below the
+            // old floor is never split off. Boundary arcs keep the chord test:
+            // they arrive pre-split by the boundary-crossing machinery.
             for bp in [b0, b1] {
                 let w = (bp - a0).dot(d) / (len * len);
                 if w > 1e-6 && w < 1.0 - 1e-6 {
@@ -2995,9 +3036,16 @@ fn arrangement_regions_from_inputs(
                         } else {
                             tol
                         };
-                    if (on - bp).length() < endpoint_tolerance
-                        && (!i_is_arc || chord_break_on_arc(i, bp))
-                    {
+                    let lands = if i_is_arc && inputs[i].is_section {
+                        (bp - a0).length() > tol * 100.0
+                            && (bp - a1).length() > tol * 100.0
+                            && arc_point_distance(i, bp)
+                                .is_some_and(|dist| dist < endpoint_tolerance)
+                    } else {
+                        (on - bp).length() < endpoint_tolerance
+                            && (!i_is_arc || chord_break_on_arc(i, bp))
+                    };
+                    if lands {
                         ts.push((w, Some(bp)));
                     }
                 }
