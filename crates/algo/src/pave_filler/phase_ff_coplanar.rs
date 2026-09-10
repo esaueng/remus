@@ -259,12 +259,14 @@ fn process_coplanar_pair(
         if matching_arc_section_exists(topo, arena, face_a, face_b, b_eid, tol)? {
             continue;
         }
-        if !is_shared_boundary_edge(p2d_start, p2d_end, &edges_a, tol.linear)
-            && let Some((c_start, c_end)) =
+        if !is_shared_boundary_edge(p2d_start, p2d_end, &edges_a, tol.linear) {
+            for (c_start, c_end) in
                 clip_section_to_polygon(p2d_start, p2d_end, p3d_start, p3d_end, &poly_a, tol.linear)
-            && !has_existing_section_at(arena, face_a, face_b, c_start, c_end, tol)
-        {
-            create_section_edge(topo, arena, face_a, face_b, c_start, c_end, tol)?;
+            {
+                if !has_existing_section_at(arena, face_a, face_b, c_start, c_end, tol) {
+                    create_section_edge(topo, arena, face_a, face_b, c_start, c_end, tol)?;
+                }
+            }
         }
     }
 
@@ -272,12 +274,14 @@ fn process_coplanar_pair(
         if matching_arc_section_exists(topo, arena, face_a, face_b, a_eid, tol)? {
             continue;
         }
-        if !is_shared_boundary_edge(p2d_start, p2d_end, &edges_b, tol.linear)
-            && let Some((c_start, c_end)) =
+        if !is_shared_boundary_edge(p2d_start, p2d_end, &edges_b, tol.linear) {
+            for (c_start, c_end) in
                 clip_section_to_polygon(p2d_start, p2d_end, p3d_start, p3d_end, &poly_b, tol.linear)
-            && !has_existing_section_at(arena, face_a, face_b, c_start, c_end, tol)
-        {
-            create_section_edge(topo, arena, face_a, face_b, c_start, c_end, tol)?;
+            {
+                if !has_existing_section_at(arena, face_a, face_b, c_start, c_end, tol) {
+                    create_section_edge(topo, arena, face_a, face_b, c_start, c_end, tol)?;
+                }
+            }
         }
     }
 
@@ -444,8 +448,8 @@ fn is_shared_boundary_edge(
 }
 
 /// Clip a coplanar section edge to the target face polygon, returning the
-/// 3D endpoints of the sub-segment that lies inside the polygon (or `None`
-/// when the whole segment is outside).
+/// 3D endpoints of each connected sub-segment inside the polygon. Returns
+/// an empty list when the whole segment is outside.
 ///
 /// A face-b boundary edge that straddles the target boundary (one endpoint
 /// inside the wall, the other outside, e.g. a faceted scoop ramp leaving the
@@ -461,19 +465,14 @@ fn clip_section_to_polygon(
     p3d_end: Point3,
     polygon: &[Point2],
     tol: f64,
-) -> Option<(Point3, Point3)> {
+) -> Vec<(Point3, Point3)> {
     let inside = |p: Point2| point_in_polygon_2d(p, polygon);
-    let start_in = inside(p2d_start);
-    let end_in = inside(p2d_end);
-    if start_in && end_in {
-        return Some((p3d_start, p3d_end));
-    }
 
     // Parameter(s) along the segment where it crosses a polygon edge.
     let d = Point2::new(p2d_end.x() - p2d_start.x(), p2d_end.y() - p2d_start.y());
     let seg_len = d.x().hypot(d.y());
     if seg_len < tol {
-        return None;
+        return Vec::new();
     }
     let mut ts: Vec<f64> = Vec::new();
     let n = polygon.len();
@@ -496,8 +495,9 @@ fn clip_section_to_polygon(
     ts.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
     ts.dedup_by(|x, y| (*x - *y).abs() < 1e-9);
 
-    // Find the in-polygon sub-interval (mid-sample test) spanning the most.
-    let mut best: Option<(f64, f64)> = None;
+    // Keep disconnected interior intervals separate. Even when both endpoints
+    // are inside, the segment can cross the exterior of a concave face.
+    let mut intervals: Vec<(f64, f64)> = Vec::new();
     for w in ts.windows(2) {
         let (ta, tb) = (w[0], w[1]);
         if tb - ta < 1e-9 {
@@ -506,15 +506,14 @@ fn clip_section_to_polygon(
         let tm = 0.5 * (ta + tb);
         let mid = Point2::new(p2d_start.x() + d.x() * tm, p2d_start.y() + d.y() * tm);
         if inside(mid) {
-            best = Some(match best {
-                Some((lo, _)) => (lo, tb),
-                None => (ta, tb),
-            });
+            if let Some(last) = intervals.last_mut()
+                && (last.1 - ta).abs() < 1e-9
+            {
+                last.1 = tb;
+            } else {
+                intervals.push((ta, tb));
+            }
         }
-    }
-    let (ta, tb) = best?;
-    if (tb - ta) * seg_len < tol {
-        return None;
     }
     let lerp = |t: f64| -> Point3 {
         Point3::new(
@@ -523,7 +522,11 @@ fn clip_section_to_polygon(
             p3d_start.z() + (p3d_end.z() - p3d_start.z()) * t,
         )
     };
-    Some((lerp(ta), lerp(tb)))
+    intervals
+        .into_iter()
+        .filter(|(ta, tb)| (tb - ta) * seg_len >= tol)
+        .map(|(ta, tb)| (lerp(ta), lerp(tb)))
+        .collect()
 }
 
 /// Create a section edge and register it in the GFA arena.
@@ -770,6 +773,43 @@ fn point_on_segment_2d(pt: Point2, a: Point2, b: Point2, tol: f64) -> bool {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
+
+    #[test]
+    fn concave_clipping_preserves_disconnected_intervals() {
+        // U-shaped face: the horizontal section must never bridge its opening.
+        let polygon = [
+            (0.0, 0.0),
+            (4.0, 0.0),
+            (4.0, 4.0),
+            (3.0, 4.0),
+            (3.0, 1.0),
+            (1.0, 1.0),
+            (1.0, 4.0),
+            (0.0, 4.0),
+        ]
+        .map(|(x, y)| Point2::new(x, y));
+        for (start, end, expected) in [
+            (-1.0, 5.0, [(0.0, 1.0), (3.0, 4.0)]),
+            (0.5, 3.5, [(0.5, 1.0), (3.0, 3.5)]),
+            (3.5, 0.5, [(3.5, 3.0), (1.0, 0.5)]),
+        ] {
+            let sections = clip_section_to_polygon(
+                Point2::new(start, 2.0),
+                Point2::new(end, 2.0),
+                Point3::new(start, 2.0, 7.0),
+                Point3::new(end, 2.0, 7.0),
+                &polygon,
+                1e-7,
+            );
+            assert_eq!(sections.len(), 2, "{sections:?}");
+            for ((a, b), (x0, x1)) in sections.into_iter().zip(expected) {
+                assert!((a.x() - x0).abs() < 1e-10);
+                assert!((b.x() - x1).abs() < 1e-10);
+                assert!((a.y() - 2.0).abs() < 1e-10 && (b.y() - 2.0).abs() < 1e-10);
+                assert!((a.z() - 7.0).abs() < 1e-10 && (b.z() - 7.0).abs() < 1e-10);
+            }
+        }
+    }
 
     #[test]
     fn point_in_unit_square() {
