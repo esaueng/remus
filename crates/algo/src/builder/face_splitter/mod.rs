@@ -7217,16 +7217,16 @@ fn split_face_2d_impl(
 
     // A section chain can meet a concave boundary at a straight continuation.
     // The greedy turn rule follows the old outline and misses the partition.
-    // On a planar face with untouched holes, recover the bounded subdivision
+    // On a planar face with no holes or untouched holes, recover the subdivision
     // without feeding those holes into a hole-less arrangement. The normal
     // hole distribution below retains their original analytic wires.
     if is_plane
         && !holes_integrated
-        && !original_inner_wires.is_empty()
         && sections.len() >= 2
         && !u_periodic
         && !v_periodic
-        && line_sections_clear_of_round_holes(sections, &original_inner_wires, tol.linear)
+        && (original_inner_wires.is_empty()
+            || line_sections_clear_of_round_holes(sections, &original_inner_wires, tol.linear))
     {
         let dcel = build_wire_loops_dcel(&all_edges, tol.linear, false, false);
         if dcel.len() > loops.len()
@@ -8351,7 +8351,7 @@ mod tests {
     use remus_topology::test_utils::make_unit_square_face;
 
     #[test]
-    fn concave_corner_chain_partitions_a_face_without_losing_round_holes() {
+    fn concave_corner_chain_partitions_plain_and_round_hole_faces() {
         use remus_math::curves::Circle3D;
         use remus_topology::{
             edge::Edge,
@@ -8360,7 +8360,9 @@ mod tests {
             wire::{OrientedEdge, Wire},
         };
         for scale in [0.1, 1.0, 100.0] {
-            for reversed in [false, true] {
+            for (reversed, with_holes) in
+                [(false, false), (true, false), (false, true), (true, true)]
+            {
                 let mut topo = Topology::new();
                 let point = |x, y| Point3::new(2.0 + x * scale, 3.0 + y * scale, 4.0);
                 // The chain continues the horizontal boundary at the reflex
@@ -8393,7 +8395,7 @@ mod tests {
                     .collect();
                 let outer = topo.add_wire(Wire::new(boundary, true).unwrap());
                 let mut holes = Vec::new();
-                for x in [1.0, 7.0] {
+                for x in [1.0, 7.0].into_iter().filter(|_| with_holes) {
                     let circle =
                         Circle3D::new(point(x, 5.0), Vec3::new(0.0, 0.0, 1.0), 0.25 * scale)
                             .unwrap();
@@ -8431,7 +8433,10 @@ mod tests {
                 )
                 .unwrap();
                 assert_eq!(result.len(), 2, "scale={scale} reversed={reversed}");
-                assert_eq!(result.iter().map(|f| f.inner_wires.len()).sum::<usize>(), 2);
+                assert_eq!(
+                    result.iter().map(|f| f.inner_wires.len()).sum::<usize>(),
+                    if with_holes { 2 } else { 0 }
+                );
                 assert!(result.iter().all(|f| f.reversed == reversed));
                 let mut outer_area = 0.0;
                 for sf in &result {
@@ -8446,6 +8451,9 @@ mod tests {
                     (outer_area - 42.0 * scale * scale).abs() < 1e-7 * scale * scale,
                     "area={outer_area}"
                 );
+                if !with_holes {
+                    continue;
+                }
                 let sf = result.iter().find(|sf| !sf.inner_wires.is_empty()).unwrap();
                 assert!(line_sections_clear_of_round_holes(
                     &sections,
