@@ -51,6 +51,13 @@ direct method. Its args are `operation`, `solidA`, `solidB`, and optional
 `operation_failed` envelope whose category is `quality_refused` and whose
 `details.kernelCode` is `exact_only_unattainable`.
 
+The handle-returning booleans (`fuse`, `cut`, `intersect`, `fuseAll`, the
+`*WithOptions` and `*WithEvolution` forms, and their batch ops) always behave
+as if `exactOnly` were set: they have no field in which to disclose an
+approximation, so they refuse with that same envelope rather than return a
+mesh. `booleanWithQuality` without `exactOnly` is the one way to accept an
+approximate result, and it says so in `quality`.
+
 ```ts
 type BatchResultV2 =
   | { ok: unknown }

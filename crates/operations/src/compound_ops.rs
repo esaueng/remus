@@ -51,6 +51,15 @@ pub fn fuse_solids(
     topo: &mut Topology,
     solids: &[SolidId],
 ) -> Result<SolidId, crate::OperationsError> {
+    // One transaction over the whole reduction: a refusal or failure in any
+    // group must not leave earlier groups' copies or partial fuses behind.
+    remus_topology::transaction::run_transacted(topo, |topo| fuse_solids_impl(topo, solids))
+}
+
+fn fuse_solids_impl(
+    topo: &mut Topology,
+    solids: &[SolidId],
+) -> Result<SolidId, crate::OperationsError> {
     if solids.is_empty() {
         return Err(crate::OperationsError::InvalidInput {
             reason: "compound has no solids to fuse".into(),
