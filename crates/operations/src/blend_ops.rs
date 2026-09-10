@@ -2,7 +2,7 @@
 
 use remus_blend::chamfer_builder::ChamferBuilder;
 use remus_blend::fillet_builder::FilletBuilder;
-pub use remus_blend::{BlendError, BlendFaceOrigins, BlendResult};
+pub use remus_blend::{BlendEngine, BlendError, BlendFaceOrigins, BlendResult};
 use remus_topology::Topology;
 use remus_topology::edge::{EdgeCurve, EdgeId};
 use remus_topology::face::FaceSurface;
@@ -707,6 +707,7 @@ fn planar_chamfer_result(
         failed: Vec::new(),
         is_partial: false,
         face_origins: Some(face_origins),
+        engine: BlendEngine::PlanarBevel,
     };
     validate_complete_blend(topo, "chamfer", solid, &result)?;
     // The fast path gets the same volume guard as the walking path. Closedness
@@ -751,6 +752,7 @@ fn planar_fillet_result(
         failed: Vec::new(),
         is_partial: false,
         face_origins: Some(face_origins),
+        engine: BlendEngine::RollingBall,
     };
     validate_complete_blend(topo, "fillet", solid, &result)?;
     // The fast path gets the same volume guard as the walking path — and needs
@@ -1051,6 +1053,7 @@ fn fillet_by_feature(
     ordered.sort_by_key(|&(planar, _)| planar);
 
     let mut current = solid;
+    let mut engine: Option<BlendEngine> = None;
     for (_, group) in ordered {
         let stale = stale_edges(topo, current, group)?;
         if !stale.is_empty() {
@@ -1061,7 +1064,13 @@ fn fillet_by_feature(
                     .into(),
             }));
         }
-        current = fillet_group(topo, current, group, radius)?.solid;
+        let step = fillet_group(topo, current, group, radius)?;
+        engine = Some(match engine {
+            Some(seen) if seen != step.engine => BlendEngine::Mixed,
+            Some(seen) => seen,
+            None => step.engine,
+        });
+        current = step.solid;
     }
 
     let result = BlendResult {
@@ -1075,6 +1084,7 @@ fn fillet_by_feature(
         // none rather than a record that is right only when every step happened
         // to take the walking builder.
         face_origins: None,
+        engine: engine.unwrap_or(BlendEngine::Mixed),
     };
     // Per-feature validation compared each step with the step before it; this
     // compares the finished body with what the caller actually handed in, so
@@ -1140,6 +1150,61 @@ pub fn fillet_v2(
     }
     transactional(topo, |t| {
         fillet_by_feature(t, solid, &groups, edges, radius)
+    })
+}
+
+/// The one fillet cascade every handle-returning surface runs.
+///
+/// Engine order is a product decision (2026-07, restated for B23): the
+/// walking engine [`fillet_v2`] first — it carries the validated fail-closed
+/// contracts and, for a planar-line selection, already tries the rolling-ball
+/// rebuild ahead of the walking builder — then the rolling-ball rebuild on its
+/// own for the selections `fillet_v2` does not route to it. Both attempts run
+/// under the closed-shell and volume guards and inside a transaction, so a
+/// rejected attempt never leaves the input partly filleted. The flat bevel is
+/// not a fillet and is no longer a fallback for one: a request only a bevel
+/// could satisfy is refused. The engine that produced the result is disclosed
+/// in [`BlendResult::engine`].
+///
+/// # Errors
+///
+/// When no engine produces a valid closed solid, returns the walking engine's
+/// typed error — the one with meaningful diagnostics (`UnsupportedVertexBlend`,
+/// `RadiusTooLarge`, …) — and leaves the topology exactly as it was.
+pub fn fillet_cascade(
+    topo: &mut Topology,
+    solid: SolidId,
+    edges: &[EdgeId],
+    radius: f64,
+) -> Result<BlendResult, OperationsError> {
+    let walking_refusal = match transactional(topo, |t| {
+        let result = fillet_v2(t, solid, edges, radius)?;
+        reject_open_shell(t, result.solid)?;
+        Ok(result)
+    }) {
+        Ok(result) => return Ok(result),
+        Err(error) => error,
+    };
+    if let Ok(result) = transactional(topo, |t| {
+        let result = planar_fillet_result(t, solid, edges, radius)?;
+        reject_open_shell(t, result.solid)?;
+        Ok(result)
+    }) {
+        return Ok(result);
+    }
+    Err(walking_refusal)
+}
+
+/// A candidate is acceptable only if its outer shell is a closed 2-manifold.
+/// The weaker manifold-only check accepts open shells (a fillet that leaves a
+/// cap untrimmed at a contact circle), which tessellate to a plausible but
+/// wrong volume.
+fn reject_open_shell(topo: &Topology, solid: SolidId) -> Result<(), OperationsError> {
+    let shell = topo.shell(topo.solid(solid)?.outer_shell())?;
+    remus_topology::validation::validate_shell_closed(shell, topo).map_err(|_| {
+        OperationsError::InvalidInput {
+            reason: "fillet produced an open shell".into(),
+        }
     })
 }
 
@@ -1404,7 +1469,7 @@ pub fn evolution_from_blend_origins(
 /// [`EvolutionMap::unresolved`]: crate::evolution::EvolutionMap::unresolved
 ///
 /// # Errors
-/// Returns whatever [`fillet_v2`] returns. The blend and the evolution
+/// Returns whatever [`fillet_cascade`] returns. The blend and the evolution
 /// computation commit or roll back together: an evolution-construction
 /// failure never leaves the fillet half-applied behind an `Err`.
 pub fn fillet_with_evolution(
@@ -1415,7 +1480,7 @@ pub fn fillet_with_evolution(
 ) -> Result<(BlendResult, EvolutionMap), OperationsError> {
     remus_topology::transaction::run_transacted(topo, |topo| {
         let input_signatures = crate::boolean::collect_face_signatures(topo, solid)?;
-        let result = fillet_v2(topo, solid, edges, radius)?;
+        let result = fillet_cascade(topo, solid, edges, radius)?;
         let evo = evolution_for_blend(topo, &result, &input_signatures)?;
         Ok((result, evo))
     })
@@ -1545,5 +1610,48 @@ mod tests {
 
         let result = fillet_v2(&mut topo, solid, &edges, 0.2);
         assert!(result.is_err_and(|error| error.to_string().contains("distinct edges")));
+    }
+
+    #[test]
+    fn fillet_cascade_discloses_the_engine_that_ran() {
+        // A planar box edge is routed to the rolling-ball rebuild first.
+        let mut topo = Topology::new();
+        let bx = crate::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+        let edges = remus_topology::explorer::solid_edges(&topo, bx).unwrap();
+        let result = fillet_cascade(&mut topo, bx, &edges[..1], 1.0).unwrap();
+        assert_eq!(result.engine, BlendEngine::RollingBall);
+        assert_ne!(result.solid, bx);
+
+        // A cylinder rim is refused by the rolling-ball rebuild (closed
+        // circular edges collapse, gh #967) and rounds on the walking engine.
+        let mut topo = Topology::new();
+        let cyl = crate::primitives::make_cylinder(&mut topo, 10.0, 20.0).unwrap();
+        let edges = remus_topology::explorer::solid_edges(&topo, cyl).unwrap();
+        let edges = crate::query::filter_filletable_edges(&topo, cyl, &edges).unwrap();
+        let result = fillet_cascade(&mut topo, cyl, &edges, 0.5).unwrap();
+        assert_eq!(result.engine, BlendEngine::Walking);
+    }
+
+    #[test]
+    fn fillet_cascade_refusal_leaves_the_arena_unchanged() {
+        let mut topo = Topology::new();
+        let bx = crate::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+        let edges = remus_topology::explorer::solid_edges(&topo, bx).unwrap();
+        let faces_before = topo.num_faces();
+        let snapshot = topo.clone();
+
+        // Larger than the box: no engine can build it, and the flat bevel is
+        // no longer consulted for a fillet request.
+        let result = fillet_cascade(&mut topo, bx, &edges[..1], 20.0);
+        assert!(result.is_err());
+        assert_eq!(topo.num_faces(), faces_before);
+        assert_eq!(
+            remus_topology::explorer::solid_edges(&topo, bx)
+                .unwrap()
+                .len(),
+            remus_topology::explorer::solid_edges(&snapshot, bx)
+                .unwrap()
+                .len()
+        );
     }
 }
