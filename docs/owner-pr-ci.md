@@ -26,6 +26,40 @@ John, then GitHub-hosted. Busy Jane remains available; jobs queue for either of 
 Missing/invalid configuration selects hosted. Hosted fallback still depends on
 GitHub billing and capacity.
 
+## Lightweight job pool
+
+`CI_FLEET_LIGHT_POOL_ENABLED=true` lets Classify Changes, Repository Policy,
+Secrets Scan, Clippy, Documentation, Cargo Deny, Security Audit and CI Pass
+use any free runner carrying `ci-remus-light` in `ci-trusted-main`. Provision
+that label only on `ci-vm-1441561` (John), `ci-server-jane-1` and
+`ci-server-jane-2`; keep their existing labels. Do not label the retired
+`ci-server-jane` registration or any additional runner. No new runner process
+or extra machine capacity is created.
+
+The pool is opt-in. Missing/false pool configuration preserves the selected-host
+routing above. All existing owner, repository, event and protected-ref checks
+apply before pool selection. Disabled fleet routing, `github-hosted`, and an
+unknown/missing fleet target still select GitHub-hosted runners. Heavy jobs
+continue using the existing selected-host expression; their commands, CPU and
+memory budgets, test selection and coverage threshold are unchanged. A short
+job on John uses its existing one-build-worker/one-test-thread profile.
+
+Pool membership, rather than the preferred-host variable, controls which
+machines can accept pooled jobs. Before draining or disabling one machine,
+remove `ci-remus-light` from its runners (or disable the pool entirely) as well
+as updating host routing. The preferred-host controller does not manage pool
+membership. Removing a label prevents new matching assignments; allow active
+jobs to finish. GitHub chooses any available matching runner, without a Jane
+preference inside the pool.
+
+Activation order: add the label to the three verified runner IDs in the
+restricted group; append the exact new callee SHA to the existing workflow
+allowlist; enable the pool variable; then validate the PR's immutable caller.
+Preserve every existing runner-group permission and workflow entry. Confirm
+light jobs execute on both machines and heavy jobs retain host selection before
+merging. Roll back subsequent scheduling with
+`CI_FLEET_LIGHT_POOL_ENABLED=false`; already assigned jobs keep their runner.
+
 Before checkout, self-hosted jobs verify the non-root identity, protected runner
 files, NoNewPrivileges, fresh storage, empty rootless Docker state, mount options
 and exact cgroup limits. Jane slots each have six CPU equivalents and 6 GiB RAM;
