@@ -75,3 +75,6 @@ service-account*.json
 firebase*.json
 google-services.json
 GoogleService-Info.plist
+
+# Python bytecode from the CI policy tests
+__pycache__/
