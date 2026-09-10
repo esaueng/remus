@@ -88,9 +88,20 @@ claiming new work.
 
 - Workspace lib suites: green locally (17 crates, 0 failures, 7 ignored).
   Corpus Gauntlet, Fuzz Smoke, and OSV: green on their latest scheduled runs.
-- **Mutation Testing: red** (scheduled run 2026-09-06, nine survivors on
-  pre-#307 source). Triage is H1 lane 3; a red proof job is not permission
-  to weaken acceptance checks.
+- **Mutation Testing: red on 2026-09-06, triaged 2026-09-10.** The weekly
+  job mutates only that week's diff (`--in-diff`), so the nine survivors
+  were the week's new code, not the whole scope. Disposition: two were the
+  `bench-internals`-only `BenchPlane` surface, unreachable from any test
+  build and now excluded by `exclude_re` in `.cargo/mutants.toml`; six
+  were real coverage gaps, each pinned by a unit test that was verified to
+  fail under the hand-applied mutant (`HealingReport::total`,
+  `sphere_loop_projected_area`'s circle `v`-term, the coaxial loft radius
+  guard, `wire_surface_alignment`'s sample-count guard, the rolling-ball
+  rational-arc control point, the variable-fillet corner-radius band); one
+  (`tessellate_nurbs_pole_cap_shared`'s `> idx_save` return) is equivalent
+  under the `ring.len() >= 3` guard above it and left as is. The next
+  scheduled run judges the following week's diff; a red there is a new
+  finding, not this one.
 - **`main` CI is cancelled on every fast merge.** `ci.yml` uses
   `cancel-in-progress: true` keyed on `github.ref`, so merge commits #338,
   #339, #341, #346, and #349 never received a completed CI verdict on their
@@ -143,8 +154,7 @@ while B4 and B16 stayed untouched).
    bounded quadric matrices, then the remaining 2.6/2.7 witnesses. Expand
    2.5 through analytic-twin NURBS fixtures; build missing arrangement
    primitives only when a pinned case requires them.
-4. **Qualification lane:** triage the nine mutation survivors on current
-   source; B24 (wildcard-arm conversion in the four densest files); B26
+4. **Qualification lane:** B24 (wildcard-arm conversion in the four densest files); B26
    (boolean invariant proptests); complete B17/B19 matrices and remaining
    B6 evidence.
 5. **Baseline/history lane (after lanes 1–2 have moved):** remaining
