@@ -69,6 +69,8 @@ enum FaceGeom {
         /// membership tested periodically from `v_start`. `None` = the full
         /// tube (whole torus).
         v_band: Option<(f64, f64)>,
+        /// Major-angle band; None denotes a full revolution.
+        u_band: Option<(f64, f64)>,
     },
 }
 
@@ -663,12 +665,23 @@ fn collect_face_geoms(topo: &Topology, solid: SolidId) -> Result<Vec<FaceGeom>, 
             && face.inner_wires().is_empty()
         {
             use std::f64::consts::TAU;
+            if let Some((u_band, v_band)) =
+                super::rectangular_torus_domain(topo, fid, Tolerance::default())
+            {
+                result.push(FaceGeom::Torus {
+                    surface: t.clone(),
+                    u_band: Some(u_band),
+                    v_band: Some(v_band),
+                });
+                continue;
+            }
             let verts = wire_polygon(topo, face.outer_wire())?;
             if verts.len() < 3 {
                 // Degenerate boundary: the untrimmed whole torus.
                 result.push(FaceGeom::Torus {
                     surface: t.clone(),
                     v_band: None,
+                    u_band: None,
                 });
                 continue;
             }
@@ -723,6 +736,7 @@ fn collect_face_geoms(topo: &Topology, solid: SolidId) -> Result<Vec<FaceGeom>, 
                         result.push(FaceGeom::Torus {
                             surface: t.clone(),
                             v_band: None,
+                            u_band: None,
                         });
                         continue;
                     }
@@ -848,9 +862,11 @@ fn ray_geom_crossings(
             v_max,
             u_gap,
         } => ray_cone_crossings(origin, ray_dir, surface, (*v_min, *v_max), *u_gap, tol),
-        FaceGeom::Torus { surface, v_band } => {
-            ray_torus_crossings(origin, ray_dir, surface, *v_band, tol)
-        }
+        FaceGeom::Torus {
+            surface,
+            v_band,
+            u_band,
+        } => ray_torus_crossings(origin, ray_dir, surface, *v_band, *u_band, tol),
     }
 }
 
@@ -1002,6 +1018,7 @@ fn ray_torus_crossings(
     ray_dir: Vec3,
     surface: &remus_math::surfaces::ToroidalSurface,
     v_band: Option<(f64, f64)>,
+    u_band: Option<(f64, f64)>,
     tol: Tolerance,
 ) -> (i32, bool) {
     use std::f64::consts::TAU;
@@ -1025,16 +1042,25 @@ fn ray_torus_crossings(
                 suspicious = true;
             }
         }
-        if let Some((v_start, span)) = v_band {
-            let hit = Point3::new(
-                origin.x() + dir.x() * t,
-                origin.y() + dir.y() * t,
-                origin.z() + dir.z() * t,
-            );
-            let (_, v) = surface.project_point(hit);
-            let vv = (v - v_start).rem_euclid(TAU);
-            suspicious |= vv <= near_angle || (span - vv).abs() <= near_angle;
-            if vv > span {
+        if v_band.is_some() || u_band.is_some() {
+            let hit = origin + dir * t;
+            let (u, v) = surface.project_point(hit);
+            let radial = (surface.major_radius() + surface.minor_radius() * v.cos()).abs();
+            let bands = [
+                (u_band, u, near / radial.max(near)),
+                (v_band, v, near_angle),
+            ];
+            let mut outside = false;
+            for (band, parameter, angular_margin) in bands {
+                if let Some((start, span)) = band {
+                    let position = (parameter - start).rem_euclid(TAU);
+                    suspicious |= position <= angular_margin
+                        || (span - position).abs() <= angular_margin
+                        || TAU - position <= angular_margin;
+                    outside |= position > span;
+                }
+            }
+            if outside {
                 continue;
             }
         }
@@ -1367,6 +1393,66 @@ mod tests {
         ));
         let shell = topo.add_shell(Shell::new(vec![face]).unwrap());
         topo.add_solid(Solid::new(shell, vec![]))
+    }
+
+    #[test]
+    fn torus_ray_crossings_respect_both_patch_angles() {
+        use remus_math::surfaces::ToroidalSurface;
+        use std::f64::consts::PI;
+        for scale in [0.01, 1.0, 100.0] {
+            let surface = ToroidalSurface::with_axis(
+                Point3::new(2.0, -3.0, 4.0),
+                12.0 * scale,
+                3.0 * scale,
+                Vec3::new(1.0, 2.0, 3.0),
+            )
+            .unwrap();
+            for u in [0.8_f64, 6.1] {
+                let radial = surface.x_axis() * u.cos() + surface.y_axis() * u.sin();
+                let origin = surface.center() + radial * surface.major_radius()
+                    - surface.z_axis() * (10.0 * scale);
+                let accepted = Some((u - 0.4, 0.8));
+                let rejected = Some((u + 0.4, 0.8));
+                // At the major radius this ray crosses the tube at v=pi/2
+                // and 3pi/2. Each half-band admits exactly one crossing.
+                for band in [Some((0.0, PI)), Some((PI, PI))] {
+                    assert_eq!(
+                        ray_torus_crossings(
+                            origin,
+                            surface.z_axis(),
+                            &surface,
+                            band,
+                            accepted,
+                            Tolerance::default()
+                        ),
+                        (1, false)
+                    );
+                    assert_eq!(
+                        ray_torus_crossings(
+                            origin,
+                            surface.z_axis(),
+                            &surface,
+                            band,
+                            rejected,
+                            Tolerance::default()
+                        )
+                        .0,
+                        0
+                    );
+                }
+                assert_eq!(
+                    ray_torus_crossings(
+                        origin,
+                        surface.z_axis(),
+                        &surface,
+                        None,
+                        accepted,
+                        Tolerance::default()
+                    ),
+                    (2, false)
+                );
+            }
+        }
     }
 
     #[test]

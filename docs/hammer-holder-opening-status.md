@@ -129,6 +129,31 @@ This is partial candidate coverage, not full acceptance. Open boundaries remain
 around upper rounds, lettering and the rear blend. Strict exact-only acceptance
 is unchanged; the full opening edit remains unsupported.
 
+## Exact classification of rectangular torus patches
+
+The upper round was present but classified outside the opposing holder. Its
+old sample hugged the adjacent cylindrical boundary, and moving the sample
+inward alone did not fix classification: partial torus faces in the opposing
+solid were represented by flat polygons for ray parity.
+
+The classifier now recognizes hole-free, four-circle torus patches whose
+on-surface boundary forms a rectangle in continuously unwrapped parameter
+space. These use exact torus ray intersections filtered by both angular
+intervals. The builder uses the same recognized domain to choose a central
+interior sample. Unsupported trims retain the existing path. No classifier
+vote rule, strict acceptance rule, or operation tolerance is relaxed.
+
+Focused tests cover rotated patches, multiple scales, reversed traversal,
+both angular seams, and exclusion of rays outside the major-angle interval.
+Holed and off-surface boundaries are excluded from recognition.
+
+The hammer raw candidate now has 103 faces and 11 free boundary edges,
+down from 23. Its upper round and lettering boundaries are paired, alongside
+the previously repaired bottom. The fixture regression checks those regions
+and source immutability. Remaining openings surround a sloped planar face and
+the rear blend. This remains partial candidate coverage, not acceptance of
+the complete 46 -> 50 mm operation.
+
 ## Next acceptance gate
 
 Repair the remaining holder-to-holder boolean, then complete both symmetric
