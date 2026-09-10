@@ -57,14 +57,17 @@ class ClassifyCiChangesTests(unittest.TestCase):
         self.assertTrue(result.heavy)
         self.assertFalse(result.wasm)
 
-    def test_committed_package_refresh_is_lightweight(self) -> None:
-        result = MODULE.classify_paths(
-            ["crates/wasm/pkg/remus_wasm_bg.wasm", "crates/wasm-io/pkg/package.json"]
-        )
-        self.assertFalse(result.heavy)
-        self.assertFalse(result.docs)
-        self.assertFalse(result.wasm)
-        self.assertEqual(result.mode, "package")
+    def test_committed_package_paths_cannot_bypass_validation(self) -> None:
+        for force_full in (False, True):
+            result = MODULE.classify_paths(
+                ["crates/wasm/pkg/remus_wasm_bg.wasm", "crates/wasm-io/pkg/package.json"],
+                force_full=force_full,
+            )
+            self.assertTrue(result.heavy)
+            self.assertTrue(result.docs)
+            self.assertTrue(result.full)
+            self.assertTrue(result.wasm)
+            self.assertEqual(result.mode, "full")
 
     def test_package_refresh_with_source_change_is_heavy(self) -> None:
         result = MODULE.classify_paths(
