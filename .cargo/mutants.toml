@@ -34,3 +34,9 @@ examine_globs = [
 
 # Exclude test and bench code from mutation
 exclude_globs = ["**/tests/**", "**/tests.rs", "**/benches/**", "**/examples/**"]
+
+# Benchmark-only helpers compiled under `bench-internals`: no test build
+# includes them, so every mutant there is "missed" by construction (two
+# survivors in the 2026-09-06 run were the `BenchPlane` surface inside
+# `benchmark_plane_pair_walk`).
+exclude_re = ["benchmark_plane_pair_walk"]
