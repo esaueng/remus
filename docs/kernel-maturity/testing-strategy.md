@@ -46,7 +46,13 @@ future builds (versioned schema).
 Standing properties, applied per family as they qualify:
 
 - native/WASM per-operation invariant agreement over the whole batch
-  operation list, generated rather than hand-written (O1.5);
+  operation list, generated rather than hand-written (O1.5). The first bounded
+  slice is `tools/parity/quadric-boolean-matrix.json`: 54 qualified
+  quadric-boolean cells execute through a native runner and an npm-installed
+  release WASM package, with independent geometry oracles before cross-target
+  invariant and serialized-byte comparison. Semantic invariants pass the
+  initial matrix; target-specific raw arena byte identity remains an explicit
+  O1.5 exit gap rather than being hidden by the semantic gate;
 - perturbation stability: a qualification fixture keeps its classification
   or refuses typed under coordinate nudges 1e-13..1e-6 (O2.4);
 
