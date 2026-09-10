@@ -7,6 +7,8 @@
 
 mod analytic;
 mod ray_cast;
+mod torus_patch;
+pub(crate) use torus_patch::rectangular_torus_domain;
 
 pub use analytic::{
     AnalyticClassifier, classify_analytic, classify_analytic_with_tolerance,
