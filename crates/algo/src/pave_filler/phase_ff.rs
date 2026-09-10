@@ -1217,6 +1217,67 @@ enum FaceExtent {
     },
 }
 
+/// Recognize a convex sphere patch bounded by oriented minor great-circle
+/// arcs. Each boundary plane supplies one exact inward half-space.
+fn convex_spherical_patch_normals(
+    topo: &Topology,
+    fid: FaceId,
+    sphere: &remus_math::surfaces::SphericalSurface,
+    tol: Tolerance,
+) -> Result<Option<Vec<Vec3>>, AlgoError> {
+    let face = topo.face(fid)?;
+    if !face.inner_wires().is_empty() {
+        return Ok(None);
+    }
+    let edges = topo.wire(face.outer_wire())?.edges();
+    if edges.len() < 3 {
+        return Ok(None);
+    }
+    let mut normals = Vec::new();
+    let mut arcs = Vec::new();
+    for oe in edges {
+        let edge = topo.edge(oe.edge())?;
+        let EdgeCurve::Circle(circle) = edge.curve() else {
+            return Ok(None);
+        };
+        if (circle.center() - sphere.center()).length() > tol.linear
+            || (circle.radius() - sphere.radius()).abs() > tol.linear
+        {
+            return Ok(None);
+        }
+        let (a, b) =
+            super::helpers::authoritative_edge_domain(edge, oe.edge(), "convex spherical patch")?;
+        let span = b - a;
+        if span.abs() >= std::f64::consts::PI || span.abs() <= tol.angular {
+            return Ok(None);
+        }
+        let sign = if oe.is_forward() {
+            span.signum()
+        } else {
+            -span.signum()
+        };
+        normals.push(circle.normal() * sign);
+        arcs.push((circle, a.min(b), a.max(b)));
+    }
+    // Check the analytic minimum of each arc against every half-space;
+    // endpoint-only or fixed sampling can miss an excursion between samples.
+    for normal in &normals {
+        for &(circle, lo, hi) in &arcs {
+            let signed = |t| (circle.evaluate(t) - sphere.center()).dot(*normal);
+            let minimum_angle = circle
+                .v_axis()
+                .dot(*normal)
+                .atan2(circle.u_axis().dot(*normal))
+                + std::f64::consts::PI;
+            let t = lo + (minimum_angle - lo).rem_euclid(std::f64::consts::TAU);
+            if signed(lo).min(signed(hi)) < -tol.linear || (t <= hi && signed(t) < -tol.linear) {
+                return Ok(None);
+            }
+        }
+    }
+    Ok(Some(normals))
+}
+
 impl FaceExtent {
     fn new(
         topo: &Topology,
@@ -1656,6 +1717,38 @@ fn restrict_curves_to_faces(
     tol: Tolerance,
     junctions: &mut JunctionRegistry,
 ) -> Result<Vec<RawCurve>, AlgoError> {
+    // Prove complete exclusion before the sampled mutual-extent filter. Using
+    // the smaller patch in that filter would incorrectly discard narrow but
+    // real sections between its fixed sample points.
+    let mut sphere_patches = Vec::new();
+    for (fid, surface) in [(fa, surf_a), (fb, surf_b)] {
+        if let FaceSurface::Sphere(sphere) = surface
+            && let Some(normals) = convex_spherical_patch_normals(topo, fid, sphere, tol)?
+        {
+            sphere_patches.push((sphere.center(), normals));
+        }
+    }
+    let raw_curves: Vec<_> = raw_curves
+        .into_iter()
+        .filter(|raw| {
+            let EdgeCurve::Circle(circle) = &raw.curve else {
+                return true;
+            };
+            !sphere_patches.iter().any(|(center, normals)| {
+                normals.iter().any(|normal| {
+                    // The maximum signed distance over the entire carrier circle is
+                    // an upper bound for every stored arc, including periodic trims.
+                    let offset = (circle.center() - *center).dot(*normal);
+                    let amplitude = circle.radius()
+                        * circle
+                            .u_axis()
+                            .dot(*normal)
+                            .hypot(circle.v_axis().dot(*normal));
+                    offset + amplitude < -tol.linear
+                })
+            })
+        })
+        .collect();
     let (Some(ext_a), Some(ext_b)) = (
         FaceExtent::new(topo, fa, surf_a, v_range_a, tol)?,
         FaceExtent::new(topo, fb, surf_b, v_range_b, tol)?,
@@ -6393,6 +6486,100 @@ fn clip_line_to_polygon_general(
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
+
+    #[test]
+    fn convex_sphere_patch_rejects_only_proven_outside_circles() {
+        use remus_math::{curves::Circle3D, surfaces::SphericalSurface};
+        use remus_topology::{
+            face::Face,
+            wire::{OrientedEdge, Wire},
+        };
+        for scale in [0.1, 1.0, 100.0] {
+            for reversed in [false, true] {
+                let mut topo = Topology::new();
+                let center = Point3::new(2.0, -3.0, 4.0);
+                let x = Vec3::new(1.0, 2.0, 3.0).normalize().unwrap();
+                let y = x.cross(Vec3::new(0.0, 0.0, 1.0)).normalize().unwrap();
+                let z = x.cross(y);
+                let axes = [x, y, z];
+                let vertices: Vec<_> = axes
+                    .iter()
+                    .map(|v| topo.add_vertex(Vertex::new(center + *v * scale, 1e-7)))
+                    .collect();
+                let mut edges = Vec::new();
+                for i in 0..3 {
+                    let j = (i + 1) % 3;
+                    let circle =
+                        Circle3D::new_with_ref(center, axes[i].cross(axes[j]), scale, axes[i])
+                            .unwrap();
+                    let (start, end, trim) = if reversed {
+                        (vertices[j], vertices[i], (std::f64::consts::FRAC_PI_2, 0.0))
+                    } else {
+                        (vertices[i], vertices[j], (0.0, std::f64::consts::FRAC_PI_2))
+                    };
+                    let mut edge = Edge::new(start, end, EdgeCurve::Circle(circle));
+                    edge.set_trim(Some(trim));
+                    edges.push(OrientedEdge::new(topo.add_edge(edge), !reversed));
+                }
+                let wire = topo.add_wire(Wire::new(edges, true).unwrap());
+                let sphere = SphericalSurface::new(center, scale).unwrap();
+                let surface = FaceSurface::Sphere(sphere.clone());
+                let mut face = Face::new(wire, vec![], surface.clone());
+                face.set_reversed(reversed);
+                let fid = topo.add_face(face);
+                let tol = Tolerance::default();
+                assert!(
+                    convex_spherical_patch_normals(&topo, fid, &sphere, tol)
+                        .unwrap()
+                        .is_some()
+                );
+                for (offset, expected) in [(-0.5, 0), (0.5, 1)] {
+                    let circle = Circle3D::new_with_ref(
+                        center + x * (offset * scale),
+                        x,
+                        0.75_f64.sqrt() * scale,
+                        y,
+                    )
+                    .unwrap();
+                    let point = circle.evaluate(0.0);
+                    let raw = RawCurve {
+                        bbox: Aabb3::from_points([
+                            center - Vec3::new(scale, scale, scale),
+                            center + Vec3::new(scale, scale, scale),
+                        ]),
+                        curve: EdgeCurve::Circle(circle),
+                        p_start: point,
+                        p_end: point,
+                        t_range: (0.0, std::f64::consts::TAU),
+                    };
+                    let result = restrict_curves_to_faces(
+                        &topo,
+                        fid,
+                        fid,
+                        &surface,
+                        &surface,
+                        None,
+                        None,
+                        vec![raw],
+                        tol,
+                        &mut JunctionRegistry::default(),
+                    )
+                    .unwrap();
+                    assert_eq!(
+                        result.len(),
+                        expected,
+                        "scale={scale} reversed={reversed} offset={offset}"
+                    );
+                }
+                let holed = topo.add_face(Face::new(wire, vec![wire], surface));
+                assert!(
+                    convex_spherical_patch_normals(&topo, holed, &sphere, tol)
+                        .unwrap()
+                        .is_none()
+                );
+            }
+        }
+    }
 
     #[test]
     fn tangent_torus_boundary_keeps_exact_arc_and_rejects_near_misses() {
