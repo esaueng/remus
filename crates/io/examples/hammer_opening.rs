@@ -1,9 +1,9 @@
 //! Replay the exact-only 46 -> 50 mm hammer-holder opening experiment.
 //!
 //! This is a diagnostic, not a supported modeling feature. The current kernel
-//! passes the cut and both left-partition intersections. The following fuse
-//! still fails independent validation. No approximate fallback or relaxed
-//! validation is enabled.
+//! passes the cut, both left-partition intersections and left-side fuse. The
+//! following right-side cut still fails exact acceptance. No approximate
+//! fallback is enabled.
 //!
 //! Run with `cargo run --profile ci-test -p remus-io --example hammer_opening`.
 

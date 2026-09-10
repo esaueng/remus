@@ -271,11 +271,13 @@ fn check_wire_self_intersection_impl(
         }
     }
 
+    let (groups, group_count) = collinear_boundary_groups(topo, wire_id)?;
     let n_edges = edge_segments.len();
     for i in 0..n_edges {
         for j in (i + 2)..n_edges {
             // Skip adjacent edges (first and last are also adjacent in a closed wire).
-            if j == n_edges - 1 && i == 0 {
+            let separation = groups[i].abs_diff(groups[j]);
+            if separation <= 1 || separation + 1 == group_count {
                 continue;
             }
             // A periodic band may reuse exactly one seam in opposite
@@ -338,6 +340,70 @@ fn check_wire_self_intersection_impl(
     Ok(vec![])
 }
 
+/// Treat monotone subdivisions of one straight boundary as one logical edge.
+/// This preserves geometric adjacency without changing the wire or its check
+/// tolerance. Only shared vertices collinear to floating-point roundoff qualify.
+fn collinear_boundary_groups(
+    topo: &Topology,
+    wire_id: WireId,
+) -> Result<(Vec<usize>, usize), CheckError> {
+    use remus_topology::edge::EdgeCurve;
+    fn root(parent: &[usize], mut i: usize) -> usize {
+        while parent[i] != i {
+            i = parent[i];
+        }
+        i
+    }
+    let edges = topo.wire(wire_id)?.edges();
+    let mut parent: Vec<usize> = (0..edges.len()).collect();
+    for i in 0..edges.len() {
+        let j = (i + 1) % edges.len();
+        let a = topo.edge(edges[i].edge())?;
+        let b = topo.edge(edges[j].edge())?;
+        if !matches!(a.curve(), EdgeCurve::Line)
+            || !matches!(b.curve(), EdgeCurve::Line)
+            || edges[i].oriented_end(a) != edges[j].oriented_start(b)
+        {
+            continue;
+        }
+        let start = topo.vertex(edges[i].oriented_start(a))?.point();
+        let mid = topo.vertex(edges[i].oriented_end(a))?.point();
+        let end = topo.vertex(edges[j].oriented_end(b))?.point();
+        let direction = end - start;
+        let length2 = direction.length_squared();
+        if !length2.is_finite() || length2 <= 0.0 {
+            continue;
+        }
+        let fraction = (mid - start).dot(direction) / length2;
+        if !fraction.is_finite() || fraction <= 0.0 || fraction >= 1.0 {
+            continue;
+        }
+        let scale = [start, mid, end]
+            .iter()
+            .flat_map(|p| [p.x().abs(), p.y().abs(), p.z().abs()])
+            .fold(length2.sqrt(), f64::max);
+        let roundoff = 32.0 * f64::EPSILON * scale;
+        if (mid - (start + direction * fraction)).length() > roundoff {
+            continue;
+        }
+        let ri = root(&parent, i);
+        let rj = root(&parent, j);
+        parent[ri.max(rj)] = ri.min(rj);
+    }
+    let mut labels = vec![usize::MAX; edges.len()];
+    let mut count = 0;
+    let mut groups = Vec::with_capacity(edges.len());
+    for i in 0..edges.len() {
+        let r = root(&parent, i);
+        if labels[r] == usize::MAX {
+            labels[r] = count;
+            count += 1;
+        }
+        groups.push(labels[r]);
+    }
+    Ok((groups, count))
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::expect_used, clippy::unwrap_used)]
@@ -350,6 +416,88 @@ mod tests {
     use remus_topology::wire::{OrientedEdge, Wire};
 
     use super::check_wire_self_intersection;
+
+    fn polygon_wire(topo: &mut Topology, points: &[(f64, f64)]) -> remus_topology::wire::WireId {
+        let vertices: Vec<_> = points
+            .iter()
+            .map(|&(x, y)| topo.add_vertex(Vertex::new(Point3::new(x, y, 0.0), 1e-7)))
+            .collect();
+        let edges = (0..vertices.len())
+            .map(|i| {
+                OrientedEdge::new(
+                    topo.add_edge(Edge::new(
+                        vertices[i],
+                        vertices[(i + 1) % vertices.len()],
+                        EdgeCurve::Line,
+                    )),
+                    true,
+                )
+            })
+            .collect();
+        topo.add_wire(Wire::new(edges, true).unwrap())
+    }
+
+    #[test]
+    fn straight_boundary_subdivision_preserves_adjacency() {
+        for rotation in 0..5 {
+            let mut points = vec![
+                (0.0, 0.0),
+                (1.0, 0.0),
+                (1.0, 1.0),
+                (1.0 - 7.75e-7, 1.0),
+                (0.0, 1.0),
+            ];
+            points.rotate_left(rotation);
+            let mut topo = Topology::new();
+            let wire = polygon_wire(&mut topo, &points);
+            assert!(
+                check_wire_self_intersection(&topo, wire, 1e-6)
+                    .unwrap()
+                    .is_empty()
+            );
+            assert_eq!(super::collinear_boundary_groups(&topo, wire).unwrap().1, 4);
+        }
+        let mut topo = Topology::new();
+        let wire = polygon_wire(&mut topo, &[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]);
+        assert!(
+            check_wire_self_intersection(&topo, wire, 1e-6)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn subdivision_does_not_hide_crossings_bends_or_backtracking() {
+        for points in [
+            // Crossing remains non-adjacent even after grouping the split diagonal.
+            vec![(0.0, 0.0), (0.5, 0.5), (1.0, 1.0), (0.0, 1.0), (1.0, 0.0)],
+            // A tiny real bend does not become a straight-boundary exemption.
+            vec![
+                (0.0, 0.0),
+                (1.0, 0.0),
+                (1.0, 1.0),
+                (1.0 - 7.75e-7, 1.0 + 1e-8),
+                (0.0, 1.0),
+            ],
+            // Collinear backtracking is not a monotone subdivision.
+            vec![
+                (0.0, 0.0),
+                (1.0, 0.0),
+                (1.0, 1.0),
+                (1.0 + 7.75e-7, 1.0),
+                (0.0, 1.0),
+            ],
+        ] {
+            let mut topo = Topology::new();
+            let wire = polygon_wire(&mut topo, &points);
+            assert!(
+                !check_wire_self_intersection(&topo, wire, 1e-6)
+                    .unwrap()
+                    .is_empty(),
+                "{points:?}"
+            );
+        }
+    }
 
     #[test]
     fn untrimmed_circle_uses_short_arc_for_crossing_check() {

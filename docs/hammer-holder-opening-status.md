@@ -65,13 +65,14 @@ Run:
 cargo run --profile ci-test -p remus-io --example hammer_opening
 ```
 
-The diagnostic now passes the first cut and both left-partition intersections,
-including the holder translated by -2 mm in X. The subsequent fuse returns an
-exact-quality 179-face candidate, but independent validation rejects it: two
-shared edges have inconsistent orientations and two wires self-intersect. The
-replay stops at that failure. No candidate is accepted by relaxing checks or
-permitting a mesh fallback. The sections below record the earlier repair
-checkpoints and the newly qualified shifted intersection.
+The diagnostic now passes the first cut, both left-partition intersections,
+and the left-side fuse, including the holder translated by -2 mm in X. The
+fuse has 177 faces and passes strict validation, mesh closure, bore preservation
+and STEP round-trip checks. The next operation, cutting the right mask from
+that result, still refuses a 162-face candidate with seven free boundary edges
+and one non-manifold edge. The replay stops at that failure. No approximate
+fallback is permitted. The sections below record the successive repair
+checkpoints.
 
 An equivalent subtraction construction was also examined:
 `current - (mask - translated_source)`. Its first tool cut fails strict sphere
@@ -235,5 +236,29 @@ carriers, both operand orders, reversed parameter ranges, periodic seams, and
 near-miss carriers that must not emit a section.
 
 This qualifies the shifted intersection, not the complete 46 -> 50 mm edit.
-The subsequent fuse is the next repair target, as described above. OpenZCAD's
+The subsequent fuse was qualified by the next repair below. OpenZCAD's
 production kernel pin and AI parameterization features remain unchanged.
+
+
+## Left-side fuse: spherical patches and subdivided straight boundaries
+
+The fuse previously created two full circular sections on spherical patches
+that lie entirely on the other side of their cutting plane. Convex patches
+bounded by minor great-circle arcs now provide inward half-spaces. Recognition
+checks analytic arc extrema against every half-space. A circle is discarded
+only when its maximum signed distance proves that its entire carrier lies
+outside a patch. Unsupported boundaries retain the existing path. The tighter
+patch is deliberately not fed into the fixed-sample extent filter, which could
+miss a narrow but legitimate section.
+
+Two remaining wire-intersection reports came from a straight boundary split
+less than the check tolerance from its corner. The checker now groups monotone,
+collinear line subdivisions for adjacency, using shared topology and a
+floating-point roundoff bound. It does not change the geometry or check
+tolerance. Crossings, genuine bends and backtracking retain their checks.
+
+The left reassembly has 177 faces and passes strict validation, native and
+browser WASM mesh closure, both mounting-bore checks, source immutability,
+partition-volume additivity and STEP round-trip validation/volume checks.
+An existing Euler-characteristic warning remains; it is not suppressed.
+The full reconstruction is still blocked at the following right-side cut.
