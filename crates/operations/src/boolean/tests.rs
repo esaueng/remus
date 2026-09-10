@@ -21,6 +21,26 @@ use crate::test_helpers::assert_volume_near;
 
 use super::*;
 
+/// A boolean under the permissive default context: the mesh fallback may
+/// run, and the test accepts whichever path produced the result. Used by
+/// tests whose geometry is known to need the fallback; the plain `boolean`
+/// entry point refuses those pairs by design (B21).
+fn boolean_allowing_fallback(
+    topo: &mut Topology,
+    op: BooleanOp,
+    a: SolidId,
+    b: SolidId,
+) -> Result<SolidId, crate::OperationsError> {
+    boolean_with_context(
+        topo,
+        op,
+        a,
+        b,
+        &remus_math::context::OperationContext::new(),
+    )
+    .map(|outcome| outcome.solid)
+}
+
 fn add_test_circle_edge(
     topo: &mut Topology,
     start: remus_topology::vertex::VertexId,
@@ -1897,7 +1917,7 @@ fn fuse_body_inside_cavity_does_not_take_false_containment_shortcut() {
     .unwrap();
 
     let hollow_volume = crate::measure::solid_volume(&topo, hollow, 0.01).unwrap();
-    let result = boolean(&mut topo, BooleanOp::Fuse, hollow, insert).unwrap();
+    let result = boolean_allowing_fallback(&mut topo, BooleanOp::Fuse, hollow, insert).unwrap();
     let result_volume = crate::measure::solid_volume(&topo, result, 0.01).unwrap();
     assert!(
         result_volume > hollow_volume + 0.1,
@@ -3134,7 +3154,7 @@ fn fuse_ring_inside_shelled_cylinder() {
     );
 
     // Cut: a disjoint tool removes nothing.
-    let cut = boolean(&mut topo, BooleanOp::Cut, shelled, ring).unwrap();
+    let cut = boolean_allowing_fallback(&mut topo, BooleanOp::Cut, shelled, ring).unwrap();
     let cut_vol = crate::measure::solid_volume(&topo, cut, 0.01).unwrap();
     assert!(
         (cut_vol - shell_vol).abs() / shell_vol < 1e-6,
@@ -3143,7 +3163,8 @@ fn fuse_ring_inside_shelled_cylinder() {
     assert_eq!(edge_health(&topo, cut), (0, 0));
 
     // Intersect: disjoint bodies share nothing.
-    let intersected = boolean(&mut topo, BooleanOp::Intersect, shelled, ring).unwrap();
+    let intersected =
+        boolean_allowing_fallback(&mut topo, BooleanOp::Intersect, shelled, ring).unwrap();
     let int_faces = remus_topology::explorer::solid_faces(&topo, intersected).unwrap();
     assert!(
         int_faces.is_empty(),
@@ -4382,7 +4403,7 @@ fn box_cone_intersect_returns_quarter_cone() {
     let box_solid = crate::primitives::make_box(&mut topo, 2.0, 2.0, 2.0).unwrap();
     let cone = crate::primitives::make_cone(&mut topo, 1.0, 0.0, 2.0).unwrap();
 
-    let solid = boolean(&mut topo, BooleanOp::Intersect, box_solid, cone)
+    let solid = boolean_allowing_fallback(&mut topo, BooleanOp::Intersect, box_solid, cone)
         .expect("box-cone intersect should succeed now the cone tessellates closed");
 
     let shell = topo
