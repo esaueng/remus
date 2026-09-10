@@ -36,6 +36,17 @@ pub trait ParametricSurface {
 
     /// Partial derivative ∂S/∂v at (u, v).
     fn partial_v(&self, u: f64, v: f64) -> Vec3;
+
+    /// Both first partials `(∂S/∂u, ∂S/∂v)` at (u, v).
+    ///
+    /// The default forwards to [`partial_u`](Self::partial_u) and
+    /// [`partial_v`](Self::partial_v); implementations whose partials share
+    /// one evaluation (NURBS) override it so integrators pay for that
+    /// evaluation once. Overrides must return exactly what the two separate
+    /// calls would.
+    fn partials(&self, u: f64, v: f64) -> (Vec3, Vec3) {
+        (self.partial_u(u, v), self.partial_v(u, v))
+    }
 }
 
 /// Unified interface for parametric curve evaluation.
@@ -215,6 +226,14 @@ impl ParametricSurface for NurbsSurface {
     fn partial_v(&self, u: f64, v: f64) -> Vec3 {
         let d = self.derivatives(u, v, 1);
         d[0][1]
+    }
+
+    /// One `derivatives(u, v, 1)` serves both partials; the two entries are
+    /// the same values `partial_u` and `partial_v` compute separately.
+    #[inline]
+    fn partials(&self, u: f64, v: f64) -> (Vec3, Vec3) {
+        let d = self.derivatives(u, v, 1);
+        (d[1][0], d[0][1])
     }
 }
 

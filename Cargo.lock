@@ -2179,6 +2179,7 @@ dependencies = [
 name = "remus-io"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "log",
  "proptest",
  "quick-xml 0.42.0",
