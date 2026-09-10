@@ -3840,10 +3840,13 @@ fn intersect_multi_region_semantically_safe(
         return false;
     };
     let mut distance_checks = 0_usize;
+    let mut classifiers = [
+        crate::classify::RobustClassifier::new(topo, a, 0.05, classify_tol),
+        crate::classify::RobustClassifier::new(topo, b, 0.05, classify_tol),
+    ];
     for &point in &samples {
-        for operand in [a, b] {
-            let classification =
-                crate::classify::classify_point_robust(topo, operand, point, 0.05, classify_tol);
+        for (operand, classifier) in [a, b].into_iter().zip(&mut classifiers) {
+            let classification = classifier.classify(point);
             if matches!(
                 classification,
                 Ok(crate::classify::PointClassification::Inside
