@@ -176,7 +176,7 @@ fn hammer_intersection_preserves_the_closed_lettering_loops() {
 /// Partial candidate regression, not acceptance of the complete opening edit.
 /// The raw GFA candidate still has unrelated open boundaries above its base.
 #[test]
-fn hammer_shifted_intersection_closes_the_bottom_boundary() {
+fn hammer_shifted_intersection_pairs_bottom_round_and_lettering_boundaries() {
     let mut topo = Topology::new();
     let source =
         read_step(include_str!("data/shapr3d_hammer_holder.step"), &mut topo).expect("import")[0];
@@ -206,10 +206,34 @@ fn hammer_shifted_intersection_closes_the_bottom_boundary() {
         }
     }
     let mut bottom_edges = 0;
+    let mut round_edges = 0;
+    let mut lettering_edges = 0;
     for (eid, count) in uses {
         let edge = topo.edge(eid).expect("edge");
         let a = topo.vertex(edge.start()).expect("start").point();
         let b = topo.vertex(edge.end()).expect("end").point();
+        let upper_round = |p: remus_math::vec::Point3| {
+            p.x() >= -17.000_001
+                && p.x() <= -13.999_999
+                && p.y() <= 21.500_001
+                && p.z() >= 47.499_999
+        };
+        if upper_round(a) && upper_round(b) {
+            round_edges += 1;
+            assert_eq!(count, 2, "unpaired upper-round edge: {a:?} -> {b:?}");
+        }
+        let lettering = |p: remus_math::vec::Point3| {
+            p.x() >= -14.000_001
+                && p.x() <= -13.599_999
+                && p.y() >= 17.0
+                && p.y() <= 20.0
+                && p.z() >= 17.0
+                && p.z() <= 19.0
+        };
+        if lettering(a) && lettering(b) {
+            lettering_edges += 1;
+            assert_eq!(count, 2, "unpaired lettering edge: {a:?} -> {b:?}");
+        }
         if (a.z() - 4.5).abs() < 1e-7 && (b.z() - 4.5).abs() < 1e-7 {
             bottom_edges += 1;
             assert_eq!(count, 2, "unpaired bottom edge: {a:?} -> {b:?}");
@@ -219,6 +243,8 @@ fn hammer_shifted_intersection_closes_the_bottom_boundary() {
         bottom_edges > 0,
         "candidate must retain its bottom boundary"
     );
+    assert!(round_edges >= 4, "candidate must retain its upper round");
+    assert!(lettering_edges > 0, "candidate must retain its lettering");
     assert_eq!(
         remus_io::arena_io::serialize_solid(&topo, source).expect("source after"),
         original
