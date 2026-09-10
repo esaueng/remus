@@ -65,15 +65,18 @@ Run:
 cargo run --profile ci-test -p remus-io --example hammer_opening
 ```
 
-The diagnostic now passes the first cut, both left-partition intersections,
-the left-side fuse, the right-side cut and the first right-side intersection.
-The 177-face left fuse and 162-face right cut pass strict validation, mesh
-closure, bore preservation and STEP round-trip checks. The next intersection,
-between the 33-face right partition and the source shifted +2 mm in X, now
-finishes tracing but produces an invalid 35-face candidate with nine free edges
-outlining its missing bottom face. The operations API rejects it and the replay
-stops there. No approximate fallback is permitted. The sections below
-record the successive repair checkpoints.
+The diagnostic now completes all eight exact-only boolean operations for the
+46-to-50 mm opening replay. The shifted right intersection has 36 faces and the
+final reassembly has 194 faces; both pass strict validation and watertight mesh
+checks. Final acceptance covers the 50 mm wall spacing, unchanged 74 mm outer
+width and 58 mm height, both original 5 mm mounting bores, volume conservation,
+retained left-side feature vertices and STEP round-trip validation/volume.
+The input source remains unchanged. No approximate fallback is permitted.
+
+This validates this specific kernel replay. The application still needs an
+editable parameter operation, dimension/face references, history and AI tooling;
+no general imported-model parameterization or range of opening sizes is enabled.
+The sections below record the successive repair checkpoints.
 
 An equivalent subtraction construction was also examined:
 `current - (mask - translated_source)`. Its first tool cut fails strict sphere
@@ -307,10 +310,32 @@ solver iteration limit, residual tolerance or validation rule changes.
 
 Focused tests cover rotated carriers, three scales, shifted angular windows,
 coincident circles, different radii, real overlap, same-side patches and tilted
-axes. The native hammer regression reaches the raw 35-face candidate without
-a convergence failure, requires every remaining free edge to lie on the
-missing bottom at z = 4.5 mm, checks that no edge has more than two face uses,
-and preserves the source. This is candidate-only coverage: nine free edges
-remain, and strict validation must reject it. Browser WASM coverage retains the
-successful partition checks and verifies that the incomplete intersection is
-refused under exact-only policy. Full opening parameterization is not enabled.
+axes. At this checkpoint, the native hammer regression reached a raw 35-face
+candidate without a convergence failure, with all nine free edges around the
+missing bottom at z = 4.5 mm. Strict validation and the exact-only WASM API
+correctly rejected that incomplete candidate. The bottom-face repair below
+replaces this partial checkpoint with complete replay acceptance. Application
+parameterization is not enabled.
+
+## Bottom-face subdivision completes the opening replay
+
+The shifted right intersection's bottom had a connected section chain, but the
+greedy wire walker followed the old concave outline and emitted one region.
+That unsplit region sampled outside the other operand and was discarded,
+leaving nine free bottom edges. The existing planar subdivision recovery was
+restricted to faces with untouched circular holes, so it never ran for this
+hole-free bottom.
+
+The recovery now also handles planar faces without holes. It adopts the DCEL
+subdivision only when it produces strictly more regions with no degenerate,
+self-crossing or nested outer loops. Faces with holes retain their existing
+straight-section/untouched-round-hole eligibility check and original wires.
+No classifier, geometry tolerance or strict acceptance rule changes.
+
+The 36-face shifted intersection and 194-face final fuse now pass the operations
+API in exact-only mode. Native fixture coverage replaces the former invalid
+candidate checkpoint with full reconstruction, dimensional and preservation
+checks, mesh closure and STEP round trips. Focused subdivision tests cover both
+plain and drilled concave faces at three scales and both face orientations,
+conserving area and retaining circular holes. WASM smoke coverage exercises the
+completed reconstruction and STEP round trip through the public API.

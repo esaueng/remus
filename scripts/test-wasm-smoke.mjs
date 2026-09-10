@@ -846,11 +846,25 @@ for (const operation of ['fillet', 'chamfer']) {
   assert.equal(JSON.parse(kernel.validateSolidDetailed(rightInside.solid)).errorCount, 0);
   const [shiftedRight] = Array.from(kernel.deserializeSolids(sourceBytes));
   kernel.transformSolid(shiftedRight, new Float64Array([1, 0, 0, 2, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]));
-  // The native raw-candidate test qualifies the point-contact repair. The
-  // public API must still refuse its open bottom rather than return a solid.
-  assert.throws(() => kernel.booleanWithQuality('intersect', rightInside.solid, shiftedRight, true), /exact-only policy/);
+  const rightCommon = kernel.booleanWithQuality('intersect', rightInside.solid, shiftedRight, true);
+  assert.equal(rightCommon.quality, 'exact');
+  assert.equal(Array.from(kernel.getSolidFaces(rightCommon.solid)).length, 36);
+  assert.equal(JSON.parse(kernel.validateSolidDetailed(rightCommon.solid)).errorCount, 0);
+  const completed = kernel.booleanWithQuality('fuse', rightCut.solid, rightCommon.solid, true);
+  assert.equal(completed.quality, 'exact');
+  const completedStep = io.exportStep(kernel.serializeSolids(new Uint32Array([completed.solid])));
+  const restoredCompleted = Array.from(kernel.deserializeSolids(io.importStep(completedStep)));
+  assert.equal(restoredCompleted.length, 1);
+  for (const solid of [completed.solid, restoredCompleted[0]]) {
+    assert.equal(Array.from(kernel.getSolidFaces(solid)).length, 194);
+    assertCut(solid);
+  }
+  const completedVolume = kernel.volume(completed.solid, 0.01);
+  assert.ok(completedVolume > 0 && completedVolume < fusedVolume);
+  assert.ok(Math.abs(completedVolume - rightVolume - kernel.volume(rightCommon.solid, 0.01)) < completedVolume * 1e-5);
+  assert.ok(Math.abs(kernel.volume(restoredCompleted[0], 0.01) - completedVolume) < completedVolume * 1e-6);
   assert.deepEqual(kernel.serializeSolids(new Uint32Array([source])), sourceBytes);
-  console.log('ok - hammer partitions preserve exact topology; incomplete right intersection stays rejected');
+  console.log('ok - hammer opening replay completes with exact topology, preserved bores and STEP round trip');
 }
 
 // 15. OpenZCAD mounting-bracket cylindrical-face resize and STEP round trip.
