@@ -213,6 +213,19 @@ fn hammer_shifted_intersection_pairs_repaired_boundaries() {
         let edge = topo.edge(eid).expect("edge");
         let a = topo.vertex(edge.start()).expect("start").point();
         let b = topo.vertex(edge.end()).expect("end").point();
+        if count != 2 {
+            // Partial checkpoint: only the still-missing cylindrical strip may
+            // remain open. A future fully closed candidate also satisfies this.
+            let rear_strip = |p: remus_math::vec::Point3| {
+                (-9.000_001..=-6.999_999).contains(&p.x())
+                    && (39.499_999..=42.500_001).contains(&p.y())
+                    && (9.499_999..=12.500_001).contains(&p.z())
+            };
+            assert!(
+                rear_strip(a) && rear_strip(b),
+                "open boundary outside rear strip: {a:?} -> {b:?}"
+            );
+        }
         let slope = |p: remus_math::vec::Point3| {
             p.x() >= -18.000_001
                 && p.x() <= -16.999_999
@@ -265,4 +278,44 @@ fn hammer_shifted_intersection_pairs_repaired_boundaries() {
         remus_io::arena_io::serialize_solid(&topo, source).expect("source after"),
         original
     );
+}
+
+#[test]
+fn hammer_rear_torus_points_are_outside_the_shifted_holder() {
+    use remus_algo::{
+        FaceClass,
+        classifier::{RayCastGeoms, classify_ray_cast_cached},
+    };
+    use remus_math::vec::Point3;
+    let mut topo = Topology::new();
+    let source =
+        read_step(include_str!("data/shapr3d_hammer_holder.step"), &mut topo).expect("import")[0];
+    transform_solid(&mut topo, source, &Mat4::translation(-2.0, 0.0, 0.0)).expect("shift");
+    let geoms = RayCastGeoms::new(&topo, source).expect("classifier");
+    // Points on the original rear round lie in the opening of the translated
+    // holder. Flat polygons substituted for its nonrectangular torus trim
+    // incorrectly count ray crossings here, retaining the original round.
+    for point in [
+        Point3::new(
+            -10.369_114_578_163_55,
+            41.327_440_176_699_69,
+            12.474_994_431_357_405,
+        ),
+        Point3::new(
+            -12.236_284_624_550_887,
+            40.026_861_291_718_77,
+            12.474_994_431_357_405,
+        ),
+        Point3::new(
+            -10.498_752_769_552_034,
+            38.192_908_739_274_17,
+            10.217_747_987_641_948,
+        ),
+    ] {
+        assert_eq!(
+            classify_ray_cast_cached(&geoms, point).expect("classify"),
+            FaceClass::Outside,
+            "{point:?}"
+        );
+    }
 }
