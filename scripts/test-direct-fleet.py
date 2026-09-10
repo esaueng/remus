@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 TEXT = (ROOT / ".github/workflows/fleet-ci.yml").read_text()
 CALLER = (ROOT / ".github/workflows/ci.yml").read_text()
 EXPRESSIONS = re.findall(
-    r"^    runs-on: (?:&fleet-runner )?(\$\{\{ fromJSON\(.+\) \}\})$", TEXT, re.M
+    r"^    runs-on: (?:&fleet(?:-light)?-runner )?(\$\{\{ fromJSON\(.+\) \}\})$", TEXT, re.M
 )
 REPO = re.search(r"github.repository == '([^']+)'", TEXT)[1]
 REPO_ID = int(re.search(r"github.repository_id == '([0-9]+)'", TEXT)[1])
@@ -82,6 +82,7 @@ class DirectFleetTests(unittest.TestCase):
                 )
 
     def test_untrusted_events_never_schedule_on_home_fleet(self):
+        self.variables["CI_FLEET_LIGHT_POOL_ENABLED"] = "true"
         cases = []
         for key, value in [
             ("repository", "outsider/repo"),
@@ -118,6 +119,7 @@ class DirectFleetTests(unittest.TestCase):
                     self.assertIsInstance(evaluate(expression, github, self.variables), str)
 
     def test_protected_main_and_opt_in_fail_closed(self):
+        self.variables["CI_FLEET_LIGHT_POOL_ENABLED"] = "true"
         for event in ("push", "workflow_dispatch"):
             self.github.update(event_name=event, ref="refs/heads/main")
             for expression in EXPRESSIONS:
@@ -133,6 +135,31 @@ class DirectFleetTests(unittest.TestCase):
         for expression in EXPRESSIONS:
             self.assertIsInstance(evaluate(expression, self.github, self.variables), str)
 
+    def test_light_pool_is_opt_in_and_heavy_jobs_keep_host_selection(self):
+        light, heavy = EXPRESSIONS
+        for target in ("ci-server-jane", "ci-server-john"):
+            for enabled in ("true", "false", "", None):
+                variables = dict(self.variables, CI_FLEET_TARGET=target,
+                                 CI_FLEET_LIGHT_POOL_ENABLED=enabled)
+                expected = {"group": "ci-trusted-main", "labels": target}
+                self.assertEqual(evaluate(heavy, self.github, variables), expected)
+                if enabled == "true":
+                    expected = {"group": "ci-trusted-main",
+                                "labels": ["self-hosted", "Linux", "X64", "ci-remus-light"]}
+                self.assertEqual(evaluate(light, self.github, variables), expected)
+
+    def test_only_bounded_light_jobs_use_shared_pool(self):
+        jobs = dict(re.findall(r"^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)", TEXT, re.M | re.S))
+        pooled = {name for name, block in jobs.items() if "fleet-light-runner" in block}
+        self.assertEqual(pooled, {"changes", "repo-policy", "secrets-scan", "clippy",
+                                  "docs", "deny", "audit", "ci-pass"})
+        for name in ("coverage", "wasm", "test", "wasm-no-io", "approx-census",
+                     "msrv", "fuzz-check", "render"):
+            self.assertRegex(jobs[name], r"runs-on: [*&]fleet-runner")
+        # Both schedules enforce the identical owner/event predicate before selecting a host.
+        self.assertEqual(EXPRESSIONS[0].split(" && (vars.CI_FLEET_LIGHT_POOL_ENABLED", 1)[0],
+                         EXPRESSIONS[1].split(" && (vars.CI_FLEET_TARGET", 1)[0])
+
     def test_no_hosted_bootstrap_and_guard_before_checkout(self):
         self.assertNotIn("select-runner.yml", TEXT)
         self.assertNotIn("/routing/v1/target", TEXT)
@@ -144,6 +171,8 @@ class DirectFleetTests(unittest.TestCase):
                 marker in job
                 for marker in (
                     "runs-on: &fleet-runner",
+                    "runs-on: &fleet-light-runner",
+                    "runs-on: *fleet-light-runner",
                     "runs-on: *fleet-runner",
                     "runs-on: ${{ fromJSON(",
                 )
