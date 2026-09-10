@@ -173,9 +173,9 @@ fn hammer_intersection_preserves_the_closed_lettering_loops() {
     assert!(remus_operations::tessellate::welded_mesh_quality(&mesh).is_watertight());
 }
 
-/// The shifted intersection is qualified independently of the later fuse.
+/// Qualify the shifted intersection and its reassembly with the outside partition.
 #[test]
-fn hammer_shifted_intersection_is_strictly_valid() {
+fn hammer_shifted_intersection_and_left_fuse_are_strictly_valid() {
     let mut topo = Topology::new();
     let source =
         read_step(include_str!("data/shapr3d_hammer_holder.step"), &mut topo).expect("import")[0];
@@ -289,6 +289,43 @@ fn hammer_shifted_intersection_is_strictly_valid() {
     assert!(lettering_edges > 0, "candidate must retain its lettering");
     assert_eq!(
         remus_io::arena_io::serialize_solid(&topo, source).expect("source after"),
+        original
+    );
+    // Reattach the edited left partition without introducing off-patch sphere
+    // circles or treating a subdivided straight junction as a crossing.
+    let outside = boolean_with_context(&mut topo, BooleanOp::Cut, source, mask, &context)
+        .expect("outside partition")
+        .solid;
+    let fused = boolean_with_context(&mut topo, BooleanOp::Fuse, outside, candidate, &context)
+        .expect("left reassembly");
+    assert_eq!(fused.quality, BooleanQuality::Exact);
+    assert_eq!(
+        remus_topology::explorer::solid_faces(&topo, fused.solid)
+            .expect("fused faces")
+            .len(),
+        177
+    );
+    assert_valid_mesh(&topo, fused.solid);
+    let fused_step =
+        remus_io::step::writer::write_step(&topo, &[fused.solid]).expect("fused export");
+    let mut fused_topo = Topology::new();
+    let fused_import = read_step(&fused_step, &mut fused_topo).expect("fused reimport");
+    assert_eq!(fused_import.len(), 1);
+    assert_valid_mesh(&fused_topo, fused_import[0]);
+    let fused_volume =
+        remus_operations::measure::solid_volume(&topo, fused.solid, 0.01).expect("fused volume");
+    let outside_volume =
+        remus_operations::measure::solid_volume(&topo, outside, 0.01).expect("outside volume");
+    let round_trip_volume =
+        remus_operations::measure::solid_volume(&fused_topo, fused_import[0], 0.01)
+            .expect("fused restored volume");
+    assert!(
+        (fused_volume - outside_volume - volume).abs() < fused_volume * 1e-5,
+        "partition volumes: {outside_volume} + {volume} -> {fused_volume}"
+    );
+    assert!((round_trip_volume - fused_volume).abs() < fused_volume * 1e-6);
+    assert_eq!(
+        remus_io::arena_io::serialize_solid(&topo, source).expect("source after fuse"),
         original
     );
 }
