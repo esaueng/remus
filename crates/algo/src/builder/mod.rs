@@ -1706,6 +1706,13 @@ fn sample_face_interior(
         )));
     }
 
+    if let Some(((u, du), (v, dv))) =
+        crate::classifier::rectangular_torus_domain(topo, face_id, tol)
+        && let Some(point) = face.surface().evaluate(u + du * 0.5, v + dv * 0.5)
+    {
+        return Ok(point);
+    }
+
     // Periodic faces bounded by closed curves (e.g. an unsplit cylinder
     // lateral wall between two full boundary circles): the closed-edge
     // midpoint lies on a v-extreme of the face, and the tangent-cross-normal
@@ -1995,6 +2002,113 @@ mod tests {
     use super::*;
     use remus_math::vec::Vec3;
     use remus_topology::builder::{make_face_from_wire, make_polygon_wire};
+
+    #[test]
+    fn torus_patch_sample_is_clear_of_its_trimmed_boundaries() {
+        use remus_math::curves::Circle3D;
+        use remus_math::surfaces::ToroidalSurface;
+        use remus_topology::{
+            edge::{Edge, EdgeCurve},
+            face::{Face, FaceSurface},
+            vertex::Vertex,
+            wire::{OrientedEdge, Wire},
+        };
+        for scale in [0.01, 1.0, 100.0] {
+            for (u0, u1, v0, v1) in [(0.0, 1.5, 0.0, 1.5), (5.8, 6.8, 5.9, 6.7)] {
+                let mut topo = Topology::new();
+                let torus = ToroidalSurface::with_axis(
+                    Point3::new(2.0, -3.0, 4.0),
+                    12.0 * scale,
+                    3.0 * scale,
+                    Vec3::new(1.0, 2.0, 3.0),
+                )
+                .unwrap();
+                let surface = FaceSurface::Torus(torus.clone());
+                let major = |v: f64| {
+                    Circle3D::new_with_ref(
+                        torus.center() + torus.z_axis() * (torus.minor_radius() * v.sin()),
+                        torus.z_axis(),
+                        torus.major_radius() + torus.minor_radius() * v.cos(),
+                        torus.x_axis(),
+                    )
+                    .unwrap()
+                };
+                let minor = |u: f64| {
+                    let radial = torus.x_axis() * u.cos() + torus.y_axis() * u.sin();
+                    Circle3D::new_with_ref(
+                        torus.center() + radial * torus.major_radius(),
+                        radial.cross(torus.z_axis()),
+                        torus.minor_radius(),
+                        radial,
+                    )
+                    .unwrap()
+                };
+                let points = [(u0, v0), (u1, v0), (u1, v1), (u0, v1)]
+                    .map(|(u, v)| surface.evaluate(u, v).unwrap());
+                let vertices = points.map(|p| topo.add_vertex(Vertex::new(p, 1e-7)));
+                let curves = [
+                    (major(v0), (u0, u1)),
+                    (minor(u1), (v0, v1)),
+                    (major(v1), (u1, u0)),
+                    (minor(u0), (v1, v0)),
+                ];
+                let edges: Vec<_> = curves
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, (curve, trim))| {
+                        let mut edge =
+                            Edge::new(vertices[i], vertices[(i + 1) % 4], EdgeCurve::Circle(curve));
+                        edge.set_trim(Some(trim));
+                        OrientedEdge::new(topo.add_edge(edge), true)
+                    })
+                    .collect();
+                let reverse: Vec<_> = edges
+                    .iter()
+                    .rev()
+                    .map(|e| OrientedEdge::new(e.edge(), false))
+                    .collect();
+                for winding in [edges, reverse] {
+                    let wire = topo.add_wire(Wire::new(winding, true).unwrap());
+                    let face = topo.add_face(Face::new(wire, vec![], surface.clone()));
+                    let holed = topo.add_face(Face::new(wire, vec![wire], surface.clone()));
+                    assert!(
+                        crate::classifier::rectangular_torus_domain(
+                            &topo,
+                            holed,
+                            Tolerance::default()
+                        )
+                        .is_none()
+                    );
+                    let wrong_surface = FaceSurface::Torus(
+                        ToroidalSurface::with_axis(
+                            torus.center(),
+                            torus.major_radius(),
+                            torus.minor_radius() * 1.1,
+                            torus.z_axis(),
+                        )
+                        .unwrap(),
+                    );
+                    let off_surface = topo.add_face(Face::new(wire, vec![], wrong_surface));
+                    assert!(
+                        crate::classifier::rectangular_torus_domain(
+                            &topo,
+                            off_surface,
+                            Tolerance::default()
+                        )
+                        .is_none()
+                    );
+                    let expected = surface
+                        .evaluate(f64::midpoint(u0, u1), f64::midpoint(v0, v1))
+                        .unwrap();
+                    let actual = sample_face_interior(&topo, face, Tolerance::default()).unwrap();
+                    assert!(
+                        (actual - expected).length() < 1e-7,
+                        "{actual:?} != {expected:?}"
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn sample_face_interior_thin_l_frame_lands_in_strip() {
