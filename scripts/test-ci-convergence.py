@@ -21,24 +21,35 @@ def jobs(text):
 
 
 JOBS = jobs(FLEET)
-HEAVY = {"clippy", "test", "approx-census", "platform-test", "coverage", "msrv",
-         "wasm", "wasm-no-io", "fuzz-check", "render", "deny", "audit"}
+# Tier 1 runs for every heavy change; tier 2 only for main pushes, merge
+# groups, dispatches, and PRs labelled `ci:full`; the package build when the
+# diff touches WASM-affecting paths or tier 2 is selected.
+TIER1 = {"test", "approx-census", "wasm-no-io"}
+TIER2 = {"platform-test", "coverage", "msrv", "fuzz-check", "render", "deny", "audit"}
+PACKAGE = {"wasm"}
+HEAVY = TIER1 | TIER2 | PACKAGE
 ALWAYS = {"changes", "repo-policy", "secrets-scan"}
 
 
 class ConvergenceTests(unittest.TestCase):
-    def complete(self, results, heavy="true", docs="true"):
+    def complete(self, results, heavy="true", docs="true", full=None, wasm=None):
         command = JOBS["ci-pass"].rsplit("        run: |\n", 1)[1]
+        full = heavy if full is None else full
+        wasm = full if wasm is None else wasm
         return subprocess.run(
             ["bash", "-c", command], capture_output=True, text=True,
-            env=dict(os.environ, NEEDS=json.dumps(results), HEAVY=heavy, DOCS=docs),
+            env=dict(os.environ, NEEDS=json.dumps(results), HEAVY=heavy, DOCS=docs,
+                     FULL=full, WASM=wasm),
         ).returncode
 
     def success(self):
         return {name: {"result": "success"} for name in HEAVY | ALWAYS | {"docs"}}
 
     def test_independent_refs_can_run_and_only_same_ref_is_superseded(self):
-        self.assertIn("group: ci-${{ github.ref }}\n  cancel-in-progress: true", CALLER)
+        self.assertIn("group: ci-${{ github.ref }}\n", CALLER)
+        # Only PR runs are superseded; every main push keeps its verdict.
+        self.assertIn("cancel-in-progress: ${{ github.event_name == 'pull_request' }}", CALLER)
+        self.assertNotIn("cancel-in-progress: true", CALLER)
         admission = jobs(CALLER)["checks"]
         self.assertNotIn("concurrency:", admission)
         self.assertNotIn("remus-ci-suite", CALLER)
@@ -51,6 +62,20 @@ class ConvergenceTests(unittest.TestCase):
                 self.assertNotIn("always()", JOBS[name].split("    steps:", 1)[0])
         for name in ALWAYS:
             self.assertNotIn("    needs:", JOBS[name])
+
+    def test_each_job_is_selected_by_its_tier_flag(self):
+        for name, flag in [*((n, "heavy") for n in TIER1), *((n, "full") for n in TIER2),
+                           ("wasm", "wasm"), ("docs", "docs")]:
+            with self.subTest(name=name):
+                header = JOBS[name].split("    steps:", 1)[0]
+                self.assertIn(f"if: needs.changes.outputs.{flag} == 'true'", header)
+        self.assertNotIn("clippy:", FLEET)
+        self.assertIn("cargo clippy --all-targets --all-features -- -D warnings", JOBS["test"])
+        self.assertLess(JOBS["test"].index("cargo clippy"), JOBS["test"].index("cargo nextest run"))
+        self.assertIn("FORCE_FULL: ${{ github.event_name != 'pull_request' || "
+                      "contains(github.event.pull_request.labels.*.name, 'ci:full') }}",
+                      JOBS["changes"])
+        self.assertIn("--head \"$GITHUB_SHA\" $full_flag", JOBS["changes"])
 
     def test_every_required_job_is_in_completion_gate(self):
         names = re.search(r"needs: \[([^]]+)\]", JOBS["ci-pass"])[1]
@@ -68,6 +93,27 @@ class ConvergenceTests(unittest.TestCase):
                     results[name]["result"] = result
                     self.assertNotEqual(self.complete(results), 0)
 
+    def test_pr_tier_can_skip_only_second_tier_and_package_jobs(self):
+        results = self.success()
+        for name in TIER2 | PACKAGE:
+            results[name]["result"] = "skipped"
+        self.assertEqual(self.complete(results, full="false", wasm="false"), 0)
+        # The package build is still required when the classifier selected it.
+        self.assertNotEqual(self.complete(results, full="false", wasm="true"), 0)
+        # Tier 2 stays required whenever it was selected.
+        self.assertNotEqual(self.complete(results, full="true", wasm="false"), 0)
+        for name in TIER1 | ALWAYS | {"docs"}:
+            altered = json.loads(json.dumps(results))
+            altered[name]["result"] = "skipped"
+            with self.subTest(job=name):
+                self.assertNotEqual(self.complete(altered, full="false", wasm="false"), 0)
+        # A wasm-affecting PR runs the package build without tier 2.
+        results["wasm"]["result"] = "success"
+        self.assertEqual(self.complete(results, full="false", wasm="true"), 0)
+        # A tier-2 or package selection without a heavy selection is inconsistent.
+        self.assertNotEqual(self.complete(self.success(), heavy="false", full="true", wasm="true"), 0)
+        self.assertNotEqual(self.complete(self.success(), heavy="false", full="false", wasm="true"), 0)
+
     def test_docs_and_metadata_can_skip_only_unselected_jobs(self):
         results = self.success()
         for name in HEAVY:
@@ -84,12 +130,14 @@ class ConvergenceTests(unittest.TestCase):
     def test_missing_classifier_output_cannot_pass(self):
         for heavy, docs in (("", "true"), ("true", ""), ("invalid", "false")):
             self.assertNotEqual(self.complete(self.success(), heavy, docs), 0)
+        for full, wasm in (("", "true"), ("true", ""), ("invalid", "true"), ("true", "maybe")):
+            self.assertNotEqual(self.complete(self.success(), full=full, wasm=wasm), 0)
 
     def test_required_completion_runs_in_the_trusted_suite(self):
         gate = JOBS["ci-pass"]
         self.assertIn("name: CI Pass", gate)
         self.assertIn("if: always()", gate)
-        self.assertIn("runs-on: *fleet-runner", gate)
+        self.assertIn("runs-on: *fleet-light-runner", gate)
         self.assertNotIn("ci-pass", jobs(CALLER))
         self.assertIn("checks / CI Pass", (ROOT / "docs/owner-pr-ci.md").read_text())
 
@@ -130,7 +178,7 @@ class ConvergenceTests(unittest.TestCase):
         self.assertNotIn("wasm-size", JOBS)
         caller_jobs = jobs(CALLER)
         self.assertIn("needs: checks", caller_jobs["wasm-size"])
-        self.assertIn("needs.checks.outputs.heavy == 'true'", caller_jobs["wasm-size"])
+        self.assertIn("needs.checks.outputs.wasm == 'true'", caller_jobs["wasm-size"])
         self.assertNotIn("wasm-size", JOBS["ci-pass"])
         self.assertIn("pull-requests: read", caller_jobs["checks"])
 

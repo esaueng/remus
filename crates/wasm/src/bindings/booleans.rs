@@ -336,11 +336,11 @@ impl BrepKernel {
     ///
     /// Returns a new solid handle (`u32`).
     ///
-    /// When the exact engine cannot handle the pair the kernel falls back to
-    /// a mesh boolean and logs a `warn` on the `remus_approx` target (visible
-    /// on the JS console through the log bridge); the returned handle then
-    /// carries a mesh, not analytic faces. Use `booleanWithQuality` to have
-    /// that disclosed in the result or refused outright.
+    /// Exact-only: when the exact engine cannot handle the pair this returns a
+    /// typed refusal (category `quality_refused`, `kernelCode`
+    /// `exact_only_unattainable`) instead of silently handing back a mesh. To
+    /// accept an approximate result, call `booleanWithQuality` without
+    /// `exactOnly`; it discloses the quality and deflection it used.
     ///
     /// # Errors
     ///
@@ -373,11 +373,11 @@ impl BrepKernel {
     ///
     /// Returns a new solid handle (`u32`).
     ///
-    /// When the exact engine cannot handle the pair the kernel falls back to
-    /// a mesh boolean and logs a `warn` on the `remus_approx` target (visible
-    /// on the JS console through the log bridge); the returned handle then
-    /// carries a mesh, not analytic faces. Use `booleanWithQuality` to have
-    /// that disclosed in the result or refused outright.
+    /// Exact-only: when the exact engine cannot handle the pair this returns a
+    /// typed refusal (category `quality_refused`, `kernelCode`
+    /// `exact_only_unattainable`) instead of silently handing back a mesh. To
+    /// accept an approximate result, call `booleanWithQuality` without
+    /// `exactOnly`; it discloses the quality and deflection it used.
     ///
     /// # Errors
     ///
@@ -444,7 +444,9 @@ impl BrepKernel {
     /// pairwise in a balanced tree while disjoint groups are merged directly
     /// without a boolean.
     ///
-    /// Returns a new solid handle (`u32`).
+    /// Returns a new solid handle (`u32`). Exact-only, like `fuse`: a
+    /// cluster the exact engine cannot fuse returns the typed
+    /// `exact_only_unattainable` refusal rather than a mesh.
     ///
     /// # Errors
     ///
@@ -464,11 +466,11 @@ impl BrepKernel {
     ///
     /// Returns a new solid handle (`u32`).
     ///
-    /// When the exact engine cannot handle the pair the kernel falls back to
-    /// a mesh boolean and logs a `warn` on the `remus_approx` target (visible
-    /// on the JS console through the log bridge); the returned handle then
-    /// carries a mesh, not analytic faces. Use `booleanWithQuality` to have
-    /// that disclosed in the result or refused outright.
+    /// Exact-only: when the exact engine cannot handle the pair this returns a
+    /// typed refusal (category `quality_refused`, `kernelCode`
+    /// `exact_only_unattainable`) instead of silently handing back a mesh. To
+    /// accept an approximate result, call `booleanWithQuality` without
+    /// `exactOnly`; it discloses the quality and deflection it used.
     ///
     /// # Errors
     ///
@@ -506,6 +508,9 @@ impl BrepKernel {
     /// on the same underlying surface, which keeps face counts low across
     /// chained booleans (e.g. 2871 → ~106 faces on sequential curved-surface
     /// booleans). Pass `false` to keep the raw fragment layout.
+    ///
+    /// Exact-only, like `fuse`: a pair the exact engine cannot handle
+    /// returns the typed `exact_only_unattainable` refusal.
     ///
     /// # Errors
     ///
@@ -564,6 +569,8 @@ impl BrepKernel {
     /// Fuse (union) two solids and return evolution tracking data.
     ///
     /// Returns a JSON string: `{"solid": <u32>, "evolution": {...}}`.
+    /// Exact-only, like `fuse`: a pair the exact engine cannot handle
+    /// returns the typed `exact_only_unattainable` refusal.
     ///
     /// # Errors
     ///

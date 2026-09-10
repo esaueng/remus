@@ -19,7 +19,9 @@ the *queue*; the narrative behind closed rows is `campaign-history.md`. All
 are living documents: update the relevant row in the same PR that changes
 its state. Before claiming anything: `gh pr list --state open` (R6).
 
-- **Drafted:** 2026-08-29, baseline `main` @ `3c232e8`.
+- **Drafted:** 2026-08-29. **Last reconciled:** 2026-09-09 against `main` @
+  `936e7b1` (regenerate with `git rev-parse --short origin/main` when touching
+  §H0; do not hand-type a baseline older than the section it heads).
 - **External K-S1 disposition — tangent-boss operand drop: done (PR #143,
   2026-08-30).** The historical pre-fix sequence returned the unchanged plate
   (19,200 instead of 21,713.274 cubic millimetres); current native and WASM
@@ -74,31 +76,48 @@ its state. Before claiming anything: `gh pr list --state open` (R6).
 
 ### H0 — in flight (verify before duplicating)
 
-Baseline reconciled on 2026-09-09 UTC at `9e0f6c14`. The bounded quadric,
-scale, tangency (#307), quarter-wall (#308), seam (#312), and persistent
-edit/healing integration (#338) work is merged. No PRs were open at inspection.
-The detailed [6.5/B18 audit](evolution-audit.md) records source/test evidence,
-remaining history gaps, and the hosted proof snapshot. Recheck live PRs and
-runs before claiming new work.
+Reconciled 2026-09-09 UTC at `936e7b1` (merges through #349). No PRs were
+open at inspection. The bounded quadric, scale, tangency (#307), quarter-wall
+(#308), seam (#312), persistent edit/healing integration (#338), cylindrical
+blend resize (#346), and zero-radius blend removal (#348) work is merged.
+The detailed [6.5/B18 audit](evolution-audit.md) records source/test
+evidence and remaining history gaps. Recheck live PRs and runs before
+claiming new work.
+
+**Proof gates, as of the reconciliation (verified, not inherited):**
+
+- Workspace lib suites: green locally (17 crates, 0 failures, 7 ignored).
+  Corpus Gauntlet, Fuzz Smoke, and OSV: green on their latest scheduled runs.
+- **Mutation Testing: red** (scheduled run 2026-09-06, nine survivors on
+  pre-#307 source). Triage is H1 lane 3; a red proof job is not permission
+  to weaken acceptance checks.
+- **`main` CI is cancelled on every fast merge.** `ci.yml` uses
+  `cancel-in-progress: true` keyed on `github.ref`, so merge commits #338,
+  #339, #341, #346, and #349 never received a completed CI verdict on their
+  own head; only the newest push in a burst is proven. Fix queued as B22.
+  Until it lands, treat "CI green on main" as "green on the last push in
+  the burst", and re-run the workflow for a specific merge before quoting it.
+
+**Open correctness/API findings from the 2026-09-09 review** (queued as
+§B rows B21–B26): the plain `boolean()` / WASM `fuse`/`cut`/`intersect`
+entry points return a mesh-fallback result with only a `log::warn!` as
+disclosure (B21, closed 2026-09-10); three fillet engines ran under two
+different cascade orders and the Rust facade used a third policy (B23,
+closed 2026-09-10); ~180 wildcard match
+arms over `EdgeCurve`/`FaceSurface` have no lint or CI gate (B24); three
+public offset paths (B25); generative coverage is 15 proptest blocks and 8
+golden files against ~445k lines (B26).
 
 2.4 remains partial pending its integration qualification; 2.6 retains the
-remaining band and anisotropic precision audit. 2.7 now has a merged bounded
-162-cell exact-or-typed contract, including 42 explicit refusals; this does not
-qualify general exact tangency. 6.5 has qualified direct-edit and healing
-history, now including journaled single-cylinder blend resize and zero-radius
-removal on planar supports.
-Broader blend resize, ambiguous boundaries, and later direct-edit geometry still
-prevent full closure. B18 also retains faces-only and unjournaled
-families. Native journaled shell/split and boolean/pattern refusals now restore
-unpublished history; scope preflight validates operands before publishing a
-gap. See the audit's reproducing regressions.
-
-Corpus and fuzz passes are on older source. The mutation report has nine
-survivors requiring current-source triage; latest-baseline CI was pending.
-These are open proof gates, not permission to weaken acceptance checks.
-The previous detailed quadric/tangency checkpoint is preserved in
+remaining band and anisotropic precision audit. 2.7 has a merged bounded
+162-cell exact-or-typed contract, including 42 explicit refusals; this does
+not qualify general exact tangency. 6.5 has qualified direct-edit and
+healing history, including journaled single-cylinder blend resize and
+zero-radius removal on planar supports. Broader blend resize, ambiguous
+boundaries, and later direct-edit geometry still prevent full closure.
+B18 retains faces-only and unjournaled families. The previous detailed
+quadric/tangency checkpoint is preserved in
 [campaign history](campaign-history.md#pre-integration-quadric-and-tangency-checkpoint-archived-2026-09-09).
-
 
 OpenZCAD consumer-roadmap K-S4 (`approx_census` CI enforcement): **done (PR
 #140)**. Its authoritative disposition line remains in planning PR
@@ -106,17 +125,31 @@ esaueng/OpenZCAD#140 so the two repositories retain separate commit streams.
 
 ### H1 — current work queue
 
-1. **Baseline/history lane:** reconcile the 6.5/B18 coverage inventory and
-   close confirmed transaction/history gaps one family per PR. Follow the
+Ordered by consumer impact per line (reprioritized 2026-09-09; the previous
+ordering front-loaded B18 journaling slices, of which nine landed in a row
+while B4 and B16 stayed untouched).
+
+1. **Contract lane (do first, one PR each):** B22 (`main` CI cancellation),
+   then B21 (boolean fallback disclosure by default), then B23 (one fillet
+   cascade policy, in `operations`, shared by WASM and the facade). B21 and
+   B23 are consumer-visible contract changes: changelog entry, both-sides
+   contract tests, OpenZCAD adapter notified in the PR.
+2. **Consumer lane:** B16, one query binding per PR, each deleting a named
+   OpenZCAD adapter heuristic; then B20. Prefer this over any further B18
+   slice until B16 has at least three rows closed.
+3. **Geometry lane (one session at a time in algo/pave-filler):** B4 (v2
+   trimmer, the M5 precondition and the un-refusal path for the two known
+   damaged-success fillet cases), then verify 2.4d against the merged
+   bounded quadric matrices, then the remaining 2.6/2.7 witnesses. Expand
+   2.5 through analytic-twin NURBS fixtures; build missing arrangement
+   primitives only when a pinned case requires them.
+4. **Qualification lane:** triage the nine mutation survivors on current
+   source; B24 (wildcard-arm conversion in the four densest files); B26
+   (boolean invariant proptests); complete B17/B19 matrices and remaining
+   B6 evidence.
+5. **Baseline/history lane (after lanes 1–2 have moved):** remaining
+   6.5/B18 families one per PR, per the
    [audit queue](evolution-audit.md#next-bounded-slices).
-2. **Geometry lane (one session at a time in algo/pave-filler):** verify 2.4d
-   against the merged bounded quadric matrices, then address the remaining
-   2.6/2.7 witnesses. Expand 2.5 through analytic-twin NURBS fixtures; build
-   missing arrangement primitives only when a pinned case requires them.
-3. **Qualification lane:** triage the mutation survivors, complete B17/B19
-   matrices and remaining B6 evidence, or add a B16 query that removes a
-   demonstrated consumer heuristic. Open Kernel Wave A still has release,
-   diagnostics, interchange and documentation obligations in its ledger.
 
 ### H2 — after P-Class 2.4 (the parallelization point)
 
@@ -134,11 +167,21 @@ publication, O5.3b PMI read, O7 hybrid RFC. Bridge: the B12 residue
 
 ### H4 — v1.0
 
-**Definition of v1.0** (the first stable publish, O4.2c): P-Class exit
-benchmarks **B1–B5** green as permanent tests + Open Kernel scoreboard
-claims **S1–S7** live + zero Unsupported-untyped cells in the capability
-matrix + the bridge backlog empty or explicitly re-triaged. Anything
-short of all four publishes as 0.x.
+**Definition of v1.0** (the first stable publish, O4.2c), as four
+countable gates. Each is a number a session can regenerate; quote the
+number, not the adjective.
+
+| Gate | Measure | 2026-09-09 |
+|---|---|---|
+| Exit benchmarks | P-Class B1–B5 green as permanent tests | 0 / 5 |
+| Scoreboard | Open Kernel S1–S7 claims live | 0 / 7 |
+| Capability matrix | cells listed under "Known Unsupported-untyped / Partial cells" in [capability-matrix.md](capability-matrix.md) | 2 named families (plane/cylinder tangency, sliver crossings) |
+| Bridge backlog | §B rows not Done or explicitly re-triaged | 22 of 26 |
+
+Anything short of all four at zero/full publishes as 0.x. Gate 3 was
+previously worded "zero Unsupported-untyped cells" while B1 claimed to be
+the only such cell; the matrix disagrees, so the matrix section is the
+authority from now on.
 
 ### H5 — Core modeling parity (post-v1.0)
 
@@ -178,325 +221,13 @@ leadership discipline (stable corpus, equivalent quality, pinned
 baseline, repeatable results, published losses, always-on gate), at
 least two from the correctness family and one from the browser family.
 
-### Historical direct-edit implementation evidence
+### Merged slice reports (moved to campaign history)
 
-The following slice reports were written before integration. They landed
-through #308/#338; references below to review, next slices, and pending
-integration describe those historical checkpoints. Current disposition and
-remaining obligations are in the [6.5/B18 audit](evolution-audit.md).
-
-Direct-edit follow-up under [P-Class 6.5](p-class-status.md):
-[boundary-aware resizing of partial cylindrical faces](../roadmap/partial-cylinder-resize.md)
-is implemented on its review branch: native and packaged WASM quarter-wall
-resizing/refusal checks pass, and the full workspace passes 4,882 tests.
-General partial walls and journaled direct-edit completion remain open.
-The next slice retains exact edge/vertex correspondence for planar and
-coaxial-bore face moves, with `moveFacesJournaled` direct/batch surfacing.
-Native reference and connectivity regressions and both rebuilt-package suites
-pass. The unchanged parent fails the new reference witness at the first edge.
-Full workspace: 4,888 passed, 13 skipped. Clippy, rustdoc, and the unchanged
-52-row approximation census pass. The journaled binding
-now applies the same face-count and topology-work preflights as `moveFaces`;
-regressions cover over-limit selections and a valid 500-sided prism. Both rebuilt WASM
-package suites and the full native suite pass with these preflights. This does not close the
-blend-boundary, radius-edit, replacement, draft, or delete/heal history cells.
-
-Surface-replacement history is the next review slice: `replace_surface_journaled`
-and direct/batch `replaceSurfaceJournaled` retain construction face, edge, and
-vertex identities through planar and qualified coaxial-cylinder replacements.
-Native tilt-then-bore composition and refusal tests pass. Rebuilt-package tests
-preserve every reference through plane and imported quarter-wall sequences,
-including arena save/restore with handle remapping, STEP geometry round trips,
-and collision rollback. The binding preserves the established topology-work
-limit. Final qualification: 4,894 workspace tests passed, 13 skipped; both
-rebuilt WASM package suites, Clippy, rustdoc, and the 52-row census pass.
-
-Blended-move boundary history is the next slice. Rigid translation retains the
-actual copy maps; sharp-support reconstruction emits boundary history only when
-construction face identities uniquely determine edges, vertices, and outer/hole
-wire cycles. Ambiguous periodic boundaries retain explicit unresolved history.
-The unchanged parent fails native and packaged reference witnesses. Successive
-bored-cap moves, both construction paths, and the periodic ambiguity refusal
-pass focused native tests. Final qualification: 4,896 workspace tests passed,
-13 skipped; both rebuilt WASM package suites, Clippy, rustdoc, and the unchanged
-52-row census pass.
-
-Cylindrical radius history is the current review slice. The native
-`resize_cylindrical_face_journaled` and direct/batch
-`resizeCylindricalFaceJournaled` entries preserve qualified bore and quarter-wall
-replacement maps. Boss edits compose Boolean and unification construction
-history, preserving cap splits, generated subdivision boundaries, and explicit
-deletions when a later edit consumes them. Unique oriented boundary
-correspondence is required; ambiguous or inferred lineage stays unresolved.
-Focused native tests pass for successive bore/boss edits, four rigid placements,
-small/large scales, every original and result entity reference, and rollback.
-A tangent bore is now refused because its new contact changes the adjacency
-graph. STEP import now certifies a declared full-turn cylindrical p-curve
-against the authoritative 3D circle traversal, preserving periodic endpoints
-without accepting extra turns or mismatched curves. All 189 reader tests pass.
-Both rebuilt WASM package suites pass the new direct/batch bore, boss, and
-quarter-wall reference, arena, STEP, and rollback matrix. Final all-features
-qualification: 4,903 passed, 13 skipped; two process-leak warnings in existing
-facade tests did not reproduce in isolated checks. Clippy, rustdoc, mdBook,
-crate boundaries, and the unchanged 52-row census pass.
-
-Draft boundary history is the current qualification slice. The existing native
-`draft_journaled` now records a complete, unique construction boundary map and
-wraps geometry plus journal recording in one transaction. Plain and bored-box
-sequences retain every original entity reference at three scales and two rigid
-placements. Invalid and folding drafts restore state; a failed call also leaves
-an existing unjournaled mutation gap unpublished until the next successful
-operation. The additive `draftJournaled` JS API uses explicit degree units for
-both direct and batch calls (`angleDegrees` in batch). Both rebuilt-package
-suites pass reference retention, arena remapping, and rollback. STEP round trips
-pass except the 10,000 mm bored-box cells: their 1,000 mm circular rim exceeds
-the existing fixed importer sampling budget on both the unchanged source and
-drafted result. Those refusals are covered explicitly without changing import
-tolerances or resource limits. Final all-features workspace qualification passes
-4,907 tests with 13 skipped and no process-leak warnings; the subsequently added
-mutation-gap rollback regression also passes separately with all features.
-Clippy, rustdoc, doc tests, mdBook, and the unchanged 52-row census pass.
-Curved-face draft and ambiguous boundary correspondence remain separate open cells.
-
-Defeature entity history is the next qualification slice. The existing native
-`defeature_journaled` wrapper now records retained, merged, and deleted boundary
-identities transactionally, with additive direct/batch `defeatureJournaled` JS
-bindings. Capping carries actual copy maps; planar reconstruction carries vertex
-source groups through collapsed corners and captures assembly allocations before
-refinement. Closed plane/cylinder and cylinder/cone bands carry explicit contact
-and seam replacement maps. Unqualified refinement or seam correspondence remains
-unresolved. Native reference, analytic-volume, and rollback witnesses pass. The focused
-packaged matrix passes 30 direct/batch cases, including STEP-imported sources,
-arena restoration, and subsequent draft edits. Existing fillet/chamfer journal
-anchors expose faces only; defeature output tests cover all entity kinds. The
-10x cylinder/cone input is an exact scaled unit fixture: direct creation of that
-fillet reproduces a wire self-intersection refusal on the unchanged parent and
-remains a separate geometry issue. Both complete rebuilt-package suites pass. Final all-features workspace
-qualification passes 4,914 tests with 13 skipped and no process-leak warnings.
-Clippy, rustdoc, doc tests, mdBook, boundaries, and the unchanged 52-row census pass. General healing pipeline history remains open.
-
-### Correctness follow-up: curved hole winding (#278)
-
-Cut/intersect assembly now compares multi-opening cylinder wires in
-seam-unwrapped UV and preserves reversed coedge p-curves. Periodic
-same-wound holes are validation errors. The cross-drilled shaft regression
-covers raw GFA and public booleans across scales and bore angles, STEP
-round trips, and the WASM render/measure matrix.
-
-This exposed a false success in the cross-drilled rim fillet: its convex
-edge received added material, and the malformed input had suppressed the
-volume-sign gate. The corrected input now receives a transactional refusal.
-Correct-side curved rim assembly remains B4/M5 work; this case is not a
-qualified blend success.
-
-### Correctness follow-up: wide spherical caps (#285)
-
-Exact circular rims now enable the shared latitude-cap tessellator without
-requiring a second trimmed face on the same sphere. Rim traversal selects
-the retained pole, including caps larger than a hemisphere. The primitive
-polygon-equator path stays unchanged. `regress_wide_sphere_cap.rs` checks
-small and large caps, the radius-9/cut-7.5 ball-stud case, scales, rigid
-transforms, two deflections, manifold meshes, closed-form volume, standalone
-face area, and STEP. The packaged WASM consumer replays the generated
-wide-cap STEP fixtures through the translator and kernel, checking
-volume and direct/batch mesh quality, including the explicit doubled pole seam. Equal-axis ellipse representations of
-circular rims use the same verified path.
-This qualification covers circular rims with or without one doubled pole
-seam; arbitrary non-circular trims are not included.
-
-
-### Healing entity history — merged in #338 (historical evidence)
-
-The next B18 slice adds native `fix_shape_journaled` and
-`heal_pipeline_journaled`, plus direct/batch `fixShapeWithConfigJournaled`
-and `runHealPipelineJournaled`. Both JS calls return the existing verified
-repair report with an added journal `op`. Batch arguments are `solid` plus
-`configJson` (a JSON string) or `steps` (an array of operator names).
-
-Explicit `ReShape` replacements compose over each pipeline step's actual
-input/output entity scope. Identity survives only while the same entity is
-still reachable. Splits and converging replacements compose; explicit removal
-records deletion. Missing targets, unrecorded replacements, and newly created
-entities without construction records stay unresolved. Contradictory live-source
-claims and replacement cycles refuse transactionally. Repair reports, both
-validation gates, operator tolerances, and rollback remain authoritative.
-
-This does not complete the healing defect matrix or all operator attribution.
-`unify_same_domain`, `sew_shells`, `remove_internal_wires`, and
-`split_common_vertex` do not currently expose complete replacement records;
-their untracked changes remain unresolved. Geometry conversions preserve
-surviving identities. `fix_shape` exposes its private repair context separately
-so composing history does not change another operator's working tolerance.
-
-Native witnesses cover merged vertices, multi-step repair, later-step rollback,
-split/merge/delete composition, unknown history, and cycle refusal. Direct/batch
-binding witnesses preserve all entity references across three scales, arena
-restore into a populated kernel, and subsequent draft. The broad all-features
-run passes 4,926 tests (13 skipped). A subsequent compatibility fix restores the
-ordinary pipeline's original custom-operator dispatch; its 21 journal tests and
-full-workspace Clippy pass. Both final optimized packages pass smoke and
-installed-tarball consumer suites, including 12 damaged-box repair cells with
-reported actions, eight repaired vertices, persistent references, arena/STEP,
-and later draft. Final all-features affected qualification passes 113 tests. One process-leak
-warning in `model_owns_context_topology_and_journal` does not reproduce in its
-isolated check; the broad run has no leak warnings. This slice is not yet a
-merged claim.
-
-### Same-domain unification history — merged in #338 (historical evidence)
-
-The next B18 increment records actual source-face groups and ordered edge runs
-inside the existing healing unifier. `unify_same_domain_with_history` is additive;
-the ordinary API keeps its existing behavior and tolerances. Each rejected phase
-discards its own records. A closed split-box witness proves that the edge phase
-can revert while retaining the successful face merge and its history.
-
-The healing pipeline now attributes single-output merge groups and committed
-edge runs. Shared internal edges consumed by a face group are recorded as deleted
-only when no result-shell use remains. Vertices consumed by those edges or merged
-runs are deleted only when absent from the complete result solid. A four-triangle
-box-face witness preserves all surviving references and explicitly deletes four
-spokes and the unused center across three scales, populated arena restore,
-repeated unification, and a later draft.
-
-A follow-on B18 increment traces multiple output regions through source-wire
-components and canceled shared edges. A pinched source can contribute to both
-regions while its neighbors contribute only to their own region; fully interior
-source faces inherit their connected region even without surviving boundary
-edges. The collector allocates no topology and requires complete boundary and
-component accounting. Pinched sources with holes remain unresolved until hole
-ownership is established. Low-level open repair fixtures cover this tracing and
-pipeline history; they do not qualify closed-solid acceptance. The unifier's
-existing outer-shell scope is
-unchanged; cavity unification and broader multi-region qualification remain
-open B18 cells. The compiled-package regression reproduces `unresolvedAcrossOperation` on the preceding package;
-both rebuilt optimized packages now pass smoke and installed-tarball consumer
-suites, including all six direct/batch unification cells. Workspace Clippy,
-rustdoc, doctests, mdBook, boundary checks, and the unchanged 52-row census pass.
-The full all-features native run passes 4,932 tests (13 skipped), with no
-process-leak warnings. The final test-fixture boundary API correction also passes
-all 140 healing tests. The rebuilt kernel grows by 12,090 bytes; the translator
-binary is unchanged. This increment is qualified locally, not yet merged.
-
-### Sewing entity history — merged in #338 (historical evidence)
-
-The next B18 increment records the edge redirects and final vertex representatives
-committed by shell sewing. `sew_shell_with_history` returns a `SewHistory` alongside
-the existing counted report; the ordinary API keeps its geometry, tolerances,
-curve-agreement checks, ambiguity refusals, and rollback. Records are produced
-only after boundary and vertex updates succeed. The pipeline attributes consumed
-sources only when they are absent from the complete result solid; sources still
-used by another shell retain their live identity.
-
-Native witnesses cover all 12 edge joins and 16 vertex joins of a disjoint-face
-cube, ordinary-operation parity, repeated no-op sewing, and refusal without
-replacement claims for mismatched curves or ambiguous partners. A shared-inner-
-patch fixture tests retained-source identity without claiming closed-solid
-qualification. A separate verified three-scale box witness preserves every
-reference through sewing, populated arena restore, and later draft; a deliberately
-failing later operator proves topology and journal rollback after sewing.
-
-The direct/batch WASM regression uses explicit construction anchors in a legacy
-arena fixture and reproduces `unresolvedAcrossOperation` on the preceding package.
-Both rebuilt optimized packages pass smoke and installed-tarball consumer
-suites, including all six direct/batch sewing cells. Workspace Clippy, rustdoc,
-doctests, mdBook, boundary checks, and the unchanged 52-row census pass. The
-kernel grows by 12,122 bytes; the translator binary is unchanged. The full
-all-features native run passes 4,935 tests (13 skipped), with no leak warnings.
-This increment is qualified locally, not yet merged. It does not extend sewing
-to cavity shells or close the broader B17 repair matrix.
-
-### Inner-wire removal history — merged in #338 (historical evidence)
-
-The next B18 increment records boundary entities consumed by
-`remove_internal_wires`. The additive `remove_internal_wires_with_history` API
-captures candidates from the actual removed wires and excludes edges and vertices
-still reachable in any result shell. The journaled pipeline records the remaining
-entities as deleted. Shared boundaries and surviving faces retain their identity;
-the ordinary removal policy and cavity traversal are unchanged.
-
-A three-scale open-hole repair witness becomes a verified closed cube with eight
-explicitly deleted edge/vertex references and all 26 surviving references bound.
-Arena restore, repeated removal, later draft, and pipeline rollback retain that
-contract. Low-level tests cover cavity wires, shared edges and vertices, and
-ordinary-operation parity. Removing loops from a valid through-bore remains a
-typed refusal with unchanged topology and journal in six direct/batch scale cells.
-The preceding compiled package reproduces unresolved consumed references. Both
-rebuilt optimized packages pass smoke and installed-tarball consumer suites,
-including all six inner-wire cells. Workspace Clippy, rustdoc, doctests, mdBook,
-crate boundaries, and the unchanged 52-row census pass. The kernel grows by
-11,512 bytes; the translator is unchanged. The full all-features native run passes
-4,937 tests (13 skipped), with no leak warnings. This increment is qualified
-locally, not yet merged.
-
-### Common-vertex split history — merged in #338 (historical evidence)
-
-The next B18 increment records the retained source and actual allocated vertices
-from `split_common_vertex`, including disconnected fans across cavity shells.
-An additive history API captures completed endpoint changes; its `ReShape`
-metadata does not redirect edges when applied. History traversal accepts direct
-self-retention in a split while rejecting cross-entity cycles and conflicting
-pending vertex actions. The existing split threshold and geometry are unchanged.
-
-Low-level pipeline tests cover all eleven descendants of an over-connected
-vertex, repeated no-op execution, and ordinary-operation count parity. Naming
-assembly returns all construction descendants and preserves them through a
-populated arena restore and later identity step. These fixtures exercise lineage;
-they do not establish a new closed-solid repair capability. Three-scale open-fan
-fixtures remain typed refusals at the verified boundary, with exact topology and
-journal rollback both after validation refusal and after a later operator fails.
-Six direct/batch compiled-package cells preserve those refusals. All 4,943 native tests pass (13 skipped), and both optimized WASM packages pass
-smoke and installed-tarball consumer checks. This increment is not yet merged
-and does not close the B17 repair matrix.
-
-### Wireframe boundary repair — merged in #338 (historical evidence)
-
-The disconnected-cube regression reproduced `fix_wireframe` reporting twelve
-repairs while retaining all twenty-four free edges. The fixer now uses the
-existing shell-sewing candidate checks and boundary rewrites, and reports the
-actual remaining free edges. Coincident chord/arc endpoints and ambiguous
-partners remain refused. No tolerance changes are introduced; the existing
-interior-sampling criterion is retained and is not a universal curve-equality
-proof.
-
-The pipeline repairs outer and cavity shells separately and records committed
-edge/vertex replacements. Local tests cover closure, connected wire identities,
-repeated no-op execution, three-scale journal references, populated arena
-restore, later draft, and rollback after a subsequent refusal. The two-shell
-fixture isolates traversal and lineage rather than cavity containment.
-All 4,945 native tests pass (13 skipped), and both optimized WASM packages pass
-smoke and installed-tarball consumer checks, including twelve sewing/wireframe
-direct/batch scale cells. This increment is not yet merged. B17 stays open.
-
-### Disabled repair modes — merged in #338 (historical evidence)
-
-The wireframe, common-vertex split, and small-face removal APIs now honor their existing `Off`
-configuration, returning no repair actions or history. A disconnected-cube
-regression reproduced twelve wireframe repairs despite `Off`. Active repair
-behavior and the general orchestrator's enabled fix set are unchanged. Local
-healing tests pass, as do all 4,946 workspace tests (13 skipped) and both
-optimized packages with smoke and installed-tarball consumer checks. One
-nextest lingering-handle warning did not reproduce in an isolated rerun.
-This increment is not yet merged.
-
-### Cavity duplicate repair — merged in #338 (historical evidence)
-
-The duplicate-face pass now compares eligible planar polygon faces within each
-outer or cavity shell. It preserves coincident faces in distinct shells and
-refuses a duplicate removal that would also remove the same face identity from
-another shell. The existing same-winding, straight-edge, unperforated-face
-eligibility and tolerances are unchanged.
-
-The failing cavity regression now repairs one duplicate. A 54-cell native matrix
-crosses three scales, outer/cavity shells, zero/one/three duplicate faces, and
-Off/Auto/On policies. Accepted repairs retain material volume, disclose exact
-duplicate counts, resolve surviving face references, and record deletions. Off
-with duplicates produces a typed validation refusal and byte-identical arena
-and journal rollback. All 26 journal tests and scoped Clippy pass after this
-expansion. Shared-identity refusal and all 151 healing tests pass. All 4,949
-workspace tests pass (13 skipped); one harness leak warning does not reproduce
-in isolation. Optimized kernel/translator builds, smoke tests, installed-package
-consumers, lint, boundaries, census, rustdoc, doctests, and mdBook pass. B17 stays
-open: this qualifies cavity duplicate repair, not the full defect matrix.
+The direct-edit (#308/#338), healing (#338), curved-hole-winding (#278), and
+wide-spherical-cap (#285) slice reports that used to sit here are archived in
+[campaign-history.md](campaign-history.md#direct-edit-healing-and-correctness-slice-reports-archived-2026-09-09).
+Current obligations are in the [6.5/B18 audit](evolution-audit.md) and the
+§B rows below; nothing in the archive is an open claim.
 
 ## §B Bridge backlog — owned by neither program
 
@@ -509,7 +240,7 @@ P-Class 2.3 · conic boolean cells = O2.2 · offset self-intersection = 5.7
 
 | ID | Item | Where | Size | Why it matters | State |
 |---|---|---|---|---|---|
-| B1 | **Healing disclosure typing** — the matrix's only named Unsupported-untyped cell: permissive healing can mask an invalid result as valid. Type every repair (report what changed, refuse to claim validity it didn't verify); both-sides tests. | `heal/src/fix/`, `check/src/validate/` | M | The last untyped silent-failure path in the kernel; highest correctness value per line. Do first in the qualification lane. | **Done (2026-09-03, PR #243):** fixer results enumerate counted repair kinds and typed declined repairs; L2 `OK` explicitly means only “no fixer action,” never validity. Operations, facade verified mode, configurable direct WASM, named pipelines, and additive detailed direct/batch WASM surfaces commit only after independent operations/check validation. Invalid and unverifiable results return stable typed refusals with attempted repairs and roll back. Native and WASM both-sides regressions pin verified success and refusal. |
+| B1 | **Healing disclosure typing** — the matrix's only named Unsupported-untyped *healing* cell (the matrix still lists tangency and sliver families; see H4): permissive healing can mask an invalid result as valid. Type every repair (report what changed, refuse to claim validity it didn't verify); both-sides tests. | `heal/src/fix/`, `check/src/validate/` | M | The last untyped silent-failure path in the kernel; highest correctness value per line. Do first in the qualification lane. | **Done (2026-09-03, PR #243):** fixer results enumerate counted repair kinds and typed declined repairs; L2 `OK` explicitly means only “no fixer action,” never validity. Operations, facade verified mode, configurable direct WASM, named pipelines, and additive detailed direct/batch WASM surfaces commit only after independent operations/check validation. Invalid and unverifiable results return stable typed refusals with attempted repairs and roll back. Native and WASM both-sides regressions pin verified success and refusal. |
 | B2 | **Boolean scale residuals** — the through-tool family now returns exact material at 1e-5 and 1e6; straight-edge refinement and local planar bands are qualified by 72 operator/scale/placement cells. | `algo` bands | M | Feeds P-Class 2.6; remaining dimensional and curved-band work is tracked in [the audit](scale-band-audit.md). | Partial — named matrix passes; broader audit remains |
 | B3 | **Closed-rim chamfers** — cone-frustum band mirroring the validated toroidal fillet assembler; closed-form volume oracle. Stabilization C1.2. | `blend`, `operations/src/chamfer.rs` | M | Exact surfaces, cheap, passes chase filter 1; unblocks resize_blend cylinder/cone (C2). | Open |
 | B4 | **v2 walking-trimmer completion** — the four named gaps: keep-side hint, shared contact edges, end-cap notch trim, chamfer external-tangent branch. Stabilization C1.3. | `blend/src/trimmer.rs` | M | Critical path for v2 walker parity → legacy engine retirement (M5 precondition). | Open |
@@ -522,21 +253,27 @@ P-Class 2.3 · conic boolean cells = O2.2 · offset self-intersection = 5.7
 | B11 | **Small hygiene set** — `log::debug!` false-zero in `fill_images_faces.rs` (diagnostic-infra bug); deterministic STEP entity ordering; heal `fix_duplicate_faces` winding-blind comparison; plane×plane sampled in-both exact upgrade; `n_fine` clamp hazard note→guard. | various | S each | Cheap, each has already cost or will cost a debugging session. | **Partial (2026-09-03, PR #239):** STEP export now canonicalizes unordered face, void-shell, and hole-loop aggregates while preserving semantic coedge traversal order; byte-equality regressions cover reordered faces and void shells. Remaining: false-zero diagnostic, winding-aware duplicate-face healing, plane×plane exact upgrade, and `n_fine` guard. |
 | B12 | **Holes on non-planar section caps** — annular Coons or cap-then-subtract vs extruded-annulus ground truth (stabilization B2.2). | `operations/src/cap.rs`, `fill_face.rs` | M | Largest remaining non-planar-cap value with clean ground truth. H3, with M7 cap work. | **Partial (2026-09-04, PR #252):** sweep and pipe caps preserve disjoint rectangular iso-parametric holes on four-sided bilinear caps, matched against an independently extruded annulus by converged volume, manifold B-Rep, watertight mesh, classification, and direct/batch WASM. Off-surface, curved, touching, and n-sided holed trims refuse typed; loft-hole correspondence and holed partial revolutions remain Unsupported-typed and ride M7's cap work. |
 | B13 | **STEP inner-shell (voids) export** — emit and read `BREP_WITH_VOIDS`, preserving cavity shell count and volume. | `io/src/step/{writer,reader}.rs` | S–M | Round-trip honesty for hollow parts; gauntlet round-trip stage will hit it. | Complete (2026-09-04): one- and two-void regressions verify single-solid round trips, shell counts, and volume. |
-| B15 | **Cut/intersect pocket-face orientation on cylinder walls** | `crates/operations/tests/regress_parallel_boss_band_sections.rs`, `algo` assembly | M | **Done (2026-09-04, PR #255):** non-fuse assembly normalizes selected cylinder outer/inner wire winding before edge merge. Box and cylinder tools on both wall sides pass exact cut/intersect, dual validation, closed-form volume, material classification, and welded-mesh orientation oracles. The formerly ignored regression is permanent coverage. | Done |
 | B14 | **Render promotion track** — Experimental→Beta after a contract-stable release cycle (stabilization C4 residue); outside both programs. | `render` | S (time-gated) | Cleans the last stabilization row. | Open |
+| B15 | **Cut/intersect pocket-face orientation on cylinder walls** | `crates/operations/tests/regress_parallel_boss_band_sections.rs`, `algo` assembly | M | **Done (2026-09-04, PR #255):** non-fuse assembly normalizes selected cylinder outer/inner wire winding before edge merge. Box and cylinder tools on both wall sides pass exact cut/intersect, dual validation, closed-form volume, material classification, and welded-mesh orientation oracles. The formerly ignored regression is permanent coverage. | Done |
 | B16 | **Consumer topology-query API set** — one binding per OpenZCAD heuristic it currently reimplements (its roadmap C2): trimmed edge parameter domain, face material sense, ordered wire traversal, per-edge convexity, sphere-patch identity, seam-edge parity, `maxFilletRadius(solid, edges)`, batched `classifyPoint`, per-edge ids in `meshEdgesAll`; plus the GCS qualification matrix (constraint type × system state × scale, nonconvergence budget) from the P-Class §6 inherited queue. Each: exact, typed refusal on foreign handles, direct + batch WASM, contract test. Added 2026-09-04 by the [industrial-parity overlay](industrial-parity.md) (rows IP-15.9, IP-9.3, IP-10.3, IP-13.1/13.4). | `wasm/bindings/query.rs`, `batch.rs`, `operations/src/query.rs`, `sketch/`, `operations/tests/qualify_gcs.rs` (new) | S each | Every row retires an adapter-side heuristic; highest OpenZCAD impact per line. Exit: the named heuristic deleted from the consumer's adapter (recorded in the PR), matrix green. | Open |
 | B17 | **Healing defect-class qualification matrix** — a generated defect class × severity × repair policy × scale matrix per fixer (wire order/closure/gaps/small edges, face orientation/small faces, seams, shell orientation/sewing/free bounds, duplicates, continuity splits, representation conversion), plus an operand self-interference report for booleans and the faceted-import sew/unify contract (issue #244). Every cell: verified repair with counted disclosure, or typed refusal; both sides. Added 2026-09-04 by the overlay (rows IP-8.3, IP-3.8, IP-8.6). | `heal/`, `operations/src/heal.rs`, `operations/tests/qualify_heal.rs` (new), `stl/import.rs` | M (S per fixer) | The family is Qualified only at the B1 boundary; the reference kernel's healing breadth is its strongest documented area. Exit: every fixer has a matrix; #244 fixture green; self-interference report typed on a self-touching corpus. | Open |
 | B18 | **Evolution completeness audit** — every topology-producing family reports total attribution or a typed unresolved record: unify same-domain (`unify_with_evolution`, OpenZCAD C1's top ask), sew, sweep/loft/revolve/extrude caps, arc-joint and self-intersection-removal offsets, section/split edges, direct edits (with 6.5), edge/vertex events beyond booleans. Added 2026-09-04 by the overlay (rows IP-3.6, IP-5.7, IP-12.1; leadership claim LC3). | `journal_ops.rs`, `evolution.rs`, `qualify_evolution_coverage.rs`, per-op modules | M (S per family) | Absolute gate §3.4 item 8; unblocks OpenZCAD's adoption order boolean → pattern → chamfer → shell/offset → direct edits. Exit: the coverage fixture claims every result face of every family exactly once or pins its typed unresolved; no `record_barrier_over_solid` call remains for a family that can construct its map. | Partial — direct-edit and healing slices merged in #338; face-only and unjournaled families remain. See [audit](evolution-audit.md). |
 | B19 | **Remaining fuzz slices and mutation scope** — curve-intersection, offset, GCS, and tessellation fuzz targets with independent oracles on the weekly schedule. The mutation-scope slice moves the previously undiscovered root config to `.cargo/mutants.toml` and selects the current CDT directory. | `fuzz/fuzz_targets/`, `.cargo/mutants.toml`, `.github/workflows/fuzz.yml` | S each | Exit: four targets scheduled with committed seeds; mutants report shows CDT mutants examined. Scope regression checks reject ignored config and the stale CDT file glob; the bounded five-mutant sample caught four and retained one survivor for review. | Partial — mutation scope verified; four fuzz slices remain open. Evidence: `scripts/test-mutants-scope.py`, `docs/kernel-maturity/testing-strategy.md` |
 | B20 | **Exact measurement completion (K-S2 remainder)** — ellipse, hyperbola, and NURBS planar boundaries; general curved-face area; deflection-independent curved-body volume, centroid, and inertia by Gauss quadrature over exact geometry with a stated bound; direct + batch WASM; scale matrix. Added 2026-09-04 by the overlay (row IP-10.1). | `check/src/properties/`, `operations/src/measure/` | M | OpenZCAD S2 measures 0.2–3.5 % volume error on filleted parts at its display deflection; the reference kernel integrates surfaces directly. Exit: relative error ≤ 1e-6 against closed forms on filleted and cavity primitives at 1e-3/1/1e3, independent of caller deflection; ledger row loses its "incomplete" caveat. | Open |
+| B21 | **Boolean fallback disclosure by default** — `boolean()`, `fuse`/`cut`/`intersect`, `fuseAll`, and the `*WithOptions`/`*WithEvolution` bindings return a bare handle when the GFA path falls over to the mesh (co-refinement) boolean; the only disclosure is `log::warn!(target: "remus_approx")` in `boolean/mod.rs::run_mesh_fallback`, and `OperationContext::new()` defaults to `AllowApproximate { budget: 0.1 }`. The Rust facade already returns `BooleanOutcome`. Decide one of: default to `ExactOnly` with `booleanWithQuality` as the opt-in, or return quality from every entry point. Found 2026-09-09. | `operations/src/boolean/mod.rs`, `math/src/context.rs`, `wasm/src/bindings/booleans.rs`, `remus/src/model.rs` | S–M | A log line is not a return value; an "exact" kernel whose consumer renders the handle silently ships NURBS-degraded faces. Same contract on Rust and JS. Breaking for JS callers that relied on the silent fallback: changelog + adapter notice. | **Done (2026-09-10):** plain Rust and WASM boolean entry points (handle-returning, options, evolution, `fuseAll`, batch) run `ExactOnly` and return the typed refusal; approximation is reachable only through `boolean_with_context` / `booleanWithQuality` and the new `boolean_outcome_with_options`, all of which return the disclosed quality. Tangent-boss regression pins refusal, rollback, and disclosure natively and in batch; changelogs carry the breaking notice. |
+| B22 | **`main` CI cancellation** — `ci.yml` `concurrency.group: ci-${{ github.ref }}` with `cancel-in-progress: true` cancels the CI run of every merge commit that is followed by another merge within ~30 min (#338, #339, #341, #346, #349 on 2026-09-09 have `conclusion: cancelled`). Scope cancellation to `pull_request` refs (e.g. `cancel-in-progress: ${{ github.event_name == 'pull_request' }}`) so every `main` head gets a verdict. | `.github/workflows/ci.yml` | S | Every CI-green claim on `main` is currently "green on the last push in the burst". Also affects the committed-package refresh evidence. | **Done (2026-09-09):** `cancel-in-progress` is now `github.event_name == 'pull_request'`; the same change tiers the suite (`docs/owner-pr-ci.md` § Tiers) so kernel PRs run ~12 min of jobs and the publisher's refresh PR runs none. |
+| B23 | **One fillet cascade policy** — WASM `fillet` runs v2 → rolling-ball → bevel (`wasm/src/helpers.rs::try_fillet`), `blend_ops.rs::planar_fillet_result` orders a legacy attempt first for concave edges, and the facade `Model::fillet` is v2-only; the deprecated v1 engines are reached in production through `#[allow(deprecated)]`. Move the cascade into `operations` behind one function both surfaces call, with the engine that produced the result disclosed in the outcome. Does NOT decide v1 retirement (owner's product decision, still "not queued"). | `wasm/src/helpers.rs`, `operations/src/blend_ops.rs`, `operations/src/fillet/`, `remus/src/model.rs` | M | Rust and JS callers get different geometry for the same request today; a rejected attempt can leave the input partly filleted unless rollback is explicit (documented trap). Precondition for honest M5 parity numbers. | **Done (2026-09-10):** `blend_ops::fillet_cascade` is the one policy — walking engine (`fillet_v2`, which already tries the rolling-ball rebuild first for planar-line selections), then the guarded rolling-ball rebuild, each transactional; the flat bevel is no longer a fillet fallback. WASM `fillet` / `filletWithEvolution` / batch `fillet`, the facade `Model::fillet`, and `fillet_with_evolution` all call it, and `BlendResult::engine` discloses which engine produced the result. v1 retirement is still not decided. |
+| B24 | **Wildcard-arm audit and gate** — ~180 `_ =>` arms over `EdgeCurve`/`FaceSurface` (densest: `measure/volume.rs` 16, `pave_filler/phase_ff.rs` 13, `tessellate/nonplanar.rs` 12, `resize_blend.rs` 11). A new variant compiles clean and silently takes the approximate branch in volume, meshing, and GFA splitting. Convert the four densest files to exhaustive matches; add a `scripts/check-wildcard-arms.sh` ratchet (count per file, no growth) to the `repo-policy` job, same pattern as `check-det-hash.sh`. Companion to RFC 0006 (face-surface wildcard audit). | `operations/src/measure/volume.rs`, `algo/src/pave_filler/phase_ff.rs`, `operations/src/tessellate/nonplanar.rs`, `operations/src/resize_blend.rs`, `scripts/` | M | The only current defence is `approx_census`, which detects drift after the fact. RFC 0006 swept-analytic surfaces will add a variant and hit every one of these. | Open |
+| B25 | **Offset path consolidation** — `offset_v2` (wrapper over `remus-offset`), sampled `offset_face` (public `samples: u32` knob), and `offset_trim` are all exposed independently through WASM (`bindings/operations.rs`, `batch.rs`), and `shell_op.rs` still calls the sampled `offset_face` internally. Route `shell_op` through the exact offset where the face family allows it and mark the sampled binding as approximate in its result/type, or fold it. | `operations/src/offset_face.rs`, `offset_trim.rs`, `shell_op.rs`, `wasm/src/bindings/operations.rs` | M | A discretization knob on the public API contradicts the exact-kernel contract; three ways to offset is a support burden for the adapter. | Open |
+| B26 | **Boolean and mesh invariant proptests** — the workspace has 15 proptest blocks (13 in `math`) and 8 golden files against ~445k lines, while roughly half of `scripts/` tests the CI policy itself. Add property tests over random primitive pairs and rigid transforms: inclusion–exclusion volume identity (A ∪ B + A ∩ B = A + B), fuse/cut complement, translation invariance of `solid_volume` (the doubled-boundary detector), watertight/manifold mesh, exact-only path stability under 1e-13 nudges. | `operations/tests/prop_boolean_invariants.rs` (new), `operations/src/boolean/tests.rs` | S–M | Cheapest broad oracle the kernel lacks; every lesson in the roadmap skill about doubled boundaries and translation-variant volume is a property nobody generates. Rides B19's schedule for the slow variants. | Open |
 
 **Explicitly not queued** (decided or terminal — do not re-open without
 the named primitive): IGES growth (C3, decided), box∪sphere and torus∩box
 census rows (TERMINAL → O2.3 re-opens them properly), universal
 duplicate-edge merge key (proven unbuildable), mesh co-refinement
 watertightness (below the chase filter until a live case routes there),
-kumiko lattice family (probe only per the roadmap skill's engine-side
-question), v1-fillet API migration (product decision, owner's),
+kumiko lattice family (harness retired 2026-08-20; re-open only from an
+in-repo fixture), v1-fillet API migration (product decision, owner's),
 monolithic mechanical-feature operators and tessellated-STEP read
 (overlay §1: composable from imprint/boolean, and no corpus pull),
 non-manifold shared-face topology (RFC 0005 later RFC; owner decision).
@@ -604,14 +341,16 @@ Match session type to lane; check both ledgers and `gh pr list` first.
 - **Geometry-hard session** (budget for multi-pass debugging): H1 lane 1
   in P-Class order, or B7 if M2 files are contended. Never two sessions
   in `algo/pave_filler` at once.
-- **Bounded/short session:** one B-row (B5, B11, B13, or one B6 family),
-  or an inherited-queue item from P-Class §6.
+- **Bounded/short session:** one B-row (B22, B11 remainder, B26, or one
+  B6 family), or an inherited-queue item from P-Class §6.
 - **Infrastructure session:** next unclaimed Wave A row in
   [open-kernel-status.md](open-kernel-status.md).
-- **Evidence session** (test-writing capacity): B6 families, B10, O1.3a.
+- **Evidence session** (test-writing capacity): B26, B6 families, B10,
+  B24 (one file per PR), O1.3b.
 - **Docs/ecosystem session:** O6 rows.
-- **Consumer-impact session:** B16 (one query binding), O4.7, B20, or
-  B18's unify item — each retires a named OpenZCAD adapter heuristic.
+- **Consumer-impact session:** B21 or B23 first (contract lane), then
+  B16 (one query binding), O4.7, B20, or B18's unify item — each retires
+  a named OpenZCAD adapter heuristic or a silent-degradation path.
 - **Parity-evidence session:** O1.2d–e (Remus-only rows first), O1.5,
   B19; see the overlay's §8 ranking.
 - **Owner-only:** O4.2c/O4.3c publishes, O6.2 hosting, O6.3 outreach,
