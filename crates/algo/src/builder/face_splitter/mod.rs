@@ -1039,6 +1039,44 @@ fn attach_whole_holes(sub_faces: &mut [SplitSubFace], holes: &[Vec<OrientedPCurv
     }
 }
 
+/// Conservative proof that straight sections miss each complete circular hole.
+/// Unsupported hole/section shapes keep the existing splitting path.
+fn line_sections_clear_of_round_holes(
+    sections: &[SectionEdge],
+    holes: &[Vec<OrientedPCurveEdge>],
+    tol: f64,
+) -> bool {
+    !holes.is_empty()
+        && !sections.is_empty()
+        && holes.iter().all(|hole| {
+            let [edge] = hole.as_slice() else {
+                return false;
+            };
+            let EdgeCurve::Circle(circle) = &edge.curve_3d else {
+                return false;
+            };
+            let (a, b) = edge.traversal_domain();
+            if (edge.start_3d - edge.end_3d).length() > tol
+                || ((b - a).abs() - std::f64::consts::TAU).abs() * circle.radius() > tol
+            {
+                return false;
+            }
+            sections.iter().all(|section| {
+                if !matches!(section.curve_3d, EdgeCurve::Line) {
+                    return false;
+                }
+                let direction = section.end - section.start;
+                let length2 = direction.length_squared();
+                if length2 <= 0.0 {
+                    return false;
+                }
+                let t =
+                    ((circle.center() - section.start).dot(direction) / length2).clamp(0.0, 1.0);
+                (circle.center() - (section.start + direction * t)).length() > circle.radius() + tol
+            })
+        })
+}
+
 /// True when any traced loop's sampled UV polygon is area-degenerate — the
 /// classifier's sliver guard would silently drop it, so the loops path
 /// under-represents the face even though the loop COUNT looks fine. The
@@ -7177,6 +7215,30 @@ fn split_face_2d_impl(
         }
     }
 
+    // A section chain can meet a concave boundary at a straight continuation.
+    // The greedy turn rule follows the old outline and misses the partition.
+    // On a planar face with untouched holes, recover the bounded subdivision
+    // without feeding those holes into a hole-less arrangement. The normal
+    // hole distribution below retains their original analytic wires.
+    if is_plane
+        && !holes_integrated
+        && !original_inner_wires.is_empty()
+        && sections.len() >= 2
+        && !u_periodic
+        && !v_periodic
+        && line_sections_clear_of_round_holes(sections, &original_inner_wires, tol.linear)
+    {
+        let dcel = build_wire_loops_dcel(&all_edges, tol.linear, false, false);
+        if dcel.len() > loops.len()
+            && !wire_loops_have_degenerate_area(&dcel, tol.linear)
+            && !wire_loops_self_cross(&dcel, tol.linear)
+            && !greedy_outer_loops_nested(&dcel, false)
+        {
+            loops = dcel;
+            cw_loops = false;
+        }
+    }
+
     // Classify each loop as outer (positive area) or hole (negative).
     // For loops with curved edges, sample intermediate UV points to get
     // an accurate area -- using only start_uv gives degenerate polygons
@@ -8287,6 +8349,120 @@ mod tests {
     use remus_math::curves2d::Line2D;
     use remus_math::vec::Vec2;
     use remus_topology::test_utils::make_unit_square_face;
+
+    #[test]
+    fn concave_corner_chain_partitions_a_face_without_losing_round_holes() {
+        use remus_math::curves::Circle3D;
+        use remus_topology::{
+            edge::Edge,
+            face::Face,
+            vertex::Vertex,
+            wire::{OrientedEdge, Wire},
+        };
+        for scale in [0.1, 1.0, 100.0] {
+            for reversed in [false, true] {
+                let mut topo = Topology::new();
+                let point = |x, y| Point3::new(2.0 + x * scale, 3.0 + y * scale, 4.0);
+                // The chain continues the horizontal boundary at the reflex
+                // corner (3,4), then turns down to the bottom rim at (8,0).
+                let polygon = [
+                    (0.0, 6.0),
+                    (0.0, 4.0),
+                    (3.0, 4.0),
+                    (3.0, 2.0),
+                    (6.0, 2.0),
+                    (6.0, 0.0),
+                    (10.0, 0.0),
+                    (10.0, 6.0),
+                ];
+                let vertices: Vec<_> = polygon
+                    .iter()
+                    .map(|&(x, y)| topo.add_vertex(Vertex::new(point(x, y), 1e-7)))
+                    .collect();
+                let boundary = (0..vertices.len())
+                    .map(|i| {
+                        OrientedEdge::new(
+                            topo.add_edge(Edge::new(
+                                vertices[i],
+                                vertices[(i + 1) % vertices.len()],
+                                EdgeCurve::Line,
+                            )),
+                            true,
+                        )
+                    })
+                    .collect();
+                let outer = topo.add_wire(Wire::new(boundary, true).unwrap());
+                let mut holes = Vec::new();
+                for x in [1.0, 7.0] {
+                    let circle =
+                        Circle3D::new(point(x, 5.0), Vec3::new(0.0, 0.0, 1.0), 0.25 * scale)
+                            .unwrap();
+                    let v = topo.add_vertex(Vertex::new(circle.evaluate(0.0), 1e-7));
+                    let mut edge = Edge::new(v, v, EdgeCurve::Circle(circle));
+                    edge.set_trim(Some((0.0, std::f64::consts::TAU)));
+                    let edge = topo.add_edge(edge);
+                    holes.push(
+                        topo.add_wire(
+                            Wire::new(vec![OrientedEdge::new(edge, false)], true).unwrap(),
+                        ),
+                    );
+                }
+                let surface = FaceSurface::Plane {
+                    normal: Vec3::new(0.0, 0.0, 1.0),
+                    d: 4.0,
+                };
+                let mut face = Face::new(outer, holes, surface);
+                face.set_reversed(reversed);
+                let fid = topo.add_face(face);
+                let sections = [
+                    line_section(point(8.0, 0.0), point(8.0, 4.0)),
+                    line_section(point(8.0, 4.0), point(3.0, 4.0)),
+                ];
+                let result = split_face_2d(
+                    &topo,
+                    fid,
+                    &sections,
+                    Rank::A,
+                    &remus_math::tolerance::Tolerance::default(),
+                    None,
+                    None,
+                    &std::collections::HashMap::new(),
+                    None,
+                )
+                .unwrap();
+                assert_eq!(result.len(), 2, "scale={scale} reversed={reversed}");
+                assert_eq!(result.iter().map(|f| f.inner_wires.len()).sum::<usize>(), 2);
+                assert!(result.iter().all(|f| f.reversed == reversed));
+                let mut outer_area = 0.0;
+                for sf in &result {
+                    outer_area += signed_area_2d(&sample_wire_loop_uv(&sf.outer_wire)).abs();
+                    for hole in &sf.inner_wires {
+                        assert_eq!(hole.len(), 1, "hole was rebuilt");
+                        assert!(matches!(&hole[0].curve_3d, EdgeCurve::Circle(circle)
+                            if (circle.radius() - 0.25 * scale).abs() < 1e-10));
+                    }
+                }
+                assert!(
+                    (outer_area - 42.0 * scale * scale).abs() < 1e-7 * scale * scale,
+                    "area={outer_area}"
+                );
+                let sf = result.iter().find(|sf| !sf.inner_wires.is_empty()).unwrap();
+                assert!(line_sections_clear_of_round_holes(
+                    &sections,
+                    &sf.inner_wires,
+                    1e-7
+                ));
+                for y in [5.0, 5.25] {
+                    // Crossing and tangency must not qualify.
+                    assert!(!line_sections_clear_of_round_holes(
+                        &[line_section(point(0.0, y), point(9.0, y))],
+                        &sf.inner_wires,
+                        1e-7
+                    ));
+                }
+            }
+        }
+    }
 
     #[test]
     fn straight_nurbs_crossings_split_both_traversals_without_projecting_skew_lines() {
