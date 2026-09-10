@@ -26,6 +26,40 @@ John, then GitHub-hosted. Busy Jane remains available; jobs queue for either of 
 Missing/invalid configuration selects hosted. Hosted fallback still depends on
 GitHub billing and capacity.
 
+## Lightweight job pool
+
+`CI_FLEET_LIGHT_POOL_ENABLED=true` lets Classify Changes, Repository Policy,
+Secrets Scan, Documentation, Cargo Deny, Security Audit and CI Pass
+use any free runner carrying `ci-remus-light` in `ci-trusted-main`. Provision
+that label only on `ci-vm-1441561` (John), `ci-server-jane-1` and
+`ci-server-jane-2`; keep their existing labels. Do not label the retired
+`ci-server-jane` registration or any additional runner. No new runner process
+or extra machine capacity is created.
+
+The pool is opt-in. Missing/false pool configuration preserves the selected-host
+routing above. All existing owner, repository, event and protected-ref checks
+apply before pool selection. Disabled fleet routing, `github-hosted`, and an
+unknown/missing fleet target still select GitHub-hosted runners. Heavy jobs
+continue using the existing selected-host expression; their commands, CPU and
+memory budgets, test selection and coverage threshold are unchanged. A short
+job on John uses its existing one-build-worker/one-test-thread profile.
+
+Pool membership, rather than the preferred-host variable, controls which
+machines can accept pooled jobs. Before draining or disabling one machine,
+remove `ci-remus-light` from its runners (or disable the pool entirely) as well
+as updating host routing. The preferred-host controller does not manage pool
+membership. Removing a label prevents new matching assignments; allow active
+jobs to finish. GitHub chooses any available matching runner, without a Jane
+preference inside the pool.
+
+Activation order: add the label to the three verified runner IDs in the
+restricted group; append the exact new callee SHA to the existing workflow
+allowlist; enable the pool variable; then validate the PR's immutable caller.
+Preserve every existing runner-group permission and workflow entry. Confirm
+light jobs execute on both machines and heavy jobs retain host selection before
+merging. Roll back subsequent scheduling with
+`CI_FLEET_LIGHT_POOL_ENABLED=false`; already assigned jobs keep their runner.
+
 Before checkout, self-hosted jobs verify the non-root identity, protected runner
 files, NoNewPrivileges, fresh storage, empty rootless Docker state, mount options
 and exact cgroup limits. Jane slots each have six CPU equivalents and 6 GiB RAM;
@@ -117,7 +151,35 @@ runners. Untrusted PRs and merge groups remain hosted.
 Repository Policy and Secrets Scan run before any expensive checks. CI Pass
 requires both to succeed, requires the classifier outputs to be valid, and
 rejects unexpectedly skipped selected checks. Documentation-only selection
-still skips the heavy suite. Optimized coverage uses the existing `ci-test`
+still skips the heavy suite.
+
+### Tiers
+
+The classifier (`scripts/classify-ci-changes.py`) selects jobs in tiers so a
+kernel PR waits only for the checks that can fail on its diff:
+
+- **Tier 1** (`heavy`, every source change): Test (clippy, nextest, doc
+  tests, complexity guards in one job), Approximation Census, WASM without
+  optional I/O. Roughly 12 minutes of runner time.
+- **Tier 2** (`full`): Coverage, macOS, MSRV, Fuzz Targets Compile,
+  Software Rendering, Cargo Deny, Security Audit. Selected for every main
+  push, merge group and dispatch, and for a PR only while it carries the
+  `ci:full` label (label it, then re-run or push).
+- **Package build** (`wasm`): WASM Build & Validate and the advisory size
+  report. Selected with tier 2, and on any PR whose diff touches
+  `crates/wasm*`, `xtask`, `tools/vs-bench`, the WASM scripts, `Cargo.lock`,
+  `Cargo.toml`, or `rust-toolchain.toml`. A kernel-only PR does not rebuild
+  the distributable packages; the main push and the publisher's refresh PR
+  cover that.
+- **Package refresh**: a diff confined to `crates/wasm/pkg` and
+  `crates/wasm-io/pkg` runs the full suite. Paths alone do not prove that the
+  committed bytes came from a trusted build; no package-only validation bypass
+  is enabled.
+
+CI Pass accepts a skipped job only when its tier flag is false, and rejects
+a tier-2 or package selection without a heavy selection. Every main push
+runs the full suite, and the caller cancels superseded runs only for
+`pull_request` events, so each merge commit keeps a completed verdict. Optimized coverage uses the existing `ci-test`
 profile for running and reporting, with coverage artifacts cleaned first; it retains the entire workspace,
 test assertions and the 60% line threshold. WASM optional-I/O clippy and native
 tests run as a separate required job. Package validation, optimization, tarball

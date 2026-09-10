@@ -33,20 +33,21 @@ class OwnerRoutingTests(unittest.TestCase):
         self.assertNotIn("select-runner.yml", CI)
 
     def test_native_checks_keep_hosted_fallback(self):
-        for name in ("clippy", "test", "msrv", "fuzz-check", "docs"):
+        for name, flag in (("test", "heavy"), ("msrv", "full"), ("fuzz-check", "full"),
+                           ("docs", "docs")):
             with self.subTest(name=name):
                 block = job(name)
                 self.assertIn("needs: [changes, repo-policy, secrets-scan]", block)
                 self.assertNotIn("needs.owner-pr", block)
-                self.assertIn("runs-on: *fleet-runner", block)
-                flag = "docs" if name == "docs" else "heavy"
+                self.assertRegex(block, r"runs-on: [*&]fleet(?:-light)?-runner")
                 self.assertIn(f"needs.changes.outputs.{flag} == 'true'", block)
+        self.assertIn("cargo clippy --all-targets --all-features -- -D warnings", job("test"))
 
     def test_specialized_jobs_keep_their_runners_and_permissions(self):
         for name in ("repo-policy", "approx-census", "coverage", "wasm",
                      "render", "deny", "audit", "secrets-scan"):
             with self.subTest(name=name):
-                self.assertIn("runs-on: *fleet-runner", job(name))
+                self.assertRegex(job(name), r"runs-on: [*&]fleet(?:-light)?-runner")
                 self.assertNotIn("needs.owner-pr.outputs.trusted", job(name))
         self.assertIn("os: [macos-latest]", job("platform-test"))
         self.assertIn("cargo llvm-cov report --profile ci-test --fail-under-lines 60", job("coverage"))
@@ -78,10 +79,11 @@ class OwnerRoutingTests(unittest.TestCase):
             with self.subTest(result=result):
                 needs = {"changes": {"result": "success"}, "repo-policy": {"result": result},
                          "secrets-scan": {"result": "success"},
-                         "clippy": {"result": "skipped"}, "test": {"result": "skipped"}}
+                         "test": {"result": "skipped"}, "coverage": {"result": "skipped"}}
                 run = subprocess.run(
                     ["bash", "-c", command],
-                    env=dict(os.environ, NEEDS=json.dumps(needs), HEAVY="false", DOCS="false"), capture_output=True)
+                    env=dict(os.environ, NEEDS=json.dumps(needs), HEAVY="false", DOCS="false",
+                             FULL="false", WASM="false"), capture_output=True)
                 self.assertEqual(run.returncode, expected, run.stderr.decode())
 
     def test_policy_regressions_run_in_repository_policy(self):
