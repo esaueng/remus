@@ -1,7 +1,9 @@
 # E5b: Stable WASM error codes
 
-Status: implemented as the additive `executeBatchV2` contract. The legacy
-`executeBatch` wire format and direct-method errors remain unchanged.
+Status: implemented as the additive `executeBatchV2` contract. O4.7 has begun
+the additive direct-method rollout with typed `fuseDetailed`, `cutDetailed`,
+and `intersectDetailed` results. The legacy `executeBatch` wire format and
+existing direct-method behavior remain unchanged.
 
 ## Context
 
@@ -83,11 +85,21 @@ code.
 
 ## Direct-method errors
 
-Changing every thrown `JsError` is a separate compatibility decision.
-Possible follow-up options are a JS `Error` with enumerable `code` and
-`details`, or additive `*Detailed` methods returning a result envelope. The
-batch registry should be designed for reuse, but E5b should ship batch v2
-first and leave existing thrown errors untouched.
+Existing methods keep their thrown `JsError` behavior indefinitely. O4.7 adds
+`*Detailed` twins one operation family at a time. The first vertical slice is
+the two-solid boolean family used by the README browser example:
+`fuseDetailed`, `cutDetailed`, and `intersectDetailed`.
+
+Each returns a typed `SolidOperationDetailedResult` with the fields
+`{ status, code, category, details, value }`. On success, `status` is `ok`,
+`value` is the committed solid handle, and the failure fields are null or
+empty. On failure, `status` is `error`, `value` is null, and `code` is the
+same native registry code carried by `executeBatchV2.details.kernelCode`, or
+the stable batch-v2 wire code when no finer native code exists. `details`
+preserves structured context plus the human-readable `message`.
+
+The remaining mutating direct-method families and typed replacements for the
+JSON-string returns remain O4.7 follow-up work.
 
 ## Compatibility and rollout
 
