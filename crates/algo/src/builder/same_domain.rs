@@ -882,11 +882,7 @@ fn compute_edge_set_quantized(
         // instances.
         let closed_uniform_angle =
             qs == qe && matches!(edge.curve(), EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_));
-        let domain = crate::builder::pcurve_compute::reconstruct_structural_sampling_domain(
-            edge.curve(),
-            sp,
-            ep,
-        );
+        let domain = stored_sampling_domain(edge, sp, ep)?;
         let disc = if closed_uniform_angle {
             closed_edge_centroid(edge.curve(), sp, ep, domain)
         } else {
@@ -1011,6 +1007,25 @@ fn closed_edge_centroid(
     remus_math::vec::Point3::new(sx / n, sy / n, sz / n)
 }
 
+fn stored_sampling_domain(
+    edge: &remus_topology::edge::Edge,
+    start: remus_math::vec::Point3,
+    end: remus_math::vec::Point3,
+) -> Option<(f64, f64)> {
+    if !matches!(edge.curve(), EdgeCurve::NurbsCurve(_)) {
+        return Some(
+            super::pcurve_compute::reconstruct_structural_sampling_domain(edge.curve(), start, end),
+        );
+    }
+    match edge.strict_domain() {
+        Ok(domain) => Some(domain),
+        Err(remus_topology::edge::EdgeDomainError::Missing { .. }) => Some(
+            super::pcurve_compute::reconstruct_structural_sampling_domain(edge.curve(), start, end),
+        ),
+        Err(_) => None,
+    }
+}
+
 /// Test whether two planar sub-faces are geometrically coincident or one
 /// is fully contained inside the other.
 ///
@@ -1060,8 +1075,9 @@ fn planar_faces_overlap(
                 continue;
             };
             let (sp, ep) = (sv.point(), ev.point());
-            let domain =
-                super::pcurve_compute::reconstruct_structural_sampling_domain(edge.curve(), sp, ep);
+            let Some(domain) = stored_sampling_domain(edge, sp, ep) else {
+                return Vec::new();
+            };
             super::pcurve_compute::sample_edge_uniform(
                 edge.curve(),
                 sp,
@@ -1398,8 +1414,7 @@ fn planar_face_area(topo: &Topology, face_id: FaceId) -> Option<f64> {
         let sv = topo.vertex(edge.start()).ok()?;
         let ev = topo.vertex(edge.end()).ok()?;
         let (sp, ep) = (sv.point(), ev.point());
-        let domain =
-            super::pcurve_compute::reconstruct_structural_sampling_domain(edge.curve(), sp, ep);
+        let domain = stored_sampling_domain(edge, sp, ep)?;
         super::pcurve_compute::sample_edge_uniform(
             edge.curve(),
             sp,
@@ -1443,8 +1458,7 @@ fn wire_points_3d(topo: &Topology, face_id: FaceId) -> Option<Vec<remus_math::ve
         let sv = topo.vertex(edge.start()).ok()?;
         let ev = topo.vertex(edge.end()).ok()?;
         let (sp, ep) = (sv.point(), ev.point());
-        let domain =
-            super::pcurve_compute::reconstruct_structural_sampling_domain(edge.curve(), sp, ep);
+        let domain = stored_sampling_domain(edge, sp, ep)?;
         super::pcurve_compute::sample_edge_uniform(
             edge.curve(),
             sp,
@@ -1789,11 +1803,9 @@ fn face_outer_wire_points(topo: &Topology, face_id: FaceId) -> Vec<remus_math::v
         let (Ok(sv), Ok(ev)) = (topo.vertex(edge.start()), topo.vertex(edge.end())) else {
             continue;
         };
-        let domain = super::pcurve_compute::reconstruct_structural_sampling_domain(
-            edge.curve(),
-            sv.point(),
-            ev.point(),
-        );
+        let Some(domain) = stored_sampling_domain(edge, sv.point(), ev.point()) else {
+            return Vec::new();
+        };
         super::pcurve_compute::sample_edge_uniform(
             edge.curve(),
             sv.point(),
