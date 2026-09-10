@@ -3895,7 +3895,8 @@ fn build_topology_face(
         .iter()
         .chain(split.inner_wires.iter().flatten())
     {
-        preflight_wire_edge(edge, tol.linear)?;
+        let source_tolerance = carried_edge_tolerance(topo, edge, tol.linear)?;
+        preflight_wire_edge(edge, (tol.linear * 100.0).max(source_tolerance))?;
     }
 
     // Step 1: Create/find vertices for each unique 3D endpoint.
@@ -4107,7 +4108,8 @@ fn instantiate_wire_edge(
     pcurve_edge: &super::split_types::OrientedPCurveEdge,
     tolerance: f64,
 ) -> Result<(remus_topology::edge::EdgeId, bool), AlgoError> {
-    let orientation = preflight_wire_edge(pcurve_edge, tolerance)?;
+    let stored_tolerance = carried_edge_tolerance(topo, pcurve_edge, tolerance)?;
+    let orientation = preflight_wire_edge(pcurve_edge, (tolerance * 100.0).max(stored_tolerance))?;
     let is_line = matches!(pcurve_edge.curve_3d, EdgeCurve::Line);
     let (storage_start, storage_end) = if orientation.reverse_storage {
         (end_vid, start_vid)
@@ -4118,7 +4120,7 @@ fn instantiate_wire_edge(
         storage_start,
         storage_end,
         pcurve_edge.curve_3d.clone(),
-        Some(tolerance),
+        Some(stored_tolerance),
     );
     if !is_line {
         edge.set_trim(orientation.trim);
@@ -4131,6 +4133,27 @@ fn instantiate_wire_edge(
     }
     let edge_id = topo.add_edge(edge);
     Ok((edge_id, orientation.forward))
+}
+
+// Splitting an imported boundary must retain its existing tolerance contract.
+// Generated section edges have no source and keep the operation tolerance.
+fn carried_edge_tolerance(
+    topo: &Topology,
+    edge: &super::split_types::OrientedPCurveEdge,
+    operation_tolerance: f64,
+) -> Result<f64, AlgoError> {
+    let Some(index) = edge.source_topo_edge else {
+        return Ok(operation_tolerance);
+    };
+    let id = topo
+        .edge_id_from_index(index)
+        .ok_or_else(|| AlgoError::FaceSplitFailed(format!("missing source edge {index}")))?;
+    let source = topo.edge(id)?;
+    let vertex_tolerance = topo
+        .vertex(source.start())?
+        .tolerance()
+        .max(topo.vertex(source.end())?.tolerance());
+    Ok(operation_tolerance.max(source.effective_tolerance(vertex_tolerance)))
 }
 
 #[derive(Clone, Copy)]
@@ -4170,7 +4193,7 @@ fn preflight_wire_edge(
         ))
     })?;
     let trim = canonicalize_carried_trim(&pcurve_edge.curve_3d, trim)?;
-    let guard = tolerance * 100.0;
+    let guard = tolerance;
     let curve_start = pcurve_edge.curve_3d.evaluate_with_endpoints(
         trim.0,
         pcurve_edge.start_3d,
@@ -4195,8 +4218,12 @@ fn preflight_wire_edge(
         && reverse_end_distance <= guard;
     if !direct && !reversed {
         return Err(AlgoError::FaceSplitFailed(format!(
-            "carried {} range endpoints do not match the wire edge",
-            pcurve_edge.curve_3d.type_tag()
+            "carried {} range endpoints do not match the wire edge: trim={trim:?} start={:?} end={:?} curve_start={curve_start:?} curve_end={curve_end:?} guard={guard} source={:?} block={:?}",
+            pcurve_edge.curve_3d.type_tag(),
+            pcurve_edge.start_3d,
+            pcurve_edge.end_3d,
+            pcurve_edge.source_topo_edge,
+            pcurve_edge.pave_block_id
         )));
     }
 
@@ -5064,5 +5091,45 @@ mod tests {
 
         assert_eq!(hits.len(), 1);
         assert!((hits[0].0 - expected).length() < 1e-7);
+    }
+    #[test]
+    fn copied_boundary_retains_source_tolerance_without_inflating_it() {
+        let curve = interpolate(
+            &[
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(0.5, 0.2, 0.0),
+                Point3::new(1.0, 0.0, 0.0),
+            ],
+            2,
+        )
+        .unwrap();
+        let start = Point3::new(0.0, 4e-5, 0.0);
+        let end = Point3::new(1.0, 0.0, 0.0);
+        let mut topo = Topology::new();
+        let a = topo.add_vertex(Vertex::new(start, 1e-7));
+        let b = topo.add_vertex(Vertex::new(end, 1e-7));
+        let mut source =
+            Edge::with_tolerance(a, b, EdgeCurve::NurbsCurve(curve.clone()), Some(5e-5));
+        source.set_trim(Some((0.0, 1.0)));
+        let source_id = topo.add_edge(source);
+        let mut transient = super::super::split_types::OrientedPCurveEdge {
+            curve_3d: EdgeCurve::NurbsCurve(curve),
+            trim: Some((0.0, 1.0)),
+            pcurve: Curve2D::Line(Line2D::new(Point2::new(0.0, 0.0), Vec2::new(1.0, 0.0)).unwrap()),
+            start_uv: Point2::new(0.0, 0.0),
+            end_uv: Point2::new(1.0, 0.0),
+            start_3d: start,
+            end_3d: end,
+            forward: true,
+            source_edge_idx: None,
+            pave_block_id: None,
+            source_topo_edge: None,
+        };
+        assert!(instantiate_test_edge(&mut topo, &transient).is_err());
+        transient.source_topo_edge = Some(source_id.index());
+        let (id, _) = instantiate_test_edge(&mut topo, &transient).unwrap();
+        assert_eq!(topo.edge(id).unwrap().tolerance(), Some(5e-5));
+        transient.start_3d = Point3::new(0.0, 6e-5, 0.0);
+        assert!(instantiate_test_edge(&mut topo, &transient).is_err());
     }
 }

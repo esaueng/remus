@@ -3804,34 +3804,9 @@ fn intersect_multi_region_semantically_safe(
     b: SolidId,
     tol: remus_math::tolerance::Tolerance,
 ) -> bool {
-    const MAX_BOUNDARY_SAMPLES: usize = 100_000;
-
-    let Ok(faces) = remus_topology::explorer::solid_faces(topo, result) else {
+    let Some(samples) = intersection_boundary_samples(topo, result) else {
         return false;
     };
-    let mut samples = Vec::new();
-    for fid in faces {
-        let Ok(mesh) = crate::tessellate::tessellate(topo, fid, 0.05) else {
-            return false;
-        };
-        for tri in mesh.indices.chunks_exact(3) {
-            let (Some(&p0), Some(&p1), Some(&p2)) = (
-                mesh.positions.get(tri[0] as usize),
-                mesh.positions.get(tri[1] as usize),
-                mesh.positions.get(tri[2] as usize),
-            ) else {
-                return false;
-            };
-            // Tessellator vertices lie on the exact face surface. Triangle
-            // centroids generally lie on the inward chord of a curved face,
-            // so classifying them would test the approximation rather than
-            // the analytic result boundary.
-            samples.extend([p0, p1, p2]);
-            if samples.len() > MAX_BOUNDARY_SAMPLES {
-                return false;
-            }
-        }
-    }
     let classify_tol = tol.linear * 100.0;
     let Ok(a_faces) = remus_topology::explorer::solid_faces(topo, a) else {
         return false;
@@ -3873,7 +3848,7 @@ fn intersect_multi_region_semantically_safe(
             });
             if !on_trimmed_boundary {
                 log::debug!(
-                    "multi-region Intersect boundary verification failed at {point:?} against {}: {classification:?}",
+                    "multi-region Intersect boundary verification failed at {point:?} against {}: {classification:?} distance_checks={distance_checks}",
                     operand.index()
                 );
                 return false;
@@ -3897,7 +3872,9 @@ fn intersect_multi_region_semantically_safe(
         ))
     })();
     let Ok((result_volume, from_a, from_b)) = volume_audit else {
-        log::debug!("multi-region Intersect volume verification could not be computed");
+        log::debug!(
+            "multi-region Intersect volume verification could not be computed: {volume_audit:?}"
+        );
         return false;
     };
     let result_convergence = (result_volume.0 - result_volume.1).abs();
@@ -3913,6 +3890,35 @@ fn intersect_multi_region_semantically_safe(
     );
     (result_volume.1 - from_a.1).abs() <= allowed_from_a
         && (result_volume.1 - from_b.1).abs() <= allowed_from_b
+}
+
+fn intersection_boundary_samples(topo: &Topology, result: SolidId) -> Option<Vec<Point3>> {
+    const MAX_BOUNDARY_SAMPLES: usize = 100_000;
+
+    // Use the owning-solid tessellator so curved faces retain their trimming
+    // wires. Standalone analytic tessellation can cover the entire carrier
+    // (for example the full tube of a partial toroidal blend).
+    let Ok(mesh) = crate::tessellate::tessellate_solid_with_tolerance(topo, result, 0.05, 0.1)
+    else {
+        return None;
+    };
+    let mut samples = Vec::new();
+    let mut visited = vec![false; mesh.positions.len()];
+    for &index in &mesh.indices {
+        let index = index as usize;
+        let (Some(&point), Some(seen)) = (mesh.positions.get(index), visited.get_mut(index)) else {
+            return None;
+        };
+        if *seen {
+            continue;
+        }
+        *seen = true;
+        samples.push(point);
+        if samples.len() > MAX_BOUNDARY_SAMPLES {
+            return None;
+        }
+    }
+    Some(samples)
 }
 
 type CoarseFineVolume = (f64, f64);
@@ -3935,7 +3941,12 @@ fn intersection_audit_mesh_volumes(
             || !crate::tessellate::is_watertight(&mesh)
         {
             return Err(crate::OperationsError::InvalidInput {
-                reason: "intersection volume audit requires a bounded watertight mesh".into(),
+                reason: format!(
+                    "intersection volume audit requires a bounded watertight mesh: solid {} deflection {deflection} triangles {} quality {:?}",
+                    solid.index(),
+                    mesh.indices.len() / 3,
+                    crate::tessellate::welded_mesh_quality(&mesh)
+                ),
             });
         }
         let origin =
