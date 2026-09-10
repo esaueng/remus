@@ -39,6 +39,26 @@ use remus_topology::edge::{EdgeCurve, EdgeId};
 use remus_topology::face::{FaceId, FaceSurface};
 use remus_topology::solid::SolidId;
 
+/// This configuration reaches the mesh fallback. The plain entry point
+/// refuses it by design (B21: a bare handle cannot disclose an
+/// approximation), so the test takes the disclosed permissive path and keeps
+/// checking the geometry it always checked.
+fn boolean_allowing_fallback(
+    topo: &mut Topology,
+    op: BooleanOp,
+    a: SolidId,
+    b: SolidId,
+) -> Result<SolidId, remus_operations::OperationsError> {
+    remus_operations::boolean::boolean_with_context(
+        topo,
+        op,
+        a,
+        b,
+        &remus_math::context::OperationContext::new(),
+    )
+    .map(|outcome| outcome.solid)
+}
+
 const W: f64 = 80.0;
 const D: f64 = 60.0;
 const T: f64 = 6.0;
@@ -454,7 +474,8 @@ fn a_corner_on_a_curved_face_is_refused() {
     // the top face's own boundary.
     let drill = make_cylinder(&mut topo, BORE_R, T + 4.0).unwrap();
     transform_solid(&mut topo, drill, &Mat4::translation(40.0, 0.0, -2.0)).unwrap();
-    let body = boolean(&mut topo, BooleanOp::Cut, blank, drill).expect("notch the wall");
+    let body =
+        boolean_allowing_fallback(&mut topo, BooleanOp::Cut, blank, drill).expect("notch the wall");
 
     let top = outer_face_facing(&topo, body, Vec3::new(0.0, 0.0, 1.0));
     let target = topo

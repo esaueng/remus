@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+### ⚠ BREAKING CHANGES
+
+* **operations,wasm:** the plain boolean entry points are exact-only. Rust
+  `boolean`, `boolean_transacted`, `boolean_with_options`,
+  `boolean_with_evolution`, and `fuse_solids`/`fuse_all`, and the WASM
+  `fuse`/`cut`/`intersect`, `fuseAll`, `*WithOptions`, `*WithEvolution`
+  methods and their batch ops, now return the typed
+  `ExactOnlyUnattainable` refusal (WASM: category `quality_refused`,
+  `kernelCode: "exact_only_unattainable"`) when the exact pipeline cannot
+  handle a pair, instead of silently returning a mesh-fallback solid with
+  only a `remus_approx` log line as disclosure. Approximation is available
+  only through the paths that disclose it: `boolean_with_context` /
+  `booleanWithQuality` (without `exactOnly`) and the new
+  `boolean_outcome_with_options`, which combines post-processing options
+  with an explicit fallback policy and returns a `BooleanOutcome`. The
+  `Model` facade is unchanged: it already returns the outcome. Callers that
+  relied on the silent fallback must opt in and read the disclosed quality.
+
+* **blend,operations,wasm:** one fillet cascade. `blend_ops::fillet_cascade`
+  (walking engine, then the guarded rolling-ball rebuild, each transactional)
+  is the policy behind the WASM `fillet` / `filletWithEvolution` / batch
+  `fillet`, the facade `Model::fillet`, and `fillet_with_evolution`, so Rust
+  and JS callers get the same geometry for the same request. The v1 flat
+  bevel is no longer a fillet fallback: a request only a bevel could satisfy
+  is refused with the walking engine's error instead of returning a
+  chamfer-shaped solid. `remus_blend::BlendResult` gains `engine:
+  BlendEngine` (`Walking`, `RollingBall`, `PlanarBevel`, `Mixed`) disclosing
+  the engine that produced the result; code constructing `BlendResult` by
+  struct literal must set it.
+
 ### Features
 
 * **offset,operations,wasm:** retain the default V2 offset builder's exact

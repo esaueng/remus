@@ -16,7 +16,7 @@ You are working on `fillet`, `chamfer`, `filletV2`, `chamferV2`, `chamferDistanc
 | Symptom | First move | Detail |
 |---|---|---|
 | `fillet` "succeeded" but shape looks unchanged | Compare (F,E,V) and volume before/after; equal = silent no-op | Step 2 |
-| Bug in default `fillet` / batch `fillet` | It chains THREE engines; find which one produced the result | Step 1 |
+| Bug in default `fillet` / batch `fillet` | Two engines behind one cascade; `BlendResult::engine` says which one produced the result | Step 1 |
 | Bug only in `filletV2`/`chamferV2` | Pure `crates/blend` walking engine | Step 4 |
 | `chamfer` (no V2) rejects curved faces | Flat-bevel engine in `chamfer.rs` is planar-only, not blend | reference.md |
 | Full closed rim fillet leaves free edges | Known open bug (rolling-ball); single-edge case works | reference.md |
@@ -24,25 +24,41 @@ You are working on `fillet`, `chamfer`, `filletV2`, `chamferV2`, `chamferDistanc
 | Straight-edge fillet wall came out as NURBS | Regression: it should be a `CylindricalFace` | Step 5 |
 | Want to delete/reorder v1 fillet code | Do NOT. It backs the live public API | Step 3 |
 
-## Step 1: Identify the engine (there are three fillet paths, not two)
+## Step 1: Identify the engine (one cascade, two engines, disclosed)
 
-The default `fillet` binding does NOT map to one engine. `fillet_solid` (`crates/wasm/src/bindings/operations.rs`) calls `try_fillet` (`crates/wasm/src/helpers.rs`), which tries three engines in order and accepts the first whose outer shell passes `validate_shell_closed` (order flipped to v2-first by product decision, 2026-07):
+Every handle-returning fillet surface runs the same cascade,
+`blend_ops::fillet_cascade` (`crates/operations/src/blend_ops.rs`, B23,
+2026-09-10). It accepts the first engine whose result passes the complete-blend,
+volume, and closed-shell guards, each attempt inside a transaction:
 
-1. `blend_ops::fillet_v2` (v2 walking engine, `crates/blend` — the maintained default)
-2. `fillet::fillet_rolling_ball` (v1 rolling-ball fallback, real rounded blend faces)
-3. `fillet::fillet` (v1 flat-bevel, last resort, planar neighbors only)
+1. `blend_ops::fillet_v2` (v2 walking engine, `crates/blend`). For a
+   planar-line selection this itself tries the rolling-ball rebuild
+   (`planar_fillet_result`) before the walking builder, then the radius-law
+   builder for all-concave edges, then per-feature splitting.
+2. `planar_fillet_result` (v1 rolling-ball rebuild with the same guards) on its
+   own, for selections `fillet_v2` did not route to it.
+
+The v1 flat bevel (`fillet::fillet`) is NOT in the cascade any more: a fillet
+request only a bevel could satisfy is refused with the walking engine's error.
+
+The result says which engine ran: `BlendResult::engine` is `Walking`,
+`RollingBall`, or `Mixed` (a multi-feature selection whose features took
+different engines). Read it before opening any engine's code.
 
 Map from a bug report to code:
 
-| JS binding | Engine |
+| Surface | Engine |
 |---|---|
-| `fillet`, `filletWithEvolution`, batch `fillet` | `try_fillet` chain: v2 → rolling-ball → bevel |
+| JS `fillet`, `filletWithEvolution`, batch `fillet`; Rust `Model::fillet`, `fillet_with_evolution`, `fillet_journaled` | `fillet_cascade` |
 | `filletV2` | pure v2 `blend_ops::fillet_v2` |
 | `chamferV2`, `chamferDistanceAngle` | pure v2 `blend_ops::chamfer_v2` / `chamfer_distance_angle` |
-| `chamfer` | flat-bevel engine `chamfer::chamfer` (planar-only, separate code) |
+| `chamfer` | `try_chamfer` (`wasm/src/helpers.rs`): flat-bevel `chamfer::chamfer`, then v2 |
 | `filletVariable` | v1 `fillet::fillet_variable` |
 
-Checkpoint: for a default `fillet` bug, instrument `try_fillet` to log which of the three branches returned. Do not debug `crates/blend` for a bug that the rolling-ball branch actually produced.
+Checkpoint: for a default `fillet` bug, log `result.engine` (or, in wasm,
+call `filletV2` and `planar_fillet_result` separately) before debugging
+`crates/blend`; do not debug the walking engine for a bug the rolling-ball
+rebuild produced.
 
 ## Step 2: The silent no-op trap (verify this FIRST on any "it did nothing" report)
 
@@ -70,15 +86,15 @@ assert_ne!(before, after, "fillet was a silent no-op");
 
 Both v1 fillet functions carry `#[deprecated]` AND are still wired into the live public API:
 
-- `fillet_rolling_ball` (`#[deprecated(since = "2.44.0")]`) is engine #1 in `try_fillet`.
-- `fillet::fillet` (`#[deprecated(since = "0.8.0")]`) is engine #3 in `try_fillet`.
+- `fillet_rolling_ball_with_origins` (`#[deprecated(since = "2.44.0")]`) is engine #2 in `fillet_cascade` and the planar fast path inside `fillet_v2`.
+- `fillet::fillet` (`#[deprecated(since = "0.8.0")]`) is no longer reached by any fillet binding; it still exists as a public function.
 
 Internal callers suppress the warning with `#[allow(deprecated)]` (the attribute lives on `try_fillet` in `helpers.rs`, plus benches, tests, and a re-export in `fillet/mod.rs`).
 
 Removing v1 outright is still a BEHAVIOR and public-API change. The product decision (2026-07) flipped the default order to v2-first with the v1 engines as fallbacks; the v1 code stays because it still backs the fallback path and `filletVariable`.
 
 - Safe: improving `crates/blend`, adding tests, fixing bugs inside an engine, editing comments.
-- Not safe without a product decision: deleting either deprecated fn, reordering or removing engines in `try_fillet`, changing which engine a binding resolves to.
+- Not safe without a product decision: deleting either deprecated fn, reordering or removing engines in `fillet_cascade`, changing which engine a binding resolves to.
 
 ## Step 4: Debugging the v2 walking engine (`crates/blend`)
 
