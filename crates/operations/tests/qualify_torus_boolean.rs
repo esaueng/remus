@@ -21,6 +21,26 @@ use remus_operations::transform::transform_solid;
 use remus_topology::Topology;
 use remus_topology::solid::SolidId;
 
+/// This configuration reaches the mesh fallback. The plain entry point
+/// refuses it by design (B21: a bare handle cannot disclose an
+/// approximation), so the test takes the disclosed permissive path and keeps
+/// checking the geometry it always checked.
+fn boolean_allowing_fallback(
+    topo: &mut Topology,
+    op: BooleanOp,
+    a: SolidId,
+    b: SolidId,
+) -> Result<SolidId, remus_operations::OperationsError> {
+    remus_operations::boolean::boolean_with_context(
+        topo,
+        op,
+        a,
+        b,
+        &remus_math::context::OperationContext::new(),
+    )
+    .map(|outcome| outcome.solid)
+}
+
 const R: f64 = 10.0;
 const RT: f64 = 2.0;
 const DEFLECTION: f64 = 0.02;
@@ -52,7 +72,7 @@ fn coaxial_cylinder_cut_matches_closed_form() {
     let c = make_cylinder(&mut topo, R, 4.0 * RT).unwrap();
     transform_solid(&mut topo, c, &Mat4::translation(0.0, 0.0, -2.0 * RT)).unwrap();
 
-    let cut = boolean(&mut topo, BooleanOp::Cut, t, c).unwrap();
+    let cut = boolean_allowing_fallback(&mut topo, BooleanOp::Cut, t, c).unwrap();
     assert_valid(&topo, cut, "torus minus coaxial cylinder");
 
     let removed = PI * PI * R * RT * RT - 4.0 * PI * RT.powi(3) / 3.0;
@@ -77,7 +97,7 @@ fn axis_perpendicular_plane_halves_torus() {
     // Slab occupies z >= 0 after centering in x/y.
     transform_solid(&mut topo, slab, &Mat4::translation(-2.0 * R, -2.0 * R, 0.0)).unwrap();
 
-    let cut = boolean(&mut topo, BooleanOp::Cut, t, slab).unwrap();
+    let cut = boolean_allowing_fallback(&mut topo, BooleanOp::Cut, t, slab).unwrap();
     assert_valid(&topo, cut, "torus minus upper half-space");
     let v = vol(&topo, cut);
     let expected = torus_volume() / 2.0;
@@ -102,7 +122,7 @@ fn tilted_plane_through_centre_halves_torus() {
     transform_solid(&mut topo, slab, &Mat4::translation(-2.0 * R, -2.0 * R, 0.0)).unwrap();
     transform_solid(&mut topo, slab, &rot).unwrap();
 
-    let cut = boolean(&mut topo, BooleanOp::Cut, t, slab).unwrap();
+    let cut = boolean_allowing_fallback(&mut topo, BooleanOp::Cut, t, slab).unwrap();
     assert_valid(&topo, cut, "torus minus tilted half-space");
     let v = vol(&topo, cut);
     let expected = torus_volume() / 2.0;
@@ -165,7 +185,7 @@ fn torus_boolean_is_deterministic() {
         let t = make_torus(&mut topo, R, RT, 32).unwrap();
         let c = make_cylinder(&mut topo, R, 4.0 * RT).unwrap();
         transform_solid(&mut topo, c, &Mat4::translation(0.0, 0.0, -2.0 * RT)).unwrap();
-        let cut = boolean(&mut topo, BooleanOp::Cut, t, c).unwrap();
+        let cut = boolean_allowing_fallback(&mut topo, BooleanOp::Cut, t, c).unwrap();
         vol(&topo, cut).to_bits()
     };
     assert_eq!(run(), run());

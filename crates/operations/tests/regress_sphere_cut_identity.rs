@@ -39,6 +39,26 @@ use remus_topology::Topology;
 use remus_topology::explorer::solid_faces;
 use remus_topology::solid::SolidId;
 
+/// This configuration reaches the mesh fallback. The plain entry point
+/// refuses it by design (B21: a bare handle cannot disclose an
+/// approximation), so the test takes the disclosed permissive path and keeps
+/// checking the geometry it always checked.
+fn boolean_allowing_fallback(
+    topo: &mut Topology,
+    op: BooleanOp,
+    a: SolidId,
+    b: SolidId,
+) -> Result<SolidId, remus_operations::OperationsError> {
+    remus_operations::boolean::boolean_with_context(
+        topo,
+        op,
+        a,
+        b,
+        &remus_math::context::OperationContext::new(),
+    )
+    .map(|outcome| outcome.solid)
+}
+
 /// Model scales, listed so the ORDER is a rotation of the natural
 /// small-to-large one. A result that only holds at whichever scale runs first
 /// is a passing accident; rotating the list makes that visible rather than
@@ -295,7 +315,7 @@ fn mirror_cuts_after_an_identity_cut_return_their_own_closed_forms() {
 
         // Step 1: the identity cut. Must leave the ball untouched.
         let far = far_tool(&mut topo, radius);
-        let carried = boolean(&mut topo, BooleanOp::Cut, sphere, far)
+        let carried = boolean_allowing_fallback(&mut topo, BooleanOp::Cut, sphere, far)
             .unwrap_or_else(|e| panic!("{label}: identity cut failed: {e}"));
 
         // Step 2: the real cut, applied to what step 1 handed on.
@@ -306,7 +326,7 @@ fn mirror_cuts_after_an_identity_cut_return_their_own_closed_forms() {
             &Mat4::translation(-side / 2.0, -side / 2.0, top - side),
         )
         .unwrap();
-        let result = boolean(&mut topo, BooleanOp::Cut, carried, tool)
+        let result = boolean_allowing_fallback(&mut topo, BooleanOp::Cut, carried, tool)
             .unwrap_or_else(|e| panic!("{label}: cut failed: {e}"));
 
         let volume = solid_volume(&topo, result, radius * 0.005).unwrap();
