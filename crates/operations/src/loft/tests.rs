@@ -1211,3 +1211,25 @@ fn ruled_circle_rails_follow_reversed_major_seam_authority() {
         }
     }
 }
+
+/// Mutation survivor (2026-09-06): `!finite || <= 0` → `&&` let a finite
+/// zero or negative ring radius through the coaxial stack's input guard.
+#[test]
+fn coaxial_band_stack_refuses_non_positive_and_non_finite_radii() {
+    for radii in [
+        [1.0, 0.0],
+        [1.0, -1.0],
+        [1.0, f64::NAN],
+        [f64::INFINITY, 1.0],
+    ] {
+        let mut topo = Topology::new();
+        let error = build_coaxial_band_stack(&mut topo, &[0.0, 1.0], &radii).unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                crate::OperationsError::InvalidInput { reason } if reason.contains("positive-radius")
+            ),
+            "{radii:?}: expected the typed input refusal, got {error:?}"
+        );
+    }
+}
