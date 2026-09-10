@@ -1,0 +1,21 @@
+[package]
+description = "Native runner for Remus cross-target operation parity"
+edition.workspace = true
+license.workspace = true
+name = "remus-parity"
+repository.workspace = true
+rust-version.workspace = true
+version = "0.1.0"
+
+[[bin]]
+name = "remus-parity-native"
+path = "src/main.rs"
+
+[dependencies]
+remus-wasm = {path = "../../crates/wasm", default-features = false}
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+
+[lints]
+workspace = true
