@@ -8,12 +8,15 @@ use remus_math::context::{CancellationToken, FallbackPolicy, OperationContext};
 use remus_operations::boolean::{BooleanOp, boolean, boolean_compound_regions, boolean_regions};
 use remus_operations::compound_ops;
 
-use crate::error::{WasmError, validate_finite};
+use crate::error::{StructuredWasmError, WasmError, validate_finite};
 use crate::handles::solid_id_to_u32;
 use crate::helpers::{build_triangle_mesh, panic_message, parse_boolean_op, triangle_mesh_to_js};
 use crate::kernel::BrepKernel;
 use crate::shapes::JsMesh;
-use crate::types::{BooleanQualityResult, CancellableBooleanResult, CancellableOperationStatus};
+use crate::types::{
+    BooleanQualityResult, CancellableBooleanResult, CancellableOperationStatus,
+    SolidOperationDetailedResult,
+};
 use tsify::Tsify as _;
 
 /// A one-shot cooperative cancellation signal for a modeling operation.
@@ -351,6 +354,21 @@ impl BrepKernel {
         Ok(solid_id_to_u32(result))
     }
 
+    /// Fuse two solids and return success or failure as typed data.
+    ///
+    /// Additive twin of [`fuse`](Self::fuse); the legacy method keeps its
+    /// existing return value and thrown-error behavior.
+    #[wasm_bindgen(js_name = "fuseDetailed")]
+    pub fn fuse_detailed(
+        &mut self,
+        a: u32,
+        b: u32,
+    ) -> Result<tsify::Ts<SolidOperationDetailedResult>, JsError> {
+        Ok(self
+            .binary_boolean_detailed_impl(BooleanOp::Fuse, "fuse", a, b)
+            .into_ts()?)
+    }
+
     /// Cut (subtract) solid `b` from solid `a`.
     ///
     /// Returns a new solid handle (`u32`).
@@ -371,6 +389,22 @@ impl BrepKernel {
         let b_id = self.resolve_solid(b)?;
         let result = boolean(self.topo_mut(), BooleanOp::Cut, a_id, b_id)?;
         Ok(solid_id_to_u32(result))
+    }
+
+    /// Cut solid `b` from solid `a` and return success or failure as typed
+    /// data.
+    ///
+    /// Additive twin of [`cut`](Self::cut); the legacy method keeps its
+    /// existing return value and thrown-error behavior.
+    #[wasm_bindgen(js_name = "cutDetailed")]
+    pub fn cut_detailed(
+        &mut self,
+        a: u32,
+        b: u32,
+    ) -> Result<tsify::Ts<SolidOperationDetailedResult>, JsError> {
+        Ok(self
+            .binary_boolean_detailed_impl(BooleanOp::Cut, "cut", a, b)
+            .into_ts()?)
     }
 
     /// Detect surface-level coincident face pairs between two solids
@@ -448,6 +482,22 @@ impl BrepKernel {
         let b_id = self.resolve_solid(b)?;
         let result = boolean(self.topo_mut(), BooleanOp::Intersect, a_id, b_id)?;
         Ok(solid_id_to_u32(result))
+    }
+
+    /// Intersect two solids and return success or failure as typed data.
+    ///
+    /// Additive twin of [`intersect_solids`](Self::intersect_solids); the
+    /// legacy method keeps its existing return value and thrown-error
+    /// behavior.
+    #[wasm_bindgen(js_name = "intersectDetailed")]
+    pub fn intersect_detailed(
+        &mut self,
+        a: u32,
+        b: u32,
+    ) -> Result<tsify::Ts<SolidOperationDetailedResult>, JsError> {
+        Ok(self
+            .binary_boolean_detailed_impl(BooleanOp::Intersect, "intersect", a, b)
+            .into_ts()?)
     }
 
     // ── Boolean operations with options ────────────────────────────
@@ -673,6 +723,29 @@ impl BrepKernel {
 
 // Private helpers (not exported to JS).
 impl BrepKernel {
+    /// Shared natively-testable body for the additive binary-boolean twins.
+    fn binary_boolean_detailed_impl(
+        &mut self,
+        op: BooleanOp,
+        operation: &'static str,
+        a: u32,
+        b: u32,
+    ) -> SolidOperationDetailedResult {
+        let result = (|| -> Result<u32, WasmError> {
+            let a_id = self.resolve_solid(a)?;
+            let b_id = self.resolve_solid(b)?;
+            let solid = boolean(self.topo_mut(), op, a_id, b_id)?;
+            Ok(solid_id_to_u32(solid))
+        })();
+
+        match result {
+            Ok(value) => SolidOperationDetailedResult::success(value),
+            Err(error) => SolidOperationDetailedResult::error(
+                StructuredWasmError::from(error).with_direct_operation(operation),
+            ),
+        }
+    }
+
     /// Shared body of the `*WithOptions` boolean bindings.
     fn boolean_with_options_impl(
         &mut self,
@@ -832,6 +905,7 @@ mod tests {
 
     use remus_math::MathError;
     use remus_operations::OperationsError;
+    use remus_operations::boolean::BooleanOp;
 
     use super::OperationCancellationToken;
     use crate::error::StructuredWasmError;
@@ -847,6 +921,13 @@ mod tests {
     fn batch_has_error(result: &str, idx: usize) -> bool {
         let parsed: serde_json::Value = serde_json::from_str(result).unwrap();
         parsed[idx]["error"].is_string()
+    }
+
+    fn batch_v2_failure_code(error: &serde_json::Value) -> &str {
+        error["details"]["kernelCode"]
+            .as_str()
+            .or_else(|| error["code"].as_str())
+            .unwrap()
     }
 
     /// Create two overlapping boxes via batch, return the raw JSON result.
@@ -1116,26 +1197,174 @@ mod tests {
         assert!(batch_has_ok(&r, 0), "cut must return ok: {r}");
     }
 
-    /// README first example: cylinder axis exactly coincident with the box's
-    /// vertical corner edge (tangential-contact class). Must cut cleanly.
+    /// README browser example: the typed direct twin and `executeBatchV2`
+    /// must both cut the corner-coincident cylinder and agree geometrically.
     #[test]
-    fn cut_corner_coincident_cylinder_readme_example() {
-        let mut k = BrepKernel::new();
-        let setup = k.execute_batch(
+    fn cut_detailed_readme_example_matches_batch_v2() {
+        let mut direct = BrepKernel::new();
+        let block = direct.make_box_solid(30.0, 20.0, 10.0).unwrap();
+        let cutter = direct.make_cylinder_solid(5.0, 15.0).unwrap();
+        let direct_result =
+            direct.binary_boolean_detailed_impl(BooleanOp::Cut, "cut", block, cutter);
+        let direct_json = serde_json::to_value(direct_result).unwrap();
+        assert_eq!(direct_json["status"], "ok");
+        assert!(direct_json["code"].is_null());
+        assert!(direct_json["category"].is_null());
+        assert_eq!(direct_json["details"], serde_json::json!({}));
+        let direct_handle = u32::try_from(direct_json["value"].as_u64().unwrap()).unwrap();
+        let direct_volume = direct.volume(direct_handle, 0.1).unwrap();
+
+        let mut batch = BrepKernel::new();
+        let response = batch.execute_batch_v2(
             r#"[
                 {"op": "makeBox", "args": {"width": 30, "height": 20, "depth": 10}},
-                {"op": "makeCylinder", "args": {"radius": 5, "height": 15}}
+                {"op": "makeCylinder", "args": {"radius": 5, "height": 15}},
+                {"op": "cut", "args": {"solidA": 0, "solidB": 1}},
+                {"op": "volume", "args": {"solid": 2, "deflection": 0.1}}
             ]"#,
         );
-        let parsed: serde_json::Value = serde_json::from_str(&setup).unwrap();
-        let a = parsed[0]["ok"].as_u64().unwrap();
-        let b = parsed[1]["ok"].as_u64().unwrap();
-        let r = k.execute_batch(&format!(
-            r#"[{{"op": "cut", "args": {{"solidA": {a}, "solidB": {b}}}}}]"#
-        ));
-        assert!(
-            batch_has_ok(&r, 0),
-            "corner-coincident cut must return ok: {r}"
+        let batch_json: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert!(batch_json[2]["ok"].is_u64(), "batch cut failed: {response}");
+        let batch_volume = batch_json[3]["ok"].as_f64().unwrap();
+        assert!((direct_volume - batch_volume).abs() < 1e-9);
+    }
+
+    #[test]
+    fn detailed_binary_boolean_successes_return_live_handles() {
+        for (op, operation) in [
+            (BooleanOp::Fuse, "fuse"),
+            (BooleanOp::Cut, "cut"),
+            (BooleanOp::Intersect, "intersect"),
+        ] {
+            let mut kernel = BrepKernel::new();
+            let a = kernel.make_box_solid(2.0, 2.0, 2.0).unwrap();
+            let b = kernel.make_box_solid(1.0, 1.0, 1.0).unwrap();
+            let result = kernel.binary_boolean_detailed_impl(op, operation, a, b);
+            let value = serde_json::to_value(result).unwrap();
+
+            assert_eq!(value["status"], "ok", "{operation}: {value}");
+            assert!(value["code"].is_null());
+            assert!(value["category"].is_null());
+            assert_eq!(value["details"], serde_json::json!({}));
+            let handle = u32::try_from(value["value"].as_u64().unwrap()).unwrap();
+            assert!(kernel.resolve_solid(handle).is_ok());
+        }
+    }
+
+    #[test]
+    fn detailed_binary_boolean_refusals_match_batch_v2_codes() {
+        for (op, operation) in [
+            (BooleanOp::Fuse, "fuse"),
+            (BooleanOp::Cut, "cut"),
+            (BooleanOp::Intersect, "intersect"),
+        ] {
+            for invalid_a in [true, false] {
+                let mut kernel = BrepKernel::new();
+                let valid = kernel.make_box_solid(2.0, 2.0, 2.0).unwrap();
+                let invalid = u32::MAX;
+                let (a, b) = if invalid_a {
+                    (invalid, valid)
+                } else {
+                    (valid, invalid)
+                };
+                let counts_before = (
+                    kernel.topo().num_vertices(),
+                    kernel.topo().num_edges(),
+                    kernel.topo().num_faces(),
+                    kernel.topo().num_solids(),
+                    kernel.topo().allocated_slot_count(),
+                );
+
+                let direct =
+                    serde_json::to_value(kernel.binary_boolean_detailed_impl(op, operation, a, b))
+                        .unwrap();
+                assert_eq!(direct["status"], "error", "{operation}: {direct}");
+                assert_eq!(direct["code"], "invalid_handle");
+                assert_eq!(direct["category"], "invalid_input");
+                assert!(direct["value"].is_null());
+                assert_eq!(direct["details"]["operation"], operation);
+                assert_eq!(direct["details"]["entity"], "solid");
+                assert_eq!(direct["details"]["index"], u64::from(invalid));
+                assert!(direct["details"]["message"].is_string());
+
+                let batch = kernel.execute_batch_v2(
+                    &serde_json::json!([{
+                        "op": operation,
+                        "args": {"solidA": a, "solidB": b},
+                    }])
+                    .to_string(),
+                );
+                let batch: serde_json::Value = serde_json::from_str(&batch).unwrap();
+                let batch_error = &batch[0]["error"];
+                assert_eq!(
+                    direct["code"].as_str().unwrap(),
+                    batch_v2_failure_code(batch_error),
+                    "{operation}: direct={direct}, batch={batch_error}"
+                );
+                assert_eq!(direct["category"], batch_error["category"]);
+                assert_eq!(
+                    (
+                        kernel.topo().num_vertices(),
+                        kernel.topo().num_edges(),
+                        kernel.topo().num_faces(),
+                        kernel.topo().num_solids(),
+                        kernel.topo().allocated_slot_count(),
+                    ),
+                    counts_before,
+                    "{operation}: a typed refusal must not mutate topology"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cut_detailed_operation_refusal_matches_batch_v2_and_rolls_back() {
+        let mut kernel = BrepKernel::new();
+        let solid = kernel.make_box_solid(2.0, 2.0, 2.0).unwrap();
+        let counts_before = (
+            kernel.topo().num_vertices(),
+            kernel.topo().num_edges(),
+            kernel.topo().num_faces(),
+            kernel.topo().num_solids(),
+            kernel.topo().allocated_slot_count(),
+        );
+
+        let direct = serde_json::to_value(kernel.binary_boolean_detailed_impl(
+            BooleanOp::Cut,
+            "cut",
+            solid,
+            solid,
+        ))
+        .unwrap();
+        assert_eq!(direct["status"], "error");
+        assert_eq!(direct["code"], "operation_failed");
+        assert_eq!(direct["category"], "internal");
+        assert!(direct["details"]["message"].is_string());
+        assert!(direct["value"].is_null());
+
+        let batch = kernel.execute_batch_v2(
+            &serde_json::json!([{
+                "op": "cut",
+                "args": {"solidA": solid, "solidB": solid},
+            }])
+            .to_string(),
+        );
+        let batch: serde_json::Value = serde_json::from_str(&batch).unwrap();
+        let batch_error = &batch[0]["error"];
+        assert_eq!(
+            direct["code"].as_str().unwrap(),
+            batch_v2_failure_code(batch_error)
+        );
+        assert_eq!(direct["category"], batch_error["category"]);
+        assert_eq!(
+            (
+                kernel.topo().num_vertices(),
+                kernel.topo().num_edges(),
+                kernel.topo().num_faces(),
+                kernel.topo().num_solids(),
+                kernel.topo().allocated_slot_count(),
+            ),
+            counts_before
         );
     }
 
