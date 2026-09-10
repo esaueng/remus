@@ -59,6 +59,7 @@ export const brepkernel_curveKnotInsert: (a: number, b: number, c: number, d: nu
 export const brepkernel_curveKnotRemove: (a: number, b: number, c: number, d: number) => [number, number, number];
 export const brepkernel_curveSplit: (a: number, b: number, c: number) => [number, number, number, number];
 export const brepkernel_cut: (a: number, b: number, c: number) => [number, number, number];
+export const brepkernel_cutDetailed: (a: number, b: number, c: number) => [number, number, number];
 export const brepkernel_cutJournaled: (a: number, b: number, c: number) => [number, number, number, number];
 export const brepkernel_cutWithEntityEvolution: (a: number, b: number, c: number) => [number, number, number, number];
 export const brepkernel_cutWithEvolution: (a: number, b: number, c: number) => [number, number, number];
@@ -104,6 +105,7 @@ export const brepkernel_fixShapeWithConfigJournaled: (a: number, b: number, c: n
 export const brepkernel_fromBREP: (a: number, b: number, c: number) => [number, number, number];
 export const brepkernel_fuse: (a: number, b: number, c: number) => [number, number, number];
 export const brepkernel_fuseAll: (a: number, b: number, c: number) => [number, number, number];
+export const brepkernel_fuseDetailed: (a: number, b: number, c: number) => [number, number, number];
 export const brepkernel_fuseJournaled: (a: number, b: number, c: number) => [number, number, number, number];
 export const brepkernel_fuseWithEntityEvolution: (a: number, b: number, c: number) => [number, number, number, number];
 export const brepkernel_fuseWithEvolution: (a: number, b: number, c: number) => [number, number, number];
@@ -164,6 +166,7 @@ export const brepkernel_inertiaTensor: (a: number, b: number) => [number, number
 export const brepkernel_interpolatePoints: (a: number, b: number, c: number, d: number) => [number, number, number];
 export const brepkernel_interpolateSurface: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number];
 export const brepkernel_intersect: (a: number, b: number, c: number) => [number, number, number];
+export const brepkernel_intersectDetailed: (a: number, b: number, c: number) => [number, number, number];
 export const brepkernel_intersectJournaled: (a: number, b: number, c: number) => [number, number, number, number];
 export const brepkernel_intersectPolygons2d: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
 export const brepkernel_intersectWithEntityEvolution: (a: number, b: number, c: number) => [number, number, number, number];

@@ -2782,25 +2782,8 @@ pub fn fillet_rolling_ball_with_origins(
                     // weight for a rational quadratic Bézier circular arc from a to b
                     // on the sphere.  The middle CP sits at distance r/cos(θ/2) from
                     // center (the tangent intersection), and the weight is cos(θ/2).
-                    let arc_mid_and_weight = |a: Point3, b: Point3| -> Option<(Point3, f64)> {
-                        let va = (a - sphere_center).normalize().ok()?;
-                        let vb = (b - sphere_center).normalize().ok()?;
-                        let r_actual = (a - sphere_center).length();
-                        let sum = va + vb;
-                        let len = sum.length();
-                        if len < 1e-15 {
-                            return None;
-                        }
-                        let dir = Vec3::new(sum.x() / len, sum.y() / len, sum.z() / len);
-                        let cos_half = len / 2.0; // cos(θ/2) for unit vectors
-                        let r_ctrl = r_actual / cos_half;
-                        let cp = Point3::new(
-                            sphere_center.x() + dir.x() * r_ctrl,
-                            sphere_center.y() + dir.y() * r_ctrl,
-                            sphere_center.z() + dir.z() * r_ctrl,
-                        );
-                        Some((cp, cos_half))
-                    };
+                    let arc_mid_and_weight =
+                        |a: Point3, b: Point3| rational_arc_control_point(sphere_center, a, b);
 
                     // Compute per-edge arc midpoints and weights.
                     if let (Some((m01, w01)), Some((m12, w12)), Some((m20, w20))) = (
@@ -3541,4 +3524,105 @@ fn boundary_polygon_area(topo: &Topology, face_id: FaceId) -> Result<f64, crate:
         );
     }
     Ok(n.length() * 0.5)
+}
+
+/// Middle control point and weight of the rational quadratic Bézier circular
+/// arc from `a` to `b` on the sphere centred at `center`. The control point
+/// is the tangent intersection at distance `r / cos(θ/2)` along the bisector
+/// of the two radial directions, and the weight is `cos(θ/2)`. `None` for
+/// a degenerate radial direction or an antipodal pair.
+fn rational_arc_control_point(center: Point3, a: Point3, b: Point3) -> Option<(Point3, f64)> {
+    let va = (a - center).normalize().ok()?;
+    let vb = (b - center).normalize().ok()?;
+    let r_actual = (a - center).length();
+    let sum = va + vb;
+    let len = sum.length();
+    if len < 1e-15 {
+        return None;
+    }
+    let dir = Vec3::new(sum.x() / len, sum.y() / len, sum.z() / len);
+    let cos_half = len / 2.0; // cos(θ/2) for unit vectors
+    let r_ctrl = r_actual / cos_half;
+    let cp = Point3::new(
+        center.x() + dir.x() * r_ctrl,
+        center.y() + dir.y() * r_ctrl,
+        center.z() + dir.z() * r_ctrl,
+    );
+    Some((cp, cos_half))
+}
+
+#[cfg(test)]
+mod rational_arc_tests {
+    #![allow(clippy::unwrap_used)]
+    use super::rational_arc_control_point;
+    use remus_math::vec::Point3;
+
+    /// Mutation survivor (2026-09-06): the z component of the bisector was
+    /// only reachable through a three-stripe corner whose analytic sphere cap
+    /// declined, which no fixture drives. Pin the closed form directly: a
+    /// quarter arc's control point is the corner of the bounding square and
+    /// its weight is cos(45°), on every axis pair and off the origin.
+    #[test]
+    fn quarter_arc_control_point_is_the_tangent_corner_on_every_axis_pair() {
+        let cases = [
+            (
+                Point3::new(0.0, 0.0, 0.0),
+                1.0,
+                [1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ),
+            (
+                Point3::new(0.0, 0.0, 0.0),
+                1.0,
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ),
+            (
+                Point3::new(3.0, -4.0, 5.0),
+                2.0,
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ),
+            (
+                Point3::new(3.0, -4.0, 5.0),
+                2.0,
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ),
+        ];
+        for (center, radius, da, db) in cases {
+            let a = Point3::new(
+                center.x() + da[0] * radius,
+                center.y() + da[1] * radius,
+                center.z() + da[2] * radius,
+            );
+            let b = Point3::new(
+                center.x() + db[0] * radius,
+                center.y() + db[1] * radius,
+                center.z() + db[2] * radius,
+            );
+            let (cp, weight) = rational_arc_control_point(center, a, b).unwrap();
+            let expected = Point3::new(
+                center.x() + (da[0] + db[0]) * radius,
+                center.y() + (da[1] + db[1]) * radius,
+                center.z() + (da[2] + db[2]) * radius,
+            );
+            assert!(
+                (cp - expected).length() < 1e-12,
+                "{center:?} {da:?} {db:?}: {cp:?}"
+            );
+            assert!(
+                (weight - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-12,
+                "{weight}"
+            );
+        }
+        assert!(
+            rational_arc_control_point(
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(1.0, 0.0, 0.0),
+                Point3::new(-1.0, 0.0, 0.0)
+            )
+            .is_none()
+        );
+    }
 }
