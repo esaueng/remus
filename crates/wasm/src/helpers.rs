@@ -264,33 +264,20 @@ pub fn json_f64(val: &serde_json::Value, key: &str) -> Result<f64, JsError> {
 
 // ── Edge/face helpers ─────────────────────────────────────────────
 
-/// Attempt a fillet, preferring the v2 walking engine and validating output.
+/// Attempt a fillet through the kernel's one cascade, validating output.
 ///
-/// Engine order is a product decision (2026-07): the v2 walking engine
-/// (`blend_ops::fillet_v2`, the maintained `crates/blend` engine with
-/// validated fail-closed contracts) runs first; the deprecated v1
-/// rolling-ball engine is the fallback for cases v2 cannot yet complete,
-/// and the v1 flat bevel is the last resort. On the box single-edge,
-/// disjoint-multi-edge, and all-12-edge cases the two primary engines
-/// produce identical volumes and face counts (the historical "v2
-/// over-removes corner material" note predates the corner-solver fixes and
-/// no longer reproduces).
-///
-/// Every candidate is validated as a closed (watertight) solid before being
-/// accepted, so a malformed result is rejected in favour of the next engine.
-/// This guard lets `filter_filletable_edges` be permissive about curved
-/// neighbours without ever returning a degenerate solid.
+/// This is [`remus_operations::blend_ops::fillet_cascade`] (walking engine,
+/// then the rolling-ball rebuild; no flat bevel) after dropping the tangent
+/// and degenerate edges the selection may carry. Every candidate is validated
+/// as a closed solid and every attempt is transactional, so a rejected
+/// attempt never leaves the input partly filleted.
 ///
 /// # Errors
 ///
-/// When no engine produces a valid closed solid, returns the v2 walking
-/// engine's typed error — the engine with meaningful diagnostics
-/// (`UnsupportedVertexBlend`, `TrimmingFailure`, `RadiusTooLarge`, …) —
-/// rather than the historical silent input-handle no-op, which left callers
-/// unable to distinguish "radius too large" from "unsupported topology"
-/// (`try_chamfer`'s doc comment calls that the no-op trap). The input solid
-/// is always rolled back to its untouched pre-attempt state on failure.
-#[allow(deprecated)]
+/// When no engine produces a valid closed solid, returns the walking engine's
+/// typed error (`UnsupportedVertexBlend`, `TrimmingFailure`, `RadiusTooLarge`,
+/// …) rather than the historical silent input-handle no-op. The input solid is
+/// always left in its untouched pre-attempt state on failure.
 pub fn try_fillet(
     topo: &mut remus_topology::Topology,
     solid_id: remus_topology::solid::SolidId,
@@ -310,7 +297,6 @@ pub fn try_fillet(
 /// # Errors
 ///
 /// Same as [`try_fillet`].
-#[allow(deprecated)]
 pub fn try_fillet_with_origins(
     topo: &mut remus_topology::Topology,
     solid_id: remus_topology::solid::SolidId,
@@ -337,63 +323,8 @@ pub fn try_fillet_with_origins(
     }
     let edges = edges.as_slice();
 
-    // A candidate is acceptable only if its outer shell is a CLOSED 2-manifold
-    // (every edge used by exactly two faces — no free/boundary edges). The
-    // weaker manifold-only check silently accepted open shells (e.g. a fillet
-    // that leaves a cap untrimmed at a contact circle), which tessellate to a
-    // plausible-but-wrong volume; reject them so the next engine or the
-    // unchanged input is used.
-    let is_valid = |topo: &remus_topology::Topology, s: remus_topology::solid::SolidId| -> bool {
-        topo.solid(s)
-            .and_then(|sd| topo.shell(sd.outer_shell()))
-            .map(|sh| remus_topology::validation::validate_shell_closed(sh, topo).is_ok())
-            .unwrap_or(false)
-    };
-
-    // Every engine mutates the shared arena in place (the trimmer's
-    // `propagate_split` rewrites the wires of each face touching a split
-    // edge; the rolling-ball rebuild rewrites cap wires). A rejected attempt
-    // therefore leaves the INPUT solid partly filleted — rounded corners plus
-    // free edges where a split was applied but never closed. A caller that
-    // reports the failure and keeps using its original handle then ships
-    // that corrupted body: the OpenZCAD demo bracket meshed with 42 boundary
-    // edges even though its fillet had "failed".
-    //
-    // Snapshot once, roll back after every rejected attempt so the next
-    // engine starts clean and a total failure is a true no-op on the input.
-    // Handle slots are preserved, so IDs held by the caller stay valid.
-    let snapshot = topo.clone();
-
-    // v2 (the walking blend) is tried first: it is the engine under active
-    // development and matches v1 on every measured case. Its failure is
-    // remembered verbatim — if the fallback engines cannot rescue the call,
-    // that typed diagnosis is what the caller receives.
-    let v2_failure = match remus_operations::blend_ops::fillet_v2(topo, solid_id, edges, radius) {
-        Ok(r) if is_valid(topo, r.solid) => return Ok((r.solid, r.face_origins)),
-        Ok(_) => remus_operations::OperationsError::InvalidInput {
-            reason: "fillet produced an open shell".into(),
-        },
-        Err(e) => e,
-    };
-    topo.restore_preserving_handle_slots(&snapshot);
-
-    if let Ok(s) = remus_operations::fillet::fillet_rolling_ball(topo, solid_id, edges, radius)
-        && is_valid(topo, s)
-    {
-        return Ok((s, None));
-    }
-    topo.restore_preserving_handle_slots(&snapshot);
-
-    if let Ok(s) = remus_operations::fillet::fillet(topo, solid_id, edges, radius)
-        && is_valid(topo, s)
-    {
-        return Ok((s, None));
-    }
-    topo.restore_preserving_handle_slots(&snapshot);
-
-    // No engine produced a valid solid — the input is unchanged, and the
-    // walking engine's diagnosis names the blocker.
-    Err(v2_failure)
+    let result = remus_operations::blend_ops::fillet_cascade(topo, solid_id, edges, radius)?;
+    Ok((result.solid, result.face_origins))
 }
 
 /// [`try_fillet`], with the rule that the answer must cover every edge named.

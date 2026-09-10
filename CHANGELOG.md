@@ -20,6 +20,18 @@
   `Model` facade is unchanged: it already returns the outcome. Callers that
   relied on the silent fallback must opt in and read the disclosed quality.
 
+* **blend,operations,wasm:** one fillet cascade. `blend_ops::fillet_cascade`
+  (walking engine, then the guarded rolling-ball rebuild, each transactional)
+  is the policy behind the WASM `fillet` / `filletWithEvolution` / batch
+  `fillet`, the facade `Model::fillet`, and `fillet_with_evolution`, so Rust
+  and JS callers get the same geometry for the same request. The v1 flat
+  bevel is no longer a fillet fallback: a request only a bevel could satisfy
+  is refused with the walking engine's error instead of returning a
+  chamfer-shaped solid. `remus_blend::BlendResult` gains `engine:
+  BlendEngine` (`Walking`, `RollingBall`, `PlanarBevel`, `Mixed`) disclosing
+  the engine that produced the result; code constructing `BlendResult` by
+  struct literal must set it.
+
 ### Features
 
 * **offset,operations,wasm:** retain the default V2 offset builder's exact
