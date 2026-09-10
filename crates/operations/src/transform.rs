@@ -145,6 +145,7 @@ pub fn transform_solid(
 
     // Collect all unique vertex IDs, edge IDs, and face IDs in a read phase.
     let (vertex_ids, edge_ids, face_ids) = collect_solid_entities(topo, solid)?;
+    let translation_certificates = translation_edge_certificates(topo, &edge_ids, matrix)?;
 
     // Mutate phase 1: transform each vertex.
     for vid in vertex_ids {
@@ -155,6 +156,7 @@ pub fn transform_solid(
 
     // Mutate phase 2: transform edge curves (NURBS, Circle, Ellipse).
     transform_edges(topo, &edge_ids, matrix)?;
+    restore_translation_certificates(topo, translation_certificates)?;
 
     // Mutate phase 3: transform face surface geometry.
     // For plane normals, use the inverse transpose: n' = (M⁻¹)ᵀ · n
@@ -324,6 +326,93 @@ pub fn transform_solid(
         }
     }
 
+    Ok(())
+}
+
+// A translation preserves mathematical endpoint residuals, but independently
+// rounding translated vertices and curve control points can increase the
+// evaluated residual by a few ulps. Preserve an existing certificate only
+// within a coordinate-scale floating-point budget. Invalid source edges and
+// larger discrepancies are never repaired here; the strict I/O gate remains
+// unchanged. Store the measured residual, not the whole roundoff allowance.
+#[allow(clippy::float_cmp)] // Exact identity is required; near-identity may scale geometry.
+pub(crate) fn translation_edge_certificates(
+    topo: &Topology,
+    edges: &HashSet<EdgeId>,
+    matrix: &Mat4,
+) -> Result<Vec<(EdgeId, f64, f64)>, crate::OperationsError> {
+    let m = &matrix.0;
+    if (0..4).any(|r| (0..4).any(|c| c != 3 && m[r][c] != if r == c { 1.0 } else { 0.0 }))
+        || m[3][3] != 1.0
+        || (m[0][3] == 0.0 && m[1][3] == 0.0 && m[2][3] == 0.0)
+    {
+        return Ok(Vec::new());
+    }
+    let mut certificates = Vec::new();
+    for &id in edges {
+        let edge = topo.edge(id)?;
+        if matches!(edge.curve(), EdgeCurve::Line) {
+            continue;
+        }
+        let Ok((a, b)) = edge.strict_domain() else {
+            continue;
+        };
+        let start = topo.vertex(edge.start())?;
+        let end = topo.vertex(edge.end())?;
+        let tolerance = edge.effective_tolerance(start.tolerance().max(end.tolerance()));
+        let p = start.point();
+        let q = end.point();
+        let first = (edge.curve().evaluate_with_endpoints(a, p, q) - p).length();
+        let second = (edge.curve().evaluate_with_endpoints(b, p, q) - q).length();
+        if !first.is_finite() || !second.is_finite() {
+            continue;
+        }
+        let residual = first.max(second);
+        if residual.is_finite() && residual <= tolerance {
+            let scale = [
+                p.x(),
+                p.y(),
+                p.z(),
+                q.x(),
+                q.y(),
+                q.z(),
+                m[0][3],
+                m[1][3],
+                m[2][3],
+            ]
+            .into_iter()
+            .map(f64::abs)
+            .fold(0.0, f64::max);
+            // Large translations must not turn a coordinate-scale budget
+            // into permission for a meaningful geometric gap.
+            let budget = (64.0 * f64::EPSILON * scale).min(tolerance * 1e-8);
+            certificates.push((id, tolerance, budget));
+        }
+    }
+    Ok(certificates)
+}
+
+pub(crate) fn restore_translation_certificates(
+    topo: &mut Topology,
+    certificates: Vec<(EdgeId, f64, f64)>,
+) -> Result<(), crate::OperationsError> {
+    for (id, tolerance, budget) in certificates {
+        let edge = topo.edge(id)?;
+        let Ok((a, b)) = edge.strict_domain() else {
+            continue;
+        };
+        let p = topo.vertex(edge.start())?.point();
+        let q = topo.vertex(edge.end())?.point();
+        let first = (edge.curve().evaluate_with_endpoints(a, p, q) - p).length();
+        let second = (edge.curve().evaluate_with_endpoints(b, p, q) - q).length();
+        if !first.is_finite() || !second.is_finite() {
+            continue;
+        }
+        let residual = first.max(second);
+        if residual.is_finite() && residual > tolerance && residual - tolerance <= budget {
+            topo.edge_mut(id)?.set_tolerance(Some(residual.next_up()))?;
+        }
+    }
     Ok(())
 }
 
@@ -1225,5 +1314,64 @@ pub(crate) fn transform_open_conic(
                 curve.type_tag()
             ),
         }),
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::float_cmp)]
+mod translation_certificate_tests {
+    use super::*;
+    use remus_math::vec::Point3;
+    use remus_topology::{edge::Edge, vertex::Vertex};
+
+    #[test]
+    fn translation_preserves_only_prevalidated_roundoff_certificates() {
+        for (valid_source, corrupt_after) in [(true, false), (false, false), (true, true)] {
+            let mut topo = Topology::new();
+            let p = Point3::new(0.0, 0.0, 0.0);
+            let q = Point3::new(10.0, 0.0, 0.0);
+            let a = topo.add_vertex(Vertex::new(p, 1e-7));
+            let b = topo.add_vertex(Vertex::new(q, 1e-7));
+            let gap = 0.00004;
+            let curve = NurbsCurve::new(
+                1,
+                vec![0.0, 0.0, 1.0, 1.0],
+                vec![Point3::new(gap, 0.0, 0.0), q],
+                vec![1.0, 1.0],
+            )
+            .unwrap();
+            let tolerance = if valid_source { gap } else { gap / 2.0 };
+            let mut edge =
+                Edge::with_tolerance(a, b, EdgeCurve::NurbsCurve(curve), Some(tolerance));
+            edge.set_trim(Some((0.0, 1.0)));
+            let id = topo.add_edge(edge);
+            let ids = HashSet::from([id]);
+            let matrix = Mat4::translation(4.5, 0.0, 0.0);
+            let certificates = translation_edge_certificates(&topo, &ids, &matrix).unwrap();
+            assert_eq!(certificates.len(), usize::from(valid_source));
+            topo.vertex_mut(a).unwrap().set_point(matrix.mul_point(p));
+            topo.vertex_mut(b).unwrap().set_point(matrix.mul_point(q));
+            transform_edges(&mut topo, &ids, &matrix).unwrap();
+            if corrupt_after {
+                let point = topo.vertex(a).unwrap().point();
+                topo.vertex_mut(a)
+                    .unwrap()
+                    .set_point(Point3::new(point.x(), 0.001, point.z()));
+            }
+            restore_translation_certificates(&mut topo, certificates).unwrap();
+            let edge = topo.edge(id).unwrap();
+            let p = topo.vertex(a).unwrap().point();
+            let q = topo.vertex(b).unwrap().point();
+            let residual = (edge.curve().evaluate_with_endpoints(0.0, p, q) - p).length();
+            assert!(residual > gap, "fixture must expose translation roundoff");
+            let actual = edge.effective_tolerance(1e-7);
+            if valid_source && !corrupt_after {
+                assert!(residual <= actual);
+                assert!(actual - gap < 1e-15);
+            } else {
+                assert_eq!(actual, tolerance);
+                assert!(residual > actual);
+            }
+        }
     }
 }
