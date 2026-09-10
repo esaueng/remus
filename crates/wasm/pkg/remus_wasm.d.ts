@@ -174,6 +174,15 @@ export interface FaceEvolutionPayloadV1 {
 export type CancellableOperationStatus = "completed" | "cancelled";
 
 /**
+ * Typed direct-method result for a mutating operation that returns a solid.
+ *
+ * O4.7 adds these envelopes alongside the legacy throwing methods. A failure
+ * carries the same native registry code as `executeBatchV2`'s `kernelCode`,
+ * falling back to its stable wire code when no finer native code exists.
+ */
+export type SolidOperationDetailedResult = { status: "ok"; code: null; category: null; details: Record<string, unknown>; value: number } | { status: "error"; code: string; category: "invalid_input" | "invalid_topology" | "unsupported" | "nonconvergence" | "resource_limit" | "tolerance_violation" | "quality_refused" | "cancelled" | "internal"; details: Record<string, unknown>; value: null };
+
+/**
  * Typed result for `booleanWithCancellation`.
  *
  * Cancellation is returned as data rather than an unstructured JavaScript
@@ -1089,6 +1098,14 @@ export class BrepKernel {
      */
     cut(a: number, b: number): number;
     /**
+     * Cut solid `b` from solid `a` and return success or failure as typed
+     * data.
+     *
+     * Additive twin of [`cut`](Self::cut); the legacy method keeps its
+     * existing return value and thrown-error behavior.
+     */
+    cutDetailed(a: number, b: number): SolidOperationDetailedResult;
+    /**
      * Cut solid `b` from `a` with journaled construction history.
      */
     cutJournaled(a: number, b: number): string;
@@ -1545,6 +1562,13 @@ export class BrepKernel {
      * or a boolean operation produces an empty or non-manifold result.
      */
     fuseAll(solid_handles: Uint32Array): number;
+    /**
+     * Fuse two solids and return success or failure as typed data.
+     *
+     * Additive twin of [`fuse`](Self::fuse); the legacy method keeps its
+     * existing return value and thrown-error behavior.
+     */
+    fuseDetailed(a: number, b: number): SolidOperationDetailedResult;
     /**
      * Fuse two solids with journaled construction history.
      *
@@ -2117,6 +2141,14 @@ export class BrepKernel {
      * produces an empty result.
      */
     intersect(a: number, b: number): number;
+    /**
+     * Intersect two solids and return success or failure as typed data.
+     *
+     * Additive twin of [`intersect_solids`](Self::intersect_solids); the
+     * legacy method keeps its existing return value and thrown-error
+     * behavior.
+     */
+    intersectDetailed(a: number, b: number): SolidOperationDetailedResult;
     /**
      * Intersect two solids with journaled construction history.
      */
