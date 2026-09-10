@@ -605,6 +605,13 @@ pub fn copy_and_transform_solid(
 ) -> Result<SolidId, crate::OperationsError> {
     crate::transform::reject_degenerate_transform(matrix)?;
     let normal_matrix = matrix.inverse()?.transpose();
+    let certificates = crate::transform::translation_edge_certificates(
+        topo,
+        &remus_topology::explorer::solid_edges(topo, solid_id)?
+            .into_iter()
+            .collect(),
+        matrix,
+    )?;
 
     // Read phase mirrors copy_solid.
     let solid = topo.solid(solid_id)?;
@@ -743,6 +750,14 @@ pub fn copy_and_transform_solid(
         let copied = topo.add_edge(copied_edge);
         edge_map.insert(esnap.old_index, copied);
     }
+
+    crate::transform::restore_translation_certificates(
+        topo,
+        certificates
+            .into_iter()
+            .map(|(id, tolerance, budget)| (edge_map[&id.index()], tolerance, budget))
+            .collect(),
+    )?;
 
     // Wires carry no geometry to transform.
     let mut wire_map: HashMap<usize, WireId> = HashMap::new();
