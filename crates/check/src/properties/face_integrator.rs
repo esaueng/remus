@@ -1893,8 +1893,9 @@ impl Accumulator {
     /// the map from the reference interval to the patch).
     fn add<S: ParametricSurface>(&mut self, surface: &S, u: f64, v: f64, w: f64) {
         let p = surface.evaluate(u, v);
-        let du = surface.partial_u(u, v);
-        let dv = surface.partial_v(u, v);
+        // One derivative evaluation for both partials (NURBS surfaces would
+        // otherwise run the full derivative solve twice per Gauss point).
+        let (du, dv) = surface.partials(u, v);
 
         // Normal = du x dv (unnormalized, includes Jacobian)
         let n = Vec3::new(

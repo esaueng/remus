@@ -10,7 +10,7 @@ use crate::vec::{Point3, Vec3};
 ///
 /// The surface is defined by degrees in the u and v directions, two knot
 /// vectors, a 2D grid of control points, and matching weights.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct NurbsSurface {
     /// Polynomial degree in the u direction.
@@ -25,9 +25,38 @@ pub struct NurbsSurface {
     control_points: Vec<Vec<Point3>>,
     /// Weight grid matching `control_points` dimensions.
     weights: Vec<Vec<f64>>,
+    /// Largest weight, cached: `derivatives` divides every weight by it so a
+    /// common factor (e.g. 1e-300) cannot destabilize the perspective divide.
+    /// The struct is immutable after construction, so the cache never goes
+    /// stale; it is filled in `new` and lazily after deserialization.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    max_weight: std::sync::OnceLock<f64>,
+}
+
+impl PartialEq for NurbsSurface {
+    fn eq(&self, other: &Self) -> bool {
+        self.degree_u == other.degree_u
+            && self.degree_v == other.degree_v
+            && self.knots_u == other.knots_u
+            && self.knots_v == other.knots_v
+            && self.control_points == other.control_points
+            && self.weights == other.weights
+    }
 }
 
 impl NurbsSurface {
+    /// The largest control-point weight (cached; computed once per surface).
+    #[must_use]
+    pub fn max_weight(&self) -> f64 {
+        *self.max_weight.get_or_init(|| {
+            self.weights
+                .iter()
+                .flatten()
+                .copied()
+                .fold(0.0_f64, f64::max)
+        })
+    }
+
     /// Construct a new NURBS surface with validation.
     ///
     /// # Errors
@@ -122,14 +151,17 @@ impl NurbsSurface {
         validate_weight_values(&weights)?;
         super::validate_control_point_values(control_points.iter().flatten().copied())?;
 
-        Ok(Self {
+        let surface = Self {
             degree_u,
             degree_v,
             knots_u,
             knots_v,
             control_points,
             weights,
-        })
+            max_weight: std::sync::OnceLock::new(),
+        };
+        let _ = surface.max_weight();
+        Ok(surface)
     }
 
     /// Polynomial degree in the u direction.
@@ -391,14 +423,20 @@ impl NurbsSurface {
         };
         basis::ders_basis_funs_into(span_v, v, pv, dv, &self.knots_v, ders_v);
 
-        // Compute homogeneous derivatives Aw[k][l] = (wx, wy, wz, w)
-        let mut aw = vec![vec![[0.0f64; 4]; d + 1]; d + 1];
-        let weight_scale = self
-            .weights
-            .iter()
-            .flatten()
-            .copied()
-            .fold(0.0_f64, f64::max);
+        // Compute homogeneous derivatives Aw[k][l] = (wx, wy, wz, w), stored
+        // row-major with stride `d + 1` in a stack buffer for the orders every
+        // hot path uses (d <= MAX_STACK_OUTPUT), heap otherwise.
+        let n = d + 1;
+        let mut aw_stack =
+            [[0.0f64; 4]; (basis::MAX_STACK_OUTPUT + 1) * (basis::MAX_STACK_OUTPUT + 1)];
+        let mut aw_heap;
+        let aw: &mut [[f64; 4]] = if n * n <= aw_stack.len() {
+            &mut aw_stack[..n * n]
+        } else {
+            aw_heap = vec![[0.0f64; 4]; n * n];
+            &mut aw_heap
+        };
+        let weight_scale = self.max_weight();
         debug_assert!(weight_scale.is_finite() && weight_scale > 0.0);
         for k in 0..=du {
             for l in 0..=dv {
@@ -414,10 +452,11 @@ impl NurbsSurface {
                         let pt = &self.control_points[u_idx][v_idx];
                         let w = self.weights[u_idx][v_idx] / weight_scale;
                         let coeff = du_ki * dv_lj;
-                        aw[k][l][0] += coeff * pt.x() * w;
-                        aw[k][l][1] += coeff * pt.y() * w;
-                        aw[k][l][2] += coeff * pt.z() * w;
-                        aw[k][l][3] += coeff * w;
+                        let cell = &mut aw[k * n + l];
+                        cell[0] += coeff * pt.x() * w;
+                        cell[1] += coeff * pt.y() * w;
+                        cell[2] += coeff * pt.z() * w;
+                        cell[3] += coeff * w;
                     }
                 }
             }
@@ -425,35 +464,38 @@ impl NurbsSurface {
 
         // Apply rational quotient rule (A4.4).
         let zero = Vec3::new(0.0, 0.0, 0.0);
-        let mut skl = vec![vec![zero; d + 1]; d + 1];
-        let w0 = aw[0][0][3];
+        let mut skl = vec![vec![zero; n]; n];
+        let w0 = aw[0][3];
 
         for k in 0..=du {
             for l in 0..=dv {
                 if k + l > d {
                     continue;
                 }
-                let mut v3 = [aw[k][l][0], aw[k][l][1], aw[k][l][2]];
+                let mut v3 = [aw[k * n + l][0], aw[k * n + l][1], aw[k * n + l][2]];
 
                 for j in 1..=l {
                     let bin = binomial(l, j) as f64;
-                    v3[0] -= bin * aw[0][j][3] * skl[k][l - j].x();
-                    v3[1] -= bin * aw[0][j][3] * skl[k][l - j].y();
-                    v3[2] -= bin * aw[0][j][3] * skl[k][l - j].z();
+                    let wj = aw[j][3];
+                    v3[0] -= bin * wj * skl[k][l - j].x();
+                    v3[1] -= bin * wj * skl[k][l - j].y();
+                    v3[2] -= bin * wj * skl[k][l - j].z();
                 }
 
                 for i in 1..=k {
                     let bin = binomial(k, i) as f64;
-                    v3[0] -= bin * aw[i][0][3] * skl[k - i][l].x();
-                    v3[1] -= bin * aw[i][0][3] * skl[k - i][l].y();
-                    v3[2] -= bin * aw[i][0][3] * skl[k - i][l].z();
+                    let wi = aw[i * n][3];
+                    v3[0] -= bin * wi * skl[k - i][l].x();
+                    v3[1] -= bin * wi * skl[k - i][l].y();
+                    v3[2] -= bin * wi * skl[k - i][l].z();
 
                     let mut v2 = [0.0f64; 3];
                     for j in 1..=l {
                         let bin2 = binomial(l, j) as f64;
-                        v2[0] += bin2 * aw[i][j][3] * skl[k - i][l - j].x();
-                        v2[1] += bin2 * aw[i][j][3] * skl[k - i][l - j].y();
-                        v2[2] += bin2 * aw[i][j][3] * skl[k - i][l - j].z();
+                        let wij = aw[i * n + j][3];
+                        v2[0] += bin2 * wij * skl[k - i][l - j].x();
+                        v2[1] += bin2 * wij * skl[k - i][l - j].y();
+                        v2[2] += bin2 * wij * skl[k - i][l - j].z();
                     }
                     v3[0] -= bin * v2[0];
                     v3[1] -= bin * v2[1];
@@ -971,5 +1013,109 @@ mod tests {
             prop_assert!((p.y() - u).abs() < 1e-12, "y: {} vs {}", p.y(), u);
             prop_assert!(p.z().abs() < 1e-12);
         }
+    }
+}
+
+#[cfg(test)]
+mod weight_cache_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+    use crate::traits::ParametricSurface;
+
+    /// A rational biquadratic patch with a spread of weights and a tiny
+    /// common factor, the case the global weight scale exists for.
+    fn rational_patch(factor: f64) -> NurbsSurface {
+        let pts: Vec<Vec<Point3>> = (0..4)
+            .map(|i| {
+                (0..3)
+                    .map(|j| {
+                        let (x, y) = (f64::from(i), f64::from(j));
+                        Point3::new(x, y, (x * y).sin() * 0.5 + 0.1 * x * x)
+                    })
+                    .collect()
+            })
+            .collect();
+        let weights: Vec<Vec<f64>> = (0..4)
+            .map(|i| {
+                (0..3)
+                    .map(|j| factor * (1.0 + 0.3 * f64::from(i) + 0.2 * f64::from(j)))
+                    .collect()
+            })
+            .collect();
+        NurbsSurface::new(
+            2,
+            2,
+            vec![0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0],
+            vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            pts,
+            weights,
+        )
+        .unwrap()
+    }
+
+    fn bits(v: Vec3) -> [u64; 3] {
+        [v.x().to_bits(), v.y().to_bits(), v.z().to_bits()]
+    }
+
+    #[test]
+    fn max_weight_is_the_global_maximum_and_is_cached_once() {
+        let s = rational_patch(1e-200);
+        let expected = s
+            .weights()
+            .iter()
+            .flatten()
+            .copied()
+            .fold(0.0_f64, f64::max);
+        assert_eq!(s.max_weight().to_bits(), expected.to_bits());
+        // Evaluations must not recompute the scale: the cell is filled by `new`
+        // and stays the same object afterwards.
+        let before = s.max_weight.get().copied();
+        for k in 0..25 {
+            let t = f64::from(k) / 24.0;
+            let _ = s.derivatives(t, 1.0 - t, 2);
+        }
+        assert_eq!(s.max_weight.get().copied(), before);
+        assert!(before.is_some());
+    }
+
+    #[test]
+    fn partials_are_bitwise_the_separate_partials() {
+        let s = rational_patch(1.0);
+        for k in 0..30 {
+            let (u, v) = (f64::from(k) / 29.0, (f64::from(k) * 0.37) % 1.0);
+            let (du, dv) = ParametricSurface::partials(&s, u, v);
+            assert_eq!(bits(du), bits(ParametricSurface::partial_u(&s, u, v)));
+            assert_eq!(bits(dv), bits(ParametricSurface::partial_v(&s, u, v)));
+        }
+    }
+
+    #[test]
+    fn stack_and_heap_derivative_paths_agree_bitwise() {
+        // d beyond the stack budget takes the heap buffer; the shared entries
+        // must match the stack path exactly.
+        let s = rational_patch(1e-120);
+        let (u, v) = (0.31, 0.77);
+        let low = s.derivatives(u, v, 2);
+        let high = s.derivatives(u, v, basis::MAX_STACK_OUTPUT + 1);
+        for k in 0..=2 {
+            for l in 0..=2 {
+                if k + l <= 2 {
+                    assert_eq!(bits(low[k][l]), bits(high[k][l]), "S^({k},{l})");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn equality_ignores_the_cache_cell() {
+        let a = rational_patch(0.5);
+        let mut b = a.clone();
+        b.max_weight = std::sync::OnceLock::new();
+        assert!(b.max_weight.get().is_none());
+        assert_eq!(a, b);
+        assert_eq!(a.max_weight().to_bits(), b.max_weight().to_bits());
+        let c = rational_patch(0.25);
+        assert_ne!(a, c);
     }
 }

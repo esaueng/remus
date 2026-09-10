@@ -9,7 +9,7 @@ use crate::vec::{Point3, Vec3};
 ///
 /// The curve is defined by its degree, a knot vector, control points, and
 /// per-control-point weights (1.0 for non-rational curves).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct NurbsCurve {
     /// Polynomial degree of the basis functions.
@@ -20,9 +20,32 @@ pub struct NurbsCurve {
     control_points: Vec<Point3>,
     /// Weights for rational curves (same length as `control_points`).
     weights: Vec<f64>,
+    /// Largest weight, cached: `derivatives` divides every weight by it so a
+    /// common factor cannot destabilize the perspective divide. The curve is
+    /// immutable after construction, so the cache never goes stale; it is
+    /// filled in `new` and lazily after deserialization.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    max_weight: std::sync::OnceLock<f64>,
+}
+
+impl PartialEq for NurbsCurve {
+    fn eq(&self, other: &Self) -> bool {
+        self.degree == other.degree
+            && self.knots == other.knots
+            && self.control_points == other.control_points
+            && self.weights == other.weights
+    }
 }
 
 impl NurbsCurve {
+    /// The largest control-point weight (cached; computed once per curve).
+    #[must_use]
+    pub fn max_weight(&self) -> f64 {
+        *self
+            .max_weight
+            .get_or_init(|| self.weights.iter().copied().fold(0.0_f64, f64::max))
+    }
+
     /// Construct a new NURBS curve with validation.
     ///
     /// # Errors
@@ -69,12 +92,15 @@ impl NurbsCurve {
             });
         }
         validate_weight_values(&weights)?;
-        Ok(Self {
+        let curve = Self {
             degree,
             knots,
             control_points,
             weights,
-        })
+            max_weight: std::sync::OnceLock::new(),
+        };
+        let _ = curve.max_weight();
+        Ok(curve)
     }
 
     /// The polynomial degree of the curve.
@@ -201,6 +227,7 @@ impl NurbsCurve {
             knots,
             control_points: self.control_points.iter().rev().copied().collect(),
             weights: self.weights.iter().rev().copied().collect(),
+            max_weight: self.max_weight.clone(),
         }
     }
 
@@ -312,7 +339,7 @@ impl NurbsCurve {
 
         // Compute homogeneous derivatives: Aw[k] = (Aw_x, Aw_y, Aw_z, w) for k-th deriv.
         let mut aw = vec![[0.0f64; 4]; du + 1];
-        let weight_scale = self.weights.iter().copied().fold(0.0_f64, f64::max);
+        let weight_scale = self.max_weight();
         debug_assert!(weight_scale.is_finite() && weight_scale > 0.0);
         for (k, aw_k) in aw.iter_mut().enumerate().take(du + 1) {
             for j in 0..=p {
@@ -832,5 +859,64 @@ mod tests {
 
         let k = line.curvature(0.5).expect("curvature should compute");
         assert!(k < 1e-10, "straight line curvature should be ~0, got {k}");
+    }
+}
+
+#[cfg(test)]
+mod weight_cache_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+
+    fn rational_arc(factor: f64) -> NurbsCurve {
+        NurbsCurve::new(
+            2,
+            vec![0.0, 0.0, 0.0, 0.5, 0.5, 1.0, 1.0, 1.0],
+            vec![
+                Point3::new(1.0, 0.0, 0.0),
+                Point3::new(1.0, 1.0, 0.0),
+                Point3::new(0.0, 1.0, 0.0),
+                Point3::new(-1.0, 1.0, 0.0),
+                Point3::new(-1.0, 0.0, 0.0),
+            ],
+            vec![
+                factor,
+                factor * 0.5_f64.sqrt(),
+                factor,
+                factor * 0.5_f64.sqrt(),
+                factor,
+            ],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn max_weight_is_the_global_maximum_and_is_cached_once() {
+        let c = rational_arc(1e-200);
+        let expected = c.weights().iter().copied().fold(0.0_f64, f64::max);
+        assert_eq!(c.max_weight().to_bits(), expected.to_bits());
+        let before = c.max_weight.get().copied();
+        for k in 0..25 {
+            let _ = c.derivatives(f64::from(k) / 24.0, 2);
+        }
+        assert_eq!(c.max_weight.get().copied(), before);
+        assert!(before.is_some());
+    }
+
+    #[test]
+    fn reversed_curve_keeps_the_cache_and_equality_ignores_it() {
+        let a = rational_arc(2.0);
+        let r = a.reversed();
+        assert_eq!(r.max_weight().to_bits(), a.max_weight().to_bits());
+        let mut b = a.clone();
+        b.max_weight = std::sync::OnceLock::new();
+        assert_eq!(a, b);
+        let d_a = a.derivatives(0.3, 2);
+        let d_b = b.derivatives(0.3, 2);
+        for (x, y) in d_a.iter().zip(&d_b) {
+            assert_eq!(x.x().to_bits(), y.x().to_bits());
+            assert_eq!(x.y().to_bits(), y.y().to_bits());
+            assert_eq!(x.z().to_bits(), y.z().to_bits());
+        }
     }
 }
