@@ -40,7 +40,7 @@ fn assert_mounting_bores(topo: &Topology, solid: SolidId) {
     assert!((centers[1] - 31.0).abs() < 1e-7);
 }
 
-fn assert_valid_mesh(topo: &Topology, solid: SolidId) {
+fn assert_closed_mesh(topo: &Topology, solid: SolidId) {
     let report = validate_solid(topo, solid, &ValidateOptions::default()).expect("validate");
     assert!(report.is_valid(), "{:?}", report.issues);
     let mesh =
@@ -49,6 +49,10 @@ fn assert_valid_mesh(topo: &Topology, solid: SolidId) {
     assert!(remus_operations::tessellate::is_watertight(&mesh));
     let welded = remus_operations::tessellate::welded_mesh_quality(&mesh);
     assert!(welded.is_watertight(), "{welded:?}");
+}
+
+fn assert_valid_mesh(topo: &Topology, solid: SolidId) {
+    assert_closed_mesh(topo, solid);
     assert_mounting_bores(topo, solid);
 }
 
@@ -175,7 +179,7 @@ fn hammer_intersection_preserves_the_closed_lettering_loops() {
 
 /// Qualify the left reconstruction and subsequent right-side cut.
 #[test]
-fn hammer_left_reassembly_and_right_partition_are_strictly_valid() {
+fn hammer_complete_opening_replay_preserves_dimensions_and_features() {
     let mut topo = Topology::new();
     let source =
         read_step(include_str!("data/shapr3d_hammer_holder.step"), &mut topo).expect("import")[0];
@@ -370,55 +374,102 @@ fn hammer_left_reassembly_and_right_partition_are_strictly_valid() {
     let shifted_right = remus_operations::copy::copy_solid(&mut topo, source).expect("right copy");
     transform_solid(&mut topo, shifted_right, &Mat4::translation(2.0, 0.0, 0.0))
         .expect("right shift");
-    // Candidate-only checkpoint: the point-contact pairs must not send the
-    // marcher into a convergence failure, but the missing bottom remains an
-    // explicit rejection. This is not acceptance of the shifted intersection.
-    let candidate = remus_algo::gfa::boolean(
+    // The planar subdivision must retain the shared bottom face instead of
+    // classifying the unsplit input bottom as one outside region.
+    let shifted_inside = boolean_with_context(
         &mut topo,
-        remus_algo::bop::BooleanOp::Intersect,
+        BooleanOp::Intersect,
         right_inside,
         shifted_right,
+        &context,
     )
-    .expect("right candidate must finish tracing");
+    .expect("shifted right intersection");
+    assert_eq!(shifted_inside.quality, BooleanQuality::Exact);
+    let candidate = shifted_inside.solid;
     assert_eq!(
         remus_topology::explorer::solid_faces(&topo, candidate)
-            .expect("candidate faces")
+            .expect("faces")
             .len(),
-        35
+        36
     );
-    let report = validate_solid(&topo, candidate, &ValidateOptions::default())
-        .expect("candidate validation");
-    assert!(
-        !report.is_valid(),
-        "the incomplete candidate must remain rejected"
+    assert_closed_mesh(&topo, candidate);
+    let finished = boolean_with_context(
+        &mut topo,
+        BooleanOp::Fuse,
+        right_cut.solid,
+        candidate,
+        &context,
+    )
+    .expect("final reassembly");
+    assert_eq!(finished.quality, BooleanQuality::Exact);
+    assert_eq!(
+        remus_topology::explorer::solid_faces(&topo, finished.solid)
+            .expect("faces")
+            .len(),
+        194
     );
-    let mut uses = std::collections::BTreeMap::new();
-    for fid in remus_topology::explorer::solid_faces(&topo, candidate).expect("candidate faces") {
-        let f = topo.face(fid).expect("face");
-        for wid in std::iter::once(f.outer_wire()).chain(f.inner_wires().iter().copied()) {
-            for oe in topo.wire(wid).expect("wire").edges() {
-                *uses.entry(oe.edge()).or_insert(0usize) += 1;
+    assert_valid_mesh(&topo, finished.solid);
+    let volume =
+        remus_operations::measure::solid_volume(&topo, finished.solid, 0.01).expect("final volume");
+    let insert_volume =
+        remus_operations::measure::solid_volume(&topo, candidate, 0.01).expect("insert volume");
+    assert!(volume > 0.0 && volume < fused_volume);
+    assert!((volume - cut_volume - insert_volume).abs() < volume * 1e-5);
+    let step = remus_io::step::writer::write_step(&topo, &[finished.solid]).expect("final STEP");
+    let mut restored = Topology::new();
+    let imported = read_step(&step, &mut restored).expect("final reimport");
+    assert_eq!(imported.len(), 1);
+    assert_valid_mesh(&restored, imported[0]);
+    let restored_volume = remus_operations::measure::solid_volume(&restored, imported[0], 0.01)
+        .expect("final restored volume");
+    assert!((restored_volume - volume).abs() < volume * 1e-6);
+    let left_vertices: Vec<_> = remus_topology::explorer::solid_vertices(&topo, fused.solid)
+        .expect("left reconstruction vertices")
+        .into_iter()
+        .map(|v| topo.vertex(v).expect("vertex").point())
+        .filter(|p| p.x() < 10.999_999)
+        .collect();
+    assert!(!left_vertices.is_empty());
+    for (arena, solid) in [(&topo, finished.solid), (&restored, imported[0])] {
+        let vertices = remus_topology::explorer::solid_vertices(arena, solid).expect("vertices");
+        let points: Vec<_> = vertices
+            .iter()
+            .map(|v| arena.vertex(*v).expect("vertex").point())
+            .collect();
+        for p in &left_vertices {
+            assert!(
+                points.iter().any(|q| (*p - *q).length() < 1e-7),
+                "lost left feature vertex {p:?}"
+            );
+        }
+        let mut lo = [f64::INFINITY; 3];
+        let mut hi = [f64::NEG_INFINITY; 3];
+        for v in vertices {
+            let p = arena.vertex(v).expect("vertex").point();
+            for (i, value) in [p.x(), p.y(), p.z()].into_iter().enumerate() {
+                lo[i] = lo[i].min(value);
+                hi[i] = hi[i].max(value);
             }
         }
-    }
-    let mut free = 0;
-    for (eid, count) in uses {
-        assert!(count <= 2, "non-manifold candidate edge");
-        if count == 1 {
-            free += 1;
-            let edge = topo.edge(eid).expect("edge");
-            for v in [edge.start(), edge.end()] {
-                let p = topo.vertex(v).expect("vertex").point();
-                assert!(
-                    (p.z() - 4.5).abs() < 1e-7
-                        && (10.999_999..=40.000_001).contains(&p.x())
-                        && (6.499_999..=43.000_001).contains(&p.y()),
-                    "unexpected free boundary {p:?}"
-                );
-            }
+        for (actual, expected) in lo
+            .into_iter()
+            .chain(hi)
+            .zip([-26.0, 6.5, 4.5, 48.0, 59.5, 62.5])
+        {
+            assert!(
+                (actual - expected).abs() < 1e-7,
+                "bound {actual} != {expected}"
+            );
+        }
+        for x in [-14.0, 36.0] {
+            assert!(remus_topology::explorer::solid_faces(arena, solid).expect("faces").into_iter().any(|fid| {
+                let f = arena.face(fid).expect("face");
+                if !matches!(f.surface(), FaceSurface::Plane { normal, .. } if normal.x().abs() > 0.999_999) { return false; }
+                let vs = remus_topology::explorer::face_vertices(arena, fid).expect("face vertices");
+                vs.len() >= 4 && vs.iter().all(|v| (arena.vertex(*v).expect("vertex").point().x() - x).abs() < 1e-7)
+            }), "missing opening wall x={x}");
         }
     }
-    assert_eq!(free, 9, "only the missing bottom boundary remains open");
     assert_eq!(
         remus_io::arena_io::serialize_solid(&topo, source).expect("source after candidate"),
         original
