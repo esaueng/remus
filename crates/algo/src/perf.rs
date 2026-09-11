@@ -35,6 +35,7 @@ std::thread_local! {
     static FACE_SPLIT_PROBES: Cell<u64> = const { Cell::new(0) };
     static LOCAL_VERTEX_INSERTS: Cell<u64> = const { Cell::new(0) };
     static EF_NURBS_PAIR_PROBES: Cell<u64> = const { Cell::new(0) };
+    static DISTANCE_FACE_PROBES: Cell<u64> = const { Cell::new(0) };
 }
 
 #[cfg(feature = "perf-counters")]
@@ -60,6 +61,15 @@ pub(crate) fn bump_pave_vertex_probe() {
 pub(crate) fn bump_ef_nurbs_pair_probe() {
     #[cfg(feature = "perf-counters")]
     increment(&EF_NURBS_PAIR_PROBES);
+}
+
+/// One boundary-vertex x face distance evaluation in the solid-to-solid
+/// distance query that survived its bounding-box pruning. Public because
+/// the query lives in `remus-operations`.
+#[inline]
+pub fn bump_distance_face_probe() {
+    #[cfg(feature = "perf-counters")]
+    increment(&DISTANCE_FACE_PROBES);
 }
 
 #[inline]
@@ -123,6 +133,9 @@ pub struct PerfSnapshot {
     /// Edge x NURBS-face pairs that reached surface projection in the
     /// edge-face interference phase (after the conservative box gate).
     pub ef_nurbs_pair_probes: u64,
+    /// Vertex x face distance evaluations in `solid_to_solid_distance`
+    /// after bounding-box pruning.
+    pub distance_face_probes: u64,
 }
 
 /// Reset all counters to zero. Only available with `perf-counters`.
@@ -134,6 +147,7 @@ pub fn reset() {
     FACE_SPLIT_PROBES.set(0);
     LOCAL_VERTEX_INSERTS.set(0);
     EF_NURBS_PAIR_PROBES.set(0);
+    DISTANCE_FACE_PROBES.set(0);
 }
 
 /// Every work counter since the last [`reset`]. Only available with
@@ -148,6 +162,7 @@ pub fn snapshot() -> PerfSnapshot {
         face_split_probes: FACE_SPLIT_PROBES.get(),
         local_vertex_inserts: LOCAL_VERTEX_INSERTS.get(),
         ef_nurbs_pair_probes: EF_NURBS_PAIR_PROBES.get(),
+        distance_face_probes: DISTANCE_FACE_PROBES.get(),
     }
 }
 
