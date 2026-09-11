@@ -5,8 +5,8 @@
   "failed": 17,
   "stages": {
     "boolean": {
-      "passed": 33,
-      "failed": 17
+      "passed": 34,
+      "failed": 16
     },
     "read": {
       "passed": 40,
@@ -27,8 +27,9 @@
   },
   "failure_categories": {
     "invalid_input": 13,
-    "invalid_topology": 4
+    "invalid_topology": 3,
+    "tolerance_violation": 1
   },
-  "boolean_exact": 8,
-  "boolean_approximate": 25
+  "boolean_exact": 10,
+  "boolean_approximate": 24
 }
