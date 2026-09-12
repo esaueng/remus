@@ -450,8 +450,25 @@ pub fn perform_with_context(
             if torus_cylinder_faces_have_only_point_contact(topo, fa, fb, tol)? {
                 continue;
             }
+            // A NURBS carrier whose control net is coplanar IS a plane, and
+            // the analytic arm cuts it exactly: a plane converted to a
+            // bilinear patch met a peg cylinder through the marcher in an arc
+            // that the fitter left 5e-5 off the true circle — more than the
+            // 1e-5 weld every section reader gates on, so its endpoints never
+            // coincided with the welded junctions the neighbouring generator
+            // lines end on and no loop closed on the peg wall. The exact
+            // circle carries no such error. Only the intersection arm sees
+            // the plane; the face keeps its NURBS carrier everywhere else.
+            let plane_a = super::helpers::planar_nurbs_as_plane(surf_a, tol);
+            let plane_b = super::helpers::planar_nurbs_as_plane(surf_b, tol);
             let mut raw_curves = compute_raw_curves(
-                surf_a, surf_b, bbox_a, bbox_b, v_range_a, v_range_b, context,
+                plane_a.as_ref().unwrap_or(surf_a),
+                plane_b.as_ref().unwrap_or(surf_b),
+                bbox_a,
+                bbox_b,
+                v_range_a,
+                v_range_b,
+                context,
             )?;
             raw_curves.extend(tangent_torus_boundary_sections(topo, fa, fb, tol)?);
             // Intersection implementations are allowed to refuse, never to
@@ -1205,6 +1222,9 @@ enum FaceExtent {
         poly: Vec<remus_math::vec::Point2>,
         holes: Vec<Vec<remus_math::vec::Point2>>,
         margin: f64,
+        /// Largest chord error of the sampled outline against its true
+        /// curved edges, in model units (zero for an all-straight outline).
+        sagitta: f64,
     },
     /// Analytic lateral face (cylinder/cone/sphere/torus): bound by the
     /// axial `v` parameter range of the face and, for a partial-arc patch
@@ -1218,6 +1238,115 @@ enum FaceExtent {
         margin: f64,
         u_gap: Option<(f64, f64)>,
     },
+    /// NURBS face whose carrier is a plane in disguise (a coplanar control
+    /// net — what `convert_to_bspline` makes of a planar face): its outer-wire
+    /// and hole outlines inverted into the surface's own `(u, v)` chart and
+    /// tested exactly like the planar polygon.
+    ///
+    /// Without this a NURBS face had only the `Analytic` v-window (u never
+    /// bounded), so a section against it was clipped to the CARRIER, not the
+    /// face: a plane converted to a B-spline patch with a 10 % margin met a
+    /// peg cylinder in an arc that ran into the margin and never reached the
+    /// face's real boundary, the splitter read it as a floating interior loop,
+    /// nothing split, and the fuse returned the bar alone.
+    ///
+    /// Genuinely curved NURBS faces deliberately keep their previous
+    /// handling: on an imported freeform body the same machinery clipped
+    /// sections and paved crossings that the splitter could not consume, and
+    /// the exact recognisers this variant leans on do not exist for them.
+    Nurbs {
+        surface: remus_math::nurbs::surface::NurbsSurface,
+        /// Coarse inversion seed grid, built once for the face.
+        grid: remus_math::nurbs::projection::SurfaceSeedGrid,
+        poly: Vec<remus_math::vec::Point2>,
+        holes: Vec<Vec<remus_math::vec::Point2>>,
+        /// In `(u, v)` units.
+        margin: f64,
+        /// Largest chord error of the sampled outline, in model units.
+        sagitta: f64,
+    },
+}
+
+/// Seventeen samples along a curved boundary edge in traversal order — the
+/// outline resolution every polygon extent uses.
+fn sample_edge_16(
+    curve: &EdgeCurve,
+    t0: f64,
+    t1: f64,
+    forward: bool,
+    s3: Point3,
+    e3: Point3,
+) -> Vec<Point3> {
+    (0..=16)
+        .map(|i| {
+            let f = f64::from(i) / 16.0;
+            let t = if forward {
+                t0 + (t1 - t0) * f
+            } else {
+                t1 + (t0 - t1) * f
+            };
+            curve.evaluate_with_endpoints(t, s3, e3)
+        })
+        .collect()
+}
+
+/// Largest distance between a curved edge and the chord of one of its
+/// sixteen outline segments, measured at each segment's mid-parameter.
+fn chord_sagitta(
+    curve: &EdgeCurve,
+    t0: f64,
+    t1: f64,
+    forward: bool,
+    s3: Point3,
+    e3: Point3,
+) -> f64 {
+    let at = |f: f64| {
+        let t = if forward {
+            t0 + (t1 - t0) * f
+        } else {
+            t1 + (t0 - t1) * f
+        };
+        curve.evaluate_with_endpoints(t, s3, e3)
+    };
+    let mut worst = 0.0_f64;
+    for i in 0..16 {
+        let (a, b) = (at(f64::from(i) / 16.0), at(f64::from(i + 1) / 16.0));
+        let m = at((f64::from(i) + 0.5) / 16.0);
+        let chord = b - a;
+        let len_sq = chord.length_squared();
+        let foot = if len_sq > 0.0 {
+            a + chord * ((m - a).dot(chord) / len_sq).clamp(0.0, 1.0)
+        } else {
+            a
+        };
+        worst = worst.max((m - foot).length());
+    }
+    worst
+}
+
+/// Length of one `(u, v)` unit in model space at `(u, v)`: the smaller of
+/// the two partial-derivative magnitudes, so a model-space band converted
+/// through it covers every direction (conservative). A degenerate row reads
+/// as unit scale rather than infinity.
+fn nurbs_uv_scale(surface: &remus_math::nurbs::surface::NurbsSurface, u: f64, v: f64) -> f64 {
+    let d = surface.derivatives(u, v, 1);
+    let scale = d[1][0].length().min(d[0][1].length());
+    if scale.is_finite() && scale > 1e-12 {
+        scale
+    } else {
+        1.0
+    }
+}
+
+/// Invert `p` onto a NURBS extent's chart. `None` when Newton fails.
+fn nurbs_extent_uv(
+    surface: &remus_math::nurbs::surface::NurbsSurface,
+    grid: &remus_math::nurbs::projection::SurfaceSeedGrid,
+    p: Point3,
+) -> Option<remus_math::vec::Point2> {
+    remus_math::nurbs::projection::project_point_to_surface_with_grid(surface, p, 1e-7, grid)
+        .ok()
+        .map(|proj| remus_math::vec::Point2::new(proj.u, proj.v))
 }
 
 /// Recognize a convex sphere patch bounded by oriented minor great-circle
@@ -1320,6 +1449,16 @@ impl FaceExtent {
                 }
             }
         }
+        // Only a PLANAR NURBS carrier gets the chart-polygon extent. Its
+        // bilinear chart is affine, so the polygon test there is exact; a
+        // genuinely curved sheet keeps its previous handling (see the
+        // variant's documentation for why the scope stops here).
+        if let FaceSurface::Nurbs(nurbs) = surface
+            && super::helpers::planar_nurbs_as_plane(surface, tol).is_some()
+            && let Some(extent) = Self::nurbs_polygon(topo, face_id, nurbs, tol)?
+        {
+            return Ok(Some(extent));
+        }
         if let FaceSurface::Plane { normal, .. } = surface {
             let face = topo.face(face_id)?;
             let outer = topo.wire(face.outer_wire())?;
@@ -1331,7 +1470,8 @@ impl FaceExtent {
                 crate::builder::plane_frame::PlaneFrame::from_normal_and_point(*normal, origin);
             // Project a wire's boundary into the plane frame, sampling each arc
             // edge (endpoints included) so curved corners aren't chord-cut.
-            let wire_poly = |wid| -> Result<Vec<remus_math::vec::Point2>, AlgoError> {
+            let mut sagitta = 0.0_f64;
+            let mut wire_poly = |wid| -> Result<Vec<remus_math::vec::Point2>, AlgoError> {
                 let wire = topo.wire(wid)?;
                 let mut poly = Vec::new();
                 for oe in wire.edges() {
@@ -1348,16 +1488,10 @@ impl FaceExtent {
                                 oe.edge(),
                                 "face-extent boundary sampling",
                             )?;
-                            for i in 0..=16 {
-                                #[allow(clippy::cast_precision_loss)]
-                                let f = i as f64 / 16.0;
-                                let t = if oe.is_forward() {
-                                    t0 + (t1 - t0) * f
-                                } else {
-                                    t1 + (t0 - t1) * f
-                                };
-                                poly.push(frame.project(curve.evaluate_with_endpoints(t, s3, e3)));
-                            }
+                            let samples = sample_edge_16(curve, t0, t1, oe.is_forward(), s3, e3);
+                            sagitta =
+                                sagitta.max(chord_sagitta(curve, t0, t1, oe.is_forward(), s3, e3));
+                            poly.extend(samples.into_iter().map(|p| frame.project(p)));
                         }
                     }
                 }
@@ -1391,6 +1525,7 @@ impl FaceExtent {
                 poly,
                 holes,
                 margin: (smaller * 0.01).max(tol.linear),
+                sagitta,
             }))
         } else {
             // A whole, untrimmed torus has no `v_range` (its boundary is the
@@ -1431,6 +1566,99 @@ impl FaceExtent {
         }
     }
 
+    /// The [`Self::Nurbs`] extent of an open-in-both-directions NURBS face.
+    ///
+    /// Mirrors the planar construction: Line edges contribute their start
+    /// vertex, every other edge is sampled, and each point is inverted onto
+    /// the surface. Declines (`None`, so the caller keeps its previous
+    /// behaviour) when any inversion fails or the outline degenerates.
+    fn nurbs_polygon(
+        topo: &Topology,
+        face_id: FaceId,
+        nurbs: &remus_math::nurbs::surface::NurbsSurface,
+        tol: Tolerance,
+    ) -> Result<Option<Self>, AlgoError> {
+        let grid = remus_math::nurbs::projection::SurfaceSeedGrid::for_surface(nurbs);
+        let face = topo.face(face_id)?;
+        let mut sagitta = 0.0_f64;
+        let mut wire_poly = |wid| -> Result<Option<Vec<remus_math::vec::Point2>>, AlgoError> {
+            let wire = topo.wire(wid)?;
+            let mut poly = Vec::new();
+            for oe in wire.edges() {
+                let edge = topo.edge(oe.edge())?;
+                let s3 = topo.vertex(edge.start())?.point();
+                let e3 = topo.vertex(edge.end())?.point();
+                let mut samples = Vec::new();
+                match edge.curve() {
+                    EdgeCurve::Line => samples.push(if oe.is_forward() { s3 } else { e3 }),
+                    curve => {
+                        let (t0, t1) = super::helpers::authoritative_edge_domain(
+                            edge,
+                            oe.edge(),
+                            "face-extent boundary sampling",
+                        )?;
+                        samples = sample_edge_16(curve, t0, t1, oe.is_forward(), s3, e3);
+                        sagitta =
+                            sagitta.max(chord_sagitta(curve, t0, t1, oe.is_forward(), s3, e3));
+                    }
+                }
+                for p in samples {
+                    let Some(uv) = nurbs_extent_uv(nurbs, &grid, p) else {
+                        return Ok(None);
+                    };
+                    poly.push(uv);
+                }
+            }
+            Ok(Some(poly))
+        };
+        let Some(poly) = wire_poly(face.outer_wire())? else {
+            return Ok(None);
+        };
+        if poly.len() < 3 {
+            return Ok(None);
+        }
+        let mut holes = Vec::new();
+        for &inner_wire in face.inner_wires() {
+            let Some(hole) = wire_poly(inner_wire)? else {
+                return Ok(None);
+            };
+            if hole.len() >= 3 {
+                holes.push(hole);
+            }
+        }
+        // Same margin rule as the planar polygon: 1 % of the SMALLER extent,
+        // here in chart units.
+        let (mut min_u, mut max_u) = (f64::INFINITY, f64::NEG_INFINITY);
+        let (mut min_v, mut max_v) = (f64::INFINITY, f64::NEG_INFINITY);
+        for p in &poly {
+            min_u = min_u.min(p.x());
+            max_u = max_u.max(p.x());
+            min_v = min_v.min(p.y());
+            max_v = max_v.max(p.y());
+        }
+        let smaller = (max_u - min_u).abs().min((max_v - min_v).abs());
+        if !smaller.is_finite() || smaller <= 0.0 {
+            return Ok(None);
+        }
+        Ok(Some(Self::Nurbs {
+            surface: nurbs.clone(),
+            grid,
+            poly,
+            holes,
+            margin: (smaller * 0.01).max(tol.linear),
+            sagitta,
+        }))
+    }
+
+    /// Largest chord error of a polygon extent's sampled outline against its
+    /// true curved edges; zero for extents that carry no sampled outline.
+    const fn outline_sagitta(&self) -> f64 {
+        match self {
+            Self::Plane { sagitta, .. } | Self::Nurbs { sagitta, .. } => *sagitta,
+            Self::Analytic { .. } | Self::Hemisphere { .. } => 0.0,
+        }
+    }
+
     /// Smallest in-face dimension, used to scale the graze-refinement sample
     /// density in `restrict_curves_to_faces`. Plane: the boundary polygon
     /// bbox's smaller side. Analytic: the `v` span (axial length for
@@ -1451,6 +1679,23 @@ impl FaceExtent {
             }
             Self::Analytic { v0, v1, .. } => (v1 - v0).abs(),
             Self::Hemisphere { radius, .. } => *radius,
+            Self::Nurbs { surface, poly, .. } => {
+                let (mut min_u, mut max_u) = (f64::INFINITY, f64::NEG_INFINITY);
+                let (mut min_v, mut max_v) = (f64::INFINITY, f64::NEG_INFINITY);
+                for p in poly {
+                    min_u = min_u.min(p.x());
+                    max_u = max_u.max(p.x());
+                    min_v = min_v.min(p.y());
+                    max_v = max_v.max(p.y());
+                }
+                // Chart units to model units at the outline's centre.
+                let scale = nurbs_uv_scale(
+                    surface,
+                    f64::midpoint(min_u, max_u),
+                    f64::midpoint(min_v, max_v),
+                );
+                (max_u - min_u).min(max_v - min_v).abs() * scale
+            }
         }
     }
 
@@ -1486,6 +1731,22 @@ impl FaceExtent {
                 let in_u = u_gap.is_none_or(|gap| !crate::classifier::u_in_gap(u, gap));
                 in_v && in_u
             }),
+            Self::Nurbs {
+                surface,
+                grid,
+                poly,
+                holes,
+                ..
+            } => nurbs_extent_uv(surface, grid, p).is_some_and(|uv| {
+                // Fails closed like the analytic strict gate.
+                let depth = depth / nurbs_uv_scale(surface, uv.x(), uv.y());
+                crate::builder::classify_2d::point_in_polygon_2d(uv, poly)
+                    && point_to_polygon_dist(uv, poly) > depth
+                    && !holes.iter().any(|h| {
+                        crate::builder::classify_2d::point_in_polygon_2d(uv, h)
+                            || point_to_polygon_dist(uv, h) <= depth
+                    })
+            }),
         }
     }
 
@@ -1510,6 +1771,22 @@ impl FaceExtent {
                 inside || on_any_boundary
             }
             Self::Analytic { .. } => true,
+            Self::Nurbs {
+                surface,
+                grid,
+                poly,
+                holes,
+                ..
+            } => nurbs_extent_uv(surface, grid, p).is_none_or(|uv| {
+                let band = band / nurbs_uv_scale(surface, uv.x(), uv.y());
+                let on_any_boundary = point_to_polygon_dist(uv, poly) <= band
+                    || holes.iter().any(|h| point_to_polygon_dist(uv, h) <= band);
+                let inside = crate::builder::classify_2d::point_in_polygon_2d(uv, poly)
+                    && !holes
+                        .iter()
+                        .any(|h| crate::builder::classify_2d::point_in_polygon_2d(uv, h));
+                inside || on_any_boundary
+            }),
         }
     }
 
@@ -1526,6 +1803,7 @@ impl FaceExtent {
                 poly,
                 holes,
                 margin,
+                ..
             } => {
                 let uv = frame.project(p);
                 let in_outer = crate::builder::classify_2d::point_in_polygon_2d(uv, poly)
@@ -1550,6 +1828,23 @@ impl FaceExtent {
                 let in_v = v >= *v0 - *margin && v <= *v1 + *margin;
                 let in_u = u_gap.is_none_or(|gap| !crate::classifier::u_in_gap(u, gap));
                 in_v && in_u
+            }),
+            Self::Nurbs {
+                surface,
+                grid,
+                poly,
+                holes,
+                margin,
+                ..
+            } => nurbs_extent_uv(surface, grid, p).is_none_or(|uv| {
+                // Conservative keep on inversion failure, as for `Analytic`.
+                let in_outer = crate::builder::classify_2d::point_in_polygon_2d(uv, poly)
+                    || point_to_polygon_dist(uv, poly) <= *margin;
+                in_outer
+                    && !holes.iter().any(|h| {
+                        crate::builder::classify_2d::point_in_polygon_2d(uv, h)
+                            && point_to_polygon_dist(uv, h) > *margin
+                    })
             }),
         }
     }
@@ -1760,6 +2055,15 @@ fn restrict_curves_to_faces(
         return Ok(raw_curves);
     };
 
+    // A pair with a NURBS-polygon extent has no downstream clip of its own:
+    // the line clipper is calibrated for plane×plane, and the splitter only
+    // trims open sections against PLANE boundaries. Every section on such a
+    // pair — lines included — is therefore cut to its in-both windows HERE,
+    // with the same bisected, junction-welded endpoints the closed-curve
+    // windows get, so it reaches the splitter ending on the face boundary.
+    let nurbs_pair =
+        matches!(ext_a, FaceExtent::Nurbs { .. }) || matches!(ext_b, FaceExtent::Nurbs { .. });
+
     const N: usize = 24;
     let mut out = Vec::with_capacity(raw_curves.len());
     for raw in raw_curves {
@@ -1770,60 +2074,64 @@ fn restrict_curves_to_faces(
         // full length (it really does lie on both faces), and it then splits
         // the curved partner along a contact with no area.
         if matches!(raw.curve, EdgeCurve::Line) {
-            if line_section_is_tangency_graze(&raw, &ext_a, &ext_b, tol) {
-                log::debug!(
-                    "restrict_curves_to_faces: faces {fa:?} × {fb:?} — dropping tangency-graze line section {:?}..{:?}",
-                    raw.p_start,
-                    raw.p_end
-                );
+            if !nurbs_pair {
+                if line_section_is_tangency_graze(&raw, &ext_a, &ext_b, tol) {
+                    log::debug!(
+                        "restrict_curves_to_faces: faces {fa:?} × {fb:?} — dropping tangency-graze line section {:?}..{:?}",
+                        raw.p_start,
+                        raw.p_end
+                    );
+                    continue;
+                }
+                out.push(raw);
                 continue;
             }
-            out.push(raw);
-            continue;
-        }
-        // Torus × box-plane: a plane×torus oval is clipped to its EXACT in-box
-        // arc at the box-edge∩torus crossings (shared with the adjacent box
-        // wall, so the notch is watertight). Gated to a closed NURBS oval whose
-        // partner is a planar face with straight (Line) boundary edges; defers
-        // (None) otherwise, so all other sections keep the sample-clip below.
-        if let Some(arcs) =
-            trim_torus_oval_to_box_face(topo, fa, fb, surf_a, surf_b, &raw, &ext_a, &ext_b, tol)
-        {
-            out.extend(arcs);
-            continue;
-        }
+        } else {
+            // Torus × box-plane: a plane×torus oval is clipped to its EXACT
+            // in-box arc at the box-edge∩torus crossings (shared with the
+            // adjacent box wall, so the notch is watertight). Gated to a closed
+            // NURBS oval whose partner is a planar face with straight (Line)
+            // boundary edges; defers (None) otherwise, so all other sections
+            // keep the sample-clip below.
+            if let Some(arcs) =
+                trim_torus_oval_to_box_face(topo, fa, fb, surf_a, surf_b, &raw, &ext_a, &ext_b, tol)
+            {
+                out.extend(arcs);
+                continue;
+            }
 
-        // OPEN marched-NURBS conic (plane×cone hyperbola/parabola from the
-        // `Points` fit): clip it to EXACT crossings with the plane face's
-        // straight boundary edges. The generic sample-clip below keeps open
-        // curves whole "for the downstream splitter to trim" — but the
-        // splitter never clips an open curved section to a plane face's
-        // boundary, so a conic spanning the whole cone extent leaves the face
-        // unsplit (the dovetail tongue-relief family: tip/flank faces never
-        // partition, the whole face classifies by one interior point, and the
-        // cut collapses to an open hole shell). Exact endpoints matter: they
-        // land ON boundary edges within tolerance so
-        // `split_boundary_edges_at_3d_points` anchors them, and the same
-        // crossing points chain with the adjacent faces' sections (a point on
-        // the shared edge and on the cone lies on BOTH faces' conics).
-        if let Some(pieces) =
-            trim_open_curve_to_plane_face_lines(topo, fa, surf_a, surf_b, &raw, &ext_a, &ext_b, tol)
-        {
-            out.extend(pieces);
-            continue;
-        }
-        if let Some(pieces) =
-            trim_open_curve_to_plane_face_lines(topo, fb, surf_b, surf_a, &raw, &ext_b, &ext_a, tol)
-        {
-            out.extend(pieces);
-            continue;
+            // OPEN marched-NURBS conic (plane×cone hyperbola/parabola from the
+            // `Points` fit): clip it to EXACT crossings with the plane face's
+            // straight boundary edges. The generic sample-clip below keeps open
+            // curves whole "for the downstream splitter to trim" — but the
+            // splitter never clips an open curved section to a plane face's
+            // boundary, so a conic spanning the whole cone extent leaves the
+            // face unsplit (the dovetail tongue-relief family: tip/flank faces
+            // never partition, the whole face classifies by one interior
+            // point, and the cut collapses to an open hole shell). Exact
+            // endpoints matter: they land ON boundary edges within tolerance
+            // so `split_boundary_edges_at_3d_points` anchors them, and the
+            // same crossing points chain with the adjacent faces' sections (a
+            // point on the shared edge and on the cone lies on BOTH faces'
+            // conics).
+            if let Some(pieces) = trim_open_curve_to_plane_face_lines(
+                topo, fa, surf_a, surf_b, &raw, &ext_a, &ext_b, tol,
+            ) {
+                out.extend(pieces);
+                continue;
+            }
+            if let Some(pieces) = trim_open_curve_to_plane_face_lines(
+                topo, fb, surf_b, surf_a, &raw, &ext_b, &ext_a, tol,
+            ) {
+                out.extend(pieces);
+                continue;
+            }
         }
 
         let pt = |i: usize| -> Point3 {
             #[allow(clippy::cast_precision_loss)]
             let f = i as f64 / N as f64;
-            let t = raw.t_range.0 + (raw.t_range.1 - raw.t_range.0) * f;
-            raw.curve.evaluate_with_endpoints(t, raw.p_start, raw.p_end)
+            raw_point_at(&raw, raw.t_range.0 + (raw.t_range.1 - raw.t_range.0) * f)
         };
         let inb: Vec<bool> = (0..=N)
             .map(|i| {
@@ -1869,8 +2177,7 @@ fn restrict_curves_to_faces(
             let ptf = |i: usize| -> Point3 {
                 #[allow(clippy::cast_precision_loss)]
                 let f = i as f64 / n_fine as f64;
-                let t = raw.t_range.0 + (raw.t_range.1 - raw.t_range.0) * f;
-                raw.curve.evaluate_with_endpoints(t, raw.p_start, raw.p_end)
+                raw_point_at(&raw, raw.t_range.0 + (raw.t_range.1 - raw.t_range.0) * f)
             };
             let inb_fine: Vec<bool> = (0..=n_fine)
                 .map(|i| {
@@ -1887,6 +2194,15 @@ fn restrict_curves_to_faces(
             }
             if closed && f1 - f0 < n_fine && !matches!(raw.curve, EdgeCurve::Circle(_)) {
                 emit_closed_curve_windows(
+                    topo, fa, fb, &raw, &ext_a, &ext_b, &inb_fine, n_fine, tol, junctions, &mut out,
+                );
+                continue;
+            }
+            // A short in-both span resolved at fine resolution still needs
+            // its window cut on a NURBS-polygon pair — a section line across
+            // a peg cap's disc is 4 % of the converted wall's carrier width.
+            if nurbs_pair && !closed && (f0 > 0 || f1 < n_fine) {
+                emit_open_curve_windows(
                     topo, fa, fb, &raw, &ext_a, &ext_b, &inb_fine, n_fine, tol, junctions, &mut out,
                 );
                 continue;
@@ -1954,7 +2270,11 @@ fn restrict_curves_to_faces(
         // gridfinity lip knife-edge) would survive as a degenerate loop and
         // over-connect the rim. Circles are left whole (seam adoption handles
         // them); open curves are left whole (the splitter clips them).
-        if closed && b1 - b0 < N && !matches!(raw.curve, EdgeCurve::Circle(_)) {
+        // On a NURBS-polygon pair a closed CIRCLE is clipped too: no seam
+        // adoption or exact-arc writer serves a NURBS face, and a whole
+        // circle would read as an interior hole on a face it only partly
+        // crosses.
+        if closed && b1 - b0 < N && (nurbs_pair || !matches!(raw.curve, EdgeCurve::Circle(_))) {
             // EVERY maximal in-both run, not just the longest: a closed
             // ellipse crossing a notched face has one window per side of the
             // notch, and dropping the shorter window gaps the section chain
@@ -1967,9 +2287,167 @@ fn restrict_curves_to_faces(
             );
             continue;
         }
+        // An OPEN section (a line, or a marched curve) on a NURBS-polygon
+        // pair is trimmed to its in-both windows; nothing downstream will.
+        if nurbs_pair && !closed && (b0 > 0 || b1 < N) {
+            emit_open_curve_windows(
+                topo, fa, fb, &raw, &ext_a, &ext_b, &inb, N, tol, junctions, &mut out,
+            );
+            continue;
+        }
         out.push(raw);
     }
     Ok(out)
+}
+
+/// Emit every maximal in-both window of an OPEN section with bisected,
+/// junction-welded endpoints — the open-curve counterpart of
+/// [`emit_closed_curve_windows`], used on pairs with a [`FaceExtent::Nurbs`]
+/// extent. Lines are cut by fraction through [`trim_raw_line`] so they keep
+/// the convention every other line clip produces; other curves carry the
+/// bisected parameter sub-span with its own endpoints, as
+/// [`rescue_corner_crossing`] does.
+#[allow(clippy::too_many_arguments)]
+fn emit_open_curve_windows(
+    topo: &Topology,
+    fa: FaceId,
+    fb: FaceId,
+    raw: &RawCurve,
+    ext_a: &FaceExtent,
+    ext_b: &FaceExtent,
+    inb: &[bool],
+    n: usize,
+    tol: Tolerance,
+    junctions: &mut JunctionRegistry,
+    out: &mut Vec<RawCurve>,
+) {
+    let span = raw.t_range.1 - raw.t_range.0;
+    #[allow(clippy::cast_precision_loss)]
+    let t_at = |i: usize| raw.t_range.0 + span * (i as f64) / (n as f64);
+    let point_at = |t: f64| raw_point_at(raw, t);
+    // Same anchoring rule as the closed windows: bisect against the
+    // margin-free window when a sample certifies it, else keep the margin.
+    let strict_inside = |t: f64| {
+        let p = point_at(t);
+        ext_a.contains_strict(p, 0.0) && ext_b.contains_strict(p, 0.0)
+    };
+    let lenient_inside = |t: f64| {
+        let p = point_at(t);
+        ext_a.contains(p) && ext_b.contains(p)
+    };
+    for (r0, r1) in all_inboth_runs(inb, false) {
+        if r1 - r0 < 2 {
+            continue;
+        }
+        // Bracket each end between the outermost sample the chosen predicate
+        // certifies and its neighbour beyond. The lenient run can start a
+        // sample EARLIER than the strict window does (a sample sitting in the
+        // margin band, off the face by less than 1 %), and bisecting from
+        // that sample against the strict predicate never moves: every
+        // midpoint reads outside and the endpoint stays a whole sample
+        // spacing short of the boundary, beyond the junction weld band.
+        let strict_first = (r0..=r1).find(|&i| strict_inside(t_at(i)));
+        let (inside, i_lo, i_hi): (&dyn Fn(f64) -> bool, usize, usize) = match strict_first {
+            Some(first) => (
+                &strict_inside,
+                first,
+                (first..=r1)
+                    .rev()
+                    .find(|&i| strict_inside(t_at(i)))
+                    .unwrap_or(first),
+            ),
+            None => (&lenient_inside, r0, r1),
+        };
+        let mut t_lo = t_at(i_lo);
+        if i_lo > 0 {
+            let (mut out_t, mut in_t) = (t_at(i_lo - 1), t_lo);
+            for _ in 0..48 {
+                let mid = 0.5 * (out_t + in_t);
+                if inside(mid) {
+                    in_t = mid;
+                } else {
+                    out_t = mid;
+                }
+            }
+            t_lo = in_t;
+        }
+        let mut t_hi = t_at(i_hi);
+        if i_hi < n {
+            let (mut in_t, mut out_t) = (t_hi, t_at(i_hi + 1));
+            for _ in 0..48 {
+                let mid = 0.5 * (in_t + out_t);
+                if inside(mid) {
+                    in_t = mid;
+                } else {
+                    out_t = mid;
+                }
+            }
+            t_hi = in_t;
+        }
+        if t_hi <= t_lo || span == 0.0 {
+            continue;
+        }
+        // A bisected end sits on the sampled OUTLINE, which undercuts a
+        // curved boundary edge by up to its chord sagitta (a 16-segment
+        // r=3 rim: 0.03) — past the junction weld band, so the endpoint
+        // would never reach the rim. Pull it onto the true boundary curve
+        // within that sagitta first; the snap then refines along the curve
+        // to its exact crossing with the partner surface. The parameter
+        // follows the point: the section reader hands back the welded
+        // vertex only when the curve evaluates within 1e-5 of it. An end
+        // that is the raw curve's own end (no bisection) stays where it is.
+        let sagitta = ext_a.outline_sagitta().max(ext_b.outline_sagitta());
+        let refine_end = |t: f64| -> (f64, Point3) {
+            let p = point_at(t);
+            if sagitta <= 0.0 {
+                return (t, p);
+            }
+            let Some(q) =
+                snap_to_boundary_junction_band(topo, fa, fb, p, tol, sagitta + tol.linear * 10.0)
+            else {
+                return (t, p);
+            };
+            (nearest_parameter(raw, q, t, span / (n as f64)), q)
+        };
+        let (t_lo, p_lo) = if i_lo > 0 {
+            refine_end(t_lo)
+        } else {
+            (t_lo, point_at(t_lo))
+        };
+        let (t_hi, p_hi) = if i_hi < n {
+            refine_end(t_hi)
+        } else {
+            (t_hi, point_at(t_hi))
+        };
+        if t_hi <= t_lo {
+            continue;
+        }
+        let piece = if matches!(raw.curve, EdgeCurve::Line) {
+            trim_raw_line(
+                raw,
+                (t_lo - raw.t_range.0) / span,
+                (t_hi - raw.t_range.0) / span,
+                tol,
+            )
+        } else {
+            let samples = (0..=16).map(|k| point_at(t_lo + (t_hi - t_lo) * f64::from(k) / 16.0));
+            Some(RawCurve {
+                curve: raw.curve.clone(),
+                bbox: Aabb3::from_points(samples),
+                t_range: (t_lo, t_hi),
+                p_start: p_lo,
+                p_end: p_hi,
+            })
+        };
+        let Some(mut piece) = piece else {
+            continue;
+        };
+        piece.p_start = junctions.resolve(topo, fa, fb, piece.p_start, tol);
+        piece.p_end = junctions.resolve(topo, fa, fb, piece.p_end, tol);
+        if (piece.p_start - piece.p_end).length() > tol.linear * 10.0 {
+            out.push(piece);
+        }
+    }
 }
 
 /// Does this LINE section meet the two faces only along a measure-zero
@@ -2458,7 +2936,7 @@ fn rescue_corner_crossing(
     let span = raw.t_range.1 - raw.t_range.0;
     #[allow(clippy::cast_precision_loss)]
     let t_at = |i: usize| raw.t_range.0 + span * (i as f64) / (n as f64);
-    let point_at = |t: f64| raw.curve.evaluate_with_endpoints(t, raw.p_start, raw.p_end);
+    let point_at = |t: f64| raw_point_at(raw, t);
     let inside = |t: f64| {
         let p = point_at(t);
         ext_a.contains(p) && ext_b.contains(p)
@@ -2627,6 +3105,61 @@ fn emit_closed_curve_windows(
         }
         out.extend(arcs);
     }
+}
+
+/// Point of `raw` at parameter `t` of its own range.
+///
+/// A `Line` raw curve carries its range in length units along the line with
+/// `p_start`/`p_end` already at the range ends, while `Line::evaluate_with_endpoints`
+/// interpolates a 0..1 fraction between whatever endpoints it is handed — so a
+/// line must be sampled by fraction of its range. Every other curve type
+/// evaluates its own parameter directly.
+fn raw_point_at(raw: &RawCurve, t: f64) -> Point3 {
+    if matches!(raw.curve, EdgeCurve::Line) {
+        let span = raw.t_range.1 - raw.t_range.0;
+        let f = if span == 0.0 {
+            0.0
+        } else {
+            (t - raw.t_range.0) / span
+        };
+        raw.p_start + (raw.p_end - raw.p_start) * f
+    } else {
+        raw.curve.evaluate_with_endpoints(t, raw.p_start, raw.p_end)
+    }
+}
+
+/// Parameter of `raw`'s curve nearest to `p`, searched within `radius` of
+/// `t_guess` and clamped to the raw range. A Line takes the exact foot; a
+/// curved raw is refined by ternary search on the distance.
+fn nearest_parameter(raw: &RawCurve, p: Point3, t_guess: f64, radius: f64) -> f64 {
+    let (r0, r1) = (
+        raw.t_range.0.min(raw.t_range.1),
+        raw.t_range.0.max(raw.t_range.1),
+    );
+    if matches!(raw.curve, EdgeCurve::Line) {
+        let seg = raw.p_end - raw.p_start;
+        let len_sq = seg.length_squared();
+        if len_sq <= 0.0 {
+            return t_guess;
+        }
+        let f = (p - raw.p_start).dot(seg) / len_sq;
+        return (raw.t_range.1 - raw.t_range.0)
+            .mul_add(f, raw.t_range.0)
+            .clamp(r0, r1);
+    }
+    let dist = |t: f64| (raw_point_at(raw, t) - p).length();
+    let (mut lo, mut hi) = ((t_guess - radius).max(r0), (t_guess + radius).min(r1));
+    for _ in 0..64 {
+        let m1 = lo + (hi - lo) / 3.0;
+        let m2 = hi - (hi - lo) / 3.0;
+        if dist(m1) < dist(m2) {
+            hi = m2;
+        } else {
+            lo = m1;
+        }
+    }
+    let t = f64::midpoint(lo, hi);
+    if dist(t) <= dist(t_guess) { t } else { t_guess }
 }
 
 /// Snap a fitted section endpoint onto the nearest boundary curve of either

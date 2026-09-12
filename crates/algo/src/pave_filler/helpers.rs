@@ -7,6 +7,7 @@ use remus_math::tolerance::Tolerance;
 use remus_math::vec::Point3;
 use remus_topology::Topology;
 use remus_topology::edge::{Edge, EdgeId};
+use remus_topology::face::FaceSurface;
 use remus_topology::vertex::VertexId;
 
 use crate::ds::{GfaArena, Pave};
@@ -172,4 +173,45 @@ pub(super) fn add_pave_to_edge(arena: &mut GfaArena, edge_id: EdgeId, pave: Pave
             }
         }
     }
+}
+
+/// The plane a NURBS surface lies in when its whole control net is coplanar
+/// within `tol.linear` — a rational surface never leaves the convex hull of
+/// its net, so coplanar control points certify a planar surface exactly.
+/// `None` for a genuinely curved net or for anything but a NURBS.
+pub(super) fn planar_nurbs_as_plane(surface: &FaceSurface, tol: Tolerance) -> Option<FaceSurface> {
+    let FaceSurface::Nurbs(nurbs) = surface else {
+        return None;
+    };
+    let points: Vec<Point3> = nurbs
+        .control_points()
+        .iter()
+        .flat_map(|row| row.iter().copied())
+        .collect();
+    let origin = *points.first()?;
+    // A well-conditioned normal in two linear passes: the net point farthest
+    // from the origin spans the first direction, and the point whose cross
+    // product with it is largest spans the second.
+    let far = points
+        .iter()
+        .copied()
+        .max_by(|a, b| (*a - origin).length().total_cmp(&(*b - origin).length()))?;
+    let axis = far - origin;
+    let (len, normal) = points
+        .iter()
+        .map(|&p| {
+            let n = axis.cross(p - origin);
+            (n.length(), n)
+        })
+        .filter(|(l, _)| l.is_finite())
+        .max_by(|a, b| a.0.total_cmp(&b.0))?;
+    if len <= tol.linear * tol.linear {
+        return None;
+    }
+    let normal = normal * (1.0 / len);
+    let d = normal.dot(origin - Point3::new(0.0, 0.0, 0.0));
+    let coplanar = points
+        .iter()
+        .all(|p| (normal.dot(*p - Point3::new(0.0, 0.0, 0.0)) - d).abs() <= tol.linear);
+    coplanar.then_some(FaceSurface::Plane { normal, d })
 }

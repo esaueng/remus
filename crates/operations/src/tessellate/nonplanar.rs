@@ -3085,7 +3085,7 @@ fn estimate_surface_radius(surface: &FaceSurface) -> f64 {
 }
 
 /// Compute interior grid resolution for `tessellate_nonplanar_cdt`.
-fn interior_grid_resolution(
+pub(super) fn interior_grid_resolution(
     surface: &FaceSurface,
     du: f64,
     dv: f64,
@@ -3143,25 +3143,54 @@ fn interior_grid_resolution(
             // to its angular equivalent and size against the control net's
             // radius, at the edge sampler's halved angular tolerance so the
             // interior matches the boundary's density.
+            //
+            // An OPEN (non-periodic) direction has no turn count to convert
+            // through, and its knot span is not an angle either: a plane
+            // converted to a bilinear patch spans its face's own millimetres
+            // in knot units, and feeding 120 of them to the chord formula as
+            // radians against the control net's radius demanded thousands of
+            // columns for a flat face — over the interior-grid work limit, so
+            // the whole face fell to the untrimmed rectangular fallback and a
+            // converted 100×10×10 box measured 29% too much volume. Size open
+            // directions by the bending the surface actually shows along its
+            // iso-curves instead (see [`nurbs_open_axis_segments`]).
             let r = nurbs_estimated_radius(s);
-            let (angular_u, tol_u) = {
-                let (du0, du1) = s.domain_u();
-                if s.is_periodic_u() && du1 > du0 {
-                    (du / (du1 - du0) * std::f64::consts::TAU, angular_tol * 0.5)
+            let periodic = |axis_u: bool| {
+                let (d0, d1) = if axis_u { s.domain_u() } else { s.domain_v() };
+                let is_periodic = if axis_u {
+                    s.is_periodic_u()
                 } else {
-                    (du, angular_tol)
-                }
+                    s.is_periodic_v()
+                };
+                is_periodic && d1 > d0
             };
-            let (angular_v, tol_v) = {
-                let (dv0, dv1) = s.domain_v();
-                if s.is_periodic_v() && dv1 > dv0 {
-                    (dv / (dv1 - dv0) * std::f64::consts::TAU, angular_tol * 0.5)
-                } else {
-                    (dv, angular_tol)
+            let bending_u = nurbs_axis_bending(s, true);
+            let bending_v = nurbs_axis_bending(s, false);
+            // A direction's own count: the periodic rule for a closed
+            // direction, the measured-bending rule for an open one that
+            // bends, and none at all for an open one that is flat.
+            let own = |axis_u: bool| -> Option<usize> {
+                let span = if axis_u { du } else { dv };
+                let (d0, d1) = if axis_u { s.domain_u() } else { s.domain_v() };
+                if periodic(axis_u) {
+                    let angular = span / (d1 - d0) * std::f64::consts::TAU;
+                    return Some(
+                        segments_for_chord_deviation_a(
+                            r,
+                            angular,
+                            deflection,
+                            angular_tol * 0.5,
+                            true,
+                        )
+                        .max(2),
+                    );
                 }
+                let (turn, len) = if axis_u { bending_u } else { bending_v };
+                nurbs_open_axis_segments(turn, len, deflection, angular_tol)
             };
-            let n_u = segments_for_chord_deviation_a(r, angular_u, deflection, tol_u, true).max(2);
-            let n_v = segments_for_chord_deviation_a(r, angular_v, deflection, tol_v, true).max(2);
+            let (own_u, own_v) = (own(true), own(false));
+            let n_u = own_u.unwrap_or_else(|| isotropic_rows(bending_u.1, own_v, bending_v.1));
+            let n_v = own_v.unwrap_or_else(|| isotropic_rows(bending_v.1, own_u, bending_u.1));
             (n_u, n_v)
         }
         FaceSurface::Plane { .. } => {
@@ -3171,6 +3200,124 @@ fn interior_grid_resolution(
             (n_u, n_v)
         }
     }
+}
+
+/// Total tangent turning and arc length along the direction `along_u` of a
+/// NURBS surface, read off the iso-curve that bends most.
+///
+/// Walks a few interior iso-curves across the other direction and chords
+/// each into `STEPS` segments; the turning is the sum of the angles between
+/// successive chords. Both come back in model units, so anything sized from
+/// them is invariant when the model and `deflection` scale together and never
+/// depends on how the knot vector happens to be scaled.
+fn nurbs_axis_bending(s: &remus_math::nurbs::surface::NurbsSurface, along_u: bool) -> (f64, f64) {
+    const ISO_LINES: usize = 5;
+    const STEPS: usize = 32;
+    let (a0, a1) = if along_u { s.domain_u() } else { s.domain_v() };
+    let (b0, b1) = if along_u { s.domain_v() } else { s.domain_u() };
+    let mut worst_turn = 0.0_f64;
+    let mut worst_len = 0.0_f64;
+    for j in 0..ISO_LINES {
+        // Interior iso-lines only: a degenerate boundary row (a pole) has no
+        // tangent direction to measure.
+        #[allow(clippy::cast_precision_loss)]
+        let b = (b1 - b0).mul_add((j as f64 + 0.5) / ISO_LINES as f64, b0);
+        let mut prev_pt: Option<Point3> = None;
+        let mut prev_dir: Option<Vec3> = None;
+        let mut turn = 0.0_f64;
+        let mut len = 0.0_f64;
+        for i in 0..=STEPS {
+            #[allow(clippy::cast_precision_loss)]
+            let a = (a1 - a0).mul_add(i as f64 / STEPS as f64, a0);
+            let p = if along_u {
+                s.evaluate(a, b)
+            } else {
+                s.evaluate(b, a)
+            };
+            if let Some(q) = prev_pt {
+                let chord = p - q;
+                let l = chord.length();
+                if l.is_finite() && l > 0.0 {
+                    len += l;
+                    let dir = chord * (1.0 / l);
+                    if let Some(pd) = prev_dir {
+                        turn += pd.dot(dir).clamp(-1.0, 1.0).acos();
+                    }
+                    prev_dir = Some(dir);
+                }
+            }
+            prev_pt = Some(p);
+        }
+        // Ties (every iso-curve straight) still record a length, or a flat
+        // direction would report no extent for the isotropic rule to use.
+        if turn > worst_turn || (turn >= worst_turn && len > worst_len) {
+            worst_turn = turn;
+            worst_len = len;
+        }
+    }
+    (worst_turn, worst_len)
+}
+
+/// Interior grid count for one OPEN (non-periodic) direction that bends,
+/// from its measured `turn` and `len`; `None` when the direction is flat.
+///
+/// An open direction has no turn count to convert through, and its knot span
+/// is not an angle either: a plane converted to a bilinear patch spans its
+/// face's own millimetres in knot units, and feeding 120 of them to the chord
+/// formula as radians against the control net's radius demanded thousands of
+/// columns for a flat face — over the interior-grid work limit, so the whole
+/// face fell to the untrimmed rectangular fallback and a converted 100×10×10
+/// box measured 29 % too much volume. The measured turning is the arc range
+/// the chord formula wants and `len / turn` the mean radius over it; a fillet
+/// stripe spanning a quarter turn in one knot unit gets the columns a quarter
+/// turn needs rather than the one radian its knot span pretends to be.
+///
+/// Flat means a single chord across the whole span — sagging by about
+/// `len × turn / 8` — stays within the deflection; a rounding-noise turn of
+/// 1e-7 rad on a flat patch lands here rather than in the chord formula,
+/// whose floor is four. The caller then sizes the flat direction against the
+/// other one (see [`isotropic_rows`]).
+fn nurbs_open_axis_segments(
+    turn: f64,
+    len: f64,
+    deflection: f64,
+    angular_tol: f64,
+) -> Option<usize> {
+    if !turn.is_finite() || !len.is_finite() || len <= 0.0 || len * turn / 8.0 <= deflection {
+        return None;
+    }
+    let radius = len / turn;
+    Some(segments_for_chord_deviation_a(radius, turn, deflection, angular_tol, true).max(2))
+}
+
+/// Ceiling on the rows a flat direction takes to match the other's spacing.
+const ISOTROPIC_ROWS_MAX: usize = 512;
+
+/// Rows for a FLAT direction of length `len`: enough to keep the interior
+/// grid roughly isotropic in model units with the other direction's `other_n`
+/// cells over `other_len`, and the two-row minimum when the other direction is
+/// flat too.
+///
+/// The CDT triangles span the grid in both directions, so the rows along a
+/// straight ruling are what keep each triangle short along the curved one:
+/// two rows on a B-spline cylinder wall leave triangles that cut through the
+/// solid (a unit B-spline cylinder measured 13 % low, a curved smooth sweep
+/// 15 % low). A flat patch bounded by a flat patch needs nothing.
+fn isotropic_rows(len: f64, other_n: Option<usize>, other_len: f64) -> usize {
+    let Some(other_n) = other_n else {
+        return 2;
+    };
+    if !len.is_finite() || !other_len.is_finite() || other_len <= 0.0 || other_n == 0 {
+        return 2;
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let spacing = other_len / other_n as f64;
+    if spacing <= 0.0 {
+        return 2;
+    }
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let rows = (len / spacing).ceil().max(2.0) as usize;
+    rows.min(ISOTROPIC_ROWS_MAX)
 }
 
 /// Estimate a curvature radius for a NURBS surface from its control net: the

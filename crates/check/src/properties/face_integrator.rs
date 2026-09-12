@@ -1178,16 +1178,27 @@ fn face_uv_bounds<S: ParametricSurface>(
 ) -> Result<UvBounds, CheckError> {
     let face = topo.face(face_id)?;
     let mut uvs = Vec::new();
+    let outer_has_edge = |curved: fn(&EdgeCurve) -> bool| -> Result<bool, CheckError> {
+        Ok(topo
+            .wire(face.outer_wire())?
+            .edges()
+            .iter()
+            .any(|oe| topo.edge(oe.edge()).is_ok_and(|e| curved(e.curve()))))
+    };
     if matches!(
         face.surface(),
         FaceSurface::Sphere(_) | FaceSurface::Cone(_)
     ) || (matches!(
         face.surface(),
         FaceSurface::Cylinder(_) | FaceSurface::Torus(_)
-    ) && topo.wire(face.outer_wire())?.edges().iter().any(|oe| {
-        topo.edge(oe.edge())
-            .is_ok_and(|e| matches!(e.curve(), EdgeCurve::NurbsCurve(_)))
-    })) {
+    ) && outer_has_edge(|c| matches!(c, EdgeCurve::NurbsCurve(_)))?)
+        // A NURBS face bounded by an arc bulges past the arc's ends the same
+        // way: the disc a peg cuts from a converted bar's top reaches 0.76
+        // beyond the chord vertex that bounds it, and a vertex-only window
+        // dropped that whole circular segment (2.09 of 25.18).
+        || (matches!(face.surface(), FaceSurface::Nurbs(_))
+            && outer_has_edge(|c| !matches!(c, EdgeCurve::Line))?)
+    {
         // A quadric section can bulge far beyond its edge endpoints.
         let points = crate::util::wire_polygon_curve_sampled(
             topo,

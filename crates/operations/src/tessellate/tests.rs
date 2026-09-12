@@ -3669,3 +3669,96 @@ fn cross_drilled_shaft_bore_rim_on_seam_is_watertight() {
         );
     }
 }
+
+/// A bilinear carrier is flat: its interior grid must be the two-column
+/// minimum however many millimetres its knot span covers. Feeding the span
+/// to the circular-arc chord formula as radians demanded thousands of
+/// columns for a converted 100×10 plane, blew the interior-grid work limit,
+/// and dropped the face to the untrimmed rectangular fallback.
+#[test]
+fn flat_open_nurbs_interior_grid_is_minimal() {
+    // A converted 100×10 plane with its 10 % margins: 120 × 12 in knot units.
+    let cp = vec![
+        vec![Point3::new(-10.0, -1.0, 0.0), Point3::new(-10.0, 11.0, 0.0)],
+        vec![Point3::new(110.0, -1.0, 0.0), Point3::new(110.0, 11.0, 0.0)],
+    ];
+    let weights = vec![vec![1.0, 1.0], vec![1.0, 1.0]];
+    let flat = NurbsSurface::new(
+        1,
+        1,
+        vec![-10.0, -10.0, 110.0, 110.0],
+        vec![-1.0, -1.0, 11.0, 11.0],
+        cp,
+        weights,
+    )
+    .unwrap();
+    let (n_u, n_v) = super::nonplanar::interior_grid_resolution(
+        &FaceSurface::Nurbs(flat),
+        100.0,
+        10.0,
+        0.005,
+        0.0,
+    );
+    assert_eq!(
+        (n_u, n_v),
+        (2, 2),
+        "a flat patch needs no interior refinement"
+    );
+}
+
+/// An open direction is sized by the bending the surface shows, not by how
+/// its knot vector happens to be scaled: the same arch with knots ×100
+/// gets the same grid, and its straight direction stays at the minimum.
+#[test]
+fn open_nurbs_interior_grid_follows_bending_not_knot_units() {
+    let arch = |knot_scale: f64| {
+        // Degree-2 arch in u (rising 2 over a run of 4), straight in v.
+        let cp = vec![
+            vec![Point3::new(0.0, 0.0, 0.0), Point3::new(0.0, 5.0, 0.0)],
+            vec![Point3::new(2.0, 0.0, 2.0), Point3::new(2.0, 5.0, 2.0)],
+            vec![Point3::new(4.0, 0.0, 0.0), Point3::new(4.0, 5.0, 0.0)],
+        ];
+        let weights = vec![vec![1.0, 1.0], vec![1.0, 1.0], vec![1.0, 1.0]];
+        let k = knot_scale;
+        NurbsSurface::new(
+            2,
+            1,
+            vec![0.0, 0.0, 0.0, k, k, k],
+            vec![0.0, 0.0, k, k],
+            cp,
+            weights,
+        )
+        .unwrap()
+    };
+    let unit = super::nonplanar::interior_grid_resolution(
+        &FaceSurface::Nurbs(arch(1.0)),
+        1.0,
+        1.0,
+        0.005,
+        0.0,
+    );
+    let scaled = super::nonplanar::interior_grid_resolution(
+        &FaceSurface::Nurbs(arch(100.0)),
+        100.0,
+        100.0,
+        0.005,
+        0.0,
+    );
+    assert_eq!(unit, scaled, "grid must not depend on knot scaling");
+    assert!(
+        unit.0 > 2,
+        "the arch bends along u and needs columns: {unit:?}"
+    );
+    // The straight direction takes the rows that keep the grid isotropic
+    // with the arch's columns: 5 long against the arch's ~4.5 of run.
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
+    let expected_rows = (5.0 / (4.47 / unit.0 as f64)).ceil() as usize;
+    assert!(
+        unit.1.abs_diff(expected_rows) <= 2,
+        "the straight direction should match the arch's spacing: {unit:?}, expected ~{expected_rows}"
+    );
+}
