@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789179518382,
+  "lastUpdate": 1789180682143,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -28987,6 +28987,240 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 69110,
             "range": "± 215",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6195c1af38562dbea32f7716c08c0cec3cdfd872",
+          "message": "perf(algo): gate edge-face projections on conservative boxes (#394)\n\nThe edge-face interference phase pruned only straight edges, and only\nagainst a face's boundary-sample box. Every curved edge was tested against\nevery face: 17 NURBS projections for the on-surface check and 65 more in\nthe crossing scan, each a Newton solve on the carrier. On the growing\nhammer holder that is 730k projections and 13M Newton iterations per fuse\nat narrow openings, for pairs that are tens of millimetres apart.\n\nEvery point the scan can evaluate on an edge lies in a cheap box: the line's\nendpoints, a circle's or ellipse's full turn boxed per axis from its normal,\na NURBS curve's control polygon (convex-hull property), plus the stored\nendpoints that `evaluate_with_endpoints` returns verbatim. Every distance\nthe scan measures is to a point on the NURBS carrier, which the projection\nclamps into its domain, so it is at least the distance to the carrier's\ncontrol-net box; and every threshold the scan compares against is at most\n4 x linear tolerance. A pair whose boxes stay 8 x tolerance apart can\ntherefore yield no crossing, no tangency and no on-surface verdict, and is\nskipped before any projection. Analytic carriers are unbounded and their\ndistance is cheap; they are not gated. Parabolas and hyperbolas have no\ncheap finite box and are never gated.\n\nNative, on top of the NURBS evaluation patch: the 3-way fuse of the holder\noperands drops 3.42 s -> 0.17 s at a 16.1 mm opening and 0.68 s -> 0.09 s\nat 46 mm, with identical faces, volume, mass properties and STEP round\ntrip. A perf counter (`ef_nurbs_pair_probes`) records the pairs that reach\nprojection; the new `scaling_` guard shows a cylinder through a NURBS bar\nkeeps 2 of 18 pairs. Box coverage is unit-tested on circle arcs across the\nseam and reversed ranges, ellipses, rational NURBS curves and lines, all\nwith endpoints a vertex tolerance off the curve.\n\nCo-authored-by: Claude Fable 5.1 <noreply@anthropic.com>",
+          "timestamp": "2026-09-11T22:31:47-04:00",
+          "tree_id": "0c6647caa47447a63e7c798cf3c0fad0c65a667a",
+          "url": "https://github.com/esaueng/remus/commit/6195c1af38562dbea32f7716c08c0cec3cdfd872"
+        },
+        "date": 1789180680415,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 859717,
+            "range": "± 1721",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 962967,
+            "range": "± 2803",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 18874,
+            "range": "± 47",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 7844954,
+            "range": "± 6769",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 7843956,
+            "range": "± 5648",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 7561721,
+            "range": "± 244259",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 734285,
+            "range": "± 7284",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 12157409,
+            "range": "± 190342",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 22321487,
+            "range": "± 64818",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 18,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 74,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 32,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 160,
+            "range": "± 8",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 108,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 528,
+            "range": "± 22",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 92,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 250,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 150,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 340,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 640,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 1894,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 8,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 24,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 44,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 51,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 396520,
+            "range": "± 1999",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 6888796,
+            "range": "± 474093",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 115726,
+            "range": "± 232",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 388930,
+            "range": "± 1067",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 70456,
+            "range": "± 106",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 668740,
+            "range": "± 15647",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 7952672,
+            "range": "± 284567",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 514528,
+            "range": "± 2199",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 797454,
+            "range": "± 2091",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 58330,
+            "range": "± 100",
             "unit": "ns/iter"
           }
         ]
