@@ -733,7 +733,12 @@ for (const operation of ['fillet', 'chamfer']) {
   assert.throws(() => hammerKernel.resizeBlend(solid, seed, 3, 2), /band-touches-freeform/);
 
   assert.deepEqual(Array.from(hammerKernel.getEntityCounts(solid)), beforeCounts);
-  assert.ok(Math.abs(hammerKernel.volume(solid, 0.01) - 50_240.482_852_844_82) <= 0.01);
+  // Same constant as `HAMMER_HOLDER_VOLUME` in crates/io/tests/resize_blend_step.rs:
+  // #396 re-sized the non-planar CDT grid and moved this body from 50 240.48 to
+  // 50 240.64 (the mesh converges to 50 242.96 at deflection 0.002, the exact
+  // integrator gives 50 245.4), but only the io test's pin was updated, so every
+  // publish.yml run since failed here and no package refresh could open.
+  assert.ok(Math.abs(hammerKernel.volume(solid, 0.01) - 50_240.643_126_845_04) <= 0.01);
   const strict = JSON.parse(hammerKernel.validateSolidDetailed(solid));
   assert.equal(strict.errorCount, 0, 'refused edit must preserve strict topology');
   assert.equal(strict.warningCount, 0, 'refused edit must preserve warning-free topology');
