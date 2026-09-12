@@ -1,0 +1,20 @@
+cut(box,cyl) x10 round 0: 15.494508ms
+cut(box,cyl) x10 round 1: 13.577322ms
+cut(box,cyl) x10 round 2: 14.282145ms
+mesh sphere tol=0.01 ang=0.1rad round 0: 8.23717ms (9800 tris)
+mesh sphere tol=0.01 ang=0.1rad round 1: 6.084539ms (9800 tris)
+mesh sphere tol=0.01 ang=0.1rad round 2: 7.36427ms (9800 tris)
+mesh sphere tol=0.01 ang=0.1rad round 3: 6.619601ms (9800 tris)
+mesh sphere tol=0.01 ang=0.1rad round 4: 5.818446ms (9800 tris)
+mesh sphere tol=0.01 ang=0.1rad round 5: 6.588752ms (9800 tris)
+mesh sphere tol=0.01 ang=0.1rad round 6: 6.528589ms (9800 tris)
+mesh sphere tol=0.01 ang=0.1rad round 7: 6.558416ms (9800 tris)
+grouped mesh sphere round 0: 5.553714ms (9800 tris)
+grouped mesh sphere round 1: 5.542013ms (9800 tris)
+grouped mesh sphere round 2: 5.560578ms (9800 tris)
+grouped mesh sphere round 3: 5.558043ms (9800 tris)
+grouped mesh sphere round 4: 6.727816ms (9800 tris)
+grouped mesh sphere round 5: 6.588301ms (9800 tris)
+grouped mesh sphere round 6: 6.564356ms (9800 tris)
+grouped mesh sphere round 7: 6.796375ms (9800 tris)
+sphere mesh: max centroid sag 0.00877 (deflection budget 0.01), area 1255.604 vs analytic 1256.637
