@@ -42,7 +42,7 @@ The scratch harness performs one warmup and records min/median/max of nine timed
 | Surface evaluation, 100 points, degree 3 |                         Direct: **11.395 µs** |                                       Cached: **12.139 µs** | Existing cached evaluator loses on this fixture.                                                                                                                                                                     |
 | Surface evaluation, 100 points, degree 9 |                         Direct: **52.148 µs** |                                       Cached: **75.416 µs** | Same conclusion; no general NURBS conclusion follows from two surfaces.                                                                                                                                              |
 
-The harness asserts unchanged transaction slot counts, chain membership/counts, interpolation endpoints, selective BVH results and agreement between direct/cached point evaluation. It does not establish full geometry qualification for proposed replacements.
+The harness asserts unchanged transaction slot counts, chain counts/lengths, interpolation endpoints, selective BVH results and agreement between direct/cached point evaluation. It does not establish full geometry qualification for proposed replacements.
 
 ### Existing real-model benchmark at the audit source SHA
 
@@ -256,6 +256,7 @@ export RAYON_NUM_THREADS=1
   "$CARGO_TARGET_DIR/profiling/examples/batch_profile" 3
   "$CARGO_TARGET_DIR/profiling/examples/perf_probe"
   "$CARGO_TARGET_DIR/profiling/examples/profile_boolean" cylinders
+  RAYON_NUM_THREADS=4 "$CARGO_TARGET_DIR/profiling/examples/profile_boolean" cylinders
 
   cargo bench --offline --locked --profile profiling \
     -p remus-io --bench nurbs_properties -- \

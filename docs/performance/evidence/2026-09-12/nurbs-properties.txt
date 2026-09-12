@@ -33,4 +33,3 @@ Benchmarking nurbs_properties/mass_properties (hammer holder): Collecting 10 sam
 Benchmarking nurbs_properties/mass_properties (hammer holder): Analyzing
 nurbs_properties/mass_properties (hammer holder)
                         time:   [3.6701 s 3.6772 s 3.6844 s]
-
