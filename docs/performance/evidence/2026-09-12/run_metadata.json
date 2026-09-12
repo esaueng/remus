@@ -1,0 +1,20 @@
+[
+  {
+    "name": "audit_probe",
+    "exit": 0,
+    "wall_s": 4.321296215057373,
+    "RAYON_NUM_THREADS": 1
+  },
+  {
+    "name": "batch_profile",
+    "exit": 0,
+    "wall_s": 1.9167468547821045,
+    "RAYON_NUM_THREADS": 1
+  },
+  {
+    "name": "perf_probe",
+    "exit": 0,
+    "wall_s": 0.1640148162841797,
+    "RAYON_NUM_THREADS": 1
+  }
+]

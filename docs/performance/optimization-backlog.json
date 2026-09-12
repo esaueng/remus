@@ -1,0 +1,2016 @@
+[
+  {
+    "id": "M01",
+    "area": "Measurement and performance governance",
+    "priority": "P0",
+    "phase": 0,
+    "evidence": "S",
+    "work": "Create one versioned workload manifest spanning all 15 crates, native facade, direct WASM, batch, translator and render entry points; reuse the existing gauntlet manifest and scorecard.",
+    "acceptance": "Every public operation family has a representative scenario or an explicit coverage gap; pin source, artifact, fixture and harness hashes.",
+    "effort_risk": "M/low",
+    "dependencies": [],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/.github/workflows/fleet-benchmark.yml#L11",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/scripts/bench-compare.sh#L29",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/tools/vs-bench/README.md#L1",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/perf.rs#L31"
+    ]
+  },
+  {
+    "id": "M02",
+    "area": "Measurement and performance governance",
+    "priority": "P0",
+    "phase": 0,
+    "evidence": "S",
+    "work": "Expand the maintained runner beyond the current selected suites: include IO NURBS properties, compound/fuse, query, transaction, sketch, import/export and session workloads.",
+    "acceptance": "One local command regenerates the inventory and results; no suite silently disappears because it is outside operations or requires a feature.",
+    "effort_risk": "S/low",
+    "dependencies": ["M01"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/.github/workflows/fleet-benchmark.yml#L11",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/scripts/bench-compare.sh#L29",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/tools/vs-bench/README.md#L1",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/perf.rs#L31"
+    ]
+  },
+  {
+    "id": "M03",
+    "area": "Measurement and performance governance",
+    "priority": "P0",
+    "phase": 0,
+    "evidence": "S",
+    "work": "Turn performance regression policy into an effective gate; the current reusable workflow needs the ci:benchmark PR label and only comments at 200%.",
+    "acceptance": "Calibrate noise on a controlled runner, then block reproducible material regressions on relevant PRs; preserve the untrusted-build/trusted-publisher separation.",
+    "effort_risk": "M/medium",
+    "dependencies": ["M02", "M06"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/.github/workflows/fleet-benchmark.yml#L11",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/scripts/bench-compare.sh#L29",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/tools/vs-bench/README.md#L1",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/perf.rs#L31"
+    ]
+  },
+  {
+    "id": "M04",
+    "area": "Measurement and performance governance",
+    "priority": "P0",
+    "phase": 0,
+    "evidence": "H",
+    "work": "Add scoped timings and deterministic work counters for snapshot bytes, candidate pairs, projections, BVH builds, quadrature, CDT fallback scans, serialization and copies.",
+    "acceptance": "Counters attribute growth and phase time without changing release behavior; measure instrumentation overhead and keep timing assertions out of ordinary tests.",
+    "effort_risk": "M/low",
+    "dependencies": ["M01"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/.github/workflows/fleet-benchmark.yml#L11",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/scripts/bench-compare.sh#L29",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/tools/vs-bench/README.md#L1",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/perf.rs#L31"
+    ]
+  },
+  {
+    "id": "M05",
+    "area": "Measurement and performance governance",
+    "priority": "P0",
+    "phase": 0,
+    "evidence": "H",
+    "work": "Record native allocation count, allocated bytes, peak live bytes, RSS, arena live/retired slots, checkpoint retention and WASM memory high-water marks.",
+    "acceptance": "Run create/edit/fail/undo/delete cycles at fixed live model size; distinguish live heap from allocator capacity and linear-memory reservation.",
+    "effort_risk": "M/low",
+    "dependencies": ["M01"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/.github/workflows/fleet-benchmark.yml#L11",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/scripts/bench-compare.sh#L29",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/tools/vs-bench/README.md#L1",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/perf.rs#L31"
+    ]
+  },
+  {
+    "id": "M06",
+    "area": "Measurement and performance governance",
+    "priority": "P0",
+    "phase": 0,
+    "evidence": "S",
+    "work": "Fix benchmark methodology: separate setup, warmup, operation, validation and teardown; replace minimum-only reporting in batch_profile with raw samples and median/tail analysis.",
+    "acceptance": "Use independent processes and paired baseline/candidate runs; enough samples for meaningful p95/p99; do not include untimed fixture construction in a named-operation CPU profile.",
+    "effort_risk": "S/low",
+    "dependencies": ["M01"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/.github/workflows/fleet-benchmark.yml#L11",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/scripts/bench-compare.sh#L29",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/tools/vs-bench/README.md#L1",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/perf.rs#L31"
+    ]
+  },
+  {
+    "id": "M07",
+    "area": "Measurement and performance governance",
+    "priority": "P0",
+    "phase": 0,
+    "evidence": "H",
+    "work": "Profile representative real models and adversarial scaling, including large imported NURBS, hollow solids, tangencies, dense contacts, many disconnected bodies and large coordinate translations.",
+    "acceptance": "Archive sampled CPU profiles and allocation profiles; qualify exact success/refusal separately from approximate success and error.",
+    "effort_risk": "M/low",
+    "dependencies": ["M02", "M04", "M05", "M06"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/.github/workflows/fleet-benchmark.yml#L11",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/scripts/bench-compare.sh#L29",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/tools/vs-bench/README.md#L1",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/perf.rs#L31"
+    ]
+  },
+  {
+    "id": "M08",
+    "area": "Measurement and performance governance",
+    "priority": "P0",
+    "phase": 0,
+    "evidence": "H",
+    "work": "Measure complete user workflows: import to visible mesh, repeated selection/measurement, sketch drag, direct face edit, save/restore and export.",
+    "acceptance": "Report cold and warm latency, p95, memory and quality per stage; include the consumer/worker boundary in addition to native kernel time.",
+    "effort_risk": "M/low",
+    "dependencies": ["M01", "M06"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/.github/workflows/fleet-benchmark.yml#L11",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/scripts/bench-compare.sh#L29",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/tools/vs-bench/README.md#L1",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/perf.rs#L31"
+    ]
+  },
+  {
+    "id": "M09",
+    "area": "Measurement and performance governance",
+    "priority": "P1",
+    "phase": 8,
+    "evidence": "S",
+    "work": "Finish real competitor runners and scenario pins in vs-bench; the current fixture is synthetic protocol coverage and bench-compare.sh is native-only.",
+    "acceptance": "Compare identical units, tolerances, representation, validation obligations and outcomes; publish failures and refusals alongside timing and reproducible commands.",
+    "effort_risk": "L/medium",
+    "dependencies": ["M01", "M06", "M07", "M08"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/.github/workflows/fleet-benchmark.yml#L11",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/scripts/bench-compare.sh#L29",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/tools/vs-bench/README.md#L1",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/perf.rs#L31"
+    ]
+  },
+  {
+    "id": "M10",
+    "area": "Measurement and performance governance",
+    "priority": "P1",
+    "phase": 0,
+    "evidence": "S",
+    "work": "Reconcile profiling instructions, command aliases and roadmap status with executable code.",
+    "acceptance": "Record O3.1 complete, native tessellation partially parallel, SIMD flags enabled, comparison harness retired, and current benchmark PR activation; retain remaining qualification gates.",
+    "effort_risk": "S/low",
+    "dependencies": ["M01"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/.github/workflows/fleet-benchmark.yml#L11",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/scripts/bench-compare.sh#L29",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/tools/vs-bench/README.md#L1",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/perf.rs#L31"
+    ]
+  },
+  {
+    "id": "T01",
+    "area": "Transactions, topology storage and lifetime",
+    "priority": "P1",
+    "phase": 3,
+    "evidence": "M",
+    "work": "Introduce a transaction coordinator/savepoints so one mutating WASM operation does not independently snapshot the same topology at each nested native wrapper.",
+    "acceptance": "Count snapshot count/bytes versus document size and nesting depth; preserve per-item batch commits, nested rollback, journals, attributes, and permanently stale failed handles.",
+    "effort_risk": "L/high",
+    "dependencies": ["M04", "M05", "W01"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/topology/src/transaction.rs#L40",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/topology/src/arena.rs#L72",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/topology/src/topology.rs#L108",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm/src/bindings/batch.rs#L458",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/ds/shape_store.rs#L88",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/docs/design/deferred-e6b-arena-compaction-and-slot-reuse.md#L1"
+    ]
+  },
+  {
+    "id": "T02",
+    "area": "Transactions, topology storage and lifetime",
+    "priority": "P1",
+    "phase": 3,
+    "evidence": "M",
+    "work": "Prototype mutation-local undo records or page/chunk copy-on-write for topology; compare both against the measured whole-topology clone baseline.",
+    "acceptance": "A fixed local edit should track touched state rather than unrelated model size; test all mutation accessors, aliasing, failure injection and snapshot retention.",
+    "effort_risk": "L/high",
+    "dependencies": ["T01"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/topology/src/transaction.rs#L40",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/topology/src/arena.rs#L72",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/topology/src/topology.rs#L108",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm/src/bindings/batch.rs#L458",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/ds/shape_store.rs#L88",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/docs/design/deferred-e6b-arena-compaction-and-slot-reuse.md#L1"
+    ]
+  },
+  {
+    "id": "T03",
+    "area": "Transactions, topology storage and lifetime",
+    "priority": "P1",
+    "phase": 3,
+    "evidence": "S",
+    "work": "Add an append-only transaction fast path for qualified construction, with a write-set guard and full fallback for operations that mutate existing entities.",
+    "acceptance": "Measure 150 makeBox operations at increasing preexisting document sizes; rollback must retire every failed allocation without reissuing IDs.",
+    "effort_risk": "M/high",
+    "dependencies": ["T01", "T02"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/topology/src/transaction.rs#L40",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/topology/src/arena.rs#L72",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/topology/src/topology.rs#L108",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm/src/bindings/batch.rs#L458",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/ds/shape_store.rs#L88",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/docs/design/deferred-e6b-arena-compaction-and-slot-reuse.md#L1"
+    ]
+  },
+  {
+    "id": "T04",
+    "area": "Transactions, topology storage and lifetime",
+    "priority": "P1",
+    "phase": 3,
+    "evidence": "S",
+    "work": "Share immutable NURBS carrier and pcurve payloads across snapshots, copies and GFA stores, while keeping topology ownership explicit.",
+    "acceptance": "Measure clone bytes and import/export cost on large control nets; transformations must detach or create new geometry and leave originals/checkpoints unchanged.",
+    "effort_risk": "L/high",
+    "dependencies": ["M05", "T02"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/topology/src/transaction.rs#L40",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/topology/src/arena.rs#L72",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/topology/src/topology.rs#L108",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm/src/bindings/batch.rs#L458",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/ds/shape_store.rs#L88",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/docs/design/deferred-e6b-arena-compaction-and-slot-reuse.md#L1"
+    ]
+  },
+  {
+    "id": "T05",
+    "area": "Transactions, topology storage and lifetime",
+    "priority": "P1",
+    "phase": 3,
+    "evidence": "S",
+    "work": "Remove redundant geometry clones inside GFA deep-copy materialization and benchmark operand-local staging/export separately from document snapshots.",
+    "acceptance": "Track each copied carrier and peak simultaneous buffers; preserve source-to-result face/edge/vertex lineage and shared aliases.",
+    "effort_risk": "M/medium",
+    "dependencies": ["M04", "M05"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/topology/src/transaction.rs#L40",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/topology/src/arena.rs#L72",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/topology/src/topology.rs#L108",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm/src/bindings/batch.rs#L458",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/ds/shape_store.rs#L88",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/docs/design/deferred-e6b-arena-compaction-and-slot-reuse.md#L1"
+    ]
+  },
+  {
+    "id": "T06",
+    "area": "Transactions, topology storage and lifetime",
+    "priority": "P1",
+    "phase": 3,
+    "evidence": "S",
+    "work": "Complete the versioned arena-compaction/checkpoint design before implementing reclamation of retired or unreachable entities.",
+    "acceptance": "Long edit/undo/delete sessions reclaim measured payload memory; old numeric handles cannot alias new objects, persistent references survive or fail explicitly, and formats stay versioned.",
+    "effort_risk": "XL/high",
+    "dependencies": ["T02", "W04", "M05"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/topology/src/transaction.rs#L40",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/topology/src/arena.rs#L72",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/topology/src/topology.rs#L108",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm/src/bindings/batch.rs#L458",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/ds/shape_store.rs#L88",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/docs/design/deferred-e6b-arena-compaction-and-slot-reuse.md#L1"
+    ]
+  },
+  {
+    "id": "T07",
+    "area": "Transactions, topology storage and lifetime",
+    "priority": "P2",
+    "phase": 3,
+    "evidence": "S",
+    "work": "Tune arena reservation and layout using actual entity-size and allocation distributions; evaluate chunked storage and packed liveness separately.",
+    "acceptance": "Preserve the existing bounded geometric growth policy; compare memory spikes, clone cost and iteration locality on native and wasm32.",
+    "effort_risk": "M/high",
+    "dependencies": ["M05", "T02"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/topology/src/transaction.rs#L40",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/topology/src/arena.rs#L72",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/topology/src/topology.rs#L108",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm/src/bindings/batch.rs#L458",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/ds/shape_store.rs#L88",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/docs/design/deferred-e6b-arena-compaction-and-slot-reuse.md#L1"
+    ]
+  },
+  {
+    "id": "T08",
+    "area": "Transactions, topology storage and lifetime",
+    "priority": "P2",
+    "phase": 2,
+    "evidence": "S",
+    "work": "Cache solid-local traversal/adjacency results and index persistent-reference signatures/history resolution where repeated queries justify it.",
+    "acceptance": "Measure lookup over increasing topology/history sizes; invalidate on edits, retirement, restore and changed discriminators; preserve deterministic ordering and ambiguity.",
+    "effort_risk": "M/high",
+    "dependencies": ["Q02"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/topology/src/transaction.rs#L40",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/topology/src/arena.rs#L72",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/topology/src/topology.rs#L108",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm/src/bindings/batch.rs#L458",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/ds/shape_store.rs#L88",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/docs/design/deferred-e6b-arena-compaction-and-slot-reuse.md#L1"
+    ]
+  },
+  {
+    "id": "Q01",
+    "area": "Spatial bounds, classification and distance",
+    "priority": "P1",
+    "phase": 2,
+    "evidence": "S",
+    "work": "Build one operation-local prepared query context holding face IDs, conservative bounds, BVH, analytic descriptors and trim data; reuse across rays and points.",
+    "acceptance": "Compare 1/100/10000 points on one solid, including recovery rays; prove equivalence to existing paths for cavities, seams and OnBoundary cases.",
+    "effort_risk": "M/medium",
+    "dependencies": ["M04", "M07"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/bvh.rs#L212",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/check/src/classify/mod.rs#L311",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/check/src/distance/mod.rs#L50",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/distance.rs#L57",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/classifier/ray_cast.rs#L159"
+    ]
+  },
+  {
+    "id": "Q02",
+    "area": "Spatial bounds, classification and distance",
+    "priority": "P1",
+    "phase": 2,
+    "evidence": "S",
+    "work": "Add persistent spatial caching after mutation invalidation is proven: topology incarnation plus mutation generation first, finer per-entity revisions later.",
+    "acceptance": "Mutate-then-query, raw mutable access, tolerance changes, failed edits, checkpoint restore and same-ID/different-topology cases never reuse stale entries; bound cache memory.",
+    "effort_risk": "L/high",
+    "dependencies": ["Q01", "M05"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/bvh.rs#L212",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/check/src/classify/mod.rs#L311",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/check/src/distance/mod.rs#L50",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/distance.rs#L57",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/classifier/ray_cast.rs#L159"
+    ]
+  },
+  {
+    "id": "Q03",
+    "area": "Spatial bounds, classification and distance",
+    "priority": "P1",
+    "phase": 2,
+    "evidence": "M",
+    "work": "Optimize BVH construction after measuring reuse: compare current repeated axis sorts and suffix allocations with binned SAH, median splits and reusable scratch.",
+    "acceptance": "Measure build time, memory, traversal work and amortized cost for query counts 1/10/10000 on sparse, clustered and overlapping bounds.",
+    "effort_risk": "M/medium",
+    "dependencies": ["Q01", "M05"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/bvh.rs#L212",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/check/src/classify/mod.rs#L311",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/check/src/distance/mod.rs#L50",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/distance.rs#L57",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/classifier/ray_cast.rs#L159"
+    ]
+  },
+  {
+    "id": "Q04",
+    "area": "Spatial bounds, classification and distance",
+    "priority": "P1",
+    "phase": 1,
+    "evidence": "S",
+    "work": "Use true nearest-distance branch-and-bound instead of building a BVH then sorting/enumerating all faces; keep explicitly non-prunable faces on a mandatory side list.",
+    "acceptance": "Preserve trimmed-surface and cavity distance results; measure faces tested plus candidate setup, with certified conservative bounds and exhaustive fallback for unknown bounds.",
+    "effort_risk": "M/high",
+    "dependencies": ["Q05", "M04"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/bvh.rs#L212",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/check/src/classify/mod.rs#L311",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/check/src/distance/mod.rs#L50",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/distance.rs#L57",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/classifier/ray_cast.rs#L159"
+    ]
+  },
+  {
+    "id": "Q05",
+    "area": "Spatial bounds, classification and distance",
+    "priority": "P1",
+    "phase": 2,
+    "evidence": "S",
+    "work": "Provide conservative finite-span curve/trimmed-face bounds and explicit confidence, improving selectivity without trusting endpoint-only or sample-only boxes.",
+    "acceptance": "Analytic extrema and rational control-hull proofs cover full domains; test periodic seams, nonuniform weights, tilted patches and scale before enabling pruning.",
+    "effort_risk": "L/high",
+    "dependencies": ["M01", "M04"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/bvh.rs#L212",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/check/src/classify/mod.rs#L311",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/check/src/distance/mod.rs#L50",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/distance.rs#L57",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/classifier/ray_cast.rs#L159"
+    ]
+  },
+  {
+    "id": "Q06",
+    "area": "Spatial bounds, classification and distance",
+    "priority": "P2",
+    "phase": 1,
+    "evidence": "S",
+    "work": "Reuse BVH traversal stacks and caller-owned candidate buffers; the current into variants still allocate an internal stack.",
+    "acceptance": "Benchmark allocation count and small-query latency; guarantee clean scratch state after early exit/error and deterministic candidate handling.",
+    "effort_risk": "S/low",
+    "dependencies": ["M04"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/bvh.rs#L212",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/check/src/classify/mod.rs#L311",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/check/src/distance/mod.rs#L50",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/distance.rs#L57",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/classifier/ray_cast.rs#L159"
+    ]
+  },
+  {
+    "id": "Q07",
+    "area": "Spatial bounds, classification and distance",
+    "priority": "P2",
+    "phase": 2,
+    "evidence": "S",
+    "work": "Accelerate cached GFA ray geometry with conservative spatial culling; it currently caches geometry but still scans its face descriptors.",
+    "acceptance": "Count ray-face evaluations on many-face solids; preserve all analytic crossing multiplicities, grazing recovery and finite trim tests.",
+    "effort_risk": "M/high",
+    "dependencies": ["Q01", "Q05"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/bvh.rs#L212",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/check/src/classify/mod.rs#L311",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/check/src/distance/mod.rs#L50",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/distance.rs#L57",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/classifier/ray_cast.rs#L159"
+    ]
+  },
+  {
+    "id": "Q08",
+    "area": "Spatial bounds, classification and distance",
+    "priority": "P2",
+    "phase": 5,
+    "evidence": "H",
+    "work": "Evaluate two-level body/face acceleration and BVH refits for clash, transformed instances, projection and repeated assembly queries.",
+    "acceptance": "Compare rebuild versus refit and degeneration after many edits; run exact narrow-phase checks and use instance transforms without copying the body.",
+    "effort_risk": "L/high",
+    "dependencies": ["Q02", "Q05"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/bvh.rs#L212",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/check/src/classify/mod.rs#L311",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/check/src/distance/mod.rs#L50",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/distance.rs#L57",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/classifier/ray_cast.rs#L159"
+    ]
+  },
+  {
+    "id": "B01",
+    "area": "Booleans and GFA",
+    "priority": "P1",
+    "phase": 1,
+    "evidence": "S",
+    "work": "Replace sampled straight-line vertex-edge projection with a domain-aware analytic projection; add qualified circle/conic paths separately.",
+    "acceptance": "Count curve evaluations per surviving pair and run VE/GFA scaling; retain tolerance composition, reversed trims, degenerate lines and endpoint behavior.",
+    "effort_risk": "S/medium",
+    "dependencies": ["M04", "M06"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/pave_filler/phase_ve.rs#L72",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/pave_filler/phase_ve.rs#L176",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/pave_filler/phase_ee.rs#L29",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/pave_filler/phase_ff.rs#L384",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/compound_ops.rs#L686",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/builder/fill_images_faces.rs#L52"
+    ]
+  },
+  {
+    "id": "B02",
+    "area": "Booleans and GFA",
+    "priority": "P1",
+    "phase": 2,
+    "evidence": "S",
+    "work": "Generate vertex-edge candidates spatially instead of visiting every cross-solid pair; current VE only bounds straight edges and scans all edges.",
+    "acceptance": "Test sparse V-by-E growth and curved-edge cases; preserve mandatory processing for unbounded/unqualified boxes and count broad-phase pairs, not only accepted interferences.",
+    "effort_risk": "M/high",
+    "dependencies": ["Q05", "M04"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/pave_filler/phase_ve.rs#L72",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/pave_filler/phase_ve.rs#L176",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/pave_filler/phase_ee.rs#L29",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/pave_filler/phase_ff.rs#L384",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/compound_ops.rs#L686",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/builder/fill_images_faces.rs#L52"
+    ]
+  },
+  {
+    "id": "B03",
+    "area": "Booleans and GFA",
+    "priority": "P1",
+    "phase": 2,
+    "evidence": "S",
+    "work": "Replace EE all-pairs enumeration with deterministic spatial candidate generation over conservative edge bounds.",
+    "acceptance": "Count pair visits at 10x edge counts; retain overlaps, tangencies, shared IDs and per-entity tolerance margins, with dense worst cases still bounded.",
+    "effort_risk": "M/high",
+    "dependencies": ["Q05", "M04"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/pave_filler/phase_ve.rs#L72",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/pave_filler/phase_ve.rs#L176",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/pave_filler/phase_ee.rs#L29",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/pave_filler/phase_ff.rs#L384",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/compound_ops.rs#L686",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/builder/fill_images_faces.rs#L52"
+    ]
+  },
+  {
+    "id": "B04",
+    "area": "Booleans and GFA",
+    "priority": "P1",
+    "phase": 2,
+    "evidence": "S",
+    "work": "Replace FF nested face loops with BVH or sweep candidate generation and shared face metadata.",
+    "acceptance": "Benchmark sparse and dense face-pair workloads; candidate completeness and deterministic junction allocation must match the baseline.",
+    "effort_risk": "M/high",
+    "dependencies": ["Q05", "M04"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/pave_filler/phase_ve.rs#L72",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/pave_filler/phase_ve.rs#L176",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/pave_filler/phase_ee.rs#L29",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/pave_filler/phase_ff.rs#L384",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/compound_ops.rs#L686",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/builder/fill_images_faces.rs#L52"
+    ]
+  },
+  {
+    "id": "B05",
+    "area": "Booleans and GFA",
+    "priority": "P2",
+    "phase": 2,
+    "evidence": "H",
+    "work": "Audit VV, VF and EF candidate generation together so phase-local speedups do not leave repeated topology gathering or another all-pairs phase dominant.",
+    "acceptance": "Add separate phase counters and reuse validated domains/bounds across compatible phases; do not bypass per-phase tolerance or representation checks.",
+    "effort_risk": "M/high",
+    "dependencies": ["Q05", "M04"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/pave_filler/phase_ve.rs#L72",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/pave_filler/phase_ve.rs#L176",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/pave_filler/phase_ee.rs#L29",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/pave_filler/phase_ff.rs#L384",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/compound_ops.rs#L686",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/builder/fill_images_faces.rs#L52"
+    ]
+  },
+  {
+    "id": "B06",
+    "area": "Booleans and GFA",
+    "priority": "P1",
+    "phase": 2,
+    "evidence": "S",
+    "work": "Index N-body overlap partitioning; fuse_all already batches connected clusters but partition_touching still checks every body pair.",
+    "acceptance": "Measure 100/1000/10000 disconnected bodies and dense clusters; preserve touching versus strictly disjoint semantics and exact polyhedral/cylinder gap proofs.",
+    "effort_risk": "M/medium",
+    "dependencies": ["Q05", "M04"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/pave_filler/phase_ve.rs#L72",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/pave_filler/phase_ve.rs#L176",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/pave_filler/phase_ee.rs#L29",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/pave_filler/phase_ff.rs#L384",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/compound_ops.rs#L686",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/builder/fill_images_faces.rs#L52"
+    ]
+  },
+  {
+    "id": "B07",
+    "area": "Booleans and GFA",
+    "priority": "P2",
+    "phase": 5,
+    "evidence": "S",
+    "work": "Extend true N-ary execution where pairwise/sequential fallbacks remain expensive; keep existing compound_cut and fuse_cluster as the baseline.",
+    "acceptance": "Track intermediate face counts, copied bytes and fallback rate; require equivalent material, region partition, order policy and construction lineage.",
+    "effort_risk": "L/high",
+    "dependencies": ["B06", "M07"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/pave_filler/phase_ve.rs#L72",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/pave_filler/phase_ve.rs#L176",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/pave_filler/phase_ee.rs#L29",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/pave_filler/phase_ff.rs#L384",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/compound_ops.rs#L686",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/builder/fill_images_faces.rs#L52"
+    ]
+  },
+  {
+    "id": "B08",
+    "area": "Booleans and GFA",
+    "priority": "P1",
+    "phase": 5,
+    "evidence": "H",
+    "work": "Rank exact analytic fast paths by observed fallback cost and workload frequency; qualify the highest-value missing surface/contact family one at a time.",
+    "acceptance": "Report exact success, typed refusal and disclosed approximation separately; require independent material/volume and topology oracles, not just fewer faces.",
+    "effort_risk": "L/high",
+    "dependencies": ["M07"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/pave_filler/phase_ve.rs#L72",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/pave_filler/phase_ve.rs#L176",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/pave_filler/phase_ee.rs#L29",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/pave_filler/phase_ff.rs#L384",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/compound_ops.rs#L686",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/builder/fill_images_faces.rs#L52"
+    ]
+  },
+  {
+    "id": "B09",
+    "area": "Booleans and GFA",
+    "priority": "P2",
+    "phase": 1,
+    "evidence": "S",
+    "work": "Reuse phase-local topology lists, curve domains, tolerance checks, surface frames and boundary projections instead of repeated lookup/collection.",
+    "acceptance": "Attribute saved allocations and samples on a GFA phase benchmark; cache keys include the domain, tolerance and geometry revision.",
+    "effort_risk": "M/medium",
+    "dependencies": ["M04", "M07"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/pave_filler/phase_ve.rs#L72",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/pave_filler/phase_ve.rs#L176",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/pave_filler/phase_ee.rs#L29",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/pave_filler/phase_ff.rs#L384",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/compound_ops.rs#L686",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/builder/fill_images_faces.rs#L52"
+    ]
+  },
+  {
+    "id": "B10",
+    "area": "Booleans and GFA",
+    "priority": "P2",
+    "phase": 5,
+    "evidence": "H",
+    "work": "Measure remaining face splitting, same-domain grouping, shell assembly and junction/weld work; extend existing spatial indices only where counters reveal growth.",
+    "acceptance": "Preserve existing fixed scaling regressions; count rejected candidates, near-coincident junction probes and assembly passes on both sparse and dense fixtures.",
+    "effort_risk": "M/high",
+    "dependencies": ["M04", "M07"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/pave_filler/phase_ve.rs#L72",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/pave_filler/phase_ve.rs#L176",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/pave_filler/phase_ee.rs#L29",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/pave_filler/phase_ff.rs#L384",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/compound_ops.rs#L686",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/builder/fill_images_faces.rs#L52"
+    ]
+  },
+  {
+    "id": "B11",
+    "area": "Booleans and GFA",
+    "priority": "P2",
+    "phase": 6,
+    "evidence": "H",
+    "work": "Parallelize pure pair geometry into per-worker result buffers, then sort and commit in a deterministic topology-allocation phase.",
+    "acceptance": "Measure 1/2/4/8/16 threads, serial small-input crossover and peak memory; identical results, typed first-error policy and accurate aggregated counters are mandatory.",
+    "effort_risk": "XL/high",
+    "dependencies": ["B04", "T01", "P01"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/pave_filler/phase_ve.rs#L72",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/pave_filler/phase_ve.rs#L176",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/pave_filler/phase_ee.rs#L29",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/pave_filler/phase_ff.rs#L384",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/compound_ops.rs#L686",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/builder/fill_images_faces.rs#L52"
+    ]
+  },
+  {
+    "id": "B12",
+    "area": "Booleans and GFA",
+    "priority": "P2",
+    "phase": 5,
+    "evidence": "S",
+    "work": "Optimize the already-bounded mesh fallback independently: reuse operand tessellation, BVHs and triangle predicates, and eliminate repeated conversion.",
+    "acceptance": "Keep it explicitly approximate; unchanged error bounds, watertightness and resource refusal; exact workloads must never be routed here to appear faster.",
+    "effort_risk": "L/high",
+    "dependencies": ["M07", "D02", "Q01"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/pave_filler/phase_ve.rs#L72",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/pave_filler/phase_ve.rs#L176",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/pave_filler/phase_ee.rs#L29",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/pave_filler/phase_ff.rs#L384",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/compound_ops.rs#L686",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/builder/fill_images_faces.rs#L52"
+    ]
+  },
+  {
+    "id": "N01",
+    "area": "Math, NURBS, fitting and intersection",
+    "priority": "P1",
+    "phase": 1,
+    "evidence": "M",
+    "work": "Store interpolation matrices in compact band form; the solve is already banded but allocation/zeroing remains n-by-n.",
+    "acceptance": "Measure resident allocation and runtime for 128/512/2048/8192 points; retain pivot fill bandwidth and interpolation residuals on ill-conditioned/repeated-knot inputs.",
+    "effort_risk": "M/high",
+    "dependencies": ["M05", "M06"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/fitting.rs#L210",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/fitting.rs#L323",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/intersection/chaining.rs#L184",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/evaluator.rs#L17",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/surface.rs#L389",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/intersection/surface_seeding.rs#L70"
+    ]
+  },
+  {
+    "id": "N02",
+    "area": "Math, NURBS, fitting and intersection",
+    "priority": "P1",
+    "phase": 1,
+    "evidence": "S",
+    "work": "Exploit local support in least-squares fitting instead of dense N-transpose-N assembly; factor once and solve all coordinates together.",
+    "acceptance": "Benchmark sample and control-point scaling; compare residuals and endpoint constraints, and consider banded QR when conditioning makes normal equations unsuitable.",
+    "effort_risk": "M/high",
+    "dependencies": ["M04", "M05", "M06"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/fitting.rs#L210",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/fitting.rs#L323",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/intersection/chaining.rs#L184",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/evaluator.rs#L17",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/surface.rs#L389",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/intersection/surface_seeding.rs#L70"
+    ]
+  },
+  {
+    "id": "N03",
+    "area": "Math, NURBS, fitting and intersection",
+    "priority": "P1",
+    "phase": 1,
+    "evidence": "M",
+    "work": "Replace intersection-point all-pairs adjacency and full-component nearest-neighbor searches with deterministic spatial neighborhoods and ordering.",
+    "acceptance": "The measured sparse chain should stop growing approximately quadratically; preserve current threshold graph, all branches, ties, loops and close separate components.",
+    "effort_risk": "M/high",
+    "dependencies": ["M04", "M06"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/fitting.rs#L210",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/fitting.rs#L323",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/intersection/chaining.rs#L184",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/evaluator.rs#L17",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/surface.rs#L389",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/intersection/surface_seeding.rs#L70"
+    ]
+  },
+  {
+    "id": "N04",
+    "area": "Math, NURBS, fitting and intersection",
+    "priority": "P1",
+    "phase": 1,
+    "evidence": "S",
+    "work": "Expose scratch-buffer derivative APIs and fuse position/first/second derivative evaluation so consumers reuse basis values and homogeneous sums.",
+    "acceptance": "Count allocations and basis evaluations on integration, projection, SSI and walker workloads; verify derivative finite differences and projective weight-scale invariance.",
+    "effort_risk": "M/high",
+    "dependencies": ["M04", "M05", "M07"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/fitting.rs#L210",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/fitting.rs#L323",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/intersection/chaining.rs#L184",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/evaluator.rs#L17",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/surface.rs#L389",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/intersection/surface_seeding.rs#L70"
+    ]
+  },
+  {
+    "id": "N05",
+    "area": "Math, NURBS, fitting and intersection",
+    "priority": "P2",
+    "phase": 5,
+    "evidence": "M",
+    "work": "Benchmark direct versus cached evaluators on realistic multi-span grids before adopting the existing power-basis evaluator; both audit fixtures made the cached path slower.",
+    "acceptance": "Include construction cost, amortization, rational degrees 3/9, knots and derivatives; adopt only proven winning regimes with a stable dispatch criterion.",
+    "effort_risk": "M/medium",
+    "dependencies": ["M07"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/fitting.rs#L210",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/fitting.rs#L323",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/intersection/chaining.rs#L184",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/evaluator.rs#L17",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/surface.rs#L389",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/intersection/surface_seeding.rs#L70"
+    ]
+  },
+  {
+    "id": "N06",
+    "area": "Math, NURBS, fitting and intersection",
+    "priority": "P2",
+    "phase": 5,
+    "evidence": "S",
+    "work": "Precompute per-axis basis/span tables for tensor-product sampling and quadrature; reuse factorizations only when knot/parameter systems really match.",
+    "acceptance": "Measure surface grids, loft rows and repeated fits; do not assume independently chord-parameterized rows share the same matrix.",
+    "effort_risk": "M/high",
+    "dependencies": ["N04", "N05"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/fitting.rs#L210",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/fitting.rs#L323",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/intersection/chaining.rs#L184",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/evaluator.rs#L17",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/surface.rs#L389",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/intersection/surface_seeding.rs#L70"
+    ]
+  },
+  {
+    "id": "N07",
+    "area": "Math, NURBS, fitting and intersection",
+    "priority": "P2",
+    "phase": 5,
+    "evidence": "S",
+    "work": "Reduce SSI patch cloning, redundant subdivision and re-marching of an already traced branch; reuse decomposition/evaluator state per surface pair.",
+    "acceptance": "Track patch bytes, seed count, unique branches, Newton calls and retries; preserve tangencies, tiny loops, periodic closure and existing resource budgets.",
+    "effort_risk": "L/high",
+    "dependencies": ["M04", "M07"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/fitting.rs#L210",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/fitting.rs#L323",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/intersection/chaining.rs#L184",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/evaluator.rs#L17",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/surface.rs#L389",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/intersection/surface_seeding.rs#L70"
+    ]
+  },
+  {
+    "id": "N08",
+    "area": "Math, NURBS, fitting and intersection",
+    "priority": "P2",
+    "phase": 5,
+    "evidence": "S",
+    "work": "Improve safeguarded projection/extrema with temporal seeds, reusable workspaces and proven bounds; retain global-search fallback where local Newton is insufficient.",
+    "acceptance": "Benchmark repeated nearby queries and adversarial multiple minima; an estimated Lipschitz constant is not a new license for certified pruning.",
+    "effort_risk": "L/high",
+    "dependencies": ["Q05", "M07"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/fitting.rs#L210",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/fitting.rs#L323",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/intersection/chaining.rs#L184",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/evaluator.rs#L17",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/surface.rs#L389",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/intersection/surface_seeding.rs#L70"
+    ]
+  },
+  {
+    "id": "N09",
+    "area": "Math, NURBS, fitting and intersection",
+    "priority": "P2",
+    "phase": 5,
+    "evidence": "S",
+    "work": "Profile filtered predicate fast-path/fallback rates and duplicate filtering, plus CDT constraint recovery and stale-hint linear scans.",
+    "acceptance": "Count actual fallback work by geometry family; preserve exact predicate signs and constrained edges on near-degenerate and large-coordinate inputs.",
+    "effort_risk": "M/high",
+    "dependencies": ["M04", "M07"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/fitting.rs#L210",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/fitting.rs#L323",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/intersection/chaining.rs#L184",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/evaluator.rs#L17",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/surface.rs#L389",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/intersection/surface_seeding.rs#L70"
+    ]
+  },
+  {
+    "id": "N10",
+    "area": "Math, NURBS, fitting and intersection",
+    "priority": "P3",
+    "phase": 7,
+    "evidence": "H",
+    "work": "Evaluate f64 SIMD batches and structure-of-arrays layouts for basis evaluation, projections, bounds and surface grids.",
+    "acceptance": "Show end-to-end benefit on native and actual SIMD WASM; respect exact arithmetic/error bounds, alignment, lane tails and code-size budgets.",
+    "effort_risk": "L/high",
+    "dependencies": ["N04", "N05", "W01", "M07"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/fitting.rs#L210",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/fitting.rs#L323",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/intersection/chaining.rs#L184",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/evaluator.rs#L17",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/surface.rs#L389",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/intersection/surface_seeding.rs#L70"
+    ]
+  },
+  {
+    "id": "N11",
+    "area": "Math, NURBS, fitting and intersection",
+    "priority": "P3",
+    "phase": 7,
+    "evidence": "H",
+    "work": "Evaluate small fixed-degree kernels, polynomial specializations, inlining and cold-path separation only after profiling identifies a material hotspot.",
+    "acceptance": "Measure instructions, cache misses and code size as well as time; keep high-degree/rational/general fallbacks and unchanged floating-point contracts.",
+    "effort_risk": "M/high",
+    "dependencies": ["M07"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/fitting.rs#L210",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/fitting.rs#L323",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/intersection/chaining.rs#L184",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/evaluator.rs#L17",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/surface.rs#L389",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/intersection/surface_seeding.rs#L70"
+    ]
+  },
+  {
+    "id": "D01",
+    "area": "Tessellation and mesh production",
+    "priority": "P1",
+    "phase": 4,
+    "evidence": "S",
+    "work": "Create a revisioned per-face mesh cache with shared edge-sample dependencies and explicit keys for linear/angular tolerance, purpose and face attribution.",
+    "acceptance": "Unchanged views reuse meshes; one edge edit invalidates every incident face; tests cover holes, seams, sheets, cavities and rolled-back edits.",
+    "effort_risk": "L/high",
+    "dependencies": ["Q02", "D03"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/tessellate/solid.rs#L331",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/tessellate/solid.rs#L913",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/cdt/constraints.rs#L8",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/tessellate/nurbs.rs#L31",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/tessellate/mesh_ops.rs#L28"
+    ]
+  },
+  {
+    "id": "D02",
+    "area": "Tessellation and mesh production",
+    "priority": "P1",
+    "phase": 4,
+    "evidence": "S",
+    "work": "Share edge sampling between solid tessellation, wireframe, export and queries when contracts match.",
+    "acceptance": "Count evaluations and copied points; do not mix display samples with mesh-boolean circle-floor policy or lose directed coedge domains.",
+    "effort_risk": "M/high",
+    "dependencies": ["M04", "M07"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/tessellate/solid.rs#L331",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/tessellate/solid.rs#L913",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/cdt/constraints.rs#L8",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/tessellate/nurbs.rs#L31",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/tessellate/mesh_ops.rs#L28"
+    ]
+  },
+  {
+    "id": "D03",
+    "area": "Tessellation and mesh production",
+    "priority": "P1",
+    "phase": 4,
+    "evidence": "S",
+    "work": "Split tessellation into boundary planning, local triangulation, shared-boundary reconciliation and deterministic assembly before broadening parallelism.",
+    "acceptance": "Existing edge sampling and holed-planar CDT remain the baseline; Steiner points reaching neighboring faces must be reconciled before dependent triangulation.",
+    "effort_risk": "L/high",
+    "dependencies": ["M04", "M07"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/tessellate/solid.rs#L331",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/tessellate/solid.rs#L913",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/cdt/constraints.rs#L8",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/tessellate/nurbs.rs#L31",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/tessellate/mesh_ops.rs#L28"
+    ]
+  },
+  {
+    "id": "D04",
+    "area": "Tessellation and mesh production",
+    "priority": "P2",
+    "phase": 6,
+    "evidence": "S",
+    "work": "Parallelize eligible nonplanar faces and independent meshes with workload-based grain sizes, after boundary ownership is stable.",
+    "acceptance": "Measure thread scaling, skewed face sizes, small inputs and memory; prove watertightness and face-ID stability across thread counts.",
+    "effort_risk": "L/high",
+    "dependencies": ["D03", "P01"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/tessellate/solid.rs#L331",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/tessellate/solid.rs#L913",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/cdt/constraints.rs#L8",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/tessellate/nurbs.rs#L31",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/tessellate/mesh_ops.rs#L28"
+    ]
+  },
+  {
+    "id": "D05",
+    "area": "Tessellation and mesh production",
+    "priority": "P2",
+    "phase": 1,
+    "evidence": "S",
+    "work": "Instrument CDT point-location/constraint walks and reuse legalization scratch; repair frequent fallback scans rather than replacing Hilbert ordering that already exists.",
+    "acceptance": "Track triangle visits, flips, Steiner points and fallback scans at 1k/10k/100k points, long holes and skinny constraints.",
+    "effort_risk": "M/high",
+    "dependencies": ["M04", "M07"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/tessellate/solid.rs#L331",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/tessellate/solid.rs#L913",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/cdt/constraints.rs#L8",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/tessellate/nurbs.rs#L31",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/tessellate/mesh_ops.rs#L28"
+    ]
+  },
+  {
+    "id": "D06",
+    "area": "Tessellation and mesh production",
+    "priority": "P2",
+    "phase": 5,
+    "evidence": "H",
+    "work": "Reduce over-tessellation through analytic/adaptive subdivision within the requested chord and angular budgets.",
+    "acceptance": "Verify maximum geometric deviation and topology on curved trims and singularities; triangle reduction must not weaken an existing quality contract.",
+    "effort_risk": "L/high",
+    "dependencies": ["M07"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/tessellate/solid.rs#L331",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/tessellate/solid.rs#L913",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/cdt/constraints.rs#L8",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/tessellate/nurbs.rs#L31",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/tessellate/mesh_ops.rs#L28"
+    ]
+  },
+  {
+    "id": "D07",
+    "area": "Tessellation and mesh production",
+    "priority": "P2",
+    "phase": 4,
+    "evidence": "S",
+    "work": "Reduce mesh assembly passes and temporary arrays for grouping, welding, normals and face offsets; reserve from measured counts.",
+    "acceptance": "Compare allocated bytes and wall time at fixed triangle count; keep stable grouping, seam normals and shared boundary IDs.",
+    "effort_risk": "M/medium",
+    "dependencies": ["M05", "M07"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/tessellate/solid.rs#L331",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/tessellate/solid.rs#L913",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/cdt/constraints.rs#L8",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/tessellate/nurbs.rs#L31",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/tessellate/mesh_ops.rs#L28"
+    ]
+  },
+  {
+    "id": "D08",
+    "area": "Tessellation and mesh production",
+    "priority": "P2",
+    "phase": 4,
+    "evidence": "H",
+    "work": "Support incremental LOD and cancellation of obsolete display work at an explicit preview API boundary.",
+    "acceptance": "Measure time-to-first-visible and final-quality latency; stale jobs cannot replace a newer mesh, and preview output remains clearly approximate.",
+    "effort_risk": "L/high",
+    "dependencies": ["D01", "W05"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/tessellate/solid.rs#L331",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/tessellate/solid.rs#L913",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/cdt/constraints.rs#L8",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/tessellate/nurbs.rs#L31",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/tessellate/mesh_ops.rs#L28"
+    ]
+  },
+  {
+    "id": "D09",
+    "area": "Tessellation and mesh production",
+    "priority": "P2",
+    "phase": 4,
+    "evidence": "H",
+    "work": "Reuse a compatible final mesh for multiple exports and render consumers instead of rebuilding it per format.",
+    "acceptance": "Cache keys include body revision and quality; verify format-specific normals, winding, units, attributes and invalidation.",
+    "effort_risk": "M/medium",
+    "dependencies": ["D01", "D02"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/tessellate/solid.rs#L331",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/tessellate/solid.rs#L913",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/cdt/constraints.rs#L8",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/tessellate/nurbs.rs#L31",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/tessellate/mesh_ops.rs#L28"
+    ]
+  },
+  {
+    "id": "D10",
+    "area": "Tessellation and mesh production",
+    "priority": "P3",
+    "phase": 7,
+    "evidence": "S",
+    "work": "Evaluate the existing GPU analytic mesher for supported display workloads and measured CPU-to-GPU transfer costs.",
+    "acceptance": "Use graphics output only within declared quality; keep native/WASM CPU paths, supported-device matrix and geometric deviation checks.",
+    "effort_risk": "L/high",
+    "dependencies": ["M07", "R05"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/tessellate/solid.rs#L331",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/tessellate/solid.rs#L913",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/cdt/constraints.rs#L8",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/tessellate/nurbs.rs#L31",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/tessellate/mesh_ops.rs#L28"
+    ]
+  },
+  {
+    "id": "V01",
+    "area": "Validation, mass properties and measurement",
+    "priority": "P1",
+    "phase": 2,
+    "evidence": "M",
+    "work": "Prepare trim loops, projected boundaries and quadrature/evaluator data once per face per operation, then reuse across volume/area/inertia/validation.",
+    "acceptance": "Measure the hammer-holder benchmark and analytic/cavity fixtures; preserve periodic UV branches, trim orientation and compensated/local-origin arithmetic.",
+    "effort_risk": "M/high",
+    "dependencies": ["M04", "M07"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/check/src/properties/face_integrator.rs#L97",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/check/src/properties/mod.rs#L149",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/check/src/validate/mod.rs#L50",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/measure/volume.rs#L2916",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/io/benches/nurbs_properties.rs#L24"
+    ]
+  },
+  {
+    "id": "V02",
+    "area": "Validation, mass properties and measurement",
+    "priority": "P1",
+    "phase": 4,
+    "evidence": "S",
+    "work": "Cache face property contributions and recombine only changed faces using construction history.",
+    "acceptance": "Repeated measurements become proportional to changes; compare against full recomputation after every supported edit/undo, including inner shells and face reversals.",
+    "effort_risk": "L/high",
+    "dependencies": ["Q02", "V01"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/check/src/properties/face_integrator.rs#L97",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/check/src/properties/mod.rs#L149",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/check/src/validate/mod.rs#L50",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/measure/volume.rs#L2916",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/io/benches/nurbs_properties.rs#L24"
+    ]
+  },
+  {
+    "id": "V03",
+    "area": "Validation, mass properties and measurement",
+    "priority": "P1",
+    "phase": 3,
+    "evidence": "S",
+    "work": "Deduplicate repeated validation of the same immutable result within a transaction, using an explicit validation certificate keyed to all relevant policies.",
+    "acceptance": "Instrument each validator invocation; preserve full required checks at trust boundaries and invalidate certificates on any change or rollback.",
+    "effort_risk": "L/high",
+    "dependencies": ["T01", "Q02", "M04"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/check/src/properties/face_integrator.rs#L97",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/check/src/properties/mod.rs#L149",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/check/src/validate/mod.rs#L50",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/measure/volume.rs#L2916",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/io/benches/nurbs_properties.rs#L24"
+    ]
+  },
+  {
+    "id": "V04",
+    "area": "Validation, mass properties and measurement",
+    "priority": "P2",
+    "phase": 2,
+    "evidence": "S",
+    "work": "Share topological indexes among edge-use, shell, Euler, orientation and finite-geometry checks rather than rebuilding traversals per check.",
+    "acceptance": "Measure allocations and entity visits on large valid and malformed bodies; identical diagnostic severities, entity IDs and acceptance are required.",
+    "effort_risk": "M/medium",
+    "dependencies": ["Q01", "M04"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/check/src/properties/face_integrator.rs#L97",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/check/src/properties/mod.rs#L149",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/check/src/validate/mod.rs#L50",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/measure/volume.rs#L2916",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/io/benches/nurbs_properties.rs#L24"
+    ]
+  },
+  {
+    "id": "V05",
+    "area": "Validation, mass properties and measurement",
+    "priority": "P2",
+    "phase": 5,
+    "evidence": "H",
+    "work": "Specialize additional qualified analytic property integrals and reuse shared moment evaluation across requested outputs.",
+    "acceptance": "Closed-form independent oracles, thin walls, trimmed holes and translated models pass; do not infer full primitive volume from its carrier alone.",
+    "effort_risk": "M/high",
+    "dependencies": ["M07"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/check/src/properties/face_integrator.rs#L97",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/check/src/properties/mod.rs#L149",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/check/src/validate/mod.rs#L50",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/measure/volume.rs#L2916",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/io/benches/nurbs_properties.rs#L24"
+    ]
+  },
+  {
+    "id": "V06",
+    "area": "Validation, mass properties and measurement",
+    "priority": "P2",
+    "phase": 6,
+    "evidence": "H",
+    "work": "Parallelize independent face integrations and validation work using deterministic reduction and stable diagnostics.",
+    "acceptance": "Compare p95 and reduction error across thread counts, especially cavity cancellation and large translations; retain serial thresholds.",
+    "effort_risk": "M/high",
+    "dependencies": ["V01", "P01"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/check/src/properties/face_integrator.rs#L97",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/check/src/properties/mod.rs#L149",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/check/src/validate/mod.rs#L50",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/measure/volume.rs#L2916",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/io/benches/nurbs_properties.rs#L24"
+    ]
+  },
+  {
+    "id": "V07",
+    "area": "Validation, mass properties and measurement",
+    "priority": "P2",
+    "phase": 5,
+    "evidence": "S",
+    "work": "Accelerate hidden-line/visibility and repeated measurement requests with prepared classification and batched query APIs.",
+    "acceptance": "Measure sample-point count, context rebuilds and end-to-end drawing time; preserve silhouette/visibility semantics and declared approximation.",
+    "effort_risk": "M/high",
+    "dependencies": ["Q01"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/check/src/properties/face_integrator.rs#L97",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/check/src/properties/mod.rs#L149",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/check/src/validate/mod.rs#L50",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/measure/volume.rs#L2916",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/io/benches/nurbs_properties.rs#L24"
+    ]
+  },
+  {
+    "id": "H01",
+    "area": "Healing and sewing",
+    "priority": "P1",
+    "phase": 1,
+    "evidence": "S",
+    "work": "Spatially index vertex merging in native healing and the operations wrapper; both contain pairwise vertex loops.",
+    "acceptance": "Count distance checks and runtime over 1k/10k/100k vertices; preserve canonical representative, tolerance policy and nontransitive-nearness behavior.",
+    "effort_risk": "M/high",
+    "dependencies": ["M04", "M06"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/heal/src/fix/solid.rs#L32",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/heal/src/upgrade/shell_sewing.rs#L215",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/heal.rs#L530",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/heal/src/upgrade/unify_same_domain.rs#L37"
+    ]
+  },
+  {
+    "id": "H02",
+    "area": "Healing and sewing",
+    "priority": "P1",
+    "phase": 2,
+    "evidence": "S",
+    "work": "Index free-edge sewing by endpoint neighborhoods and curve signatures before exact compatibility checks.",
+    "acceptance": "Sparse free-edge candidates scale with local contacts; preserve ambiguity refusals, coedge/pcurve lineage and cases with several eligible partners.",
+    "effort_risk": "M/high",
+    "dependencies": ["Q05", "M04"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/heal/src/fix/solid.rs#L32",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/heal/src/upgrade/shell_sewing.rs#L215",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/heal.rs#L530",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/heal/src/upgrade/unify_same_domain.rs#L37"
+    ]
+  },
+  {
+    "id": "H03",
+    "area": "Healing and sewing",
+    "priority": "P2",
+    "phase": 2,
+    "evidence": "S",
+    "work": "Bucket duplicate-face candidates by conservative geometry/topology descriptors before the current pairwise comparison.",
+    "acceptance": "Verify reversed wires, holes, aliases and genuinely distinct coincident faces; descriptors only select candidates and cannot establish equivalence alone.",
+    "effort_risk": "M/high",
+    "dependencies": ["Q05", "M04"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/heal/src/fix/solid.rs#L32",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/heal/src/upgrade/shell_sewing.rs#L215",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/heal.rs#L530",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/heal/src/upgrade/unify_same_domain.rs#L37"
+    ]
+  },
+  {
+    "id": "H04",
+    "area": "Healing and sewing",
+    "priority": "P2",
+    "phase": 5,
+    "evidence": "H",
+    "work": "Make healing pipelines process dirty entities and reuse analysis findings when intervening steps do not invalidate them.",
+    "acceptance": "Track scans and repeated repairs; preserve final validation, repair disclosure, tolerance limits and complete construction history.",
+    "effort_risk": "L/high",
+    "dependencies": ["Q02", "V04"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/heal/src/fix/solid.rs#L32",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/heal/src/upgrade/shell_sewing.rs#L215",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/heal.rs#L530",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/heal/src/upgrade/unify_same_domain.rs#L37"
+    ]
+  },
+  {
+    "id": "H05",
+    "area": "Healing and sewing",
+    "priority": "P2",
+    "phase": 1,
+    "evidence": "S",
+    "work": "Retain and expand unify_faces scaling guards; the former per-group whole-edge-map rescan has already been fixed.",
+    "acceptance": "Reproduce current many-group prism/STL baselines and investigate only remaining hot paths; do not recreate an already-merged optimization ticket.",
+    "effort_risk": "S/low",
+    "dependencies": ["M04", "M06"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/heal/src/fix/solid.rs#L32",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/heal/src/upgrade/shell_sewing.rs#L215",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/heal.rs#L530",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/heal/src/upgrade/unify_same_domain.rs#L37"
+    ]
+  },
+  {
+    "id": "H06",
+    "area": "Healing and sewing",
+    "priority": "P2",
+    "phase": 5,
+    "evidence": "H",
+    "work": "Profile SameParameter, curve/surface recognition, small-edge/wire repair and unification at multiple model sizes.",
+    "acceptance": "Reuse projections and analytic tests only on matching revisions; no performance gain may come from deleting legitimate small features or loosening repair tolerances.",
+    "effort_risk": "M/high",
+    "dependencies": ["M07", "Q01"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/heal/src/fix/solid.rs#L32",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/heal/src/upgrade/shell_sewing.rs#L215",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/heal.rs#L530",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/heal/src/upgrade/unify_same_domain.rs#L37"
+    ]
+  },
+  {
+    "id": "S01",
+    "area": "Sketch solver",
+    "priority": "P1",
+    "phase": 0,
+    "evidence": "S",
+    "work": "Add sketch benchmarks for drag updates, large sparse systems, independent components, redundant constraints and inconsistent systems.",
+    "acceptance": "Record solve/diagnostic time, Jacobian dimensions, iterations, rank, residuals and allocations at 10/100/1000/10000 parameters where supported.",
+    "effort_risk": "M/low",
+    "dependencies": ["M01", "M06"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/sketch/src/gcs/system.rs#L343",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/sketch/src/gcs/solver.rs#L32",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/sketch/src/gcs/qr.rs#L35",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/sketch/src/gcs/dof.rs#L23"
+    ]
+  },
+  {
+    "id": "S02",
+    "area": "Sketch solver",
+    "priority": "P2",
+    "phase": 5,
+    "evidence": "S",
+    "work": "Split the constraint graph into independent connected components before dense solving.",
+    "acceptance": "Time depends on component sizes rather than total unrelated parameters; preserve DOF, rank, conflict classification and all coupled constraints.",
+    "effort_risk": "L/high",
+    "dependencies": ["S01", "M07"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/sketch/src/gcs/system.rs#L343",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/sketch/src/gcs/solver.rs#L32",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/sketch/src/gcs/qr.rs#L35",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/sketch/src/gcs/dof.rs#L23"
+    ]
+  },
+  {
+    "id": "S03",
+    "area": "Sketch solver",
+    "priority": "P2",
+    "phase": 1,
+    "evidence": "S",
+    "work": "Reuse residual/Jacobian/QR/step workspaces and avoid per-iteration cloning/reallocation where ownership permits.",
+    "acceptance": "Allocation count per iteration drops; solver convergence, step acceptance, failed-solve rollback and diagnostics remain equivalent.",
+    "effort_risk": "M/medium",
+    "dependencies": ["S01", "M05"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/sketch/src/gcs/system.rs#L343",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/sketch/src/gcs/solver.rs#L32",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/sketch/src/gcs/qr.rs#L35",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/sketch/src/gcs/dof.rs#L23"
+    ]
+  },
+  {
+    "id": "S04",
+    "area": "Sketch solver",
+    "priority": "P2",
+    "phase": 5,
+    "evidence": "S",
+    "work": "Evaluate sparse Jacobian assembly and rank-revealing sparse solving for large coupled sketches, with the existing dense solver as the small-system baseline.",
+    "acceptance": "Use sparse and dense adversarial matrices; preserve rank/DOF and ill-conditioned behavior; review new numerical dependencies explicitly.",
+    "effort_risk": "XL/high",
+    "dependencies": ["S02", "S03"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/sketch/src/gcs/system.rs#L343",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/sketch/src/gcs/solver.rs#L32",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/sketch/src/gcs/qr.rs#L35",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/sketch/src/gcs/dof.rs#L23"
+    ]
+  },
+  {
+    "id": "S05",
+    "area": "Sketch solver",
+    "priority": "P2",
+    "phase": 5,
+    "evidence": "H",
+    "work": "Cache structural sparsity/parameter maps and warm-start related drag solves; factorization reuse requires an unchanged or explicitly updated Jacobian.",
+    "acceptance": "Measure interactive traces including topology/constraint changes; do not reuse stale numeric factors merely because the graph is unchanged.",
+    "effort_risk": "L/high",
+    "dependencies": ["S02", "S03"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/sketch/src/gcs/system.rs#L343",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/sketch/src/gcs/solver.rs#L32",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/sketch/src/gcs/qr.rs#L35",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/sketch/src/gcs/dof.rs#L23"
+    ]
+  },
+  {
+    "id": "S06",
+    "area": "Sketch solver",
+    "priority": "P2",
+    "phase": 5,
+    "evidence": "S",
+    "work": "Share final residual/Jacobian work between solve_detailed, DOF and diagnostics when evaluated at the same iterate.",
+    "acceptance": "Reduce duplicated computation without changing restored state, per-constraint residuals or error classifications.",
+    "effort_risk": "M/high",
+    "dependencies": ["S01", "S03"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/sketch/src/gcs/system.rs#L343",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/sketch/src/gcs/solver.rs#L32",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/sketch/src/gcs/qr.rs#L35",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/sketch/src/gcs/dof.rs#L23"
+    ]
+  },
+  {
+    "id": "O01",
+    "area": "Blends, offsets and other modeling operations",
+    "priority": "P2",
+    "phase": 5,
+    "evidence": "S",
+    "work": "Reuse support evaluations and derivative/Jacobian work inside blend correctors; tune continuation from measured iteration/retry counts.",
+    "acceptance": "Benchmark curved/variable-radius stations and whole fillets, not just the planar walker fixture; preserve G1 contact, radius and stopping conditions.",
+    "effort_risk": "M/high",
+    "dependencies": ["M07", "N04"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/blend/src/walker.rs#L268",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/blend/src/analytic.rs#L108",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/offset/src/inter3d.rs#L24",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/offset/src/move_faces.rs#L113",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/sweep.rs#L40",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/query.rs#L141"
+    ]
+  },
+  {
+    "id": "O02",
+    "area": "Blends, offsets and other modeling operations",
+    "priority": "P2",
+    "phase": 5,
+    "evidence": "H",
+    "work": "Prioritize additional certified analytic blend/offset cases by actual walker and fallback cost.",
+    "acceptance": "Independent radius/material/volume checks and transformed-scale fixtures pass; general supports remain typed refusals until qualified.",
+    "effort_risk": "L/high",
+    "dependencies": ["M07"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/blend/src/walker.rs#L268",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/blend/src/analytic.rs#L108",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/offset/src/inter3d.rs#L24",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/offset/src/move_faces.rs#L113",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/sweep.rs#L40",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/query.rs#L141"
+    ]
+  },
+  {
+    "id": "O03",
+    "area": "Blends, offsets and other modeling operations",
+    "priority": "P2",
+    "phase": 5,
+    "evidence": "S",
+    "work": "Reuse adjacent-support intersections, projected trim curves and vertex planning in offsets/re-limitation; current inter3d is already adjacency-based.",
+    "acceptance": "Measure local edit cost on a large body; preserve pcurve authority, winding, tolerance composition and construction mappings.",
+    "effort_risk": "L/high",
+    "dependencies": ["Q01", "M07"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/blend/src/walker.rs#L268",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/blend/src/analytic.rs#L108",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/offset/src/inter3d.rs#L24",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/offset/src/move_faces.rs#L113",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/sweep.rs#L40",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/query.rs#L141"
+    ]
+  },
+  {
+    "id": "O04",
+    "area": "Blends, offsets and other modeling operations",
+    "priority": "P2",
+    "phase": 5,
+    "evidence": "S",
+    "work": "Reuse sweep frames, arc-length maps, profile sampling and compatible loft factorization; avoid reconstructing shared profile geometry.",
+    "acceptance": "Benchmark long paths and many sections, including twists/kinks/holes; preserve parameterization, continuity and exact analytic lowering.",
+    "effort_risk": "M/high",
+    "dependencies": ["M07", "N06"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/blend/src/walker.rs#L268",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/blend/src/analytic.rs#L108",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/offset/src/inter3d.rs#L24",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/offset/src/move_faces.rs#L113",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/sweep.rs#L40",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/query.rs#L141"
+    ]
+  },
+  {
+    "id": "O05",
+    "area": "Blends, offsets and other modeling operations",
+    "priority": "P2",
+    "phase": 5,
+    "evidence": "H",
+    "work": "Use assembly instances and delayed topology materialization for repeated transforms/pattern display where the API can express shared geometry.",
+    "acceptance": "Measure 10k instances versus copied solids; retain identity/attributes and explicitly materialize when booleans or exact export require independent topology.",
+    "effort_risk": "XL/high",
+    "dependencies": ["T04", "Q08"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/blend/src/walker.rs#L268",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/blend/src/analytic.rs#L108",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/offset/src/inter3d.rs#L24",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/offset/src/move_faces.rs#L113",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/sweep.rs#L40",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/query.rs#L141"
+    ]
+  },
+  {
+    "id": "O06",
+    "area": "Blends, offsets and other modeling operations",
+    "priority": "P2",
+    "phase": 2,
+    "evidence": "S",
+    "work": "Cache feature-recognition/selection adjacency and bucket opposing planar faces by normal/position before polygon overlap tests.",
+    "acceptance": "Measure repeated selection on many-face solids; retain holes, blend exclusions, tolerance-aware pairing and ambiguous matches.",
+    "effort_risk": "M/high",
+    "dependencies": ["Q02", "M07"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/blend/src/walker.rs#L268",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/blend/src/analytic.rs#L108",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/offset/src/inter3d.rs#L24",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/offset/src/move_faces.rs#L113",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/sweep.rs#L40",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/query.rs#L141"
+    ]
+  },
+  {
+    "id": "O07",
+    "area": "Blends, offsets and other modeling operations",
+    "priority": "P2",
+    "phase": 5,
+    "evidence": "S",
+    "work": "Plan local direct edits and resize-blend operations against an affected neighborhood, minimizing copied surfaces and repeated trial rebuilds.",
+    "acceptance": "Count touched versus total entities; preserve transactional refusal, contact dependencies and total lineage across zero-radius removal and topology changes.",
+    "effort_risk": "L/high",
+    "dependencies": ["T01", "Q02", "M07"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/blend/src/walker.rs#L268",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/blend/src/analytic.rs#L108",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/offset/src/inter3d.rs#L24",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/offset/src/move_faces.rs#L113",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/sweep.rs#L40",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/query.rs#L141"
+    ]
+  },
+  {
+    "id": "I01",
+    "area": "Import, export and serialization",
+    "priority": "P1",
+    "phase": 5,
+    "evidence": "S",
+    "work": "Profile STEP lexical scanning, string ownership, attribute reparsing, reference lookup, topology construction and validation separately; prototype borrowed spans/typed parsed attributes.",
+    "acceptance": "Measure peak memory and time on large repeated entities/NURBS; preserve units, multiple contexts, escapes, malformed references and preallocation limits.",
+    "effort_risk": "L/high",
+    "dependencies": ["M04", "M05", "M07"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/io/src/step/reader.rs#L346",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/io/src/arena_io.rs#L768",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm-io/src/lib.rs#L171",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/io/src/threemf/writer.rs#L93",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/io/src/gltf/writer.rs#L22"
+    ]
+  },
+  {
+    "id": "I02",
+    "area": "Import, export and serialization",
+    "priority": "P1",
+    "phase": 3,
+    "evidence": "S",
+    "work": "Use staged import/document construction to avoid full existing-document snapshots for a qualified atomic append.",
+    "acceptance": "Import cost should follow new content rather than unrelated prior models; malformed/post-allocation refusal restores all state and handle safety.",
+    "effort_risk": "L/high",
+    "dependencies": ["T01", "T03"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/io/src/step/reader.rs#L346",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/io/src/arena_io.rs#L768",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm-io/src/lib.rs#L171",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/io/src/threemf/writer.rs#L93",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/io/src/gltf/writer.rs#L22"
+    ]
+  },
+  {
+    "id": "I03",
+    "area": "Import, export and serialization",
+    "priority": "P2",
+    "phase": 5,
+    "evidence": "S",
+    "work": "Serialize through borrowed views or streaming writers to avoid cloning an owned arena dump before JSON encoding.",
+    "acceptance": "Measure allocations, peak bytes and output time; preserve current schema versions, ordering, aliases, exact floats, attributes and round-trip compatibility.",
+    "effort_risk": "M/high",
+    "dependencies": ["M05", "M07"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/io/src/step/reader.rs#L346",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/io/src/arena_io.rs#L768",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm-io/src/lib.rs#L171",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/io/src/threemf/writer.rs#L93",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/io/src/gltf/writer.rs#L22"
+    ]
+  },
+  {
+    "id": "I04",
+    "area": "Import, export and serialization",
+    "priority": "P2",
+    "phase": 5,
+    "evidence": "S",
+    "work": "Measure and reduce exact arena transfer overhead between the split kernel and translator WASM modules.",
+    "acceptance": "Report kernel serialize, JS transfer, translator deserialize and export separately; retain module isolation, shared versioning, body roots and limits.",
+    "effort_risk": "L/high",
+    "dependencies": ["W01", "I03"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/io/src/step/reader.rs#L346",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/io/src/arena_io.rs#L768",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm-io/src/lib.rs#L171",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/io/src/threemf/writer.rs#L93",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/io/src/gltf/writer.rs#L22"
+    ]
+  },
+  {
+    "id": "I05",
+    "area": "Import, export and serialization",
+    "priority": "P2",
+    "phase": 5,
+    "evidence": "S",
+    "work": "Stream multi-solid mesh exports and archive payloads to avoid holding all meshes, XML, binary staging buffers and final output together.",
+    "acceptance": "Peak memory scales with a bounded chunk where API permits; validate complete archive/schema, normals, units and deterministic output.",
+    "effort_risk": "L/high",
+    "dependencies": ["M05", "M07"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/io/src/step/reader.rs#L346",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/io/src/arena_io.rs#L768",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm-io/src/lib.rs#L171",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/io/src/threemf/writer.rs#L93",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/io/src/gltf/writer.rs#L22"
+    ]
+  },
+  {
+    "id": "I06",
+    "area": "Import, export and serialization",
+    "priority": "P2",
+    "phase": 4,
+    "evidence": "S",
+    "work": "Route exporters through a compatible shared mesh producer/cache where possible; inspect per-face glTF tessellation versus solid-level STL/3MF paths.",
+    "acceptance": "Preserve each format's actual mesh contract and material/face grouping; compare seam quality and output size as well as speed.",
+    "effort_risk": "M/high",
+    "dependencies": ["D09"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/io/src/step/reader.rs#L346",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/io/src/arena_io.rs#L768",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm-io/src/lib.rs#L171",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/io/src/threemf/writer.rs#L93",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/io/src/gltf/writer.rs#L22"
+    ]
+  },
+  {
+    "id": "I07",
+    "area": "Import, export and serialization",
+    "priority": "P3",
+    "phase": 7,
+    "evidence": "H",
+    "work": "Evaluate optional versioned binary arena transport and compression settings only after copy/parse measurements show a material benefit.",
+    "acceptance": "Keep existing JSON readers/writers compatible; document precision, canonicalization, resource limits, migration and native/WASM round-trip oracles.",
+    "effort_risk": "XL/high",
+    "dependencies": ["I03", "I04", "M07"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/io/src/step/reader.rs#L346",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/io/src/arena_io.rs#L768",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm-io/src/lib.rs#L171",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/io/src/threemf/writer.rs#L93",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/io/src/gltf/writer.rs#L22"
+    ]
+  },
+  {
+    "id": "W01",
+    "area": "WASM bindings and browser delivery",
+    "priority": "P1",
+    "phase": 0,
+    "evidence": "M",
+    "work": "Add real installed-package direct/batch workflow benchmarks with source and WASM hash provenance; the audit confirms document-size growth on the shipped package.",
+    "acceptance": "Measure cold/warm Node and real browsers, copies, memory and error behavior; compare native/WASM only when source, flags and fixtures match.",
+    "effort_risk": "M/low",
+    "dependencies": ["M01", "M06"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm/src/bindings/batch.rs#L437",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm/src/shapes.rs#L79",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm/src/bindings/tessellate.rs#L160",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm/src/bindings/checkpoint.rs#L20",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/xtask/src/wasm.rs#L185"
+    ]
+  },
+  {
+    "id": "W02",
+    "area": "WASM bindings and browser delivery",
+    "priority": "P1",
+    "phase": 1,
+    "evidence": "S",
+    "work": "Prefer existing typed/binary mesh outputs for bulk geometry and avoid repeated cloning getters; evaluate a consume-once buffer API.",
+    "acceptance": "Compare JS JSON/grouped/binary paths at fixed mesh sizes; preserve f64/f32 contracts, ownership, array lengths, face offsets and repeated-call behavior.",
+    "effort_risk": "M/high",
+    "dependencies": ["W01", "M05"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm/src/bindings/batch.rs#L437",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm/src/shapes.rs#L79",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm/src/bindings/tessellate.rs#L160",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm/src/bindings/checkpoint.rs#L20",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/xtask/src/wasm.rs#L185"
+    ]
+  },
+  {
+    "id": "W03",
+    "area": "WASM bindings and browser delivery",
+    "priority": "P2",
+    "phase": 5,
+    "evidence": "S",
+    "work": "Measure JSON parse/dispatch/serialize cost for tiny batch operations; consider typed numeric batches only when overhead dominates.",
+    "acceptance": "Benchmark 1/10/1000 operations with identical native work; preserve validation order, typed errors, references and per-item rollback semantics.",
+    "effort_risk": "L/high",
+    "dependencies": ["W01", "M04"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm/src/bindings/batch.rs#L437",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm/src/shapes.rs#L79",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm/src/bindings/tessellate.rs#L160",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm/src/bindings/checkpoint.rs#L20",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/xtask/src/wasm.rs#L185"
+    ]
+  },
+  {
+    "id": "W04",
+    "area": "WASM bindings and browser delivery",
+    "priority": "P2",
+    "phase": 3,
+    "evidence": "S",
+    "work": "Reduce checkpoint memory through shared immutable topology and copy-on-write at a finer granularity; Rc checkpoint sharing already exists.",
+    "acceptance": "Measure creation, first post-checkpoint edit, restore, discard and retained sketches/assemblies; keep non-reuse of external handles and exact session restoration.",
+    "effort_risk": "L/high",
+    "dependencies": ["T02", "M05"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm/src/bindings/batch.rs#L437",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm/src/shapes.rs#L79",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm/src/bindings/tessellate.rs#L160",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm/src/bindings/checkpoint.rs#L20",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/xtask/src/wasm.rs#L185"
+    ]
+  },
+  {
+    "id": "W05",
+    "area": "WASM bindings and browser delivery",
+    "priority": "P2",
+    "phase": 4,
+    "evidence": "H",
+    "work": "Keep long kernel work in a worker and coalesce/cancel obsolete interactive requests at the consumer boundary.",
+    "acceptance": "Measure main-thread responsiveness, transfer time and cancellation latency; do not hide kernel CPU time or change which operation commits.",
+    "effort_risk": "L/high",
+    "dependencies": ["P02", "W01"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm/src/bindings/batch.rs#L437",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm/src/shapes.rs#L79",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm/src/bindings/tessellate.rs#L160",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm/src/bindings/checkpoint.rs#L20",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/xtask/src/wasm.rs#L185"
+    ]
+  },
+  {
+    "id": "W06",
+    "area": "WASM bindings and browser delivery",
+    "priority": "P2",
+    "phase": 0,
+    "evidence": "S",
+    "work": "Treat cold loading, code size and module transfer as separate budgets; translator splitting and SIMD build flags already exist.",
+    "acceptance": "Measure raw/compressed bytes, compile/instantiate time, first call and steady state on real browsers; preserve the current 9 MiB review/10 MiB hard package policy.",
+    "effort_risk": "M/medium",
+    "dependencies": ["W01"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm/src/bindings/batch.rs#L437",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm/src/shapes.rs#L79",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm/src/bindings/tessellate.rs#L160",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm/src/bindings/checkpoint.rs#L20",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/xtask/src/wasm.rs#L185"
+    ]
+  },
+  {
+    "id": "W07",
+    "area": "WASM bindings and browser delivery",
+    "priority": "P3",
+    "phase": 6,
+    "evidence": "H",
+    "work": "Prototype WASM threads only after native task isolation and consumer deployment requirements are settled.",
+    "acceptance": "Benchmark startup, pool memory and 1/N-thread exact results; provide non-threaded fallback and obtain separate approval for deployment/header changes.",
+    "effort_risk": "XL/high",
+    "dependencies": ["P01", "B11", "D04", "W01"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm/src/bindings/batch.rs#L437",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm/src/shapes.rs#L79",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm/src/bindings/tessellate.rs#L160",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm/src/bindings/checkpoint.rs#L20",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/xtask/src/wasm.rs#L185"
+    ]
+  },
+  {
+    "id": "W08",
+    "area": "WASM bindings and browser delivery",
+    "priority": "P3",
+    "phase": 7,
+    "evidence": "H",
+    "work": "Evaluate explicit borrowed/zero-copy views only behind a documented lifetime/ownership design; copying typed arrays are currently the safe baseline.",
+    "acceptance": "Prove validity across memory growth, reentrancy and free; compare saved copies against JS/worker transfer costs and never expose stale views.",
+    "effort_risk": "L/high",
+    "dependencies": ["W02", "M05"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm/src/bindings/batch.rs#L437",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm/src/shapes.rs#L79",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm/src/bindings/tessellate.rs#L160",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm/src/bindings/checkpoint.rs#L20",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/xtask/src/wasm.rs#L185"
+    ]
+  },
+  {
+    "id": "R01",
+    "area": "Rendering",
+    "priority": "P2",
+    "phase": 5,
+    "evidence": "S",
+    "work": "Add a reusable offscreen render session/context; the convenience path currently creates a GPU context per render.",
+    "acceptance": "Separate cold device/pipeline setup from repeated-frame cost; preserve device-loss recovery, options and software-adapter behavior.",
+    "effort_risk": "M/medium",
+    "dependencies": ["M07"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/render/src/lib.rs#L169",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/render/src/pipeline.rs#L549",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/render/src/mesh.rs#L64",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/render/src/pipeline.rs#L710",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/render/src/compute_mesh.rs#L71"
+    ]
+  },
+  {
+    "id": "R02",
+    "area": "Rendering",
+    "priority": "P2",
+    "phase": 4,
+    "evidence": "S",
+    "work": "Retain mesh/GPU buffers across camera-only frames and upload only changed geometry.",
+    "acceptance": "Measure tessellation, upload bytes and frame latency; update face-ID picking and attributes with the correct geometry revision.",
+    "effort_risk": "M/high",
+    "dependencies": ["D01", "R01"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/render/src/lib.rs#L169",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/render/src/pipeline.rs#L549",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/render/src/mesh.rs#L64",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/render/src/pipeline.rs#L710",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/render/src/compute_mesh.rs#L71"
+    ]
+  },
+  {
+    "id": "R03",
+    "area": "Rendering",
+    "priority": "P2",
+    "phase": 1,
+    "evidence": "S",
+    "work": "Replace per-triangle vertex expansion with per-face indexed render vertices where normals/attributes permit.",
+    "acceptance": "Measure GPU bytes and vertex processing; preserve sharp normals and the correct face ID at every triangle and seam.",
+    "effort_risk": "M/medium",
+    "dependencies": ["M05", "M07"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/render/src/lib.rs#L169",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/render/src/pipeline.rs#L549",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/render/src/mesh.rs#L64",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/render/src/pipeline.rs#L710",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/render/src/compute_mesh.rs#L71"
+    ]
+  },
+  {
+    "id": "R04",
+    "area": "Rendering",
+    "priority": "P2",
+    "phase": 5,
+    "evidence": "S",
+    "work": "Make readback asynchronous or optional for repeated rendering; separate color and ID readback by caller need.",
+    "acceptance": "Measure GPU/CPU synchronization and tail latency; do not reuse buffers before completion or return stale picking data.",
+    "effort_risk": "M/medium",
+    "dependencies": ["R01", "M07"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/render/src/lib.rs#L169",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/render/src/pipeline.rs#L549",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/render/src/mesh.rs#L64",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/render/src/pipeline.rs#L710",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/render/src/compute_mesh.rs#L71"
+    ]
+  },
+  {
+    "id": "R05",
+    "area": "Rendering",
+    "priority": "P3",
+    "phase": 7,
+    "evidence": "H",
+    "work": "Benchmark culling, instancing, index locality and GPU compute crossover on the intended graphics workload.",
+    "acceptance": "Distinguish discrete GPU, integrated GPU and software rendering; optimize a measured render workload without claiming an exact-kernel speedup.",
+    "effort_risk": "L/medium",
+    "dependencies": ["M07", "R01"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/render/src/lib.rs#L169",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/render/src/pipeline.rs#L549",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/render/src/mesh.rs#L64",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/render/src/pipeline.rs#L710",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/render/src/compute_mesh.rs#L71"
+    ]
+  },
+  {
+    "id": "P01",
+    "area": "Build optimization, scheduling and qualification",
+    "priority": "P2",
+    "phase": 6,
+    "evidence": "S",
+    "work": "Choose task grain and thread-pool policy by estimated work rather than only edge/face counts; avoid nested oversubscription.",
+    "acceptance": "Benchmark 1/2/4/8/16 threads on several body sizes; compare p95, peak memory, throughput and serial crossover; aggregate thread-local work counters correctly.",
+    "effort_risk": "M/high",
+    "dependencies": ["M04", "M07"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/Cargo.toml#L118",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm/Cargo.toml#L16",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/context.rs#L119",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/docs/kernel-maturity/p-class-status.md#L69",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/docs/kernel-maturity/open-kernel-status.md#L45"
+    ]
+  },
+  {
+    "id": "P02",
+    "area": "Build optimization, scheduling and qualification",
+    "priority": "P2",
+    "phase": 5,
+    "evidence": "S",
+    "work": "Extend cooperative cancellation and deterministic budgets into long inner phases; context and phase-boundary checks already exist.",
+    "acceptance": "Measure cancellation latency during candidate generation, allocation, fitting and serialization; rollback and output quality stay unchanged.",
+    "effort_risk": "M/high",
+    "dependencies": ["M04", "M07"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/Cargo.toml#L118",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm/Cargo.toml#L16",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/context.rs#L119",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/docs/kernel-maturity/p-class-status.md#L69",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/docs/kernel-maturity/open-kernel-status.md#L45"
+    ]
+  },
+  {
+    "id": "P03",
+    "area": "Build optimization, scheduling and qualification",
+    "priority": "P3",
+    "phase": 7,
+    "evidence": "S",
+    "work": "Benchmark release LTO/codegen-unit choices, WASM -Oz versus speed-oriented optimization, and CPU-specific builds where distribution permits.",
+    "acceptance": "Track execution, cold load, compile time and artifact size together; retain portable builds and exact shipped-artifact correctness tests.",
+    "effort_risk": "M/medium",
+    "dependencies": ["M07", "W06"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/Cargo.toml#L118",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm/Cargo.toml#L16",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/context.rs#L119",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/docs/kernel-maturity/p-class-status.md#L69",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/docs/kernel-maturity/open-kernel-status.md#L45"
+    ]
+  },
+  {
+    "id": "P04",
+    "area": "Build optimization, scheduling and qualification",
+    "priority": "P3",
+    "phase": 7,
+    "evidence": "H",
+    "work": "Run a profile-guided optimization experiment trained on a representative corpus, with disjoint holdout models.",
+    "acceptance": "Accept only broad held-out gains with no meaningful regressions; record training provenance and repeat after important compiler/algorithm changes.",
+    "effort_risk": "L/medium",
+    "dependencies": ["M07", "P03"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/Cargo.toml#L118",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm/Cargo.toml#L16",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/context.rs#L119",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/docs/kernel-maturity/p-class-status.md#L69",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/docs/kernel-maturity/open-kernel-status.md#L45"
+    ]
+  },
+  {
+    "id": "P05",
+    "area": "Build optimization, scheduling and qualification",
+    "priority": "P3",
+    "phase": 7,
+    "evidence": "H",
+    "work": "Test allocator choice, compact collection layouts, hot/cold data splitting and assembly-level tuning only after allocation/cache profiles justify them.",
+    "acceptance": "Measure total workload cost and memory, not isolated allocation speed; document dependencies, unsafe requirements and native/WASM differences.",
+    "effort_risk": "L/high",
+    "dependencies": ["M05", "M07"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/Cargo.toml#L118",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm/Cargo.toml#L16",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/context.rs#L119",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/docs/kernel-maturity/p-class-status.md#L69",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/docs/kernel-maturity/open-kernel-status.md#L45"
+    ]
+  },
+  {
+    "id": "P06",
+    "area": "Build optimization, scheduling and qualification",
+    "priority": "P1",
+    "phase": 8,
+    "evidence": "H",
+    "work": "Qualify the combined optimized kernel after each wave and freeze reproducible performance/quality baselines for release.",
+    "acceptance": "Native plus actual direct/batch WASM, real models, resource exhaustion, deterministic threading, long sessions and exact-source CI all pass; attach no-gain closures too.",
+    "effort_risk": "L/high",
+    "dependencies": ["M03", "M05", "M07", "W01"],
+    "source_references": [
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/Cargo.toml#L118",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm/Cargo.toml#L16",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/context.rs#L119",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/docs/kernel-maturity/p-class-status.md#L69",
+      "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/docs/kernel-maturity/open-kernel-status.md#L45"
+    ]
+  }
+]

@@ -13,6 +13,11 @@ that flips them; agents do not flip them autonomously.
 Rows added on 2026-09-04 by the [industrial-parity overlay](industrial-parity.md)
 are indexed there; this ledger is their only state of record.
 
+The [2026-09-12 performance audit](../performance/kernel-optimization-roadmap.md)
+expands O3 and M8 into prioritized work packages with baseline measurements,
+dependencies and acceptance checks. It records existing partial implementations
+without changing completion status here; audit IDs are not a second ledger.
+
 | Issue | Wave | State | PR |
 | --- | --- | --- | --- |
 | O1.1a Gauntlet pipeline skeleton | A | Complete — isolated bounded workers run import, validation, disclosed probe boolean, manifold tessellation, and property-checked STEP round-trip; JSONL and aggregate JSON/Markdown outputs use stable taxonomy codes | [#164](https://github.com/esaueng/remus/pull/164) |
