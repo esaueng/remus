@@ -9297,3 +9297,48 @@ fn scaling_ef_curved_edge_gate_prunes_far_nurbs_pairs() {
     let report = crate::validate::validate_solid(&topo, fused).unwrap();
     assert!(report.is_valid(), "{:?}", report.issues);
 }
+
+/// `solid_to_solid_distance` prunes faces by bounding box; NURBS faces now
+/// carry a conservative box (control net plus boundary vertices) instead of
+/// being projected for every sampled vertex. A NURBS-faced bar and a box far
+/// from all but its nearest wall must probe only that wall's neighbourhood,
+/// and the distance must not change.
+#[cfg(feature = "perf-counters")]
+#[test]
+fn scaling_distance_query_prunes_far_nurbs_faces() {
+    use remus_math::mat::Mat4;
+
+    let mut topo = Topology::new();
+    let plain = crate::primitives::make_box(&mut topo, 100.0, 10.0, 10.0).unwrap();
+    let bar = crate::primitives::make_box(&mut topo, 100.0, 10.0, 10.0).unwrap();
+    crate::heal::convert_to_bspline(&mut topo, bar).unwrap();
+    // A small box 5 units above the bar's top face, near its far end.
+    let probe = crate::primitives::make_box(&mut topo, 4.0, 4.0, 4.0).unwrap();
+    crate::transform::transform_solid(&mut topo, probe, &Mat4::translation(90.0, 3.0, 15.0))
+        .unwrap();
+
+    let reference = crate::distance::solid_to_solid_distance(&topo, plain, probe).unwrap();
+    remus_algo::perf::reset();
+    let measured = crate::distance::solid_to_solid_distance(&topo, bar, probe).unwrap();
+    let probes = remus_algo::perf::snapshot().distance_face_probes;
+    eprintln!(
+        "distance guard: probes={probes} plain={} nurbs={}",
+        reference.distance, measured.distance
+    );
+
+    assert!(
+        (measured.distance - 5.0).abs() < 1e-9,
+        "distance {}",
+        measured.distance
+    );
+    assert!((measured.distance - reference.distance).abs() < 1e-9);
+    // 8 probe vertices x 6 NURBS faces would be 48 projections ungated; the
+    // box test keeps the top face (and at most the two walls whose boxes the
+    // 0.01 margin lets through), and the reverse pass keeps the probe's
+    // faces nearest the bar's vertices.
+    assert!(probes > 0, "distance guard counter was not exercised");
+    assert!(
+        probes <= 32,
+        "expected box pruning to keep at most 32 probes, got {probes}"
+    );
+}
