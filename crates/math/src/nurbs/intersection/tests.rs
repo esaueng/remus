@@ -953,6 +953,94 @@ fn plane_nurbs_tube_wall_returns_closed_loop() {
     }
 }
 
+/// Build an OPEN polygonal tube: `segments` straight quads around an arc that
+/// stops `gap_angle` short of closing, so the carrier has a real wedge gap.
+///
+/// The wall is degree (1, 1): one quad per segment, control points exactly on
+/// the cylinder, so every point of the carrier is within chord error of the
+/// radius-1 tube and the z=1 slice is a clean near-full arc. The gap is a
+/// genuine carrier boundary, not sampling noise.
+fn open_polygonal_tube(segments: usize, gap_angle: f64) -> NurbsSurface {
+    use std::f64::consts::TAU;
+    assert!(segments >= 3);
+    assert!(gap_angle > 0.0 && gap_angle < TAU);
+    let span = TAU - gap_angle;
+    let mut bottom = Vec::with_capacity(segments + 1);
+    let mut top = Vec::with_capacity(segments + 1);
+    let mut knots = Vec::with_capacity(segments + 4);
+    knots.push(0.0);
+    knots.push(0.0);
+    for i in 0..=segments {
+        #[allow(clippy::cast_precision_loss)]
+        let a = span * (i as f64) / (segments as f64);
+        bottom.push(Point3::new(a.cos(), a.sin(), 0.0));
+        top.push(Point3::new(a.cos(), a.sin(), 2.0));
+        if i > 0 && i < segments {
+            knots.push(a);
+        }
+    }
+    knots.push(span);
+    knots.push(span);
+    NurbsSurface::new(
+        1,
+        1,
+        vec![0.0, 0.0, 1.0, 1.0],
+        knots,
+        vec![bottom, top],
+        vec![vec![1.0; segments + 1]; 2],
+    )
+    .unwrap()
+}
+
+/// An OPEN carrier must stay open: closing the z=1 arc of a tube with a real
+/// wedge gap would invent a section segment across open space.
+///
+/// Same 32-sample grid as the closed-loop twin. The arc's endpoints land one
+/// grid spacing apart (indistinguishable from the closed case in 3D), so this
+/// is the case endpoint proximity alone cannot decide: the carrier-domain
+/// evidence — the gap midpoint projects onto the carrier's angular boundary
+/// rim, not its interior — must decline the closure.
+#[test]
+fn plane_nurbs_open_tube_stays_open() {
+    use std::f64::consts::TAU;
+    let tube = open_polygonal_tube(128, 0.02);
+
+    let result = intersect_plane_nurbs(&tube, Vec3::new(0.0, 0.0, 1.0), 1.0, 32).unwrap();
+
+    assert_eq!(
+        result.len(),
+        1,
+        "one open arc should chain into one curve, got {}",
+        result.len()
+    );
+    let curve = &result[0].curve;
+    let domain = curve.domain();
+    let (p_start, p_end) = (curve.evaluate(domain.0), curve.evaluate(domain.1));
+    let gap = (p_start - p_end).length();
+    // The carrier's real gap: chord of the missing 0.02-radian wedge.
+    let expected = 2.0_f64 * (0.02_f64 / 2.0).sin();
+    assert!(
+        (gap - expected).abs() < 0.05,
+        "open arc should keep its carrier gap (~{expected:.4}), got gap = {gap:.4}",
+    );
+    // Sanity: the arc really is the near-full tube (spans the circle), not a
+    // short fragment the seed grid happened to catch.
+    let mut covered = 0.0_f64;
+    let mut prev = p_start;
+    for k in 1..=64 {
+        #[allow(clippy::cast_precision_loss)]
+        let t = domain.0 + (domain.1 - domain.0) * (k as f64) / 64.0;
+        let p = curve.evaluate(t);
+        covered += (p - prev).length();
+        prev = p;
+    }
+    assert!(
+        (covered - (TAU - 0.02)).abs() < 0.5,
+        "arc should span the near-full tube (~{:.2}), got length {covered:.2}",
+        TAU - 0.02
+    );
+}
+
 /// Verify that the tangential touch test still works with the new
 /// second-order analysis integrated into the main SSI pipeline.
 #[test]

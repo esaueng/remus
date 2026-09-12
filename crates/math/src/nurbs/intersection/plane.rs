@@ -142,23 +142,81 @@ pub fn intersect_plane_nurbs(
     // downstream weld band (1e-5 section reader, 1e-3 junction trigger) can
     // close a 0.3–0.6 model-unit gap — the loop never splits either face.
     // Close such loops exactly: when a single chain's endpoints land within a
-    // grid spacing of each other, append the start point and interpolate
-    // periodically so the stored curve is closed (start == end) and the FF
-    // phase's closed-section machinery (seam adoption, window clipping) owns
-    // it. Gated to the unambiguous case — one chain, endpoints mutually
-    // nearest across the gap — so open branches never gain a spurious
-    // closing segment.
+    // grid spacing of each other AND the carrier domain continues across the
+    // gap (the seam is interior to the carrier, not a boundary rim), append
+    // the start point and interpolate so the stored curve is closed
+    // (start == end) and the FF phase's closed-section machinery (seam
+    // adoption, window clipping) owns it. Endpoint proximity alone never
+    // closes: an open carrier whose arc stops a grid spacing short of its
+    // own rim (e.g. a near-full tube with a real wedge gap) chains
+    // identically in 3D but must stay open. Gated to the unambiguous case —
+    // one chain, endpoints mutually nearest across the gap, carrier-domain
+    // evidence — so open branches never gain a spurious closing segment.
     close_transversal_loop(&mut curves, &refined_points, u_step, v_step, surface);
 
     Ok(curves)
+}
+
+/// Evidence that the carrier continues across a chain's endpoint gap.
+///
+/// A chain that stops a grid spacing short of its own endpoints is ambiguous
+/// in 3D: it is either a closed loop sampled at an arbitrary seam, or an
+/// open arc ending at (or just inside of) a real carrier boundary. The
+/// carrier's own parameterization distinguishes them — but only where the
+/// chain's chart parameters are trustworthy. Each refined seed carries the
+/// `(u, v)` it converged to (`param1`); the chain's consecutive parameters
+/// are Newton-converged evidence of how the section walks the carrier, while
+/// any 3D midpoint re-projection is not (projection snaps a gap midpoint to
+/// the nearest rim even across open space, and its distance reads as chord
+/// sagitta either way).
+///
+/// Walk the chain's section-direction parameters and require the walk to
+/// wrap: the largest consecutive jump (in the wrapped sense) must be the
+/// endpoint gap. On a closed tube the walk covers the full period — every
+/// interior step is a grid step and the wrap-around jump from the last point
+/// back to the first is the smallest step of all (the sub-grid seam sliver
+/// the walk straddles). On an open carrier the walk stops a full grid step
+/// inside each rim, so the wrap-around jump spans the open wedge plus two
+/// grid steps and is the LARGEST jump by far. Comparing wrap jump against
+/// the walk's own largest interior step keeps the test scale-free: no
+/// absolute length, no domain-period arithmetic, and no dependence on where
+/// the seed grid placed the seam.
+fn chain_wraps_closed_direction(first_uv: (f64, f64), params: &[(f64, f64)]) -> bool {
+    if params.len() < 3 {
+        return false;
+    }
+    // Section direction: the chart direction the endpoints separate along
+    // (angular for a transversal tube slice, not axial).
+    let span_u = (first_uv.0 - params[params.len() - 1].0).abs();
+    let span_v = (first_uv.1 - params[params.len() - 1].1).abs();
+    let pick_u = span_u >= span_v;
+    let mut prev = if pick_u { first_uv.0 } else { first_uv.1 };
+    let mut largest_interior = 0.0_f64;
+    for &(u, v) in &params[1..] {
+        let cur = if pick_u { u } else { v };
+        let jump = (cur - prev).abs();
+        if jump.is_finite() {
+            largest_interior = largest_interior.max(jump);
+        }
+        prev = cur;
+    }
+    if !(largest_interior.is_finite() && largest_interior > 0.0) {
+        return false;
+    }
+    // Wrap-around jump from the last chain point back to the first.
+    let wrap = (prev - if pick_u { first_uv.0 } else { first_uv.1 }).abs();
+    wrap.is_finite() && wrap <= largest_interior
 }
 
 /// Append-then-periodically-refit closure for a single-chain transversal loop.
 ///
 /// See the call site for why this exists. Returns without touching `curves`
 /// unless every gate holds: exactly one curve from more than eight refined
-/// points, whose endpoints are each other's nearest refined neighbour across
-/// the gap and sit within two grid spacings of each other in 3D.
+/// points, whose endpoints sit within two grid spacings of each other in 3D,
+/// are mutually nearest across the gap, AND whose gap midpoint inverts onto
+/// the carrier interior (carrier-domain seam evidence — endpoint proximity
+/// alone cannot distinguish a closed loop from an open carrier stopping a
+/// grid spacing short of its rim).
 fn close_transversal_loop(
     curves: &mut [super::IntersectionCurve],
     refined: &[IntersectionPoint],
@@ -179,15 +237,27 @@ fn close_transversal_loop(
     if !gap.is_finite() || gap <= 1e-6 {
         return;
     }
+    // Carrier-domain seam evidence FIRST: endpoint proximity in 3D is
+    // necessary but never sufficient. The chain's own converged parameters
+    // must wrap the section direction (largest consecutive parameter jump
+    // is the endpoint gap itself); an open carrier's wrap jump spans the
+    // open wedge and is the largest by far. A 3D gap midpoint cannot serve
+    // instead — projection snaps it to the nearest rim even across space.
+    let params: Vec<(f64, f64)> = curve.points.iter().map(|p| p.param1).collect();
+    let first_uv = params[0];
+    if !chain_wraps_closed_direction(first_uv, &params) {
+        return;
+    }
     // Grid spacing in model units at the loop: the larger of the two
     // parametric steps pushed through the surface metric at the gap midpoint.
+    // Project the midpoint onto the surface for the metric; fail closed (no
+    // closure without a metric) when projection fails. The midpoint is used
+    // ONLY for the metric scale here, never as closure evidence (see above).
     let mid = super::Point3::new(
         0.5 * (first.x() + last.x()),
         0.5 * (first.y() + last.y()),
         0.5 * (first.z() + last.z()),
     );
-    // Project the midpoint onto the surface for the metric; fail closed (no
-    // closure without a metric) when projection fails.
     let (u_m, v_m) = match crate::nurbs::projection::project_point_to_surface(surface, mid, 1e-7) {
         Ok(proj) => (proj.u, proj.v),
         Err(_) => return,
