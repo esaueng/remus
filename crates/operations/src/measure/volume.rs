@@ -90,7 +90,14 @@ fn solid_has_torus_notch_band(topo: &Topology, solid: SolidId) -> bool {
             FaceSurface::Torus(t) => {
                 f.inner_wires().len() == 1 && torus_wire_wraps_tube(topo, f.outer_wire(), t)
             }
-            _ => false,
+            // Only a torus band can wrap the tube angle: every other carrier
+            // is a deliberate `false`, so a future variant cannot silently
+            // inherit this defect signature.
+            FaceSurface::Plane { .. }
+            | FaceSurface::Nurbs(_)
+            | FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_) => false,
         })
     })
 }
@@ -181,7 +188,13 @@ fn quadric_wall_is_notched_band(topo: &Topology, fid: FaceId) -> bool {
     let (axis, origin) = match face.surface() {
         FaceSurface::Cylinder(c) => (c.axis(), c.origin()),
         FaceSurface::Cone(c) => (c.axis(), c.apex()),
-        _ => return false,
+        // Only cylinder/cone walls have an axial level signature. Planes,
+        // spheres, tori, and NURBS are notched by no rectangle this predicate
+        // audits, so they decline explicitly rather than via a catch-all.
+        FaceSurface::Plane { .. }
+        | FaceSurface::Sphere(_)
+        | FaceSurface::Torus(_)
+        | FaceSurface::Nurbs(_) => return false,
     };
     if !face.inner_wires().is_empty() {
         return false;
@@ -232,7 +245,12 @@ fn quadric_wall_boundary_winds_period(topo: &Topology, fid: FaceId) -> bool {
     let (axis, origin) = match face.surface() {
         FaceSurface::Cylinder(c) => (c.axis(), c.origin()),
         FaceSurface::Cone(c) => (c.axis(), c.apex()),
-        _ => return false,
+        // Only cylinder/cone walls have a periodic angle to wind. The
+        // remaining carriers decline explicitly.
+        FaceSurface::Plane { .. }
+        | FaceSurface::Sphere(_)
+        | FaceSurface::Torus(_)
+        | FaceSurface::Nurbs(_) => return false,
     };
     let Ok(axis) = axis.normalize() else {
         return false;
@@ -363,7 +381,16 @@ fn analytic_faces_solid_volume(
             // wraps a period bounds no patch and has no "above" to count: the
             // integrator leaves it, and the solid is deferred to tessellation.
             FaceSurface::Torus(_) if !face.inner_wires().is_empty() => return Ok(None),
-            _ => {}
+            // Plain (unholed) planes, holed planes, and unholed quadrics
+            // reach the integrator below; each carrier is named so a new
+            // variant is a compile error, not a silent pass-through.
+            // (NURBS is covered by the first arm above and is not repeated
+            // here.)
+            FaceSurface::Plane { .. }
+            | FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Torus(_)
+            | FaceSurface::Sphere(_) => {}
         }
     }
     if !has_bored_quadric {
@@ -500,7 +527,15 @@ fn analytic_revolution_solid_volume(topo: &Topology, solid: SolidId) -> Option<f
             FaceSurface::Nurbs(_) if !nurbs_band_is_on_axis(topo, fid, axis_o, axis_d) => {
                 return None;
             }
-            _ => {}
+            // Quadric walls and on-axis NURBS bands were validated in the
+            // first pass; axis-centred planar caps are validated here. Each
+            // carrier is named so a new variant is a compile error, not a
+            // silent pass-through.
+            FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Torus(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Nurbs(_) => {}
         }
     }
 
@@ -575,17 +610,31 @@ fn planar_face_arcs_centered_on_axis(
                 return false;
             };
             let center = match edge.curve() {
-                remus_topology::edge::EdgeCurve::Circle(c) => Some(c.center()),
-                remus_topology::edge::EdgeCurve::NurbsCurve(nc) => {
+                EdgeCurve::Circle(c) => Some(c.center()),
+                EdgeCurve::NurbsCurve(nc) => {
                     let rtol = remus_math::tolerance::Tolerance::default().linear * 100.0;
                     match remus_geometry::convert::recognize_curve(nc, rtol) {
                         remus_geometry::convert::RecognizedCurve::Circle { center, .. } => {
                             Some(center)
                         }
-                        _ => None,
+                        // Any other recognized NURBS form (line, ellipse,
+                        // hyperbola, parabola, unrecognized) carries no
+                        // circle centre to test, so it is ignored here exactly
+                        // as a non-circular edge is.
+                        remus_geometry::convert::RecognizedCurve::Line { .. }
+                        | remus_geometry::convert::RecognizedCurve::Ellipse { .. }
+                        | remus_geometry::convert::RecognizedCurve::Hyperbola { .. }
+                        | remus_geometry::convert::RecognizedCurve::Parabola { .. }
+                        | remus_geometry::convert::RecognizedCurve::NotRecognized => None,
                     }
                 }
-                _ => None,
+                // Straight lines need no centre test; conic arcs cannot bound
+                // a surface-of-revolution cap centred on this axis, so they
+                // are ignored here (the cap integrator declines them below).
+                EdgeCurve::Line
+                | EdgeCurve::Ellipse(_)
+                | EdgeCurve::Hyperbola(_)
+                | EdgeCurve::Parabola(_) => None,
             };
             if let Some(center) = center {
                 // Distance from the arc centre to the axis line must be ~0.
@@ -698,14 +747,26 @@ fn solid_is_steinmetz_lens_fuse(topo: &Topology, faces: &[FaceId]) -> bool {
             FaceSurface::Cylinder(_) if !face.inner_wires().is_empty() => holed_cyl_walls.push(fid),
             FaceSurface::Cylinder(_) => plain_cyl_walls.push(fid),
             FaceSurface::Plane { normal, .. } => planar_normals.push(*normal),
-            _ => return false,
+            // The closed form is exactly two cylinder walls plus planar caps.
+            // Any other carrier — cone, sphere, torus, NURBS — declines the
+            // gate explicitly, so a future variant cannot silently inherit it.
+            FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_)
+            | FaceSurface::Nurbs(_) => return false,
         }
     }
 
     let cylinder_surface = |fid: FaceId| -> Option<remus_math::surfaces::CylindricalSurface> {
         match topo.face(fid).ok()?.surface() {
             FaceSurface::Cylinder(cylinder) => Some(cylinder.clone()),
-            _ => None,
+            // Helper is only ever called on grouped wall faces; any other
+            // carrier is a `None` by construction, named per variant.
+            FaceSurface::Plane { .. }
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_)
+            | FaceSurface::Nurbs(_) => None,
         }
     };
     let same_cylinder = |left: FaceId, right: FaceId| -> bool {
@@ -1114,7 +1175,9 @@ fn try_analytic_solid_volume(topo: &Topology, solid: SolidId) -> Option<f64> {
                 let h = (c2_vec - c1_vec).dot(axis).abs();
                 return Some(PI * h / 3.0 * (r1 * r1 + r1 * r2 + r2 * r2));
             }
-            _ => {}
+            // Zero caps is a cone with no planar boundary (decline); three or
+            // more caps is not a cone/frustum primitive (decline).
+            [] | [_, _, _, ..] => {}
         }
     }
 
@@ -1502,7 +1565,13 @@ pub fn solid_volume(
                 FaceSurface::Plane { .. } => {
                     remus_check::properties::face_integrator::integrate_face(topo, face_id, 8).ok()
                 }
-                _ => None,
+                // Only the torus band and its planar notch walls integrate
+                // here. Any other carrier (cylinder, cone, sphere, NURBS, or
+                // a future variant) aborts to the whole-solid mesh below.
+                FaceSurface::Cylinder(_)
+                | FaceSurface::Cone(_)
+                | FaceSurface::Sphere(_)
+                | FaceSurface::Nurbs(_) => None,
             };
             let Some(contribution) = contribution else {
                 integral = None;
@@ -1835,7 +1904,14 @@ fn line_circle_cylinder_signed_volume(topo: &Topology, face_id: FaceId) -> Optio
                 signed_chart_area -= v * sweep;
                 circles += 1;
             }
-            _ => return None,
+            // Only straight axial segments and coaxial rim circles bound the
+            // line/circle cylinder this integrator is exact for. Ellipse,
+            // hyperbola, parabola, and NURBS rims decline explicitly, so a
+            // future curve variant cannot silently inherit this path.
+            EdgeCurve::Ellipse(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_)
+            | EdgeCurve::NurbsCurve(_) => return None,
         }
     }
     if circles == 0 || signed_chart_area.abs() <= tolerance.linear * tolerance.angular {
@@ -1859,7 +1935,14 @@ fn analytic_cylinder_signed_volume(
     let face = topo.face(face_id)?;
     let cyl = match face.surface() {
         FaceSurface::Cylinder(c) => c,
-        _ => {
+        // Typed precondition guard: only a cylinder face may reach this
+        // integrator. Named per variant so a future surface is a compile
+        // error here rather than a silent fallthrough.
+        FaceSurface::Plane { .. }
+        | FaceSurface::Cone(_)
+        | FaceSurface::Sphere(_)
+        | FaceSurface::Torus(_)
+        | FaceSurface::Nurbs(_) => {
             return Err(crate::OperationsError::InvalidInput {
                 reason: "analytic_cylinder_signed_volume requires a cylinder face".into(),
             });
@@ -2120,7 +2203,17 @@ fn planar_wire_signed_area2(
                             center, radius, ..
                         } => Some((center, radius)),
                         remus_geometry::convert::RecognizedCurve::Line { .. } => None,
-                        _ => return Ok(None),
+                        // Ellipse, hyperbola, parabola, and unrecognized
+                        // NURBS carry no circular bulge: the exact planar
+                        // path declines rather than applying a wrong
+                        // correction. Each form is named so a future
+                        // recognized form is a compile error here.
+                        remus_geometry::convert::RecognizedCurve::Ellipse { .. }
+                        | remus_geometry::convert::RecognizedCurve::Hyperbola { .. }
+                        | remus_geometry::convert::RecognizedCurve::Parabola { .. }
+                        | remus_geometry::convert::RecognizedCurve::NotRecognized => {
+                            return Ok(None);
+                        }
                     }
                 }
             };
@@ -2200,7 +2293,14 @@ fn analytic_cone_signed_volume(
     let face = topo.face(face_id)?;
     let cone = match face.surface() {
         FaceSurface::Cone(c) => c,
-        _ => {
+        // Typed precondition guard: only a cone face may reach this
+        // integrator. Named per variant so a future surface is a compile
+        // error here rather than a silent fallthrough.
+        FaceSurface::Plane { .. }
+        | FaceSurface::Cylinder(_)
+        | FaceSurface::Sphere(_)
+        | FaceSurface::Torus(_)
+        | FaceSurface::Nurbs(_) => {
             return Err(crate::OperationsError::InvalidInput {
                 reason: "analytic_cone_signed_volume requires a cone face".into(),
             });
@@ -2321,7 +2421,14 @@ fn analytic_sphere_signed_volume(
     let face = topo.face(face_id)?;
     let sph = match face.surface() {
         FaceSurface::Sphere(s) => s,
-        _ => {
+        // Typed precondition guard: only a sphere face may reach this
+        // integrator. Named per variant so a future surface is a compile
+        // error here rather than a silent fallthrough.
+        FaceSurface::Plane { .. }
+        | FaceSurface::Cylinder(_)
+        | FaceSurface::Cone(_)
+        | FaceSurface::Torus(_)
+        | FaceSurface::Nurbs(_) => {
             return Err(crate::OperationsError::InvalidInput {
                 reason: "analytic_sphere_signed_volume requires a sphere face".into(),
             });
@@ -2449,7 +2556,14 @@ fn analytic_torus_signed_volume(
     let face = topo.face(face_id)?;
     let tor = match face.surface() {
         FaceSurface::Torus(t) => t,
-        _ => {
+        // Typed precondition guard: only a torus face may reach this
+        // integrator. Named per variant so a future surface is a compile
+        // error here rather than a silent fallthrough.
+        FaceSurface::Plane { .. }
+        | FaceSurface::Cylinder(_)
+        | FaceSurface::Cone(_)
+        | FaceSurface::Sphere(_)
+        | FaceSurface::Nurbs(_) => {
             return Err(crate::OperationsError::InvalidInput {
                 reason: "analytic_torus_signed_volume requires a torus face".into(),
             });
@@ -2494,7 +2608,15 @@ fn analytic_torus_signed_volume(
                         let (t0, t1) = nc.domain();
                         Some(nc.evaluate(f64::midpoint(t0, t1)))
                     }
-                    _ => None,
+                    // Only circle and swept-circle NURBS rims widen the
+                    // angular range here. Straight lines and conic arcs add
+                    // no out-of-endpoint angle, and a future curve variant
+                    // must opt in explicitly rather than inherit `None`
+                    // silently.
+                    EdgeCurve::Line
+                    | EdgeCurve::Ellipse(_)
+                    | EdgeCurve::Hyperbola(_)
+                    | EdgeCurve::Parabola(_) => None,
                 };
                 if let Some(mid) = mid {
                     let (u, v) = tor.project_point(mid);
@@ -2677,7 +2799,13 @@ fn exact_analytic_face_volume(
             FaceSurface::Cone(_) if !holed => analytic_cone_signed_volume(topo, fid).ok()?,
             FaceSurface::Sphere(_) if !holed => analytic_sphere_signed_volume(topo, fid).ok()?,
             FaceSurface::Torus(_) if !holed => analytic_torus_signed_volume(topo, fid).ok()?,
-            _ => return None, // holed quadric wall: no hole-aware integrator here
+            // Holed quadric walls have no hole-aware integrator on this path:
+            // each holed carrier declines explicitly so a future variant
+            // cannot silently inherit the unholed arm above.
+            FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_) => return None,
         };
     }
     Some(total.abs())
@@ -3315,6 +3443,65 @@ mod regression_tests {
         let tor = crate::primitives::make_torus(&mut t, 6.0, 2.0, 32).unwrap();
         let v = try_analytic_solid_volume(&t, tor).expect("plain torus fast-path");
         assert!((v - 2.0 * PI * PI * 6.0 * 4.0).abs() < 1e-6);
+    }
+
+    /// B24: every handled surface family must retain its volume behavior after
+    /// the wildcard-to-exhaustive conversion. Each primitive exercises one
+    /// converted `match` family through the public `solid_volume` entry point:
+    /// box (planar caps), cylinder (wall + caps), cone/frustum (wall + caps),
+    /// sphere (patch sums), torus (band sums).
+    #[test]
+    fn b24_handled_surface_families_retain_volume() {
+        use std::f64::consts::PI;
+
+        // Box: all-planar boundary through the Green/exact planar path.
+        let mut t = Topology::new();
+        let solid = crate::primitives::make_box(&mut t, 3.0, 4.0, 5.0).unwrap();
+        let vol = solid_volume(&t, solid, 0.01).unwrap();
+        assert!(
+            (vol - 60.0).abs() < 1e-6,
+            "box volume should be 60.0, got {vol}"
+        );
+
+        // Cylinder: wall + disc caps through the revolution path.
+        let mut t = Topology::new();
+        let solid = crate::primitives::make_cylinder(&mut t, 2.0, 7.0).unwrap();
+        let vol = solid_volume(&t, solid, 0.01).unwrap();
+        let expected = PI * 4.0 * 7.0;
+        assert!(
+            (vol - expected).abs() / expected < 1e-9,
+            "cylinder volume should be {expected}, got {vol}"
+        );
+
+        // Frustum: cone wall + two disc caps.
+        let mut t = Topology::new();
+        let solid = crate::primitives::make_cone(&mut t, 4.0, 2.0, 6.0).unwrap();
+        let vol = solid_volume(&t, solid, 0.01).unwrap();
+        let expected = PI * 6.0 / 3.0 * (16.0 + 8.0 + 4.0);
+        assert!(
+            (vol - expected).abs() / expected < 1e-9,
+            "frustum volume should be {expected}, got {vol}"
+        );
+
+        // Sphere: patch sums over the analytic sphere integrator.
+        let mut t = Topology::new();
+        let solid = crate::primitives::make_sphere(&mut t, 3.0, 32).unwrap();
+        let vol = solid_volume(&t, solid, 0.01).unwrap();
+        let expected = 4.0 / 3.0 * PI * 27.0;
+        assert!(
+            (vol - expected).abs() / expected < 1e-6,
+            "sphere volume should be {expected}, got {vol}"
+        );
+
+        // Torus: band sums over the analytic torus integrator.
+        let mut t = Topology::new();
+        let solid = crate::primitives::make_torus(&mut t, 6.0, 2.0, 32).unwrap();
+        let vol = solid_volume(&t, solid, 0.01).unwrap();
+        let expected = 2.0 * PI * PI * 6.0 * 4.0;
+        assert!(
+            (vol - expected).abs() / expected < 1e-6,
+            "torus volume should be {expected}, got {vol}"
+        );
     }
 
     #[test]
