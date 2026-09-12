@@ -1903,10 +1903,10 @@ impl Accumulator {
     /// Add one abscissa's contribution, weighted by `w` (which already carries
     /// the map from the reference interval to the patch).
     fn add<S: ParametricSurface>(&mut self, surface: &S, u: f64, v: f64, w: f64) {
-        let p = surface.evaluate(u, v);
-        // One derivative evaluation for both partials (NURBS surfaces would
-        // otherwise run the full derivative solve twice per Gauss point).
-        let (du, dv) = surface.partials(u, v);
+        // One solve for position and both partials (a NURBS surface would
+        // otherwise run a full evaluation plus the derivative solve per
+        // Gauss point).
+        let (p, du, dv) = surface.point_and_partials(u, v);
 
         // Normal = du x dv (unnormalized, includes Jacobian)
         let n = Vec3::new(

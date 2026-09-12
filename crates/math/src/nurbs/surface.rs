@@ -1091,6 +1091,27 @@ mod weight_cache_tests {
     }
 
     #[test]
+    fn point_and_partials_matches_separate_evaluations_to_rounding() {
+        // The position takes a different summation path than `evaluate`
+        // (homogeneous quotient vs. scaled perspective divide), so it agrees
+        // to rounding, not bit-identically; the partials are the same table
+        // entries either way.
+        let s = rational_patch(1.0);
+        for k in 0..30 {
+            let (u, v) = (f64::from(k) / 29.0, (f64::from(k) * 0.37) % 1.0);
+            let (p, du, dv) = ParametricSurface::point_and_partials(&s, u, v);
+            let q = ParametricSurface::evaluate(&s, u, v);
+            let drift = (p.x() - q.x()).hypot(p.y() - q.y()).hypot(p.z() - q.z());
+            assert!(
+                drift < 1e-12,
+                "position drift {drift:.3e} at ({u}, {v}) exceeds rounding"
+            );
+            assert_eq!(bits(du), bits(ParametricSurface::partial_u(&s, u, v)));
+            assert_eq!(bits(dv), bits(ParametricSurface::partial_v(&s, u, v)));
+        }
+    }
+
+    #[test]
     fn stack_and_heap_derivative_paths_agree_bitwise() {
         // d beyond the stack budget takes the heap buffer; the shared entries
         // must match the stack path exactly.

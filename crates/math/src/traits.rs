@@ -47,6 +47,18 @@ pub trait ParametricSurface {
     fn partials(&self, u: f64, v: f64) -> (Vec3, Vec3) {
         (self.partial_u(u, v), self.partial_v(u, v))
     }
+
+    /// Position and both first partials `(S, ∂S/∂u, ∂S/∂v)` at (u, v).
+    ///
+    /// The default evaluates each piece separately. Implementations whose
+    /// position and partials share one solve (NURBS: one `derivatives(u, v, 1)`
+    /// yields all three) override it so quadrature pays for that solve once.
+    /// Overrides must return exactly what the three separate calls would,
+    /// except for floating-point reassociation at the rounding level.
+    fn point_and_partials(&self, u: f64, v: f64) -> (Point3, Vec3, Vec3) {
+        let (du, dv) = self.partials(u, v);
+        (self.evaluate(u, v), du, dv)
+    }
 }
 
 /// Unified interface for parametric curve evaluation.
@@ -234,6 +246,24 @@ impl ParametricSurface for NurbsSurface {
     fn partials(&self, u: f64, v: f64) -> (Vec3, Vec3) {
         let d = self.derivatives(u, v, 1);
         (d[1][0], d[0][1])
+    }
+
+    /// One `derivatives(u, v, 1)` serves the position and both partials: entry
+    /// `[0][0]` is the surface point alongside the two first partials.
+    ///
+    /// The position takes a different summation path than [`Self::evaluate`]
+    /// (homogeneous quotient vs. scaled perspective divide), so the two agree
+    /// to ~1e-14 in model units, not bit-identically. That is three orders
+    /// below the tightest consumer tolerance (`1e-7` linear) and below the
+    /// Gauss-quadrature truncation the caller is already converging.
+    #[inline]
+    fn point_and_partials(&self, u: f64, v: f64) -> (Point3, Vec3, Vec3) {
+        let d = self.derivatives(u, v, 1);
+        (
+            Point3::new(d[0][0].x(), d[0][0].y(), d[0][0].z()),
+            d[1][0],
+            d[0][1],
+        )
     }
 }
 
