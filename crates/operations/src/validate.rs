@@ -422,6 +422,43 @@ fn component_counts(
     ))
 }
 
+/// A probe the strict-validation budget guard records per measured shell:
+/// which shell was integrated, at what Gauss order, how many faces it holds,
+/// and the signed volume that resulted.
+#[derive(Debug, Clone, Copy)]
+pub struct ShellOrientationProbe {
+    /// Index of the shell in traversal order (0 is the outer shell).
+    pub shell: usize,
+    /// Gauss order the signed-volume integral ran at.
+    pub order: usize,
+    /// Faces integrated for this shell.
+    pub faces: usize,
+    /// Signed volume the integration returned.
+    pub signed_volume: f64,
+}
+
+/// Strict-validation budget probes for one `validate_solid` call.
+///
+/// The probes name the measured inside-out integral — the floor the B28
+/// roadmap row calls out on the hammer-holder body — without changing the
+/// verdict: one entry per measured shell, each carrying that shell's face
+/// count, Gauss order, and signed volume. They exist so the scaling guard can
+/// assert the budget-relevant work (which shell ran, at what order, over how
+/// many faces) and so the number stays comparable across runs.
+#[derive(Debug, Clone)]
+pub struct ValidateBudgetProbes {
+    /// One entry per shell whose signed volume was integrated.
+    pub shells: Vec<ShellOrientationProbe>,
+}
+
+impl ValidateBudgetProbes {
+    /// Face count across every measured shell.
+    #[must_use]
+    pub fn measured_faces(&self) -> usize {
+        self.shells.iter().map(|probe| probe.faces).sum()
+    }
+}
+
 /// Report a shell that is turned the wrong way round.
 ///
 /// A shell can be closed, 2-manifold and consistently wound and still face
@@ -440,6 +477,40 @@ fn component_counts(
 ///
 /// Both are silent when the answer cannot be established (a face that will not
 /// integrate, a body with no measurable extent) rather than guessing.
+///
+/// Collect one budget probe per measured shell.
+///
+/// The probes record the same `shell_signed_volume` integrals the verdict
+/// already reads — one entry per shell, in traversal order (outer shell
+/// first) — so the guard pins the budget-relevant work while the verdict
+/// stays byte-identical to [`shell_orientation_issues`].
+fn shell_orientation_probes(
+    topo: &Topology,
+    solid: SolidId,
+    check: OrientationCheck,
+) -> Result<Vec<ShellOrientationProbe>, crate::OperationsError> {
+    let OrientationCheck::Order(order) = check else {
+        return Ok(Vec::new());
+    };
+    let solid_data = topo.solid(solid)?;
+    let mut probes = Vec::new();
+    let shells =
+        std::iter::once(solid_data.outer_shell()).chain(solid_data.inner_shells().iter().copied());
+    for (index, shell) in shells.enumerate() {
+        let Some(signed) = crate::measure::shell_signed_volume(topo, shell, order) else {
+            continue;
+        };
+        let faces = topo.shell(shell)?.faces().len();
+        probes.push(ShellOrientationProbe {
+            shell: index,
+            order,
+            faces,
+            signed_volume: signed,
+        });
+    }
+    Ok(probes)
+}
+
 fn shell_orientation_issues(
     topo: &Topology,
     solid: SolidId,
@@ -663,6 +734,28 @@ pub fn validate_solid(
     solid: SolidId,
 ) -> Result<ValidationReport, crate::OperationsError> {
     validate_solid_with_options(topo, solid, &ValidationOptions::default())
+}
+
+/// Strict validation that also reports the inside-out budget probes.
+///
+/// Same verdict as [`validate_solid`]: the probes are a read-out of the shell
+/// signed-volume integrals the verdict already evaluates, recorded alongside
+/// it. The result is identical by construction — no tolerance, sample count,
+/// or threshold changes — so the B28 budget guard can pin the measured work
+/// (shell, Gauss order, face count, signed volume) without re-running the
+/// integral or loosening what the report accepts.
+///
+/// # Errors
+///
+/// Returns an error if topology lookups fail.
+pub fn validate_solid_with_budget_probes(
+    topo: &Topology,
+    solid: SolidId,
+    options: &ValidationOptions,
+) -> Result<(ValidationReport, ValidateBudgetProbes), crate::OperationsError> {
+    let report = validate_solid_with_options(topo, solid, options)?;
+    let shells = shell_orientation_probes(topo, solid, options.orientation)?;
+    Ok((report, ValidateBudgetProbes { shells }))
 }
 
 /// Validate a solid with configurable tolerance options.
