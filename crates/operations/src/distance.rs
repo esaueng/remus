@@ -146,6 +146,7 @@ pub fn solid_to_solid_distance(
             if prunable_b[idx] && aabb_dist_sq > best_dist * best_dist {
                 continue;
             }
+            remus_algo::perf::bump_distance_face_probe();
             if let Some((dist, closest)) = point_to_face_distance(topo, pa, faces_b[idx], tol)?
                 && dist < best_dist
             {
@@ -171,6 +172,7 @@ pub fn solid_to_solid_distance(
             if prunable_a[idx] && aabb_dist_sq > best_dist * best_dist {
                 continue;
             }
+            remus_algo::perf::bump_distance_face_probe();
             if let Some((dist, closest)) = point_to_face_distance(topo, pb, faces_a[idx], tol)?
                 && dist < best_dist
             {
@@ -524,22 +526,39 @@ fn build_face_aabbs(
         let mut polygonal = face.surface().is_planar();
         let mut min = Point3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);
         let mut max = Point3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+        let mut grow = |p: Point3| {
+            min = Point3::new(min.x().min(p.x()), min.y().min(p.y()), min.z().min(p.z()));
+            max = Point3::new(max.x().max(p.x()), max.y().max(p.y()), max.z().max(p.z()));
+        };
         for oe in wire.edges() {
             let edge = topo.edge(oe.edge())?;
             polygonal &= matches!(edge.curve(), remus_topology::edge::EdgeCurve::Line);
             for vid in [edge.start(), edge.end()] {
-                let p = topo.vertex(vid)?.point();
-                min = Point3::new(min.x().min(p.x()), min.y().min(p.y()), min.z().min(p.z()));
-                max = Point3::new(max.x().max(p.x()), max.y().max(p.y()), max.z().max(p.z()));
+                grow(topo.vertex(vid)?.point());
             }
         }
+        // A NURBS face can be pruned on a conservative box: every point
+        // `point_to_face_distance` can return lies on the carrier inside its
+        // domain (the projection clamps there), which the convex hull of the
+        // control net contains, or on a boundary edge, which lies within the
+        // edge tolerance of the carrier and inside the margin below. Analytic
+        // curved carriers are unbounded and their distance is cheap, so they
+        // keep the exact-vertex box and stay unprunable.
+        let bounded_carrier = if let FaceSurface::Nurbs(surface) = face.surface() {
+            for p in surface.control_points().iter().flatten() {
+                grow(*p);
+            }
+            true
+        } else {
+            false
+        };
         // Curved faces can extend arbitrarily far beyond seam vertices.
         // Their boxes are ordering hints, never distance lower bounds.
         let margin = 0.01;
         min = Point3::new(min.x() - margin, min.y() - margin, min.z() - margin);
         max = Point3::new(max.x() + margin, max.y() + margin, max.z() + margin);
         result.push((i, Aabb3 { min, max }));
-        prunable.push(polygonal);
+        prunable.push(polygonal || bounded_carrier);
     }
     Ok((result, prunable))
 }
