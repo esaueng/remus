@@ -9248,3 +9248,52 @@ fn intersection_audit_uses_the_trimmed_torus_boundary() {
             .any(|p| !in_mask(p))
     );
 }
+
+/// The edge-face interference phase gates every boxable edge x NURBS face
+/// pair on conservative boxes before projecting edge samples onto the
+/// surface. A cylinder standing through one side of a long NURBS-faced bar
+/// has one circle and its seam line that can reach the pierced wall (and the
+/// seam the top wall); without the gate all three peg edges would be
+/// projected onto all six faces. Counts are deterministic work, not time.
+///
+/// This guards the pruning only. That the gate leaves geometry untouched is
+/// covered by the box-coverage tests in `phase_ef` (every sample the scan
+/// can evaluate lies inside the gate box) and by the Shapr3D hammer fixtures
+/// in `remus-io`, whose exact face counts, volumes and STEP round trips run
+/// through this phase on real NURBS lettering and blends. The raw GFA fuse
+/// on a `convert_to_bspline` bar is used here because the operations-level
+/// boolean recognises those faces back to planes and never reaches the gate;
+/// its result volume is not asserted (a pre-existing, gate-independent
+/// defect on such converted margins is tracked separately).
+#[cfg(feature = "perf-counters")]
+#[test]
+fn scaling_ef_curved_edge_gate_prunes_far_nurbs_pairs() {
+    use remus_math::mat::Mat4;
+
+    let mut topo = Topology::new();
+    let bar = crate::primitives::make_box(&mut topo, 100.0, 10.0, 10.0).unwrap();
+    let converted = crate::heal::convert_to_bspline(&mut topo, bar).unwrap();
+    assert!(converted >= 6, "bar faces should now be NURBS carriers");
+
+    // Axis along z at x = 50, y = 8: the bottom circle (z = 7) crosses the
+    // y = 10 side face; the top circle (z = 13) is clear of the bar.
+    let peg = crate::primitives::make_cylinder(&mut topo, 3.0, 6.0).unwrap();
+    crate::transform::transform_solid(&mut topo, peg, &Mat4::translation(50.0, 8.0, 7.0)).unwrap();
+
+    remus_algo::perf::reset();
+    let fused =
+        remus_algo::gfa::boolean(&mut topo, remus_algo::bop::BooleanOp::Fuse, bar, peg).unwrap();
+    let probes = remus_algo::perf::snapshot().ef_nurbs_pair_probes;
+    eprintln!("gate guard: probes={probes}");
+
+    // Three peg edges x six NURBS faces = 18 ungated pairs. The gate keeps
+    // the bottom circle x the y = 10 face and the seam line x the faces its
+    // box reaches: at most 3, and at least the 1 that proves the counter is
+    // exercised rather than silently deleted.
+    assert!(
+        (1..=3).contains(&probes),
+        "expected the gate to leave 1..=3 edge x NURBS-face pairs, got {probes}"
+    );
+    let report = crate::validate::validate_solid(&topo, fused).unwrap();
+    assert!(report.is_valid(), "{:?}", report.issues);
+}
