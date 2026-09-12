@@ -63,6 +63,21 @@ const VERTEX_TOL: f64 = 1e-7;
 /// Tolerance for the 2D segment intersection parameter test.
 const PARAM_TOL: f64 = 1e-10;
 
+/// Return the existing vertex at `point` (within `tolerance`), or mint a new
+/// one. Contact splits on shared boundary edges must reuse one vertex per
+/// position: two trims splitting the same edge at the same point would
+/// otherwise mint coincident vertices, and the two resulting contact edges
+/// would meet the cap wire at different ids — leaving use-1 stubs the
+/// end-cap notch cannot share.
+fn find_or_add_vertex(topo: &mut Topology, point: Point3, tolerance: f64) -> VertexId {
+    for (vid, vertex) in topo.vertices().iter() {
+        if (vertex.point() - point).length() <= tolerance {
+            return vid;
+        }
+    }
+    topo.add_vertex(Vertex::new(point, tolerance))
+}
+
 /// A point where the contact line crosses a face boundary edge.
 struct BoundaryHit {
     /// Index into the wire's oriented-edge list.
@@ -222,8 +237,8 @@ pub fn trim_face(
         return Err(BlendError::TrimmingFailure { face: face_id });
     }
 
-    let va_id = topo.add_vertex(Vertex::new(hit_a.point_3d, VERTEX_TOL));
-    let vb_id = topo.add_vertex(Vertex::new(hit_b.point_3d, VERTEX_TOL));
+    let va_id = find_or_add_vertex(topo, hit_a.point_3d, VERTEX_TOL);
+    let vb_id = find_or_add_vertex(topo, hit_b.point_3d, VERTEX_TOL);
 
     // Each hit splits one oriented edge into two sub-edges:
     //   original: oriented from S→E
@@ -768,7 +783,13 @@ fn segment_intersect_2d(
 /// line parameter `u` on `b` is unconstrained. This is needed for contact
 /// line trimming where the contact line extends beyond the face boundary.
 ///
-/// Returns `Some(t)` on segment `a` if the crossing exists.
+/// The parallel gate is scale-aware: the denominator is the signed area of
+/// the direction parallelogram, so an absolute epsilon misreads a short
+/// boundary edge crossing a nearly-parallel contact (a near-tangent ridge
+/// fillet, whose contact runs ~1e-2 rad off the wall) as parallel and the
+/// trim finds zero hits. Scaling by the direction magnitudes measures the
+/// sine of the crossing angle instead. Returns `Some(t)` on segment `a` if
+/// the crossing exists.
 fn line_segment_intersect_2d(
     a1: (f64, f64),
     a2: (f64, f64),
@@ -781,9 +802,10 @@ fn line_segment_intersect_2d(
     let dy_b = b2.1 - b1.1;
 
     let denom = dx_a * dy_b - dy_a * dx_b;
-
-    // Parallel or degenerate.
-    if denom.abs() < PARAM_TOL {
+    let scale = (dx_a * dx_a + dy_a * dy_a).sqrt() * (dx_b * dx_b + dy_b * dy_b).sqrt();
+    // Parallel or degenerate: the sine of the crossing angle is below the
+    // parameter tolerance, or either direction has no length at all.
+    if denom.abs() <= PARAM_TOL * scale {
         return None;
     }
 
@@ -1594,6 +1616,33 @@ mod tests {
         // Non-parallel but non-overlapping segments.
         let t = segment_intersect_2d((0.0, 0.0), (1.0, 0.0), (2.0, -1.0), (2.0, 1.0));
         assert!(t.is_none());
+    }
+
+    #[test]
+    fn line_contact_finds_a_near_parallel_wall_crossing() {
+        // A near-tangent ridge fillet runs its contact ~1e-2 rad off the
+        // wall it trims: the direction parallelogram's signed area is ~1e-4
+        // of the direction magnitudes, far below the old absolute epsilon.
+        // The crossing is genuine (the contact meets both short end edges)
+        // and must be reported.
+        let t =
+            line_segment_intersect_2d((0.0, 0.0), (5.00025, 0.0), (5.00025, 0.0), (5.00025, -8.0));
+        assert!(t.is_some(), "near-parallel wall crossing must be found");
+        // A truly parallel contact still reports no crossing.
+        let parallel =
+            line_segment_intersect_2d((0.0, 0.0), (5.00025, 0.0), (0.0, 1e-6), (5.00025, 1e-6));
+        assert!(
+            parallel.is_none(),
+            "a parallel contact must still report no crossing"
+        );
+        // Degenerate directions report no crossing rather than dividing by
+        // a zero scale.
+        assert!(
+            line_segment_intersect_2d((1.0, 1.0), (1.0, 1.0), (0.0, 0.0), (2.0, 0.0)).is_none()
+        );
+        assert!(
+            line_segment_intersect_2d((0.0, 0.0), (2.0, 0.0), (1.0, 1.0), (1.0, 1.0)).is_none()
+        );
     }
 
     #[test]
