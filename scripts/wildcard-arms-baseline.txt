@@ -1,0 +1,64 @@
+# Wildcard match arms over `EdgeCurve`/`FaceSurface`, audited for B24.
+# One line per production source file: `<count> <path>`, `LC_ALL=C sort`ed.
+# `scripts/check-wildcard-arms.sh` fails when any file grows past its count
+# (including a previously unlisted file) and when a count shrinks without a
+# manifest update in the same change, so reductions are recorded where they land.
+# Convert an arm to exhaustive matches and lower its file's count in the same PR;
+# never raise a count except to record a genuinely required wildcard.
+4 crates/algo/src/builder/builder_solid.rs
+1 crates/algo/src/builder/face_splitter/conversion.rs
+5 crates/algo/src/builder/face_splitter/mod.rs
+6 crates/algo/src/builder/face_splitter/special_cases.rs
+9 crates/algo/src/builder/fill_images_faces.rs
+2 crates/algo/src/builder/mod.rs
+1 crates/algo/src/builder/pcurve_compute.rs
+5 crates/algo/src/builder/same_domain.rs
+1 crates/algo/src/classifier/ray_cast.rs
+1 crates/algo/src/pave_filler/fill_face_info.rs
+4 crates/algo/src/pave_filler/phase_ef.rs
+16 crates/algo/src/pave_filler/phase_ff.rs
+1 crates/algo/src/pave_filler/phase_vf.rs
+2 crates/blend/src/chamfer_builder.rs
+1 crates/blend/src/face_face.rs
+8 crates/blend/src/fillet_builder.rs
+2 crates/blend/src/query.rs
+1 crates/blend/src/trimmer.rs
+1 crates/check/src/classify/mod.rs
+1 crates/check/src/properties/face_integrator.rs
+1 crates/check/src/validate/face.rs
+1 crates/heal/src/fix/face.rs
+6 crates/io/src/step/reader.rs
+2 crates/io/src/step/writer.rs
+3 crates/offset/src/inter3d.rs
+2 crates/offset/src/loops.rs
+4 crates/offset/src/move_faces.rs
+1 crates/offset/src/move_faces/quarter_cylinder.rs
+2 crates/operations/src/boolean/assembly.rs
+2 crates/operations/src/compound_ops.rs
+1 crates/operations/src/defeature.rs
+1 crates/operations/src/draft.rs
+2 crates/operations/src/extrude.rs
+1 crates/operations/src/feature_recognition.rs
+2 crates/operations/src/fillet/mod.rs
+1 crates/operations/src/fillet/rolling_ball.rs
+3 crates/operations/src/heal.rs
+3 crates/operations/src/loft.rs
+2 crates/operations/src/measure/area.rs
+2 crates/operations/src/measure/mod.rs
+16 crates/operations/src/measure/volume.rs
+4 crates/operations/src/offset_face.rs
+3 crates/operations/src/offset_wire.rs
+4 crates/operations/src/push_pull.rs
+1 crates/operations/src/replace_surface.rs
+10 crates/operations/src/resize_blend.rs
+4 crates/operations/src/revolve.rs
+3 crates/operations/src/sweep.rs
+1 crates/operations/src/tessellate/mesh_ops.rs
+13 crates/operations/src/tessellate/nonplanar.rs
+1 crates/operations/src/tessellate/solid.rs
+1 crates/operations/src/untrim.rs
+1 crates/topology/src/face.rs
+1 crates/wasm/src/bindings/gridfinity_tests.rs
+1 crates/wasm/src/bindings/operations.rs
+3 crates/wasm/src/bindings/query.rs
+1 crates/wasm/src/kernel.rs
