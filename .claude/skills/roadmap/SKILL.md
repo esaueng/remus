@@ -131,16 +131,18 @@ that does not exist yet; without it, stop.
 
 ## Open items with a repro
 
-The `#[ignore]` inventory (regenerated 2026-09-06) has one open engine witness:
+The `#[ignore]` inventory (regenerated 2026-09-11 at `95de160`: 15
+attributes, one doc-comment false hit) has one open engine witness:
 `qualify_boolean_anisotropic.rs::anisotropic_world_volume_resolves_small_feature_scale`.
-The remaining twelve ignores are
+The remaining fourteen ignores are
 two fork-policy pins blocked on the trim-contract reconciliation
 (`crates/operations/tests/regress_chamfer_obtuse_ridge.rs`,
 `regress_fillet_concave_notch.rs`, see PR #126), one ~2 min perf run
-(`boolean/tests.rs::staircase_fuse_with_cylinders`), and print-only
-diagnostics (`profile_intersect.rs` ×3, the two #696 dovetail probes, the four
-`diag_*tangency*` landscape probes — re-run those with `--ignored --nocapture`
-before re-opening the tangency row). Everything else that was once "deferred"
+(`boolean/tests.rs::staircase_fuse_with_cylinders`), two manual release-mode
+`unify_faces` scaling measurements (`regress_unify_scaling.rs`, issue #284,
+closed), and print-only diagnostics (`profile_intersect.rs` ×3, the two #696
+dovetail probes, the four `diag_*tangency*` landscape probes — re-run those
+with `--ignored --nocapture` before re-opening the tangency row). Everything else that was once "deferred"
 is either a §B row in `roadmap.md`, a program-ledger issue, or a closed entry in
 `campaign-history.md`.
 
@@ -151,6 +153,8 @@ harness's own option-honoured floor misreading a correct 0.05 fillet on an
 
 ## Durable lessons (one line each; the story is in `campaign-history.md`)
 
+- **A NURBS carrier with a coplanar control net is the plane it is; recognise it before FF/EF/face-info, and gate that recognition on exact planarity:** applying the trimmed-extent and chart-crossing machinery to a genuinely curved import paved 12,408 noise crossings and broke its splitter (`helpers::planar_nurbs_as_plane`, PR #396). Also: never feed a NURBS knot span to the arc-chord formula as radians (`tessellate/nonplanar.rs` grid sizer).
+- **Prune NURBS pairs with conservative boxes that are result-identical by construction:** control-net box (convex hull) on the face side, endpoint-padded edge box on the edge side, gate at a multiple of every threshold the scan uses, and count survivors with a `perf-counters` scaling guard (`phase_ef.rs`, `distance.rs`, PRs #394/#395).
 - **Blend resize identity requires construction support lineage plus a complete unique boundary incidence map:** a rebuilt band is not automatically a preserved face (`crates/operations/tests/journal_resize_blend.rs`); removal additionally requires complete boundary merge/deletion coverage, and broader regions refuse the journaled path.
 
 - **Journal setup belongs inside the operation transaction:** `journal_begin` can publish an outstanding global barrier before geometry runs; refusal must restore it (`crates/operations/tests/journal.rs`, shell/split and boolean/pattern unpublished-history regressions).
