@@ -131,13 +131,13 @@ that does not exist yet; without it, stop.
 
 ## Open items with a repro
 
-The `#[ignore]` inventory (regenerated 2026-09-11 at `95de160`: 15
-attributes, one doc-comment false hit) has one open engine witness:
+The `#[ignore]` inventory (regenerated 2026-09-12 at `b1a0bf1`: 19
+`#[ignore` hits, of which 3 are doc-comment mentions, 1 a comment-only
+mention, and 1 file carries two measurement attributes — 14 real
+attributes) has one open engine witness:
 `qualify_boolean_anisotropic.rs::anisotropic_world_volume_resolves_small_feature_scale`.
-The remaining fourteen ignores are
-two fork-policy pins blocked on the trim-contract reconciliation
-(`crates/operations/tests/regress_chamfer_obtuse_ridge.rs`,
-`regress_fillet_concave_notch.rs`, see PR #126), one ~2 min perf run
+The remaining thirteen ignores are
+one ~2 min perf run
 (`boolean/tests.rs::staircase_fuse_with_cylinders`), two manual release-mode
 `unify_faces` scaling measurements (`regress_unify_scaling.rs`, issue #284,
 closed), and print-only diagnostics (`profile_intersect.rs` ×3, the two #696
