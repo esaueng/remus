@@ -32,6 +32,9 @@ for (let sample = 0; sample < samples + warmup; sample++) {
       args: { width: 1, height: 1, depth: 1 },
     }));
     const handles = checked(kernel.executeBatch(JSON.stringify(seeds)), size);
+    const ids = handles.map((row) => row.ok);
+    assert(ids.every((id) => Number.isInteger(id) && id >= 0 && id <= 0xffffffff));
+    assert.equal(new Set(ids).size, size, 'seeding must create distinct solids');
     const base = handles[0].ok,
       untouched = handles.at(-1).ok;
     const input = JSON.stringify(

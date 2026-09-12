@@ -41,6 +41,11 @@ fn transform(size: usize, direct: bool) -> (u128, Value) {
     let mut kernel = BrepKernel::new();
     let seeds = vec![json!({"op":"makeBox", "args":{"width":1.,"height":1.,"depth":1.}}); size];
     let handles = batch(&mut kernel, &serde_json::to_string(&seeds).unwrap(), size);
+    let ids: std::collections::BTreeSet<u32> = handles
+        .iter()
+        .map(|row| u32::try_from(row["ok"].as_u64().expect("solid handle")).unwrap())
+        .collect();
+    assert_eq!(ids.len(), size, "seeding must create distinct solids");
     let base = u32::try_from(handles[0]["ok"].as_u64().expect("solid handle")).unwrap();
     let untouched = handles[size - 1]["ok"].as_u64().unwrap();
     let input = serde_json::to_string(&vec![
