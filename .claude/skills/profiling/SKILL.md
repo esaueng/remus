@@ -9,11 +9,15 @@ description: Use when investigating or fixing performance in Remus: a benchmark 
 
 Remus must beat the reference kernel on performance, not merely pass tests. Perf regressions are release blockers. CI runs `boolean_tracking` on a shared runner and only comments on regressions over 200% (`.github/workflows/benchmark.yml`, `fail-on-alert: false`), so the automated gate is looser than the real bar. You are the gate: any PR touching a hot path pastes before/after criterion numbers in its body. Cross-kernel claims require `./scripts/bench-compare.sh $BREPJS` output, not native-only numbers (see the parity-benchmarking skill).
 
+## Maintained audit baseline
+
+Use `python3 scripts/performance/run.py` for the three-family NURBS/transform/chaining baseline; see `docs/performance/baseline.md` for fixed timing boundaries, correctness gates, raw samples and artifact provenance. This is the supported transform-scaling baseline; `batch_profile` remains a legacy minimum-only diagnostic. CPU/allocation attribution and wider workload coverage are separate follow-ups (O3.1a, M01/M06/M10 partial).
+
 ## Quick reference
 
 ```bash
 cargo bench-fast                                          # kernel-comparison suite (cad_operations, ~2 min)
-cargo bench-full                                          # all 5 bench files
+cargo bench-full                                          # operations benches only; excludes other crates
 cargo bench -p remus-operations --bench boolean_perf -- "N=64"   # isolate one bench by substring
 cargo flamegraph --profile profiling --bench cad_operations -p remus-operations \
   -o /tmp/flamegraph.svg -- --bench "<filter>"            # flamegraph a specific criterion bench
