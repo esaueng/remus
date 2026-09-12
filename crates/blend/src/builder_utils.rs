@@ -334,11 +334,15 @@ pub struct BlendFaceInfo {
     pub cross_start: (remus_topology::edge::EdgeId, VertexId, VertexId),
 }
 
-/// Replace a face's two-edge corner path `from -> corner -> to` with the
-/// single cross-section arc `edge`, notching the fillet's end profile out of
-/// an end cap so the cap and the blend share one edge entity. Both replaced
-/// edges must be straight (the box corner sides); returns whether a
-/// replacement happened.
+/// Replace a face's corner path `from -> ... -> to` with the single
+/// cross-section arc `edge`, notching the fillet's end profile out of an end
+/// cap so the cap and the blend share one edge entity.
+///
+/// The path may run through one intermediate corner vertex (the box corner
+/// sides: two straight edges) or two (a concave notch whose contact splits
+/// the corner edge: three straight edges). Every replaced edge must be
+/// straight; anything else (an already-notched arc, a curved wall) is left
+/// alone. Returns whether a replacement happened.
 pub fn notch_face_corner_with_arc(
     topo: &mut Topology,
     face_id: FaceId,
@@ -355,49 +359,90 @@ pub fn notch_face_corner_with_arc(
         let e = topo.edge(oe.edge())?;
         Ok((oe.oriented_start(e), oe.oriented_end(e)))
     };
-    for i in 0..n {
-        let j = (i + 1) % n;
-        let (s0, e0) = ends(&oes[i])?;
-        let (s1, e1) = ends(&oes[j])?;
-        if e0 != s1 || e0 == va || e0 == vb {
+    let oriented: Vec<(VertexId, VertexId)> =
+        oes.iter().map(ends).collect::<Result<Vec<_>, _>>()?;
+    for len in [2_usize, 3_usize] {
+        if n <= len {
             continue;
         }
-        let fwd = s0 == va && e1 == vb;
-        let rev = s0 == vb && e1 == va;
-        if !(fwd || rev) {
-            continue;
-        }
-        let both_straight = [oes[i].edge(), oes[j].edge()].iter().all(|&eid| {
-            topo.edge(eid)
-                .is_ok_and(|e| matches!(e.curve(), EdgeCurve::Line))
-        });
-        if !both_straight {
-            continue;
-        }
-        let mut new_oes: Vec<OrientedEdge> = Vec::with_capacity(n - 1);
-        for (k, oe) in oes.iter().enumerate() {
-            if k == i {
-                new_oes.push(OrientedEdge::new(arc_eid, fwd));
-            } else if k != j {
-                new_oes.push(*oe);
+        for i in 0..n {
+            let mut ok = true;
+            for k in 0..len {
+                let (_, e_k) = oriented[(i + k) % n];
+                let (s_next, _) = oriented[(i + k + 1) % n];
+                if e_k != s_next {
+                    ok = false;
+                    break;
+                }
+                // Strictly interior corner vertices must be genuine corners,
+                // not the arc's own endpoints (which would fold the wire
+                // back on itself). The path's end vertex (`k == len - 1`)
+                // is `va`/`vb` by construction and is checked below.
+                if k + 1 < len && (e_k == va || e_k == vb) {
+                    ok = false;
+                    break;
+                }
             }
+            if !ok {
+                continue;
+            }
+            let (s0, _) = oriented[i];
+            let (_, e_last) = oriented[(i + len - 1) % n];
+            let fwd = s0 == va && e_last == vb;
+            let rev = s0 == vb && e_last == va;
+            if !(fwd || rev) {
+                continue;
+            }
+            let all_straight = (0..len).all(|k| {
+                topo.edge(oes[(i + k) % n].edge())
+                    .is_ok_and(|e| matches!(e.curve(), EdgeCurve::Line))
+            });
+            if !all_straight {
+                continue;
+            }
+            // The replacement must not duplicate a surviving edge: when a
+            // wire edge outside the consumed path already spans the arc's
+            // endpoints, the result would be a degenerate lens (the arc plus
+            // that same direct edge), not a notch.
+            let duplicates_survivor = (0..n).any(|k| {
+                let rel = (k + n - i) % n;
+                if rel < len {
+                    return false;
+                }
+                let edge = topo.edge(oes[k].edge());
+                let Ok(edge) = edge else { return false };
+                let (a, b) = (edge.start(), edge.end());
+                (a == va && b == vb) || (a == vb && b == va)
+            });
+            if duplicates_survivor {
+                continue;
+            }
+            let mut new_oes: Vec<OrientedEdge> = Vec::with_capacity(n - len + 1);
+            for (k, oe) in oes.iter().enumerate() {
+                let rel = (k + n - i) % n;
+                if rel == 0 {
+                    new_oes.push(OrientedEdge::new(arc_eid, fwd));
+                } else if rel >= len {
+                    new_oes.push(*oe);
+                }
+            }
+            let new_wire = topo.add_wire(Wire::new(new_oes, true)?);
+            let (surface, reversed, inners) = {
+                let f = topo.face(face_id)?;
+                (
+                    f.surface().clone(),
+                    f.is_reversed(),
+                    f.inner_wires().to_vec(),
+                )
+            };
+            let new_face = if reversed {
+                Face::new_reversed(new_wire, inners, surface)
+            } else {
+                Face::new(new_wire, inners, surface)
+            };
+            let nf = topo.add_face(new_face);
+            return Ok(Some(nf));
         }
-        let new_wire = topo.add_wire(Wire::new(new_oes, true)?);
-        let (surface, reversed, inners) = {
-            let f = topo.face(face_id)?;
-            (
-                f.surface().clone(),
-                f.is_reversed(),
-                f.inner_wires().to_vec(),
-            )
-        };
-        let new_face = if reversed {
-            Face::new_reversed(new_wire, inners, surface)
-        } else {
-            Face::new(new_wire, inners, surface)
-        };
-        let nf = topo.add_face(new_face);
-        return Ok(Some(nf));
     }
     Ok(None)
 }
@@ -939,26 +984,223 @@ mod tests {
             1e-5,
         ));
     }
+}
+
+#[test]
+#[allow(clippy::expect_used)]
+fn straight_contact_matches_nonuniform_linear_nurbs() {
+    let start = Point3::new(0.0, 0.0, 0.0);
+    let end = Point3::new(1.0, 0.0, 0.0);
+    let nonuniform = NurbsCurve::new(
+        1,
+        vec![0.0, 0.0, 0.5, 1.0, 1.0],
+        vec![start, Point3::new(0.9, 0.0, 0.0), end],
+        vec![1.0, 1.0, 1.0],
+    )
+    .expect("valid linear NURBS");
+
+    assert!(contact_geometry_matches(
+        &EdgeCurve::Line,
+        start,
+        end,
+        &nonuniform,
+        1e-5,
+    ));
+}
+#[cfg(test)]
+mod notch_tests {
+    use super::*;
+
+    /// Build a planar n-gon face with unit tolerance, returning the face
+    /// and its ordered vertex ids. Vertices run counter-clockwise seen from
+    /// `+normal`.
+    #[allow(clippy::unwrap_used)]
+    fn make_ngon_face(
+        topo: &mut Topology,
+        corners: &[Point3],
+        normal: Vec3,
+    ) -> (FaceId, Vec<VertexId>) {
+        let vertices: Vec<VertexId> = corners
+            .iter()
+            .map(|&point| topo.add_vertex(Vertex::new(point, 1e-7)))
+            .collect();
+        let edges: Vec<EdgeId> = vertices
+            .iter()
+            .enumerate()
+            .map(|(i, &start)| {
+                let end = vertices[(i + 1) % vertices.len()];
+                topo.add_edge(Edge::new(start, end, EdgeCurve::Line))
+            })
+            .collect();
+        let wire = topo.add_wire(
+            Wire::new(
+                edges
+                    .iter()
+                    .map(|&edge| OrientedEdge::new(edge, true))
+                    .collect(),
+                true,
+            )
+            .unwrap(),
+        );
+        let d = normal.dot(Vec3::new(corners[0].x(), corners[0].y(), corners[0].z()));
+        let face = topo.add_face(Face::new(
+            wire,
+            Vec::new(),
+            FaceSurface::Plane { normal, d },
+        ));
+        (face, vertices)
+    }
+
+    /// Assert a wire is a head-to-tail closed loop.
+    #[allow(clippy::unwrap_used)]
+    fn assert_wire_closed(topo: &Topology, wire_id: WireId) {
+        let wire = topo.wire(wire_id).unwrap();
+        let oes = wire.edges();
+        for i in 0..oes.len() {
+            let current = topo.edge(oes[i].edge()).unwrap();
+            let next = topo.edge(oes[(i + 1) % oes.len()].edge()).unwrap();
+            assert_eq!(
+                oes[i].oriented_end(current),
+                oes[(i + 1) % oes.len()].oriented_start(next),
+                "wire disconnected at position {i}",
+            );
+        }
+    }
 
     #[test]
-    #[allow(clippy::expect_used)]
-    fn straight_contact_matches_nonuniform_linear_nurbs() {
-        let start = Point3::new(0.0, 0.0, 0.0);
-        let end = Point3::new(1.0, 0.0, 0.0);
-        let nonuniform = NurbsCurve::new(
-            1,
-            vec![0.0, 0.0, 0.5, 1.0, 1.0],
-            vec![start, Point3::new(0.9, 0.0, 0.0), end],
-            vec![1.0, 1.0, 1.0],
-        )
-        .expect("valid linear NURBS");
+    #[allow(clippy::unwrap_used)]
+    fn notch_replaces_a_two_edge_box_corner() {
+        let mut topo = Topology::new();
+        let corners = [
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(2.0, 0.0, 0.0),
+            Point3::new(2.0, 1.0, 0.0),
+            Point3::new(0.0, 1.0, 0.0),
+        ];
+        let (face, vertices) = make_ngon_face(&mut topo, &corners, Vec3::new(0.0, 0.0, 1.0));
+        // Oriented corner path in wire order: vertices[1] -> vertices[2] ->
+        // vertices[3]. The arc must run from the path start to the path end.
+        let arc = topo.add_edge(Edge::new(vertices[1], vertices[3], EdgeCurve::Line));
+        let notched = notch_face_corner_with_arc(&mut topo, face, (arc, vertices[1], vertices[3]))
+            .unwrap()
+            .expect("two-edge corner must notch");
+        let wire = topo.wire(topo.face(notched).unwrap().outer_wire()).unwrap();
+        assert_eq!(wire.edges().len(), 3);
+        assert!(
+            wire.edges().iter().any(|oe| oe.edge() == arc),
+            "notched wire must carry the arc edge"
+        );
+        assert_wire_closed(&topo, topo.face(notched).unwrap().outer_wire());
+    }
 
-        assert!(contact_geometry_matches(
-            &EdgeCurve::Line,
-            start,
-            end,
-            &nonuniform,
-            1e-5,
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn notch_replaces_a_three_edge_split_corner() {
+        // A concave-notch contact splits the corner edge twice, so the cap
+        // reaches the arc endpoints over three straight edges
+        // `from -> a -> b -> to`. The notch must consume all three so no
+        // use-1 stub is left behind. No two-edge wire path shares the arc
+        // endpoints, so only the len-3 scan can match.
+        let mut topo = Topology::new();
+        let corners = [
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(2.0, 0.0, 0.0),
+            Point3::new(2.4, 0.2, 0.0),
+            Point3::new(2.6, 0.4, 0.0),
+            Point3::new(2.0, 1.0, 0.0),
+            Point3::new(0.0, 1.0, 0.0),
+        ];
+        let (face, vertices) = make_ngon_face(&mut topo, &corners, Vec3::new(0.0, 0.0, 1.0));
+        let arc = topo.add_edge(Edge::new(vertices[1], vertices[4], EdgeCurve::Line));
+        let notched = notch_face_corner_with_arc(&mut topo, face, (arc, vertices[1], vertices[4]))
+            .unwrap()
+            .expect("three-edge split corner must notch");
+        let wire = topo.wire(topo.face(notched).unwrap().outer_wire()).unwrap();
+        assert_eq!(
+            wire.edges().len(),
+            4,
+            "6-edge wire minus a 3-edge path plus the arc must leave 4 edges"
+        );
+        assert!(
+            wire.edges().iter().any(|oe| oe.edge() == arc),
+            "notched wire must carry the arc edge"
+        );
+        assert_wire_closed(&topo, topo.face(notched).unwrap().outer_wire());
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn notch_refuses_an_arc_duplicating_a_surviving_edge() {
+        // The direct edge vertices[0] -> vertices[1] already spans the arc's
+        // endpoints: consuming the long way around (three edges) would leave
+        // the arc plus that same direct edge as a degenerate lens, so the
+        // notch must refuse.
+        let mut topo = Topology::new();
+        let corners = [
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(2.0, 0.0, 0.0),
+            Point3::new(2.0, 1.0, 0.0),
+            Point3::new(0.0, 1.0, 0.0),
+        ];
+        let (face, vertices) = make_ngon_face(&mut topo, &corners, Vec3::new(0.0, 0.0, 1.0));
+        let arc = topo.add_edge(Edge::new(vertices[0], vertices[1], EdgeCurve::Line));
+        assert!(
+            notch_face_corner_with_arc(&mut topo, face, (arc, vertices[0], vertices[1]))
+                .unwrap()
+                .is_none(),
+            "an arc duplicating a surviving edge must not notch"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn notch_leaves_a_curved_path_alone() {
+        // Every path between the arc endpoints contains a non-line edge (an
+        // already-notched arc or a curved wall): no sharp corner exists to
+        // notch, so the face must be left alone. (A single curved path is
+        // not enough: the wire's other way around the same endpoints may
+        // still be a notchable straight corner, which must keep working.)
+        let mut topo = Topology::new();
+        let v0 = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
+        let v1 = topo.add_vertex(Vertex::new(Point3::new(2.0, 0.0, 0.0), 1e-7));
+        let v2 = topo.add_vertex(Vertex::new(Point3::new(2.0, 1.0, 0.0), 1e-7));
+        let v3 = topo.add_vertex(Vertex::new(Point3::new(0.0, 1.0, 0.0), 1e-7));
+        let e0 = topo.add_edge(Edge::new(v0, v1, EdgeCurve::Line));
+        let circle = remus_math::curves::Circle3D::new(
+            Point3::new(2.0, 0.5, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            0.5,
+        )
+        .unwrap();
+        let e1 = topo.add_edge(Edge::new(v1, v2, EdgeCurve::Circle(circle.clone())));
+        let e2 = topo.add_edge(Edge::new(v2, v3, EdgeCurve::Line));
+        let e3 = topo.add_edge(Edge::new(v3, v0, EdgeCurve::Circle(circle)));
+        let wire = topo.add_wire(
+            Wire::new(
+                vec![
+                    OrientedEdge::new(e0, true),
+                    OrientedEdge::new(e1, true),
+                    OrientedEdge::new(e2, true),
+                    OrientedEdge::new(e3, true),
+                ],
+                true,
+            )
+            .unwrap(),
+        );
+        let face = topo.add_face(Face::new(
+            wire,
+            Vec::new(),
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
         ));
+        let arc = topo.add_edge(Edge::new(v1, v3, EdgeCurve::Line));
+        assert!(
+            notch_face_corner_with_arc(&mut topo, face, (arc, v1, v3))
+                .unwrap()
+                .is_none(),
+            "a curved corner path must not notch"
+        );
     }
 }
