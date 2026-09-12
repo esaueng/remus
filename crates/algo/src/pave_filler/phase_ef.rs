@@ -99,6 +99,60 @@ fn collect_face_boundary_edges(
 struct FaceContainment {
     bbox: Option<Aabb3>,
     planar: Option<PlanarContainment>,
+    /// Chart-polygon containment for a NURBS face that is open in both
+    /// directions. A curved face's sampled boundary box is not conservative,
+    /// so such faces used to accept EVERY crossing of their carrier — a peg
+    /// cap rim crossing a converted bar wall's carrier 3 mm above the wall
+    /// paved a vertex in open space.
+    nurbs: Option<NurbsContainment>,
+}
+
+struct NurbsContainment {
+    surface: remus_math::nurbs::surface::NurbsSurface,
+    grid: SurfaceSeedGrid,
+    /// The plane the (coplanar) control net lies in, for exact crossings.
+    plane: (Vec3, f64),
+    /// Outer outline inverted into the surface's `(u, v)` chart.
+    polygon: Vec<Point2>,
+    /// Inner-wire outlines in the same chart.
+    holes: Vec<Vec<Point2>>,
+    /// Model-space boundary sagitta margin; converted to chart units at the
+    /// tested point through the local metric.
+    margin: f64,
+}
+
+impl NurbsContainment {
+    /// Chart coordinates of `pt` and the length of one chart unit there.
+    fn invert(&self, pt: Point3) -> Option<(Point2, f64)> {
+        let proj =
+            project_point_to_surface_with_grid(&self.surface, pt, NURBS_PROJECT_TOL, &self.grid)
+                .ok()?;
+        let d = self.surface.derivatives(proj.u, proj.v, 1);
+        let scale = d[1][0].length().min(d[0][1].length());
+        let scale = if scale.is_finite() && scale > 1e-12 {
+            scale
+        } else {
+            1.0
+        };
+        Some((Point2::new(proj.u, proj.v), scale))
+    }
+
+    fn accepts(&self, pt: Point3) -> bool {
+        // Conservative keep when the inversion fails, as the curved-face
+        // fallback always was.
+        let Some((uv, scale)) = self.invert(pt) else {
+            return true;
+        };
+        let margin = self.margin / scale;
+        let within_outer = point_in_polygon_2d(uv, &self.polygon)
+            || distance_to_polygon_boundary(uv, &self.polygon) <= margin;
+        if !within_outer {
+            return false;
+        }
+        !self.holes.iter().any(|hole| {
+            point_in_polygon_2d(uv, hole) && distance_to_polygon_boundary(uv, hole) > margin
+        })
+    }
 }
 
 struct PlanarContainment {
@@ -118,6 +172,9 @@ impl FaceContainment {
             .is_some_and(|bbox| !bbox.contains_point(pt))
         {
             return false;
+        }
+        if let Some(nurbs) = &self.nurbs {
+            return nurbs.accepts(pt);
         }
         let Some(planar) = &self.planar else {
             return true;
@@ -257,6 +314,7 @@ fn build_face_containment(
         return Ok(FaceContainment {
             bbox: None,
             planar: None,
+            nurbs: None,
         });
     };
     let diag = (bbox.max - bbox.min).length();
@@ -284,18 +342,63 @@ fn build_face_containment(
                     holes,
                     margin,
                 }),
+                nurbs: None,
             });
         }
         return Ok(FaceContainment {
             bbox: Some(bbox.expanded((diag * 0.5).max(tol.linear * 10.0))),
             planar: None,
+            nurbs: None,
         });
+    }
+
+    // A PLANAR NURBS carrier (a coplanar control net) has an affine chart:
+    // its outline inverts to a polygon there, tested like the planar one.
+    // Any failed inversion declines to the accept-everything fallback below.
+    // Genuinely curved NURBS faces keep that fallback on purpose: paving
+    // their crossings fed an imported freeform body's splitter sections it
+    // could not consume.
+    if let FaceSurface::Nurbs(nurbs) = &surface
+        && let Some(FaceSurface::Plane { normal, d }) =
+            super::helpers::planar_nurbs_as_plane(&surface, tol)
+        && outer_points.len() >= 3
+    {
+        let grid = SurfaceSeedGrid::for_surface(nurbs);
+        let invert = |pts: &[Point3]| -> Option<Vec<Point2>> {
+            pts.iter()
+                .map(|&p| {
+                    project_point_to_surface_with_grid(nurbs, p, NURBS_PROJECT_TOL, &grid)
+                        .ok()
+                        .map(|proj| Point2::new(proj.u, proj.v))
+                })
+                .collect()
+        };
+        if let Some(polygon) = invert(&outer_points)
+            && let Some(holes) = hole_points
+                .iter()
+                .map(|pts| invert(pts))
+                .collect::<Option<Vec<_>>>()
+        {
+            return Ok(FaceContainment {
+                bbox: None,
+                planar: None,
+                nurbs: Some(NurbsContainment {
+                    surface: nurbs.clone(),
+                    grid,
+                    plane: (normal, d),
+                    polygon,
+                    holes,
+                    margin: max_boundary_error.max(tol.linear * 10.0),
+                }),
+            });
+        }
     }
 
     // A sampled boundary box is not conservative for a curved surface patch.
     Ok(FaceContainment {
         bbox: None,
         planar: None,
+        nurbs: None,
     })
 }
 
@@ -395,9 +498,46 @@ fn check_edge_face_pairs(
                 continue;
             }
 
-            let crossings = match surface {
-                FaceSurface::Plane { normal, d } => {
+            let crossings = match (surface, &containments[face_idx].nurbs) {
+                (FaceSurface::Plane { normal, d }, _) => {
                     find_edge_plane_crossings(&curve, start_pos, end_pos, t0, t1, *normal, *d, tol)
+                }
+                // The unsigned sampler below only notices a crossing when a
+                // sample lands within tolerance of the surface, which a
+                // transversal crossing between two samples never does — so
+                // a peg's cap rim passing through a converted bar wall went
+                // unpaved and the rim never split. The carrier is a plane, so
+                // the algebraic plane crossing is exact.
+                //
+                // An edge that HUGS the carrier — never departing it on both
+                // sides beyond the band `fill_face_info` treats as lying in
+                // the face — is that phase's coincidence, not a crossing:
+                // a gridfinity cavity's rim riding a compartment wall's
+                // planar carrier paved the wall at every noise flip and left
+                // the cut with an edge shared by three faces.
+                (FaceSurface::Nurbs(_), Some(nurbs)) => {
+                    let (normal, d) = nurbs.plane;
+                    let signed = |pt: Point3| normal.dot(Vec3::new(pt.x(), pt.y(), pt.z())) - d;
+                    let chord = (end_pos - start_pos).length();
+                    let hug = (super::fill_face_info::ON_SURFACE_BAND_FACTOR * tol.linear).max(
+                        (super::fill_face_info::IN_FACE_MAX_DEVIATION_RATIO * chord)
+                            .min(super::fill_face_info::IN_FACE_MAX_DEVIATION_ABS),
+                    );
+                    let (mut above, mut below) = (0.0_f64, 0.0_f64);
+                    for i in 0..=N_SAMPLES {
+                        #[allow(clippy::cast_precision_loss)]
+                        let t = t0 + (t1 - t0) * (i as f64 / N_SAMPLES as f64);
+                        let sd = signed(curve.evaluate_with_endpoints(t, start_pos, end_pos));
+                        above = above.max(sd);
+                        below = below.min(sd);
+                    }
+                    if above > hug && -below > hug {
+                        find_edge_plane_crossings(
+                            &curve, start_pos, end_pos, t0, t1, normal, d, tol,
+                        )
+                    } else {
+                        Vec::new()
+                    }
                 }
                 _ => find_edge_surface_crossings(
                     &curve, start_pos, end_pos, t0, t1, surface, tol, grid,

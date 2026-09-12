@@ -24,7 +24,13 @@ use remus_topology::face::{FaceId, FaceSurface};
 use remus_topology::solid::SolidId;
 
 const DEFLECTION: f64 = 0.01;
-const HAMMER_HOLDER_VOLUME: f64 = 50_240.482_852_844_82;
+/// The fixture's tessellated volume at [`DEFLECTION`]. The freeform faces
+/// mesh through the non-planar CDT, whose interior grid now keeps straight
+/// directions isotropic with the curved ones; the mesh volume converges
+/// upward towards the exact integrator's 50 245.4 as the deflection shrinks
+/// (50 242.96 at 0.002), and this value sits 0.16 closer to it than the
+/// previous grid's 50 240.48.
+const HAMMER_HOLDER_VOLUME: f64 = 50_240.643_126_845_04;
 
 fn assert_valid(topo: &Topology, solid: SolidId) {
     let report = validate_solid(topo, solid, &ValidateOptions::default()).expect("validate solid");
