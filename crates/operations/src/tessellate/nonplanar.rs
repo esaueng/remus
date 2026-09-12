@@ -2723,6 +2723,38 @@ pub(super) fn tessellate_nonplanar_cdt(
             })
             .collect();
 
+        // A boolean can step a cylinder/cone wall's outer rim through three
+        // or more axial levels (e.g. a box top cutting a taller cylinder).
+        // The rulings are straight and need no v-refinement of their own, so
+        // the base grid above carries exactly one mid-v row — and the band
+        // between the step and the next rim then triangulates from boundary
+        // points alone, fanning long chord triangles from the step corners
+        // across the free arc. Seed interior samples at every rim level and
+        // between consecutive levels (see `stepped_rim_interior_points`) so
+        // no band between two levels ever triangulates unsupported. Plain
+        // two-level walls return `None` there, keeping their row count
+        // unchanged.
+        if matches!(
+            face_data.surface(),
+            FaceSurface::Cylinder(_) | FaceSurface::Cone(_)
+        ) && face_data.inner_wires().is_empty()
+            && let Some(extra) = stepped_rim_interior_points(
+                topo,
+                face_data,
+                (u_min, u_max, v_min, v_max),
+                &boundary_uv,
+                n_u,
+            )
+        {
+            validate_interior_grid_size(n_u, extra.len() / n_u.max(1) + 2)?;
+            for (u, v) in extra {
+                let point = Point2::new(u, v);
+                if point_in_polygon_2d(boundary_uv_ref, point) && !on_boundary(point) {
+                    interior_pts.push(to_cdt(u, v));
+                }
+            }
+        }
+
         if has_ellipse_wire {
             // An ellipse boundary bends through both parameter directions while
             // a cylinder/cone grid has only two rows in its straight ruling
@@ -3071,6 +3103,208 @@ fn project_via_pcurve(
 /// Evaluate a non-planar surface at `(u, v)` and return a 3D point.
 fn eval_surface_point(surface: &FaceSurface, u: f64, v: f64) -> Point3 {
     surface.evaluate(u, v).unwrap_or(Point3::new(0.0, 0.0, 0.0))
+}
+
+/// Interior `(u, v)` samples supporting the bands around a rim step on a
+/// cylinder/cone wall.
+///
+/// Returns `None` when the face is not a stepped-rim wall (fewer than three
+/// distinct axial rim-circle levels on the outer wire), so plain two-level
+/// walls keep exactly their existing mid-v row. Otherwise returns samples on
+/// full-width subdivision rows between consecutive rim levels — each band no
+/// taller than the base grid's u-column spacing — plus, under every boundary
+/// sample, the samples where its two neighboring grid columns meet those
+/// rows, so no step corner can fan across the arc. All samples stay strictly
+/// inside the face's own parameter box, so they never touch the boundary
+/// itself (the caller's `on_boundary` filter then keeps shared-edge
+/// watertightness unchanged).
+fn stepped_rim_interior_points(
+    topo: &Topology,
+    face_data: &remus_topology::face::Face,
+    uv_range: (f64, f64, f64, f64),
+    boundary_uv: &[(f64, f64)],
+    n_u: usize,
+) -> Option<Vec<(f64, f64)>> {
+    let (u_min, u_max, v_min, v_max) = uv_range;
+    let du = u_max - u_min;
+    let tolerance = remus_math::tolerance::Tolerance::default().linear;
+    let wire = topo.wire(face_data.outer_wire()).ok()?;
+    let mut levels = Vec::<f64>::new();
+    for oriented in wire.edges() {
+        let rim_v = match topo.edge(oriented.edge()).ok()?.curve() {
+            EdgeCurve::Circle(circle) => {
+                let center = circle.center();
+                match face_data.surface() {
+                    FaceSurface::Cylinder(cyl) => (center - cyl.origin()).dot(cyl.axis()),
+                    FaceSurface::Cone(cone) => cone.project_point(center).1,
+                    _ => return None,
+                }
+            }
+            _ => continue,
+        };
+        if !levels
+            .iter()
+            .any(|&existing| (existing - rim_v).abs() <= tolerance)
+        {
+            levels.push(rim_v);
+        }
+    }
+    if levels.len() < 3 {
+        return None;
+    }
+    levels.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let span = levels[levels.len() - 1] - levels[0];
+    if !span.is_finite() || span <= tolerance {
+        return None;
+    }
+    // Subdivide every inter-level band to the base grid's u density: no band
+    // may be taller than one u-column spacing, so no triangle spanning a
+    // band can be longer across the arc than it is tall.
+    #[allow(clippy::cast_precision_loss)]
+    let row_pitch = if n_u > 0 && du > 0.0 {
+        du / n_u as f64
+    } else {
+        span
+    };
+    let mut rows = Vec::with_capacity(4 * levels.len());
+    // Include each interior level's own line: the constrained boundary
+    // already carries vertices at the rim arcs, so coincident samples are
+    // dropped by the caller's `on_boundary` filter — but along a PARTIAL
+    // rim arc the same row supplies off-rim supports at that exact height,
+    // so the band below a step corner triangulates between two nearby
+    // supported lines instead of fanning from the corner alone. Flank each
+    // interior level just above and below it as well, so the rows hugging a
+    // step sit a fraction of the neighboring gap away; a level flush with
+    // the box face contributes its inside flank only.
+    for (k, &level) in levels.iter().enumerate() {
+        if level > v_min + tolerance && level < v_max - tolerance {
+            rows.push(level);
+        }
+        let gap_below = if k > 0 {
+            level - levels[k - 1]
+        } else {
+            f64::INFINITY
+        };
+        let gap_above = if k + 1 < levels.len() {
+            levels[k + 1] - level
+        } else {
+            f64::INFINITY
+        };
+        let flank = gap_below.min(gap_above) / 8.0;
+        if !flank.is_finite() || flank <= tolerance {
+            continue;
+        }
+        for v in [level - flank, level + flank] {
+            if v > v_min + tolerance && v < v_max - tolerance {
+                rows.push(v);
+            }
+        }
+    }
+    for pair in levels.windows(2) {
+        let (lo, hi) = (pair[0], pair[1]);
+        let width = hi - lo;
+        if !width.is_finite() || width <= tolerance {
+            continue;
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let want = ((width / row_pitch).ceil().max(2.0) as usize).max(2);
+        for j in 1..want {
+            #[allow(clippy::cast_precision_loss)]
+            let v = lo + width * (j as f64 / want as f64);
+            if v > v_min + tolerance && v < v_max - tolerance {
+                rows.push(v);
+            }
+        }
+    }
+    rows.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    rows.dedup_by(|a, b| (*a - *b).abs() <= tolerance);
+    // Hard cap: at most a handful of subdivision rows per inter-level band,
+    // applied per band so thinning one tall band never removes another
+    // band's rim-flanking rows — those are what pin the step corners. The
+    // caller enforces the same overall work bound.
+    let mut capped = Vec::with_capacity(rows.len());
+    for pair in levels.windows(2) {
+        let (lo, hi) = (pair[0], pair[1]);
+        let mut band: Vec<f64> = rows
+            .iter()
+            .copied()
+            .filter(|&v| v > lo - tolerance && v < hi + tolerance)
+            .collect();
+        if band.len() > 6 {
+            let stride = band.len().div_ceil(6);
+            let mut thinned = Vec::with_capacity(6);
+            for (i, &v) in band.iter().enumerate() {
+                if i % stride == 0 && thinned.len() < 6 {
+                    thinned.push(v);
+                }
+            }
+            band = thinned;
+        }
+        capped.extend(band);
+    }
+    capped.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    capped.dedup_by(|a, b| (*a - *b).abs() <= tolerance);
+    rows = capped;
+    if rows.is_empty() {
+        return None;
+    }
+    // Pin each step corner's neighborhood columns: at every outer-wire
+    // vertex, take the samples where the two NEIGHBORING base-grid columns
+    // meet the rows (not the corner's own half-snapped column — the corner
+    // sits between columns, and its own rounded column may fall outside the
+    // polygon). Without them a step corner fans to the nearest supported
+    // ROW — several columns away — and that diagonal cuts the arc.
+    //
+    // Columns are read off the wire's boundary samples (`boundary_uv`,
+    // parallel to `boundary_3d`), NOT re-projected: re-projection wraps to
+    // [0, TAU) while the chart continues a full turn past the seam, so a
+    // corner at the chart's far edge would pin columns a turn away from the
+    // boundary the CDT actually walks through.
+    let boundary_us: Vec<f64> = boundary_uv.iter().map(|&(u, _)| u).collect();
+    let mut corner_us = Vec::new();
+    // Every boundary sample is a potential fan apex: pin its two
+    // neighboring grid columns (floor/ceil), not just wire vertices — a
+    // step corner is one sample among hundreds, and any of them can anchor
+    // a long fan when the rows above are sparse.
+    for &u_corner in &boundary_us {
+        if !u_corner.is_finite() || du <= 0.0 {
+            continue;
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let col_f = (u_corner - u_min) / du * n_u as f64;
+        for col in [col_f.floor(), col_f.ceil()] {
+            #[allow(clippy::cast_precision_loss)]
+            let u = u_min + du * col / n_u as f64;
+            if u > u_min && u < u_max {
+                corner_us.push(u);
+            }
+        }
+    }
+    corner_us.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    corner_us.dedup_by(|a, b| (*a - *b).abs() <= tolerance);
+
+    let mut points = Vec::with_capacity(rows.len() * n_u.max(1));
+    if n_u > 1 {
+        for &v in &rows {
+            for iu in 1..n_u {
+                #[allow(clippy::cast_precision_loss)]
+                let u = u_min + du * (iu as f64 / n_u as f64);
+                points.push((u, v));
+            }
+        }
+        for &u in &corner_us {
+            for &v in &rows {
+                points.push((u, v));
+            }
+        }
+    } else {
+        for &u in &corner_us {
+            for &v in &rows {
+                points.push((u, v));
+            }
+        }
+    }
+    (!points.is_empty()).then_some(points)
 }
 
 /// Estimate the effective radius of a surface for sample density calculation.
