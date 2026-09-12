@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789226444410,
+  "lastUpdate": 1789229644707,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -29923,6 +29923,240 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 58278,
             "range": "± 125",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ca91b956cdde99f78f048dd32b656b559ad14e7d",
+          "message": "fix(blend): complete B4 planar walking-trimmer gaps (#398)\n\n* fix(blend): notch split end-cap corners over two or three edges\n\nThe walking fillet's end-cap notch only replaced a two-edge corner path.\nA concave-notch contact splits the corner edge, so the cap reaches the\ncross-section arc endpoints over three straight edges; the third edge\nwas left as a use-1 stub alongside the arc, opening the shell. Scan\ntwo- then three-edge straight paths, keep the strictly-interior\nendpoint guard (the path end is va/vb by construction), and refuse a\nmatch that would duplicate a surviving direct edge as a degenerate\nlens. Unit coverage pins the two- and three-edge notches, the\nendpoint/lens refusals, and the curved-path refusal.\n\n* fix(blend): share trimmer contact vertices and scale the parallel gate\n\nContact splits on shared boundary edges reuse one vertex per position\ninstead of minting coincident duplicates, so the two wall trims and the\ncap wire meet at one id per contact point and the end-cap notch can share\nthe arc. The line/segment parallel gate keys on the sine of the crossing\nangle (scaled by direction magnitudes) instead of an absolute epsilon on\nthe signed area, so a near-tangent ridge contact (~1e-2 rad off its wall)\nstill intersects instead of yielding zero hits and TrimmingFailure. Truly\nparallel and degenerate directions still report no crossing.\n\n* fix(blend): close stitched end caps on split corners with shared arcs\n\nstitch_end only replaced a consecutive two-edge corner pair, and scanned\nevery wire in the arena. On a concave notch the cap reaches the arc over\na three-edge split-corner path, and the trimmer-rewritten stale profile\nwire presents the same run first in arena order and swallows the arc —\nleaving the bottom cap open with use-1 stubs while the top closes.\n\nAccept head-to-tail runs of up to four straight edges through the spine\nend, require the run to lie in the arc's own plane (wall vertices leave\nit immediately), and restrict the scan to live face-boundary wires of the\nsolid under construction plus its trimmed replacements. Fully reverse the\nblend loop (order + flags) when the wall is reversed instead of flipping\nonly the flag, so the shared flanks still oppose exactly while the\ngeometric normal points outward — a bare flag flip validates closed but\nnon-orientable. Read the convexity probe from the trimmed replacement,\nnot the pre-trim face id.\n\nUnit test pins the stale-wire race with a decoy-competing wire in first\narena position (fails with the live gate neutered).\n\n* test(operations): enable concave notch fillet/chamfer pins\n\nThe walking-trimmer end-cap closure now handles the split-corner caps and\nthe shared-vertex trims these geometries produce, so both formerly-ignored\nconcave witnesses pass: the notch fillet adds only its sliver and the\nnotch chamfer adds only its sliver, each watertight with no over-shared\nedges.\n\n* test(blend): pin traversal-side contact direction on a concave corner\n\nmaterial_contact_direction is the chamfer external-tangent fix: on a\nconcave edge the bisector projection lands on the faces' extensions, so\nthe contact side must come from the face's own wire traversal instead.\nCover it directly with a two-wall reflex fixture in extrude winding\n(head-to-tail closure asserted): both walls' traversal sides point into\nthe wall and oppose the bisector-projected external branch, and a face\nwithout the spine edge yields None so the caller falls back.\n\n* docs(roadmap): mark B4 planar trimmer complete, curved trim as M5 remainder\n\nThe four named planar gaps are implemented with pins green; the two e2e\nfillet fixtures remain typed refusals rooted in curved-face trimming\n(second-pass endpoints 0.5 off-boundary, peak-rim endpoints one radius\noff), which is outside the four planar gaps.\n\n* fix(blend): repair planar trimmer CI qualification (#400)\n\n* fix(blend): satisfy clippy in planar trimmer tests\n\n* test(blend): qualify supported concave torture case",
+          "timestamp": "2026-09-12T12:06:28-04:00",
+          "tree_id": "c676ff69b8c20f7a15a3bc79c12180376654e933",
+          "url": "https://github.com/esaueng/remus/commit/ca91b956cdde99f78f048dd32b656b559ad14e7d"
+        },
+        "date": 1789229643882,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1266168,
+            "range": "± 14602",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1366232,
+            "range": "± 17979",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 27077,
+            "range": "± 976",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 11968665,
+            "range": "± 84447",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 11930662,
+            "range": "± 22058",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 11473656,
+            "range": "± 145386",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 1085389,
+            "range": "± 8291",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 17867047,
+            "range": "± 42541",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 33006044,
+            "range": "± 391465",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 39,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 108,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 65,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 220,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 159,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 767,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 154,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 356,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 213,
+            "range": "± 7",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 518,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 726,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 3211,
+            "range": "± 7",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 16,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 38,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 62,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 63,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 563770,
+            "range": "± 2614",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 11221992,
+            "range": "± 89496",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 169630,
+            "range": "± 477",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 627658,
+            "range": "± 1253",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 130422,
+            "range": "± 584",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 927786,
+            "range": "± 1707",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 10716066,
+            "range": "± 60813",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 801877,
+            "range": "± 2108",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 1175300,
+            "range": "± 7405",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 86719,
+            "range": "± 344",
             "unit": "ns/iter"
           }
         ]
