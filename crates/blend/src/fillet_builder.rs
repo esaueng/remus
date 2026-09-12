@@ -471,7 +471,7 @@ impl<'a> FilletBuilder<'a> {
             // Preserve the fork's stitched planar path when it can close the
             // spine ends directly; otherwise reuse the upstream trimmer
             // contact edges and notch the remaining end caps below.
-            match stitch_planar_blend(topo, stripe, tr1, tr2, &face_replacements) {
+            match stitch_planar_blend(topo, self.solid, stripe, tr1, tr2, &face_replacements) {
                 Ok(Some(mut faces)) => {
                     blend_face_origins
                         .extend(faces.iter().map(|&f| (f, vec![stripe.face1, stripe.face2])));
@@ -575,6 +575,42 @@ impl<'a> FilletBuilder<'a> {
     }
 }
 
+/// Whether a wire lies in the arc edge's plane: every vertex of every use
+/// sits within one blend radius of the plane through the arc's start point
+/// spanned by its circle normal (`make_end_arc` always mints circles, so a
+/// line arc refuses here).
+///
+/// `stitch_end` scans every wire in the arena for a corner run through the
+/// spine-end vertex; without a plane gate it matches wall wires that merely
+/// pass through the same vertices and splices the end arc into the wrong
+/// face. The radius bounds how far cap material reaches from the section
+/// plane; wall vertices a full spine length away exceed it by orders of
+/// magnitude.
+fn wire_in_arc_plane(
+    topo: &Topology,
+    oes: &[OrientedEdge],
+    arc: EdgeId,
+) -> Result<bool, BlendError> {
+    let arc_edge = topo.edge(arc)?;
+    let EdgeCurve::Circle(circle) = arc_edge.curve() else {
+        return Ok(false);
+    };
+    let normal = circle.normal();
+    let start_point = topo.vertex(arc_edge.start())?.point();
+    let radius = circle.radius();
+    for oe in oes {
+        let edge = topo.edge(oe.edge())?;
+        for vid in [edge.start(), edge.end()] {
+            let point = topo.vertex(vid)?.point();
+            let distance = (point - start_point).dot(normal).abs();
+            if distance > radius + 1e-7 {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
+}
+
 /// Find how `edge` is traversed (forward flag) in `face`'s outer wire.
 fn wire_traversal_of(topo: &Topology, face: FaceId, edge: EdgeId) -> Option<bool> {
     let wire_id = topo.face(face).ok()?.outer_wire();
@@ -660,17 +696,23 @@ fn stitch_end(
     c1: VertexId,
     c2: VertexId,
     cap_normal: Vec3,
+    live: &std::collections::HashSet<remus_topology::wire::WireId>,
 ) -> Result<Option<FaceId>, BlendError> {
-    // --- Case A: a single wire traverses c → v → c' consecutively. ---
+    // --- Case A: a wire runs c → … → v → … → c' through the spine end. ---
+    // A concave-notch contact splits the corner edge, so the cap may reach
+    // the arc endpoints over up to four consecutive edges. Only live
+    // face-boundary wires are eligible: the trimmer's `propagate_split`
+    // rewrites dangling sketch wires alongside face wires, so a stale
+    // profile wire can present the same corner run and would otherwise win
+    // the arena-order race and swallow the arc. The run must also lie in the
+    // arc's own plane, or wall wires passing through the same vertices win
+    // the same race and corrupt the wall.
     let wire_ids: Vec<_> = topo.wires().iter().map(|(id, _)| id).collect();
-    let mut case_a: Option<(
-        remus_topology::wire::WireId,
-        usize,
-        usize,
-        VertexId,
-        VertexId,
-    )> = None;
+    let mut case_a: Option<(remus_topology::wire::WireId, Vec<usize>, VertexId, VertexId)> = None;
     'outer: for &wid in &wire_ids {
+        if !live.contains(&wid) {
+            continue;
+        }
         let wire = topo.wire(wid)?;
         let oes = wire.edges();
         if oes
@@ -679,32 +721,91 @@ fn stitch_end(
         {
             continue;
         }
+        if !wire_in_arc_plane(topo, oes, arc)? {
+            continue;
+        }
         let n = oes.len();
-        for i in 0..n {
-            let j = (i + 1) % n;
-            let ei = topo.edge(oes[i].edge())?;
-            let ej = topo.edge(oes[j].edge())?;
-            if oes[i].oriented_end(ei) == v_id && oes[j].oriented_start(ej) == v_id {
-                let xa = oes[i].oriented_start(ei);
-                let yb = oes[j].oriented_end(ej);
-                if (xa == c1 && yb == c2) || (xa == c2 && yb == c1) {
-                    case_a = Some((wid, i, j, xa, yb));
-                    break 'outer;
+        if n < 2 {
+            continue;
+        }
+        for start in 0..n {
+            // The run must be a head-to-tail chain; collect at most four
+            // edges so a full-wire match can never consume the whole loop.
+            // (Four covers two stacked split corners; the pinned concave
+            // notch needs three.)
+            let mut run: Vec<usize> = vec![start];
+            while run.len() < 4 {
+                let next = (start + run.len()) % n;
+                let prev = (start + run.len() - 1) % n;
+                let e_prev = topo.edge(oes[prev].edge())?;
+                let e_next = topo.edge(oes[next].edge())?;
+                if oes[prev].oriented_end(e_prev) != oes[next].oriented_start(e_next) {
+                    break;
+                }
+                // Interior joints must be genuine corners, not the arc's own
+                // endpoints (which would fold the wire back on itself). The
+                // path's end vertex is `va`/`vb` by construction and is
+                // checked below.
+                let joint = oes[prev].oriented_end(e_prev);
+                if run.len() > 1 && (joint == c1 || joint == c2) {
+                    break;
+                }
+                run.push(next);
+                // Stop at the first spine-end vertex: the run must pass
+                // through `v_id`, not merely start near it.
+                if joint == v_id {
+                    break;
                 }
             }
+            if run.len() < 2 || run.len() >= n {
+                continue;
+            }
+            let first_edge = topo.edge(oes[run[0]].edge())?;
+            let last_edge = topo.edge(oes[run[run.len() - 1]].edge())?;
+            let path_start = oes[run[0]].oriented_start(first_edge);
+            let path_end = oes[run[run.len() - 1]].oriented_end(last_edge);
+            if !((path_start == c1 && path_end == c2) || (path_start == c2 && path_end == c1)) {
+                continue;
+            }
+            if !run.iter().any(|&pos| {
+                let edge = topo.edge(oes[pos].edge());
+                let Ok(edge) = edge else { return false };
+                oes[pos].oriented_start(edge) == v_id || oes[pos].oriented_end(edge) == v_id
+            }) {
+                continue;
+            }
+            // Every consumed edge must be straight: a curved wall or an
+            // already-stitched arc is not a sharp corner awaiting closure.
+            let mut all_straight = true;
+            for &pos in &run {
+                let Ok(edge) = topo.edge(oes[pos].edge()) else {
+                    all_straight = false;
+                    break;
+                };
+                if !matches!(edge.curve(), EdgeCurve::Line) {
+                    all_straight = false;
+                    break;
+                }
+            }
+            if !all_straight {
+                continue;
+            }
+            let xa = path_start;
+            let yb = path_end;
+            case_a = Some((wid, run, xa, yb));
+            break 'outer;
         }
     }
 
-    if let Some((wid, i, j, xa, _yb)) = case_a {
+    if let Some((wid, run, xa, _yb)) = case_a {
         let arc_forward = topo.edge(arc)?.start() == xa;
         let oes = topo.wire(wid)?.edges().to_vec();
-        let mut new_edges = Vec::with_capacity(oes.len() - 1);
+        let in_run = |pos: usize| run.contains(&pos);
+        let mut new_edges = Vec::with_capacity(oes.len() - run.len() + 1);
         for (pos, oe) in oes.iter().enumerate() {
-            if pos == i {
+            if pos == run[0] {
                 new_edges.push(OrientedEdge::new(arc, arc_forward));
-            } else if pos == j {
-                // consumed by the arc
-            } else {
+            } else if !in_run(pos) {
                 new_edges.push(*oe);
             }
         }
@@ -793,6 +894,7 @@ fn stitch_end(
 #[allow(clippy::similar_names)]
 fn stitch_planar_blend(
     topo: &mut Topology,
+    solid: SolidId,
     stripe: &Stripe,
     tr1: &trimmer::TrimResult,
     tr2: &trimmer::TrimResult,
@@ -965,27 +1067,27 @@ fn stitch_planar_blend(
         return Ok(None);
     };
 
-    // Blend wall wire: ce1, arc, ce2, arc.
+    // Blend wall wire: ce1, arc, ce2, arc. The contacts run opposite to
+    // their trimmed walls so that, with an unreversed face, every shared
+    // flank opposes exactly.
     let fwd_between = |topo: &Topology, e: EdgeId, from: VertexId| -> Result<bool, BlendError> {
         Ok(topo.edge(e)?.start() == from)
     };
-    let wire = Wire::new(
-        vec![
-            OrientedEdge::new(ce1, !f1_fwd),
-            OrientedEdge::new(arc_at_k1, fwd_between(topo, arc_at_k1, b1_to)?),
-            OrientedEdge::new(ce2, !f2_fwd),
-            OrientedEdge::new(arc_at_other, fwd_between(topo, arc_at_other, b2_to)?),
-        ],
-        true,
-    )?;
-    let wire_id = topo.add_wire(wire);
+    let mut loop_edges = vec![
+        OrientedEdge::new(ce1, !f1_fwd),
+        OrientedEdge::new(arc_at_k1, fwd_between(topo, arc_at_k1, b1_to)?),
+        OrientedEdge::new(ce2, !f2_fwd),
+        OrientedEdge::new(arc_at_other, fwd_between(topo, arc_at_other, b2_to)?),
+    ];
 
     // Orient the blend wall: outward is radially away from the ball center
-    // for a convex edge, toward it for a concave edge.
+    // for a convex edge, toward it for a concave edge. Read the side faces
+    // from the trimmed replacements (the current arena state), not the
+    // stripe's pre-trim face ids.
     let secm = &stripe.sections[stripe.sections.len() / 2];
-    let f1_face = topo.face(stripe.face1)?;
-    let n1_stored = f1_face.surface().normal(0.0, 0.0);
-    let n1_out = if f1_face.is_reversed() {
+    let f1_trimmed = topo.face(f1_now)?;
+    let n1_stored = f1_trimmed.surface().normal(0.0, 0.0);
+    let n1_out = if f1_trimmed.is_reversed() {
         -n1_stored
     } else {
         n1_stored
@@ -999,6 +1101,24 @@ fn stitch_planar_blend(
         Some((u, v)) => stripe.surface.normal(u, v).dot(desired) < 0.0,
         None => false,
     };
+
+    // A reversed face flips every effective use: the loop above only
+    // opposes the walls when the face stays unreversed. Fully reverse the
+    // loop (order + flags) instead of just setting the flag, so the shared
+    // flanks still oppose exactly while the geometric normal points
+    // outward. A bare flag flip without rewinding keeps the patch but
+    // agrees with the walls on every flank (a non-orientable shell that
+    // still validates closed); rewinding without the flag would integrate
+    // the complement patch.
+    if reversed {
+        loop_edges = loop_edges
+            .iter()
+            .rev()
+            .map(|oe| OrientedEdge::new(oe.edge(), !oe.is_forward()))
+            .collect();
+    }
+    let wire = Wire::new(loop_edges, true)?;
+    let wire_id = topo.add_wire(wire);
 
     let mut blend_face = Face::new(wire_id, Vec::new(), stripe.surface.clone());
     blend_face.set_reversed(reversed);
@@ -1024,6 +1144,26 @@ fn stitch_planar_blend(
             1 - k1,
         ),
     ];
+    // Live boundary wires: the input solid's face boundaries plus the
+    // trimmed replacements built above. Anything else (notably the stale
+    // 2D profile wire the extruded solid was built from, which
+    // `propagate_split` rewrites in place) must not compete for the arc.
+    let live: std::collections::HashSet<remus_topology::wire::WireId> = {
+        let mut set = std::collections::HashSet::new();
+        let solid_faces = remus_topology::explorer::solid_faces(topo, solid).unwrap_or_default();
+        for face_id in solid_faces {
+            // Current boundary: the trimmed replacement when one exists.
+            let current = face_replacements.get(&face_id).copied().unwrap_or(face_id);
+            let Ok(current_face) = topo.face(current) else {
+                continue;
+            };
+            set.insert(current_face.outer_wire());
+            for &inner in current_face.inner_wires() {
+                set.insert(inner);
+            }
+        }
+        set
+    };
     for &(v_end, arc, arc_from, cap_normal, k) in &ends {
         if let Some(patch) = stitch_end(
             topo,
@@ -1034,6 +1174,7 @@ fn stitch_planar_blend(
             c1[k],
             c2[k],
             cap_normal,
+            &live,
         )? {
             faces.push(patch);
         }
@@ -2784,6 +2925,139 @@ mod tests {
             edge.curve()
                 .evaluate_with_endpoints(f64::midpoint(range.0, range.1), start, end);
         assert!((midpoint - selected_midpoint).length() < 1e-12);
+    }
+
+    #[test]
+    fn stitch_end_ignores_a_stale_non_face_wire() {
+        // The trimmer's `propagate_split` rewrites the stale 2D profile wire
+        // alongside face wires, so it can present the same corner run and win
+        // the arena-order race: in production the sketch wire predates the cap
+        // wires. `stitch_end` must only consider wires bound to the solid
+        // under construction. The decoy lead-in keeps the stale run below the
+        // whole-loop veto so it genuinely competes (verified by neutering the
+        // gate and watching this test fail).
+        let mut topo = Topology::new();
+        // Shared corner vertices, minted first so the stale wire below
+        // precedes every live wire in arena order.
+        let va = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
+        let vmid = topo.add_vertex(Vertex::new(Point3::new(2.0, 0.0, 0.0), 1e-7));
+        let vb = topo.add_vertex(Vertex::new(Point3::new(2.0, 1.0, 0.0), 1e-7));
+        // Stale doppelganger first: same vertex ids, own edges, no face.
+        let decoy_vertex = topo.add_vertex(Vertex::new(Point3::new(-1.0, -1.0, 0.0), 1e-7));
+        let stale_decoy = topo.add_edge(Edge::new(decoy_vertex, va, EdgeCurve::Line));
+        let stale_edge_a = topo.add_edge(Edge::new(va, vmid, EdgeCurve::Line));
+        let stale_edge_b = topo.add_edge(Edge::new(vmid, vb, EdgeCurve::Line));
+        let stale_wire = topo.add_wire(
+            Wire::new(
+                vec![
+                    OrientedEdge::new(stale_decoy, true),
+                    OrientedEdge::new(stale_edge_a, true),
+                    OrientedEdge::new(stale_edge_b, true),
+                ],
+                false,
+            )
+            .unwrap(),
+        );
+        // Live cap face on z = 0 whose wire runs
+        // (0,0,0) -> va -> vmid -> vb -> (0,1,0) -> close.
+        let v0 = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
+        let v3 = topo.add_vertex(Vertex::new(Point3::new(0.0, 1.0, 0.0), 1e-7));
+        let live_edge_0 = topo.add_edge(Edge::new(v0, va, EdgeCurve::Line));
+        let live_edge_1 = topo.add_edge(Edge::new(va, vmid, EdgeCurve::Line));
+        let live_edge_2 = topo.add_edge(Edge::new(vmid, vb, EdgeCurve::Line));
+        let live_edge_3 = topo.add_edge(Edge::new(vb, v3, EdgeCurve::Line));
+        let live_edge_4 = topo.add_edge(Edge::new(v3, v0, EdgeCurve::Line));
+        let wire_id = topo.add_wire(
+            Wire::new(
+                vec![
+                    OrientedEdge::new(live_edge_0, true),
+                    OrientedEdge::new(live_edge_1, true),
+                    OrientedEdge::new(live_edge_2, true),
+                    OrientedEdge::new(live_edge_3, true),
+                    OrientedEdge::new(live_edge_4, true),
+                ],
+                true,
+            )
+            .unwrap(),
+        );
+        let _face_id = topo.add_face(Face::new(
+            wire_id,
+            Vec::new(),
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+        // Production-style circle arc over the live corner in the cap plane.
+        let arc_mid = Point3::new(
+            f64::midpoint(
+                topo.vertex(va).unwrap().point().x(),
+                topo.vertex(vb).unwrap().point().x(),
+            ),
+            f64::midpoint(
+                topo.vertex(va).unwrap().point().y(),
+                topo.vertex(vb).unwrap().point().y(),
+            ),
+            0.0,
+        );
+        let corner_point = topo.vertex(vmid).unwrap().point();
+        let arc_center = Point3::new(
+            2.0 * arc_mid.x() - corner_point.x(),
+            2.0 * arc_mid.y() - corner_point.y(),
+            0.0,
+        );
+        let arc_radius = (topo.vertex(va).unwrap().point() - arc_center).length();
+        let arc_circle =
+            remus_math::curves::Circle3D::new(arc_center, Vec3::new(0.0, 0.0, 1.0), arc_radius)
+                .unwrap();
+        let va_point = topo.vertex(va).unwrap().point();
+        let vb_point = topo.vertex(vb).unwrap().point();
+        let start_parameter = arc_circle.project(va_point);
+        let end_parameter = start_parameter
+            + (arc_circle.project(vb_point) - start_parameter).rem_euclid(std::f64::consts::TAU);
+        let arc = crate::builder_utils::add_certified_curve_edge(
+            &mut topo,
+            va,
+            vb,
+            EdgeCurve::Circle(arc_circle),
+            (start_parameter, end_parameter),
+        )
+        .unwrap();
+        // Spine edge far away so the exclusion never fires on the test wires.
+        let spine_vertex = topo.add_vertex(Vertex::new(Point3::new(9.0, 9.0, 0.0), 1e-7));
+        let spine_edge = topo.add_edge(Edge::new(spine_vertex, spine_vertex, EdgeCurve::Line));
+        let mut live = std::collections::HashSet::new();
+        live.insert(wire_id);
+        let patched = stitch_end(
+            &mut topo,
+            &[spine_edge],
+            vmid,
+            arc,
+            va,
+            va,
+            vb,
+            Vec3::new(0.0, 0.0, -1.0),
+            &live,
+        )
+        .unwrap();
+        assert!(
+            patched.is_none(),
+            "a two-edge run through a third vertex replaces in place without a patch face"
+        );
+        assert_eq!(
+            topo.wire(stale_wire).unwrap().edges().len(),
+            3,
+            "the stale wire must be untouched"
+        );
+        // And the live wire must have taken the arc.
+        assert!(
+            topo.wire(wire_id)
+                .unwrap()
+                .edges()
+                .iter()
+                .any(|oe| oe.edge() == arc),
+            "the live cap wire must carry the arc"
+        );
     }
 
     #[test]

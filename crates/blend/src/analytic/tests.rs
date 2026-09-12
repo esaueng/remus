@@ -5583,3 +5583,198 @@ fn plane_cone_chamfer_concave_emits_chamfer_cone() {
         "cone-side contact must lie on chamfer cone: project→eval gave {on_surf_cone:?}, want {want_cone:?}"
     );
 }
+
+/// Build a concave two-wall corner around a vertical spine edge at `tip`,
+/// with each wall running outward to `outer1`/`outer2` (all at `z = 0`, walls
+/// extruded implicitly by the spine direction). Returns the spine plus the
+/// two wall faces whose wires traverse the spine edge, so
+/// `material_contact_direction` resolves the into-material side from
+/// traversal rather than the bisector projection.
+///
+/// The walls use the reflex-notch numbers: inward normals
+/// `n1 = (-0.7071,-0.7071,0)`, `n2 = (0.7071,-0.7071,0)`, where the
+/// bisector-projected contact direction lands on the faces' extensions
+/// (the external tangent branch).
+fn make_concave_wall_pair(
+    topo: &mut Topology,
+    tip: Point3,
+    outer1: Point3,
+    outer2: Point3,
+    top: Point3,
+) -> (Spine, FaceId, FaceId, Vec3, Vec3) {
+    let spine_bot = topo.add_vertex(Vertex::new(tip, 1e-7));
+    let spine_top = topo.add_vertex(Vertex::new(top, 1e-7));
+    let spine_edge = topo.add_edge(authoritative_edge(spine_bot, spine_top, EdgeCurve::Line));
+    let spine = Spine::from_single_edge(topo, spine_edge).unwrap();
+
+    // Wall 1: outer1 -> tip at the base (extrude order), spine traversed
+    // forward tip -> top, then back along the top and side reversed.
+    let w1_outer_bot = topo.add_vertex(Vertex::new(outer1, 1e-7));
+    let w1_outer_top = topo.add_vertex(Vertex::new(
+        Point3::new(outer1.x(), outer1.y(), top.z()),
+        1e-7,
+    ));
+    let w1_base = topo.add_edge(authoritative_edge(w1_outer_bot, spine_bot, EdgeCurve::Line));
+    let w1_side = topo.add_edge(authoritative_edge(
+        w1_outer_bot,
+        w1_outer_top,
+        EdgeCurve::Line,
+    ));
+    let w1_top = topo.add_edge(authoritative_edge(w1_outer_top, spine_top, EdgeCurve::Line));
+    let wall1_wire = topo.add_wire(
+        Wire::new(
+            vec![
+                OrientedEdge::new(w1_base, true),
+                OrientedEdge::new(spine_edge, true),
+                OrientedEdge::new(w1_top, false),
+                OrientedEdge::new(w1_side, false),
+            ],
+            true,
+        )
+        .unwrap(),
+    );
+    let wall1 = topo.add_face(Face::new(
+        wall1_wire,
+        vec![],
+        FaceSurface::Plane {
+            normal: Vec3::new(0.707_106_781_186_547_5, 0.707_106_781_186_547_5, 0.0),
+            d: 2.828_427_124_746_19,
+        },
+    ));
+
+    // Wall 2: mirrored.
+    let w2_outer_bot = topo.add_vertex(Vertex::new(outer2, 1e-7));
+    let w2_outer_top = topo.add_vertex(Vertex::new(
+        Point3::new(outer2.x(), outer2.y(), top.z()),
+        1e-7,
+    ));
+    let w2_base = topo.add_edge(authoritative_edge(w2_outer_bot, spine_bot, EdgeCurve::Line));
+    let w2_side = topo.add_edge(authoritative_edge(
+        w2_outer_bot,
+        w2_outer_top,
+        EdgeCurve::Line,
+    ));
+    let w2_top = topo.add_edge(authoritative_edge(w2_outer_top, spine_top, EdgeCurve::Line));
+    // Production order mirrored: the spine is traversed reversed here
+    // (forward on wall 1), closing outer -> outer-top -> tip-top -> tip.
+    let wall2_wire = topo.add_wire(
+        Wire::new(
+            vec![
+                OrientedEdge::new(w2_side, true),
+                OrientedEdge::new(w2_top, true),
+                OrientedEdge::new(spine_edge, false),
+                OrientedEdge::new(w2_base, false),
+            ],
+            true,
+        )
+        .unwrap(),
+    );
+    let wall2 = topo.add_face(Face::new(
+        wall2_wire,
+        vec![],
+        FaceSurface::Plane {
+            normal: Vec3::new(-0.707_106_781_186_547_5, 0.707_106_781_186_547_5, 0.0),
+            d: -4.242_640_687_119_285,
+        },
+    ));
+
+    let n1 = Vec3::new(-0.707_106_781_186_547_5, -0.707_106_781_186_547_5, 0.0);
+    let n2 = Vec3::new(0.707_106_781_186_547_5, -0.707_106_781_186_547_5, 0.0);
+    // The traversal side is only meaningful on connected wires; pin both loops.
+    for wire_id in [wall1_wire, wall2_wire] {
+        let wire = topo.wire(wire_id).unwrap();
+        let oes = wire.edges();
+        for i in 0..oes.len() {
+            let current = topo.edge(oes[i].edge()).unwrap();
+            let next = topo.edge(oes[(i + 1) % oes.len()].edge()).unwrap();
+            assert_eq!(
+                oes[i].oriented_end(current),
+                oes[(i + 1) % oes.len()].oriented_start(next),
+                "fixture wire must close head-to-tail"
+            );
+        }
+    }
+    (spine, wall1, wall2, n1, n2)
+}
+
+/// The traversal side points into the wall on a concave corner, where the
+/// bisector projection selects the external tangent branch.
+///
+/// On the reflex notch the bisector-projected contact direction is
+/// `(0.7071,-0.7071,0)` on wall 1 — pointing away from the wall face, which
+/// runs tip → `(4,0)` i.e. `(-0.7071,+0.7071,0)`. The wire-traversal side
+/// must return the wall direction instead.
+#[test]
+fn concave_wall_contact_direction_follows_traversal_not_bisector() {
+    let mut topo = Topology::new();
+    let (spine, wall1, wall2, n1, n2) = make_concave_wall_pair(
+        &mut topo,
+        Point3::new(5.0, -1.0, 0.0),
+        Point3::new(4.0, 0.0, 0.0),
+        Point3::new(6.0, 0.0, 0.0),
+        Point3::new(5.0, -1.0, 8.0),
+    );
+    let tangent = spine.tangent(&topo, 0.0).unwrap();
+
+    for (wall, normal, want) in [
+        (
+            wall1,
+            n1,
+            Vec3::new(-0.707_106_781_186_547_5, 0.707_106_781_186_547_5, 0.0),
+        ),
+        (
+            wall2,
+            n2,
+            Vec3::new(0.707_106_781_186_547_5, 0.707_106_781_186_547_5, 0.0),
+        ),
+    ] {
+        let dir = material_contact_direction(&topo, wall, &spine, normal, tangent)
+            .expect("spine edge is in the wall wire");
+        let alignment = dir.dot(want);
+        assert!(
+            alignment > 1.0 - 1e-12,
+            "wall contact direction {dir:?} must point into the wall {want:?}"
+        );
+        // And it must disagree with the bisector projection (the external
+        // branch) on this concave corner.
+        let (bisector, _) = section_basis(n1, n2, tangent);
+        let projected = compute_contact_direction(normal, bisector);
+        assert!(
+            dir.dot(projected) < 0.0,
+            "traversal side {dir:?} must oppose the external branch {projected:?} on a concave edge"
+        );
+    }
+}
+
+/// A face that never references the spine edge has no traversal side: the
+/// caller falls back to the bisector projection.
+#[test]
+fn contact_direction_without_spine_in_wire_returns_none() {
+    let mut topo = Topology::new();
+    let (spine, _, _, n1, _) = make_concave_wall_pair(
+        &mut topo,
+        Point3::new(5.0, -1.0, 0.0),
+        Point3::new(4.0, 0.0, 0.0),
+        Point3::new(6.0, 0.0, 0.0),
+        Point3::new(5.0, -1.0, 8.0),
+    );
+    let tangent = spine.tangent(&topo, 0.0).unwrap();
+    // Fresh face sharing no edge with the spine.
+    let v0 = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
+    let v1 = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
+    let other = topo.add_edge(authoritative_edge(v0, v1, EdgeCurve::Line));
+    let elsewhere_wire =
+        topo.add_wire(Wire::new(vec![OrientedEdge::new(other, true)], false).unwrap());
+    let elsewhere = topo.add_face(Face::new(
+        elsewhere_wire,
+        vec![],
+        FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: 0.0,
+        },
+    ));
+    assert!(
+        material_contact_direction(&topo, elsewhere, &spine, n1, tangent).is_none(),
+        "a face without the spine edge must yield no traversal side"
+    );
+}
