@@ -12,6 +12,8 @@ The evidence includes source inspection across all 15 workspace crates, executab
 
 Use the [CSV backlog](optimization-backlog.csv) or [JSON backlog](optimization-backlog.json) for dependency selection. IDs in this document are audit work packages, not a second implementation-status ledger. Record execution and closure in the existing [unified roadmap](../kernel-maturity/roadmap.md), [Open Kernel status](../kernel-maturity/open-kernel-status.md) and [P-Class status](../kernel-maturity/p-class-status.md), adding an owning row there if a selected package has none. Keep audit evidence fixed to its recorded SHA; later measurements need their own dated evidence directory.
 
+The first maintained baseline slice is available through `python3 scripts/performance/run.py`; see [commands, timing boundaries and acceptance](baseline.md). O3.1a in the Open Kernel ledger owns its completion; M01/M06/M10 retain their broader scope.
+
 The machine-readable inventories repeat the work table for tool use. When editing a work package, update the Markdown row and both inventory formats together, preserve stable IDs, and validate dependency references and cycles.
 
 ## Read this first
