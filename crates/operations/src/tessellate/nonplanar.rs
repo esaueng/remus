@@ -3129,24 +3129,47 @@ fn stepped_rim_interior_points(
     let du = u_max - u_min;
     let tolerance = remus_math::tolerance::Tolerance::default().linear;
     let wire = topo.wire(face_data.outer_wire()).ok()?;
+    let level_of = |point: Point3| -> Option<f64> {
+        match face_data.surface() {
+            FaceSurface::Cylinder(cyl) => Some((point - cyl.origin()).dot(cyl.axis())),
+            FaceSurface::Cone(cone) => Some(cone.project_point(point).1),
+            _ => None,
+        }
+    };
+    // On a wall bounded only by rim circles and axial lines (planar caps,
+    // seams, step corners) every outer-wire VERTEX is a level, not only the
+    // rim circles. A seam line split by an earlier edit (a cap offset leaves
+    // its former height as a vertex on the seam) puts a boundary vertex
+    // between two rim levels with only its two line endpoints sampled around
+    // it; with no row at its own height it fans to the nearest supported row
+    // across the arc exactly like a step corner does. A rim circle's level is
+    // reached through its vertices too, so on that family this is a superset
+    // of the circle rule. A wall carrying any other boundary curve (a
+    // boolean's marched intersection pieces, an ellipse) keeps the circle
+    // rule: its vertices are wherever the intersection happened to end, and
+    // seeding rows there changes meshes that blend and classification checks
+    // on cross-drilled bores depend on (`pclass_curved_blend`).
+    let rim_and_axial_only = wire.edges().iter().all(|oriented| {
+        topo.edge(oriented.edge())
+            .is_ok_and(|edge| matches!(edge.curve(), EdgeCurve::Line | EdgeCurve::Circle(_)))
+    });
     let mut levels = Vec::<f64>::new();
-    for oriented in wire.edges() {
-        let rim_v = match topo.edge(oriented.edge()).ok()?.curve() {
-            EdgeCurve::Circle(circle) => {
-                let center = circle.center();
-                match face_data.surface() {
-                    FaceSurface::Cylinder(cyl) => (center - cyl.origin()).dot(cyl.axis()),
-                    FaceSurface::Cone(cone) => cone.project_point(center).1,
-                    _ => return None,
-                }
-            }
-            _ => continue,
-        };
+    let mut push_level = |rim_v: f64| {
         if !levels
             .iter()
             .any(|&existing| (existing - rim_v).abs() <= tolerance)
         {
             levels.push(rim_v);
+        }
+    };
+    for oriented in wire.edges() {
+        let edge = topo.edge(oriented.edge()).ok()?;
+        if rim_and_axial_only {
+            for vertex in [edge.start(), edge.end()] {
+                push_level(level_of(topo.vertex(vertex).ok()?.point())?);
+            }
+        } else if let EdgeCurve::Circle(circle) = edge.curve() {
+            push_level(level_of(circle.center())?);
         }
     }
     if levels.len() < 3 {
@@ -3218,17 +3241,42 @@ fn stepped_rim_interior_points(
     }
     rows.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     rows.dedup_by(|a, b| (*a - *b).abs() <= tolerance);
-    // Hard cap: at most a handful of subdivision rows per inter-level band,
-    // applied per band so thinning one tall band never removes another
-    // band's rim-flanking rows — those are what pin the step corners. The
-    // caller enforces the same overall work bound.
-    let mut capped = Vec::with_capacity(rows.len());
+    // Hard cap: at most a handful of SUBDIVISION rows per inter-level band.
+    // The level rows and their flanks are exempt — they are what pin the
+    // boundary vertices, and thinning a band by stride used to drop exactly
+    // those (a 117 mm band kept six evenly spread rows and lost the flank
+    // one unit above its step, so the step corner fanned 19 mm up to the
+    // first surviving row). Applied per band so thinning one tall band never
+    // touches another. The caller enforces the same overall work bound.
+    let pinned: Vec<f64> = rows
+        .iter()
+        .copied()
+        .filter(|&v| {
+            levels.iter().any(|&level| {
+                let gap_below = levels
+                    .iter()
+                    .filter(|&&other| other < level - tolerance)
+                    .map(|&other| level - other)
+                    .fold(f64::INFINITY, f64::min);
+                let gap_above = levels
+                    .iter()
+                    .filter(|&&other| other > level + tolerance)
+                    .map(|&other| other - level)
+                    .fold(f64::INFINITY, f64::min);
+                let flank = gap_below.min(gap_above) / 8.0;
+                (v - level).abs() <= tolerance
+                    || (flank.is_finite() && ((v - level).abs() - flank).abs() <= tolerance)
+            })
+        })
+        .collect();
+    let mut capped = pinned.clone();
     for pair in levels.windows(2) {
         let (lo, hi) = (pair[0], pair[1]);
         let mut band: Vec<f64> = rows
             .iter()
             .copied()
-            .filter(|&v| v > lo - tolerance && v < hi + tolerance)
+            .filter(|&v| v > lo + tolerance && v < hi - tolerance)
+            .filter(|&v| !pinned.iter().any(|&p| (p - v).abs() <= tolerance))
             .collect();
         if band.len() > 6 {
             let stride = band.len().div_ceil(6);
@@ -3285,15 +3333,16 @@ fn stepped_rim_interior_points(
 
     let mut points = Vec::with_capacity(rows.len() * n_u.max(1));
     if n_u > 1 {
+        // Full rows already visit every base-grid column, and the pinned
+        // corner columns ARE base-grid columns (floor/ceil of the sample's
+        // column index), so emitting them again only handed the CDT one
+        // duplicate per corner column per row: at a 1e-6 deflection that
+        // was another rows x n_u points to locate and reject, and it is
+        // what pushed the macOS test job past its 30-minute limit.
         for &v in &rows {
             for iu in 1..n_u {
                 #[allow(clippy::cast_precision_loss)]
                 let u = u_min + du * (iu as f64 / n_u as f64);
-                points.push((u, v));
-            }
-        }
-        for &u in &corner_us {
-            for &v in &rows {
                 points.push((u, v));
             }
         }

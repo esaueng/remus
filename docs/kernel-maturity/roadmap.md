@@ -12,6 +12,7 @@ record and the bridge backlog neither program owns:
 | **Bridge backlog (§B below)** | Ready items covered by neither program | §B table, updated in-place |
 | [Campaign history](campaign-history.md) | Closed roots, refuted theories, and the digs behind them (not loaded by default) | read-only, append when a dig closes |
 | [Industrial parity overlay](industrial-parity.md) | Non-owning competitive crosswalk against the reference kernel, scope contract, scorecard, workflow scenarios, H5–H7 gates | no ledger — points at the rows above; update pointers when an owner row flips |
+| [Kernel performance audit and roadmap](../performance/kernel-optimization-roadmap.md) | 111 measured or evidence-gated optimization work packages, nine execution phases, dependencies and reproduction evidence | Non-owning audit; implementation state stays in this roadmap and the program ledgers |
 
 The work-selection *doctrine* (chase filters, TERMINAL list, acceptance bar,
 durable lessons) remains `.claude/skills/roadmap/SKILL.md`; this page is

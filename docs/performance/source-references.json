@@ -1,0 +1,428 @@
+[
+  {
+    "path": ".github/workflows/fleet-benchmark.yml",
+    "line": 11,
+    "needle": "    if:",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/.github/workflows/fleet-benchmark.yml#L11"
+  },
+  {
+    "path": "scripts/bench-compare.sh",
+    "line": 29,
+    "needle": "run_bench cargo",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/scripts/bench-compare.sh#L29"
+  },
+  {
+    "path": "tools/vs-bench/README.md",
+    "line": 1,
+    "needle": "# Comparison",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/tools/vs-bench/README.md#L1"
+  },
+  {
+    "path": "crates/algo/src/perf.rs",
+    "line": 31,
+    "needle": "thread_local!",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/perf.rs#L31"
+  },
+  {
+    "path": "crates/topology/src/transaction.rs",
+    "line": 40,
+    "needle": "pub fn run_transacted",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/topology/src/transaction.rs#L40"
+  },
+  {
+    "path": "crates/topology/src/arena.rs",
+    "line": 72,
+    "needle": "pub struct Arena",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/topology/src/arena.rs#L72"
+  },
+  {
+    "path": "crates/topology/src/topology.rs",
+    "line": 108,
+    "needle": "    mutation_ticks:",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/topology/src/topology.rs#L108"
+  },
+  {
+    "path": "crates/wasm/src/bindings/batch.rs",
+    "line": 458,
+    "needle": "            let snapshot = self.topo().clone();",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm/src/bindings/batch.rs#L458"
+  },
+  {
+    "path": "crates/algo/src/ds/shape_store.rs",
+    "line": 88,
+    "needle": "    pub fn export_solid(",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/ds/shape_store.rs#L88"
+  },
+  {
+    "path": "docs/design/deferred-e6b-arena-compaction-and-slot-reuse.md",
+    "line": 1,
+    "needle": "#",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/docs/design/deferred-e6b-arena-compaction-and-slot-reuse.md#L1"
+  },
+  {
+    "path": "crates/math/src/bvh.rs",
+    "line": 212,
+    "needle": "fn build_recursive(",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/bvh.rs#L212"
+  },
+  {
+    "path": "crates/check/src/classify/mod.rs",
+    "line": 311,
+    "needle": "fn count_ray_crossings(",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/check/src/classify/mod.rs#L311"
+  },
+  {
+    "path": "crates/check/src/distance/mod.rs",
+    "line": 50,
+    "needle": "pub fn point_to_solid(",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/check/src/distance/mod.rs#L50"
+  },
+  {
+    "path": "crates/operations/src/distance.rs",
+    "line": 57,
+    "needle": "pub fn point_to_solid_distance(",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/distance.rs#L57"
+  },
+  {
+    "path": "crates/algo/src/classifier/ray_cast.rs",
+    "line": 159,
+    "needle": "pub struct RayCastGeoms",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/classifier/ray_cast.rs#L159"
+  },
+  {
+    "path": "crates/algo/src/pave_filler/phase_ve.rs",
+    "line": 72,
+    "needle": "fn check_vertex_edge_pairs(",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/pave_filler/phase_ve.rs#L72"
+  },
+  {
+    "path": "crates/algo/src/pave_filler/phase_ve.rs",
+    "line": 176,
+    "needle": "fn project_point_on_edge(",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/pave_filler/phase_ve.rs#L176"
+  },
+  {
+    "path": "crates/algo/src/pave_filler/phase_ee.rs",
+    "line": 29,
+    "needle": "pub fn perform(",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/pave_filler/phase_ee.rs#L29"
+  },
+  {
+    "path": "crates/algo/src/pave_filler/phase_ff.rs",
+    "line": 384,
+    "needle": "    for (idx_a, &fa)",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/pave_filler/phase_ff.rs#L384"
+  },
+  {
+    "path": "crates/operations/src/compound_ops.rs",
+    "line": 686,
+    "needle": "fn partition_touching(",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/compound_ops.rs#L686"
+  },
+  {
+    "path": "crates/algo/src/builder/fill_images_faces.rs",
+    "line": 52,
+    "needle": "pub",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/algo/src/builder/fill_images_faces.rs#L52"
+  },
+  {
+    "path": "crates/math/src/nurbs/fitting.rs",
+    "line": 210,
+    "needle": "fn solve_interpolation(",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/fitting.rs#L210"
+  },
+  {
+    "path": "crates/math/src/nurbs/fitting.rs",
+    "line": 323,
+    "needle": "fn solve_approximation(",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/fitting.rs#L323"
+  },
+  {
+    "path": "crates/math/src/nurbs/intersection/chaining.rs",
+    "line": 184,
+    "needle": "pub fn chain_intersection_points(",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/intersection/chaining.rs#L184"
+  },
+  {
+    "path": "crates/math/src/nurbs/evaluator.rs",
+    "line": 17,
+    "needle": "pub struct SurfaceEvaluator",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/evaluator.rs#L17"
+  },
+  {
+    "path": "crates/math/src/nurbs/surface.rs",
+    "line": 389,
+    "needle": "    pub fn derivatives(",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/surface.rs#L389"
+  },
+  {
+    "path": "crates/math/src/nurbs/intersection/surface_seeding.rs",
+    "line": 70,
+    "needle": "pub fn intersect_nurbs_nurbs_with_context(",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/nurbs/intersection/surface_seeding.rs#L70"
+  },
+  {
+    "path": "crates/operations/src/tessellate/solid.rs",
+    "line": 331,
+    "needle": "fn tessellate_faces_core(",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/tessellate/solid.rs#L331"
+  },
+  {
+    "path": "crates/operations/src/tessellate/solid.rs",
+    "line": 913,
+    "needle": "    let cdt_results:",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/tessellate/solid.rs#L913"
+  },
+  {
+    "path": "crates/math/src/cdt/constraints.rs",
+    "line": 8,
+    "needle": "impl",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/cdt/constraints.rs#L8"
+  },
+  {
+    "path": "crates/operations/src/tessellate/nurbs.rs",
+    "line": 31,
+    "needle": "fn ",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/tessellate/nurbs.rs#L31"
+  },
+  {
+    "path": "crates/operations/src/tessellate/mesh_ops.rs",
+    "line": 28,
+    "needle": "fn ",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/tessellate/mesh_ops.rs#L28"
+  },
+  {
+    "path": "crates/check/src/properties/face_integrator.rs",
+    "line": 97,
+    "needle": "pub fn integrate_face(",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/check/src/properties/face_integrator.rs#L97"
+  },
+  {
+    "path": "crates/check/src/properties/mod.rs",
+    "line": 149,
+    "needle": "pub fn solid_properties(",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/check/src/properties/mod.rs#L149"
+  },
+  {
+    "path": "crates/check/src/validate/mod.rs",
+    "line": 50,
+    "needle": "pub fn validate_solid(",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/check/src/validate/mod.rs#L50"
+  },
+  {
+    "path": "crates/operations/src/measure/volume.rs",
+    "line": 2916,
+    "needle": "pub fn mass_properties(",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/measure/volume.rs#L2916"
+  },
+  {
+    "path": "crates/io/benches/nurbs_properties.rs",
+    "line": 24,
+    "needle": "fn bench_nurbs_properties(",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/io/benches/nurbs_properties.rs#L24"
+  },
+  {
+    "path": "crates/heal/src/fix/solid.rs",
+    "line": 32,
+    "needle": "fn ",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/heal/src/fix/solid.rs#L32"
+  },
+  {
+    "path": "crates/heal/src/upgrade/shell_sewing.rs",
+    "line": 215,
+    "needle": "fn plan_merges(",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/heal/src/upgrade/shell_sewing.rs#L215"
+  },
+  {
+    "path": "crates/operations/src/heal.rs",
+    "line": 530,
+    "needle": "    // Build merge map",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/heal.rs#L530"
+  },
+  {
+    "path": "crates/heal/src/upgrade/unify_same_domain.rs",
+    "line": 37,
+    "needle": "fn ",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/heal/src/upgrade/unify_same_domain.rs#L37"
+  },
+  {
+    "path": "crates/sketch/src/gcs/system.rs",
+    "line": 343,
+    "needle": "    pub fn solve(",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/sketch/src/gcs/system.rs#L343"
+  },
+  {
+    "path": "crates/sketch/src/gcs/solver.rs",
+    "line": 32,
+    "needle": "pub fn solve_dogleg",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/sketch/src/gcs/solver.rs#L32"
+  },
+  {
+    "path": "crates/sketch/src/gcs/qr.rs",
+    "line": 35,
+    "needle": "    pub fn factorize(",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/sketch/src/gcs/qr.rs#L35"
+  },
+  {
+    "path": "crates/sketch/src/gcs/dof.rs",
+    "line": 23,
+    "needle": "pub fn analyze(",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/sketch/src/gcs/dof.rs#L23"
+  },
+  {
+    "path": "crates/blend/src/walker.rs",
+    "line": 268,
+    "needle": "    fn newton_solve(",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/blend/src/walker.rs#L268"
+  },
+  {
+    "path": "crates/blend/src/analytic.rs",
+    "line": 108,
+    "needle": "fn ",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/blend/src/analytic.rs#L108"
+  },
+  {
+    "path": "crates/offset/src/inter3d.rs",
+    "line": 24,
+    "needle": "pub fn intersect_faces_3d(",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/offset/src/inter3d.rs#L24"
+  },
+  {
+    "path": "crates/offset/src/move_faces.rs",
+    "line": 113,
+    "needle": "    let snapshot = topo.clone();",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/offset/src/move_faces.rs#L113"
+  },
+  {
+    "path": "crates/operations/src/sweep.rs",
+    "line": 40,
+    "needle": "fn compute_frames(",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/sweep.rs#L40"
+  },
+  {
+    "path": "crates/operations/src/query.rs",
+    "line": 141,
+    "needle": "pub fn opposing_planar_face_pairs(",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/operations/src/query.rs#L141"
+  },
+  {
+    "path": "crates/io/src/step/reader.rs",
+    "line": 346,
+    "needle": "struct StepEntity",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/io/src/step/reader.rs#L346"
+  },
+  {
+    "path": "crates/io/src/arena_io.rs",
+    "line": 768,
+    "needle": "pub fn serialize_document(",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/io/src/arena_io.rs#L768"
+  },
+  {
+    "path": "crates/wasm-io/src/lib.rs",
+    "line": 171,
+    "needle": "fn load_document(",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm-io/src/lib.rs#L171"
+  },
+  {
+    "path": "crates/io/src/threemf/writer.rs",
+    "line": 93,
+    "needle": "fn write_model_xml(",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/io/src/threemf/writer.rs#L93"
+  },
+  {
+    "path": "crates/io/src/gltf/writer.rs",
+    "line": 22,
+    "needle": "pub fn ",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/io/src/gltf/writer.rs#L22"
+  },
+  {
+    "path": "crates/wasm/src/bindings/batch.rs",
+    "line": 437,
+    "needle": "    /// The two arms differ",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm/src/bindings/batch.rs#L437"
+  },
+  {
+    "path": "crates/wasm/src/shapes.rs",
+    "line": 79,
+    "needle": "    pub fn positions(",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm/src/shapes.rs#L79"
+  },
+  {
+    "path": "crates/wasm/src/bindings/tessellate.rs",
+    "line": 160,
+    "needle": "    pub fn tessellate_solid_grouped_binary(",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm/src/bindings/tessellate.rs#L160"
+  },
+  {
+    "path": "crates/wasm/src/bindings/checkpoint.rs",
+    "line": 20,
+    "needle": "    pub fn checkpoint(",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm/src/bindings/checkpoint.rs#L20"
+  },
+  {
+    "path": "xtask/src/wasm.rs",
+    "line": 185,
+    "needle": "pub fn build_both_targets(",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/xtask/src/wasm.rs#L185"
+  },
+  {
+    "path": "crates/render/src/lib.rs",
+    "line": 169,
+    "needle": "pub fn render_solid_offscreen(",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/render/src/lib.rs#L169"
+  },
+  {
+    "path": "crates/render/src/pipeline.rs",
+    "line": 549,
+    "needle": "    let ctx = GpuContext::new()?;",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/render/src/pipeline.rs#L549"
+  },
+  {
+    "path": "crates/render/src/mesh.rs",
+    "line": 64,
+    "needle": "    pub fn build(",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/render/src/mesh.rs#L64"
+  },
+  {
+    "path": "crates/render/src/pipeline.rs",
+    "line": 710,
+    "needle": "pub fn map_and_read(",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/render/src/pipeline.rs#L710"
+  },
+  {
+    "path": "crates/render/src/compute_mesh.rs",
+    "line": 71,
+    "needle": "fn ",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/render/src/compute_mesh.rs#L71"
+  },
+  {
+    "path": "Cargo.toml",
+    "line": 118,
+    "needle": "[profile.release]",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/Cargo.toml#L118"
+  },
+  {
+    "path": "crates/wasm/Cargo.toml",
+    "line": 16,
+    "needle": "wasm-opt =",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/wasm/Cargo.toml#L16"
+  },
+  {
+    "path": "crates/math/src/context.rs",
+    "line": 119,
+    "needle": "pub struct WorkBudgets",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/crates/math/src/context.rs#L119"
+  },
+  {
+    "path": "docs/kernel-maturity/p-class-status.md",
+    "line": 69,
+    "needle": "| 8.2",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/docs/kernel-maturity/p-class-status.md#L69"
+  },
+  {
+    "path": "docs/kernel-maturity/open-kernel-status.md",
+    "line": 45,
+    "needle": "| O3.2",
+    "url": "https://github.com/esaueng/remus/blob/ca91b956cdde99f78f048dd32b656b559ad14e7d/docs/kernel-maturity/open-kernel-status.md#L45"
+  }
+]

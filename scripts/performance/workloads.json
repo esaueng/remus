@@ -1,0 +1,143 @@
+{
+  "schema": "remus-performance-workloads-v1",
+  "name": "audit-first-slice",
+  "fixtures": [
+    {
+      "id": "hammer-holder",
+      "path": "crates/io/tests/data/shapr3d_hammer_holder.step",
+      "sha256": "709bb3d2dad8ec6bcc6930d69114c827ec084b2ecc6f37c59399be31cbb870bc"
+    }
+  ],
+  "procedural_fixtures": {
+    "unit-boxes": {
+      "dimensions": [1, 1, 1],
+      "transform_calls": 150,
+      "translation_per_call": [0.001, 0, 0]
+    },
+    "straight-chain": {
+      "point_rule": "(i, 0, 0), i in 0..size",
+      "threshold": 1.1
+    }
+  },
+  "cases": [
+    {
+      "id": "native_validate",
+      "family": "nurbs",
+      "scenario": "native_validate",
+      "size": 42,
+      "fixture": "hammer-holder"
+    },
+    {
+      "id": "native_mass_properties",
+      "family": "nurbs",
+      "scenario": "native_mass_properties",
+      "size": 42,
+      "fixture": "hammer-holder"
+    },
+    {
+      "id": "native_transform_direct_50",
+      "family": "transform",
+      "scenario": "native_transform_direct",
+      "size": 50,
+      "fixture": "unit-boxes"
+    },
+    {
+      "id": "native_transform_direct_200",
+      "family": "transform",
+      "scenario": "native_transform_direct",
+      "size": 200,
+      "fixture": "unit-boxes"
+    },
+    {
+      "id": "native_transform_direct_400",
+      "family": "transform",
+      "scenario": "native_transform_direct",
+      "size": 400,
+      "fixture": "unit-boxes"
+    },
+    {
+      "id": "native_transform_batch_50",
+      "family": "transform",
+      "scenario": "native_transform_batch",
+      "size": 50,
+      "fixture": "unit-boxes"
+    },
+    {
+      "id": "native_transform_batch_200",
+      "family": "transform",
+      "scenario": "native_transform_batch",
+      "size": 200,
+      "fixture": "unit-boxes"
+    },
+    {
+      "id": "native_transform_batch_400",
+      "family": "transform",
+      "scenario": "native_transform_batch",
+      "size": 400,
+      "fixture": "unit-boxes"
+    },
+    {
+      "id": "wasm_transform_direct_50",
+      "family": "transform",
+      "scenario": "wasm_transform_direct",
+      "size": 50,
+      "fixture": "unit-boxes"
+    },
+    {
+      "id": "wasm_transform_direct_200",
+      "family": "transform",
+      "scenario": "wasm_transform_direct",
+      "size": 200,
+      "fixture": "unit-boxes"
+    },
+    {
+      "id": "wasm_transform_direct_400",
+      "family": "transform",
+      "scenario": "wasm_transform_direct",
+      "size": 400,
+      "fixture": "unit-boxes"
+    },
+    {
+      "id": "wasm_transform_batch_50",
+      "family": "transform",
+      "scenario": "wasm_transform_batch",
+      "size": 50,
+      "fixture": "unit-boxes"
+    },
+    {
+      "id": "wasm_transform_batch_200",
+      "family": "transform",
+      "scenario": "wasm_transform_batch",
+      "size": 200,
+      "fixture": "unit-boxes"
+    },
+    {
+      "id": "wasm_transform_batch_400",
+      "family": "transform",
+      "scenario": "wasm_transform_batch",
+      "size": 400,
+      "fixture": "unit-boxes"
+    },
+    {
+      "id": "native_chain_128",
+      "family": "chain",
+      "scenario": "native_chain",
+      "size": 128,
+      "fixture": "straight-chain"
+    },
+    {
+      "id": "native_chain_512",
+      "family": "chain",
+      "scenario": "native_chain",
+      "size": 512,
+      "fixture": "straight-chain"
+    },
+    {
+      "id": "native_chain_2048",
+      "family": "chain",
+      "scenario": "native_chain",
+      "size": 2048,
+      "fixture": "straight-chain"
+    }
+  ]
+}
