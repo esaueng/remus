@@ -3333,15 +3333,16 @@ fn stepped_rim_interior_points(
 
     let mut points = Vec::with_capacity(rows.len() * n_u.max(1));
     if n_u > 1 {
+        // Full rows already visit every base-grid column, and the pinned
+        // corner columns ARE base-grid columns (floor/ceil of the sample's
+        // column index), so emitting them again only handed the CDT one
+        // duplicate per corner column per row: at a 1e-6 deflection that
+        // was another rows x n_u points to locate and reject, and it is
+        // what pushed the macOS test job past its 30-minute limit.
         for &v in &rows {
             for iu in 1..n_u {
                 #[allow(clippy::cast_precision_loss)]
                 let u = u_min + du * (iu as f64 / n_u as f64);
-                points.push((u, v));
-            }
-        }
-        for &u in &corner_us {
-            for &v in &rows {
                 points.push((u, v));
             }
         }
