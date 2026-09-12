@@ -26,7 +26,7 @@ const LEAF_PARAM_REL_EPS: f64 = 1e-9;
 
 /// Weld-band multiple of the arena tolerance for the EF-IN on-surface test
 /// (marched/fitted geometry sits up to ~100x linear tolerance off exact).
-const ON_SURFACE_BAND_FACTOR: f64 = 100.0;
+pub(super) const ON_SURFACE_BAND_FACTOR: f64 = 100.0;
 
 /// Maximum surface deviation of an EF-IN leaf as a fraction of its chord —
 /// a dimensionless crossing-angle gate. A grazing (near-tangential) contact
@@ -34,7 +34,7 @@ const ON_SURFACE_BAND_FACTOR: f64 = 100.0;
 /// a transversal crossing's adjacent leaves swing away linearly (corner-pad
 /// cap rims on the walls: 24-58% measured). Scale-free by design: absolute
 /// bands cannot separate the two classes.
-const IN_FACE_MAX_DEVIATION_RATIO: f64 = 0.2;
+pub(super) const IN_FACE_MAX_DEVIATION_RATIO: f64 = 0.2;
 
 /// Absolute ceiling on the ratio band. A LONG leaf crossing at a shallow
 /// angle keeps a small deviation/chord ratio while sitting a macroscopic
@@ -43,7 +43,7 @@ const IN_FACE_MAX_DEVIATION_RATIO: f64 = 0.2;
 /// the wall's splitter an off-plane section that warps the partition. A
 /// genuinely grazing contact hugs the surface in absolute terms as well;
 /// beyond this the leaf is transversal regardless of ratio.
-const IN_FACE_MAX_DEVIATION_ABS: f64 = 1e-2;
+pub(super) const IN_FACE_MAX_DEVIATION_ABS: f64 = 1e-2;
 
 /// Populate [`FaceInfo`] for all faces with their classified pave blocks.
 ///
@@ -164,7 +164,11 @@ fn fill_section_sc(arena: &mut GfaArena) {
 /// Returns `None` when the measurement is not trustworthy: NURBS
 /// projection can silently fall back to a domain-midpoint guess on
 /// convergence failure, which would read as a huge distance and falsely
-/// reject a leaf that genuinely hugs the surface.
+/// reject a leaf that genuinely hugs the surface. A NURBS carrier that is a
+/// plane in disguise (a coplanar control net) is measured against that plane
+/// exactly; without any measurement every leaf next to a crossing was kept,
+/// and a peg's rim circle crossing a converted bar wall transversally handed
+/// the wall its whole rim as "in-face" section edges.
 fn dist_to_surface(
     surface: &remus_topology::face::FaceSurface,
     p: remus_math::vec::Point3,
@@ -174,7 +178,15 @@ fn dist_to_surface(
         FaceSurface::Plane { normal, d } => {
             Some((normal.dot(remus_math::vec::Vec3::new(p.x(), p.y(), p.z())) - d).abs())
         }
-        FaceSurface::Nurbs(_) => None,
+        FaceSurface::Nurbs(_) => match super::helpers::planar_nurbs_as_plane(
+            surface,
+            remus_math::tolerance::Tolerance::new(),
+        ) {
+            Some(FaceSurface::Plane { normal, d }) => {
+                Some((normal.dot(remus_math::vec::Vec3::new(p.x(), p.y(), p.z())) - d).abs())
+            }
+            _ => None,
+        },
         other => other
             .project_point(p)
             .and_then(|(u, v)| other.evaluate(u, v))
