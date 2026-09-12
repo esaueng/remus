@@ -5637,8 +5637,8 @@ fn make_concave_wall_pair(
         wall1_wire,
         vec![],
         FaceSurface::Plane {
-            normal: Vec3::new(0.7071067811865475, 0.7071067811865475, 0.0),
-            d: 2.82842712474619,
+            normal: Vec3::new(0.707_106_781_186_547_5, 0.707_106_781_186_547_5, 0.0),
+            d: 2.828_427_124_746_19,
         },
     ));
 
@@ -5673,13 +5673,13 @@ fn make_concave_wall_pair(
         wall2_wire,
         vec![],
         FaceSurface::Plane {
-            normal: Vec3::new(-0.7071067811865475, 0.7071067811865475, 0.0),
-            d: -4.242640687119285,
+            normal: Vec3::new(-0.707_106_781_186_547_5, 0.707_106_781_186_547_5, 0.0),
+            d: -4.242_640_687_119_285,
         },
     ));
 
-    let n1 = Vec3::new(-0.7071067811865475, -0.7071067811865475, 0.0);
-    let n2 = Vec3::new(0.7071067811865475, -0.7071067811865475, 0.0);
+    let n1 = Vec3::new(-0.707_106_781_186_547_5, -0.707_106_781_186_547_5, 0.0);
+    let n2 = Vec3::new(0.707_106_781_186_547_5, -0.707_106_781_186_547_5, 0.0);
     // The traversal side is only meaningful on connected wires; pin both loops.
     for wire_id in [wall1_wire, wall2_wire] {
         let wire = topo.wire(wire_id).unwrap();
@@ -5720,12 +5720,12 @@ fn concave_wall_contact_direction_follows_traversal_not_bisector() {
         (
             wall1,
             n1,
-            Vec3::new(-0.7071067811865475, 0.7071067811865475, 0.0),
+            Vec3::new(-0.707_106_781_186_547_5, 0.707_106_781_186_547_5, 0.0),
         ),
         (
             wall2,
             n2,
-            Vec3::new(0.7071067811865475, 0.7071067811865475, 0.0),
+            Vec3::new(0.707_106_781_186_547_5, 0.707_106_781_186_547_5, 0.0),
         ),
     ] {
         let dir = material_contact_direction(&topo, wall, &spine, normal, tangent)
