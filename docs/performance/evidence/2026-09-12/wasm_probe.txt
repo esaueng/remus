@@ -1,0 +1,13 @@
+{"node":"v24.14.0","package":"2.130.14","coldRequireMs":20.463035999999995,"wasmSha256":"d6fad954f2ac834f0bf7209ee15d67e066d8f5d174e19a404ad1c94aa5633e2d","wasmBytes":8253737}
+{"name":"query_batch","seed":50,"ops":150,"reps":9,"minMs":3.4291559999999777,"medianMs":4.364415000000008,"maxMs":8.815404000000001}
+{"name":"build_batch","seed":50,"ops":150,"reps":9,"minMs":16.438793999999973,"medianMs":16.73185799999999,"maxMs":17.206306000000012}
+{"name":"assembly_batch","seed":50,"ops":150,"reps":9,"minMs":7.694964999999968,"medianMs":7.856179999999995,"maxMs":8.225669000000039}
+{"name":"transform_direct","seed":50,"ops":150,"reps":9,"minMs":6.688662000000022,"medianMs":6.836381000000017,"maxMs":7.110369999999989}
+{"name":"query_batch","seed":200,"ops":150,"reps":9,"minMs":3.0885620000000245,"medianMs":3.1303520000000162,"maxMs":3.2640239999999494}
+{"name":"build_batch","seed":200,"ops":150,"reps":9,"minMs":35.67536999999993,"medianMs":35.73936100000003,"maxMs":37.111507000000074}
+{"name":"assembly_batch","seed":200,"ops":150,"reps":9,"minMs":19.94117899999992,"medianMs":19.986715000000004,"maxMs":20.110229000000118}
+{"name":"transform_direct","seed":200,"ops":150,"reps":9,"minMs":25.33007100000009,"medianMs":25.41207700000018,"maxMs":25.85347200000001}
+{"name":"query_batch","seed":400,"ops":150,"reps":9,"minMs":3.055058999999801,"medianMs":3.0802669999998216,"maxMs":3.109502000000248}
+{"name":"build_batch","seed":400,"ops":150,"reps":9,"minMs":60.990424000000075,"medianMs":61.26527400000032,"maxMs":61.44370100000015}
+{"name":"assembly_batch","seed":400,"ops":150,"reps":9,"minMs":37.24102099999982,"medianMs":37.355829000000085,"maxMs":37.46067700000003}
+{"name":"transform_direct","seed":400,"ops":150,"reps":9,"minMs":51.466238999999405,"medianMs":51.54925600000024,"maxMs":51.92563700000028}

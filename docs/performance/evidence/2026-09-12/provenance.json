@@ -1,0 +1,108 @@
+{
+  "date": "2026-09-12",
+  "source_sha": "ca91b956cdde99f78f048dd32b656b559ad14e7d",
+  "native_profile": "profiling: inherits release, opt-level=3, debug=true, lto=false",
+  "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)\nbinary: rustc\ncommit-hash: ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96\ncommit-date: 2026-05-25\nhost: x86_64-unknown-linux-gnu\nrelease: 1.96.0\nLLVM version: 22.1.2\n",
+  "cpu": "AMD Ryzen 9 5900XT, 16 cores / 32 logical CPUs",
+  "native_default_rayon_threads": 1,
+  "package_version": "2.130.14",
+  "package_refresh_commit": "f19685684714003255f9a98e8e6a885d1419e5dd",
+  "package_refresh_declared_source": "8bc1d81e968d4d82bf7e642f4bf5ad464008472e",
+  "package_wasm_sha256": "d6fad954f2ac834f0bf7209ee15d67e066d8f5d174e19a404ad1c94aa5633e2d",
+  "package_wasm_git_blob": "0e384340e3584cf108d31d337cb4a7542fe3014b",
+  "wasm_bytes": 8253737,
+  "pinned_reusable_workflow_content_matches_current_source": true,
+  "open_prs_at_audit_start": [
+    401,
+    402
+  ],
+  "open_issues_at_audit_start": [],
+  "full_workspace_tests_run": false,
+  "gpu_or_browser_benchmarks_run": false,
+  "sampled_cpu_or_allocation_profiles_run": false,
+  "perf_available_on_path": false,
+  "run_results": {
+    "scratch_native_probes": "exit 0",
+    "maintained_native_batch_probe": "exit 0",
+    "maintained_native_cut_sphere_probe": "exit 0",
+    "compound_cylinders_threads_1": "exit 0",
+    "compound_cylinders_threads_4": "exit 0",
+    "actual_committed_wasm_probe": "exit 0",
+    "io_nurbs_properties_criterion": "exit 0"
+  },
+  "crate_source_census": {
+    "algo": {
+      "rust_files": 54,
+      "criterion_targets": 1
+    },
+    "blend": {
+      "rust_files": 19,
+      "criterion_targets": 1
+    },
+    "check": {
+      "rust_files": 26,
+      "criterion_targets": 0
+    },
+    "geometry": {
+      "rust_files": 19,
+      "criterion_targets": 0
+    },
+    "heal": {
+      "rust_files": 49,
+      "criterion_targets": 0
+    },
+    "io": {
+      "rust_files": 26,
+      "criterion_targets": 1
+    },
+    "math": {
+      "rust_files": 60,
+      "criterion_targets": 3
+    },
+    "offset": {
+      "rust_files": 14,
+      "criterion_targets": 0
+    },
+    "operations": {
+      "rust_files": 82,
+      "criterion_targets": 5
+    },
+    "remus": {
+      "rust_files": 2,
+      "criterion_targets": 0
+    },
+    "render": {
+      "rust_files": 7,
+      "criterion_targets": 0
+    },
+    "sketch": {
+      "rust_files": 11,
+      "criterion_targets": 0
+    },
+    "topology": {
+      "rust_files": 23,
+      "criterion_targets": 0
+    },
+    "wasm": {
+      "rust_files": 40,
+      "criterion_targets": 0
+    },
+    "wasm-io": {
+      "rust_files": 2,
+      "criterion_targets": 0
+    }
+  },
+  "note": "Original audit measurements; harness paths and formatting adapted for repository publication. Source SHA and committed WASM package provenance remain distinct.",
+  "published_evidence_sha256": {
+    "audit_probe.rs": "20372040e029edf9ccaa35fcb439a800143f1795194725edf2533ff9f008f6d5",
+    "audit_probe.txt": "25d9355e8c5e29b9bf280bf4df87e5917d0ded25656c137e36b9d162a8278ce7",
+    "batch_profile.txt": "ba5356155009854176bd4c11c17239424f9b86a02695184e281d0ab1db10956d",
+    "cylinders-threads-1.txt": "0d5fb67f47b0fcb942d7bb9023841fa3834fa2e902a4463565c0b9e9419300bf",
+    "cylinders-threads-4.txt": "6617bedfc1043fd291bcf049ff72aef318d07908bd40ec51ce7118ea1f4ac529",
+    "nurbs-properties.txt": "8b5fca42665a56cfaaf435009cd5183fbaff95cb292e92d73cf4cba24d5b2f94",
+    "perf_probe.txt": "b457375516a73510e60e1c3521a31012be259b9859c454156a69ef647dc510ea",
+    "run_metadata.json": "9e7f865dfd00423de15d6579d84cf98cf08c9593ed33aa22e18a3b404eb8f1aa",
+    "wasm_probe.cjs": "be529aa628df2a3d69d8ef90d37e4a18dea2af63fb9f03bab139b75a034a6bce",
+    "wasm_probe.txt": "0a02e9dbdf4c8e53dde52f1dab550f8b81c44b45e94bac67f1f25e8d758666c1"
+  }
+}
