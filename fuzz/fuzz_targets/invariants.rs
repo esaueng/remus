@@ -20,11 +20,13 @@
 use std::collections::BTreeMap;
 
 use remus_math::aabb::Aabb3;
+use remus_math::vec::Point3;
 use remus_operations::measure::{mass_properties, solid_bounding_box, solid_volume};
 use remus_operations::tessellate::{
     boundary_edge_count, non_manifold_edge_count, tessellate_solid,
 };
 use remus_topology::Topology;
+use remus_topology::edge::EdgeId;
 use remus_topology::explorer;
 use remus_topology::solid::SolidId;
 
@@ -850,5 +852,569 @@ pub fn assert_option_honoured(
         "{what}: {setting_a} and {setting_b} are different requests but both \
          changed the volume by {da:.3e} (before {before:.9}, after {va:.9} and \
          {vb:.9}). The option was accepted and then ignored.",
+    );
+}
+
+// ── B26/1: inclusion–exclusion ───────────────────────────────────────
+
+/// `vol(A ∪ B) + vol(A ∩ B) = vol(A) + vol(B)`.
+///
+/// Callers must produce the union and intersection via
+/// `boolean_with_context` under `ExactOnly` with disclosed `BooleanOutcome`
+/// quality; any typed refusal (`Unsupported`, `ExactOnlyUnattainable`,
+/// `EmptyResult`, …) on either call is a pass. A finite `Ok` volume that is
+/// non-finite is a finding, never a skip: NaN/Inf out of a successful
+/// measurement is malformed output, not a refusal.
+///
+/// # Panics
+///
+/// Panics when the two result volumes do not sum to the operand volumes
+/// within [`VOL_SLACK`], or when any successful measurement is non-finite.
+pub fn assert_inclusion_exclusion(what: &str, va: f64, vb: f64, v_union: f64, v_inter: f64) {
+    for (label, v) in [
+        ("vol(A)", va),
+        ("vol(B)", vb),
+        ("union", v_union),
+        ("intersect", v_inter),
+    ] {
+        assert!(
+            v.is_finite(),
+            "{what}: inclusion–exclusion {label} measured {v} — a successful \
+             measurement returning NaN/Inf is malformed output, not a refusal.",
+        );
+    }
+    let lhs = v_union + v_inter;
+    let rhs = va + vb;
+    let scale = lhs.abs().max(rhs.abs()).max(VOL_FLOOR);
+    let rel = (lhs - rhs).abs() / scale;
+    assert!(
+        rel <= VOL_SLACK,
+        "{what}: inclusion–exclusion fails — vol(A ∪ B) = {v_union:.9} plus \
+         vol(A ∩ B) = {v_inter:.9} sums to {lhs:.9}, but vol(A) + vol(B) = \
+         {va:.9} + {vb:.9} = {rhs:.9} (relative error {rel:.3e}).",
+    );
+}
+
+// ── B26/2: cut complement ────────────────────────────────────────────
+
+/// `vol(A) = vol(A ∖ B) + vol(A ∩ B)`.
+///
+/// Same contract as [`assert_inclusion_exclusion`]: both results from the
+/// exact path; typed `Err` is a pass, non-finite successful output is a
+/// finding.
+///
+/// # Panics
+///
+/// Panics when the cut and the intersection do not sum to the target within
+/// [`VOL_SLACK`], or when any successful measurement is non-finite.
+pub fn assert_cut_complement(what: &str, va: f64, v_cut: f64, v_inter: f64) {
+    for (label, v) in [("vol(A)", va), ("cut", v_cut), ("intersect", v_inter)] {
+        assert!(
+            v.is_finite(),
+            "{what}: cut complement {label} measured {v} — a successful \
+             measurement returning NaN/Inf is malformed output, not a refusal.",
+        );
+    }
+    let scale = va.abs().max((v_cut + v_inter).abs()).max(VOL_FLOOR);
+    let rel = (va - (v_cut + v_inter)).abs() / scale;
+    assert!(
+        rel <= VOL_SLACK,
+        "{what}: cut complement fails — vol(A ∖ B) = {v_cut:.9} plus \
+         vol(A ∩ B) = {v_inter:.9} sums to {:.9}, but vol(A) = {va:.9} \
+         (relative error {rel:.3e}).",
+        v_cut + v_inter,
+    );
+}
+
+// ── B26/3: translation invariance ────────────────────────────────────
+
+/// `solid_volume` must not move under rigid translation.
+///
+/// The recorded precedent is a doubled boundary integrating phantom
+/// material whose contribution depends on absolute position. The comparison
+/// uses the existing [`VOL_SLACK`]. A typed `Err` from the transform or the
+/// second measurement is a pass; a successful but non-finite reading is a
+/// finding.
+///
+/// # Panics
+///
+/// Panics when the translated body measures differently beyond [`VOL_SLACK`]
+/// or returns non-finite output.
+pub fn assert_translation_invariant(
+    what: &str,
+    topo: &Topology,
+    solid: SolidId,
+    v0: f64,
+    dx: f64,
+    dy: f64,
+    dz: f64,
+) {
+    use remus_math::mat::Mat4;
+    use remus_operations::transform::transform_solid;
+
+    assert!(
+        v0.is_finite(),
+        "{what}: translation check input volume is {v0} — a successful \
+         measurement returning NaN/Inf is malformed output, not a refusal.",
+    );
+    let mut moved = topo.clone();
+    if transform_solid(&mut moved, solid, &Mat4::translation(dx, dy, dz)).is_err() {
+        return; // a refusal is a pass
+    }
+    let Ok(aabb) = solid_bounding_box(&moved, solid) else {
+        return;
+    };
+    let diag = (aabb.max - aabb.min).length();
+    if !(diag.is_finite() && diag > 0.0) {
+        return;
+    }
+    let Ok(v1) = solid_volume(&moved, solid, volume_deflection(diag)) else {
+        return;
+    };
+    assert!(
+        v1.is_finite(),
+        "{what}: translated body measured {v1} — a successful measurement \
+         returning NaN/Inf is malformed output, not a refusal.",
+    );
+    let scale = v0.abs().max(v1.abs()).max(VOL_FLOOR);
+    let rel = (v0 - v1).abs() / scale;
+    assert!(
+        rel <= VOL_SLACK,
+        "{what}: volume moved from {v0:.9} to {v1:.9} under translation by \
+         ({dx:.3}, {dy:.3}, {dz:.3}) (relative {rel:.3e}).",
+    );
+}
+
+// ── B26/4: exact-path stability under input nudges ───────────────────
+
+/// One exact boolean attempt: success carries census + volume; refusal
+/// carries the typed engine error. `OperationsError` has no `Clone`, so the
+/// refusal keeps the error's rendering alongside its variant name — the
+/// comparison in [`assert_nudge_stable`] is kind-level (refused vs refused
+/// passes regardless of message), never string matching.
+#[derive(Debug, Clone)]
+pub enum NudgeOutcome {
+    /// Exact boolean succeeded; census and volume were measured.
+    Success {
+        /// Topological census of the result.
+        census: Census,
+        /// Measured volume of the result.
+        volume: f64,
+    },
+    /// The engine refused with a typed error.
+    Refused {
+        /// Variant name of the `OperationsError` (e.g. `Unsupported`).
+        variant: &'static str,
+        /// Full rendering of the error, for the panic message.
+        reason: String,
+    },
+    /// The boolean succeeded but a follow-up census/volume measurement
+    /// returned a typed `Err`. Compared by [`assert_nudge_stable`] as its
+    /// own kind: a typed measurement refusal is not success data and must
+    /// not be fabricated into any.
+    Unmeasurable {
+        /// Rendered measurement error.
+        reason: String,
+    },
+}
+
+/// Run one exact boolean and classify the outcome.
+///
+/// `boolean_with_context` under `ExactOnly` with disclosed quality:
+/// `Exact` success is measured (census + volume); any `Err` becomes
+/// [`NudgeOutcome::Refused`] with the typed error preserved (no strings
+/// invented at this layer — the error value itself is carried). A
+/// `BooleanQuality::Approximate` under `ExactOnly` violates the policy and
+/// panics: it must never be relabelled a refusal.
+pub fn exact_boolean_outcome(
+    topo: &mut Topology,
+    op: remus_operations::boolean::BooleanOp,
+    a: SolidId,
+    b: SolidId,
+) -> NudgeOutcome {
+    use remus_math::context::{FallbackPolicy, OperationContext};
+    use remus_operations::boolean::{BooleanQuality, boolean_with_context};
+
+    let context = OperationContext::new().with_fallback(FallbackPolicy::ExactOnly);
+    match boolean_with_context(topo, op, a, b, &context) {
+        Ok(outcome) => match outcome.quality {
+            BooleanQuality::Exact => {
+                let census = match census(topo, outcome.solid) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        return NudgeOutcome::Unmeasurable {
+                            reason: e.to_string(),
+                        };
+                    }
+                };
+                let volume = match measure(topo, outcome.solid) {
+                    Some(m) => m.volume,
+                    None => {
+                        return NudgeOutcome::Unmeasurable {
+                            reason: "volume/bbox measurement refused".to_string(),
+                        };
+                    }
+                };
+                assert!(
+                    volume.is_finite(),
+                    "exact boolean result measured {volume} — a successful \
+                     measurement returning NaN/Inf is malformed output, not \
+                     a refusal.",
+                );
+                NudgeOutcome::Success { census, volume }
+            }
+            BooleanQuality::Approximate { deflection } => {
+                panic!(
+                    "ExactOnly policy returned Approximate quality at deflection \
+                     {deflection} — the policy invariant is violated; this must \
+                     never be relabelled a refusal.",
+                );
+            }
+        },
+        Err(e) => {
+            let reason = e.to_string();
+            let variant = match e {
+                remus_operations::OperationsError::ExactOnlyUnattainable => "ExactOnlyUnattainable",
+                remus_operations::OperationsError::InvalidInput { .. } => "InvalidInput",
+                remus_operations::OperationsError::NonManifoldResult => "NonManifoldResult",
+                remus_operations::OperationsError::EmptyResult { .. } => "EmptyResult",
+                remus_operations::OperationsError::Unsupported { .. } => "Unsupported",
+                remus_operations::OperationsError::BodyClassMeasureMismatch { .. } => {
+                    "BodyClassMeasureMismatch"
+                }
+                remus_operations::OperationsError::BodyClassOperationUnsupported { .. } => {
+                    "BodyClassOperationUnsupported"
+                }
+                remus_operations::OperationsError::BodyValidationFailed { .. } => {
+                    "BodyValidationFailed"
+                }
+                remus_operations::OperationsError::HealingValidationFailed { .. } => {
+                    "HealingValidationFailed"
+                }
+                remus_operations::OperationsError::HealingVerificationUnavailable { .. } => {
+                    "HealingVerificationUnavailable"
+                }
+                remus_operations::OperationsError::HealingRepairRefused { .. } => {
+                    "HealingRepairRefused"
+                }
+                remus_operations::OperationsError::ConfiguredHealingValidationFailed { .. } => {
+                    "ConfiguredHealingValidationFailed"
+                }
+                remus_operations::OperationsError::ConfiguredHealingVerificationUnavailable {
+                    ..
+                } => "ConfiguredHealingVerificationUnavailable",
+                remus_operations::OperationsError::PatternInstancesOverlap { .. } => {
+                    "PatternInstancesOverlap"
+                }
+                remus_operations::OperationsError::Topology(_) => "Topology",
+                remus_operations::OperationsError::Math(_) => "Math",
+                remus_operations::OperationsError::Algo(_) => "Algo",
+                remus_operations::OperationsError::Blend(_) => "Blend",
+                remus_operations::OperationsError::ResizeBlend(_) => "ResizeBlend",
+                remus_operations::OperationsError::Check(_) => "Check",
+                remus_operations::OperationsError::Geometry(_) => "Geometry",
+                remus_operations::OperationsError::Heal(_) => "Heal",
+                remus_operations::OperationsError::Offset(_) => "Offset",
+                remus_operations::OperationsError::PartialResult { .. } => "PartialResult",
+            };
+            NudgeOutcome::Refused { variant, reason }
+        }
+    }
+}
+
+/// Exact-path stability under a 1e-13 rigid input nudge.
+///
+/// Compares refusal-versus-success, never skipping kind changes:
+/// * `Refused` vs `Refused` — pass.
+/// * `Unmeasurable` vs `Unmeasurable` — pass.
+/// * `Success` vs `Success` — full [`Census`] equality (every field,
+///   including `shells` and `orphan_edges`) and volume within [`VOL_SLACK`].
+/// * Any kind change — panic.
+///
+/// # Panics
+///
+/// Panics on outcome-kind flips, census moves, volume moves beyond
+/// [`VOL_SLACK`], or non-finite success volumes.
+pub fn assert_nudge_stable(what: &str, base: &NudgeOutcome, nudged: &NudgeOutcome) {
+    match (base, nudged) {
+        (NudgeOutcome::Refused { .. }, NudgeOutcome::Refused { .. })
+        | (NudgeOutcome::Unmeasurable { .. }, NudgeOutcome::Unmeasurable { .. }) => {}
+        (
+            NudgeOutcome::Success {
+                census: c0,
+                volume: v0,
+            },
+            NudgeOutcome::Success {
+                census: c1,
+                volume: v1,
+            },
+        ) => {
+            assert!(
+                c0 == c1,
+                "{what}: a 1e-13 input nudge changed the exact result's census \
+                 from {c0:?} to {c1:?}.",
+            );
+            for (label, v) in [("base", *v0), ("nudged", *v1)] {
+                assert!(
+                    v.is_finite(),
+                    "{what}: nudge-stability {label} volume is {v} — a \
+                     successful measurement returning NaN/Inf is malformed \
+                     output, not a refusal.",
+                );
+            }
+            let scale = v0.abs().max(v1.abs()).max(VOL_FLOOR);
+            let rel = (v0 - v1).abs() / scale;
+            assert!(
+                rel <= VOL_SLACK,
+                "{what}: a 1e-13 input nudge moved the exact result's \
+                 volume from {v0:.9} to {v1:.9} (relative {rel:.3e}).",
+            );
+        }
+        (b, n) => {
+            panic!(
+                "{what}: a 1e-13 input nudge changed the exact outcome kind \
+                 from {b:?} to {n:?}.",
+            );
+        }
+    }
+}
+
+/// Nudge operand `b` by a rigid 1e-13 translation along +x, then run the
+/// exact boolean on `(a, b)` in both arenas.
+///
+/// Uses [`transform_solid`](remus_operations::transform::transform_solid) so
+/// vertices, edge curves, and face surfaces move together: the nudged input
+/// is a consistent rigidly moved operand, not a vertex-edited inconsistent
+/// B-Rep. Compare the pair with [`assert_nudge_stable`].
+pub fn exact_boolean_nudged_pair(
+    topo: &Topology,
+    op: remus_operations::boolean::BooleanOp,
+    a: SolidId,
+    b: SolidId,
+) -> Option<(NudgeOutcome, NudgeOutcome)> {
+    use remus_math::mat::Mat4;
+    use remus_operations::transform::transform_solid;
+
+    let mut t0 = topo.clone();
+    let mut t1 = topo.clone();
+    if transform_solid(&mut t1, b, &Mat4::translation(1e-13, 0.0, 0.0)).is_err() {
+        return None;
+    }
+    Some((
+        exact_boolean_outcome(&mut t0, op, a, b),
+        exact_boolean_outcome(&mut t1, op, a, b),
+    ))
+}
+
+// ── B26/5: position-quantized free-edge check ─────────────────────────
+
+/// Quantization grid for the position-based free-edge check.
+///
+/// Ten times the kernel linear tolerance (1e-7) and the tessellator weld
+/// grid (1e-7): fine enough that the generator's half-unit lattice can never
+/// merge distinct vertices into one key, coarse enough to absorb weld-scale
+/// rounding. Quantization reduces — but cannot eliminate — split-key risk
+/// from boundary rounding; a vertex sitting within half a quantum of a cell
+/// boundary can still split keys across runs, so this oracle supplements the
+/// edge-id census rather than replacing it.
+pub const POS_KEY_GRID: f64 = 1e-6;
+
+/// A position key for one vertex: coordinates quantized to [`POS_KEY_GRID`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PosKey(pub i64, pub i64, pub i64);
+
+/// Quantize one vertex position to the [`POS_KEY_GRID`] lattice.
+///
+/// Returns `None` for non-finite coordinates: non-finite geometry is never
+/// silently skipped or quantized into a key.
+#[must_use]
+pub fn pos_key(p: Point3) -> Option<PosKey> {
+    for v in [p.x(), p.y(), p.z()] {
+        if !v.is_finite() {
+            return None;
+        }
+    }
+    let q = |v: f64| (v / POS_KEY_GRID).round() as i64;
+    Some(PosKey(q(p.x()), q(p.y()), q(p.z())))
+}
+
+/// An edge's geometric identity: quantized endpoints (canonical order) plus
+/// quantized curve midpoint — except for degenerate point edges (both
+/// endpoints quantize together), which key by endpoint *id* instead (see
+/// [`edge_geom_key`]): the id is the only discriminant a point edge has.
+/// Two non-degenerate edges sharing endpoints but differing in bulge carry
+/// different midpoint keys and count as distinct; two edges agreeing on all
+/// three (doubled boundary) share one key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct EdgeGeomKey {
+    /// Canonical (min, max) endpoint keys — or, for degenerate point edges,
+    /// the key below with the id-derived discriminant in `mid`.
+    pub ends: (PosKey, PosKey),
+    /// Quantized curve midpoint — or, for degenerate point edges, a
+    /// quantized encoding of the edge id (never equal to a geometry key's
+    /// midpoint for a distinct position).
+    pub mid: PosKey,
+}
+
+/// Failure mode of [`edge_geom_key`]. `Err` means the edge cannot be keyed
+/// and the caller must decide: the closed check treats it as a finding (see
+/// [`assert_position_closed`]), never a skip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GeomKeyError {
+    /// A topology lookup failed.
+    Topology,
+    /// A vertex position, trim bound, or midpoint evaluation is non-finite.
+    NonFinite,
+    /// A non-`Line` edge has no authoritative stored trim. Missing authority
+    /// is never reconstructed: blessing it here would hide invalid output.
+    MissingAuthority,
+}
+
+/// Read an edge's geometric key.
+///
+/// The midpoint is sampled through the edge curve at mid stored-trim
+/// (`strict_domain`, which also validates finiteness), or at mid `[0, 1]`
+/// for `Line`. Non-finite positions, bounds, or evaluations, failed lookups,
+/// and missing non-`Line` authority are all `Err` — never silently skipped.
+///
+/// Degenerate point edges (both endpoints quantize to the same key — the
+/// torus primitive's seam vertices, where one corner vertex serves the whole
+/// genus-1 fundamental polygon) key by endpoints alone with a matching
+/// degenerate midpoint: their curve midpoint is the same point, so they
+/// cannot contribute midpoint discrimination, and synthesizing one would
+/// manufacture a false distinction between identical keys.
+pub fn edge_geom_key(topo: &Topology, eid: EdgeId) -> Result<EdgeGeomKey, GeomKeyError> {
+    use remus_topology::edge::EdgeCurve;
+
+    let edge = topo.edge(eid).map_err(|_| GeomKeyError::Topology)?;
+    let a = topo
+        .vertex(edge.start())
+        .map_err(|_| GeomKeyError::Topology)?
+        .point();
+    let b = topo
+        .vertex(edge.end())
+        .map_err(|_| GeomKeyError::Topology)?
+        .point();
+    let (ka, kb) = (
+        pos_key(a).ok_or(GeomKeyError::NonFinite)?,
+        pos_key(b).ok_or(GeomKeyError::NonFinite)?,
+    );
+    let ends = if ka <= kb { (ka, kb) } else { (kb, ka) };
+    if ka == kb {
+        // Degenerate point edge: the stored vertices coincide to 1 µm, so
+        // the quantized curve midpoint is that same key by construction and
+        // carries no discrimination. Key by endpoint id instead: distinct
+        // point edges (the torus primitive's two seam loops share one
+        // vertex but are distinct ids) stay distinct keys, each carrying
+        // the wire multiplicity it actually has — matching the
+        // `edge_to_face_map` convention where each wire occurrence is one
+        // face use. Two traversals of the *same* point edge collapse to one
+        // key with both uses, i.e. geometrically closed.
+        //
+        // Scope note: the id-keyed arm fires only for quantized-degenerate
+        // edges. A genuine position-duplicate boundary between non-degenerate
+        // edges still keys by geometry (endpoints + real curve midpoint)
+        // and stays visible. The residual blind spot is a duplicate point
+        // edge *pair sharing one id* — impossible by construction (one id is
+        // one edge) — so no finer key is needed.
+        return Ok(EdgeGeomKey {
+            ends: (ka, kb),
+            mid: pos_key(Point3::new(eid.index() as f64 * POS_KEY_GRID, 0.0, 0.0)).unwrap_or(ka),
+        });
+    }
+    let (t0, t1) = if matches!(edge.curve(), EdgeCurve::Line) {
+        (0.0, 1.0)
+    } else {
+        edge.strict_domain().map_err(|e| match e {
+            remus_topology::edge::EdgeDomainError::Missing { .. } => GeomKeyError::MissingAuthority,
+            remus_topology::edge::EdgeDomainError::Invalid { .. } => GeomKeyError::NonFinite,
+            _ => GeomKeyError::NonFinite,
+        })?
+    };
+    if !t0.is_finite() || !t1.is_finite() {
+        return Err(GeomKeyError::NonFinite);
+    }
+    let mid = edge.curve().evaluate_with_endpoints(0.5 * (t0 + t1), a, b);
+    if !mid.x().is_finite() || !mid.y().is_finite() || !mid.z().is_finite() {
+        return Err(GeomKeyError::NonFinite);
+    }
+    Ok(EdgeGeomKey {
+        ends,
+        mid: pos_key(mid).ok_or(GeomKeyError::NonFinite)?,
+    })
+}
+
+/// Per-key face-use counts over all shells (outer + inner), preserving
+/// seam-use multiplicity (each wire occurrence counts once).
+///
+/// Multiplicity convention matches [`census`]'s `edge_to_face_map` count:
+/// one wire occurrence = one face use. A seam edge traversed twice in one
+/// face's wire contributes two uses — the B-Rep convention the manifold
+/// check relies on. A single-face body whose boundary wire walks its seam
+/// edges twice each (the torus primitive's genus-1 fundamental polygon:
+/// one face, 2 edges, 4 occurrences) therefore keys each edge at 2 uses:
+/// geometrically closed, matching the id census.
+///
+/// Returns the counts plus the number of wire occurrences that could not be
+/// keyed. Unkeyable occurrences are reported, never dropped silently: see
+/// [`assert_position_closed`].
+pub fn position_edge_use_counts(
+    topo: &Topology,
+    solid: SolidId,
+) -> Result<(BTreeMap<EdgeGeomKey, usize>, usize), remus_topology::TopologyError> {
+    let mut counts: BTreeMap<EdgeGeomKey, usize> = BTreeMap::new();
+    let mut unkeyed = 0usize;
+    let data = topo.solid(solid)?;
+    let shells = std::iter::once(data.outer_shell()).chain(data.inner_shells().iter().copied());
+    for shell_id in shells {
+        for fid in topo.shell(shell_id)?.faces().to_vec() {
+            let face = topo.face(fid)?;
+            for wire_id in
+                std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+            {
+                for oe in topo.wire(wire_id)?.edges().to_vec() {
+                    match edge_geom_key(topo, oe.edge()) {
+                        Ok(key) => *counts.entry(key).or_default() += 1,
+                        Err(_) => unkeyed += 1,
+                    }
+                }
+            }
+        }
+    }
+    Ok((counts, unkeyed))
+}
+
+/// Position-quantized closedness: every geometric edge key must have exactly
+/// 2 uses; any unkeyable wire occurrence (non-finite geometry or missing
+/// non-`Line` authority) is a finding.
+///
+/// Supplements the edge-id census, which is blind to position-duplicate
+/// boundaries built from distinct ids.
+///
+/// # Panics
+///
+/// Panics on position-level free edges (1 use), non-manifold keys (3+ uses),
+/// or unkeyable occurrences.
+pub fn assert_position_closed(what: &str, topo: &Topology, solid: SolidId) {
+    let Ok((counts, unkeyed)) = position_edge_use_counts(topo, solid) else {
+        return;
+    };
+    let mut free: Vec<EdgeGeomKey> = Vec::new();
+    let mut non_manifold: Vec<EdgeGeomKey> = Vec::new();
+    for (key, uses) in &counts {
+        match uses {
+            1 => free.push(*key),
+            2 => {}
+            _ => non_manifold.push(*key),
+        }
+    }
+    assert!(
+        free.is_empty() && non_manifold.is_empty() && unkeyed == 0,
+        "{what}: position-quantized edge check failed — {} key(s) with 1 use \
+         (e.g. {free:.3?}), {} key(s) with 3+ uses (e.g. {non_manifold:.3?}), \
+         {unkeyed} unkeyable wire occurrence(s) (non-finite geometry or \
+         missing curve authority).",
+        free.len(),
+        non_manifold.len(),
     );
 }
