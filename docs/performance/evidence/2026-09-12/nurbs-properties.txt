@@ -1,0 +1,35 @@
+   Compiling log v0.4.34
+   Compiling regex-automata v0.4.16
+   Compiling remus-math v0.1.0 (<audit-source>/crates/math)
+   Compiling remus-topology v0.1.0 (<audit-source>/crates/topology)
+   Compiling remus-geometry v0.1.0 (<audit-source>/crates/geometry)
+   Compiling remus-algo v0.1.0 (<audit-source>/crates/algo)
+   Compiling remus-check v0.1.0 (<audit-source>/crates/check)
+   Compiling remus-offset v0.1.0 (<audit-source>/crates/offset)
+   Compiling remus-heal v0.1.0 (<audit-source>/crates/heal)
+   Compiling remus-blend v0.1.0 (<audit-source>/crates/blend)
+   Compiling zopfli v0.8.3
+   Compiling zip v8.6.0
+   Compiling remus-operations v0.1.0 (<audit-source>/crates/operations)
+   Compiling regex v1.13.1
+   Compiling criterion v0.8.2
+   Compiling remus-io v0.1.0 (<audit-source>/crates/io)
+    Finished `profiling` profile [optimized + debuginfo] target(s) in 1m 49s
+     Running benches/nurbs_properties.rs (<audit-target>/profiling/deps/nurbs_properties-1c2f12f025af70e4)
+Gnuplot not found, using plotters backend
+Benchmarking nurbs_properties/validate_solid strict (hammer holder)
+Benchmarking nurbs_properties/validate_solid strict (hammer holder): Warming up for 500.00 ms
+
+Warning: Unable to complete 10 samples in 1.0s. You may wish to increase target time to 16.2s.
+Benchmarking nurbs_properties/validate_solid strict (hammer holder): Collecting 10 samples in estimated 16.207 s (10 iterations)
+Benchmarking nurbs_properties/validate_solid strict (hammer holder): Analyzing
+nurbs_properties/validate_solid strict (hammer holder)
+                        time:   [1.6129 s 1.6158 s 1.6191 s]
+Benchmarking nurbs_properties/mass_properties (hammer holder)
+Benchmarking nurbs_properties/mass_properties (hammer holder): Warming up for 500.00 ms
+
+Warning: Unable to complete 10 samples in 1.0s. You may wish to increase target time to 36.7s.
+Benchmarking nurbs_properties/mass_properties (hammer holder): Collecting 10 samples in estimated 36.702 s (10 iterations)
+Benchmarking nurbs_properties/mass_properties (hammer holder): Analyzing
+nurbs_properties/mass_properties (hammer holder)
+                        time:   [3.6701 s 3.6772 s 3.6844 s]
