@@ -898,6 +898,61 @@ fn plane_nurbs_cylinder_domain() {
     }
 }
 
+/// A transversal plane slicing a NURBS tube wall must return the full loop as
+/// ONE closed fitted curve — not zero curves, and not an open arc with a
+/// grid-sized gap.
+///
+/// At 32 seed-grid samples the wall's z=1 loop seeds 31 unique crossings.
+/// The old per-cell edge scan pushed every crossing twice (once per incident
+/// cell), and the doubled cloud drove the chaining threshold's
+/// nearest-neighbour average to zero: each twin pair chained alone, deduped
+/// to a single point, and was discarded as too short — the loop returned
+/// zero curves. Unique-edge emission keeps the average at the true
+/// along-curve spacing; the single chain's endpoints then land one grid
+/// spacing apart and are closed by an exact re-append refit, so the stored
+/// curve is closed (start == end) with fit deviation at the interpolation
+/// error, not the grid spacing.
+#[test]
+fn plane_nurbs_tube_wall_returns_closed_loop() {
+    let cylinder = cylinder_nurbs_surface();
+
+    // Coarse grid: 32 samples is what the FF phase passes (`NURBS_SAMPLES`).
+    let result = intersect_plane_nurbs(&cylinder, Vec3::new(0.0, 0.0, 1.0), 1.0, 32).unwrap();
+
+    assert_eq!(
+        result.len(),
+        1,
+        "one transversal loop should chain into one curve, got {}",
+        result.len()
+    );
+    let curve = &result[0].curve;
+    let domain = curve.domain();
+    let (p_start, p_end) = (curve.evaluate(domain.0), curve.evaluate(domain.1));
+    assert!(
+        (p_start - p_end).length() < 1e-9,
+        "loop should be closed, gap = {:.3e}",
+        (p_start - p_end).length()
+    );
+    // Independent geometry oracle: every fitted point lies on the true tube
+    // (z=1 plane, unit radius) to the interpolation error — orders below the
+    // 0.06 grid spacing a gap would leave.
+    for k in 0..=32 {
+        #[allow(clippy::cast_precision_loss)]
+        let t = domain.0 + (domain.1 - domain.0) * (k as f64) / 32.0;
+        let p = curve.evaluate(t);
+        assert!(
+            (p.z() - 1.0).abs() < 1e-3,
+            "fitted point should lie in the z=1 plane, got z={}",
+            p.z()
+        );
+        let r = (p.x().powi(2) + p.y().powi(2)).sqrt();
+        assert!(
+            (r - 1.0).abs() < 1e-3,
+            "fitted point should lie on the unit circle, got r={r}"
+        );
+    }
+}
+
 /// Verify that the tangential touch test still works with the new
 /// second-order analysis integrated into the main SSI pipeline.
 #[test]

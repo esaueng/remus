@@ -167,9 +167,11 @@ while B4 and B16 stayed untouched). The contract lane that headed this list
    trimmer, the M5 precondition and the un-refusal path for the two known
    damaged-success fillet cases), then verify 2.4d against the merged
    bounded quadric matrices, then the remaining 2.6/2.7 witnesses. Expand
-   2.5 through the two slices #396 named (curved-NURBS trimmed FF extent and
-   transversal EF crossings; the plane×cylinder LSPIA fit error); build
-   missing arrangement primitives only when a pinned case requires them.
+   2.5 through the slices #396 named (curved-NURBS trimmed FF extent and
+   transversal EF crossings; the plane×cylinder LSPIA fit error — the first
+   of which partially landed as a math-layer plane×NURBS seed/closure fix
+   with no FF/EF path change); build missing arrangement primitives only
+   when a pinned case requires them.
 3. **Qualification lane:** B24 (wildcard-arm conversion in the four densest files); B26
    (boolean invariant proptests); complete B17/B19 matrices and remaining
    B6 evidence.
