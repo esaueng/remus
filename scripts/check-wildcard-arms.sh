@@ -75,7 +75,7 @@ scan() {
 # an enum. Strings, character literals, and line/block comments are stripped
 # first so braces inside them cannot shift the depth tracking.
 count_arms() {
-  awk '
+  awk -v SQ="'" '
     function push_frame() {
       nstack++
       fb[nstack] = 0; fp[nstack] = 0; fq[nstack] = 0
