@@ -1009,6 +1009,8 @@ fn straight_contact_matches_nonuniform_linear_nurbs() {
 }
 #[cfg(test)]
 mod notch_tests {
+    #![allow(clippy::expect_used)]
+
     use super::*;
 
     /// Build a planar n-gon face with unit tolerance, returning the face

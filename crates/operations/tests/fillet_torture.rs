@@ -507,22 +507,21 @@ fn mixed_convexity_chain(_name: &str) -> Observed {
     ];
     let mut concave_topo = topo.clone();
     let concave_before = snapshot(&concave_topo, input);
-    let concave_error = match fillet_v2(&mut concave_topo, input, &[edges[0]], 0.4) {
-        Ok(_) => panic!("mixed-convexity-chain/concave unexpectedly built"),
-        Err(error) => error,
-    };
-    assert_eq!(
-        blend_failure_code(&concave_error),
-        "invalid-input",
-        "mixed-convexity-chain/concave: {concave_error}"
-    );
-    assert_unchanged(
+    let concave = fillet_v2(&mut concave_topo, input, &[edges[0]], 0.4)
+        .unwrap_or_else(|error| panic!("mixed-convexity-chain/concave: {error}"));
+    assert!(concave.failed.is_empty());
+    assert_built(
         &concave_topo,
         input,
-        &concave_before,
+        concave.solid,
         "mixed-convexity-chain/concave",
     );
-
+    let expected_volume = concave_before.volume + 0.4_f64.powi(2) * (1.0 - TAU / 8.0) * 5.0;
+    let actual_volume = solid_volume(&concave_topo, concave.solid, MEASURE_DEFLECTION).unwrap();
+    assert!(
+        (actual_volume - expected_volume).abs() < 1e-6,
+        "concave fillet volume {actual_volume}, expected {expected_volume}"
+    );
     let mut convex_topo = topo.clone();
     let convex = fillet_v2(&mut convex_topo, input, &[edges[1]], 0.4)
         .unwrap_or_else(|error| panic!("mixed-convexity-chain/convex: {error}"));
