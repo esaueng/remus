@@ -217,6 +217,16 @@ impl Tally {
         }
     }
 
+    /// Merge another family's tally into this one (counts only; incorrect
+    /// descriptions are preserved for reporting).
+    fn merge(&mut self, other: &Self) {
+        self.exact_ok += other.exact_ok;
+        self.typed_refusal += other.typed_refusal;
+        self.incorrect += other.incorrect;
+        self.incorrect_descriptions
+            .extend(other.incorrect_descriptions.iter().cloned());
+    }
+
     fn finish(&self, family: &str) {
         println!(
             "B26TALLY family={family} exact_ok={} typed_refusal={} incorrect={}",
@@ -499,6 +509,53 @@ fn pin_operands(
 }
 
 // ── Family 1: box pairs — inclusion–exclusion + cut complement ────────
+//
+// Masking rule: each paired operation is validated independently FIRST.
+// A permitted refusal on one op never discards another op's successful but
+// incorrect result. Only identities needing several outputs at once are
+// gated on all of them succeeding.
+
+/// Validate one successful box-pair result (topology + mesh + translation
+/// invariance), including the empty-intersection representation.
+fn check_box_pair_result(
+    topo: &Topology,
+    s: SolidId,
+    tag: &str,
+    what: &str,
+    allow_empty: bool,
+) -> Result<(), String> {
+    match expected_empty_interpretation(topo, s, &format!("{what} {tag}")) {
+        Ok(true) => {
+            if allow_empty {
+                Ok(())
+            } else {
+                Err(format!("{what} {tag}: unexpectedly empty result"))
+            }
+        }
+        Ok(false) => {
+            check_valid_closed_oriented(topo, s, &format!("{what} {tag}"))?;
+            check_watertight_mesh(topo, s, &format!("{what} {tag}"))?;
+            check_translation_invariant(topo, s, &format!("{what} {tag}"))?;
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Classify one paired-operation error: a typed refusal passes, anything
+/// else is incorrect.
+fn check_paired_error(r: &Result<SolidId, OperationsError>, what: &str) -> Result<bool, String> {
+    match r {
+        Ok(_) => Ok(true),
+        Err(e) => {
+            if classify_refusal(e) {
+                Ok(false)
+            } else {
+                Err(format!("{what}: untyped boolean error: {e:?}"))
+            }
+        }
+    }
+}
 
 fn family_box_pair(offset: f64) -> Outcome {
     let what = format!("box-pair offset={offset}");
@@ -517,26 +574,47 @@ fn family_box_pair(offset: f64) -> Outcome {
         let (y, _) = tool_box_at(&mut topo, 2.0, 2.0, 2.0, offset, 0.0, 0.0);
         boolean(&mut topo, op, x, y)
     };
-    let (fused, inter, cut) = match (
+    let (rf, ri, rc) = (
         run(BooleanOp::Fuse),
         run(BooleanOp::Intersect),
         run(BooleanOp::Cut),
-    ) {
-        (Ok(f), Ok(i), Ok(c)) => (f, i, c),
-        (f, i, c) => {
-            // Any typed refusal is a pass for this case (boundary contact).
-            for r in [&f, &i, &c] {
-                if let Err(e) = r {
-                    if !classify_refusal(e) {
-                        println!("B26CASE {what}: untyped boolean error: {e:?}");
-                        return Outcome::Incorrect;
-                    }
-                }
+    );
+    // Validate every Ok result independently before looking at refusals:
+    // a permitted refusal on one op must not mask an incorrect success on
+    // another.
+    let mut vols: [Option<f64>; 3] = [None, None, None];
+    for (r, tag, slot, allow_empty) in [
+        (&rf, "fuse", 0, false),
+        (&ri, "intersect", 1, true),
+        (&rc, "cut", 2, false),
+    ] {
+        if let Ok(s) = r {
+            if let Err(e) = check_box_pair_result(&topo, *s, tag, &what, allow_empty) {
+                println!("B26CASE {e}");
+                return Outcome::Incorrect;
             }
-            return Outcome::TypedRefusal;
+            vols[slot] = Some(vol(&topo, *s));
         }
+    }
+    // Classify refusals only after all successes have been judged.
+    let mut ok_count = 0;
+    for r in [&rf, &ri, &rc] {
+        match check_paired_error(r, &what) {
+            Ok(true) => ok_count += 1,
+            Ok(false) => {}
+            Err(e) => {
+                println!("B26CASE {e}");
+                return Outcome::Incorrect;
+            }
+        }
+    }
+    if ok_count < 3 {
+        return Outcome::TypedRefusal;
+    }
+    let [Some(vf), Some(vi), Some(vc)] = vols else {
+        println!("B26CASE {what}: internal harness error: missing volumes");
+        return Outcome::Incorrect;
     };
-    let [vf, vi, vc] = [vol(&topo, fused), vol(&topo, inter), vol(&topo, cut)];
 
     // Oracle 1: inclusion–exclusion over closed forms.
     if rel_err(vf + vi, va + vb) > REL_SLACK {
@@ -550,37 +628,6 @@ fn family_box_pair(offset: f64) -> Outcome {
         println!("B26CASE {what}: cut complement fails: cut {vc:.9} + inter {vi:.9} != A {va:.9}");
         return Outcome::Incorrect;
     }
-    // Oracle 3: valid closed oriented topology. An empty intersection is
-    // the kernel's empty-set representation (no faces to validate); the
-    // volume oracle above already judged it (~0).
-    for (s, tag) in [(fused, "fuse"), (inter, "intersect"), (cut, "cut")] {
-        match expected_empty_interpretation(&topo, s, &format!("{what} {tag}")) {
-            Ok(true) => {
-                if tag != "intersect" {
-                    println!("B26CASE {what} {tag}: unexpectedly empty result");
-                    return Outcome::Incorrect;
-                }
-            }
-            Ok(false) => {
-                if let Err(e) = check_valid_closed_oriented(&topo, s, &format!("{what} {tag}")) {
-                    println!("B26CASE {e}");
-                    return Outcome::Incorrect;
-                }
-                if let Err(e) = check_watertight_mesh(&topo, s, &format!("{what} {tag}")) {
-                    println!("B26CASE {e}");
-                    return Outcome::Incorrect;
-                }
-                if let Err(e) = check_translation_invariant(&topo, s, &format!("{what} {tag}")) {
-                    println!("B26CASE {e}");
-                    return Outcome::Incorrect;
-                }
-            }
-            Err(e) => {
-                println!("B26CASE {e}");
-                return Outcome::Incorrect;
-            }
-        }
-    }
     Outcome::ExactOk
 }
 
@@ -590,11 +637,11 @@ fn family_box_pair(offset: f64) -> Outcome {
 // the intersection is exactly the πr²·2 plug inside the box.
 
 fn family_box_cylinder() -> Outcome {
-    let what = "box-cylinder plug";
+    let what = String::from("box-cylinder plug");
     let mut topo = Topology::new();
     let (stock, v_stock) = stock_box(&mut topo, 4.0, 4.0, 2.0);
     let (tool, v_tool) = tool_cylinder_at(&mut topo, 0.5, 4.0, 2.0, 2.0, -1.0);
-    if pin_operands(&topo, stock, v_stock, tool, v_tool, what).is_err() {
+    if pin_operands(&topo, stock, v_stock, tool, v_tool, &what).is_err() {
         return Outcome::Incorrect;
     }
     let plug_expected = PI * 0.5 * 0.5 * 2.0;
@@ -604,25 +651,45 @@ fn family_box_cylinder() -> Outcome {
         let (y, _) = tool_cylinder_at(&mut topo, 0.5, 4.0, 2.0, 2.0, -1.0);
         boolean(&mut topo, op, x, y)
     };
-    let (fused, inter, cut) = match (
+    let (rf, ri, rc) = (
         run(BooleanOp::Fuse),
         run(BooleanOp::Intersect),
         run(BooleanOp::Cut),
-    ) {
-        (Ok(f), Ok(i), Ok(c)) => (f, i, c),
-        (f, i, c) => {
-            for r in [&f, &i, &c] {
-                if let Err(e) = r {
-                    if !classify_refusal(e) {
-                        println!("B26CASE {what}: untyped boolean error: {e:?}");
-                        return Outcome::Incorrect;
-                    }
-                }
+    );
+    // Independent-first: validate every Ok result before classifying
+    // refusals, so a permitted refusal never masks an incorrect success.
+    let mut vols: [Option<f64>; 3] = [None, None, None];
+    for (r, tag, slot) in [(&rf, "fuse", 0), (&ri, "intersect", 1), (&rc, "cut", 2)] {
+        if let Ok(s) = r {
+            if let Err(e) = check_valid_closed_oriented(&topo, *s, &format!("{what} {tag}")) {
+                println!("B26CASE {e}");
+                return Outcome::Incorrect;
             }
-            return Outcome::TypedRefusal;
+            if let Err(e) = check_watertight_mesh(&topo, *s, &format!("{what} {tag}")) {
+                println!("B26CASE {e}");
+                return Outcome::Incorrect;
+            }
+            vols[slot] = Some(vol(&topo, *s));
         }
+    }
+    let mut ok_count = 0;
+    for r in [&rf, &ri, &rc] {
+        match check_paired_error(r, &what) {
+            Ok(true) => ok_count += 1,
+            Ok(false) => {}
+            Err(e) => {
+                println!("B26CASE {e}");
+                return Outcome::Incorrect;
+            }
+        }
+    }
+    if ok_count < 3 {
+        return Outcome::TypedRefusal;
+    }
+    let [Some(vf), Some(vi), Some(vc)] = vols else {
+        println!("B26CASE {what}: internal harness error: missing volumes");
+        return Outcome::Incorrect;
     };
-    let [vf, vi, vc] = [vol(&topo, fused), vol(&topo, inter), vol(&topo, cut)];
 
     // Closed-form oracles: plug, drilled box, union by inclusion–exclusion.
     if rel_err(vi, plug_expected) > REL_SLACK {
@@ -642,16 +709,6 @@ fn family_box_cylinder() -> Outcome {
             v_stock + v_tool - plug_expected
         );
         return Outcome::Incorrect;
-    }
-    for (s, tag) in [(fused, "fuse"), (inter, "intersect"), (cut, "cut")] {
-        if let Err(e) = check_valid_closed_oriented(&topo, s, &format!("{what} {tag}")) {
-            println!("B26CASE {e}");
-            return Outcome::Incorrect;
-        }
-        if let Err(e) = check_watertight_mesh(&topo, s, &format!("{what} {tag}")) {
-            println!("B26CASE {e}");
-            return Outcome::Incorrect;
-        }
     }
     Outcome::ExactOk
 }
@@ -702,33 +759,43 @@ fn family_cavity(offset: f64) -> Outcome {
         let (tool, _) = tool_box_at(&mut topo, 2.0, 2.0, 6.0, offset, 1.0, -1.0);
         boolean(&mut topo, op, ho, tool)
     };
-    let (cut, inter) = match (run(BooleanOp::Cut), run(BooleanOp::Intersect)) {
-        (Ok(c), Ok(i)) => (c, i),
-        (c, i) => {
-            for r in [&c, &i] {
-                if let Err(e) = r {
-                    if !classify_refusal(e) {
-                        println!("B26CASE {what}: untyped boolean error: {e:?}");
-                        return Outcome::Incorrect;
-                    }
-                }
+    let (rc, ri) = (run(BooleanOp::Cut), run(BooleanOp::Intersect));
+    // Independent-first: judge every Ok result before classifying refusals.
+    let mut vols: [Option<f64>; 2] = [None, None];
+    for (r, tag, slot) in [(&rc, "cut", 0), (&ri, "intersect", 1)] {
+        if let Ok(s) = r {
+            if let Err(e) = check_valid_closed_oriented(&topo, *s, &format!("{what} {tag}")) {
+                println!("B26CASE {e}");
+                return Outcome::Incorrect;
             }
-            return Outcome::TypedRefusal;
+            if let Err(e) = check_watertight_mesh(&topo, *s, &format!("{what} {tag}")) {
+                println!("B26CASE {e}");
+                return Outcome::Incorrect;
+            }
+            vols[slot] = Some(vol(&topo, *s));
         }
+    }
+    let mut ok_count = 0;
+    for r in [&rc, &ri] {
+        match check_paired_error(r, &what) {
+            Ok(true) => ok_count += 1,
+            Ok(false) => {}
+            Err(e) => {
+                println!("B26CASE {e}");
+                return Outcome::Incorrect;
+            }
+        }
+    }
+    if ok_count < 2 {
+        return Outcome::TypedRefusal;
+    }
+    let [Some(vc), Some(vi)] = vols else {
+        println!("B26CASE {what}: internal harness error: missing volumes");
+        return Outcome::Incorrect;
     };
-    if rel_err(vol(&topo, cut) + vol(&topo, inter), v_hollow) > REL_SLACK {
+    if rel_err(vc + vi, v_hollow) > REL_SLACK {
         println!("B26CASE {what}: cavity partition fails");
         return Outcome::Incorrect;
-    }
-    for (s, tag) in [(cut, "cut"), (inter, "intersect")] {
-        if let Err(e) = check_valid_closed_oriented(&topo, s, &format!("{what} {tag}")) {
-            println!("B26CASE {e}");
-            return Outcome::Incorrect;
-        }
-        if let Err(e) = check_watertight_mesh(&topo, s, &format!("{what} {tag}")) {
-            println!("B26CASE {e}");
-            return Outcome::Incorrect;
-        }
     }
     Outcome::ExactOk
 }
@@ -776,34 +843,44 @@ fn family_rigid(offset: f64, angle: f64) -> Outcome {
             .map_err(|_| OperationsError::NonManifoldResult)?;
         boolean(&mut both, op, p, q)
     };
-    let (fused, inter) = match (run(BooleanOp::Fuse), run(BooleanOp::Intersect)) {
-        (Ok(f), Ok(i)) => (f, i),
-        (f, i) => {
-            for r in [&f, &i] {
-                if let Err(e) = r {
-                    if !classify_refusal(e) {
-                        println!("B26CASE {what}: untyped boolean error: {e:?}");
-                        return Outcome::Incorrect;
-                    }
-                }
+    let (rf, ri) = (run(BooleanOp::Fuse), run(BooleanOp::Intersect));
+    // Independent-first: judge every Ok result before classifying refusals.
+    let mut vols: [Option<f64>; 2] = [None, None];
+    for (r, tag, slot) in [(&rf, "fuse", 0), (&ri, "intersect", 1)] {
+        if let Ok(s) = r {
+            if let Err(e) = check_valid_closed_oriented(&both, *s, &format!("{what} {tag}")) {
+                println!("B26CASE {e}");
+                return Outcome::Incorrect;
             }
-            return Outcome::TypedRefusal;
+            if let Err(e) = check_watertight_mesh(&both, *s, &format!("{what} {tag}")) {
+                println!("B26CASE {e}");
+                return Outcome::Incorrect;
+            }
+            vols[slot] = Some(vol(&both, *s));
         }
+    }
+    let mut ok_count = 0;
+    for r in [&rf, &ri] {
+        match check_paired_error(r, &what) {
+            Ok(true) => ok_count += 1,
+            Ok(false) => {}
+            Err(e) => {
+                println!("B26CASE {e}");
+                return Outcome::Incorrect;
+            }
+        }
+    }
+    if ok_count < 2 {
+        return Outcome::TypedRefusal;
+    }
+    let [Some(vf), Some(vi)] = vols else {
+        println!("B26CASE {what}: internal harness error: missing volumes");
+        return Outcome::Incorrect;
     };
     let va2 = closed_box(2.0, 1.0, 1.0);
-    if rel_err(vol(&both, fused) + vol(&both, inter), 2.0 * va2) > REL_SLACK {
+    if rel_err(vf + vi, 2.0 * va2) > REL_SLACK {
         println!("B26CASE {what}: rigid inclusion-exclusion fails");
         return Outcome::Incorrect;
-    }
-    for (s, tag) in [(fused, "fuse"), (inter, "intersect")] {
-        if let Err(e) = check_valid_closed_oriented(&both, s, &format!("{what} {tag}")) {
-            println!("B26CASE {e}");
-            return Outcome::Incorrect;
-        }
-        if let Err(e) = check_watertight_mesh(&both, s, &format!("{what} {tag}")) {
-            println!("B26CASE {e}");
-            return Outcome::Incorrect;
-        }
     }
     Outcome::ExactOk
 }
@@ -839,29 +916,39 @@ fn family_scale(offset: f64, scale: f64) -> Outcome {
         );
         boolean(&mut topo, op, x, y)
     };
-    let (fused, inter) = match (run(BooleanOp::Fuse), run(BooleanOp::Intersect)) {
-        (Ok(f), Ok(i)) => (f, i),
-        (f, i) => {
-            for r in [&f, &i] {
-                if let Err(e) = r {
-                    if !classify_refusal(e) {
-                        println!("B26CASE {what}: untyped boolean error: {e:?}");
-                        return Outcome::Incorrect;
-                    }
-                }
+    let (rf, ri) = (run(BooleanOp::Fuse), run(BooleanOp::Intersect));
+    // Independent-first: judge every Ok result before classifying refusals.
+    let mut vols: [Option<f64>; 2] = [None, None];
+    for (r, tag, slot) in [(&rf, "fuse", 0), (&ri, "intersect", 1)] {
+        if let Ok(s) = r {
+            if let Err(e) = check_valid_closed_oriented(&topo, *s, &format!("{what} {tag}")) {
+                println!("B26CASE {e}");
+                return Outcome::Incorrect;
             }
-            return Outcome::TypedRefusal;
+            vols[slot] = Some(vol(&topo, *s));
         }
+    }
+    let mut ok_count = 0;
+    for r in [&rf, &ri] {
+        match check_paired_error(r, &what) {
+            Ok(true) => ok_count += 1,
+            Ok(false) => {}
+            Err(e) => {
+                println!("B26CASE {e}");
+                return Outcome::Incorrect;
+            }
+        }
+    }
+    if ok_count < 2 {
+        return Outcome::TypedRefusal;
+    }
+    let [Some(vf), Some(vi)] = vols else {
+        println!("B26CASE {what}: internal harness error: missing volumes");
+        return Outcome::Incorrect;
     };
-    if rel_err(vol(&topo, fused) + vol(&topo, inter), va + vb) > REL_SLACK {
+    if rel_err(vf + vi, va + vb) > REL_SLACK {
         println!("B26CASE {what}: scaled inclusion-exclusion fails");
         return Outcome::Incorrect;
-    }
-    for (s, tag) in [(fused, "fuse"), (inter, "intersect")] {
-        if let Err(e) = check_valid_closed_oriented(&topo, s, &format!("{what} {tag}")) {
-            println!("B26CASE {e}");
-            return Outcome::Incorrect;
-        }
     }
     Outcome::ExactOk
 }
@@ -982,21 +1069,34 @@ fn family_nudge(offset: f64) -> Outcome {
             }
         }
         (Ok(s0), Ok(s1)) => {
-            let v0 = vol(&t0, s0);
-            let v1 = vol(&t1, s1);
-            if rel_err(v0, v1) > REL_SLACK {
-                println!("B26CASE {what}: nudge moved volume {v0:.9} -> {v1:.9}");
-                return Outcome::Incorrect;
-            }
+            // Independent-first: judge each side's topology before comparing
+            // volumes, so a bad base result cannot hide behind a matching
+            // nudged one (or vice versa).
             if check_valid_closed_oriented(&t0, s0, &format!("{what} base")).is_err()
                 || check_valid_closed_oriented(&t1, s1, &format!("{what} nudged")).is_err()
             {
                 println!("B26CASE {what}: nudge result topology invalid");
                 return Outcome::Incorrect;
             }
+            let v0 = vol(&t0, s0);
+            let v1 = vol(&t1, s1);
+            if rel_err(v0, v1) > REL_SLACK {
+                println!("B26CASE {what}: nudge moved volume {v0:.9} -> {v1:.9}");
+                return Outcome::Incorrect;
+            }
             Outcome::ExactOk
         }
         (Ok(s0), Err(e1)) | (Err(e1), Ok(s0)) => {
+            // The successful side is still judged on its own: an incorrect
+            // success paired with a refusal must not pass as TypedRefusal.
+            if check_valid_closed_oriented(&t0, s0, &format!("{what} success-side")).is_err() {
+                println!("B26CASE {what}: success side of nudge pair is topologically invalid");
+                return Outcome::Incorrect;
+            }
+            if !classify_refusal(&e1) {
+                println!("B26CASE {what}: untyped nudge error: {e1:?}");
+                return Outcome::Incorrect;
+            }
             let v0 = vol(&t0, s0);
             println!(
                 "B26CASE {what}: 1e-13 nudge flipped outcome kind (volume was {v0:.9}): {e1:?}"
@@ -1074,16 +1174,35 @@ fn run_ci_matrix() {
 /// rarity. Curved cases use 8-segment spheres (volume-identical, faster).
 fn run_campaign(n: usize, seed: u64) {
     let mut rng = Stream(seed);
-    let mut tally = Tally::default();
+    // Per-family tallies: a shared tally would let abundant box successes
+    // mask universal refusal in a curved family. Each family finishes (and
+    // enforces its own non-vacuity gate) independently; the merged tally is
+    // reporting only.
+    let mut box_tally = Tally::default();
+    let mut plug_tally = Tally::default();
+    let mut oblique_tally = Tally::default();
+    let mut sphere_tally = Tally::default();
     for i in 0..n {
         match i % 5 {
-            0 | 1 => campaign_box_case(&mut rng, &mut tally, seed, i),
-            2 => campaign_cylinder_plug_case(&mut rng, &mut tally, seed, i),
-            3 => campaign_oblique_cylinder_case(&mut rng, &mut tally, seed, i),
-            _ => campaign_sphere_cut_case(&mut rng, &mut tally, seed, i),
+            0 | 1 => campaign_box_case(&mut rng, &mut box_tally, seed, i),
+            2 => campaign_cylinder_plug_case(&mut rng, &mut plug_tally, seed, i),
+            3 => campaign_oblique_cylinder_case(&mut rng, &mut oblique_tally, seed, i),
+            _ => campaign_sphere_cut_case(&mut rng, &mut sphere_tally, seed, i),
         }
     }
-    tally.finish("campaign");
+    box_tally.finish("campaign-box");
+    plug_tally.finish("campaign-plug");
+    oblique_tally.finish("campaign-oblique");
+    sphere_tally.finish("campaign-sphere-cut");
+    let mut merged = Tally::default();
+    merged.merge(&box_tally);
+    merged.merge(&plug_tally);
+    merged.merge(&oblique_tally);
+    merged.merge(&sphere_tally);
+    println!(
+        "B26TALLY family=campaign-merged exact_ok={} typed_refusal={} incorrect={}",
+        merged.exact_ok, merged.typed_refusal, merged.incorrect
+    );
 }
 
 fn campaign_box_case(rng: &mut Stream, tally: &mut Tally, seed: u64, i: usize) {
@@ -1112,58 +1231,100 @@ fn campaign_box_case(rng: &mut Stream, tally: &mut Tally, seed: u64, i: usize) {
     let desc = format!(
         "seed={seed} index={i} family=campaign-box dims=({dx},{dy},{dz}) offset=({ex},{ey},{ez})"
     );
-    match (run(BooleanOp::Fuse), run(BooleanOp::Intersect)) {
-        (Ok(f), Ok(n)) => {
-            // An empty intersection is the kernel's empty-set
-            // representation for disjoint operands: no faces to
-            // validate, volume ~0 expected. Judge it by volume only.
-            let inter_empty =
-                expected_empty_interpretation(&topo, n, "campaign inter").unwrap_or(false);
-            if inter_empty {
-                let bad_ie = rel_err(vol(&topo, f), va + vb) > REL_SLACK;
-                let bad_topo = check_valid_closed_oriented(&topo, f, "campaign fuse").is_err();
-                let bad_mesh = check_watertight_mesh(&topo, f, "campaign fuse").is_err();
-                if bad_ie || bad_topo || bad_mesh {
-                    println!("B26CASE {desc} (disjoint fuse)");
-                    tally.record(
-                        Outcome::Incorrect,
-                        shrink_box_case(dx, dy, dz, ex, ey, ez, seed, i),
-                    );
-                } else {
-                    tally.record(Outcome::ExactOk, desc);
-                }
-                return;
+    let (rf, rn) = (run(BooleanOp::Fuse), run(BooleanOp::Intersect));
+    // Independent-first: judge every Ok result before classifying refusals.
+    // A permitted refusal on intersect must not mask an incorrect fuse, and
+    // an empty intersection is judged by volume (~0) rather than validated.
+    // The fuse check stages an optional failure (staged first so the
+    // shrunk description moves exactly once); the inter check returns
+    // directly since no staged value is live there.
+    let fuse_failure: Option<String> = if let Ok(f) = &rf {
+        let inter_empty = rn.as_ref().ok().is_some_and(|n| {
+            expected_empty_interpretation(&topo, *n, "campaign inter").unwrap_or(false)
+        });
+        if inter_empty {
+            if rel_err(vol(&topo, *f), va + vb) > REL_SLACK {
+                println!("B26CASE {desc} (disjoint fuse volume)");
+                Some(shrink_box_case(dx, dy, dz, ex, ey, ez, seed, i))
+            } else {
+                None
             }
-            let bad_ie = rel_err(vol(&topo, f) + vol(&topo, n), va + vb) > REL_SLACK;
-            let bad_topo = check_valid_closed_oriented(&topo, f, "campaign fuse").is_err()
-                || check_valid_closed_oriented(&topo, n, "campaign inter").is_err();
-            let bad_mesh = check_watertight_mesh(&topo, f, "campaign fuse").is_err()
-                || check_watertight_mesh(&topo, n, "campaign inter").is_err();
-            if bad_ie || bad_topo || bad_mesh {
-                println!("B26CASE {desc}");
+        } else if let Ok(n) = &rn {
+            if rel_err(vol(&topo, *f) + vol(&topo, *n), va + vb) > REL_SLACK {
+                println!("B26CASE {desc} (inclusion-exclusion)");
+                Some(shrink_box_case(dx, dy, dz, ex, ey, ez, seed, i))
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+        .or_else(|| {
+            if let Err(e) = check_valid_closed_oriented(&topo, *f, "campaign fuse") {
+                println!("B26CASE {desc} (fuse topology: {e})");
+                Some(shrink_box_case(dx, dy, dz, ex, ey, ez, seed, i))
+            } else {
+                None
+            }
+        })
+        .or_else(|| {
+            if let Err(e) = check_watertight_mesh(&topo, *f, "campaign fuse") {
+                println!("B26CASE {desc} (fuse mesh: {e})");
+                Some(shrink_box_case(dx, dy, dz, ex, ey, ez, seed, i))
+            } else {
+                None
+            }
+        })
+    } else {
+        None
+    };
+    if let Some(failed) = fuse_failure {
+        tally.record(Outcome::Incorrect, failed);
+        return;
+    }
+    if let Ok(n) = &rn {
+        if expected_empty_interpretation(&topo, *n, "campaign inter").unwrap_or(false) {
+            // Empty set: nothing to validate; the fuse-side volume check
+            // above already judged the disjoint identity.
+        } else {
+            if let Err(e) = check_valid_closed_oriented(&topo, *n, "campaign inter") {
+                println!("B26CASE {desc} (inter topology: {e})");
                 tally.record(
                     Outcome::Incorrect,
                     shrink_box_case(dx, dy, dz, ex, ey, ez, seed, i),
                 );
-            } else {
-                tally.record(Outcome::ExactOk, desc);
+                return;
+            }
+            if let Err(e) = check_watertight_mesh(&topo, *n, "campaign inter") {
+                println!("B26CASE {desc} (inter mesh: {e})");
+                tally.record(
+                    Outcome::Incorrect,
+                    shrink_box_case(dx, dy, dz, ex, ey, ez, seed, i),
+                );
+                return;
             }
         }
-        (fr, nr) => {
-            let mut untyped = false;
-            for r in [&fr, &nr] {
-                if let Err(e) = r {
-                    if !classify_refusal(e) {
-                        untyped = true;
-                    }
+    }
+    // Classify refusals only after all successes have been judged.
+    let mut ok_count = 0;
+    let mut untyped = false;
+    for r in [&rf, &rn] {
+        match r {
+            Ok(_) => ok_count += 1,
+            Err(e) => {
+                if !classify_refusal(e) {
+                    untyped = true;
                 }
             }
-            if untyped {
-                tally.record(Outcome::Incorrect, desc);
-            } else {
-                tally.record(Outcome::TypedRefusal, desc);
-            }
         }
+    }
+    if untyped {
+        println!("B26CASE {desc} (untyped error)");
+        tally.record(Outcome::Incorrect, desc);
+    } else if ok_count < 2 {
+        tally.record(Outcome::TypedRefusal, desc);
+    } else {
+        tally.record(Outcome::ExactOk, desc);
     }
 }
 
@@ -1253,30 +1414,51 @@ fn campaign_cylinder_plug_case(rng: &mut Stream, tally: &mut Tally, seed: u64, i
         boolean(&mut topo, op, x, y)
     };
     let plug = PI * r * r * 2.0;
-    match (run(BooleanOp::Cut), run(BooleanOp::Intersect)) {
-        (Ok(c), Ok(n)) => {
-            let bad = rel_err(vol(&topo, n), plug) > REL_SLACK
-                || rel_err(vol(&topo, c), v_stock - plug) > REL_SLACK
-                || check_valid_closed_oriented(&topo, c, "campaign plug cut").is_err()
-                || check_valid_closed_oriented(&topo, n, "campaign plug inter").is_err();
-            if bad {
-                println!("B26CASE {desc}");
-                tally.record(Outcome::Incorrect, desc);
-            } else {
-                tally.record(Outcome::ExactOk, desc);
+    let (rc, rn) = (run(BooleanOp::Cut), run(BooleanOp::Intersect));
+    // Independent-first: judge every Ok result before classifying refusals.
+    let mut failure: Option<&'static str> = None;
+    if let Ok(c) = &rc {
+        if rel_err(vol(&topo, *c), v_stock - plug) > REL_SLACK {
+            failure = Some("cut volume");
+        } else if let Err(e) = check_valid_closed_oriented(&topo, *c, "campaign plug cut") {
+            println!("B26CASE {desc} (cut topology: {e})");
+            failure = Some("cut topology");
+        }
+    }
+    if failure.is_none()
+        && let Ok(n) = &rn
+    {
+        if rel_err(vol(&topo, *n), plug) > REL_SLACK {
+            failure = Some("inter volume");
+        } else if let Err(e) = check_valid_closed_oriented(&topo, *n, "campaign plug inter") {
+            println!("B26CASE {desc} (inter topology: {e})");
+            failure = Some("inter topology");
+        }
+    }
+    if let Some(reason) = failure {
+        println!("B26CASE {desc} ({reason})");
+        tally.record(Outcome::Incorrect, desc);
+        return;
+    }
+    let mut ok_count = 0;
+    let mut untyped = false;
+    for r in [&rc, &rn] {
+        match r {
+            Ok(_) => ok_count += 1,
+            Err(e) => {
+                if !classify_refusal(e) {
+                    untyped = true;
+                }
             }
         }
-        (c, n) => {
-            let untyped = [&c, &n].iter().any(|r| match r {
-                Err(e) => !classify_refusal(e),
-                Ok(_) => false,
-            });
-            if untyped {
-                tally.record(Outcome::Incorrect, desc);
-            } else {
-                tally.record(Outcome::TypedRefusal, desc);
-            }
-        }
+    }
+    if untyped {
+        println!("B26CASE {desc} (untyped error)");
+        tally.record(Outcome::Incorrect, desc);
+    } else if ok_count < 2 {
+        tally.record(Outcome::TypedRefusal, desc);
+    } else {
+        tally.record(Outcome::ExactOk, desc);
     }
 }
 
