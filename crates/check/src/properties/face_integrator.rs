@@ -1938,8 +1938,10 @@ impl Accumulator {
     ) {
         // One solve for position and both partials (a NURBS surface would
         // otherwise run a full evaluation plus the derivative solve per
-        // Gauss point).
-        let (p, du, dv) = surface.point_and_partials_with_scratch(u, v, scratch);
+        // Gauss point). The span-hinted path verifies the previous spans
+        // before trusting them, so analytic surfaces (whose default ignores
+        // the hint) and NURBS faces alike get exactly the unhinted answer.
+        let (p, du, dv, _, _) = surface.span_hinted_point_and_partials_with_scratch(u, v, scratch);
 
         // Normal = du x dv (unnormalized, includes Jacobian)
         let n = Vec3::new(

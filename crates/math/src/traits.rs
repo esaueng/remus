@@ -72,6 +72,24 @@ pub trait ParametricSurface {
     ) -> (Point3, Vec3, Vec3) {
         self.point_and_partials(u, v)
     }
+
+    /// [`point_and_partials_with_scratch`](Self::point_and_partials_with_scratch)
+    /// reusing the previous call's knot spans when the parameters still lie
+    /// in them (NURBS only; the default forwards to the unhinted path).
+    /// Returns the position, both partials, and whether each axis's span
+    /// hint hit — for census only; results are identical either way. Callers
+    /// must use one scratch per surface and must not share one across
+    /// threads.
+    #[inline]
+    fn span_hinted_point_and_partials_with_scratch(
+        &self,
+        u: f64,
+        v: f64,
+        scratch: &mut crate::nurbs::surface::DerivativeScratch,
+    ) -> (Point3, Vec3, Vec3, bool, bool) {
+        let (p, du, dv) = self.point_and_partials_with_scratch(u, v, scratch);
+        (p, du, dv, false, false)
+    }
 }
 
 /// Unified interface for parametric curve evaluation.
@@ -279,18 +297,21 @@ impl ParametricSurface for NurbsSurface {
         )
     }
 
-    /// Scratch-backed [`point_and_partials`](Self::point_and_partials): one
-    /// `derivatives_into(u, v, 1)` into caller-owned storage, so a hot loop
-    /// reusing one scratch performs no per-abscissa allocation.
+    /// Span-hinted [`point_and_partials_with_scratch`](Self::point_and_partials_with_scratch):
+    /// one `derivatives_into(u, v, 1)` that reuses the previous call's knot
+    /// spans when the parameters still lie in them. Returns the position,
+    /// both partials, and whether each axis's span hint hit — for census
+    /// only; results are identical either way. Callers must use one scratch
+    /// per surface and must not share one across threads.
     #[inline]
-    fn point_and_partials_with_scratch(
+    fn span_hinted_point_and_partials_with_scratch(
         &self,
         u: f64,
         v: f64,
         scratch: &mut crate::nurbs::surface::DerivativeScratch,
-    ) -> (Point3, Vec3, Vec3) {
-        let (p, du, dv) = scratch.point_and_partials_from(self, u, v);
-        (Point3::new(p.x(), p.y(), p.z()), du, dv)
+    ) -> (Point3, Vec3, Vec3, bool, bool) {
+        let (p, du, dv, hit_u, hit_v) = scratch.span_hinted_point_and_partials_from(self, u, v);
+        (Point3::new(p.x(), p.y(), p.z()), du, dv, hit_u, hit_v)
     }
 }
 
