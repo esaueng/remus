@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789275245277,
+  "lastUpdate": 1789277431962,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -33901,6 +33901,240 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 102424,
             "range": "± 1148",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "184b19646a10b39ee911687c58e88c325ec413eb",
+          "message": "perf(nurbs): reuse projection grids and spans with verified packages (#435)\n\n* perf(check): reuse one NURBS seed grid for face trim preparation\n\nface_uv_bounds and build_face_uv projected every boundary sample\nthrough project_point_to_surface, which rebuilds its 81-evaluation\ncoarse seed grid on every call: ~12k samples x 81 bicubic evaluations\nper integrate pass over the hammer holder. The NURBS arm of\nintegrate_face now builds one SurfaceSeedGrid per face and projects\nevery trim sample through project_point_to_surface_with_grid. The\ngrid depends only on the surface, so a shared grid returns exactly\nwhat per-point grid searches would - same nearest node, same Newton\nseed - bit for bit (unit-tested in math as\na_supplied_grid_gives_bit_identical_results); the Err fallback\nreplicates the trait's domain-midpoint answer. face_uv_bounds now\ntakes a projection closure instead of a generic surface (its only use\nof the surface was projection); analytic call sites pass the same\nmethod closure, unchanged. Grid lifetime is one integrate_face call\nover an immutable surface: no invalidation concern. No tolerance,\nquadrature order, sample count, threshold, traversal, or validation\nsemantics change.\n\nMeasured profiling profile, same machine (hammer holder, 42 NURBS\nfaces), 3x repeats back-to-back, medians:\nvalidate_solid 1.28s -> 1.08s (-16%),\nmass_properties 2.77s -> 2.57s (-7%).\nPer-face contributions bitwise identical at orders 5 and 8 (hash\nc608a4fbfb518418 / c70f043f4836c6de before and after);\nmass/center/validity identical to all printed digits; STEP round\ntrip byte-identical length with identical reimport mass.\n\n* perf(math): reuse previous knot spans across quadrature abscissae\n\nGauss abscissae arrive in ascending u (and usually ascending v within one\npatch), so the derivative solve usually stays in the same knot span; each\nabscissa still paid two find_span binary searches. DerivativeScratch now\ncarries the previous spans and the NURBS span-hinted trait path verifies\nknots[span] <= t < knots[span+1] - the exact find_span postcondition,\nincluding repeated knots and clamped domain ends - before trusting them,\nfalling back to the search (which refreshes the hint) on a miss. A hit\nfeeds the same indices into the untouched solve, so results are\nbit-identical; analytic surfaces use the default, which forwards to the\nunhinted path. One scratch per surface is required (spans are knot\nindices); integrate_parametric already holds one scratch per face.\n\nMeasured profiling profile, same machine (hammer holder, 42 NURBS faces),\n3x repeats back-to-back, medians, on top of the seed-grid commit:\nvalidate_solid 1.085s -> 1.066s (-1.7%),\nmass_properties 2.561s -> 2.530s (-1.2%).\nPer-face contributions bitwise identical at orders 5 and 8 (hashes\nbf21eeed2b293f88 / 8e2f1f365af2a05c before and after); mass/center/\nvalidity identical to all printed digits. New unit tests pin bitwise\nequality over span crossings, knots, ends, clamping (both walk orders)\nand guard the hint against going vacuous (199/199 hits on a single-span\nwalk).\n\n* fix(math): preserve scratch reuse for existing surface callers\n\n* chore(wasm): rebuild paired packages for NURBS optimizations",
+          "timestamp": "2026-09-13T01:24:15-04:00",
+          "tree_id": "bc469331f9fab4e066adc9b7d194a7c7007eb09f",
+          "url": "https://github.com/esaueng/remus/commit/184b19646a10b39ee911687c58e88c325ec413eb"
+        },
+        "date": 1789277430696,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 861121,
+            "range": "± 7824",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 941313,
+            "range": "± 8839",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 19206,
+            "range": "± 233",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 7834471,
+            "range": "± 15553",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 7870046,
+            "range": "± 305429",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 7596836,
+            "range": "± 77384",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 711692,
+            "range": "± 723",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 12158495,
+            "range": "± 305457",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 22515343,
+            "range": "± 194353",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 18,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 69,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 31,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 131,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 108,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 482,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 92,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 242,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 151,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 334,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 641,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 1934,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 8,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 24,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 59,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 59,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 387761,
+            "range": "± 2102",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 7035472,
+            "range": "± 13822",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 120325,
+            "range": "± 182",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 409984,
+            "range": "± 7972",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 71008,
+            "range": "± 10090",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 680813,
+            "range": "± 39246",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 8399514,
+            "range": "± 396061",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 501183,
+            "range": "± 1563",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 791147,
+            "range": "± 2250",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 58354,
+            "range": "± 161",
             "unit": "ns/iter"
           }
         ]
