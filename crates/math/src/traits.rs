@@ -59,6 +59,19 @@ pub trait ParametricSurface {
         let (du, dv) = self.partials(u, v);
         (self.evaluate(u, v), du, dv)
     }
+
+    /// [`point_and_partials`](Self::point_and_partials) with caller-provided
+    /// scratch storage for implementations that allocate per call (NURBS).
+    /// The default ignores `scratch`. Callers must not share one scratch
+    /// across threads.
+    fn point_and_partials_with_scratch(
+        &self,
+        u: f64,
+        v: f64,
+        _scratch: &mut crate::nurbs::surface::DerivativeScratch,
+    ) -> (Point3, Vec3, Vec3) {
+        self.point_and_partials(u, v)
+    }
 }
 
 /// Unified interface for parametric curve evaluation.
@@ -264,6 +277,20 @@ impl ParametricSurface for NurbsSurface {
             d[1][0],
             d[0][1],
         )
+    }
+
+    /// Scratch-backed [`point_and_partials`](Self::point_and_partials): one
+    /// `derivatives_into(u, v, 1)` into caller-owned storage, so a hot loop
+    /// reusing one scratch performs no per-abscissa allocation.
+    #[inline]
+    fn point_and_partials_with_scratch(
+        &self,
+        u: f64,
+        v: f64,
+        scratch: &mut crate::nurbs::surface::DerivativeScratch,
+    ) -> (Point3, Vec3, Vec3) {
+        let (p, du, dv) = scratch.point_and_partials_from(self, u, v);
+        (Point3::new(p.x(), p.y(), p.z()), du, dv)
     }
 }
 

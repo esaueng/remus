@@ -37,7 +37,7 @@ pub use projection::{
     CurveProjection, SurfaceProjection, SurfaceSeedGrid, project_point_to_curve,
     project_point_to_surface, project_point_to_surface_seeded, project_point_to_surface_with_grid,
 };
-pub use surface::NurbsSurface;
+pub use surface::{DerivativeScratch, NurbsSurface};
 pub use surface_fitting::interpolate_surface;
 
 /// Reject control points carrying a non-finite coordinate.
