@@ -37,6 +37,6 @@
   ],
   "type": "module",
   "types": "remus_wasm.d.ts",
-  "version": "2.130.17",
+  "version": "2.130.18",
   "homepage": "https://github.com/esaueng/remus"
 }
