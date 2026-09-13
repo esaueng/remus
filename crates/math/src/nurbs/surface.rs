@@ -44,6 +44,98 @@ impl PartialEq for NurbsSurface {
     }
 }
 
+/// Reusable scratch storage for [`NurbsSurface::derivatives_into`].
+///
+/// Holds the basis-derivative buffers and the homogeneous quotient table so a
+/// hot loop (e.g. one Gauss abscissa after another) pays their allocation at
+/// most once, when the buffer first grows to the requested size. All state is
+/// overwritten on every call; nothing is read before it is written.
+///
+/// Re-exported for quadrature callers in other crates; see
+/// [`NurbsSurface::derivatives_into`].
+#[derive(Debug, Default)]
+pub struct DerivativeScratch {
+    basis: Vec<f64>,
+    sk: Vec<Vec3>,
+    point_and_partials_out: Vec<Vec<Vec3>>,
+}
+
+impl DerivativeScratch {
+    /// Empty scratch; buffers grow on first use.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn ensure_basis(&mut self, len: usize) {
+        if self.basis.len() < len {
+            self.basis.resize(len, 0.0);
+        }
+    }
+
+    fn ensure_sk(&mut self, len: usize) {
+        if self.sk.len() < len {
+            self.sk.resize(len, Vec3::new(0.0, 0.0, 0.0));
+        }
+    }
+
+    /// Size the basis buffer for a `derivatives_into` call at order `d`.
+    fn ensure_basis_for(&mut self, surface: &NurbsSurface, d: usize) {
+        let du = d.min(surface.degree_u);
+        let dv = d.min(surface.degree_v);
+        self.ensure_basis((du + 1) * (surface.degree_u + 1) + (dv + 1) * (surface.degree_v + 1));
+    }
+
+    /// Size the quotient table for a `derivatives_into` call at order `d`.
+    fn ensure_sk_for(&mut self, d: usize) {
+        self.ensure_sk((d + 1) * (d + 1));
+    }
+
+    /// Grow the reusable 2x2 `derivatives_into` output table.
+    #[doc(hidden)]
+    pub fn ensure_point_and_partials_out(&mut self) {
+        if self.point_and_partials_out.len() < 2 || self.point_and_partials_out[0].len() < 2 {
+            self.point_and_partials_out = vec![vec![Vec3::new(0.0, 0.0, 0.0); 2]; 2];
+        }
+    }
+
+    /// Run one fused position-and-partials solve into the reusable buffers.
+    ///
+    /// Equivalent to `point_and_partials` on this surface, without any
+    /// per-call allocation once the buffers have grown. Callers must not
+    /// share one scratch across threads.
+    #[doc(hidden)]
+    pub fn point_and_partials_from(
+        &mut self,
+        surface: &NurbsSurface,
+        u: f64,
+        v: f64,
+    ) -> (Vec3, Vec3, Vec3) {
+        self.ensure_point_and_partials_out();
+        self.ensure_basis_for(surface, 1);
+        self.ensure_sk_for(1);
+        // Split the borrows: the output table and the scratch buffers live in
+        // disjoint fields, so both can be borrowed at once.
+        let Self {
+            basis,
+            sk,
+            point_and_partials_out: out,
+        } = self;
+        surface.derivatives_into_with_buffers(u, v, 1, basis, sk, out);
+        (out[0][0], out[1][0], out[0][1])
+    }
+
+    /// The reusable 2x2 `derivatives_into` output table.
+    ///
+    /// Valid only after [`Self::ensure_point_and_partials_out`]; callers must
+    /// not retain the borrow across calls.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn point_and_partials_out_mut(&mut self) -> &mut [Vec<Vec3>] {
+        &mut self.point_and_partials_out
+    }
+}
+
 impl NurbsSurface {
     /// The largest control-point weight (cached; computed once per surface).
     #[must_use]
@@ -384,9 +476,56 @@ impl NurbsSurface {
     /// derivative `∂^(k+l)S / ∂u^k ∂v^l` as a `Vec3`.
     ///
     /// Uses NURBS Book A3.6 + A4.4 (rational quotient rule).
+    ///
+    /// The returned table costs one heap allocation per row plus the outer
+    /// vector. Hot loops that call this per quadrature abscissa should use
+    /// [`Self::derivatives_into`] with a reused scratch buffer instead.
     #[must_use]
     #[allow(clippy::many_single_char_names, clippy::cast_precision_loss)]
     pub fn derivatives(&self, u: f64, v: f64, d: usize) -> Vec<Vec<Vec3>> {
+        let mut scratch = DerivativeScratch::new();
+        let mut out = vec![vec![Vec3::new(0.0, 0.0, 0.0); d + 1]; d + 1];
+        self.derivatives_into(u, v, d, &mut scratch, &mut out);
+        out
+    }
+
+    /// Compute surface derivatives up to order `d`, writing into caller-owned
+    /// storage: `out[k][l]` receives `∂^(k+l)S / ∂u^k ∂v^l`.
+    ///
+    /// `out` must have at least `d + 1` rows of at least `d + 1` entries; only
+    /// entries with `k + l <= d` (clamped by each axis degree) are written.
+    /// `scratch` carries the reusable basis/homogeneous buffers so repeated
+    /// calls (e.g. per quadrature abscissa) perform no allocation for the
+    /// orders every hot path uses; larger orders take a heap path sized by the
+    /// request. Results are bit-identical to [`Self::derivatives`]: same
+    /// spans, same basis values, same contraction and quotient order.
+    #[allow(clippy::many_single_char_names, clippy::cast_precision_loss)]
+    pub fn derivatives_into(
+        &self,
+        u: f64,
+        v: f64,
+        d: usize,
+        scratch: &mut DerivativeScratch,
+        out: &mut [Vec<Vec3>],
+    ) {
+        scratch.ensure_basis_for(self, d);
+        scratch.ensure_sk_for(d);
+        self.derivatives_into_with_buffers(u, v, d, &mut scratch.basis, &mut scratch.sk, out);
+    }
+
+    /// [`Self::derivatives_into`] with the scratch buffers passed explicitly,
+    /// so a caller holding both the output table and the scratch (e.g. two
+    /// disjoint fields of one struct) can borrow both at once.
+    #[allow(clippy::many_single_char_names, clippy::cast_precision_loss)]
+    fn derivatives_into_with_buffers(
+        &self,
+        u: f64,
+        v: f64,
+        d: usize,
+        basis_buf: &mut [f64],
+        sk_buf: &mut [Vec3],
+        out: &mut [Vec<Vec3>],
+    ) {
         let pu = self.degree_u;
         let pv = self.degree_v;
         let n_rows = self.control_points.len();
@@ -400,27 +539,11 @@ impl NurbsSurface {
         let dv = d.min(pv);
         let stride_u = pu + 1;
         let required_u = (du + 1) * stride_u;
-        let mut ders_u_stack =
-            [0.0f64; (basis::MAX_STACK_OUTPUT + 1) * (basis::MAX_STACK_OUTPUT + 1)];
-        let mut ders_u_heap;
-        let ders_u: &mut [f64] = if required_u <= ders_u_stack.len() {
-            &mut ders_u_stack[..required_u]
-        } else {
-            ders_u_heap = vec![0.0; required_u];
-            &mut ders_u_heap
-        };
-        basis::ders_basis_funs_into(span_u, u, pu, du, &self.knots_u, ders_u);
         let stride_v = pv + 1;
         let required_v = (dv + 1) * stride_v;
-        let mut ders_v_stack =
-            [0.0f64; (basis::MAX_STACK_OUTPUT + 1) * (basis::MAX_STACK_OUTPUT + 1)];
-        let mut ders_v_heap;
-        let ders_v: &mut [f64] = if required_v <= ders_v_stack.len() {
-            &mut ders_v_stack[..required_v]
-        } else {
-            ders_v_heap = vec![0.0; required_v];
-            &mut ders_v_heap
-        };
+        let (ders_u, ders_v) = basis_buf.split_at_mut(required_u);
+        let ders_v = &mut ders_v[..required_v];
+        basis::ders_basis_funs_into(span_u, u, pu, du, &self.knots_u, ders_u);
         basis::ders_basis_funs_into(span_v, v, pv, dv, &self.knots_v, ders_v);
 
         // Compute homogeneous derivatives Aw[k][l] = (wx, wy, wz, w), stored
@@ -464,7 +587,11 @@ impl NurbsSurface {
 
         // Apply rational quotient rule (A4.4).
         let zero = Vec3::new(0.0, 0.0, 0.0);
-        let mut skl = vec![vec![zero; n]; n];
+        for entry in sk_buf.iter_mut() {
+            *entry = zero;
+        }
+        let sk = &mut *sk_buf;
+        let skl = |sk: &[Vec3], k: usize, l: usize| sk[k * n + l];
         let w0 = aw[0][3];
 
         for k in 0..=du {
@@ -477,25 +604,28 @@ impl NurbsSurface {
                 for j in 1..=l {
                     let bin = binomial(l, j) as f64;
                     let wj = aw[j][3];
-                    v3[0] -= bin * wj * skl[k][l - j].x();
-                    v3[1] -= bin * wj * skl[k][l - j].y();
-                    v3[2] -= bin * wj * skl[k][l - j].z();
+                    let s = skl(sk, k, l - j);
+                    v3[0] -= bin * wj * s.x();
+                    v3[1] -= bin * wj * s.y();
+                    v3[2] -= bin * wj * s.z();
                 }
 
                 for i in 1..=k {
                     let bin = binomial(k, i) as f64;
                     let wi = aw[i * n][3];
-                    v3[0] -= bin * wi * skl[k - i][l].x();
-                    v3[1] -= bin * wi * skl[k - i][l].y();
-                    v3[2] -= bin * wi * skl[k - i][l].z();
+                    let s = skl(sk, k - i, l);
+                    v3[0] -= bin * wi * s.x();
+                    v3[1] -= bin * wi * s.y();
+                    v3[2] -= bin * wi * s.z();
 
                     let mut v2 = [0.0f64; 3];
                     for j in 1..=l {
                         let bin2 = binomial(l, j) as f64;
                         let wij = aw[i * n + j][3];
-                        v2[0] += bin2 * wij * skl[k - i][l - j].x();
-                        v2[1] += bin2 * wij * skl[k - i][l - j].y();
-                        v2[2] += bin2 * wij * skl[k - i][l - j].z();
+                        let s = skl(sk, k - i, l - j);
+                        v2[0] += bin2 * wij * s.x();
+                        v2[1] += bin2 * wij * s.y();
+                        v2[2] += bin2 * wij * s.z();
                     }
                     v3[0] -= bin * v2[0];
                     v3[1] -= bin * v2[1];
@@ -503,11 +633,18 @@ impl NurbsSurface {
                 }
 
                 debug_assert!(w0.is_finite() && w0 > 0.0);
-                skl[k][l] = Vec3::new(v3[0] / w0, v3[1] / w0, v3[2] / w0);
+                sk[k * n + l] = Vec3::new(v3[0] / w0, v3[1] / w0, v3[2] / w0);
             }
         }
 
-        skl
+        for k in 0..=du {
+            for l in 0..=dv {
+                if k + l > d {
+                    continue;
+                }
+                out[k][l] = sk[k * n + l];
+            }
+        }
     }
 
     /// Compute the unit normal vector at parameters `(u, v)`.
@@ -1125,6 +1262,58 @@ mod weight_cache_tests {
                     assert_eq!(bits(low[k][l]), bits(high[k][l]), "S^({k},{l})");
                 }
             }
+        }
+    }
+
+    #[test]
+    fn derivatives_into_matches_derivatives_bitwise() {
+        use crate::vec::Vec3;
+        // Scratch-buffer path must reproduce the allocating path exactly:
+        // same spans, basis values, contraction and quotient order. Cover
+        // d = 0..3 (including the degree-clamped d > pu/pv arms) and an order
+        // that forces the heap `aw` path.
+        let s = rational_patch(1.0);
+        let mut scratch = DerivativeScratch::new();
+        for d in 0..=3 {
+            for k in 0..30 {
+                let (u, v) = (f64::from(k) / 29.0, (f64::from(k) * 0.37) % 1.0);
+                let mut out = vec![vec![Vec3::new(0.0, 0.0, 0.0); d + 1]; d + 1];
+                s.derivatives_into(u, v, d, &mut scratch, &mut out);
+                let expected = s.derivatives(u, v, d);
+                for a in 0..=d {
+                    for b in 0..=d {
+                        // Entries outside the written triangle keep whatever
+                        // the caller put there; only compare written cells.
+                        if a + b > d || a > s.degree_u().min(d) || b > s.degree_v().min(d) {
+                            continue;
+                        }
+                        assert_eq!(bits(out[a][b]), bits(expected[a][b]), "S^({a},{b}) d={d}");
+                    }
+                }
+            }
+        }
+        // Heap `aw` path (d = MAX_STACK_OUTPUT + 1) agrees too.
+        let (u, v) = (0.31, 0.77);
+        let d = basis::MAX_STACK_OUTPUT + 1;
+        let mut out = vec![vec![Vec3::new(0.0, 0.0, 0.0); d + 1]; d + 1];
+        s.derivatives_into(u, v, d, &mut scratch, &mut out);
+        let expected = s.derivatives(u, v, d);
+        for a in 0..=2 {
+            for b in 0..=2 {
+                if a + b <= 2 {
+                    assert_eq!(bits(out[a][b]), bits(expected[a][b]), "S^({a},{b}) heap");
+                }
+            }
+        }
+        // Reusing one scratch across many calls stays exact (no stale state).
+        let mut out2 = vec![vec![Vec3::new(0.0, 0.0, 0.0); 2]; 2];
+        for k in 0..50 {
+            let (u, v) = (f64::from(k) / 49.0, 1.0 - f64::from(k) / 49.0);
+            s.derivatives_into(u, v, 1, &mut scratch, &mut out2);
+            let expected = s.derivatives(u, v, 1);
+            assert_eq!(bits(out2[0][0]), bits(expected[0][0]));
+            assert_eq!(bits(out2[1][0]), bits(expected[1][0]));
+            assert_eq!(bits(out2[0][1]), bits(expected[0][1]));
         }
     }
 

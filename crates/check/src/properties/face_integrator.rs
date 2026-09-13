@@ -5,6 +5,7 @@
 //! (cylinder, cone, sphere, torus, NURBS) use tensor-product Gauss-Legendre
 //! quadrature over the UV domain.
 
+use remus_math::nurbs::surface::DerivativeScratch;
 use remus_math::quadrature::gauss_legendre_points;
 use remus_math::traits::ParametricSurface;
 use remus_math::vec::{Point2, Point3, Vec3};
@@ -603,6 +604,7 @@ fn integrate_torus_tube_band(
     breaks.dedup_by(|a, b| (*a - *b).abs() < 1e-12);
     let gauss = gauss_legendre_points(order);
     let mut acc = Accumulator::default();
+    let mut scratch = DerivativeScratch::new();
     for interval in breaks.windows(2) {
         let v_scale = (interval[1] - interval[0]) / 2.0;
         let v_mid = f64::midpoint(interval[0], interval[1]);
@@ -621,7 +623,13 @@ fn integrate_torus_tube_band(
                 let mid = a + (patch as f64 + 0.5) * step;
                 for gu in gauss {
                     let u = (step / 2.0).mul_add(gu.x, mid);
-                    acc.add(torus, u, v, gu.w * gv.w * step.abs() / 2.0 * v_scale);
+                    acc.add(
+                        torus,
+                        u,
+                        v,
+                        gu.w * gv.w * step.abs() / 2.0 * v_scale,
+                        &mut scratch,
+                    );
                 }
             }
         }
@@ -1902,11 +1910,22 @@ struct Accumulator {
 impl Accumulator {
     /// Add one abscissa's contribution, weighted by `w` (which already carries
     /// the map from the reference interval to the patch).
-    fn add<S: ParametricSurface>(&mut self, surface: &S, u: f64, v: f64, w: f64) {
+    ///
+    /// `scratch` is thread-local reuse storage for the NURBS derivative
+    /// solve; other surfaces ignore it. Callers must not share one scratch
+    /// across threads.
+    fn add<S: ParametricSurface>(
+        &mut self,
+        surface: &S,
+        u: f64,
+        v: f64,
+        w: f64,
+        scratch: &mut DerivativeScratch,
+    ) {
         // One solve for position and both partials (a NURBS surface would
         // otherwise run a full evaluation plus the derivative solve per
         // Gauss point).
-        let (p, du, dv) = surface.point_and_partials(u, v);
+        let (p, du, dv) = surface.point_and_partials_with_scratch(u, v, scratch);
 
         // Normal = du x dv (unnormalized, includes Jacobian)
         let n = Vec3::new(
@@ -2073,6 +2092,10 @@ fn integrate_parametric<S: ParametricSurface>(
     let du_patch = (u_range.1 - u_range.0) / nu as f64;
     let u_scale = du_patch / 2.0;
     let mut acc = Accumulator::default();
+    // One scratch per face integration: every NURBS abscissa below reuses
+    // these buffers instead of allocating a derivative table each time.
+    // Integration is single-threaded within a face, so one scratch suffices.
+    let mut scratch = DerivativeScratch::new();
 
     if trim.splits_domain() {
         let breaks = trim.u_breaks(u_range);
@@ -2097,7 +2120,13 @@ fn integrate_parametric<S: ParametricSurface>(
                             let v_mid = dv_patch.mul_add(iv as f64, a) + v_scale;
                             for gpv in gauss_pts {
                                 let v = v_scale.mul_add(gpv.x, v_mid);
-                                acc.add(surface, u, v, gpu.w * gpv.w * u_scale * v_scale);
+                                acc.add(
+                                    surface,
+                                    u,
+                                    v,
+                                    gpu.w * gpv.w * u_scale * v_scale,
+                                    &mut scratch,
+                                );
                             }
                         }
                     }
@@ -2121,7 +2150,13 @@ fn integrate_parametric<S: ParametricSurface>(
                     if !trim.accepts(u, v) {
                         continue;
                     }
-                    acc.add(surface, u, v, gpu.w * gpv.w * u_scale * v_scale);
+                    acc.add(
+                        surface,
+                        u,
+                        v,
+                        gpu.w * gpv.w * u_scale * v_scale,
+                        &mut scratch,
+                    );
                 }
             }
         }
