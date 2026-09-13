@@ -20,8 +20,8 @@ the *queue*; the narrative behind closed rows is `campaign-history.md`. All
 are living documents: update the relevant row in the same PR that changes
 its state. Before claiming anything: `gh pr list --state open` (R6).
 
-- **Drafted:** 2026-08-29. **Last reconciled:** 2026-09-11 against `main` @
-  `95de160` (regenerate with `git rev-parse --short origin/main` when touching
+- **Drafted:** 2026-08-29. **Last reconciled:** 2026-09-12 against `main` @
+  `f464285f` (regenerate with `git rev-parse --short origin/main` when touching
   §H0; do not hand-type a baseline older than the section it heads).
 - **External K-S1 disposition — tangent-boss operand drop: done (PR #143,
   2026-08-30).** The historical pre-fix sequence returned the unchanged plate
@@ -77,76 +77,64 @@ its state. Before claiming anything: `gh pr list --state open` (R6).
 
 ### H0 — in flight (verify before duplicating)
 
-Reconciled 2026-09-11 UTC at `95de160` (merges through #396). Open at
-inspection: none (no open PRs, no open issues). Since the previous
-reconciliation at `63e388c`: #382 (translation endpoint certificates) and
-the package refresh #393 merged; the hammer-holder perf campaign landed as
-a stacked train (#389 NURBS weight cache, #394 edge-face box gating, #395
-distance-query NURBS pruning; see B28) with #391 (`unifyFacesChecked`, a
-B16 row) on top; and #396 fixed converted-B-spline planes measuring 29 %
-high and losing a fused peg, and disclosed the first named P-Class 2.5
-slices. The previous reconciliation's notes: the contract lane closed
-(B21 #356, B22 #350, B23 #359), typed binary boolean results (#354) and the
-native/wasm quadric parity matrix (#355) landed, and the hammer-holder
-opening stack merged as a linear train (#363, #375, #366, #367, #368, #370,
-#371, #373, #374; see B27). #363's opposing-face clip regressed the
-deepened-notch fixture to eight unpaired edges and was fixed in-branch
-before the train (two arrangement gaps, recorded in the skill's lessons).
-The 2026-09-06 mutation survivors are triaged (#381). The bounded quadric,
-scale, tangency (#307), quarter-wall (#308), seam (#312), persistent
-edit/healing integration (#338), cylindrical blend resize (#346), and
-zero-radius blend removal (#348) work remains merged. The detailed
-[6.5/B18 audit](evolution-audit.md) records source/test evidence and
-remaining history gaps. Recheck live PRs and runs before claiming new work.
+Reconciled 2026-09-12 UTC against `f464285f`. This is a dated review
+snapshot, not a claim that pending PRs have landed. Refresh live heads,
+review discussions, and individual checks before claiming or merging work.
 
-**Proof gates, as of the reconciliation (verified, not inherited):**
+**Merged since the `95de160` reconciliation:**
 
-- Workspace suites: `cargo nextest run --workspace` 5,024 passed, 0 failed
-  at #396 (its PR body). Corpus Gauntlet: green on every daily run through
-  2026-09-11. Fuzz Smoke: green on its 2026-09-06 scheduled run. OSV: green.
-  Both weekly jobs run again on 2026-09-13; the mutation verdict there
-  covers the perf train's diff and is a new finding, not the one below.
-- **Mutation Testing: red on 2026-09-06, triaged 2026-09-10.** The weekly
-  job mutates only that week's diff (`--in-diff`), so the nine survivors
-  were the week's new code, not the whole scope. Disposition: two were the
-  `bench-internals`-only `BenchPlane` surface, unreachable from any test
-  build and now excluded by `exclude_re` in `.cargo/mutants.toml`; six
-  were real coverage gaps, each pinned by a unit test that was verified to
-  fail under the hand-applied mutant (`HealingReport::total`,
-  `sphere_loop_projected_area`'s circle `v`-term, the coaxial loft radius
-  guard, `wire_surface_alignment`'s sample-count guard, the rolling-ball
-  rational-arc control point, the variable-fillet corner-radius band); one
-  (`tessellate_nurbs_pole_cap_shared`'s `> idx_save` return) is equivalent
-  under the `ring.len() >= 3` guard above it and left as is. The next
-  scheduled run judges the following week's diff; a red there is a new
-  finding, not this one.
-- **`main` CI is cancelled on every fast merge.** `ci.yml` uses
-  `cancel-in-progress: true` keyed on `github.ref`, so merge commits #338,
-  #339, #341, #346, and #349 never received a completed CI verdict on their
-  own head; only the newest push in a burst is proven. Fix queued as B22.
-  Until it lands, treat "CI green on main" as "green on the last push in
-  the burst", and re-run the workflow for a specific merge before quoting it.
+- B4 planar walking-trimmer work (#398) is partial: the named planar gaps
+  are implemented, but curved-face trimming still blocks the blend-adjacent
+  second pass and the gridfinity peak-rim cases. Their typed refusals are
+  not successful end-to-end fillets.
+- Stepped-rim tessellation gained interior supports (#399), seam-vertex
+  handling (#403), and removal of duplicate column seeding (#409).
+- The performance audit (#404) is a non-owning inventory of 111 work
+  packages. The maintained native/committed-WASM baseline (#406) is owned
+  by O3.1a. B28 also gained fused NURBS position/partials evaluation at each
+  quadrature point (#411); its older timing numbers below remain tied to
+  their original measurements, not this newer source.
+- Package #408 committed version 2.130.15 from `4e6499fc`. It predates
+  #409/#411; pending #419 was built from `b1a0bf12`. Source integration,
+  committed distribution, and OpenZCAD adoption are separate gates.
 
-**Open correctness/API findings from the 2026-09-09 review** (queued as
-§B rows B21–B26): the plain `boolean()` / WASM `fuse`/`cut`/`intersect`
-entry points return a mesh-fallback result with only a `log::warn!` as
-disclosure (B21, closed 2026-09-10); three fillet engines ran under two
-different cascade orders and the Rust facade used a third policy (B23,
-closed 2026-09-10); ~180 wildcard match
-arms over `EdgeCurve`/`FaceSurface` have no lint or CI gate (B24); three
-public offset paths (B25); generative coverage is 15 proptest blocks and 8
-golden files against ~445k lines (B26).
+**PR ownership and review disposition at inspection:**
 
-2.4 remains partial pending its integration qualification; 2.6 retains the
-remaining band and anisotropic precision audit. 2.7 has a merged bounded
-162-cell exact-or-typed contract, including 42 explicit refusals; this does
-not qualify general exact tangency. 6.5 has qualified direct-edit and
-healing history, including journaled single-cylinder blend resize and
-zero-radius removal on planar supports. Broader blend resize, ambiguous
-boundaries, and later direct-edit geometry still prevent full closure.
-B18 retains faces-only and unjournaled families. The previous detailed
-quadric/tangency checkpoint is preserved in
-[campaign history](campaign-history.md#pre-integration-quadric-and-tangency-checkpoint-archived-2026-09-09).
+| Owner | PRs | Disposition and remaining gate |
+|---|---|---|
+| B24 wildcard audit | #422 | Replaces closed #415/#420/#421; combines exhaustive volume matches with the 166-arm ratchet baseline. Hosted CI pending. The ratchet is not wired into CI; the immutable workflow source/caller update and the other three dense-file conversions remain open. |
+| B26 native generated campaign | #410 | Complementary to #417. Head `865f0c1f` adds fixes for refusal-masked successful outputs and per-family success counting; re-review and new-head CI remain required. Earlier green checks do not qualify this new head. |
+| B26 structured fuzz oracles | #417 | Held at `1573b516`: successful NaN/Inf measurements are filtered into refusal, a base-refused root skips the nudge comparison, and coincident endpoints bypass closed-curve domain authority. All three need injected regression witnesses; no kernel fix belongs in this tests-only slice. |
+| P-Class 2.5 section supply | #416 | Held at `e1b3a656`: the new closure heuristic closes an actually open near-full tube section. Unique grid-edge seeding does not prove loop closure. Require carrier-domain/continuation evidence and the open-tube regression before crediting this slice. |
+| B28 validation work probes | #413 | Held at `e401170d`: probes rerun shell integration after validation instead of observing its work. Collect from the actual integration, cover skipped orientation, and distinguish a work-identity guard from an enforced latency budget. |
+| B28 derivative scratch | #418 | Pending hosted tests at `937cae61`; independent review compared 33,852 vectors bit-for-bit with the previous implementation. This is a pending optimization, not closure of B28 or P-Class 8.2. |
+| CI action and immutable caller pins | #412 | Pending final hosted tests at `058387b0`; does not supply B24's missing ratchet wiring. |
+| Committed WASM distribution | #419 | Version 2.130.16 candidate from `b1a0bf12`, with coverage still running at inspection. Recheck source provenance after further kernel merges. |
+
+B26 is not complete: the two tests-only PRs exercise
+complementary native generated and structured-fuzz paths. Neither closes
+B19's four remaining curve-intersection, offset, GCS, and tessellation fuzz
+slices. Review holds above are not resolved by an aggregate green check.
+
+**Proof gates checked on 2026-09-12:**
+
+- [Corpus Gauntlet](https://github.com/esaueng/remus/actions/runs/34681892888):
+  passed September 12.
+- [Fuzz Smoke](https://github.com/esaueng/remus/actions/runs/34020633257):
+  latest completed run passed September 6; it predates this PR batch.
+- [Mutation Testing](https://github.com/esaueng/remus/actions/runs/34017122331):
+  latest completed run failed September 6. #381 triaged its nine survivors
+  (two benchmark-only exclusions, six pinned coverage gaps, one equivalent
+  mutant); that disposition is not a subsequent successful scheduled run.
+- B22 is done: `ci.yml` limits cancellation to PR events, so later main
+  pushes no longer cancel preceding main runs. The latest main CI at
+  `f464285f` was pending at inspection, not proven green.
+
+The earlier quadric/tangency checkpoint and merged edit/healing history
+remain in [campaign history](campaign-history.md#pre-integration-quadric-and-tangency-checkpoint-archived-2026-09-09)
+and the [6.5/B18 audit](evolution-audit.md). B16 remains the first consumer
+lane: link the adapter deletion for `unifyFacesChecked`, then deliver more
+query rows before returning to lower-priority history slices.
 
 OpenZCAD consumer-roadmap K-S4 (`approx_census` CI enforcement): **done (PR
 #140)**. Its authoritative disposition line remains in planning PR
