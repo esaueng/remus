@@ -1,4 +1,10 @@
-# P-Class Program
+# P-Class capability specifications
+
+**Status and work selection:** [Remus master roadmap](roadmap.md#p-class-register).
+This is the technical reference for scope, architecture and per-issue exit gates.
+Dated implementation notes below explain the contract at their cited commits;
+they are not a second live status ledger. Update current dispositions in the master.
+
 
 The roadmap from a capable solids kernel to a Parasolid-class one: three
 architectural pillars, seven milestones, forty-odd issues, every one with a
@@ -6,15 +12,15 @@ typed exit gate.
 
 - **Drafted:** 2026-08-28 (rev 2), baseline `main` @ `748e408b`.
 - **Predecessors:** the P0 backlog (Issues 1–14, complete), RFC 0003
-  (complete). RFC 0002 is partially open — see Issue 2.0.
+  (complete). RFC 0002 staged scope is recorded under Issue 2.0 in the master register.
 - **Promotion authority** remains
   [capability-matrix.md](capability-matrix.md); this program plans the work,
   it does not promote labels.
 - **Competitive overlay:** [industrial-parity.md](industrial-parity.md)
   maps every reference-kernel parity target onto the issues below and added
   4.8, 5.7b, 5.8, 6.6, 7.6, 7.7, 8.6, and 8.7 (2026-09-04) where the audit
-  found no owner. It owns no state; this ledger and
-  [p-class-status.md](p-class-status.md) stay authoritative.
+  found no owner. It owns no implementation state; the
+  [master register](roadmap.md#p-class-register) is authoritative.
 
 ## §0 What "Parasolid-class" means here
 
@@ -32,35 +38,11 @@ definition of done:
 
 ## §1 Starting position
 
-**Breadth is done.** Every Parasolid operation family exists: booleans,
-blends, sweeps, shell/offset/draft, sectioning, healing, mass properties,
-assemblies, feature recognition, defeaturing, STEP plus five mesh formats, a
-GCS sketch solver, WASM bindings. The
-[capability matrix](capability-matrix.md) and the
-[stability ledger](../production-readiness/stability-matrix.md) govern what
-each family may claim.
-
-**One area is ahead of the pack:** the RFC 0002/0003 stack — evolution
-journal, persistent naming with typed resolution, attribute propagation,
-serialization — is machinery most kernels never grew. It makes milestone M6
-(direct modeling) unusually valuable here.
-
-**The three architectural pillars are M2, M3, and M4.** The
-sheet/wire/cellular body taxonomy (M4) is now implemented through
-Issue 4.7; per-entity tolerant modeling (M3) and general curved×curved boolean
-intersection (M2) remain open. Issue 2.2 closes the first general-position
-cell: two offset spheres now fuse, cut, and intersect through an exact
-radical-plane circle with analytic spherical result faces. General quadric
-and NURBS pairs remain the honest D2 boundary.
-
-**Ordering principle: architecture before generality, generality before
-polish.** Tolerant modeling and body taxonomy change data structures every
-later feature touches; retrofitting them under a mature blend engine is how
-kernels calcify.
+The starting-position narrative has been superseded by the [master register](roadmap.md#p-class-register). The three architectural pillars remain general curved booleans (M2), tolerant modeling (M3), and body taxonomy (M4). Bounded implementations and their remaining limits are recorded there.
 
 ## §2 Program at a glance
 
-| ID | Milestone | Size | Depends on |
+| ID | Milestone | Size | Architectural dependency |
 |---|---|---|---|
 | M2 | General curved booleans — RFC 0002 completion → sphere → quadrics → NURBS×NURBS; scale bands; budgets & cancellation | L | — |
 | M3 | Tolerant modeling — RFC 0004; per-entity tolerance through predicates, GFA, sew, import | L | RFC ∥ M2 · integration after 2.4 |
@@ -71,6 +53,9 @@ kernels calcify.
 | M8 | Industrialization — differential testing, perf gates, parallelism, real-model corpus | L | 8.1 starts after 2.4 |
 
 Size scale: **S** = one PR · **M** = 2–4 PRs · **L** = 5+ PRs, staged.
+These are architectural dependencies, not the current work queue; the master
+roadmap records landed subsets and execution order.
+
 Milestone IDs continue the original program's numbering (the P0 backlog is
 retro-labeled M0/M1).
 
@@ -828,7 +813,7 @@ history, so the crosswalk scores the cell `Gap-measured`.
 - **Performance:** N-body fuse bench (existing `fuse_perf`) extended to the
   composed path; entity growth bounded by the sum of pairwise results.
 - **Docs/ledger:** capability matrix body-type axis; stability matrix
-  "Cellular and Compound operands" row; this ledger.
+  "Cellular and Compound operands" row; the master register.
 
 > **Exit gate:** three mutually intersecting boxes fuse into one valid
 > region whose volume equals the inclusion–exclusion sum, with every result
@@ -1713,7 +1698,7 @@ variant behind a feature, measure, and either adopt or close with numbers.
   cold-init and size columns (§3.1 of the overlay) for both variants.
 - **Fixture:** gauntlet smoke models. **Performance:** ≥1.5× on 4 threads
   with determinism held, or a documented negative result.
-- **Docs/ledger:** README P2 line reworded to match the decision; K-W3 size
+- **Docs/ledger:** master roadmap decision recorded with the evidence; K-W3 size
   policy respected for both variants.
 
 > **Exit gate:** a threads-enabled build tessellates the reference models
@@ -1723,75 +1708,16 @@ variant behind a feature, measure, and either adopt or close with numbers.
 
 ## §4 Dependency structure
 
-```
-M2 booleans ──────────┬──> M4 bodies ─────┐
-  (load-bearing wall) ├──> M5 blends ─────┤
-                      ├──> M6 direct ─────┼──> Exit benchmarks B1–B5
-                      └──> 8.1 diff-test  │
-M3 tolerant (RFC ∥ M2, integrate > 2.4) ──┤
-M7.4 extend/imprint (early) ──> M6 ───────┘
-```
-
-Practical reading: **M2 first and alone** — it churns the pave filler, so
-nothing else should. The M3 and M4 RFCs are written during M2 (design work,
-disjoint files). After 2.4, three tracks parallelize cleanly for concurrent
-sessions: M3 integration (algo acceptance bands), M4 (builder/operations),
-and 7.4 + 8.1 (geometry/math + test harness — near-zero file overlap with
-either). The rest of M7 (7.1–7.3, 7.5) and M8 (8.2–8.5) attach where capacity
-allows.
+Current prerequisites and scheduling live in the [master dependency map](roadmap.md#dependencies-and-horizons). Per-issue technical dependencies above still apply; completed bounded work must not be repeated merely because an older milestone sequence listed it later.
 
 ## §5 Program exit benchmarks
 
-Milestone gates prove parts; these five scenarios prove the program. Each
-becomes a permanent CI-adjacent integration test when it first passes.
-
-| | Scenario | Exit | Milestones |
-|---|---|---|---|
-| B1 | Import two real freeform STEP bodies, fuse, fillet the intersection seam, export STEP | Re-import matches: watertight, valid, volume stable, names round-trip | M2 + M5 |
-| B2 | A gappy real-world import booleans correctly with zero heal invocations | Result tolerances disclosed and bounded by the context cap | M3 |
-| B3 | Shell a curved thin-wall part at a thickness that folds the inner offset | Self-intersection excised, valid result, volume vs. mesh oracle | M2 + 5.7 |
-| B4 | Direct-edit an imported body: move a boss across a filleted, holed plate | Neighbors re-limit; persistent references resolve Bound afterward | M6 |
-| B5 | The full boolean qualification suite at model scales 1e-5 through 1e6 | Exact or typed refusal at every scale — never a silent wrong volume | 2.6 |
+The five unchanged scenarios now live under [EXIT-B1–EXIT-B5](roadmap.md#p-class-exit-benchmarks) in the master roadmap, disambiguating them from bridge IDs.
 
 ## §6 Inherited queue & deliberate non-goals
 
-**Inherited queue** — small open items from prior programs, tracked here so
-the big milestones don't silently swallow them. None deserves a milestone;
-all deserve to stay findable. Fair game for any session needing a bounded
-task:
+All six inherited items have owners in the [consolidation map](roadmap.md#consolidation-map).
+Non-goals and decisions live in [decisions and exclusions](roadmap.md#decisions-and-exclusions).
 
-- **e3b colors & attribute scope** — STEP `COLOUR_RGB`/`STYLED_ITEM` chains,
-  edge/vertex attribute scope, remaining WASM accessors (queued in the e3b
-  design doc since Issue 14).
-- **OperationsError ToDiagnostic registry** — the one error enum still
-  outside the pinned diagnostic registries.
-- **Conic curve cells** — hyperbola/parabola intersection and boolean cells,
-  Unqualified since the capability matrix was written.
-- **Sketch (GCS) qualification** — nonconvergence budget and degeneracy
-  matrix for the DogLeg solver (out of Parasolid scope — constraint solving
-  is a separate product there — but the ledger row is open).
-- **Hidden-line qualification** — the projection row's error/performance
-  matrix; upgrades further once 7.5 silhouettes land.
-- **Multi-body mesh import split** — `SolidId → Vec<SolidId>` reader
-  convention across STL/3MF/OBJ/PLY/glTF (breaking API change, pinned as a
-  current-behaviour test; owner's call).
-
-**Deliberate non-goals:**
-
-- **Feature-count parity with Parasolid.** The target is the four properties
-  in §0, not the 900-function PK interface.
-- **Convergent-style facet modeling** (mesh bodies as first-class B-Rep
-  operands). `mesh_boolean` stays a bounded fallback; revisit only after M4
-  settles the body taxonomy it would extend.
-- **IGES growth.** Decided 2026-08-21: STEP is the exchange path; IGES stays
-  a declared lossy preview.
-- **History/parametrics above the kernel.** Feature trees,
-  constraints-driven regeneration, and UI concerns belong to consumers; the
-  kernel's contribution is the naming/evolution substrate, which is done.
-- **Upstream v3+ behavior.** Standing fork rule: independent implementation
-  or explicit Apache-2.0 grant only.
-
-> **Risk worth naming:** M3 and 5.5/6.1 are the two places this plan can
-> silently balloon. If tolerant-modeling integration (3.4) starts
-> destabilizing the M2 boolean gains, stop and re-stage — the RFC's stage
-> boundaries exist so the program can pause there without stranding work.
+If tolerant-modeling integration (3.4) destabilizes M2 boolean gains, stop and
+re-stage at the RFC boundaries; do not weaken the existing qualification gates.

@@ -1,5 +1,7 @@
 # Scale-band audit
 
+Current work selection and status: [P-Class 2.6](roadmap.md#p-2-6). This audit records evidence and witnesses; the master roadmap owns the remaining work, including the former B2 alias.
+
 Status: partial, 2026-09-06. The through-tool family below is qualified;
 this is not a claim that every absolute band in `crates/algo` is audited.
 

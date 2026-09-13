@@ -1,5 +1,7 @@
 # Persistent evolution audit: 6.5 and B18
 
+Current work selection and status: [6.5](roadmap.md#p-6-5) and [B18](roadmap.md#b18). This source-pinned audit provides evidence and candidate slices; the master roadmap owns their priority and disposition.
+
 Source baseline: `14c562821a7b191a51f11a041da66fe274f82959`, reviewed
 2026-09-09 UTC. This inventory reconciles merged implementation with
 [P-Class 6.5](p-class-status.md) and [bridge B18](roadmap.md).

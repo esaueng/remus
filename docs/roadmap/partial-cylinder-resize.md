@@ -1,5 +1,7 @@
 # Boundary-aware resizing of partial cylindrical faces
 
+Current scope and status: [P-Class 6.2](../kernel-maturity/roadmap.md#p-6-2) and [6.5](../kernel-maturity/roadmap.md#p-6-5) in the master roadmap. This file preserves the fixture, design and acceptance criteria; it is not a separate work queue.
+
 Status: merged (#308, integrated with #338; journaled cylindrical blend
 resize followed in #346). Quarter-wall resizing/refusal is qualified natively
 and in the packaged WASM. General partial walls remain open under P-Class 6.5;
