@@ -388,7 +388,7 @@ python3 scripts/check-apache-replay-provenance.py   # provenance ledger integrit
 | Where | What |
 | --- | --- |
 | [`book/`](book/src) | Task-oriented guide: getting started, architecture, concepts, operation reference, tolerances, data exchange, WASM, rendering, troubleshooting |
-| [`docs/kernel-maturity/`](docs/kernel-maturity) | The maturity contract (target, capability matrix, operation contract, failure taxonomy, testing strategy), the unified roadmap, and the P-Class and Open Kernel program plans and status ledgers |
+| [`docs/kernel-maturity/`](docs/kernel-maturity) | The maturity contract (target, capability matrix, operation contract, failure taxonomy, testing strategy), the master roadmap and its supporting capability/adoption specifications |
 | [`docs/design/`](docs/design) | RFCs and design research: operation context (0001), coedge architecture (0002), persistent naming (0003), tolerant modeling (0004), body taxonomy (0005), swept analytic surfaces (0006) |
 | [`docs/production-readiness/`](docs/production-readiness) | Audit, stability matrix, coverage, release checklist, fork maintenance, Apache replay provenance |
 | [`AGENTS.md`](AGENTS.md) | Working guide: module map, ripple-effect checklists, common pitfalls |
@@ -403,29 +403,15 @@ authority to publish.
 
 ## Roadmap
 
-Priorities, not dates. Planning is by dependency and acceptance gate; the
-[unified roadmap](docs/kernel-maturity/roadmap.md) is the live queue, and the
-[kernel maturity target](docs/kernel-maturity/target.md) describes the full
-program.
+The [Remus master roadmap](docs/kernel-maturity/roadmap.md) is the single source
+of truth for priorities, dependencies, implementation status and remaining work.
+It consolidates P-Class, Open Kernel, bridge work, stabilization residue and all
+111 performance packages. Start with its current priorities and check in-flight
+PR ownership before selecting one bounded item.
 
-**P0 — foundations and correctness.** Capability and failure contracts across
-every operation family; the reproduction and regression corpus; first-class
-coedges and explicit curve/p-curve trimming; unified tolerance and operation
-context; intersection robustness; General Fuse and boolean robustness
-(shrinking the set of inputs that fall back to meshing, starting with torus and
-mixed-surface cases); transactional topology mutation; kernel-wide diagnostics.
-
-**P1 — professional modeling behavior.** Complete vertex, edge, and face
-evolution with persistent topological naming; general blends, offsets,
-shelling, sweeps, and lofts — including the miter-corner sweep, boundaries with
-more than four edges, and partial revolutions with non-planar boundaries;
-direct face editing, including [boundary-aware partial-cylinder resizing](docs/roadmap/partial-cylinder-resize.md); attribute propagation; broad STEP round-trip behavior with
-topology attributes; memory compaction and session lifecycle.
-
-**P2 — extended scope.** General and non-manifold bodies; mixed B-rep and facet
-modeling; cellular topology; lattice representation; concurrent operations and
-large-model scaling — including parallel tessellation on the WASM target, which
-native builds already do per face.
+Detailed specifications, design RFCs and source-pinned audits remain supporting
+references. The [kernel maturity target](docs/kernel-maturity/target.md), capability
+matrix and stability matrix continue to define correctness and public claims.
 
 ## Contributing
 

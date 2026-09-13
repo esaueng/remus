@@ -1,6 +1,11 @@
-# Stabilization plan: promoting every non-Stable feature
+# Archived stabilization plan
 
-This document is the working plan for driving each README [Status](../../README.md#status)
+**Archived planning reference.** Current work and remaining obligations live in
+the [master consolidation map](roadmap.md#consolidation-map). The dated
+dispositions and original promotion recipes below are historical; they must not
+be used to infer current support or start a second promotion queue.
+
+This document records the original plan for driving each README [Status](../../README.md#status)
 row currently labeled **Beta** or **Experimental** to **Stable**. It is a plan,
 not a promotion: labels change only under the rules of the
 [capability matrix](capability-matrix.md), and every promotion PR updates the
@@ -351,39 +356,8 @@ Executed in one campaign; per the maintenance rule, each item's outcome:
   determinism pin for the color and face-id buffers was added. Promotion via
   Beta remains for a later release cycle per the original plan.
 
-## Sequencing
+## Sequencing and reporting
 
-Dependency-driven order, not calendar-driven. Phases overlap freely except
-where arrows are noted.
-
-| Order | Item | Effort | Depends on |
-| --- | --- | --- | --- |
-| 1 | A1 Draft | S | — |
-| 2 | A2 Defeaturing | S | — |
-| 3 | A3 Assemblies | S–M | — |
-| 4 | A4 Feature recognition | M | — |
-| 5 | B3 Evolution coverage | M | — (unlocks A1/A2 provenance cells too) |
-| 6 | B2 Non-planar profiles (caps 1–3) | L | — |
-| 7 | C1 Curved blends (items 1–3) | XL | — |
-| 8 | C2 resize_blend | M | C1 band assemblers |
-| 9 | B1 Torus booleans | M–L | — |
-| 10 | C4 Rendering | M | CI adapter work |
-| 11 | C3 IGES | L–XL | decision gate |
-
-Rationale for the order: Phase A items are cheap, independent, and each one
-exercises the full promotion pipeline (axes → evidence → matrix update → label
-change), which de-risks the process before the expensive rows. B3 comes early
-because draft/defeature provenance cells land naturally while A1/A2 fixtures
-are being written. C1 is started early despite its size because its first item
-is a known correctness defect, not a feature. C3 is last because it has the
-weakest consumer pull and an explicit alternative (STEP).
-
-## Reporting
-
-Each promotion lands as one PR (or a short series) that: updates the family
-section of [capability-matrix.md](capability-matrix.md), flips the
-[stability-matrix](../production-readiness/stability-matrix.md) row and the
-README label together, and ships the evidence. This plan file is updated in
-the same PR — each item's section gains a one-line disposition (done / partial
-/ re-scoped) so the plan cannot rot silently, per the same maintenance rule the
-roadmap skill applies to itself.
+Use the [master priorities](roadmap.md#current-priorities). Update current item
+state there; update the capability matrix, stability matrix and README together
+when a promotion is earned. Do not update this archive as a live ledger.
