@@ -9,8 +9,9 @@
 //! Structural invariants run at every internal node; the expensive
 //! measurement, determinism and idempotence batteries run once at the root.
 
-#![no_main]
+#![cfg_attr(not(test), no_main)]
 
+#[cfg(not(test))]
 use libfuzzer_sys::fuzz_target;
 
 mod invariants;
@@ -25,10 +26,15 @@ use shapegen::{Node, Refusal};
 /// fuzz iteration into a timeout report, which teaches nothing.
 const HEAVY_FACE_LIMIT: usize = 120;
 
-fuzz_target!(|node: Node| {
+#[cfg(not(test))]
+fuzz_target!(|node: Node| run_case_with_nudge(node, check_root_nudge_stable));
+
+fn run_case_with_nudge(node: Node, check_nudge: impl FnOnce(&Node)) {
     let mut topo = Topology::new();
 
     // Per-node structural checks, plus operand-relative volume bounds.
+    // B26 oracle 5 (position-quantized closedness) runs per node alongside
+    // the edge-id census gate.
     let mut violations_checked = 0usize;
     let root = shapegen::eval(&mut topo, &node, &mut |t, c| {
         violations_checked += 1;
@@ -37,6 +43,14 @@ fuzz_target!(|node: Node| {
         // I1/I2 — the result is actually a solid.
         if let Ok(census) = inv::census(t, c.result) {
             inv::assert_closed_manifold(&what, &census);
+
+            // B26/5 per node: the by-edge-ID gate above is blind to
+            // position-duplicate free edges (distinct ids, coincident
+            // geometry), so every node also runs the position-quantized
+            // supplement. A typed refusal is a pass per the file's rule;
+            // this check only reads topology, so it cannot refuse — any
+            // position-level gap panics here, at the node that produced it.
+            inv::assert_position_closed(&what, t, c.result);
 
             // I4 — the result may not exceed its operands. Both operands are
             // still live in `topo`, so this is checked where the engine made
@@ -65,6 +79,9 @@ fuzz_target!(|node: Node| {
         }
     });
 
+    // Compare both outcomes even when the original root boolean refused.
+    check_nudge(&node);
+
     // Every `Err` here is the engine refusing: an empty algebraic result, an
     // unsupported configuration, a degenerate primitive. Refusing is a correct
     // outcome and is not a finding.
@@ -81,6 +98,9 @@ fuzz_target!(|node: Node| {
     if census.faces > HEAVY_FACE_LIMIT {
         return;
     }
+
+    // B26/5 at the root: the position-quantized supplement to the id census.
+    inv::assert_position_closed("root", &topo, root.solid);
 
     // I1 (mesh rung) — a closed B-Rep that tessellates leaky is still broken.
     // Necessary but not sufficient: #52 was watertight with the bore filled and
@@ -106,7 +126,17 @@ fuzz_target!(|node: Node| {
         // because it catches a defect confined to one route (#46).
         inv::assert_measurements_agree("root", &topo, root.solid, m.volume);
         inv::assert_deflection_stable("root", &topo, root.solid, m.volume);
+        // B26/3 at the root: volume must not follow the body through space.
+        // A translation-variant reading is the doubled-boundary signature.
+        inv::assert_translation_invariant("root", &topo, root.solid, m.volume, 13.25, -7.5, 3.0);
     }
+
+    // B26/1+2+4 at the root: replay the root tree's top-level boolean twice
+    // more per identity. The tree evaluator consumes operand handles, so this
+    // replays the root node only when the root is a single Combine over two
+    // freshly evaluable subtrees; deeper trees are covered per-node by I4/I5
+    // above and by the nudge pair below.
+    check_root_boolean_identities(&node);
 
     // I5b — the same shape at another size must give the same relative answers.
     // Aimed squarely at tolerances written as absolute distances.
@@ -135,7 +165,95 @@ fuzz_target!(|node: Node| {
     // I7 — idempotence. `fuse(r, r)` must be `r`. Built on a copy of the root
     // so the self-fuse operates on two distinct handles.
     check_self_fuse(&topo, root.solid, &census);
-});
+}
+
+/// B26/1+2: inclusion–exclusion and cut complement at the root combine.
+///
+/// Replays the root `Combine(a, b)` with fresh operand evaluations so each
+/// identity boolean gets unconsumed inputs: union+intersect for
+/// inclusion–exclusion, cut+intersect for the complement. Every boolean here
+/// runs `ExactOnly` with disclosed quality via [`inv::exact_boolean_outcome`]
+/// on cloned arenas; any typed refusal on any leg is a pass. Non-`Combine`
+/// roots (a lone primitive) have no identity to check.
+fn check_root_boolean_identities(node: &shapegen::Node) {
+    use remus_operations::boolean::BooleanOp;
+
+    let shapegen::Node::Combine(kind, left, right) = node else {
+        return;
+    };
+    // Measure the operands on a fresh evaluation of each subtree.
+    let mut ta = Topology::new();
+    let mut tb = Topology::new();
+    let (Ok(va_node), Ok(vb_node)) = (
+        shapegen::eval_quiet(&mut ta, left),
+        shapegen::eval_quiet(&mut tb, right),
+    ) else {
+        return; // operand construction refused: nothing to check
+    };
+    let (Some(ma), Some(mb)) = (
+        inv::measure(&ta, va_node.solid),
+        inv::measure(&tb, vb_node.solid),
+    ) else {
+        return;
+    };
+
+    // Each identity leg runs on its own scratch arena so operand handles
+    // stay valid across legs.
+    let run_exact = |op: BooleanOp| -> Option<f64> {
+        // Rebuild both operands in the scratch arena from the same subtrees.
+        let mut s = Topology::new();
+        let (Ok(x), Ok(y)) = (
+            shapegen::eval_quiet(&mut s, left),
+            shapegen::eval_quiet(&mut s, right),
+        ) else {
+            return None;
+        };
+        match inv::exact_boolean_outcome(&mut s, op, x.solid, y.solid) {
+            inv::NudgeOutcome::Success { volume, .. } => Some(volume),
+            inv::NudgeOutcome::Refused { .. } | inv::NudgeOutcome::Unmeasurable { .. } => None,
+        }
+    };
+
+    match kind.op() {
+        BooleanOp::Fuse | BooleanOp::Cut | BooleanOp::Intersect => {
+            // Inclusion–exclusion needs union + intersect regardless of the
+            // root op; cut complement needs cut + intersect.
+            let (Some(v_union), Some(v_inter)) =
+                (run_exact(BooleanOp::Fuse), run_exact(BooleanOp::Intersect))
+            else {
+                return;
+            };
+            inv::assert_inclusion_exclusion("root", ma.volume, mb.volume, v_union, v_inter);
+            if let Some(v_cut) = run_exact(BooleanOp::Cut) {
+                inv::assert_cut_complement("root", ma.volume, v_cut, v_inter);
+            }
+        }
+    }
+}
+
+/// B26/4: the root combine's exact outcome must survive a rigid 1e-13 nudge.
+///
+/// Rebuilds both root operands fresh, runs the exact boolean on `(a, b)` and
+/// on `(a, b + 1e-13 x via transform_solid)`, and compares refusal-vs-success
+/// with [`inv::assert_nudge_stable`]. Either leg refusing outright is handled
+/// inside the comparison (refused-vs-refused passes).
+fn check_root_nudge_stable(node: &shapegen::Node) {
+    let shapegen::Node::Combine(kind, left, right) = node else {
+        return;
+    };
+    let mut s = Topology::new();
+    let (Ok(x), Ok(y)) = (
+        shapegen::eval_quiet(&mut s, left),
+        shapegen::eval_quiet(&mut s, right),
+    ) else {
+        return;
+    };
+    let Some((base, nudged)) = inv::exact_boolean_nudged_pair(&s, kind.op(), x.solid, y.solid)
+    else {
+        return;
+    };
+    inv::assert_nudge_stable("root", &base, &nudged);
+}
 
 /// `fuse(a, a)` must be `a`: same hole count, same volume.
 fn check_self_fuse(topo: &Topology, root: remus_topology::solid::SolidId, before: &inv::Census) {
@@ -159,4 +277,90 @@ fn check_self_fuse(topo: &Topology, root: remus_topology::solid::SolidId, before
         return;
     };
     inv::assert_idempotent("fuse(a, a)", before, &after, v0.volume, v1.volume);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::inv;
+    use remus_math::{
+        curves::Circle3D,
+        vec::{Point3, Vec3},
+    };
+    use remus_topology::{
+        Topology,
+        edge::{Edge, EdgeCurve},
+        vertex::Vertex,
+    };
+
+    #[test]
+    fn refused_root_still_runs_nudge_comparison() {
+        use super::shapegen::{self, BoolKind, Node, Prim};
+        let leaf = Node::Leaf(Prim::Cuboid {
+            dx: 0,
+            dy: 0,
+            dz: 0,
+        });
+        let node = Node::Combine(BoolKind::Cut, Box::new(leaf.clone()), Box::new(leaf));
+        assert!(shapegen::eval_quiet(&mut Topology::new(), &node).is_err());
+        super::check_root_nudge_stable(&node);
+        let called = std::cell::Cell::new(false);
+        super::run_case_with_nudge(node, |_| called.set(true));
+        assert!(called.get(), "a refused root skipped nudge comparison");
+    }
+
+    #[test]
+    fn successful_non_finite_measurements_are_findings() {
+        assert!(inv::checked_volume::<()>(Err(())).is_none());
+        assert_eq!(inv::checked_volume::<()>(Ok(32.0)), Some(32.0));
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(std::panic::catch_unwind(|| inv::checked_volume::<()>(Ok(value))).is_err());
+        }
+    }
+
+    #[test]
+    fn closed_curves_require_authority_and_share_geometric_keys() {
+        let mut topo = Topology::new();
+        let circle =
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+        let v = topo.add_vertex(Vertex::new(circle.evaluate(0.0), 1e-7));
+        let bare = Edge::new(v, v, EdgeCurve::Circle(circle));
+        let missing = topo.add_edge(bare.clone());
+        assert_eq!(
+            inv::edge_geom_key(&topo, missing),
+            Err(inv::GeomKeyError::MissingAuthority)
+        );
+        let mut invalid = bare.clone();
+        invalid.set_trim(Some((0.0, f64::NAN)));
+        let invalid = topo.add_edge(invalid);
+        assert!(inv::edge_geom_key(&topo, invalid).is_err());
+        let mut closed = bare;
+        closed.set_trim(Some((0.0, std::f64::consts::TAU)));
+        let a = topo.add_edge(closed.clone());
+        let b = topo.add_edge(closed);
+        let key = inv::edge_geom_key(&topo, a).unwrap();
+        assert_eq!(key, inv::edge_geom_key(&topo, b).unwrap());
+        assert!(key.point_edge.is_none());
+        assert_ne!(key.ends.0, key.mid);
+    }
+
+    #[test]
+    fn nudge_refusal_success_flips_are_findings_in_both_directions() {
+        let mut topo = Topology::new();
+        let solid = remus_operations::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+        let success = inv::NudgeOutcome::Success {
+            census: inv::census(&topo, solid).unwrap(),
+            volume: 1.0,
+        };
+        let refused = inv::NudgeOutcome::Refused {
+            variant: "ExactOnlyUnattainable",
+            reason: "injected refusal".into(),
+        };
+        for (a, b) in [(&refused, &success), (&success, &refused)] {
+            assert!(
+                std::panic::catch_unwind(|| inv::assert_nudge_stable("injected", a, b)).is_err()
+            );
+        }
+        inv::assert_nudge_stable("refused", &refused, &refused);
+        inv::assert_nudge_stable("success", &success, &success);
+    }
 }
