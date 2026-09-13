@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise admission, early-failure, and merge-group completion contracts."""
 
+import importlib.util
 import json
 import os
 import re
@@ -13,6 +14,9 @@ CALLER = (ROOT / ".github/workflows/ci.yml").read_text()
 FLEET = (ROOT / ".github/workflows/fleet-ci.yml").read_text()
 BENCH = (ROOT / ".github/workflows/fleet-benchmark.yml").read_text()
 BENCH_CALLER = (ROOT / ".github/workflows/benchmark.yml").read_text()
+SPEC = importlib.util.spec_from_file_location("direct", ROOT / "scripts/test-direct-fleet.py")
+DIRECT = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(DIRECT)
 
 
 def jobs(text):
@@ -45,13 +49,38 @@ class ConvergenceTests(unittest.TestCase):
     def success(self):
         return {name: {"result": "success"} for name in HEAVY | ALWAYS | {"docs"}}
 
-    def test_independent_refs_can_run_and_only_same_ref_is_superseded(self):
-        self.assertIn("group: ci-${{ github.ref }}\n", CALLER)
-        # Only PR runs are superseded; every main push keeps its verdict.
-        self.assertIn("cancel-in-progress: ${{ github.event_name == 'pull_request' }}", CALLER)
-        self.assertNotIn("cancel-in-progress: true", CALLER)
-        admission = jobs(CALLER)["checks"]
-        self.assertNotIn("concurrency:", admission)
+    def concurrency(self, event, ref, run_id):
+        github = {"event_name": event, "ref": ref, "run_id": str(run_id)}
+        group = re.search(r"^  group: (.+)$", CALLER, re.M)[1]
+        group = re.sub(r"\$\{\{.*?\}\}",
+                       lambda match: str(DIRECT.evaluate(match[0], github, {})), group)
+        cancel = re.search(r"^  cancel-in-progress: (.+)$", CALLER, re.M)[1]
+        return group, DIRECT.evaluate(cancel, github, {})
+
+    def test_three_main_runs_cannot_replace_each_others_pending_slot(self):
+        # A concurrency group has only one pending slot even when running
+        # cancellation is disabled. Three pushes must therefore use three groups.
+        runs = [self.concurrency("push", "refs/heads/main", run_id)
+                for run_id in (100, 101, 102)]
+        self.assertEqual(len({group for group, _ in runs}), 3)
+        self.assertTrue(all(cancel is False for _, cancel in runs))
+
+    def test_same_pr_is_superseded_but_other_prs_are_independent(self):
+        first = self.concurrency("pull_request", "refs/pull/7/merge", 100)
+        newer = self.concurrency("pull_request", "refs/pull/7/merge", 101)
+        other = self.concurrency("pull_request", "refs/pull/8/merge", 102)
+        self.assertEqual(first[0], newer[0])
+        self.assertNotEqual(first[0], other[0])
+        self.assertTrue(all(cancel is True for _, cancel in (first, newer, other)))
+
+    def test_merge_group_runs_keep_independent_verdicts(self):
+        runs = [self.concurrency("merge_group", "refs/heads/gh-readonly-queue/main/test", run_id)
+                for run_id in (100, 101, 102)]
+        self.assertEqual(len({group for group, _ in runs}), 3)
+        self.assertTrue(all(cancel is False for _, cancel in runs))
+
+    def test_reusable_jobs_do_not_add_another_concurrency_gate(self):
+        self.assertNotIn("concurrency:", jobs(CALLER)["checks"])
         self.assertNotIn("remus-ci-suite", CALLER)
         self.assertNotIn("concurrency:", FLEET)
 
