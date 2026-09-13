@@ -1,5 +1,7 @@
 # Hammer-holder opening: kernel repair checkpoint
 
+Current capability and performance status: [B27](kernel-maturity/roadmap.md#b27) and [B28](kernel-maturity/roadmap.md#b28) in the master roadmap. The sections below are chronological repair checkpoints: an early “not yet supported” statement does not override later evidence or the master disposition.
+
 The imported Shapr3D holder has a nominal 46 mm opening, 74 mm outside width,
 58 mm height and two 5 mm mounting bores. Import is supported. The complete
 46 -> 50 mm opening reconstruction is **not yet supported**; no application
