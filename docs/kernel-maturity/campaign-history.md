@@ -1697,3 +1697,199 @@ workspace tests pass (13 skipped); one harness leak warning does not reproduce
 in isolation. Optimized kernel/translator builds, smoke tests, installed-package
 consumers, lint, boundaries, census, rustdoc, doctests, and mdBook pass. B17 stays
 open: this qualifies cavity duplicate repair, not the full defect matrix.
+
+## Roadmap snapshot before master consolidation
+
+Archived 2026-09-12 from `f464285f`. These are historical observations, including
+known stale H0 CI/PR claims and old package-size figures. The master roadmap
+supersedes all scheduling/status language below.
+
+Original snapshot: drafted 2026-08-29. **Last reconciled:** 2026-09-11 against `main` @
+  `95de160` (regenerate with `git rev-parse --short origin/main` when touching
+  §H0; do not hand-type a baseline older than the section it heads).
+- **External K-S1 disposition — tangent-boss operand drop: done (PR #143,
+  2026-08-30).** The historical pre-fix sequence returned the unchanged plate
+  (19,200 instead of 21,713.274 cubic millimetres); current native and WASM
+  contracts retain the operand across the ratio/scale matrix, with exact-only
+  refusal and explicit approximation provenance where the exact path is unavailable.
+- **External K-S1 disposition — cross-drilled render/measure:** done in PR
+  #144. The OpenZCAD operation sequence now has a deterministic replay bundle,
+  independent volume oracles, ratio/scale display-mesh qualification, and a
+  non-vacuous WASM `meshQuality` contract. Follow-ups remain for the separate
+  face-orientation inconsistency and the sub-millimeter fine-mesh boundary
+  residue; neither is hidden by this disposition.
+- **External K-S1 disposition — fillet fail-closed migration: done (PR #181,
+  2026-09-01).** Every public fillet/chamfer mutation path — the WASM `fillet`
+  cascade, `filletVariable`, `filletV2`/`chamferV2`/`chamferDistanceAngle`,
+  the journaled wrappers, `executeBatch`/`executeBatchV2`, and the legacy v1
+  Rust engines — is transactional and postcondition-validated: no path returns
+  the input handle or a clone of it as success, exposes partially mutated
+  topology, or ships a geometrically invalid result; refusals carry the stable
+  `blend_failure_code` vocabulary on every surface. The versioned repro bundle
+  `fillet-variable-fail-closed` fails on the pre-fix kernel and passes after.
+  Two damaged-success cases the old closed-shell gate could not see (the
+  blend-adjacent second-pass fillet and the gridfinity lip peak-rim fillet)
+  are honest typed refusals now; un-refusing them is the B4 trimmer work.
+- **Remus K-S4 disposition — NURBS fuzz slice:** done in PR #163. Bounded
+  rational-surface construction/evaluation and NURBS SSI now run in the
+  scheduled fuzz campaign against an independent plane oracle; topology
+  mutation, native serialization, curve-intersection, and offset-specific
+  campaigns remain S4 follow-ups.
+- **Remus K-S4 disposition — topology-mutation fuzz slice:** done in PR #170.
+  Derivation, validated/transactional rollback, checkpoint restore, and
+  solid-deletion sequences now run in the scheduled campaign over a bounded
+  box against exact-state, stale-handle, atomic-refusal, closed-manifold
+  census, and closed-form volume oracles. The campaign's first run found the
+  rollback/restore contract split fixed in the same PR: transactional
+  rollback now undoes in-window retirements (`restore_for_rollback`), and the
+  checkpoint barrier no longer leaves a dangling face-loop derivation map.
+  Native serialization, curve-intersection, and offset-specific campaigns
+  remain S4 follow-ups; migrating ad-hoc snapshot/restore call sites off the
+  checkpoint-barrier primitive is flagged for the W5 contract work.
+- **Remus K-S4 disposition — native-serialization fuzz slice:** done in PR
+  #173. Bounded box/cylinder documents with duplicate roots, shared-shell
+  aliases, repeated/aliased compound members, hostile tolerances, and
+  attributes now round-trip in the scheduled campaign against per-position
+  validation/census/closed-form volume oracles, bit-exact state survival,
+  byte-identical re-serialization, and typed non-mutating refusal of
+  corrupted references. The byte-identity oracle pinned serde_json's
+  `float_roundtrip` feature as load-bearing for exact f64 replay (fixed in
+  the same PR with a bit-exact tolerance regression). Curve-intersection and
+  offset-specific campaigns remain S4 follow-ups.
+
+## §H Horizons
+
+### H0 — in flight (verify before duplicating)
+
+Reconciled 2026-09-11 UTC at `95de160` (merges through #396). Open at
+inspection: none (no open PRs, no open issues). Since the previous
+reconciliation at `63e388c`: #382 (translation endpoint certificates) and
+the package refresh #393 merged; the hammer-holder perf campaign landed as
+a stacked train (#389 NURBS weight cache, #394 edge-face box gating, #395
+distance-query NURBS pruning; see B28) with #391 (`unifyFacesChecked`, a
+B16 row) on top; and #396 fixed converted-B-spline planes measuring 29 %
+high and losing a fused peg, and disclosed the first named P-Class 2.5
+slices. The previous reconciliation's notes: the contract lane closed
+(B21 #356, B22 #350, B23 #359), typed binary boolean results (#354) and the
+native/wasm quadric parity matrix (#355) landed, and the hammer-holder
+opening stack merged as a linear train (#363, #375, #366, #367, #368, #370,
+#371, #373, #374; see B27). #363's opposing-face clip regressed the
+deepened-notch fixture to eight unpaired edges and was fixed in-branch
+before the train (two arrangement gaps, recorded in the skill's lessons).
+The 2026-09-06 mutation survivors are triaged (#381). The bounded quadric,
+scale, tangency (#307), quarter-wall (#308), seam (#312), persistent
+edit/healing integration (#338), cylindrical blend resize (#346), and
+zero-radius blend removal (#348) work remains merged. The detailed
+[6.5/B18 audit](evolution-audit.md) records source/test evidence and
+remaining history gaps. Recheck live PRs and runs before claiming new work.
+
+**Proof gates, as of the reconciliation (verified, not inherited):**
+
+- Workspace suites: `cargo nextest run --workspace` 5,024 passed, 0 failed
+  at #396 (its PR body). Corpus Gauntlet: green on every daily run through
+  2026-09-11. Fuzz Smoke: green on its 2026-09-06 scheduled run. OSV: green.
+  Both weekly jobs run again on 2026-09-13; the mutation verdict there
+  covers the perf train's diff and is a new finding, not the one below.
+- **Mutation Testing: red on 2026-09-06, triaged 2026-09-10.** The weekly
+  job mutates only that week's diff (`--in-diff`), so the nine survivors
+  were the week's new code, not the whole scope. Disposition: two were the
+  `bench-internals`-only `BenchPlane` surface, unreachable from any test
+  build and now excluded by `exclude_re` in `.cargo/mutants.toml`; six
+  were real coverage gaps, each pinned by a unit test that was verified to
+  fail under the hand-applied mutant (`HealingReport::total`,
+  `sphere_loop_projected_area`'s circle `v`-term, the coaxial loft radius
+  guard, `wire_surface_alignment`'s sample-count guard, the rolling-ball
+  rational-arc control point, the variable-fillet corner-radius band); one
+  (`tessellate_nurbs_pole_cap_shared`'s `> idx_save` return) is equivalent
+  under the `ring.len() >= 3` guard above it and left as is. The next
+  scheduled run judges the following week's diff; a red there is a new
+  finding, not this one.
+- **`main` CI is cancelled on every fast merge.** `ci.yml` uses
+  `cancel-in-progress: true` keyed on `github.ref`, so merge commits #338,
+  #339, #341, #346, and #349 never received a completed CI verdict on their
+  own head; only the newest push in a burst is proven. Fix queued as B22.
+  Until it lands, treat "CI green on main" as "green on the last push in
+  the burst", and re-run the workflow for a specific merge before quoting it.
+
+**Open correctness/API findings from the 2026-09-09 review** (queued as
+§B rows B21–B26): the plain `boolean()` / WASM `fuse`/`cut`/`intersect`
+entry points return a mesh-fallback result with only a `log::warn!` as
+disclosure (B21, closed 2026-09-10); three fillet engines ran under two
+different cascade orders and the Rust facade used a third policy (B23,
+closed 2026-09-10); ~180 wildcard match
+arms over `EdgeCurve`/`FaceSurface` have no lint or CI gate (B24); three
+public offset paths (B25); generative coverage is 15 proptest blocks and 8
+golden files against ~445k lines (B26).
+
+2.4 remains partial pending its integration qualification; 2.6 retains the
+remaining band and anisotropic precision audit. 2.7 has a merged bounded
+162-cell exact-or-typed contract, including 42 explicit refusals; this does
+not qualify general exact tangency. 6.5 has qualified direct-edit and
+healing history, including journaled single-cylinder blend resize and
+zero-radius removal on planar supports. Broader blend resize, ambiguous
+boundaries, and later direct-edit geometry still prevent full closure.
+B18 retains faces-only and unjournaled families. The previous detailed
+quadric/tangency checkpoint is preserved in
+[campaign history](campaign-history.md#pre-integration-quadric-and-tangency-checkpoint-archived-2026-09-09).
+
+OpenZCAD consumer-roadmap K-S4 (`approx_census` CI enforcement): **done (PR
+#140)**. Its authoritative disposition line remains in planning PR
+esaueng/OpenZCAD#140 so the two repositories retain separate commit streams.
+
+
+### Historical external roadmap dispositions
+
+
+- **K-W3 distributed WASM budget — partial
+  ([PR #174](https://github.com/esaueng/remus/pull/174), 2026-08-31):** every
+  consumer package workflow now deterministically optimizes the distributed
+  bundler binary, validation fails above the 8 MiB OpenZCAD ceiling, and the
+  PR size report compares committed distribution artifacts. Current `main`
+  falls from 8,773,687 to 7,724,098 bytes, leaving 664,510 bytes of headroom.
+  OpenZCAD cold-load timing on target hardware remains the product-side W3
+  follow-up.
+- **K-S2 exact measurement — partial (PR #151):** production `faceArea` and
+  `surfaceArea` now reuse the exact planar boundary-moment integrator for
+  line/circle/parabola wires, including circular holes, with scale,
+  deflection-independence, direct-WASM, and batch-WASM oracles. Exact ellipse,
+  hyperbola, and NURBS planar boundaries, general curved-face area, and
+  deflection-independent curved-body volume remain.
+- **K-S3 SSI Newton budget — done
+  ([PR #147](https://github.com/esaueng/remus/pull/147), 2026-08-30):**
+  `WorkBudgets::newton_iterations` is authoritative across NURBS×NURBS seed,
+  branch, and march refinement; cancellation is polled inside the coupled
+  Newton loop and propagates through the existing typed, transactional WASM
+  boolean contract. Per R8 the cap is JS-callable: an additive optional
+  `newton_iterations` argument on `booleanWithQuality` /
+  `booleanWithCancellation` and a `newtonIterations` field on the
+  `executeBatch` `booleanWithQuality` op, validated (non-negative integer
+  within the public work budget) with contract tests on the default,
+  bounded, and rejection paths. Default behavior remains the historical 20
+  iterations. Its then-remaining subdivision slice is closed immediately
+  below; parameter-space budgeting remains queued under P-Class 2.8.
+- **K-S3 SSI subdivision budget — done
+  ([PR #160](https://github.com/esaueng/remus/pull/160), 2026-08-30):**
+  `WorkBudgets::subdivision_depth` replaces the seed finder's hard-coded
+  recursion depth and is authoritative before every recursive Bezier-patch
+  split. The default depth 6 reproduces prior behavior; depth 0 performs no
+  recursive split. Direct `booleanWithQuality` / `booleanWithCancellation`
+  expose additive `subdivision_depth`, and batch `booleanWithQuality` exposes
+  `subdivisionDepth`, with shared validation and default/boundary/rejection
+  contract tests. Parameter-space budgeting and wider operation-family
+  adoption remain under P-Class 2.8.
+- **K-S3 SSI marcher-budget WASM surface — done ([PR #202](https://github.com/esaueng/remus/pull/202),
+  2026-09-02):** the existing `march_steps`, `queue_size`, `segments`, and
+  `branches_per_direction` caps are additive optional arguments on direct
+  `booleanWithQuality` / `booleanWithCancellation` and matching camelCase
+  fields on batch `booleanWithQuality`. Shared bounded-integer validation,
+  legacy-default equivalence, generated-WASM smoke coverage, context-authority
+  tests, and a batch rejection/rollback volume oracle pin the contract.
+  Parameter-space tolerance and wider operation-family adoption remain under
+  P-Class 2.8, so that parent item stays partial.
+- **K-S1 pattern overlap — done (PR #142, 2026-08-30):** linear,
+  circular, and grid patterns now refuse measured material overlap with the
+  typed `pattern_instances_overlap` contract and full rollback across native,
+  direct WASM, and `executeBatchV2` repro coverage. Touching and disjoint
+  instances remain supported across a 1e-3/1/1e3 scale sweep. Exact instance
+  fusing is intentionally deferred until the separately queued
+  pattern-through-fuse provenance work can make its evolution claims truthful.

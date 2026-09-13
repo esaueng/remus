@@ -1,10 +1,14 @@
-# Open Kernel Program — implementation plan
+# Open Kernel implementation specifications
+
+**Status and work selection:** [Remus master roadmap](roadmap.md#open-kernel-register).
+This file defines issue scope, technical dependencies and acceptance criteria.
+Dated implementation notes are context at the cited commits, not current status.
 
 Issue-level breakdown of the [Open Kernel Program](open-kernel-program.md):
 every pillar decomposed into staged, independently-shippable issues with
 files, sizes, dependencies, and typed exit gates, in the style of the
-[P-Class program](p-class-program.md). The status ledger is
-[open-kernel-status.md](open-kernel-status.md).
+[P-Class program](p-class-program.md). The status register is in the
+[master roadmap](roadmap.md#open-kernel-register).
 
 - **Drafted:** 2026-08-29, baseline `main` @ `d154e64`.
 - **Standing rules:** P-Class R1–R8 plus R9 (public claims are reproducible
@@ -15,8 +19,8 @@ files, sizes, dependencies, and typed exit gates, in the style of the
 - **Competitive overlay:** [industrial-parity.md](industrial-parity.md)
   maps the reference-kernel crosswalk onto these issues and added O1.2d–f,
   O1.5, O2.4, O3.4, O4.5–O4.7, O5.4, and O5.5 (2026-09-04) where it found
-  no owner. The overlay owns no state; this plan and
-  [open-kernel-status.md](open-kernel-status.md) stay authoritative.
+  no owner. The overlay owns no implementation state; the
+  [master register](roadmap.md#open-kernel-register) is authoritative.
 
 ## §0 Repository conventions this program introduces
 
@@ -161,7 +165,7 @@ median/p95 method with its outlier rule; and the refresh policy
 (re-baseline on a reference minor release, hardware change, or protocol
 change, never silently). The first baseline run lands on the results branch
 with the harness SHA. Exit: the PR that lands the baseline edits the
-`[locked by O1.2f]` placeholders in the overlay's H5/H6 gates into numeric
+`[locked by O1.2f]` placeholders in the master roadmap's H5/H6 gates into numeric
 bands in the same change; no band exists anywhere before that PR.
 
 **Depends on:** O4.1a (facade, for the Remus runner); scenario breadth
@@ -945,53 +949,15 @@ so no session "helpfully" starts early.
 
 ---
 
-## §W Waves — what runs when, for parallel sessions
+## §W Waves — scheduling reference
 
-Disjoint-file scheduling, same discipline as P-Class §4. `gh pr list`
-before claiming anything (R6).
-
-**Wave A — now (no P-Class collision):**
-
-| Issue | Files | Size |
-|---|---|---|
-| O1.1a–c gauntlet | `tools/gauntlet` (new) | M+S+S |
-| O1.3a fillet torture corpus | `operations/tests` | S |
-| O1.4a validation properties | `io/step` | M |
-| O2.1a–b RFC 0006 + math substrate | `docs/design`, `math` | M+M |
-| O2.3a splitter inventory | read-only analysis | S |
-| O3.1 benches | `math/algo/blend benches` (new) | S×3 |
-| O4.1a–b facade + examples | `crates/remus` (new) | M+S |
-| O4.4 error registry (e5b) | `operations` | S |
-| O5.1a–b assemblies | `io/step`, `operations/assembly` | M+M |
-| O6.1 docs skeleton, O6.4 contributing | `docs/book`, root | S+S |
-
-**Wave B — after P-Class 2.4 (splitter files free; census strong):**
-O2.1c–e (the variant ripple), O2.2 (conics, M2 track), O2.3b–d
-(arrangement), O3.2 (spatial cache), O4.1c (wasm delegation), O4.2a–b
-(publish dry-run), O1.2 (head-to-head, publishable numbers), O4.3
-(Python), O5.2 (e3b), O5.3a (AP242 writer), O6.2 (playground).
-
-**Wave C — after M4 / M5:** O1.3b (torture suite public), O5.3b (PMI
-read), O7 (RFC 0007), O5.3c last.
-
-**Added 2026-09-04 (industrial-parity overlay):** O1.2d–e, O1.5, O4.6,
-O4.7, and O5.5 join Wave A (tools, wasm tests, docs; no P-Class
-collision); O1.2f joins Wave B with O1.2a; O2.4 joins Wave B after 2.6
-(math + `phase_ff.rs`, M2 track); O3.4 follows O3.2 in Wave B; O4.5 is
-owner-gated; O5.4 rides Wave A/B with O5.1.
-
-**Owner-gated at any time:** O4.2c first publish · O4.3c PyPI · O6.2
-hosting target · O6.3 outreach.
+The [master scheduling constraints](roadmap.md#scheduling-constraints) replace
+the old Wave A/B/C queue. Wave labels in the master register retain dependency
+grouping, not a second list of unclaimed work.
 
 ## §X Cross-program conflict table
 
-The three places this program can collide with P-Class, and the rule:
-
-| Files | P-Class owner | This program | Rule |
-|---|---|---|---|
-| `algo/src/builder/face_splitter/` | 2.4 | O2.3 | O2.3b+ waits for 2.4; O2.3a (read-only) any time |
-| `algo/src/gfa.rs`, `pave_filler/` | M2 | O2.2 | O2.2 runs *inside* the M2 track, never parallel |
-| `topology/src/` | M3.2 | O3.2 | additive files both sides; coordinate PRs, land M3.2 first if same-week |
-
-Everything else in Wave A is new directories or io/operations files M2
-does not touch.
+Live file ownership and the [master dependency map](roadmap.md#dependencies-and-horizons)
+govern scheduling. In particular M2/O2.2/O2.3 share GFA/splitter files and
+M3/O3.2/B29 share topology mutation contracts. Inspect exact PR footprints before
+claiming a row; no broad claim that an entire wave is disjoint is sufficient.
