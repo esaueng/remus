@@ -898,6 +898,142 @@ fn plane_nurbs_cylinder_domain() {
     }
 }
 
+/// A transversal plane slicing a NURBS tube wall must return the full loop as
+/// ONE closed fitted curve — not zero curves, and not an open arc with a
+/// grid-sized gap.
+///
+/// At 32 seed-grid samples the wall's z=1 loop seeds 31 unique crossings.
+/// The old per-cell edge scan pushed every crossing twice (once per incident
+/// cell), and the doubled cloud drove the chaining threshold's
+/// nearest-neighbour average to zero: each twin pair chained alone, deduped
+/// to a single point, and was discarded as too short — the loop returned
+/// zero curves. Unique-edge emission keeps the average at the true
+/// along-curve spacing; the single chain's endpoints then land one grid
+/// spacing apart and are closed by an exact re-append refit, so the stored
+/// curve is closed (start == end) with fit deviation at the interpolation
+/// error, not the grid spacing.
+#[test]
+fn plane_nurbs_tube_wall_returns_closed_loop() {
+    let cylinder = cylinder_nurbs_surface();
+
+    // Coarse grid: 32 samples is what the FF phase passes (`NURBS_SAMPLES`).
+    let result = intersect_plane_nurbs(&cylinder, Vec3::new(0.0, 0.0, 1.0), 1.0, 32).unwrap();
+
+    assert_eq!(
+        result.len(),
+        1,
+        "one transversal loop should chain into one curve, got {}",
+        result.len()
+    );
+    let curve = &result[0].curve;
+    let domain = curve.domain();
+    let (p_start, p_end) = (curve.evaluate(domain.0), curve.evaluate(domain.1));
+    assert!(
+        (p_start - p_end).length() < 1e-9,
+        "loop should be closed, gap = {:.3e}",
+        (p_start - p_end).length()
+    );
+    // Independent geometry oracle: every fitted point lies on the true tube
+    // (z=1 plane, unit radius) to the interpolation error — orders below the
+    // 0.06 grid spacing a gap would leave.
+    for k in 0..=32 {
+        #[allow(clippy::cast_precision_loss)]
+        let t = domain.0 + (domain.1 - domain.0) * (k as f64) / 32.0;
+        let p = curve.evaluate(t);
+        assert!(
+            (p.z() - 1.0).abs() < 1e-3,
+            "fitted point should lie in the z=1 plane, got z={}",
+            p.z()
+        );
+        let r = (p.x().powi(2) + p.y().powi(2)).sqrt();
+        assert!(
+            (r - 1.0).abs() < 1e-3,
+            "fitted point should lie on the unit circle, got r={r}"
+        );
+    }
+}
+
+/// Build an OPEN polygonal tube: `segments` straight quads around an arc that
+/// stops `gap_angle` short of closing, so the carrier has a real wedge gap.
+///
+/// The wall is degree (1, 1): one quad per segment, control points exactly on
+/// the cylinder, so every point of the carrier is within chord error of the
+/// radius-1 tube and the z=1 slice is a clean near-full arc. The gap is a
+/// genuine carrier boundary, not sampling noise.
+fn open_polygonal_tube(segments: usize, gap_angle: f64) -> NurbsSurface {
+    use std::f64::consts::TAU;
+    assert!(segments >= 3);
+    assert!(gap_angle > 0.0 && gap_angle < TAU);
+    let span = TAU - gap_angle;
+    let mut bottom = Vec::with_capacity(segments + 1);
+    let mut top = Vec::with_capacity(segments + 1);
+    let mut knots = Vec::with_capacity(segments + 4);
+    knots.push(0.0);
+    knots.push(0.0);
+    for i in 0..=segments {
+        #[allow(clippy::cast_precision_loss)]
+        let a = span * (i as f64) / (segments as f64);
+        bottom.push(Point3::new(a.cos(), a.sin(), 0.0));
+        top.push(Point3::new(a.cos(), a.sin(), 2.0));
+        if i > 0 && i < segments {
+            knots.push(a);
+        }
+    }
+    knots.push(span);
+    knots.push(span);
+    NurbsSurface::new(
+        1,
+        1,
+        vec![0.0, 0.0, 1.0, 1.0],
+        knots,
+        vec![bottom, top],
+        vec![vec![1.0; segments + 1]; 2],
+    )
+    .unwrap()
+}
+
+/// A physical wedge gap must survive section fitting.
+#[test]
+fn plane_nurbs_open_tube_stays_open() {
+    use std::f64::consts::TAU;
+    let tube = open_polygonal_tube(128, 0.02);
+
+    let result = intersect_plane_nurbs(&tube, Vec3::new(0.0, 0.0, 1.0), 1.0, 32).unwrap();
+
+    assert_eq!(
+        result.len(),
+        1,
+        "one open arc should chain into one curve, got {}",
+        result.len()
+    );
+    let curve = &result[0].curve;
+    let domain = curve.domain();
+    let (p_start, p_end) = (curve.evaluate(domain.0), curve.evaluate(domain.1));
+    let gap = (p_start - p_end).length();
+    // The carrier's real gap: chord of the missing 0.02-radian wedge.
+    let expected = 2.0_f64 * (0.02_f64 / 2.0).sin();
+    assert!(
+        gap > 0.01 && (gap - expected).abs() < 0.01,
+        "open arc should keep its carrier gap (~{expected:.4}), got gap = {gap:.4}",
+    );
+    // Sanity: the arc really is the near-full tube (spans the circle), not a
+    // short fragment the seed grid happened to catch.
+    let mut covered = 0.0_f64;
+    let mut prev = p_start;
+    for k in 1..=64 {
+        #[allow(clippy::cast_precision_loss)]
+        let t = domain.0 + (domain.1 - domain.0) * (k as f64) / 64.0;
+        let p = curve.evaluate(t);
+        covered += (p - prev).length();
+        prev = p;
+    }
+    assert!(
+        (covered - (TAU - 0.02)).abs() < 0.5,
+        "arc should span the near-full tube (~{:.2}), got length {covered:.2}",
+        TAU - 0.02
+    );
+}
+
 /// Verify that the tangential touch test still works with the new
 /// second-order analysis integrated into the main SSI pipeline.
 #[test]
@@ -1351,4 +1487,54 @@ fn cancelled_context_refuses_ssi_with_typed_result() {
     let result =
         intersect_nurbs_nurbs_with_context(&flat_surface(), &tilted_surface(), 15, 0.02, &context);
     assert!(matches!(result, Err(MathError::Cancelled)));
+}
+
+#[test]
+fn plane_nurbs_open_tube_gap_is_independent_of_chart_and_rotation() {
+    for swap in [false, true] {
+        for rotation in [0.0_f64, 0.1, 1.7, 3.2] {
+            let segments = 128;
+            let end = std::f64::consts::TAU - 0.02;
+            let mut knots = vec![0.0, 0.0];
+            for i in 1..segments {
+                knots.push(f64::from(i) / f64::from(segments));
+            }
+            knots.extend([1.0, 1.0]);
+            let row = |z| {
+                (0..=segments)
+                    .map(|i| {
+                        let a = end * f64::from(i) / f64::from(segments) + rotation;
+                        Point3::new(a.cos(), a.sin(), z)
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let bottom = row(0.0);
+            let top = row(2.0);
+            let axial = vec![0.0, 0.0, 2.0, 2.0];
+            let surface = if swap {
+                let points = bottom.iter().zip(&top).map(|(&a, &b)| vec![a, b]).collect();
+                NurbsSurface::new(1, 1, knots, axial, points, vec![vec![1.0; 2]; 129])
+            } else {
+                NurbsSurface::new(
+                    1,
+                    1,
+                    axial,
+                    knots,
+                    vec![bottom, top],
+                    vec![vec![1.0; 129]; 2],
+                )
+            }
+            .unwrap();
+            let curves =
+                intersect_plane_nurbs(&surface, Vec3::new(0.0, 0.0, 1.0), 1.0, 32).unwrap();
+            assert_eq!(curves.len(), 1);
+            let c = &curves[0].curve;
+            let (a, b) = c.domain();
+            let gap = (c.evaluate(a) - c.evaluate(b)).length();
+            assert!(
+                (gap - 2.0 * (0.01_f64).sin()).abs() < 0.001,
+                "open tube closed: swap={swap}, rotation={rotation}, gap={gap}"
+            );
+        }
+    }
 }
