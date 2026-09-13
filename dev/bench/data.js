@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789259676468,
+  "lastUpdate": 1789261081862,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -32731,6 +32731,240 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 87220,
             "range": "± 510",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "57fa5a17642d5146a8f8c4fc22132d417d9c866e",
+          "message": "fix(ci): retain workflow sources and reconcile roadmap integration (#422)\n\n* fix(operations): convert volume.rs wildcard arms to exhaustive matches (B24)\n\nReplace all 16 EdgeCurve/FaceSurface _ => arms in\noperations/src/measure/volume.rs with deliberate per-variant handling\n(behavior-preserving). Add scripts/check-wildcard-arms.sh no-growth\nratchet scoped to volume.rs. Add b24_handled_surface_families_retain_volume\nregression (box/cylinder/frustum/sphere/torus). Update B24 ledger to\nPartial. Other dense files (phase_ff, nonplanar, resize_blend) untouched.\n\n* chore(policy): add wildcard-arm audit gate and baseline (B24 ratchet)\n\nAdds scripts/check-wildcard-arms.sh, modeled on check-det-hash.sh\n(git-grep scans, scan() exit-status discipline, LC_ALL=C manifest\ncompare), counting '_ =>' arms in match blocks over EdgeCurve or\nFaceSurface per production file. Pattern-side attribution excludes\nmatches over tuples, slices, Results, AnalyticSurface, and\nRecognizedCurve rebuilds that merely construct enum values in arm\nbodies. scripts/wildcard-arms-baseline.txt pins 182 arms in 57 files\nfrom current origin/main; the gate fails on growth (including new\nfiles) and on unrecorded shrinkage. Wired into the Repository Policy\njob next to check-det-hash.sh. Roadmap B24 records the landed\nratchet; the four file conversions stay open.\n\n* chore(policy): land wildcard-arm ratchet unwired, wire with pin update\n\nfleet-ci.yml is consumed through an immutable caller pin\n(test_caller_pins_the_reviewed_workflow_content,\ntest_callers_pin_the_checked_in_workflow_content): any callee edit\nwithout the matching caller-pin bump fails Repository Policy and\nClassify Changes. Keep this PR's callee byte-identical to the pin by\nlanding the gate script, baseline, and roadmap row unwired; the\none-line repo-policy wiring lands together with the pin update so a\nsingle PR carries both sides of the invariant.\n\n* fix(policy): preserve wildcard counts around Rust character literals\n\n* fix(ci): pin reusable workflows to retained main history\n\n* docs(roadmap): consolidate plans into one master register",
+          "timestamp": "2026-09-12T20:50:21-04:00",
+          "tree_id": "92039f9f411d3875f90a653a5604b0eade0a33a2",
+          "url": "https://github.com/esaueng/remus/commit/57fa5a17642d5146a8f8c4fc22132d417d9c866e"
+        },
+        "date": 1789261080894,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1370265,
+            "range": "± 3771",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1428383,
+            "range": "± 18385",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 27486,
+            "range": "± 2531",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 12323601,
+            "range": "± 169696",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 12315856,
+            "range": "± 24843",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 11846148,
+            "range": "± 15278",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 1137340,
+            "range": "± 3197",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 18867447,
+            "range": "± 21351",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 34161530,
+            "range": "± 362758",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 36,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 106,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 63,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 221,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 165,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 804,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 172,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 339,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 230,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 504,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 815,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 3381,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 24,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 33,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 66,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 66,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 595476,
+            "range": "± 5329",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 11816870,
+            "range": "± 13271",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 175565,
+            "range": "± 2671",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 661838,
+            "range": "± 1900",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 136652,
+            "range": "± 115",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 981466,
+            "range": "± 3671",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 11591578,
+            "range": "± 45530",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 809465,
+            "range": "± 1804",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 1219870,
+            "range": "± 4158",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 103408,
+            "range": "± 1245",
             "unit": "ns/iter"
           }
         ]
