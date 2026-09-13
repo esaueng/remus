@@ -58,6 +58,14 @@ pub struct DerivativeScratch {
     basis: Vec<f64>,
     sk: Vec<Vec3>,
     point_and_partials_out: Vec<Vec<Vec3>>,
+    /// Last knot spans the derivative solve ran in, if any.
+    ///
+    /// [`Self::span_hinted_point_and_partials_from`] consults the hinted
+    /// spans first and falls back to the binary search on a miss, so
+    /// quadrature callers must not read these fields directly — only through
+    /// that method, which verifies before trusting.
+    last_span_u: Option<usize>,
+    last_span_v: Option<usize>,
 }
 
 impl DerivativeScratch {
@@ -111,18 +119,50 @@ impl DerivativeScratch {
         u: f64,
         v: f64,
     ) -> (Vec3, Vec3, Vec3) {
+        let (p, du, dv, _, _) = self.span_hinted_point_and_partials_from(surface, u, v);
+        (p, du, dv)
+    }
+
+    /// [`Self::point_and_partials_from`], reusing the previous call's knot
+    /// spans when the parameters still lie in them.
+    ///
+    /// Gauss abscissae arrive in ascending `u` (and usually ascending `v`
+    /// within one patch), so the solve usually stays in the same span; a
+    /// verified hint then replaces each axis's `find_span` binary search.
+    /// Verification is `knots[span] <= t < knots[span + 1]` — the exact
+    /// postcondition [`basis::find_span`] establishes, including at repeated
+    /// knots and the clamped domain ends — so a hit runs bit-identically to
+    /// the search (the same indices feed the same basis solve), and a miss
+    /// takes the search, which also refreshes the hint. The returned `bool`s
+    /// report whether each axis hit, for census only; results do not depend
+    /// on them. Callers must use one scratch per surface: spans are knot
+    /// indices, meaningless on any other knot vector. Callers must not share
+    /// one scratch across threads.
+    #[doc(hidden)]
+    pub fn span_hinted_point_and_partials_from(
+        &mut self,
+        surface: &NurbsSurface,
+        u: f64,
+        v: f64,
+    ) -> (Vec3, Vec3, Vec3, bool, bool) {
         self.ensure_point_and_partials_out();
         self.ensure_basis_for(surface, 1);
         self.ensure_sk_for(1);
-        // Split the borrows: the output table and the scratch buffers live in
-        // disjoint fields, so both can be borrowed at once.
+        // Split the borrows: the output table, the scratch buffers, and the
+        // span hints live in disjoint fields, so all can be borrowed at once.
         let Self {
             basis,
             sk,
             point_and_partials_out: out,
+            last_span_u,
+            last_span_v,
         } = self;
-        surface.derivatives_into_with_buffers(u, v, 1, basis, sk, out);
-        (out[0][0], out[1][0], out[0][1])
+        let (span_u, hit_u) = surface.find_span_hinted_u(u, last_span_u.unwrap_or(usize::MAX));
+        let (span_v, hit_v) = surface.find_span_hinted_v(v, last_span_v.unwrap_or(usize::MAX));
+        *last_span_u = Some(span_u);
+        *last_span_v = Some(span_v);
+        surface.derivatives_into_with_spans(u, v, 1, span_u, span_v, basis, sk, out);
+        (out[0][0], out[1][0], out[0][1], hit_u, hit_v)
     }
 
     /// The reusable 2x2 `derivatives_into` output table.
@@ -526,15 +566,94 @@ impl NurbsSurface {
         sk_buf: &mut [Vec3],
         out: &mut [Vec<Vec3>],
     ) {
-        let pu = self.degree_u;
-        let pv = self.degree_v;
         let n_rows = self.control_points.len();
         let n_cols = self.control_points[0].len();
-        let u = u.clamp(self.knots_u[pu], self.knots_u[n_rows]);
-        let v = v.clamp(self.knots_v[pv], self.knots_v[n_cols]);
+        let u = u.clamp(self.knots_u[self.degree_u], self.knots_u[n_rows]);
+        let v = v.clamp(self.knots_v[self.degree_v], self.knots_v[n_cols]);
+        let span_u = basis::find_span(n_rows, self.degree_u, u, &self.knots_u);
+        let span_v = basis::find_span(n_cols, self.degree_v, v, &self.knots_v);
+        self.derivatives_into_with_spans(u, v, d, span_u, span_v, basis_buf, sk_buf, out);
+    }
 
-        let span_u = basis::find_span(n_rows, pu, u, &self.knots_u);
-        let span_v = basis::find_span(n_cols, pv, v, &self.knots_v);
+    /// Verify a hinted span the way [`basis::find_span`] defines it: the index
+    /// `i` with `knots[i] <= t < knots[i + 1]`, clamped to
+    /// `[degree, n - 1]`. Returns `None` when the hint misses, including when
+    /// it is out of range for this knot vector (e.g. a fresh scratch).
+    fn verify_span_hint(
+        knots: &[f64],
+        n: usize,
+        degree: usize,
+        t: f64,
+        hint: usize,
+    ) -> Option<usize> {
+        if hint < degree || hint >= n {
+            return None;
+        }
+        // `find_span` clamps both domain ends before searching, so the hint
+        // check must accept the same clamped outcomes: at or past either end
+        // the answer is the end span regardless of the knot comparison.
+        if t >= knots[n] {
+            return (hint == n - 1).then_some(hint);
+        }
+        if t <= knots[degree] {
+            return (hint == degree).then_some(hint);
+        }
+        (knots[hint] <= t && t < knots[hint + 1]).then_some(hint)
+    }
+
+    /// [`basis::find_span`] on the u axis, consulting `hint` first.
+    fn find_span_hinted_u(&self, u: f64, hint: usize) -> (usize, bool) {
+        let n_rows = self.control_points.len();
+        if let Some(span) = Self::verify_span_hint(&self.knots_u, n_rows, self.degree_u, u, hint) {
+            return (span, true);
+        }
+        let u = u.clamp(self.knots_u[self.degree_u], self.knots_u[n_rows]);
+        (
+            basis::find_span(n_rows, self.degree_u, u, &self.knots_u),
+            false,
+        )
+    }
+
+    /// [`basis::find_span`] on the v axis, consulting `hint` first.
+    fn find_span_hinted_v(&self, v: f64, hint: usize) -> (usize, bool) {
+        let n_cols = self.control_points[0].len();
+        if let Some(span) = Self::verify_span_hint(&self.knots_v, n_cols, self.degree_v, v, hint) {
+            return (span, true);
+        }
+        let v = v.clamp(self.knots_v[self.degree_v], self.knots_v[n_cols]);
+        (
+            basis::find_span(n_cols, self.degree_v, v, &self.knots_v),
+            false,
+        )
+    }
+
+    /// [`Self::derivatives_into_with_buffers`] with pre-resolved knot spans.
+    ///
+    /// `span_u`/`span_v` must be what [`basis::find_span`] returns for the
+    /// (clamped) `(u, v)` — which is exactly what the hinted lookup above
+    /// guarantees, hit or miss. Splitting span resolution out of the solve
+    /// lets a hot loop pay the binary search only when the abscissa leaves
+    /// the previous span; the arithmetic below is untouched.
+    #[allow(
+        clippy::many_single_char_names,
+        clippy::cast_precision_loss,
+        clippy::too_many_arguments
+    )]
+    fn derivatives_into_with_spans(
+        &self,
+        u: f64,
+        v: f64,
+        d: usize,
+        span_u: usize,
+        span_v: usize,
+        basis_buf: &mut [f64],
+        sk_buf: &mut [Vec3],
+        out: &mut [Vec<Vec3>],
+    ) {
+        let pu = self.degree_u;
+        let pv = self.degree_v;
+        let u = u.clamp(self.knots_u[pu], self.knots_u[self.control_points.len()]);
+        let v = v.clamp(self.knots_v[pv], self.knots_v[self.control_points[0].len()]);
         let du = d.min(pu);
         let dv = d.min(pv);
         let stride_u = pu + 1;
@@ -1315,6 +1434,160 @@ mod weight_cache_tests {
             assert_eq!(bits(out2[1][0]), bits(expected[1][0]));
             assert_eq!(bits(out2[0][1]), bits(expected[0][1]));
         }
+    }
+
+    #[test]
+    fn trait_scratch_method_populates_and_reuses_buffers() {
+        use crate::traits::ParametricSurface;
+
+        let surface = rational_patch(1.0);
+        let mut scratch = DerivativeScratch::new();
+        surface.point_and_partials_with_scratch(0.2, 0.3, &mut scratch);
+        assert!(
+            !scratch.basis.is_empty(),
+            "NURBS must use the supplied scratch"
+        );
+        let buffers = (
+            scratch.basis.as_ptr(),
+            scratch.sk.as_ptr(),
+            scratch.point_and_partials_out.as_ptr(),
+        );
+        for (u, v) in [(0.25, 0.4), (0.75, 0.9), (1.0, 1.0)] {
+            let (p, du, dv) = surface.point_and_partials_with_scratch(u, v, &mut scratch);
+            let (expected, expected_du, expected_dv) = surface.point_and_partials(u, v);
+            assert_eq!(
+                bits(Vec3::new(p.x(), p.y(), p.z())),
+                bits(Vec3::new(expected.x(), expected.y(), expected.z()))
+            );
+            assert_eq!(bits(du), bits(expected_du));
+            assert_eq!(bits(dv), bits(expected_dv));
+            assert_eq!(
+                buffers,
+                (
+                    scratch.basis.as_ptr(),
+                    scratch.sk.as_ptr(),
+                    scratch.point_and_partials_out.as_ptr()
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn span_hinted_solve_matches_unhinted_bitwise() {
+        use crate::traits::ParametricSurface;
+        // Ascending walks (the quadrature order), span crossings, domain ends,
+        // repeated knots, and out-of-domain clamping must all reproduce the
+        // unhinted solve bit for bit — a hit feeds the same indices, a miss
+        // takes the search. The bicubic single-span case covers the hint that
+        // never misses; the rational two-span case covers crossings.
+        let single = NurbsSurface::new(
+            3,
+            3,
+            vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+            vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+            (0..4)
+                .map(|i| {
+                    (0..4)
+                        .map(|j| {
+                            Point3::new(f64::from(j), f64::from(i), (f64::from(i + j) * 0.5).sin())
+                        })
+                        .collect()
+                })
+                .collect(),
+            vec![vec![1.0; 4]; 4],
+        )
+        .unwrap();
+        let two_span = rational_patch(1.0);
+        for s in [&single, &two_span] {
+            // Dense ascending grid plus exact knots, ends, and out-of-domain.
+            let (u0, u1) = s.domain_u();
+            let (v0, v1) = s.domain_v();
+            let mut params = Vec::new();
+            for k in 0..200 {
+                params.push((
+                    u0 + (u1 - u0) * f64::from(k) / 199.0,
+                    v0 + (v1 - v0) * (f64::from(k) * 0.618_033_988_7 % 1.0),
+                ));
+            }
+            params.extend(
+                s.knots_u()
+                    .iter()
+                    .flat_map(|&u| s.knots_v().iter().map(move |&v| (u, v))),
+            );
+            params.extend([
+                (u0, v0),
+                (u1, v1),
+                (u0 - 0.25, v0 - 0.25),
+                (u1 + 0.25, v1 + 0.25),
+                (f64::midpoint(u0, u1), v1 + 1.0),
+            ]);
+            // One shared scratch per surface, walked twice: ascending (high
+            // hit rate) then shuffled (miss-heavy). Both must match.
+            for order in [false, true] {
+                let mut scratch = DerivativeScratch::new();
+                let mut seq = params.clone();
+                if order {
+                    seq.reverse();
+                }
+                for &(u, v) in &seq {
+                    let (p, du, dv, _, _) =
+                        ParametricSurface::span_hinted_point_and_partials_with_scratch(
+                            s,
+                            u,
+                            v,
+                            &mut scratch,
+                        );
+                    let (ep, edu, edv) = ParametricSurface::point_and_partials(s, u, v);
+                    assert_eq!(
+                        bits(p - ep),
+                        bits(Vec3::new(0.0, 0.0, 0.0)),
+                        "p at ({u}, {v})"
+                    );
+                    assert_eq!(bits(du), bits(edu), "du at ({u}, {v})");
+                    assert_eq!(bits(dv), bits(edv), "dv at ({u}, {v})");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn span_hint_reports_hits_on_quadrature_like_walks() {
+        use crate::traits::ParametricSurface;
+        // Guard against a vacuous hint: on an ascending walk inside one span
+        // nearly every abscissa must hit. A single-span bicubic patch walked
+        // at 200 ascending points hits 199/200 per axis (the first call has
+        // no hint yet).
+        let s = NurbsSurface::new(
+            3,
+            3,
+            vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+            vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+            (0..4)
+                .map(|i| {
+                    (0..4)
+                        .map(|j| {
+                            Point3::new(f64::from(j), f64::from(i), (f64::from(i + j) * 0.5).sin())
+                        })
+                        .collect()
+                })
+                .collect(),
+            vec![vec![1.0; 4]; 4],
+        )
+        .unwrap();
+        let mut scratch = DerivativeScratch::new();
+        let (mut hit_u, mut hit_v) = (0usize, 0usize);
+        for k in 0..200 {
+            let t = f64::from(k) / 199.0;
+            let (_, _, _, hu, hv) = ParametricSurface::span_hinted_point_and_partials_with_scratch(
+                &s,
+                t,
+                t,
+                &mut scratch,
+            );
+            hit_u += usize::from(hu);
+            hit_v += usize::from(hv);
+        }
+        assert_eq!((hit_u, hit_v), (199, 199));
     }
 
     #[test]
