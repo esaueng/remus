@@ -8,10 +8,9 @@ on:
     types: [checks_requested]
 
 concurrency:
-  group: ci-${{ github.ref }}
-  # Supersede only PR runs. Every main push keeps its run so each merge
-  # commit gets a completed verdict instead of being cancelled by the next
-  # merge in a burst.
+  # Shared groups replace pending runs even when running cancellation is off.
+  # Give each non-PR run its own group so every main commit keeps its verdict.
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
