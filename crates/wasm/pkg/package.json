@@ -29,7 +29,7 @@
   "name": "remus-wasm",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/esaueng/remus.git"
+    "url": "https://github.com/esaueng/remus"
   },
   "sideEffects": [
     "./remus_wasm.js",
@@ -37,6 +37,6 @@
   ],
   "type": "module",
   "types": "remus_wasm.d.ts",
-  "version": "2.130.14",
-  "homepage": "https://github.com/esaueng/remus"
+  "version": "2.131.0",
+  "remusSourceCommit": "ce91b575dd8bd264923d85f8f2faedecf9c61b8b"
 }
