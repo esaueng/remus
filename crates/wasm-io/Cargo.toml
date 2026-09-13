@@ -9,7 +9,7 @@ repository.workspace = true
 rust-version.workspace = true
 # Ships in lockstep with `remus-wasm`; `cargo xtask wasm-build` refuses to
 # package the two at different versions.
-version = "2.130.2"
+version = "2.131.0"
 
 [lib]
 crate-type = ["cdylib", "rlib"]

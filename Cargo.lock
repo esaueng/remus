@@ -2296,7 +2296,7 @@ dependencies = [
 
 [[package]]
 name = "remus-wasm"
-version = "2.130.2"
+version = "2.131.0"
 dependencies = [
  "log",
  "remus",
@@ -2318,7 +2318,7 @@ dependencies = [
 
 [[package]]
 name = "remus-wasm-io"
-version = "2.130.2"
+version = "2.131.0"
 dependencies = [
  "remus-io",
  "remus-math",
