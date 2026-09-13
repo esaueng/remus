@@ -297,6 +297,17 @@ impl ParametricSurface for NurbsSurface {
         )
     }
 
+    #[inline]
+    fn point_and_partials_with_scratch(
+        &self,
+        u: f64,
+        v: f64,
+        scratch: &mut crate::nurbs::surface::DerivativeScratch,
+    ) -> (Point3, Vec3, Vec3) {
+        let (p, du, dv) = scratch.point_and_partials_from(self, u, v);
+        (Point3::new(p.x(), p.y(), p.z()), du, dv)
+    }
+
     /// Span-hinted [`point_and_partials_with_scratch`](Self::point_and_partials_with_scratch):
     /// one `derivatives_into(u, v, 1)` that reuses the previous call's knot
     /// spans when the parameters still lie in them. Returns the position,

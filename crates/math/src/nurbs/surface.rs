@@ -1437,6 +1437,42 @@ mod weight_cache_tests {
     }
 
     #[test]
+    fn trait_scratch_method_populates_and_reuses_buffers() {
+        use crate::traits::ParametricSurface;
+
+        let surface = rational_patch(1.0);
+        let mut scratch = DerivativeScratch::new();
+        surface.point_and_partials_with_scratch(0.2, 0.3, &mut scratch);
+        assert!(
+            !scratch.basis.is_empty(),
+            "NURBS must use the supplied scratch"
+        );
+        let buffers = (
+            scratch.basis.as_ptr(),
+            scratch.sk.as_ptr(),
+            scratch.point_and_partials_out.as_ptr(),
+        );
+        for (u, v) in [(0.25, 0.4), (0.75, 0.9), (1.0, 1.0)] {
+            let (p, du, dv) = surface.point_and_partials_with_scratch(u, v, &mut scratch);
+            let (expected, expected_du, expected_dv) = surface.point_and_partials(u, v);
+            assert_eq!(
+                bits(Vec3::new(p.x(), p.y(), p.z())),
+                bits(Vec3::new(expected.x(), expected.y(), expected.z()))
+            );
+            assert_eq!(bits(du), bits(expected_du));
+            assert_eq!(bits(dv), bits(expected_dv));
+            assert_eq!(
+                buffers,
+                (
+                    scratch.basis.as_ptr(),
+                    scratch.sk.as_ptr(),
+                    scratch.point_and_partials_out.as_ptr()
+                )
+            );
+        }
+    }
+
+    #[test]
     fn span_hinted_solve_matches_unhinted_bitwise() {
         use crate::traits::ParametricSurface;
         // Ascending walks (the quadrature order), span crossings, domain ends,
@@ -1501,12 +1537,7 @@ mod weight_cache_tests {
                             v,
                             &mut scratch,
                         );
-                    let (ep, edu, edv) = ParametricSurface::point_and_partials_with_scratch(
-                        s,
-                        u,
-                        v,
-                        &mut DerivativeScratch::new(),
-                    );
+                    let (ep, edu, edv) = ParametricSurface::point_and_partials(s, u, v);
                     assert_eq!(
                         bits(p - ep),
                         bits(Vec3::new(0.0, 0.0, 0.0)),
