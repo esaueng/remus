@@ -15,8 +15,7 @@ measurable exit gates for the three post-v1.0 horizons (H5–H7 in
   in this document, per the repository's no-naming policy.
 - **What this document is not:** a third implementation backlog. It adds no
   ledger. The authoritative state of every row stays where it already lives:
-  [p-class-status.md](p-class-status.md), [open-kernel-status.md](open-kernel-status.md),
-  the §B table in [roadmap.md](roadmap.md), the
+  the [master implementation registers](roadmap.md), the
   [capability matrix](capability-matrix.md), and the
   [stability matrix](../production-readiness/stability-matrix.md). Where a
   parity target had no owner, this overlay added a row **to the program that
@@ -734,67 +733,7 @@ attachment (B7); STEP voids (B13, PR #251); cap holes (B12, PR #252).
 
 ## §6 Post-v1.0 horizons and their gates
 
-H0–H4 are unchanged (see [roadmap.md](roadmap.md) §H). The three horizons
-below are appended after H4; each gate is either absolute (§3.4) or a band
-placeholder locked by O1.2f.
-
-### H5 — Core modeling parity (authored-from-scratch domain)
-
-Purpose: prove parity across the in-scope authored-modeling domain.
-
-1. This crosswalk is complete: every in-scope row has a non-`Unknown`
-   competitive state and an owner, and §5.17's rows are on their ledgers.
-2. Zero `Unsupported-untyped` cells in the capability matrix (carried from
-   H4 and re-verified).
-3. W1, W2, W5, and W7 complete correctly through both surfaces — not by
-   refusal — at 1e-3/1/1e3 scale.
-4. General curved booleans qualified: 2.4c/d, 2.5, 2.6, 2.7 closed; 4.8
-   N-ary and mixed-dimensional cells qualified or typed with a named
-   primitive.
-5. Broad matrices qualified for fillet (M5 rows plus 5.8 rollover), chamfer
-   (B3), shell/offset (5.7b, B5 done), draft (6.4), sweep (7.1), loft (7.2),
-   direct edit (6.2, 6.3), with typed both-sides boundaries everywhere else.
-6. Complete topology evolution for all covered operation families (B18 audit
-   at zero unowned unresolved classes; 6.5 closed).
-7. Stable Rust facade (O4.1c delegation, O4.2a/b dry-run green), stable
-   JS/WASM contract (O4.4 registry), and the planned Python surface (O4.3a/b)
-   passing the mirrored contract suite.
-8. Parity measurements published for the modeled-from-scratch scenarios
-   (W1, W2, W5, W7) with O1.2f's baseline pinned and the §3.4 absolute gates
-   green; numeric bands: `[locked by O1.2f]`.
-
-### H6 — Industrial interchange and corpus parity
-
-Purpose: comparable outcomes on real supplier data, assemblies, and large
-models.
-
-1. W3 passes: dirty STEP models are diagnosed, tolerated (M3.5, B2 exit
-   benchmark) or verified-repaired (B1), operated on (M3.4), and re-exported
-   with complete disclosure; zero heal invocations on the tolerant path.
-2. AP242 product structure (O5.1, O5.3a), attributes (O5.2), and the
-   declared PMI read profile (O5.3b) qualified against CAx-IF test-round
-   models (O1.4b).
-3. Assembly occurrence identity and instancing stable (O5.4) across
-   round trip and edits.
-4. Real-model gauntlet stage pass rates within locked parity bands
-   `[locked by O1.2f]`, with the taxonomy breakdown public (O1.1c/d).
-5. Zero `silent_wrong`, `crash`, and unbounded `hang_or_budget_overrun`
-   across the gated corpus on both kernels' comparison rows.
-6. Imported-model boolean, blend, offset, direct-edit, tessellation, and
-   measurement stages within bands `[locked by O1.2f]`.
-7. Large-model memory and tail-latency budgets enforced (8.2, 8.6, O3.2,
-   O3.4) with W8 passing under a declared memory ceiling.
-8. Deterministic concurrent sessions and supported parallel operations
-   (8.3, 8.4 under the 200-run determinism gate; 8.7 decision recorded).
-9. A second serious external consumer exercising the native or Python API
-   with its corpus in Remus CI (O6.3, S6).
-
-### H7 — Demonstrated technical leadership
-
-Purpose: independently reproducible areas where Remus is measurably better.
-Requires a minimum portfolio of **five** leadership claims from §7 meeting
-the leadership discipline, at least two of them in the correctness family
-(LC1–LC4) and at least one in the browser family (LC7–LC9).
+The complete H5/H6/H7 gates have moved to the [master roadmap](roadmap.md#dependencies-and-horizons). This reference retains scorecard definitions, crosswalk ownership and claim discipline; update sequencing and horizon acceptance in one place.
 
 ## §7 Leadership claims and the discipline they must meet
 
@@ -825,53 +764,8 @@ Known-loss publication is mandatory: the O1.2c results page carries a
 
 ## §8 Prioritization and critical path
 
-Ordering uses the sanctioned chase filters and TERMINAL list in
-`.claude/skills/roadmap/SKILL.md`, then, in order: correctness and
-silent-wrong risk; dependency unlock; OpenZCAD user impact; industrial-corpus
-frequency; breadth of downstream operations improved; existence of a stable
-reproduction or independent oracle; ability to cut a bounded vertical slice;
-file-collision risk. Feature count, novelty, and ease are not criteria.
+Use the [master priorities](roadmap.md#current-priorities) and [dependency map](roadmap.md#dependencies-and-horizons). Crosswalk rows identify scope and evidence, not a competing queue.
 
-The critical path, tested against the repository rather than assumed:
+## §9 Owner decisions
 
-```
-explicit trims / p-curves / body topology (2.0 done, M4 done)
-  → general surface intersection + UV arrangement (2.4c/d, 2.5, O2.3)
-    → tolerant modeling integration (3.4, 3.5)
-      → general curved booleans, N-ary (2.6, 2.7, 4.8)
-        → healing/import integration on real corpora (O1.1d, B17, W3)
-          → local operations and direct modeling (5.8, 6.2–6.5, 6.6)
-            → advanced sweeps and surfacing (7.1–7.4, 7.6, 7.7)
-              → semantic exchange and assemblies (O5.1–O5.5)
-                → large-model performance and deterministic parallelism
-                  (O3.2, O3.4, 8.2–8.4, 8.6, 8.7)
-                    → hybrid B-Rep/faceted modeling (O7, RFC only)
-```
-
-The one deviation from the assumed order: healing/import integration sits
-*before* local operations here because the gauntlet already runs and W3 is
-the OpenZCAD-relevant workflow with the highest measured failure rate
-(smoke 29/50 full passes at the last pinned manifest); M6 has no consumer
-pull until imported bodies survive it.
-
-## §9 Owner decisions this overlay leaves open
-
-Recorded here so no session resolves them by default:
-
-1. **O4.5 — stable C ABI:** adopt (feeds Python via a C layer, opens
-   C++/C# consumers) or decline (PyO3 direct, no ABI surface). Decision
-   record only; no implementation either way before the record.
-2. **O5.5 — external references and partial loading:** whether the kernel
-   owns any part of it or the application document does. Design note plus
-   decision.
-3. **8.7 — WASM threads and SIMD:** evidence-gated like O3.3; the owner
-   decides whether the OpenZCAD deployment can accept the cross-origin
-   isolation headers threads require.
-4. **IGES:** stays Option 2 (decided 2026-08-21). Reopening needs consumer
-   or corpus evidence and an explicit owner decision.
-5. **Non-manifold / cellular with shared faces:** later RFC per RFC 0005;
-   whether it precedes or follows O7 is the owner's call.
-6. **v1 fillet API migration:** unchanged product decision; H5's blend
-   gate does not depend on it.
-7. **First publish (O4.2c) and PyPI (O4.3c):** owner-gated; H5 gate 7
-   requires dry-run readiness only, not the publish itself.
+All seven former decisions are retained in the [master decision register](roadmap.md#decisions-and-exclusions). No competitive gate implicitly authorizes publishing, deployment, API retirement or a new platform requirement.

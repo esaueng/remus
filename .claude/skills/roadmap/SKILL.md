@@ -15,7 +15,7 @@ closed row — the digs, the refuted theories, the tool-era scores — lives in
 ## This is a LIVING document: maintenance is mandatory
 
 When a session **closes, defers, or discovers** a work item, it MUST update the
-queue (`docs/kernel-maturity/roadmap.md` or the item's program ledger) in the
+master queue (`docs/kernel-maturity/roadmap.md`) in the
 same PR, and this file whenever a filter, a TERMINAL entry, a trap, or a
 lesson changes. A stale doctrine is worse than none: past sessions burned large
 budgets rediscovering dead ends this file was supposed to name. Keep every
@@ -55,12 +55,11 @@ and the engine-side fixture named beside it is the bar. The gridfinity-derived
 `*_inmem` fixtures and the wasm `gridfinity_tests` module stay: they are generic
 hard-geometry regression coverage with no external dependency.
 
-## The queue lives in the program docs
+## The queue lives in the master roadmap
 
-Work selection starts from `docs/kernel-maturity/roadmap.md` — the unified queue
-merging the P-Class program (ledger `p-class-status.md`), the Open Kernel program
-(ledger `open-kernel-status.md`), and the bridge backlog (§B). Pick by the
-session-playbook section there, then apply THIS file's filters, TERMINAL list, and
+Work selection starts from `docs/kernel-maturity/roadmap.md` — the single priority, dependency and implementation-status authority for P-Class,
+Open Kernel, bridge and performance work. The old status files are redirects;
+specifications and audits are supporting references. Pick by the session workflow there, then apply THIS file's filters, TERMINAL list, and
 acceptance bar to whatever you picked: the roadmap doc governs *what* is open, this
 file governs *how* to chase. Before claiming anything: `gh pr list --state open`,
 and read the last scheduled runs (Corpus Gauntlet, Fuzz Smoke, Mutation Testing)
@@ -68,7 +67,7 @@ and read the last scheduled runs (Corpus Gauntlet, Fuzz Smoke, Mutation Testing)
 
 `docs/kernel-maturity/industrial-parity.md` is the non-owning competitive
 overlay: it says where a row stands against the reference kernel and which
-program row owns the gap, never what is open — never claim work from it
+master row owns the gap, never what is open — never claim work from it
 directly; claim the owner row it points at.
 
 ## The priority filters (rules with reasons)
@@ -131,19 +130,17 @@ that does not exist yet; without it, stop.
 
 ## Open items with a repro
 
-The `#[ignore]` inventory (regenerated 2026-09-11 at `95de160`: 15
-attributes, one doc-comment false hit) has one open engine witness:
-`qualify_boolean_anisotropic.rs::anisotropic_world_volume_resolves_small_feature_scale`.
-The remaining fourteen ignores are
-two fork-policy pins blocked on the trim-contract reconciliation
-(`crates/operations/tests/regress_chamfer_obtuse_ridge.rs`,
-`regress_fillet_concave_notch.rs`, see PR #126), one ~2 min perf run
+The `#[ignore]` inventory (regenerated 2026-09-12 at `f464285f`: 13
+actual attributes, excluding comment mentions) has one open engine witness:
+`qualify_boolean_anisotropic.rs::anisotropic_world_volume_resolves_small_feature_scale`
+(P-Class 2.6 in the master roadmap). The other twelve are one ~2 min perf run
 (`boolean/tests.rs::staircase_fuse_with_cylinders`), two manual release-mode
-`unify_faces` scaling measurements (`regress_unify_scaling.rs`, issue #284,
-closed), and print-only diagnostics (`profile_intersect.rs` ×3, the two #696
-dovetail probes, the four `diag_*tangency*` landscape probes — re-run those
-with `--ignored --nocapture` before re-opening the tangency row). Everything else that was once "deferred"
-is either a §B row in `roadmap.md`, a program-ledger issue, or a closed entry in
+`unify_faces` scaling measurements (`regress_unify_scaling.rs`, issue #284),
+and nine print-only diagnostics (`profile_intersect.rs` ×3, the two #696
+dovetail probes, the four `diag_*tangency*` probes). The concave-notch fillet
+and obtuse-ridge chamfer pins are no longer ignored after #398. Re-run
+landscape diagnostics with `--ignored --nocapture` before re-opening a case.
+Current work lives in the master roadmap; closed narratives live in
 `campaign-history.md`.
 
 The `modifier_ops` fuzz red that stood from 2026-08-16 to 2026-09-02 was the
@@ -162,8 +159,9 @@ harness's own option-honoured floor misreading a correct 0.05 fillet on an
 - **`main` CI runs are cancelled by the next merge in a burst** (`ci.yml`
   `cancel-in-progress` keyed on ref, B22): a `main` merge with `conclusion:
   cancelled` has no verdict; re-run it before quoting "green on main".
-- **A `log::warn!` is not disclosure:** the plain boolean entry points hand back
-  a mesh-fallback solid with only a log line (B21); read `BooleanOutcome` or use
+  B22 repaired the cancellation policy; this remains a historical evidence lesson.
+- **A `log::warn!` is not disclosure:** the pre-B21 plain entry points handed back
+  a mesh-fallback solid with only a log line; B21 now makes those paths exact-only. Read `BooleanOutcome` or use
   `ExactOnly` in any verification, never the bare handle.
 - **cargo-mutants 27 discovers `.cargo/mutants.toml`, not a root-level config;** verify real default selection and stale-path refusals with `scripts/test-mutants-scope.py` before claiming mutation scope (B19).
 - **Deterministic STEP emission sorts unordered face, void-shell, and hole-loop aggregates by arena ID but never sorts coedges;** coedge sequence carries boundary traversal semantics (`crates/io/src/step/writer.rs`).

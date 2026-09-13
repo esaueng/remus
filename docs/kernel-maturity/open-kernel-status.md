@@ -1,80 +1,8 @@
-# Open Kernel Program status
+# Open Kernel status
 
-Canonical plan: [open-kernel-implementation.md](open-kernel-implementation.md)
-(strategy in [open-kernel-program.md](open-kernel-program.md)). This ledger is
-updated in the final PR for every issue. `Pending` means no implementation PR
-has landed; the live open-PR inventory remains authoritative before work
-starts (R6). Wave assignments and the cross-program conflict table live in
-the implementation plan (§W, §X) — check both before claiming an issue.
+Implementation status has moved to the [Remus master roadmap](roadmap.md#open-kernel-register).
+Update the owning row there in the same PR that changes its state. This file is
+a compatibility redirect and must not grow another status table.
 
-Owner-gated rows require an explicit maintainer decision recorded in the PR
-that flips them; agents do not flip them autonomously.
-
-Rows added on 2026-09-04 by the [industrial-parity overlay](industrial-parity.md)
-are indexed there; this ledger is their only state of record.
-
-The [2026-09-12 performance audit](../performance/kernel-optimization-roadmap.md)
-expands O3 and M8 into prioritized work packages with baseline measurements,
-dependencies and acceptance checks. It records existing partial implementations
-without changing completion status here; audit IDs are not a second ledger.
-
-| Issue | Wave | State | PR |
-| --- | --- | --- | --- |
-| O1.1a Gauntlet pipeline skeleton | A | Complete — isolated bounded workers run import, validation, disclosed probe boolean, manifold tessellation, and property-checked STEP round-trip; JSONL and aggregate JSON/Markdown outputs use stable taxonomy codes | [#164](https://github.com/esaueng/remus/pull/164) |
-| O1.1b Corpus manifests + fetcher | A | Complete — pinned 50-model smoke, 1,000-of-10,000 ABC, and 113-model MAMBO manifests; archive/member SHA-256 verification, content-addressed caching, deterministic sampling, and typed source refusals; no corpus bytes committed | [#166](https://github.com/esaueng/remus/pull/166) |
-| O1.1c Gauntlet CI wiring | A | Complete — nightly smoke and weekly abc-1k schedules publish reproducible aggregate scoreboards and append-only per-stage trends; a 0.50pp drop fails while still publishing the red aggregate | [#171](https://github.com/esaueng/remus/pull/171) |
-| O1.1d Triage loop (recurring) | A | Partial — 1/5 required classes closed: generic period-winding `FACE_BOUND` bands now reconstruct exact analytic seams or refuse transactionally; pinned smoke manifest `779fcc7f…` at `a36bddac` moved `invalid_input` 14→10 and full passes 26/50→29/50 | [#177](https://github.com/esaueng/remus/pull/177) |
-| O1.2a Head-to-head protocol + runners | B | Pending | — |
-| O1.2b Head-to-head scenario set | B | Pending | — |
-| O1.2c Head-to-head results page | B | Pending | — |
-| O1.2d Scorecard metric schema + absolute gates | A | Complete — versioned `tools/vs-bench` observations and deterministic JSON reports preserve all metric groups, one-hot oracle-classified outcomes, independent absolute gates, and equivalent-quality-only timing. Adversarial native/CLI contracts reject schema mismatch, incomplete evidence, undisclosed degradation, and oracle disagreement on either kernel; kernel runners and measured baselines remain O1.2a–c/e/f | [#275](https://github.com/esaueng/remus/pull/275) |
-| O1.2e Workflow scenarios W1–W9 | A | Partial — W9 STEP preallocation refusals run twice through the native facade and real WASM batch compatibility build, with per-stage typed-refusal and complete logical-session snapshot checks. W1–W8, post-allocation W9, shipped split translators, scorecard/results-page integration, and reference runners remain pending. | `tools/vs-bench/workflows/README.md`, `scripts/test-w9-preflight.sh` |
-| O1.2f Baseline pin milestone | B | Pending — added 2026-09-04 by the industrial-parity overlay (§3.3); locks the H5/H6 numeric bands | — |
-| O1.3a Fillet torture corpus + runner | A | Complete — 10 named cases built-and-verified or transactionally refused with stable codes | [#139](https://github.com/esaueng/remus/pull/139) |
-| O1.3b Fillet torture publication | C | Pending | — |
-| O1.4a STEP validation properties | A | Complete — opt-in CAx-IF validation properties round-trip aggregate and per-solid area, volume, centroid, and bounding boxes with derived units; malformed properties refuse transactionally with stable diagnostics, and direct/batch WASM contracts preserve import diagnostics | [#180](https://github.com/esaueng/remus/pull/180) |
-| O1.4b CAx-IF test-round manifest | B | Pending | — |
-| O1.5 Native/WASM per-operation parity harness | A | Partial — the first 54-cell matrix generates cone/sphere, sphere/cylinder, and torus/sphere fuse/cut/intersect bundles across three scales and two placements, executes each through native and npm-installed release WASM `executeBatchV2`, oracle-checks exact quality and geometry on both, and diffs diagnostics, census, analytic carriers, mesh quality, volume, and serialized-byte SHA-256. Semantic invariants pass all 54 cells; raw arena bytes differ in all 54 and remain a visible non-gating exit gap. Full batch-op coverage, byte identity, failure/evolution fixtures, nightly registration, and the platform matrix remain. | `tools/parity/`, `scripts/test-o15-parity.sh` |
-| O2.1a RFC 0006 swept analytic surfaces | A | Complete — the accepted design preserves STEP parameterization with self-contained math-layer profiles, checked projection, exact lowering/recognition, typed unsupported paths, staged R8 contracts, and a measured disposition for all 92 production `FaceSurface` wildcard matches | [#183](https://github.com/esaueng/remus/pull/183) |
-| O2.1b Revolution/extrusion math substrate | A | Complete — self-contained swept profiles plus revolution and linear-extrusion carriers provide checked evaluation/projection, exact first and second derivatives, curvature, explicit periods, and exact directed finite-span rational NURBS lowering; scale, seam, pole, reversed-span, success, and typed-refusal properties pin all six profile variants without adding topology variants | [#189](https://github.com/esaueng/remus/pull/189) |
-| O2.1c FaceSurface variants + site audit | B | Pending | — |
-| O2.1d Revolution/extrusion I/O wiring | B | Pending | — |
-| O2.1e Revolution/extrusion boolean arms | B | Pending | — |
-| O2.2 Conic edges through booleans | B (M2 track) | Pending | — |
-| O2.3a Splitter inventory + design note | A | Complete — all ten callable special-case entry points are mapped to their geometric gates and direct or foil fixtures; the accepted design defines an exact-refined deterministic DCEL with certified event identity, periodic seam/pole quotienting, typed failures, property gates, and a staged three-entry-point deletion floor; positive isolation gaps for sector splitting and boundary chaining are explicit | [#193](https://github.com/esaueng/remus/pull/193) |
-| O2.3b UV-arrangement core | B | Pending | — |
-| O2.3c Winding classification bridge | B | Pending | — |
-| O2.3d Special-case migration + ratchet | B | Pending | — |
-| O2.4 Predicate escalation policy | B (after 2.6) | Pending — added 2026-09-04 by the industrial-parity overlay (row IP-1.9) | — |
-| O3.1 Inner-loop benches (math/algo/blend) | A | Complete — measured 64-cut and Gridfinity flamegraphs declare a 3% inclusive threshold; every qualifying stack family plus the prerequisite NURBS, SSI, Bézier clipping, CDT, GFA, and blend-walker loops now has a Criterion baseline wired into local comparison and hosted trend tracking | [#197](https://github.com/esaueng/remus/pull/197) |
-| O3.1a Audit baseline: NURBS, transforms, chaining | A | Complete — maintained three-family native/committed-WASM runner emits fixed workload identity, independent-process raw samples, correctness results, source/artifact provenance and failure records; M01/M06/M10 remain partial beyond this bounded slice | [Runner and acceptance](../performance/baseline.md) |
-| O3.2 Journal-invalidated spatial cache | B | Pending | — |
-| O3.3 SIMD in NURBS evaluation | B (evidence-gated) | Pending | — |
-| O3.4 Journal-driven incremental tessellation | B (after O3.2) | Pending — added 2026-09-04 by the industrial-parity overlay (rows IP-9.5, IP-14.6) | — |
-| O4.1a Facade crate + Model type | A | Complete — the native `remus::Model` owns topology and operation policy with journal access; its curated prelude exposes quality-disclosed booleans, v2 blends, sweeps, measurement, tessellation, STEP, validation, and persistent references with flat typed errors; the runnable quickstart and transactional refusal tests pin the contract | [#201](https://github.com/esaueng/remus/pull/201) |
-| O4.1b Facade examples | A | Complete — packaged native workflows now cover constrained-sketch bracket construction through exact STEP, typed STEP recovery with validate/heal-or-tolerate handling and an exact containment boolean, and native replay of the committed cross-drilled WASM contract; analytic volume plus validation and welded watertight/manifold oracles pin every result | [#225](https://github.com/esaueng/remus/pull/225) (landed via [#233](https://github.com/esaueng/remus/pull/233)) |
-| O4.1c WASM delegation to facade | B | Pending | — |
-| O4.2a Publish dry-run readiness | B | Pending | — |
-| O4.2b Tag-driven release automation | B | Pending | — |
-| O4.2c First publish | owner-gated | Pending | — |
-| O4.3a Python core binding | B | Pending | — |
-| O4.3b Python wheels + CI | B | Pending | — |
-| O4.3c PyPI publish | owner-gated | Pending | — |
-| O4.4 Stable error-code registry (e5b) | A | Pending | — |
-| O4.5 Stable C ABI decision record | owner-gated | Pending — added 2026-09-04 by the industrial-parity overlay (row IP-15.4) | — |
-| O4.6 Serialization compatibility and migration policy | A | Pending — added 2026-09-04 by the industrial-parity overlay (rows IP-2.7, IP-12.5, IP-12.7) | — |
-| O4.7 Typed direct-method WASM results | A | Partial — additive typed result envelopes cover the README's two-solid boolean family (`fuseDetailed`, `cutDetailed`, `intersectDetailed`) with direct/`executeBatchV2` code parity and unchanged legacy methods; remaining mutating families, the generated twin-coverage gate, typed replacements for 13 JSON-string returns, and the OpenZCAD regex acceptance list remain pending | `crates/wasm/src/bindings/booleans.rs` |
-| O5.1a STEP assembly reader | A | Pending | — |
-| O5.1b STEP assembly writer | A | Pending | — |
-| O5.1c Assembly WASM + batch | A | Pending | — |
-| O5.2 Colors/names/attribute scope (e3b) | B | Pending | — |
-| O5.3a AP242 writer schema | B | Pending | — |
-| O5.3b PMI read, ref-anchored | C | Pending | — |
-| O5.3c PMI write | C | Pending | — |
-| O5.4 Assembly occurrence identity and instancing | A/B (with O5.1) | Pending — added 2026-09-04 by the industrial-parity overlay (rows IP-2.3, IP-11.3) | — |
-| O5.5 External references and partial loading (design + decision) | A | Pending — added 2026-09-04 by the industrial-parity overlay (row IP-11.6) | — |
-| O6.1 Docs site | A | Pending | — |
-| O6.2 Browser playground | B | Pending | — |
-| O6.3 Second-consumer track (ongoing) | rolling | Pending | — |
-| O6.4 Contribution posture | A | Pending | — |
-| O7 RFC 0007 mesh+B-Rep hybrid | C (after M4) | Pending | — |
+Detailed scope and exit criteria remain in [open-kernel-implementation.md](open-kernel-implementation.md).
+All former issue IDs, bounded dispositions and evidence links were migrated.

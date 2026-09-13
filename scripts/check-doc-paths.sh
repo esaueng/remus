@@ -77,4 +77,6 @@ if [ $FAIL -ne 0 ]; then
   exit 1
 fi
 
+python3 "$(dirname "$0")/sync-roadmap-inventory.py" --check
+
 echo "✅ Doc paths OK."
