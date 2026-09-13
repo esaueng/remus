@@ -116,3 +116,10 @@ doc = false
 name = "wasm_batch"
 path = "fuzz_targets/wasm_batch.rs"
 test = false
+
+[[bin]]
+bench = false
+doc = false
+name = "tessellation"
+path = "fuzz_targets/tessellation.rs"
+test = false

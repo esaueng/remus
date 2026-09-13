@@ -130,8 +130,10 @@ that does not exist yet; without it, stop.
 
 ## Open items with a repro
 
-The `#[ignore]` inventory (regenerated 2026-09-12 at `f464285f`: 13
-actual attributes, excluding comment mentions) has one open engine witness:
+The `#[ignore]` inventory (regenerated 2026-09-13 at `fba835c3`: 19
+`#[ignore` hits, of which 3 are doc-comment mentions, 1 a comment-only
+mention, and 1 file carries two measurement attributes — 14 real
+attributes) has one open engine witness:
 `qualify_boolean_anisotropic.rs::anisotropic_world_volume_resolves_small_feature_scale`
 (P-Class 2.6 in the master roadmap). The other twelve are one ~2 min perf run
 (`boolean/tests.rs::staircase_fuse_with_cylinders`), two manual release-mode

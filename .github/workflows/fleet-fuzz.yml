@@ -58,6 +58,7 @@ jobs:
           - nurbs_surface
           - topology_mutation
           - arena_roundtrip
+          - tessellation
     permissions:
       contents: read
       pull-requests: read
