@@ -116,3 +116,89 @@ fn shapr3d_reversed_nurbs_faces_import_and_round_trip_consistently() {
     assert_eq!(reread.len(), 1, "round trip must keep one solid");
     assert_consistent(&topo2, reread[0], "round trip");
 }
+
+/// B28 strict-validation budget guard: pins the reproducible performance
+/// budget for strict `validate_solid` on the hammer-holder fixture without
+/// changing any tolerance, sample count, or threshold.
+///
+/// The guard is result-identical by construction: it runs the same strict
+/// validation the import regression above asserts, then additionally reads
+/// out the inside-out budget probes (the signed-volume integral that the B28
+/// row names as the remaining floor) and asserts they describe the same
+/// verdict — one measured outer shell, at the default Gauss order, over the
+/// fixture's 160 faces, with a positive signed volume matching the measured
+/// mass reference. A future change that skips the integral, drops faces from
+/// it, reorders shells, or changes the Gauss order trips the census; a change
+/// that alters the verdict trips the strict report first. Wall-clock timing
+/// is deliberately not asserted here — the `nurbs_properties` Criterion bench
+/// and the `scripts/performance` runner own the numbers; this test owns the
+/// work identity the budget is quoted against.
+#[test]
+fn hammer_holder_strict_validation_budget_is_pinned() {
+    use remus_operations::validate::{ValidationOptions, validate_solid_with_budget_probes};
+
+    let mut topo = Topology::new();
+    let solids = read_step(HAMMER_HOLDER, &mut topo).expect("import Shapr3D STEP");
+    assert_eq!(solids.len(), 1, "fixture must contain one solid");
+    let solid = solids[0];
+
+    let options = ValidationOptions::default();
+    let (report, probes) =
+        validate_solid_with_budget_probes(&topo, solid, &options).expect("budget probes");
+
+    // The verdict is the strict one: valid, no errors.
+    assert!(
+        report.is_valid(),
+        "hammer holder must stay strictly valid: {:?}",
+        report.issues
+    );
+    assert_eq!(report.error_count(), 0);
+
+    // One measured shell: the outer shell, traversed first.
+    assert_eq!(
+        probes.shells.len(),
+        1,
+        "hammer holder has no cavities; exactly the outer shell is measured: {probes:?}"
+    );
+    let probe = probes.shells[0];
+    assert_eq!(probe.shell, 0, "outer shell is measured first: {probes:?}");
+    assert_eq!(
+        probe.order,
+        remus_check::properties::PropertiesOptions::default().gauss_order,
+        "budget is quoted at the default Gauss order; a change of order is a \
+         threshold change, not a timing win: {probes:?}"
+    );
+    assert_eq!(
+        probe.faces, 160,
+        "the integral must cover every face of the fixture: {probes:?}"
+    );
+    assert_eq!(
+        probes.measured_faces(),
+        160,
+        "measured-face census must match the fixture census: {probes:?}"
+    );
+
+    // The signed volume the integral returned is the body's own volume: it
+    // must agree with the measured mass reference this file already pins
+    // (same 0.1% tolerance — not tightened to improve timing), and it must be
+    // positive, i.e. the shell is wound outward.
+    assert!(
+        probe.signed_volume > 0.0,
+        "outer shell must enclose a positive signed volume: {probes:?}"
+    );
+    assert!(
+        (probe.signed_volume - EXPECTED_VOLUME).abs() <= EXPECTED_VOLUME * 0.001,
+        "probe signed volume {} differs from measured reference {EXPECTED_VOLUME}",
+        probe.signed_volume
+    );
+
+    let skipped = ValidationOptions {
+        orientation: remus_operations::validate::OrientationCheck::Skip,
+        ..options
+    };
+    let (skipped_report, skipped_probes) =
+        validate_solid_with_budget_probes(&topo, solid, &skipped).expect("skipped probes");
+    assert!(skipped_report.is_valid());
+    assert!(skipped_probes.shells.is_empty());
+    assert_eq!(skipped_probes.measured_faces(), 0);
+}
