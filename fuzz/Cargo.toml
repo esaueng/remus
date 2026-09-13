@@ -14,6 +14,7 @@ arbitrary = {version = "1", features = ["derive"]}
 libfuzzer-sys = {version = "0.4", features = ["arbitrary-derive"]}
 remus-io = {path = "../crates/io"}
 remus-math = {path = "../crates/math"}
+remus-offset = {path = "../crates/offset"}
 remus-operations = {path = "../crates/operations"}
 remus-topology = {path = "../crates/topology"}
 remus-wasm = {path = "../crates/wasm"}
@@ -129,4 +130,11 @@ bench = false
 doc = false
 name = "curve_intersection"
 path = "fuzz_targets/curve_intersection.rs"
+test = false
+
+[[bin]]
+bench = false
+doc = false
+name = "offset"
+path = "fuzz_targets/offset.rs"
 test = false

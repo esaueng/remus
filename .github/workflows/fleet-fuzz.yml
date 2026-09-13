@@ -60,6 +60,7 @@ jobs:
           - arena_roundtrip
           - tessellation
           - curve_intersection
+          - offset
     permissions:
       contents: read
       pull-requests: read
