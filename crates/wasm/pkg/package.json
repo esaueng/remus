@@ -1,5 +1,5 @@
 {
-  "description": "WebAssembly bindings for remus \u2014 browser-native B-Rep solid modeling",
+  "description": "WebAssembly bindings for remus — browser-native B-Rep solid modeling",
   "exports": {
     ".": {
       "node": "./remus_wasm_node.cjs",
@@ -29,7 +29,7 @@
   "name": "remus-wasm",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/esaueng/remus.git"
+    "url": "https://github.com/esaueng/remus"
   },
   "sideEffects": [
     "./remus_wasm.js",
@@ -37,6 +37,6 @@
   ],
   "type": "module",
   "types": "remus_wasm.d.ts",
-  "version": "2.130.16",
-  "homepage": "https://github.com/esaueng/remus"
+  "version": "2.130.17",
+  "remusSourceCommit": "0b9b0f67e7d707b1dc30db6db8cebba692ac9a6d"
 }
