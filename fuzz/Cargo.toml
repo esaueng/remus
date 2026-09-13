@@ -16,6 +16,7 @@ remus-io = {path = "../crates/io"}
 remus-math = {path = "../crates/math"}
 remus-offset = {path = "../crates/offset"}
 remus-operations = {path = "../crates/operations"}
+remus-sketch = {path = "../crates/sketch"}
 remus-topology = {path = "../crates/topology"}
 remus-wasm = {path = "../crates/wasm"}
 serde_json = "1"
@@ -137,4 +138,11 @@ bench = false
 doc = false
 name = "offset"
 path = "fuzz_targets/offset.rs"
+test = false
+
+[[bin]]
+bench = false
+doc = false
+name = "gcs"
+path = "fuzz_targets/gcs.rs"
 test = false
