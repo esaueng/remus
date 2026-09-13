@@ -1,5 +1,5 @@
 {
-  "description": "WebAssembly file-format translators for remus \u2014 STEP, IGES, STL, 3MF, OBJ, PLY, glTF",
+  "description": "WebAssembly file-format translators for remus — STEP, IGES, STL, 3MF, OBJ, PLY, glTF",
   "exports": {
     ".": {
       "node": "./remus_wasm_io_node.cjs",
@@ -29,7 +29,7 @@
   "name": "remus-wasm-io",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/esaueng/remus.git"
+    "url": "https://github.com/esaueng/remus"
   },
   "sideEffects": [
     "./remus_wasm_io.js",
@@ -37,6 +37,6 @@
   ],
   "type": "module",
   "types": "remus_wasm_io.d.ts",
-  "version": "2.130.16",
-  "homepage": "https://github.com/esaueng/remus"
+  "version": "2.130.17",
+  "remusSourceCommit": "0b9b0f67e7d707b1dc30db6db8cebba692ac9a6d"
 }
