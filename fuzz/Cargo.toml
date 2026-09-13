@@ -123,3 +123,10 @@ doc = false
 name = "tessellation"
 path = "fuzz_targets/tessellation.rs"
 test = false
+
+[[bin]]
+bench = false
+doc = false
+name = "curve_intersection"
+path = "fuzz_targets/curve_intersection.rs"
+test = false
