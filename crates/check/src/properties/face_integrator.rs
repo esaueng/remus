@@ -114,7 +114,8 @@ pub fn integrate_face(
                 (0.0, std::f64::consts::TAU),
                 face_boundary_v_extent(topo, face_id, s)?,
             );
-            let (u_range, v_range) = face_uv_bounds(topo, face_id, s, true, false, full)?;
+            let (u_range, v_range) =
+                face_uv_bounds(topo, face_id, &|p| s.project_point(p), true, false, full)?;
             let uv = build_face_uv(topo, face_id, |p| s.project_point(p), true, false, true)?;
             Ok(integrate_with_trimming(
                 s,
@@ -131,7 +132,8 @@ pub fn integrate_face(
                 (0.0, std::f64::consts::TAU),
                 face_boundary_v_extent(topo, face_id, s)?,
             );
-            let (u_range, v_range) = face_uv_bounds(topo, face_id, s, true, false, full)?;
+            let (u_range, v_range) =
+                face_uv_bounds(topo, face_id, &|p| s.project_point(p), true, false, full)?;
             let uv = build_face_uv(topo, face_id, |p| s.project_point(p), true, false, true)?;
             Ok(integrate_with_trimming(
                 s,
@@ -196,7 +198,8 @@ pub fn integrate_face(
                 (0.0, std::f64::consts::TAU),
                 (-std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_2),
             );
-            let (u_range, v_range) = face_uv_bounds(topo, face_id, s, true, false, full)?;
+            let (u_range, v_range) =
+                face_uv_bounds(topo, face_id, &|p| s.project_point(p), true, false, full)?;
             let mut uv = build_face_uv(topo, face_id, |p| s.project_point(p), true, false, false)?;
             uv.hole_vs = full_revolution_hole_vs(topo, face_id, s);
             for hole in crate::util::face_hole_polygons_curve_sampled(
@@ -345,7 +348,8 @@ pub fn integrate_face(
                 return Ok(band);
             }
             let full = ((0.0, std::f64::consts::TAU), (0.0, std::f64::consts::TAU));
-            let (u_range, v_range) = face_uv_bounds(topo, face_id, s, true, true, full)?;
+            let (u_range, v_range) =
+                face_uv_bounds(topo, face_id, &|p| s.project_point(p), true, true, full)?;
             // A torus is periodic in `v` as well, so the trimming boundary has
             // to be unwrapped on that axis too or a seam-crossing band lands in
             // a different branch than the range above.
@@ -364,16 +368,23 @@ pub fn integrate_face(
             let full = (s.domain_u(), s.domain_v());
             let periodic_u = s.is_periodic_u();
             let periodic_v = s.is_periodic_v();
+            // One seed grid serves every trim projection on this face. The
+            // grid depends only on the surface, so a shared grid returns
+            // exactly what per-point grid searches would — same nearest
+            // node, same Newton seed — bit for bit (see
+            // `project_point_to_surface_with_grid`). The surface outlives
+            // this call by construction (it is borrowed from the topology).
+            let grid = remus_math::nurbs::projection::SurfaceSeedGrid::for_surface(s);
+            let project = |p: Point3| {
+                remus_math::nurbs::projection::project_point_to_surface_with_grid(s, p, 1e-7, &grid)
+                    .map_or(
+                        ((full.0.0 + full.0.1) * 0.5, (full.1.0 + full.1.1) * 0.5),
+                        |proj| (proj.u, proj.v),
+                    )
+            };
             let (u_range, v_range) =
-                face_uv_bounds(topo, face_id, s, periodic_u, periodic_v, full)?;
-            let uv = build_face_uv(
-                topo,
-                face_id,
-                |p| s.project_point(p),
-                periodic_u,
-                false,
-                false,
-            )?;
+                face_uv_bounds(topo, face_id, &project, periodic_u, periodic_v, full)?;
+            let uv = build_face_uv(topo, face_id, project, periodic_u, false, false)?;
             Ok(integrate_with_trimming(
                 s,
                 u_range,
@@ -1161,6 +1172,9 @@ fn full_revolution_hole_vs<S: ParametricSurface>(
 
 /// Compute UV bounds for a parametric face by projecting boundary vertices
 /// onto the surface and taking the min/max of the resulting parameters.
+/// The projection is caller-supplied so NURBS faces can share one seed grid
+/// across every trim projection (see the `Nurbs` arm of [`integrate_face`]);
+/// analytic callers pass their surface's own `project_point` unchanged.
 ///
 /// For surfaces with periodic u or v coordinates (cylinders, cones, spheres,
 /// tori), sequentially unwraps the angular coordinates so that faces straddling
@@ -1176,10 +1190,10 @@ fn full_revolution_hole_vs<S: ParametricSurface>(
 /// `full_domain` must be finite on both axes. A cylinder's and a cone's
 /// analytic domain is not, so those pass their face's own boundary extent
 /// (see [`face_boundary_v_extent`]) rather than `±∞`.
-fn face_uv_bounds<S: ParametricSurface>(
+fn face_uv_bounds(
     topo: &Topology,
     face_id: FaceId,
-    surface: &S,
+    project: &dyn Fn(Point3) -> (f64, f64),
     periodic_u: bool,
     periodic_v: bool,
     full_domain: UvBounds,
@@ -1214,13 +1228,13 @@ fn face_uv_bounds<S: ParametricSurface>(
             TRIM_SAMPLES,
             TRIM_SAMPLES,
         )?;
-        uvs.extend(points.into_iter().map(|point| surface.project_point(point)));
+        uvs.extend(points.into_iter().map(project));
     } else {
         let wire = topo.wire(face.outer_wire())?;
         for oe in wire.edges() {
             let edge = topo.edge(oe.edge())?;
             let point = topo.vertex(oe.oriented_start(edge))?.point();
-            uvs.push(surface.project_point(point));
+            uvs.push(project(point));
         }
     }
 
@@ -1924,8 +1938,10 @@ impl Accumulator {
     ) {
         // One solve for position and both partials (a NURBS surface would
         // otherwise run a full evaluation plus the derivative solve per
-        // Gauss point).
-        let (p, du, dv) = surface.point_and_partials_with_scratch(u, v, scratch);
+        // Gauss point). The span-hinted path verifies the previous spans
+        // before trusting them, so analytic surfaces (whose default ignores
+        // the hint) and NURBS faces alike get exactly the unhinted answer.
+        let (p, du, dv, _, _) = surface.span_hinted_point_and_partials_with_scratch(u, v, scratch);
 
         // Normal = du x dv (unnormalized, includes Jacobian)
         let n = Vec3::new(
