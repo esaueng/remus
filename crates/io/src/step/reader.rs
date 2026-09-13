@@ -1953,6 +1953,59 @@ impl<'a> StepBuilder<'a> {
         Ok(shell_id)
     }
 
+    /// Narrow only a proven two-rim circular band. Arbitrary trimmed faces
+    /// retain the entire selected branch; their vertices alone cannot bound
+    /// their interior (a cap can enclose a pole without a vertex there).
+    #[allow(clippy::too_many_arguments)]
+    fn inner_torus_band_range(
+        &self,
+        wire: WireId,
+        seam: remus_topology::edge::EdgeId,
+        center: Point3,
+        axis: Vec3,
+        major: f64,
+        minor: f64,
+    ) -> Result<Option<(f64, f64)>, IoError> {
+        let mut levels: Vec<(f64, f64)> = Vec::new();
+        for oriented in self.topo.wire(wire)?.edges() {
+            if oriented.edge() == seam {
+                continue;
+            }
+            let edge = self.topo.edge(oriented.edge())?;
+            let EdgeCurve::Circle(circle) = edge.curve() else {
+                return Ok(None);
+            };
+            let delta = circle.center() - center;
+            let z = delta.dot(axis);
+            let tol = 1e-7 * minor.max(1.0);
+            if circle.normal().dot(axis).abs() < 1.0 - 1e-12
+                || (delta - axis * z).length() > tol
+                || ((circle.radius() + major).hypot(z) - minor).abs() > tol
+            {
+                return Ok(None);
+            }
+            let Ok((start, end)) = edge.strict_domain() else {
+                return Ok(None);
+            };
+            let span = (end - start).abs();
+            if let Some(level) = levels.iter_mut().find(|level| (level.0 - z).abs() < tol) {
+                level.1 += span;
+            } else {
+                levels.push((z, span));
+            }
+        }
+        if levels.len() != 2
+            || levels
+                .iter()
+                .any(|level| (level.1 - std::f64::consts::TAU).abs() > 1e-7)
+        {
+            return Ok(None);
+        }
+        let a = std::f64::consts::PI - (levels[0].0 / minor).clamp(-1.0, 1.0).asin();
+        let b = std::f64::consts::PI - (levels[1].0 / minor).clamp(-1.0, 1.0).asin();
+        Ok(Some((a.min(b), a.max(b))))
+    }
+
     #[allow(clippy::too_many_lines)]
     fn build_face(
         &mut self,
@@ -1991,7 +2044,7 @@ impl<'a> StepBuilder<'a> {
         let surface_ref =
             required_reference_attribute("ADVANCED_FACE", face_ref, &slots, 2, "face_geometry")?;
 
-        let surface = self.build_surface(surface_ref)?;
+        let mut surface = self.build_surface(surface_ref)?;
 
         let mut candidates = Vec::with_capacity(list_refs.len());
         let mut pending_by_wire = HashMap::<WireId, Vec<PendingPcurveUse>>::new();
@@ -2048,6 +2101,77 @@ impl<'a> StepBuilder<'a> {
         }
 
         self.validate_pcurve_consumption(face_ref, surface_ref, &pcurve_cursors)?;
+
+        if self.get_entity(surface_ref)?.entity_type == "DEGENERATE_TOROIDAL_SURFACE" {
+            if pending_by_wire
+                .values()
+                .flatten()
+                .any(|use_| use_.pcurve_ref.is_some())
+            {
+                return Err(IoError::UnsupportedEntity {
+                    entity: "PCURVE on DEGENERATE_TOROIDAL_SURFACE (angular-to-rational parameter conversion)".to_string(),
+                });
+            }
+            let torus_attrs = self.get_entity(surface_ref)?.attrs.clone();
+            let torus_slots = split_attr_slots(&torus_attrs);
+            let kind = "DEGENERATE_TOROIDAL_SURFACE";
+            let placement =
+                required_reference_attribute(kind, surface_ref, &torus_slots, 1, "position")?;
+            let (center, axis, _) = self.build_axis2_placement(placement)?;
+            let invalid = |e| IoError::ParseError {
+                reason: format!("{kind} #{surface_ref}: {e}"),
+            };
+            let axis = axis.normalize().map_err(invalid)?;
+            let major =
+                required_real_attribute(kind, surface_ref, &torus_slots, 2, "major_radius")?
+                    * self.units.length;
+            let minor =
+                required_real_attribute(kind, surface_ref, &torus_slots, 3, "minor_radius")?
+                    * self.units.length;
+            let outer = matches!(torus_slots.get(4), Some(AttrSlot::Enum(".T." | ".TRUE.")));
+            // Start the rational carrier on the explicit periodic seam. This
+            // keeps the face's full-turn trim inside one [0, 1] U domain.
+            for candidate in &candidates {
+                let wire = self.topo.wire(candidate.wire)?;
+                let mut uses = HashMap::new();
+                for edge in wire.edges() {
+                    *uses.entry(edge.edge()).or_insert(0usize) += 1;
+                }
+                let seam = wire
+                    .edges()
+                    .iter()
+                    .find(|edge| uses.get(&edge.edge()) == Some(&2));
+                if let Some(seam) = seam {
+                    let edge = self.topo.edge(seam.edge())?;
+                    let point = self.topo.vertex(edge.start())?.point();
+                    let delta = point - center;
+                    let radial = delta - axis * delta.dot(axis);
+                    if radial.length() > SWEEP_LENGTH_EPS {
+                        let reference =
+                            radial.normalize().map_err(invalid)? * if outer { 1.0 } else { -1.0 };
+                        let range = if outer || candidates.len() != 1 {
+                            None
+                        } else {
+                            self.inner_torus_band_range(
+                                candidate.wire,
+                                seam.edge(),
+                                center,
+                                axis,
+                                major,
+                                minor,
+                            )?
+                        };
+                        surface = FaceSurface::Nurbs(
+                            degenerate_torus_nurbs(
+                                center, axis, reference, major, minor, outer, range,
+                            )
+                            .map_err(invalid)?,
+                        );
+                        break;
+                    }
+                }
+            }
+        }
 
         let (outer, inner_wires) =
             self.resolve_face_bounds(face_ref, &surface, &candidates, &mut pending_by_wire)?;
@@ -3273,6 +3397,40 @@ impl<'a> StepBuilder<'a> {
                     reason: format!("SPHERICAL_SURFACE #{surface_ref}: {e}"),
                 })?;
                 Ok(FaceSurface::Sphere(sphere))
+            }
+            "DEGENERATE_TOROIDAL_SURFACE" => {
+                let slots = split_attr_slots(&attrs);
+                let kind = "DEGENERATE_TOROIDAL_SURFACE";
+                let axis_ref =
+                    required_reference_attribute(kind, surface_ref, &slots, 1, "position")?;
+                let major = required_real_attribute(kind, surface_ref, &slots, 2, "major_radius")?
+                    * self.units.length;
+                let minor = required_real_attribute(kind, surface_ref, &slots, 3, "minor_radius")?
+                    * self.units.length;
+                let outer = match slots.get(4) {
+                    Some(AttrSlot::Enum(".T." | ".TRUE.")) => true,
+                    Some(AttrSlot::Enum(".F." | ".FALSE.")) => false,
+                    _ => {
+                        return Err(IoError::ParseError {
+                            reason: format!(
+                                "{kind} #{surface_ref} requires a boolean select_outer"
+                            ),
+                        });
+                    }
+                };
+                if !(major > 0.0 && minor > major && minor.is_finite()) {
+                    return Err(IoError::ParseError {
+                        reason: format!(
+                            "{kind} #{surface_ref} requires 0 < major_radius < minor_radius"
+                        ),
+                    });
+                }
+                let (center, axis, reference) = self.build_axis2_placement(axis_ref)?;
+                degenerate_torus_nurbs(center, axis, reference, major, minor, outer, None)
+                    .map(FaceSurface::Nurbs)
+                    .map_err(|e| IoError::ParseError {
+                        reason: format!("{kind} #{surface_ref}: {e}"),
+                    })
             }
             "TOROIDAL_SURFACE" => {
                 let slots = split_attr_slots(&attrs);
@@ -7136,6 +7294,57 @@ fn line_line_intersection(p0: Point3, u: Vec3, q0: Point3, v: Vec3) -> Option<Po
     let e = v.dot(w0);
     let s = b.mul_add(e, -d) / denom;
     Some(p0 + u * s)
+}
+
+/// Exact rational carrier for the selected manifold portion of a spindle
+/// torus (ISO 10303-42, 4.5.64). An ordinary torus carrier projects points
+/// onto the outer branch, so it cannot represent the inner lemon faithfully.
+/// Each <= 90-degree meridian arc is a rational quadratic; revolving their
+/// control points preserves the surface exactly, without fitting or sampling.
+/// Preserve increasing source U/V directions; ADVANCED_FACE.same_sense
+/// supplies the face orientation, including reversed inner-branch faces.
+fn degenerate_torus_nurbs(
+    center: Point3,
+    axis: Vec3,
+    reference: Vec3,
+    major: f64,
+    minor: f64,
+    outer: bool,
+    meridian_range: Option<(f64, f64)>,
+) -> Result<remus_math::nurbs::NurbsSurface, remus_math::MathError> {
+    let axis = axis.normalize()?;
+    let reference = (reference - axis * reference.dot(axis)).normalize()?;
+    let phi = (-major / minor).acos();
+    let (start, end) = meridian_range.unwrap_or_else(|| {
+        if outer {
+            (-phi, phi)
+        } else {
+            (phi, std::f64::consts::TAU - phi)
+        }
+    });
+    // Four segments cover either branch with positive rational weights.
+    let step = (end - start) / 4.0;
+    let circle_center = center + reference * major;
+    let point = |angle: f64, weight: f64| {
+        circle_center
+            + reference * (minor * angle.cos() / weight)
+            + axis * (minor * angle.sin() / weight)
+    };
+    let mut points = vec![point(start, 1.0)];
+    let mut weights = vec![1.0];
+    for i in 0..4 {
+        let a = step.mul_add(f64::from(i), start);
+        let b = a + step;
+        let weight = (step / 2.0).cos();
+        points.push(point(a.midpoint(b), weight));
+        points.push(point(b, 1.0));
+        weights.extend([weight, 1.0]);
+    }
+    let knots = vec![
+        0.0, 0.0, 0.0, 0.25, 0.25, 0.5, 0.5, 0.75, 0.75, 1.0, 1.0, 1.0,
+    ];
+    let meridian = remus_math::nurbs::NurbsCurve::new(2, knots, points, weights)?;
+    revolve_nurbs(&meridian, center, axis)
 }
 
 /// Revolve a NURBS generatrix a full turn about an axis, exactly.
@@ -11570,6 +11779,64 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
         };
         assert!((torus.major_radius() - 5.0).abs() < 1e-12);
         assert!((torus.minor_radius() - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn degenerate_torus_preserves_selected_branch_and_normals() {
+        let head = "#1=CARTESIAN_POINT('',(7.,8.,9.));
+                    #2=DIRECTION('',(1.,0.,0.));
+                    #3=DIRECTION('',(0.,0.,-1.));
+                    #4=AXIS2_PLACEMENT_3D('',#1,#2,#3);";
+        for outer in [false, true] {
+            let flag = if outer { ".T." } else { ".F." };
+            let body = format!("{head}#5=DEGENERATE_TOROIDAL_SURFACE('123 #99',#4,2.,5.,{flag});");
+            let FaceSurface::Nurbs(surface) = surface_geometry(&body, 5).unwrap() else {
+                panic!("selected branch must have an exact rational carrier");
+            };
+            for u in [0.07, 0.23, 0.57, 0.91] {
+                for v in [0.1, 0.3, 0.5, 0.7, 0.9] {
+                    let p = surface.evaluate(u, v);
+                    let z = p.x() - 7.0;
+                    let radial = Vec3::new(0.0, p.y() - 8.0, p.z() - 9.0);
+                    let rho = radial.length();
+                    let offset = if outer { rho - 2.0 } else { rho + 2.0 };
+                    assert!((offset * offset + z * z - 25.0).abs() < 1e-11);
+                    let expected = (radial * (offset / rho) + Vec3::new(z, 0.0, 0.0))
+                        .normalize()
+                        .unwrap();
+                    assert!(
+                        surface.normal(u, v).unwrap().dot(expected)
+                            * if outer { 1.0 } else { -1.0 }
+                            > 1.0 - 1e-12
+                    );
+                }
+            }
+            let equator = surface.evaluate(0.0, 0.5);
+            assert!(
+                ((equator - Point3::new(7.0, 8.0, 9.0)).length() - if outer { 7.0 } else { 3.0 })
+                    .abs()
+                    < 1e-12
+            );
+        }
+    }
+
+    #[test]
+    fn degenerate_torus_rejects_invalid_radii_and_branch_flags() {
+        let head = "#1=CARTESIAN_POINT('',(0.,0.,0.));
+                    #2=DIRECTION('',(0.,0.,1.));
+                    #3=DIRECTION('',(1.,0.,0.));
+                    #4=AXIS2_PLACEMENT_3D('',#1,#2,#3);";
+        for tail in [
+            "2.,5.,$",
+            "2.,5.,.U.",
+            "2.,5.",
+            "5.,2.,.T.",
+            "2.,2.,.F.",
+            "0.,5.,.F.",
+        ] {
+            let body = format!("{head}#5=DEGENERATE_TOROIDAL_SURFACE('',#4,{tail});");
+            assert!(surface_geometry(&body, 5).is_err(), "{tail}");
+        }
     }
 
     /// Resolve one surface entity through the real parse + dispatch path.
