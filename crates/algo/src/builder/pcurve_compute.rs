@@ -209,9 +209,26 @@ pub(super) fn unwrap_periodic_params_pub(
 }
 
 /// Returns `(u_period, v_period)` for a surface -- `Some(TAU)` if periodic.
+///
+/// A recognized exact-rational cylinder wall carried as NURBS keeps the chart
+/// period of its carrier: the `to_nurbs` u-knots span [0, 1] over the full
+/// revolution, so the period is 1.0, not TAU. Every other NURBS face stays
+/// non-periodic. Recognizer input only — infallible on any surface.
 pub(super) fn surface_periods(surface: &FaceSurface) -> (Option<f64>, Option<f64>) {
     match surface {
-        FaceSurface::Plane { .. } | FaceSurface::Nurbs(_) => (None, None),
+        FaceSurface::Plane { .. } => (None, None),
+        FaceSurface::Nurbs(nurbs) => {
+            if crate::pave_filler::helpers::rational_cylinder_wall(
+                nurbs,
+                remus_math::tolerance::Tolerance::new(),
+            )
+            .is_some()
+            {
+                (Some(1.0), None)
+            } else {
+                (None, None)
+            }
+        }
         FaceSurface::Cylinder(_) | FaceSurface::Cone(_) => (Some(TAU), None),
         FaceSurface::Sphere(_) => (Some(TAU), None),
         FaceSurface::Torus(_) => (Some(TAU), Some(TAU)),
@@ -253,6 +270,52 @@ pub(super) fn sample_edge_to_uv(
     Ok(uv_pts)
 }
 
+/// Exact chart projection of a 3D point onto a recognized wall.
+///
+/// Closed-form angle normalized to the chart period (1.0 in u), axial
+/// rescaled from model length to the knot-domain v (see below for why the
+/// cylinder's axial parameter is NOT the chart-v).
+///
+/// `None` when the surface is not a recognized wall.
+#[must_use]
+#[allow(clippy::unnecessary_wraps)]
+pub fn wall_chart_uv(
+    wall: &remus_math::surfaces::CylindricalSurface,
+    nurbs: &remus_math::nurbs::surface::NurbsSurface,
+    point: Point3,
+) -> Option<(f64, f64)> {
+    use remus_math::vec::Point3 as P3;
+    let (angle, axial) = wall.project_point(point);
+    let (v_lo, v_hi) = nurbs.domain_v();
+    let rows = nurbs.control_points();
+    if rows.len() < 2 {
+        return Some((angle / TAU, f64::midpoint(v_lo, v_hi)));
+    }
+    let p_bot = rows[0][0];
+    let p_top = rows[rows.len() - 1][0];
+    let axis = wall.axis();
+    let h = axis.dot(p_top - p_bot);
+    if h.abs() <= f64::EPSILON {
+        return Some((angle / TAU, f64::midpoint(v_lo, v_hi)));
+    }
+    let v = v_lo + (axial - axis.dot(p_bot - P3::new(0.0, 0.0, 0.0))) / h * (v_hi - v_lo);
+    Some((angle / TAU, v))
+}
+
+/// Recognize `surface` as an exact-rational cylinder wall carried as NURBS,
+/// returning the recovered cylinder on success. `None` for anything else
+/// (including planar NURBS and freeform nets).
+#[must_use]
+pub fn wall_chart(surface: &FaceSurface) -> Option<remus_math::surfaces::CylindricalSurface> {
+    let FaceSurface::Nurbs(nurbs) = surface else {
+        return None;
+    };
+    crate::pave_filler::helpers::rational_cylinder_wall(
+        nurbs,
+        remus_math::tolerance::Tolerance::new(),
+    )
+}
+
 fn project_native_point_on_surface(
     point: Point3,
     surface: &FaceSurface,
@@ -265,10 +328,26 @@ fn project_native_point_on_surface(
     let projected = match surface {
         FaceSurface::Plane { .. } => return Err(projection_failure(surface, stage)),
         FaceSurface::Nurbs(nurbs) => {
-            let projection =
-                remus_math::nurbs::projection::project_point_to_surface(nurbs, point, 1e-7)
-                    .map_err(|_| projection_failure(surface, stage))?;
-            Point2::new(projection.u, projection.v)
+            // A recognized exact-rational cylinder wall projects EXACTLY via
+            // the recovered cylinder (closed-form angle + axial), not via
+            // Newton on the NURBS chart. Newton seeds from a coarse grid and
+            // converges to the nearest chart branch, which collapses the
+            // seam side: both u≈0 and u≈1 samples project to the same copy
+            // and a full-turn boundary loop measures a folded strip instead
+            // of one period. The exact chart has no seam ambiguity (the
+            // caller unwraps with period 1.0 via `surface_periods`).
+            if let Some(wall) = crate::pave_filler::helpers::rational_cylinder_wall(
+                nurbs,
+                remus_math::tolerance::Tolerance::new(),
+            ) {
+                let (u, v) = wall_chart_uv(&wall, nurbs, point).unwrap_or((0.5, 0.5));
+                Point2::new(u, v)
+            } else {
+                let projection =
+                    remus_math::nurbs::projection::project_point_to_surface(nurbs, point, 1e-7)
+                        .map_err(|_| projection_failure(surface, stage))?;
+                Point2::new(projection.u, projection.v)
+            }
         }
         FaceSurface::Cylinder(_)
         | FaceSurface::Cone(_)

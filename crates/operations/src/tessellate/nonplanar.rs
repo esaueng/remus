@@ -1983,6 +1983,162 @@ fn stitch_rings(
     }
 }
 
+/// Tessellate a recognized exact-rational cylinder wall carried as NURBS
+/// (`convert_to_bspline` output: degree (2,1), 9×2 net, quarter-arc knots)
+/// whose outer wire is a wall band: one closed NURBS rim + seam-up + one
+/// closed section circle + seam-down (the doubled-seam canonical band the GFA
+/// wall splitter emits).
+///
+/// The generic CDT path cannot mesh this face: its boundary walks a full
+/// chart period across the knot-domain seam, and the interior grid evaluates
+/// through the clamped NURBS chart. Instead sweep the band directly from the
+/// two shared rim polylines in the pool (watertight by construction):
+/// order each rim's global ids by the exact wall-chart angle, stitch the two
+/// rings with [`stitch_rings`], and orient via the recovered cylinder normal.
+/// Anything but the exact band shape returns `Ok(false)` and defers.
+pub(super) fn tessellate_converted_wall_band_shared(
+    topo: &Topology,
+    face_data: &remus_topology::face::Face,
+    edge_global_indices: &DetHashMap<usize, Vec<u32>>,
+    merged: &mut TriangleMesh,
+) -> Result<bool, crate::OperationsError> {
+    let FaceSurface::Nurbs(nurbs) = face_data.surface() else {
+        return Ok(false);
+    };
+    let Some(wall) = remus_algo::wall_chart(face_data.surface()) else {
+        return Ok(false);
+    };
+    if !face_data.inner_wires().is_empty() {
+        return Ok(false);
+    }
+    let wall_nurbs = nurbs.clone();
+    let wall_geom = wall;
+    // Exact wire shape: [closed NURBS rim, Line, closed Circle, Line].
+    let wire = topo.wire(face_data.outer_wire())?;
+    let oes = wire.edges();
+    if oes.len() != 4 {
+        return Ok(false);
+    }
+    let is_closed_rim = |eid: remus_topology::edge::EdgeId| -> bool {
+        topo.edge(eid).is_ok_and(|e| e.start() == e.end())
+    };
+    let kinds: Vec<bool> = oes
+        .iter()
+        .map(|oe| {
+            let Ok(e) = topo.edge(oe.edge()) else {
+                return false;
+            };
+            match e.curve() {
+                EdgeCurve::NurbsCurve(_) | EdgeCurve::Circle(_) => is_closed_rim(oe.edge()),
+                EdgeCurve::Line => !is_closed_rim(oe.edge()),
+                _ => false,
+            }
+        })
+        .collect();
+    if kinds != [true, true, true, true] {
+        return Ok(false);
+    }
+    // Positions 0 and 2 must be the closed rims (NURBS bottom, Circle
+    // section), 1 and 3 the seam lines — in either rim order.
+    let rim_kind = |i: usize| -> Option<u8> {
+        let e = topo.edge(oes[i].edge()).ok()?;
+        match e.curve() {
+            EdgeCurve::NurbsCurve(_) => Some(0),
+            EdgeCurve::Circle(_) => Some(1),
+            EdgeCurve::Line => Some(2),
+            _ => None,
+        }
+    };
+    let order_ok = matches!(
+        (rim_kind(0), rim_kind(1), rim_kind(2), rim_kind(3)),
+        (Some(0), Some(2), Some(1), Some(2)) | (Some(1), Some(2), Some(0), Some(2))
+    );
+    if !order_ok {
+        return Ok(false);
+    }
+    // Both rims at constant chart-v (bottom rim at the wall base, section
+    // circle at its plane height), on the carrier within the fit band.
+    let chart_v = |p: Point3| -> f64 {
+        remus_algo::wall_chart_uv(&wall_geom, &wall_nurbs, p)
+            .unwrap_or((0.0, f64::NAN))
+            .1
+    };
+    let rim_level = |eid: remus_topology::edge::EdgeId| -> Option<f64> {
+        let gids = edge_global_indices.get(&eid.index())?;
+        let mut lo = f64::INFINITY;
+        let mut hi = f64::NEG_INFINITY;
+        for &gid in gids {
+            let v = chart_v(merged.positions[gid as usize]);
+            if !v.is_finite() {
+                return None;
+            }
+            lo = lo.min(v);
+            hi = hi.max(v);
+        }
+        if hi - lo > 1e-4 {
+            None
+        } else {
+            Some(f64::midpoint(lo, hi))
+        }
+    };
+    let lo_eid = oes[0].edge();
+    let hi_eid = oes[2].edge();
+    let (Some(_v_lo), Some(_v_hi)) = (rim_level(lo_eid), rim_level(hi_eid)) else {
+        return Ok(false);
+    };
+    // Order each rim's shared global ids by exact chart angle (the pool
+    // polyline starts at the seam vertex and walks one direction; sorting by
+    // angle restores the ring order the stitcher needs).
+    let mut rings: Vec<LatRing> = Vec::with_capacity(2);
+    for eid in [lo_eid, hi_eid] {
+        let Some(pool) = edge_global_indices.get(&eid.index()) else {
+            return Ok(false);
+        };
+        let mut gids = pool.clone();
+        if gids.len() > 2
+            && (gids.first() == gids.last()
+                || (merged.positions[*gids.first().unwrap_or(&0) as usize]
+                    - merged.positions[*gids.last().unwrap_or(&0) as usize])
+                    .length()
+                    < 1e-10)
+        {
+            gids.pop();
+        }
+        let mut unique = DetHashSet::default();
+        gids.retain(|gid| unique.insert(*gid));
+        if gids.len() < 3 {
+            return Ok(false);
+        }
+        let mut ring: LatRing = gids
+            .into_iter()
+            .map(|gid| {
+                let p = merged.positions[gid as usize];
+                let (u, _) =
+                    remus_algo::wall_chart_uv(&wall_geom, &wall_nurbs, p).unwrap_or((0.0, 0.0));
+                (u * TAU, gid)
+            })
+            .collect();
+        ring.sort_by(|a, b| a.0.total_cmp(&b.0));
+        rings.push(ring);
+    }
+    let project = {
+        let (w, n) = (wall_geom.clone(), wall_nurbs.clone());
+        move |point: Point3| remus_algo::wall_chart_uv(&w, &n, point).unwrap_or((0.5, 0.5))
+    };
+    let normal = {
+        let (w, n) = (wall_geom.clone(), wall_nurbs.clone());
+        move |u: f64, _v: f64| {
+            // Chart-u is the normalized angle; recover the cylinder angle.
+            let ang = u * TAU;
+            let _ = &n;
+            w.normal(ang, 0.0)
+        }
+    };
+    let emit = make_band_emit(&project, &normal);
+    stitch_rings(merged, &rings[0], &rings[1], &emit);
+    Ok(true)
+}
+
 /// Tessellate a periodic-v NURBS band from its two shared closed rims.
 ///
 /// Walking blends and extruded closed conics both have a rectangular UV
@@ -2178,6 +2334,13 @@ pub(super) fn tessellate_nonplanar_cdt(
 
     let wire = topo.wire(face_data.outer_wire())?;
     let tol_dup = 1e-10;
+    // GFA band faces (wire carries a section Circle) project through the
+    // exact wall chart (see below); a converted PRIMITIVE wall keeps the
+    // established Newton path the seam-wall regression test pins.
+    let has_section_circle = wire.edges().iter().any(|oe| {
+        topo.edge(oe.edge())
+            .is_ok_and(|e| matches!(e.curve(), EdgeCurve::Circle(_)))
+    });
 
     // Fourth element: is_forward flag -- needed for seam UV assignment.
     let mut boundary_3d: Vec<(Point3, u32, EdgeId, bool)> = Vec::new();
@@ -2331,14 +2494,33 @@ pub(super) fn tessellate_nonplanar_cdt(
 
     let mut boundary_uv: Vec<(f64, f64)> = boundary_3d
         .iter()
-        .map(|(pt, _, edge_id_local, _)| {
-            // Seam edges (two uses) fall back to direct surface
-            // projection until tessellation is branch-aware.
-            if let Ok(Some(pcurve)) = topo.pcurve(*edge_id_local, face_id) {
-                let uv = project_via_pcurve(pcurve, *pt, face_data.surface());
-                if let Some(uv) = uv {
-                    return Ok(uv);
-                }
+        .map(|(pt, _, edge_id_local, is_fwd)| {
+            // Prefer the GFA-carried pcurve (fitted through exact-chart
+            // samples, seam-unwrapped) over raw Newton projection, which
+            // collapses the seam side of a closed wall chart. Seam edges
+            // (two uses on this face) address their own branch via the
+            // oriented key; a missing pcurve falls back to projection.
+            if let Some(pcurve) = topo.pcurve_oriented(*edge_id_local, face_id, *is_fwd)
+                && let Some(uv) = project_via_pcurve(pcurve, *pt, face_data.surface())
+            {
+                return Ok(uv);
+            }
+            // A recognized exact-rational cylinder wall carried as NURBS
+            // projects EXACTLY via the recovered cylinder (closed-form angle
+            // + axial rescaled to the knot chart), not via Newton, which
+            // converges to the nearest chart branch and collapses the seam
+            // side: both u≈0 and u≈1 samples land on the same copy and a
+            // full-turn band boundary measures a folded strip. The CDT
+            // unwrap below then restores one continuous period copy.
+            // Gated to GFA band faces (wire carries a section Circle):
+            // a converted PRIMITIVE wall has no section and keeps the
+            // established Newton path the seam-wall regression test pins.
+            if let FaceSurface::Nurbs(nurbs) = face_data.surface()
+                && has_section_circle
+                && let Some(wall) = remus_algo::wall_chart(face_data.surface())
+                && let Some((u, v)) = remus_algo::wall_chart_uv(&wall, nurbs, *pt)
+            {
+                return Ok((u, v));
             }
             project_to_surface_uv(face_data.surface(), *pt)
         })
@@ -2359,8 +2541,17 @@ pub(super) fn tessellate_nonplanar_cdt(
             | FaceSurface::Sphere(_)
             | FaceSurface::Torus(_) => Some((std::f64::consts::TAU, std::f64::consts::PI)),
             FaceSurface::Nurbs(s) if s.is_periodic_u() => {
-                let (du0, du1) = s.domain_u();
-                (du1 > du0).then(|| (du1 - du0, f64::midpoint(du0, du1)))
+                // A GFA band face on a recognized wall projects through the
+                // exact chart (period 1.0 in u), not the knot domain — unwrap
+                // with the chart period so the seam jump is one full turn,
+                // not a knot-width artefact. Converted primitives keep the
+                // knot-domain period the seam-wall regression test pins.
+                if has_section_circle && remus_algo::wall_chart(face_data.surface()).is_some() {
+                    Some((1.0, 0.5))
+                } else {
+                    let (du0, du1) = s.domain_u();
+                    (du1 > du0).then(|| (du1 - du0, f64::midpoint(du0, du1)))
+                }
             }
             _ => None,
         };
@@ -2549,8 +2740,8 @@ pub(super) fn tessellate_nonplanar_cdt(
         .iter()
         .map(|hole| {
             hole.iter()
-                .map(|(point, _, edge_id, _)| {
-                    if let Ok(Some(pcurve)) = topo.pcurve(*edge_id, face_id)
+                .map(|(point, _, edge_id, is_fwd)| {
+                    if let Some(pcurve) = topo.pcurve_oriented(*edge_id, face_id, *is_fwd)
                         && let Some(uv) = project_via_pcurve(pcurve, *point, face_data.surface())
                     {
                         return Ok(uv);
@@ -2926,7 +3117,36 @@ pub(super) fn tessellate_nonplanar_cdt(
                 pu_raw
             };
             let pt3 = eval_surface_point(surface, pu, pv);
-            let nrm = surface.normal(pu, pv);
+            let base_nrm = surface.normal(pu, pv);
+            // A GFA band face on a recognized wall evaluates its interior
+            // grid through the EXACT chart too: the unwrapped CDT rectangle
+            // straddles the knot-domain seam (u in [0.75, 1.75] on a [0, 1]
+            // chart), and raw NURBS evaluation clamps the overhang onto the
+            // seam meridian — collapsing every straddling vertex (the wrap
+            // arm above only fixes periodic-u surfaces via the knot width,
+            // not the chart period). Map chart-u back to the knot domain by
+            // the period before evaluating. Converted primitives keep the
+            // established knot-width wrap.
+            let (pt3, nrm) = match surface {
+                FaceSurface::Nurbs(nurbs)
+                    if has_section_circle && remus_algo::wall_chart(surface).is_some() =>
+                {
+                    let (du0, _du1) = nurbs.domain_u();
+                    let wrapped_u = du0 + (pu_raw - du0).rem_euclid(1.0);
+                    let pt = nurbs.evaluate(wrapped_u, pv);
+                    // Outward normal from the recovered cylinder (exact for
+                    // a wall; the NURBS normal at a clamped seam sample is
+                    // not defined by the chart copy the CDT means).
+                    let n = remus_algo::wall_chart(surface)
+                        .map(|wall| {
+                            let (ang, _) = wall.project_point(pt);
+                            wall.normal(ang, 0.0)
+                        })
+                        .unwrap_or(base_nrm);
+                    (pt, n)
+                }
+                _ => (pt3, base_nrm),
+            };
 
             let key = point_merge_key(pt3, MERGE_GRID);
             let gid = *point_to_global.entry(key).or_insert_with(|| {
@@ -3102,6 +3322,13 @@ fn project_via_pcurve(
 
 /// Evaluate a non-planar surface at `(u, v)` and return a 3D point.
 fn eval_surface_point(surface: &FaceSurface, u: f64, v: f64) -> Point3 {
+    // GFA band faces on a recognized wall evaluate through the EXACT chart
+    // (see the interior-grid arm above): raw NURBS evaluation clamps
+    // out-of-chart u onto the seam meridian, collapsing straddling
+    // vertices. This shared helper keeps raw evaluation — the band-only
+    // wrap lives at the CDT call sites, and `project_via_pcurve` (used by
+    // every surface, including converted primitives) must agree with the
+    // surface the pcurves were fitted against.
     surface.evaluate(u, v).unwrap_or(Point3::new(0.0, 0.0, 0.0))
 }
 
