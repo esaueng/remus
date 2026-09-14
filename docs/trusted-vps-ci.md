@@ -36,7 +36,7 @@ and [infrastructure validation](https://github.com/petergstfsn/ci-server/blob/04
 
 | Workflow | Triggers | Work and disposition |
 | --- | --- | --- |
-| `ci.yml` | main push, PR | All remain hosted: change classifier, repository policy, Clippy, workspace nextest/doc tests and complexity guards, approximation census, macOS tests, coverage (60% floor), MSRV, WASM build/validation/size report, fuzz compilation, software rendering, cargo-deny, audit, docs, secrets scan, CI Pass. Only boundaries and classifier tests are repeated in the pilot. |
+| `ci.yml` | main push, PR | All remain hosted: change classifier, repository policy, Clippy, workspace nextest/doc tests and complexity guards, approximation census, coverage (60% floor), MSRV, WASM build/validation/size report, fuzz compilation, software rendering, cargo-deny, audit, docs, secrets scan, CI Pass. Only boundaries and classifier tests are repeated in the pilot. |
 | `benchmark.yml` | main push, PR | Hosted Rust benchmarks; separate hosted publisher writes gh-pages and comments with a scoped token. No baseline/artifact is imported by the pilot. |
 | `fuzz.yml` | weekly, dispatch | Hosted nightly compilation and 12 fuzz targets, 120-second execution and 2048-MB fuzzer RSS limit per target. Compilation plus runner overhead is unmeasured on this VPS. |
 | `gauntlet.yml` | daily/weekly, dispatch tier | Hosted CAD corpus, up to 360 minutes, two model workers; separate results-branch publisher. Existing 50-basis-point ratchet retained. |
@@ -56,7 +56,7 @@ Rendering installs Mesa via sudo and stays hosted. Cargo-deny uses a Docker
 action; no container suite is migrated. Coverage has OIDC write permission,
 the size reporter has PR write permission, and publishers have narrowly
 scoped write tokens; none of those credentials or permissions reaches the VPS.
-No Windows job currently exists; the macOS job remains on macOS.
+Windows and macOS CI tests are currently disabled.
 
 ## Trust and capacity
 

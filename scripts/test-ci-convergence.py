@@ -29,7 +29,7 @@ JOBS = jobs(FLEET)
 # groups, dispatches, and PRs labelled `ci:full`; the package build when the
 # diff touches WASM-affecting paths or tier 2 is selected.
 TIER1 = {"test", "approx-census", "wasm-no-io"}
-TIER2 = {"platform-test", "coverage", "msrv", "fuzz-check", "render", "deny", "audit"}
+TIER2 = {"coverage", "msrv", "fuzz-check", "render", "deny", "audit"}
 PACKAGE = {"wasm"}
 HEAVY = TIER1 | TIER2 | PACKAGE
 ALWAYS = {"changes", "repo-policy", "secrets-scan"}
