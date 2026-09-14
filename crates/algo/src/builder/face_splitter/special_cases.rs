@@ -3149,20 +3149,22 @@ pub(super) fn split_face_with_internal_loops(
     // hole-avoidance cannot place the remainder's probe. Like the analytic
     // path, sample the wall chart on a (u, v) grid and pick the point whose
     // nearest 3D distance to every hole loop is greatest.
-    let remainder_is_wall = matches!(
-        remainder.surface,
-        FaceSurface::Cylinder(_) | FaceSurface::Cone(_)
-    ) || matches!(&remainder.surface, FaceSurface::Nurbs(nurbs)
-        if crate::pave_filler::helpers::rational_cylinder_wall(
-            nurbs,
-            remus_math::tolerance::Tolerance::new(),
-        )
-        .is_some());
-    if remainder.precomputed_interior.is_none()
-        && remainder_is_wall
-        && !remainder.inner_wires.is_empty()
-    {
-        remainder.precomputed_interior = converted_wall_remainder_interior(&remainder);
+    if remainder.precomputed_interior.is_none() && !remainder.inner_wires.is_empty() {
+        remainder.precomputed_interior = match &remainder.surface {
+            FaceSurface::Cylinder(_) | FaceSurface::Cone(_) => {
+                cylinder_cone_remainder_interior(&remainder)
+            }
+            FaceSurface::Nurbs(nurbs)
+                if crate::pave_filler::helpers::rational_cylinder_wall(
+                    nurbs,
+                    remus_math::tolerance::Tolerance::new(),
+                )
+                .is_some() =>
+            {
+                converted_wall_remainder_interior(&remainder)
+            }
+            _ => None,
+        };
     }
     if matches!(remainder.surface, FaceSurface::Torus(_))
         && remainder.outer_wire.iter().all(|edge| {
