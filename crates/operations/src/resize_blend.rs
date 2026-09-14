@@ -474,7 +474,12 @@ fn remove_blend_region(
         }
         ["cylinder", "cone"] | ["cone", "cylinder"] => heal_cylinder_cone_band(topo, solid, band),
         [first, second] => Err(ResizeBlendError::UnsupportedSupportPair { first, second }.into()),
-        _ => Err(reconstruction(format!(
+        // Zero, one, or three-or-more supports cannot be a two-support blend
+        // reconstruction. These arms match on the string dispatch (not on
+        // `EdgeCurve`/`FaceSurface`), so they carry no wildcard-arm audit
+        // obligation; they are spelled out so a support-count change is
+        // explicit rather than a reworded catch-all.
+        [] | [_] | [_, _, _, ..] => Err(reconstruction(format!(
             "blend region has unsupported support surfaces {support_types:?}; expected all planes or one supported analytic pair"
         ))),
     }
@@ -530,7 +535,14 @@ fn reconstructs_external_cylinder_cone(
         let face = topo.face(*support).ok()?;
         match face.surface() {
             FaceSurface::Cylinder(cylinder) => Some(cylinder.radius()),
-            _ => None,
+            // Only a cylinder support carries the radius this probe compares
+            // against the torus major radius. Every other carrier declines
+            // explicitly so a future variant cannot silently inherit `None`.
+            FaceSurface::Plane { .. }
+            | FaceSurface::Nurbs(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_) => None,
         }
     });
     let has_cone = band.supports.iter().any(|support| {
@@ -539,7 +551,13 @@ fn reconstructs_external_cylinder_cone(
     });
     let torus_major_radius = match topo.face(band.faces[0])?.surface() {
         FaceSurface::Torus(torus) => Some(torus.major_radius()),
-        _ => None,
+        // The external-branch probe only applies to a torus band; any other
+        // carrier (including a future variant) declines explicitly.
+        FaceSurface::Plane { .. }
+        | FaceSurface::Nurbs(_)
+        | FaceSurface::Cylinder(_)
+        | FaceSurface::Cone(_)
+        | FaceSurface::Sphere(_) => None,
     };
     let (Some(cylinder), true, Some(major)) = (cylinder_radius, has_cone, torus_major_radius)
     else {
@@ -577,7 +595,11 @@ fn blend_surface(surface: &FaceSurface) -> Option<(BlendKind, f64)> {
         FaceSurface::Cylinder(cylinder) => Some((BlendKind::Cylinder, cylinder.radius())),
         FaceSurface::Torus(torus) => Some((BlendKind::Torus, torus.minor_radius())),
         FaceSurface::Sphere(sphere) => Some((BlendKind::Sphere, sphere.radius())),
-        _ => None,
+        // Only constant-radius rolling-ball carriers are blend geometry.
+        // Planes, cones, and NURBS never carry a blend radius, so they
+        // decline explicitly; a future variant is a compile error here,
+        // not a silent `None`.
+        FaceSurface::Plane { .. } | FaceSurface::Cone(_) | FaceSurface::Nurbs(_) => None,
     }
 }
 
@@ -2073,7 +2095,7 @@ fn add_certified_closed_circle_edge(
     Ok(topo.add_edge(edge))
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::unnested_or_patterns)]
 fn heal_plane_cylinder_band(
     topo: &mut Topology,
     solid: SolidId,
@@ -2099,7 +2121,37 @@ fn heal_plane_cylinder_band(
         (FaceSurface::Cylinder(_), FaceSurface::Plane { .. }) => {
             (band.supports[1], band.supports[0])
         }
-        _ => return Err(reconstruction("support classification changed during heal")),
+        // Supports were already classified as a plane/cylinder pair by
+        // `remove_blend_region`'s dispatch; any other pairing here (a cone,
+        // sphere, torus, or NURBS support, or a future variant) means the
+        // classification changed under the copy, so refuse rather than
+        // rebuild against the wrong carriers. The two accepted orders above
+        // are excluded arm by arm, so a future variant is a compile error.
+        (FaceSurface::Plane { .. }, FaceSurface::Plane { .. })
+        | (
+            FaceSurface::Plane { .. },
+            FaceSurface::Nurbs(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_),
+        )
+        | (FaceSurface::Cylinder(_), FaceSurface::Cylinder(_))
+        | (
+            FaceSurface::Cylinder(_),
+            FaceSurface::Nurbs(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_),
+        )
+        | (
+            FaceSurface::Nurbs(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_),
+            _,
+        ) => {
+            return Err(reconstruction("support classification changed during heal"));
+        }
     };
 
     let copied_entities = crate::copy::copy_solid_with_entity_map(topo, solid)?;
@@ -2146,11 +2198,28 @@ fn heal_plane_cylinder_band(
 
     let (plane_normal, plane_d) = match topo.face(plane)?.surface() {
         FaceSurface::Plane { normal, d } => (*normal, *d),
-        _ => return Err(reconstruction("plane support lost its surface")),
+        // The plane handle was resolved from a plane/cylinder pair above; a
+        // non-plane carrier here (or a future variant) is the same
+        // classification drift, refused with the same typed error.
+        FaceSurface::Nurbs(_)
+        | FaceSurface::Cylinder(_)
+        | FaceSurface::Cone(_)
+        | FaceSurface::Sphere(_)
+        | FaceSurface::Torus(_) => {
+            return Err(reconstruction("plane support lost its surface"));
+        }
     };
     let cylinder_surface = match topo.face(cylinder)?.surface() {
         FaceSurface::Cylinder(surface) => surface.clone(),
-        _ => return Err(reconstruction("cylinder support lost its surface")),
+        // Symmetric to the plane re-check above: any non-cylinder carrier
+        // (or a future variant) is classification drift, not a rebuild case.
+        FaceSurface::Plane { .. }
+        | FaceSurface::Nurbs(_)
+        | FaceSurface::Cone(_)
+        | FaceSurface::Sphere(_)
+        | FaceSurface::Torus(_) => {
+            return Err(reconstruction("cylinder support lost its surface"));
+        }
     };
     let axis = cylinder_surface
         .axis()
@@ -2182,7 +2251,17 @@ fn heal_plane_cylinder_band(
 
     let plane_circle_normal = match topo.edge(*plane_contact)?.curve() {
         EdgeCurve::Circle(circle) => circle.normal(),
-        _ => return Err(reconstruction("plane contact is not an exact circle")),
+        // The plane contact of a closed plane/cylinder rim is an exact
+        // circle by construction. Lines, conic arcs, and NURBS (or a future
+        // curve variant) mean the rim is no longer that analytic contact,
+        // so refuse with the same typed error rather than rebuilding.
+        EdgeCurve::Line
+        | EdgeCurve::NurbsCurve(_)
+        | EdgeCurve::Ellipse(_)
+        | EdgeCurve::Hyperbola(_)
+        | EdgeCurve::Parabola(_) => {
+            return Err(reconstruction("plane contact is not an exact circle"));
+        }
     };
     let circle = Circle3D::new_with_ref(
         center,
@@ -2525,8 +2604,12 @@ fn rebuild_closed_periodic_support(
     candidates.sort_unstable();
     candidates.dedup();
     let source = match candidates.as_slice() {
+        // Zero or several ambiguous seam sources mean no single seam to
+        // carry forward; the caller re-derives the seam. This matches on a
+        // slice of candidate pairs (not on `EdgeCurve`/`FaceSurface`), so it
+        // carries no wildcard-arm audit obligation.
+        [] | [_, _, ..] => None,
         [source] => Some(*source),
-        _ => None,
     };
     let seam = topo.add_edge(Edge::new(far_vertex, sharp_vertex, EdgeCurve::Line));
     let mut edges = Vec::with_capacity(far_boundary.len() + 3);
@@ -2561,7 +2644,34 @@ fn heal_cylinder_cone_band(
     ) {
         (FaceSurface::Cylinder(_), FaceSurface::Cone(_)) => (band.supports[0], band.supports[1]),
         (FaceSurface::Cone(_), FaceSurface::Cylinder(_)) => (band.supports[1], band.supports[0]),
-        _ => return Err(reconstruction("support classification changed during heal")),
+        // As in the plane/cylinder healer: supports were dispatched as a
+        // cylinder/cone pair, so any other pairing (including a future
+        // variant) is classification drift, refused with the same error.
+        (
+            FaceSurface::Plane { .. }
+            | FaceSurface::Nurbs(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_),
+            _,
+        )
+        | (
+            FaceSurface::Cylinder(_),
+            FaceSurface::Plane { .. }
+            | FaceSurface::Nurbs(_)
+            | FaceSurface::Cylinder(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_),
+        )
+        | (
+            FaceSurface::Cone(_),
+            FaceSurface::Plane { .. }
+            | FaceSurface::Nurbs(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_),
+        ) => {
+            return Err(reconstruction("support classification changed during heal"));
+        }
     };
 
     let copied_entities = crate::copy::copy_solid_with_entity_map(topo, solid)?;
@@ -2593,11 +2703,26 @@ fn heal_cylinder_cone_band(
 
     let cylinder_surface = match topo.face(cylinder)?.surface() {
         FaceSurface::Cylinder(surface) => surface.clone(),
-        _ => return Err(reconstruction("cylinder support lost its surface")),
+        // Same drift guard as the plane/cylinder healer: any non-cylinder
+        // carrier (or a future variant) refuses with the same typed error.
+        FaceSurface::Plane { .. }
+        | FaceSurface::Nurbs(_)
+        | FaceSurface::Cone(_)
+        | FaceSurface::Sphere(_)
+        | FaceSurface::Torus(_) => {
+            return Err(reconstruction("cylinder support lost its surface"));
+        }
     };
     let cone_surface = match topo.face(cone)?.surface() {
         FaceSurface::Cone(surface) => surface.clone(),
-        _ => return Err(reconstruction("cone support lost its surface")),
+        // Symmetric cone re-check: only a cone carrier may rebuild here.
+        FaceSurface::Plane { .. }
+        | FaceSurface::Nurbs(_)
+        | FaceSurface::Cylinder(_)
+        | FaceSurface::Sphere(_)
+        | FaceSurface::Torus(_) => {
+            return Err(reconstruction("cone support lost its surface"));
+        }
     };
     let cylinder_axis = cylinder_surface
         .axis()
@@ -2868,7 +2993,33 @@ fn compose_evolution(
 pub fn resize_blend_failure_code(error: &OperationsError) -> &'static str {
     match error {
         OperationsError::ResizeBlend(error) => error.code(),
-        _ => "resize-blend-failed",
+        // Dispatches on the typed error enum, not on `EdgeCurve`/`FaceSurface`:
+        // every non-resize-blend error maps to the generic code. Spelled per
+        // variant so a new `OperationsError` variant is a compile error here
+        // rather than an inherited string.
+        OperationsError::ExactOnlyUnattainable
+        | OperationsError::InvalidInput { .. }
+        | OperationsError::NonManifoldResult
+        | OperationsError::EmptyResult { .. }
+        | OperationsError::Unsupported { .. }
+        | OperationsError::BodyClassMeasureMismatch { .. }
+        | OperationsError::BodyClassOperationUnsupported { .. }
+        | OperationsError::BodyValidationFailed { .. }
+        | OperationsError::HealingValidationFailed { .. }
+        | OperationsError::HealingVerificationUnavailable { .. }
+        | OperationsError::HealingRepairRefused { .. }
+        | OperationsError::ConfiguredHealingValidationFailed { .. }
+        | OperationsError::ConfiguredHealingVerificationUnavailable { .. }
+        | OperationsError::PatternInstancesOverlap { .. }
+        | OperationsError::Topology(_)
+        | OperationsError::Math(_)
+        | OperationsError::Algo(_)
+        | OperationsError::Blend(_)
+        | OperationsError::Check(_)
+        | OperationsError::Geometry(_)
+        | OperationsError::Heal(_)
+        | OperationsError::Offset(_)
+        | OperationsError::PartialResult { .. } => "resize-blend-failed",
     }
 }
 
