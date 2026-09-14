@@ -58,6 +58,10 @@ jobs:
           - nurbs_surface
           - topology_mutation
           - arena_roundtrip
+          - tessellation
+          - curve_intersection
+          - offset
+          - gcs
     permissions:
       contents: read
       pull-requests: read
