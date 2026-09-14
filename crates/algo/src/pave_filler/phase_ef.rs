@@ -111,7 +111,12 @@ struct NurbsContainment {
     surface: remus_math::nurbs::surface::NurbsSurface,
     grid: SurfaceSeedGrid,
     /// The plane the (coplanar) control net lies in, for exact crossings.
-    plane: (Vec3, f64),
+    /// `None` for a recognized exact-rational cylinder wall, whose signed
+    /// distance is measured against the recovered analytic cylinder instead.
+    plane: Option<(Vec3, f64)>,
+    /// Recovered analytic cylinder for a recognized converted wall; the
+    /// signed distance is radial (`|p - axis| - r`), exact for Line edges.
+    wall: Option<remus_math::surfaces::CylindricalSurface>,
     /// Outer outline inverted into the surface's `(u, v)` chart.
     polygon: Vec<Point2>,
     /// Inner-wire outlines in the same chart.
@@ -355,42 +360,55 @@ fn build_face_containment(
     // A PLANAR NURBS carrier (a coplanar control net) has an affine chart:
     // its outline inverts to a polygon there, tested like the planar one.
     // Any failed inversion declines to the accept-everything fallback below.
+    // A recognized exact-rational cylinder wall gets the same chart-polygon
+    // containment PLUS an exact signed distance (radial, against the
+    // recovered analytic cylinder) for transversal crossing detection.
     // Genuinely curved NURBS faces keep that fallback on purpose: paving
     // their crossings fed an imported freeform body's splitter sections it
     // could not consume.
     if let FaceSurface::Nurbs(nurbs) = &surface
-        && let Some(FaceSurface::Plane { normal, d }) =
-            super::helpers::planar_nurbs_as_plane(&surface, tol)
         && outer_points.len() >= 3
     {
-        let grid = SurfaceSeedGrid::for_surface(nurbs);
-        let invert = |pts: &[Point3]| -> Option<Vec<Point2>> {
-            pts.iter()
-                .map(|&p| {
-                    project_point_to_surface_with_grid(nurbs, p, NURBS_PROJECT_TOL, &grid)
-                        .ok()
-                        .map(|proj| Point2::new(proj.u, proj.v))
-                })
-                .collect()
-        };
-        if let Some(polygon) = invert(&outer_points)
-            && let Some(holes) = hole_points
-                .iter()
-                .map(|pts| invert(pts))
-                .collect::<Option<Vec<_>>>()
-        {
-            return Ok(FaceContainment {
-                bbox: None,
-                planar: None,
-                nurbs: Some(NurbsContainment {
-                    surface: nurbs.clone(),
-                    grid,
-                    plane: (normal, d),
-                    polygon,
-                    holes,
-                    margin: max_boundary_error.max(tol.linear * 10.0),
-                }),
-            });
+        let planar = super::helpers::planar_nurbs_as_plane(&surface, tol).and_then(|p| match p {
+            FaceSurface::Plane { normal, d } => Some((normal, d)),
+            _ => None,
+        });
+        let wall = super::helpers::rational_cylinder_wall(nurbs, tol);
+        if planar.is_some() || wall.is_some() {
+            let grid = SurfaceSeedGrid::for_surface(nurbs);
+            let invert = |pts: &[Point3]| -> Option<Vec<Point2>> {
+                pts.iter()
+                    .map(|&p| {
+                        project_point_to_surface_with_grid(nurbs, p, NURBS_PROJECT_TOL, &grid)
+                            .ok()
+                            .map(|proj| Point2::new(proj.u, proj.v))
+                    })
+                    .collect()
+            };
+            if let Some(polygon) = invert(&outer_points)
+                && let Some(holes) = hole_points
+                    .iter()
+                    .map(|pts| invert(pts))
+                    .collect::<Option<Vec<_>>>()
+            {
+                // A wall and a plane reading are mutually exclusive: the
+                // wall net is curved, so coplanar detection must have
+                // declined.
+                debug_assert!(planar.is_none() || wall.is_none());
+                return Ok(FaceContainment {
+                    bbox: None,
+                    planar: None,
+                    nurbs: Some(NurbsContainment {
+                        surface: nurbs.clone(),
+                        grid: SurfaceSeedGrid::for_surface(nurbs),
+                        plane: planar,
+                        wall,
+                        polygon,
+                        holes,
+                        margin: max_boundary_error.max(tol.linear * 10.0),
+                    }),
+                });
+            }
         }
     }
 
@@ -545,9 +563,41 @@ fn check_edge_face_pairs(
                 // a gridfinity cavity's rim riding a compartment wall's
                 // planar carrier paved the wall at every noise flip and left
                 // the cut with an edge shared by three faces.
+                //
+                // A recognized exact-rational cylinder wall measures the
+                // same signed test radially: Line edges get the closed-form
+                // line-cylinder solve; curved edges sample the radial field
+                // for sign changes like the planar arm. The hug gate is
+                // identical in structure (both sides beyond the band), and
+                // the containment check below still bounds every crossing
+                // to the face's trimmed chart polygon — the carrier alone
+                // never admits a crossing.
                 (FaceSurface::Nurbs(_), Some(nurbs)) => {
-                    let (normal, d) = nurbs.plane;
-                    let signed = |pt: Point3| normal.dot(Vec3::new(pt.x(), pt.y(), pt.z())) - d;
+                    let signed: Box<dyn Fn(Point3) -> f64> = match (&nurbs.plane, &nurbs.wall) {
+                        (Some((normal, d)), None) => {
+                            let (normal, d) = (*normal, *d);
+                            Box::new(move |pt: Point3| {
+                                normal.dot(Vec3::new(pt.x(), pt.y(), pt.z())) - d
+                            })
+                        }
+                        (None, Some(wall)) => {
+                            let wall = wall.clone();
+                            Box::new(move |pt: Point3| {
+                                let to_pt = pt - wall.origin();
+                                let axial = wall.axis() * wall.axis().dot(to_pt);
+                                (to_pt - axial).length() - wall.radius()
+                            })
+                        }
+                        // Structurally unreachable: the containment builder
+                        // sets exactly one of the two readings (wall nets are
+                        // curved, so coplanar detection declines on them).
+                        _ => {
+                            return Err(AlgoError::IntersectionFailed(
+                                "EF NURBS containment carries neither a plane nor a wall reading"
+                                    .to_string(),
+                            ));
+                        }
+                    };
                     let chord = (end_pos - start_pos).length();
                     let hug = (super::fill_face_info::ON_SURFACE_BAND_FACTOR * tol.linear).max(
                         (super::fill_face_info::IN_FACE_MAX_DEVIATION_RATIO * chord)
@@ -562,9 +612,20 @@ fn check_edge_face_pairs(
                         below = below.min(sd);
                     }
                     if above > hug && -below > hug {
-                        find_edge_plane_crossings(
-                            &curve, start_pos, end_pos, t0, t1, normal, d, tol,
-                        )
+                        match (&nurbs.plane, &nurbs.wall) {
+                            (Some((normal, d)), None) => find_edge_plane_crossings(
+                                &curve, start_pos, end_pos, t0, t1, *normal, *d, tol,
+                            ),
+                            (None, Some(wall)) => find_edge_cylinder_crossings(
+                                &curve, start_pos, end_pos, t0, t1, wall, &signed, tol,
+                            ),
+                            _ => {
+                                return Err(AlgoError::IntersectionFailed(
+                                    "EF NURBS containment carries neither a plane nor a wall reading"
+                                        .to_string(),
+                                ));
+                            }
+                        }
                     } else {
                         Vec::new()
                     }
@@ -737,6 +798,62 @@ fn check_edge_face_pairs(
     }
 
     Ok(())
+}
+
+/// Find edge-cylinder crossings against a recognized converted wall.
+///
+/// Line edges get the closed-form line-cylinder solve (quadratic in the
+/// chord parameter — exact up to roundoff, mirroring the algebraic
+/// line-plane arm above). Every other curve samples the caller-supplied
+/// signed radial field for sign changes, like the planar arm's curved-edge
+/// path. Both paths keep the 1e-7 endpoint slack the plane arm uses.
+#[allow(clippy::too_many_arguments)]
+fn find_edge_cylinder_crossings(
+    curve: &EdgeCurve,
+    start_pos: Point3,
+    end_pos: Point3,
+    t0: f64,
+    t1: f64,
+    wall: &remus_math::surfaces::CylindricalSurface,
+    signed: &dyn Fn(Point3) -> f64,
+    tol: Tolerance,
+) -> Vec<(f64, Point3)> {
+    if matches!(curve, EdgeCurve::Line) {
+        // Solve |radial(start + s*dir)|^2 = r^2 for the chord fraction s.
+        let axis = wall.axis();
+        let dir = end_pos - start_pos;
+        let axial_dir = axis * axis.dot(dir);
+        let radial_dir = dir - axial_dir;
+        let to_start = start_pos - wall.origin();
+        let axial_start = axis * axis.dot(to_start);
+        let radial_start = to_start - axial_start;
+        let a = radial_dir.length_squared();
+        // 1e-15 checks for mathematical degeneracy (line parallel to the
+        // axis — radial-cross-section blind), not geometric tolerance.
+        if a < 1e-30 {
+            return Vec::new();
+        }
+        let b = 2.0 * radial_start.dot(radial_dir);
+        let c = radial_start.length_squared() - wall.radius() * wall.radius();
+        let disc = b * b - 4.0 * a * c;
+        if !disc.is_finite() || disc < 0.0 {
+            return Vec::new();
+        }
+        let sqrt_disc = disc.sqrt();
+        let mut out = Vec::new();
+        for s in [(-b - sqrt_disc) / (2.0 * a), (-b + sqrt_disc) / (2.0 * a)] {
+            if !s.is_finite() || !(-1e-7..=1.0 + 1e-7).contains(&s) {
+                continue;
+            }
+            let s_clamped = s.clamp(0.0, 1.0);
+            let pt = start_pos + dir * s_clamped;
+            let t = s_clamped.mul_add(t1 - t0, t0);
+            out.push((t, pt));
+        }
+        out
+    } else {
+        find_crossings_by_sampling(curve, start_pos, end_pos, t0, t1, signed, tol.linear)
+    }
 }
 
 /// Find edge-plane crossings using algebraic ray-plane intersection.

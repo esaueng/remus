@@ -43,8 +43,8 @@ use edge_splitting::{
 };
 use sampling::{sample_wire_loop_uv, sample_wire_loop_uv_periodic, sample_wire_loop_uv_via_frame};
 use special_cases::{
-    split_closed_torus_into_bands, split_face_with_internal_loops, split_noseam_face_direct,
-    split_periodic_face_into_bands, split_periodic_face_into_sectors,
+    split_closed_torus_into_bands, split_converted_wall_into_bands, split_face_with_internal_loops,
+    split_noseam_face_direct, split_periodic_face_into_bands, split_periodic_face_into_sectors,
     split_torus_band_by_arrangement, try_split_crossing_plane_face, try_split_disk_by_chords,
 };
 
@@ -1950,6 +1950,73 @@ fn sections_form_winding_chain(sections: &[SectionEdge], surface: &FaceSurface, 
         return false;
     }
     winding_section_chain(sections, surface, tol).is_some()
+}
+
+/// Whether a section on a recognized exact-rational cylinder wall is a
+/// transverse ring winding the wall's chart.
+///
+/// The wall's chart period is 1.0 (`surface_periods`), which the TAU-based
+/// `winding_section_chain` cannot read — yet a transverse section ring still
+/// separates the wall into bands rather than bounding a disc, and routing it
+/// to the internal-loops path attaches it as a hole on the UNSPLIT wall
+/// (losing the kept band). Detect it directly: exactly one section, a closed
+/// loop (endpoints coincident), on a recognized wall, whose exact chart-u
+/// samples (via the recovered cylinder — no Newton projection) span the
+/// whole chart period. A partial-arc section (which does not separate bands)
+/// spans less and keeps the existing route.
+fn is_wall_transverse_section_ring(sections: &[SectionEdge], surface: &FaceSurface) -> bool {
+    let [s] = sections else {
+        return false;
+    };
+    let FaceSurface::Nurbs(nurbs) = surface else {
+        return false;
+    };
+    let Some(wall) = crate::pave_filler::helpers::rational_cylinder_wall(
+        nurbs,
+        remus_math::tolerance::Tolerance::new(),
+    ) else {
+        return false;
+    };
+    if (s.start - s.end).length() > 1e-7 {
+        return false;
+    }
+    // BK_WALLRING=1 dumps the chart-u span evidence for this decision.
+    let trace_ring = std::env::var("BK_WALLRING").is_ok();
+    let (u_period, _) = super::pcurve_compute::surface_periods(surface);
+    let period = u_period.unwrap_or(1.0);
+    if !period.is_finite() || period <= 0.0 {
+        return false;
+    }
+    // Exact chart-u samples along the section curve.
+    let (t0, t1) = s.domain();
+    let mut us = Vec::with_capacity(33);
+    for k in 0..=32 {
+        #[allow(clippy::cast_precision_loss)]
+        let t = t0 + (t1 - t0) * (f64::from(k) / 32.0);
+        let p = s.curve_3d.evaluate_with_endpoints(t, s.start, s.end);
+        let (u_ang, _) = wall.project_point(p);
+        us.push(u_ang.rem_euclid(std::f64::consts::TAU) / std::f64::consts::TAU * period);
+    }
+    // Covered span = period minus the largest gap between sorted samples. A
+    // transverse ring covers the whole period (span ≈ period); a partial arc
+    // leaves a large gap.
+    us.sort_by(f64::total_cmp);
+    let mut max_gap = 0.0_f64;
+    for w in us.windows(2) {
+        max_gap = max_gap.max(w[1] - w[0]);
+    }
+    if let (Some(first), Some(last)) = (us.first(), us.last()) {
+        max_gap = max_gap.max((first + period) - last);
+    }
+    let winds = period - max_gap > 0.9 * period;
+    if trace_ring {
+        log::debug!(
+            "WALLRING trim={:?} domain=({t0:.4},{t1:.4}) period={period} span={:.4} winds={winds}",
+            s.trim,
+            period - max_gap
+        );
+    }
+    winds
 }
 
 /// The ordered section chain forming a loop that WINDS the surface's
@@ -5588,6 +5655,43 @@ fn split_face_2d_impl(
         return Ok(bands);
     }
 
+    // Converted-wall band shortcut: a transverse section ring on a
+    // recognized exact-rational cylinder wall separates bands, not a disc.
+    // The wall-ring veto below routes it past the internal-loops path; this
+    // emits the bands directly (the NURBS-chart sibling of the periodic
+    // band path above, which only serves analytic cylinders/cones).
+    // BK_WALLBAND=1 dumps the decline evidence when this returns None.
+    if !is_plane
+        && original_inner_wires.is_empty()
+        && let Some(bands) = split_converted_wall_into_bands(
+            &surface,
+            &boundary_edges,
+            sections,
+            rank,
+            reversed,
+            face_id,
+            tol.linear,
+        )
+    {
+        return Ok(bands);
+    }
+    if std::env::var("BK_WALLBAND").is_ok()
+        && !is_plane
+        && original_inner_wires.is_empty()
+        && let FaceSurface::Nurbs(nurbs) = &surface
+        && crate::pave_filler::helpers::rational_cylinder_wall(
+            nurbs,
+            remus_math::tolerance::Tolerance::new(),
+        )
+        .is_some()
+    {
+        log::debug!(
+            "WALLBAND face={face_id:?} declined the band path (sections={} boundary={})",
+            sections.len(),
+            boundary_edges.len()
+        );
+    }
+
     // Internal section edge shortcut: when section edges form closed loops
     // entirely within the face (not connecting to boundary edges), the wire
     // builder struggles with periodic UV and 4-way junctions. Instead, group
@@ -5694,7 +5798,19 @@ fn split_face_2d_impl(
         // fall through to the general splitter, whose band machinery handles
         // them. A genuine lens hole (a tube poking the wall) has winding 0
         // and keeps the internal path.
-        endpoints_internal && !sections_form_winding_chain(sections, &surface, tol.linear)
+        //
+        // A recognized exact-rational cylinder wall carried as NURBS is NOT
+        // u-periodic in the `surface_periods` sense the winding test needs
+        // (its chart period is 1.0, and `winding_section_chain` bails on
+        // `None` periods) — yet a transverse section ring still winds its
+        // chart and still separates bands rather than bounding a disc. Veto
+        // the internal path for such a ring explicitly: it is a closed loop
+        // whose chart-u span covers the whole period, so it cannot be a
+        // contractible hole. Anything else keeps the existing route.
+        let wall_ring_winds = is_wall_transverse_section_ring(sections, &surface);
+        endpoints_internal
+            && !sections_form_winding_chain(sections, &surface, tol.linear)
+            && !wall_ring_winds
     };
 
     if all_sections_internal {

@@ -10,7 +10,12 @@
 
 pub mod fill_face_info;
 pub mod force_interf_ee;
-mod helpers;
+// Visible to `crate::builder` and `crate::classifier` (wall recognition,
+// EF crossings). The `redundant_pub_crate` allow is required because the
+// enclosing `pave_filler` module is private — clippy folds `pub(crate)` to
+// `pub` in that scope, but we keep `pub(crate)` to make the intent explicit.
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) mod helpers;
 pub mod link_existing;
 pub mod make_blocks;
 pub mod make_pcurves;
