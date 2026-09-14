@@ -195,6 +195,65 @@ fn cylinder_cone_band_resizes_through_exact_reconstruction() {
     assert_watertight_with_mesh_oracle(&topo, resized.solid);
 }
 
+/// B24: the cylinder/cone healer's exhaustive support-pair arms preserve the
+/// exact-reconstruction behavior after conversion.
+///
+/// Rebuilds the resized shoulder's band region and pins its two-support
+/// cylinder/cone classification, so a future surface variant that reaches
+/// the converted drift-guard arms fails to compile (or fails this pin)
+/// instead of silently rebuilding against the wrong carriers.
+#[test]
+fn b24_cylinder_cone_healer_keeps_exact_support_classification() {
+    use remus_operations::resize_blend::blend_region;
+
+    let mut topo = Topology::new();
+    let (sharp, shoulder) = cylinder_cone_shoulder(&mut topo);
+    let old = fillet_v2(&mut topo, sharp, &[shoulder], 0.25).unwrap();
+    let band = remus_topology::explorer::solid_faces(&topo, old.solid)
+        .unwrap()
+        .into_iter()
+        .find(|face| {
+            matches!(
+                topo.face(*face).unwrap().surface(),
+                FaceSurface::Torus(torus)
+                    if (torus.minor_radius() - 0.25).abs() < 1e-7
+            )
+        })
+        .expect("the cylinder-cone shoulder must produce an exact torus band");
+    let resized = resize_blend(&mut topo, old.solid, band, 0.25, 0.15).unwrap();
+    assert_watertight_with_mesh_oracle(&topo, resized.solid);
+    let rebuilt = remus_topology::explorer::solid_faces(&topo, resized.solid)
+        .unwrap()
+        .into_iter()
+        .find(|face| {
+            matches!(
+                topo.face(*face).unwrap().surface(),
+                FaceSurface::Torus(torus)
+                    if (torus.minor_radius() - 0.15).abs() < 1e-7
+            )
+        })
+        .expect("the resized shoulder must rebuild an exact torus band");
+    let region = blend_region(&topo, resized.solid, rebuilt).unwrap();
+    assert_eq!(region.faces.len(), 1);
+    // The rebuilt band's tangent supports are the cylinder/cone pair;
+    // classify them through the public adjacency rather than the private
+    // band description.
+    let adjacency = topo.build_adjacency(resized.solid).unwrap();
+    let mut kinds: Vec<&'static str> = topo
+        .wire(topo.face(rebuilt).unwrap().outer_wire())
+        .unwrap()
+        .edges()
+        .iter()
+        .map(remus_topology::wire::OrientedEdge::edge)
+        .flat_map(|edge| adjacency.faces_for_edge(edge))
+        .filter(|support| **support != rebuilt)
+        .map(|support| topo.face(*support).unwrap().surface().type_tag())
+        .collect();
+    kinds.sort_unstable();
+    kinds.dedup();
+    assert_eq!(kinds, vec!["cone", "cylinder"]);
+}
+
 #[test]
 fn cylinder_sphere_shoulder_fillet_is_watertight() {
     let mut topo = Topology::new();
