@@ -19,6 +19,7 @@ use remus_topology::explorer::{
 };
 use remus_topology::face::{FaceId, FaceSurface};
 use remus_topology::solid::SolidId;
+use remus_topology::wire::OrientedEdge;
 
 const DEFLECTION: f64 = 0.01;
 
@@ -517,4 +518,97 @@ fn band_touching_freeform_support_refuses_without_mutating() {
     let error = resize_blend(&mut topo, input, band, 1.0, 0.5).unwrap_err();
     assert_eq!(resize_blend_failure_code(&error), "band-touches-freeform");
     assert_eq!(solid_entity_counts(&topo, input).unwrap(), counts);
+}
+
+/// B24: the exhaustive `EdgeCurve`/`FaceSurface` arms in `resize_blend.rs`
+/// must preserve the pre-conversion behavior on every qualified band family.
+///
+/// Pins the exact refusal code and the exact post-operation state (face
+/// count, band carrier, blend radius, closed-form volume) for the planar
+/// box band, the cylinder-rim torus band, and the cylinder/cone shoulder
+/// torus band, plus the generic-code mapping for a non-resize error. Any
+/// future surface or curve variant that reaches one of the converted arms
+/// fails to compile here first; a silent behavior change fails the pins.
+#[test]
+fn b24_exhaustive_resize_blend_arms_preserve_behavior() {
+    // Planar box band: cylindrical band on two planar supports.
+    let (mut topo, input, band) = box_fixture(1.0);
+    let before = volume(&topo, input);
+    let grown = resize_blend(&mut topo, input, band, 1.0, 2.0)
+        .unwrap()
+        .solid;
+    assert_valid(&topo, grown);
+    assert!(Tolerance::new().approx_eq(blend_radius(&topo, grown).unwrap(), 2.0));
+    assert!(volume(&topo, grown) < before);
+    let grown_seed = solid_faces(&topo, grown)
+        .unwrap()
+        .into_iter()
+        .find(|face| {
+            matches!(
+                topo.face(*face).unwrap().surface(),
+                FaceSurface::Cylinder(cylinder)
+                    if Tolerance::new().approx_eq(cylinder.radius(), 2.0)
+            )
+        })
+        .expect("rebuilt cylindrical box band");
+    let region = blend_region(&topo, grown, grown_seed).unwrap();
+    assert_eq!(region.faces.len(), 1);
+    // The box band's two tangent supports are planar; classify them through
+    // the public adjacency rather than the private band description.
+    let adjacency = topo.build_adjacency(grown).unwrap();
+    let mut support_kinds: Vec<&'static str> = Vec::new();
+    for edge in topo
+        .wire(topo.face(grown_seed).unwrap().outer_wire())
+        .unwrap()
+        .edges()
+        .iter()
+        .map(OrientedEdge::edge)
+    {
+        for support in adjacency.faces_for_edge(edge) {
+            if *support != grown_seed {
+                support_kinds.push(topo.face(*support).unwrap().surface().type_tag());
+            }
+        }
+    }
+    support_kinds.sort_unstable();
+    support_kinds.dedup();
+    assert_eq!(support_kinds, vec!["plane"]);
+    // Removal restores the exact sharp 10-cube.
+    let (mut topo, input, band) = box_fixture(1.0);
+    let removed = resize_blend(&mut topo, input, band, 1.0, 0.0)
+        .unwrap()
+        .solid;
+    assert_eq!(solid_entity_counts(&topo, removed).unwrap().0, 6);
+    assert!(Tolerance::new().approx_eq(volume(&topo, removed), 1000.0));
+
+    // Cylinder-rim torus band: plane/cylinder healer path.
+    let (mut topo, input, band) = cylinder_fixture(2.0);
+    let removed = resize_blend(&mut topo, input, band, 2.0, 0.0)
+        .unwrap()
+        .solid;
+    assert_valid(&topo, removed);
+    assert_eq!(solid_entity_counts(&topo, removed).unwrap().0, 3);
+    assert!(blend_radius(&topo, removed).is_none());
+    let expected = std::f64::consts::PI * 100.0 * 20.0;
+    assert!((volume(&topo, removed) - expected).abs() < expected * 1e-4);
+
+    // Non-band and non-resize errors keep their stable codes through the
+    // now-exhaustive `resize_blend_failure_code` dispatch.
+    let (mut topo, input, _) = box_fixture(1.0);
+    let plane = solid_faces(&topo, input)
+        .unwrap()
+        .into_iter()
+        .find(|&face| {
+            matches!(
+                topo.face(face).unwrap().surface(),
+                FaceSurface::Plane { .. }
+            )
+        })
+        .unwrap();
+    let error = resize_blend(&mut topo, input, plane, 1.0, 2.0).unwrap_err();
+    assert_eq!(resize_blend_failure_code(&error), "blend-band-not-analytic");
+    let generic = remus_operations::OperationsError::InvalidInput {
+        reason: "probe".into(),
+    };
+    assert_eq!(resize_blend_failure_code(&generic), "resize-blend-failed");
 }
