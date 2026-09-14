@@ -1211,17 +1211,543 @@ pub(super) fn sphere_closed_loop_interior(
 /// down. The end bands reuse the face's original boundary circle edges.
 ///
 /// Preconditions (returns `None` so the caller can fall back otherwise):
-/// - surface is a cylinder or cone
-/// - boundary is exactly 2 closed circle edges plus seam Line edges, all
-///   seam endpoints at the same u
-/// - every section is a full closed circle whose start point sits on the
-///   seam (guaranteed by the seam-anchor pre-pass) at a v strictly between
-///   the boundary circles, with no two circles at the same v
+/// - surface is a NURBS face the exact-rational wall recognizer accepts
+/// - boundary is the converted-wall shape (closed NURBS rims + seam Lines)
+/// - every section is a closed transverse ring (endpoints coincident,
+///   chart-u span covering the whole chart period) at a chart-v strictly
+///   between the rims, with no two rings at the same v
 #[allow(
     clippy::too_many_lines,
     clippy::too_many_arguments,
     clippy::items_after_statements
 )]
+pub(super) fn split_converted_wall_into_bands(
+    surface: &FaceSurface,
+    boundary_edges: &[OrientedPCurveEdge],
+    sections: &[SectionEdge],
+    rank: Rank,
+    reversed: bool,
+    face_id: FaceId,
+    tol: f64,
+) -> Option<Vec<SplitSubFace>> {
+    use remus_math::curves2d::{Curve2D, Line2D};
+    use remus_math::vec::{Point2, Vec2};
+
+    let FaceSurface::Nurbs(nurbs) = surface else {
+        return None;
+    };
+    let wall = crate::pave_filler::helpers::rational_cylinder_wall(
+        nurbs,
+        remus_math::tolerance::Tolerance::new(),
+    )?;
+    if std::env::var("BK_WALLBAND").is_ok() {
+        log::debug!(
+            "WALLBAND enter face={face_id:?} sections={} boundary={} rank={rank:?}",
+            sections.len(),
+            boundary_edges.len()
+        );
+    }
+    if !boundary_edges.is_empty() && sections.is_empty() {
+        return None;
+    }
+    let close_tol = tol * 100.0;
+
+    // Axial ends of the wall chart, from the boundary's exact chart-v.
+    let chart_v = |p: Point3| -> f64 { wall.project_point(p).1 };
+    let mut v_min = f64::INFINITY;
+    let mut v_max = f64::NEG_INFINITY;
+    for e in boundary_edges {
+        for p in [e.start_3d, e.end_3d] {
+            let v = chart_v(p);
+            v_min = v_min.min(v);
+            v_max = v_max.max(v);
+        }
+    }
+    if !v_min.is_finite() || !v_max.is_finite() || (v_max - v_min) <= close_tol {
+        return None;
+    }
+
+    // Collect transverse rings: closed loops whose chart-u span covers the
+    // whole chart period (span > 90% of 2π in angle space). Decline reasons
+    // surface under BK_WALLBAND.
+    struct WallRing {
+        v: f64,
+        seam: Point3,
+        edge: OrientedPCurveEdge,
+    }
+    let mut ring_decline: Option<String> = None;
+    // Wrap the ring scan so decline reasons surface under BK_WALLBAND.
+    let ring_scan: Option<Vec<WallRing>> = (|| {
+        let mut rings: Vec<WallRing> = Vec::with_capacity(sections.len());
+        for s in sections {
+            if (s.start - s.end).length() > close_tol {
+                ring_decline = Some(format!(
+                    "section not closed (chord {:.2e})",
+                    (s.start - s.end).length()
+                ));
+                return None;
+            }
+            // Chart-u span over 33 exact samples. A Circle section (the exact
+            // plane×wall substitution) is analytically closed: span the full
+            // period without sampling.
+            let full_span = matches!(s.curve_3d, EdgeCurve::Circle(_));
+            if !full_span {
+                let (t0, t1) = s.domain();
+                let mut us = Vec::with_capacity(33);
+                for k in 0..=32 {
+                    #[allow(clippy::cast_precision_loss)]
+                    let t = t0 + (t1 - t0) * (f64::from(k) / 32.0);
+                    let p = s.curve_3d.evaluate_with_endpoints(t, s.start, s.end);
+                    us.push(wall.project_point(p).0.rem_euclid(std::f64::consts::TAU));
+                }
+                us.sort_by(f64::total_cmp);
+                let mut max_gap = 0.0_f64;
+                for w in us.windows(2) {
+                    max_gap = max_gap.max(w[1] - w[0]);
+                }
+                if let (Some(first), Some(last)) = (us.first(), us.last()) {
+                    max_gap = max_gap.max((first + std::f64::consts::TAU) - last);
+                }
+                if std::f64::consts::TAU - max_gap <= 0.9 * std::f64::consts::TAU {
+                    ring_decline = Some(format!(
+                        "chart-u span {:.3} < 90% period",
+                        std::f64::consts::TAU - max_gap
+                    ));
+                    return None;
+                }
+            }
+            // Ring level: median chart-v over the samples. A Circle section
+            // (the exact substitution) is exactly at its plane height: read
+            // it off the seam point directly. A fitted NURBS ring wobbles,
+            // so the median over samples is robust there.
+            let v = if let EdgeCurve::Circle(circle) = &s.curve_3d {
+                chart_v(circle.evaluate(0.0))
+            } else {
+                let (t0, t1) = s.domain();
+                let mut vs: Vec<f64> = (0..=32)
+                    .map(|k| {
+                        #[allow(clippy::cast_precision_loss)]
+                        let t = t0 + (t1 - t0) * (f64::from(k) / 32.0);
+                        chart_v(s.curve_3d.evaluate_with_endpoints(t, s.start, s.end))
+                    })
+                    .collect();
+                vs.sort_by(f64::total_cmp);
+                vs[vs.len() / 2]
+            };
+            if v <= v_min + close_tol || v >= v_max - close_tol {
+                // A ring AT a boundary rim duplicates the existing rim — no band
+                // split there (the flush-cap signature).
+                continue;
+            }
+            // Seam point: the section ring's own start (= end, closed loop),
+            // snapped to the nearest point ON the ring (the FF writer's start is
+            // already on it — this only cleans float noise). The rim loops below
+            // are re-anchored to THIS same vertex (the rim seam is split there),
+            // so both bands share it verbatim and the assembly can close. The
+            // wall rim seam is a DIFFERENT vertex (the converted circle's start,
+            // 7.5 away axially) — anchoring the ring to it would drag the wire
+            // off the carrier, which the preflight rejects.
+            // Seam point: the section ring's own start (= end, closed loop).
+            // For a Circle section (the exact substitution) the carrier is
+            // anchored at the circle's own origin, NOT at the wire endpoints:
+            // `evaluate_with_endpoints` ignores start/end for circles, so the
+            // carrier-vs-wire check below would compare the circle origin
+            // against the FF writer's start and wrongly decline. Skip the
+            // check for circles (the writer mints start/end ON the circle by
+            // evaluating it) and keep it for fitted NURBS (whose carrier
+            // genuinely depends on the wire endpoints).
+            let rim_seam = s.start;
+            if !matches!(s.curve_3d, EdgeCurve::Circle(_)) {
+                let (t0, t1) = s.domain();
+                let curve_start = s.curve_3d.evaluate_with_endpoints(t0, s.start, s.end);
+                let curve_end = s.curve_3d.evaluate_with_endpoints(t1, s.start, s.end);
+                // The ring's own start must sit on its carrier (else the wire is
+                // already broken upstream — decline rather than emit a failing wire).
+                if (curve_start - s.start).length() > close_tol
+                    || (curve_end - s.end).length() > close_tol
+                {
+                    ring_decline = Some("ring wire off its own carrier".to_string());
+                    return None;
+                }
+            }
+            let pcurve = match rank {
+                Rank::A => &s.pcurve_a,
+                Rank::B => &s.pcurve_b,
+            };
+            rings.push(WallRing {
+                v,
+                seam: rim_seam,
+                edge: OrientedPCurveEdge {
+                    curve_3d: s.curve_3d.clone(),
+                    trim: s.trim,
+                    pcurve: pcurve.clone(),
+                    start_uv: s.start_uv_a.unwrap_or_else(|| Point2::new(0.0, v)),
+                    end_uv: s.end_uv_a.unwrap_or_else(|| Point2::new(1.0, v)),
+                    start_3d: rim_seam,
+                    end_3d: rim_seam,
+                    // The band wire walks the lower rim BACKWARD (its UPPER
+                    // role) and the upper ring FORWARD (its LOWER role) —
+                    // opposite traversals covering one turn total (see the
+                    // band-emission comment below). The emitter negates the
+                    // lower level and keeps the upper level as stored, so
+                    // the stored direction must be the LOWER role
+                    // (forward=true = natural traversal). The FF section's
+                    // own direction is arbitrary (writer order), so set it
+                    // here: natural = same traversal as the bottom rim at
+                    // the seam (tangent alignment), computed below at
+                    // emission. Store forward=true unconditionally; the
+                    // emission roles derive both directions from it.
+                    forward: true,
+                    source_edge_idx: None,
+                    // Preserve the FF section's pave_block_id so the wall
+                    // side's ring edge resolves its vertices through the
+                    // CommonBlock split edge — the same VertexIds the slab
+                    // side's disc edge uses — and `merge_duplicate_edges`
+                    // sees ONE shared edge, not two coincident copies.
+                    pave_block_id: s.pave_block_id,
+                    source_topo_edge: None,
+                },
+            });
+        }
+        if rings.is_empty() {
+            ring_decline = Some("every ring at a boundary rim (flush-cap)".to_string());
+            return None;
+        }
+        rings.sort_by(|a, b| a.v.total_cmp(&b.v));
+        if rings.windows(2).any(|w| w[1].v - w[0].v < close_tol) {
+            ring_decline = Some("coincident ring levels".to_string());
+            return None;
+        }
+        Some(rings)
+    })();
+    let ring_scan = ring_scan;
+    let Some(rings) = ring_scan else {
+        if std::env::var("BK_WALLBAND").is_ok() {
+            match &ring_decline {
+                Some(reason) => log::debug!("WALLBAND ring scan declined: {reason}"),
+                None => log::debug!("WALLBAND ring scan declined: no reason recorded"),
+            }
+        }
+        return None;
+    };
+
+    // Seam segment between two ring levels: a straight Line.
+    let mk_seam = |pa: Point3, pb: Point3| -> Option<OrientedPCurveEdge> {
+        let dir3 = pb - pa;
+        if dir3.length() < close_tol {
+            return None;
+        }
+        let va = chart_v(pa);
+        let vb = chart_v(pb);
+        let dir = Vec2::new(0.0, if vb > va { 1.0 } else { -1.0 });
+        let pcurve = Curve2D::Line(Line2D::new(Point2::new(0.0, va), dir).ok()?);
+        Some(OrientedPCurveEdge {
+            curve_3d: EdgeCurve::Line,
+            trim: None,
+            pcurve,
+            start_uv: Point2::new(0.0, va),
+            end_uv: Point2::new(0.0, vb),
+            start_3d: pa,
+            end_3d: pb,
+            forward: true,
+            source_edge_idx: None,
+            pave_block_id: None,
+            source_topo_edge: None,
+        })
+    };
+
+    // Levels: bottom rim, rings, top rim. Rim levels reuse the wall's OWN
+    // boundary rim edges (bottom/top circles + seam split at the section's
+    // seam vertex): they are the wall's real boundary, so carrier and wire
+    // agree by construction, and the seam vertex is shared with the ring
+    // verbatim. Reusing a translated copy of the fitted section curve cannot
+    // work — a NURBS carrier evaluates from its own control net, not from
+    // the wire endpoints, so the preflight (carrier-vs-wire agreement) fails
+    // by the full band height.
+    //
+    // Preconditions: the boundary holds exactly the converted-wall shape
+    // (closed NURBS rims top/bottom + Line seam sides, possibly EF-split);
+    // otherwise None (caller falls back).
+    let rim_loop_at = |v: f64| -> Option<Vec<OrientedPCurveEdge>> {
+        // Decline reasons, surfaced under BK_WALLBAND for diagnosis.
+        enum Decline {
+            BoundaryLen,
+            RimPieces,
+            RimNotClosed,
+        }
+        let mut decline = None;
+        let out = (|| {
+            // The wall boundary arrives UNSPLIT here (pave-level edge images
+            // are applied downstream in
+            // `boundary_edges_to_pcurve_with_images`, not in the
+            // `boundary_edges` this function receives): expect exactly the
+            // converted-wall shape — one closed NURBS rim at v (bottom/top).
+            // Anything else declines so the caller falls back.
+            if boundary_edges.len() != 4 {
+                decline = Some(Decline::BoundaryLen);
+                return None;
+            }
+            let pieces: Vec<OrientedPCurveEdge> = boundary_edges
+                .iter()
+                .filter(|e| {
+                    [e.start_3d, e.end_3d]
+                        .iter()
+                        .all(|p| (chart_v(*p) - v).abs() <= close_tol)
+                })
+                .cloned()
+                .collect();
+            if pieces.len() != 1 {
+                decline = Some(Decline::RimPieces);
+                return None;
+            }
+            // The single rim piece must be closed (start ≈ end at the seam).
+            if (pieces[0].start_3d - pieces[0].end_3d).length() > close_tol {
+                decline = Some(Decline::RimNotClosed);
+                return None;
+            }
+            // NOTE: the rim's seam vertex is NOT required to equal the ring
+            // seam here — the band emitter splits the rim AT the ring seam
+            // (EF-style split of the rim's fitted curve at the seam point),
+            // so any closed rim at the right height qualifies.
+            Some(pieces)
+        })();
+        if out.is_none() && std::env::var("BK_WALLBAND").is_ok() {
+            let reason = match decline {
+                Some(Decline::BoundaryLen) => {
+                    format!("boundary len {}", boundary_edges.len())
+                }
+                Some(Decline::RimPieces) => "rim pieces != 1".to_string(),
+                Some(Decline::RimNotClosed) => "rim not closed".to_string(),
+                None => "unknown (ring collection)".to_string(),
+            };
+            log::debug!("WALLBAND v={v:.4} decline: {reason}");
+        }
+        out
+    };
+    let bot_loop = match rim_loop_at(v_min) {
+        Some(loop_) => loop_,
+        None => {
+            return None;
+        }
+    };
+    let top_loop = match rim_loop_at(v_max) {
+        Some(loop_) => loop_,
+        None => {
+            return None;
+        }
+    };
+    // Band emission: each band's outer wire is (lower loop pieces) + seam up
+    // + (upper loop pieces, reversed) + seam down. Rim loops are SPLIT at the
+    // ring seam first (EF-style split of the rim's fitted curve at the seam
+    // point — `split_boundary_edges_at_3d_points` handles NURBS sections),
+    // so every level starts/ends at the shared seam vertex — UNLESS the
+    // split point is not interior to the rim (the ring seam is the rim's own
+    // vertex already, or the split fails): then the rim is already a closed
+    // loop usable as-is, and only the CHAINING (start-at-seam) matters.
+    // Interior point from the recovered cylinder at the band's mid-height,
+    // opposite the seam.
+    let seam_pt = rings[0].seam;
+    let split_rim_at_seam = |rim: Vec<OrientedPCurveEdge>| -> Option<Vec<OrientedPCurveEdge>> {
+        debug_assert_eq!(rim.len(), 1);
+        let rim_seam = rim[0].start_3d;
+        if (rim_seam - seam_pt).length() <= close_tol {
+            // Already seamed here: the rim's own vertex IS the shared vertex.
+            return Some(rim);
+        }
+        let split = super::edge_splitting::split_boundary_edges_at_3d_points(
+            rim,
+            std::slice::from_ref(&seam_pt),
+            None,
+            surface,
+            tol,
+        )
+        .ok()?;
+        if split.len() <= 1 {
+            // No interior split (the point was at/near the rim's own vertex):
+            // the rim is already a closed loop; chain it to start at whichever
+            // end is nearer the seam.
+            let mut rim = split;
+            debug_assert_eq!(rim.len(), 1);
+            let e = &mut rim[0];
+            if (e.end_3d - seam_pt).length() < (e.start_3d - seam_pt).length() {
+                std::mem::swap(&mut e.start_3d, &mut e.end_3d);
+                std::mem::swap(&mut e.start_uv, &mut e.end_uv);
+                e.forward = !e.forward;
+            }
+            return Some(rim);
+        }
+        if std::env::var("BK_WALLBAND").is_ok() {
+            log::debug!(
+                "WALLBAND split_rim: out={} seam=({:.3},{:.3},{:.3})",
+                split.len(),
+                seam_pt.x(),
+                seam_pt.y(),
+                seam_pt.z()
+            );
+            for e in &split {
+                log::debug!(
+                    "WALLBAND   {} ({:.3},{:.3},{:.3})->({:.3},{:.3},{:.3})",
+                    e.curve_3d.type_tag(),
+                    e.start_3d.x(),
+                    e.start_3d.y(),
+                    e.start_3d.z(),
+                    e.end_3d.x(),
+                    e.end_3d.y(),
+                    e.end_3d.z()
+                );
+            }
+        }
+        // Re-chain the split pieces starting at the seam vertex.
+        let mut pieces = split;
+        let mut start_idx = None;
+        for (i, e) in pieces.iter().enumerate() {
+            if (e.start_3d - seam_pt).length() <= close_tol {
+                start_idx = Some(i);
+                break;
+            }
+        }
+        let mut chain: Vec<OrientedPCurveEdge> = Vec::with_capacity(pieces.len() + 1);
+        let n = pieces.len();
+        for k in 0..n {
+            let e = pieces.swap_remove(start_idx?);
+            chain.push(e);
+            if k + 1 < n {
+                // Next piece starts where this one ends.
+                let tail = chain.last()?.end_3d;
+                let mut next_idx = None;
+                let mut flip = false;
+                for (i, c) in pieces.iter().enumerate() {
+                    if (c.start_3d - tail).length() <= close_tol {
+                        next_idx = Some(i);
+                        flip = false;
+                        break;
+                    }
+                    if (c.end_3d - tail).length() <= close_tol {
+                        next_idx = Some(i);
+                        flip = true;
+                        break;
+                    }
+                }
+                let mut next = pieces.swap_remove(next_idx?);
+                if flip {
+                    std::mem::swap(&mut next.start_3d, &mut next.end_3d);
+                    std::mem::swap(&mut next.start_uv, &mut next.end_uv);
+                    next.forward = !next.forward;
+                }
+                // Stage it as the next `swap_remove(start_idx)` target.
+                pieces.push(next);
+                start_idx = Some(pieces.len() - 1);
+            }
+        }
+        if (chain.last()?.end_3d - seam_pt).length() > close_tol {
+            return None;
+        }
+        Some(chain)
+    };
+    let Some(bot_loop) = split_rim_at_seam(bot_loop) else {
+        if std::env::var("BK_WALLBAND").is_ok() {
+            log::debug!("WALLBAND declined: bot split_rim_at_seam");
+        }
+        return None;
+    };
+    let Some(top_loop) = split_rim_at_seam(top_loop) else {
+        if std::env::var("BK_WALLBAND").is_ok() {
+            log::debug!("WALLBAND declined: top split_rim_at_seam");
+        }
+        return None;
+    };
+    // Band emission: each band's outer wire is (lower ring BACKWARD) + seam
+    // up + (upper ring FORWARD) + seam down. The two rings oppose, so the
+    // wire covers one turn total (same-direction roles would walk two turns
+    // and double the chart area with the wrong sign — the failure the
+    // WALLORIENT trace caught: 270→630→990, two full turns). Concretely the
+    // wire is: reversed lower loop, seam up, forward upper loop, seam down.
+    // The lower level is negated (its stored direction is the natural/lower
+    // role; the band needs its UPPER role), the upper level is kept as
+    // stored (its LOWER role). Rim loops are single closed edges: negating
+    // means swapping endpoints + forward flag (start/end coincide at the
+    // seam, so only the flag matters for traversal).
+    let mut bands = Vec::with_capacity(rings.len() + 1);
+    // Levels bottom-to-top: bottom rim loop, rings, top rim loop.
+    let mut ordered: Vec<(f64, Vec<OrientedPCurveEdge>)> = Vec::new();
+    ordered.push((v_min, bot_loop));
+    for r in &rings {
+        ordered.push((r.v, vec![r.edge.clone()]));
+    }
+    ordered.push((v_max, top_loop));
+    ordered.sort_by(|a, b| a.0.total_cmp(&b.0));
+    for w in ordered.windows(2) {
+        let (va, lower_pieces) = &w[0];
+        let (vb, upper_pieces) = &w[1];
+        let (va, vb) = (*va, *vb);
+        // Lower ring BACKWARD, upper ring FORWARD (opposed — one turn total).
+        // Only the ENDPOINTS swap (start↔end, both the 3D pair and the UV
+        // pair): the `forward` flag is the section's traversal role, not the
+        // wire direction. Reorder pieces so consecutive pieces join in wire
+        // order: the negated level must END where the seam-up edge begins
+        // (the shared seam vertex). The stored lower loop starts at the seam
+        // and runs +u; negated it must run -u BACK INTO the seam, i.e. the
+        // wire order is the reverse of storage with each piece's endpoints
+        // swapped. `.rev()` + swap does exactly that for any piece count
+        // (for one piece it is just the swap). The earlier no-`.rev()`
+        // variant kept storage order, so the negated level STARTED at the
+        // far side of the seam and the wire jumped the full band height
+        // (the 7.5-unit seam jump the wire-gap probe caught).
+        // (Same-direction roles would walk two turns and double the chart
+        // area with the wrong sign.)
+        let lower_neg: Vec<OrientedPCurveEdge> = lower_pieces
+            .iter()
+            .rev()
+            .map(|e| {
+                let mut n = e.clone();
+                std::mem::swap(&mut n.start_3d, &mut n.end_3d);
+                std::mem::swap(&mut n.start_uv, &mut n.end_uv);
+                n
+            })
+            .collect();
+        // Seam vertex of a level = its wire start. The negated lower loop
+        // starts where the stored loop ended (= the seam, since every loop
+        // is closed at the seam).
+        let (Some(lower_seam), Some(upper_seam)) = (
+            lower_neg.first().map(|e| e.start_3d),
+            upper_pieces.first().map(|e| e.start_3d),
+        ) else {
+            if std::env::var("BK_WALLBAND").is_ok() {
+                log::debug!("WALLBAND declined: empty level wire");
+            }
+            return None;
+        };
+        let Some(seam_up) = mk_seam(lower_seam, upper_seam) else {
+            if std::env::var("BK_WALLBAND").is_ok() {
+                log::debug!("WALLBAND declined: mk_seam failed va={va} vb={vb}");
+            }
+            return None;
+        };
+        let Some(seam_down) = mk_seam(upper_seam, lower_seam) else {
+            if std::env::var("BK_WALLBAND").is_ok() {
+                log::debug!("WALLBAND declined: mk_seam (down) failed va={va} vb={vb}");
+            }
+            return None;
+        };
+        let mut wire: Vec<OrientedPCurveEdge> = lower_neg;
+        wire.push(seam_up);
+        wire.extend(upper_pieces.clone());
+        wire.push(seam_down);
+        let (seam_ang, _) = wall.project_point(lower_seam);
+        let interior = wall.evaluate(seam_ang + std::f64::consts::PI, f64::midpoint(va, vb));
+        bands.push(SplitSubFace {
+            surface: surface.clone(),
+            outer_wire: wire,
+            inner_wires: Vec::new(),
+            reversed,
+            parent: face_id,
+            rank,
+            precomputed_interior: Some(interior),
+        });
+    }
+    Some(bands)
+}
+
 pub(super) fn split_periodic_face_into_bands(
     surface: &FaceSurface,
     boundary_edges: &[OrientedPCurveEdge],
@@ -1298,6 +1824,7 @@ pub(super) fn split_periodic_face_into_bands(
     let ref_tan = traversal_tangent(bot_edge)?;
 
     // Collect section circles with their v and natural-direction alignment.
+    #[allow(clippy::items_after_statements)]
     struct BandCircle {
         v: f64,
         lower: OrientedPCurveEdge,
@@ -2469,8 +2996,10 @@ pub(super) fn split_face_with_internal_loops(
 
         // Build the outside sub-face's hole: the merged union outline when
         // this loop consumed an overlapping pre-existing hole, otherwise the
-        // reversed loop.
-        let hole: Vec<OrientedPCurveEdge> = if let Some(u) = union_hole_by_loop[li].take() {
+        // reversed loop. The reversal opposes the disc's winding (hole opposes
+        // outer, per the B-rep convention the validator enforces: a shared
+        // edge must be used once forward and once reversed).
+        let mut hole: Vec<OrientedPCurveEdge> = if let Some(u) = union_hole_by_loop[li].take() {
             // Normalize to hole winding: effective-CW about the effective
             // normal, i.e. stored CW (positive trapezoid area) for an
             // unreversed parent, stored CCW for a reversed one.
@@ -2511,6 +3040,27 @@ pub(super) fn split_face_with_internal_loops(
         if let (Some(first), Some(last)) = (hole.first(), hole.last())
             && (last.end_3d - first.start_3d).length() < tol_3d * 100.0
         {
+            // The hole must oppose the disc: a shared edge used twice in the
+            // same direction fails orientation validation. The reversal above
+            // opposes the disc's normalized winding — except when the disc
+            // normalization already reversed the loop (it enclosed the larger
+            // region): then disc and hole end up same-handed. Detect that on
+            // single-edge circles (multi-edge loops chain by position and
+            // cannot mismatch this way): when the hole's edge direction
+            // matches the disc's, flip the hole back. This is structural
+            // (same-handed loops on the two sub-faces), not diagnostic: the
+            // fuse of a converted barrel with an overlapping slab left its
+            // section disc as a zero-area degenerate (outer and hole the
+            // same circle same-handed), collapsing the whole slab bottom to
+            // 2-triangle walls and losing ~200 units³.
+            if hole.len() == 1 && loop_edges.len() == 1 && hole[0].forward == loop_edges[0].forward
+            {
+                let e = &mut hole[0];
+                std::mem::swap(&mut e.start_uv, &mut e.end_uv);
+                std::mem::swap(&mut e.start_3d, &mut e.end_3d);
+                e.forward = !e.forward;
+                log::debug!("HOLEFLIP face={face_id:?} flipped hole to oppose disc");
+            }
             all_holes.push(hole);
         }
     }
@@ -2593,14 +3143,26 @@ pub(super) fn split_face_with_internal_loops(
     // nearest 3D distance to every hole loop is greatest — guaranteed on the
     // kept wall, away from every lens.
     let mut remainder = remainder;
-    if remainder.precomputed_interior.is_none()
-        && matches!(
-            remainder.surface,
-            FaceSurface::Cylinder(_) | FaceSurface::Cone(_)
+    // A recognized exact-rational cylinder wall carried as NURBS needs the
+    // same off-hole interior as an analytic lateral: the loop is a single
+    // closed fitted edge with a degenerate UV footprint, so the generic UV
+    // hole-avoidance cannot place the remainder's probe. Like the analytic
+    // path, sample the wall chart on a (u, v) grid and pick the point whose
+    // nearest 3D distance to every hole loop is greatest.
+    let remainder_is_wall = matches!(
+        remainder.surface,
+        FaceSurface::Cylinder(_) | FaceSurface::Cone(_)
+    ) || matches!(&remainder.surface, FaceSurface::Nurbs(nurbs)
+        if crate::pave_filler::helpers::rational_cylinder_wall(
+            nurbs,
+            remus_math::tolerance::Tolerance::new(),
         )
+        .is_some());
+    if remainder.precomputed_interior.is_none()
+        && remainder_is_wall
         && !remainder.inner_wires.is_empty()
     {
-        remainder.precomputed_interior = cylinder_cone_remainder_interior(&remainder);
+        remainder.precomputed_interior = converted_wall_remainder_interior(&remainder);
     }
     if matches!(remainder.surface, FaceSurface::Torus(_))
         && remainder.outer_wire.iter().all(|edge| {
@@ -3129,6 +3691,176 @@ fn chain_single_closed_loop(
         }
     }
     ((chain.last()?.end_3d - start).length() < close).then_some(chain)
+}
+
+/// Interior point on a converted-wall remainder face that carries a CURVED
+/// hole loop (the transverse section ring where an analytic tool slices the
+/// wall).
+///
+/// Same role as [`cylinder_cone_remainder_interior`] for analytic laterals:
+/// the loop is a single closed fitted edge with a degenerate UV footprint,
+/// so the generic UV hole-avoidance cannot place the remainder's probe.
+/// Samples the wall chart on a (u, v) grid — u over the chart period (1.0
+/// for the `to_nurbs` wall chart, via [`surface_periods`]), v over the
+/// boundary's chart span — and returns the 3D point whose minimum distance
+/// to every hole loop is largest. `None` keeps the caller's unset interior.
+///
+/// Gated to recognized exact-rational walls at the call site; every other
+/// NURBS face keeps its previous handling.
+pub fn converted_wall_remainder_interior(remainder: &SplitSubFace) -> Option<Point3> {
+    let FaceSurface::Nurbs(nurbs) = &remainder.surface else {
+        return None;
+    };
+    let wall = crate::pave_filler::helpers::rational_cylinder_wall(
+        nurbs,
+        remus_math::tolerance::Tolerance::new(),
+    )?;
+    let (u_period, _) = super::super::pcurve_compute::surface_periods(&remainder.surface);
+    let period = u_period.unwrap_or(1.0);
+    // Hole loops in 3D + chart segments for the containment test. Chart u
+    // comes from the recovered cylinder's angle normalized into [0, period);
+    // v is the axial coordinate. Both are exact — no Newton projection.
+    let chart_uv = |p: Point3| -> (f64, f64) {
+        let (u_ang, v_ax) = wall.project_point(p);
+        (
+            u_ang.rem_euclid(std::f64::consts::TAU) / std::f64::consts::TAU * period,
+            v_ax,
+        )
+    };
+    let mut hole_pts: Vec<Point3> = Vec::new();
+    let mut hole_segs: Vec<(f64, f64, f64, f64)> = Vec::new();
+    let n = 48;
+    for hole in &remainder.inner_wires {
+        let mut prev_uv: Option<(f64, f64)> = None;
+        for edge in hole {
+            let (t0, t1) = edge.domain();
+            for k in 0..=n {
+                #[allow(clippy::cast_precision_loss)]
+                let t = t0 + (t1 - t0) * (k as f64 / f64::from(n));
+                let p = edge
+                    .curve_3d
+                    .evaluate_with_endpoints(t, edge.start_3d, edge.end_3d);
+                hole_pts.push(p);
+                let (u, v) = chart_uv(p);
+                if let Some((pu, pv)) = prev_uv {
+                    // Unwrap u relative to the previous sample so a
+                    // seam-crossing step is one continuous segment.
+                    let wrapped_delta = (u - pu).rem_euclid(period) - period * 0.5;
+                    let wrapped_delta = if wrapped_delta < -period * 0.5 {
+                        wrapped_delta + period
+                    } else {
+                        wrapped_delta
+                    };
+                    let u_unwrapped = pu + wrapped_delta;
+                    let (a_u, a_v, b_u, b_v) = if pu <= u_unwrapped {
+                        (pu, pv, u_unwrapped, v)
+                    } else {
+                        (u_unwrapped, v, pu, pv)
+                    };
+                    hole_segs.push((a_u, a_v, b_u, b_v));
+                }
+                prev_uv = Some((u, v));
+            }
+        }
+    }
+    if hole_pts.is_empty() {
+        return None;
+    }
+    // Axial extent the boundary actually covers, from exact chart v.
+    // NOTE: the outer wire of a wall remainder is the FULL wall boundary
+    // (bottom rim + seam + top rim + seam), so v spans the whole wall height
+    // INCLUDING the dropped band above the section ring. The grid search
+    // ranges over that whole span and relies on `inside_hole` to exclude the
+    // dropped region — see the search comment below.
+    let mut v_min = f64::INFINITY;
+    let mut v_max = f64::NEG_INFINITY;
+    for e in &remainder.outer_wire {
+        let (t0, t1) = e.domain();
+        for k in 0..=16 {
+            #[allow(clippy::cast_precision_loss)]
+            let t = t0 + (t1 - t0) * (k as f64 / 16.0);
+            let p = e.curve_3d.evaluate_with_endpoints(t, e.start_3d, e.end_3d);
+            let (_, v) = chart_uv(p);
+            v_min = v_min.min(v);
+            v_max = v_max.max(v);
+        }
+    }
+    if !v_min.is_finite() || !v_max.is_finite() || (v_max - v_min) <= 0.0 {
+        return None;
+    }
+    // Even-odd vertical-ray test in chart space, trying every period
+    // translate so a seam-wrapping loop still matches.
+    let inside_hole = |u: f64, v: f64| -> bool {
+        let seg_u_min = hole_segs.iter().map(|s| s.0).fold(f64::INFINITY, f64::min);
+        let seg_u_max = hole_segs
+            .iter()
+            .map(|s| s.2)
+            .fold(f64::NEG_INFINITY, f64::max);
+        if !seg_u_min.is_finite() {
+            return false;
+        }
+        #[allow(clippy::cast_possible_truncation)]
+        let k0 = ((seg_u_min - u) / period).floor() as i64;
+        #[allow(clippy::cast_possible_truncation)]
+        let k1 = ((seg_u_max - u) / period).ceil() as i64;
+        let mut crossings = 0u32;
+        for k in k0..=k1 {
+            #[allow(clippy::cast_precision_loss)]
+            let uu = u + (k as f64) * period;
+            for &(a_u, a_v, b_u, b_v) in &hole_segs {
+                if uu >= a_u && uu < b_u && (b_u - a_u) > 1e-15 {
+                    let t = (uu - a_u) / (b_u - a_u);
+                    if a_v + t * (b_v - a_v) > v {
+                        crossings += 1;
+                    }
+                }
+            }
+        }
+        crossings % 2 == 1
+    };
+    // Grid-search the full chart period × axial span for the wall point
+    // maximising the minimum 3D distance to the hole loops. Candidates are
+    // verified ON the kept remainder (outside every hole): without the
+    // check the max-distance point can sit inside the largest hole region
+    // (farthest from its rim), which is exactly the dropped material — the
+    // remainder then classifies by a point inside the tool and vanishes.
+    // `inside_hole` is the same even-odd chart test the search already uses.
+    let search = |n_u: u32, n_v: u32| -> Option<Point3> {
+        let mut best: Option<(f64, Point3)> = None;
+        for iu in 0..n_u {
+            #[allow(clippy::cast_precision_loss)]
+            let frac_u = f64::from(iu) / f64::from(n_u);
+            for iv in 1..n_v {
+                #[allow(clippy::cast_precision_loss)]
+                let v = v_min + (v_max - v_min) * f64::from(iv) / f64::from(n_v);
+                if inside_hole(frac_u * period, v) {
+                    continue;
+                }
+                let u_ang = frac_u * std::f64::consts::TAU;
+                let p = wall.evaluate(u_ang, v);
+                let min_d = hole_pts
+                    .iter()
+                    .map(|h| (*h - p).length())
+                    .fold(f64::INFINITY, f64::min);
+                if best.is_none_or(|(bd, _)| min_d > bd) {
+                    best = Some((min_d, p));
+                }
+            }
+        }
+        best.map(|(_, p)| p)
+    };
+    let found = search(48, 5).or_else(|| search(256, 17));
+    // Fail closed: verify the winner is really outside every hole (guard
+    // against a containment-test false negative handing back a point in
+    // the dropped region). A rejected winner keeps the caller's unset
+    // interior rather than a wrong probe.
+    found.filter(|p| {
+        let (u_ang, v_ax) = wall.project_point(*p);
+        !inside_hole(
+            u_ang.rem_euclid(std::f64::consts::TAU) / std::f64::consts::TAU * period,
+            v_ax,
+        )
+    })
 }
 
 /// Interior point on a cylinder/cone lateral remainder face that carries
@@ -4610,6 +5342,63 @@ mod tests {
             (p - hole_center).length() > 1.9,
             "interior point must be outside the hole, got dist {}",
             (p - hole_center).length()
+        );
+    }
+
+    #[test]
+    fn converted_wall_remainder_interior_lands_below_a_transverse_section_ring() {
+        // The B-family shape: a `to_nurbs` exact-rational wall (r=5, z∈[0,10])
+        // with a transverse section ring at z=7.5 as its hole. The remainder
+        // probe must land on the wall BELOW the ring (the kept band), never
+        // inside the dropped cap above it.
+        use super::super::super::split_types::SplitSubFace;
+        use crate::ds::Rank;
+        use remus_topology::topology::Topology;
+
+        let mut dummy_topo = Topology::new();
+        let parent = remus_topology::test_utils::make_unit_square_face(&mut dummy_topo);
+
+        let cyl =
+            CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 5.0)
+                .unwrap();
+        let wall = cyl.to_nurbs(0.0, 10.0).unwrap();
+        let surface = FaceSurface::Nurbs(wall);
+
+        // Outer wire: bottom rim (z=0), seam up, top rim (z=10), seam down.
+        let bot = Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 5.0).unwrap();
+        let top =
+            Circle3D::new(Point3::new(0.0, 0.0, 10.0), Vec3::new(0.0, 0.0, 1.0), 5.0).unwrap();
+        let outer = vec![
+            arc_edge(&bot, 0.0, TAU, true),
+            line_chord(Point3::new(5.0, 0.0, 0.0), Point3::new(5.0, 0.0, 10.0)),
+            arc_edge(&top, 0.0, TAU, true),
+            line_chord(Point3::new(5.0, 0.0, 10.0), Point3::new(5.0, 0.0, 0.0)),
+        ];
+
+        // Hole: the transverse section ring at z=7.5.
+        let ring =
+            Circle3D::new(Point3::new(0.0, 0.0, 7.5), Vec3::new(0.0, 0.0, 1.0), 5.0).unwrap();
+        let inner = vec![vec![arc_edge(&ring, 0.0, TAU, true)]];
+
+        let sub = SplitSubFace {
+            surface,
+            outer_wire: outer,
+            inner_wires: inner,
+            reversed: false,
+            parent,
+            rank: Rank::A,
+            precomputed_interior: None,
+        };
+
+        let p = super::converted_wall_remainder_interior(&sub).unwrap();
+        let radial = (p.x() * p.x() + p.y() * p.y()).sqrt();
+        assert!(
+            (radial - 5.0).abs() < 1e-6,
+            "interior point on the wall, got {p:?}"
+        );
+        assert!(
+            p.z() < 7.5 - 1e-6,
+            "interior point must land below the section ring, got {p:?}"
         );
     }
 
