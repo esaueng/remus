@@ -150,14 +150,17 @@ class UbuntuRoutingTests(unittest.TestCase):
                 with self.subTest(file=path.name, job=name):
                     self.assertNotIn("runner.environment != 'self-hosted'", cache)
                     self.assertIn("save-if: ${{ github.ref == 'refs/heads/main' }}", cache)
-                    if name != "platform-test":
-                        guard = "*fleet-isolation" if path.name == "fleet-ci.yml" else "fleet-guard@"
-                        self.assertLess(block.index(guard), block.index("Swatinem/rust-cache@"))
+                    guard = "*fleet-isolation" if path.name == "fleet-ci.yml" else "fleet-guard@"
+                    self.assertLess(block.index(guard), block.index("Swatinem/rust-cache@"))
 
-    def test_macos_stays_required_and_publish_credentials_stay_separate(self):
+    def test_macos_is_disabled(self):
         fleet = jobs((WORKFLOWS / "fleet-ci.yml").read_text())
-        self.assertIn("os: [macos-latest]", fleet["platform-test"])
-        self.assertIn("platform-test", fleet["ci-pass"])
+        self.assertNotIn("platform-test", fleet)
+        self.assertNotIn("platform-test", fleet["ci-pass"])
+        for path in WORKFLOWS.glob("*.yml"):
+            self.assertNotIn("macos-latest", path.read_text(), path.name)
+
+    def test_publish_credentials_stay_separate(self):
         for name, run in (("benchmark", "bench"), ("gauntlet", "run")):
             blocks = jobs((WORKFLOWS / f"fleet-{name}.yml").read_text())
             self.assertIn("contents: read", blocks[run])

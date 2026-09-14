@@ -77,7 +77,7 @@ Approve the exact immutable `fleet-ci.yml` runner-group entry without removing
 existing restrictions. Configure the external controller's selected repository
 identities and dedicated GitHub credential, then validate both hosts. The
 required completion check is `checks / CI Pass`, the existing gate inside the
-reusable suite. It validates every selected job, including macOS, and runs on
+reusable suite. It validates every selected job and runs on
 the selected fleet for eligible events. Review requirements stay unchanged.
 
 Run an authorized real application job on each Jane slot, verify cleanup and
@@ -109,8 +109,8 @@ Cargo Deny uses the same 0.20.2 CLI and all-feature checks directly. OSV uses
 the same 2.5.1 scanner/reporter image, pinned by digest and started with
 `docker run` after the guard. Docker actions would prepare images before the
 empty-Docker check and fail it on an otherwise clean runner.
-The macOS platform job remains hosted and required by `checks / CI Pass`.
-Jane and John cannot replace macOS capacity. Release workflows are unchanged.
+macOS CI tests are temporarily disabled while macOS app development is paused.
+Release workflows are unchanged.
 
 Policy verification: `python3 scripts/test-direct-fleet.py`,
 `python3 scripts/test-owner-pr-routing.py`, the existing owner policy tests,
@@ -161,7 +161,7 @@ kernel PR waits only for the checks that can fail on its diff:
 - **Tier 1** (`heavy`, every source change): Test (clippy, nextest, doc
   tests, complexity guards in one job), Approximation Census, WASM without
   optional I/O. Roughly 12 minutes of runner time.
-- **Tier 2** (`full`): Coverage, macOS, MSRV, Fuzz Targets Compile,
+- **Tier 2** (`full`): Coverage, MSRV, Fuzz Targets Compile,
   Software Rendering, Cargo Deny, Security Audit. Selected for every main
   push, merge group and dispatch, and for a PR only while it carries the
   `ci:full` label (label it, then re-run or push).

@@ -49,7 +49,6 @@ class OwnerRoutingTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertRegex(job(name), r"runs-on: [*&]fleet(?:-light)?-runner")
                 self.assertNotIn("needs.owner-pr.outputs.trusted", job(name))
-        self.assertIn("os: [macos-latest]", job("platform-test"))
         self.assertIn("cargo llvm-cov report --profile ci-test --fail-under-lines 60", job("coverage"))
         self.assertIn("id-token: write", job("coverage"))
         self.assertIn("id-token: write", CALLER)
