@@ -531,6 +531,88 @@ fn collect_face_geoms(topo: &Topology, solid: SolidId) -> Result<Vec<FaceGeom>, 
     for fid in faces {
         let face = topo.face(fid)?;
 
+        // A recognized exact-rational converted cylinder wall classifies
+        // against its recovered analytic cylinder: the wall is geometrically
+        // the cylinder, so the analytic crossing test (with the face's axial
+        // span and hole bands) applies verbatim. The polygon fallback would
+        // chord the wall into a coarse prism and flip parity; the wall is
+        // NOT planar-approximated. The span comes from the boundary samples
+        // projected through the recovered cylinder (exact); hole bands come
+        // from the inner wires the same way. A NURBS outer wire is sampled
+        // densely (16 interior samples, like a closed analytic circle) so
+        // the axial span is not chord-collapsed.
+        if let remus_topology::face::FaceSurface::Nurbs(nurbs) = face.surface()
+            && let Some(wall) = crate::pave_filler::helpers::rational_cylinder_wall(
+                nurbs,
+                remus_math::tolerance::Tolerance::new(),
+            )
+        {
+            let verts = wire_polygon(topo, face.outer_wire())?;
+            if verts.len() >= 3 {
+                let mut v_min = f64::INFINITY;
+                let mut v_max = f64::NEG_INFINITY;
+                for p in &verts {
+                    let (_, v) = wall.project_point(*p);
+                    v_min = v_min.min(v);
+                    v_max = v_max.max(v);
+                }
+                if v_min.is_finite() && v_max > v_min {
+                    let mut hole_bands: Vec<(f64, f64)> = Vec::new();
+                    let mut banded = true;
+                    for &iw in face.inner_wires() {
+                        let pts = wire_polygon(topo, iw)?;
+                        if pts.len() < 3 {
+                            banded = false;
+                            break;
+                        }
+                        let mut h_min = f64::INFINITY;
+                        let mut h_max = f64::NEG_INFINITY;
+                        let mut hu = Vec::with_capacity(pts.len());
+                        for p in &pts {
+                            let (u, v) = wall.project_point(*p);
+                            h_min = h_min.min(v);
+                            h_max = h_max.max(v);
+                            hu.push(u);
+                        }
+                        // The v-band is the hole's AXIAL SPAN only when the
+                        // ring is transverse (near-constant v around the
+                        // loop). Gate the projected span against the loop's
+                        // own axial extent: a transverse ring's v-span IS
+                        // its axial extent, so the check passes; a tilted
+                        // ring's v-span overstates the blocked slab and
+                        // must decline to the polygon path instead of
+                        // miscounting parity.
+                        if !(h_min.is_finite() && h_max > h_min && largest_u_gap(&hu).is_none()) {
+                            banded = false;
+                            break;
+                        }
+                        let (mut zlo, mut zhi) = (f64::INFINITY, f64::NEG_INFINITY);
+                        for p in &pts {
+                            zlo = zlo.min(p.z());
+                            zhi = zhi.max(p.z());
+                        }
+                        if (h_max - h_min) > (zhi - zlo) + 1e-9 {
+                            banded = false;
+                            break;
+                        }
+                        hole_bands.push((h_min, h_max));
+                    }
+                    if banded {
+                        // The wall chart spans the full revolution (the seam
+                        // rows coincide), so there is no angular trim.
+                        result.push(FaceGeom::Cylinder {
+                            surface: wall,
+                            v_min,
+                            v_max,
+                            hole_bands,
+                            u_gap: None,
+                        });
+                        continue;
+                    }
+                }
+            }
+        }
+
         // Full-period cylindrical faces: the outer wire contains a closed
         // circle edge, so the face wraps the entire circumference and the
         // analytic crossing test applies. Inner wires are accepted only when
@@ -761,6 +843,48 @@ fn collect_face_geoms(topo: &Topology, solid: SolidId) -> Result<Vec<FaceGeom>, 
 
         let verts = wire_polygon(topo, face.outer_wire())?;
         if verts.len() < 3 {
+            continue;
+        }
+
+        // A recognized converted wall is NEVER planar-approximated: its
+        // control polygon chords the tube into a coarse prism and parity
+        // flips by construction (the analytic collection above declined
+        // only for a non-banded hole — a tilted ring no v-band can express).
+        // Such a face contributes its boundary polygon with its holes: the
+        // loop vertices lie ON the tube (not chord-collapsed — `wire_polygon`
+        // samples closed NURBS rims densely), so the polygon is a faithful
+        // prism whose parity the planar test gets right for interior probes.
+        if let remus_topology::face::FaceSurface::Nurbs(nurbs) = face.surface()
+            && crate::pave_filler::helpers::rational_cylinder_wall(
+                nurbs,
+                remus_math::tolerance::Tolerance::new(),
+            )
+            .is_some()
+        {
+            let wall_verts = wire_polygon(topo, face.outer_wire())?;
+            if wall_verts.len() < 3 {
+                continue;
+            }
+            let mut wall_holes = Vec::with_capacity(face.inner_wires().len());
+            for &iw in face.inner_wires() {
+                let hole = wire_polygon(topo, iw)?;
+                if hole.len() >= 3 {
+                    wall_holes.push(hole);
+                }
+            }
+            let raw_normal = newell_normal(&wall_verts);
+            let normal = if face.is_reversed() {
+                -raw_normal
+            } else {
+                raw_normal
+            };
+            let d = dot_normal_point(normal, wall_verts[0]);
+            result.push(FaceGeom::Planar {
+                verts: wall_verts,
+                holes: wall_holes,
+                normal,
+                d,
+            });
             continue;
         }
 

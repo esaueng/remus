@@ -482,6 +482,19 @@ pub fn perform_with_context(
                     surf_b.type_tag(),
                     raw_curves.len()
                 );
+                for rc in &raw_curves {
+                    log::debug!(
+                        "RAWC-CURVE {} trim={:?} s=({:.3},{:.3},{:.3}) e=({:.3},{:.3},{:.3})",
+                        rc.curve.type_tag(),
+                        rc.t_range,
+                        rc.p_start.x(),
+                        rc.p_start.y(),
+                        rc.p_start.z(),
+                        rc.p_end.x(),
+                        rc.p_end.y(),
+                        rc.p_end.z()
+                    );
+                }
             }
             // For plane-plane Line curves with all-straight-edge faces, trim
             // each curve to the mutual overlap of the two faces' clipped
@@ -2055,6 +2068,22 @@ fn restrict_curves_to_faces(
         return Ok(raw_curves);
     };
 
+    // A plane slicing a recognized exact-rational cylinder wall meets it in
+    // an exact circle: refit the marched NURBS ring to the plane. The marcher
+    // fits the closed loop through its own sample points (interpolation has
+    // no planarity constraint), so the ring carries the ~5e-5 LSPIA-class
+    // wobble PR #396 names — fifty times the 1e-6 adjacency key and five
+    // hundred times the 1e-7 merge cell — and the two copies of the ring
+    // (wall side, slab-bottom side) quantize to different midpoint cells and
+    // never merge, leaving the cut open. The plane IS the section: projecting
+    // the ring's samples onto it is exact, not a tolerance change.
+    //
+    // Gated to a single closed marched ring on a plane×wall pair whose
+    // samples already hug the plane (a genuine transverse section, not a
+    // grazing contact): anything else keeps its previous handling.
+    let raw_curves =
+        snap_wall_section_rings_to_plane(topo, fa, fb, surf_a, surf_b, raw_curves, tol);
+
     // A pair with a NURBS-polygon extent has no downstream clip of its own:
     // the line clipper is calibrated for plane×plane, and the splitter only
     // trims open sections against PLANE boundaries. Every section on such a
@@ -2298,6 +2327,272 @@ fn restrict_curves_to_faces(
         out.push(raw);
     }
     Ok(out)
+}
+
+/// Exact circle for a plane slicing a recognized converted-cylinder wall.
+///
+/// On a `(Plane, NURBS-wall)` pair the transverse section is geometrically
+/// the plane×recovered-cylinder circle — but the pair routes to the marched
+/// NURBS arm (`analytic_nurbs_intersection` via `plane_nurbs_intersection`),
+/// whose interpolation fit carries the ~5e-5 planarity wobble (PR #396).
+/// That wobble is fifty times the 1e-6 adjacency key, so the wall side's
+/// copy of the ring and the slab side's copy never merge and the cut stays
+/// open. Substituting the EXACT circle (same math as the analytic
+/// plane-cylinder arm, measured against the recovered cylinder) removes the
+/// fit error at the source instead of patching it downstream.
+///
+/// Substitution, not an extra curve: returns `Some` with the single exact
+/// circle, or `None` when the pair is not the gated family (anything else
+/// keeps its previous handling — including the marched path when the exact
+/// solve declines).
+///
+/// Strict gates:
+/// - exactly one of the two faces is a `Plane`, the other a NURBS face the
+///   exact-rational wall recognizer accepts;
+/// - the plane is NOT parallel to the wall axis (transverse; the parallel
+///   case is lines, not a ring — declined);
+/// - the recovered-cylinder solve yields a circle (transverse includes
+///   near-perpendicular; an oblique plane yields an ellipse, which is
+///   returned too — both are exact and both split bands).
+fn exact_wall_section_circle(
+    surf_a: &FaceSurface,
+    surf_b: &FaceSurface,
+    tol: Tolerance,
+) -> Option<RawCurve> {
+    /// Rim seam of a recognized exact-rational wall: the first control point
+    /// of the first row sits on the chart-u seam by `to_nurbs` construction
+    /// (the coincident first/last rows ARE the seam). The section circle is
+    /// transverse (constant height), so the seam vertex at the circle's
+    /// height is the rim-seam point raised along the wall axis to the
+    /// circle's axial level — the vertex the band emitter and the seam
+    /// anchor share, re-derived from the surfaces alone because the FF phase
+    /// cannot reach the builder's wire.
+    ///
+    /// The anchor is only usable when it actually lies ON the circle (radial
+    /// check) — otherwise the re-anchor would drag the wire off its carrier
+    /// and the preflight would reject it. `None` then (caller keeps the
+    /// unanchored circle).
+    fn wall_rim_seam_point(
+        wall: &remus_math::surfaces::CylindricalSurface,
+        nurbs: &remus_math::nurbs::surface::NurbsSurface,
+        circle: &remus_math::curves::Circle3D,
+        tol: Tolerance,
+    ) -> Option<Point3> {
+        let rows = nurbs.control_points();
+        let seam_base = (*rows.first()?).first()?;
+        let (_, circle_v) = wall.project_point(circle.evaluate(0.0));
+        let anchor = wall.evaluate(wall.project_point(*seam_base).0, circle_v);
+        let radial = anchor - circle.center();
+        let on_circle = (radial.length() - circle.radius()).abs() <= tol.linear
+            && radial.dot(circle.normal()).abs() <= tol.linear;
+        on_circle.then_some(anchor)
+    }
+    let (normal, d, wall, wall_nurbs) = match (surf_a, surf_b) {
+        (FaceSurface::Plane { normal, d }, FaceSurface::Nurbs(nurbs)) => (
+            *normal,
+            *d,
+            super::helpers::rational_cylinder_wall(nurbs, tol)?,
+            nurbs,
+        ),
+        (FaceSurface::Nurbs(nurbs), FaceSurface::Plane { normal, d }) => (
+            *normal,
+            *d,
+            super::helpers::rational_cylinder_wall(nurbs, tol)?,
+            nurbs,
+        ),
+        _ => return None,
+    };
+    // Transverse only: a plane parallel to the axis meets the wall in lines.
+    if normal.dot(wall.axis()).abs() < 1e-9 {
+        return None;
+    }
+    let analytic = remus_math::analytic_intersection::AnalyticSurface::Cylinder(&wall);
+    let exact =
+        remus_math::analytic_intersection::exact_plane_analytic_bounded(analytic, normal, d, None)
+            .ok()?;
+    // Exactly one closed ring: a transverse plane meets the cylinder in one
+    // circle (perpendicular) or one ellipse (oblique). Anything else (miss,
+    // tangent point-chains, lines) declines to the marched path.
+    let [one] = exact.as_slice() else {
+        return None;
+    };
+    match one {
+        remus_math::analytic_intersection::ExactIntersectionCurve::Circle(circle) => {
+            // Re-anchor the seam vertex at the wall's own NURBS rim start:
+            // the exact circle's frame is arbitrary (`Frame3::from_normal`),
+            // so its t=0 can sit a quarter turn from the rim seam the band
+            // emitter shares. A circle anchored elsewhere walks the ring
+            // backwards through the shared pool and flips the CDT hole
+            // winding on every face that consumes the section as a hole
+            // (the fuse slab-bottom disc measured -806 instead of +78:
+            // same-handed outer and hole loops, hole never removed).
+            // `new_with_ref` fixes t=0 at the rim seam with no geometric
+            // change (circles are radially symmetric). The rim start is the
+            // NURBS wall's chart-u seam vertex — the same evidence
+            // `seam_anchor_on_wall_circle` uses downstream, re-derived here
+            // because the FF phase cannot reach the builder's face wire.
+            // The stored normal is kept as the exact solver produced it
+            // (about the slab-bottom normal); traversal sense is the
+            // assembler's decision, not the intersection's.
+            let anchored = wall_rim_seam_point(&wall, wall_nurbs, circle, tol)
+                .and_then(|seam| {
+                    remus_math::curves::Circle3D::new_with_ref(
+                        circle.center(),
+                        circle.normal(),
+                        circle.radius(),
+                        seam - circle.center(),
+                    )
+                    .ok()
+                })
+                .unwrap_or_else(|| circle.clone());
+            if std::env::var("BK_RAWC").is_ok() {
+                let probe = anchored.evaluate(0.0);
+                log::debug!(
+                    "WALLSEAM anchored t=0 at ({:.3},{:.3},{:.3})",
+                    probe.x(),
+                    probe.y(),
+                    probe.z()
+                );
+            }
+            let bbox = circle_bbox(&anchored);
+            let domain = (0.0, std::f64::consts::TAU);
+            let p_start = ParametricCurve::evaluate(&anchored, domain.0);
+            let p_end = ParametricCurve::evaluate(&anchored, domain.1);
+            Some(RawCurve {
+                curve: EdgeCurve::Circle(anchored),
+                bbox,
+                t_range: domain,
+                p_start,
+                p_end,
+            })
+        }
+        remus_math::analytic_intersection::ExactIntersectionCurve::Ellipse(ellipse) => {
+            let bbox = ellipse_bbox(ellipse);
+            let domain = (0.0, std::f64::consts::TAU);
+            let p_start = ParametricCurve::evaluate(ellipse, domain.0);
+            let p_end = ParametricCurve::evaluate(ellipse, domain.1);
+            Some(RawCurve {
+                curve: EdgeCurve::Ellipse(ellipse.clone()),
+                bbox,
+                t_range: domain,
+                p_start,
+                p_end,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Snap a marched plane×wall section ring onto its plane.
+///
+/// On a `(Plane, NURBS-wall)` pair a single closed marched NURBS ring is the
+/// transverse section — geometrically a circle IN the plane — but the
+/// interpolation fit carries the marcher's planarity wobble (~5e-5, the PR
+/// #396 fit error). That wobble is fifty times the 1e-6 adjacency key and
+/// five hundred times the 1e-7 merge cell, so the wall side's copy of the
+/// ring and the slab side's copy quantize to different midpoint cells, never
+/// merge, and the cut stays open. Projecting the ring's own samples onto the
+/// plane is exact (the plane IS the section), not a tolerance change: the
+/// refit interpolates the projected samples, so the ring keeps its shape in
+/// the plane and loses only the out-of-plane noise.
+///
+/// Strict gates — anything else returns the input untouched:
+/// - exactly one of the two faces is a `Plane`, the other a NURBS face the
+///   exact-rational wall recognizer accepts;
+/// - exactly one raw curve, a closed marched `NurbsCurve` (endpoints
+///   coincident within linear tolerance);
+/// - every one of 25 samples sits within `tol.linear * 100` of the plane
+///   (a genuine transverse section hugs it; a grazing contact does not).
+#[allow(clippy::items_after_statements)]
+fn snap_wall_section_rings_to_plane(
+    topo: &Topology,
+    fa: FaceId,
+    fb: FaceId,
+    surf_a: &FaceSurface,
+    surf_b: &FaceSurface,
+    raw_curves: Vec<RawCurve>,
+    tol: Tolerance,
+) -> Vec<RawCurve> {
+    let [raw] = raw_curves.as_slice() else {
+        return raw_curves;
+    };
+    if !matches!(raw.curve, EdgeCurve::NurbsCurve(_)) {
+        return raw_curves;
+    }
+    if (raw.p_start - raw.p_end).length() >= tol.linear {
+        return raw_curves;
+    }
+    let (normal, d) = match (surf_a, surf_b) {
+        (FaceSurface::Plane { normal, d }, FaceSurface::Nurbs(nurbs))
+            if super::helpers::rational_cylinder_wall(nurbs, tol).is_some() =>
+        {
+            (*normal, *d)
+        }
+        (FaceSurface::Nurbs(nurbs), FaceSurface::Plane { normal, d })
+            if super::helpers::rational_cylinder_wall(nurbs, tol).is_some() =>
+        {
+            (*normal, *d)
+        }
+        _ => return raw_curves,
+    };
+    // Confirm the ring hugs the plane before touching it: sample the stored
+    // curve (not the endpoints alone) so a grazing arc cannot qualify.
+    // NOTE: samples are the RAW marched points, whose out-of-plane wobble
+    // is exactly what the refit below removes — so the gate must admit the
+    // PR #396 fit error (~5e-5), not just `tol.linear`. Anything beyond
+    // that is not a transverse section and keeps its previous handling.
+    const SNAPS: usize = 25;
+    let mut samples = Vec::with_capacity(SNAPS);
+    for i in 0..SNAPS {
+        #[allow(clippy::cast_precision_loss)]
+        let f = i as f64 / SNAPS as f64;
+        let t = raw.t_range.0 + (raw.t_range.1 - raw.t_range.0) * f;
+        let p = raw.curve.evaluate_with_endpoints(t, raw.p_start, raw.p_end);
+        let signed = normal.dot(p - Point3::new(0.0, 0.0, 0.0)) - d;
+        if !signed.is_finite() || signed.abs() > 1e-4 {
+            return raw_curves;
+        }
+        samples.push(p - normal * signed);
+    }
+    // Refit through the projected samples, closed (first point re-appended).
+    // `interpolate` passes through every point exactly, so the ring is
+    // in-plane to roundoff and keeps its in-plane shape.
+    let mut closed = samples.clone();
+    if let Some(first) = samples.first() {
+        closed.push(*first);
+    }
+    let Ok(fitted) =
+        remus_math::nurbs::fitting::interpolate(&closed, 3.min(closed.len().saturating_sub(1)))
+    else {
+        return raw_curves;
+    };
+    // Verify the refit actually hugs the plane: interpolation through
+    // projected samples should be exact, but a near-singular sample layout
+    // can still wobble. Fail closed (keep the original) over emitting a
+    // ring that does not sit in the section plane.
+    let verify_domain = fitted.domain();
+    for i in 0..=SNAPS {
+        #[allow(clippy::cast_precision_loss)]
+        let f = i as f64 / SNAPS as f64;
+        let t = verify_domain.0 + (verify_domain.1 - verify_domain.0) * f;
+        let p = fitted.evaluate(t);
+        let signed = normal.dot(p - Point3::new(0.0, 0.0, 0.0)) - d;
+        if !signed.is_finite() || signed.abs() > tol.linear {
+            return raw_curves;
+        }
+    }
+    let domain = fitted.domain();
+    let p_start = fitted.evaluate(domain.0);
+    let p_end = fitted.evaluate(domain.1);
+    let bbox = nurbs_curve_bbox(&fitted);
+    let _ = (topo, fa, fb);
+    vec![RawCurve {
+        curve: EdgeCurve::NurbsCurve(fitted),
+        bbox,
+        t_range: domain,
+        p_start,
+        p_end,
+    }]
 }
 
 /// Emit every maximal in-both window of an OPEN section with bisected,
@@ -5072,6 +5367,12 @@ fn compute_raw_curves(
                 (normal.dot(*p - Point3::new(0.0, 0.0, 0.0)) - *d).abs() <= context.tolerance.linear
             }) {
                 Ok(Vec::new())
+            } else if let Some(exact) = exact_wall_section_circle(surf_a, surf_b, context.tolerance)
+            {
+                // A plane slicing a recognized converted-cylinder wall meets
+                // it in an exact circle: substitute it for the marched ring
+                // (see the function docs for why the march is unusable here).
+                Ok(vec![exact])
             } else {
                 plane_nurbs_intersection(*normal, *d, nurbs)
             }

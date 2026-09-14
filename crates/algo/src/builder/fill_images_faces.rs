@@ -531,6 +531,21 @@ pub fn fill_images_faces<S: BuildHasher, S2: BuildHasher>(
 
         if split_results.is_empty() {
             log::warn!("fill_images_faces: split_face_2d returned empty for face {face_id:?}");
+            if std::env::var("BK_WALLBAND").is_ok() {
+                for (si, sec) in sections.iter().enumerate() {
+                    log::debug!(
+                        "WALLBAND empty sec[{si}] {} trim={:?} ({:.4},{:.4},{:.4})->({:.4},{:.4},{:.4})",
+                        sec.curve_3d.type_tag(),
+                        sec.trim,
+                        sec.start.x(),
+                        sec.start.y(),
+                        sec.start.z(),
+                        sec.end.x(),
+                        sec.end.y(),
+                        sec.end.z()
+                    );
+                }
+            }
             let expanded =
                 rebuild_face_with_edge_images(topo, face_id, edge_images).unwrap_or(face_id);
             sub_faces.push(SubFace {
@@ -1316,6 +1331,24 @@ fn compute_seam_anchors(topo: &Topology, arena: &GfaArena) -> BTreeMap<usize, Po
             // periodic in BOTH directions and has no boundary at all: its two
             // seams collapse to a single degenerate vertex, which is still the
             // seam evidence `seam_anchor_on_circle` needs.
+            //
+            // A recognized converted-cylinder wall carried as NURBS seams on
+            // its chart-u boundary (coincident first/last control rows), not
+            // on a Line edge — but the seam evidence is the same shape: the
+            // wall's rim start vertex sits on the seam meridian. Anchor the
+            // exact circle there so the wall side's ring edge and the slab
+            // side's disc edge share endpoint identity (the seam-anchor
+            // pre-pass exists exactly for this pairing).
+            if let FaceSurface::Nurbs(nurbs) = surface
+                && let Some(wall) = crate::pave_filler::helpers::rational_cylinder_wall(
+                    nurbs,
+                    remus_math::tolerance::Tolerance::new(),
+                )
+                && let Some(anchor) = seam_anchor_on_wall_circle(topo, face, circle, &wall)
+            {
+                anchors.insert(idx, anchor);
+                break;
+            }
             if !matches!(
                 surface,
                 FaceSurface::Cylinder(_) | FaceSurface::Cone(_) | FaceSurface::Torus(_)
@@ -1330,6 +1363,36 @@ fn compute_seam_anchors(topo: &Topology, arena: &GfaArena) -> BTreeMap<usize, Po
         }
     }
     anchors
+}
+
+/// Find the point on `circle` at the seam meridian of a recognized converted
+/// wall face: the wall's rim start vertex (a converted-circle NURBS edge
+/// start) sits on the chart-u seam, and the circle point at the same height
+/// on that meridian is the anchor. Returns `None` when the rim start cannot
+/// be read or the seam-meridian point at the circle's height misses the
+/// circle (not a transverse constant-height ring).
+fn seam_anchor_on_wall_circle(
+    topo: &Topology,
+    face: &Face,
+    circle: &remus_math::curves::Circle3D,
+    wall: &remus_math::surfaces::CylindricalSurface,
+) -> Option<Point3> {
+    let wire = topo.wire(face.outer_wire()).ok()?;
+    let rim_start = wire.edges().iter().find_map(|oe| {
+        let edge = topo.edge(oe.edge()).ok()?;
+        if !matches!(edge.curve(), EdgeCurve::NurbsCurve(_)) {
+            return None;
+        }
+        let p = topo.vertex(edge.start()).ok()?.point();
+        Some(p)
+    })?;
+    let (seam_ang, _) = wall.project_point(rim_start);
+    let (_, v_circle) = wall.project_point(circle.evaluate(0.0));
+    let anchor = wall.evaluate(seam_ang, v_circle);
+    let radial = anchor - circle.center();
+    let on_circle = (radial.length() - circle.radius()).abs() < SEAM_ON_CIRCLE_TOL
+        && radial.dot(circle.normal()).abs() < SEAM_ON_CIRCLE_TOL;
+    on_circle.then_some(anchor)
 }
 
 /// Find the point on `circle` at the seam u of `face`'s periodic surface.
@@ -4069,11 +4132,70 @@ fn build_topology_face(
     }
 
     // Step 5: Build face.
-    let mut face = Face::new(wire_id, inner_wire_ids, split.surface.clone());
+    let mut face = Face::new(wire_id, inner_wire_ids.clone(), split.surface.clone());
     if split.reversed {
         face.set_reversed(true);
     }
     let face_id = topo.add_face(face);
+
+    // Carry the face-splitter's pcurves onto the new edges' coedge uses —
+    // but ONLY the seam-unwrapped NURBS-chart ones the converted-wall band
+    // path needs. The tessellator's CDT boundary projects wire points with
+    // raw Newton (which collapses the seam side of a closed wall chart),
+    // while these pcurves were fitted through exact-chart samples unwrapped
+    // to one continuous period copy. Every other pcurve (notably Line2D on
+    // planes, whose arc-length parameterization disagrees with the [0,1]
+    // coedge range the SameParameter proof evaluates) must NOT be carried:
+    // storing it turns a proof the validator can already do into
+    // `same_parameter_proof_unavailable` on all-planar imprint results.
+    // Store via the coedge path (the face's loops exist now that the face
+    // is allocated). A seam edge (two uses on this face) needs the oriented
+    // key — `set_pcurve` would refuse it as ambiguous — so resolve each
+    // use's coedge through the face loops. Failure to store is non-fatal
+    // (CDT falls back to projection).
+    {
+        let wall_pcurves_only = match &split.surface {
+            remus_topology::face::FaceSurface::Nurbs(n) => {
+                crate::pave_filler::helpers::rational_cylinder_wall(
+                    n,
+                    remus_math::tolerance::Tolerance::new(),
+                )
+                .is_some()
+            }
+            _ => false,
+        };
+        if !wall_pcurves_only {
+            return Ok(Some(face_id));
+        }
+        let loops: Vec<remus_topology::face_loop::LoopId> =
+            topo.loops_of_face(face_id).unwrap_or(&[]).to_vec();
+        let mut coedges: Vec<remus_topology::coedge::CoedgeId> = Vec::new();
+        for lid in loops {
+            if let Ok(lp) = topo.face_loop(lid) {
+                coedges.extend(lp.coedges().iter().copied());
+            }
+        }
+        let mut cursor = 0usize;
+        let put = |topo: &mut Topology,
+                   splits: &[super::split_types::OrientedPCurveEdge],
+                   cursor: &mut usize| {
+            for pe in splits {
+                if *cursor >= coedges.len() {
+                    break;
+                }
+                let cid = coedges[*cursor];
+                *cursor += 1;
+                let _ = topo.set_coedge_pcurve(
+                    cid,
+                    remus_topology::pcurve::PCurve::new(pe.pcurve.clone(), 0.0, 1.0),
+                );
+            }
+        };
+        put(topo, &split.outer_wire, &mut cursor);
+        for inner in &split.inner_wires {
+            put(topo, inner, &mut cursor);
+        }
+    }
 
     Ok(Some(face_id))
 }
