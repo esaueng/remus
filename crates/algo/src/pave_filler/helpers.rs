@@ -13,13 +13,24 @@ use remus_topology::vertex::VertexId;
 use crate::ds::{GfaArena, Pave};
 use crate::error::AlgoError;
 
+/// Clamped quarter-arc knots (`to_nurbs` u) and clamped linear knots (v) of
+/// an exact-rational converted cylinder wall.
+const WALL_KNOTS_U: [f64; 12] = [
+    0.0, 0.0, 0.0, 0.25, 0.25, 0.5, 0.5, 0.75, 0.75, 1.0, 1.0, 1.0,
+];
+const WALL_KNOTS_V: [f64; 4] = [0.0, 0.0, 1.0, 1.0];
+
 /// Resolve the stored parameter authority for a topology edge.
 ///
 /// PaveFiller must never reconstruct a curved edge's branch from its endpoint
 /// positions: periodic seams and major/reversed spans are not recoverable from
 /// those points alone. Lines retain their intrinsic endpoint-local `[0, 1]`
 /// domain through [`Edge::strict_domain`].
-pub(super) fn authoritative_edge_domain(
+///
+/// Visible to `crate::builder` and `crate::classifier` alongside the other
+/// helpers in this module (see the `redundant_pub_crate` note on `mod helpers`).
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) fn authoritative_edge_domain(
     edge: &Edge,
     edge_id: EdgeId,
     stage: &'static str,
@@ -175,11 +186,103 @@ pub(super) fn add_pave_to_edge(arena: &mut GfaArena, edge_id: EdgeId, pave: Pave
     }
 }
 
+/// Recognize an exact-rational converted cylinder wall carried as NURBS.
+///
+/// Matches exactly what `CylindricalSurface::to_nurbs` (`math/src/surfaces.rs`)
+/// emits: degree (2, 1), a 9×2 grid, clamped quarter-arc knots in u,
+/// clamped linear knots in v, 1/√2 diagonal weights, coincident seam rows,
+/// parallel ring axes, and one common radius. Returns the recovered
+/// analytic cylinder so callers can measure against it exactly.
+///
+/// Structural gates only — sampled/freeform sheets (cone/sphere/torus
+/// sampled grids, imported freeform) return `None` and keep their previous
+/// handling. In particular the `(9, 2)` grid + `(2, 1)` degree + knot
+/// fingerprint excludes every other `convert_to_bspline` emitter (bilinear
+/// planes are (1,1) 2×2; cone/sphere/torus are 33×9 degree-1 sampled).
+/// Callers must additionally bound the result to the face's trimmed region
+/// (containment/extent); the carrier alone is unbounded in v.
+#[allow(clippy::items_after_statements, clippy::redundant_pub_crate)]
+pub(crate) fn rational_cylinder_wall(
+    nurbs: &remus_math::nurbs::surface::NurbsSurface,
+    tol: Tolerance,
+) -> Option<remus_math::surfaces::CylindricalSurface> {
+    use remus_math::vec::Vec3;
+    if nurbs.degree_u() != 2 || nurbs.degree_v() != 1 {
+        return None;
+    }
+    let cps = nurbs.control_points();
+    if cps.len() != 9 || cps.iter().any(|row| row.len() != 2) {
+        return None;
+    }
+    let ws = nurbs.weights();
+    if ws.len() != 9 || ws.iter().any(|row| row.len() != 2) {
+        return None;
+    }
+    if nurbs.knots_u() != WALL_KNOTS_U || nurbs.knots_v() != WALL_KNOTS_V {
+        return None;
+    }
+    let w1 = std::f64::consts::FRAC_1_SQRT_2;
+    for (i, row) in ws.iter().enumerate() {
+        let expected = if i % 2 == 0 { 1.0 } else { w1 };
+        if (row[0] - expected).abs() > 1e-12
+            || (row[1] - expected).abs() > 1e-12
+            || (row[0] - row[1]).abs() > 1e-12
+        {
+            return None;
+        }
+    }
+    // Closed seam: first and last rows coincide (same gate `is_periodic_u`
+    // uses, tightened to the caller's linear tolerance).
+    if (cps[0][0] - cps[8][0]).length() > tol.linear
+        || (cps[0][1] - cps[8][1]).length() > tol.linear
+    {
+        return None;
+    }
+    // All nine ring axes parallel: the v-direction column of every row.
+    let mut axis_sum = Vec3::new(0.0, 0.0, 0.0);
+    for row in cps {
+        let v = row[1] - row[0];
+        let len = v.length();
+        if !len.is_finite() || len <= tol.linear {
+            return None;
+        }
+        axis_sum += v * (1.0 / len);
+    }
+    let axis = axis_sum.normalize().ok()?;
+    // Ring centre from the four cardinal bottom points; common radius.
+    let bot = {
+        let (mut sx, mut sy, mut sz) = (0.0, 0.0, 0.0);
+        for i in [0, 2, 4, 6] {
+            sx += cps[i][0].x();
+            sy += cps[i][0].y();
+            sz += cps[i][0].z();
+        }
+        Point3::new(sx / 4.0, sy / 4.0, sz / 4.0)
+    };
+    let mut radius = 0.0;
+    for i in [0, 2, 4, 6] {
+        radius += ((cps[i][0] - bot) - axis * axis.dot(cps[i][0] - bot)).length();
+    }
+    radius /= 4.0;
+    if !radius.is_finite() || radius <= tol.linear {
+        return None;
+    }
+    // Every cardinal bottom point sits on the recovered cylinder.
+    for i in [0, 2, 4, 6] {
+        let radial = (cps[i][0] - bot) - axis * axis.dot(cps[i][0] - bot);
+        if (radial.length() - radius).abs() > tol.linear {
+            return None;
+        }
+    }
+    remus_math::surfaces::CylindricalSurface::new(bot, axis, radius).ok()
+}
+
 /// The plane a NURBS surface lies in when its whole control net is coplanar
 /// within `tol.linear` — a rational surface never leaves the convex hull of
 /// its net, so coplanar control points certify a planar surface exactly.
 /// `None` for a genuinely curved net or for anything but a NURBS.
-pub(super) fn planar_nurbs_as_plane(surface: &FaceSurface, tol: Tolerance) -> Option<FaceSurface> {
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) fn planar_nurbs_as_plane(surface: &FaceSurface, tol: Tolerance) -> Option<FaceSurface> {
     let FaceSurface::Nurbs(nurbs) = surface else {
         return None;
     };

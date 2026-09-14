@@ -89,6 +89,16 @@ pub fn build_solids_with_origins(
         return Err(AlgoError::AssemblyFailed("no faces selected".into()));
     }
     log::debug!("BuilderSolid: {} faces selected", selected.len());
+    if std::env::var("BK_FACES").is_ok() {
+        for sf in selected {
+            log::debug!(
+                "SELECTED face={:?} src={:?} reversed={}",
+                sf.face_id,
+                sf.source_face,
+                sf.reversed
+            );
+        }
+    }
 
     // Step 0: Create reversed copies for Cut B-faces
     let mut face_ids: Vec<FaceId> = Vec::with_capacity(selected.len());
@@ -118,6 +128,14 @@ pub fn build_solids_with_origins(
         sources.push(Some(sf.source_face));
     }
 
+    // BK_FACES=3 dumps after EVERY assembly step (sliver, zero-len, weld,
+    // collinear, arc-split, merge, doubled, spur, cap) to find the step that
+    // creates a stray face.
+    let trace_steps = std::env::var("BK_FACES").is_ok_and(|v| v == "3");
+    if trace_steps {
+        dump_face_wires(topo, &face_ids, "FACES step00-selected");
+    }
+
     // Step 0a-pre: Drop degenerate sliver faces — all-Line outer wires with
     // fewer than 3 distinct vertex positions enclose zero area (e.g. a loft
     // band built over a duplicated profile point, giving [e, e-reversed]).
@@ -132,11 +150,17 @@ pub fn build_solids_with_origins(
             "all faces degenerate slivers".into(),
         ));
     }
+    if trace_steps {
+        dump_face_wires(topo, &face_ids, "FACES step01-sliver");
+    }
 
     // Step 0a-pre2: Strip zero-length Line edges from wires (duplicated
     // input vertices produce them; their twin lives only on the degenerate
     // slivers removed above, so they would survive as free edges).
     remove_zero_length_edges(topo, &mut face_ids)?;
+    if trace_steps {
+        dump_face_wires(topo, &face_ids, "FACES step02-zerolen");
+    }
 
     // Step 0a-pre3: Weld vertices that are coincident within snap tolerance.
     // Intersection in the pavefiller can place a vertex a few ULPs short of an
@@ -147,6 +171,9 @@ pub fn build_solids_with_origins(
     // them to one canonical vertex (and dropping the resulting zero-length
     // slivers) lets the merge below see identical partitions.
     weld_coincident_vertices(topo, &mut face_ids, lineage)?;
+    if trace_steps {
+        dump_face_wires(topo, &face_ids, "FACES step03-weld");
+    }
 
     // Step 0a: Split Line edges at intermediate collinear vertices.
     // Adjacent faces can partition the same geometric boundary differently
@@ -154,12 +181,18 @@ pub fn build_solids_with_origins(
     // Line edge against the global vertex set gives both sides identical
     // partitions so the merge below can unify them.
     split_edges_at_collinear_vertices(topo, &mut face_ids, lineage)?;
+    if trace_steps {
+        dump_face_wires(topo, &face_ids, "FACES step04-collinear");
+    }
 
     // Step 0a2: The same refinement for curved (Circle/Ellipse) rims. A
     // coincident rounded corner can arrive split at a seam vertex on one
     // operand but whole on the other; splitting each arc at the global vertex
     // set lets the merge below unify the shared rim.
     split_arc_edges_at_collinear_vertices(topo, &mut face_ids, lineage)?;
+    if trace_steps {
+        dump_face_wires(topo, &face_ids, "FACES step05-arcsplit");
+    }
 
     // Step 0b: Merge duplicate edges across selected faces.
     // Faces from different input solids may have separate edge entities for the
@@ -167,6 +200,13 @@ pub fn build_solids_with_origins(
     // the BuilderSolid's connectivity flood-fill sees shared edges.
     // This is operation-safe: only operates on BOP-selected faces.
     merge_duplicate_edges(topo, &mut face_ids)?;
+    // BK_FACES=1 dumps the selected faces' wires after the merge (edge IDs +
+    // curve kinds + endpoints) for diagnosing lost/shared-edge defects.
+    // BK_FACES=2 dumps the same AFTER spur-excise + normalize (the result
+    // faces' actual wires).
+    if std::env::var("BK_FACES").is_ok() {
+        dump_face_wires(topo, &face_ids, "FACES post-merge");
+    }
 
     // Step 0b2: Drop doubled faces — two (or more) selected faces whose outer
     // wires reference the identical set of (merged) edge entities. Such faces
@@ -177,6 +217,12 @@ pub fn build_solids_with_origins(
     // incident to 3+ faces (non-manifold). Removing the whole group is sound:
     // coincident faces with one identical boundary cancel.
     remove_doubled_faces(topo, &mut face_ids, &mut sources);
+    if trace_steps {
+        dump_face_wires(topo, &face_ids, "FACES step06-doubled");
+    }
+    if trace_steps {
+        dump_face_wires(topo, &face_ids, "FACES step06-doubled");
+    }
 
     // Step 0b3: Excise out-and-back spurs — the same edge traversed forward
     // then immediately backward is a zero-width excursion contributing two
@@ -185,6 +231,12 @@ pub fn build_solids_with_origins(
     // changes the enclosed region. A face whose outer wire collapses below
     // 3 edges was ONLY the excursion (a slit) and is dropped entirely.
     excise_out_and_back_spurs(topo, &mut face_ids, &mut sources);
+    if std::env::var("BK_FACES").is_ok_and(|v| v == "2") {
+        dump_face_wires(topo, &face_ids, "FACES post-spur");
+    }
+    if trace_steps {
+        dump_face_wires(topo, &face_ids, "FACES step07-spur");
+    }
 
     if face_ids.is_empty() {
         return Err(AlgoError::AssemblyFailed(
@@ -199,6 +251,9 @@ pub fn build_solids_with_origins(
     // free edges where the larger face's overhang remainder should be. Cap each
     // such loop with a planar face that reuses the existing edges.
     cap_partial_overlap_free_loops(topo, &mut face_ids, &mut sources, cap_planes)?;
+    if trace_steps {
+        dump_face_wires(topo, &face_ids, "FACES step08-cap");
+    }
 
     // Snapshot provenance now that face_ids / sources are final and parallel:
     // map each result-bound face to the input face it derives from (None for a
@@ -208,6 +263,53 @@ pub fn build_solids_with_origins(
         .copied()
         .zip(sources.iter().copied())
         .collect();
+    if std::env::var("BK_FACES").is_ok_and(|v| v == "3") {
+        // Pre-assemble wire dump WITH vertex IDs: catches a face whose wire
+        // references a different vertex than its twin (merge-key split).
+        for &fid in &face_ids {
+            let Ok(face) = topo.face(fid) else {
+                continue;
+            };
+            for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+            {
+                let Ok(wire) = topo.wire(wid) else {
+                    continue;
+                };
+                let mut parts = Vec::new();
+                for oe in wire.edges() {
+                    let Ok(edge) = topo.edge(oe.edge()) else {
+                        continue;
+                    };
+                    parts.push(format!(
+                        "{:?}{} {:?}->{:?}",
+                        oe.edge(),
+                        if oe.is_forward() { "+" } else { "-" },
+                        edge.start(),
+                        edge.end()
+                    ));
+                }
+                log::debug!(
+                    "FACES pre-assemble-vids face={fid:?} wire={wid:?} [{}]",
+                    parts.join(" ")
+                );
+            }
+        }
+    }
+    if std::env::var("BK_FACES").is_ok_and(|v| v == "3") {
+        let mut rows: Vec<(usize, usize)> = face_ids
+            .iter()
+            .zip(sources.iter())
+            .map(|(f, s)| {
+                (
+                    f.index(),
+                    s.map(remus_topology::arena::Id::index)
+                        .unwrap_or(usize::MAX),
+                )
+            })
+            .collect();
+        rows.sort_unstable();
+        log::debug!("FACES pre-assemble face_ids={rows:?}");
+    }
 
     // Phase 2: Build shells via connectivity flood-fill
     let shells = perform_loops(topo, &face_ids)?;
@@ -282,13 +384,28 @@ pub(super) fn orient_revolved_face_wires(
         }
         let (surface, outer, inners) = {
             let face = topo.face(face_id)?;
+            // A recognized converted-cylinder wall carried as NURBS gets the
+            // same outer-wire repair as an analytic lateral: the band emitter
+            // builds geometric loops whose orientation follows construction
+            // order, not the stored-normal convention. The chart area comes
+            // from the recovered cylinder's exact (angle, axial) chart (see
+            // `wall_wire_chart_area`), not the NURBS Newton projection.
+            // Inner wires: wall bands carry none (bands are emitted without
+            // holes), so no inner-wire repair is needed for walls.
+            let is_wall = matches!(face.surface(), FaceSurface::Nurbs(nurbs)
+                if crate::pave_filler::helpers::rational_cylinder_wall(
+                    nurbs,
+                    remus_math::tolerance::Tolerance::new(),
+                )
+                .is_some());
             if !matches!(
                 face.surface(),
                 FaceSurface::Cylinder(_)
                     | FaceSurface::Cone(_)
                     | FaceSurface::Sphere(_)
                     | FaceSurface::Torus(_)
-            ) {
+            ) && !is_wall
+            {
                 continue;
             }
             (
@@ -307,6 +424,19 @@ pub(super) fn orient_revolved_face_wires(
         } else if matches!(surface, FaceSurface::Cylinder(_) | FaceSurface::Cone(_))
             && let Some(area) = revolved_wire_uv_area(topo, outer, &surface)?
         {
+            if area < 0.0 {
+                (reverse_wire(topo, outer)?, true)
+            } else {
+                (outer, false)
+            }
+        } else if matches!(surface, FaceSurface::Nurbs(_))
+            && let Some(area) = wall_wire_chart_area(topo, outer, &surface)?
+        {
+            // Same convention as the analytic laterals: negative chart area
+            // reverses. BK_WALLORIENT=1 dumps the chart area per wall face.
+            if std::env::var("BK_WALLORIENT").is_ok() {
+                log::debug!("WALLORIENT face={face_id:?} chart_area={area:.4}");
+            }
             if area < 0.0 {
                 (reverse_wire(topo, outer)?, true)
             } else {
@@ -336,7 +466,16 @@ pub(super) fn orient_revolved_face_wires(
             let (inner, inner_changed) = orient_wire_to_surface(topo, inners[0], &surface, false)?;
             changed |= inner_changed;
             oriented_inners.push(inner);
-        } else if !inners.is_empty() {
+        } else if !inners.is_empty() && !matches!(surface, FaceSurface::Plane { .. })
+        // Planar inner wires (holes) arrive with the B-rep-correct
+        // opposite-handed winding from the face splitter (the disc/hole
+        // opposition the validator enforces). The UV-area comparison
+        // below cannot read a planar hole: `revolved_wire_uv_area`
+        // returns None for planes, so `(None, None)` never matches the
+        // same-sign arm and the hole survives — EXCEPT the comparison
+        // is skipped entirely here; keep planar holes exactly as the
+        // splitter built them.
+        {
             let outer_area = revolved_wire_uv_area(topo, oriented_outer, &surface)?;
             for &inner in &inners {
                 let inner_area = revolved_wire_uv_area(topo, inner, &surface)?;
@@ -545,6 +684,94 @@ fn revolved_wire_uv_area(
         return Ok(None);
     }
     // Translate before summing to avoid cancellation on axially translated parts.
+    let origin = uv[0];
+    let area: f64 = uv
+        .windows(2)
+        .map(|pair| {
+            let a = pair[0] - origin;
+            let b = pair[1] - origin;
+            a.x() * b.y() - b.x() * a.y()
+        })
+        .sum();
+    let magnitude: f64 = uv
+        .windows(2)
+        .map(|pair| {
+            let a = pair[0] - origin;
+            let b = pair[1] - origin;
+            (a.x() * b.y()).abs() + (b.x() * a.y()).abs()
+        })
+        .sum();
+    Ok((area.abs() > remus_math::tolerance::Tolerance::new().relative * magnitude).then_some(area))
+}
+
+/// Signed chart area of a wire on a recognized converted-cylinder wall.
+///
+/// Same role as [`revolved_wire_uv_area`] for analytic laterals, but the
+/// chart is the recovered cylinder's exact (angle, axial) projection — the
+/// NURBS surface's own Newton projection is unusable here (it falls back to
+/// the domain midpoint on convergence failure, collapsing the loop). The
+/// angle is unwrapped against the predecessor (nearest period copy), and a
+/// loop whose unwrapped end does not rejoin its start declines (None), like
+/// the analytic path's period-closure check. The angle runs the same way as
+/// the analytic cylinder u (both from the same recovered cylinder), so the
+/// sign convention matches the analytic arm: negative reverses.
+fn wall_wire_chart_area(
+    topo: &Topology,
+    wire_id: WireId,
+    surface: &FaceSurface,
+) -> Result<Option<f64>, AlgoError> {
+    use remus_math::vec::Point2;
+    let FaceSurface::Nurbs(nurbs) = surface else {
+        return Ok(None);
+    };
+    let Some(wall) = crate::pave_filler::helpers::rational_cylinder_wall(
+        nurbs,
+        remus_math::tolerance::Tolerance::new(),
+    ) else {
+        return Ok(None);
+    };
+    let mut points = Vec::new();
+    for oriented in topo.wire(wire_id)?.edges() {
+        let edge = topo.edge(oriented.edge())?;
+        let domain = edge.strict_domain().map_err(|error| {
+            AlgoError::AssemblyFailed(format!("cannot orient wall wire: {error}"))
+        })?;
+        super::pcurve_compute::sample_edge_uniform(
+            edge.curve(),
+            topo.vertex(edge.start())?.point(),
+            topo.vertex(edge.end())?.point(),
+            domain,
+            32,
+            oriented.is_forward(),
+            &mut points,
+        );
+    }
+    if points.len() < 3 {
+        return Ok(None);
+    }
+    // Exact chart projection, then the shared period-unwrap (period TAU —
+    // the wall chart angle is the cylinder angle, same as the analytic u).
+    // Do NOT hand-roll the unwrap: the shared helper rounds multi-period
+    // jumps, which a folded walk needs (a single ±period step mis-unwraps a
+    // wire that mixes period copies and the band loop measures ~zero area
+    // with the wrong sign — the failure this repair exists to prevent).
+    let mut uv: Vec<Point2> = points
+        .iter()
+        .map(|p| {
+            let (u, v) = wall.project_point(*p);
+            Point2::new(u, v)
+        })
+        .collect();
+    if std::env::var("BK_WALLORIENT").is_ok() {
+        let raw: Vec<(f64, f64)> = uv.iter().map(|p| (p.x().to_degrees(), p.y())).collect();
+        log::debug!("WALLORIENT raw uv (deg) = {raw:.1?}");
+    }
+    uv.push(uv[0]);
+    super::pcurve_compute::unwrap_periodic_params_pub(&mut uv, Some(std::f64::consts::TAU), None);
+    if std::env::var("BK_WALLORIENT").is_ok() {
+        let unw: Vec<(f64, f64)> = uv.iter().map(|p| (p.x().to_degrees(), p.y())).collect();
+        log::debug!("WALLORIENT unwrapped uv (deg) = {unw:.1?}");
+    }
     let origin = uv[0];
     let area: f64 = uv
         .windows(2)
@@ -2012,6 +2239,9 @@ fn assemble_regions(
     for &fid in &all_faces {
         normalize_face_wires(topo, fid);
     }
+    if std::env::var("BK_FACES").is_ok_and(|v| v == "3") {
+        dump_face_wires(topo, &all_faces, "FACES step09-normalize");
+    }
 
     // Largest-volume region first preserves the historical primary-solid order
     // and gives callers a deterministic compatibility choice.
@@ -2106,6 +2336,10 @@ fn assemble_regions(
         assigned_holes[region].push(hole.clone());
     }
 
+    if std::env::var("BK_FACES").is_ok_and(|v| v == "3") {
+        let flat: Vec<FaceId> = region_faces.iter().flatten().copied().collect();
+        dump_face_wires(topo, &flat, "FACES step10-regions");
+    }
     let mut solids = Vec::with_capacity(region_faces.len());
     for (faces, holes) in region_faces.into_iter().zip(assigned_holes) {
         let outer_shell = Shell::new(faces)
@@ -2535,6 +2769,28 @@ fn weld_coincident_vertices(
 
     if weld.is_empty() {
         return Ok(());
+    }
+    // BK_WELD=1 dumps the vertex weld map for diagnosing splits that break
+    // band wires (a seam vertex welded onto a rim vertex fragments the seam).
+    if std::env::var("BK_WELD").is_ok() {
+        let mut rows: Vec<(usize, usize, Point3, Point3)> = Vec::new();
+        for (vid, cid) in &weld {
+            if let (Ok(v), Ok(c)) = (topo.vertex(*vid), topo.vertex(*cid)) {
+                rows.push((vid.index(), cid.index(), v.point(), c.point()));
+            }
+        }
+        rows.sort_by_key(|(vid, cid, _, _)| (*vid, *cid));
+        for (vid, cid, vp, cp) in rows {
+            log::debug!(
+                "WELD Id({vid}) -> Id({cid}) ({:.4},{:.4},{:.4}) -> ({:.4},{:.4},{:.4})",
+                vp.x(),
+                vp.y(),
+                vp.z(),
+                cp.x(),
+                cp.y(),
+                cp.z()
+            );
+        }
     }
     let resolve = |vid: VertexId| -> VertexId { weld.get(&vid).copied().unwrap_or(vid) };
 
@@ -3400,6 +3656,150 @@ fn project_angle_on_curve(curve: &remus_topology::edge::EdgeCurve, p: Point3) ->
     }
 }
 
+/// Whether two coincident closed edges traverse their shared ring in opposite
+/// directions, probed by curve tangents AT the shared seam vertex.
+///
+/// Coincident closed curves in one merge group share their seam position, so
+/// opposite tangents there mean opposite traversal — regardless of carrier
+/// type (Circle, Ellipse, NURBS) or parameterization. Each edge's tangent is
+/// evaluated at the seam-vertex parameter on its OWN curve: analytic conics
+/// project the seam point; NURBS edges project via the curve projector and
+/// accept the foot only within the stored trim (a foot outside the trim is a
+/// different branch, not the seam). Returns `None` when either tangent is
+/// near-zero or the seam projection fails — the caller keeps no-flip.
+///
+/// The stored `forward` flag is NOT consulted: it describes the wire's use of
+/// the edge, not the edge's intrinsic traversal, and both faces here may use
+/// their copy forward while the carriers run opposite.
+fn closed_pair_traversal_flipped(
+    topo: &Topology,
+    canonical: remus_topology::edge::EdgeId,
+    dup: remus_topology::edge::EdgeId,
+) -> Option<bool> {
+    use remus_topology::edge::EdgeCurve;
+    let canon_edge = topo.edge(canonical).ok()?;
+    let dup_edge = topo.edge(dup).ok()?;
+    // Shared seam position: the canonical edge's start vertex (start == end
+    // for closed edges; the quantizer already put both edges in one group).
+    let seam = topo.vertex(canon_edge.start()).ok()?.point();
+    let tangent_at_seam = |edge: &remus_topology::edge::Edge| -> Option<Vec3> {
+        match edge.curve() {
+            EdgeCurve::Circle(c) => {
+                let t = c.project(seam);
+                if (c.evaluate(t) - seam).length() > 1e-6 {
+                    return None;
+                }
+                Some(c.tangent(t))
+            }
+            EdgeCurve::Ellipse(e) => {
+                let t = e.project(seam);
+                if (e.evaluate(t) - seam).length() > 1e-6 {
+                    return None;
+                }
+                Some(e.tangent(t))
+            }
+            EdgeCurve::NurbsCurve(n) => {
+                let Ok((t0, t1)) = edge.strict_domain() else {
+                    return None;
+                };
+                let proj =
+                    remus_math::nurbs::projection::project_point_to_curve(n, seam, 1e-7).ok()?;
+                if proj.parameter < t0.min(t1) || proj.parameter > t0.max(t1) {
+                    return None;
+                }
+                if (proj.point - seam).length() > 1e-6 {
+                    return None;
+                }
+                n.tangent(proj.parameter).ok()
+            }
+            _ => None,
+        }
+    };
+    let a = tangent_at_seam(canon_edge)?;
+    let b = tangent_at_seam(dup_edge)?;
+    if a.length() < 1e-12 || b.length() < 1e-12 {
+        return None;
+    }
+    Some(a.dot(b) < 0.0)
+}
+
+/// Project a closed fitted-NURBS ring's midpoint onto its section plane.
+///
+/// A plane×wall transverse section ring is carried as independently fitted
+/// NURBS copies whose midpoints differ by the marcher's planarity wobble —
+/// the midpoint cell in the adjacency key then splits one ring into two
+/// identities. Sampling the ring itself (25 points) and fitting a plane
+/// detects the section plane WITHOUT trusting any face: a genuine section
+/// ring is planar to the fit error (~5e-5), and projecting the midpoint
+/// onto that plane lands both copies in one cell. A non-planar ring keeps
+/// its raw midpoint. Infallible by design — any failure returns the input.
+#[allow(clippy::items_after_statements)]
+fn planarize_closed_ring_midpoint(topo: &Topology, edge_id: EdgeId, midpoint: Point3) -> Point3 {
+    let Ok(edge) = topo.edge(edge_id) else {
+        return midpoint;
+    };
+    if edge.start() != edge.end() {
+        return midpoint;
+    }
+    let EdgeCurve::NurbsCurve(_) = edge.curve() else {
+        return midpoint;
+    };
+    let Ok((t0, t1)) = edge.strict_domain() else {
+        return midpoint;
+    };
+    let Ok(start) = topo
+        .vertex(edge.start())
+        .map(remus_topology::vertex::Vertex::point)
+    else {
+        return midpoint;
+    };
+    let Ok(end) = topo
+        .vertex(edge.end())
+        .map(remus_topology::vertex::Vertex::point)
+    else {
+        return midpoint;
+    };
+    const N: usize = 25;
+    let mut pts = Vec::with_capacity(N);
+    for i in 0..N {
+        #[allow(clippy::cast_precision_loss)]
+        let t = t0 + (t1 - t0) * (i as f64) / (N as f64);
+        pts.push(edge.curve().evaluate_with_endpoints(t, start, end));
+    }
+    // Fit a plane through the centroid: normal = smallest eigenvector of
+    // the covariance via cross-product iteration (3 fixed-point steps from
+    // the Newell normal — enough for a near-planar ring).
+    let mut c = Vec3::new(0.0, 0.0, 0.0);
+    for p in &pts {
+        c += Vec3::new(p.x(), p.y(), p.z());
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let c = c * (1.0 / N as f64);
+    let centroid = Point3::new(c.x(), c.y(), c.z());
+    let mut normal = Vec3::new(0.0, 0.0, 0.0);
+    for w in pts.windows(2) {
+        let a = w[0] - centroid;
+        let b = w[1] - centroid;
+        normal += a.cross(b);
+    }
+    let Ok(n) = normal.normalize() else {
+        return midpoint;
+    };
+    // Gate: every sample must hug the fitted plane within the fit-error
+    // band (1e-4). A non-planar ring (freeform section) keeps its midpoint.
+    if pts.iter().any(|p| {
+        let signed = n.dot(*p - centroid);
+        !signed.is_finite() || signed.abs() > 1e-4
+    }) {
+        return midpoint;
+    }
+    let signed = n.dot(midpoint - centroid);
+    if !signed.is_finite() {
+        return midpoint;
+    }
+    midpoint - n * signed
+}
+
 fn point_on_edge_branch(
     topo: &Topology,
     edge: &remus_topology::edge::Edge,
@@ -3432,6 +3832,97 @@ fn point_on_edge_branch(
         _ => return Ok(false),
     };
     Ok((point - closest).length() <= tol)
+}
+
+/// Dump every face's wires (edge IDs + curve kinds + endpoints) under `label`.
+///
+/// Diagnostic for lost/shared-edge defects; gated by the caller on BK_FACES.
+fn dump_face_wires(topo: &Topology, face_ids: &[FaceId], label: &str) {
+    for &fid in face_ids {
+        let Ok(face) = topo.face(fid) else {
+            continue;
+        };
+        for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+            let Ok(wire) = topo.wire(wid) else {
+                continue;
+            };
+            let mut parts = Vec::new();
+            for oe in wire.edges() {
+                let Ok(edge) = topo.edge(oe.edge()) else {
+                    continue;
+                };
+                let (Ok(sv), Ok(ev)) = (topo.vertex(edge.start()), topo.vertex(edge.end())) else {
+                    continue;
+                };
+                let (sp, ep) = (sv.point(), ev.point());
+                parts.push(format!(
+                    "{:?}{} {} ({:.2},{:.2},{:.2})->({:.2},{:.2},{:.2})",
+                    oe.edge(),
+                    if oe.is_forward() { "+" } else { "-" },
+                    edge.curve().type_tag(),
+                    sp.x(),
+                    sp.y(),
+                    sp.z(),
+                    ep.x(),
+                    ep.y(),
+                    ep.z()
+                ));
+            }
+            log::debug!(
+                "FACES {label} face={fid:?} wire={wid:?} [{}]",
+                parts.join(" ")
+            );
+        }
+    }
+}
+
+/// Whether an edge is a converted-wall rim arc: a NURBS curve whose control
+/// polygon is planar-parallel to a coordinate plane and whose endpoints
+/// coincide (closed rim) or nearly so. Structural gate for the wall-rim
+/// merge fast path in [`merge_duplicate_edges`]: wall rims share the
+/// `to_nurbs` carrier family and quantized endpoints, so same-qpair copies
+/// ARE the same rim and merge directly without midpoint/branch checks (which
+/// compare parameter-speed artefacts, not geometry).
+fn is_wall_rim_edge(edge: &remus_topology::edge::Edge) -> bool {
+    use remus_topology::edge::EdgeCurve;
+    let EdgeCurve::NurbsCurve(curve) = edge.curve() else {
+        return false;
+    };
+    // Closed rim (start == end vertex): the band bottom/top circles.
+    if edge.start() != edge.end() {
+        return false;
+    }
+    // Carrier must look like a wall-chart arc: control points at (nearly)
+    // constant v (one chart row direction). Sample-free check: the control
+    // polygon's bounding box is thin in exactly one axis (the wall axis).
+    let cps = curve.control_points();
+    if cps.is_empty() {
+        return false;
+    }
+    let mut lo = [f64::INFINITY; 3];
+    let mut hi = [f64::NEG_INFINITY; 3];
+    for p in cps {
+        lo[0] = lo[0].min(p.x());
+        lo[1] = lo[1].min(p.y());
+        lo[2] = lo[2].min(p.z());
+        hi[0] = hi[0].max(p.x());
+        hi[1] = hi[1].max(p.y());
+        hi[2] = hi[2].max(p.z());
+    }
+    let ext = [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]];
+    // A rim arc spans the wall diameter in two axes and is thin in the
+    // axial one (fit wobble scale, not a chord scale). BK_WALLRIM=1 dumps
+    // the extents per candidate edge.
+    if std::env::var("BK_WALLRIM").is_ok() {
+        log::debug!(
+            "WALLRIM ncp={} ext=({:.2e},{:.2e},{:.2e})",
+            cps.len(),
+            ext[0],
+            ext[1],
+            ext[2]
+        );
+    }
+    ext.iter().filter(|e| **e < 1e-4).count() == 1 && ext.iter().all(|e| e.is_finite())
 }
 
 /// Merge duplicate edges across selected faces by quantized endpoint position.
@@ -3514,44 +4005,102 @@ fn merge_duplicate_edges(topo: &mut Topology, face_ids: &mut [FaceId]) -> Result
                     {
                         continue;
                     }
-                    let midpoint = |edge: &remus_topology::edge::Edge| {
-                        let (t0, t1) = match edge.strict_domain() {
-                            Ok(domain) => domain,
-                            // Compatibility-only transients that predate stored
-                            // authority retain the historical support+endpoint
-                            // merge. Every new sphere section carries a strict
-                            // range and therefore takes the branch check below.
-                            Err(EdgeDomainError::Missing { .. }) => return Ok(None),
-                            Err(error) => {
-                                return Err(AlgoError::AssemblyFailed(format!(
-                                    "cannot merge curved edge with invalid range: {error}"
-                                )));
-                            }
+                    // NURBS rims of a recognized converted wall: same
+                    // carrier family (the `to_nurbs` wall chart), same
+                    // quantized endpoints — the copies ARE the same rim
+                    // (bottom/top circle split at the same seam vertex by
+                    // weld + band emitter). Midpoint/branch checks below
+                    // would compare parameter-speed artefacts, not geometry;
+                    // skip them and merge directly. Anything else keeps the
+                    // existing checks.
+                    let both_wall_rims = matches!(
+                        (canon_edge.curve(), dup_edge.curve()),
+                        (EdgeCurve::NurbsCurve(_), EdgeCurve::NurbsCurve(_))
+                    ) && is_wall_rim_edge(canon_edge)
+                        && is_wall_rim_edge(dup_edge);
+                    if !both_wall_rims {
+                        let midpoint = |edge: &remus_topology::edge::Edge| {
+                            let (t0, t1) = match edge.strict_domain() {
+                                Ok(domain) => domain,
+                                // Compatibility-only transients that predate stored
+                                // authority retain the historical support+endpoint
+                                // merge. Every new sphere section carries a strict
+                                // range and therefore takes the branch check below.
+                                Err(EdgeDomainError::Missing { .. }) => return Ok(None),
+                                Err(error) => {
+                                    return Err(AlgoError::AssemblyFailed(format!(
+                                        "cannot merge curved edge with invalid range: {error}"
+                                    )));
+                                }
+                            };
+                            let start = topo.vertex(edge.start())?.point();
+                            let end = topo.vertex(edge.end())?.point();
+                            Ok::<Option<Point3>, AlgoError>(Some(
+                                edge.curve().evaluate_with_endpoints(
+                                    t0 + (t1 - t0) * 0.5,
+                                    start,
+                                    end,
+                                ),
+                            ))
                         };
-                        let start = topo.vertex(edge.start())?.point();
-                        let end = topo.vertex(edge.end())?.point();
-                        Ok::<Option<Point3>, AlgoError>(Some(edge.curve().evaluate_with_endpoints(
-                            t0 + (t1 - t0) * 0.5,
-                            start,
-                            end,
-                        )))
-                    };
-                    let canon_midpoint = midpoint(canon_edge)?;
-                    let dup_midpoint = midpoint(dup_edge)?;
-                    if let (Some(canon_midpoint), Some(dup_midpoint)) =
-                        (canon_midpoint, dup_midpoint)
-                        && (canon_midpoint - dup_midpoint).length() > tol
-                    {
-                        // NURBS parameter speed can differ for coincident curves
-                        // (including a spline representing a straight loft rim).
-                        // Compare geometric membership before refusing a merge.
-                        if both_analytic_conics
-                            || !point_on_edge_branch(topo, canon_edge, dup_midpoint, tol)?
-                            || !point_on_edge_branch(topo, dup_edge, canon_midpoint, tol)?
+                        let canon_midpoint = midpoint(canon_edge)?;
+                        let dup_midpoint = midpoint(dup_edge)?;
+                        if let (Some(canon_midpoint), Some(dup_midpoint)) =
+                            (canon_midpoint, dup_midpoint)
+                            && (canon_midpoint - dup_midpoint).length() > tol
                         {
-                            continue;
+                            // NURBS parameter speed can differ for coincident curves
+                            // (including a spline representing a straight loft rim).
+                            // Compare geometric membership before refusing a merge.
+                            //
+                            // Fitted section rings shared with a plane face get a
+                            // wider membership band: a plane×wall transverse
+                            // section is ONE geometric ring carried as two
+                            // independently fitted NURBS copies (one per face),
+                            // and the fits differ by the marcher's planarity
+                            // wobble (~5e-5, the PR #396 fit error) — fifty times
+                            // the 1e-7 merge cell. The copies ARE the same ring
+                            // (same quantized endpoints, both closed), so refusing
+                            // the merge leaves the cut open. The band (1e-4)
+                            // still rejects genuinely distinct branches, which
+                            // sit millimetres apart.
+                            let both_closed_nurbs = matches!(
+                                (canon_edge.curve(), dup_edge.curve()),
+                                (EdgeCurve::NurbsCurve(_), EdgeCurve::NurbsCurve(_))
+                            ) && canon_qs == canon_qe;
+                            let band = if both_closed_nurbs { 1e-4 } else { tol };
+                            let on_branch =
+                                |edge: &remus_topology::edge::Edge,
+                                 point: Point3|
+                                 -> Result<bool, AlgoError> {
+                                    let closest = match edge.curve() {
+                                        EdgeCurve::NurbsCurve(curve) => {
+                                            let Ok((a, b)) = edge.strict_domain() else {
+                                                return Ok(false);
+                                            };
+                                            let projection =
+                                        remus_math::nurbs::projection::project_point_to_curve(
+                                            curve, point, band,
+                                        )?;
+                                            if projection.parameter < a.min(b)
+                                                || projection.parameter > a.max(b)
+                                            {
+                                                return Ok(false);
+                                            }
+                                            projection.point
+                                        }
+                                        _ => return point_on_edge_branch(topo, edge, point, band),
+                                    };
+                                    Ok((point - closest).length() <= band)
+                                };
+                            if both_analytic_conics
+                                || !on_branch(canon_edge, dup_midpoint)?
+                                || !on_branch(dup_edge, canon_midpoint)?
+                            {
+                                continue;
+                            }
                         }
-                    }
+                    } // end non-wall-rim branch checks
                 }
                 let dup_qs = quantize_point(topo.vertex(dup_edge.start())?.point(), tol);
                 let dup_qe = quantize_point(topo.vertex(dup_edge.end())?.point(), tol);
@@ -3577,10 +4126,16 @@ fn merge_duplicate_edges(topo: &mut Topology, face_ids: &mut [FaceId]) -> Result
                         (EdgeCurve::Ellipse(a), EdgeCurve::Ellipse(b)) => {
                             a.normal().dot(b.normal()) < 0.0
                         }
-                        // Mixed or free-form closed pairs: no reliable direction
-                        // probe without a seam-anchored parameterization; keep
-                        // the pre-existing no-flip behavior.
-                        _ => false,
+                        // Mixed analytic/free-form closed pairs (a converted
+                        // wall's NURBS ring vs the exact section circle from
+                        // the FF substitution): no shared parameterization,
+                        // so compare curve tangents AT the shared seam vertex
+                        // instead. Coincident closed curves in one group share
+                        // their seam position, so opposite tangents there mean
+                        // opposite traversal. Tangent direction is meaningless
+                        // for a near-degenerate evaluation — decline the flip
+                        // (keep no-flip) when either tangent is near-zero.
+                        _ => closed_pair_traversal_flipped(topo, canonical, dup).unwrap_or(false),
                     }
                 } else {
                     dup_qs == canon_qe && dup_qe == canon_qs
@@ -3687,6 +4242,94 @@ fn merge_duplicate_edges(topo: &mut Topology, face_ids: &mut [FaceId]) -> Result
         "merge_duplicate_edges: merged {merge_count} duplicate edges across {} faces",
         faces_to_rebuild_sorted.len()
     );
+    // BK_MERGE=1 dumps every replacement (dup → canonical, flip?) for
+    // diagnosing shared-edge orientation defects. BK_MERGE=2 additionally
+    // dumps per-group evidence (qpair members, curve kinds, midpoints) so a
+    // REFUSED merge can be told apart from a never-grouped pair.
+    if std::env::var("BK_MERGE").is_ok() {
+        let mut rows: Vec<(usize, usize, bool)> = replacements
+            .iter()
+            .map(|(dup, (canon, flip))| (dup.index(), canon.index(), *flip))
+            .collect();
+        rows.sort_unstable();
+        for (dup, canon, flip) in rows {
+            log::debug!("MERGE dup=Id({dup}) canon=Id({canon}) flip={flip}");
+        }
+    }
+    if std::env::var("BK_MERGE").is_ok_and(|v| v == "2") {
+        // ALL NURBS edges across the selected faces (not just closed): shows
+        // whether a refused merge or a never-grouped pair is the defect.
+        // NOTE: this runs AFTER replacements were applied, so merged faces
+        // already share edge IDs — pre-merge copies are gone.
+        let mut closed_nurbs: Vec<String> = Vec::new();
+        for (fi, &fid) in face_ids.iter().enumerate() {
+            let Ok(face) = topo.face(fid) else {
+                continue;
+            };
+            for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+            {
+                let Ok(wire) = topo.wire(wid) else {
+                    continue;
+                };
+                for oe in wire.edges() {
+                    let Ok(edge) = topo.edge(oe.edge()) else {
+                        continue;
+                    };
+                    if !matches!(edge.curve(), EdgeCurve::NurbsCurve(_)) {
+                        continue;
+                    }
+                    let (Ok(sv), Ok(ev)) = (topo.vertex(edge.start()), topo.vertex(edge.end()))
+                    else {
+                        continue;
+                    };
+                    closed_nurbs.push(format!(
+                        "{:?}(face{fi}) {} {:?}->{:?} ({:.2},{:.2},{:.2})->({:.2},{:.2},{:.2})",
+                        oe.edge(),
+                        edge.curve().type_tag(),
+                        edge.start(),
+                        edge.end(),
+                        sv.point().x(),
+                        sv.point().y(),
+                        sv.point().z(),
+                        ev.point().x(),
+                        ev.point().y(),
+                        ev.point().z()
+                    ));
+                }
+            }
+        }
+        closed_nurbs.sort();
+        log::debug!("MERGENURBS [{}]", closed_nurbs.join(" | "));
+        for (qpair, edge_ids) in &groups {
+            let mut unique: Vec<EdgeId> = edge_ids.clone();
+            unique.sort_by_key(|e| e.index());
+            unique.dedup();
+            if unique.len() < 2 {
+                continue;
+            }
+            let mut desc = Vec::new();
+            for eid in &unique {
+                let Ok(edge) = topo.edge(*eid) else {
+                    continue;
+                };
+                let (Ok(sv), Ok(ev)) = (topo.vertex(edge.start()), topo.vertex(edge.end())) else {
+                    continue;
+                };
+                let merged = replacements.contains_key(eid);
+                desc.push(format!(
+                    "{eid:?} {} ({:.2},{:.2},{:.2})->({:.2},{:.2},{:.2}) merged={merged}",
+                    edge.curve().type_tag(),
+                    sv.point().x(),
+                    sv.point().y(),
+                    sv.point().z(),
+                    ev.point().x(),
+                    ev.point().y(),
+                    ev.point().z()
+                ));
+            }
+            log::debug!("MERGEGROUP qpair={qpair:?} [{}]", desc.join(" | "));
+        }
+    }
 
     Ok(())
 }
@@ -3937,6 +4580,34 @@ fn edge_adjacency_key(
             "cannot assemble edge with a non-finite carrier midpoint".into(),
         ));
     }
+    // Fitted section rings shared with a plane face quantize their midpoints
+    // into DIFFERENT cells: the two independently fitted NURBS copies differ
+    // by the marcher's planarity wobble (~5e-5, the PR #396 fit error) —
+    // fifty times the 1e-7 merge cell — so the midpoint key splits ONE
+    // geometric ring into two identities and the cut never closes. Project
+    // the midpoint of a closed NURBS edge onto its plane when the whole
+    // ring hugs one (a transverse plane×wall section): the projection is
+    // exact (the plane IS the section), not a tolerance change, and both
+    // copies land in the same cell. Non-planar rings keep the raw midpoint.
+    // BK_MIDPOINT=1 dumps the raw vs planarized midpoint per closed NURBS edge.
+    let midpoint = match midpoint {
+        Some(point) if matches!(edge.curve(), EdgeCurve::NurbsCurve(_)) => {
+            let planar = planarize_closed_ring_midpoint(topo, edge_id, point);
+            if std::env::var("BK_MIDPOINT").is_ok() {
+                log::debug!(
+                    "MIDPOINT edge={edge_id:?} raw=({:.6},{:.6},{:.6}) planar=({:.6},{:.6},{:.6})",
+                    point.x(),
+                    point.y(),
+                    point.z(),
+                    planar.x(),
+                    planar.y(),
+                    planar.z()
+                );
+            }
+            Some(planar)
+        }
+        other => other,
+    };
     Ok((
         EdgeAdjacencyKey {
             endpoints,

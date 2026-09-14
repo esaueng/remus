@@ -15,10 +15,11 @@ use super::mesh_ops::{
     dedupe_coincident_triangles, fill_sub_deflection_triangular_gaps, weld_boundary_vertices,
 };
 use super::nonplanar::{
-    tessellate_cone_apex_fan_shared, tessellate_latitude_band_shared, tessellate_nonplanar_cdt,
-    tessellate_nonplanar_snap, tessellate_nurbs_blend_band_shared,
-    tessellate_nurbs_pole_cap_shared, tessellate_revolution_band_shared,
-    tessellate_sphere_cap_shared, tessellate_torus_notch_band, tessellate_torus_two_rim_band,
+    tessellate_cone_apex_fan_shared, tessellate_converted_wall_band_shared,
+    tessellate_latitude_band_shared, tessellate_nonplanar_cdt, tessellate_nonplanar_snap,
+    tessellate_nurbs_blend_band_shared, tessellate_nurbs_pole_cap_shared,
+    tessellate_revolution_band_shared, tessellate_sphere_cap_shared, tessellate_torus_notch_band,
+    tessellate_torus_two_rim_band,
 };
 use super::nurbs::{compute_angular_range, compute_v_param_range};
 use super::planar::{
@@ -851,6 +852,7 @@ fn tessellate_faces_core(
 
             let (mut all_positions, mut all_global_ids) =
                 collect_wire_global_vertices(wire, &edge_global_indices, &merged.positions, tol);
+
             remove_closing_duplicate_global(
                 &mut all_positions,
                 &mut all_global_ids,
@@ -1309,23 +1311,43 @@ pub(super) fn tessellate_face_with_shared_edges(
             )?;
         }
     } else if matches!(face_data.surface(), FaceSurface::Nurbs(_)) {
-        let handled = tessellate_nurbs_pole_cap_shared(
-            topo,
-            face_data,
-            deflection,
-            angular_tol,
-            edge_global_indices,
-            merged,
-            point_to_global,
-        )? || tessellate_nurbs_blend_band_shared(
-            topo,
-            face_data,
-            deflection,
-            angular_tol,
-            edge_global_indices,
-            merged,
-            point_to_global,
-        )?;
+        // The converted-wall band mesher only fires on the GFA band wire
+        // shape ([closed NURBS rim, Line, closed Circle, Line]); a converted
+        // PRIMITIVE wall (two NURBS rims + two seam lines, no section) must
+        // keep the established CDT path the seam-wall regression test pins.
+        let is_gfa_band = remus_algo::wall_chart(face_data.surface()).is_some_and(|_| {
+            topo.wire(face_data.outer_wire()).is_ok_and(|w| {
+                w.edges().iter().any(|oe| {
+                    topo.edge(oe.edge())
+                        .is_ok_and(|e| matches!(e.curve(), EdgeCurve::Circle(_)))
+                })
+            })
+        });
+        let handled = (is_gfa_band
+            && tessellate_converted_wall_band_shared(
+                topo,
+                face_data,
+                edge_global_indices,
+                merged,
+            )?)
+            || tessellate_nurbs_pole_cap_shared(
+                topo,
+                face_data,
+                deflection,
+                angular_tol,
+                edge_global_indices,
+                merged,
+                point_to_global,
+            )?
+            || tessellate_nurbs_blend_band_shared(
+                topo,
+                face_data,
+                deflection,
+                angular_tol,
+                edge_global_indices,
+                merged,
+                point_to_global,
+            )?;
         if !handled {
             let pos_save = merged.positions.len();
             let nrm_save = merged.normals.len();

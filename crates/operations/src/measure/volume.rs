@@ -1905,13 +1905,63 @@ fn line_circle_cylinder_signed_volume(topo: &Topology, face_id: FaceId) -> Optio
                 circles += 1;
             }
             // Only straight axial segments and coaxial rim circles bound the
-            // line/circle cylinder this integrator is exact for. Ellipse,
-            // hyperbola, parabola, and NURBS rims decline explicitly, so a
-            // future curve variant cannot silently inherit this path.
-            EdgeCurve::Ellipse(_)
-            | EdgeCurve::Hyperbola(_)
-            | EdgeCurve::Parabola(_)
-            | EdgeCurve::NurbsCurve(_) => return None,
+            // line/circle cylinder this integrator is exact for. A closed
+            // NURBS rim on a RECOGNIZED converted wall is the same geometry
+            // (an exact rational circle at constant chart-v): integrate it
+            // through the wall chart instead of declining. Ellipse,
+            // hyperbola, parabola, and unrecognized NURBS decline
+            // explicitly, so a future curve variant cannot silently inherit
+            // this path.
+            //
+            // Chart-v is the knot-domain blend factor bottom→top, NOT model
+            // axial: rescale by the wall's model height (deg-1 linear in v,
+            // so the bottom control row is at v_lo and the top row at v_hi).
+            // The origin-offset terms (ox, oy) vanish for a full turn
+            // (sin/cos integrate to zero over 2π), leaving only the
+            // radius·sweep term — same as the circle arm.
+            EdgeCurve::NurbsCurve(_) => {
+                let wall = remus_algo::wall_chart(face.surface())?;
+                let start = topo.vertex(edge.start()).ok()?.point();
+                if edge.start() != edge.end() {
+                    return None;
+                }
+                let FaceSurface::Nurbs(nurbs) = face.surface() else {
+                    return None;
+                };
+                let wall_rows = nurbs.control_points();
+                if wall_rows.len() < 2 {
+                    return None;
+                }
+                let axis = wall.axis();
+                let p_bot = wall_rows[0][0];
+                let p_top = wall_rows[wall_rows.len() - 1][0];
+                let height = axis.dot(p_top - p_bot);
+                if !height.is_finite() || height.abs() <= tolerance.linear {
+                    return None;
+                }
+                let (v_lo, v_hi) = nurbs.domain_v();
+                let v_span = v_hi - v_lo;
+                if !v_span.is_finite() || v_span <= 0.0 {
+                    return None;
+                }
+                let (_, blend) = remus_algo::wall_chart_uv(&wall, nurbs, start)?;
+                // Axial level in model units from the cylinder origin:
+                // bottom row + blend-fraction of the model height.
+                let bottom_v = axis.dot(p_bot - cylinder.origin());
+                let v = bottom_v + blend / v_span * height;
+                // Full turn in chart-u (period 1.0), signed by wire direction.
+                let sweep = if oriented.is_forward() {
+                    -std::f64::consts::TAU
+                } else {
+                    std::f64::consts::TAU
+                };
+                boundary_integral -= v * sweep * cylinder.radius();
+                signed_chart_area -= v * sweep;
+                circles += 1;
+            }
+            EdgeCurve::Ellipse(_) | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => {
+                return None;
+            }
         }
     }
     if circles == 0 || signed_chart_area.abs() <= tolerance.linear * tolerance.angular {
