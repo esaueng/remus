@@ -49,7 +49,6 @@
 3 crates/operations/src/offset_wire.rs
 4 crates/operations/src/push_pull.rs
 1 crates/operations/src/replace_surface.rs
-10 crates/operations/src/resize_blend.rs
 4 crates/operations/src/revolve.rs
 3 crates/operations/src/sweep.rs
 1 crates/operations/src/tessellate/mesh_ops.rs
