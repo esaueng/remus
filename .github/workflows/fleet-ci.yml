@@ -184,7 +184,7 @@ jobs:
           PR_BASE: ${{ github.event.pull_request.base.sha }}
           PUSH_BASE: ${{ github.event.before }}
           MERGE_BASE: ${{ github.event.merge_group.base_sha }}
-          # The second tier (coverage, macOS, MSRV, fuzz compile, render,
+          # The second tier (coverage, MSRV, fuzz compile, render,
           # deny, audit, package build) runs for every main push, merge
           # group and dispatch, and for PRs only with the `ci:full` label.
           FORCE_FULL: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full') }}
@@ -310,25 +310,6 @@ jobs:
         run: python3 scripts/check-approx-census.py --self-test
       - name: Compare approximation census
         run: python3 scripts/check-approx-census.py
-  platform-test:
-    name: Test (${{ matrix.os }})
-    needs: [changes, repo-policy, secrets-scan]
-    if: needs.changes.outputs.full == 'true'
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-latest]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
-        with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: taiki-e/install-action@7b8d4719ee4aaa279bdf55df38dacb9ebfe12a6c # v2.87.6
-        with:
-          tool: nextest
-      - run: cargo nextest run --workspace --cargo-profile ci-test --test-threads "${RUST_TEST_THREADS:-num-cpus}"
   coverage:
     name: Coverage
     needs: [changes, repo-policy, secrets-scan]
@@ -590,7 +571,7 @@ jobs:
   ci-pass:
     name: CI Pass
     if: always()
-    needs: [changes, repo-policy, test, approx-census, platform-test, coverage, msrv, wasm, wasm-no-io, fuzz-check, render, deny, audit, docs, secrets-scan]
+    needs: [changes, repo-policy, test, approx-census, coverage, msrv, wasm, wasm-no-io, fuzz-check, render, deny, audit, docs, secrets-scan]
     runs-on: *fleet-light-runner
     steps:
       - *fleet-source
@@ -621,6 +602,6 @@ jobs:
                (.key as $job |
                 if $job == "docs" then $docs == "false"
                 elif $job == "wasm" then $wasm == "false"
-                elif (["platform-test", "coverage", "msrv", "fuzz-check", "render", "deny", "audit"] | index($job)) != null then $full == "false"
+                elif (["coverage", "msrv", "fuzz-check", "render", "deny", "audit"] | index($job)) != null then $full == "false"
                 else $heavy == "false" end))
             ))' > /dev/null

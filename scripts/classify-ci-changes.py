@@ -5,7 +5,7 @@ Outputs (all lowercase booleans except ``mode``):
 
 * ``heavy`` — source changed: build, lint, and test the workspace.
 * ``docs`` — documentation changed: build rustdoc and the book.
-* ``full`` — run the second tier (coverage, macOS, MSRV, fuzz compile,
+* ``full`` — run the second tier (coverage, MSRV, fuzz compile,
   render, deny, audit). True only for heavy changes on non-PR events or PRs
   carrying the ``ci:full`` label (``--full``).
 * ``wasm`` — build and validate the distributable WASM packages. True for
