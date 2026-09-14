@@ -14,7 +14,9 @@ arbitrary = {version = "1", features = ["derive"]}
 libfuzzer-sys = {version = "0.4", features = ["arbitrary-derive"]}
 remus-io = {path = "../crates/io"}
 remus-math = {path = "../crates/math"}
+remus-offset = {path = "../crates/offset"}
 remus-operations = {path = "../crates/operations"}
+remus-sketch = {path = "../crates/sketch"}
 remus-topology = {path = "../crates/topology"}
 remus-wasm = {path = "../crates/wasm"}
 serde_json = "1"
@@ -116,3 +118,31 @@ doc = false
 name = "wasm_batch"
 path = "fuzz_targets/wasm_batch.rs"
 test = false
+
+[[bin]]
+bench = false
+doc = false
+name = "tessellation"
+path = "fuzz_targets/tessellation.rs"
+test = true
+
+[[bin]]
+bench = false
+doc = false
+name = "curve_intersection"
+path = "fuzz_targets/curve_intersection.rs"
+test = true
+
+[[bin]]
+bench = false
+doc = false
+name = "offset"
+path = "fuzz_targets/offset.rs"
+test = true
+
+[[bin]]
+bench = false
+doc = false
+name = "gcs"
+path = "fuzz_targets/gcs.rs"
+test = true
