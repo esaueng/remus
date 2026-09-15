@@ -77,9 +77,23 @@ impl GcsSystem {
     }
 
     /// Add a point. Returns its handle.
-    pub fn add_point(&mut self, data: PointData) -> PointId {
+    ///
+    /// # Errors
+    ///
+    /// Returns `SketchError::InvalidValue` if either coordinate is NaN or
+    /// infinite. A poisoned coordinate is not caught downstream — every
+    /// tolerance comparison against NaN is false — so it is rejected here,
+    /// where the bad value is still attributable to the caller's input.
+    ///
+    /// Finite extreme magnitudes (e.g. `1e300`) are accepted: scale handling
+    /// is the solver's job, and rejecting large-but-finite inputs here would
+    /// invent a range contract no caller asked for.
+    pub fn add_point(&mut self, data: PointData) -> Result<PointId, SketchError> {
+        if !data.x.is_finite() || !data.y.is_finite() {
+            return Err(SketchError::InvalidValue);
+        }
         self.dirty = true;
-        self.points.insert(data)
+        Ok(self.points.insert(data))
     }
 
     /// Get a point by handle.
@@ -163,9 +177,14 @@ impl GcsSystem {
     /// # Errors
     ///
     /// Returns `SketchError::InvalidHandle` if the center point handle is invalid.
+    /// Returns `SketchError::InvalidValue` if the radius is NaN, infinite,
+    /// or non-positive.
     pub fn add_circle(&mut self, center: PointId, radius: f64) -> Result<CircleId, SketchError> {
         if !self.points.contains(center) {
             return Err(SketchError::InvalidHandle);
+        }
+        if !(radius.is_finite() && radius > 0.0) {
+            return Err(SketchError::InvalidValue);
         }
         self.dirty = true;
         Ok(self.circles.insert(CircleData { center, radius }))
@@ -274,12 +293,15 @@ impl GcsSystem {
         self.arcs.iter()
     }
 
-    /// Add a constraint. Validates that all referenced entities exist.
+    /// Add a constraint. Validates that all referenced entities exist and
+    /// that every numeric argument is finite (and positive where a positive
+    /// magnitude is required).
     ///
     /// # Errors
     ///
     /// Returns `SketchError::InvalidHandle` if any entity referenced by the
-    /// constraint does not exist.
+    /// constraint does not exist. Returns `SketchError::InvalidValue` if a
+    /// numeric argument is NaN, infinite, or outside its permitted range.
     pub fn add_constraint(&mut self, constraint: Constraint) -> Result<ConstraintId, SketchError> {
         self.validate_constraint(&constraint)?;
         self.dirty = true;
@@ -355,13 +377,15 @@ impl GcsSystem {
             .sum();
 
         if n == 0 {
-            // No free params — just check residuals
+            // No free params — just check residuals. NaN propagates via
+            // `max_abs_residual` so a poisoned value can never read as
+            // converged (see the solver's fold for why a plain max is wrong).
             let snap = self.build_snapshot();
             let mut residuals = Vec::with_capacity(m);
             for (_, entry) in self.constraints.iter() {
                 eval_residuals(&entry.constraint, &snap, &mut residuals);
             }
-            let max_r = residuals.iter().fold(0.0_f64, |a, &b| a.max(b.abs()));
+            let max_r = max_abs_residual(&residuals);
             return Ok(SolveResult {
                 converged: max_r < tolerance,
                 iterations: 0,
@@ -678,24 +702,47 @@ impl GcsSystem {
 
     /// Validate all entity references in a constraint.
     fn validate_constraint(&self, c: &Constraint) -> Result<(), SketchError> {
+        // Every `_` arm below is a finite check on a caller-supplied scalar:
+        // NaN/infinite targets are not caught downstream (a comparison
+        // against NaN is always false), so they are rejected here, where the
+        // bad value is still attributable to the caller's input. Only
+        // `CircleRadius` additionally requires positivity.
         match c {
-            Constraint::Coincident(p1, p2) | Constraint::Distance(p1, p2, _) => {
+            Constraint::Coincident(p1, p2) => {
                 self.check_point(*p1)?;
                 self.check_point(*p2)?;
             }
-            Constraint::PointLineDistance(pt, line, _) => {
+            Constraint::Distance(p1, p2, d) => {
+                self.check_point(*p1)?;
+                self.check_point(*p2)?;
+                if !d.is_finite() {
+                    return Err(SketchError::InvalidValue);
+                }
+            }
+            Constraint::PointLineDistance(pt, line, d) => {
                 self.check_point(*pt)?;
                 self.check_line(*line)?;
+                if !d.is_finite() {
+                    return Err(SketchError::InvalidValue);
+                }
             }
-            Constraint::FixX(p, _) | Constraint::FixY(p, _) => {
+            Constraint::FixX(p, v) | Constraint::FixY(p, v) => {
                 self.check_point(*p)?;
+                if !v.is_finite() {
+                    return Err(SketchError::InvalidValue);
+                }
             }
             Constraint::Horizontal(line) | Constraint::Vertical(line) => {
                 self.check_line(*line)?;
             }
-            Constraint::Angle(l1, l2, _)
-            | Constraint::Perpendicular(l1, l2)
-            | Constraint::Parallel(l1, l2) => {
+            Constraint::Angle(l1, l2, theta) => {
+                self.check_line(*l1)?;
+                self.check_line(*l2)?;
+                if !theta.is_finite() {
+                    return Err(SketchError::InvalidValue);
+                }
+            }
+            Constraint::Perpendicular(l1, l2) | Constraint::Parallel(l1, l2) => {
                 self.check_line(*l1)?;
                 self.check_line(*l2)?;
             }
@@ -725,8 +772,11 @@ impl GcsSystem {
                 self.check_arc(*arc)?;
                 self.check_circle(*circ)?;
             }
-            Constraint::ArcLength(arc, _) => {
+            Constraint::ArcLength(arc, target) => {
                 self.check_arc(*arc)?;
+                if !target.is_finite() {
+                    return Err(SketchError::InvalidValue);
+                }
             }
             Constraint::ConcentricArcArc(arc1, arc2) => {
                 self.check_arc(*arc1)?;
