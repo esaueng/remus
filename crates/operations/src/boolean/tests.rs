@@ -522,6 +522,67 @@ fn cut_overlapping_tool_removes_material_via_gfa() {
     );
 }
 
+/// The multi-region Cut path must not run on a hollow input: `face_components`
+/// walks the outer shell only, and both the per-component split and the
+/// reassembly drop cavity faces, so a hollow solid would silently lose its
+/// void. The gate must keep the cavity (single-shell GFA path) rather than
+/// route through `cut_multi_region_input`.
+///
+/// Fixture: a hollow 3³ block (1³ void) fused with a disjoint solid cube, so
+/// the outer shell has two components while one piece carries a cavity. The
+/// tool overlaps only the plain-cube piece, leaving the hollow piece to be
+/// kept as-is — the configuration that previously dropped the cavity.
+#[test]
+fn cut_multi_region_input_refuses_hollow_target() {
+    let mut topo = Topology::new();
+    let outer = crate::primitives::make_box(&mut topo, 3.0, 3.0, 3.0).unwrap();
+    let void = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+    crate::transform::transform_solid(
+        &mut topo,
+        void,
+        &remus_math::mat::Mat4::translation(1.0, 1.0, 1.0),
+    )
+    .unwrap();
+    let hollow = boolean(&mut topo, BooleanOp::Cut, outer, void).unwrap();
+    assert_eq!(topo.solid(hollow).unwrap().inner_shells().len(), 1);
+    let hollow_volume = crate::measure::solid_volume(&topo, hollow, 0.01).unwrap();
+    assert!(
+        (hollow_volume - 26.0).abs() < 1e-6,
+        "hollow 3³ block with 1³ void must measure 26, got {hollow_volume}"
+    );
+
+    let plain = make_unit_cube_manifold_at(&mut topo, 10.0, 0.0, 0.0);
+    let acc = boolean(&mut topo, BooleanOp::Fuse, hollow, plain).unwrap();
+    assert_eq!(
+        topo.solid(acc).unwrap().inner_shells().len(),
+        1,
+        "accumulator must carry the hollow piece's cavity"
+    );
+    assert_eq!(
+        crate::boolean::assembly::face_components(&topo, acc).len(),
+        2,
+        "accumulator outer shell must have two components"
+    );
+
+    // Tool overlaps only the plain-cube piece (disjoint from the hollow piece).
+    // The permissive context allows the mesh fallback the hollow-piece GFA
+    // configuration needs; the gate under test is the multi-region routing,
+    // not the exact pipeline.
+    let tool = make_unit_cube_manifold_at(&mut topo, 10.5, 0.0, 0.0);
+    let result = boolean_allowing_fallback(&mut topo, BooleanOp::Cut, acc, tool).unwrap();
+    assert_eq!(
+        topo.solid(result).unwrap().inner_shells().len(),
+        1,
+        "multi-region Cut must preserve the hollow piece's cavity"
+    );
+    let vol = crate::measure::solid_volume(&topo, result, 0.01).unwrap();
+    // 26 (hollow) + 1 (plain) - 0.5 (tool overlap) = 26.5.
+    assert!(
+        (vol - 26.5).abs() < 1e-3,
+        "cavity-preserving cut must measure 26.5, got {vol}"
+    );
+}
+
 #[test]
 fn intersect_disjoint_returns_empty() {
     use remus_topology::explorer::solid_faces;
