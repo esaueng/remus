@@ -125,6 +125,20 @@ fn wasm_blend_evolution(
     remus_operations::blend_ops::evolution_from_blend_origins(topo, result, Some(origins), &[])
 }
 
+/// Parse a draft angle in degrees into radians.
+///
+/// All shipped draft entry points (`draft`, batch `draft`, `draftJournaled`,
+/// batch `draftJournaled`) take degrees; the kernel takes radians. Sharing one
+/// parser keeps the units identical by construction instead of by convention.
+///
+/// # Errors
+///
+/// Returns [`WasmError::InvalidInput`] if `angle_degrees` is not finite.
+pub fn parse_draft_angle_radians(angle_degrees: f64) -> Result<f64, WasmError> {
+    validate_finite(angle_degrees, "angle_degrees")?;
+    Ok(angle_degrees.to_radians())
+}
+
 /// Parse a join type string into a [`JoinType`] enum value.
 ///
 /// Used by both the direct WASM binding and the batch dispatcher.
@@ -1436,6 +1450,7 @@ impl BrepKernel {
     /// Apply draft angle to faces of a solid.
     ///
     /// `face_handles` is an array of face handles to draft.
+    /// `angle_degrees` is in degrees, matching the batch `draft` op.
     /// Returns a solid handle.
     ///
     /// # Errors
@@ -1465,7 +1480,7 @@ impl BrepKernel {
         ] {
             validate_finite(value, name)?;
         }
-        validate_finite(angle_degrees, "angle_degrees")?;
+        let angle_radians = parse_draft_angle_radians(angle_degrees)?;
         for (value, name) in [
             (pull_x, "pull_x"),
             (pull_y, "pull_y"),
@@ -1487,7 +1502,7 @@ impl BrepKernel {
             &face_ids,
             Vec3::new(pull_x, pull_y, pull_z),
             Point3::new(neutral_x, neutral_y, neutral_z),
-            angle_degrees.to_radians(),
+            angle_radians,
         )?;
         Ok(solid_id_to_u32(result))
     }
