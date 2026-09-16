@@ -76,6 +76,10 @@ pub mod tessellate;
 
 pub mod assembly;
 pub(crate) mod cap;
+/// Carrier surface shared with sweep/pipe/loft end caps: re-exported so
+/// profile builders (and their fixtures) construct hole loops at exactly
+/// the carrier-evaluated positions the cap certifier requires.
+pub use cap::nonplanar_ring_surface;
 pub mod compound_ops;
 pub mod evolution;
 pub mod journal_ops;
