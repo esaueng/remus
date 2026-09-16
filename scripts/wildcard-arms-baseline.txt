@@ -51,7 +51,6 @@
 4 crates/operations/src/revolve.rs
 3 crates/operations/src/sweep.rs
 1 crates/operations/src/tessellate/mesh_ops.rs
-13 crates/operations/src/tessellate/nonplanar.rs
 1 crates/operations/src/tessellate/solid.rs
 1 crates/operations/src/untrim.rs
 1 crates/topology/src/face.rs
