@@ -21,7 +21,14 @@ fn solve_profile() -> Result<Vec<Point3>, Box<dyn Error>> {
     ];
     let points: Vec<_> = guesses
         .into_iter()
-        .map(|(x, y)| sketch.add_point(PointData { x, y, fixed: false }))
+        .map(|(x, y)| {
+            // Literal example coordinates are finite by construction.
+            #[allow(clippy::expect_used)]
+            let id = sketch
+                .add_point(PointData { x, y, fixed: false })
+                .expect("example coordinates are finite");
+            id
+        })
         .collect();
     let lines = [
         sketch.add_line(points[0], points[1])?,

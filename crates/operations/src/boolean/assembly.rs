@@ -1314,6 +1314,50 @@ pub(super) fn validate_boolean_result_with_tolerance(
         });
     }
 
+    // Orientation sense (H-9b): every edge shared by exactly two faces must
+    // be used once forward and once reversed (RAW wire sense, ignoring the
+    // face's `reversed` flag). Edge-use COUNTS cannot see this — a face
+    // wound the wrong way still uses each edge exactly twice — so a
+    // misoriented result passes every structural gate above with the correct
+    // volume and face count.
+    //
+    // CALIBRATION — READ BEFORE TOUCHING. Three gate shapes were tried
+    // against the boolean suite, and all three misfire:
+    //
+    // 1. Raw same-sense edge pairs (zero threshold): fires on HEALTHY
+    //    results. The correct tray-cut GFA result carries 4 on ordinary
+    //    planar faces (the assembler's `reversed`-face pairing convention);
+    //    57 failures.
+    // 2. Winding-vs-normal disagreement per face: ALSO fires on healthy
+    //    results. The tray-cut target build itself (outer-minus-inner box
+    //    cut, no tool) trips it, and so does the CORRECT torus-notch cut
+    //    below (its kept toroidal band reads dot=-26.6: the chord-sampled
+    //    Newell polygon of a 128-point partial-torus loop disagrees with
+    //    the analytic normal at the centroid — a measurement artifact of
+    //    sampling a curved loop with straight chords, not a misoriented
+    //    face). 45 failures.
+    // 3. The conjunction (pair AND miswound face, torus-scoped): still
+    //    fires on the correct torus-notch cut (8/8 pairs touch the
+    //    dot=-26.6 band). The Newell-vs-normal signal cannot separate the
+    //    H-9b fuse defect (dot=-0.430) from a healthy partial-torus band
+    //    (dot=-26.6) — same sign, larger magnitude on the HEALTHY face.
+    //
+    // The defect class is real (H-9b: torus×box fuse, 7 faces, correct
+    // volume, closed 2-manifold, 4 same-sense shared edges, one face with
+    // dot=-0.430) but this site cannot separate it from the assembler's own
+    // conventions and the Newell-sampling artifact without a per-face
+    // ground truth the validator does not currently provide. So there is
+    // NO orientation gate here by design — not an omission. The H-9b shape
+    // is pinned as a characterization test below (`torus_box_fuse_...`),
+    // and a future ground truth (e.g. UV-space winding, or the signed-volume
+    // orientation probes in `validate.rs`, which integrate rather than
+    // sample chords) should gate here once it separates the two cases.
+    //
+    // What DOES catch orientation problems today: `validate_solid` (winding
+    // Warning + Euler Warning fire on the H-9b shape post-hoc) and the
+    // signed-volume orientation probes. Neither refuses — that refusal is
+    // the missing piece, tracked by H-9b rather than implemented here.
+
     Ok(())
 }
 
