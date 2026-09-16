@@ -6,11 +6,13 @@ const TOL: f64 = 1e-10;
 #[test]
 fn fix_xy_converges() {
     let mut sys = GcsSystem::new();
-    let p = sys.add_point(PointData {
-        x: 5.0,
-        y: 7.0,
-        fixed: false,
-    });
+    let p = sys
+        .add_point(PointData {
+            x: 5.0,
+            y: 7.0,
+            fixed: false,
+        })
+        .expect("test coordinates are finite");
     sys.add_constraint(Constraint::FixX(p, 2.0)).unwrap();
     sys.add_constraint(Constraint::FixY(p, 3.0)).unwrap();
 
@@ -24,16 +26,20 @@ fn fix_xy_converges() {
 #[test]
 fn distance_constraint() {
     let mut sys = GcsSystem::new();
-    let p0 = sys.add_point(PointData {
-        x: 0.0,
-        y: 0.0,
-        fixed: true,
-    });
-    let p1 = sys.add_point(PointData {
-        x: 0.5,
-        y: 0.0,
-        fixed: false,
-    });
+    let p0 = sys
+        .add_point(PointData {
+            x: 0.0,
+            y: 0.0,
+            fixed: true,
+        })
+        .expect("test coordinates are finite");
+    let p1 = sys
+        .add_point(PointData {
+            x: 0.5,
+            y: 0.0,
+            fixed: false,
+        })
+        .expect("test coordinates are finite");
     sys.add_constraint(Constraint::Distance(p0, p1, 3.0))
         .unwrap();
 
@@ -51,16 +57,20 @@ fn distance_constraint() {
 #[test]
 fn coincident_constraint() {
     let mut sys = GcsSystem::new();
-    let p0 = sys.add_point(PointData {
-        x: 1.0,
-        y: 2.0,
-        fixed: true,
-    });
-    let p1 = sys.add_point(PointData {
-        x: 3.0,
-        y: 4.0,
-        fixed: false,
-    });
+    let p0 = sys
+        .add_point(PointData {
+            x: 1.0,
+            y: 2.0,
+            fixed: true,
+        })
+        .expect("test coordinates are finite");
+    let p1 = sys
+        .add_point(PointData {
+            x: 3.0,
+            y: 4.0,
+            fixed: false,
+        })
+        .expect("test coordinates are finite");
     sys.add_constraint(Constraint::Coincident(p0, p1)).unwrap();
 
     let result = sys.solve(100, TOL).unwrap();
@@ -73,16 +83,20 @@ fn coincident_constraint() {
 #[test]
 fn horizontal_line() {
     let mut sys = GcsSystem::new();
-    let p0 = sys.add_point(PointData {
-        x: 0.0,
-        y: 1.0,
-        fixed: true,
-    });
-    let p1 = sys.add_point(PointData {
-        x: 5.0,
-        y: 3.0,
-        fixed: false,
-    });
+    let p0 = sys
+        .add_point(PointData {
+            x: 0.0,
+            y: 1.0,
+            fixed: true,
+        })
+        .expect("test coordinates are finite");
+    let p1 = sys
+        .add_point(PointData {
+            x: 5.0,
+            y: 3.0,
+            fixed: false,
+        })
+        .expect("test coordinates are finite");
     let l = sys.add_line(p0, p1).unwrap();
     sys.add_constraint(Constraint::Horizontal(l)).unwrap();
 
@@ -94,16 +108,20 @@ fn horizontal_line() {
 #[test]
 fn vertical_line() {
     let mut sys = GcsSystem::new();
-    let p0 = sys.add_point(PointData {
-        x: 2.0,
-        y: 0.0,
-        fixed: true,
-    });
-    let p1 = sys.add_point(PointData {
-        x: 5.0,
-        y: 7.0,
-        fixed: false,
-    });
+    let p0 = sys
+        .add_point(PointData {
+            x: 2.0,
+            y: 0.0,
+            fixed: true,
+        })
+        .expect("test coordinates are finite");
+    let p1 = sys
+        .add_point(PointData {
+            x: 5.0,
+            y: 7.0,
+            fixed: false,
+        })
+        .expect("test coordinates are finite");
     let l = sys.add_line(p0, p1).unwrap();
     sys.add_constraint(Constraint::Vertical(l)).unwrap();
 
@@ -115,26 +133,34 @@ fn vertical_line() {
 #[test]
 fn perpendicular_lines() {
     let mut sys = GcsSystem::new();
-    let p0 = sys.add_point(PointData {
-        x: 0.0,
-        y: 0.0,
-        fixed: true,
-    });
-    let p1 = sys.add_point(PointData {
-        x: 1.0,
-        y: 0.0,
-        fixed: true,
-    });
-    let p2 = sys.add_point(PointData {
-        x: 0.0,
-        y: 0.0,
-        fixed: true,
-    });
-    let p3 = sys.add_point(PointData {
-        x: 0.5,
-        y: 0.5,
-        fixed: false,
-    });
+    let p0 = sys
+        .add_point(PointData {
+            x: 0.0,
+            y: 0.0,
+            fixed: true,
+        })
+        .expect("test coordinates are finite");
+    let p1 = sys
+        .add_point(PointData {
+            x: 1.0,
+            y: 0.0,
+            fixed: true,
+        })
+        .expect("test coordinates are finite");
+    let p2 = sys
+        .add_point(PointData {
+            x: 0.0,
+            y: 0.0,
+            fixed: true,
+        })
+        .expect("test coordinates are finite");
+    let p3 = sys
+        .add_point(PointData {
+            x: 0.5,
+            y: 0.5,
+            fixed: false,
+        })
+        .expect("test coordinates are finite");
     let l1 = sys.add_line(p0, p1).unwrap();
     let l2 = sys.add_line(p2, p3).unwrap();
     sys.add_constraint(Constraint::Perpendicular(l1, l2))
@@ -150,26 +176,34 @@ fn perpendicular_lines() {
 #[test]
 fn parallel_lines() {
     let mut sys = GcsSystem::new();
-    let p0 = sys.add_point(PointData {
-        x: 0.0,
-        y: 0.0,
-        fixed: true,
-    });
-    let p1 = sys.add_point(PointData {
-        x: 1.0,
-        y: 1.0,
-        fixed: true,
-    });
-    let p2 = sys.add_point(PointData {
-        x: 2.0,
-        y: 0.0,
-        fixed: true,
-    });
-    let p3 = sys.add_point(PointData {
-        x: 3.0,
-        y: 0.5,
-        fixed: false,
-    });
+    let p0 = sys
+        .add_point(PointData {
+            x: 0.0,
+            y: 0.0,
+            fixed: true,
+        })
+        .expect("test coordinates are finite");
+    let p1 = sys
+        .add_point(PointData {
+            x: 1.0,
+            y: 1.0,
+            fixed: true,
+        })
+        .expect("test coordinates are finite");
+    let p2 = sys
+        .add_point(PointData {
+            x: 2.0,
+            y: 0.0,
+            fixed: true,
+        })
+        .expect("test coordinates are finite");
+    let p3 = sys
+        .add_point(PointData {
+            x: 3.0,
+            y: 0.5,
+            fixed: false,
+        })
+        .expect("test coordinates are finite");
     let l1 = sys.add_line(p0, p1).unwrap();
     let l2 = sys.add_line(p2, p3).unwrap();
     sys.add_constraint(Constraint::Parallel(l1, l2)).unwrap();
@@ -187,26 +221,34 @@ fn parallel_lines() {
 fn rectangle_30x20() {
     let mut sys = GcsSystem::new();
 
-    let p0 = sys.add_point(PointData {
-        x: 0.0,
-        y: 0.0,
-        fixed: false,
-    });
-    let p1 = sys.add_point(PointData {
-        x: 25.0,
-        y: 1.0,
-        fixed: false,
-    });
-    let p2 = sys.add_point(PointData {
-        x: 26.0,
-        y: 18.0,
-        fixed: false,
-    });
-    let p3 = sys.add_point(PointData {
-        x: 1.0,
-        y: 17.0,
-        fixed: false,
-    });
+    let p0 = sys
+        .add_point(PointData {
+            x: 0.0,
+            y: 0.0,
+            fixed: false,
+        })
+        .expect("test coordinates are finite");
+    let p1 = sys
+        .add_point(PointData {
+            x: 25.0,
+            y: 1.0,
+            fixed: false,
+        })
+        .expect("test coordinates are finite");
+    let p2 = sys
+        .add_point(PointData {
+            x: 26.0,
+            y: 18.0,
+            fixed: false,
+        })
+        .expect("test coordinates are finite");
+    let p3 = sys
+        .add_point(PointData {
+            x: 1.0,
+            y: 17.0,
+            fixed: false,
+        })
+        .expect("test coordinates are finite");
 
     let bottom = sys.add_line(p0, p1).unwrap();
     let right = sys.add_line(p1, p2).unwrap();
@@ -258,11 +300,13 @@ fn rectangle_30x20() {
 #[test]
 fn dof_analysis() {
     let mut sys = GcsSystem::new();
-    let p = sys.add_point(PointData {
-        x: 0.0,
-        y: 0.0,
-        fixed: false,
-    });
+    let p = sys
+        .add_point(PointData {
+            x: 0.0,
+            y: 0.0,
+            fixed: false,
+        })
+        .expect("test coordinates are finite");
 
     // Free point: 2 DOF
     let dof = sys.dof();
@@ -287,16 +331,20 @@ fn dof_analysis() {
 #[test]
 fn remove_point_in_use_fails() {
     let mut sys = GcsSystem::new();
-    let p0 = sys.add_point(PointData {
-        x: 0.0,
-        y: 0.0,
-        fixed: false,
-    });
-    let p1 = sys.add_point(PointData {
-        x: 1.0,
-        y: 0.0,
-        fixed: false,
-    });
+    let p0 = sys
+        .add_point(PointData {
+            x: 0.0,
+            y: 0.0,
+            fixed: false,
+        })
+        .expect("test coordinates are finite");
+    let p1 = sys
+        .add_point(PointData {
+            x: 1.0,
+            y: 0.0,
+            fixed: false,
+        })
+        .expect("test coordinates are finite");
     let _l = sys.add_line(p0, p1).unwrap();
 
     assert!(sys.remove_point(p0).is_err());
@@ -305,16 +353,20 @@ fn remove_point_in_use_fails() {
 #[test]
 fn remove_line_in_use_fails() {
     let mut sys = GcsSystem::new();
-    let p0 = sys.add_point(PointData {
-        x: 0.0,
-        y: 0.0,
-        fixed: false,
-    });
-    let p1 = sys.add_point(PointData {
-        x: 1.0,
-        y: 0.0,
-        fixed: false,
-    });
+    let p0 = sys
+        .add_point(PointData {
+            x: 0.0,
+            y: 0.0,
+            fixed: false,
+        })
+        .expect("test coordinates are finite");
+    let p1 = sys
+        .add_point(PointData {
+            x: 1.0,
+            y: 0.0,
+            fixed: false,
+        })
+        .expect("test coordinates are finite");
     let l = sys.add_line(p0, p1).unwrap();
     sys.add_constraint(Constraint::Horizontal(l)).unwrap();
 
@@ -324,11 +376,13 @@ fn remove_line_in_use_fails() {
 #[test]
 fn stale_constraint_handle() {
     let mut sys = GcsSystem::new();
-    let p = sys.add_point(PointData {
-        x: 0.0,
-        y: 0.0,
-        fixed: false,
-    });
+    let p = sys
+        .add_point(PointData {
+            x: 0.0,
+            y: 0.0,
+            fixed: false,
+        })
+        .expect("test coordinates are finite");
     let c = sys.add_constraint(Constraint::FixX(p, 0.0)).unwrap();
     sys.remove_constraint(c).unwrap();
     assert!(sys.remove_constraint(c).is_err());
@@ -337,11 +391,13 @@ fn stale_constraint_handle() {
 #[test]
 fn solve_after_removal() {
     let mut sys = GcsSystem::new();
-    let p = sys.add_point(PointData {
-        x: 5.0,
-        y: 7.0,
-        fixed: false,
-    });
+    let p = sys
+        .add_point(PointData {
+            x: 5.0,
+            y: 7.0,
+            fixed: false,
+        })
+        .expect("test coordinates are finite");
     let _cx = sys.add_constraint(Constraint::FixX(p, 2.0)).unwrap();
     let cy = sys.add_constraint(Constraint::FixY(p, 3.0)).unwrap();
 
@@ -359,11 +415,13 @@ fn solve_after_removal() {
 #[test]
 fn add_constraint_with_invalid_handle_fails() {
     let mut sys = GcsSystem::new();
-    let p = sys.add_point(PointData {
-        x: 0.0,
-        y: 0.0,
-        fixed: false,
-    });
+    let p = sys
+        .add_point(PointData {
+            x: 0.0,
+            y: 0.0,
+            fixed: false,
+        })
+        .expect("test coordinates are finite");
     sys.remove_point(p).unwrap();
     assert!(sys.add_constraint(Constraint::FixX(p, 0.0)).is_err());
 }
@@ -371,21 +429,27 @@ fn add_constraint_with_invalid_handle_fails() {
 #[test]
 fn triangle_345() {
     let mut sys = GcsSystem::new();
-    let p0 = sys.add_point(PointData {
-        x: 0.0,
-        y: 0.0,
-        fixed: true,
-    });
-    let p1 = sys.add_point(PointData {
-        x: 1.0,
-        y: 0.0,
-        fixed: false,
-    });
-    let p2 = sys.add_point(PointData {
-        x: 0.5,
-        y: 1.0,
-        fixed: false,
-    });
+    let p0 = sys
+        .add_point(PointData {
+            x: 0.0,
+            y: 0.0,
+            fixed: true,
+        })
+        .expect("test coordinates are finite");
+    let p1 = sys
+        .add_point(PointData {
+            x: 1.0,
+            y: 0.0,
+            fixed: false,
+        })
+        .expect("test coordinates are finite");
+    let p2 = sys
+        .add_point(PointData {
+            x: 0.5,
+            y: 1.0,
+            fixed: false,
+        })
+        .expect("test coordinates are finite");
 
     let bottom = sys.add_line(p0, p1).unwrap();
     sys.add_constraint(Constraint::Horizontal(bottom)).unwrap();
@@ -411,16 +475,20 @@ fn triangle_345() {
 #[test]
 fn fixed_points_no_solve_needed() {
     let mut sys = GcsSystem::new();
-    let p0 = sys.add_point(PointData {
-        x: 0.0,
-        y: 0.0,
-        fixed: true,
-    });
-    let p1 = sys.add_point(PointData {
-        x: 1.0,
-        y: 0.0,
-        fixed: true,
-    });
+    let p0 = sys
+        .add_point(PointData {
+            x: 0.0,
+            y: 0.0,
+            fixed: true,
+        })
+        .expect("test coordinates are finite");
+    let p1 = sys
+        .add_point(PointData {
+            x: 1.0,
+            y: 0.0,
+            fixed: true,
+        })
+        .expect("test coordinates are finite");
     sys.add_constraint(Constraint::Distance(p0, p1, 1.0))
         .unwrap();
 
@@ -432,21 +500,27 @@ fn fixed_points_no_solve_needed() {
 #[test]
 fn add_arc_basic() {
     let mut sys = GcsSystem::new();
-    let c = sys.add_point(PointData {
-        x: 0.0,
-        y: 0.0,
-        fixed: true,
-    });
-    let s = sys.add_point(PointData {
-        x: 1.0,
-        y: 0.0,
-        fixed: false,
-    });
-    let e = sys.add_point(PointData {
-        x: 0.0,
-        y: 1.0,
-        fixed: false,
-    });
+    let c = sys
+        .add_point(PointData {
+            x: 0.0,
+            y: 0.0,
+            fixed: true,
+        })
+        .expect("test coordinates are finite");
+    let s = sys
+        .add_point(PointData {
+            x: 1.0,
+            y: 0.0,
+            fixed: false,
+        })
+        .expect("test coordinates are finite");
+    let e = sys
+        .add_point(PointData {
+            x: 0.0,
+            y: 1.0,
+            fixed: false,
+        })
+        .expect("test coordinates are finite");
     let arc = sys.add_arc(c, s, e).unwrap();
     assert_eq!(sys.arc_count(), 1);
     let data = sys.arc(arc).unwrap();
@@ -458,21 +532,27 @@ fn add_arc_basic() {
 #[test]
 fn remove_arc_cleans_up() {
     let mut sys = GcsSystem::new();
-    let c = sys.add_point(PointData {
-        x: 0.0,
-        y: 0.0,
-        fixed: true,
-    });
-    let s = sys.add_point(PointData {
-        x: 1.0,
-        y: 0.0,
-        fixed: false,
-    });
-    let e = sys.add_point(PointData {
-        x: 0.0,
-        y: 1.0,
-        fixed: false,
-    });
+    let c = sys
+        .add_point(PointData {
+            x: 0.0,
+            y: 0.0,
+            fixed: true,
+        })
+        .expect("test coordinates are finite");
+    let s = sys
+        .add_point(PointData {
+            x: 1.0,
+            y: 0.0,
+            fixed: false,
+        })
+        .expect("test coordinates are finite");
+    let e = sys
+        .add_point(PointData {
+            x: 0.0,
+            y: 1.0,
+            fixed: false,
+        })
+        .expect("test coordinates are finite");
     let arc = sys.add_arc(c, s, e).unwrap();
     let count_before = sys.constraint_count();
     assert!(count_before > 0, "internal constraint should exist");
@@ -487,17 +567,21 @@ fn remove_arc_cleans_up() {
 #[test]
 fn point_on_circle_converges() {
     let mut sys = GcsSystem::new();
-    let center = sys.add_point(PointData {
-        x: 0.0,
-        y: 0.0,
-        fixed: true,
-    });
+    let center = sys
+        .add_point(PointData {
+            x: 0.0,
+            y: 0.0,
+            fixed: true,
+        })
+        .expect("test coordinates are finite");
     let circ = sys.add_circle(center, 2.0).unwrap();
-    let pt = sys.add_point(PointData {
-        x: 3.0,
-        y: 0.0,
-        fixed: false,
-    });
+    let pt = sys
+        .add_point(PointData {
+            x: 3.0,
+            y: 0.0,
+            fixed: false,
+        })
+        .expect("test coordinates are finite");
     sys.add_constraint(Constraint::PointOnCircle(pt, circ))
         .unwrap();
     let result = sys.solve(100, 1e-10).unwrap();
@@ -513,27 +597,35 @@ fn point_on_circle_converges() {
 #[test]
 fn point_on_arc_converges() {
     let mut sys = GcsSystem::new();
-    let c = sys.add_point(PointData {
-        x: 0.0,
-        y: 0.0,
-        fixed: true,
-    });
-    let s = sys.add_point(PointData {
-        x: 2.0,
-        y: 0.0,
-        fixed: true,
-    });
-    let e = sys.add_point(PointData {
-        x: 0.0,
-        y: 2.0,
-        fixed: false,
-    });
+    let c = sys
+        .add_point(PointData {
+            x: 0.0,
+            y: 0.0,
+            fixed: true,
+        })
+        .expect("test coordinates are finite");
+    let s = sys
+        .add_point(PointData {
+            x: 2.0,
+            y: 0.0,
+            fixed: true,
+        })
+        .expect("test coordinates are finite");
+    let e = sys
+        .add_point(PointData {
+            x: 0.0,
+            y: 2.0,
+            fixed: false,
+        })
+        .expect("test coordinates are finite");
     let arc = sys.add_arc(c, s, e).unwrap();
-    let pt = sys.add_point(PointData {
-        x: 3.0,
-        y: 3.0,
-        fixed: false,
-    });
+    let pt = sys
+        .add_point(PointData {
+            x: 3.0,
+            y: 3.0,
+            fixed: false,
+        })
+        .expect("test coordinates are finite");
     sys.add_constraint(Constraint::PointOnArc(pt, arc)).unwrap();
     let result = sys.solve(100, 1e-10).unwrap();
     assert!(result.converged);
@@ -548,32 +640,42 @@ fn point_on_arc_converges() {
 #[test]
 fn tangent_line_arc_converges() {
     let mut sys = GcsSystem::new();
-    let p0 = sys.add_point(PointData {
-        x: 0.0,
-        y: 0.0,
-        fixed: true,
-    });
-    let p1 = sys.add_point(PointData {
-        x: 2.0,
-        y: 0.0,
-        fixed: true,
-    });
+    let p0 = sys
+        .add_point(PointData {
+            x: 0.0,
+            y: 0.0,
+            fixed: true,
+        })
+        .expect("test coordinates are finite");
+    let p1 = sys
+        .add_point(PointData {
+            x: 2.0,
+            y: 0.0,
+            fixed: true,
+        })
+        .expect("test coordinates are finite");
     let line = sys.add_line(p0, p1).unwrap();
-    let c = sys.add_point(PointData {
-        x: 2.0,
-        y: 1.0,
-        fixed: false,
-    });
-    let s = sys.add_point(PointData {
-        x: 2.0,
-        y: 0.0,
-        fixed: false,
-    });
-    let e = sys.add_point(PointData {
-        x: 3.0,
-        y: 1.0,
-        fixed: false,
-    });
+    let c = sys
+        .add_point(PointData {
+            x: 2.0,
+            y: 1.0,
+            fixed: false,
+        })
+        .expect("test coordinates are finite");
+    let s = sys
+        .add_point(PointData {
+            x: 2.0,
+            y: 0.0,
+            fixed: false,
+        })
+        .expect("test coordinates are finite");
+    let e = sys
+        .add_point(PointData {
+            x: 3.0,
+            y: 1.0,
+            fixed: false,
+        })
+        .expect("test coordinates are finite");
     let arc = sys.add_arc(c, s, e).unwrap();
     sys.add_constraint(Constraint::Coincident(p1, s)).unwrap();
     sys.add_constraint(Constraint::TangentLineArc(line, arc, p1))
@@ -590,37 +692,49 @@ fn tangent_line_arc_converges() {
 #[test]
 fn equal_radius_arc_arc_converges() {
     let mut sys = GcsSystem::new();
-    let c1 = sys.add_point(PointData {
-        x: 0.0,
-        y: 0.0,
-        fixed: true,
-    });
-    let s1 = sys.add_point(PointData {
-        x: 2.0,
-        y: 0.0,
-        fixed: true,
-    });
-    let e1 = sys.add_point(PointData {
-        x: 0.0,
-        y: 2.0,
-        fixed: false,
-    });
+    let c1 = sys
+        .add_point(PointData {
+            x: 0.0,
+            y: 0.0,
+            fixed: true,
+        })
+        .expect("test coordinates are finite");
+    let s1 = sys
+        .add_point(PointData {
+            x: 2.0,
+            y: 0.0,
+            fixed: true,
+        })
+        .expect("test coordinates are finite");
+    let e1 = sys
+        .add_point(PointData {
+            x: 0.0,
+            y: 2.0,
+            fixed: false,
+        })
+        .expect("test coordinates are finite");
     let arc1 = sys.add_arc(c1, s1, e1).unwrap();
-    let c2 = sys.add_point(PointData {
-        x: 5.0,
-        y: 0.0,
-        fixed: true,
-    });
-    let s2 = sys.add_point(PointData {
-        x: 8.0,
-        y: 0.0,
-        fixed: false,
-    });
-    let e2 = sys.add_point(PointData {
-        x: 5.0,
-        y: 3.0,
-        fixed: false,
-    });
+    let c2 = sys
+        .add_point(PointData {
+            x: 5.0,
+            y: 0.0,
+            fixed: true,
+        })
+        .expect("test coordinates are finite");
+    let s2 = sys
+        .add_point(PointData {
+            x: 8.0,
+            y: 0.0,
+            fixed: false,
+        })
+        .expect("test coordinates are finite");
+    let e2 = sys
+        .add_point(PointData {
+            x: 5.0,
+            y: 3.0,
+            fixed: false,
+        })
+        .expect("test coordinates are finite");
     let arc2 = sys.add_arc(c2, s2, e2).unwrap();
     sys.add_constraint(Constraint::EqualRadiusArcArc(arc1, arc2))
         .unwrap();
@@ -644,37 +758,49 @@ fn equal_radius_arc_arc_converges() {
 #[test]
 fn concentric_arc_arc_converges() {
     let mut sys = GcsSystem::new();
-    let c1 = sys.add_point(PointData {
-        x: 0.0,
-        y: 0.0,
-        fixed: true,
-    });
-    let s1 = sys.add_point(PointData {
-        x: 1.0,
-        y: 0.0,
-        fixed: false,
-    });
-    let e1 = sys.add_point(PointData {
-        x: 0.0,
-        y: 1.0,
-        fixed: false,
-    });
+    let c1 = sys
+        .add_point(PointData {
+            x: 0.0,
+            y: 0.0,
+            fixed: true,
+        })
+        .expect("test coordinates are finite");
+    let s1 = sys
+        .add_point(PointData {
+            x: 1.0,
+            y: 0.0,
+            fixed: false,
+        })
+        .expect("test coordinates are finite");
+    let e1 = sys
+        .add_point(PointData {
+            x: 0.0,
+            y: 1.0,
+            fixed: false,
+        })
+        .expect("test coordinates are finite");
     let arc1 = sys.add_arc(c1, s1, e1).unwrap();
-    let c2 = sys.add_point(PointData {
-        x: 0.5,
-        y: 0.5,
-        fixed: false,
-    });
-    let s2 = sys.add_point(PointData {
-        x: 2.5,
-        y: 0.5,
-        fixed: false,
-    });
-    let e2 = sys.add_point(PointData {
-        x: 0.5,
-        y: 2.5,
-        fixed: false,
-    });
+    let c2 = sys
+        .add_point(PointData {
+            x: 0.5,
+            y: 0.5,
+            fixed: false,
+        })
+        .expect("test coordinates are finite");
+    let s2 = sys
+        .add_point(PointData {
+            x: 2.5,
+            y: 0.5,
+            fixed: false,
+        })
+        .expect("test coordinates are finite");
+    let e2 = sys
+        .add_point(PointData {
+            x: 0.5,
+            y: 2.5,
+            fixed: false,
+        })
+        .expect("test coordinates are finite");
     let arc2 = sys.add_arc(c2, s2, e2).unwrap();
     sys.add_constraint(Constraint::ConcentricArcArc(arc1, arc2))
         .unwrap();
@@ -689,42 +815,54 @@ fn concentric_arc_arc_converges() {
 fn slot_profile_line_arc_tangent() {
     let mut sys = GcsSystem::new();
     // 4 corner points for a 4-unit-long, 2-unit-wide slot
-    let p0 = sys.add_point(PointData {
-        x: 0.0,
-        y: 0.0,
-        fixed: true,
-    });
-    let p1 = sys.add_point(PointData {
-        x: 4.0,
-        y: 0.0,
-        fixed: false,
-    });
-    let p2 = sys.add_point(PointData {
-        x: 4.0,
-        y: 2.0,
-        fixed: false,
-    });
-    let p3 = sys.add_point(PointData {
-        x: 0.0,
-        y: 2.0,
-        fixed: false,
-    });
+    let p0 = sys
+        .add_point(PointData {
+            x: 0.0,
+            y: 0.0,
+            fixed: true,
+        })
+        .expect("test coordinates are finite");
+    let p1 = sys
+        .add_point(PointData {
+            x: 4.0,
+            y: 0.0,
+            fixed: false,
+        })
+        .expect("test coordinates are finite");
+    let p2 = sys
+        .add_point(PointData {
+            x: 4.0,
+            y: 2.0,
+            fixed: false,
+        })
+        .expect("test coordinates are finite");
+    let p3 = sys
+        .add_point(PointData {
+            x: 0.0,
+            y: 2.0,
+            fixed: false,
+        })
+        .expect("test coordinates are finite");
     // Two horizontal lines
     let bottom_line = sys.add_line(p0, p1).unwrap();
     let top_line = sys.add_line(p3, p2).unwrap();
     // Right semicircle: center at (4, 1), connecting p1 to p2
-    let rc = sys.add_point(PointData {
-        x: 4.0,
-        y: 1.0,
-        fixed: false,
-    });
+    let rc = sys
+        .add_point(PointData {
+            x: 4.0,
+            y: 1.0,
+            fixed: false,
+        })
+        .expect("test coordinates are finite");
     let right_arc = sys.add_arc(rc, p1, p2).unwrap();
     // Left semicircle: center at (0, 1), connecting p3 to p0
-    let lc = sys.add_point(PointData {
-        x: 0.0,
-        y: 1.0,
-        fixed: false,
-    });
+    let lc = sys
+        .add_point(PointData {
+            x: 0.0,
+            y: 1.0,
+            fixed: false,
+        })
+        .expect("test coordinates are finite");
     let left_arc = sys.add_arc(lc, p3, p0).unwrap();
     // Tangent constraints at all 4 junctions
     sys.add_constraint(Constraint::TangentLineArc(bottom_line, right_arc, p1))
@@ -752,23 +890,29 @@ fn slot_profile_line_arc_tangent() {
 #[test]
 fn arc_endpoints_equidistant_from_center() {
     let mut sys = GcsSystem::new();
-    let c = sys.add_point(PointData {
-        x: 0.0,
-        y: 0.0,
-        fixed: true,
-    });
-    let s = sys.add_point(PointData {
-        x: 1.0,
-        y: 0.0,
-        fixed: true,
-    });
+    let c = sys
+        .add_point(PointData {
+            x: 0.0,
+            y: 0.0,
+            fixed: true,
+        })
+        .expect("test coordinates are finite");
+    let s = sys
+        .add_point(PointData {
+            x: 1.0,
+            y: 0.0,
+            fixed: true,
+        })
+        .expect("test coordinates are finite");
     // End point starts off-circle — solver should move it onto the circle
     // (start is fixed, so the dynamic radius is pinned at 1.0)
-    let e = sys.add_point(PointData {
-        x: 0.0,
-        y: 1.5,
-        fixed: false,
-    });
+    let e = sys
+        .add_point(PointData {
+            x: 0.0,
+            y: 1.5,
+            fixed: false,
+        })
+        .expect("test coordinates are finite");
     let _arc = sys.add_arc(c, s, e).unwrap();
     let result = sys.solve(100, 1e-10).unwrap();
     assert!(result.converged);
@@ -782,21 +926,27 @@ fn arc_endpoints_equidistant_from_center() {
     // Also verify the dynamic behavior: when start moves, end tracks it.
     // Create a new system where start is free and moved by a FixX constraint.
     let mut sys2 = GcsSystem::new();
-    let c2 = sys2.add_point(PointData {
-        x: 0.0,
-        y: 0.0,
-        fixed: true,
-    });
-    let s2 = sys2.add_point(PointData {
-        x: 1.0,
-        y: 0.0,
-        fixed: false,
-    });
-    let e2 = sys2.add_point(PointData {
-        x: 0.0,
-        y: 1.0,
-        fixed: false,
-    });
+    let c2 = sys2
+        .add_point(PointData {
+            x: 0.0,
+            y: 0.0,
+            fixed: true,
+        })
+        .expect("test coordinates are finite");
+    let s2 = sys2
+        .add_point(PointData {
+            x: 1.0,
+            y: 0.0,
+            fixed: false,
+        })
+        .expect("test coordinates are finite");
+    let e2 = sys2
+        .add_point(PointData {
+            x: 0.0,
+            y: 1.0,
+            fixed: false,
+        })
+        .expect("test coordinates are finite");
     let _arc2 = sys2.add_arc(c2, s2, e2).unwrap();
     // Push start out to radius 2
     sys2.add_constraint(Constraint::Distance(c2, s2, 2.0))
@@ -818,11 +968,13 @@ fn arc_endpoints_equidistant_from_center() {
 /// Helper: a free point at `(x, y)`.
 fn free_pt(sys: &mut GcsSystem, x: f64, y: f64) -> PointId {
     sys.add_point(PointData { x, y, fixed: false })
+        .expect("test coordinates are finite")
 }
 
 /// Helper: a pinned point at `(x, y)`.
 fn fixed_pt(sys: &mut GcsSystem, x: f64, y: f64) -> PointId {
     sys.add_point(PointData { x, y, fixed: true })
+        .expect("test coordinates are finite")
 }
 
 #[test]
@@ -1401,4 +1553,170 @@ fn diagnostics_classify_a_fully_pinned_system() {
     assert_eq!(e.num_equations, 0);
     assert!(!e.redundant);
     assert_eq!(e.classification, SolveClassification::Solved);
+}
+
+// ── Non-finite input rejection (A-2/A-3) ─────────────────────────────
+
+/// A NaN-poisoned system must never report success: before the fix, the
+/// `f64::max` residual fold dropped NaN and `solve` returned
+/// `converged: true, max_residual: 0.0, iterations: 0`.
+#[test]
+fn nan_point_never_reports_convergence() {
+    // The entry points reject NaN outright now, but belt-and-braces: even a
+    // system whose NaN arrives by another route (e.g. deserialized state)
+    // must fail the convergence test rather than pass it.
+    let mut sys = GcsSystem::new();
+    let err = sys.add_point(PointData {
+        x: f64::NAN,
+        y: 0.0,
+        fixed: false,
+    });
+    assert!(
+        matches!(err, Err(crate::SketchError::InvalidValue)),
+        "NaN point must be rejected, got {err:?}"
+    );
+
+    // Solver-level: a NaN residual must propagate, not fold to zero.
+    let mut params = vec![f64::NAN];
+    let result = crate::gcs::solver::solve_dogleg(
+        &mut params,
+        &|_: &[f64]| vec![f64::NAN],
+        &|_: &[f64]| vec![1.0],
+        1,
+        100,
+        1e-10,
+    );
+    assert!(
+        !result.converged,
+        "NaN residual must not converge: {result:?}"
+    );
+    assert!(
+        result.max_residual.is_nan(),
+        "NaN residual must surface as NaN, got {}",
+        result.max_residual
+    );
+
+    // A fixed-point NaN target is rejected at the constraint boundary.
+    let mut sys = GcsSystem::new();
+    let p = free_pt(&mut sys, 0.0, 0.0);
+    let err = sys.add_constraint(Constraint::FixX(p, f64::NAN));
+    assert!(
+        matches!(err, Err(crate::SketchError::InvalidValue)),
+        "NaN FixX target must be rejected, got {err:?}"
+    );
+}
+
+/// Non-finite and out-of-domain values are rejected at every value-carrying
+/// entry point, not just `CircleRadius`.
+#[test]
+fn non_finite_values_rejected_at_entry() {
+    let mut sys = GcsSystem::new();
+    let p = free_pt(&mut sys, 0.0, 0.0);
+    let q = free_pt(&mut sys, 1.0, 0.0);
+    let line = sys.add_line(p, q).unwrap();
+    let circ = sys.add_circle(p, 1.0).unwrap();
+    let arc = sys.add_arc(p, p, q).unwrap();
+
+    // Points: NaN and infinite coordinates.
+    for (x, y) in [
+        (f64::NAN, 0.0),
+        (0.0, f64::NAN),
+        (f64::INFINITY, 0.0),
+        (0.0, f64::NEG_INFINITY),
+    ] {
+        assert!(
+            matches!(
+                sys.add_point(PointData { x, y, fixed: false }),
+                Err(crate::SketchError::InvalidValue)
+            ),
+            "point ({x}, {y}) must be rejected"
+        );
+    }
+
+    // Circles: NaN, infinite, zero, and negative radii.
+    for radius in [f64::NAN, f64::INFINITY, 0.0, -2.0] {
+        assert!(
+            matches!(
+                sys.add_circle(p, radius),
+                Err(crate::SketchError::InvalidValue)
+            ),
+            "radius {radius} must be rejected"
+        );
+    }
+
+    // Constraints: NaN and infinite scalar arguments.
+    let bad_values = [f64::NAN, f64::INFINITY, f64::NEG_INFINITY];
+    for v in bad_values {
+        assert!(
+            matches!(
+                sys.add_constraint(Constraint::Distance(p, q, v)),
+                Err(crate::SketchError::InvalidValue)
+            ),
+            "Distance({v}) must be rejected"
+        );
+        assert!(
+            matches!(
+                sys.add_constraint(Constraint::FixX(p, v)),
+                Err(crate::SketchError::InvalidValue)
+            ),
+            "FixX({v}) must be rejected"
+        );
+        assert!(
+            matches!(
+                sys.add_constraint(Constraint::FixY(p, v)),
+                Err(crate::SketchError::InvalidValue)
+            ),
+            "FixY({v}) must be rejected"
+        );
+        assert!(
+            matches!(
+                sys.add_constraint(Constraint::PointLineDistance(p, line, v)),
+                Err(crate::SketchError::InvalidValue)
+            ),
+            "PointLineDistance({v}) must be rejected"
+        );
+        assert!(
+            matches!(
+                sys.add_constraint(Constraint::Angle(line, line, v)),
+                Err(crate::SketchError::InvalidValue)
+            ),
+            "Angle({v}) must be rejected"
+        );
+        assert!(
+            matches!(
+                sys.add_constraint(Constraint::ArcLength(arc, v)),
+                Err(crate::SketchError::InvalidValue)
+            ),
+            "ArcLength({v}) must be rejected"
+        );
+        assert!(
+            matches!(
+                sys.add_constraint(Constraint::CircleRadius(circ, v)),
+                Err(crate::SketchError::InvalidValue)
+            ),
+            "CircleRadius({v}) must be rejected"
+        );
+    }
+    // CircleRadius additionally rejects non-positive finite values.
+    assert!(
+        matches!(
+            sys.add_constraint(Constraint::CircleRadius(circ, 0.0)),
+            Err(crate::SketchError::InvalidValue)
+        ),
+        "CircleRadius(0) must be rejected"
+    );
+    assert!(
+        matches!(
+            sys.add_constraint(Constraint::CircleRadius(circ, -1.0)),
+            Err(crate::SketchError::InvalidValue)
+        ),
+        "CircleRadius(-1) must be rejected"
+    );
+
+    // Finite values still pass validation.
+    sys.add_constraint(Constraint::Distance(p, q, 2.0)).unwrap();
+    sys.add_constraint(Constraint::FixX(p, 0.0)).unwrap();
+    sys.add_constraint(Constraint::Angle(line, line, 0.5))
+        .unwrap();
+    sys.add_constraint(Constraint::ArcLength(arc, 1.0)).unwrap();
 }
