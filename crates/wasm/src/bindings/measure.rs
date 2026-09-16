@@ -90,6 +90,10 @@ impl BrepKernel {
 
     /// Compute the volume of a solid.
     ///
+    /// Exact analytic and Gauss-quadrature paths run first, so the result
+    /// is deflection-independent on those paths; `deflection` only controls
+    /// the tessellation fallback.
+    ///
     /// # Errors
     ///
     /// Returns an error if the solid handle is invalid or tessellation fails.
@@ -101,6 +105,11 @@ impl BrepKernel {
     }
 
     /// Compute the total surface area of a solid.
+    ///
+    /// Analytic curved faces and exact planar boundaries integrate their
+    /// exact geometry, so the result is deflection-independent on those
+    /// paths; `deflection` only controls the NURBS-face tessellation and
+    /// the sampled planar fallback.
     ///
     /// # Errors
     ///
@@ -178,6 +187,11 @@ impl BrepKernel {
 
     /// Compute the area of a single face.
     ///
+    /// Planar faces with line/circle/ellipse/parabola/hyperbola/recognized-
+    /// NURBS boundaries and all analytic curved faces integrate their exact
+    /// geometry, deflection-independent; `deflection` only controls the
+    /// NURBS-face tessellation and the sampled planar fallback.
+    ///
     /// # Errors
     ///
     /// Returns an error if the face handle is invalid or tessellation fails.
@@ -190,11 +204,13 @@ impl BrepKernel {
 
     /// Compute the center of mass of a solid (uniform density).
     ///
-    /// Returns `[x, y, z]`.
+    /// Returns `[x, y, z]`. Integrates the exact face geometry, so the
+    /// result is deflection-independent; `deflection` is accepted for API
+    /// compatibility and ignored.
     ///
     /// # Errors
     ///
-    /// Returns an error if the solid has zero volume or tessellation fails.
+    /// Returns an error if the solid has zero volume or integration fails.
     #[wasm_bindgen(js_name = "centerOfMass")]
     pub fn center_of_mass(&self, solid: u32, deflection: f64) -> Result<Vec<f64>, JsError> {
         validate_positive(deflection, "deflection")?;
@@ -952,6 +968,107 @@ mod tests {
             "Izz = {}, expected {izz}",
             inertia[2]
         );
+    }
+
+    /// B20: direct + batch parity on a bored-box cavity primitive at three
+    /// model scales — volume, centroid, and inertia against the closed form
+    /// at ≤ 1e-6 relative, at coarse and fine caller deflections.
+    #[test]
+    fn b20_bored_box_direct_and_batch_parity_across_scales() {
+        use std::f64::consts::PI;
+        for scale in [1e-3_f64, 1.0, 1e3] {
+            let mut k = BrepKernel::new();
+            let plate = k
+                .make_box_solid(20.0 * scale, 20.0 * scale, 20.0 * scale)
+                .unwrap();
+            let bore = k.make_cylinder_solid(2.0 * scale, 24.0 * scale).unwrap();
+            k.transform_solid_binding(
+                bore,
+                vec![
+                    1.0,
+                    0.0,
+                    0.0,
+                    10.0 * scale,
+                    0.0,
+                    1.0,
+                    0.0,
+                    10.0 * scale,
+                    0.0,
+                    0.0,
+                    1.0,
+                    -2.0 * scale,
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0,
+                ],
+            )
+            .unwrap();
+            let cut = k.cut(plate, bore).unwrap();
+
+            let r = 2.0 * scale;
+            let expected_v = (8000.0 - PI * 4.0 * 20.0) * scale.powi(3);
+            let vb = 8000.0 * scale.powi(3);
+            let vc = PI * r * r * 20.0 * scale;
+            let dx = 20.0 * scale;
+            let expected_izz = vb / 12.0 * (dx * dx + dx * dx) - vc * r * r / 2.0;
+
+            for deflection in [scale * 1e3, scale * 1e-4] {
+                // Direct bindings.
+                let v = k.volume(cut, deflection).unwrap();
+                assert!(
+                    ((v - expected_v) / expected_v).abs() < 1e-6,
+                    "direct volume scale={scale:e} d={deflection:e}: {v:e} vs {expected_v:e}"
+                );
+                let com = k.center_of_mass(cut, deflection).unwrap();
+                assert!(
+                    (com[0] - 10.0 * scale).abs() < 1e-6 * 20.0 * scale,
+                    "direct CoM x"
+                );
+                assert!(
+                    (com[1] - 10.0 * scale).abs() < 1e-6 * 20.0 * scale,
+                    "direct CoM y"
+                );
+                assert!(
+                    (com[2] - 10.0 * scale).abs() < 1e-6 * 20.0 * scale,
+                    "direct CoM z"
+                );
+                let inertia = k.inertia_tensor(cut).unwrap();
+                assert!(
+                    ((inertia[8] - expected_izz) / expected_izz).abs() < 1e-6,
+                    "direct Izz: {} vs {expected_izz}",
+                    inertia[8]
+                );
+
+                // Batch bindings on the same body.
+                let out = k.execute_batch(&format!(
+                    "[{{\"op\":\"volume\",\"args\":{{\"solid\":{cut},\"deflection\":{deflection}}}}},{{\"op\":\"centerOfMass\",\"args\":{{\"solid\":{cut},\"deflection\":{deflection}}}}},{{\"op\":\"massProperties\",\"args\":{{\"solid\":{cut}}}}}]"
+                ));
+                let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+                let bv = parsed[0]["ok"].as_f64().unwrap();
+                assert!(
+                    ((bv - expected_v) / expected_v).abs() < 1e-6,
+                    "batch volume: {bv:e} vs {expected_v:e}"
+                );
+                let bcom = parsed[1]["ok"].as_array().unwrap();
+                assert!(
+                    (bcom[0].as_f64().unwrap() - 10.0 * scale).abs() < 1e-6 * 20.0 * scale,
+                    "batch CoM x"
+                );
+                let bprops = &parsed[2]["ok"];
+                let bvol = bprops["volume"].as_f64().unwrap();
+                assert!(
+                    ((bvol - expected_v) / expected_v).abs() < 1e-6,
+                    "batch massProperties volume"
+                );
+                let binertia = bprops["inertia"].as_array().unwrap();
+                let bizz = binertia[2].as_f64().unwrap();
+                assert!(
+                    ((bizz - expected_izz) / expected_izz).abs() < 1e-6,
+                    "batch Izz: {bizz} vs {expected_izz}"
+                );
+            }
+        }
     }
 
     #[test]
