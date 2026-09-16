@@ -72,11 +72,15 @@ fn run_case(case: Case) {
     let mut sys = GcsSystem::new();
     let mut ids = Vec::with_capacity(n);
     for i in 0..n {
-        let id = sys.add_point(PointData {
-            x: coord(case.px[i % 4]),
-            y: coord(case.py[i % 4]),
-            fixed: false,
-        });
+        // `coord` maps bytes into [-4, 4]: finite by construction, so the
+        // `InvalidValue` arm is unreachable here.
+        let id = sys
+            .add_point(PointData {
+                x: coord(case.px[i % 4]),
+                y: coord(case.py[i % 4]),
+                fixed: false,
+            })
+            .expect("fuzz coordinates are finite");
         ids.push(id);
     }
     let at = |k: u8| ids[usize::from(k) % n];

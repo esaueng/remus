@@ -147,11 +147,7 @@ pub fn read_glb_with_limits(
                     reason: format!("buffer view index {} out of range", accessor.buffer_view),
                 }
             })?;
-            let pos_data = safe_slice(bin, view.byte_offset, view.byte_length)?;
-            for chunk in pos_data.chunks_exact(12) {
-                let x = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
-                let y = f32::from_le_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]);
-                let z = f32::from_le_bytes([chunk[8], chunk[9], chunk[10], chunk[11]]);
+            for [x, y, z] in decode_accessor_vertices(accessor, view, bin, "POSITION")? {
                 positions.push(Point3::new(f64::from(x), f64::from(y), f64::from(z)));
             }
         }
@@ -159,12 +155,8 @@ pub fn read_glb_with_limits(
         if let Some(norm_idx) = prim.normal_accessor
             && let Some(accessor) = accessors.get(norm_idx)
             && let Some(view) = buffer_views.get(accessor.buffer_view)
-            && let Ok(norm_data) = safe_slice(bin, view.byte_offset, view.byte_length)
         {
-            for chunk in norm_data.chunks_exact(12) {
-                let x = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
-                let y = f32::from_le_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]);
-                let z = f32::from_le_bytes([chunk[8], chunk[9], chunk[10], chunk[11]]);
+            for [x, y, z] in decode_accessor_vertices(accessor, view, bin, "NORMAL")? {
                 normals.push(Vec3::new(f64::from(x), f64::from(y), f64::from(z)));
             }
         }
@@ -185,6 +177,38 @@ pub fn read_glb_with_limits(
 
             #[allow(clippy::cast_possible_truncation)]
             let v_offset = vertex_offset as u32;
+
+            // The declared `count` gates how many indices are decoded: the
+            // budget sums declared counts, so decoding past `count` would let
+            // an under-declared accessor smuggle unbounded index data through
+            // (the vertex-side twin of this bug). A view that does not hold
+            // exactly `count` elements is malformed.
+            let elem_bytes = match accessor.component_type {
+                5123 => 2,
+                5125 => 4,
+                ct => {
+                    return Err(crate::IoError::ParseError {
+                        reason: format!(
+                            "unsupported index component type {ct} (expected 5123=uint16 or 5125=uint32)"
+                        ),
+                    });
+                }
+            };
+            let expected_bytes = accessor.count.checked_mul(elem_bytes).ok_or_else(|| {
+                crate::IoError::ParseError {
+                    reason: "GLB indices accessor count overflows".into(),
+                }
+            })?;
+            if idx_data.len() != expected_bytes {
+                return Err(crate::IoError::ParseError {
+                    reason: format!(
+                        "GLB indices accessor declares {} elements but its buffer view holds {} bytes (expected {})",
+                        accessor.count,
+                        idx_data.len(),
+                        expected_bytes,
+                    ),
+                });
+            }
 
             match accessor.component_type {
                 5123 => {
@@ -259,8 +283,49 @@ fn safe_slice(data: &[u8], offset: usize, length: usize) -> Result<&[u8], crate:
 struct AccessorInfo {
     buffer_view: usize,
     component_type: u32,
-    #[allow(dead_code)]
     count: usize,
+}
+
+/// Decode a POSITION/NORMAL accessor's vertex data, verifying the declared
+/// `count` against the view's byte length first.
+///
+/// An under-declared `count` used to defeat the entity budget (the budget
+/// sums declared counts) while the decoder followed `byteLength` and
+/// materialized far more vertices — a fail-open pair. Decoding exactly
+/// `count` elements keeps the budget honest and the positions/indices
+/// contract intact; a mismatch is a malformed file, refused by name.
+fn decode_accessor_vertices(
+    accessor: &AccessorInfo,
+    view: &BufferViewInfo,
+    bin: &[u8],
+    kind: &str,
+) -> Result<Vec<[f32; 3]>, crate::IoError> {
+    let pos_data = safe_slice(bin, view.byte_offset, view.byte_length)?;
+    let expected_bytes =
+        accessor
+            .count
+            .checked_mul(12)
+            .ok_or_else(|| crate::IoError::ParseError {
+                reason: format!("GLB {kind} accessor count overflows"),
+            })?;
+    if pos_data.len() != expected_bytes {
+        return Err(crate::IoError::ParseError {
+            reason: format!(
+                "GLB {kind} accessor declares {} vertices but its buffer view holds {} bytes (expected {})",
+                accessor.count,
+                pos_data.len(),
+                expected_bytes,
+            ),
+        });
+    }
+    let mut out = Vec::with_capacity(accessor.count);
+    for chunk in pos_data.chunks_exact(12) {
+        let x = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+        let y = f32::from_le_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]);
+        let z = f32::from_le_bytes([chunk[8], chunk[9], chunk[10], chunk[11]]);
+        out.push([x, y, z]);
+    }
+    Ok(out)
 }
 
 struct BufferViewInfo {
@@ -277,6 +342,12 @@ struct MeshPrimitive {
 }
 
 /// Minimal JSON parsing for accessor array.
+///
+/// Out-of-`u32`-range `componentType` values are dropped (with the accessor):
+/// `extract_int` parses into `usize`, and a hostile value like 5123+2³² must
+/// not truncate silently into a different index width. Dropping keeps this
+/// parser total — the consumer reports the missing accessor — while the
+/// truncation it replaces produced wrong-vertex meshes as success.
 fn parse_accessors(json: &str) -> Vec<AccessorInfo> {
     let mut accessors = Vec::new();
 
@@ -294,14 +365,22 @@ fn parse_accessors(json: &str) -> Vec<AccessorInfo> {
     };
 
     for obj in split_json_objects(arr_str) {
-        let bv = extract_int(obj, "bufferView");
         let count = extract_int(obj, "count");
-        let component_type = extract_int(obj, "componentType");
-        if let (Some(bv), Some(count)) = (bv, count) {
-            #[allow(clippy::cast_possible_truncation)]
+        // `extract_int` parses into `usize` (64-bit here), so a hostile
+        // `componentType` like 5123+2³² used to truncate silently via `as
+        // u32` and reinterpret the index width (uint32 read as uint16).
+        // Reject out-of-range values by dropping the accessor instead of
+        // casting it: the consumer then reports the missing accessor
+        // rather than decoding a wrong-width mesh as success.
+        let component_type = extract_int(obj, "componentType")
+            .map(u32::try_from)
+            .transpose()
+            .ok()
+            .flatten();
+        if let (Some(bv), Some(count)) = (extract_int(obj, "bufferView"), count) {
             accessors.push(AccessorInfo {
                 buffer_view: bv,
-                component_type: component_type.unwrap_or(5126) as u32,
+                component_type: component_type.unwrap_or(5126),
                 count,
             });
         }
@@ -937,6 +1016,89 @@ mod tests {
             .expect_err("u32 index overflow must be an error");
         assert!(
             format!("{err}").contains("overflow"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// An accessor whose `count` disagrees with its view's byte length is
+    /// malformed: the old decoder followed `byteLength` and materialized
+    /// whatever it found, so an under-declared `count` defeated the entity
+    /// budget while decoding 100 vertices for `count: 3` (E-4). Both
+    /// directions refuse now.
+    #[test]
+    fn accessor_count_byte_length_mismatch_is_rejected() {
+        // 3 declared vertices but a 4-vertex (48-byte) position view.
+        let positions: [f32; 12] = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        let indices: [u16; 3] = [0, 1, 2];
+        let mut bin = Vec::new();
+        for &v in &positions {
+            bin.extend_from_slice(&v.to_le_bytes());
+        }
+        for &v in &indices {
+            bin.extend_from_slice(&v.to_le_bytes());
+        }
+        while bin.len() % 4 != 0 {
+            bin.push(0);
+        }
+        // count:3 over a 48-byte view (4 vertices): under-declared.
+        let json = r#"{"asset":{"version":"2.0"},"meshes":[{"primitives":[{"attributes":{"POSITION":0},"indices":1}]}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"},{"bufferView":1,"componentType":5123,"count":3,"type":"SCALAR"}],"bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":48},{"buffer":0,"byteOffset":48,"byteLength":6}],"buffers":[{"byteLength":54}]}"#;
+        let glb = build_glb_bytes(json, &bin);
+        let err = read_glb(&glb)
+            .map(|_| ())
+            .expect_err("count/view mismatch must error");
+        assert!(
+            format!("{err}").contains("declares 3 vertices"),
+            "unexpected error: {err}"
+        );
+
+        // count:4 over a 36-byte view (3 vertices): over-declared.
+        let json = r#"{"asset":{"version":"2.0"},"meshes":[{"primitives":[{"attributes":{"POSITION":0},"indices":1}]}],"accessors":[{"bufferView":0,"componentType":5126,"count":4,"type":"VEC3"},{"bufferView":1,"componentType":5123,"count":3,"type":"SCALAR"}],"bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36},{"buffer":0,"byteOffset":36,"byteLength":6}],"buffers":[{"byteLength":42}]}"#;
+        let mut bin = Vec::new();
+        for &v in &positions[..9] {
+            bin.extend_from_slice(&v.to_le_bytes());
+        }
+        for &v in &indices {
+            bin.extend_from_slice(&v.to_le_bytes());
+        }
+        while bin.len() % 4 != 0 {
+            bin.push(0);
+        }
+        let glb = build_glb_bytes(json, &bin);
+        assert!(
+            read_glb(&glb).is_err(),
+            "over-declared count must error, not decode past the view"
+        );
+    }
+
+    /// A `componentType` outside the u32 range used to truncate via `as u32`
+    /// (5123+2³² decoded as uint16) and silently reinterpret the index
+    /// width (E-11). The accessor is dropped now, so the primitive's
+    /// indices accessor is missing and the read fails closed.
+    #[test]
+    fn out_of_range_component_type_is_rejected_not_truncated() {
+        let positions: [f32; 9] = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+        let indices: [u16; 3] = [0, 1, 2];
+        let mut bin = Vec::new();
+        for &v in &positions {
+            bin.extend_from_slice(&v.to_le_bytes());
+        }
+        for &v in &indices {
+            bin.extend_from_slice(&v.to_le_bytes());
+        }
+        while bin.len() % 4 != 0 {
+            bin.push(0);
+        }
+        // 5123 + 2^32 = 4294972419: truncates to 5123 under `as u32`.
+        let json = r#"{"asset":{"version":"2.0"},"meshes":[{"primitives":[{"attributes":{"POSITION":0},"indices":1}]}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"},{"bufferView":1,"componentType":4294972419,"count":3,"type":"SCALAR"}],"bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36},{"buffer":0,"byteOffset":36,"byteLength":6}],"buffers":[{"byteLength":42}]}"#;
+        let glb = build_glb_bytes(json, &bin);
+        // The accessor is dropped (not truncated to uint16), so the
+        // primitive's indices accessor is missing and the read fails closed
+        // instead of decoding a wrong-width mesh as success.
+        let err = read_glb(&glb).map(|_| ()).expect_err(
+            "out-of-range componentType must fail closed, not decode as truncated width",
+        );
+        assert!(
+            format!("{err}").contains("component type"),
             "unexpected error: {err}"
         );
     }
