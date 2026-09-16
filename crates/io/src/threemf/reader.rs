@@ -63,7 +63,7 @@ fn extract_model_xml(data: &[u8], limits: ImportLimits) -> Result<String, IoErro
 
     let mut xml_str = String::with_capacity(declared_size);
     model_file
-        .take(limits.max_archive_entry_bytes as u64 + 1)
+        .take(limits.max_archive_entry_bytes.saturating_add(1) as u64)
         .read_to_string(&mut xml_str)
         .map_err(IoError::Io)?;
     ensure_limit(

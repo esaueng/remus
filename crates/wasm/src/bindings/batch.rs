@@ -2658,7 +2658,9 @@ impl BrepKernel {
             }
             "draft" => {
                 let s = get_u32(args, "solid")?;
-                let angle = get_f64(args, "angle")?;
+                let angle_degrees = get_f64(args, "angle")?;
+                let angle_radians = super::operations::parse_draft_angle_radians(angle_degrees)
+                    .map_err(StructuredWasmError::from)?;
                 let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
                 let face_handles: Vec<u32> = get_u32_array_optional(args, "faces")?;
                 let face_ids: Vec<_> = face_handles
@@ -2679,7 +2681,7 @@ impl BrepKernel {
                     &face_ids,
                     dir,
                     neutral,
-                    angle,
+                    angle_radians,
                 )
                 .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(result)))

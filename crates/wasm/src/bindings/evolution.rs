@@ -340,6 +340,8 @@ impl BrepKernel {
         angle_degrees: f64,
     ) -> Result<serde_json::Value, StructuredWasmError> {
         validate_finite(angle_degrees, "angleDegrees").map_err(StructuredWasmError::from)?;
+        let angle_radians = super::operations::parse_draft_angle_radians(angle_degrees)
+            .map_err(StructuredWasmError::from)?;
         let vector = |values: &[f64], name: &str| -> Result<[f64; 3], StructuredWasmError> {
             let [x, y, z] = values else {
                 return Err(StructuredWasmError::invalid_argument(
@@ -368,7 +370,7 @@ impl BrepKernel {
             &face_ids,
             remus_math::vec::Vec3::new(dx, dy, dz),
             remus_math::vec::Point3::new(nx, ny, nz),
-            angle_degrees.to_radians(),
+            angle_radians,
         )
         .map_err(StructuredWasmError::from)?;
         Ok(serde_json::json!({
