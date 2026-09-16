@@ -493,6 +493,28 @@ fn edge_concavity_with_faces(
     })
 }
 
+/// The parameter domain an edge ACTUALLY covers on its stored curve.
+///
+/// Curved edges report their stored authoritative trim interval verbatim; a
+/// closed edge reports one full period anchored at its start vertex, and an
+/// open edge uses the endpoint-trimmed convention. Lines report
+/// `(0, length)` to match the query surface's parameterization of line edges.
+///
+/// This differs from the raw curve domain (`[0, TAU]` for every circle): a
+/// circle edge's endpoints subtend TWO arcs, and only this span says which
+/// one the edge is — reconstructing it from endpoints alone flips intentional
+/// major arcs.
+///
+/// # Errors
+///
+/// Returns an error if the edge handle is invalid, if vertex lookup fails for
+/// line endpoints, or if a curved edge lacks valid stored parameter
+/// authority.
+pub fn trimmed_edge_domain(topo: &Topology, edge: EdgeId) -> Result<(f64, f64), OperationsError> {
+    let edge_data = topo.edge(edge)?;
+    crate::tessellate::edge_param_span(topo, edge_data)
+}
+
 /// Filter edges to only those shared by two planar faces in a solid.
 ///
 /// Given a solid and a set of edge IDs, returns only the edges

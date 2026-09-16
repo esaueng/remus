@@ -1466,14 +1466,18 @@ pub fn solid_is_inverted(topo: &Topology, solid: SolidId) -> Result<bool, crate:
     Ok(signed < -floor)
 }
 
-/// Compute the volume of a solid using the signed tetrahedra method
-/// (divergence theorem on a surface tessellation).
+/// Compute the volume of a solid.
 ///
-/// For each triangle `(v0, v1, v2)`, the signed volume of the
-/// tetrahedron it forms with the origin is `v0 . (v1 x v2) / 6`.
+/// Exact analytic and Gauss-quadrature paths are tried first (closed-form
+/// primitives, per-face quadrature over analytic surfaces, surfaces of
+/// revolution); only solids outside those families fall through to the
+/// signed-tetrahedra method on a surface tessellation, where for each
+/// triangle `(v0, v1, v2)` the signed volume of the tetrahedron it forms
+/// with the origin is `v0 . (v1 x v2) / 6`.
 ///
-/// For pure-primitive solids (sphere, cylinder, cone, torus), uses exact
-/// analytic formulas instead of tessellation.
+/// On every exact path the result is deflection-independent: `deflection`
+/// only controls the tessellation fallback. See
+/// [`mass_properties`] for the stated error bound of the quadrature path.
 ///
 /// # Orientation
 ///
@@ -3169,6 +3173,23 @@ pub fn solid_volume_from_faces(
 /// analytic and NURBS surfaces — no tessellation, so no deflection
 /// parameter). Cavity shells contribute with reversed orientation.
 ///
+/// # Stated error bound
+///
+/// * Planar faces bounded by lines, circles, ellipses, parabolas,
+///   hyperbolas, and recognized NURBS arcs integrate in closed form
+///   (Green's theorem): round-off only, ~1e-15 relative.
+/// * Untrimmed quadric faces (cylinder, cone, sphere, torus) and NURBS faces
+///   integrate by composite Gauss quadrature at order 8, converged to
+///   ~1e-9 relative or better on production geometry.
+/// * Trimmed curved faces are exact for the polylines their UV outlines are;
+///   the residual is the outline chord error, which falls with the square of
+///   the 128-sample trim resolution — ~1e-7 relative on the cross-drilled
+///   shaft family (see `curved_properties.rs`).
+///
+/// Bodies whose boundary falls entirely in the first two families measure at
+/// ≤ 1e-6 relative against closed forms at every model scale (1e-3/1/1e3)
+/// and every caller deflection (see `b20_exact_measurement_scale_matrix`).
+///
 /// # Errors
 ///
 /// Returns an error if the solid handle is invalid, integration fails, or
@@ -3191,21 +3212,42 @@ pub fn mass_properties(
 
 /// Compute the center of mass of a solid, assuming uniform density.
 ///
-/// Uses the same signed-tetrahedra decomposition as `solid_volume`,
-/// accumulating the centroid contribution of each tetrahedron:
-/// `centroid += signed_vol * (a + b + c)`, then divides by
-/// `4 * total_volume`.
-///
-/// Cavity shells count. Their faces are stored reversed, so `tessellate`
-/// flips their winding and their signed tetrahedra subtract both the void's
-/// volume and its first moment — which is what makes the result the composite
-/// centroid `(V_out*c_out - V_void*c_void) / (V_out - V_void)` rather than the
-/// outer body's own.
+/// Integrates the exact face geometry by Gauss quadrature (the same
+/// divergence-theorem path as [`mass_properties`]), so the result is
+/// deflection-independent: `deflection` is accepted for API compatibility
+/// and ignored. Cavity shells count through their faces' stored reversal,
+/// which makes each void subtract both its volume and its first moment —
+/// the composite centroid `(V_out*c_out - V_void*c_void) / (V_out - V_void)`
+/// rather than the outer body's own.
 ///
 /// # Errors
 ///
-/// Returns an error if the solid has zero volume or tessellation fails.
+/// Returns an error if the solid has zero volume or integration fails.
 pub fn solid_center_of_mass(
+    topo: &Topology,
+    solid: SolidId,
+    deflection: f64,
+) -> Result<Point3, crate::OperationsError> {
+    let _ = deflection;
+    // Fast path: for all-planar-triangle solids, compute directly
+    // from face geometry (avoids re-tessellation winding issues).
+    if let Ok(com) = center_of_mass_from_faces(topo, solid) {
+        return Ok(com);
+    }
+
+    Ok(remus_check::properties::center_of_mass(
+        topo,
+        solid,
+        &remus_check::properties::PropertiesOptions {
+            gauss_order: 8,
+            ..Default::default()
+        },
+    )?)
+}
+
+/// Tessellation-based center of mass (legacy path, retained for tests).
+#[allow(dead_code)]
+fn solid_center_of_mass_tessellated_legacy(
     topo: &Topology,
     solid: SolidId,
     deflection: f64,
