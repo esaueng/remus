@@ -3878,6 +3878,163 @@ mod tests {
         assert!((direct_volume - batch_volume).abs() < 1e-9);
     }
 
+    /// B12 annular-Coons cell: hexagon-outer / iso-rect-hole saddle profile.
+    /// The carrier comes from the shared cap builder so the hole loop sits
+    /// at exactly the carrier-evaluated positions the certifier requires.
+    fn hexagon_annulus_profile(k: &mut BrepKernel) -> u32 {
+        const OUTER_XY: [[f64; 2]; 6] = [
+            [-2.0, -1.0],
+            [0.0, -2.0],
+            [2.0, -1.0],
+            [2.0, 1.0],
+            [0.0, 2.0],
+            [-2.0, 1.0],
+        ];
+        let corners: Vec<Point3> = OUTER_XY
+            .iter()
+            .map(|&[x, y]| Point3::new(x, y, 0.1 * x * y))
+            .collect();
+        let carrier = remus_operations::nonplanar_ring_surface(&corners).unwrap();
+        // Wound opposite the outer boundary per B-Rep convention.
+        let hole_pts: Vec<Point3> = [(0.55, 0.55), (0.55, 0.8), (0.8, 0.8), (0.8, 0.55)]
+            .iter()
+            .map(|&(u, v)| carrier.evaluate(u, v))
+            .collect();
+        let outer = make_polygon_wire(k.topo_mut(), &corners, TOL).unwrap();
+        let hole = make_polygon_wire(k.topo_mut(), &hole_pts, TOL).unwrap();
+        let face = k
+            .topo_mut()
+            .add_face(Face::new(outer, vec![hole], FaceSurface::Nurbs(carrier)));
+        face_id_to_u32(face)
+    }
+
+    fn assert_hexagon_annulus_sweep(k: &BrepKernel, handle: u32, label: &str) -> f64 {
+        let solid = k.resolve_solid(handle).unwrap();
+        let faces = remus_topology::explorer::solid_faces(k.topo(), solid).unwrap();
+        let holed_caps = faces
+            .iter()
+            .filter(|&&face_id| {
+                let face = k.topo().face(face_id).unwrap();
+                matches!(face.surface(), FaceSurface::Nurbs(_)) && face.inner_wires().len() == 1
+            })
+            .count();
+        assert_eq!(
+            holed_caps, 2,
+            "{label}: both n-sided caps must be single trimmed holed faces"
+        );
+
+        let report = remus_operations::validate::validate_solid(k.topo(), solid).unwrap();
+        assert_eq!(
+            report.error_count(),
+            0,
+            "{label}: invalid solid: {report:?}"
+        );
+        let mesh = remus_operations::tessellate::tessellate_solid(k.topo(), solid, 0.01).unwrap();
+        let quality = remus_operations::tessellate::welded_mesh_quality(&mesh);
+        assert!(
+            quality.is_watertight(),
+            "{label}: mesh has {} boundary and {} non-manifold edges",
+            quality.boundary_edges,
+            quality.non_manifold_edges
+        );
+
+        // Closed form for a straight sweep: length times enclosed chord-polygon
+        // area, outer minus hole (outer from literals, hole read back).
+        let outer_area: f64 = [
+            [-2.0, -1.0],
+            [0.0, -2.0],
+            [2.0, -1.0],
+            [2.0, 1.0],
+            [0.0, 2.0],
+            [-2.0, 1.0],
+        ]
+        .iter()
+        .zip(
+            [
+                [0.0, -2.0],
+                [2.0, -1.0],
+                [2.0, 1.0],
+                [0.0, 2.0],
+                [-2.0, 1.0],
+                [-2.0, -1.0],
+            ]
+            .iter(),
+        )
+        .map(|(a, b)| a[0] * b[1] - b[0] * a[1])
+        .sum::<f64>()
+            / 2.0;
+        let outer_area = outer_area.abs();
+        // Hole area is read from the RESULT solid's cap hole loop (B-Rep
+        // facts), keeping the area math independent of the kernel's volume
+        // integration while the classification probes below verify intent.
+        let cap_hole: Vec<[f64; 2]> = faces
+            .iter()
+            .find_map(|&fid| {
+                let face = k.topo().face(fid).unwrap();
+                if !(matches!(face.surface(), FaceSurface::Nurbs(_))
+                    && face.inner_wires().len() == 1)
+                {
+                    return None;
+                }
+                Some(
+                    k.topo()
+                        .wire(face.inner_wires()[0])
+                        .unwrap()
+                        .edges()
+                        .iter()
+                        .map(|oe| {
+                            let e = k.topo().edge(oe.edge()).unwrap();
+                            let p = k.topo().vertex(e.start()).unwrap().point();
+                            [p.x(), p.y()]
+                        })
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .unwrap();
+        let hole_area: f64 = cap_hole
+            .iter()
+            .zip(cap_hole.iter().cycle().skip(1))
+            .map(|(a, b)| a[0] * b[1] - b[0] * a[1])
+            .sum::<f64>()
+            / 2.0;
+        let expected = 6.0 * (outer_area - hole_area.abs());
+        let volume = remus_operations::measure::solid_volume(k.topo(), solid, 1e-4).unwrap();
+        assert!(
+            (volume - expected).abs() / expected < 1e-6,
+            "{label}: volume {volume} vs closed form {expected}"
+        );
+        volume
+    }
+
+    #[test]
+    fn nsided_annulus_sweep_matches_direct_and_batch_contracts() {
+        let mut direct = BrepKernel::new();
+        let direct_profile = hexagon_annulus_profile(&mut direct);
+        let direct_solid = direct
+            .sweep_face(
+                direct_profile,
+                1,
+                vec![0.0, 0.0, 1.0, 1.0],
+                vec![0.0, 0.0, 0.0, 0.0, 0.0, 6.0],
+                vec![1.0, 1.0],
+            )
+            .unwrap();
+        let direct_volume = assert_hexagon_annulus_sweep(&direct, direct_solid, "direct sweep");
+
+        let mut batch = BrepKernel::new();
+        let batch_profile = hexagon_annulus_profile(&mut batch);
+        let path = batch.make_line_edge(0.0, 0.0, 0.0, 0.0, 0.0, 6.0).unwrap();
+        let result = dispatch(
+            &mut batch,
+            "sweep",
+            serde_json::json!({"face": batch_profile, "pathEdge": path}),
+        );
+        let batch_solid = batch_solid_handle(&result, "n-sided annulus sweep");
+        let batch_volume = assert_hexagon_annulus_sweep(&batch, batch_solid, "batch sweep");
+
+        assert!((direct_volume - batch_volume).abs() < 1e-9);
+    }
+
     #[test]
     fn wire_sweep_has_direct_and_batch_measurement_parity() {
         let mut direct = BrepKernel::new();
