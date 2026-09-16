@@ -125,6 +125,20 @@ fn wasm_blend_evolution(
     remus_operations::blend_ops::evolution_from_blend_origins(topo, result, Some(origins), &[])
 }
 
+/// Parse a draft angle in degrees into radians.
+///
+/// All shipped draft entry points (`draft`, batch `draft`, `draftJournaled`,
+/// batch `draftJournaled`) take degrees; the kernel takes radians. Sharing one
+/// parser keeps the units identical by construction instead of by convention.
+///
+/// # Errors
+///
+/// Returns [`WasmError::InvalidInput`] if `angle_degrees` is not finite.
+pub fn parse_draft_angle_radians(angle_degrees: f64) -> Result<f64, WasmError> {
+    validate_finite(angle_degrees, "angle_degrees")?;
+    Ok(angle_degrees.to_radians())
+}
+
 /// Parse a join type string into a [`JoinType`] enum value.
 ///
 /// Used by both the direct WASM binding and the batch dispatcher.
@@ -388,12 +402,9 @@ impl BrepKernel {
             .iter()
             .map(|&h| self.resolve_face(h))
             .collect::<Result<_, _>>()?;
-        let result = remus_operations::shell_op::shell(
-            self.topo_mut(),
-            solid_id,
-            thickness,
-            &open_face_ids,
-        )?;
+        let result = self.with_topology_transaction(|topo| {
+            remus_operations::shell_op::shell(topo, solid_id, thickness, &open_face_ids)
+        })?;
         Ok(solid_id_to_u32(result))
     }
 
@@ -886,7 +897,8 @@ impl BrepKernel {
 
         let face_id = self.resolve_face(face)?;
         let direction = Vec3::new(dir_x, dir_y, dir_z);
-        let solid_id = extrude(self.topo_mut(), face_id, direction, distance)?;
+        let solid_id =
+            self.with_topology_transaction(|topo| extrude(topo, face_id, direction, distance))?;
 
         Ok(solid_id_to_u32(solid_id))
     }
@@ -934,7 +946,9 @@ impl BrepKernel {
         let direction = Vec3::new(dx, dy, dz);
         let angle_radians = angle_degrees.to_radians();
 
-        let solid_id = revolve(self.topo_mut(), face_id, origin, direction, angle_radians)?;
+        let solid_id = self.with_topology_transaction(|topo| {
+            revolve(topo, face_id, origin, direction, angle_radians)
+        })?;
 
         Ok(solid_id_to_u32(solid_id))
     }
@@ -1019,7 +1033,7 @@ impl BrepKernel {
             path_weights,
         )?;
 
-        let solid_id = sweep(self.topo_mut(), face_id, &path_curve)?;
+        let solid_id = self.with_topology_transaction(|topo| sweep(topo, face_id, &path_curve))?;
 
         Ok(solid_id_to_u32(solid_id))
     }
@@ -1038,7 +1052,8 @@ impl BrepKernel {
     pub fn sweep_wire(&mut self, profile: u32, path_edge: u32) -> Result<u32, JsError> {
         let wire_id = self.resolve_wire(profile)?;
         let path_curve = self.extract_nurbs_curve(path_edge)?;
-        let solid_id = sweep_wire(self.topo_mut(), wire_id, &path_curve)?;
+        let solid_id =
+            self.with_topology_transaction(|topo| sweep_wire(topo, wire_id, &path_curve))?;
         Ok(solid_id_to_u32(solid_id))
     }
 
@@ -1436,6 +1451,7 @@ impl BrepKernel {
     /// Apply draft angle to faces of a solid.
     ///
     /// `face_handles` is an array of face handles to draft.
+    /// `angle_degrees` is in degrees, matching the batch `draft` op.
     /// Returns a solid handle.
     ///
     /// # Errors
@@ -1465,7 +1481,7 @@ impl BrepKernel {
         ] {
             validate_finite(value, name)?;
         }
-        validate_finite(angle_degrees, "angle_degrees")?;
+        let angle_radians = parse_draft_angle_radians(angle_degrees)?;
         for (value, name) in [
             (pull_x, "pull_x"),
             (pull_y, "pull_y"),
@@ -1487,7 +1503,7 @@ impl BrepKernel {
             &face_ids,
             Vec3::new(pull_x, pull_y, pull_z),
             Point3::new(neutral_x, neutral_y, neutral_z),
-            angle_degrees.to_radians(),
+            angle_radians,
         )?;
         Ok(solid_id_to_u32(result))
     }
@@ -1708,7 +1724,9 @@ impl BrepKernel {
     pub fn thicken_face(&mut self, face: u32, thickness: f64) -> Result<u32, JsError> {
         validate_finite(thickness, "thickness")?;
         let face_id = self.resolve_face(face)?;
-        let result = remus_operations::thicken::thicken(self.topo_mut(), face_id, thickness)?;
+        let result = self.with_topology_transaction(|topo| {
+            remus_operations::thicken::thicken(topo, face_id, thickness)
+        })?;
         Ok(solid_id_to_u32(result))
     }
 

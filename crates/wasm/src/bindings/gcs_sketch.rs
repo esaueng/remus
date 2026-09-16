@@ -237,7 +237,12 @@ impl BrepKernel {
             });
         }
         let sk = self.gcs_sketch_mut(sketch)?;
-        let id = sk.sys.add_point(remus_sketch::PointData { x, y, fixed });
+        let id = sk
+            .sys
+            .add_point(remus_sketch::PointData { x, y, fixed })
+            .map_err(|e| WasmError::InvalidInput {
+                reason: format!("addPoint: {e}"),
+            })?;
         sk.points.push(id);
         #[allow(clippy::cast_possible_truncation)]
         Ok((sk.points.len() - 1) as u32)

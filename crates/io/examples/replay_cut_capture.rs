@@ -68,12 +68,24 @@ fn describe(topo: &Topology, sid: remus_topology::solid::SolidId, label: &str) {
 struct DropLogger;
 
 fn is_replay_diagnostic(message: &str) -> bool {
+    // Every env-gated probe family in `algo::builder::fill_images_faces`
+    // (see its module docs' "Diagnostic probes" section) must be listed
+    // here, or its records read as a false zero: the `log` machinery
+    // delivers them, but this filter drops them before printing.
+    // Unconditional `fill_images_faces:` progress lines are always listed;
+    // opt-in `BK_*` families only emit when their env var is set.
     message.contains("growth sliver")
         || message.contains("growth shell")
         || message.contains("FF_TRACE")
         || message.contains("SUBFACE")
         || message.contains("RAYTRACE")
         || message.contains("fill_images_faces:")
+        || message.contains("SECS face=")
+        || message.contains("SPLITW ")
+        || message.contains("WALLBAND ")
+        || message.contains("PAVES curve#")
+        || message.contains("ARC nurbs hits=")
+        || message.contains("CLIP face=")
 }
 
 impl log::Log for DropLogger {
@@ -105,6 +117,23 @@ mod tests {
         assert!(is_replay_diagnostic(
             "fill_images_faces: face Id(42) has_sections=true sections=3"
         ));
+    }
+
+    /// Every env-gated probe family in `fill_images_faces.rs` must pass the
+    /// replay content filter: the B11 false-zero was an unlisted prefix
+    /// reading as zero delivered records, not a logging defect.
+    #[test]
+    fn env_gated_probe_families_pass_the_content_filter() {
+        for probe in [
+            "SECS face=Id(9) sec[0] (1.000,2.000,3.000)->(4.000,5.000,6.000)",
+            "SPLITW piece[0] rev=false uv_area=1.0000 n_area=1.0000",
+            "WALLBAND empty sec[0] Line trim=None (1.0000,2.0000,3.0000)->(4.0000,5.0000,6.0000)",
+            "PAVES curve#3 Line pb=Id(7) (1.0000,2.0000,3.0000)->(4.0000,5.0000,6.0000) extra=0",
+            "ARC nurbs hits=2 s0=0.1000 sN=-0.2000 es=(1.000,2.000,3.000) ee=(4.000,5.000,6.000)",
+            "CLIP face=Id(9) line=(1.000,2.000,3.000)->(4.000,5.000,6.000) crossings=[0.5] ext=None",
+        ] {
+            assert!(is_replay_diagnostic(probe), "probe filtered out: {probe}");
+        }
     }
 }
 

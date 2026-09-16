@@ -59,6 +59,49 @@ absent from the document). The byte-identity oracle caught serde_json
 losing the last bit of arbitrary f64 tolerances without the
 `float_roundtrip` feature, which is now enabled workspace-wide.
 
+`tessellation` builds a bounded unplaced primitive leaf from `shapegen`
+(leaves only — a rigid placement can rotate a sphere's seam/pole frame out
+of the tessellator's weld alignment, and a misclassified boolean hands the
+mesher a wrong-but-closed solid; both failure classes are owned elsewhere)
+and tessellates it at two deflections a factor of four apart. The oracle is
+independent of the mesher under test: the hand-derived closed-form volume
+that `shapegen::build_prim_measured` returns alongside each primitive. The
+signed mesh volume at both deflections must agree with the closed form
+within `VOL_SLACK`, the finer deflection must not diverge from it, and the
+index buffer must be structurally sound (non-empty, valid indices).
+**A typed refusal is a pass.** Its corpus covers all five primitive kinds.
+
+`curve_intersection` builds a bounded NURBS curve and a bounded NURBS
+surface from the fuzzer's bytes (small degree, few control points,
+coordinates on a coarse lattice so near-degeneracy is common) and runs
+`intersect_curve_surface`. The oracle is independent of the solver under
+test: every reported hit must satisfy BOTH geometries —
+`curve.evaluate(hit.t)` and `surface.evaluate(hit.uv)` each within 1e-4 of
+`hit.point`. A hit on only one geometry (or neither), or a non-finite hit,
+is a finding; constructor or solver `Err` is a pass.
+
+`offset` builds a bounded primitive (never a boolean result — compound
+operands entangle offset defects with boolean misclassification, owned by
+`boolean_tree`), places it rigidly, and offsets it by a small signed
+distance. The oracle is independent of the offset machinery under test:
+the result must be a closed 2-manifold whose measured volume moves in the
+right direction (outward grows, inward shrinks, within slack at ~zero) and
+stays under the one-sided convex ceiling `2·(V + A·|d|)`, which admits exact
+second-order edge/corner growth while catching wrong-way offsets and gross
+volume inflation. Typed refusal (offset, construction, or measurement) is
+a pass.
+
+`gcs` builds a small sketch from the fuzzer's bytes — 2–5 points on a
+coarse lattice, lines over them, and three constraints drawn from the six
+geometrically re-checkable kinds (coincident, distance, horizontal,
+vertical, fix-X, fix-Y; the angular kinds are out of scope and never
+constructed) — then runs the solver. The oracle is independent of the
+solver under test: when the solver reports `converged`, every constraint
+is re-evaluated geometrically from the solved point positions with
+hand-written residual functions, within 1e-6. A converged-but-violated
+system, or non-finite solved positions, is a finding; builder or solver
+`Err` (including non-convergence) is a pass.
+
 Run one target locally with nightly Rust and `cargo-fuzz`:
 
 ```bash
@@ -67,7 +110,9 @@ cargo +nightly fuzz run nurbs_surface -- -max_total_time=60 -rss_limit_mb=2048
 
 PR CI compiles every target. The scheduled `Fuzz Smoke` workflow runs the
 public model-reader, boolean-tree, modifier, NURBS-surface,
-topology-mutation, and arena-roundtrip campaigns for two minutes each and
+topology-mutation, arena-roundtrip, tessellation, curve-intersection,
+offset, and GCS campaigns for two minutes each and
 retains crash artifacts. `arena_reader` and `wasm_batch` currently compile
-in PR CI but are not scheduled; curve-intersection and offset-specific
-campaigns remain separate S4 follow-ups.
+in PR CI but are not scheduled. All four B19 engine slices (tessellation,
+curve-intersection, offset, GCS) landed with independent oracles,
+committed geometric seeds, and weekly scheduling in PR #441.

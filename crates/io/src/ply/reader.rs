@@ -273,9 +273,18 @@ fn parse_binary_body(
 
     let mut indices = Vec::new();
     let mut triangle_count = 0_usize;
-    for _ in 0..header.face_count {
+    for face_number in 0..header.face_count {
+        // A truncated face section used to end the mesh silently (`break`
+        // with `Ok`), handing back fewer faces than declared with no
+        // diagnostic — the ASCII path errors on short faces, and so does
+        // this one now.
         if offset >= body.len() {
-            break;
+            return Err(crate::IoError::ParseError {
+                reason: format!(
+                    "unexpected end of PLY face data at face {face_number} of {}",
+                    header.face_count
+                ),
+            });
         }
         let n_verts = body[offset] as usize;
         offset += 1;
@@ -285,7 +294,12 @@ fn parse_binary_body(
         ensure_limit("PLY triangles", triangle_count, limits.max_model_entities)?;
 
         if offset + n_verts * 4 > body.len() {
-            break;
+            return Err(crate::IoError::ParseError {
+                reason: format!(
+                    "unexpected end of PLY face data at face {face_number} of {}",
+                    header.face_count
+                ),
+            });
         }
 
         let mut face_indices = Vec::with_capacity(n_verts);
@@ -485,6 +499,24 @@ mod tests {
     fn missing_header_error() {
         let data = b"not a ply file";
         assert!(read_ply(data).is_err());
+    }
+
+    /// A truncated binary face section used to end the mesh silently with
+    /// `Ok` and fewer faces than declared (E-6). The ASCII path errors on
+    /// short faces; the binary path does too now.
+    #[test]
+    fn rejects_truncated_binary_face_section() {
+        // 1 vertex, 100 declared faces, zero face bytes.
+        let mut data = b"ply\nformat binary_little_endian 1.0\nelement vertex 1\nproperty float x\nproperty float y\nproperty float z\nelement face 100\nproperty list uchar int vertex_indices\nend_header\n"
+            .to_vec();
+        data.extend_from_slice(&0.0f32.to_le_bytes());
+        data.extend_from_slice(&0.0f32.to_le_bytes());
+        data.extend_from_slice(&0.0f32.to_le_bytes());
+        let err = read_ply(&data).unwrap_err();
+        assert!(
+            matches!(err, crate::IoError::ParseError { .. }),
+            "truncated binary faces must error, got {err}"
+        );
     }
 
     #[test]

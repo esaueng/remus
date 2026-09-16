@@ -107,23 +107,42 @@ impl Sketch {
     /// Converts to a `GcsSystem`, solves, and writes positions back.
     ///
     /// # Errors
-    /// Returns `SketchError` if an entity handle is invalid.
+    /// Returns `SketchError` if an entity handle is invalid, or if a stored
+    /// point coordinate is NaN or infinite (`InvalidValue`).
+    ///
+    /// # Panics
+    ///
+    /// Never panics on finite input. The internal `expect` below fires only
+    /// if `GcsSystem::add_point` rejects a coordinate this function already
+    /// validated — i.e. on a kernel-internal inconsistency, not on caller
+    /// input.
     pub fn solve(
         &mut self,
         max_iterations: usize,
         tolerance: f64,
     ) -> Result<SolveResult, SketchError> {
+        for p in &self.points {
+            if !p.x.is_finite() || !p.y.is_finite() {
+                return Err(SketchError::InvalidValue);
+            }
+        }
         let mut sys = GcsSystem::new();
 
         let point_ids: Vec<PointId> = self
             .points
             .iter()
             .map(|p| {
-                sys.add_point(PointData {
-                    x: p.x,
-                    y: p.y,
-                    fixed: p.fixed,
-                })
+                // Validated finite above; `expect` guards a kernel-internal
+                // inconsistency, never caller input (see # Panics).
+                #[allow(clippy::expect_used)]
+                let id = sys
+                    .add_point(PointData {
+                        x: p.x,
+                        y: p.y,
+                        fixed: p.fixed,
+                    })
+                    .expect("legacy Sketch point must be finite");
+                id
             })
             .collect();
 
