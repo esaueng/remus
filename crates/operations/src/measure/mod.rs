@@ -668,36 +668,43 @@ mod tests {
         }
     }
 
-    /// Ellipse moments are not yet on the exact boundary path. Preserve the
-    /// established high-resolution fallback rather than accidentally routing
-    /// them through the check crate's coarser generic polygon outline.
+    /// Ellipse boundaries are on the exact Green-theorem path: a full
+    /// ellipse disc measures to the closed form at every scale and
+    /// deflection. (Previously this test pinned the 256-sample fallback at
+    /// 2e-4; the exact path holds 1e-12.)
     #[test]
-    fn elliptical_planar_face_keeps_high_resolution_fallback() {
+    fn elliptical_planar_face_is_exact_across_scale_and_deflection() {
         use remus_math::vec::{Point3, Vec3};
         use remus_topology::builder::{make_ellipse_edge, make_planar_face_from_wire};
         use remus_topology::wire::{OrientedEdge, Wire};
         use std::f64::consts::PI;
 
-        let mut topo = Topology::new();
-        let edge = make_ellipse_edge(
-            &mut topo,
-            Point3::new(0.0, 0.0, 0.0),
-            Vec3::new(0.0, 0.0, 1.0),
-            5.0,
-            2.0,
-            1e-7,
-        )
-        .unwrap();
-        let wire = Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap();
-        let wire_id = topo.add_wire(wire);
-        let face = make_planar_face_from_wire(&mut topo, wire_id).unwrap();
+        for scale in [1e-3_f64, 1.0, 1e3] {
+            let (a, b) = (5.0 * scale, 2.0 * scale);
+            let mut topo = Topology::new();
+            let edge = make_ellipse_edge(
+                &mut topo,
+                Point3::new(0.0, 0.0, 0.0),
+                Vec3::new(0.0, 0.0, 1.0),
+                a,
+                b,
+                1e-7,
+            )
+            .unwrap();
+            let wire = Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap();
+            let wire_id = topo.add_wire(wire);
+            let face = make_planar_face_from_wire(&mut topo, wire_id).unwrap();
+            let expected = PI * a * b;
 
-        assert_rel(
-            face_area(&topo, face, 1e6).unwrap(),
-            PI * 5.0 * 2.0,
-            2e-4,
-            "sampled ellipse area compatibility",
-        );
+            for deflection in [scale * 1e-6, scale * 1e3] {
+                assert_rel(
+                    face_area(&topo, face, deflection).unwrap(),
+                    expected,
+                    1e-12,
+                    "exact ellipse disc area",
+                );
+            }
+        }
     }
 
     /// Sphere surface area = 4*pi*r^2. r=5 -> SA = 100*pi ~ 314.16.

@@ -57,11 +57,12 @@ pub struct FaceContribution {
 ///
 /// # Accuracy
 ///
-/// * **Planar faces** bounded entirely by lines, circular arcs, and ellipses are exact:
-///   `integrate_planar_face_exact` integrates the boundary in closed form by
-///   Green's theorem, holes included. Any other edge type on any of the face's
-///   wires drops the whole face to the chord-polygon fan path, which
-///   under-counts a circular cap by its sagitta area.
+/// * **Planar faces** bounded entirely by lines, circular arcs, ellipses,
+///   parabolas, hyperbolas, and NURBS arcs recognized as one of those forms
+///   are exact: `integrate_planar_face_exact` integrates the boundary in
+///   closed form by Green's theorem, holes included. Any other edge type on
+///   any of the face's wires drops the whole face to the chord-polygon fan
+///   path, which under-counts a circular cap by its sagitta area.
 /// * **Quadric faces** that span a full revolution, or whose boundary does not
 ///   trim the analytic domain, are integrated over that domain by composite
 ///   Gauss quadrature, converged to machine precision at the default order.
@@ -1652,13 +1653,46 @@ fn planar_wire_monomial_moments(
                     e2,
                 );
             }
-            // Refused, not approximated. A hyperbola's integrand is
-            // transcendental (cosh/sinh), so no fixed Gauss rule is exact
-            // for it the way it is for circles and parabolas. Returning
-            // `None` routes the whole face to the sampled fallback rather
-            // than reporting a quadrature error as an exact result.
-            EdgeCurve::Hyperbola(_) | EdgeCurve::NurbsCurve(_) => {
-                return Ok(None);
+            EdgeCurve::Hyperbola(h) => {
+                // A hyperbola branch is `P(t) = C + a·cosh(t)·u + b·sinh(t)·v`:
+                // transcendental, so no fixed Gauss rule is exact for it the
+                // way it is for circles and parabolas. The span is chunked in
+                // the dimensionless parameter `t` (scale-invariant, exactly
+                // like `Hyperbola3D::arc_length`) so 16-point Gauss on each
+                // ≤ 0.5 chunk converges the degree-≤7 moment integrands to
+                // ~1e-12 relative, independent of model scale.
+                let (t0, t1) = edge
+                    .strict_domain()
+                    .map_err(crate::error::edge_domain_validation)?;
+                accumulate_hyperbola_green_segments(
+                    &mut moments,
+                    h,
+                    (t0, t1),
+                    dir_sign,
+                    origin,
+                    e1,
+                    e2,
+                );
+            }
+            EdgeCurve::NurbsCurve(nc) => {
+                // A NURBS boundary that curve recognition identifies as a
+                // line, circle, ellipse, hyperbola, or parabola IS that curve
+                // to recognition tolerance, so it integrates through the
+                // recognized form's exact arm rather than dropping the whole
+                // face to the chord-polygon fallback. An unrecognized NURBS
+                // still refuses (`None`), exactly as before.
+                if !accumulate_recognized_nurbs_green_segment(
+                    &mut moments,
+                    nc,
+                    edge,
+                    topo,
+                    dir_sign,
+                    origin,
+                    e1,
+                    e2,
+                )? {
+                    return Ok(None);
+                }
             }
         }
     }
@@ -1670,6 +1704,544 @@ fn planar_wire_monomial_moments(
         }
     }
     Ok(Some(moments))
+}
+
+/// Maximum `t`-span of one hyperbola quadrature chunk.
+///
+/// `t` is dimensionless (`P(t) = C + a·cosh(t)·u + b·sinh(t)·v`), so this
+/// chunks the geometry independent of model scale — the same convention
+/// [`remus_math::curves::Hyperbola3D::arc_length`] uses. Sixteen-point Gauss
+/// on a ≤ 0.5 chunk resolves the degree-≤7 moment integrands
+/// (`s^{i+1}/(i+1) · t^j · t'(u)`, `i + j ≤ 3`) to ~1e-12 relative.
+const HYPERBOLA_GREEN_MAX_CHUNK: f64 = 0.5;
+
+/// Gauss order of one hyperbola quadrature chunk (exact through degree 31,
+/// far past the degree-≤7 moment integrands).
+const HYPERBOLA_GREEN_ORDER: usize = 16;
+
+/// Integrate one hyperbola arc's Green's-theorem contribution.
+///
+/// Splits `(t0, t1)` into chunks of at most [`HYPERBOLA_GREEN_MAX_CHUNK`] in
+/// `t` and applies [`accumulate_green_segment`] to each, so the result is
+/// scale-invariant: a uniformly scaled hyperbola carries the same `t` span
+/// and the same chunking.
+#[allow(clippy::too_many_arguments)]
+fn accumulate_hyperbola_green_segments(
+    moments: &mut [f64; 10],
+    h: &remus_math::curves::Hyperbola3D,
+    range: (f64, f64),
+    dir_sign: f64,
+    origin: Point3,
+    e1: Vec3,
+    e2: Vec3,
+) {
+    let (t0, t1) = range;
+    let span = t1 - t0;
+    if !span.is_finite() || span == 0.0 {
+        return;
+    }
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let chunks = ((span.abs() / HYPERBOLA_GREEN_MAX_CHUNK).ceil() as usize).max(1);
+    #[allow(clippy::cast_precision_loss)]
+    let dt = span / chunks as f64;
+    for i in 0..chunks {
+        #[allow(clippy::cast_precision_loss)]
+        let a = dt.mul_add(i as f64, t0);
+        accumulate_green_segment(
+            moments,
+            (a, a + dt),
+            HYPERBOLA_GREEN_ORDER,
+            dir_sign,
+            |u| (h.evaluate(u), h.tangent(u)),
+            origin,
+            e1,
+            e2,
+        );
+    }
+}
+
+/// Integrate one NURBS edge's Green's-theorem contribution through its
+/// recognized analytic form.
+///
+/// Returns `Ok(true)` when the curve was recognized and accumulated,
+/// `Ok(false)` when it was not recognized (the caller refuses the exact
+/// path, exactly as it did for every NURBS edge before).
+#[allow(clippy::too_many_arguments)]
+fn accumulate_recognized_nurbs_green_segment(
+    moments: &mut [f64; 10],
+    nc: &remus_math::nurbs::curve::NurbsCurve,
+    edge: &remus_topology::edge::Edge,
+    topo: &Topology,
+    dir_sign: f64,
+    origin: Point3,
+    e1: Vec3,
+    e2: Vec3,
+) -> Result<bool, CheckError> {
+    use remus_geometry::convert::{RecognizedCurve, recognize_curve};
+
+    // Scale-relative recognition tolerance: an absolute tolerance makes
+    // recognition depend on model size. The NURBS control hull sets the
+    // scale — the edge's own vertices cannot: a closed edge's coincide, so
+    // their distance is zero at every model scale. Floored so degenerate
+    // curves cannot drive the tolerance to zero.
+    let start = topo.vertex(edge.start())?.point();
+    let end = topo.vertex(edge.end())?.point();
+    let mut extent: f64 = (end - start).length();
+    for p in nc.control_points() {
+        extent = extent.max((*p - start).length());
+    }
+    let extent = extent.max(1e-12);
+    let tolerance = (extent * 1e-9).max(1e-12);
+    // Recognition is a least-squares fit: verify the fit before trusting
+    // it. The check resamples the NURBS and measures the worst deviation
+    // from the recognized curve in units of the edge extent; anything above
+    // 1e-6 refuses the exact path. This is what keeps a near-hyperbola
+    // ellipse fit (or any wrong-form fit) from integrating the wrong arc
+    // exactly.
+    let recognized = recognize_curve(nc, tolerance);
+    if !nurbs_recognition_verifies(nc, edge, topo, &recognized, extent)? {
+        return Ok(false);
+    }
+    match recognized {
+        RecognizedCurve::Line { .. } => {
+            let d = end - start;
+            accumulate_green_segment(
+                moments,
+                (0.0, 1.0),
+                8,
+                dir_sign,
+                |u| (start + d * u, d),
+                origin,
+                e1,
+                e2,
+            );
+            Ok(true)
+        }
+        RecognizedCurve::Circle { center, radius, .. } => {
+            accumulate_recognized_circle_green_segments(
+                moments, center, radius, nc, edge, dir_sign, origin, e1, e2,
+            );
+            Ok(true)
+        }
+        RecognizedCurve::Ellipse {
+            center,
+            normal,
+            u_axis,
+            semi_major,
+            semi_minor,
+        } => {
+            let ellipse = remus_math::curves::Ellipse3D::with_axes(
+                center,
+                normal,
+                semi_major,
+                semi_minor,
+                u_axis,
+                normal.cross(u_axis),
+            )
+            .map_err(|_| {
+                CheckError::IntegrationFailed("recognized ellipse is degenerate".into())
+            })?;
+            accumulate_recognized_periodic_green_segments(
+                moments,
+                &|u| (ellipse.evaluate(u), ellipse.tangent(u)),
+                nc,
+                edge,
+                dir_sign,
+                origin,
+                e1,
+                e2,
+            );
+            Ok(true)
+        }
+        RecognizedCurve::Hyperbola {
+            center,
+            normal,
+            u_axis,
+            semi_major,
+            semi_minor,
+        } => {
+            let hyperbola = remus_math::curves::Hyperbola3D::with_axes(
+                center, normal, u_axis, semi_major, semi_minor,
+            )
+            .map_err(|_| {
+                CheckError::IntegrationFailed("recognized hyperbola is degenerate".into())
+            })?;
+            // The recognized branch is unbounded like any hyperbola: the
+            // NURBS parameter range trims it, so bracket the edge endpoints
+            // on the recognized curve. `Hyperbola3D::project` inverts the
+            // `v` coordinate exactly, but the `u` coordinate only agrees to
+            // recognition tolerance — verify the round trip before trusting
+            // the span, or a mis-recognized curve integrates the wrong arc
+            // exactly. Falls back to refusal (`Ok(false)`) on mismatch.
+            let t0 = hyperbola.project(start);
+            let t1 = hyperbola.project(end);
+            let roundtrip =
+                (hyperbola.evaluate(t0) - start).length() + (hyperbola.evaluate(t1) - end).length();
+            if roundtrip > tolerance.max(extent * 1e-6) {
+                return Ok(false);
+            }
+            accumulate_hyperbola_green_segments(
+                moments,
+                &hyperbola,
+                (t0, t1),
+                dir_sign,
+                origin,
+                e1,
+                e2,
+            );
+            Ok(true)
+        }
+        RecognizedCurve::Parabola {
+            vertex,
+            axis_dir,
+            focal_length,
+            ..
+        } => {
+            // The recognizer reports the axis and focal length but not the
+            // in-plane direction; recover it from the edge endpoints (the
+            // chord of a parabolic arc is never parallel to the axis).
+            let axis = axis_dir.normalize().map_err(|_| {
+                CheckError::IntegrationFailed("recognized parabola axis is degenerate".into())
+            })?;
+            let chord = end - start;
+            let u_axis = (chord - axis * chord.dot(axis)).normalize().map_err(|_| {
+                CheckError::IntegrationFailed(
+                    "recognized parabola chord is parallel to its axis".into(),
+                )
+            })?;
+            let parabola =
+                remus_math::curves::Parabola3D::with_axes(vertex, axis, u_axis, focal_length)
+                    .map_err(|_| {
+                        CheckError::IntegrationFailed("recognized parabola is degenerate".into())
+                    })?;
+            let t0 = parabola.project(start);
+            let t1 = parabola.project(end);
+            accumulate_green_segment(
+                moments,
+                (t0, t1),
+                16,
+                dir_sign,
+                |u| (parabola.evaluate(u), parabola.tangent(u)),
+                origin,
+                e1,
+                e2,
+            );
+            Ok(true)
+        }
+        RecognizedCurve::NotRecognized => Ok(false),
+    }
+}
+
+/// Verify a NURBS recognition fit by resampling.
+///
+/// Evaluates the NURBS at 17 evenly spaced parameters (the fitter's own 16
+/// samples plus the midpoint bias it cannot see), projects each sample onto
+/// the recognized curve, and returns whether the worst deviation is within
+/// `1e-6` of the edge extent. A wrong-form fit — e.g. an ellipse reported
+/// for a hyperbola arc — misses by orders of magnitude more, so this is a
+/// verification, not a second tolerance knob.
+#[allow(clippy::float_cmp)]
+fn nurbs_recognition_verifies(
+    nc: &remus_math::nurbs::curve::NurbsCurve,
+    edge: &remus_topology::edge::Edge,
+    topo: &Topology,
+    recognized: &remus_geometry::convert::RecognizedCurve,
+    extent: f64,
+) -> Result<bool, CheckError> {
+    use remus_geometry::convert::RecognizedCurve;
+
+    const SAMPLES: usize = 17;
+
+    if matches!(recognized, RecognizedCurve::NotRecognized) {
+        return Ok(true);
+    }
+    // Closed edge: sample the full NURBS domain; open edge: sample the
+    // stored trim span so the verification covers the traced arc.
+    let (t0, t1) = if edge.start() == edge.end() {
+        nc.domain()
+    } else {
+        match edge.strict_domain() {
+            Ok(span) => span,
+            Err(_) => nc.domain(),
+        }
+    };
+    if !(t0.is_finite() && t1.is_finite()) || t0 == t1 {
+        return Ok(false);
+    }
+    let mut worst: f64 = 0.0;
+    for k in 0..SAMPLES {
+        #[allow(clippy::cast_precision_loss)]
+        let t = (t1 - t0).mul_add(k as f64 / (SAMPLES - 1) as f64, t0);
+        let p = nc.evaluate(t);
+        let q = match recognized {
+            RecognizedCurve::Line { origin, direction } => {
+                let rel = p - *origin;
+                *origin + *direction * rel.dot(*direction)
+            }
+            RecognizedCurve::Circle { center, radius, .. } => {
+                let rel = p - *center;
+                let len = rel.length();
+                if len < 1e-30 {
+                    *center
+                } else {
+                    *center + rel * (*radius / len)
+                }
+            }
+            RecognizedCurve::Ellipse {
+                center,
+                normal,
+                u_axis,
+                semi_major,
+                semi_minor,
+            } => {
+                let Ok(ellipse) = remus_math::curves::Ellipse3D::with_axes(
+                    *center,
+                    *normal,
+                    *semi_major,
+                    *semi_minor,
+                    *u_axis,
+                    normal.cross(*u_axis),
+                ) else {
+                    return Ok(false);
+                };
+                ellipse.evaluate(ellipse.project(p))
+            }
+            RecognizedCurve::Hyperbola {
+                center,
+                normal,
+                u_axis,
+                semi_major,
+                semi_minor,
+            } => {
+                let Ok(hyperbola) = remus_math::curves::Hyperbola3D::with_axes(
+                    *center,
+                    *normal,
+                    *u_axis,
+                    *semi_major,
+                    *semi_minor,
+                ) else {
+                    return Ok(false);
+                };
+                hyperbola.evaluate(hyperbola.project(p))
+            }
+            RecognizedCurve::Parabola {
+                vertex, axis_dir, ..
+            } => {
+                // Nearest-point projection onto a parabola needs a solve;
+                // the axis-coordinate inversion is exact on-curve, and the
+                // residual below still separates a true parabola fit (which
+                // reproduces every sample to ~1e-12) from a wrong-form fit.
+                let Ok(axis) = axis_dir.normalize() else {
+                    return Ok(false);
+                };
+                let rel = p - *vertex;
+                *vertex + axis * rel.dot(axis)
+            }
+            RecognizedCurve::NotRecognized => p,
+        };
+        worst = worst.max((p - q).length());
+        if worst > extent * 1e-6 {
+            return Ok(false);
+        }
+    }
+    // The parabola arm above only checks the axis coordinate, so confirm
+    // the transverse coordinate too: rebuild the parabola (as the caller
+    // does) and check the full 3D round trip.
+    if let RecognizedCurve::Parabola {
+        vertex,
+        axis_dir,
+        focal_length,
+        ..
+    } = recognized
+    {
+        let start = topo.vertex(edge.start())?.point();
+        let end = topo.vertex(edge.end())?.point();
+        let Ok(axis) = axis_dir.normalize() else {
+            return Ok(false);
+        };
+        let chord = end - start;
+        let Ok(u_axis) = (chord - axis * chord.dot(axis)).normalize() else {
+            return Ok(false);
+        };
+        let Ok(parabola) =
+            remus_math::curves::Parabola3D::with_axes(*vertex, axis, u_axis, *focal_length)
+        else {
+            return Ok(false);
+        };
+        for k in 0..SAMPLES {
+            #[allow(clippy::cast_precision_loss)]
+            let t = (t1 - t0).mul_add(k as f64 / (SAMPLES - 1) as f64, t0);
+            let p = nc.evaluate(t);
+            let q = parabola.evaluate(parabola.project(p));
+            if (p - q).length() > extent * 1e-6 {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
+}
+
+/// Integrate a NURBS edge recognized as a circle.
+///
+/// The recognized circle fixes the center and radius; the NURBS parameter
+/// range trims the arc. Endpoints are projected onto the circle for the
+/// angular span (a closed edge takes the full turn), chunked to ≤ π/2 per
+/// chunk exactly like the native circle arm.
+#[allow(clippy::too_many_arguments)]
+fn accumulate_recognized_circle_green_segments(
+    moments: &mut [f64; 10],
+    center: Point3,
+    radius: f64,
+    nc: &remus_math::nurbs::curve::NurbsCurve,
+    edge: &remus_topology::edge::Edge,
+    dir_sign: f64,
+    origin: Point3,
+    e1: Vec3,
+    e2: Vec3,
+) {
+    use remus_math::curves::Circle3D;
+    // Closed edge (coincident vertices): the full turn. The span is the
+    // edge's stored trim, not the NURBS full domain: a closed edge on a
+    // shared curve traces the trim, and sampling the domain instead would
+    // integrate the wrong arc.
+    let closed = edge.start() == edge.end();
+    let (a0, span) = if closed {
+        (0.0, std::f64::consts::TAU)
+    } else {
+        // Angular span of the edge's own trim about the recognized center,
+        // measured at the edge endpoints in the circle's own plane, in the
+        // Green's angle convention `atan2(v·e2, v·e1)` the rebuilt circle
+        // integrates in. The endpoints (not the NURBS domain ends) bound
+        // the traced arc.
+        let Ok((s0, s1)) = edge.strict_domain() else {
+            return;
+        };
+        let p0 = nc.evaluate(s0);
+        let p1 = nc.evaluate(s1);
+        let angle = |p: Point3| {
+            let v = p - center;
+            v.dot(e2).atan2(v.dot(e1))
+        };
+        let span = (angle(p1) - angle(p0)).rem_euclid(std::f64::consts::TAU);
+        let span = if span < 1e-12 {
+            std::f64::consts::TAU
+        } else {
+            span
+        };
+        (angle(p0), span)
+    };
+    // Rebuild a circle on the recognized center/radius in the face plane
+    // (`e1 × e2` is the plane normal by construction of the caller frame).
+    let normal = e1.cross(e2);
+    let Ok(circle) = Circle3D::new(center, normal, radius) else {
+        return;
+    };
+    // Rotate the evaluation phase so `a0` is the start: `Circle3D` starts at
+    // its own `u_axis`, which need not coincide with `e1`. The circle is
+    // rebuilt CCW about `normal = e1 × e2`, so its angle increases with the
+    // Green's angle `atan2(v·e2, v·e1)` and the shift is a rigid rotation.
+    let phase = {
+        let v = circle.evaluate(0.0) - center;
+        v.dot(e2).atan2(v.dot(e1))
+    };
+    let shift = a0 - phase;
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let chunks = ((span / std::f64::consts::FRAC_PI_2).ceil() as usize).clamp(1, 8);
+    let dt = span / chunks as f64;
+    let r = circle.radius();
+    for i in 0..chunks {
+        #[allow(clippy::cast_precision_loss)]
+        let a = dt.mul_add(i as f64, 0.0);
+        accumulate_green_segment(
+            moments,
+            (a, a + dt),
+            16,
+            dir_sign,
+            |u| {
+                let t = u + shift;
+                (circle.evaluate(t), circle.tangent(t) * r)
+            },
+            origin,
+            e1,
+            e2,
+        );
+    }
+}
+
+/// Integrate a NURBS edge recognized as an ellipse (or any periodic form
+/// evaluated through closures): chunk the edge's own trim span and evaluate
+/// the recognized curve at phase-matched parameters.
+///
+/// The edge trim (not the NURBS full domain) bounds the traced arc;
+/// endpoints are phase-matched onto the recognized periodic curve by
+/// nearest-angle projection, so the span is the arc the edge actually
+/// traces rather than a complement.
+#[allow(clippy::too_many_arguments)]
+fn accumulate_recognized_periodic_green_segments(
+    moments: &mut [f64; 10],
+    eval: &dyn Fn(f64) -> (Point3, Vec3),
+    nc: &remus_math::nurbs::curve::NurbsCurve,
+    edge: &remus_topology::edge::Edge,
+    dir_sign: f64,
+    origin: Point3,
+    e1: Vec3,
+    e2: Vec3,
+) {
+    let closed = edge.start() == edge.end();
+    let (a0, span) = if closed {
+        (0.0, std::f64::consts::TAU)
+    } else {
+        let Ok((s0, s1)) = edge.strict_domain() else {
+            return;
+        };
+        let p0 = nc.evaluate(s0);
+        let p1 = nc.evaluate(s1);
+        let angle = |p: Point3| {
+            let v = p - origin;
+            v.dot(e1).atan2(v.dot(e2))
+        };
+        let span = (angle(p1) - angle(p0)).rem_euclid(std::f64::consts::TAU);
+        let span = if span < 1e-12 {
+            std::f64::consts::TAU
+        } else {
+            span
+        };
+        (angle(p0), span)
+    };
+    // Phase-match: find the recognized-curve parameter whose in-plane angle
+    // is `a0` by scanning one turn (monotone angle for ellipse/circle).
+    let mut best = 0.0;
+    let mut best_err = f64::INFINITY;
+    for k in 0..1024 {
+        #[allow(clippy::cast_precision_loss)]
+        let t = std::f64::consts::TAU * k as f64 / 1024.0;
+        let (p, _) = eval(t);
+        let v = p - origin;
+        let err = (v.dot(e1).atan2(v.dot(e2)) - a0)
+            .rem_euclid(std::f64::consts::TAU)
+            .min((a0 - v.dot(e1).atan2(v.dot(e2))).rem_euclid(std::f64::consts::TAU));
+        if err < best_err {
+            best_err = err;
+            best = t;
+        }
+    }
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let chunks = ((span / std::f64::consts::FRAC_PI_2).ceil() as usize).clamp(1, 8);
+    let dt = span / chunks as f64;
+    for i in 0..chunks {
+        #[allow(clippy::cast_precision_loss)]
+        let a = dt.mul_add(i as f64, 0.0);
+        accumulate_green_segment(
+            moments,
+            (a, a + dt),
+            16,
+            dir_sign,
+            |u| eval(u + best),
+            origin,
+            e1,
+            e2,
+        );
+    }
 }
 
 /// Accumulate one boundary segment's Green's-theorem contribution to the
@@ -1719,6 +2291,31 @@ fn accumulate_green_segment<F>(
             moments[k] += w * s.powi(i + 1) / f64::from(i + 1) * t.powi(j);
         }
     }
+}
+
+/// Whether a NURBS boundary edge is recognized as an analytic form (line,
+/// circle, ellipse, hyperbola, or parabola) at a scale-relative tolerance.
+///
+/// Shared by [`wire_newell_normal`] and `planar_wire_monomial_moments`'s
+/// NURBS arm so both make the same routing decision for the same edge.
+fn nurbs_boundary_is_recognized(
+    nc: &remus_math::nurbs::curve::NurbsCurve,
+    edge: &remus_topology::edge::Edge,
+    topo: &Topology,
+) -> Result<bool, CheckError> {
+    use remus_geometry::convert::{RecognizedCurve, recognize_curve};
+
+    let start = topo.vertex(edge.start())?.point();
+    let mut extent: f64 = 0.0;
+    for p in nc.control_points() {
+        extent = extent.max((*p - start).length());
+    }
+    let extent = extent.max(1e-12);
+    let tolerance = (extent * 1e-9).max(1e-12);
+    Ok(!matches!(
+        recognize_curve(nc, tolerance),
+        RecognizedCurve::NotRecognized
+    ))
 }
 
 /// Newell normal of a wire's boundary, sampled densely enough that a wire
@@ -1791,11 +2388,32 @@ fn wire_newell_normal(
                     pts.push(p.evaluate((to - from).mul_add(f, from)));
                 }
             }
+            EdgeCurve::Hyperbola(h) => {
+                let (t0, t1) = edge
+                    .strict_domain()
+                    .map_err(crate::error::edge_domain_validation)?;
+                let (from, to) = if forward { (t0, t1) } else { (t1, t0) };
+                for k in 0..ARC_SAMPLES {
+                    let f = k as f64 / ARC_SAMPLES as f64;
+                    pts.push(h.evaluate((to - from).mul_add(f, from)));
+                }
+            }
             // Matches the refusal in `planar_wire_monomial_moments`: the
-            // exact path does not handle these edge types, so the normal it
-            // would produce is never used.
-            EdgeCurve::Hyperbola(_) | EdgeCurve::NurbsCurve(_) => {
-                return Ok(None);
+            // exact path does not handle unrecognized NURBS, so the normal
+            // it would produce is never used. A recognized NURBS takes the
+            // recognized form's arm below.
+            EdgeCurve::NurbsCurve(nc) => {
+                if !nurbs_boundary_is_recognized(nc, edge, topo)? {
+                    return Ok(None);
+                }
+                // Recognized: sample the NURBS itself (it IS the analytic
+                // form to recognition tolerance) for the plane determination.
+                let (t0, t1) = nc.domain();
+                let (from, to) = if forward { (t0, t1) } else { (t1, t0) };
+                for k in 0..ARC_SAMPLES {
+                    let f = k as f64 / ARC_SAMPLES as f64;
+                    pts.push(nc.evaluate((to - from).mul_add(f, from)));
+                }
             }
         }
     }
