@@ -643,8 +643,7 @@ impl BrepKernel {
     #[wasm_bindgen(js_name = "getEdgeParamSpan")]
     pub fn get_edge_param_span(&self, edge: u32) -> Result<Vec<f64>, JsError> {
         let edge_id = self.resolve_edge(edge)?;
-        let edge_data = self.topo.edge(edge_id)?;
-        let (t0, t1) = remus_operations::tessellate::edge_param_span(&self.topo, edge_data)?;
+        let (t0, t1) = remus_operations::query::trimmed_edge_domain(&self.topo, edge_id)?;
         Ok(vec![t0, t1])
     }
 
