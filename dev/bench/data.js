@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789536702825,
+  "lastUpdate": 1789537124424,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -36241,6 +36241,240 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 61113,
             "range": "± 680",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "966473c7b0973a817a66fd524c69d5816ed1f32f",
+          "message": "fix: review batch D-1, B-4, sketch NaN, transactions, io hardening, H-9b (#453)\n\n* fix(wasm): take batch draft angle in degrees like the direct binding\n\nThe batch \"draft\" op passed its \"angle\" straight to the kernel as\nradians while the direct draft binding, draftJournaled, and batch\ndraftJournaled all take degrees and convert. The same physical angle\nneeded different numbers per entry point: porting kernel.draft(..., 5)\nto executeBatch {angle: 5} issued a ~286-degree taper instead of 5\ndegrees, with no diagnostic that the unit changed.\n\nShare one parse_draft_angle_radians helper across all four entry\npoints so the units match by construction. Update the batch qualify\ntests to 5.0 degrees and add direct_and_batch_draft_match_in_degrees,\nwhich drafts 5 degrees through both entries and pins bit-identical\nvolumes against the closed form.\n\nBREAKING: batch \"draft\" callers passing radians must switch to\ndegrees.\n\nSigned-off-by: petergstfsn <171875562+petergstfsn@users.noreply.github.com>\n\n* fix(operations): keep cavities out of the multi-region Cut path\n\nface_components walks the outer shell only, and both the\nper-component split and the reassembly in cut_multi_region_input\ndrop cavity faces — a hollow input with two outer components lost\nits void silently (inner_shells 1->0, volume filled by the cavity).\n\nGate the multi-region Cut routing on the input having no inner\nshells, matching the Fuse tool gate below that names the same\nhazard. Hollow multi-piece inputs now take the single-shell GFA\npath instead.\n\nWhile testing this, the GFA multi-region acceptance rejected the\nnow-correct hollow result: it compared raw Euler against\n2 * outer_components, but cavity shells contribute their own +2\nsurplus (V-E+F = 6 over 2 outer components + 1 cavity). Compare\nnet of inner_shell_surplus, matching the single-component gate\nabove; otherwise hollow results route to the mesh fallback, which\ncannot represent cavities at all.\n\nAdd cut_multi_region_input_refuses_hollow_target: hollow 3^3+void\nfused with a disjoint cube (2 outer components, 1 cavity), tool\noverlapping only the plain piece. Asserts inner_shells == 1 and\nvolume 26.5; failed before (inner=0 via mesh fallback).\n\nSigned-off-by: petergstfsn <171875562+petergstfsn@users.noreply.github.com>\n\n* fix(sketch): reject non-finite inputs and propagate NaN residuals\n\nThe DogLeg solver folded residuals with f64::max, which drops NaN:\na NaN-poisoned system reported converged=true, max_residual=0.0,\niterations=0. The diagnostics layer already had a NaN-propagating\nfold with a comment naming exactly this trap; the solver decision\npath did not use it. Replace all four solver folds plus the n==0\nfast path with a NaN-propagating max_abs_residual so poisoned\nresiduals can only fail the convergence test.\n\nNearly every value-carrying entry point accepted NaN despite\nSketchError::InvalidValue existing for that purpose: add_point and\nadd_circle now return Result (InvalidValue on non-finite;\nnon-positive radius), and add_constraint validates every scalar\nargument (Distance, FixX/Y, PointLineDistance, Angle, ArcLength,\nCircleRadius) for finiteness. Update all in-repo callers (legacy\nSketch::solve pre-validates without changing its signature; both\nWASM sketch bindings map the new error; tests, example, and fuzz\ntarget carry expect on finite-by-construction inputs).\n\nAdd nan_point_never_reports_convergence (entry rejection plus\nsolver-level NaN propagation) and\nnon_finite_values_rejected_at_entry (every entry point, plus\nfinite-still-accepted).\n\nBREAKING: GcsSystem::add_point/add_circle now return Result.\nSigned-off-by: petergstfsn <171875562+petergstfsn@users.noreply.github.com>\n\n* fix(algo,operations,wasm): roll back failed evolution, split, and direct ops\n\nThree entry-point families could leave half-built topology behind\non refusal because they lacked the transaction wrapper their\nsiblings carry:\n\n- GFA boolean_with_face_origins, boolean_with_entity_evolution,\n  and boolean_regions_with_entity_evolution: the export phase\n  appends result entities to the caller arena before the\n  provenance-desync check runs. Wrap each (bodies move to *_impl,\n  public names unchanged). journal_ops::boolean_journaled was\n  already wrapped.\n- split_with_evolution (covering split): trimming mints connector\n  faces and each half assembles before the per-half gates and the\n  volume-sum veto, so a late refusal left half-built topology.\n- Direct WASM extrude, revolve, sweep, sweepWire, shell, and\n  thicken bindings: use with_topology_transaction like loft,\n  push-pull, pipe, and the batch dispatcher already do.\n\nAdd refused_split_leaves_topology_unchanged (entity counts plus\njournal snapshot) and\nrefused_evolution_boolean_leaves_topology_unchanged (operand counts\nplus arena totals across a deleted-handle refusal).\n\nSigned-off-by: petergstfsn <171875562+petergstfsn@users.noreply.github.com>\n\n* fix(io): close budget and truncation gaps in mesh and STEP readers\n\nEight related hostile-input findings, each with a crafted-input\nregression test:\n\n- glTF componentType out of u32 range no longer truncates via as\n  u32 (5123+2^32 decoded as uint16, silently reinterpreting index\n  width): the accessor is dropped so the read fails closed.\n- glTF POSITION/NORMAL/indices decoders verify declared count\n  against view byte length exactly, both directions. An\n  under-declared count previously defeated the entity budget while\n  the decoder materialized far more vertices.\n- OBJ u32::MAX+1 face index now rejected (off-by-one: the guard was\n  > MAX+1, so 4294967296 wrapped to vertex u32::MAX).\n- PLY binary truncated face section now errors like the ASCII path\n  instead of returning Ok with fewer faces than declared.\n- OBJ fan triangulation budgets the face before pushing N-2\n  triangles; vn lines count against the entity budget alongside v.\n- STEP StepBuilder carries ImportLimits and build_polyline budgets\n  its point-ref list (a 200k-ref POLYLINE allocated ~1.6 MB of refs\n  with only the input-bytes cap as a bound).\n- 3MF take(limit as u64 + 1) uses saturating_add (usize::MAX from a\n  saturated JS limit overflowed in debug, wrapped to take(0) in\n  release).\n\nSigned-off-by: petergstfsn <171875562+petergstfsn@users.noreply.github.com>\n\n* test(operations): characterize torus-box fuse orientation defect\n\nA torus x box Fuse is accepted Exact with 7 faces, correct volume,\nand a closed 2-manifold, yet faces whose stored winding disagrees\nwith the surface normal plus same-sense shared edges pass every\nacceptance gate: counts, Euler, manifold, representation, bounds,\nand result validation are all blind to orientation sense.\n\nThree gate shapes were tried against the boolean suite and all\nmisfire (57 / 45 / 28 healthy rejects): same-sense pairs fire on\nthe assembler reversed-face pairing convention, and winding-vs-normal\nfires on healthy tray and torus-notch results whose chord-sampled\nNewell polygons misread curved windings. Document the calibration\nin validate_boolean_result_with_tolerance so the next attempt does\nnot re-try a refuted gate, and pin the shape as a characterization\ntest (contract plus defect signature plus validator visibility)\nthat a future ground truth can flip to refusal. No behavior change.\n\nSigned-off-by: petergstfsn <171875562+petergstfsn@users.noreply.github.com>\n\n---------\n\nSigned-off-by: petergstfsn <171875562+petergstfsn@users.noreply.github.com>",
+          "timestamp": "2026-09-16T01:25:41-04:00",
+          "tree_id": "8f3897168da28a34e671eaa4560cf0693a3897e9",
+          "url": "https://github.com/esaueng/remus/commit/966473c7b0973a817a66fd524c69d5816ed1f32f"
+        },
+        "date": 1789537122592,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1046562,
+            "range": "± 2946",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1137639,
+            "range": "± 9858",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 22540,
+            "range": "± 458",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 9259766,
+            "range": "± 33730",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 9262210,
+            "range": "± 39982",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 8935767,
+            "range": "± 21547",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 881862,
+            "range": "± 2764",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 14776782,
+            "range": "± 46431",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 26501528,
+            "range": "± 263022",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 22,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 75,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 36,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 159,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 125,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 540,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 124,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 278,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 197,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 377,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 783,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 2106,
+            "range": "± 12",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 9,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 29,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 56,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 56,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 469242,
+            "range": "± 4419",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 8342378,
+            "range": "± 63432",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 146177,
+            "range": "± 1757",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 492571,
+            "range": "± 2457",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 82447,
+            "range": "± 229",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 818153,
+            "range": "± 4510",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 9436817,
+            "range": "± 85764",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 621486,
+            "range": "± 2443",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 973699,
+            "range": "± 9894",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 68721,
+            "range": "± 432",
             "unit": "ns/iter"
           }
         ]
