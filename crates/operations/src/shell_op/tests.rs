@@ -2,7 +2,8 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::print_stderr,
-    clippy::cast_possible_wrap
+    clippy::cast_possible_wrap,
+    clippy::panic
 )]
 
 use remus_math::tolerance::Tolerance;
@@ -1145,6 +1146,257 @@ fn shell_emits_no_same_sense_edge_pairs() {
         same_sense_pair_count(&t3, shelled_box),
         0,
         "shelled box must be strictly consistently wound"
+    );
+}
+
+/// B25 scale matrix: shell volume matches closed forms at 1e-3, 1, and 1e3.
+///
+/// Box (closed hollow), cylinder cup (open top), and hollow sphere each
+/// carry exact analytic inner skins — planes, re-radiused cylinders, and
+/// re-radiused spheres — so the shelled volume must equal the closed form
+/// at every scale, not merely at unit size. Two deflections per cell pin
+/// convergence rather than a single clamped tessellation.
+#[test]
+fn shell_scale_matrix_matches_closed_forms() {
+    let pi = std::f64::consts::PI;
+    for scale in [1e-3_f64, 1.0, 1e3] {
+        // Closed hollow box 10³ − 8³.
+        let mut topo = Topology::new();
+        let bx = crate::primitives::make_box(&mut topo, 10.0 * scale, 10.0 * scale, 10.0 * scale)
+            .unwrap();
+        let hollow = shell(&mut topo, bx, 1.0 * scale, &[]).unwrap();
+        let expected = (10.0 * scale).powi(3) - (8.0 * scale).powi(3);
+        for deflection in [0.001 * scale, 0.0001 * scale] {
+            let vol = crate::measure::solid_volume(&topo, hollow, deflection).unwrap();
+            assert!(
+                (vol - expected).abs() / expected < 1e-6,
+                "scale={scale:e} box hollow: {vol} vs closed form {expected}"
+            );
+        }
+
+        // Open-top cylinder cup: wall π(R²−r²)h plus floor πr²t.
+        let mut topo = Topology::new();
+        let cyl = crate::primitives::make_cylinder(&mut topo, 5.0 * scale, 12.0 * scale).unwrap();
+        let top = find_faces_by_normal(&topo, cyl, Vec3::new(0.0, 0.0, 1.0));
+        assert_eq!(top.len(), 1);
+        let cup = shell(&mut topo, cyl, 1.0 * scale, &top).unwrap();
+        let expected = pi * ((25.0 - 16.0) * 12.0 + 16.0 * 1.0) * scale.powi(3);
+        for deflection in [0.001 * scale, 0.0001 * scale] {
+            let vol = crate::measure::solid_volume(&topo, cup, deflection).unwrap();
+            // Curved-wall tessellation leaves ~1e-6 relative at millimetre
+            // scale; the bound below separates that from real drift.
+            assert!(
+                (vol - expected).abs() / expected < 1e-5,
+                "scale={scale:e} cylinder cup: {vol} vs closed form {expected}"
+            );
+        }
+
+        // Closed hollow sphere 4/3·π(R³−r³).
+        let mut topo = Topology::new();
+        let sph = crate::primitives::make_sphere(&mut topo, 6.0 * scale, 24).unwrap();
+        let hollow = shell(&mut topo, sph, 1.0 * scale, &[]).unwrap();
+        let expected = 4.0 / 3.0 * pi * (216.0 - 125.0) * scale.powi(3);
+        for deflection in [0.001 * scale, 0.0001 * scale] {
+            let vol = crate::measure::solid_volume(&topo, hollow, deflection).unwrap();
+            assert!(
+                (vol - expected).abs() / expected < 1e-6,
+                "scale={scale:e} hollow sphere: {vol} vs closed form {expected}"
+            );
+        }
+    }
+}
+
+/// B25 filleted-box shell: vertical corner cylinders offset exactly.
+///
+/// A box with its four vertical edges filleted (r=2) carries exact cylinder
+/// inner skins at r−t after shelling, so the open-top shelled volume must
+/// match the closed form (outer filleted volume minus the open-top cavity
+/// with shrunk corner radius), and every ray-cast probe must agree with the
+/// intended material: cavity points Outside, wall points Inside.
+#[test]
+fn shell_filleted_box_matches_closed_form_and_classification() {
+    let mut topo = Topology::new();
+    let body = crate::primitives::make_box(&mut topo, 40.0, 20.0, 10.0).unwrap();
+    let edges = remus_topology::explorer::solid_edges(&topo, body).unwrap();
+    let vertical: Vec<_> = edges
+        .into_iter()
+        .filter(|edge| {
+            let data = topo.edge(*edge).unwrap();
+            let a = topo.vertex(data.start()).unwrap().point();
+            let b = topo.vertex(data.end()).unwrap().point();
+            (a.x() - b.x()).abs() < 1e-9 && (a.y() - b.y()).abs() < 1e-9
+        })
+        .collect();
+    assert_eq!(vertical.len(), 4);
+    let filleted = crate::blend_ops::fillet_v2(&mut topo, body, &vertical, 2.0)
+        .unwrap()
+        .solid;
+    let top = find_faces_by_normal(&topo, filleted, Vec3::new(0.0, 0.0, 1.0));
+    assert_eq!(top.len(), 1);
+    let shelled = shell(&mut topo, filleted, 0.5, &top).unwrap();
+
+    // Inner cylinder skins must carry the shrunk radius r−t = 1.5.
+    let mut inner_radii: Vec<f64> = Vec::new();
+    for fid in remus_topology::explorer::solid_faces(&topo, shelled).unwrap() {
+        if let FaceSurface::Cylinder(cyl) = topo.face(fid).unwrap().surface() {
+            inner_radii.push(cyl.radius());
+        }
+    }
+    assert!(
+        inner_radii.iter().any(|r| (*r - 1.5).abs() < 1e-9),
+        "inner corner cylinders must carry r−t = 1.5, got {inner_radii:?}"
+    );
+
+    // Closed form: outer filleted volume minus the open-top cavity
+    // (39×19×9.5 box with four r=1.5 corner columns removed).
+    let pi = std::f64::consts::PI;
+    let outer = crate::measure::solid_volume(&topo, filleted, 0.001).unwrap();
+    let cavity = 39.0 * 19.0 * 9.5 - 4.0 * (1.5 * 1.5 * (1.0 - pi / 4.0)) * 9.5;
+    let expected = outer - cavity;
+    for deflection in [0.001, 0.0001] {
+        let vol = crate::measure::solid_volume(&topo, shelled, deflection).unwrap();
+        assert!(
+            (vol - expected).abs() / expected < 1e-6,
+            "filleted open-top shell: {vol} vs closed form {expected}"
+        );
+    }
+
+    let report = crate::validate::validate_solid(&topo, shelled).unwrap();
+    assert!(
+        report.is_valid(),
+        "filleted open-top shell must validate: {:?}",
+        report.issues
+    );
+    let mesh = crate::tessellate::tessellate_solid(&topo, shelled, 0.01).unwrap();
+    assert!(
+        crate::tessellate::welded_mesh_quality(&mesh).is_watertight(),
+        "filleted open-top shell must tessellate watertight"
+    );
+    let options = remus_check::classify::ClassifyOptions::default();
+    for (name, point, inside) in [
+        ("cavity", Point3::new(20.0, 10.0, 5.0), false),
+        ("bottom wall", Point3::new(20.0, 10.0, 0.25), true),
+        ("above floor", Point3::new(20.0, 10.0, 0.6), false),
+        ("side wall", Point3::new(39.9, 10.0, 5.0), true),
+        ("outside", Point3::new(20.0, 10.0, 11.0), false),
+    ] {
+        let got = remus_check::classify::classify_point(&topo, shelled, point, &options).unwrap();
+        assert_eq!(
+            got == remus_check::classify::PointClassification::Inside,
+            inside,
+            "{name} probe disagrees with intended material: {got:?}"
+        );
+    }
+}
+
+/// B25 exact-only shell refuses NURBS inner skins with a typed error, and
+/// the opt-in outcome discloses the sampled faces instead of failing.
+///
+/// Fixture: a `loft_smooth` solid carries four genuine curved NURBS side
+/// walls (the census `nurbs-loft` row); a `convert_to_bspline` box does not
+/// qualify — its degree-1 planar patches are singular under the sampled
+/// refit and fail the interpolation itself.
+#[test]
+fn shell_nurbs_policy_refuses_exact_and_discloses_approximation() {
+    use crate::shell_op::{ShellQuality, shell_outcome_with_evolution};
+
+    fn square_at(topo: &mut Topology, size: f64, z: f64) -> FaceId {
+        use remus_topology::edge::{Edge, EdgeCurve};
+        use remus_topology::face::Face;
+        use remus_topology::vertex::Vertex;
+        use remus_topology::wire::{OrientedEdge, Wire};
+
+        let half = size / 2.0;
+        let corners = [(-half, -half), (half, -half), (half, half), (-half, half)];
+        let verts: Vec<_> = corners
+            .iter()
+            .map(|(x, y)| {
+                topo.add_vertex(Vertex::new(Point3::new(*x, *y, z), Tolerance::new().linear))
+            })
+            .collect();
+        let edges: Vec<_> = (0..4)
+            .map(|i| topo.add_edge(Edge::new(verts[i], verts[(i + 1) % 4], EdgeCurve::Line)))
+            .collect();
+        let wire = topo.add_wire(
+            Wire::new(
+                edges
+                    .iter()
+                    .map(|id| OrientedEdge::new(*id, true))
+                    .collect(),
+                true,
+            )
+            .unwrap(),
+        );
+        topo.add_face(Face::new(
+            wire,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: z,
+            },
+        ))
+    }
+
+    let mut topo = Topology::new();
+    let profiles = [
+        square_at(&mut topo, 6.0, 0.0),
+        square_at(&mut topo, 3.0, 5.0),
+        square_at(&mut topo, 6.0, 10.0),
+    ];
+    let lofted = crate::loft::loft_smooth(&mut topo, &profiles).unwrap();
+    let nurbs_kept: Vec<_> = remus_topology::explorer::solid_faces(&topo, lofted)
+        .unwrap()
+        .into_iter()
+        .filter(|face| matches!(topo.face(*face).unwrap().surface(), FaceSurface::Nurbs(_)))
+        .collect();
+    assert_eq!(
+        nurbs_kept.len(),
+        4,
+        "the loft fixture must carry four NURBS side walls"
+    );
+
+    // Exact-only shell names the refusal instead of refitting silently.
+    let error = shell(&mut topo, lofted, 0.3, &[]).unwrap_err();
+    assert!(
+        matches!(
+            error,
+            crate::OperationsError::Unsupported {
+                operation: "shell",
+                ..
+            }
+        ),
+        "exact-only NURBS shell must refuse typed, got {error:?}"
+    );
+    assert!(
+        error.to_string().contains("NURBS"),
+        "the refusal must name the NURBS cause: {error}"
+    );
+
+    // Opt-in approximation discloses every sampled face.
+    let outcome = shell_outcome_with_evolution(&mut topo, lofted, 0.3, &[], Some(0.1)).unwrap();
+    match outcome.outcome.quality {
+        ShellQuality::Approximate {
+            deflection,
+            sampled_faces,
+        } => {
+            assert!(
+                (deflection - 0.1).abs() < 1e-12,
+                "the outcome must disclose the requested spacing, got {deflection}"
+            );
+            assert_eq!(
+                sampled_faces.len(),
+                nurbs_kept.len(),
+                "every kept NURBS face must be disclosed, got {sampled_faces:?}"
+            );
+        }
+        ShellQuality::Exact => panic!("a NURBS shell cannot report Exact"),
+    }
+    // The approximated shell still gates closed.
+    let report = crate::validate::validate_solid_relaxed(&topo, outcome.outcome.solid).unwrap();
+    assert!(
+        report.is_valid(),
+        "approximate NURBS shell must still gate closed: {:?}",
+        report.issues
     );
 }
 

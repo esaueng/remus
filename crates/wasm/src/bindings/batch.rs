@@ -265,6 +265,7 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "chamferV2"
         | "chamferDistanceAngle"
         | "shell"
+        | "shellWithQuality"
         | "mirror"
         | "unifyFaces"
         | "convertToBspline"
@@ -287,6 +288,7 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "transformWire"
         | "transformFace"
         | "offsetFace"
+        | "offsetFaceWithQuality"
         | "offsetSolid"
         | "offsetSolidV2"
         | "section"
@@ -2001,6 +2003,57 @@ impl BrepKernel {
                 .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(result)))
             }
+            "shellWithQuality" => {
+                use remus_operations::shell_op::{ShellQuality, shell_outcome_with_evolution};
+
+                let s = get_u32(args, "solid")?;
+                let thickness = get_f64(args, "thickness")?;
+                crate::error::validate_positive(thickness, "thickness")
+                    .map_err(StructuredWasmError::from)?;
+                let approximation = match args.get("approximationSpacing") {
+                    None | Some(serde_json::Value::Null) => None,
+                    Some(value) => {
+                        let spacing = value.as_f64().ok_or_else(|| {
+                            StructuredWasmError::invalid_argument(
+                                "invalid 'approximationSpacing': expected number",
+                                Some("approximationSpacing"),
+                            )
+                        })?;
+                        crate::error::validate_positive(spacing, "approximationSpacing")
+                            .map_err(StructuredWasmError::from)?;
+                        Some(spacing)
+                    }
+                };
+                let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
+                let face_handles: Vec<u32> = get_u32_array_optional(args, "faces")?;
+                let face_ids: Vec<_> = face_handles
+                    .iter()
+                    .map(|&h| self.resolve_face(h).map_err(StructuredWasmError::from))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let outcome = shell_outcome_with_evolution(
+                    self.topo_mut(),
+                    solid_id,
+                    thickness,
+                    &face_ids,
+                    approximation,
+                )
+                .map_err(StructuredWasmError::from)?;
+                match outcome.outcome.quality {
+                    ShellQuality::Exact => Ok(serde_json::json!({
+                        "solid": solid_id_to_u32(outcome.outcome.solid),
+                        "quality": "exact"
+                    })),
+                    ShellQuality::Approximate {
+                        deflection,
+                        sampled_faces,
+                    } => Ok(serde_json::json!({
+                        "solid": solid_id_to_u32(outcome.outcome.solid),
+                        "quality": "approximate",
+                        "deflection": deflection,
+                        "sampledFaces": sampled_faces
+                    })),
+                }
+            }
             "mirror" => {
                 let s = get_u32(args, "solid")?;
                 let px = get_f64(args, "px").unwrap_or(0.0);
@@ -2456,6 +2509,7 @@ impl BrepKernel {
                 let samples =
                     validate_work_count(samples, "samples").map_err(StructuredWasmError::from)?;
                 let face_id = self.resolve_face(f).map_err(StructuredWasmError::from)?;
+                #[allow(deprecated)]
                 let result = remus_operations::offset_face::offset_face(
                     self.topo_mut(),
                     face_id,
@@ -2464,6 +2518,47 @@ impl BrepKernel {
                 )
                 .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(face_id_to_u32(result)))
+            }
+            "offsetFaceWithQuality" => {
+                use remus_operations::offset_face::{FaceOffsetQuality, offset_face_with_quality};
+
+                let f = get_u32(args, "face")?;
+                let dist = get_f64(args, "distance")?;
+                let approximation = match args.get("approximationSamples") {
+                    None | Some(serde_json::Value::Null) => None,
+                    Some(value) => {
+                        let samples = value.as_u64().ok_or_else(|| {
+                            StructuredWasmError::invalid_argument(
+                                "invalid 'approximationSamples': expected positive integer",
+                                Some("approximationSamples"),
+                            )
+                        })?;
+                        let samples = u32::try_from(samples).map_err(|_| {
+                            StructuredWasmError::invalid_argument(
+                                "invalid 'approximationSamples': out of range",
+                                Some("approximationSamples"),
+                            )
+                        })?;
+                        validate_work_count(samples, "approximationSamples")
+                            .map_err(StructuredWasmError::from)?;
+                        Some(usize::try_from(samples).unwrap_or(usize::MAX))
+                    }
+                };
+                let face_id = self.resolve_face(f).map_err(StructuredWasmError::from)?;
+                let outcome =
+                    offset_face_with_quality(self.topo_mut(), face_id, dist, approximation)
+                        .map_err(StructuredWasmError::from)?;
+                match outcome.quality {
+                    FaceOffsetQuality::Exact => Ok(serde_json::json!({
+                        "face": face_id_to_u32(outcome.face),
+                        "quality": "exact"
+                    })),
+                    FaceOffsetQuality::Approximate { samples } => Ok(serde_json::json!({
+                        "face": face_id_to_u32(outcome.face),
+                        "quality": "approximate",
+                        "samples": samples
+                    })),
+                }
             }
             "offsetSolid" => {
                 let s = get_u32(args, "solid")?;
