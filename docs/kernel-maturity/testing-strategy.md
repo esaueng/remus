@@ -52,7 +52,12 @@ Standing properties, applied per family as they qualify:
   release WASM package, with independent geometry oracles before cross-target
   invariant and serialized-byte comparison. Semantic invariants pass the
   initial matrix; target-specific raw arena byte identity remains an explicit
-  O1.5 exit gap rather than being hidden by the semantic gate;
+  O1.5 exit gap rather than being hidden by the semantic gate. The extended
+  slice is `tools/parity/parity-matrix.json`: 366 cells over all 16 primitive
+  pairs plus fillet/chamfer/shell/offset/draft and the extrude/revolve/sweep/
+  loft/pipe/helical family at 1e-3/1/1e3, executed through the native facade
+  (`crates/remus`) against the real WASM batch build with volume, face
+  census, and disclosure-outcome agreement per cell;
 - perturbation stability: a qualification fixture keeps its classification
   or refuses typed under coordinate nudges 1e-13..1e-6 (O2.4);
 

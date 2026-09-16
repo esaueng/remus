@@ -12,7 +12,13 @@ name = "remus-parity-native"
 path = "src/main.rs"
 
 [dependencies]
-remus-wasm = {path = "../../crates/wasm", default-features = false}
+remus.workspace = true
+remus-check.workspace = true
+remus-geometry.workspace = true
+remus-io.workspace = true
+remus-math.workspace = true
+remus-operations.workspace = true
+remus-topology.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
