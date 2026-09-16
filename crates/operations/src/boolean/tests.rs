@@ -522,6 +522,67 @@ fn cut_overlapping_tool_removes_material_via_gfa() {
     );
 }
 
+/// The multi-region Cut path must not run on a hollow input: `face_components`
+/// walks the outer shell only, and both the per-component split and the
+/// reassembly drop cavity faces, so a hollow solid would silently lose its
+/// void. The gate must keep the cavity (single-shell GFA path) rather than
+/// route through `cut_multi_region_input`.
+///
+/// Fixture: a hollow 3³ block (1³ void) fused with a disjoint solid cube, so
+/// the outer shell has two components while one piece carries a cavity. The
+/// tool overlaps only the plain-cube piece, leaving the hollow piece to be
+/// kept as-is — the configuration that previously dropped the cavity.
+#[test]
+fn cut_multi_region_input_refuses_hollow_target() {
+    let mut topo = Topology::new();
+    let outer = crate::primitives::make_box(&mut topo, 3.0, 3.0, 3.0).unwrap();
+    let void = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+    crate::transform::transform_solid(
+        &mut topo,
+        void,
+        &remus_math::mat::Mat4::translation(1.0, 1.0, 1.0),
+    )
+    .unwrap();
+    let hollow = boolean(&mut topo, BooleanOp::Cut, outer, void).unwrap();
+    assert_eq!(topo.solid(hollow).unwrap().inner_shells().len(), 1);
+    let hollow_volume = crate::measure::solid_volume(&topo, hollow, 0.01).unwrap();
+    assert!(
+        (hollow_volume - 26.0).abs() < 1e-6,
+        "hollow 3³ block with 1³ void must measure 26, got {hollow_volume}"
+    );
+
+    let plain = make_unit_cube_manifold_at(&mut topo, 10.0, 0.0, 0.0);
+    let acc = boolean(&mut topo, BooleanOp::Fuse, hollow, plain).unwrap();
+    assert_eq!(
+        topo.solid(acc).unwrap().inner_shells().len(),
+        1,
+        "accumulator must carry the hollow piece's cavity"
+    );
+    assert_eq!(
+        crate::boolean::assembly::face_components(&topo, acc).len(),
+        2,
+        "accumulator outer shell must have two components"
+    );
+
+    // Tool overlaps only the plain-cube piece (disjoint from the hollow piece).
+    // The permissive context allows the mesh fallback the hollow-piece GFA
+    // configuration needs; the gate under test is the multi-region routing,
+    // not the exact pipeline.
+    let tool = make_unit_cube_manifold_at(&mut topo, 10.5, 0.0, 0.0);
+    let result = boolean_allowing_fallback(&mut topo, BooleanOp::Cut, acc, tool).unwrap();
+    assert_eq!(
+        topo.solid(result).unwrap().inner_shells().len(),
+        1,
+        "multi-region Cut must preserve the hollow piece's cavity"
+    );
+    let vol = crate::measure::solid_volume(&topo, result, 0.01).unwrap();
+    // 26 (hollow) + 1 (plain) - 0.5 (tool overlap) = 26.5.
+    assert!(
+        (vol - 26.5).abs() < 1e-3,
+        "cavity-preserving cut must measure 26.5, got {vol}"
+    );
+}
+
 #[test]
 fn intersect_disjoint_returns_empty() {
     use remus_topology::explorer::solid_faces;
@@ -1569,6 +1630,138 @@ fn cut_torus_by_box_notch_is_analytic_watertight() {
     assert!(
         (vol - expected).abs() / expected < 0.02,
         "volume {vol:.2} should be within 2% of {expected:.0}"
+    );
+}
+
+/// Characterization of the H-9b orientation defect (no gate — see the
+/// CALIBRATION comment in `validate_boolean_result_with_tolerance`).
+///
+/// A torus×box Fuse comes back Exact with 7 faces, correct volume, closed
+/// 2-manifold — and faces whose stored winding disagrees with the surface
+/// normal (the torus band at dot=-26.6 plus one planar notch wall at
+/// dot=-157.4) plus same-sense shared edges. Every acceptance gate passes
+/// it: edge counts, Euler, manifold, operand representation, bounds, and
+/// result validation are all blind to orientation sense.
+///
+/// Three gate shapes were tried and all misfire (57 / 45 / 28 healthy
+/// booleans rejected — same-sense pairs fire on the assembler's
+/// `reversed`-face pairing convention, and winding-vs-normal fires on
+/// healthy tray AND torus-notch results whose chord-sampled Newell polygons
+/// misread curved windings). This test pins the shape's CURRENT observable
+/// contract — Exact, 7 faces, volume ≈2049, closed manifold — plus the
+/// defect signature itself, so the day a ground truth that separates the
+/// two cases lands (UV-space winding, signed-volume orientation probes),
+/// the test tells its author exactly which assertion to flip from
+/// characterization to refusal.
+///
+/// NOTE on the dots: the torus band reads dot=-26.6 here while the H-9b
+/// probe reported dot=-0.430 for the same configuration — the Newell dot
+/// scales with polygon area (unchanged by normalization), so its magnitude
+/// is sampling-dependent and only the SIGN carries meaning. Both agree on
+/// the sign. The planar notch wall at dot=-157.4 is the same class of
+/// chord-sampling artifact on a healthy face, which is exactly why no gate
+/// consumes this signal today.
+#[test]
+fn torus_box_fuse_orientation_defect_characterization() {
+    let mut topo = Topology::new();
+    let tor = crate::primitives::make_torus(&mut topo, 10.0, 3.0, 32).unwrap();
+    let bx = crate::primitives::make_box(&mut topo, 8.0, 8.0, 8.0).unwrap();
+    crate::transform::transform_solid(
+        &mut topo,
+        bx,
+        &remus_math::mat::Mat4::translation(6.0, -4.0, -4.0),
+    )
+    .unwrap();
+    let result = boolean(&mut topo, BooleanOp::Fuse, tor, bx).unwrap();
+
+    // Current contract: accepted Exact.
+    let faces = remus_topology::explorer::solid_faces(&topo, result).unwrap();
+    assert_eq!(
+        faces.len(),
+        7,
+        "H-9b shape must stay 7 faces, got {}",
+        faces.len()
+    );
+    let vol = crate::measure::solid_volume(&topo, result, 0.01).unwrap();
+    assert!(
+        (vol - 2049.0).abs() / 2049.0 < 0.02,
+        "H-9b shape volume should stay ≈2049, got {vol:.2}"
+    );
+    assert!(is_closed_manifold(&topo, result).unwrap());
+
+    // Defect signature: the torus band plus one planar notch wall whose
+    // stored windings disagree with their surface normals. (The torus band
+    // read dot=-0.430 in the H-9b probe vs dot=-26.6 here — magnitude is
+    // sampling-dependent, sign is the signal. The planar wall is the same
+    // chord-sampling artifact class on a healthy face, which is why no gate
+    // consumes this signal today.)
+    let mut miswound_faces = 0usize;
+    for fid in &faces {
+        let Ok(polygon) = remus_check::util::face_polygon(&topo, *fid) else {
+            continue;
+        };
+        if polygon.len() < 3 {
+            continue;
+        }
+        let mut nx = 0.0;
+        let mut ny = 0.0;
+        let mut nz = 0.0;
+        for pair in polygon.windows(2) {
+            let (a, b) = (pair[0], pair[1]);
+            nx += (a.y() - b.y()) * (a.z() + b.z());
+            ny += (a.z() - b.z()) * (a.x() + b.x());
+            nz += (a.x() - b.x()) * (a.y() + b.y());
+        }
+        let wire_normal = remus_math::vec::Vec3::new(nx, ny, nz);
+        if wire_normal.length() < 1e-15 {
+            continue;
+        }
+        let face = topo.face(*fid).unwrap();
+        let mut cx = 0.0;
+        let mut cy = 0.0;
+        let mut cz = 0.0;
+        for p in &polygon {
+            cx += p.x();
+            cy += p.y();
+            cz += p.z();
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let n = polygon.len() as f64;
+        let centroid = Point3::new(cx / n, cy / n, cz / n);
+        let surface_normal = if let Some((u, v)) = face.surface().project_point(centroid) {
+            face.surface().normal(u, v)
+        } else {
+            face.surface().normal(0.0, 0.0)
+        };
+        if wire_normal.dot(surface_normal) < -0.1 {
+            miswound_faces += 1;
+        }
+    }
+    assert_eq!(
+        miswound_faces, 2,
+        "H-9b signature must stay exactly the torus band + one notch wall, got {miswound_faces}"
+    );
+
+    // Post-hoc validators DO see it (Warning, not Error — which is why the
+    // gates pass): pin that visibility so a future refusal has a signal.
+    let report = remus_check::validate::validate_solid(
+        &topo,
+        result,
+        &remus_check::validate::ValidateOptions::default(),
+    )
+    .unwrap();
+    assert!(
+        report
+            .issues
+            .iter()
+            .any(|i| i.description.contains("winding")
+                || format!("{:?}", i.check).contains("Orientation")),
+        "validators must keep seeing the winding defect: {:?}",
+        report
+            .issues
+            .iter()
+            .map(|i| &i.description)
+            .collect::<Vec<_>>()
     );
 }
 

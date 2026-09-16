@@ -37,8 +37,14 @@ fn build_gcs_from_state(sk: &SketchState) -> Result<GcsBuildResult, JsError> {
                 y: p.y,
                 fixed: p.fixed,
             })
+            // `sketchAddPoint` validates finiteness at the boundary, so a
+            // poisoned coordinate here is an internal invariant violation —
+            // surface it as invalid input rather than solving on NaN.
+            .map_err(|e| WasmError::InvalidInput {
+                reason: format!("sketch point is not finite: {e}"),
+            })
         })
-        .collect();
+        .collect::<Result<_, _>>()?;
 
     // Add arcs
     let mut arc_ids = Vec::with_capacity(sk.arcs.len());

@@ -283,6 +283,24 @@ pub fn split_with_evolution(
     plane_point: Point3,
     plane_normal: Vec3,
 ) -> Result<(SplitResult, SplitEvolution), OperationsError> {
+    // Trimming mints connector faces and each half assembles (allocating
+    // wires/faces/shells/solids) BEFORE the per-half gates and the
+    // volume-sum veto run, so a late refusal would leave half-built
+    // topology behind without this wrapper.
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        split_with_evolution_impl(topo, solid, plane_point, plane_normal)
+    })
+}
+
+/// [`split_with_evolution`] without the transaction wrapper.
+///
+/// Only the wrapped entry point is safe to call on live topology.
+fn split_with_evolution_impl(
+    topo: &mut Topology,
+    solid: SolidId,
+    plane_point: Point3,
+    plane_normal: Vec3,
+) -> Result<(SplitResult, SplitEvolution), OperationsError> {
     let tol = Tolerance::new();
     let normal = plane_normal.normalize()?;
     let d = dot_normal_point(normal, plane_point);
@@ -1371,6 +1389,43 @@ mod tests {
         assert!(
             matches!(err, OperationsError::Unsupported { operation, .. } if operation == "split"),
             "expected a typed refusal, got {err:?}"
+        );
+    }
+
+    /// A refused split must leave the topology exactly as it was: trimming
+    /// mints connector faces and each half assembles (allocating
+    /// wires/faces/shells/solids) BEFORE the per-half gates and the
+    /// volume-sum veto run, so without the transaction wrapper a late
+    /// refusal would leave half-built topology behind (B-3).
+    #[test]
+    fn refused_split_leaves_topology_unchanged() {
+        use remus_topology::explorer::solid_entity_counts;
+        let mut topo = Topology::new();
+        let cube = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+        let before = solid_entity_counts(&topo, cube).unwrap();
+        let journal_before = topo.journal().snapshot();
+
+        // Plane misses the cube entirely: refused after classification.
+        let err = split(
+            &mut topo,
+            cube,
+            Point3::new(0.0, 0.0, 5.0),
+            Vec3::new(0.0, 0.0, 1.0),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, OperationsError::InvalidInput { .. }),
+            "expected InvalidInput, got {err:?}"
+        );
+        assert_eq!(
+            solid_entity_counts(&topo, cube).unwrap(),
+            before,
+            "refused split must not mutate entity counts"
+        );
+        assert_eq!(
+            topo.journal().snapshot(),
+            journal_before,
+            "refused split must not advance the journal"
         );
     }
 }

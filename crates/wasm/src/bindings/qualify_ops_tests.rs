@@ -132,6 +132,10 @@ fn wall_by_normal(k: &mut BrepKernel, solid: u32, target: [f64; 3]) -> u32 {
 
 /// Draft through the batch API matches the native closed form
 /// (1 + tan(a)/2 for a unit cube's +X wall about the base plane).
+///
+/// The batch `angle` is in degrees, matching the direct `draft` binding and
+/// `draftJournaled`/`angleDegrees`: 5° here, not 5 radians. This pins the
+/// D-1 unit contract on both entry points.
 #[test]
 fn batch_draft_volume_matches_closed_form() {
     let mut k = BrepKernel::new();
@@ -151,7 +155,7 @@ fn batch_draft_volume_matches_closed_form() {
         &[op(
             "draft",
             serde_json::json!({
-                "solid": cube, "faces": [wall], "angle": angle,
+                "solid": cube, "faces": [wall], "angle": 5.0,
                 "dirX": 0.0, "dirY": 0.0, "dirZ": 1.0,
                 "neutralX": 0.0, "neutralY": 0.0, "neutralZ": 0.0,
             }),
@@ -266,6 +270,8 @@ fn batch_defeature_restores_plain_box() {
 
 /// The batch draft is deterministic across fresh kernels: identical result
 /// volumes bit-for-bit.
+///
+/// The angle is in degrees, matching the direct `draft` binding (D-1).
 #[test]
 fn batch_draft_is_deterministic() {
     let run_once = || {
@@ -284,7 +290,7 @@ fn batch_draft_is_deterministic() {
             &[op(
                 "draft",
                 serde_json::json!({
-                    "solid": cube, "faces": [wall], "angle": 0.1,
+                    "solid": cube, "faces": [wall], "angle": 5.0,
                     "dirZ": 1.0,
                 }),
             )],
@@ -300,6 +306,53 @@ fn batch_draft_is_deterministic() {
         out[0].as_f64().unwrap().to_bits()
     };
     assert_eq!(run_once(), run_once());
+}
+
+/// The direct `draft` binding and the batch `draft` op take the same physical
+/// angle in degrees and produce bit-identical volumes (D-1 cross-entry
+/// parity: the batch arm previously passed its `angle` through as radians).
+#[test]
+fn direct_and_batch_draft_match_in_degrees() {
+    let fixture = |kernel: &mut BrepKernel| {
+        let out = run_all_ok(
+            kernel,
+            &[op(
+                "makeBox",
+                serde_json::json!({"width": 1.0, "height": 1.0, "depth": 1.0}),
+            )],
+        );
+        let cube = as_u32(&out[0]);
+        (cube, wall_by_normal(kernel, cube, [1.0, 0.0, 0.0]))
+    };
+    let mut direct = BrepKernel::new();
+    let (solid, wall) = fixture(&mut direct);
+    let direct_result = direct
+        .draft_solid(solid, vec![wall], 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 5.0)
+        .expect("direct draft");
+    let direct_volume = kernel_volume(&direct, direct_result);
+
+    let mut batch = BrepKernel::new();
+    let (solid, wall) = fixture(&mut batch);
+    let output = run_all_ok(
+        &mut batch,
+        &[op(
+            "draft",
+            serde_json::json!({
+                "solid": solid, "faces": [wall], "angle": 5.0,
+                "dirX": 0.0, "dirY": 0.0, "dirZ": 1.0,
+                "neutralX": 0.0, "neutralY": 0.0, "neutralZ": 0.0,
+            }),
+        )],
+    );
+    let batch_result = as_u32(&output[0]);
+    let batch_volume = kernel_volume(&batch, batch_result);
+
+    let expected = 1.0 + 5.0_f64.to_radians().tan() / 2.0;
+    assert!(
+        ((direct_volume - expected) / expected).abs() < 1e-9,
+        "direct draft should taper 5°, expected {expected}, got {direct_volume}"
+    );
+    assert_eq!(direct_volume.to_bits(), batch_volume.to_bits());
 }
 
 /// The shipped direct and batch entry points run the same exact

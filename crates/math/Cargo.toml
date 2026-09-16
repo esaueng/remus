@@ -32,6 +32,13 @@ name = "cdt_insertion"
 [features]
 default = []
 serde = ["dep:serde"]
+# Manual 4-lane blocking of the homogeneous contraction in
+# `NurbsSurface::derivatives_into_with_spans` (see `contract_aw_cells_4lane`
+# in `src/nurbs/surface.rs`). Same operations in the same per-lane order as
+# the scalar nest, so output is bit-identical; verified by
+# `contract_4lane_bit_identical` plus the hammer-holder exact-output record
+# in `docs/kernel-maturity/o33-simd-evidence.md`.
+simd = []
 
 [lints]
 workspace = true
