@@ -1,0 +1,476 @@
+{
+  "schema_version": 2,
+  "operations": ["fuse", "cut", "intersect"],
+  "scales": [0.001, 1.0, 1000.0],
+  "placements": ["origin", "rigid"],
+  "volume_relative_tolerance": 0.001,
+  "surface_volume_relative_tolerance": 5e-8,
+  "families": [
+    {
+      "id": "cone-sphere",
+      "kind": "boolean",
+      "lhs": {
+        "op": "makeCone",
+        "args": {"bottomRadius": 6.0, "topRadius": 2.0, "height": 12.0},
+        "scale_fields": ["bottomRadius", "topRadius", "height"]
+      },
+      "rhs": {
+        "op": "makeSphere",
+        "args": {"radius": 4.0, "segments": 24},
+        "scale_fields": ["radius"]
+      },
+      "rhs_translation": [2.0, 0.0, 6.0],
+      "lhs_volume": {"coefficient": 208.0, "pi_power": 1},
+      "rhs_volume": {"coefficient": 85.33333333333333, "pi_power": 1},
+      "intersection_volume": 197.10640301106753,
+      "allowed_surface_types": ["plane", "cone", "sphere"],
+      "required_surface_types": ["cone", "sphere"],
+      "slice": "o15-first"
+    },
+    {
+      "id": "sphere-cylinder",
+      "kind": "boolean",
+      "lhs": {
+        "op": "makeSphere",
+        "args": {"radius": 6.0, "segments": 24},
+        "scale_fields": ["radius"]
+      },
+      "rhs": {
+        "op": "makeCylinder",
+        "args": {"radius": 3.0, "height": 20.0},
+        "scale_fields": ["radius", "height"]
+      },
+      "rhs_translation": [2.0, 0.0, -10.0],
+      "lhs_volume": {"coefficient": 288.0, "pi_power": 1},
+      "rhs_volume": {"coefficient": 180.0, "pi_power": 1},
+      "intersection_volume": 294.1884259241949,
+      "allowed_surface_types": ["plane", "sphere", "cylinder"],
+      "required_surface_types": ["sphere", "cylinder"],
+      "slice": "o15-first"
+    },
+    {
+      "id": "torus-sphere",
+      "kind": "boolean",
+      "lhs": {
+        "op": "makeTorus",
+        "args": {"majorRadius": 6.0, "minorRadius": 2.0, "segments": 32},
+        "scale_fields": ["majorRadius", "minorRadius"]
+      },
+      "rhs": {
+        "op": "makeSphere",
+        "args": {"radius": 3.0, "segments": 24},
+        "scale_fields": ["radius"]
+      },
+      "rhs_translation": [5.0, 0.0, 1.0],
+      "lhs_volume": {"coefficient": 48.0, "pi_power": 2},
+      "rhs_volume": {"coefficient": 36.0, "pi_power": 1},
+      "intersection_volume": 56.2702148298352,
+      "allowed_surface_types": ["torus", "sphere"],
+      "required_surface_types": ["torus", "sphere"],
+      "slice": "o15-first"
+    },
+    {
+      "id": "box-box",
+      "kind": "boolean",
+      "lhs": {
+        "op": "makeBox",
+        "args": {"width": 10.0, "height": 8.0, "depth": 6.0},
+        "scale_fields": ["width", "height", "depth"]
+      },
+      "rhs": {
+        "op": "makeBox",
+        "args": {"width": 6.0, "height": 6.0, "depth": 6.0},
+        "scale_fields": ["width", "height", "depth"]
+      },
+      "rhs_translation": [4.0, 2.0, 1.0],
+      "expected_volumes": {"fuse": 516.0, "cut": 300.0, "intersect": 180.0},
+      "allowed_surface_types": ["plane"],
+      "required_surface_types": ["plane"],
+      "disclosure": "exact",
+      "expect": "exact"
+    },
+    {
+      "id": "box-cylinder",
+      "kind": "boolean",
+      "lhs": {
+        "op": "makeBox",
+        "args": {"width": 10.0, "height": 8.0, "depth": 6.0},
+        "scale_fields": ["width", "height", "depth"]
+      },
+      "rhs": {
+        "op": "makeCylinder",
+        "args": {"radius": 3.0, "height": 20.0},
+        "scale_fields": ["radius", "height"]
+      },
+      "rhs_translation": [2.0, 0.0, -10.0],
+      "allowed_surface_types": ["plane", "cylinder"],
+      "required_surface_types": [],
+      "disclosure": "either",
+      "expect": "success_or_disclosed"
+    },
+    {
+      "id": "box-cone",
+      "kind": "boolean",
+      "lhs": {
+        "op": "makeBox",
+        "args": {"width": 10.0, "height": 8.0, "depth": 6.0},
+        "scale_fields": ["width", "height", "depth"]
+      },
+      "rhs": {
+        "op": "makeCone",
+        "args": {"bottomRadius": 6.0, "topRadius": 2.0, "height": 12.0},
+        "scale_fields": ["bottomRadius", "topRadius", "height"]
+      },
+      "rhs_translation": [2.0, 0.0, -3.0],
+      "allowed_surface_types": ["plane", "cone"],
+      "required_surface_types": [],
+      "disclosure": "either",
+      "expect": "success_or_disclosed"
+    },
+    {
+      "id": "box-sphere",
+      "kind": "boolean",
+      "lhs": {
+        "op": "makeBox",
+        "args": {"width": 10.0, "height": 8.0, "depth": 6.0},
+        "scale_fields": ["width", "height", "depth"]
+      },
+      "rhs": {
+        "op": "makeSphere",
+        "args": {"radius": 4.0, "segments": 24},
+        "scale_fields": ["radius"]
+      },
+      "rhs_translation": [2.0, 0.0, 3.0],
+      "allowed_surface_types": ["plane", "sphere"],
+      "required_surface_types": [],
+      "disclosure": "either",
+      "expect": "success_or_disclosed"
+    },
+    {
+      "id": "box-torus",
+      "kind": "boolean",
+      "lhs": {
+        "op": "makeBox",
+        "args": {"width": 12.0, "height": 12.0, "depth": 6.0},
+        "scale_fields": ["width", "height", "depth"]
+      },
+      "rhs": {
+        "op": "makeTorus",
+        "args": {"majorRadius": 6.0, "minorRadius": 2.0, "segments": 32},
+        "scale_fields": ["majorRadius", "minorRadius"]
+      },
+      "rhs_translation": [0.0, 0.0, 1.0],
+      "allowed_surface_types": ["plane", "torus"],
+      "required_surface_types": [],
+      "disclosure": "either",
+      "expect": "success_or_disclosed"
+    },
+    {
+      "id": "cylinder-cylinder",
+      "kind": "boolean",
+      "lhs": {
+        "op": "makeCylinder",
+        "args": {"radius": 4.0, "height": 16.0},
+        "scale_fields": ["radius", "height"]
+      },
+      "rhs": {
+        "op": "makeCylinder",
+        "args": {"radius": 3.0, "height": 16.0},
+        "scale_fields": ["radius", "height"]
+      },
+      "rhs_rotation_y_deg": 90.0,
+      "rhs_translation": [-8.0, 0.0, 4.0],
+      "allowed_surface_types": ["plane", "cylinder"],
+      "required_surface_types": ["cylinder"],
+      "disclosure": "either",
+      "expect": "success_or_disclosed"
+    },
+    {
+      "id": "cylinder-cone",
+      "kind": "boolean",
+      "lhs": {
+        "op": "makeCylinder",
+        "args": {"radius": 4.0, "height": 14.0},
+        "scale_fields": ["radius", "height"]
+      },
+      "rhs": {
+        "op": "makeCone",
+        "args": {"bottomRadius": 5.0, "topRadius": 2.0, "height": 10.0},
+        "scale_fields": ["bottomRadius", "topRadius", "height"]
+      },
+      "rhs_translation": [2.0, 0.0, 2.0],
+      "allowed_surface_types": ["plane", "cylinder", "cone"],
+      "required_surface_types": [],
+      "disclosure": "either",
+      "expect": "success_or_disclosed"
+    },
+    {
+      "id": "cylinder-sphere",
+      "kind": "boolean",
+      "lhs": {
+        "op": "makeCylinder",
+        "args": {"radius": 3.0, "height": 20.0},
+        "scale_fields": ["radius", "height"]
+      },
+      "rhs": {
+        "op": "makeSphere",
+        "args": {"radius": 5.0, "segments": 24},
+        "scale_fields": ["radius"]
+      },
+      "rhs_translation": [2.0, 0.0, 10.0],
+      "allowed_surface_types": ["plane", "cylinder", "sphere"],
+      "required_surface_types": [],
+      "disclosure": "either",
+      "expect": "success_or_disclosed"
+    },
+    {
+      "id": "cylinder-torus",
+      "kind": "boolean",
+      "lhs": {
+        "op": "makeCylinder",
+        "args": {"radius": 3.0, "height": 20.0},
+        "scale_fields": ["radius", "height"]
+      },
+      "rhs": {
+        "op": "makeTorus",
+        "args": {"majorRadius": 6.0, "minorRadius": 2.0, "segments": 32},
+        "scale_fields": ["majorRadius", "minorRadius"]
+      },
+      "rhs_translation": [-5.0, 0.0, 10.0],
+      "allowed_surface_types": ["plane", "cylinder", "torus"],
+      "required_surface_types": [],
+      "disclosure": "either",
+      "expect": "success_or_disclosed"
+    },
+    {
+      "id": "cone-cone",
+      "kind": "boolean",
+      "lhs": {
+        "op": "makeCone",
+        "args": {"bottomRadius": 5.0, "topRadius": 1.0, "height": 10.0},
+        "scale_fields": ["bottomRadius", "topRadius", "height"]
+      },
+      "rhs": {
+        "op": "makeCone",
+        "args": {"bottomRadius": 5.0, "topRadius": 1.0, "height": 10.0},
+        "scale_fields": ["bottomRadius", "topRadius", "height"]
+      },
+      "rhs_translation": [3.0, 0.0, 0.0],
+      "allowed_surface_types": ["plane", "cone"],
+      "required_surface_types": ["cone"],
+      "disclosure": "either",
+      "expect": "success_or_disclosed"
+    },
+    {
+      "id": "cone-torus",
+      "kind": "boolean",
+      "lhs": {
+        "op": "makeCone",
+        "args": {"bottomRadius": 6.0, "topRadius": 2.0, "height": 12.0},
+        "scale_fields": ["bottomRadius", "topRadius", "height"]
+      },
+      "rhs": {
+        "op": "makeTorus",
+        "args": {"majorRadius": 5.0, "minorRadius": 1.5, "segments": 32},
+        "scale_fields": ["majorRadius", "minorRadius"]
+      },
+      "rhs_translation": [2.0, 0.0, 6.0],
+      "allowed_surface_types": ["plane", "cone", "torus"],
+      "required_surface_types": [],
+      "disclosure": "either",
+      "expect": "success_or_disclosed"
+    },
+    {
+      "id": "sphere-sphere",
+      "kind": "boolean",
+      "lhs": {
+        "op": "makeSphere",
+        "args": {"radius": 5.0, "segments": 24},
+        "scale_fields": ["radius"]
+      },
+      "rhs": {
+        "op": "makeSphere",
+        "args": {"radius": 4.0, "segments": 24},
+        "scale_fields": ["radius"]
+      },
+      "rhs_translation": [4.0, 0.0, 0.0],
+      "allowed_surface_types": ["sphere"],
+      "required_surface_types": ["sphere"],
+      "disclosure": "either",
+      "expect": "success_or_disclosed"
+    },
+    {
+      "id": "torus-torus",
+      "kind": "boolean",
+      "lhs": {
+        "op": "makeTorus",
+        "args": {"majorRadius": 6.0, "minorRadius": 2.0, "segments": 32},
+        "scale_fields": ["majorRadius", "minorRadius"]
+      },
+      "rhs": {
+        "op": "makeTorus",
+        "args": {"majorRadius": 6.0, "minorRadius": 2.0, "segments": 32},
+        "scale_fields": ["majorRadius", "minorRadius"]
+      },
+      "rhs_translation": [5.0, 0.0, 1.0],
+      "allowed_surface_types": ["torus"],
+      "required_surface_types": ["torus"],
+      "disclosure": "either",
+      "expect": "success_or_disclosed"
+    },
+    {
+      "id": "fillet-box-edge",
+      "kind": "fillet",
+      "base": {"op": "makeBox", "args": {"width": 10.0, "height": 10.0, "depth": 10.0}, "scale_fields": ["width", "height", "depth"]},
+      "radius_scale": 0.1,
+      "edge_selector": "first",
+      "allowed_surface_types": ["plane", "cylinder", "sphere", "torus", "bspline"],
+      "required_surface_types": [],
+      "disclosure": "either",
+      "expect": "success_or_disclosed",
+      "volume_oracle": {"kind": "fillet_box_edge", "relative_tolerance": 0.05}
+    },
+    {
+      "id": "chamfer-box-edge",
+      "kind": "chamfer",
+      "base": {"op": "makeBox", "args": {"width": 10.0, "height": 10.0, "depth": 10.0}, "scale_fields": ["width", "height", "depth"]},
+      "distance_scale": 0.1,
+      "edge_selector": "first",
+      "allowed_surface_types": ["plane", "bspline"],
+      "required_surface_types": [],
+      "disclosure": "either",
+      "expect": "success_or_disclosed",
+      "volume_oracle": {"kind": "chamfer_box_edge", "relative_tolerance": 0.02}
+    },
+    {
+      "id": "shell-box-closed",
+      "kind": "shell",
+      "base": {"op": "makeBox", "args": {"width": 10.0, "height": 10.0, "depth": 10.0}, "scale_fields": ["width", "height", "depth"]},
+      "thickness_scale": 0.1,
+      "open_faces": "none",
+      "allowed_surface_types": ["plane"],
+      "required_surface_types": ["plane"],
+      "disclosure": "either",
+      "expect": "success_or_disclosed",
+      "volume_oracle": {"kind": "shell_box_closed", "relative_tolerance": 1e-9}
+    },
+    {
+      "id": "shell-box-open-top",
+      "kind": "shell",
+      "base": {"op": "makeBox", "args": {"width": 10.0, "height": 10.0, "depth": 10.0}, "scale_fields": ["width", "height", "depth"]},
+      "thickness_scale": 0.1,
+      "open_faces": "open-top",
+      "allowed_surface_types": ["plane"],
+      "required_surface_types": ["plane"],
+      "disclosure": "either",
+      "expect": "success_or_disclosed",
+      "volume_oracle": {"kind": "shell_box_open_top", "relative_tolerance": 1e-9}
+    },
+    {
+      "id": "offset-box-out",
+      "kind": "offset",
+      "base": {"op": "makeBox", "args": {"width": 10.0, "height": 10.0, "depth": 10.0}, "scale_fields": ["width", "height", "depth"]},
+      "distance_scale": 0.1,
+      "allowed_surface_types": ["plane"],
+      "required_surface_types": ["plane"],
+      "disclosure": "either",
+      "expect": "success_or_disclosed",
+      "volume_oracle": {"kind": "offset_box", "relative_tolerance": 1e-9}
+    },
+    {
+      "id": "offset-box-in",
+      "kind": "offset",
+      "base": {"op": "makeBox", "args": {"width": 10.0, "height": 10.0, "depth": 10.0}, "scale_fields": ["width", "height", "depth"]},
+      "distance_scale": -0.1,
+      "allowed_surface_types": ["plane"],
+      "required_surface_types": ["plane"],
+      "disclosure": "either",
+      "expect": "success_or_disclosed",
+      "volume_oracle": {"kind": "offset_box", "relative_tolerance": 1e-9}
+    },
+    {
+      "id": "draft-box-wall",
+      "kind": "draft",
+      "base": {"op": "makeBox", "args": {"width": 1.0, "height": 1.0, "depth": 1.0}, "scale_fields": ["width", "height", "depth"]},
+      "wall_normal": [1.0, 0.0, 0.0],
+      "angle_degrees": 5.0,
+      "pull_direction": [0.0, 0.0, 1.0],
+      "neutral_point": [0.0, 0.0, 0.0],
+      "allowed_surface_types": ["plane"],
+      "required_surface_types": ["plane"],
+      "disclosure": "either",
+      "expect": "success_or_disclosed",
+      "volume_oracle": {"kind": "draft_box_wall", "relative_tolerance": 1e-9}
+    },
+    {
+      "id": "extrude-square",
+      "kind": "extrude",
+      "profile": {"kind": "square", "size": 1.0},
+      "direction": [0.0, 0.0, 1.0],
+      "distance_scale": 5.0,
+      "allowed_surface_types": ["plane"],
+      "required_surface_types": ["plane"],
+      "disclosure": "either",
+      "expect": "success_or_disclosed",
+      "volume_oracle": {"kind": "extrude_square", "relative_tolerance": 1e-9}
+    },
+    {
+      "id": "revolve-square",
+      "kind": "revolve",
+      "profile": {"kind": "square", "size": 1.0},
+      "axis_origin": [0.0, 0.0, 0.0],
+      "axis_direction": [0.0, 1.0, 0.0],
+      "angle_degrees": 360.0,
+      "allowed_surface_types": ["plane", "cylinder", "cone", "sphere", "torus"],
+      "required_surface_types": [],
+      "disclosure": "either",
+      "expect": "success_or_disclosed",
+      "volume_oracle": {"kind": "revolve_square", "relative_tolerance": 1e-6}
+    },
+    {
+      "id": "sweep-square",
+      "kind": "sweep",
+      "profile": {"kind": "square", "size": 1.0},
+      "path": {"kind": "straight", "length_scale": 2.0},
+      "allowed_surface_types": ["plane"],
+      "required_surface_types": [],
+      "disclosure": "either",
+      "expect": "success_or_disclosed",
+      "volume_oracle": {"kind": "sweep_square", "relative_tolerance": 1e-9}
+    },
+    {
+      "id": "loft-square",
+      "kind": "loft",
+      "profile": {"kind": "square", "size": 1.0},
+      "height_scale": 1.0,
+      "allowed_surface_types": ["plane", "bspline"],
+      "required_surface_types": [],
+      "disclosure": "either",
+      "expect": "success_or_disclosed",
+      "volume_oracle": {"kind": "loft_square", "relative_tolerance": 1e-9}
+    },
+    {
+      "id": "pipe-square",
+      "kind": "pipe",
+      "profile": {"kind": "square", "size": 1.0},
+      "path": {"kind": "straight", "length_scale": 2.0},
+      "allowed_surface_types": ["plane", "bspline"],
+      "required_surface_types": [],
+      "disclosure": "either",
+      "expect": "success_or_disclosed",
+      "volume_oracle": {"kind": "pipe_square", "relative_tolerance": 1e-9}
+    },
+    {
+      "id": "helix-square",
+      "kind": "helix",
+      "profile": {"kind": "offset_square", "size": 1.0, "offset_scale": 3.0},
+      "helix_radius_scale": 3.0,
+      "pitch_scale": 4.0,
+      "turns": 1.0,
+      "allowed_surface_types": ["plane", "cylinder", "cone", "sphere", "torus", "bspline"],
+      "required_surface_types": [],
+      "disclosure": "either",
+      "expect": "success_or_disclosed"
+    }
+  ]
+}
