@@ -3,6 +3,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 node --test tools/parity/quadric-boolean.test.mjs
+node --test tools/parity/parity-matrix.test.mjs
 cargo test -p remus-parity
 cargo build --release -p remus-parity
 
@@ -14,5 +15,11 @@ status=0
 node tools/parity/quadric-boolean.mjs \
   "$target_dir/release/remus-parity-native" \
   "$wasm_dir" > "$target_dir/o15-parity.json" || status=$?
-cat "$target_dir/o15-parity.json"
-exit "$status"
+echo "first-slice status: $status"
+status2=0
+node tools/parity/parity-matrix.mjs \
+  "$target_dir/release/remus-parity-native" \
+  "$wasm_dir" > "$target_dir/o15-parity-extended.json" || status2=$?
+cat "$target_dir/o15-parity-extended.json"
+if [ "$status" -ne 0 ]; then exit "$status"; fi
+exit "$status2"
