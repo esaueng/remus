@@ -1286,6 +1286,7 @@ export class BrepKernel {
      * Apply draft angle to faces of a solid.
      *
      * `face_handles` is an array of face handles to draft.
+     * `angle_degrees` is in degrees, matching the batch `draft` op.
      * Returns a solid handle.
      *
      * # Errors
