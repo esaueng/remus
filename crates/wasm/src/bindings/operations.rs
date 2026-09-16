@@ -408,6 +408,37 @@ impl BrepKernel {
         Ok(solid_id_to_u32(result))
     }
 
+    /// Hollow a solid with disclosed inner-skin quality.
+    ///
+    /// The plain [`shell`](Self::shell_solid) binding is exact-only: a solid
+    /// whose kept faces include a NURBS face fails with a typed
+    /// `unsupported` refusal instead of degrading to a sampled refit. This
+    /// binding accepts an explicit opt-in to approximation —
+    /// `approximation_spacing` is a model-unit sample spacing (a positive
+    /// finite number), or omitted/`null` for the exact-only policy — and
+    /// reports whether the sampled NURBS path ran (`quality:
+    /// "approximate"`, with the spacing and the sampled source-face
+    /// indices).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a handle is invalid, thickness is non-positive,
+    /// the spacing is present but not finite and positive, or (under the
+    /// exact-only policy) a kept face has no exact offset.
+    #[wasm_bindgen(js_name = "shellWithQuality")]
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn shell_with_quality(
+        &mut self,
+        solid: u32,
+        thickness: f64,
+        open_faces: Vec<u32>,
+        approximation_spacing: Option<f64>,
+    ) -> Result<tsify::Ts<crate::types::ShellQualityResult>, JsError> {
+        Ok(self
+            .shell_with_quality_impl(solid, thickness, open_faces, approximation_spacing)?
+            .into_ts()?)
+    }
+
     // ── Chamfer ───────────────────────────────────────────────────
 
     /// Chamfer edges of a solid.
@@ -1231,6 +1262,7 @@ impl BrepKernel {
         let _ = validate_work_product(samples, samples, "sample grid")?;
         let samples = validate_work_count(samples, "samples")?;
         let face_id = self.resolve_face(face)?;
+        #[allow(deprecated)]
         let result = remus_operations::offset_face::offset_face(
             self.topo_mut(),
             face_id,
@@ -1238,6 +1270,35 @@ impl BrepKernel {
             samples,
         )?;
         Ok(face_id_to_u32(result))
+    }
+
+    /// Offset a face with disclosed result quality.
+    ///
+    /// The plain [`offsetFace`](Self::offset_face) binding carries a
+    /// caller-chosen `samples` discretization knob that contradicts the
+    /// exact-kernel contract. This binding takes an explicit opt-in to
+    /// approximation instead — `approximation_samples` is a grid resolution
+    /// (a positive integer within the public work budget), or
+    /// omitted/`null` for the exact-only policy under which a NURBS face
+    /// fails with a typed `unsupported` refusal — and reports whether the
+    /// sampled NURBS refit ran (`quality: "approximate"`, with the count),
+    /// mirroring [`booleanWithQuality`](Self::boolean_with_quality).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a handle is invalid, the distance is not finite,
+    /// the sample count is present but out of budget, or (under the
+    /// exact-only policy) the face has no exact offset.
+    #[wasm_bindgen(js_name = "offsetFaceWithQuality")]
+    pub fn offset_face_with_quality(
+        &mut self,
+        face: u32,
+        distance: f64,
+        approximation_samples: Option<f64>,
+    ) -> Result<tsify::Ts<crate::types::FaceOffsetQualityResult>, JsError> {
+        Ok(self
+            .offset_face_with_quality_impl(face, distance, approximation_samples)?
+            .into_ts()?)
     }
 
     // ── Helical Sweep ───────────────────────────────────────────
@@ -2534,6 +2595,88 @@ impl BrepKernel {
 }
 
 impl BrepKernel {
+    pub(crate) fn shell_with_quality_impl(
+        &mut self,
+        solid: u32,
+        thickness: f64,
+        open_faces: Vec<u32>,
+        approximation_spacing: Option<f64>,
+    ) -> Result<crate::types::ShellQualityResult, JsError> {
+        use remus_operations::shell_op::{ShellQuality, shell_outcome_with_evolution};
+
+        crate::error::validate_positive(thickness, "thickness")?;
+        if let Some(spacing) = approximation_spacing {
+            crate::error::validate_positive(spacing, "approximation_spacing")?;
+        }
+        let solid_id = self.resolve_solid(solid)?;
+        let open_face_ids: Vec<remus_topology::face::FaceId> = open_faces
+            .iter()
+            .map(|&h| self.resolve_face(h))
+            .collect::<Result<_, _>>()?;
+        let outcome = shell_outcome_with_evolution(
+            self.topo_mut(),
+            solid_id,
+            thickness,
+            &open_face_ids,
+            approximation_spacing,
+        )?;
+        let (quality, deflection, sampled_faces) = match outcome.outcome.quality {
+            ShellQuality::Exact => ("exact".to_string(), None, None),
+            ShellQuality::Approximate {
+                deflection,
+                sampled_faces,
+            } => (
+                "approximate".to_string(),
+                Some(deflection),
+                Some(sampled_faces.into_iter().map(|i| i as u32).collect()),
+            ),
+        };
+        Ok(crate::types::ShellQualityResult {
+            solid: solid_id_to_u32(outcome.outcome.solid),
+            quality,
+            deflection,
+            sampled_faces,
+        })
+    }
+
+    pub(crate) fn offset_face_with_quality_impl(
+        &mut self,
+        face: u32,
+        distance: f64,
+        approximation_samples: Option<f64>,
+    ) -> Result<crate::types::FaceOffsetQualityResult, JsError> {
+        use remus_operations::offset_face::{FaceOffsetQuality, offset_face_with_quality};
+
+        crate::error::validate_finite(distance, "distance")?;
+        let approximation = approximation_samples
+            .map(|samples| {
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let count = samples as usize;
+                if (count as f64 - samples).abs() > f64::EPSILON || count == 0 {
+                    return Err(crate::error::WasmError::InvalidInput {
+                        reason: "approximation_samples must be a positive integer".into(),
+                    });
+                }
+                crate::error::validate_work_count(count as u32, "approximation_samples")?;
+                Ok(count)
+            })
+            .transpose()?;
+        let face_id = self.resolve_face(face)?;
+        let outcome = offset_face_with_quality(self.topo_mut(), face_id, distance, approximation)?;
+        let (quality, samples) = match outcome.quality {
+            FaceOffsetQuality::Exact => ("exact".to_string(), None),
+            FaceOffsetQuality::Approximate { samples } => (
+                "approximate".to_string(),
+                Some(u32::try_from(samples).unwrap_or(u32::MAX)),
+            ),
+        };
+        Ok(crate::types::FaceOffsetQualityResult {
+            face: face_id_to_u32(outcome.face),
+            quality,
+            samples,
+        })
+    }
+
     /// Shared fallible implementation for both direct solid-offset exports.
     pub(crate) fn offset_solid_impl(
         &mut self,
