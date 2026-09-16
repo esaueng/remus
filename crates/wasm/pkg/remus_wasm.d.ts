@@ -838,11 +838,13 @@ export class BrepKernel {
     /**
      * Compute the center of mass of a solid (uniform density).
      *
-     * Returns `[x, y, z]`.
+     * Returns `[x, y, z]`. Integrates the exact face geometry, so the
+     * result is deflection-independent; `deflection` is accepted for API
+     * compatibility and ignored.
      *
      * # Errors
      *
-     * Returns an error if the solid has zero volume or tessellation fails.
+     * Returns an error if the solid has zero volume or integration fails.
      */
     centerOfMass(solid: number, deflection: number): Float64Array;
     /**
@@ -1286,6 +1288,7 @@ export class BrepKernel {
      * Apply draft angle to faces of a solid.
      *
      * `face_handles` is an array of face handles to draft.
+     * `angle_degrees` is in degrees, matching the batch `draft` op.
      * Returns a solid handle.
      *
      * # Errors
@@ -1390,6 +1393,11 @@ export class BrepKernel {
     extrude(face: number, dir_x: number, dir_y: number, dir_z: number, distance: number): number;
     /**
      * Compute the area of a single face.
+     *
+     * Planar faces with line/circle/ellipse/parabola/hyperbola/recognized-
+     * NURBS boundaries and all analytic curved faces integrate their exact
+     * geometry, deflection-independent; `deflection` only controls the
+     * NURBS-face tessellation and the sampled planar fallback.
      *
      * # Errors
      *
@@ -3401,6 +3409,11 @@ export class BrepKernel {
     /**
      * Compute the total surface area of a solid.
      *
+     * Analytic curved faces and exact planar boundaries integrate their
+     * exact geometry, so the result is deflection-independent on those
+     * paths; `deflection` only controls the NURBS-face tessellation and
+     * the sampled planar fallback.
+     *
      * # Errors
      *
      * Returns an error if the solid handle is invalid or tessellation fails.
@@ -3731,6 +3744,10 @@ export class BrepKernel {
     validateSolidWithOptions(solid: number, tolerance_scale: number): number;
     /**
      * Compute the volume of a solid.
+     *
+     * Exact analytic and Gauss-quadrature paths run first, so the result
+     * is deflection-independent on those paths; `deflection` only controls
+     * the tessellation fallback.
      *
      * # Errors
      *
