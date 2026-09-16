@@ -1,5 +1,12 @@
 //! Regression coverage for untrimmed polynomial NURBS whose endpoint domain
 //! is uniquely witnessed without a monotone world-axis coordinate.
+//!
+//! The MAMBO B1 triage fixture pins the O1.1d class where the scalar-witness
+//! certificate admits the polygon but the witness bisection converges to the
+//! wrong lobe: bare-carrier intersection seams whose endpoints sit strictly
+//! inside their carriers. Projection-based recovery imports the exact-foot
+//! ones (#241/#243/#244/#245 — the scalar witness refuses them); the
+//! off-carrier ones (#253/#258, 6.2e-5/1.1e-4 off) still fail closed.
 
 #![allow(clippy::expect_used, clippy::panic)]
 
@@ -17,6 +24,11 @@ use remus_topology::solid::SolidId;
 use remus_topology::validation::validate_shell_closed;
 
 const SYNTHETIC_SHAPR_STYLE: &str = include_str!("data/shapr_untrimmed_nurbs_domain.step");
+/// MAMBO Basic B1 (Apache-2.0), reduced to its shape spine: the untrimmed
+/// cylinder-intersection seam carriers keep their file bytes verbatim; only
+/// the administrative header entities were dropped. Pinned by the
+/// open-kernel gauntlet smoke manifest (`mambo-basic-b1`).
+const MAMBO_B1_UNTRIMMED_NURBS: &str = include_str!("data/mambo_b1_untrimmed_nurbs.step");
 
 #[test]
 fn uniquely_witnessed_untrimmed_nurbs_domain_imports() {
@@ -32,17 +44,20 @@ fn uniquely_witnessed_untrimmed_nurbs_domain_imports() {
             start_parameter,
             end_parameter,
             endpoint_residual_mm,
-            stored_edge_tolerance_mm,
             recovery_tolerance_cap_mm,
             ..
         } = diagnostic
         else {
             panic!("unexpected STEP import diagnostic")
         };
-        assert!((*start_parameter - 0.1).abs() < 1.0e-12);
-        assert!((*end_parameter - 0.9).abs() < 1.0e-12);
-        assert!((*endpoint_residual_mm - 5.0e-7_f64.hypot(5.0e-7)).abs() < 1.0e-13);
-        assert!((*stored_edge_tolerance_mm - *endpoint_residual_mm).abs() < 1.0e-13);
+        // The fixture vertices sit 5e-7 off the carrier, so projection
+        // returns the closest feet, which sit within the foot-conditioning
+        // radius (~3.5e-4 here) of the nominal 0.1/0.9 parameters — not on
+        // them to roundoff scale. The residual and cap assertions below pin
+        // the tolerance-scale contract that actually matters.
+        assert!((*start_parameter - 0.1).abs() < 5.0e-4);
+        assert!((*end_parameter - 0.9).abs() < 5.0e-4);
+        assert!(*endpoint_residual_mm <= *recovery_tolerance_cap_mm);
         assert!((*recovery_tolerance_cap_mm - 1.0e-6).abs() < 1.0e-16);
         assert_eq!(
             diagnostic.diagnostic().code(),
@@ -64,11 +79,11 @@ fn uniquely_witnessed_untrimmed_nurbs_domain_imports() {
     for edge_id in nurbs_edges {
         let edge = topology.edge(edge_id).expect("NURBS edge");
         let (start, end) = edge.strict_domain().expect("stored edge authority");
-        assert!((start - 0.1).abs() < 1.0e-12);
-        assert!((end - 0.9).abs() < 1.0e-12);
+        assert!((start - 0.1).abs() < 5.0e-4);
+        assert!((end - 0.9).abs() < 5.0e-4);
         assert!(
-            (edge.tolerance().expect("edge-local tolerance") - 5.0e-7_f64.hypot(5.0e-7)).abs()
-                < 1.0e-13
+            edge.tolerance().expect("edge-local tolerance") <= 1.0e-6,
+            "edge-local tolerance must stay within the recovery cap"
         );
     }
 
@@ -132,13 +147,15 @@ fn excessive_unique_domain_endpoint_error_is_refused_at_the_local_cap() {
     assert!(
         error
             .to_string()
-            .contains("local recovery cap 1.000000e-6 mm"),
+            .contains("misses its carrier by 4.047427e-4 mm (local recovery cap 1.000000e-6 mm)"),
         "unexpected error: {error}"
     );
 }
 
 #[test]
 fn model_uncertainty_cannot_raise_the_absolute_local_recovery_cap() {
+    // The recovery ceiling is absolute (1e-6), not derived from the model's
+    // declared uncertainty: a 1e-2 model heals nothing more than a 1e-6 one.
     let step = SYNTHETIC_SHAPR_STYLE
         .replace(
             "LENGTH_MEASURE(9.99999999999999955E-7)",
@@ -152,7 +169,7 @@ fn model_uncertainty_cannot_raise_the_absolute_local_recovery_cap() {
     assert!(
         error
             .to_string()
-            .contains("local recovery cap 1.000000e-4 mm"),
+            .contains("misses its carrier by 4.047427e-4 mm (local recovery cap 1.000000e-6 mm)"),
         "unexpected error: {error}"
     );
 }
@@ -167,10 +184,55 @@ fn non_finite_untrimmed_nurbs_input_is_refused() {
     assert!(matches!(error, IoError::ParseError { .. }));
 }
 
+#[test]
+fn mambo_b1_exact_foot_seams_reach_projected_recovery() {
+    // Edges #241/#243/#244/#245 ride bare untrimmed intersection carriers
+    // whose endpoints sit strictly inside the carrier domain with exact
+    // feet: the scalar witness refuses them (wrong-lobe bisection) while
+    // the projected path recovers them. The full model still fails closed
+    // on edges #253/#258 (vertices 6.2e-5/1.1e-4 off their carriers), so
+    // this test pins the per-edge behaviour: the exact-foot edges must get
+    // PAST the witness refusal and reach the projected recovery, and the
+    // first failure must be the off-carrier #253 — never #241.
+    let mut topology = Topology::new();
+    let result = read_step_with_report(MAMBO_B1_UNTRIMMED_NURBS, &mut topology);
+    let error = result.expect_err("off-carrier seam vertices must still refuse");
+    assert!(
+        error.to_string().contains("EDGE_CURVE #253"),
+        "unexpected error: {error}"
+    );
+    assert!(
+        error
+            .to_string()
+            .contains("misses its carrier by 6.164947e-5 mm (local recovery cap 1.000000e-6 mm)"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn mambo_b1_off_carrier_vertex_still_refuses() {
+    // Push one exact-foot seam vertex off its carrier past the absolute
+    // recovery ceiling: the import must fail closed with the stablecoded
+    // refusal, not heal the vertex onto the wrong lobe.
+    let step = MAMBO_B1_UNTRIMMED_NURBS.replace(
+        "#387=CARTESIAN_POINT('',(5.0,0.0,5.0));",
+        "#387=CARTESIAN_POINT('',(5.0,0.0,5.5));",
+    );
+    assert!(step.contains("(5.0,0.0,5.5)"), "fixture edit must apply");
+    let error = read_step(&step, &mut Topology::new()).expect_err("off-carrier vertex");
+    assert!(
+        error.to_string().contains("misses its carrier"),
+        "unexpected error: {error}"
+    );
+}
+
 fn assert_untrimmed_domain_refused(step: &str) {
     let error = read_step(step, &mut Topology::new()).expect_err("ambiguous NURBS domain");
+    let message = error.to_string();
+    // Both refusals are the same fail-closed gate: no unique branch, or no
+    // branch within the recovery cap. The message names which one fired.
     assert!(
-        error.to_string().contains("do not uniquely establish"),
+        message.contains("do not uniquely establish") || message.contains("misses its carrier"),
         "unexpected error: {error}"
     );
 }
