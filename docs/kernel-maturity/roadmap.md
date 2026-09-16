@@ -434,7 +434,7 @@ Wave labels are interpreted by the scheduling constraints above.
 | <a id="o-o3-1"></a>O3.1 Inner-loop benches (math/algo/blend) | A | Complete — measured 64-cut and Gridfinity flamegraphs declare a 3% inclusive threshold; every qualifying stack family plus the prerequisite NURBS, SSI, Bézier clipping, CDT, GFA, and blend-walker loops now has a Criterion baseline wired into local comparison and hosted trend tracking | [#197](https://github.com/esaueng/remus/pull/197) |
 | <a id="o-o3-1a"></a>O3.1a Audit baseline: NURBS, transforms, chaining | A | Complete — maintained three-family native/committed-WASM runner emits fixed workload identity, independent-process raw samples, correctness results, source/artifact provenance and failure records; M01/M06/M10 remain partial beyond this bounded slice | [Runner and acceptance](../performance/baseline.md) |
 | <a id="o-o3-2"></a>O3.2 Journal-invalidated spatial cache | B | Pending | — |
-| <a id="o-o3-3"></a>O3.3 SIMD in NURBS evaluation | B (evidence-gated) | Pending | — |
+| <a id="o-o3-3"></a>O3.3 SIMD in NURBS evaluation | B (evidence-gated) | Complete — manual 4-lane blocking of the `derivatives_into_with_spans` homogeneous contraction behind the `remus-math/simd` feature; native −4.9%/−5.3% on `nurbs_properties`, WASM −11…−12% on the `massProperties` harness, bit-identical output on both; 64-cut/Gridfinity profiles confirm ~0.5%/0% NURBS share there (analytic/CDT paths untouched) | [Evidence](o33-simd-evidence.md) |
 | <a id="o-o3-4"></a>O3.4 Journal-driven incremental tessellation | B (after O3.2) | Pending — added 2026-09-04 by the industrial-parity overlay (rows IP-9.5, IP-14.6) | — |
 
 </details>
