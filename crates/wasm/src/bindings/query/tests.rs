@@ -906,3 +906,80 @@ fn batch_curvature_error_at_cone_apex() {
         "curvature at the apex must error: {results:?}"
     );
 }
+
+// ── getEdgeParamSpan (batch contract) ────
+//
+// The trimmed edge parameter domain retires the adapter's untrimmed-domain
+// readout (`packages/kernel-adapter/src/exact-brep.ts::brepEdgeCircle`, which
+// documents that `getEdgeCurveParameters` "reports the UNDERLYING curve's
+// domain rather than the edge's trim of it, so a quarter fillet arc reads as
+// a full turn"). Batch carries the same span the direct binding returns.
+
+fn batch_edge_span(k: &mut BrepKernel, edge: u32) -> (f64, f64) {
+    let span = batch_ok(k, "getEdgeParamSpan", serde_json::json!({"edge": edge}));
+    let pair = span.as_array().unwrap();
+    assert_eq!(pair.len(), 2, "span must be [t0, t1]: {span}");
+    (pair[0].as_f64().unwrap(), pair[1].as_f64().unwrap())
+}
+
+#[test]
+fn batch_trimmed_span_matches_direct_on_box_line_edge() {
+    let (mut k, solid) = kernel_with_box();
+    let edge = k.get_solid_edges(solid).unwrap()[0];
+    let direct = k.get_edge_param_span(edge).unwrap();
+    let (t0, t1) = batch_edge_span(&mut k, edge);
+    assert!(
+        (direct[0] - t0).abs() < 1e-12 && (direct[1] - t1).abs() < 1e-12,
+        "batch {t0},{t1} must match direct {direct:?}"
+    );
+    assert!((t0 - 0.0).abs() < 1e-12);
+    assert!((t1 - 1.0).abs() < 1e-9, "unit box edge length, got {t1}");
+}
+
+#[test]
+fn batch_trimmed_span_is_quarter_arc_not_full_turn() {
+    // A fillet rim arc subtends ~a quarter turn of its circle; the raw curve
+    // domain would read a full turn. Batch must report the trim.
+    let (mut k, solid) = kernel_with_box();
+    let edge = k.get_solid_edges(solid).unwrap()[0];
+    let filleted = k.fillet_solid(solid, vec![edge], 0.3).unwrap();
+    let arc_edge = k
+        .get_solid_edges(filleted)
+        .unwrap()
+        .into_iter()
+        .find(|&e| {
+            k.get_edge_curve_type(e).unwrap() == "CIRCLE" && {
+                let v = k.get_edge_vertices(e).unwrap();
+                let d =
+                    ((v[0] - v[3]).powi(2) + (v[1] - v[4]).powi(2) + (v[2] - v[5]).powi(2)).sqrt();
+                d > 1e-6 // open arc, not a closed rim
+            }
+        })
+        .expect("filleted box must carry an open arc edge");
+    let (t0, t1) = batch_edge_span(&mut k, arc_edge);
+    assert!(
+        ((t1 - t0).abs() - std::f64::consts::FRAC_PI_2).abs() < 1e-6,
+        "fillet rim arc must sweep a quarter turn, got [{t0}, {t1}]"
+    );
+}
+
+#[test]
+fn batch_trimmed_span_refuses_foreign_handle() {
+    let (mut k, _solid) = kernel_with_box();
+    let results = batch_run(
+        &mut k,
+        &[op_name_args(
+            "getEdgeParamSpan",
+            serde_json::json!({"edge": 999_999_u32}),
+        )],
+    );
+    assert!(
+        results[0].get("error").is_some(),
+        "foreign edge handle must refuse: {results:?}"
+    );
+    let message = results[0]["error"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("invalid edge handle"),
+        "refusal must name the bad handle, got: {message}"
+    );
+}
