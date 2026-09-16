@@ -342,10 +342,16 @@ pub(crate) fn translation_edge_certificates(
     matrix: &Mat4,
 ) -> Result<Vec<(EdgeId, f64, f64)>, crate::OperationsError> {
     let m = &matrix.0;
-    if (0..4).any(|r| (0..4).any(|c| c != 3 && m[r][c] != if r == c { 1.0 } else { 0.0 }))
-        || m[3][3] != 1.0
-        || (m[0][3] == 0.0 && m[1][3] == 0.0 && m[2][3] == 0.0)
-    {
+    if m[3] != [0.0, 0.0, 0.0, 1.0] || (m[0][3] == 0.0 && m[1][3] == 0.0 && m[2][3] == 0.0) {
+        return Ok(Vec::new());
+    }
+    // Rigid motions (rotation/reflection + translation, no scale/shear)
+    // preserve endpoint residuals mathematically; only independent f64
+    // rounding of the mapped vertices and curve frames can move the measured
+    // value, by a coordinate-scale few ulps. Uniform scales also qualify:
+    // both the residual and the tolerance-carried gap scale together, and the
+    // budget below scales with the coordinates.
+    if !is_rigid_or_uniform_scale(matrix) {
         return Ok(Vec::new());
     }
     let mut certificates = Vec::new();
@@ -409,8 +415,16 @@ pub(crate) fn restore_translation_certificates(
             continue;
         }
         let residual = first.max(second);
-        if residual.is_finite() && residual > tolerance && residual - tolerance <= budget {
-            topo.edge_mut(id)?.set_tolerance(Some(residual.next_up()))?;
+        if residual.is_finite() && residual > tolerance {
+            // A rigid motion preserves endpoint residuals mathematically, so a
+            // post-transform excess within the coordinate-scale roundoff
+            // budget is the transform's own rounding, not new geometry: carry
+            // the certificate forward. Larger gaps are left alone — the
+            // strict I/O gate still refuses them. Store the measured residual
+            // (rounded up), not the whole budget.
+            if residual - tolerance <= budget {
+                topo.edge_mut(id)?.set_tolerance(Some(residual.next_up()))?;
+            }
         }
     }
     Ok(())
@@ -769,6 +783,19 @@ fn transform_nurbs_surface(
         new_cps,
         surface.weights().to_vec(),
     )?)
+}
+
+/// Whether a matrix preserves endpoint residuals up to f64 rounding:
+/// a rigid motion (rotation/reflection + translation) or a rigid motion
+/// with a uniform scale. Both keep the linear part conformal (MᵀM = s²I),
+/// so the only drift is independent rounding of the mapped vertices and
+/// curve frames. Anything else (shear, anisotropic scale) can move the
+/// residual geometrically and must not mint certificates.
+///
+/// Separated from [`is_uniform_scale`] (which answers whether analytic
+/// surfaces survive exactly) so each gate states its own contract.
+fn is_rigid_or_uniform_scale(matrix: &Mat4) -> bool {
+    is_uniform_scale(matrix)
 }
 
 fn is_uniform_scale(matrix: &Mat4) -> bool {
