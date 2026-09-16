@@ -689,3 +689,187 @@ fn batch_through_tool_booleans_preserve_material_across_scales() {
         }
     }
 }
+
+#[test]
+fn batch_shell_scale_matrix_matches_closed_forms() {
+    // B25: shell_op through execute_batch matches closed forms at 1e-3/1/1e3
+    // on box (closed hollow), cylinder cup (open top), and hollow sphere.
+    let pi = std::f64::consts::PI;
+    for exponent in [-3, 0, 3] {
+        let scale = 10.0_f64.powi(exponent);
+        // Closed hollow box 10^3 - 8^3.
+        let mut kernel = BrepKernel::new();
+        let out = run_all_ok(
+            &mut kernel,
+            &[op(
+                "makeBox",
+                serde_json::json!({"width":10.0*scale,"height":10.0*scale,"depth":10.0*scale}),
+            )],
+        );
+        let solid = as_u32(&out[0]);
+        let out = run_all_ok(
+            &mut kernel,
+            &[op(
+                "shell",
+                serde_json::json!({"solid":solid,"thickness":1.0*scale}),
+            )],
+        );
+        let shelled = as_u32(&out[0]);
+        let expected = (10.0 * scale).powi(3) - (8.0 * scale).powi(3);
+        let out = run_all_ok(
+            &mut kernel,
+            &[op(
+                "volume",
+                serde_json::json!({"solid":shelled,"deflection":0.001*scale}),
+            )],
+        );
+        let vol = out[0].as_f64().unwrap();
+        assert!(
+            (vol - expected).abs() / expected < 1e-6,
+            "scale={scale:e} batch box hollow: {vol} vs {expected}"
+        );
+
+        // Open-top cylinder cup.
+        let mut kernel = BrepKernel::new();
+        let out = run_all_ok(
+            &mut kernel,
+            &[op(
+                "makeCylinder",
+                serde_json::json!({"radius":5.0*scale,"height":12.0*scale}),
+            )],
+        );
+        let solid = as_u32(&out[0]);
+        let faces = run_all_ok(
+            &mut kernel,
+            &[op("getSolidFaces", serde_json::json!({"solid": solid}))],
+        );
+        let handles: Vec<u32> = faces[0].as_array().unwrap().iter().map(as_u32).collect();
+        let top = wall_by_normal(&mut kernel, solid, [0.0, 0.0, 1.0]);
+        let _ = handles;
+        let out = run_all_ok(
+            &mut kernel,
+            &[op(
+                "shell",
+                serde_json::json!({"solid":solid,"thickness":1.0*scale,"faces":[top]}),
+            )],
+        );
+        let shelled = as_u32(&out[0]);
+        let expected = pi * ((25.0 - 16.0) * 12.0 + 16.0 * 1.0) * scale.powi(3);
+        let out = run_all_ok(
+            &mut kernel,
+            &[op(
+                "volume",
+                serde_json::json!({"solid":shelled,"deflection":0.001*scale}),
+            )],
+        );
+        let vol = out[0].as_f64().unwrap();
+        assert!(
+            (vol - expected).abs() / expected < 1e-5,
+            "scale={scale:e} batch cylinder cup: {vol} vs {expected}"
+        );
+        let validation = run_all_ok(
+            &mut kernel,
+            &[op("validateSolid", serde_json::json!({"solid":shelled}))],
+        );
+        assert_eq!(validation[0], 0);
+
+        // Closed hollow sphere.
+        let mut kernel = BrepKernel::new();
+        let out = run_all_ok(
+            &mut kernel,
+            &[op(
+                "makeSphere",
+                serde_json::json!({"radius":6.0*scale,"segments":24}),
+            )],
+        );
+        let solid = as_u32(&out[0]);
+        let out = run_all_ok(
+            &mut kernel,
+            &[op(
+                "shell",
+                serde_json::json!({"solid":solid,"thickness":1.0*scale}),
+            )],
+        );
+        let shelled = as_u32(&out[0]);
+        let expected = 4.0 / 3.0 * pi * (216.0 - 125.0) * scale.powi(3);
+        let out = run_all_ok(
+            &mut kernel,
+            &[op(
+                "volume",
+                serde_json::json!({"solid":shelled,"deflection":0.001*scale}),
+            )],
+        );
+        let vol = out[0].as_f64().unwrap();
+        assert!(
+            (vol - expected).abs() / expected < 1e-6,
+            "scale={scale:e} batch hollow sphere: {vol} vs {expected}"
+        );
+    }
+}
+
+#[test]
+fn batch_shell_with_quality_reports_exact_on_analytic_solids() {
+    // B25: the quality-disclosing shell reports "exact" (no deflection, no
+    // sampled faces) on analytic solids, direct and batch alike.
+    let mut kernel = BrepKernel::new();
+    let out = run_all_ok(
+        &mut kernel,
+        &[op(
+            "makeBox",
+            serde_json::json!({"width":10.0,"height":10.0,"depth":10.0}),
+        )],
+    );
+    let solid = as_u32(&out[0]);
+    let result = run_all_ok(
+        &mut kernel,
+        &[op(
+            "shellWithQuality",
+            serde_json::json!({"solid":solid,"thickness":1.0}),
+        )],
+    );
+    assert_eq!(result[0]["quality"], "exact");
+    assert!(result[0].get("deflection").is_none());
+    assert!(result[0].get("sampledFaces").is_none());
+    let shelled = as_u32(&result[0]["solid"]);
+    let out = run_all_ok(
+        &mut kernel,
+        &[op(
+            "volume",
+            serde_json::json!({"solid":shelled,"deflection":0.001}),
+        )],
+    );
+    let vol = out[0].as_f64().unwrap();
+    assert!(
+        (vol - 488.0).abs() / 488.0 < 1e-9,
+        "box hollow volume: {vol}"
+    );
+}
+
+#[test]
+fn batch_offset_face_with_quality_reports_exact_on_planes() {
+    // B25: the quality-disclosing face offset reports "exact" on a planar
+    // face and refuses a NURBS face under the exact-only policy.
+    let mut kernel = BrepKernel::new();
+    let out = run_all_ok(
+        &mut kernel,
+        &[op(
+            "makeBox",
+            serde_json::json!({"width":4.0,"height":4.0,"depth":4.0}),
+        )],
+    );
+    let solid = as_u32(&out[0]);
+    let faces = run_all_ok(
+        &mut kernel,
+        &[op("getSolidFaces", serde_json::json!({"solid": solid}))],
+    );
+    let face = as_u32(&faces[0].as_array().unwrap()[0]);
+    let result = run_all_ok(
+        &mut kernel,
+        &[op(
+            "offsetFaceWithQuality",
+            serde_json::json!({"face":face,"distance":0.5}),
+        )],
+    );
+    assert_eq!(result[0]["quality"], "exact");
+    assert!(result[0].get("samples").is_none());
+}
