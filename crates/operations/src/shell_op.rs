@@ -152,12 +152,74 @@ fn compute_miter_offset(outer: Point3, unique_normals: &[(Vec3, bool)], thicknes
     )
 }
 
+/// The result quality a quality-disclosing shell reports.
+///
+/// Mirrors [`crate::boolean::BooleanQuality`]: the result type tells the
+/// caller whether the inner skin is exact analytic geometry or carries a
+/// sampled approximation — never a bare handle plus a log line.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ShellQuality {
+    /// Every inner face is the exact analytic offset of its source face;
+    /// analytic surface types are preserved.
+    Exact,
+    /// The sampled NURBS offset built the inner skin for the named faces.
+    /// `deflection` is the sample-grid spacing in model units the refit ran
+    /// at; analytic surface types were lost on those faces.
+    Approximate {
+        /// Model-unit sample spacing of the NURBS refit.
+        deflection: f64,
+        /// Source-face indices whose inner skin is sampled, in face order.
+        sampled_faces: Vec<usize>,
+    },
+}
+
+/// A shell result with its disclosed quality.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShellOutcome {
+    /// The shelled solid.
+    pub solid: SolidId,
+    /// How the inner skin was produced. Never silently approximate: a
+    /// sampled inner face is visible here.
+    pub quality: ShellQuality,
+}
+
+/// A [`ShellOutcome`] with its construction-derived face evolution.
+#[derive(Debug, Clone)]
+pub struct ShellOutcomeWithEvolution {
+    /// The shelled solid with its disclosed quality.
+    pub outcome: ShellOutcome,
+    /// Face evolution recorded while the hollow body was built; see
+    /// [`shell_with_evolution`].
+    pub evolution: crate::evolution::EvolutionMap,
+}
+
+impl ShellOutcomeWithEvolution {
+    /// Split into the plain `(solid, evolution)` pair
+    /// [`shell_with_evolution`] returns. The quality is dropped, so prefer
+    /// matching on [`Self::outcome`] first.
+    #[must_use]
+    pub fn into_inner(self) -> (SolidId, crate::evolution::EvolutionMap) {
+        (self.outcome.solid, self.evolution)
+    }
+}
+
 /// Create a hollow shell from a solid by offsetting faces inward.
 ///
 /// Each face is offset inward by `thickness` along its OUTWARD normal, which
 /// is not its surface's normal when the face is reversed: hollowing widens a
-/// bore and narrows a boss. Supports planar, NURBS, and analytic surface
-/// faces, and carries every face's inner wires onto both skins, so a body
+/// bore and narrows a boss. Every kept face — planar, cylindrical, conical,
+/// spherical, toroidal — is offset by the exact analytic rule for its surface
+/// family, so the inner skin preserves analytic surface types with no
+/// sampling and no discretization knob.
+///
+/// A NURBS face has no exact offset in the kernel's surface vocabulary: its
+/// true offset is not a NURBS surface of bounded degree. NURBS faces are
+/// refused with [`crate::OperationsError::Unsupported`] (never silently
+/// refit). Callers that accept an approximate NURBS inner skin use
+/// [`shell_outcome_with_evolution`] and read the disclosed [`ShellQuality`]
+/// from the outcome; the plain [`shell`] entry point stays exact-only.
+///
+/// Carries every face's inner wires onto both skins, so a body
 /// with a bore comes back with the bore.
 ///
 /// If `open_faces` is non-empty, those faces are removed from both the outer
@@ -174,7 +236,7 @@ fn compute_miter_offset(outer: Point3, unique_normals: &[(Vec3, bool)], thicknes
 /// the offset would collapse a sphere through its own centre.
 ///
 /// Returns [`crate::OperationsError::Unsupported`] when the hollow body has
-/// no exact construction: an opened face that is not planar, a free boundary
+/// no exact construction: a kept NURBS face, an opened face that is not planar, a free boundary
 /// that lies in none of the opened faces' planes or does not close into a
 /// loop, or a result that comes back open, invalid or enclosing no volume.
 /// Any failure rolls the topology back.
@@ -206,8 +268,54 @@ pub fn shell_with_evolution(
     thickness: f64,
     open_faces: &[FaceId],
 ) -> Result<(SolidId, crate::evolution::EvolutionMap), crate::OperationsError> {
+    Ok(shell_outcome_with_evolution(topo, solid, thickness, open_faces, None)?.into_inner())
+}
+
+/// A shell run with an explicit approximation policy, disclosing the result
+/// quality — the [`ShellOutcome`] analogue of
+/// [`crate::boolean::boolean_with_context`].
+///
+/// - `approximation: None` is the exact-only policy: a solid whose kept faces
+///   include a NURBS face fails with [`crate::OperationsError::Unsupported`]
+///   naming the first NURBS face, instead of degrading to a sampled refit.
+///   This is what [`shell`] and [`shell_with_evolution`] run.
+/// - `approximation: Some(deflection)` permits the sampled NURBS path at the
+///   given model-unit sample spacing, and the outcome reports
+///   [`ShellQuality::Approximate`] naming every sampled source face. The
+///   spacing plays the same role as the [`crate::boolean::BooleanQuality`]
+///   deflection: it is the disclosure of what ran, not a quality claim.
+///
+/// Every error rolls the topology back.
+///
+/// # Errors
+///
+/// Returns [`shell`]'s errors, plus the exact-only refusal above, plus an
+/// [`crate::OperationsError::InvalidInput`] refusal for a non-finite or
+/// non-positive `deflection`.
+#[allow(clippy::too_many_lines)]
+pub fn shell_outcome_with_evolution(
+    topo: &mut Topology,
+    solid: SolidId,
+    thickness: f64,
+    open_faces: &[FaceId],
+    approximation: Option<f64>,
+) -> Result<ShellOutcomeWithEvolution, crate::OperationsError> {
+    if let Some(deflection) = approximation
+        && (!deflection.is_finite() || deflection <= 0.0)
+    {
+        return Err(crate::OperationsError::InvalidInput {
+            reason: format!(
+                "shell approximation spacing must be finite and positive, got {deflection}"
+            ),
+        });
+    }
     remus_topology::transaction::run_transacted(topo, |topology| {
-        shell_with_evolution_impl(topology, solid, thickness, open_faces)
+        shell_with_evolution_impl(topology, solid, thickness, open_faces, approximation).map(
+            |(solid, evolution, quality)| ShellOutcomeWithEvolution {
+                outcome: ShellOutcome { solid, quality },
+                evolution,
+            },
+        )
     })
 }
 
@@ -217,7 +325,8 @@ fn shell_with_evolution_impl(
     solid: SolidId,
     thickness: f64,
     open_faces: &[FaceId],
-) -> Result<(SolidId, crate::evolution::EvolutionMap), crate::OperationsError> {
+    approximation: Option<f64>,
+) -> Result<(SolidId, crate::evolution::EvolutionMap, ShellQuality), crate::OperationsError> {
     let tol = Tolerance::new();
 
     if thickness <= tol.linear {
@@ -273,6 +382,10 @@ fn shell_with_evolution_impl(
     // and whether it is a fresh inner-skin face (`generated`) or the outer
     // face carried through (`modified`).
     let mut spec_sources: Vec<(usize, bool)> = Vec::new();
+    // Source-face indices whose inner skin the sampled NURBS path built, in
+    // face order. Empty on the exact-only policy; reported in the outcome
+    // when the caller opted into approximation.
+    let mut sampled: Vec<usize> = Vec::new();
 
     // ─── Phase 1: Build vertex→normals map using ALL face types ───────────
     //
@@ -549,11 +662,88 @@ fn shell_with_evolution_impl(
                     spec_sources.push((fid.index(), true));
                 }
             }
-            FaceSurface::Cone(_) | FaceSurface::Nurbs(_) | FaceSurface::Torus(_) => {
+            FaceSurface::Cone(cone) => {
+                // Exact analytic cone offset: same half-angle, apex shifted
+                // along the axis. This is the `offset_face` cone arm inlined
+                // so the shell's exact path never depends on the sampled
+                // single-face entry point.
+                let sin_ha = cone.half_angle().sin();
+                if sin_ha.abs() < tol.linear {
+                    return Err(crate::OperationsError::InvalidInput {
+                        reason: "cone half-angle is degenerate (sin ≈ 0)".into(),
+                    });
+                }
+                let along_surface = if concave { thickness } else { -thickness };
+                let new_apex = cone.apex() + cone.axis() * (along_surface / sin_ha);
+                let new_cone = remus_math::surfaces::ConicalSurface::new(
+                    new_apex,
+                    cone.axis(),
+                    cone.half_angle(),
+                )
+                .map_err(crate::OperationsError::Math)?;
+                result_specs.push(FaceSpec::Surface {
+                    vertices: inner_verts_fwd,
+                    surface: FaceSurface::Cone(new_cone),
+                    reversed: !concave,
+                    inner_wires: inner_holes,
+                });
+                spec_sources.push((fid.index(), true));
+            }
+            FaceSurface::Torus(torus) => {
+                // Exact analytic torus offset: major radius unchanged, minor
+                // radius adjusted. Same inlining rationale as the cone arm.
+                let along_surface = if concave { thickness } else { -thickness };
+                let new_minor = torus.minor_radius() + along_surface;
+                if new_minor <= 0.0 {
+                    return Err(crate::OperationsError::InvalidInput {
+                        reason: format!(
+                            "shell thickness ({thickness}) collapses torus minor radius ({}), \
+                             resulting inner torus would have non-positive minor radius ({new_minor})",
+                            torus.minor_radius(),
+                        ),
+                    });
+                }
+                let new_torus = remus_math::surfaces::ToroidalSurface::new(
+                    torus.center(),
+                    torus.major_radius(),
+                    new_minor,
+                )
+                .map_err(crate::OperationsError::Math)?;
+                result_specs.push(FaceSpec::Surface {
+                    vertices: inner_verts_fwd,
+                    surface: FaceSurface::Torus(new_torus),
+                    reversed: !concave,
+                    inner_wires: inner_holes,
+                });
+                spec_sources.push((fid.index(), true));
+            }
+            FaceSurface::Nurbs(_) => {
+                // No exact offset exists in the kernel's surface vocabulary,
+                // so there is no exact arm to route to. Under the exact-only
+                // policy this is a typed refusal naming the face; with an
+                // explicit approximation spacing the sampled single-face path
+                // builds the inner skin and the outcome discloses it (the
+                // B21 rule: never a bare handle or a log line).
+                let Some(spacing) = approximation else {
+                    return Err(unsupported(format!(
+                        "face {} is a NURBS face with no exact offset; shell is exact-only — \
+                         use shell_outcome_with_evolution with an approximation spacing to \
+                         accept a sampled inner skin",
+                        fid.index()
+                    )));
+                };
+                sampled.push(fid.index());
                 // `offset_face` moves along the SURFACE normal, which is the
                 // face's outward normal only when the face is not reversed.
                 let along_surface = if concave { thickness } else { -thickness };
-                let inner_fid = crate::offset_face::offset_face(topo, fid, along_surface, 8)?;
+                let samples = samples_for_spacing(spacing, thickness);
+                let inner_fid = crate::offset_face::offset_face_with_quality(
+                    topo,
+                    fid,
+                    along_surface,
+                    Some(samples),
+                )?
+                .face;
                 let inner_face = topo.face(inner_fid)?;
                 result_specs.push(FaceSpec::Surface {
                     vertices: inner_verts_fwd,
@@ -641,7 +831,9 @@ fn shell_with_evolution_impl(
 
     if boundary_edge_ids.is_empty() {
         // No open boundary — shell is already closed (no open faces, or all faces present).
-        return finish_shell(topo, solid, evolution, tol.linear, inspect_planar_folds);
+        let quality = quality_of(&sampled, approximation);
+        return finish_shell(topo, solid, evolution, tol.linear, inspect_planar_folds)
+            .map(|(solid, evolution)| (solid, evolution, quality));
     }
 
     // Determine the oriented direction of each boundary edge relative to its
@@ -836,7 +1028,43 @@ fn shell_with_evolution_impl(
         remus_topology::shell::Shell::new(new_faces).map_err(crate::OperationsError::Topology)?;
     *topo.shell_mut(shell_id)? = new_shell;
 
+    let quality = quality_of(&sampled, approximation);
     finish_shell(topo, solid, evolution, tol.linear, inspect_planar_folds)
+        .map(|(solid, evolution)| (solid, evolution, quality))
+}
+
+/// The outcome quality for a finished inner skin: exact when no face took
+/// the sampled path, otherwise the disclosed approximation with the spacing
+/// the caller opted into and the sampled faces in face order.
+fn quality_of(sampled: &[usize], approximation: Option<f64>) -> ShellQuality {
+    match (sampled, approximation) {
+        ([], _) => ShellQuality::Exact,
+        (_, Some(deflection)) => ShellQuality::Approximate {
+            deflection,
+            sampled_faces: sampled.to_vec(),
+        },
+        // Unreachable: `sampled` is only pushed on the `Some` path above.
+        // If this ever fires, the disclosure — not the geometry — is wrong,
+        // so fail closed rather than report `Exact` over sampled faces.
+        (_, None) => ShellQuality::Approximate {
+            deflection: f64::NAN,
+            sampled_faces: sampled.to_vec(),
+        },
+    }
+}
+
+/// Sample-grid size for the disclosed NURBS approximation at `spacing`.
+///
+/// The sampled single-face path takes a grid count, while the shell outcome
+/// discloses a model-unit spacing (the B21-style disclosure). The count is
+/// derived from the thickness so the grid resolves the offset itself:
+/// `thickness / spacing` samples per direction, clamped to the path's own
+/// `[4, 64]` working range. The exact count is an implementation detail —
+/// the spacing is the contract.
+fn samples_for_spacing(spacing: f64, thickness: f64) -> usize {
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let n = (thickness / spacing).ceil() as usize;
+    n.clamp(4, 64)
 }
 
 /// Remove the one exact global-fold cell before the ordinary shell gate.

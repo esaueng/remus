@@ -1,6 +1,6 @@
 //! STEP export authority for curved edges minted by public operations.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, deprecated)]
 
 use std::f64::consts::{PI, TAU};
 
