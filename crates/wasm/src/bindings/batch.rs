@@ -189,6 +189,7 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "getFaceNormal"
         | "getFaceCurvature"
         | "getFaceMinRadius"
+        | "getEdgeParamSpan"
         | "getFaceVertexPositions"
         | "getOpposingPlanarFacePairs"
         | "wireLength"
@@ -2342,6 +2343,19 @@ impl BrepKernel {
                 }
                 Ok(serde_json::json!(coords))
             }
+            "getEdgeParamSpan" => {
+                // The parameter span the edge ACTUALLY covers on its stored
+                // curve (same query as the direct `getEdgeParamSpan`
+                // binding): a stored trim verbatim, a closed edge as one full
+                // period anchored at its start vertex, an open edge via the
+                // endpoint-trimmed convention, lines as `[0, length]`. A
+                // foreign edge handle is a typed refusal, never a guess.
+                let e = get_u32(args, "edge")?;
+                let edge_id = self.resolve_edge(e).map_err(StructuredWasmError::from)?;
+                let (t0, t1) = remus_operations::query::trimmed_edge_domain(self.topo(), edge_id)
+                    .map_err(StructuredWasmError::from)?;
+                Ok(serde_json::json!([t0, t1]))
+            }
             "defeature" => {
                 let s = get_u32(args, "solid")?;
                 let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
@@ -2658,7 +2672,9 @@ impl BrepKernel {
             }
             "draft" => {
                 let s = get_u32(args, "solid")?;
-                let angle = get_f64(args, "angle")?;
+                let angle_degrees = get_f64(args, "angle")?;
+                let angle_radians = super::operations::parse_draft_angle_radians(angle_degrees)
+                    .map_err(StructuredWasmError::from)?;
                 let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
                 let face_handles: Vec<u32> = get_u32_array_optional(args, "faces")?;
                 let face_ids: Vec<_> = face_handles
@@ -2679,7 +2695,7 @@ impl BrepKernel {
                     &face_ids,
                     dir,
                     neutral,
-                    angle,
+                    angle_radians,
                 )
                 .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(result)))

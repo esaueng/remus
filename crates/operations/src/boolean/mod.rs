@@ -1450,6 +1450,16 @@ fn boolean_with_context_impl(
                 // equivalent to the old multi-region `unwrap_or(false)`: that
                 // call ran on this same solid, so an error would have surfaced
                 // at the hollow gate (reached first) regardless.
+                //
+                // `inner_shell_surplus` counts cavity shells (2 per genus-0
+                // cavity), which are NOT outer-shell components: a hollow box
+                // has one outer component plus one cavity shell, while a
+                // two-piece solid has two outer components and no cavities.
+                // The single-component gate above already subtracted the
+                // surplus; the multi-region gate below must compare the
+                // outer-component count against the Euler balance NET of
+                // cavities, or every hollow multi-piece result is rejected
+                // into the mesh fallback (which cannot represent cavities).
                 let closed_manifold = match manifold_pre {
                     Some(m) if !unified => m,
                     _ => is_closed_manifold(topo, result)?,
@@ -1497,6 +1507,15 @@ fn boolean_with_context_impl(
                 // `euler_balanced` correction the single-component gate above
                 // applies — which is why the bound below is `2 * components`
                 // rather than an equality against it.
+                //
+                // Cavity shells are not outer components, so a hollow
+                // multi-piece result balances at `2 * components +
+                // inner_shell_surplus`, not `2 * components`: the hollow box
+                // above measures V-E+F = 6 over 2 outer components because
+                // its cavity contributes its own +2. Compare net of the
+                // surplus or the gate rejects exactly the hollow results it
+                // must accept (routing them to the mesh fallback, which
+                // cannot represent cavities at all).
                 let components_vec = crate::boolean::assembly::face_components(topo, result);
                 let components = components_vec.len();
                 // For Cut, also verify no component is a "B-interior piece" —
@@ -1541,7 +1560,11 @@ fn boolean_with_context_impl(
                 // legitimately yields N disjoint chunks.
                 if matches!(op, BooleanOp::Cut | BooleanOp::Fuse | BooleanOp::Intersect)
                     && components >= 2
-                    && euler_balanced(euler, inner_wire_count, i64::try_from(components).unwrap_or(i64::MAX))
+                    && euler_balanced(
+                        euler - inner_shell_surplus,
+                        inner_wire_count,
+                        i64::try_from(components).unwrap_or(i64::MAX),
+                    )
                     && components_are_disjoint_pieces(topo, &components_vec)
                     && cut_safe
                     && intersect_safe
@@ -1617,7 +1640,11 @@ fn boolean_with_context_impl(
     // into per-component cuts and recombining preserves the missing
     // pieces. Cut distributes over disjoint union; Fuse/Intersect have
     // more complex interaction semantics so we leave those to mesh.
-    if op == BooleanOp::Cut {
+    // Gated to inputs WITHOUT inner (cavity) shells: `face_components`
+    // walks the outer shell only, and both the per-component split and the
+    // reassembly below drop cavity faces — a hollow input would silently
+    // lose its void (same hazard the Fuse tool gate below names).
+    if op == BooleanOp::Cut && topo.solid(a).is_ok_and(|s| s.inner_shells().is_empty()) {
         let components = crate::boolean::assembly::face_components(topo, a);
         if components.len() >= 2
             && components_are_disjoint_pieces(topo, &components)

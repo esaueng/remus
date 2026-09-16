@@ -52,6 +52,14 @@ pub fn read_obj_with_limits(
             Some("vn") => {
                 let coords = parse_3_floats(&mut parts, line)?;
                 normals.push(Vec3::new(coords[0], coords[1], coords[2]));
+                // `vn` lines allocate a `Vec3` each like `v` lines do; budget
+                // them under the same entity count so a normal-only flood
+                // cannot grow the mesh unbounded.
+                ensure_limit(
+                    "OBJ vertices",
+                    positions.len() + normals.len(),
+                    limits.max_model_entities,
+                )?;
             }
             Some("f") => {
                 let face_indices = parse_face_indices(&mut parts, line)?;
@@ -60,6 +68,14 @@ pub fn read_obj_with_limits(
                         reason: format!("face with fewer than 3 vertices: {line}"),
                     });
                 }
+                // Budget the face BEFORE fan-triangulating it: a single N-gon
+                // yields N-2 triangles, so checking only after the push loop
+                // lets one hostile face allocate ~3N indices past the budget.
+                ensure_limit(
+                    "OBJ triangles",
+                    indices.len() / 3 + face_indices.len().saturating_sub(2),
+                    limits.max_model_entities,
+                )?;
                 // Fan triangulation: v0-v1-v2, v0-v2-v3, v0-v3-v4, ...
                 let v0 = face_indices[0];
                 for i in 1..face_indices.len() - 1 {
@@ -106,7 +122,10 @@ fn parse_face_index(token: &str, line: &str) -> Result<u32, crate::IoError> {
     }
     // Reject indices that cannot be represented as u32 instead of letting
     // the cast truncate them into silently corrupted (wrong-vertex) indices.
-    if idx > u32::MAX as i64 + 1 {
+    // The boundary is `> MAX` (equivalently `>= MAX + 1`): OBJ is 1-indexed,
+    // so `u32::MAX + 1` would otherwise pass the guard and wrap to vertex
+    // `u32::MAX`.
+    if idx > u32::MAX as i64 {
         return Err(crate::IoError::ParseError {
             reason: format!("face index out of range in: {line}"),
         });
@@ -243,6 +262,62 @@ v 0.0 1.0 0.0
 f 4294967297 2 3
 ";
         assert!(read_obj(obj).is_err(), "oversized face index must error");
+    }
+
+    #[test]
+    fn face_index_u32_max_plus_one_is_rejected_not_truncated() {
+        // 4294967296 == u32::MAX + 1: OBJ is 1-indexed, so the old `> MAX+1`
+        // guard admitted this and `(idx - 1) as u32` wrapped it to u32::MAX
+        // (E-10). The boundary is `>=` now.
+        let obj = "\
+v 0.0 0.0 0.0
+v 1.0 0.0 0.0
+v 0.0 1.0 0.0
+f 4294967296 2 3
+";
+        assert!(read_obj(obj).is_err(), "u32::MAX+1 face index must error");
+    }
+
+    #[test]
+    fn oversized_fan_is_budgeted_before_triangulation() {
+        // A single 300-gon yields 298 triangles; with a 10-triangle budget
+        // the error must fire before the push loop allocates them (E-2).
+        use crate::limits::ImportLimits;
+        use std::fmt::Write as _;
+        let mut obj = String::from("v 0.0 0.0 0.0\nv 1.0 0.0 0.0\nv 1.0 1.0 0.0\n");
+        obj.push('f');
+        for i in 1..=300 {
+            write!(obj, " {}", (i % 3) + 1).unwrap();
+        }
+        obj.push('\n');
+        let limits = ImportLimits {
+            max_model_entities: 10,
+            ..ImportLimits::default()
+        };
+        let err = read_obj_with_limits(&obj, limits).unwrap_err();
+        assert!(
+            format!("{err}").contains("OBJ triangles"),
+            "expected a triangle-budget error, got {err}"
+        );
+    }
+
+    #[test]
+    fn vn_flood_counts_against_the_entity_budget() {
+        // `vn` lines allocate a Vec3 each like `v` lines; 200k of them with
+        // a 10-entity budget must refuse (E-3), not return Ok.
+        use crate::limits::ImportLimits;
+        let mut obj = String::new();
+        for _ in 0..200_000 {
+            obj.push_str("vn 0.0 0.0 1.0\n");
+        }
+        let limits = ImportLimits {
+            max_model_entities: 10,
+            ..ImportLimits::default()
+        };
+        assert!(
+            read_obj_with_limits(&obj, limits).is_err(),
+            "vn flood must exceed the entity budget"
+        );
     }
 
     #[test]

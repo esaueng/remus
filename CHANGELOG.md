@@ -173,6 +173,13 @@
   requiring per-position closed-form volumes, bit-exact state survival,
   byte-identical re-serialization, and typed non-mutating refusal of
   corrupted references.
+* **fuzz:** add the four remaining bounded scheduled engine slices with
+  independent oracles, committed geometric seeds, and native seed tests —
+  unplaced-primitive tessellation against the closed-form volume (agreement
+  plus no refinement divergence), curve-surface hits re-evaluated onto both
+  geometries, solid offsets checked for closed-manifold volume direction
+  under a one-sided convex ceiling, and converged GCS sketches re-checked
+  by hand-written geometric residuals — all on the weekly schedule.
 
 ## 2.130.0
 
