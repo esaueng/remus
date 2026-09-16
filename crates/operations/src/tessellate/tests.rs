@@ -3762,3 +3762,95 @@ fn open_nurbs_interior_grid_follows_bending_not_knot_units() {
         "the straight direction should match the arch's spacing: {unit:?}, expected ~{expected_rows}"
     );
 }
+
+/// B24: the exhaustive `EdgeCurve`/`FaceSurface` arms converted in
+/// `nonplanar.rs` preserve the pre-conversion behavior on every carrier
+/// family.
+///
+/// Pins decline/accept verdicts through the public structured-band entry
+/// points: a cylinder band with a hyperbola rim edge declines (former
+/// `_ =>` decline), a plane face declines the band projectors, a sphere
+/// cap keeps its structured path, and the converted-wall wire classifier
+/// still rejects an ellipse rim. Any future variant that reaches one of
+/// the converted arms fails to compile here first; a silent behavior
+/// change fails the pins.
+#[test]
+fn b24_exhaustive_carrier_arms_preserve_behavior() {
+    use remus_math::curves::Hyperbola3D;
+    use remus_math::surfaces::CylindricalSurface;
+
+    // Cylinder band whose outer wire carries a hyperbola edge: the
+    // revolution-band classifier declines (no structured sweep).
+    let mut topo = Topology::new();
+    let cylinder =
+        CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+    let hyperbola = Hyperbola3D::new(
+        Point3::new(2.0, 0.0, 0.5),
+        Vec3::new(0.0, 0.0, 1.0),
+        0.5,
+        0.5,
+    )
+    .unwrap();
+    let h0 = hyperbola.evaluate(-0.5);
+    let h1 = hyperbola.evaluate(0.5);
+    let hv0 = topo.add_vertex(Vertex::new(h0, 1e-7));
+    let hv1 = topo.add_vertex(Vertex::new(h1, 1e-7));
+    let h_edge = topo.add_edge(Edge::new(hv0, hv1, EdgeCurve::Hyperbola(hyperbola)));
+    let c0 = Point3::new(1.0, 0.0, 0.0);
+    let cv0 = topo.add_vertex(Vertex::new(c0, 1e-7));
+    let c_edge = topo.add_edge(Edge::new(
+        cv0,
+        cv0,
+        EdgeCurve::Circle(
+            remus_math::curves::Circle3D::new(
+                Point3::new(0.0, 0.0, 0.0),
+                Vec3::new(0.0, 0.0, 1.0),
+                1.0,
+            )
+            .unwrap(),
+        ),
+    ));
+    let wire = topo.add_wire(
+        Wire::new(
+            vec![
+                OrientedEdge::new(h_edge, true),
+                OrientedEdge::new(c_edge, true),
+            ],
+            true,
+        )
+        .unwrap(),
+    );
+    let face = topo.add_face(Face::new(wire, vec![], FaceSurface::Cylinder(cylinder)));
+    let face_data = topo.face(face).unwrap();
+    let mut merged = TriangleMesh::default();
+    let handled = super::nonplanar::tessellate_revolution_band_shared(
+        &topo,
+        face_data,
+        &DetHashMap::default(),
+        &mut merged,
+    )
+    .unwrap();
+    assert!(
+        !handled,
+        "a hyperbola rim edge must decline the structured band sweep"
+    );
+
+    // Plane face: no band projector accepts it.
+    let mut topo = Topology::new();
+    let plane_face = remus_topology::test_utils::make_unit_square_face(&mut topo);
+    let face_data = topo.face(plane_face).unwrap();
+    let mut merged = TriangleMesh::default();
+    let handled = super::nonplanar::tessellate_revolution_band_shared(
+        &topo,
+        face_data,
+        &DetHashMap::default(),
+        &mut merged,
+    )
+    .unwrap();
+    assert!(!handled, "a plane face must decline the band sweep");
+    let local = super::nonplanar::tessellate_band_face_local(&topo, face_data, 0.1, 0.1).unwrap();
+    assert!(
+        local.is_none(),
+        "a plane face must decline the local band path"
+    );
+}

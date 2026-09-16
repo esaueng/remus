@@ -122,6 +122,10 @@ pub fn project_point_to_curve(
 ///
 /// Returns a sorted list of candidate parameters (best first) to use as
 /// Newton seeds. Using multiple seeds avoids converging to a local minimum.
+///
+/// The public coarse-seed helper exposes the same sweep (all span samples,
+/// best first) so import adapters can re-seed refinement deterministically
+/// without reimplementing the sampling.
 #[allow(clippy::cast_precision_loss)]
 fn curve_coarse_search(curve: &NurbsCurve, point: Point3) -> Result<Vec<f64>, MathError> {
     // Collect all (distance_sq, parameter) samples.
@@ -130,7 +134,7 @@ fn curve_coarse_search(curve: &NurbsCurve, point: Point3) -> Result<Vec<f64>, Ma
     let degree = curve.degree();
     let n_samples = (degree + 1).max(5) * 2;
 
-    for span in degree..knots.len() - degree - 1 {
+    for span in degree..knots.len().saturating_sub(degree + 1) {
         let u_start = knots[span];
         let u_end = knots[span + 1];
         if u_end <= u_start {
@@ -172,11 +176,60 @@ fn curve_coarse_search(curve: &NurbsCurve, point: Point3) -> Result<Vec<f64>, Ma
     Ok(candidates)
 }
 
+/// Full coarse sweep behind the private coarse search: every non-empty-span
+/// sample, ordered best first, without the five-candidate truncation.
+///
+/// Import adapters ruling out an ambiguous second foot need the whole sweep,
+/// not just the winner's neighbourhood: a bitangent carrier's losing branch
+/// can sit far from every top-five seed. The samples — and therefore the
+/// verdict — are a pure function of the carrier and the query point.
+#[allow(clippy::cast_precision_loss)]
+pub fn curve_coarse_seeds_public(curve: &NurbsCurve, point: Point3) -> Vec<f64> {
+    let knots = curve.knots();
+    let degree = curve.degree();
+    let n_samples = (degree + 1).max(5) * 2;
+
+    let mut samples: Vec<(f64, f64)> = Vec::new();
+    for span in degree..knots.len().saturating_sub(degree + 1) {
+        let u_start = knots[span];
+        let u_end = knots[span + 1];
+        if u_end <= u_start {
+            continue;
+        }
+        for i in 0..=n_samples {
+            let t = i as f64 / n_samples as f64;
+            let u = t.mul_add(u_end - u_start, u_start);
+            let pt = curve.evaluate(u);
+            let d_sq = (pt - point).length_squared();
+            samples.push((d_sq, u));
+        }
+    }
+    samples.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    samples.into_iter().map(|(_, u)| u).collect()
+}
+
 /// Newton–Raphson refinement for curve point projection.
 ///
 /// Finds parameter u that minimizes ||C(u) - P|| starting from `u_init`.
 /// Always returns a result — falls back to the best iterate if formal
-/// convergence criteria are not met within [`MAX_ITERATIONS`].
+/// convergence criteria are not met within the maximum iteration budget.
+///
+/// This is the public entry point to the same refinement
+/// [`project_point_to_curve`] runs per coarse-search seed. Import adapters
+/// that must rule out a second ambiguous foot re-sweep the carrier with
+/// their own seeds and need the identical iteration here, not a copy.
+#[allow(clippy::suspicious_operation_groupings)]
+pub fn curve_newton_refine_public(
+    curve: &NurbsCurve,
+    point: Point3,
+    u_init: f64,
+    u_min: f64,
+    u_max: f64,
+    tolerance: f64,
+) -> (f64, Point3) {
+    curve_newton_refine(curve, point, u_init, u_min, u_max, tolerance)
+}
+
 #[allow(clippy::suspicious_operation_groupings)]
 fn curve_newton_refine(
     curve: &NurbsCurve,
