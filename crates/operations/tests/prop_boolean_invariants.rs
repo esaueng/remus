@@ -1581,13 +1581,14 @@ fn arb_angle() -> impl Strategy<Value = f64> {
     ]
 }
 
-/// Fast-suite angle sampler. The oblique X/Y battery shows ±45°/±30°
-/// X/Y rotations mis-carve cylinder–box cuts that graze the stock cap
-/// (findings 9+ — pinned ready-repro `b26_finding_oblique_cap_graze_cut`
-/// at rotX(45°)), while 0°/180° X/Y (which keep axis-aligned faces
-/// axis-aligned and never flip an axis end-for-end) and ALL Z rotations
-/// (axis-preserving) are exact on the same pairs. The slow suite keeps
-/// the full lattice under `PROP_BOOL_SLOW=1`.
+/// Fast-suite angle sampler. Development probes showed ±45°/±30° X/Y
+/// rotations mis-carving cylinder–box cuts that graze the stock cap, so
+/// oblique X/Y rotations are excluded from the fast lattice: 0°/180° X/Y
+/// (which keep axis-aligned faces axis-aligned and never flip an axis
+/// end-for-end) and ALL Z rotations (axis-preserving) are exact on the
+/// same pairs. No pinned repro was retained for the oblique cell — a future
+/// §B row owns it on first pinned reproduction. The slow suite keeps the
+/// full lattice under `PROP_BOOL_SLOW=1`.
 fn arb_fast_angle(axis: u8) -> impl Strategy<Value = f64> {
     use std::f64::consts::{FRAC_PI_2, FRAC_PI_4, FRAC_PI_6, PI};
     if axis % 3 == 2 {
@@ -1652,11 +1653,12 @@ fn arb_gen_prim(slow: bool) -> impl Strategy<Value = GenPrim> {
 /// Full proptest input: two primitives, a rigid placement of the tool, and
 /// a scale band. Scales ride the operand *dimensions* (1e-3/1/1e3), never a
 /// non-uniform arena scale, so placements stay rigid and volume oracles stay
-/// sharp. grazing contacts (face-touching, edge-touching, cap-grazing)
-/// refuse-or-assemble-wrong on the current engine (findings 2, 10, 11):
-/// the offset lattice below is shifted +0.25 off the half-unit grid so
-/// exact grazing is never drawn, while near-miss placements (0.25 off)
-/// still exercise the boundary neighbourhood.
+/// sharp. Grazing contacts (face-touching, edge-touching, cap-grazing)
+/// refuse-or-assemble-wrong on the current engine (observed during
+/// development; only finding 2 was retained as a pinned repro): the offset
+/// lattice below is shifted +0.25 off the half-unit grid so exact grazing
+/// is never drawn, while near-miss placements (0.25 off) still exercise
+/// the boundary neighbourhood. The slow suite keeps the on-lattice offsets.
 #[derive(Debug, Clone)]
 struct BoolPairInput {
     a: GenPrim,
@@ -1684,8 +1686,8 @@ fn arb_bool_pair_fast() -> impl Strategy<Value = BoolPairInput> {
                 angle,
                 offset: (
                     // +0.25 off-lattice shift: exact grazing contacts
-                    // (face-touching, cap-grazing — findings 2, 10, 11)
-                    // are never drawn; near-misses still are.
+                    // (face-touching, cap-grazing) are never drawn;
+                    // near-misses still are.
                     f64::from(ox).mul_add(0.5, 0.25),
                     f64::from(oy).mul_add(0.5, 0.25),
                     f64::from(oz).mul_add(0.5, 0.25),
