@@ -12,8 +12,8 @@
 //! spline and offsets its end vertex 1.620525e-3 mm off the chord —
 //! mirroring Scale edge #128, whose end vertex misses its carrier by
 //! 1.619256e-3 mm against a 1.0e-5 mm local recovery cap — and the
-//! pre-fix reader fails the fixture with that same
-//! `uniquely witnessed NURBS carrier` error.
+//! pre-normalization reader fails the fixture with that same
+//! `misses its carrier` recovery-cap error.
 //!
 //! The companion unit tests in `crates/io/src/step/reader.rs` pin the
 //! normalization boundary itself (rational and multi-span splines stay
@@ -142,10 +142,13 @@ fn near_linear_cubic_spline_with_off_chord_vertex_still_fails_closed() {
         );
     let error =
         read_step_with_report(&cubic, &mut Topology::new()).expect_err("cubic must not normalize");
+    let message = error.to_string();
     assert!(
-        error
-            .to_string()
-            .contains("uniquely witnessed NURBS carrier"),
+        message.contains("misses its carrier by"),
         "off-chord cubic vertex must still refuse at the recovery cap, got: {error}"
+    );
+    assert!(
+        message.contains("(local recovery cap 1.000000e-7 mm)"),
+        "refusal must name the recovery cap, got: {error}"
     );
 }
