@@ -15,8 +15,12 @@
 //! use remus_sketch::{GcsSystem, PointData, Constraint};
 //!
 //! let mut sys = GcsSystem::new();
-//! let p0 = sys.add_point(PointData { x: 0.0, y: 0.0, fixed: true });
-//! let p1 = sys.add_point(PointData { x: 5.0, y: 1.0, fixed: false });
+//! let p0 = sys
+//!     .add_point(PointData { x: 0.0, y: 0.0, fixed: true })
+//!     .unwrap();
+//! let p1 = sys
+//!     .add_point(PointData { x: 5.0, y: 1.0, fixed: false })
+//!     .unwrap();
 //! sys.add_constraint(Constraint::Distance(p0, p1, 3.0)).unwrap();
 //! let result = sys.solve(100, 1e-10).unwrap();
 //! assert!(result.converged);

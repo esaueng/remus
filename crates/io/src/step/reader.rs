@@ -55,6 +55,17 @@ use crate::limits::{ImportLimits, ensure_input_size, ensure_limit};
 
 const MAX_UNTRIMMED_NURBS_RECOVERY_CONTROL_POINTS: usize = 4_096;
 const MAX_UNTRIMMED_NURBS_RECOVERY_TOLERANCE_MM: f64 = 1.0e-4;
+/// Absolute ceiling for projection-based untrimmed NURBS domain recovery, in
+/// millimetres. The recovery projector runs under the caller tolerance, but
+/// acceptance is additionally capped here so a model that declares a coarse
+/// uncertainty can never heal a visibly off-carrier endpoint into an exact
+/// edge.
+const MAX_PROJECTED_NURBS_RECOVERY_TOLERANCE_MM: f64 = 1.0e-6;
+/// Separation gate for the second-foot uniqueness sweep, as a fraction of
+/// the carrier domain: two stationary points closer than this are the same
+/// foot sampled twice, not an ambiguous branch.
+const UNTRIMMED_RECOVERY_FOOT_SEPARATION_FRACTION: f64 = 1.0e-9;
+#[cfg(test)]
 const NURBS_DOMAIN_BISECTION_STEPS: usize = 96;
 
 /// A non-fatal, machine-actionable diagnostic produced during STEP import.
@@ -297,9 +308,9 @@ fn read_step_impl(
     let result: Result<StepReadResult, IoError> = (|| {
         let (built_solids, built_sheets, diagnostics) = {
             let mut builder = if include_sheets {
-                StepBuilder::new_for_body_import(topo, &entities, units)?
+                StepBuilder::new_for_body_import(topo, &entities, units, limits)?
             } else {
-                StepBuilder::new(topo, &entities, units)?
+                StepBuilder::new(topo, &entities, units, limits)?
             };
             let solids = builder.build_all_solids()?;
             let sheets = if include_sheets {
@@ -1627,6 +1638,10 @@ struct StepBuilder<'a> {
     /// Conversion from the file's declared units into millimetres/radians,
     /// applied to every length- and angle-valued quantity as it is read.
     units: UnitScale,
+    /// Hostile-input budgets: every allocation-driving attribute count
+    /// (bound lists, point aggregates, knot expansions) is measured against
+    /// these before the buffer is sized.
+    limits: ImportLimits,
     /// Largest uncertainty explicitly declared by the STEP representation,
     /// converted to millimetres and floored at the kernel tolerance.
     model_tolerance_cap: f64,
@@ -1643,22 +1658,25 @@ impl<'a> StepBuilder<'a> {
         topo: &'a mut Topology,
         entities: &'a HashMap<u64, StepEntity>,
         units: UnitScale,
+        limits: ImportLimits,
     ) -> Result<Self, IoError> {
-        Self::new_with_roots(topo, entities, units, false)
+        Self::new_with_roots(topo, entities, units, limits, false)
     }
 
     fn new_for_body_import(
         topo: &'a mut Topology,
         entities: &'a HashMap<u64, StepEntity>,
         units: UnitScale,
+        limits: ImportLimits,
     ) -> Result<Self, IoError> {
-        Self::new_with_roots(topo, entities, units, true)
+        Self::new_with_roots(topo, entities, units, limits, true)
     }
 
     fn new_with_roots(
         topo: &'a mut Topology,
         entities: &'a HashMap<u64, StepEntity>,
         units: UnitScale,
+        limits: ImportLimits,
         include_sheets: bool,
     ) -> Result<Self, IoError> {
         let brep_tolerance_caps = representation_model_tolerances(entities, include_sheets)?;
@@ -1666,6 +1684,7 @@ impl<'a> StepBuilder<'a> {
             topo,
             entities,
             units,
+            limits,
             model_tolerance_cap: Tolerance::new().linear,
             brep_tolerance_caps,
             vertex_cache: HashMap::new(),
@@ -4792,9 +4811,14 @@ impl<'a> StepBuilder<'a> {
                             .max(forward_residuals[0])
                             .max(forward_residuals[1]);
                         (domain_start, domain_end)
-                    } else if let Some((t0, t1)) =
-                        Self::uniquely_witnessed_nurbs_domain(nurbs, start, end)?
-                    {
+                    } else if let Some((t0, t1)) = Self::projected_nurbs_domain(
+                        ec_ref,
+                        &self.limits,
+                        nurbs,
+                        start,
+                        end,
+                        tolerance_cap.min(MAX_PROJECTED_NURBS_RECOVERY_TOLERANCE_MM),
+                    )? {
                         let recovery_tolerance_cap =
                             tolerance_cap.min(MAX_UNTRIMMED_NURBS_RECOVERY_TOLERANCE_MM);
                         let mut endpoint_residual = 0.0_f64;
@@ -4851,12 +4875,328 @@ impl<'a> StepBuilder<'a> {
         Ok(edge)
     }
 
+    /// Recover a unique NURBS sub-domain from the topological endpoints'
+    /// closest feet on the carrier.
+    ///
+    /// The scalar-witness certificate below is about the control polygon, not
+    /// the curve: a curve whose polygon projection is strictly monotone can
+    /// still approach an endpoint off its witness axis, and then the witness
+    /// bisection converges to a point on the wrong lobe (MAMBO B1
+    /// EDGE_CURVE #241: the witness point misses by 2.3e-4 while the true
+    /// foot is exact). Endpoint projection asks the question directly.
+    ///
+    /// Each endpoint is projected with the kernel projector (per-span coarse
+    /// search plus Newton refinement) under the caller tolerance, then
+    /// re-checked against the absolute recovery ceiling. The pair is accepted
+    /// only when both feet are unique global minima: a second stationary
+    /// point within the endpoint's own tolerance band refuses, so a
+    /// bitangent or looping carrier can never select an ambiguous branch. A
+    /// reversed pair (end foot before start foot) is accepted as-is; it
+    /// traces start → end under the NURBS open-curve convention, matching
+    /// the analytic Circle/Ellipse handling above. A closed carrier whose
+    /// endpoints are the seam point and an interior point is the periodic
+    /// analogue of the natural-endpoint match: the seam vertex takes the
+    /// nearer domain end and the interior vertex takes its unique foot, so
+    /// the two half-arcs stay distinguished. Degenerate spans and
+    /// off-carrier endpoints refuse with the same stable codes as before.
+    fn projected_nurbs_domain(
+        ec_ref: u64,
+        limits: &ImportLimits,
+        curve: &remus_math::nurbs::NurbsCurve,
+        start: Point3,
+        end: Point3,
+        tolerance_cap: f64,
+    ) -> Result<Option<(f64, f64)>, IoError> {
+        ensure_limit(
+            "control points per untrimmed NURBS domain recovery",
+            curve.control_points().len(),
+            MAX_UNTRIMMED_NURBS_RECOVERY_CONTROL_POINTS,
+        )?;
+        if curve.degree() == 0 {
+            return Ok(None);
+        }
+        let (domain_start, domain_end) = curve.domain();
+        if !(domain_start.is_finite() && domain_end.is_finite() && domain_end > domain_start) {
+            return Ok(None);
+        }
+        // Bit identity is intentional: the acceptance argument below treats
+        // the carrier as an exact polynomial point set, and approximate
+        // equality cannot certify that rational weights cancel exactly.
+        let Some(first_weight) = curve.weights().first().copied() else {
+            return Ok(None);
+        };
+        if !first_weight.is_finite()
+            || first_weight <= 0.0
+            || curve
+                .weights()
+                .iter()
+                .any(|weight| weight.to_bits() != first_weight.to_bits())
+        {
+            return Ok(None);
+        }
+
+        let parameter_for = |label: &str, point: Point3| -> Result<Option<f64>, IoError> {
+            let projected = remus_math::nurbs::project_point_to_curve(curve, point, tolerance_cap)
+                .map_err(|error| IoError::ParseError {
+                    reason: format!("untrimmed NURBS endpoint projection failed: {error}"),
+                })?;
+            if !projected.distance.is_finite() || projected.distance > tolerance_cap {
+                return Err(IoError::ParseError {
+                    reason: format!(
+                        "EDGE_CURVE #{ec_ref} {label} endpoint misses its carrier by \
+                             {distance:.6e} mm (local recovery cap {tolerance_cap:.6e} mm)",
+                        distance = projected.distance,
+                    ),
+                });
+            }
+            // Exact vertices keep the parameter the file's own coordinates
+            // name: when the vertex reproduces the carrier to roundoff
+            // scale, the closest foot IS the exact parameter, and returning
+            // the projector's foot would trade it for a conditioning-shifted
+            // neighbour. The uniqueness sweep below still runs, anchored on
+            // the exact parameter.
+            let anchor = Self::exact_carrier_parameter(curve, point, tolerance_cap)
+                .unwrap_or(projected.parameter);
+            // Uniqueness: re-sweep the carrier's knot spans for a second
+            // stationary point within the endpoint's own tolerance band. A
+            // bitangent or looping carrier approaches the vertex twice, and
+            // either branch could be the intended one, so the domain refuses.
+            // The sweep reuses the projector's own span sampling, so its cost
+            // stays linear in the span count. Seeds that refine back to the
+            // found foot (same stationary point, sampling jitter) are not a
+            // second branch: only a well-separated refinement refuses. The
+            // separation is relative to the foot's conditioning — a foot on
+            // a gently curving carrier moves ~sqrt(2·ρ·tol) inside the
+            // tolerance ball, and that arc is the same foot, not ambiguity.
+            let separation = Self::projected_foot_separation(curve, anchor, tolerance_cap);
+            let keep_out = ((domain_end - domain_start)
+                * UNTRIMMED_RECOVERY_FOOT_SEPARATION_FRACTION)
+                .max(separation)
+                .max(domain_start.abs().max(domain_end.abs()).max(1.0) * f64::EPSILON);
+            for seed in Self::untrimmed_recovery_seeds(curve, limits, point, anchor, keep_out)? {
+                let (refined, _) = remus_math::nurbs::curve_newton_refine_public(
+                    curve,
+                    point,
+                    seed,
+                    domain_start,
+                    domain_end,
+                    tolerance_cap,
+                );
+                if (refined - anchor).abs() < keep_out {
+                    continue;
+                }
+                let distance = (curve.evaluate(refined) - point).length();
+                if distance.is_finite() && distance <= tolerance_cap {
+                    return Ok(None);
+                }
+            }
+            Ok(Some(anchor))
+        };
+
+        Ok(parameter_for("start", start)?
+            .zip(parameter_for("end", end)?)
+            .filter(|(start_parameter, end_parameter)| {
+                (end_parameter - start_parameter).abs() > 1.0e-6 * (domain_end - domain_start)
+            })
+            .or_else(|| {
+                Self::closed_seam_nurbs_domain(
+                    curve,
+                    start,
+                    end,
+                    tolerance_cap,
+                    domain_start,
+                    domain_end,
+                )
+            }))
+    }
+
+    /// Span seeds for the [`StepBuilder::projected_nurbs_domain`] uniqueness
+    /// sweep: the projector's own coarse samples against the query endpoint,
+    /// best first, with the found foot's neighbourhood removed.
+    ///
+    /// The sample count is attacker-visible (it scales with the carrier's
+    /// span count), so it is measured against the import entity budget
+    /// before the buffer is sized.
+    ///
+    /// A closed carrier whose endpoints are the seam point and an interior
+    /// point is the periodic analogue of the natural-endpoint match above:
+    /// the seam vertex takes the nearer domain end and the interior vertex
+    /// takes its unique projected foot, so the two half-arcs sharing the
+    /// carrier stay distinguished. Returns `None` unless the carrier is
+    /// closed to the caller tolerance, exactly one endpoint sits on the seam
+    /// (within tolerance), and the other sits strictly inside.
+    fn closed_seam_nurbs_domain(
+        curve: &remus_math::nurbs::NurbsCurve,
+        start: Point3,
+        end: Point3,
+        tolerance_cap: f64,
+        domain_start: f64,
+        domain_end: f64,
+    ) -> Option<(f64, f64)> {
+        let seam_gap = (curve.evaluate(domain_start) - curve.evaluate(domain_end)).length();
+        if !seam_gap.is_finite() || seam_gap > tolerance_cap {
+            return None;
+        }
+        let start_seam = (curve.evaluate(domain_start) - start)
+            .length()
+            .min((curve.evaluate(domain_end) - start).length());
+        let end_seam = (curve.evaluate(domain_end) - end)
+            .length()
+            .min((curve.evaluate(domain_start) - end).length());
+        if !(start_seam.is_finite() && end_seam.is_finite()) {
+            return None;
+        }
+        // Exactly one endpoint on the seam: both on the seam is the closed
+        // edge (handled by the natural-endpoint match); neither is.
+        let (seam_end, interior_point) =
+            match (start_seam <= tolerance_cap, end_seam <= tolerance_cap) {
+                (true, false) => (domain_start, end),
+                (false, true) => (domain_end, start),
+                _ => return None,
+            };
+        let _ = seam_end;
+        let projected =
+            remus_math::nurbs::project_point_to_curve(curve, interior_point, tolerance_cap).ok()?;
+        if !projected.distance.is_finite() || projected.distance > tolerance_cap {
+            return None;
+        }
+        // The interior foot must sit strictly inside: a second seam foot is
+        // the degenerate whole-loop edge, not a half-arc.
+        let margin = 1.0e-6 * (domain_end - domain_start);
+        if projected.parameter - domain_start < margin || domain_end - projected.parameter < margin
+        {
+            return None;
+        }
+        if start_seam <= tolerance_cap {
+            Some((domain_start, projected.parameter))
+        } else {
+            Some((projected.parameter, domain_end))
+        }
+    }
+    fn untrimmed_recovery_seeds(
+        curve: &remus_math::nurbs::NurbsCurve,
+        limits: &ImportLimits,
+        endpoint: Point3,
+        found: f64,
+        keep_out: f64,
+    ) -> Result<Vec<f64>, IoError> {
+        let seeds = remus_math::nurbs::curve_coarse_seeds_public(curve, endpoint);
+        ensure_limit(
+            "coarse seeds per untrimmed NURBS uniqueness sweep",
+            seeds.len(),
+            limits.max_model_entities,
+        )?;
+        Ok(seeds
+            .into_iter()
+            .filter(|seed| (seed - found).abs() >= keep_out)
+            .collect())
+    }
+
+    /// Parameter-space radius of the tolerance ball around a projected foot.
+    ///
+    /// A foot on a gently curving carrier is ill-conditioned: the whole arc
+    /// with `distance <= tolerance_cap` spans roughly `sqrt(2·ρ·tol)` in
+    /// parameter space (ρ = curvature radius), and every seed on that arc
+    /// refines to *some* point of it. The uniqueness sweep must treat that
+    /// arc as the same foot, not as an ambiguous second branch. Returns 0
+    /// for a degenerate foot (zero speed or curvature), where any separation
+    /// is ambiguity.
+    fn projected_foot_separation(
+        curve: &remus_math::nurbs::NurbsCurve,
+        foot: f64,
+        tolerance_cap: f64,
+    ) -> f64 {
+        let ders = curve.derivatives(foot, 2);
+        if ders.len() < 3 {
+            return 0.0;
+        }
+        let speed_sq = ders[1].length_squared();
+        let cross = ders[1].cross(ders[2]);
+        let curvature = if speed_sq > f64::EPSILON {
+            cross.length() / (speed_sq * speed_sq.sqrt())
+        } else {
+            return 0.0;
+        };
+        if !(curvature.is_finite() && curvature > 0.0) {
+            return 0.0;
+        }
+        let radius = 1.0 / curvature;
+        let arc = (2.0 * radius * tolerance_cap).sqrt();
+        let speed = speed_sq.sqrt();
+        if !(arc.is_finite() && speed.is_finite() && speed > 0.0) {
+            return 0.0;
+        }
+        arc / speed
+    }
+
+    /// Exact parameter of a vertex that already sits on the carrier.
+    ///
+    /// Scans the carrier's knot spans for a parameter whose evaluation
+    /// matches the vertex within `tolerance_cap` and refines it with one
+    /// Newton pass. Returns `None` when no span comes that close, leaving
+    /// the general projection to decide. This preserves the exact parameter
+    /// the file's own coordinates name (a vertex evaluated from the carrier
+    /// at write time) instead of paying the conditioning cost of a closest
+    /// foot, which can sit ~sqrt(ρ·tol) away along a gently curving carrier.
+    fn exact_carrier_parameter(
+        curve: &remus_math::nurbs::NurbsCurve,
+        point: Point3,
+        tolerance_cap: f64,
+    ) -> Option<f64> {
+        let (domain_start, domain_end) = curve.domain();
+        let mut best: Option<(f64, f64)> = None;
+        for seed in remus_math::nurbs::curve_coarse_seeds_public(curve, point) {
+            let (refined, _) = remus_math::nurbs::curve_newton_refine_public(
+                curve,
+                point,
+                seed,
+                domain_start,
+                domain_end,
+                tolerance_cap,
+            );
+            let distance = (curve.evaluate(refined) - point).length();
+            if distance.is_finite() && distance <= tolerance_cap {
+                let exactness = distance;
+                let replace = best.is_none_or(|(_, best_distance)| exactness < best_distance);
+                if replace {
+                    best = Some((refined, exactness));
+                }
+                if exactness == 0.0 {
+                    break;
+                }
+            }
+        }
+        // The sweep above is the projector's own sampling, so the global
+        // closest it finds is the projector's own foot. Accept it as exact
+        // only when it reproduces the vertex to roundoff scale: anything
+        // larger is a genuinely off-carrier vertex whose foot must go
+        // through the uniqueness gate below.
+        let (parameter, distance) = best?;
+        let scale = point
+            .x()
+            .abs()
+            .max(point.y().abs())
+            .max(point.z().abs())
+            .max(1.0);
+        if distance <= 1024.0 * f64::EPSILON * scale {
+            Some(parameter)
+        } else {
+            None
+        }
+    }
+
     /// Recover a unique NURBS sub-domain only when a scalar projection of its
     /// polynomial control polygon is strictly monotone. The projected curve's
     /// derivative is a non-negative degree-reduced B-spline combination of
     /// positive adjacent control differences, so the projection is injective
     /// over the entire carrier. Bisection therefore cannot select an alternate
     /// lobe or crossing.
+    ///
+    /// Retained for unit coverage of the monotone fast path; the STEP import
+    /// path now resolves untrimmed domains through
+    /// [`StepBuilder::projected_nurbs_domain`], which asks the projector
+    /// directly instead of certifying the polygon.
+    #[cfg(test)]
     fn uniquely_witnessed_nurbs_domain(
         curve: &remus_math::nurbs::NurbsCurve,
         start: Point3,
@@ -5460,6 +5800,15 @@ impl<'a> StepBuilder<'a> {
                 reason: format!("POLYLINE #{curve_ref} has no points"),
             });
         }
+        // The point list drives a `with_capacity` + per-point build below, so
+        // budget it like any other allocation-driving count: a 200k-ref
+        // POLYLINE in a 1.5 MB file would otherwise allocate ~1.6 MB of refs
+        // plus the point buffer with only the input-bytes cap as a bound.
+        crate::limits::ensure_limit(
+            "STEP POLYLINE points",
+            point_refs.len(),
+            self.limits.max_model_entities,
+        )?;
 
         // Coincident consecutive points would force a repeated interior knot,
         // which a degree-1 B-spline cannot carry. They are geometrically
@@ -5546,6 +5895,28 @@ impl<'a> StepBuilder<'a> {
             .map_err(|e| IoError::ParseError {
                 reason: format!("B_SPLINE_CURVE #{curve_ref}: {e}"),
             })?;
+        // A degree-1 two-point B-spline is the segment between its control
+        // points, so read it as [`EdgeCurve::Line`], whose geometry the
+        // edge's vertices already determine. Routing it through the NURBS
+        // domain-recovery adapter instead would project the shared vertices
+        // onto the carrier and refuse spacings the identical `LINE`
+        // spelling accepts; HOOPS Exchange writes exactly this degenerate
+        // spelling for straight sides (see the Scale Platform v1
+        // regression fixture). The match is exact: degree 1, two control
+        // points, and unit weights are precisely the degree-1 Bezier
+        // segment, whose point set is the control chord. Bit identity is
+        // intentional, matching the polynomial proof in
+        // `uniquely_witnessed_nurbs_domain`: approximate equality cannot
+        // certify that rational weights cancel exactly.
+        if nurbs.degree() == 1
+            && nurbs.control_points().len() == 2
+            && nurbs
+                .weights()
+                .iter()
+                .all(|weight| weight.to_bits() == 1.0_f64.to_bits())
+        {
+            return Ok(EdgeCurve::Line);
+        }
         Ok(EdgeCurve::NurbsCurve(nurbs))
     }
 
@@ -9272,6 +9643,41 @@ mod tests {
     }
 
     #[test]
+    fn rejects_ref_dense_polyline_above_explicit_limit() {
+        // A single POLYLINE with 200k point refs: one entity, but the ref
+        // list drives a `with_capacity` + per-point build. The list length
+        // counts against the entity budget now (E-1), so a 10-entity budget
+        // refuses before allocating. `build_polyline` is reached directly:
+        // only referenced curves are built during a real import, so the
+        // full-file path would need a solid root to reach this builder.
+        use std::fmt::Write as _;
+        let mut refs = String::new();
+        for i in 1..=200_000u32 {
+            if i > 1 {
+                refs.push(',');
+            }
+            write!(refs, "#{i}").unwrap();
+        }
+        let attrs = format!("'',({refs})");
+        let entities = HashMap::new();
+        let mut topo = Topology::new();
+        let limits = ImportLimits {
+            max_model_entities: 10,
+            ..ImportLimits::default()
+        };
+        let builder_units = UnitScale {
+            length: 1.0,
+            angle: 1.0,
+        };
+        let builder = StepBuilder::new(&mut topo, &entities, builder_units, limits).unwrap();
+        let err = builder.build_polyline(1, &attrs).unwrap_err();
+        assert!(
+            matches!(err, IoError::LimitExceeded { .. }),
+            "ref-dense POLYLINE must exceed the budget, got {err}"
+        );
+    }
+
+    #[test]
     fn statement_scanner_preserves_semicolons_and_escaped_quotes_in_strings() {
         let step = "ISO-10303-21;HEADER;FILE_NAME('A; O''Brien', '', (), (), '', '', '');ENDSEC;DATA;#1=CARTESIAN_POINT('semi;colon',(1.,2.,3.));ENDSEC;END-ISO-10303-21;";
         let entities = parse_step_entities(step, ImportLimits::default()).unwrap();
@@ -9555,7 +9961,8 @@ mod tests {
         let units = required_unit_scale(&entities).unwrap();
         let mut topo = Topology::new();
         let oriented = {
-            let mut builder = StepBuilder::new(&mut topo, &entities, units).unwrap();
+            let mut builder =
+                StepBuilder::new(&mut topo, &entities, units, ImportLimits::default()).unwrap();
             builder.build_oriented_edge(11).unwrap()
         };
         assert!(!oriented.is_forward());
@@ -9684,6 +10091,7 @@ mod tests {
                     length: 1.0,
                     angle: 1.0,
                 },
+                ImportLimits::default(),
             )
             .unwrap();
             builder
@@ -9877,7 +10285,8 @@ mod tests {
         let units = required_unit_scale(&entities).unwrap();
         let mut topo = Topology::new();
         let error = {
-            let mut builder = StepBuilder::new(&mut topo, &entities, units).unwrap();
+            let mut builder =
+                StepBuilder::new(&mut topo, &entities, units, ImportLimits::default()).unwrap();
             builder.build_edge_curve(11).unwrap_err()
         };
         assert!(error.to_string().contains("endpoint misses its carrier"));
@@ -9988,7 +10397,9 @@ mod tests {
                 let units = required_unit_scale(&entities).unwrap();
                 let mut topo = Topology::new();
                 let error = {
-                    let mut builder = StepBuilder::new(&mut topo, &entities, units).unwrap();
+                    let mut builder =
+                        StepBuilder::new(&mut topo, &entities, units, ImportLimits::default())
+                            .unwrap();
                     builder.build_edge_curve(11).unwrap_err()
                 };
                 assert!(error.to_string().contains("endpoint misses its carrier"));
@@ -10155,7 +10566,8 @@ mod tests {
         assert!((units.angle - std::f64::consts::PI / 180.0).abs() < 1e-15);
         let mut topo = Topology::new();
         let (arc_id, full_id) = {
-            let mut builder = StepBuilder::new(&mut topo, &entities, units).unwrap();
+            let mut builder =
+                StepBuilder::new(&mut topo, &entities, units, ImportLimits::default()).unwrap();
             (
                 builder.build_edge_curve(11).unwrap(),
                 builder.build_edge_curve(15).unwrap(),
@@ -10325,6 +10737,71 @@ mod tests {
     }
 
     #[test]
+    fn degenerate_linear_bspline_reads_as_vertex_defined_line() {
+        // HOOPS Exchange writes straight sides as degree-1 two-point
+        // B-splines (Scale Platform v1 edges #127/#135). The segment is
+        // the control chord, so it must read as [`EdgeCurve::Line`],
+        // whose geometry the edge's vertices determine — not as a NURBS
+        // carrier that domain recovery would project the vertices onto.
+        let body = "#1=CARTESIAN_POINT('',(-137.18454022,160.,45.));\n\
+                     #2=CARTESIAN_POINT('',(-137.186817746,-159.999999984,45.));\n\
+                     #3=B_SPLINE_CURVE_WITH_KNOTS('',1,(#1,#2),\
+                          .UNSPECIFIED.,.F.,.F.,(2,2),\
+                          (0.023809524,0.976190476),.UNSPECIFIED.);";
+        let curve = curve_geometry(body, 3).unwrap();
+        assert!(
+            matches!(curve, EdgeCurve::Line),
+            "degree-1 two-point spline must read as a Line, got {:?}",
+            curve.type_tag()
+        );
+    }
+
+    #[test]
+    fn rational_linear_two_point_spline_is_not_a_line() {
+        // Unit weights are load-bearing: a rational degree-1 two-point
+        // curve is still a straight segment point-wise, but it is not
+        // the polynomial carrier the [`EdgeCurve::Line`] normalization
+        // claims, so it must stay a NURBS curve.
+        let body = "#1=CARTESIAN_POINT('',(0.,0.,0.));\n\
+                     #2=CARTESIAN_POINT('',(4.,0.,0.));\n\
+                     #3=(BOUNDED_CURVE() B_SPLINE_CURVE(1,(#1,#2),\
+                         .UNSPECIFIED.,.F.,.F.) B_SPLINE_CURVE_WITH_KNOTS(\
+                         (2,2),(0.,1.),.UNSPECIFIED.) CURVE()\
+                         GEOMETRIC_REPRESENTATION_ITEM() RATIONAL_B_SPLINE_CURVE((1.,2.))\
+                         REPRESENTATION_ITEM(''));";
+        let curve = curve_geometry(body, 3).unwrap();
+        assert!(
+            matches!(curve, EdgeCurve::NurbsCurve(_)),
+            "rational two-point spline must stay NURBS, got {:?}",
+            curve.type_tag()
+        );
+    }
+
+    #[test]
+    fn multi_span_or_higher_degree_splines_are_not_lines() {
+        // Three collinear control points still carry a NURBS
+        // parameterization (interior knot, Greville anchors), so only
+        // the exact two-point degree-1 Bezier normalizes to a Line.
+        let body = "#1=CARTESIAN_POINT('',(0.,0.,0.));\n\
+                     #2=CARTESIAN_POINT('',(2.,0.,0.));\n\
+                     #3=CARTESIAN_POINT('',(4.,0.,0.));\n\
+                     #4=B_SPLINE_CURVE_WITH_KNOTS('',1,(#1,#2,#3),\
+                          .UNSPECIFIED.,.F.,.F.,(2,1,2),\
+                          (0.,0.5,1.),.UNSPECIFIED.);\n\
+                     #5=B_SPLINE_CURVE_WITH_KNOTS('',3,(#1,#2,#3,#1),\
+                          .UNSPECIFIED.,.F.,.F.,(4,4),\
+                          (0.,1.),.UNSPECIFIED.);";
+        for curve_id in [4, 5] {
+            let curve = curve_geometry(body, curve_id).unwrap();
+            assert!(
+                matches!(curve, EdgeCurve::NurbsCurve(_)),
+                "curve #{curve_id} must stay NURBS, got {:?}",
+                curve.type_tag()
+            );
+        }
+    }
+
+    #[test]
     fn shared_folded_nurbs_trims_preserve_declared_parameters_and_use_sense() {
         const FIRST: f64 = 2e-9;
         const LAST: f64 = 0.75;
@@ -10358,7 +10835,8 @@ mod tests {
         let units = required_unit_scale(&entities).unwrap();
         let mut topo = Topology::new();
         let (forward, reverse_use) = {
-            let mut builder = StepBuilder::new(&mut topo, &entities, units).unwrap();
+            let mut builder =
+                StepBuilder::new(&mut topo, &entities, units, ImportLimits::default()).unwrap();
             (
                 builder.build_oriented_edge(14).unwrap(),
                 builder.build_oriented_edge(15).unwrap(),
@@ -10427,7 +10905,8 @@ mod tests {
             Tolerance::new().linear,
         ));
         let end = topo.add_vertex(Vertex::new(circle.evaluate(1.0), Tolerance::new().linear));
-        let mut builder = StepBuilder::new(&mut topo, &entities, units).unwrap();
+        let mut builder =
+            StepBuilder::new(&mut topo, &entities, units, ImportLimits::default()).unwrap();
         assert!((builder.brep_tolerance_caps[&40] - 1e-3).abs() < 1e-15);
         assert!((builder.brep_tolerance_caps[&41] - 9.0).abs() < 1e-12);
         builder.model_tolerance_cap = builder.brep_tolerance_caps[&40];
@@ -10466,7 +10945,8 @@ mod tests {
         let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
         let units = required_unit_scale(&entities).unwrap();
         let mut topo = Topology::new();
-        let builder = StepBuilder::new(&mut topo, &entities, units).unwrap();
+        let builder =
+            StepBuilder::new(&mut topo, &entities, units, ImportLimits::default()).unwrap();
         assert!((builder.brep_tolerance_caps[&40] - 1e-5).abs() < 1e-15);
     }
 
@@ -10498,7 +10978,8 @@ mod tests {
         let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
         let units = required_unit_scale(&entities).unwrap();
         let mut topo = Topology::new();
-        let builder = StepBuilder::new(&mut topo, &entities, units).unwrap();
+        let builder =
+            StepBuilder::new(&mut topo, &entities, units, ImportLimits::default()).unwrap();
         assert_eq!(
             builder.brep_tolerance_caps[&40].to_bits(),
             Tolerance::new().linear.to_bits()
@@ -10526,7 +11007,7 @@ mod tests {
         let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
         let units = required_unit_scale(&entities).unwrap();
         let mut topo = Topology::new();
-        let error = StepBuilder::new(&mut topo, &entities, units)
+        let error = StepBuilder::new(&mut topo, &entities, units, ImportLimits::default())
             .err()
             .expect("an unrelated placement must not widen authority");
         assert!(error.to_string().contains("assembly placement #48"));
@@ -10546,7 +11027,7 @@ mod tests {
             let entities = parse_step_entities(&step_file(&body), ImportLimits::default()).unwrap();
             let units = required_unit_scale(&entities).unwrap();
             let mut topo = Topology::new();
-            let error = StepBuilder::new(&mut topo, &entities, units)
+            let error = StepBuilder::new(&mut topo, &entities, units, ImportLimits::default())
                 .err()
                 .expect("non-reference representation items must fail closed");
             assert!(error.to_string().contains("invalid item list"));
@@ -10567,7 +11048,8 @@ mod tests {
         let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
         let units = required_unit_scale(&entities).unwrap();
         let mut topo = Topology::new();
-        let builder = StepBuilder::new(&mut topo, &entities, units).unwrap();
+        let builder =
+            StepBuilder::new(&mut topo, &entities, units, ImportLimits::default()).unwrap();
         assert_eq!(
             builder.brep_tolerance_caps[&40].to_bits(),
             Tolerance::new().linear.to_bits()
@@ -10586,7 +11068,7 @@ mod tests {
         let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
         let units = required_unit_scale(&entities).unwrap();
         let mut topo = Topology::new();
-        let error = StepBuilder::new(&mut topo, &entities, units)
+        let error = StepBuilder::new(&mut topo, &entities, units, ImportLimits::default())
             .err()
             .expect("a quoted uncertainty reference must fail closed");
         assert!(error.to_string().contains("invalid uncertainty list"));
@@ -10606,7 +11088,7 @@ mod tests {
         let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
         let units = required_unit_scale(&entities).unwrap();
         let mut topo = Topology::new();
-        let error = StepBuilder::new(&mut topo, &entities, units)
+        let error = StepBuilder::new(&mut topo, &entities, units, ImportLimits::default())
             .err()
             .expect("a missing uncertainty unit must fail closed");
         assert!(
@@ -10630,7 +11112,7 @@ mod tests {
         let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
         let units = required_unit_scale(&entities).unwrap();
         let mut topo = Topology::new();
-        let error = StepBuilder::new(&mut topo, &entities, units)
+        let error = StepBuilder::new(&mut topo, &entities, units, ImportLimits::default())
             .err()
             .expect("a malformed uncertainty value must fail closed");
         assert!(error.to_string().contains("non-numeric value_component"));
@@ -10659,7 +11141,7 @@ mod tests {
         let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
         let units = required_unit_scale(&entities).unwrap();
         let mut topo = Topology::new();
-        let error = StepBuilder::new(&mut topo, &entities, units)
+        let error = StepBuilder::new(&mut topo, &entities, units, ImportLimits::default())
             .err()
             .expect("malformed occurrence must fail");
         assert!(error.to_string().contains("missing transformation #49"));
@@ -10682,7 +11164,9 @@ mod tests {
             let entities = parse_step_entities(&step_file(&body), ImportLimits::default()).unwrap();
             let units = required_unit_scale(&entities).unwrap();
             let mut topo = Topology::new();
-            assert!(StepBuilder::new(&mut topo, &entities, units).is_err());
+            assert!(
+                StepBuilder::new(&mut topo, &entities, units, ImportLimits::default()).is_err()
+            );
             assert_eq!(topo.num_vertices(), 0);
         }
     }
@@ -10701,7 +11185,7 @@ mod tests {
         let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
         let units = required_unit_scale(&entities).unwrap();
         let mut topo = Topology::new();
-        let error = match StepBuilder::new(&mut topo, &entities, units) {
+        let error = match StepBuilder::new(&mut topo, &entities, units, ImportLimits::default()) {
             Ok(_) => panic!("conflicting uncertainties must be refused"),
             Err(error) => error,
         };
@@ -10731,7 +11215,8 @@ mod tests {
         let end_id = topo.add_vertex(Vertex::new(circle.evaluate(1.0), Tolerance::new().linear));
         let edge_count = topo.num_edges();
         let error = {
-            let mut builder = StepBuilder::new(&mut topo, &entities, units).unwrap();
+            let mut builder =
+                StepBuilder::new(&mut topo, &entities, units, ImportLimits::default()).unwrap();
             builder
                 .import_edge_with_authority(77, start_id, end_id, EdgeCurve::Circle(circle), None)
                 .unwrap_err()
@@ -10765,7 +11250,8 @@ mod tests {
         ));
         let end = topo.add_vertex(Vertex::new(circle.evaluate(1.0), Tolerance::new().linear));
         let edge = {
-            let mut builder = StepBuilder::new(&mut topo, &entities, units).unwrap();
+            let mut builder =
+                StepBuilder::new(&mut topo, &entities, units, ImportLimits::default()).unwrap();
             builder.model_tolerance_cap = builder.brep_tolerance_caps[&40];
             builder
                 .import_edge_with_authority(78, start, end, EdgeCurve::Circle(circle), None)
@@ -10791,7 +11277,8 @@ mod tests {
         let end = topo.add_vertex(Vertex::new(circle.evaluate(1.0), 1e-7));
         let edge = Edge::new(start, end, EdgeCurve::Circle(circle));
         let error = {
-            let builder = StepBuilder::new(&mut topo, &entities, units).unwrap();
+            let builder =
+                StepBuilder::new(&mut topo, &entities, units, ImportLimits::default()).unwrap();
             builder.sample_bound_edge(&edge).unwrap_err()
         };
         assert!(error.to_string().contains("authoritative curve range"));
@@ -11618,7 +12105,8 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
             topo.add_vertex(Vertex::new(end, Tolerance::new().linear))
         };
         let edge = {
-            let mut builder = StepBuilder::new(&mut topo, &entities, units)?;
+            let mut builder =
+                StepBuilder::new(&mut topo, &entities, units, ImportLimits::default())?;
             builder.import_edge_with_authority(42, start_id, end_id, curve, None)?
         };
         let edge_id = topo.add_edge(edge);
@@ -11630,7 +12118,7 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
         let entities = parse_step_entities(&step_file(body), ImportLimits::default())?;
         let units = required_unit_scale(&entities)?;
         let mut topo = Topology::new();
-        let builder = StepBuilder::new(&mut topo, &entities, units)?;
+        let builder = StepBuilder::new(&mut topo, &entities, units, ImportLimits::default())?;
         builder.build_curve_geometry(curve_id)
     }
 
@@ -11642,7 +12130,8 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
         let units = required_unit_scale(&entities)?;
         let mut topo = Topology::new();
         let built = {
-            let mut builder = StepBuilder::new(&mut topo, &entities, units)?;
+            let mut builder =
+                StepBuilder::new(&mut topo, &entities, units, ImportLimits::default())?;
             builder.build_edge_curve(edge_id)?
         };
         Ok((topo, built))
@@ -11844,7 +12333,7 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
         let entities = parse_step_entities(&step_file(body), ImportLimits::default())?;
         let units = required_unit_scale(&entities)?;
         let mut topo = Topology::new();
-        let builder = StepBuilder::new(&mut topo, &entities, units)?;
+        let builder = StepBuilder::new(&mut topo, &entities, units, ImportLimits::default())?;
         builder.build_surface(surface_id)
     }
 
@@ -11854,7 +12343,7 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
         let entities = parse_step_entities(&step_file(body), ImportLimits::default())?;
         let units = required_unit_scale(&entities)?;
         let mut topo = Topology::new();
-        let builder = StepBuilder::new(&mut topo, &entities, units)?;
+        let builder = StepBuilder::new(&mut topo, &entities, units, ImportLimits::default())?;
         builder.build_axis2_placement(placement_id)
     }
 
@@ -11863,7 +12352,7 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
         let entities = parse_step_entities(&step_file(body), ImportLimits::default())?;
         let units = required_unit_scale(&entities)?;
         let mut topo = Topology::new();
-        let builder = StepBuilder::new(&mut topo, &entities, units)?;
+        let builder = StepBuilder::new(&mut topo, &entities, units, ImportLimits::default())?;
         builder.build_axis1_placement(placement_id)
     }
 

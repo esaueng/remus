@@ -99,7 +99,9 @@ native serialization. Minimized corpus inputs are stored under version control
 when licensing permits.
 
 Current scheduled coverage includes the public import readers, structured
-boolean trees, modifiers, `nurbs_surface`, and `topology_mutation`. The
+boolean trees, modifiers, `nurbs_surface`, `topology_mutation`,
+`arena_roundtrip`, and the four B19 engine slices (`tessellation`,
+`curve_intersection`, `offset`, `gcs`). The
 NURBS target generates bounded rational surfaces and an independent
 horizontal NURBS plane, then requires finite evaluation/derivatives, typed
 constructor refusal for corrupted data, and SSI points, parameters, and
@@ -119,10 +121,20 @@ the native arena format, requiring per-position validation, census, and
 closed-form volumes, bit-exact tolerance/trim/attribute survival,
 byte-identical re-serialization, and typed, non-mutating refusal of
 corrupted references. Its byte-identity oracle pinned the serde_json
-`float_roundtrip` feature as load-bearing for exact f64 replay.
+`float_roundtrip` feature as load-bearing for exact f64 replay. The
+`tessellation` target tessellates bounded unplaced primitives at two
+deflections against the hand-derived closed-form volume (agreement plus no
+refinement divergence); `curve_intersection` requires every
+curve-surface hit to re-evaluate onto both geometries; `offset` requires
+the offset result to be a closed manifold whose volume moves with the
+distance sign under a one-sided convex ceiling; `gcs` re-checks every
+constraint of a converged sketch geometrically from the solved positions.
+All four carry committed geometric seeds and native seed tests. Their
+short pre-landing fuzz probes ran green (tessellation 642 runs, offset
+8527 runs, gcs ~230k runs; the 2026-09-02 lesson's native replay applies
+to any future artifact before its message is believed).
 `arena_reader` and `wasm_batch` currently compile in PR CI but are not
-scheduled; curve-intersection, offset, GCS, and tessellation fuzzing remain
-outstanding and are owned by bridge row B19.
+scheduled.
 
 B19's mutation-scope slice moves the config to `.cargo/mutants.toml`, the
 location cargo-mutants 27.0.0 actually discovers. The previous root-level
@@ -147,7 +159,7 @@ four were caught and one survived: `replace <= with > in sorted_pair`.
 The command correctly exited 2 and retained that survivor in `missed.txt`
 and `outcomes.json`; no mutant was suppressed. Reversing the pair ordering
 still provides a consistent undirected key, but this bounded run does not
-claim mutation completeness or close the remaining B19 fuzz work. The
+claim mutation completeness. The
 weekly changed-lines filter and mutation-result failure policy are unchanged.
 
 ## Corpus
