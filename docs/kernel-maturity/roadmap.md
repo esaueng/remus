@@ -110,6 +110,49 @@ The same dated reconciliation reports [Corpus Gauntlet success on September 12](
 and [Mutation Testing failure on September 6](https://github.com/esaueng/remus/actions/runs/34017122331).
 #381 triaged the nine mutation survivors; triage is not a subsequent successful
 scheduled run. Refresh these proof jobs before a capability or release claim.
+
+### Proof-gate refresh (2026-09-16)
+
+All four workflows have active `schedule` triggers in `.github/workflows`
+(`fuzz.yml`, `mutants.yml`, `gauntlet.yml`, `osv-scan.yml`) and none is
+disabled — `gh api repos/esaueng/remus/actions/workflows` reports every one
+`active`, and each of Fuzz Smoke and Mutation Testing shows an unbroken weekly
+schedule history back through August. The premise that Fuzz Smoke and Mutation
+Testing had "no scheduled run in the last 100 runs" was a window artefact:
+the last-100 list only reaches back to 2026-09-14, while both are weekly
+Sunday jobs, so at most one scheduled run each can appear in it. No trigger
+was re-enabled or fixed because none was broken. Caller pins
+(`fuzz.yml` → fleet `de062d7c`, `mutants.yml` → fleet `dbb22761`,
+`gauntlet.yml` → fleet `6da8b6a0`) are all reachable commits.
+
+Each workflow was run once by dispatch on 2026-09-16 and read back:
+
+| Job | Verdict | Run |
+| --- | --- | --- |
+| Corpus Gauntlet (schedule, 2026-09-16) | success | [`35074386370`](https://github.com/esaueng/remus/actions/runs/35074386370) |
+| OSV Scan (schedule, 2026-09-14) | success | [`34839089074`](https://github.com/esaueng/remus/actions/runs/34839089074) |
+| Mutation Testing (dispatch, 2026-09-16) | success — 0 missed, 0 timed-out on the week's `--in-diff` scope | [`35059075161`](https://github.com/esaueng/remus/actions/runs/35059075161) |
+| Fuzz Smoke (dispatch, 2026-09-16) | **failure** — `modifier_ops` volume oracle | [`35059073599`](https://github.com/esaueng/remus/actions/runs/35059073599) |
+
+The fuzz failure is the same defect class as the 2026-09-13 scheduled failure
+([`34747689405`](https://github.com/esaueng/remus/actions/runs/34747689405),
+also `modifier_ops`): the `assert_measurements_agree` oracle reports
+`mass_properties` ~3–5% above `solid_volume` on a torus-bored box after a
+small fillet. Both crash inputs were replayed natively and both measurements
+printed before believing the message: the Gauss route (~36.41) integrates the
+true boundary and agrees with the converged closed mesh (~36.41), while the
+tessellated route (~35.27) under-reads. Root: the bored body routes to
+`volume_from_direct_face_tessellation`, whose exact-analytic gate measured
+NURBS-trimmed planes by chord while those faces' own tessellation walks the
+raw knot domain instead of the edge trim. Fix: `planar_face_signed_volume`
+now reports an `exact_boundary` bit, the exact gate declines chorded planes,
+and the direct fallback re-routes such bodies to the closed whole-solid mesh;
+regression `crates/operations/tests/regress_volume_nurbs_trimmed_planes.rs`
+fails before and passes after. See
+[#463](https://github.com/esaueng/remus/pull/463) (open at this writing; its
+CI `Test` failure is the pre-existing `revolve_orientation_holds_across_scales`
+scale assertion, which fails identically on unmodified `main` and passes at
+the current head — not a regression from the fix).
 Package #408 (2.130.15, source `4e6499fc`) predates #409/#411/#418.
 Closed candidates #419 and #425 predate newer integrated source; rebuild the
 committed distribution from the final source before claiming package parity.
