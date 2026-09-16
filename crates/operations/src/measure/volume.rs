@@ -1735,7 +1735,15 @@ pub fn solid_volume(
         // domain rather than the edge trim (see above). Route those bodies to
         // the closed mesh too — unless every face integrates in closed form,
         // in which case no per-face mesh is built at all.
+        // Keep this fallback scoped to the torus-bore failure: on small
+        // partial revolves the direct analytic integration is more accurate
+        // than the closed mesh even when a planar cap declines this gate.
+        let has_torus_bore = outer_faces.iter().any(|&fid| {
+            topo.face(fid)
+                .is_ok_and(|f| f.is_reversed() && matches!(f.surface(), FaceSurface::Torus(_)))
+        });
         if all_plane_quadric
+            && has_torus_bore
             && exact_analytic_face_volume(topo, solid, deflection, false).is_none()
             && outer_faces.iter().any(|&fid| {
                 topo.face(fid).is_ok_and(|f| {
