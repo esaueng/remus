@@ -561,6 +561,22 @@ pub fn boolean_with_face_origins(
     solid_a: SolidId,
     solid_b: SolidId,
 ) -> Result<(SolidId, FaceOriginIndices), AlgoError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        boolean_with_face_origins_impl(topo, op, solid_a, solid_b)
+    })
+}
+
+/// [`boolean_with_face_origins`] without the transaction wrapper.
+///
+/// The export phase appends result entities to the caller's arena before the
+/// provenance-desync check runs, so only the wrapped entry point is safe to
+/// call on live topology.
+fn boolean_with_face_origins_impl(
+    topo: &mut Topology,
+    op: BooleanOp,
+    solid_a: SolidId,
+    solid_b: SolidId,
+) -> Result<(SolidId, FaceOriginIndices), AlgoError> {
     // Same up-front refusal as `boolean_with_tolerance`; see that function.
     reject_unsupported_curves(topo, solid_a)?;
     reject_unsupported_curves(topo, solid_b)?;
@@ -952,6 +968,21 @@ pub fn boolean_with_entity_evolution(
     solid_a: SolidId,
     solid_b: SolidId,
 ) -> Result<(SolidId, EntityEvolution), AlgoError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        boolean_with_entity_evolution_impl(topo, op, solid_a, solid_b)
+    })
+}
+
+/// [`boolean_with_entity_evolution`] without the transaction wrapper.
+///
+/// The export phase appends result entities to the caller's arena, so only
+/// the wrapped entry point is safe to call on live topology.
+fn boolean_with_entity_evolution_impl(
+    topo: &mut Topology,
+    op: BooleanOp,
+    solid_a: SolidId,
+    solid_b: SolidId,
+) -> Result<(SolidId, EntityEvolution), AlgoError> {
     reject_unsupported_curves(topo, solid_a)?;
     reject_unsupported_curves(topo, solid_b)?;
 
@@ -1005,6 +1036,21 @@ pub fn boolean_with_entity_evolution(
 ///
 /// Returns [`AlgoError`] if any GFA stage, region assembly, or export fails.
 pub fn boolean_regions_with_entity_evolution(
+    topo: &mut Topology,
+    op: BooleanOp,
+    solid_a: SolidId,
+    solid_b: SolidId,
+) -> Result<Vec<BooleanRegion>, AlgoError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        boolean_regions_with_entity_evolution_impl(topo, op, solid_a, solid_b)
+    })
+}
+
+/// [`boolean_regions_with_entity_evolution`] without the transaction wrapper.
+///
+/// Each region export appends result entities to the caller's arena, so only
+/// the wrapped entry point is safe to call on live topology.
+fn boolean_regions_with_entity_evolution_impl(
     topo: &mut Topology,
     op: BooleanOp,
     solid_a: SolidId,
@@ -1248,5 +1294,46 @@ mod entity_evolution_tests {
             boolean_with_entity_evolution(&mut topo2, BooleanOp::Fuse, a2, b2).unwrap();
         assert_eq!(evolution.edges, evolution2.edges);
         assert_eq!(evolution.vertices, evolution2.vertices);
+    }
+
+    /// A refused evolution boolean must leave the caller's topology exactly
+    /// as it was: the export phase appends result entities before the
+    /// provenance-desync check runs, so without the transaction wrapper a
+    /// late failure would leave a partial solid copy behind (B-2).
+    #[test]
+    fn refused_evolution_boolean_leaves_topology_unchanged() {
+        use remus_topology::explorer::solid_entity_counts;
+        let mut topo = Topology::new();
+        let a = make_unit_cube_manifold_at(&mut topo, 0.0, 0.0, 0.0);
+        let before = solid_entity_counts(&topo, a).unwrap();
+
+        // A successful call allocates exactly the result; a refused one must
+        // allocate nothing. Drive a pre-export refusal with a deleted
+        // handle: the lookup error fires before any allocation, and the
+        // transaction must leave the arena exactly as the refusal found it.
+        let scratch = make_unit_cube_manifold_at(&mut topo, 9.0, 0.0, 0.0);
+        topo.delete_solid(scratch).unwrap();
+        let after_delete = (
+            topo.num_faces(),
+            topo.num_edges(),
+            topo.num_vertices(),
+            topo.num_solids(),
+        );
+        assert!(boolean_with_entity_evolution(&mut topo, BooleanOp::Fuse, a, scratch).is_err());
+        assert_eq!(
+            solid_entity_counts(&topo, a).unwrap(),
+            before,
+            "evolution boolean must not mutate its operand on refusal"
+        );
+        assert_eq!(
+            (
+                topo.num_faces(),
+                topo.num_edges(),
+                topo.num_vertices(),
+                topo.num_solids()
+            ),
+            after_delete,
+            "refused evolution boolean must not allocate"
+        );
     }
 }

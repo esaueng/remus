@@ -297,9 +297,9 @@ fn read_step_impl(
     let result: Result<StepReadResult, IoError> = (|| {
         let (built_solids, built_sheets, diagnostics) = {
             let mut builder = if include_sheets {
-                StepBuilder::new_for_body_import(topo, &entities, units)?
+                StepBuilder::new_for_body_import(topo, &entities, units, limits)?
             } else {
-                StepBuilder::new(topo, &entities, units)?
+                StepBuilder::new(topo, &entities, units, limits)?
             };
             let solids = builder.build_all_solids()?;
             let sheets = if include_sheets {
@@ -1627,6 +1627,10 @@ struct StepBuilder<'a> {
     /// Conversion from the file's declared units into millimetres/radians,
     /// applied to every length- and angle-valued quantity as it is read.
     units: UnitScale,
+    /// Hostile-input budgets: every allocation-driving attribute count
+    /// (bound lists, point aggregates, knot expansions) is measured against
+    /// these before the buffer is sized.
+    limits: ImportLimits,
     /// Largest uncertainty explicitly declared by the STEP representation,
     /// converted to millimetres and floored at the kernel tolerance.
     model_tolerance_cap: f64,
@@ -1643,22 +1647,25 @@ impl<'a> StepBuilder<'a> {
         topo: &'a mut Topology,
         entities: &'a HashMap<u64, StepEntity>,
         units: UnitScale,
+        limits: ImportLimits,
     ) -> Result<Self, IoError> {
-        Self::new_with_roots(topo, entities, units, false)
+        Self::new_with_roots(topo, entities, units, limits, false)
     }
 
     fn new_for_body_import(
         topo: &'a mut Topology,
         entities: &'a HashMap<u64, StepEntity>,
         units: UnitScale,
+        limits: ImportLimits,
     ) -> Result<Self, IoError> {
-        Self::new_with_roots(topo, entities, units, true)
+        Self::new_with_roots(topo, entities, units, limits, true)
     }
 
     fn new_with_roots(
         topo: &'a mut Topology,
         entities: &'a HashMap<u64, StepEntity>,
         units: UnitScale,
+        limits: ImportLimits,
         include_sheets: bool,
     ) -> Result<Self, IoError> {
         let brep_tolerance_caps = representation_model_tolerances(entities, include_sheets)?;
@@ -1666,6 +1673,7 @@ impl<'a> StepBuilder<'a> {
             topo,
             entities,
             units,
+            limits,
             model_tolerance_cap: Tolerance::new().linear,
             brep_tolerance_caps,
             vertex_cache: HashMap::new(),
@@ -5460,6 +5468,15 @@ impl<'a> StepBuilder<'a> {
                 reason: format!("POLYLINE #{curve_ref} has no points"),
             });
         }
+        // The point list drives a `with_capacity` + per-point build below, so
+        // budget it like any other allocation-driving count: a 200k-ref
+        // POLYLINE in a 1.5 MB file would otherwise allocate ~1.6 MB of refs
+        // plus the point buffer with only the input-bytes cap as a bound.
+        crate::limits::ensure_limit(
+            "STEP POLYLINE points",
+            point_refs.len(),
+            self.limits.max_model_entities,
+        )?;
 
         // Coincident consecutive points would force a repeated interior knot,
         // which a degree-1 B-spline cannot carry. They are geometrically
@@ -9272,6 +9289,41 @@ mod tests {
     }
 
     #[test]
+    fn rejects_ref_dense_polyline_above_explicit_limit() {
+        // A single POLYLINE with 200k point refs: one entity, but the ref
+        // list drives a `with_capacity` + per-point build. The list length
+        // counts against the entity budget now (E-1), so a 10-entity budget
+        // refuses before allocating. `build_polyline` is reached directly:
+        // only referenced curves are built during a real import, so the
+        // full-file path would need a solid root to reach this builder.
+        use std::fmt::Write as _;
+        let mut refs = String::new();
+        for i in 1..=200_000u32 {
+            if i > 1 {
+                refs.push(',');
+            }
+            write!(refs, "#{i}").unwrap();
+        }
+        let attrs = format!("'',({refs})");
+        let entities = HashMap::new();
+        let mut topo = Topology::new();
+        let limits = ImportLimits {
+            max_model_entities: 10,
+            ..ImportLimits::default()
+        };
+        let builder_units = UnitScale {
+            length: 1.0,
+            angle: 1.0,
+        };
+        let builder = StepBuilder::new(&mut topo, &entities, builder_units, limits).unwrap();
+        let err = builder.build_polyline(1, &attrs).unwrap_err();
+        assert!(
+            matches!(err, IoError::LimitExceeded { .. }),
+            "ref-dense POLYLINE must exceed the budget, got {err}"
+        );
+    }
+
+    #[test]
     fn statement_scanner_preserves_semicolons_and_escaped_quotes_in_strings() {
         let step = "ISO-10303-21;HEADER;FILE_NAME('A; O''Brien', '', (), (), '', '', '');ENDSEC;DATA;#1=CARTESIAN_POINT('semi;colon',(1.,2.,3.));ENDSEC;END-ISO-10303-21;";
         let entities = parse_step_entities(step, ImportLimits::default()).unwrap();
@@ -9555,7 +9607,8 @@ mod tests {
         let units = required_unit_scale(&entities).unwrap();
         let mut topo = Topology::new();
         let oriented = {
-            let mut builder = StepBuilder::new(&mut topo, &entities, units).unwrap();
+            let mut builder =
+                StepBuilder::new(&mut topo, &entities, units, ImportLimits::default()).unwrap();
             builder.build_oriented_edge(11).unwrap()
         };
         assert!(!oriented.is_forward());
@@ -9684,6 +9737,7 @@ mod tests {
                     length: 1.0,
                     angle: 1.0,
                 },
+                ImportLimits::default(),
             )
             .unwrap();
             builder
@@ -9877,7 +9931,8 @@ mod tests {
         let units = required_unit_scale(&entities).unwrap();
         let mut topo = Topology::new();
         let error = {
-            let mut builder = StepBuilder::new(&mut topo, &entities, units).unwrap();
+            let mut builder =
+                StepBuilder::new(&mut topo, &entities, units, ImportLimits::default()).unwrap();
             builder.build_edge_curve(11).unwrap_err()
         };
         assert!(error.to_string().contains("endpoint misses its carrier"));
@@ -9988,7 +10043,9 @@ mod tests {
                 let units = required_unit_scale(&entities).unwrap();
                 let mut topo = Topology::new();
                 let error = {
-                    let mut builder = StepBuilder::new(&mut topo, &entities, units).unwrap();
+                    let mut builder =
+                        StepBuilder::new(&mut topo, &entities, units, ImportLimits::default())
+                            .unwrap();
                     builder.build_edge_curve(11).unwrap_err()
                 };
                 assert!(error.to_string().contains("endpoint misses its carrier"));
@@ -10155,7 +10212,8 @@ mod tests {
         assert!((units.angle - std::f64::consts::PI / 180.0).abs() < 1e-15);
         let mut topo = Topology::new();
         let (arc_id, full_id) = {
-            let mut builder = StepBuilder::new(&mut topo, &entities, units).unwrap();
+            let mut builder =
+                StepBuilder::new(&mut topo, &entities, units, ImportLimits::default()).unwrap();
             (
                 builder.build_edge_curve(11).unwrap(),
                 builder.build_edge_curve(15).unwrap(),
@@ -10358,7 +10416,8 @@ mod tests {
         let units = required_unit_scale(&entities).unwrap();
         let mut topo = Topology::new();
         let (forward, reverse_use) = {
-            let mut builder = StepBuilder::new(&mut topo, &entities, units).unwrap();
+            let mut builder =
+                StepBuilder::new(&mut topo, &entities, units, ImportLimits::default()).unwrap();
             (
                 builder.build_oriented_edge(14).unwrap(),
                 builder.build_oriented_edge(15).unwrap(),
@@ -10427,7 +10486,8 @@ mod tests {
             Tolerance::new().linear,
         ));
         let end = topo.add_vertex(Vertex::new(circle.evaluate(1.0), Tolerance::new().linear));
-        let mut builder = StepBuilder::new(&mut topo, &entities, units).unwrap();
+        let mut builder =
+            StepBuilder::new(&mut topo, &entities, units, ImportLimits::default()).unwrap();
         assert!((builder.brep_tolerance_caps[&40] - 1e-3).abs() < 1e-15);
         assert!((builder.brep_tolerance_caps[&41] - 9.0).abs() < 1e-12);
         builder.model_tolerance_cap = builder.brep_tolerance_caps[&40];
@@ -10466,7 +10526,8 @@ mod tests {
         let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
         let units = required_unit_scale(&entities).unwrap();
         let mut topo = Topology::new();
-        let builder = StepBuilder::new(&mut topo, &entities, units).unwrap();
+        let builder =
+            StepBuilder::new(&mut topo, &entities, units, ImportLimits::default()).unwrap();
         assert!((builder.brep_tolerance_caps[&40] - 1e-5).abs() < 1e-15);
     }
 
@@ -10498,7 +10559,8 @@ mod tests {
         let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
         let units = required_unit_scale(&entities).unwrap();
         let mut topo = Topology::new();
-        let builder = StepBuilder::new(&mut topo, &entities, units).unwrap();
+        let builder =
+            StepBuilder::new(&mut topo, &entities, units, ImportLimits::default()).unwrap();
         assert_eq!(
             builder.brep_tolerance_caps[&40].to_bits(),
             Tolerance::new().linear.to_bits()
@@ -10526,7 +10588,7 @@ mod tests {
         let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
         let units = required_unit_scale(&entities).unwrap();
         let mut topo = Topology::new();
-        let error = StepBuilder::new(&mut topo, &entities, units)
+        let error = StepBuilder::new(&mut topo, &entities, units, ImportLimits::default())
             .err()
             .expect("an unrelated placement must not widen authority");
         assert!(error.to_string().contains("assembly placement #48"));
@@ -10546,7 +10608,7 @@ mod tests {
             let entities = parse_step_entities(&step_file(&body), ImportLimits::default()).unwrap();
             let units = required_unit_scale(&entities).unwrap();
             let mut topo = Topology::new();
-            let error = StepBuilder::new(&mut topo, &entities, units)
+            let error = StepBuilder::new(&mut topo, &entities, units, ImportLimits::default())
                 .err()
                 .expect("non-reference representation items must fail closed");
             assert!(error.to_string().contains("invalid item list"));
@@ -10567,7 +10629,8 @@ mod tests {
         let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
         let units = required_unit_scale(&entities).unwrap();
         let mut topo = Topology::new();
-        let builder = StepBuilder::new(&mut topo, &entities, units).unwrap();
+        let builder =
+            StepBuilder::new(&mut topo, &entities, units, ImportLimits::default()).unwrap();
         assert_eq!(
             builder.brep_tolerance_caps[&40].to_bits(),
             Tolerance::new().linear.to_bits()
@@ -10586,7 +10649,7 @@ mod tests {
         let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
         let units = required_unit_scale(&entities).unwrap();
         let mut topo = Topology::new();
-        let error = StepBuilder::new(&mut topo, &entities, units)
+        let error = StepBuilder::new(&mut topo, &entities, units, ImportLimits::default())
             .err()
             .expect("a quoted uncertainty reference must fail closed");
         assert!(error.to_string().contains("invalid uncertainty list"));
@@ -10606,7 +10669,7 @@ mod tests {
         let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
         let units = required_unit_scale(&entities).unwrap();
         let mut topo = Topology::new();
-        let error = StepBuilder::new(&mut topo, &entities, units)
+        let error = StepBuilder::new(&mut topo, &entities, units, ImportLimits::default())
             .err()
             .expect("a missing uncertainty unit must fail closed");
         assert!(
@@ -10630,7 +10693,7 @@ mod tests {
         let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
         let units = required_unit_scale(&entities).unwrap();
         let mut topo = Topology::new();
-        let error = StepBuilder::new(&mut topo, &entities, units)
+        let error = StepBuilder::new(&mut topo, &entities, units, ImportLimits::default())
             .err()
             .expect("a malformed uncertainty value must fail closed");
         assert!(error.to_string().contains("non-numeric value_component"));
@@ -10659,7 +10722,7 @@ mod tests {
         let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
         let units = required_unit_scale(&entities).unwrap();
         let mut topo = Topology::new();
-        let error = StepBuilder::new(&mut topo, &entities, units)
+        let error = StepBuilder::new(&mut topo, &entities, units, ImportLimits::default())
             .err()
             .expect("malformed occurrence must fail");
         assert!(error.to_string().contains("missing transformation #49"));
@@ -10682,7 +10745,9 @@ mod tests {
             let entities = parse_step_entities(&step_file(&body), ImportLimits::default()).unwrap();
             let units = required_unit_scale(&entities).unwrap();
             let mut topo = Topology::new();
-            assert!(StepBuilder::new(&mut topo, &entities, units).is_err());
+            assert!(
+                StepBuilder::new(&mut topo, &entities, units, ImportLimits::default()).is_err()
+            );
             assert_eq!(topo.num_vertices(), 0);
         }
     }
@@ -10701,7 +10766,7 @@ mod tests {
         let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
         let units = required_unit_scale(&entities).unwrap();
         let mut topo = Topology::new();
-        let error = match StepBuilder::new(&mut topo, &entities, units) {
+        let error = match StepBuilder::new(&mut topo, &entities, units, ImportLimits::default()) {
             Ok(_) => panic!("conflicting uncertainties must be refused"),
             Err(error) => error,
         };
@@ -10731,7 +10796,8 @@ mod tests {
         let end_id = topo.add_vertex(Vertex::new(circle.evaluate(1.0), Tolerance::new().linear));
         let edge_count = topo.num_edges();
         let error = {
-            let mut builder = StepBuilder::new(&mut topo, &entities, units).unwrap();
+            let mut builder =
+                StepBuilder::new(&mut topo, &entities, units, ImportLimits::default()).unwrap();
             builder
                 .import_edge_with_authority(77, start_id, end_id, EdgeCurve::Circle(circle), None)
                 .unwrap_err()
@@ -10765,7 +10831,8 @@ mod tests {
         ));
         let end = topo.add_vertex(Vertex::new(circle.evaluate(1.0), Tolerance::new().linear));
         let edge = {
-            let mut builder = StepBuilder::new(&mut topo, &entities, units).unwrap();
+            let mut builder =
+                StepBuilder::new(&mut topo, &entities, units, ImportLimits::default()).unwrap();
             builder.model_tolerance_cap = builder.brep_tolerance_caps[&40];
             builder
                 .import_edge_with_authority(78, start, end, EdgeCurve::Circle(circle), None)
@@ -10791,7 +10858,8 @@ mod tests {
         let end = topo.add_vertex(Vertex::new(circle.evaluate(1.0), 1e-7));
         let edge = Edge::new(start, end, EdgeCurve::Circle(circle));
         let error = {
-            let builder = StepBuilder::new(&mut topo, &entities, units).unwrap();
+            let builder =
+                StepBuilder::new(&mut topo, &entities, units, ImportLimits::default()).unwrap();
             builder.sample_bound_edge(&edge).unwrap_err()
         };
         assert!(error.to_string().contains("authoritative curve range"));
@@ -11618,7 +11686,8 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
             topo.add_vertex(Vertex::new(end, Tolerance::new().linear))
         };
         let edge = {
-            let mut builder = StepBuilder::new(&mut topo, &entities, units)?;
+            let mut builder =
+                StepBuilder::new(&mut topo, &entities, units, ImportLimits::default())?;
             builder.import_edge_with_authority(42, start_id, end_id, curve, None)?
         };
         let edge_id = topo.add_edge(edge);
@@ -11630,7 +11699,7 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
         let entities = parse_step_entities(&step_file(body), ImportLimits::default())?;
         let units = required_unit_scale(&entities)?;
         let mut topo = Topology::new();
-        let builder = StepBuilder::new(&mut topo, &entities, units)?;
+        let builder = StepBuilder::new(&mut topo, &entities, units, ImportLimits::default())?;
         builder.build_curve_geometry(curve_id)
     }
 
@@ -11642,7 +11711,8 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
         let units = required_unit_scale(&entities)?;
         let mut topo = Topology::new();
         let built = {
-            let mut builder = StepBuilder::new(&mut topo, &entities, units)?;
+            let mut builder =
+                StepBuilder::new(&mut topo, &entities, units, ImportLimits::default())?;
             builder.build_edge_curve(edge_id)?
         };
         Ok((topo, built))
@@ -11844,7 +11914,7 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
         let entities = parse_step_entities(&step_file(body), ImportLimits::default())?;
         let units = required_unit_scale(&entities)?;
         let mut topo = Topology::new();
-        let builder = StepBuilder::new(&mut topo, &entities, units)?;
+        let builder = StepBuilder::new(&mut topo, &entities, units, ImportLimits::default())?;
         builder.build_surface(surface_id)
     }
 
@@ -11854,7 +11924,7 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
         let entities = parse_step_entities(&step_file(body), ImportLimits::default())?;
         let units = required_unit_scale(&entities)?;
         let mut topo = Topology::new();
-        let builder = StepBuilder::new(&mut topo, &entities, units)?;
+        let builder = StepBuilder::new(&mut topo, &entities, units, ImportLimits::default())?;
         builder.build_axis2_placement(placement_id)
     }
 
@@ -11863,7 +11933,7 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
         let entities = parse_step_entities(&step_file(body), ImportLimits::default())?;
         let units = required_unit_scale(&entities)?;
         let mut topo = Topology::new();
-        let builder = StepBuilder::new(&mut topo, &entities, units)?;
+        let builder = StepBuilder::new(&mut topo, &entities, units, ImportLimits::default())?;
         builder.build_axis1_placement(placement_id)
     }
 

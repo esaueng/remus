@@ -7,6 +7,27 @@
 
 use super::qr::QrResult;
 
+/// Largest absolute residual, propagating NaN.
+///
+/// `f64::max` returns the non-NaN operand, so a max-fold over residuals
+/// silently drops a poisoned (NaN) equation and reports the system clean —
+/// the solver would exit `converged: true` with `max_residual: 0.0` on input
+/// that never evaluated to a number. NaN short-circuits instead, so a
+/// poisoned residual can only ever fail the `< tol` convergence test.
+fn max_abs_residual(values: &[f64]) -> f64 {
+    let mut max = 0.0_f64;
+    for &v in values {
+        let a = v.abs();
+        if a.is_nan() {
+            return f64::NAN;
+        }
+        if a > max {
+            max = a;
+        }
+    }
+    max
+}
+
 /// Result of a solve attempt.
 #[derive(Debug, Clone)]
 pub struct SolveResult {
@@ -44,7 +65,7 @@ where
     let n = params.len();
     if n == 0 || num_residuals == 0 {
         let r = residual_fn(params);
-        let max_r = r.iter().fold(0.0_f64, |a, &b| a.max(b.abs()));
+        let max_r = max_abs_residual(&r);
         return SolveResult {
             converged: max_r < tol,
             iterations: 0,
@@ -60,7 +81,7 @@ where
 
     for iteration in 0..max_iter {
         let r = residual_fn(params);
-        let max_r = r.iter().fold(0.0_f64, |a, &b| a.max(b.abs()));
+        let max_r = max_abs_residual(&r);
 
         if max_r < tol {
             return SolveResult {
@@ -161,7 +182,7 @@ where
 
         if h_norm < 1e-15 * (1.0 + param_norm) {
             let final_r = residual_fn(params);
-            let final_max = final_r.iter().fold(0.0_f64, |a, &b| a.max(b.abs()));
+            let final_max = max_abs_residual(&final_r);
             return SolveResult {
                 converged: final_max < tol,
                 iterations: iteration + 1,
@@ -171,7 +192,7 @@ where
     }
 
     let r = residual_fn(params);
-    let max_r = r.iter().fold(0.0_f64, |a, &b| a.max(b.abs()));
+    let max_r = max_abs_residual(&r);
     SolveResult {
         converged: max_r < tol,
         iterations: max_iter,
