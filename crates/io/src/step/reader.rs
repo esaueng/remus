@@ -5563,6 +5563,28 @@ impl<'a> StepBuilder<'a> {
             .map_err(|e| IoError::ParseError {
                 reason: format!("B_SPLINE_CURVE #{curve_ref}: {e}"),
             })?;
+        // A degree-1 two-point B-spline is the segment between its control
+        // points, so read it as [`EdgeCurve::Line`], whose geometry the
+        // edge's vertices already determine. Routing it through the NURBS
+        // domain-recovery adapter instead would project the shared vertices
+        // onto the carrier and refuse spacings the identical `LINE`
+        // spelling accepts; HOOPS Exchange writes exactly this degenerate
+        // spelling for straight sides (see the Scale Platform v1
+        // regression fixture). The match is exact: degree 1, two control
+        // points, and unit weights are precisely the degree-1 Bezier
+        // segment, whose point set is the control chord. Bit identity is
+        // intentional, matching the polynomial proof in
+        // `uniquely_witnessed_nurbs_domain`: approximate equality cannot
+        // certify that rational weights cancel exactly.
+        if nurbs.degree() == 1
+            && nurbs.control_points().len() == 2
+            && nurbs
+                .weights()
+                .iter()
+                .all(|weight| weight.to_bits() == 1.0_f64.to_bits())
+        {
+            return Ok(EdgeCurve::Line);
+        }
         Ok(EdgeCurve::NurbsCurve(nurbs))
     }
 
@@ -10380,6 +10402,71 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("do not uniquely establish"));
+    }
+
+    #[test]
+    fn degenerate_linear_bspline_reads_as_vertex_defined_line() {
+        // HOOPS Exchange writes straight sides as degree-1 two-point
+        // B-splines (Scale Platform v1 edges #127/#135). The segment is
+        // the control chord, so it must read as [`EdgeCurve::Line`],
+        // whose geometry the edge's vertices determine — not as a NURBS
+        // carrier that domain recovery would project the vertices onto.
+        let body = "#1=CARTESIAN_POINT('',(-137.18454022,160.,45.));\n\
+                     #2=CARTESIAN_POINT('',(-137.186817746,-159.999999984,45.));\n\
+                     #3=B_SPLINE_CURVE_WITH_KNOTS('',1,(#1,#2),\
+                          .UNSPECIFIED.,.F.,.F.,(2,2),\
+                          (0.023809524,0.976190476),.UNSPECIFIED.);";
+        let curve = curve_geometry(body, 3).unwrap();
+        assert!(
+            matches!(curve, EdgeCurve::Line),
+            "degree-1 two-point spline must read as a Line, got {:?}",
+            curve.type_tag()
+        );
+    }
+
+    #[test]
+    fn rational_linear_two_point_spline_is_not_a_line() {
+        // Unit weights are load-bearing: a rational degree-1 two-point
+        // curve is still a straight segment point-wise, but it is not
+        // the polynomial carrier the [`EdgeCurve::Line`] normalization
+        // claims, so it must stay a NURBS curve.
+        let body = "#1=CARTESIAN_POINT('',(0.,0.,0.));\n\
+                     #2=CARTESIAN_POINT('',(4.,0.,0.));\n\
+                     #3=(BOUNDED_CURVE() B_SPLINE_CURVE(1,(#1,#2),\
+                         .UNSPECIFIED.,.F.,.F.) B_SPLINE_CURVE_WITH_KNOTS(\
+                         (2,2),(0.,1.),.UNSPECIFIED.) CURVE()\
+                         GEOMETRIC_REPRESENTATION_ITEM() RATIONAL_B_SPLINE_CURVE((1.,2.))\
+                         REPRESENTATION_ITEM(''));";
+        let curve = curve_geometry(body, 3).unwrap();
+        assert!(
+            matches!(curve, EdgeCurve::NurbsCurve(_)),
+            "rational two-point spline must stay NURBS, got {:?}",
+            curve.type_tag()
+        );
+    }
+
+    #[test]
+    fn multi_span_or_higher_degree_splines_are_not_lines() {
+        // Three collinear control points still carry a NURBS
+        // parameterization (interior knot, Greville anchors), so only
+        // the exact two-point degree-1 Bezier normalizes to a Line.
+        let body = "#1=CARTESIAN_POINT('',(0.,0.,0.));\n\
+                     #2=CARTESIAN_POINT('',(2.,0.,0.));\n\
+                     #3=CARTESIAN_POINT('',(4.,0.,0.));\n\
+                     #4=B_SPLINE_CURVE_WITH_KNOTS('',1,(#1,#2,#3),\
+                          .UNSPECIFIED.,.F.,.F.,(2,1,2),\
+                          (0.,0.5,1.),.UNSPECIFIED.);\n\
+                     #5=B_SPLINE_CURVE_WITH_KNOTS('',3,(#1,#2,#3,#1),\
+                          .UNSPECIFIED.,.F.,.F.,(4,4),\
+                          (0.,1.),.UNSPECIFIED.);";
+        for curve_id in [4, 5] {
+            let curve = curve_geometry(body, curve_id).unwrap();
+            assert!(
+                matches!(curve, EdgeCurve::NurbsCurve(_)),
+                "curve #{curve_id} must stay NURBS, got {:?}",
+                curve.type_tag()
+            );
+        }
     }
 
     #[test]
