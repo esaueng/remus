@@ -3998,6 +3998,22 @@ mod tests {
             .sum::<f64>()
             / 2.0;
         let expected = 6.0 * (outer_area - hole_area.abs());
+        // The opening must remain void (ray-cast spot check, mirroring the
+        // native fixture's classification probes).
+        let mid_x = cap_hole.iter().map(|p| p[0]).sum::<f64>() / cap_hole.len() as f64;
+        let mid_y = cap_hole.iter().map(|p| p[1]).sum::<f64>() / cap_hole.len() as f64;
+        let opening = remus_check::classify::classify_point(
+            k.topo(),
+            solid,
+            Point3::new(mid_x, mid_y, 3.0),
+            &remus_check::classify::ClassifyOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            opening,
+            remus_check::classify::PointClassification::Outside,
+            "{label}: the opening was silently capped"
+        );
         let volume = remus_operations::measure::solid_volume(k.topo(), solid, 1e-4).unwrap();
         assert!(
             (volume - expected).abs() / expected < 1e-6,
