@@ -5,17 +5,17 @@
 # manifest update in the same change, so reductions are recorded where they land.
 # Convert an arm to exhaustive matches and lower its file's count in the same PR;
 # never raise a count except to record a genuinely required wildcard.
-4 crates/algo/src/builder/builder_solid.rs
+6 crates/algo/src/builder/builder_solid.rs
 1 crates/algo/src/builder/face_splitter/conversion.rs
 5 crates/algo/src/builder/face_splitter/mod.rs
-6 crates/algo/src/builder/face_splitter/special_cases.rs
-9 crates/algo/src/builder/fill_images_faces.rs
+7 crates/algo/src/builder/face_splitter/special_cases.rs
+10 crates/algo/src/builder/fill_images_faces.rs
 2 crates/algo/src/builder/mod.rs
 1 crates/algo/src/builder/pcurve_compute.rs
 5 crates/algo/src/builder/same_domain.rs
 1 crates/algo/src/classifier/ray_cast.rs
 1 crates/algo/src/pave_filler/fill_face_info.rs
-4 crates/algo/src/pave_filler/phase_ef.rs
+5 crates/algo/src/pave_filler/phase_ef.rs
 1 crates/algo/src/pave_filler/phase_vf.rs
 2 crates/blend/src/chamfer_builder.rs
 1 crates/blend/src/face_face.rs
@@ -42,7 +42,6 @@
 1 crates/operations/src/fillet/rolling_ball.rs
 3 crates/operations/src/heal.rs
 3 crates/operations/src/loft.rs
-2 crates/operations/src/measure/area.rs
 2 crates/operations/src/measure/mod.rs
 4 crates/operations/src/offset_face.rs
 3 crates/operations/src/offset_wire.rs
