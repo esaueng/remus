@@ -393,8 +393,26 @@ console.log(`ok - meshQuality: watertight, euler=${quality.eulerCharacteristic}`
     assert.equal(diagnostic.code, 'step_untrimmed_nurbs_domain_recovered');
     assert.equal(diagnostic.category, 'tolerance_violation');
     assert.ok(diagnostic.details.edgeCurveEntity > 0);
-    assert.ok(Math.abs(diagnostic.details.startParameter - 0.1) < 1e-12);
-    assert.ok(Math.abs(diagnostic.details.endParameter - 0.9) < 1e-12);
+    // These off-carrier vertices project near, not exactly onto, 0.1/0.9.
+    // Independently evaluate the fixture's cubic Bezier in XY (the two
+    // diagnosed edges differ only in constant Z), and verify the reported
+    // residual against the actual source vertices. Nominal parameters alone
+    // do not certify the recovered trim after endpoint projection.
+    const endpointResidual = (t, point) => {
+      assert.ok(Number.isFinite(t) && t > 0 && t < 1);
+      const u = 1 - t;
+      const x = 6 * u * u * t + 3 * u * t * t + 3 * t * t * t;
+      const y = -3 * u * u * t + 6 * u * t * t + 3 * t * t * t;
+      return Math.hypot(x - point[0], y - point[1]);
+    };
+    const measuredResidual = Math.max(
+      endpointResidual(diagnostic.details.startParameter, [0.5160005, -0.1860005]),
+      endpointResidual(diagnostic.details.endParameter, [2.4839995, 2.6460005]),
+    );
+    assert.ok(
+      Math.abs(measuredResidual - diagnostic.details.endpointResidualMm) < 1e-12,
+      'reported recovery residual must match the source curve and vertices',
+    );
     assert.ok(diagnostic.details.endpointResidualMm > 1e-7);
     assert.ok(diagnostic.details.endpointResidualMm <= 1e-6);
     assert.equal(
