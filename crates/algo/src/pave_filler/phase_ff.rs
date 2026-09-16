@@ -540,7 +540,14 @@ pub fn perform_with_context(
                                 FaceSurface::Cone(c) => {
                                     (c.project_point(raw.p_start).1, c.project_point(raw.p_end).1)
                                 }
-                                _ => return None,
+                                // B24: exhaustive over `FaceSurface` — the
+                                // closure only fires on cylinder/cone band
+                                // partners (see the `matches!` gate above);
+                                // every other carrier declines the band clip.
+                                FaceSurface::Plane { .. }
+                                | FaceSurface::Nurbs(_)
+                                | FaceSurface::Sphere(_)
+                                | FaceSurface::Torus(_) => return None,
                             };
                             let dv = ve - vs;
                             if dv.abs() < 1e-12 {
@@ -978,7 +985,15 @@ pub fn perform_with_context(
                     {
                         find_boundary_vertex_on_curve(topo, fa, fb, &raw.curve, tol)
                     }
-                    _ => None,
+                    // B24: exhaustive over `EdgeCurve` — only a closed
+                    // section circle can adopt a boundary seam vertex;
+                    // every other carrier keeps the fresh-seam path.
+                    EdgeCurve::Line
+                    | EdgeCurve::NurbsCurve(_)
+                    | EdgeCurve::Ellipse(_)
+                    | EdgeCurve::Hyperbola(_)
+                    | EdgeCurve::Parabola(_)
+                    | EdgeCurve::Circle(_) => None,
                 };
                 if let Some((_, t_seam, p_seam)) = adopted_seam {
                     let span = raw.t_range.1 - raw.t_range.0;
@@ -2263,7 +2278,13 @@ fn restrict_curves_to_faces(
             let band = match &raw.curve {
                 EdgeCurve::Circle(c) => c.radius() * 2.0e-3,
                 EdgeCurve::Ellipse(e) => e.semi_major() * 2.0e-3,
-                _ => 0.0,
+                // B24: exhaustive over `EdgeCurve` — only closed
+                // circle/ellipse sections carry a margin-band graze
+                // radius; lines and open conics use no band.
+                EdgeCurve::Line
+                | EdgeCurve::NurbsCurve(_)
+                | EdgeCurve::Hyperbola(_)
+                | EdgeCurve::Parabola(_) => 0.0,
             }
             .max(tol.linear * 100.0);
             let outside_a_plane = |p: Point3| -> bool {
@@ -2400,7 +2421,22 @@ fn exact_wall_section_circle(
             super::helpers::rational_cylinder_wall(nurbs, tol)?,
             nurbs,
         ),
-        _ => return None,
+        // B24: exhaustive over the `FaceSurface` pair — only a
+        // plane×NURBS-wall pair admits the exact section circle;
+        // every other pair keeps the marched path.
+        (FaceSurface::Plane { .. } | FaceSurface::Nurbs(_), FaceSurface::Cylinder(_))
+        | (FaceSurface::Plane { .. } | FaceSurface::Nurbs(_), FaceSurface::Cone(_))
+        | (FaceSurface::Plane { .. } | FaceSurface::Nurbs(_), FaceSurface::Sphere(_))
+        | (FaceSurface::Plane { .. } | FaceSurface::Nurbs(_), FaceSurface::Torus(_))
+        | (FaceSurface::Plane { .. }, FaceSurface::Plane { .. })
+        | (FaceSurface::Nurbs(_), FaceSurface::Nurbs(_))
+        | (
+            FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_),
+            _,
+        ) => return None,
     };
     // Transverse only: a plane parallel to the axis meets the wall in lines.
     if normal.dot(wall.axis()).abs() < 1e-9 {
@@ -2533,7 +2569,25 @@ fn snap_wall_section_rings_to_plane(
         {
             (*normal, *d)
         }
-        _ => return raw_curves,
+        // B24: exhaustive over the `FaceSurface` pair — only a
+        // plane×recognized-wall pair admits the ring snap; every
+        // other pair returns the input untouched.
+        (
+            FaceSurface::Plane { .. } | FaceSurface::Nurbs(_),
+            FaceSurface::Plane { .. }
+            | FaceSurface::Nurbs(_)
+            | FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_),
+        )
+        | (
+            FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_),
+            _,
+        ) => return raw_curves,
     };
     // Confirm the ring hugs the plane before touching it: sample the stored
     // curve (not the endpoints alone) so a grazing arc cannot qualify.
@@ -2930,7 +2984,32 @@ fn trim_torus_oval_to_box_face(
     let (torus, plane_face, plane_ext) = match (surf_a, surf_b) {
         (FaceSurface::Torus(t), FaceSurface::Plane { .. }) => (t, fb, ext_b),
         (FaceSurface::Plane { .. }, FaceSurface::Torus(t)) => (t, fa, ext_a),
-        _ => return None,
+        // B24: exhaustive over the `FaceSurface` pair — only a
+        // torus×plane pair admits the oval trim; every other pair
+        // defers to the sample-clip path.
+        (
+            FaceSurface::Plane { .. },
+            FaceSurface::Plane { .. }
+            | FaceSurface::Nurbs(_)
+            | FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_),
+        )
+        | (
+            FaceSurface::Nurbs(_)
+            | FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_),
+            _,
+        )
+        | (
+            FaceSurface::Torus(_),
+            FaceSurface::Nurbs(_)
+            | FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_),
+        ) => return None,
     };
     let _ = ext_a;
     let _ = ext_b;
@@ -3764,7 +3843,13 @@ fn trim_ellipse_to_boundary_crossings(
     let sec = match &raw.curve {
         EdgeCurve::Ellipse(e) => SecCurve::Ell(e),
         EdgeCurve::Circle(c) => SecCurve::Circ(c),
-        _ => return None,
+        // B24: exhaustive over `EdgeCurve` — only closed
+        // circle/ellipse sections admit the exact-arc trim;
+        // lines and open conics decline.
+        EdgeCurve::Line
+        | EdgeCurve::NurbsCurve(_)
+        | EdgeCurve::Hyperbola(_)
+        | EdgeCurve::Parabola(_) => return None,
     };
     // Must be a closed full section (the raw plane×analytic intersection).
     if (raw.p_start - raw.p_end).length() > 1e-7 {
@@ -3779,7 +3864,25 @@ fn trim_ellipse_to_boundary_crossings(
         (FaceSurface::Cylinder(_) | FaceSurface::Cone(_), FaceSurface::Plane { .. }) => {
             (fb, surf_b, fa, surf_a)
         }
-        _ => return None,
+        // B24: exhaustive over the `FaceSurface` pair — only a
+        // plane×cylinder/cone pair admits the exact-arc trim;
+        // every other pair declines.
+        (
+            FaceSurface::Plane { .. },
+            FaceSurface::Plane { .. }
+            | FaceSurface::Nurbs(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_),
+        )
+        | (FaceSurface::Nurbs(_) | FaceSurface::Sphere(_) | FaceSurface::Torus(_), _)
+        | (
+            FaceSurface::Cylinder(_) | FaceSurface::Cone(_),
+            FaceSurface::Nurbs(_)
+            | FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_),
+        ) => return None,
     };
     let FaceSurface::Plane {
         normal: plane_n,
@@ -3858,7 +3961,10 @@ fn trim_ellipse_to_boundary_crossings(
                         push_crossing(p, &mut crossings);
                     }
                 }
-                _ => {}
+                // B24: exhaustive over `EdgeCurve` — lines are handled
+                // above, circle/ellipse rims here; NURBS and open
+                // conics contribute no exact seam/rim crossing.
+                EdgeCurve::NurbsCurve(_) | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => {}
             }
         }
     }
@@ -3970,7 +4076,13 @@ fn conic_edge_plane_crossings(
             e.u_axis() * e.semi_major(),
             e.v_axis() * e.semi_minor(),
         ),
-        _ => return Some(Vec::new()),
+        // B24: exhaustive over `EdgeCurve` — only circle/ellipse
+        // edges admit conic crossings; lines, NURBS, and open
+        // conics contribute none.
+        EdgeCurve::Line
+        | EdgeCurve::NurbsCurve(_)
+        | EdgeCurve::Hyperbola(_)
+        | EdgeCurve::Parabola(_) => return Some(Vec::new()),
     };
     let domain = if edge.is_closed() {
         None
@@ -4046,7 +4158,13 @@ fn line_segment_surface_crossings(sp: Point3, ep: Point3, surface: &FaceSurface)
     match surface {
         FaceSurface::Cylinder(cyl) => line_segment_cylinder_crossings(sp, ep, cyl),
         FaceSurface::Cone(cone) => line_segment_cone_crossings(sp, ep, cone),
-        _ => Vec::new(),
+        // B24: exhaustive over `FaceSurface` — only cylinder/cone
+        // laterals admit exact segment crossings; planes, spheres,
+        // tori, and NURBS report none (uniform-t fallback).
+        FaceSurface::Plane { .. }
+        | FaceSurface::Nurbs(_)
+        | FaceSurface::Sphere(_)
+        | FaceSurface::Torus(_) => Vec::new(),
     }
 }
 
@@ -4645,7 +4763,14 @@ fn compute_face_bbox(topo: &Topology, face_id: FaceId, tol: Tolerance) -> Result
         FaceSurface::Torus(t) if face_boundary_all_degenerate(topo, face_id, tol)? => {
             Some(t.aabb())
         }
-        _ => None,
+        // B24: exhaustive over `FaceSurface` — spheres and full tori
+        // widen the AABB above; planes, cylinders, cones, NURBS, and
+        // trimmed tori are bounded by their boundary samples alone.
+        FaceSurface::Plane { .. }
+        | FaceSurface::Nurbs(_)
+        | FaceSurface::Cylinder(_)
+        | FaceSurface::Cone(_)
+        | FaceSurface::Torus(_) => None,
     };
 
     Ok(match (points.is_empty(), surface_bbox) {
@@ -4797,7 +4922,32 @@ fn torus_cylinder_faces_have_only_point_contact(
     let (tf, cf, torus, cylinder) = match (topo.face(fa)?.surface(), topo.face(fb)?.surface()) {
         (FaceSurface::Torus(t), FaceSurface::Cylinder(c)) => (fa, fb, t, c),
         (FaceSurface::Cylinder(c), FaceSurface::Torus(t)) => (fb, fa, t, c),
-        _ => return Ok(false),
+        // B24: exhaustive over the `FaceSurface` pair — only a
+        // torus×cylinder pair admits the point-contact test;
+        // every other pair keeps its sections.
+        (
+            FaceSurface::Plane { .. }
+            | FaceSurface::Nurbs(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_),
+            _,
+        )
+        | (
+            FaceSurface::Cylinder(_),
+            FaceSurface::Plane { .. }
+            | FaceSurface::Nurbs(_)
+            | FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_),
+        )
+        | (
+            FaceSurface::Torus(_),
+            FaceSurface::Plane { .. }
+            | FaceSurface::Nurbs(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_),
+        ) => return Ok(false),
     };
     let Some(((u0, span), _)) = crate::classifier::rectangular_torus_domain(topo, tf, tol) else {
         return Ok(false);
@@ -4813,7 +4963,14 @@ fn torus_cylinder_faces_have_only_point_contact(
             EdgeCurve::Line => {}
             EdgeCurve::Circle(c)
                 if c.normal().cross(cylinder.axis()).length() * c.radius() <= tol.linear => {}
-            _ => return Ok(false),
+            // B24: exhaustive over `EdgeCurve` — non-perpendicular
+            // circles, ellipses, NURBS, and open conics retain the
+            // marching path.
+            EdgeCurve::Circle(_)
+            | EdgeCurve::NurbsCurve(_)
+            | EdgeCurve::Ellipse(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_) => return Ok(false),
         }
     }
     let Some(range) = face_v_range(topo, cf, face.surface())? else {
@@ -4946,7 +5103,32 @@ fn tangent_torus_boundary_sections(
     let (fid, torus, cylinder) = match (topo.face(fa)?.surface(), topo.face(fb)?.surface()) {
         (FaceSurface::Torus(t), FaceSurface::Cylinder(c)) => (fa, t, c),
         (FaceSurface::Cylinder(c), FaceSurface::Torus(t)) => (fb, t, c),
-        _ => return Ok(Vec::new()),
+        // B24: exhaustive over the `FaceSurface` pair — only a
+        // torus×cylinder pair admits the tangent-boundary recovery;
+        // every other pair keeps no extra sections.
+        (
+            FaceSurface::Plane { .. }
+            | FaceSurface::Nurbs(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_),
+            _,
+        )
+        | (
+            FaceSurface::Cylinder(_),
+            FaceSurface::Plane { .. }
+            | FaceSurface::Nurbs(_)
+            | FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_),
+        )
+        | (
+            FaceSurface::Torus(_),
+            FaceSurface::Plane { .. }
+            | FaceSurface::Nurbs(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_),
+        ) => return Ok(Vec::new()),
     };
     let mut sections = Vec::new();
     for oe in topo.wire(topo.face(fid)?.outer_wire())?.edges() {
@@ -6183,7 +6365,13 @@ fn circle_exits_plane_boundary(
                         }
                     }
                 }
-                _ => {}
+                // B24: exhaustive over `EdgeCurve` — lines and circle
+                // arcs are scanned above; ellipse, NURBS, and
+                // open-conic boundary edges contribute no exit.
+                EdgeCurve::NurbsCurve(_)
+                | EdgeCurve::Ellipse(_)
+                | EdgeCurve::Hyperbola(_)
+                | EdgeCurve::Parabola(_) => {}
             }
         }
     }
@@ -6305,7 +6493,13 @@ fn closed_circle_boundary_crossings(
                         edge_hits.push((t, p, Some(oe.edge())));
                     }
                 }
-                _ => continue,
+                // B24: exhaustive over `EdgeCurve` — lines and circle
+                // arcs contribute crossings above; ellipse, NURBS,
+                // and open-conic boundary edges contribute none.
+                EdgeCurve::NurbsCurve(_)
+                | EdgeCurve::Ellipse(_)
+                | EdgeCurve::Hyperbola(_)
+                | EdgeCurve::Parabola(_) => continue,
             }
             for (t, p, src) in edge_hits {
                 let dup = hits
@@ -8883,7 +9077,14 @@ mod context_budget_tests {
             .iter()
             .map(|raw| match &raw.curve {
                 EdgeCurve::NurbsCurve(curve) => curve.control_points().len(),
-                _ => 0,
+                // B24: exhaustive over `EdgeCurve` — only marched
+                // NURBS sections carry control points; analytic
+                // section curves contribute none.
+                EdgeCurve::Line
+                | EdgeCurve::Circle(_)
+                | EdgeCurve::Ellipse(_)
+                | EdgeCurve::Hyperbola(_)
+                | EdgeCurve::Parabola(_) => 0,
             })
             .sum()
     }
@@ -8933,7 +9134,7 @@ mod context_budget_tests {
 #[cfg(test)]
 mod conic_crossing_tests {
     #![allow(clippy::unwrap_used)]
-    use remus_math::curves::{Circle3D, Ellipse3D};
+    use remus_math::curves::{Circle3D, Ellipse3D, Hyperbola3D, Parabola3D};
     use remus_math::vec::{Point3, Vec3};
     use remus_topology::Topology;
     use remus_topology::edge::{Edge, EdgeCurve};
@@ -9062,5 +9263,71 @@ mod conic_crossing_tests {
             assert!((h.x() - 1.0).abs() < 1e-9);
             assert!((ellipse.evaluate(ellipse.project(h)) - h).length() < 1e-9);
         }
+    }
+
+    /// B24: the exhaustive `EdgeCurve` arms converted in this file preserve
+    /// the pre-conversion behavior on every carrier family.
+    ///
+    /// A line segment, an open NURBS span, and the open hyperbola/parabola
+    /// arcs decline the conic-crossing helper exactly as the former `_ =>`
+    /// did (empty vec for the closed-form path, `None` without parameter
+    /// authority); the circle and ellipse rims keep their exact crossings.
+    /// Any future `EdgeCurve` variant that reaches one of the converted
+    /// arms fails to compile here first; a silent behavior change fails
+    /// the pins.
+    #[test]
+    fn b24_exhaustive_curve_arms_preserve_behavior() {
+        let mut topo = Topology::new();
+        let normal = Vec3::new(0.0, 1.0, 0.0);
+        // Line edges decline: no conic crossings.
+        let vs = topo.add_vertex(Vertex::new(Point3::new(-6.0, 0.0, 0.0), 1e-7));
+        let ve = topo.add_vertex(Vertex::new(Point3::new(6.0, 0.0, 0.0), 1e-7));
+        let line = Edge::new(vs, ve, EdgeCurve::Line);
+        let hits = conic_edge_plane_crossings(&line, normal, -5.155).unwrap();
+        assert!(hits.is_empty());
+        // Circle rim keeps its two exact crossings (the #190 slab cut).
+        let circle = Circle3D::new_with_ref(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            6.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let rim = closed_circle_edge(&mut topo, circle);
+        let hits = conic_edge_plane_crossings(&rim, normal, -5.155).unwrap();
+        assert_eq!(hits.len(), 2);
+        // Ellipse rim keeps its crossings.
+        let ellipse = Ellipse3D::new(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            4.0,
+            2.0,
+        )
+        .unwrap();
+        let p = ellipse.evaluate(0.0);
+        let v = topo.add_vertex(Vertex::new(p, 1e-7));
+        let erim = Edge::new(v, v, EdgeCurve::Ellipse(ellipse));
+        let hits = conic_edge_plane_crossings(&erim, Vec3::new(1.0, 0.0, 0.0), 1.0).unwrap();
+        assert_eq!(hits.len(), 2);
+        // Open hyperbola/parabola arcs decline without parameter authority.
+        let hyperbola = Hyperbola3D::new(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            4.0,
+            2.0,
+        )
+        .unwrap();
+        let hs = topo.add_vertex(Vertex::new(hyperbola.evaluate(-1.0), 1e-7));
+        let he = topo.add_vertex(Vertex::new(hyperbola.evaluate(1.0), 1e-7));
+        let hedge = Edge::new(hs, he, EdgeCurve::Hyperbola(hyperbola));
+        let hits = conic_edge_plane_crossings(&hedge, normal, 0.5).unwrap();
+        assert!(hits.is_empty());
+        let parabola =
+            Parabola3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 1.0, 0.0), 1.0).unwrap();
+        let ps = topo.add_vertex(Vertex::new(parabola.evaluate(-1.0), 1e-7));
+        let pe = topo.add_vertex(Vertex::new(parabola.evaluate(1.0), 1e-7));
+        let pedge = Edge::new(ps, pe, EdgeCurve::Parabola(parabola));
+        let hits = conic_edge_plane_crossings(&pedge, normal, 0.5).unwrap();
+        assert!(hits.is_empty());
     }
 }
