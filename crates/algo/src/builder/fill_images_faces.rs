@@ -4,6 +4,23 @@
 //! [`SectionEdge`] entries and calls [`split_face_2d`] to produce
 //! geometric sub-faces. Faces without intersection data pass through
 //! unchanged.
+//!
+//! # Diagnostic probes
+//!
+//! The `log::debug!` lines in this file come in two families. The
+//! `fill_images_faces:` lines are unconditional per-face progress records:
+//! a `log` subscriber at Debug level always receives one per processed
+//! face, so a run that shows zero of them while other `remus_algo` records
+//! arrive means the face loop never ran (or the subscriber filters them
+//! out) — not that logging is broken. The `SECS` / `SPLITW` / `WALLBAND` /
+//! `PAVES` / `ARC` / `CLIP` lines are opt-in probes behind `BK_*` env vars
+//! (see each call site); those only emit when their env var is set, so a
+//! zero count there while the `fill_images_faces:` lines flow is expected,
+//! and a zero count of the `fill_images_faces:` lines themselves while the
+//! env-gated probes are awaited is a subscriber/env misconfiguration, not a
+//! logging defect. The replay harness's content filter (which passes only
+//! recognized diagnostic families) must name a probe family to observe it:
+//! an unlisted prefix reads as a false zero.
 
 use std::collections::{BTreeMap, HashMap};
 use std::hash::BuildHasher;
@@ -294,6 +311,10 @@ pub fn fill_images_faces<S: BuildHasher, S2: BuildHasher>(
         let has_sections =
             fi.is_some_and(|fi| !fi.pave_blocks_sc.is_empty() || !fi.pave_blocks_in.is_empty());
 
+        // Unconditional per-face progress record (see the module docs'
+        // "Diagnostic probes" section): always emitted at Debug level, so a
+        // subscriber that receives other `remus_algo` records but none of
+        // these means the face loop never reached this face.
         log::debug!("fill_images_faces: face {face_id:?} has_sections={has_sections}");
 
         if !has_sections {
@@ -418,6 +439,7 @@ pub fn fill_images_faces<S: BuildHasher, S2: BuildHasher>(
             }
         };
 
+        // Opt-in probe: only emits with BK_SECS set (see module docs).
         if std::env::var("BK_SECS").is_ok() {
             for (si, sec) in sections.iter().enumerate() {
                 let (a, b) = (sec.start, sec.end);
@@ -451,6 +473,7 @@ pub fn fill_images_faces<S: BuildHasher, S2: BuildHasher>(
             Some(&mut section_split_registry),
         )?;
 
+        // Opt-in probe: only emits with BK_SPLITW=<face index> (see module docs).
         if std::env::var("BK_SPLITW").is_ok_and(|v| v == format!("{}", face_id.index())) {
             if let Ok(face) = topo.face(face_id)
                 && let remus_topology::face::FaceSurface::Plane { normal, .. } = face.surface()
@@ -531,6 +554,7 @@ pub fn fill_images_faces<S: BuildHasher, S2: BuildHasher>(
 
         if split_results.is_empty() {
             log::warn!("fill_images_faces: split_face_2d returned empty for face {face_id:?}");
+            // Opt-in probe: only emits with BK_WALLBAND set (see module docs).
             if std::env::var("BK_WALLBAND").is_ok() {
                 for (si, sec) in sections.iter().enumerate() {
                     log::debug!(
@@ -1856,6 +1880,7 @@ fn build_section_map(
     topo: &Topology,
     arena: &GfaArena,
 ) -> Result<HashMap<FaceId, Vec<SectionSource>>, AlgoError> {
+    // Opt-in probe: only emits with BK_PAVES set (see module docs).
     if std::env::var("BK_PAVES").is_ok() {
         for (ci, curve) in arena.curves.iter().enumerate() {
             for &pb_id in &curve.pave_blocks {
@@ -3173,6 +3198,7 @@ fn arc_segment_crossings(
                 prev_f = f;
                 prev_s = sv;
             }
+            // Opt-in probe: only emits with BK_ARC set (see module docs).
             if std::env::var("BK_ARC").is_ok() {
                 log::debug!(
                     "ARC nurbs hits={} s0={:.4} sN={:.4} es=({:.3},{:.3},{:.3}) ee=({:.3},{:.3},{:.3})",
@@ -3535,6 +3561,7 @@ fn clip_line_to_face_extent(
     }
 
     crossings.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    // Opt-in probe: only emits with BK_CLIP set (see module docs).
     if std::env::var("BK_CLIP").is_ok() {
         log::debug!(
             "CLIP face={face_id:?} line=({:.3},{:.3},{:.3})->({:.3},{:.3},{:.3}) crossings={crossings:?} ext={crossings_ext:?}",
