@@ -968,15 +968,65 @@ pub fn shell_journaled(
     thickness: f64,
     open_faces: &[remus_topology::FaceId],
 ) -> Result<JournaledSolidOp, OperationsError> {
+    Ok(shell_journaled_with_quality(topo, solid, thickness, open_faces, None)?.into_op())
+}
+
+/// A [`JournaledSolidOp`] with the shell's disclosed [`crate::shell_op::ShellQuality`].
+#[derive(Debug)]
+pub struct JournaledShellOp {
+    /// The journaled shell result.
+    pub journaled: JournaledSolidOp,
+    /// How the inner skin was produced; see [`crate::shell_op::ShellQuality`].
+    pub quality: crate::shell_op::ShellQuality,
+}
+
+impl JournaledShellOp {
+    /// Drop the quality disclosure, returning the plain journaled op.
+    #[must_use]
+    pub fn into_op(self) -> JournaledSolidOp {
+        self.journaled
+    }
+}
+
+/// Runs a shell with an explicit approximation policy.
+///
+/// Journals its construction-derived face evolution and discloses the result
+/// quality — the journaled analogue of
+/// [`crate::shell_op::shell_outcome_with_evolution`].
+///
+/// `approximation: None` is exact-only (what [`shell_journaled`] runs); a
+/// `Some(deflection)` spacing permits the sampled NURBS inner skin and the
+/// returned quality names the sampled faces.
+///
+/// # Errors
+///
+/// Returns [`OperationsError`] if the shell or recording fails; topology and
+/// journal state are restored together, including unpublished mutation gaps.
+pub fn shell_journaled_with_quality(
+    topo: &mut Topology,
+    solid: SolidId,
+    thickness: f64,
+    open_faces: &[remus_topology::FaceId],
+    approximation: Option<f64>,
+) -> Result<JournaledShellOp, OperationsError> {
     remus_topology::transaction::run_transacted(topo, |topo| {
         let pending = begin_scoped(topo, "shell", &[solid])?;
-        let (result, map) =
-            crate::shell_op::shell_with_evolution(topo, solid, thickness, open_faces)?;
-        let op = record_face_evolution(topo, pending, &map, &[result])?;
-        Ok(JournaledSolidOp {
-            solid: result,
-            op,
-            map,
+        let outcome = crate::shell_op::shell_outcome_with_evolution(
+            topo,
+            solid,
+            thickness,
+            open_faces,
+            approximation,
+        )?;
+        let result = outcome.outcome.solid;
+        let op = record_face_evolution(topo, pending, &outcome.evolution, &[result])?;
+        Ok(JournaledShellOp {
+            journaled: JournaledSolidOp {
+                solid: result,
+                op,
+                map: outcome.evolution,
+            },
+            quality: outcome.outcome.quality,
         })
     })
 }
