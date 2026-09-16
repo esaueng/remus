@@ -481,6 +481,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Holed-face integration tests | `bindings/holed_face_tests.rs` |
 | Qualified-operation integration tests | `bindings/qualify_ops_tests.rs` |
 | Direct/batch B6 primitive qualification | `bindings/qualify_primitives_tests.rs` |
+| Direct/batch B6 convex-hull/Minkowski qualification | `bindings/qualify_convex_hull_tests.rs` |
 
 ### L4: wasm-io (`crates/wasm-io/src/`)
 | Task | File(s) |
