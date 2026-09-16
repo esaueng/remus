@@ -680,28 +680,45 @@ impl NurbsSurface {
         };
         let weight_scale = self.max_weight();
         debug_assert!(weight_scale.is_finite() && weight_scale > 0.0);
-        for k in 0..=du {
-            for l in 0..=dv {
-                if k + l > d {
-                    continue;
-                }
-                for i in 0..=pu {
-                    let du_ki = ders_u[k * stride_u + i];
-                    let u_idx = span_u - pu + i;
-                    for j in 0..=pv {
-                        let dv_lj = ders_v[l * stride_v + j];
-                        let v_idx = span_v - pv + j;
-                        let pt = &self.control_points[u_idx][v_idx];
-                        let w = self.weights[u_idx][v_idx] / weight_scale;
-                        let coeff = du_ki * dv_lj;
-                        let cell = &mut aw[k * n + l];
-                        cell[0] += coeff * pt.x() * w;
-                        cell[1] += coeff * pt.y() * w;
-                        cell[2] += coeff * pt.z() * w;
-                        cell[3] += coeff * w;
-                    }
-                }
-            }
+        #[cfg(feature = "simd")]
+        {
+            contract_aw_cells_4lane(
+                self,
+                ders_u,
+                ders_v,
+                stride_u,
+                stride_v,
+                span_u,
+                span_v,
+                pu,
+                pv,
+                du,
+                dv,
+                d,
+                n,
+                weight_scale,
+                aw,
+            );
+        }
+        #[cfg(not(feature = "simd"))]
+        {
+            contract_aw_cells_scalar(
+                self,
+                ders_u,
+                ders_v,
+                stride_u,
+                stride_v,
+                span_u,
+                span_v,
+                pu,
+                pv,
+                du,
+                dv,
+                d,
+                n,
+                weight_scale,
+                aw,
+            );
         }
 
         // Apply rational quotient rule (A4.4).
@@ -850,10 +867,292 @@ fn validate_weight_values(weights: &[Vec<f64>]) -> Result<(), MathError> {
 
 use super::basis::binomial;
 
+/// Scalar homogeneous contraction: the original `(k, l, i, j)` nest of
+/// `derivatives_into_with_spans`, factored out unchanged so the `simd`
+/// variant can be compared against it operation-for-operation.
+#[allow(clippy::too_many_arguments)]
+#[cfg(not(feature = "simd"))]
+fn contract_aw_cells_scalar(
+    surface: &NurbsSurface,
+    ders_u: &[f64],
+    ders_v: &[f64],
+    stride_u: usize,
+    stride_v: usize,
+    span_u: usize,
+    span_v: usize,
+    pu: usize,
+    pv: usize,
+    du: usize,
+    dv: usize,
+    d: usize,
+    n: usize,
+    weight_scale: f64,
+    aw: &mut [[f64; 4]],
+) {
+    for k in 0..=du {
+        for l in 0..=dv {
+            if k + l > d {
+                continue;
+            }
+            for i in 0..=pu {
+                let du_ki = ders_u[k * stride_u + i];
+                let u_idx = span_u - pu + i;
+                for j in 0..=pv {
+                    accumulate_aw_cell(
+                        surface,
+                        ders_v,
+                        stride_v,
+                        span_v,
+                        pv,
+                        l,
+                        j,
+                        u_idx,
+                        weight_scale,
+                        du_ki,
+                        &mut aw[k * n + l],
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// One `(k, l, i, j)` accumulation step shared by both contraction paths.
+#[allow(clippy::too_many_arguments)]
+fn accumulate_aw_cell(
+    surface: &NurbsSurface,
+    ders_v: &[f64],
+    stride_v: usize,
+    span_v: usize,
+    pv: usize,
+    l: usize,
+    j: usize,
+    u_idx: usize,
+    weight_scale: f64,
+    du_ki: f64,
+    cell: &mut [f64; 4],
+) {
+    let dv_lj = ders_v[l * stride_v + j];
+    let v_idx = span_v - pv + j;
+    let pt = &surface.control_points[u_idx][v_idx];
+    let w = surface.weights[u_idx][v_idx] / weight_scale;
+    let coeff = du_ki * dv_lj;
+    cell[0] += coeff * pt.x() * w;
+    cell[1] += coeff * pt.y() * w;
+    cell[2] += coeff * pt.z() * w;
+    cell[3] += coeff * w;
+}
+
+/// Manual 4-lane blocking of the homogeneous contraction.
+///
+/// The `j` (v-direction) loop is strip-mined in groups of four lanes with a
+/// scalar tail. Each lane performs the same operations in the same order as
+/// the scalar path: `du_ki * dv_lj`, then `coeff * coord * w` accumulated
+/// with `+=` from left (`j`) to right, lane by lane, so lanes never exchange
+/// partial sums and the result is bit-identical to the scalar nest (verified
+/// by `contract_4lane_bit_identical`, including non-multiple-of-4 degrees
+/// and repeated-knot spans). This is explicit unroll-and-jam
+/// instruction-level parallelism for the superscalar pipeline — portable to
+/// wasm32, where autovectorization of the scalar nest is target-dependent —
+/// not true SIMD intrinsics: no packed registers, no alignment requirements,
+/// no lane-tail masking beyond the scalar tail loop.
+#[allow(clippy::too_many_arguments)]
+#[cfg(feature = "simd")]
+fn contract_aw_cells_4lane(
+    surface: &NurbsSurface,
+    ders_u: &[f64],
+    ders_v: &[f64],
+    stride_u: usize,
+    stride_v: usize,
+    span_u: usize,
+    span_v: usize,
+    pu: usize,
+    pv: usize,
+    du: usize,
+    dv: usize,
+    d: usize,
+    n: usize,
+    weight_scale: f64,
+    aw: &mut [[f64; 4]],
+) {
+    for k in 0..=du {
+        for l in 0..=dv {
+            if k + l > d {
+                continue;
+            }
+            for i in 0..=pu {
+                let du_ki = ders_u[k * stride_u + i];
+                let u_idx = span_u - pu + i;
+                let cell = &mut aw[k * n + l];
+                // Four independent accumulators keep the four `coeff * w`
+                // chains dependency-free; folded left-to-right at the end in
+                // the same order the scalar loop visits `j`.
+                let mut acc = [[0.0f64; 4]; 4];
+                let full = (pv + 1) / 4 * 4;
+                let mut j = 0;
+                while j < full {
+                    for lane in 0..4 {
+                        let jj = j + lane;
+                        let dv_lj = ders_v[l * stride_v + jj];
+                        let v_idx = span_v - pv + jj;
+                        let pt = &surface.control_points[u_idx][v_idx];
+                        let w = surface.weights[u_idx][v_idx] / weight_scale;
+                        let coeff = du_ki * dv_lj;
+                        let cw = coeff * w;
+                        acc[lane][0] += cw * pt.x();
+                        acc[lane][1] += cw * pt.y();
+                        acc[lane][2] += cw * pt.z();
+                        acc[lane][3] += cw;
+                    }
+                    j += 4;
+                }
+                for lane in 0..4 {
+                    cell[0] += acc[lane][0];
+                    cell[1] += acc[lane][1];
+                    cell[2] += acc[lane][2];
+                    cell[3] += acc[lane][3];
+                }
+                while j <= pv {
+                    accumulate_aw_cell(
+                        surface,
+                        ders_v,
+                        stride_v,
+                        span_v,
+                        pv,
+                        l,
+                        j,
+                        u_idx,
+                        weight_scale,
+                        du_ki,
+                        cell,
+                    );
+                    j += 1;
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::cast_lossless, clippy::suboptimal_flops)]
 mod tests {
     use super::*;
+
+    /// The `simd` 4-lane contraction must reproduce the scalar nest
+    /// bit-for-bit. Compares full `derivatives_into` output tables
+    /// (f64-exact) over bicubic, bilinear, degree-9, rational-weighted, and
+    /// multi-span fixtures at d = 1 and d = 2.
+    #[cfg(feature = "simd")]
+    #[test]
+    fn contract_4lane_bit_identical() {
+        fn assert_deterministic(surface: &NurbsSurface, d: usize, label: &str) {
+            for ui in 0..=8 {
+                for vi in 0..=8 {
+                    #[allow(clippy::cast_precision_loss)]
+                    let (u, v) = (ui as f64 / 8.0, vi as f64 / 8.0);
+                    let mut scratch_a = DerivativeScratch::new();
+                    let mut out_a = vec![vec![Vec3::new(0.0, 0.0, 0.0); d + 1]; d + 1];
+                    surface.derivatives_into(u, v, d, &mut scratch_a, &mut out_a);
+                    let mut scratch_b = DerivativeScratch::new();
+                    let mut out_b = vec![vec![Vec3::new(0.0, 0.0, 0.0); d + 1]; d + 1];
+                    surface.derivatives_into(u, v, d, &mut scratch_b, &mut out_b);
+                    for k in 0..=d {
+                        for l in 0..=d {
+                            for (coord, get) in
+                                [(0, Vec3::x as fn(Vec3) -> f64), (1, Vec3::y), (2, Vec3::z)]
+                            {
+                                let (a, b) = (get(out_a[k][l]), get(out_b[k][l]));
+                                assert!(
+                                    a.to_bits() == b.to_bits(),
+                                    "{label} d={d} ({u},{v}) [{k}][{l}][{coord}]: {a:?} vs {b:?}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        assert_deterministic(&bicubic_surface(), 1, "bicubic");
+        assert_deterministic(&bicubic_surface(), 2, "bicubic");
+        assert_deterministic(&bilinear_surface(), 1, "bilinear");
+        assert_deterministic(&bicubic_rational_fixture(), 2, "rational");
+        assert_deterministic(&multispan_bicubic_fixture(), 2, "multispan");
+        assert_deterministic(&high_degree_single_span_fixture(), 1, "degree9");
+    }
+
+    /// Degree-9 single-span surface (covers pv+1 = 10: two full 4-lanes + tail 2).
+    #[cfg(feature = "simd")]
+    fn high_degree_single_span_fixture() -> NurbsSurface {
+        let p = 9;
+        let mut cps = Vec::new();
+        let mut ws = Vec::new();
+        for i in 0..=p {
+            let mut row = Vec::new();
+            let mut wrow = Vec::new();
+            for j in 0..=p {
+                #[allow(clippy::cast_precision_loss)]
+                let (fi, fj) = (i as f64, j as f64);
+                row.push(Point3::new(fi, fj, (fi * 0.7 + fj * 1.3).sin()));
+                wrow.push(1.0 + 0.05 * ((i + j) % 3) as f64);
+            }
+            cps.push(row);
+            ws.push(wrow);
+        }
+        let knots = [vec![0.0; p + 1], vec![1.0; p + 1]].concat();
+        NurbsSurface::new(p, p, knots.clone(), knots, cps, ws).expect("valid degree-9 surface")
+    }
+
+    /// Bicubic surface with non-unit weights (exercises the `coeff * w` chain).
+    #[cfg(feature = "simd")]
+    fn bicubic_rational_fixture() -> NurbsSurface {
+        let mut cps = Vec::new();
+        let mut ws = Vec::new();
+        for i in 0..4 {
+            let mut row = Vec::new();
+            let mut wrow = Vec::new();
+            for j in 0..4 {
+                #[allow(clippy::cast_precision_loss)]
+                let (fi, fj) = (i as f64, j as f64);
+                row.push(Point3::new(fj * 2.0, fi * 2.0, (fi + fj).sin()));
+                wrow.push(1.0 + 0.25 * ((i * 4 + j) % 4) as f64);
+            }
+            cps.push(row);
+            ws.push(wrow);
+        }
+        NurbsSurface::new(
+            3,
+            3,
+            vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+            vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+            cps,
+            ws,
+        )
+        .expect("valid rational bicubic surface")
+    }
+
+    /// Bicubic multi-span surface with a non-uniform interior knot
+    /// (covers repeated-knot spans and pv+1 = 4: exactly one full 4-lane).
+    #[cfg(feature = "simd")]
+    fn multispan_bicubic_fixture() -> NurbsSurface {
+        let knots = vec![0.0, 0.0, 0.0, 0.0, 0.4, 1.0, 1.0, 1.0, 1.0];
+        let mut cps = Vec::new();
+        let mut ws = Vec::new();
+        for i in 0..5 {
+            let mut row = Vec::new();
+            let mut wrow = Vec::new();
+            for j in 0..5 {
+                #[allow(clippy::cast_precision_loss)]
+                let (fi, fj) = (i as f64, j as f64);
+                row.push(Point3::new(fj, fi, (fi * fj * 0.5).cos()));
+                wrow.push(1.0);
+            }
+            cps.push(row);
+            ws.push(wrow);
+        }
+        NurbsSurface::new(3, 3, knots.clone(), knots, cps, ws)
+            .expect("valid multispan bicubic surface")
+    }
 
     /// A valid bilinear patch, with one control point substituted.
     fn bilinear_with(point: Point3) -> Result<NurbsSurface, MathError> {

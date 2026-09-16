@@ -57,7 +57,13 @@ pub(super) fn tessellate_band_face_local(
                 Box::new(move |u, v| c2.normal(u, v)),
             )
         }
-        _ => return Ok(None),
+        // B24: exhaustive over `FaceSurface` — only cylinder/cone
+        // bands admit the structured sweep; planes, spheres, tori,
+        // and NURBS keep the fallback path.
+        FaceSurface::Plane { .. }
+        | FaceSurface::Nurbs(_)
+        | FaceSurface::Sphere(_)
+        | FaceSurface::Torus(_) => return Ok(None),
     };
 
     // Curved wire edges → endpoint-connected cycles (the pool version's
@@ -330,7 +336,13 @@ pub(super) fn tessellate_revolution_band_shared(
                 Box::new(move |u, v| c2.normal(u, v)),
             )
         }
-        _ => return Ok(false),
+        // B24: exhaustive over `FaceSurface` — only cylinder/cone
+        // bands admit the structured sweep; planes, spheres, tori,
+        // and NURBS keep the fallback path.
+        FaceSurface::Plane { .. }
+        | FaceSurface::Nurbs(_)
+        | FaceSurface::Sphere(_)
+        | FaceSurface::Torus(_) => return Ok(false),
     };
 
     // Collect rim edges as endpoint-connected CYCLES of curved edges;
@@ -371,6 +383,10 @@ pub(super) fn tessellate_revolution_band_shared(
                 outer_had_line = true;
             }
             // Ellipse rims keep the CDT path.
+            // B24: exhaustive over `EdgeCurve` — lines, circles, and
+            // NURBS are handled above; near-circle ellipses join the
+            // collected rims while genuine ellipses, hyperbolas, and
+            // parabolas decline.
             EdgeCurve::Ellipse(_) | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => {
                 return Ok(false);
             }
@@ -401,7 +417,14 @@ pub(super) fn tessellate_revolution_band_shared(
                         inner_curved.push((oe.edge().index(), e.start(), e.end()));
                     }
                 }
-                _ => return Ok(false),
+                // B24: exhaustive over `EdgeCurve` — lines are
+                // rejected above by shape, circles and NURBS are
+                // collected; ellipses, hyperbolas, and parabolas
+                // decline.
+                EdgeCurve::Line
+                | EdgeCurve::Ellipse(_)
+                | EdgeCurve::Hyperbola(_)
+                | EdgeCurve::Parabola(_) => return Ok(false),
             }
         }
         let Some(two) = collect_full_turn_rim_cycles(topo, &inner_curved, &project_u, 1)? else {
@@ -424,7 +447,13 @@ pub(super) fn tessellate_revolution_band_shared(
     let axis = match face_data.surface() {
         FaceSurface::Cylinder(c) => c.axis(),
         FaceSurface::Cone(c) => c.axis(),
-        _ => return Ok(false),
+        // B24: exhaustive over `FaceSurface` — only cylinder/cone
+        // bands carry a revolution axis; planes, spheres, tori,
+        // and NURBS decline.
+        FaceSurface::Plane { .. }
+        | FaceSurface::Nurbs(_)
+        | FaceSurface::Sphere(_)
+        | FaceSurface::Torus(_) => return Ok(false),
     };
     let flat_tol = 1e-4 * estimate_surface_radius(face_data.surface()).max(1.0);
     let mut axial_ranges = Vec::new();
@@ -677,7 +706,14 @@ pub(super) fn tessellate_cone_apex_fan_shared(
             }
             // An open rim arc, a trimmed cone, a NURBS boundary: not the
             // pointed-cone pattern. Let the caller decide.
-            _ => return Ok(false),
+            // B24: exhaustive over `EdgeCurve` — closed circles and
+            // seam lines are handled above; every other carrier
+            // declines.
+            EdgeCurve::NurbsCurve(_)
+            | EdgeCurve::Ellipse(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_)
+            | EdgeCurve::Circle(_) => return Ok(false),
         }
     }
     let Some(rim_idx) = rim_edge_idx else {
@@ -1394,13 +1430,25 @@ pub(super) fn tessellate_latitude_band_shared(
                 Box::new(move |u, v| t3.normal(u, v)),
             )
         }
-        _ => return Ok(false),
+        // B24: exhaustive over `FaceSurface` — only sphere/torus
+        // caps admit the structured sweep; planes, cylinders,
+        // cones, and NURBS keep the fallback path.
+        FaceSurface::Plane { .. }
+        | FaceSurface::Nurbs(_)
+        | FaceSurface::Cylinder(_)
+        | FaceSurface::Cone(_) => return Ok(false),
     };
 
     let band_radius = match face_data.surface() {
         FaceSurface::Sphere(s) => s.radius(),
         FaceSurface::Torus(t) => t.minor_radius(),
-        _ => return Ok(false),
+        // B24: exhaustive over `FaceSurface` — only sphere/torus
+        // caps reach this sweep; planes, cylinders, cones, and
+        // NURBS keep the fallback path.
+        FaceSurface::Plane { .. }
+        | FaceSurface::Nurbs(_)
+        | FaceSurface::Cylinder(_)
+        | FaceSurface::Cone(_) => return Ok(false),
     };
     let emit = make_band_emit(project.as_ref(), surf_normal.as_ref());
     let full_circle_cols = segments_for_chord_deviation_a(
@@ -1684,7 +1732,13 @@ fn collect_constant_v_ring(
         let e = topo.edge(oe.edge())?;
         match e.curve() {
             EdgeCurve::Line | EdgeCurve::Circle(_) => {}
-            _ => return Ok(None),
+            // B24: exhaustive over `EdgeCurve` — only line/circle
+            // edges bound a constant-v ring; ellipses, NURBS, and
+            // open conics decline.
+            EdgeCurve::NurbsCurve(_)
+            | EdgeCurve::Ellipse(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_) => return Ok(None),
         }
         let Some(edge_gids) = edge_global_indices.get(&oe.edge().index()) else {
             return Ok(None);
@@ -1766,7 +1820,12 @@ fn collect_var_v_ring(
         has_nurbs |= matches!(e.curve(), EdgeCurve::NurbsCurve(_));
         match e.curve() {
             EdgeCurve::Line | EdgeCurve::Circle(_) | EdgeCurve::NurbsCurve(_) => {}
-            _ => return Ok(None),
+            // B24: exhaustive over `EdgeCurve` — only
+            // line/circle/NURBS edges bound a variable-v ring;
+            // ellipses and open conics decline.
+            EdgeCurve::Ellipse(_) | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => {
+                return Ok(None);
+            }
         }
         let Some(edge_gids) = edge_global_indices.get(&oe.edge().index()) else {
             return Ok(None);
@@ -2031,7 +2090,10 @@ pub(super) fn tessellate_converted_wall_band_shared(
             match e.curve() {
                 EdgeCurve::NurbsCurve(_) | EdgeCurve::Circle(_) => is_closed_rim(oe.edge()),
                 EdgeCurve::Line => !is_closed_rim(oe.edge()),
-                _ => false,
+                // B24: exhaustive over `EdgeCurve` — only NURBS,
+                // circle, and line edges match the band wire shape;
+                // ellipses and open conics are not rims.
+                EdgeCurve::Ellipse(_) | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => false,
             }
         })
         .collect();
@@ -2046,7 +2108,10 @@ pub(super) fn tessellate_converted_wall_band_shared(
             EdgeCurve::NurbsCurve(_) => Some(0),
             EdgeCurve::Circle(_) => Some(1),
             EdgeCurve::Line => Some(2),
-            _ => None,
+            // B24: exhaustive over `EdgeCurve` — only NURBS,
+            // circle, and line edges classify; ellipses and open
+            // conics are unclassified.
+            EdgeCurve::Ellipse(_) | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => None,
         }
     };
     let order_ok = matches!(
@@ -2553,7 +2618,10 @@ pub(super) fn tessellate_nonplanar_cdt(
                     (du1 > du0).then(|| (du1 - du0, f64::midpoint(du0, du1)))
                 }
             }
-            _ => None,
+            // B24: exhaustive over `FaceSurface` — planes carry no UV
+            // parameterization, and non-periodic NURBS walls need no
+            // seam unwrap; both decline.
+            FaceSurface::Plane { .. } | FaceSurface::Nurbs(_) => None,
         };
         if let Some((period, target_mid)) = u_periodic
             && !boundary_uv.is_empty()
@@ -3145,7 +3213,15 @@ pub(super) fn tessellate_nonplanar_cdt(
                         .unwrap_or(base_nrm);
                     (pt, n)
                 }
-                _ => (pt3, base_nrm),
+                // B24: exhaustive over `FaceSurface` — only a
+                // recognized-wall NURBS face re-charts its interior
+                // grid; every other carrier keeps raw evaluation.
+                FaceSurface::Plane { .. }
+                | FaceSurface::Nurbs(_)
+                | FaceSurface::Cylinder(_)
+                | FaceSurface::Cone(_)
+                | FaceSurface::Sphere(_)
+                | FaceSurface::Torus(_) => (pt3, base_nrm),
             };
 
             let key = point_merge_key(pt3, MERGE_GRID);
@@ -3360,7 +3436,13 @@ fn stepped_rim_interior_points(
         match face_data.surface() {
             FaceSurface::Cylinder(cyl) => Some((point - cyl.origin()).dot(cyl.axis())),
             FaceSurface::Cone(cone) => Some(cone.project_point(point).1),
-            _ => None,
+            // B24: exhaustive over `FaceSurface` — only
+            // cylinder/cone walls carry axial rim levels; planes,
+            // spheres, tori, and NURBS have none.
+            FaceSurface::Plane { .. }
+            | FaceSurface::Nurbs(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_) => None,
         }
     };
     // On a wall bounded only by rim circles and axial lines (planar caps,
@@ -4849,7 +4931,14 @@ pub(super) fn tessellate_sphere_cap_shared(
             {
                 ellipse.normal()
             }
-            _ => {
+            // B24: exhaustive over `EdgeCurve` — circles and
+            // equal-axis ellipses supply the rim axis above; lines,
+            // NURBS, genuine ellipses, and open conics end the rim.
+            EdgeCurve::Line
+            | EdgeCurve::NurbsCurve(_)
+            | EdgeCurve::Ellipse(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_) => {
                 circular_rim = false;
                 break;
             }
@@ -4870,7 +4959,14 @@ pub(super) fn tessellate_sphere_cap_shared(
             {
                 (c.center(), c.normal(), c.semi_major())
             }
-            _ => continue,
+            // B24: exhaustive over `EdgeCurve` — circles and
+            // near-circles probe the hemisphere above; lines,
+            // NURBS, genuine ellipses, and open conics are skipped.
+            EdgeCurve::Line
+            | EdgeCurve::NurbsCurve(_)
+            | EdgeCurve::Ellipse(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_) => continue,
         };
         if (center - sphere.center()).length() <= sphere.radius() * 1e-10
             && (radius - sphere.radius()).abs() <= sphere.radius() * 1e-10
