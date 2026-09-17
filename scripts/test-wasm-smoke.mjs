@@ -393,15 +393,17 @@ console.log(`ok - meshQuality: watertight, euler=${quality.eulerCharacteristic}`
     assert.equal(diagnostic.code, 'step_untrimmed_nurbs_domain_recovered');
     assert.equal(diagnostic.category, 'tolerance_violation');
     assert.ok(diagnostic.details.edgeCurveEntity > 0);
-    assert.ok(Math.abs(diagnostic.details.startParameter - 0.1) < 1e-12);
-    assert.ok(Math.abs(diagnostic.details.endParameter - 0.9) < 1e-12);
-    assert.ok(diagnostic.details.endpointResidualMm > 1e-7);
-    assert.ok(diagnostic.details.endpointResidualMm <= 1e-6);
-    assert.equal(
-      diagnostic.details.storedEdgeToleranceMm,
-      diagnostic.details.endpointResidualMm,
+    // O1.1d (#469): the domain is resolved by endpoint projection, so the
+    // reported parameters are the closest feet — within the foot-conditioning
+    // radius (~3.5e-4 on this fixture) of the nominal 0.1/0.9 parameters, not
+    // on them to roundoff scale. Mirrors the native pin in
+    // crates/io/tests/step_untrimmed_nurbs_domain.rs.
+    assert.ok(Math.abs(diagnostic.details.startParameter - 0.1) < 5e-4);
+    assert.ok(Math.abs(diagnostic.details.endParameter - 0.9) < 5e-4);
+    assert.ok(
+      diagnostic.details.endpointResidualMm <= diagnostic.details.recoveryToleranceCapMm,
     );
-    assert.ok(Math.abs(diagnostic.details.recoveryToleranceCapMm - 1e-6) < 1e-18);
+    assert.ok(Math.abs(diagnostic.details.recoveryToleranceCapMm - 1e-6) < 1e-16);
   }
   console.log('ok - STEP bounded-healing report');
 }
