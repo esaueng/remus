@@ -191,13 +191,13 @@ fn fillet_on_base_rim_stays_watertight() {
     assert_watertight(&topo, result.solid, "fillet", &[harness, 0.001]);
 }
 
-/// B38 witness: the same 0.05 fillet band meshes open at coarser deflections.
+/// B46 witness: the same 0.05 fillet band meshes open at coarser deflections.
 /// At 0.1 (twice the band radius) the band face degenerates (37 boundary, 8
 /// non-manifold edges); at 0.01 its rim is sampled one segment differently from
 /// the holed cone wall it meets (63 boundary edges). The fuse itself is clean
 /// at these deflections (see [`fused_torus_measures_and_meshes_correctly`]).
 #[test]
-#[ignore = "B38: blend band on a rim shared with a holed cone wall meshes open at deflection 0.1 and 0.01"]
+#[ignore = "B46: blend band on a rim shared with a holed cone wall meshes open at deflection 0.1 and 0.01"]
 fn fillet_on_base_rim_stays_watertight_at_coarse_deflection() {
     let mut topo = Topology::new();
     let solid = build(&mut topo);
