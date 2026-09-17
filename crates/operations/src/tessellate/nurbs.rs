@@ -434,25 +434,26 @@ pub fn compute_sphere_v_range(
         .sum::<f64>()
         / wire_pts.len() as f64;
 
-    let signed_area = projected_signed_area(&wire_pts);
-    if signed_area > 0.0 {
+    // Which pole the face covers is the wire's winding about the sphere's OWN
+    // axis. Projecting onto the world XY plane assumed an unrotated frame: a
+    // sphere whose equator lies in a plane normal to world Y projects to a
+    // degenerate line whose signed area is rounding noise, and far from the
+    // origin that noise gave both hemispheres of a rotated primitive the same
+    // sign, so both swept the same half and the solid meshed open (B41).
+    let winding: f64 = wire_pts
+        .iter()
+        .zip(wire_pts.iter().cycle().skip(1))
+        .map(|(a, b)| {
+            (*a - sphere.center())
+                .cross(*b - sphere.center())
+                .dot(sphere.z_axis())
+        })
+        .sum();
+    if winding > 0.0 {
         (avg_v, FRAC_PI_2)
     } else {
         (-FRAC_PI_2, avg_v)
     }
-}
-
-/// Signed area of a polygon projected onto the XY plane.
-/// Positive = CCW winding from +Z, negative = CW.
-#[must_use]
-pub fn projected_signed_area(pts: &[Point3]) -> f64 {
-    let n = pts.len();
-    let mut area = 0.0;
-    for i in 0..n {
-        let j = (i + 1) % n;
-        area += pts[i].x() * pts[j].y() - pts[j].x() * pts[i].y();
-    }
-    area * 0.5
 }
 
 /// Determine the [`AnalyticKind`] for sphere tessellation based on v-range.
