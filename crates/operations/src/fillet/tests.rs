@@ -10,7 +10,7 @@ use std::collections::{HashMap, HashSet};
 use remus_math::nurbs::surface::NurbsSurface;
 use remus_math::vec::Point3;
 use remus_topology::Topology;
-use remus_topology::edge::EdgeId;
+use remus_topology::edge::{EdgeCurve, EdgeId};
 use remus_topology::face::{FaceId, FaceSurface};
 use remus_topology::solid::SolidId;
 use remus_topology::test_utils::make_unit_cube_manifold;
@@ -1629,10 +1629,12 @@ fn dihedral_deg(topo: &Topology, e: EdgeId, fs: &[FaceId]) -> f64 {
 
 /// #834: round an edge whose neighbour is a previous fillet's blend face.
 ///
-/// A single-edge rolling-ball fillet yields a watertight solid with a blend
-/// face. Filleting a (non-tangent) edge bordering that blend face must itself
-/// produce a valid, watertight manifold — the blend's accessible
-/// non-degenerate edges are concave end-caps, so the fillet fills the seam.
+/// After a single-edge rolling-ball fillet, the arc where the blend band
+/// meets the top face is tangent-continuous with the two box edges beside
+/// it: the band is tangent to both walls. A seed on that arc therefore
+/// expands across the tangent seams onto both box edges, and the second
+/// fillet rounds the whole ridgeline into a valid, watertight manifold —
+/// convex, so it removes material.
 #[test]
 fn fillet_edge_adjacent_to_blend_is_watertight() {
     use remus_topology::validation::validate_shell_closed;
@@ -1694,59 +1696,295 @@ fn fillet_edge_adjacent_to_blend_is_watertight() {
         })
         .expect("a non-tangent edge bordering the blend face");
 
-    // Second fillet on that blend-adjacent edge.
-    //
-    // Fail-closed contract: the historical "success" here passed the manifold
-    // and closed-shell checks below while carrying 6 orientation-inconsistent
-    // shared edges — a non-orientable patch that only the full validation
-    // baseline catches. The engine now refuses it with a typed error. If the
-    // engine is ever repaired, every oracle in the success branch must hold.
-    let result = fillet_rolling_ball(&mut topo, first, &[target], 0.5);
-    match result {
-        Ok(result) => {
-            let report = remus_check::validate::validate_solid(
-                &topo,
-                result,
-                &remus_check::validate::ValidateOptions::default(),
-            )
-            .unwrap();
-            assert!(
-                report.is_valid(),
-                "an accepted blend-adjacent fillet must be fully valid: {:#?}",
-                report.issues
-            );
-            let sh = topo
-                .shell(topo.solid(result).unwrap().outer_shell())
-                .unwrap();
-            validate_shell_manifold(sh, &topo).expect("second fillet must be manifold");
-            validate_shell_closed(sh, &topo)
-                .expect("second fillet on a blend-adjacent edge must be watertight");
+    // The seed runs across both tangent seams: arc plus the two box edges.
+    let chain = remus_blend::g1_chain::expand_g1_chain(
+        &topo,
+        first,
+        &[target],
+        remus_math::tolerance::Tolerance::new(),
+    )
+    .unwrap();
+    assert_eq!(
+        chain.len(),
+        3,
+        "arc seed must expand onto both box edges: {chain:?}"
+    );
 
-            let vol2 = crate::measure::solid_volume(&topo, result, 0.05).unwrap();
-            // Concave end-cap edge → the fillet fills; volume stays sane
-            // (between the first fillet and the original box).
-            assert!(
-                vol2 > vol1 - 1e-6 && vol2 <= 1000.0 + 1e-6,
-                "filled fillet volume out of range: first={vol1}, second={vol2}"
-            );
-        }
-        Err(error) => {
-            assert!(
-                !crate::blend_ops::blend_failure_code(&error).is_empty(),
-                "the refusal must carry a machine-readable code, got {error}"
-            );
-            // The refused second fillet must leave the once-filleted box
-            // exactly as it was: still closed, still the same volume.
-            let sh = topo
-                .shell(topo.solid(first).unwrap().outer_shell())
-                .unwrap();
-            validate_shell_closed(sh, &topo)
-                .expect("input must still be watertight after a refused second fillet");
-            let vol_after = crate::measure::solid_volume(&topo, first, 0.05).unwrap();
-            assert!(
-                (vol_after - vol1).abs() < 1e-9,
-                "input volume changed across a refused fillet: {vol1} -> {vol_after}"
-            );
+    let result = fillet_rolling_ball(&mut topo, first, &[target], 0.5)
+        .expect("second fillet on a blend-adjacent edge must succeed");
+    let report = remus_check::validate::validate_solid(
+        &topo,
+        result,
+        &remus_check::validate::ValidateOptions::default(),
+    )
+    .unwrap();
+    assert!(
+        report.is_valid(),
+        "the blend-adjacent fillet must be fully valid: {:#?}",
+        report.issues
+    );
+    let sh = topo
+        .shell(topo.solid(result).unwrap().outer_shell())
+        .unwrap();
+    validate_shell_manifold(sh, &topo).expect("second fillet must be manifold");
+    validate_shell_closed(sh, &topo)
+        .expect("second fillet on a blend-adjacent edge must be watertight");
+
+    // Two 9-long box edges and the corner arc, all convex: material leaves.
+    let vol2 = crate::measure::solid_volume(&topo, result, 0.05).unwrap();
+    let straight = (1.0 - std::f64::consts::FRAC_PI_4) * 0.25 * 18.0;
+    assert!(
+        vol2 < vol1 - straight && vol2 > vol1 - straight - 0.5,
+        "second fillet must remove its straight runs' material: first={vol1}, second={vol2}"
+    );
+}
+
+/// Endpoints of edge `e`.
+fn edge_endpoints(topo: &Topology, e: EdgeId) -> (Point3, Point3) {
+    let ed = topo.edge(e).unwrap();
+    (
+        topo.vertex(ed.start()).unwrap().point(),
+        topo.vertex(ed.end()).unwrap().point(),
+    )
+}
+
+/// The vertical box edge at `x = dx, y = 0`.
+fn box_vertical_edge(topo: &Topology, solid: SolidId, dx: f64) -> EdgeId {
+    let near = |a: f64, b: f64| (a - b).abs() < 1e-9;
+    solid_edge_ids(topo, solid)
+        .into_iter()
+        .find(|&e| {
+            let (a, b) = edge_endpoints(topo, e);
+            near(a.x(), dx) && near(b.x(), dx) && near(a.y(), 0.0) && near(b.y(), 0.0)
+        })
+        .expect("vertical edge at x=dx, y=0")
+}
+
+/// The straight top box edge at `x = dx, z = dz`.
+fn box_top_edge(topo: &Topology, solid: SolidId, dx: f64, dz: f64) -> EdgeId {
+    let near = |a: f64, b: f64| (a - b).abs() < 1e-9;
+    solid_edge_ids(topo, solid)
+        .into_iter()
+        .find(|&e| {
+            let (a, b) = edge_endpoints(topo, e);
+            matches!(topo.edge(e).unwrap().curve(), EdgeCurve::Line)
+                && near(a.x(), dx)
+                && near(b.x(), dx)
+                && near(a.z(), dz)
+                && near(b.z(), dz)
+        })
+        .expect("top edge at x=dx, z=dz")
+}
+
+/// Closed-form volume of the box with a vertical edge filleted at `r1` and,
+/// afterwards, the top edge beside it filleted at `r2` through the
+/// production cascade: the top fillet propagates along its tangent ridgeline
+/// across the earlier band's arc onto the far top edge. Returns the measured
+/// result and its solid.
+fn sequential_top_fillet(
+    topo: &mut Topology,
+    (dx, dy, dz): (f64, f64, f64),
+    r1: f64,
+    r2: f64,
+) -> (SolidId, SolidId) {
+    let solid = crate::primitives::make_box(topo, dx, dy, dz).unwrap();
+    let vertical = box_vertical_edge(topo, solid, dx);
+    let first = crate::blend_ops::fillet_cascade(topo, solid, &[vertical], r1)
+        .expect("first fillet")
+        .solid;
+    let top = box_top_edge(topo, first, dx, dz);
+
+    // Propagation across the band: line → arc → line.
+    let chain = remus_blend::g1_chain::expand_g1_chain(
+        topo,
+        first,
+        &[top],
+        remus_math::tolerance::Tolerance::new(),
+    )
+    .unwrap();
+    assert_eq!(
+        chain.len(),
+        3,
+        "top seed must run across the band's arc: {chain:?}"
+    );
+    let arcs = chain
+        .iter()
+        .filter(|&&e| matches!(topo.edge(e).unwrap().curve(), EdgeCurve::Circle(_)))
+        .count();
+    assert_eq!(arcs, 1, "the chain carries exactly the band's arc");
+
+    let second = crate::blend_ops::fillet_cascade(topo, first, &[top], r2)
+        .expect("the top edge must fillet after the vertical one")
+        .solid;
+    (first, second)
+}
+
+fn assert_fully_valid(topo: &Topology, solid: SolidId, what: &str) {
+    let report = remus_check::validate::validate_solid(
+        topo,
+        solid,
+        &remus_check::validate::ValidateOptions::default(),
+    )
+    .unwrap();
+    assert!(
+        report.is_valid(),
+        "{what} must be fully valid: {:#?}",
+        report.issues
+    );
+    let sh = topo
+        .shell(topo.solid(solid).unwrap().outer_shell())
+        .unwrap();
+    let closed = remus_topology::validation::validate_shell_closed(sh, topo);
+    assert!(
+        closed.is_ok(),
+        "{what} must be watertight: {:?}",
+        closed.err()
+    );
+}
+
+/// A fillet on a box edge that ends on an earlier fillet of the same
+/// radius (the interactive default: fillet one edge, then the next).
+///
+/// The rolling ball's centre runs along the earlier band's axis, so the
+/// corner is a sphere octant: the same shape as blending all three corner
+/// edges at once, which the engine already emits as an exact sphere.
+#[test]
+fn sequential_fillet_equal_radius_rounds_corner_as_sphere() {
+    let dims = (9.5, 12.5, 8.5);
+    let (dx, dy, dz) = dims;
+    let mut topo = Topology::new();
+    let (first, second) = sequential_top_fillet(&mut topo, dims, 1.0, 1.0);
+    assert_fully_valid(&topo, second, "sequential equal-radius fillet");
+
+    // Same topology as the three-edge corner blend: 3 cylinders + 1 cap.
+    let counts = remus_topology::explorer::solid_entity_counts(&topo, second).unwrap();
+    assert_eq!(counts, (10, 21, 13), "faces, edges, vertices");
+
+    // Closed form: three quarter-cylinder runs plus a sphere-octant corner.
+    let straight = (1.0 - std::f64::consts::FRAC_PI_4) * ((dz - 1.0) + (dy - 1.0) + (dx - 1.0));
+    let corner = 1.0 - std::f64::consts::FRAC_PI_6;
+    let expected = dx * dy * dz - straight - corner;
+    let vol = crate::measure::solid_volume(&topo, second, 0.01).unwrap();
+    assert!(
+        (vol - expected).abs() < 0.05,
+        "sequential fillet volume {vol} should match closed form {expected}"
+    );
+    let vol_first = crate::measure::solid_volume(&topo, first, 0.01).unwrap();
+    assert!(vol < vol_first, "a convex fillet removes material");
+
+    // The corner cap is the ball surface: every point one radius from the
+    // ball centre, which sits on the earlier band's axis one radius down.
+    let centre = Point3::new(dx - 1.0, 1.0, dz - 1.0);
+    let cap = remus_topology::explorer::solid_faces(&topo, second)
+        .unwrap()
+        .into_iter()
+        .find(|&f| matches!(topo.face(f).unwrap().surface(), FaceSurface::Nurbs(_)))
+        .expect("one lofted corner cap");
+    let FaceSurface::Nurbs(surface) = topo.face(cap).unwrap().surface() else {
+        unreachable!()
+    };
+    let (u0, u1) = (surface.knots_u()[0], *surface.knots_u().last().unwrap());
+    let (v0, v1) = (surface.knots_v()[0], *surface.knots_v().last().unwrap());
+    let mut worst = 0.0f64;
+    for i in 0..=16 {
+        for j in 0..=16 {
+            let u = u0 + (u1 - u0) * f64::from(i) / 16.0;
+            let v = v0 + (v1 - v0) * f64::from(j) / 16.0;
+            let p = remus_math::traits::ParametricSurface::evaluate(surface, u, v);
+            worst = worst.max(((p - centre).length() - 1.0).abs());
         }
     }
+    assert!(worst < 1e-3, "corner cap strays {worst} from the ball");
+}
+
+/// The same sequence with a smaller second radius: the corner is a torus
+/// band around the earlier fillet's axis, whose material follows Pappus.
+#[test]
+fn sequential_fillet_smaller_radius_rounds_corner_as_torus() {
+    let dims = (9.5, 12.5, 8.5);
+    let (dx, dy, _) = dims;
+    let mut topo = Topology::new();
+    let (first, second) = sequential_top_fillet(&mut topo, dims, 1.0, 0.5);
+    assert_fully_valid(&topo, second, "sequential smaller-radius fillet");
+
+    let counts = remus_topology::explorer::solid_entity_counts(&topo, second).unwrap();
+    assert_eq!(counts, (10, 22, 14), "faces, edges, vertices");
+
+    // Closed form. The second fillet's cross-section removes
+    // A = (1−π/4)·r² per unit length along its two straight runs, and along
+    // the quarter-turn arc its centroid (0.2234·r inside the corner) travels
+    // a quarter circle of radius R − 0.2234·r about the band's axis.
+    let (big, r) = (1.0, 0.5);
+    let section = (1.0 - std::f64::consts::FRAC_PI_4) * r * r;
+    let centroid_inset = {
+        let square = r * r * r / 2.0;
+        let quarter_disc =
+            std::f64::consts::FRAC_PI_4 * r * r * (r - 4.0 * r / (3.0 * std::f64::consts::PI));
+        (square - quarter_disc) / section
+    };
+    let corner = section * std::f64::consts::FRAC_PI_2 * (big - centroid_inset);
+    let vol_first = crate::measure::solid_volume(&topo, first, 0.01).unwrap();
+    let expected = vol_first - section * ((dy - big) + (dx - big)) - corner;
+    let vol = crate::measure::solid_volume(&topo, second, 0.01).unwrap();
+    assert!(
+        (vol - expected).abs() < 0.05,
+        "sequential fillet volume {vol} should match closed form {expected}"
+    );
+}
+
+/// A seam between two faces of one plane is a split, not a transition: the
+/// L-blank a fuse leaves behind has its wall corner edge collinear with the
+/// base-plate corner edge, on coplanar side faces. Selecting the base
+/// segment must fillet the base segment only, as it always has.
+#[test]
+fn g1_chain_does_not_cross_a_coplanar_split() {
+    use remus_math::mat::Mat4;
+
+    let mut topo = Topology::new();
+    let base = crate::primitives::make_box(&mut topo, 80.0, 40.0, 8.0).unwrap();
+    let wall = crate::primitives::make_box(&mut topo, 80.0, 8.0, 32.0).unwrap();
+    crate::transform::transform_solid(&mut topo, wall, &Mat4::translation(0.0, 32.0, 7.5)).unwrap();
+    let blank =
+        crate::boolean::boolean(&mut topo, crate::boolean::BooleanOp::Fuse, base, wall).unwrap();
+
+    let near = |a: f64, b: f64| (a - b).abs() < 1e-6;
+    let base_corner = solid_edge_ids(&topo, blank)
+        .into_iter()
+        .find(|&e| {
+            let (a, b) = edge_endpoints(&topo, e);
+            near(a.x(), 0.0)
+                && near(b.x(), 0.0)
+                && near(a.y(), 40.0)
+                && near(b.y(), 40.0)
+                && a.z().max(b.z()) < 8.5
+                && (a.z() - b.z()).abs() > 4.0
+        })
+        .expect("base-plate corner edge at x=0, y=40");
+    let chain = remus_blend::g1_chain::expand_g1_chain(
+        &topo,
+        blank,
+        &[base_corner],
+        remus_math::tolerance::Tolerance::new(),
+    )
+    .unwrap();
+    assert_eq!(
+        chain,
+        vec![base_corner],
+        "the collinear wall edge must not join"
+    );
+}
+
+/// A full-turn rim of the blend's own radius is a dome, not a fillet: the
+/// plane it borders would shrink to a point. The curvature guard keeps
+/// refusing it while the partial arc above is allowed.
+#[test]
+fn equal_radius_full_rim_is_still_refused() {
+    let mut topo = Topology::new();
+    let solid = crate::primitives::make_cylinder(&mut topo, 1.0, 4.0).unwrap();
+    let rim = solid_edge_ids(&topo, solid)
+        .into_iter()
+        .find(|&e| topo.edge(e).unwrap().is_closed())
+        .expect("a closed rim edge");
+    let err = fillet_rolling_ball(&mut topo, solid, &[rim], 1.0).unwrap_err();
+    assert!(format!("{err}").contains("curvature"), "{err}");
 }

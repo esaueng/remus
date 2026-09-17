@@ -39,3 +39,5 @@ mod qualify_convex_hull_tests;
 mod qualify_ops_tests;
 #[cfg(test)]
 mod qualify_primitives_tests;
+#[cfg(test)]
+mod sequential_fillet_tests;
