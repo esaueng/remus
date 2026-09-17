@@ -3492,7 +3492,6 @@ fn b26_finding15_conesphere_wire_mesh() {
 /// proptest seed (shrinking aborted) — this repro is the retention.
 /// Minimized from `prop_random_curved_pair_identities`.
 #[test]
-#[ignore = "open: disjoint cone-sphere fuse open mesh + low volume (B26 finding 16)"]
 fn b26_finding16_conesphere_disjoint_fuse() {
     use remus_operations::primitives::{make_cone, make_sphere};
     let m = Mat4::translation(0.0, -1000.0, 3000.0)
@@ -3527,7 +3526,6 @@ fn b26_finding16_conesphere_disjoint_fuse() {
 /// aborted) — this repro is the retention.
 /// Minimized from `prop_random_curved_pair_identities`.
 #[test]
-#[ignore = "open: unit disjoint cone-sphere fuse open mesh + drift (B26 finding 16)"]
 fn b26_finding16_conesphere_unit_drift() {
     use remus_operations::primitives::{make_cone, make_sphere};
     let m = Mat4::translation(0.0, -2.0, 3.0) * Mat4::rotation_x(3.0 * std::f64::consts::FRAC_PI_2);
