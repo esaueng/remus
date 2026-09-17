@@ -1012,6 +1012,46 @@ pub struct BooleanQualityResult {
     pub deflection: Option<f64>,
 }
 
+/// Typed result for `shellWithQuality`: a shell result with its
+/// disclosed quality, so a consumer can tell an exact inner skin from a
+/// sampled-NURBS one instead of silently losing analytic surfaces.
+#[derive(Debug, serde::Serialize, Tsify)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ShellQualityResult {
+    /// Handle of the result solid.
+    pub solid: u32,
+    /// `"exact"` when every inner face is the exact analytic offset of its
+    /// source face; `"approximate"` when the sampled NURBS path built the
+    /// inner skin for the named faces.
+    pub quality: String,
+    /// Model-unit sample spacing the NURBS refit ran at. Present only when
+    /// `quality` is `"approximate"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deflection: Option<f64>,
+    /// Source-face indices whose inner skin is sampled. Present only when
+    /// `quality` is `"approximate"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sampled_faces: Option<Vec<u32>>,
+}
+
+/// Typed result for `offsetFaceWithQuality`: a face-offset result with its
+/// disclosed quality, so a consumer can tell an exact analytic offset from
+/// a sampled NURBS refit.
+#[derive(Debug, serde::Serialize, Tsify)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FaceOffsetQualityResult {
+    /// Handle of the result face.
+    pub face: u32,
+    /// `"exact"` when the analytic rule of the face's surface family
+    /// produced the result; `"approximate"` when the NURBS face was offset
+    /// by sampling and refitting.
+    pub quality: String,
+    /// Grid resolution per parameter direction the refit ran at. Present
+    /// only when `quality` is `"approximate"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub samples: Option<u32>,
+}
+
 /// Terminal state of a cancellable operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, Tsify)]
 #[serde(rename_all = "camelCase")]
