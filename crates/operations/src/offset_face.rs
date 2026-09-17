@@ -1,9 +1,12 @@
 //! Face offset: create a new face offset from an existing face by a given
 //! distance along its surface normal.
 //!
-//! For planar faces, this is an exact operation (translate along normal).
-//! For NURBS faces, the offset is approximated by sampling the surface
-//! normal field and refitting via surface interpolation.
+//! Analytic faces (plane, cylinder, cone, sphere, torus) offset exactly by
+//! the closed-form rule of their surface family. A NURBS face has no exact
+//! offset in the kernel's surface vocabulary, so it is approximated by
+//! sampling the surface normal field and refitting via surface
+//! interpolation — that approximation is disclosed in the result type (see
+//! [`FaceOffsetOutcome`]), never a bare handle or a log line.
 
 use remus_math::nurbs::surface_fitting::interpolate_surface;
 use remus_math::tolerance::Tolerance;
@@ -19,9 +22,10 @@ use crate::OperationsError;
 /// Positive distance offsets outward (away from the solid interior),
 /// negative distance offsets inward.
 ///
-/// For planar faces, the operation is exact. For NURBS faces, the
-/// surface is sampled at a grid of `samples × samples` points and
-/// re-interpolated.
+/// Analytic faces offset exactly by the closed-form rule of their surface
+/// family. A NURBS face is approximated by sampling its normal field on a
+/// `samples × samples` grid and refitting — that approximation is disclosed
+/// by [`offset_face_with_quality`], which this delegates to.
 ///
 /// # Errors
 ///
@@ -29,12 +33,73 @@ use crate::OperationsError;
 /// - The face lookup fails
 /// - NURBS surface normal computation fails at any sample point
 /// - Surface re-interpolation fails
+#[deprecated(
+    since = "0.9.0",
+    note = "the `samples` discretization knob contradicts the exact-kernel contract; \
+            use `offset_face_with_quality`, which discloses the NURBS approximation \
+            in `FaceOffsetOutcome` instead of burying it in a caller-chosen grid"
+)]
 pub fn offset_face(
     topo: &mut Topology,
     face_id: FaceId,
     distance: f64,
     samples: usize,
 ) -> Result<FaceId, OperationsError> {
+    Ok(offset_face_with_quality(topo, face_id, distance, Some(samples))?.face)
+}
+
+/// The result quality a quality-disclosing face offset reports.
+///
+/// Mirrors [`crate::boolean::BooleanQuality`]: the result type tells the
+/// caller whether the offset face is exact analytic geometry or a sampled
+/// refit.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FaceOffsetQuality {
+    /// The analytic rule of the face's surface family produced the result;
+    /// the surface type is preserved.
+    Exact,
+    /// The NURBS face was offset by sampling its normal field on a
+    /// `samples × samples` grid and refitting. The count is disclosed here
+    /// so the caller can see what ran.
+    Approximate {
+        /// Grid resolution per parameter direction the refit ran at.
+        samples: usize,
+    },
+}
+
+/// A face-offset result with its disclosed quality.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FaceOffsetOutcome {
+    /// The offset face.
+    pub face: FaceId,
+    /// How the face was produced. Never silently approximate: a sampled
+    /// NURBS refit is visible here.
+    pub quality: FaceOffsetQuality,
+}
+
+/// Create a new face offset from `face_id` by `distance`, disclosing whether
+/// the result is exact or a sampled NURBS approximation.
+///
+/// This is [`offset_face`] without the discretization knob on the public
+/// contract: analytic faces offset exactly, and a NURBS face takes an
+/// explicit opt-in to approximation —
+/// - `approximation: None` is the exact-only policy: a NURBS face fails with
+///   [`OperationsError::Unsupported`] instead of degrading to a sampled
+///   refit;
+/// - `approximation: Some(samples)` permits the sampled refit at the given
+///   grid resolution (clamped to a minimum of 4, as before), and the outcome
+///   reports [`FaceOffsetQuality::Approximate`] with the count that ran.
+///
+/// # Errors
+///
+/// Returns the same errors as [`offset_face`], plus the exact-only refusal
+/// for a NURBS face under `None`.
+pub fn offset_face_with_quality(
+    topo: &mut Topology,
+    face_id: FaceId,
+    distance: f64,
+    approximation: Option<usize>,
+) -> Result<FaceOffsetOutcome, OperationsError> {
     let tol = Tolerance::new();
     let face = topo.face(face_id)?;
     let surface = face.surface().clone();
@@ -50,25 +115,53 @@ pub fn offset_face(
     }
 
     if distance.abs() < tol.linear {
-        return crate::copy::copy_face(topo, face_id);
+        let face = crate::copy::copy_face(topo, face_id)?;
+        return Ok(FaceOffsetOutcome {
+            face,
+            quality: FaceOffsetQuality::Exact,
+        });
     }
+
+    let exact = |face: FaceId| FaceOffsetOutcome {
+        face,
+        quality: FaceOffsetQuality::Exact,
+    };
 
     match surface {
         FaceSurface::Plane { normal, d } => {
-            offset_planar_face(topo, outer_wire, &inner_wires, normal, d, distance)
+            offset_planar_face(topo, outer_wire, &inner_wires, normal, d, distance).map(exact)
         }
-        FaceSurface::Nurbs(ref nurbs) => offset_nurbs_face(topo, face_id, nurbs, distance, samples),
+        FaceSurface::Nurbs(ref nurbs) => {
+            let Some(samples) = approximation else {
+                return Err(OperationsError::Unsupported {
+                    operation: "offset_face",
+                    reason: format!(
+                        "face {} is a NURBS face with no exact offset; offset_face is \
+                         exact-only — use offset_face_with_quality with a sample count to \
+                         accept a sampled refit",
+                        face_id.index()
+                    ),
+                });
+            };
+            let samples = samples.max(4);
+            offset_nurbs_face(topo, face_id, nurbs, distance, samples).map(|face| {
+                FaceOffsetOutcome {
+                    face,
+                    quality: FaceOffsetQuality::Approximate { samples },
+                }
+            })
+        }
         FaceSurface::Cylinder(ref cyl) => {
-            offset_cylinder_face(topo, outer_wire, &inner_wires, cyl, distance)
+            offset_cylinder_face(topo, outer_wire, &inner_wires, cyl, distance).map(exact)
         }
         FaceSurface::Cone(ref cone) => {
-            offset_cone_face(topo, outer_wire, &inner_wires, cone, distance)
+            offset_cone_face(topo, outer_wire, &inner_wires, cone, distance).map(exact)
         }
         FaceSurface::Sphere(ref sphere) => {
-            offset_sphere_face(topo, outer_wire, &inner_wires, sphere, distance)
+            offset_sphere_face(topo, outer_wire, &inner_wires, sphere, distance).map(exact)
         }
         FaceSurface::Torus(ref torus) => {
-            offset_torus_face(topo, outer_wire, &inner_wires, torus, distance)
+            offset_torus_face(topo, outer_wire, &inner_wires, torus, distance).map(exact)
         }
     }
 }
@@ -995,7 +1088,7 @@ fn offset_point_on_surface(
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, deprecated)]
 
     use remus_topology::Topology;
     use remus_topology::test_utils::make_unit_square_face;

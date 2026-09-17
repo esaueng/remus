@@ -4,6 +4,24 @@
 
 ### ⚠ BREAKING CHANGES
 
+* **operations,wasm:** offset path consolidation (B25). `shell` /
+  `shell_op::shell` is now exact-only: a solid whose kept faces include a
+  NURBS face fails with a typed `Unsupported` refusal naming the face instead
+  of silently running the sampled `offset_face` refit (cone/torus inner skins
+  are now exact analytic offsets inlined in `shell_op`, never routed through
+  the sampled path). `offset_face` keeps its signature but its `samples`
+  knob is deprecated — analytic faces are exact as before, and a NURBS face
+  now fails exact-only unless the caller opts in. Approximation is available
+  only through the paths that disclose it: `shell_outcome_with_evolution` /
+  `shell_journaled_with_quality` returning `ShellOutcome` (`Exact`, or
+  `Approximate` with the model-unit spacing and sampled source-face indices),
+  `offset_face_with_quality` returning `FaceOffsetOutcome`, and the new WASM
+  `shellWithQuality` / `offsetFaceWithQuality` direct plus `executeBatch` ops.
+  Callers that relied on the silent sampled shell/NURBS offset must opt in
+  and read the disclosed quality. The OpenZCAD `kernel-adapter` uses only
+  `shell` and `offsetSolidV2` (no `offsetFace` call sites), so no adapter
+  change is required.
+
 * **operations,wasm:** the plain boolean entry points are exact-only. Rust
   `boolean`, `boolean_transacted`, `boolean_with_options`,
   `boolean_with_evolution`, and `fuse_solids`/`fuse_all`, and the WASM
