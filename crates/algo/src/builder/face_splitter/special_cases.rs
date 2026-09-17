@@ -2439,10 +2439,21 @@ fn torus_section_to_edge(
 /// later operator-neutral classifier can retain the long band for Cut/Fuse and
 /// the short band for Intersect.
 ///
-/// Returns `None` (defer to the generic path) unless the in-box arcs stitch into
-/// exactly two φ-wrapping closed loops. Relies on the FF exact-crossing trim
-/// (`trim_torus_oval_to_box_face`) having given the arcs faithful endpoints that
-/// share the box-edge crossing vertices.
+/// A boundary loop is either a chain of OPEN arcs stitched at shared endpoints
+/// (the box family: each wall's oval is split at the box edges) or ONE CLOSED
+/// section (a tool face that crosses the tube without touching any of its own
+/// edges: a cap plane through the torus axis, an oblique cone wall). A closed
+/// section that wraps `φ` is a band separator exactly like a stitched loop;
+/// filing it as an inner wire leaves a full periodic outer wire with
+/// non-contractible "holes" that the mesher skins over and the integrators
+/// misread (fuzz `modifier_ops` crash-71dbb118, 2026-09-17). A closed section
+/// that does NOT wrap `φ` (a small tool poking a disc hole) fails the winding
+/// check below and defers to the internal-loops path as before.
+///
+/// Returns `None` (defer to the generic path) unless the sections form exactly
+/// two φ-wrapping closed loops. Relies on the FF exact-crossing trim
+/// (`trim_torus_oval_to_box_face`) having given open arcs faithful endpoints
+/// that share the box-edge crossing vertices.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn split_torus_band_by_arrangement(
     surface: &FaceSurface,
@@ -2456,13 +2467,20 @@ pub(super) fn split_torus_band_by_arrangement(
     let FaceSurface::Torus(torus) = surface else {
         return Ok(None);
     };
-    // Open arcs only (closed sections would be the lobe-hole case, not a band).
-    let open: Vec<OrientedPCurveEdge> = sections
-        .iter()
-        .filter(|s| (s.start - s.end).length() > tol)
-        .map(|s| torus_section_to_edge(s, surface, rank))
-        .collect::<Result<_, _>>()?;
-    if open.len() < 2 {
+    // A closed section is a loop on its own; open arcs are stitched below.
+    // Whether a closed section is a band separator or a disc hole is decided
+    // by the φ-winding check, not here.
+    let mut open: Vec<OrientedPCurveEdge> = Vec::new();
+    let mut loops: Vec<Vec<OrientedPCurveEdge>> = Vec::new();
+    for s in sections {
+        let e = torus_section_to_edge(s, surface, rank)?;
+        if (s.start - s.end).length() > tol {
+            open.push(e);
+        } else {
+            loops.push(vec![e]);
+        }
+    }
+    if open.len() + loops.len() < 2 {
         return Ok(None);
     }
 
@@ -2472,7 +2490,6 @@ pub(super) fn split_torus_band_by_arrangement(
     // suffices — a loose one could stitch unrelated endpoints into false loops.
     let join_tol = (tol * 100.0).max(tol);
     let mut used = vec![false; open.len()];
-    let mut loops: Vec<Vec<OrientedPCurveEdge>> = Vec::new();
     for s0 in 0..open.len() {
         if used[s0] {
             continue;
@@ -2555,8 +2572,13 @@ pub(super) fn split_torus_band_by_arrangement(
 
     // Snap each loop's internal junctions to the midpoint of the two meeting
     // endpoints so the loop is internally watertight at the box-edge vertices.
+    // A one-edge closed section has no junction: its endpoints are already one
+    // vertex, and snapping would collapse them onto each other's midpoint.
     let snap_loop = |l: &mut Vec<OrientedPCurveEdge>| {
         let n = l.len();
+        if n < 2 {
+            return;
+        }
         for i in 0..n {
             let j = (i + 1) % n;
             let mid = l[i].end_3d + (l[j].start_3d - l[i].end_3d) * 0.5;
@@ -2568,15 +2590,22 @@ pub(super) fn split_torus_band_by_arrangement(
         snap_loop(l);
     }
 
-    // The loops sit at roughly constant ring angle u. Their wrap-safe means
-    // identify the short box-bounded interval and the complementary long
-    // interval without assuming the notch is on +x.
+    // The loops sit at roughly constant ring angle u (an oblique wall's loop
+    // wanders around its mean). Their wrap-safe means, sampled ALONG each edge
+    // so a one-edge loop is not judged by its single start vertex, identify
+    // the short tool-bounded interval and the complementary long interval
+    // without assuming the notch is on +x.
     let loop_mean_u = |l: &[OrientedPCurveEdge]| -> f64 {
         let (mut sx, mut sy) = (0.0, 0.0);
         for e in l {
-            let (u, _) = torus.project_point(e.start_3d);
-            sx += u.cos();
-            sy += u.sin();
+            let (t0, t1) = e.traversal_domain();
+            for k in 0..8 {
+                let t = t0 + (t1 - t0) * f64::from(k) / 8.0;
+                let (u, _) = torus
+                    .project_point(e.curve_3d.evaluate_with_endpoints(t, e.start_3d, e.end_3d));
+                sx += u.cos();
+                sy += u.sin();
+            }
         }
         sy.atan2(sx).rem_euclid(TAU)
     };
