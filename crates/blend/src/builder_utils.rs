@@ -1206,3 +1206,36 @@ mod notch_tests {
         );
     }
 }
+
+/// The plane carried by `surface` as `(normal, d)`, or `None` for any other
+/// surface. Exhaustive so a new `FaceSurface` variant is a compile error
+/// here rather than a silent "not a plane".
+#[must_use]
+pub fn plane_of(surface: &remus_topology::face::FaceSurface) -> Option<(Vec3, f64)> {
+    use remus_topology::face::FaceSurface;
+    match surface {
+        FaceSurface::Plane { normal, d } => Some((*normal, *d)),
+        FaceSurface::Nurbs(_)
+        | FaceSurface::Cylinder(_)
+        | FaceSurface::Cone(_)
+        | FaceSurface::Sphere(_)
+        | FaceSurface::Torus(_) => None,
+    }
+}
+
+/// The cylinder carried by `surface`, or `None` for any other surface.
+/// Exhaustive for the same reason as [`plane_of`].
+#[must_use]
+pub fn cylinder_of(
+    surface: &remus_topology::face::FaceSurface,
+) -> Option<&remus_math::surfaces::CylindricalSurface> {
+    use remus_topology::face::FaceSurface;
+    match surface {
+        FaceSurface::Cylinder(cylinder) => Some(cylinder),
+        FaceSurface::Plane { .. }
+        | FaceSurface::Nurbs(_)
+        | FaceSurface::Cone(_)
+        | FaceSurface::Sphere(_)
+        | FaceSurface::Torus(_) => None,
+    }
+}

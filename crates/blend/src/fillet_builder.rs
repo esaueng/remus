@@ -21,8 +21,9 @@ use remus_topology::wire::{OrientedEdge, Wire, WireId};
 use crate::analytic;
 use crate::blend_func::{BorrowedEvolRadBlend, ConstRadBlend};
 use crate::builder_utils::{
-    FlippedNormalSurface, add_certified_curve_edge, project_onto_axis, radial_distance,
-    refuse_non_line_rim_neighbors, surface_ref_or_adapter, wire_axial_range, wire_radial_extremum,
+    FlippedNormalSurface, add_certified_curve_edge, cylinder_of, plane_of, project_onto_axis,
+    radial_distance, refuse_non_line_rim_neighbors, surface_ref_or_adapter, wire_axial_range,
+    wire_radial_extremum,
 };
 use crate::corner;
 use crate::g1_chain;
@@ -2773,15 +2774,14 @@ pub fn equal_radius_cap(
     if edge.is_closed() {
         return None;
     }
-    let (plane_normal, plane_reversed, cyl, cyl_reversed, plane_first) = match (surf1, surf2) {
-        (FaceSurface::Plane { normal, .. }, FaceSurface::Cylinder(c)) => {
-            (*normal, surf1_reversed, c, surf2_reversed, true)
-        }
-        (FaceSurface::Cylinder(c), FaceSurface::Plane { normal, .. }) => {
-            (*normal, surf2_reversed, c, surf1_reversed, false)
-        }
-        _ => return None,
-    };
+    let (plane_normal, plane_reversed, cyl, cyl_reversed, plane_first) =
+        if let (Some((normal, _)), Some(c)) = (plane_of(surf1), cylinder_of(surf2)) {
+            (normal, surf1_reversed, c, surf2_reversed, true)
+        } else if let (Some(c), Some((normal, _))) = (cylinder_of(surf1), plane_of(surf2)) {
+            (normal, surf2_reversed, c, surf1_reversed, false)
+        } else {
+            return None;
+        };
     if (cyl.radius() - radius).abs() > tol.linear {
         return None;
     }

@@ -16,6 +16,8 @@ use remus_topology::edge::{EdgeCurve, EdgeId};
 use remus_topology::face::{FaceId, FaceSurface};
 use remus_topology::solid::SolidId;
 
+use crate::builder_utils::{cylinder_of, plane_of};
+
 /// Cosine threshold shared by the edge-tangent and face-normal continuity
 /// tests: about 10 degrees of deviation. A true G1 joint scores 1.0 exactly.
 const G1_COS_THRESHOLD: f64 = 0.985;
@@ -48,32 +50,31 @@ fn same_underlying_surface(topo: &Topology, a: FaceId, b: FaceId, tol: Tolerance
     let (Ok(fa), Ok(fb)) = (topo.face(a), topo.face(b)) else {
         return false;
     };
-    match (fa.surface(), fb.surface()) {
-        (FaceSurface::Plane { normal: na, d: da }, FaceSurface::Plane { normal: nb, d: db }) => {
-            let (Ok(ua), Ok(ub)) = (na.normalize(), nb.normalize()) else {
-                return false;
-            };
-            let dot = ua.dot(ub);
-            // Same plane whichever way each face's stored normal points.
-            (dot > 1.0 - tol.angular.max(1e-9) && (da - db).abs() <= tol.linear)
-                || (dot < -(1.0 - tol.angular.max(1e-9)) && (da + db).abs() <= tol.linear)
-        }
-        (FaceSurface::Cylinder(ca), FaceSurface::Cylinder(cb)) => {
-            let (Ok(axis_a), Ok(axis_b)) = (ca.axis().normalize(), cb.axis().normalize()) else {
-                return false;
-            };
-            if axis_a.dot(axis_b).abs() < 1.0 - tol.angular.max(1e-9) {
-                return false;
-            }
-            if (ca.radius() - cb.radius()).abs() > tol.linear {
-                return false;
-            }
-            let between = cb.origin() - ca.origin();
-            let off_axis = between - axis_a * between.dot(axis_a);
-            off_axis.length() <= tol.linear
-        }
-        _ => false,
+    let cos_parallel = 1.0 - tol.angular.max(1e-9);
+    if let (Some((na, da)), Some((nb, db))) = (plane_of(fa.surface()), plane_of(fb.surface())) {
+        let (Ok(ua), Ok(ub)) = (na.normalize(), nb.normalize()) else {
+            return false;
+        };
+        let dot = ua.dot(ub);
+        // Same plane whichever way each face's stored normal points.
+        return (dot > cos_parallel && (da - db).abs() <= tol.linear)
+            || (dot < -cos_parallel && (da + db).abs() <= tol.linear);
     }
+    if let (Some(ca), Some(cb)) = (cylinder_of(fa.surface()), cylinder_of(fb.surface())) {
+        let (Ok(axis_a), Ok(axis_b)) = (ca.axis().normalize(), cb.axis().normalize()) else {
+            return false;
+        };
+        if axis_a.dot(axis_b).abs() < cos_parallel {
+            return false;
+        }
+        if (ca.radius() - cb.radius()).abs() > tol.linear {
+            return false;
+        }
+        let between = cb.origin() - ca.origin();
+        let off_axis = between - axis_a * between.dot(axis_a);
+        return off_axis.length() <= tol.linear;
+    }
+    false
 }
 
 /// Whether the two faces bounding one edge continue the two faces bounding
