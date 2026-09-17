@@ -1,0 +1,15 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc c2269b3ba273eb69ebf9f2a5aa6ed10539867b6faaf0b9a0fbb9ec695fe1a784 # shrinks to input = BoolPairInput { a: Cone { r0: 2.0, r1: 0.0, h: 1.0 }, b: Cylinder { r: 1.0, h: 1.0 }, axis: 0, angle: 0.0, offset: (0.0, 1.5, 0.5), scale: 1.0 }
+cc 95e665d43d90b00c4acbedf8b44e37a28539b00ebe5bbdc22065c0ca5a04513a # shrinks to input = BoolPairInput { a: Torus { major: 2.0, minor: 0.25 }, b: Box { dx: 1.0, dy: 1.0, dz: 1.0 }, axis: 0, angle: 0.0, offset: (0.0, 0.0, 0.5), scale: 0.001 }
+cc ba404cb32b17b4a68c00332784124673fd24ab6f7aa4774811494991d6f1a077 # shrinks to input = BoolPairInput { a: Sphere { r: 2.0 }, b: Torus { major: 2.0, minor: 0.5 }, axis: 0, angle: 4.71238898038469, offset: (0.0, 1.0, 1.0), scale: 0.001 }
+cc b8c3882d3776f529c43ba91d7f9a0f653e273d6895db545766f4a57805f85641 # shrinks to input = BoolPairInput { a: Torus { major: 3.0, minor: 0.5 }, b: Cone { r0: 1.5, r1: 1.0, h: 1.0 }, axis: 0, angle: 4.71238898038469, offset: (2.5, 0.0, 0.0), scale: 0.001 }
+cc 74c6bb6133eb80558d8be828edae2d802b58d493166ebcccf8a64e87ac36b810 # shrinks to input = BoolPairInput { a: Cone { r0: 1.0, r1: 0.5, h: 1.0 }, b: Sphere { r: 1.0 }, axis: 0, angle: 4.71238898038469, offset: (0.0, 0.0, 1.0), scale: 0.001 }
+cc 60f088712704d08c34e4e3cdc4e98172c580336030464266db9b12e3b3f14d5a # shrinks to input = BoolPairInput { a: Box { dx: 2.5, dy: 1.0, dz: 1.0 }, b: Cone { r0: 1.0, r1: 2.5, h: 2.5 }, axis: 2, angle: 4.71238898038469, offset: (0.5, -1.5, -0.5), scale: 1.0 }
+cc ef7a773eeb2527c1b5dea7d32b07ea561e973cd58ee97f9f584fef8feb688d44 # shrinks to input = BoolPairInput { a: Box { dx: 1.0, dy: 1.0, dz: 1.5 }, b: Cylinder { r: 4.0, h: 3.5 }, axis: 1, angle: 3.141592653589793, offset: (3.25, 4.25, 3.25), scale: 1.0 }
+cc 08b68860f1bc9496b62dd91086234c5a83e2692499385c847800d38541830323 # shrinks to input = BoolPairInput { a: Sphere { r: 1.0 }, b: Cone { r0: 1.0, r1: 1.5, h: 2.5 }, axis: 2, angle: 1.5707963267948966, offset: (-1.0, -2.0, -1.5), scale: 1.0 }
+cc faf15cbd40e6323fe4c378f107c23fd9f35dafe6f02421b32da92c576f2067b4 # shrinks to input = BoolPairInput { a: Box { dx: 1.5, dy: 1.0, dz: 2.5 }, b: Torus { major: 2.5, minor: 0.25 }, axis: 0, angle: 0.7853981633974483, offset: (0.0, -1.5, 0.0), scale: 1.0 }
