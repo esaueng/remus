@@ -43,6 +43,13 @@ unit box fused with a large disjoint torus, one box edge filleted at r and r/2
 — that once tripped the option-honoured invariant: the two fillets differed by
 4e-4 as they should, but the check scaled that against the torus's ~800 of
 unrelated volume. The invariant now judges the volume each setting changed.
+A second fillet seed — a torus whose tube enters a frustum through its base
+cap and leaves through the cone wall, fused, then a 0.05 fillet on the base
+rim — reported an open mesh on the fillet that was really the fuse's: the two
+closed tube-wrapping pierce sections were filed as inner wires of the full
+periodic torus face, which the mesher skinned over and both volume routes
+misread by less than the agreement band. The band tracer now accepts closed
+sections (B45).
 
 `arena_roundtrip` builds bounded boxes and cylinders (census and closed-form
 volumes known by construction) with duplicate roots, shared-shell aliases,
