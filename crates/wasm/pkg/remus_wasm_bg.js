@@ -4871,6 +4871,36 @@ export class BrepKernel {
         return ret[0] >>> 0;
     }
     /**
+     * Offset a face with disclosed result quality.
+     *
+     * The plain [`offsetFace`](Self::offset_face) binding carries a
+     * caller-chosen `samples` discretization knob that contradicts the
+     * exact-kernel contract. This binding takes an explicit opt-in to
+     * approximation instead — `approximation_samples` is a grid resolution
+     * (a positive integer within the public work budget), or
+     * omitted/`null` for the exact-only policy under which a NURBS face
+     * fails with a typed `unsupported` refusal — and reports whether the
+     * sampled NURBS refit ran (`quality: "approximate"`, with the count),
+     * mirroring [`booleanWithQuality`](Self::boolean_with_quality).
+     *
+     * # Errors
+     *
+     * Returns an error if a handle is invalid, the distance is not finite,
+     * the sample count is present but out of budget, or (under the
+     * exact-only policy) the face has no exact offset.
+     * @param {number} face
+     * @param {number} distance
+     * @param {number | null} [approximation_samples]
+     * @returns {FaceOffsetQualityResult}
+     */
+    offsetFaceWithQuality(face, distance, approximation_samples) {
+        const ret = wasm.brepkernel_offsetFaceWithQuality(this.__wbg_ptr, face, distance, !isLikeNone(approximation_samples), isLikeNone(approximation_samples) ? 0 : approximation_samples);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
      * V2 offset journaled as one construction-derived face-evolution entry
      * (kind `offset`). Returns JSON `{"solid", "op"}`.
      * @param {number} solid
@@ -6110,6 +6140,39 @@ export class BrepKernel {
             throw takeFromExternrefTable0(ret[1]);
         }
         return ret[0] >>> 0;
+    }
+    /**
+     * Hollow a solid with disclosed inner-skin quality.
+     *
+     * The plain [`shell`](Self::shell_solid) binding is exact-only: a solid
+     * whose kept faces include a NURBS face fails with a typed
+     * `unsupported` refusal instead of degrading to a sampled refit. This
+     * binding accepts an explicit opt-in to approximation —
+     * `approximation_spacing` is a model-unit sample spacing (a positive
+     * finite number), or omitted/`null` for the exact-only policy — and
+     * reports whether the sampled NURBS path ran (`quality:
+     * "approximate"`, with the spacing and the sampled source-face
+     * indices).
+     *
+     * # Errors
+     *
+     * Returns an error if a handle is invalid, thickness is non-positive,
+     * the spacing is present but not finite and positive, or (under the
+     * exact-only policy) a kept face has no exact offset.
+     * @param {number} solid
+     * @param {number} thickness
+     * @param {Uint32Array} open_faces
+     * @param {number | null} [approximation_spacing]
+     * @returns {ShellQualityResult}
+     */
+    shellWithQuality(solid, thickness, open_faces, approximation_spacing) {
+        const ptr0 = passArray32ToWasm0(open_faces, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.brepkernel_shellWithQuality(this.__wbg_ptr, solid, thickness, ptr0, len0, !isLikeNone(approximation_spacing), isLikeNone(approximation_spacing) ? 0 : approximation_spacing);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
     }
     /**
      * Add an arc to a sketch (defined by center, start, end point indices).
