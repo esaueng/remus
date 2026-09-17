@@ -4,8 +4,8 @@
 use std::collections::{HashMap, HashSet};
 
 use remus_blend::BlendFaceOrigins;
+use remus_math::nurbs::fitting::interpolate_with_params;
 use remus_math::nurbs::surface::NurbsSurface;
-use remus_math::nurbs::surface_fitting::interpolate_surface;
 use remus_math::surfaces::CylindricalSurface;
 use remus_math::tolerance::Tolerance;
 use remus_math::vec::{Point3, Vec3};
@@ -126,6 +126,72 @@ fn origins_from_face_specs(
         .collect();
     origins.deleted.sort_by_key(|source| source.index());
     origins
+}
+
+/// Loft rational quadratic arc sections into one fillet strip surface.
+///
+/// Each grid row is `[contact1, apex, contact2]`, the apex being the tangent
+/// intersection of the section arc, and `weights[i]` is that apex's rational
+/// weight (`cos` of the arc's half-angle), so every station's u-isocurve is an
+/// exact circular arc. The three control rows are interpolated through the
+/// stations in v with one shared uniform parameterization (the stations are
+/// equally spaced along the edge) — the apex row in homogeneous coordinates,
+/// so the arcs stay exact at the stations even when the weight varies.
+///
+/// Interpolating the raw `[contact, apex, contact]` triples as data points
+/// instead (a parabola through the apex) makes the wall pass through the
+/// original sharp edge and bulge well outside the rolling ball.
+fn loft_arc_sections(
+    grid: &[[Point3; 3]],
+    weights: &[f64],
+) -> Result<NurbsSurface, remus_math::MathError> {
+    let n = grid.len();
+    if n < 2 || weights.len() != n {
+        return Err(remus_math::MathError::EmptyInput);
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let params: Vec<f64> = (0..n).map(|i| i as f64 / (n - 1) as f64).collect();
+    let degree_v = (n - 1).min(3);
+
+    let contact1: Vec<Point3> = grid.iter().map(|row| row[0]).collect();
+    let contact2: Vec<Point3> = grid.iter().map(|row| row[2]).collect();
+    let apex_h: Vec<Point3> = grid
+        .iter()
+        .zip(weights)
+        .map(|(row, &w)| Point3::new(row[1].x() * w, row[1].y() * w, row[1].z() * w))
+        .collect();
+    // The weight is interpolated with the same basis as the homogeneous apex
+    // so the two divide back into a consistent rational control row.
+    let weight_h: Vec<Point3> = weights.iter().map(|&w| Point3::new(w, 0.0, 0.0)).collect();
+
+    let row0 = interpolate_with_params(&contact1, degree_v, &params)?;
+    let row1_h = interpolate_with_params(&apex_h, degree_v, &params)?;
+    let row1_w = interpolate_with_params(&weight_h, degree_v, &params)?;
+    let row2 = interpolate_with_params(&contact2, degree_v, &params)?;
+
+    let apex_weights: Vec<f64> = row1_w.control_points().iter().map(|p| p.x()).collect();
+    if apex_weights.iter().any(|w| *w <= 0.0 || !w.is_finite()) {
+        return Err(remus_math::MathError::EmptyInput);
+    }
+    let apex: Vec<Point3> = row1_h
+        .control_points()
+        .iter()
+        .zip(&apex_weights)
+        .map(|(p, &w)| Point3::new(p.x() / w, p.y() / w, p.z() / w))
+        .collect();
+
+    NurbsSurface::new(
+        2,
+        degree_v,
+        vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+        row0.knots().to_vec(),
+        vec![
+            row0.control_points().to_vec(),
+            apex,
+            row2.control_points().to_vec(),
+        ],
+        vec![vec![1.0; n], apex_weights, vec![1.0; n]],
+    )
 }
 
 /// The exact cylinder a constant-radius rolling ball sweeps along a straight
@@ -853,6 +919,33 @@ pub fn fillet_rolling_ball_with_origins(
                     }
                 };
                 if radius >= min_curvature_r {
+                    // One equality is exact rather than degenerate: a circular
+                    // edge around a convex cylinder of the blend's own radius,
+                    // where the offset collapses to the axis and the blend is a
+                    // sphere. `blend_cross_sections` solves it in closed form.
+                    let other = face_list.iter().copied().find(|f| f.index() != fid.index());
+                    let is_sphere_cap = other.is_some_and(|other_fid| {
+                        face_surfaces
+                            .get(&other_fid.index())
+                            .is_some_and(|other_surf| {
+                                remus_blend::fillet_builder::equal_radius_cap(
+                                    edge,
+                                    other_surf,
+                                    face_reversed
+                                        .get(&other_fid.index())
+                                        .copied()
+                                        .unwrap_or(false),
+                                    surf,
+                                    face_reversed.get(&fid.index()).copied().unwrap_or(false),
+                                    radius,
+                                    tol,
+                                )
+                                .is_some()
+                            })
+                    });
+                    if is_sphere_cap {
+                        continue;
+                    }
                     return Err(crate::OperationsError::InvalidInput {
                         reason: format!(
                             "fillet radius {radius:.6} meets or exceeds minimum surface \
@@ -1083,8 +1176,10 @@ pub fn fillet_rolling_ball_with_origins(
         // junction vertices are known when computing canonical contacts.
         // Detect chains of consecutive fillet edges that share a vertex.
         // When two fillet strips meet at a vertex on the same pair of faces,
-        // they should share contact points for G1 tangent continuity.
-        let mut vertex_fillet_adjacency: HashMap<usize, Vec<(usize, usize, usize)>> =
+        // or on face pairs that are tangent there (a box edge running onto
+        // the arc of an earlier fillet's band), they should share contact
+        // points for G1 tangent continuity rather than get a corner patch.
+        let mut vertex_fillet_adjacency: HashMap<usize, Vec<(EdgeId, usize, usize)>> =
             HashMap::new();
         for &edge_id in &filtered_edges {
             let edge = topo.edge(edge_id)?;
@@ -1097,16 +1192,37 @@ pub fn fillet_rolling_ball_with_origins(
                 vertex_fillet_adjacency
                     .entry(edge.start().index())
                     .or_default()
-                    .push((edge_id.index(), fa, fb));
+                    .push((edge_id, fa, fb));
                 vertex_fillet_adjacency
                     .entry(edge.end().index())
                     .or_default()
-                    .push((edge_id.index(), fa, fb));
+                    .push((edge_id, fa, fb));
             }
         }
+        let away_tangent =
+            |edge_id: EdgeId, vi: usize| -> Result<Option<Vec3>, crate::OperationsError> {
+                let edge = topo.edge(edge_id)?;
+                let p_start = topo.vertex(edge.start())?.point();
+                let p_end = topo.vertex(edge.end())?.point();
+                let t = if edge.start().index() == vi {
+                    sample_edge_tangent(edge.curve(), p_start, p_end, 0.0)
+                } else {
+                    -sample_edge_tangent(edge.curve(), p_start, p_end, 1.0)
+                };
+                Ok(t.normalize().ok())
+            };
         let mut g1_chain_vertices: HashSet<usize> = HashSet::new();
         for (vi, adj) in &vertex_fillet_adjacency {
-            if adj.len() == 2 && adj[0].1 == adj[1].1 && adj[0].2 == adj[1].2 {
+            if adj.len() != 2 {
+                continue;
+            }
+            let same_faces = adj[0].1 == adj[1].1 && adj[0].2 == adj[1].2;
+            let tangent_junction =
+                match (away_tangent(adj[0].0, *vi)?, away_tangent(adj[1].0, *vi)?) {
+                    (Some(a), Some(b)) => a.dot(b) < -0.985,
+                    _ => false,
+                };
+            if same_faces || tangent_junction {
                 g1_chain_vertices.insert(*vi);
             }
         }
@@ -2212,6 +2328,9 @@ pub fn fillet_rolling_ball_with_origins(
 
             // Sample cross-section geometry at each v-station along the edge curve.
             let mut grid: Vec<[Point3; 3]> = Vec::with_capacity(n_v);
+            // Rational weight of each row's apex: `cos` of the section arc's
+            // half-angle, so the row is an exact circular arc.
+            let mut section_weights: Vec<f64> = Vec::with_capacity(n_v);
             let mut bisector_ref = Vec3::new(0.0, 0.0, 0.0);
 
             if let Some(sections) = blend_section_cache
@@ -2223,6 +2342,7 @@ pub fn fillet_rolling_ball_with_origins(
                 // pre-pass used to trim the neighbour faces, so they stay watertight).
                 for (i, sec) in sections.iter().enumerate() {
                     grid.push([sec.contact1, sec.apex, sec.contact2]);
+                    section_weights.push(sec.weight);
                     if i == 0 {
                         let mid = Point3::new(
                             (sec.contact1.x() + sec.contact2.x()) * 0.5,
@@ -2289,7 +2409,20 @@ pub fn fillet_rolling_ball_with_origins(
                     // invert the arc and over-cut.
                     let mid_cp = p;
 
+                    // The arc turns through the supplement of the angle the
+                    // two contact directions make at the apex.
+                    let apex_weight = match (
+                        (contact1 - mid_cp).normalize(),
+                        (contact2 - mid_cp).normalize(),
+                    ) {
+                        (Ok(a), Ok(b)) => {
+                            let interior = a.dot(b).clamp(-1.0, 1.0).acos();
+                            ((std::f64::consts::PI - interior) * 0.5).cos()
+                        }
+                        _ => half_angle.cos(),
+                    };
                     grid.push([contact1, mid_cp, contact2]);
+                    section_weights.push(apex_weight);
                 }
             }
 
@@ -2312,21 +2445,36 @@ pub fn fillet_rolling_ball_with_origins(
             // to match the adjacent fillet strip's endpoints for G1 continuity.
             let start_vi = edge.start().index();
             let end_vi = edge.end().index();
+            // The cached pair is in the previous strip's face order, which
+            // need not be this strip's: across a tangent seam the two strips
+            // do not even share a face pair. Snap each contact to whichever
+            // cached point is nearer rather than trusting the order.
+            let snap_nearest = |row: &mut [Point3; 3], cached: (Point3, Point3)| {
+                let (c1, c2) = cached;
+                let straight = (row[0] - c1).length() + (row[2] - c2).length();
+                let crossed = (row[0] - c2).length() + (row[2] - c1).length();
+                if straight <= crossed {
+                    row[0] = c1;
+                    row[2] = c2;
+                } else {
+                    row[0] = c2;
+                    row[2] = c1;
+                }
+            };
             if g1_chain_vertices.contains(&start_vi) {
-                if let Some(&(c1, c2)) = g1_contact_cache.get(&start_vi) {
+                if let Some(&cached) = g1_contact_cache.get(&start_vi) {
                     // Snap this strip's start to match the previous strip's end.
-                    grid[0] = [c1, grid[0][1], c2];
+                    snap_nearest(&mut grid[0], cached);
                 } else {
                     // First strip at this junction — cache for the next strip.
                     g1_contact_cache.insert(start_vi, (grid[0][0], grid[0][2]));
                 }
             }
             if g1_chain_vertices.contains(&end_vi) {
-                if let Some(&(c1, c2)) = g1_contact_cache.get(&end_vi) {
-                    let last = n_v - 1;
-                    grid[last] = [c1, grid[last][1], c2];
+                let last = n_v - 1;
+                if let Some(&cached) = g1_contact_cache.get(&end_vi) {
+                    snap_nearest(&mut grid[last], cached);
                 } else {
-                    let last = n_v - 1;
                     g1_contact_cache.insert(end_vi, (grid[last][0], grid[last][2]));
                 }
             }
@@ -2437,15 +2585,9 @@ pub fn fillet_rolling_ball_with_origins(
                 )
                 .map_err(crate::OperationsError::Math)?
             } else {
-                // Curved edge: interpolate through sampled cross-sections.
-                let n_arc = 3;
-                let transposed: Vec<Vec<Point3>> = (0..n_arc)
-                    .map(|col| (0..n_v).map(|row| grid[row][col]).collect())
-                    .collect();
-                let degree_u = 2.min(n_arc - 1);
-                let degree_v = (n_v - 1).min(3);
-                interpolate_surface(&transposed, degree_u, degree_v)
-                    .map_err(crate::OperationsError::Math)?
+                // Curved edge: exact rational arcs at every station, lofted
+                // through the stations.
+                loft_arc_sections(&grid, &section_weights).map_err(crate::OperationsError::Math)?
             };
 
             // The fillet strip's outward normal must point away from the solid

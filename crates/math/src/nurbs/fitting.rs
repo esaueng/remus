@@ -55,6 +55,51 @@ pub fn interpolate(points: &[Point3], degree: usize) -> Result<NurbsCurve, MathE
     NurbsCurve::new(p, knots, control_points, weights)
 }
 
+/// Interpolate a NURBS curve through data points at caller-supplied parameters.
+///
+/// Like [`interpolate`], but the parameter of each data point is given
+/// rather than derived from chord lengths. Several rows fitted with the same
+/// `params` share one knot vector and can be assembled into a surface, and a
+/// row whose points coincide (a degenerate pole) still has a well-posed
+/// system. `params` must be strictly increasing from `0.0` to `1.0`.
+///
+/// # Errors
+///
+/// Returns an error if fewer than 2 points are provided, `params` does not
+/// match `points` in length or is not increasing on `[0, 1]`, or the
+/// interpolation system is singular.
+pub fn interpolate_with_params(
+    points: &[Point3],
+    degree: usize,
+    params: &[f64],
+) -> Result<NurbsCurve, MathError> {
+    let n = points.len();
+    if n < 2 {
+        return Err(MathError::EmptyInput);
+    }
+    if params.len() != n {
+        return Err(MathError::InvalidControlPointGrid {
+            expected_rows: n,
+            expected_cols: params.len(),
+        });
+    }
+    let increasing = params.windows(2).all(|w| w[1] > w[0]);
+    if !increasing || params[0].abs() > 1e-12 || (params[n - 1] - 1.0).abs() > 1e-12 {
+        return Err(MathError::ParameterOutOfRange {
+            value: params[0],
+            min: 0.0,
+            max: 1.0,
+        });
+    }
+
+    let p = degree.min(n - 1);
+    let knots = build_interpolation_knots(params, p, n);
+    let control_points = solve_interpolation(points, params, &knots, p)?;
+
+    let weights = vec![1.0; n];
+    NurbsCurve::new(p, knots, control_points, weights)
+}
+
 /// Approximate a set of points with a NURBS curve of specified number
 /// of control points.
 ///
@@ -1070,6 +1115,69 @@ mod tests {
             "midpoint x: expected ~0.5, got {}",
             p.x()
         );
+    }
+
+    #[test]
+    fn interpolate_with_params_hits_points_at_given_params() {
+        let points = vec![
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 2.0, 0.0),
+            Point3::new(3.0, 1.0, 1.0),
+            Point3::new(4.0, 4.0, 2.0),
+            Point3::new(6.0, 3.0, 2.0),
+        ];
+        let params = [0.0, 0.25, 0.5, 0.75, 1.0];
+        let curve = interpolate_with_params(&points, 3, &params).unwrap();
+        for (p, &t) in points.iter().zip(&params) {
+            let q = curve.evaluate(t);
+            assert!((q - *p).length() < 1e-9, "at t={t}: {q:?} vs {p:?}");
+        }
+    }
+
+    #[test]
+    fn interpolate_with_params_shares_knots_across_rows() {
+        let params = [0.0, 0.3, 0.6, 1.0];
+        let a = vec![
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 1.0, 0.0),
+            Point3::new(2.0, 0.0, 0.0),
+            Point3::new(3.0, 1.0, 0.0),
+        ];
+        let b = vec![
+            Point3::new(0.0, 0.0, 5.0),
+            Point3::new(0.1, 0.2, 5.0),
+            Point3::new(9.0, 0.0, 5.0),
+            Point3::new(9.5, 1.0, 5.0),
+        ];
+        let ca = interpolate_with_params(&a, 3, &params).unwrap();
+        let cb = interpolate_with_params(&b, 3, &params).unwrap();
+        assert_eq!(ca.knots(), cb.knots());
+    }
+
+    #[test]
+    fn interpolate_with_params_accepts_a_degenerate_row() {
+        // A pole: every station touches the same point. Chord-length
+        // parameters would collapse; supplied ones keep the system solvable.
+        let pole = Point3::new(1.0, 2.0, 3.0);
+        let points = vec![pole; 5];
+        let params = [0.0, 0.25, 0.5, 0.75, 1.0];
+        let curve = interpolate_with_params(&points, 3, &params).unwrap();
+        for k in 0..=10 {
+            let q = curve.evaluate(f64::from(k) / 10.0);
+            assert!((q - pole).length() < 1e-9);
+        }
+    }
+
+    #[test]
+    fn interpolate_with_params_rejects_bad_params() {
+        let points = vec![
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(2.0, 0.0, 0.0),
+        ];
+        assert!(interpolate_with_params(&points, 2, &[0.0, 0.5]).is_err());
+        assert!(interpolate_with_params(&points, 2, &[0.0, 0.7, 0.6]).is_err());
+        assert!(interpolate_with_params(&points, 2, &[0.1, 0.5, 1.0]).is_err());
     }
 
     #[test]
