@@ -228,6 +228,7 @@ export const brepkernel_multiSectionSweep: (a: number, b: number, c: number, d: 
 export const brepkernel_mutualTrimSheets: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
 export const brepkernel_new: () => number;
 export const brepkernel_offsetFace: (a: number, b: number, c: number, d: number) => [number, number, number];
+export const brepkernel_offsetFaceWithQuality: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
 export const brepkernel_offsetJournaled: (a: number, b: number, c: number) => [number, number, number, number];
 export const brepkernel_offsetPolygon2d: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
 export const brepkernel_offsetSolid: (a: number, b: number, c: number) => [number, number, number];
@@ -281,6 +282,7 @@ export const brepkernel_sheetBoundingBox: (a: number, b: number) => [number, num
 export const brepkernel_sheetCenterOfArea: (a: number, b: number) => [number, number, number, number];
 export const brepkernel_sheetVolume: (a: number, b: number, c: number) => [number, number, number];
 export const brepkernel_shell: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
+export const brepkernel_shellWithQuality: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number];
 export const brepkernel_sketchAddArc: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
 export const brepkernel_sketchAddCircle: (a: number, b: number, c: number, d: number) => [number, number, number];
 export const brepkernel_sketchAddConstraint: (a: number, b: number, c: number, d: number) => [number, number];
