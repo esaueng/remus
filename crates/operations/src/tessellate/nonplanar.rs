@@ -2859,6 +2859,19 @@ pub(super) fn tessellate_nonplanar_cdt(
     let du = u_max - u_min;
     let dv = v_max - v_min;
 
+    // A boundary with no parametric height is not a polygon. A primitive
+    // hemisphere's rim sits at constant v; near the origin it projects to
+    // exactly v = 0 and the CDT below finds nothing to triangulate, but far
+    // from the origin the projection carries rounding noise (~1e-13), and the
+    // square-box rescale below would blow that noise up into a real polygon
+    // and fan slivers over the rim while the other hemisphere got nothing
+    // (B41). Decline instead, so the caller's structured or sweep path takes
+    // the face exactly as it does at the origin.
+    let negligible = |short: f64, long: f64| short <= 1e-9 * long.max(1e-12);
+    if negligible(dv, du) || negligible(du, dv) {
+        return Ok(());
+    }
+
     // Triangulate in a SQUARE parameter box, not the raw (u, v) one.
     //
     // A cylindrical or conical band is an angle across and a length along, and
