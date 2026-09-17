@@ -1709,13 +1709,33 @@ fn is_sphere_torus_pair(a: &GenPrim, b: &GenPrim) -> bool {
 /// Broken at 1e-3 (ops-invalid cut; valid-but-open/drifting fuse) and at
 /// unit scale (valid fuse with open-at-fine mesh; ops-invalid cut;
 /// translation-drifting valid fuse) across placements — the pair-cell, not
-/// the placement or scale, is broken. Pinned repros + row B39 own it.
+/// the placement or scale, is broken. Pinned repros + row B38 own it.
 fn is_torus_cone_pair(a: &GenPrim, b: &GenPrim) -> bool {
     matches!(
         (a, b),
         (GenPrim::Torus { .. }, GenPrim::Cone { .. })
             | (GenPrim::Cone { .. }, GenPrim::Torus { .. })
     )
+}
+
+/// Oblique box–torus predicate for the finding-21 generation exclusion:
+/// box–torus pairs under oblique X/Y rotation misbuild pervasively
+/// (observed: ops-invalid fuse with open mesh and drifting volume,
+/// watertight-but-drifting intersect, ops-valid cut with open mesh and
+/// drift — every leg broken somewhere). The fast suite excludes oblique
+/// X/Y rotations for exactly this reason; the slow suite drew one and
+/// paid out. Pinned repro + row B44 own it.
+fn is_oblique_boxtorus(input: &BoolPairInput) -> bool {
+    use std::f64::consts::{FRAC_PI_4, FRAC_PI_6};
+    #[allow(clippy::float_cmp)]
+    let oblique_xy = (input.axis == 0 || input.axis == 1)
+        && (input.angle == FRAC_PI_4 || input.angle == FRAC_PI_6);
+    oblique_xy
+        && matches!(
+            (&input.a, &input.b),
+            (GenPrim::Box { .. }, GenPrim::Torus { .. })
+                | (GenPrim::Torus { .. }, GenPrim::Box { .. })
+        )
 }
 
 /// Finding-17 neighborhood predicate for the generation exclusion: six
@@ -1796,13 +1816,12 @@ fn arb_bool_pair_slow() -> impl Strategy<Value = BoolPairInput> {
                 scale,
             })
         })
-        // Finding 13 (sphere–torus), finding 14 (torus–cone), and the
-        // finding-17 neighborhood (box(dx=2.5)×cone(r1=2.5) at axis 2,
-        // angle 3π/2, offset (0.5,-1.5,-0.5)): excluded from generation at
-        // every scale — pervasively broken across placements and scales,
-        // up to a CDT integer-overflow PANIC inside the intersect path
-        // that no oracle gate can contain (pinned repros + rows
-        // B32/B38/B39 and the panic row). Rejection rate is ~1/5 of draws
+        // Finding 13 (sphere–torus), finding 14 (torus–cone), the
+        // finding-17 neighborhood, and oblique box–torus pairs: excluded
+        // from generation at every scale — pervasively broken across
+        // placements and scales, up to a CDT integer-overflow PANIC inside
+        // the intersect path that no oracle gate can contain (pinned
+        // repros + rows B32/B38/B39/B42/B44). Rejection rate is ~1/5 of draws
         // — far below the abort threshold.
         .prop_filter(
             "broken cells excluded until their rows close",
@@ -1810,6 +1829,7 @@ fn arb_bool_pair_slow() -> impl Strategy<Value = BoolPairInput> {
                 !is_sphere_torus_pair(&input.a, &input.b)
                     && !is_torus_cone_pair(&input.a, &input.b)
                     && !is_finding17_neighborhood(input)
+                    && !is_oblique_boxtorus(input)
             },
         )
 }
@@ -2922,6 +2942,37 @@ fn b26_finding20_spherecone_equalradii() {
     // Health premises (pass today): watertight mesh, sane translation.
     check_watertight_mesh_scaled(&topo, f.solid, "finding-20-eq fuse").expect("mesh watertight");
     check_translation_invariant_scaled(&topo, f.solid, "finding-20-eq fuse")
+        .expect("translation invariant");
+}
+
+/// Ready-repro for the twenty-first proptest-found defect (2026-09-16): a
+/// box–torus fuse at unit scale under oblique X/Y rotation (box 1.5×1×2.5,
+/// torus R=2.5/r=0.25, x-rotated 45°, offset (0,-1.5,0)) whose exact B-Rep
+/// is ops-INVALID (5 inconsistent-orientation edges, both validators
+/// agree) with an open mesh (736 boundary) and a drifting volume (7.8%);
+/// the intersect is watertight-but-drifting (95%) and the cut is
+/// ops-valid with an open mesh (736) and 19% drift — every leg broken
+/// somewhere. Same oblique-box–torus cell as the fast suite excludes for
+/// good reason. Committed as `#[ignore]` per the testing skill: it fails
+/// until the owning row fixes the kernel. Do NOT fix in the B26 proptest
+/// PR — filed as a new §B row.
+/// Minimized from `prop_random_curved_pair_identities` (committed seed).
+#[test]
+#[ignore = "open: oblique box-torus pervasive misbuilds (B26 finding 21)"]
+fn b26_finding21_oblique_boxtorus() {
+    use remus_operations::primitives::{make_box, make_torus};
+    let m = Mat4::translation(0.0, -1.5, 0.0) * Mat4::rotation_x(std::f64::consts::FRAC_PI_4);
+    let mut topo = Topology::new();
+    let a = make_box(&mut topo, 1.5, 1.0, 2.5).expect("valid box");
+    let b = make_torus(&mut topo, 2.5, 0.25, 16).expect("valid torus");
+    remus_operations::transform::transform_solid(&mut topo, b, &m).expect("placement applies");
+    let f = exact_boolean(&mut topo, BooleanOp::Fuse, a, b).expect("exact fuse succeeds");
+    check_exact_quality(&f, "finding-21 fuse").expect("exact quality");
+    // The failing oracles: both validators must be clean, the mesh
+    // watertight, and the volume translation-invariant.
+    check_valid_closed_oriented(&topo, f.solid, "finding-21 fuse").expect("fully valid");
+    check_watertight_mesh_scaled(&topo, f.solid, "finding-21 fuse").expect("mesh watertight");
+    check_translation_invariant_scaled(&topo, f.solid, "finding-21 fuse")
         .expect("translation invariant");
 }
 
