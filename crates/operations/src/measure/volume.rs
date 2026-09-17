@@ -1668,19 +1668,48 @@ pub fn solid_volume(
     // L-blank whose blend wall came out NURBS measured 49.1 mm³ removed by the
     // per-face path against 34.7 from the solid's own (watertight) mesh.
     //
-    // So when a NURBS face is present, prefer the closed whole-solid mesh —
-    // the same reasoning the scalloped-sphere and torus-notch cases above
-    // already apply. Solids without NURBS keep the existing routing, so the
-    // common bored-solid path costs no extra tessellation.
+    // The same holds for a PLANAR face whose boundary the closed form chords
+    // without authority: `planar_face_signed_volume` integrates the true arcs
+    // only for recognized circular trims, and `exact_analytic_face_volume`
+    // already declines those faces (see `exact_boundary`). But that gate only
+    // guards the exact path — when the direct path below is reached for
+    // another reason (here: a reversed torus bore wall), the planes fall back
+    // to their OWN tessellation, whose NURBS-rim sampling walks the raw knot
+    // domain instead of the edge's trim span and drops ~1.5 mm² per face. A
+    // box bored by an oblique torus then reads ~3 % light (fuzz
+    // `modifier_ops`, 2026-09-13/16: 35.27 vs the mesh's 36.41) while the
+    // closed whole-solid mesh — shared rim vertices, no per-face sampling —
+    // measures it exactly. So when a NURBS face is present, prefer the closed
+    // whole-solid mesh — the same reasoning the scalloped-sphere and
+    // torus-notch cases above already apply. Solids without NURBS keep the
+    // existing routing, so the common bored-solid path costs no extra
+    // tessellation.
+    //
+    // The plane carve-out below (`all_plane_quadric`) preserves the exact
+    // analytic route for bodies whose every face integrates in closed form:
+    // those never touch a per-face mesh, so the sampling defect cannot reach
+    // them. Only the fallback summation is re-routed.
     if needs_direct_tessellation {
-        let has_nurbs = {
-            let s = topo.solid(solid)?;
-            let sh = topo.shell(s.outer_shell())?;
-            sh.faces().iter().any(|&fid| {
-                topo.face(fid)
-                    .is_ok_and(|f| matches!(f.surface(), FaceSurface::Nurbs(_)))
+        let outer_faces = topo
+            .shell(topo.solid(solid)?.outer_shell())?
+            .faces()
+            .to_vec();
+        let has_nurbs = outer_faces.iter().any(|&fid| {
+            topo.face(fid)
+                .is_ok_and(|f| matches!(f.surface(), FaceSurface::Nurbs(_)))
+        });
+        let all_plane_quadric = outer_faces.iter().all(|&fid| {
+            topo.face(fid).is_ok_and(|f| {
+                matches!(
+                    f.surface(),
+                    FaceSurface::Plane { .. }
+                        | FaceSurface::Cylinder(_)
+                        | FaceSurface::Cone(_)
+                        | FaceSurface::Sphere(_)
+                        | FaceSurface::Torus(_)
+                )
             })
-        };
+        });
         // The same reasoning covers a sphere patch that is not a latitude BAND.
         // `volume_from_direct_face_tessellation` integrates a sphere face
         // analytically over the [u] x [v] box its wire spans, which is the
@@ -1693,6 +1722,39 @@ pub fn solid_volume(
         // instead, and its corner fillets read as removing half of what the
         // undrilled plate's removed.
         if has_nurbs || has_non_band_sphere {
+            let mesh = tessellate::tessellate_solid(topo, solid, deflection)?;
+            if !mesh.indices.is_empty() && mesh_boundary_edge_count(&mesh) == 0 {
+                let vol = signed_volume_from_mesh(&mesh);
+                if vol > 1e-12 {
+                    return Ok(vol);
+                }
+            }
+        }
+        // Even without a NURBS face on the solid, a NURBS-TRIMMED plane falls
+        // back to its own tessellation below, which samples the raw knot
+        // domain rather than the edge trim (see above). Route those bodies to
+        // the closed mesh too — unless every face integrates in closed form,
+        // in which case no per-face mesh is built at all.
+        // Keep this fallback scoped to the torus-bore failure: on small
+        // partial revolves the direct analytic integration is more accurate
+        // than the closed mesh even when a planar cap declines this gate.
+        let has_torus_bore = outer_faces.iter().any(|&fid| {
+            topo.face(fid)
+                .is_ok_and(|f| f.is_reversed() && matches!(f.surface(), FaceSurface::Torus(_)))
+        });
+        if all_plane_quadric
+            && has_torus_bore
+            && exact_analytic_face_volume(topo, solid, deflection, false).is_none()
+            && outer_faces.iter().any(|&fid| {
+                topo.face(fid).is_ok_and(|f| {
+                    matches!(f.surface(), FaceSurface::Plane { .. })
+                        && planar_face_signed_volume(topo, fid)
+                            .ok()
+                            .flatten()
+                            .is_none_or(|exact| !exact.exact_boundary)
+                })
+            })
+        {
             let mesh = tessellate::tessellate_solid(topo, solid, deflection)?;
             if !mesh.indices.is_empty() && mesh_boundary_edge_count(&mesh) == 0 {
                 let vol = signed_volume_from_mesh(&mesh);
@@ -2109,8 +2171,17 @@ struct PlanarFaceExact {
     arc_edges: usize,
     /// Total arc length over those edges — the only part of the boundary a
     /// tessellation has to approximate, so the budget for comparing this
-    /// against the face's own mesh is proportional to it.
+    /// against the face's own mesh is proportional to it. Zero when a
+    /// boundary edge is neither a line nor a recognized circular arc (for
+    /// example an unrecognized marched NURBS section): the closed form then
+    /// chords that edge, and no chord budget can vouch for it — see
+    /// [`planar_face_area_is_consistent`].
     arc_length: f64,
+    /// Whether every boundary edge contributed its true geometry to the
+    /// closed form (lines, circular arcs, full circles). False when any edge
+    /// declined the arc handler — an unrecognized NURBS section, a conic
+    /// with no circular bulge — and the area silently chords it.
+    exact_boundary: bool,
 }
 
 /// Exact signed volume contribution of any line-and-arc-bounded PLANAR face.
@@ -2154,12 +2225,14 @@ fn planar_face_signed_volume(
     let mut arc_edges = outer.arc_edges;
     let mut arc_length = outer.arc_length;
     let mut area_mag2 = outer.area2.abs();
+    let mut exact_boundary = outer.exact_boundary;
     for &iw in face.inner_wires() {
         let Some(hole) = planar_wire_signed_area2(topo, iw, ex, ey)? else {
             return Ok(None);
         };
         arc_edges += hole.arc_edges;
         arc_length += hole.arc_length;
+        exact_boundary &= hole.exact_boundary;
         area_mag2 -= hole.area2.abs();
     }
     if area_mag2 < 0.0 {
@@ -2178,6 +2251,7 @@ fn planar_face_signed_volume(
         area,
         arc_edges,
         arc_length,
+        exact_boundary,
     }))
 }
 
@@ -2189,6 +2263,11 @@ struct PlanarWireArea {
     arc_edges: usize,
     /// Total arc length over those edges.
     arc_length: f64,
+    /// Whether every non-degenerate edge contributed its true geometry.
+    /// False when any edge fell through every arc arm below without a
+    /// bulge correction — an unrecognized NURBS section, whose chord then
+    /// stands in for the arc silently.
+    exact_boundary: bool,
 }
 
 /// Green's-theorem signed doubled area (`∮(x dy − y dx)`) of one planar wire in
@@ -2209,6 +2288,7 @@ fn planar_wire_signed_area2(
     let mut area2: f64 = 0.0; // accumulates 2·A (Green's ∮(x dy − y dx))
     let mut arc_edges = 0_usize;
     let mut arc_length = 0.0_f64;
+    let mut exact_boundary = true;
     {
         let wire = topo.wire(wire_id)?;
         for oe in wire.edges() {
@@ -2241,6 +2321,10 @@ fn planar_wire_signed_area2(
             // Circular-arc bulge correction (segment between the arc and its
             // chord). A `Line` has no bulge. A `Circle`/arc-`NurbsCurve` adds
             // sign·ρ²·(|α| − sin|α|), α the signed sweep about the arc centre.
+            // Any other edge (an unrecognized NURBS section, a conic with no
+            // circular bulge) keeps only its chord above: record that the
+            // boundary is no longer exact so the caller cannot vouch for the
+            // closed form with a chord budget.
             let arc = match edge.curve() {
                 remus_topology::edge::EdgeCurve::Line => None,
                 // The exact bulge correction below is circular-arc only.
@@ -2258,15 +2342,18 @@ fn planar_wire_signed_area2(
                         } => Some((center, radius)),
                         remus_geometry::convert::RecognizedCurve::Line { .. } => None,
                         // Ellipse, hyperbola, parabola, and unrecognized
-                        // NURBS carry no circular bulge: the exact planar
-                        // path declines rather than applying a wrong
-                        // correction. Each form is named so a future
-                        // recognized form is a compile error here.
+                        // NURBS carry no circular bulge. The chord above
+                        // stands in for the arc: mark the boundary inexact
+                        // rather than declining — the area-consistency probe
+                        // below decides whether the chord suffices. Each
+                        // form is named so a future recognized form is a
+                        // compile error here.
                         remus_geometry::convert::RecognizedCurve::Ellipse { .. }
                         | remus_geometry::convert::RecognizedCurve::Hyperbola { .. }
                         | remus_geometry::convert::RecognizedCurve::Parabola { .. }
                         | remus_geometry::convert::RecognizedCurve::NotRecognized => {
-                            return Ok(None);
+                            exact_boundary = false;
+                            None
                         }
                     }
                 }
@@ -2328,6 +2415,7 @@ fn planar_wire_signed_area2(
         area2,
         arc_edges,
         arc_length,
+        exact_boundary,
     }))
 }
 
@@ -2838,7 +2926,9 @@ fn exact_analytic_face_volume(
             FaceSurface::Nurbs(_) => return None,
             FaceSurface::Plane { .. } => {
                 let exact = planar_face_signed_volume(topo, fid).ok()??;
-                if !planar_face_area_is_consistent(topo, fid, &exact, deflection) {
+                if !exact.exact_boundary
+                    || !planar_face_area_is_consistent(topo, fid, &exact, deflection)
+                {
                     return None;
                 }
                 exact.volume

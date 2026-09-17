@@ -183,7 +183,12 @@ pub fn outward_normal(verts: &[Point3], toward: Vec3) -> Result<Vec3, crate::Ope
 ///
 /// A planar ring → exact `Plane` cap. A non-planar 4-sided ring → a
 /// bilinear patch, optionally trimmed by certified rectangular holes. A
-/// hole-free non-planar ring with more than four edges → a Coons patch.
+/// non-planar ring with more than four edges → a Coons patch through its
+/// chord chains, likewise trimmable by certified rectangular holes
+/// (B12 annular-Coons cell): the [`crate::fill_face`] certification,
+/// tessellation, and volume integration are all carrier-generic over the
+/// cap's rectangular parameter domain, so the single trimmed face covers
+/// both carriers with no per-carrier code path.
 ///
 /// # Errors
 ///
@@ -233,16 +238,18 @@ pub fn build_cap_face(
         return Ok(topo.add_face(Face::new(wid, inner_wires, surface)));
     }
 
-    if !inner_wires.is_empty() && n != 4 {
+    if !inner_wires.is_empty() && n < 4 {
         return Err(crate::OperationsError::InvalidInput {
-            reason: "non-planar cap holes currently require a four-sided outer ring".into(),
+            reason: "non-planar cap holes require at least a four-sided outer ring".into(),
         });
     }
 
     // 4-sided: single bilinear span. 5-or-more-sided: Coons patch of the
     // ring's chord chains — its boundary iso-curves are exactly the ring
     // chords, so like the bilinear case it cannot overfill past the section.
-    // (A 3-ring of chords always lies in a plane and took the branch above.)
+    // (A 3-ring of chords always lies in a plane and took the branch above,
+    // so a holed non-planar ring always has a rectangular parameter domain
+    // for the certifier below.)
     let surf = if n == 4 {
         bilinear_cap_patch(cap_verts).map_err(crate::OperationsError::Math)?
     } else {

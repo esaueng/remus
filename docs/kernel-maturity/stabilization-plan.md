@@ -145,10 +145,13 @@ The README enumerates exactly four gaps; each is one workstream:
    bilinear-only cap with a Coons/loft cap over an n-sided ring (the
    `fill_face.rs` Coons machinery is the starting point). Oracle: watertight
    mesh + volume convergence across deflections.
-2. **Holes on non-planar sections — done 2026-09-04 (B12).** Four-sided
-   bilinear sweep/pipe caps preserve certified rectangular iso-parametric holes;
-   B-Rep, mesh, classifier, and volume converge against an independently
-   extruded annulus. Broader trimmed patches refuse typed.
+2. **Holes on non-planar sections — done 2026-09-04 (B12), extended with the
+   annular-Coons cell.** Four-sided bilinear sweep/pipe caps preserve certified
+   rectangular iso-parametric holes; n-sided Coons-carrier caps preserve them
+   the same way as single trimmed faces (certification, tessellation, and
+   volume are carrier-generic). B-Rep, mesh, classifier, and volume converge
+   against an independently extruded annulus. Off-surface, curved,
+   touching/overlapping, and multi-span-straddling hole trims refuse typed.
 3. **Partial revolution with non-planar boundary.** Build the two cap faces
    from the swept boundary curves instead of requiring a plane.
 4. **Miter-corner sweep with non-planar profiles.** The bisector-plane joint

@@ -4,6 +4,15 @@
 
 ### ⚠ BREAKING CHANGES
 
+* `shell` is now exact-only: a solid whose kept faces include a NURBS face
+  fails with category `unsupported` instead of returning a handle to a body
+  whose inner skin was silently sample-refit. Use `shellWithQuality` (or
+  batch `shellWithQuality`) with `approximationSpacing` to accept an
+  approximation; its result discloses `quality` plus `deflection` and
+  `sampledFaces`. `offsetFace` keeps its signature with a deprecated
+  `samples` knob; `offsetFaceWithQuality` (exact-only by default, opt-in
+  `approximationSamples`) discloses `quality` and `samples`.
+
 * `fuse`, `cut`, `intersect`, `fuseAll`, `fuseWithOptions` /
   `cutWithOptions` / `intersectWithOptions`, `fuseWithEvolution` /
   `cutWithEvolution` / `intersectWithEvolution`, and the matching
