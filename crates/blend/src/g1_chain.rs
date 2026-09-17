@@ -1,8 +1,11 @@
 //! G1 continuity chain expansion for fillet edge propagation.
 //!
 //! Given a set of seed edges, iteratively expands along manifold edges
-//! that share the same face pair and are tangent-continuous at the
-//! shared vertex.
+//! that are tangent-continuous at the shared vertex and continue the same
+//! smooth ridgeline: either both edges lie between the same two faces, or
+//! the faces change across a tangent seam (a planar wall running into the
+//! cylindrical band of an earlier fillet) so that the outward normals on
+//! each side agree at the vertex.
 
 use std::collections::{HashMap, HashSet};
 
@@ -10,8 +13,109 @@ use remus_math::tolerance::Tolerance;
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
 use remus_topology::edge::{EdgeCurve, EdgeId};
-use remus_topology::face::FaceId;
+use remus_topology::face::{FaceId, FaceSurface};
 use remus_topology::solid::SolidId;
+
+/// Cosine threshold shared by the edge-tangent and face-normal continuity
+/// tests: about 10 degrees of deviation. A true G1 joint scores 1.0 exactly.
+const G1_COS_THRESHOLD: f64 = 0.985;
+
+/// Outward unit normal of face `fid` at the surface point `point`.
+///
+/// Returns `None` when the surface cannot be evaluated there (a NURBS
+/// projection that fails, a degenerate normal), which callers treat as
+/// "not tangent-continuous".
+fn outward_normal_at(topo: &Topology, fid: FaceId, point: Point3) -> Option<Vec3> {
+    let face = topo.face(fid).ok()?;
+    let surface = face.surface();
+    let raw = match surface {
+        FaceSurface::Plane { normal, .. } => *normal,
+        other => {
+            let (u, v) = other.project_point(point)?;
+            other.normal(u, v)
+        }
+    };
+    let oriented = if face.is_reversed() { -raw } else { raw };
+    oriented.normalize().ok()
+}
+
+/// Whether two faces carry one and the same underlying surface, so that the
+/// edge between them is a topological split rather than a geometric seam.
+///
+/// Only planes and cylinders are recognised; every other pairing is treated
+/// as a genuine change of surface.
+fn same_underlying_surface(topo: &Topology, a: FaceId, b: FaceId, tol: Tolerance) -> bool {
+    let (Ok(fa), Ok(fb)) = (topo.face(a), topo.face(b)) else {
+        return false;
+    };
+    match (fa.surface(), fb.surface()) {
+        (FaceSurface::Plane { normal: na, d: da }, FaceSurface::Plane { normal: nb, d: db }) => {
+            let (Ok(ua), Ok(ub)) = (na.normalize(), nb.normalize()) else {
+                return false;
+            };
+            let dot = ua.dot(ub);
+            // Same plane whichever way each face's stored normal points.
+            (dot > 1.0 - tol.angular.max(1e-9) && (da - db).abs() <= tol.linear)
+                || (dot < -(1.0 - tol.angular.max(1e-9)) && (da + db).abs() <= tol.linear)
+        }
+        (FaceSurface::Cylinder(ca), FaceSurface::Cylinder(cb)) => {
+            let (Ok(axis_a), Ok(axis_b)) = (ca.axis().normalize(), cb.axis().normalize()) else {
+                return false;
+            };
+            if axis_a.dot(axis_b).abs() < 1.0 - tol.angular.max(1e-9) {
+                return false;
+            }
+            if (ca.radius() - cb.radius()).abs() > tol.linear {
+                return false;
+            }
+            let between = cb.origin() - ca.origin();
+            let off_axis = between - axis_a * between.dot(axis_a);
+            off_axis.length() <= tol.linear
+        }
+        _ => false,
+    }
+}
+
+/// Whether the two faces bounding one edge continue the two faces bounding
+/// another edge smoothly at `point`: the outward normals match pairwise
+/// (either pairing, since face order within a pair is arbitrary), and every
+/// face that changes across the vertex changes to a different surface.
+///
+/// This is what makes a ridgeline continue across a tangent seam: a box edge
+/// runs onto the arc where the wall turns into an earlier fillet's cylinder.
+/// Edges whose faces meet at a crease do not qualify, so a fillet never
+/// propagates around a sharp corner. Nor does a split of one surface into
+/// two faces (collinear edges between coplanar faces, as a fuse can leave
+/// behind): that boundary is topological, callers select the segments they
+/// mean, and the engine has always ended a fillet there.
+fn faces_continue_at(
+    topo: &Topology,
+    current: &[FaceId],
+    neighbor: &[FaceId],
+    point: Point3,
+    tol: Tolerance,
+) -> bool {
+    let normals = |faces: &[FaceId]| -> Option<(Vec3, Vec3)> {
+        Some((
+            outward_normal_at(topo, faces[0], point)?,
+            outward_normal_at(topo, faces[1], point)?,
+        ))
+    };
+    let (Some((a1, a2)), Some((b1, b2))) = (normals(current), normals(neighbor)) else {
+        return false;
+    };
+    let same = |x: Vec3, y: Vec3| x.dot(y) > G1_COS_THRESHOLD;
+    let pairing = if same(a1, b1) && same(a2, b2) {
+        [(current[0], neighbor[0]), (current[1], neighbor[1])]
+    } else if same(a1, b2) && same(a2, b1) {
+        [(current[0], neighbor[1]), (current[1], neighbor[0])]
+    } else {
+        return false;
+    };
+    pairing.iter().all(|&(from, to)| {
+        from.index() == to.index() || !same_underlying_surface(topo, from, to, tol)
+    })
+}
 
 /// Sample the tangent of an edge curve at normalized parameter `t` in `[0, 1]`.
 ///
@@ -32,7 +136,12 @@ fn sample_edge_tangent(
 ///
 /// Starting from `seed_edges`, iteratively adds any manifold edge that:
 /// 1. Shares a vertex with an edge already in the set.
-/// 2. Has the same pair of adjacent faces (same ridgeline).
+/// 2. Continues the same ridgeline: it has the same pair of adjacent faces,
+///    or its faces are tangent to the current edge's faces at the shared
+///    vertex (the outward normals agree pairwise, < 10 deg deviation). The
+///    second form is how a fillet seed on a box edge runs onto the arc where
+///    that edge meets an earlier fillet's cylindrical band, and out again
+///    onto the edge beyond it.
 /// 3. Is tangent-continuous at the shared vertex (< 10 deg deviation).
 ///
 /// # Errors
@@ -134,12 +243,14 @@ pub fn expand_g1_chain(
                 if nf.len() != 2 {
                     continue;
                 }
-                // Must share the same face pair.
+                // Must continue the same ridgeline: the same face pair, or a
+                // face pair tangent to it at the shared vertex.
                 let (nf1, nf2) = {
                     let (a, b) = (nf[0].index(), nf[1].index());
                     if a < b { (a, b) } else { (b, a) }
                 };
-                if (cf1, cf2) != (nf1, nf2) {
+                let shared_point = topo.vertex(shared_vid)?.point();
+                if (cf1, cf2) != (nf1, nf2) && !faces_continue_at(topo, cf, nf, shared_point, tol) {
                     continue;
                 }
 
@@ -163,7 +274,7 @@ pub fn expand_g1_chain(
 
                 // G1 continuity: "away" tangents must be anti-parallel (< ~10 deg deviation).
                 // cos(170 deg) ~ -0.985.  This is strict: a true G1 joint has dot = -1.0.
-                if t_cur.dot(t_nb) < -0.985 {
+                if t_cur.dot(t_nb) < -G1_COS_THRESHOLD {
                     expanded.insert(nb.index());
                     queue.push(nb);
                 }

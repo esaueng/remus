@@ -271,10 +271,14 @@ impl<'a> FilletBuilder<'a> {
                 // result, which reads exactly like an internal failure and
                 // leaves the caller no way to say "try a smaller radius".
                 // Same treatment the rim assembler's own bound already gets.
+                // A chain that crosses a tangent seam is likewise a verdict on
+                // this engine, and the dispatcher needs it by name to hand the
+                // chain to the rolling-ball engine.
                 Err(
                     e @ (BlendError::InvalidInput { .. }
                     | BlendError::RadiusTooLarge { .. }
-                    | BlendError::CliffEncountered { .. }),
+                    | BlendError::CliffEncountered { .. }
+                    | BlendError::UnsupportedSeamCrossing { .. }),
                 ) => {
                     return Err(e);
                 }
@@ -2533,6 +2537,27 @@ fn compute_stripe_for_spine(
     let face1 = adj_faces[0];
     let face2 = adj_faces[1];
 
+    // The chain may continue across a tangent seam onto another face pair
+    // (`g1_chain` follows a box edge onto the arc of an earlier fillet's
+    // band). One stripe is computed against one face pair, so refuse that by
+    // name and let the dispatcher hand the chain to the rolling-ball engine.
+    let pair_of = |edge: EdgeId| -> Option<(usize, usize)> {
+        let faces = adjacency.faces_for_edge(edge);
+        if faces.len() != 2 {
+            return None;
+        }
+        let (a, b) = (faces[0].index(), faces[1].index());
+        Some(if a < b { (a, b) } else { (b, a) })
+    };
+    let spine_pair = pair_of(edge_id);
+    if let Some(&crossing) = spine
+        .edges()
+        .iter()
+        .find(|&&edge| pair_of(edge) != spine_pair)
+    {
+        return Err(BlendError::UnsupportedSeamCrossing { edge: crossing });
+    }
+
     // Snapshot surface data, respecting face orientation.
     let face1_data = topo.face(face1)?;
     let surf1 = face1_data.surface().clone();
@@ -2695,6 +2720,162 @@ pub struct BlendCrossSection {
     pub weight: f64,
 }
 
+/// The one rolling-ball configuration whose walker system is singular yet
+/// whose geometry is exact.
+///
+/// A circular edge between a plane and a coaxial convex cylinder, blended
+/// with the cylinder's own radius: the ball centre sits on the axis, one
+/// radius inside the plane, for every station, so the blend is a sphere and
+/// its contact with the plane collapses to a single point (the pole). The
+/// walker cannot solve it (its Jacobian is rank-deficient), but every section
+/// is a quarter circle from the pole to the cylinder's contact circle.
+///
+/// This is what a fillet meets when it runs along a box edge into the band
+/// an earlier fillet of the same radius left on the neighbouring edge.
+#[derive(Clone, Copy, Debug)]
+pub struct EqualRadiusCap {
+    /// Ball centre: the point of the cylinder axis one radius inside the plane.
+    pub center: Point3,
+    /// The single point where every section touches the plane.
+    pub pole: Point3,
+    /// Foot of the axis on the plane, from which the radial directions are
+    /// measured; coincides with the pole for this configuration.
+    pub axis_foot: Point3,
+    /// Unit axis direction of the cylinder.
+    pub axis: Vec3,
+    /// `true` when `surf1` is the plane (so `contact1` is the pole).
+    pub plane_first: bool,
+}
+
+/// Recognise the [`EqualRadiusCap`] configuration for `edge` between `surf1`
+/// and `surf2`, or `None` when the ordinary walker applies.
+///
+/// Requires: one plane and one cylinder whose radius equals `radius`, an
+/// edge that is a circle centred on the cylinder axis and perpendicular to
+/// it (so the plane is too), and a convex cylinder (material inside it). A
+/// concave cylinder of the same radius is a hole the ball would fill, which
+/// is not a fillet.
+#[must_use]
+pub fn equal_radius_cap(
+    edge: &Edge,
+    surf1: &FaceSurface,
+    surf1_reversed: bool,
+    surf2: &FaceSurface,
+    surf2_reversed: bool,
+    radius: f64,
+    tol: remus_math::tolerance::Tolerance,
+) -> Option<EqualRadiusCap> {
+    let EdgeCurve::Circle(circle) = edge.curve() else {
+        return None;
+    };
+    // A full-turn rim would leave the plane touching the sphere at one point
+    // only: the plane face vanishes. That is a dome, not a fillet.
+    if edge.is_closed() {
+        return None;
+    }
+    let (plane_normal, plane_reversed, cyl, cyl_reversed, plane_first) = match (surf1, surf2) {
+        (FaceSurface::Plane { normal, .. }, FaceSurface::Cylinder(c)) => {
+            (*normal, surf1_reversed, c, surf2_reversed, true)
+        }
+        (FaceSurface::Cylinder(c), FaceSurface::Plane { normal, .. }) => {
+            (*normal, surf2_reversed, c, surf1_reversed, false)
+        }
+        _ => return None,
+    };
+    if (cyl.radius() - radius).abs() > tol.linear {
+        return None;
+    }
+    let axis = cyl.axis().normalize().ok()?;
+    let parallel = |v: Vec3| v.normalize().is_ok_and(|u| u.dot(axis).abs() > 1.0 - 1e-9);
+    if !parallel(circle.normal()) || !parallel(plane_normal) {
+        return None;
+    }
+    let center = circle.center();
+    let from_origin = center - cyl.origin();
+    let off_axis = from_origin - axis * from_origin.dot(axis);
+    if off_axis.length() > tol.linear {
+        return None;
+    }
+    // Convex only: the cylinder's outward normal at the edge points away
+    // from the axis.
+    let (u, v) = surf_cylinder_uv(
+        cyl,
+        circle.center() + circle_radial(circle, 0.0) * circle.radius(),
+    );
+    let raw = remus_math::traits::ParametricSurface::normal(cyl, u, v);
+    let outward = if cyl_reversed { -raw } else { raw };
+    if outward.dot(circle_radial(circle, 0.0)) <= 0.0 {
+        return None;
+    }
+    let plane_outward = if plane_reversed {
+        -plane_normal
+    } else {
+        plane_normal
+    };
+    let plane_outward = plane_outward.normalize().ok()?;
+    Some(EqualRadiusCap {
+        center: center - plane_outward * radius,
+        pole: center,
+        axis_foot: center,
+        axis,
+        plane_first,
+    })
+}
+
+/// `(u, v)` of `point` on `cyl`.
+fn surf_cylinder_uv(cyl: &remus_math::surfaces::CylindricalSurface, point: Point3) -> (f64, f64) {
+    remus_math::traits::ParametricSurface::project_point(cyl, point)
+}
+
+/// Unit radial direction of `circle` at angle `theta`.
+fn circle_radial(circle: &Circle3D, theta: f64) -> Vec3 {
+    let point = remus_math::traits::ParametricCurve::evaluate(circle, theta);
+    (point - circle.center())
+        .normalize()
+        .unwrap_or_else(|_| Vec3::new(1.0, 0.0, 0.0))
+}
+
+/// Exact sections of an [`EqualRadiusCap`] at spine `fractions`.
+fn equal_radius_cap_sections(
+    edge_id: EdgeId,
+    edge: &Edge,
+    p_start: Point3,
+    p_end: Point3,
+    cap: &EqualRadiusCap,
+    radius: f64,
+    fractions: &[f64],
+) -> Result<Vec<BlendCrossSection>, BlendError> {
+    let domain = edge.strict_domain().map_err(crate::edge_domain_input)?;
+    // Pole-to-equator: the two contact radii are perpendicular, so each
+    // section is a quarter circle and its apex is the original edge point.
+    let weight = std::f64::consts::FRAC_1_SQRT_2;
+    let mut out = Vec::with_capacity(fractions.len());
+    for &f in fractions {
+        let t = (domain.1 - domain.0).mul_add(f.clamp(0.0, 1.0), domain.0);
+        let apex = edge.curve().evaluate_with_endpoints(t, p_start, p_end);
+        let from_foot = apex - cap.axis_foot;
+        let radial = (from_foot - cap.axis * from_foot.dot(cap.axis))
+            .normalize()
+            .map_err(|_| BlendError::StartSolutionFailure {
+                edge: edge_id,
+                t: f,
+            })?;
+        let on_cylinder = cap.center + radial * radius;
+        let (contact1, contact2) = if cap.plane_first {
+            (cap.pole, on_cylinder)
+        } else {
+            (on_cylinder, cap.pole)
+        };
+        out.push(BlendCrossSection {
+            contact1,
+            apex,
+            contact2,
+            weight,
+        });
+    }
+    Ok(out)
+}
+
 /// Compute the true rolling-ball blend cross-sections for a constant-radius
 /// fillet of `edge_id`, at the requested spine `fractions` (each in `[0, 1]`).
 ///
@@ -2722,6 +2903,26 @@ pub fn blend_cross_sections(
     fractions: &[f64],
 ) -> Result<Vec<BlendCrossSection>, BlendError> {
     use remus_math::vec::Point3;
+
+    {
+        let edge = topo.edge(edge_id)?;
+        let tol = remus_math::tolerance::Tolerance::new();
+        if let Some(cap) = equal_radius_cap(
+            edge,
+            surf1,
+            surf1_reversed,
+            surf2,
+            surf2_reversed,
+            radius,
+            tol,
+        ) {
+            let p_start = topo.vertex(edge.start())?.point();
+            let p_end = topo.vertex(edge.end())?.point();
+            return equal_radius_cap_sections(
+                edge_id, edge, p_start, p_end, &cap, radius, fractions,
+            );
+        }
+    }
 
     let spine = Spine::from_single_edge(topo, edge_id)?;
     let len = spine.length();
