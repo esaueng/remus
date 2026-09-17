@@ -5552,19 +5552,14 @@ fn split_face_2d_impl(
 
     // Torus notch band: a box (or analogous) cut removes a sector of the ring
     // whose surface boundary is two φ-wrapping loops; the kept torus is the
-    // u-band between them. Contained tracer — defers (None) when the in-box arcs
-    // don't stitch into exactly two φ-wrapping loops. Restricted to ALL-OPEN
-    // sections: a CLOSED-loop section (a section circle/loop entirely interior to
-    // the torus, e.g. a small tool poking a closed hole) bounds its own region
-    // that the band tracer would silently drop, so defer those to the
-    // internal-loops path.
-    let all_sections_open = !sections.is_empty()
-        && sections
-            .iter()
-            .all(|s| (s.start - s.end).length() > tol.linear);
+    // u-band between them. Contained tracer — defers (None) unless the
+    // sections form exactly two φ-wrapping loops, each either a chain of open
+    // arcs or one closed section. A CLOSED section that does not wrap φ (a
+    // small tool poking a disc hole) fails the tracer's winding check and
+    // defers to the internal-loops path, which carves it as a hole.
     if matches!(surface, FaceSurface::Torus(_))
         && original_inner_wires.is_empty()
-        && all_sections_open
+        && !sections.is_empty()
         && let Some(band) = split_torus_band_by_arrangement(
             &surface, sections, rank, reversed, face_id, tol.linear,
         )?
