@@ -500,6 +500,29 @@ export interface MeshQualityResult {
 }
 
 /**
+ * Typed result for `offsetFaceWithQuality`: a face-offset result with its
+ * disclosed quality, so a consumer can tell an exact analytic offset from
+ * a sampled NURBS refit.
+ */
+export interface FaceOffsetQualityResult {
+    /**
+     * Handle of the result face.
+     */
+    face: number;
+    /**
+     * `"exact"` when the analytic rule of the face's surface family
+     * produced the result; `"approximate"` when the NURBS face was offset
+     * by sampling and refitting.
+     */
+    quality: string;
+    /**
+     * Grid resolution per parameter direction the refit ran at. Present
+     * only when `quality` is `"approximate"`.
+     */
+    samples?: number;
+}
+
+/**
  * Typed result for `polygonUnion2d` and `polygonBoolean2d`.
  *
  * Each loop is a flat `[x0, y0, x1, y1, ...]` array of 2D coordinates.
@@ -566,6 +589,34 @@ export interface HealPipelineResult {
      * Both independent validators accepted the returned solid.
      */
     verified: boolean;
+}
+
+/**
+ * Typed result for `shellWithQuality`: a shell result with its
+ * disclosed quality, so a consumer can tell an exact inner skin from a
+ * sampled-NURBS one instead of silently losing analytic surfaces.
+ */
+export interface ShellQualityResult {
+    /**
+     * Handle of the result solid.
+     */
+    solid: number;
+    /**
+     * `"exact"` when every inner face is the exact analytic offset of its
+     * source face; `"approximate"` when the sampled NURBS path built the
+     * inner skin for the named faces.
+     */
+    quality: string;
+    /**
+     * Model-unit sample spacing the NURBS refit ran at. Present only when
+     * `quality` is `"approximate"`.
+     */
+    deflection?: number;
+    /**
+     * Source-face indices whose inner skin is sampled. Present only when
+     * `quality` is `"approximate"`.
+     */
+    sampledFaces?: number[];
 }
 
 /**
@@ -2792,6 +2843,26 @@ export class BrepKernel {
      */
     offsetFace(face: number, distance: number, samples: number): number;
     /**
+     * Offset a face with disclosed result quality.
+     *
+     * The plain [`offsetFace`](Self::offset_face) binding carries a
+     * caller-chosen `samples` discretization knob that contradicts the
+     * exact-kernel contract. This binding takes an explicit opt-in to
+     * approximation instead — `approximation_samples` is a grid resolution
+     * (a positive integer within the public work budget), or
+     * omitted/`null` for the exact-only policy under which a NURBS face
+     * fails with a typed `unsupported` refusal — and reports whether the
+     * sampled NURBS refit ran (`quality: "approximate"`, with the count),
+     * mirroring [`booleanWithQuality`](Self::boolean_with_quality).
+     *
+     * # Errors
+     *
+     * Returns an error if a handle is invalid, the distance is not finite,
+     * the sample count is present but out of budget, or (under the
+     * exact-only policy) the face has no exact offset.
+     */
+    offsetFaceWithQuality(face: number, distance: number, approximation_samples?: number | null): FaceOffsetQualityResult;
+    /**
      * V2 offset journaled as one construction-derived face-evolution entry
      * (kind `offset`). Returns JSON `{"solid", "op"}`.
      */
@@ -3320,6 +3391,26 @@ export class BrepKernel {
      * Returns an error if thickness is non-positive or the solid is invalid.
      */
     shell(solid: number, thickness: number, open_faces: Uint32Array): number;
+    /**
+     * Hollow a solid with disclosed inner-skin quality.
+     *
+     * The plain [`shell`](Self::shell_solid) binding is exact-only: a solid
+     * whose kept faces include a NURBS face fails with a typed
+     * `unsupported` refusal instead of degrading to a sampled refit. This
+     * binding accepts an explicit opt-in to approximation —
+     * `approximation_spacing` is a model-unit sample spacing (a positive
+     * finite number), or omitted/`null` for the exact-only policy — and
+     * reports whether the sampled NURBS path ran (`quality:
+     * "approximate"`, with the spacing and the sampled source-face
+     * indices).
+     *
+     * # Errors
+     *
+     * Returns an error if a handle is invalid, thickness is non-positive,
+     * the spacing is present but not finite and positive, or (under the
+     * exact-only policy) a kept face has no exact offset.
+     */
+    shellWithQuality(solid: number, thickness: number, open_faces: Uint32Array, approximation_spacing?: number | null): ShellQualityResult;
     /**
      * Add an arc to a sketch (defined by center, start, end point indices).
      * Returns the arc index.
