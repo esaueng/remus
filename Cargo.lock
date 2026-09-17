@@ -2245,7 +2245,13 @@ dependencies = [
 name = "remus-parity"
 version = "0.1.0"
 dependencies = [
- "remus-wasm",
+ "remus",
+ "remus-check",
+ "remus-geometry",
+ "remus-io",
+ "remus-math",
+ "remus-operations",
+ "remus-topology",
  "serde",
  "serde_json",
  "sha2",

@@ -173,6 +173,7 @@ harness's own option-honoured floor misreading a correct 0.05 fillet on an
 - **Gauss-Newton extrema stalls where |(C−P)·a| ≈ |v|² (minor-axis ellipse vertex from 4 radii: the dropped curvature term equals the kept term, scale-invariant);** a right-distance/wrong-point answer passes unless stationarity is asserted (`crates/geometry/tests/b10_conic_distance.rs`, B10).
 
 - **Tightening a section to its opposing face's true extent exposes arrangement gaps the overlong section masked;** a curved face must pre-split sections at its own wire vertices, and a section arc's endpoint-T test must use the true curve, not its chord (deepened-notch foil, PR #363).
+- **Exact circular trims on bilinear/Coons caps are vacuous — a planar section of one is a hyperbola or ruling line, never a circle;** curved cap holes stay typed-refused (with rollback), chase the certified iso-rect class or converged-approximate paths instead (`crates/operations/tests/qualify_b12_annular_coons.rs`, B12).
 - **Replay a fuzz artifact natively and print BOTH measurements before believing its message;** an assertion that formats one reading twice reads exactly like a no-op that never happened (`modifier_ops`, 2026-09-02).
 - **Not every scenario failure is a boolean fallback.** Tessellation density,
   shared-rim meshing, and face orientation produced whole failure families with
