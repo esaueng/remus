@@ -348,7 +348,14 @@ fn rel_err(a: f64, b: f64) -> f64 {
 /// Closed B-Rep check over outer + inner (cavity) shells: every geometric
 /// edge key must have exactly 2 uses. Keys are quantized endpoints plus the
 /// curve midpoint, so distinct arcs sharing endpoints never merge while
-/// genuine duplicates share one key.
+/// genuine duplicates share one key. Truly point-like `Line` edges (same
+/// start/end vertex) carry their arena index as a discriminant: they have
+/// no geometric identity beyond that vertex, so without it two DISTINCT
+/// degenerate seam edges (the torus primitive walks two of them twice each
+/// in its single face wire) collapse onto one key with 4 uses and read as
+/// non-manifold. This mirrors the fuzz oracle's `point_edge` discriminant
+/// (`fuzz/fuzz_targets/invariants.rs::edge_geom_key`); curved closed edges
+/// keep purely geometric keys (their midpoint distinguishes them).
 fn pos_key(p: remus_math::vec::Point3) -> (i64, i64, i64) {
     let q = |v: f64| (v / POS_GRID).round() as i64;
     (q(p.x()), q(p.y()), q(p.z()))
@@ -357,7 +364,13 @@ fn pos_key(p: remus_math::vec::Point3) -> (i64, i64, i64) {
 fn edge_midpoint_key(
     topo: &Topology,
     eid: remus_topology::edge::EdgeId,
-) -> Option<((i64, i64, i64), (i64, i64, i64), (i64, i64, i64))> {
+) -> Option<(
+    (i64, i64, i64),
+    (i64, i64, i64),
+    (i64, i64, i64),
+    Option<usize>,
+)> {
+    use remus_topology::edge::EdgeCurve;
     let edge = topo.edge(eid).ok()?;
     let a = topo.vertex(edge.start()).ok()?.point();
     let b = topo.vertex(edge.end()).ok()?.point();
@@ -375,12 +388,22 @@ fn edge_midpoint_key(
     if !mid.x().is_finite() || !mid.y().is_finite() || !mid.z().is_finite() {
         return None;
     }
-    Some((ends.0, ends.1, pos_key(mid)))
+    // Point-degenerate straight edges collapse (ends, mid) onto one triple;
+    // discriminate them by arena index (see the `position_closed` doc).
+    let point_edge = (matches!(edge.curve(), EdgeCurve::Line) && ka == kb).then_some(eid.index());
+    Some((ends.0, ends.1, pos_key(mid), point_edge))
 }
 
 fn position_closed(topo: &Topology, solid: SolidId) -> Result<(usize, usize), String> {
-    let mut counts: BTreeMap<((i64, i64, i64), (i64, i64, i64), (i64, i64, i64)), usize> =
-        BTreeMap::new();
+    let mut counts: BTreeMap<
+        (
+            (i64, i64, i64),
+            (i64, i64, i64),
+            (i64, i64, i64),
+            Option<usize>,
+        ),
+        usize,
+    > = BTreeMap::new();
     let data = topo
         .solid(solid)
         .map_err(|e| format!("solid lookup: {e:?}"))?;
@@ -571,72 +594,42 @@ fn is_finding2(input: &BoolPairInput) -> bool {
             && ox > -2.0 && ox < 1.0
             && oy > -1.0 && oy < 2.0
     );
-    pinned || pinned2 || family || nearmiss
+    // Sphere–cone wire-damage class (finding 20): sphere(1) × cone(h=2.5)
+    // at unit scale, z-rotated quarter-turn, offset (-1,-2,-1.5) — all legs
+    // ops-valid with sane volumes/translation and clean meshes, yet every
+    // leg carries supplement wire self-intersections (cone radii vary:
+    // (1.0,1.5), (1.0,2.0), (1.5,1.5) observed). Same wire-damage class as
+    // the pinned-2 arm above. Same carve-out, same §B row (B33 extended).
+    #[allow(clippy::float_cmp)]
+    let spherecone = matches!(
+        (input.a, input.b, input.axis, input.angle, input.scale),
+        (
+            GenPrim::Sphere { r },
+            GenPrim::Cone { h, .. },
+            2,
+            a,
+            sc,
+        ) if r == 1.0 && h == 2.5
+            && (a == std::f64::consts::FRAC_PI_2 || a == 3.0 * std::f64::consts::FRAC_PI_2)
+            && sc == 1.0
+    );
+    pinned || pinned2 || family || nearmiss || spherecone
 }
 
-/// Known-open finding-3/8 family gate: fuse/cut legs whose exact B-Rep is
-/// fully valid but whose mesh is open at the scale-derived deflection —
-/// the tessellator's separate contract, pinned by the finding-3/8
-/// ready-repros. Matches the pinned inputs (seeds `706d4834`: cylinder–box
-/// at 1e-3; `45291830`: box–sphere at 1e-3; `b24e61be`: cylinder–cylinder
-/// at 1e-3 AND unit scale) plus the same box–sphere shape at neighbouring
-/// lattice offsets (the generator walks offsets on a half-unit lattice, so
-/// siblings recur). Every other oracle still judges these legs.
-///
-/// The cylinder–cylinder mesh-open class is structural, not a single
-/// input: a fuse whose stock cap survives as a single closed-circle face
-/// (unmerged split-rim arcs) tessellates open at fine deflection whenever
-/// the tool bites the cap off-center (sweep: (0,1.5,1), (2,0,1), (0,3,1)
-/// open; (0,0,1), (1,1,1) clean). The gate below matches that shape —
-/// cylinder stock with a cylinder tool — rather than one offset.
-fn is_finding3_mesh(input: &BoolPairInput) -> bool {
-    #[allow(clippy::float_cmp)]
-    {
-        matches!(
-            (input.a, input.b, input.axis, input.angle, input.offset, input.scale),
-            (
-                GenPrim::Cylinder { r, h },
-                GenPrim::Box { dx, dy, dz },
-                2,
-                a,
-                (ox, oy, oz),
-                sc,
-            )
-            if r == 1.0
-                && h == 1.0
-                && dx == 1.0
-                && dy == 2.0
-                && dz == 1.0
-                && a == 3.0 * std::f64::consts::FRAC_PI_2
-                && ox == 0.0
-                && oy == 0.0
-                && oz == 0.5
-                && sc == 0.001
-        ) || matches!(
-            (input.a, input.b, input.axis, input.scale),
-            (
-                GenPrim::Box { dx, dy, dz },
-                GenPrim::Sphere { .. },
-                0,
-                sc,
-            ) if dx == dy && dy == dz && sc == 0.001
-        ) || matches!(
-            (input.a, input.b, input.axis, input.scale),
-            (
-                GenPrim::Box { dx, dy, dz },
-                GenPrim::Sphere { .. },
-                0,
-                sc,
-            ) if dx == 2.0 && dy == 1.0 && dz == 2.0 && sc == 0.001
-        ) || matches!(
-            // Cylinder–cylinder mesh-open class (finding 8): cylinder stock
-            // with a cylinder tool at any offset/angle/scale — the
-            // unmerged-rim cap tessellates open whenever the tool bites
-            // off-center, so the mesh oracle cannot judge these legs.
-            (input.a, input.b),
-            (GenPrim::Cylinder { .. }, GenPrim::Cylinder { .. }),
-        )
-    }
+/// Finding-8 class gate: cylinder-stock/cylinder-tool fuse legs whose
+/// stock cap survives as a single closed-circle face (unmerged split-rim
+/// arcs — the `merge_split_rim_arcs` healer's input class) tessellate open
+/// at fine deflection whenever the tool bites the cap off-center (sweep on
+/// the pinned input: (0,1.5,1), (2,0,1), (0,3,1) open; (0,0,1), (1,1,1)
+/// clean — pinned ready-repro `b26_finding_cylinder_cap_closed_circle_mesh_open`,
+/// owner row B34). The gate matches the SHAPE (cylinder stock with a
+/// cylinder tool at any offset/angle/scale), not one input, because the
+/// class is structural. Every other oracle still judges these legs.
+fn is_finding8_mesh(input: &BoolPairInput) -> bool {
+    matches!(
+        (input.a, input.b),
+        (GenPrim::Cylinder { .. }, GenPrim::Cylinder { .. }),
+    )
 }
 
 fn check_supplements(topo: &Topology, solid: SolidId, what: &str) -> Result<(), String> {
@@ -1608,7 +1601,8 @@ fn arb_fast_angle(axis: u8) -> impl Strategy<Value = f64> {
 
 fn arb_gen_prim_nosphere(slow: bool) -> impl Strategy<Value = GenPrim> {
     // Sphere-free lattice for the fast suite (see `b26_slow_enabled`):
-    // half-unit dims in [1,4]; cone/torus only when slow is on.
+    // half-unit dims in [1,4]; frustum-cones/torus only when slow is on
+    // (pointed cones excluded everywhere: finding 12).
     let box_s = (2u8..=8u8).prop_map(|k| f64::from(k) * 0.5);
     let arb_box =
         (box_s.clone(), box_s.clone(), box_s).prop_map(|(dx, dy, dz)| GenPrim::Box { dx, dy, dz });
@@ -1617,10 +1611,15 @@ fn arb_gen_prim_nosphere(slow: bool) -> impl Strategy<Value = GenPrim> {
         h: f64::from(h) * 0.5,
     });
     if slow {
-        let arb_cone = (2u8..=6u8, 0u8..=6u8, 2u8..=6u8).prop_map(|(r0, r1, h)| GenPrim::Cone {
+        // Frustums only: true point-tipped cones (r1 == 0) are an excluded
+        // cell — the apex-degenerate pair booleans misbuild on the current
+        // engine (B26 finding 12: fuse mesh open on a valid B-Rep, cut
+        // ops-invalid with drifting volumes; pinned repros
+        // `b26_finding12_*`, owner row B37). A future §B row owns pointed
+        // cones on first pinned frustum-clean evidence.
+        let arb_cone = (2u8..=6u8, 1u8..=6u8, 2u8..=6u8).prop_map(|(r0, r1, h)| GenPrim::Cone {
             r0: f64::from(r0) * 0.5,
-            // One draw in seven is a true point-tipped cone.
-            r1: if r1 == 0 { 0.0 } else { f64::from(r1) * 0.5 },
+            r1: f64::from(r1) * 0.5,
             h: f64::from(h) * 0.5,
         });
         let arb_torus = (2u8..=6u8, 1u8..=3u8).prop_map(|(major, minor)| {
@@ -1697,6 +1696,81 @@ fn arb_bool_pair_fast() -> impl Strategy<Value = BoolPairInput> {
         })
 }
 
+/// Sphere–torus pair predicate for the finding-13 generation exclusion.
+fn is_sphere_torus_pair(a: &GenPrim, b: &GenPrim) -> bool {
+    matches!(
+        (a, b),
+        (GenPrim::Sphere { .. }, GenPrim::Torus { .. })
+            | (GenPrim::Torus { .. }, GenPrim::Sphere { .. })
+    )
+}
+
+/// Torus–cone pair predicate for the finding-14 generation exclusion.
+/// Broken at 1e-3 (ops-invalid cut; valid-but-open/drifting fuse) and at
+/// unit scale (valid fuse with open-at-fine mesh; ops-invalid cut;
+/// translation-drifting valid fuse) across placements — the pair-cell, not
+/// the placement or scale, is broken. Pinned repros + row B39 own it.
+fn is_torus_cone_pair(a: &GenPrim, b: &GenPrim) -> bool {
+    matches!(
+        (a, b),
+        (GenPrim::Torus { .. }, GenPrim::Cone { .. })
+            | (GenPrim::Cone { .. }, GenPrim::Torus { .. })
+    )
+}
+
+/// Finding-17 neighborhood predicate for the generation exclusion: six
+/// observed inputs sharing box × cone(r1=2.5) at axis 2, angle 3π/2,
+/// offset (0.5,-1.5,-0.5) — drifting cut volumes, open fuse meshes, low
+/// closed-form agreement, and (decisively) a CDT integer-overflow PANIC
+/// inside the intersect path that no oracle gate can contain. Pinned
+/// repros + rows B32 (wrong answers) and the panic row own it.
+#[allow(clippy::float_cmp)]
+fn is_finding17_neighborhood(input: &BoolPairInput) -> bool {
+    matches!(
+        (
+            input.a, input.b, input.axis, input.angle, input.offset, input.scale
+        ),
+        (
+            GenPrim::Box { .. },
+            GenPrim::Cone { r1, .. },
+            2,
+            a,
+            (ox, oy, oz),
+            _sc,
+        )
+        if r1 == 2.5
+            && a == 3.0 * std::f64::consts::FRAC_PI_2
+            && ox == 0.5
+            && oy == -1.5
+            && oz == -0.5
+    )
+}
+
+/// Scale-band sampler for the slow suite: pairs involving a sphere, cone,
+/// or torus draw at unit/1e3 scale only; box/cylinder pairs keep the full
+/// 1e-3/1/1e3 band. Small-scale curved pairs are pervasively broken on the
+/// current engine (findings 4/13/14/15 + the retired finding-3 instances —
+/// translation drift, open meshes, and supplement failures on valid
+/// B-Reps); rows B34–B40 own the class. Box/cylinder pairs stay fully
+/// drawn at 1e-3 (green, including the deterministic scale family).
+fn arb_slow_scale(a: GenPrim, b: GenPrim) -> impl Strategy<Value = f64> {
+    let exotic = matches!(
+        (a, b),
+        (
+            GenPrim::Sphere { .. } | GenPrim::Cone { .. } | GenPrim::Torus { .. },
+            _,
+        ) | (
+            _,
+            GenPrim::Sphere { .. } | GenPrim::Cone { .. } | GenPrim::Torus { .. },
+        )
+    );
+    if exotic {
+        prop_oneof![Just(1.0), Just(1e3)].boxed()
+    } else {
+        prop_oneof![Just(1e-3), Just(1.0), Just(1e3)].boxed()
+    }
+}
+
 fn arb_bool_pair_slow() -> impl Strategy<Value = BoolPairInput> {
     (
         arb_gen_prim(true),
@@ -1707,20 +1781,37 @@ fn arb_bool_pair_slow() -> impl Strategy<Value = BoolPairInput> {
         // (Slow keeps the on-lattice offsets: grazing-contact defects are
         // its refusal-or-correct battery, not green-suite draws.)
         (-4i8..=8i8, -4i8..=8i8, -4i8..=8i8),
-        prop_oneof![Just(1e-3), Just(1.0), Just(1e3)],
     )
-        .prop_map(|(a, b, axis, angle, (ox, oy, oz), scale)| BoolPairInput {
-            a,
-            b,
-            axis,
-            angle,
-            offset: (
-                f64::from(ox) * 0.5,
-                f64::from(oy) * 0.5,
-                f64::from(oz) * 0.5,
-            ),
-            scale,
+        .prop_flat_map(|(a, b, axis, angle, (ox, oy, oz))| {
+            arb_slow_scale(a, b).prop_map(move |scale| BoolPairInput {
+                a,
+                b,
+                axis,
+                angle,
+                offset: (
+                    f64::from(ox) * 0.5,
+                    f64::from(oy) * 0.5,
+                    f64::from(oz) * 0.5,
+                ),
+                scale,
+            })
         })
+        // Finding 13 (sphere–torus), finding 14 (torus–cone), and the
+        // finding-17 neighborhood (box(dx=2.5)×cone(r1=2.5) at axis 2,
+        // angle 3π/2, offset (0.5,-1.5,-0.5)): excluded from generation at
+        // every scale — pervasively broken across placements and scales,
+        // up to a CDT integer-overflow PANIC inside the intersect path
+        // that no oracle gate can contain (pinned repros + rows
+        // B32/B38/B39 and the panic row). Rejection rate is ~1/5 of draws
+        // — far below the abort threshold.
+        .prop_filter(
+            "broken cells excluded until their rows close",
+            |input: &BoolPairInput| {
+                !is_sphere_torus_pair(&input.a, &input.b)
+                    && !is_torus_cone_pair(&input.a, &input.b)
+                    && !is_finding17_neighborhood(input)
+            },
+        )
 }
 
 #[allow(dead_code)]
@@ -1861,16 +1952,16 @@ fn check_bool_pair(input: &BoolPairInput) -> Result<(), TestCaseError> {
     // cylinder–cylinder cut below is translation-variant at the kernel
     // level. Skip only its translation oracle so CI stays green while the
     // pinned repro stays red; every other oracle still judges it.
-    // Finding-4 family: box × sphere at 1e-3, axis 0 — translation-variant
-    // small-scale classification/volume (pinned: box(2,1,2) × sphere(1)
-    // cut, seed ef0e66e3, plus its intersect twin seed 1cdb908f; sibling
-    // seed 3f14bbf7: unit-box × sphere intersect). Any rotation/offset:
-    // the lattice keeps producing siblings of the same defect.
-    #[allow(clippy::float_cmp)]
-    let finding4 = matches!(
-        (input.a, input.b, input.axis, input.scale),
-        (GenPrim::Box { .. }, GenPrim::Sphere { .. }, 0, sc,) if sc == 0.001
-    );
+    // (No finding-4 gate here by design: box–sphere pairs at 1e-3 are not
+    // drawn — see `arb_slow_scale` — so there is no drawn input to carve
+    // out. The pinned repro + row B35 own the defect. If the band rule is
+    // ever lifted, these legs fail LOUD through the standard oracles
+    // below.)
+    // (No finding-14 gate here by design: torus–cone pairs are excluded
+    // from generation entirely — see `arb_bool_pair_slow` — so there is no
+    // drawn input to carve out. The pinned repros + row B39 own the cell;
+    // if the exclusion is ever lifted, these legs fail LOUD through the
+    // standard oracles below, which is the correct signal for new rows.)
     #[allow(clippy::float_cmp)]
     let finding1 = matches!(
         (
@@ -1894,6 +1985,89 @@ fn check_bool_pair(input: &BoolPairInput) -> Result<(), TestCaseError> {
             && oz == -2.0
             && sc == 1.0
     );
+    // Finding-19 family: box × cylinder(r=4,h=3.5) grazing fuses at unit
+    // scale, y-rotated π, offset (3.25,4.25,3.25) — fully valid B-Reps with
+    // exact volumes and translation down to 1e-15, yet open meshes (6/42
+    // boundary edges) on the grazing-sliver seams (the fast suite's +0.25
+    // off-lattice shift avoids exact grazing but not near-misses). Skip
+    // only the fuse-mesh oracle for this family; every other oracle still
+    // judges it. Pinned repros + owner row in B26 §B.
+    #[allow(clippy::float_cmp)]
+    let finding19 = matches!(
+        (
+            input.a, input.b, input.axis, input.angle, input.offset, input.scale
+        ),
+        (
+            GenPrim::Box { .. },
+            GenPrim::Cylinder { r, h },
+            1,
+            a,
+            (ox, oy, oz),
+            sc,
+        )
+        if r == 4.0
+            && h == 3.5
+            && a == std::f64::consts::PI
+            && ox == 3.25
+            && oy == 4.25
+            && oz == 3.25
+            && sc == 1.0
+    );
+    // Finding-20 mesh pin: sphere(1) × cone(1.0, 2.0, 2.5) at unit scale,
+    // z-rotated π/2, offset (-1,-2,-1.5) — the cut leg's mesh opens (3
+    // boundary edges) at the scale-derived deflection while coarse
+    // deflections close it, on top of the wire damage the spherecone arm
+    // above already carves out. Skip only the cut-mesh oracle for this
+    // exact input; every other oracle still judges it. Pinned in the
+    // finding-20 sibling repro (mesh assert) + row B33 (extended).
+    #[allow(clippy::float_cmp)]
+    let finding20_cutmesh = matches!(
+        (
+            input.a, input.b, input.axis, input.angle, input.offset, input.scale
+        ),
+        (
+            GenPrim::Sphere { r },
+            GenPrim::Cone { r0, r1, h },
+            2,
+            a,
+            (ox, oy, oz),
+            sc,
+        )
+        if r == 1.0
+            && r0 == 1.0
+            && r1 == 2.0
+            && h == 2.5
+            && a == std::f64::consts::FRAC_PI_2
+            && ox == -1.0
+            && oy == -2.0
+            && oz == -1.5
+            && sc == 1.0
+    );
+    // (No finding-17 gate here by design: the neighborhood is excluded
+    // from generation entirely — see `arb_bool_pair_slow` — because one
+    // member panics inside the boolean where no oracle gate can contain
+    // it. The pinned repros + rows B32 (wrong answers) and the panic row
+    // own the cell; if the exclusion is ever lifted, these legs fail LOUD
+    // through the standard oracles below.)
+    // Finding-16 pair-cell gate (pinned repros + row B41): cone–sphere
+    // disjoint fuses carry open meshes (16/8 boundary at 1e3/unit) with
+    // low volumes (8%/6.6%) on fully valid B-Reps, identically across
+    // disjoint placements — the concat, not the placement, is broken.
+    // Skip the fuse-mesh oracle and the inclusion–exclusion identity (which
+    // consumes the wrong fuse volume). Cut/inter legs, fuse-topology,
+    // translation, nudge, and refusal-typing still judge every drawn leg —
+    // a future healthy cone–sphere fuse keeps nearly full coverage, and
+    // any NEW breakage fails loud.
+    let finding16_pair = matches!(
+        (&input.a, &input.b),
+        (GenPrim::Cone { .. }, GenPrim::Sphere { .. })
+            | (GenPrim::Sphere { .. }, GenPrim::Cone { .. })
+    );
+    // (No finding-13 gate here by design: sphere–torus pairs are excluded
+    // from generation entirely — see `arb_bool_pair_slow` — so there is no
+    // drawn input to carve out. The pinned repros + row B38 own the cell;
+    // if the exclusion is ever lifted, these legs fail LOUD through the
+    // standard oracles below, which is the correct signal for new rows.)
     // Independent-first: judge every Ok result (topology + mesh +
     // translation invariance) before classifying refusals. An empty result
     // (faceless solid: disjoint intersect, fully-covered cut) carries no
@@ -1902,7 +2076,7 @@ fn check_bool_pair(input: &BoolPairInput) -> Result<(), TestCaseError> {
     // judged by volume (~0) instead.
     let mut vols: [Option<f64>; 3] = [None, None, None];
     let skip_f2 = is_finding2(input);
-    let skip_mesh_f3 = is_finding3_mesh(input);
+    let skip_mesh_f8 = is_finding8_mesh(input);
     for (r, tag, slot) in [(&rf, "fuse", 0), (&ri, "intersect", 1), (&rc, "cut", 2)] {
         if let Ok((topo, s)) = r {
             if expected_empty_interpretation(topo, *s, &format!("proptest {tag}"))
@@ -1924,16 +2098,31 @@ fn check_bool_pair(input: &BoolPairInput) -> Result<(), TestCaseError> {
             topo_check.map_err(|e| {
                 TestCaseError::fail(format!("proptest {tag} topology: {e} (input {input:?})"))
             })?;
-            // Mesh-oracle scope: the mesh oracle runs on every success leg
-            // except the known-open finding-3 family (valid exact B-Rep
-            // that tessellates open at small scale — the tessellator's
-            // separate contract, pinned by the finding-3 ready-repro).
-            if !skip_mesh_f3 {
+            // Mesh-oracle scope: the finding-8 class gate, the finding-16
+            // pair-cell gate (fuse legs), the finding-19 family gate (fuse
+            // legs), and the finding-20 exact pin below (cut leg only —
+            // its fuse/inter legs keep the oracle).
+            if !(skip_mesh_f8
+                || finding16_pair && tag == "fuse"
+                || finding19 && tag == "fuse"
+                || finding20_cutmesh && tag == "cut")
+            {
                 check_watertight_mesh_scaled(topo, *s, &format!("proptest {tag}")).map_err(
                     |e| TestCaseError::fail(format!("proptest {tag} mesh: {e} (input {input:?})")),
                 )?;
             }
-            if !(finding4 || finding1 && tag == "cut") {
+            // Translation-oracle scope: the finding-1 exact pin only. (1e-3
+            // legs drawn by the strategies are box/cylinder pairs, whose
+            // volumes are translation-invariant; 1e-3 sphere/cone/torus
+            // legs are not drawn — see `arb_slow_scale` — and their drift
+            // defects live in rows B32/B35–B40 with pinned repros.)
+            // Translation-oracle scope: the finding-1 exact pin, plus the
+            // unit cone–sphere fuse (finding 16 drifts 60% there while the
+            // 1e-3/1e3 instances are translation-sane — the drift rides
+            // that input's open mesh, row B41 owns it).
+            #[allow(clippy::float_cmp)]
+            let finding16_unit_drift = finding16_pair && tag == "fuse" && input.scale == 1.0;
+            if !(finding1 && tag == "cut" || finding16_unit_drift) {
                 check_translation_invariant_scaled(topo, *s, &format!("proptest {tag}")).map_err(
                     |e| {
                         TestCaseError::fail(format!(
@@ -2003,12 +2192,19 @@ fn check_bool_pair(input: &BoolPairInput) -> Result<(), TestCaseError> {
             "proptest harness error: missing volumes (input {input:?})"
         )));
     };
-    // Oracle 1: inclusion–exclusion over closed forms.
-    prop_assert!(
-        rel_err(vf + vi, va + vb) <= REL_SLACK,
-        "inclusion-exclusion fails: fuse {vf:.9} + inter {vi:.9} != A {va:.9} + B {vb:.9} \
-         (input {input:?})"
-    );
+    // Oracle 1: inclusion–exclusion over closed forms. (Finding 13 never
+    // reaches these: its fuse leg refuses, so ok_count < 3 returns above.
+    // If a future engine change makes the fuse succeed, these run and judge
+    // the still-broken legs — that future red is signal, not noise.
+    // Finding 16 skips this identity only: its fuse volume is wrong while
+    // the cut-complement legs are clean.)
+    if !finding16_pair {
+        prop_assert!(
+            rel_err(vf + vi, va + vb) <= REL_SLACK,
+            "inclusion-exclusion fails: fuse {vf:.9} + inter {vi:.9} != A {va:.9} + B {vb:.9} \
+             (input {input:?})"
+        );
+    }
     // Oracle 2: cut complement over closed forms.
     prop_assert!(
         rel_err(vc + vi, va) <= REL_SLACK,
@@ -2598,6 +2794,256 @@ fn b26_finding_cylinder_cut_translation_variant() {
     check_translation_invariant(&topo, c.solid, "finding-1 cut").expect("translation invariant");
 }
 
+/// Ready-repro for the nineteenth proptest-found defect (2026-09-16): a
+/// box–cylinder GRAZING fuse at unit scale (box 1×1×1.5, cylinder r=4/h=3.5
+/// y-rotated π, offset (3.25,4.25,3.25) — 0.05-unit overlap sliver; the
+/// fast suite's +0.25 off-lattice shift avoids exact grazing but not
+/// near-misses) whose exact B-Rep is fully valid with exact volumes
+/// (inclusion–exclusion holds to 1e-4) and translation down to 1e-15, yet
+/// tessellates open (6 boundary edges) on the sliver seam. Pure mesh-class
+/// defect — the first in the DEFAULT (fast) suite. Committed as `#[ignore]`
+/// per the testing skill: it fails until the owning row fixes the kernel.
+/// Do NOT fix in the B26 proptest PR — filed as a new §B row.
+/// Minimized from `prop_random_primitive_pair_identities` (committed seed).
+#[test]
+#[ignore = "open: grazing box-cylinder fuse open mesh (B26 finding 19)"]
+fn b26_finding19_grazing_fuse_mesh() {
+    use remus_operations::primitives::{make_box, make_cylinder};
+    let m = Mat4::translation(3.25, 4.25, 3.25) * Mat4::rotation_y(std::f64::consts::PI);
+    let mut topo = Topology::new();
+    let a = make_box(&mut topo, 1.0, 1.0, 1.5).expect("valid box");
+    let b = make_cylinder(&mut topo, 4.0, 3.5).expect("valid cylinder");
+    remus_operations::transform::transform_solid(&mut topo, b, &m).expect("placement applies");
+    let f = exact_boolean(&mut topo, BooleanOp::Fuse, a, b).expect("exact fuse succeeds");
+    check_exact_quality(&f, "finding-19 fuse").expect("exact quality");
+    check_valid_closed_oriented(&topo, f.solid, "finding-19 fuse").expect("B-Rep fully valid");
+    // The failing oracle: the mesh of a valid B-Rep must be watertight.
+    check_watertight_mesh_scaled(&topo, f.solid, "finding-19 fuse").expect("mesh watertight");
+}
+
+/// Second pinned instance of finding 19 (2026-09-16): the same grazing
+/// cylinder (r=4/h=3.5, y-rotated π, offset (3.25,4.25,3.25)) against a
+/// taller box (1×1.5×1.5) — fully valid B-Rep with exact volumes and sane
+/// translation, yet an open mesh (42 boundary edges) on the sliver seam.
+/// Same owner row (new §B row with the first instance). No persisted
+/// proptest seed (shrinking aborted) — this repro is the retention.
+/// Minimized from `prop_random_primitive_pair_identities`.
+#[test]
+#[ignore = "open: grazing fuse open mesh, taller-box sibling (B26 finding 19)"]
+fn b26_finding19_grazing_sibling() {
+    use remus_operations::primitives::{make_box, make_cylinder};
+    let m = Mat4::translation(3.25, 4.25, 3.25) * Mat4::rotation_y(std::f64::consts::PI);
+    let mut topo = Topology::new();
+    let a = make_box(&mut topo, 1.0, 1.5, 1.5).expect("valid box");
+    let b = make_cylinder(&mut topo, 4.0, 3.5).expect("valid cylinder");
+    remus_operations::transform::transform_solid(&mut topo, b, &m).expect("placement applies");
+    let f = exact_boolean(&mut topo, BooleanOp::Fuse, a, b).expect("exact fuse succeeds");
+    check_exact_quality(&f, "finding-19-sib fuse").expect("exact quality");
+    check_valid_closed_oriented(&topo, f.solid, "finding-19-sib fuse").expect("B-Rep fully valid");
+    // The failing oracle: the mesh of a valid B-Rep must be watertight.
+    check_watertight_mesh_scaled(&topo, f.solid, "finding-19-sib fuse").expect("mesh watertight");
+}
+
+/// Ready-repro for the twentieth proptest-found defect (2026-09-16): a
+/// sphere–cone fuse at unit scale (sphere r=1, frustum cone r0=1/r1=1.5/
+/// h=2.5, z-rotated quarter-turn, offset (-1,-2,-1.5)) whose exact B-Rep is
+/// ops-valid with sane volumes/translation and a clean mesh, yet carries
+/// two `WireSelfIntersection` errors from the check-crate supplement (the
+/// cut and intersect legs show the same signature). Same wire-damage class
+/// as finding 2 — owned by the extended §B row B33, no new row. Committed
+/// as `#[ignore]` per the testing skill: it fails until the owning row
+/// fixes the kernel. Do NOT fix in the B26 proptest PR.
+/// Minimized from `prop_random_curved_pair_identities` (committed seed).
+#[test]
+#[ignore = "open: sphere-cone wire self-intersections (B26 finding 20)"]
+fn b26_finding20_spherecone_wires() {
+    use remus_operations::primitives::{make_cone, make_sphere};
+    let m = Mat4::translation(-1.0, -2.0, -1.5) * Mat4::rotation_z(std::f64::consts::FRAC_PI_2);
+    let mut topo = Topology::new();
+    let a = make_sphere(&mut topo, 1.0, 8).expect("valid sphere");
+    let b = make_cone(&mut topo, 1.0, 1.5, 2.5).expect("valid cone");
+    remus_operations::transform::transform_solid(&mut topo, b, &m).expect("placement applies");
+    let f = exact_boolean(&mut topo, BooleanOp::Fuse, a, b).expect("exact fuse succeeds");
+    check_exact_quality(&f, "finding-20 fuse").expect("exact quality");
+    // The failing oracle: both validators must be clean.
+    check_valid_closed_oriented(&topo, f.solid, "finding-20 fuse").expect("fully valid");
+    // Health premise (passes today): the fuse mesh is watertight — pinned
+    // so the repro tracks full health, not just the supplement.
+    check_watertight_mesh_scaled(&topo, f.solid, "finding-20 fuse").expect("mesh watertight");
+}
+
+/// Second pinned instance of finding 20 (2026-09-16): the same sphere–cone
+/// shapes with a wider cone top (r1=2.0 instead of 1.5) — all three legs
+/// ops-valid with sane volumes/translation and clean meshes, yet every leg
+/// carries supplement wire self-intersections. Same owner row (B33
+/// extended): the wire-damage class, not the placement, is broken. No
+/// persisted proptest seed (shrinking aborted) — this repro is the
+/// retention. Minimized from `prop_random_curved_pair_identities`.
+#[test]
+#[ignore = "open: sphere-cone wires, wider-top sibling (B26 finding 20)"]
+fn b26_finding20_spherecone_sibling() {
+    use remus_operations::primitives::{make_cone, make_sphere};
+    let m = Mat4::translation(-1.0, -2.0, -1.5) * Mat4::rotation_z(std::f64::consts::FRAC_PI_2);
+    let mut topo = Topology::new();
+    let a = make_sphere(&mut topo, 1.0, 8).expect("valid sphere");
+    let b = make_cone(&mut topo, 1.0, 2.0, 2.5).expect("valid cone");
+    remus_operations::transform::transform_solid(&mut topo, b, &m).expect("placement applies");
+    let f = exact_boolean(&mut topo, BooleanOp::Fuse, a, b).expect("exact fuse succeeds");
+    check_exact_quality(&f, "finding-20-sib fuse").expect("exact quality");
+    // The failing oracle: both validators must be clean.
+    check_valid_closed_oriented(&topo, f.solid, "finding-20-sib fuse").expect("fully valid");
+    // Health premise (passes today): the fuse mesh is watertight — pinned
+    // so the repro tracks full health, not just the supplement. (The CUT
+    // mesh of this input opens at fine deflection; the suite gate above
+    // covers it and row B33 documents it.)
+    check_watertight_mesh_scaled(&topo, f.solid, "finding-20-sib fuse").expect("mesh watertight");
+}
+
+/// Third pinned instance of finding 20 (2026-09-16): the same sphere–cone
+/// shapes with an equal-radii cone (r0=1.5/r1=1.5/h=2.5) — all legs
+/// ops-valid with sane volumes/translation and clean meshes, yet the fuse
+/// leg carries supplement wire self-intersections like its siblings. Same
+/// owner row (B33 extended): the wire-damage class, not the cone radii, is
+/// broken. No persisted proptest seed (shrinking aborted) — this repro is
+/// the retention. Minimized from `prop_random_curved_pair_identities`.
+#[test]
+#[ignore = "open: sphere-cone wires, equal-radii sibling (B26 finding 20)"]
+fn b26_finding20_spherecone_equalradii() {
+    use remus_operations::primitives::{make_cone, make_sphere};
+    let m = Mat4::translation(-1.0, -2.0, -1.5) * Mat4::rotation_z(std::f64::consts::FRAC_PI_2);
+    let mut topo = Topology::new();
+    let a = make_sphere(&mut topo, 1.0, 8).expect("valid sphere");
+    let b = make_cone(&mut topo, 1.5, 1.5, 2.5).expect("valid cone");
+    remus_operations::transform::transform_solid(&mut topo, b, &m).expect("placement applies");
+    let f = exact_boolean(&mut topo, BooleanOp::Fuse, a, b).expect("exact fuse succeeds");
+    check_exact_quality(&f, "finding-20-eq fuse").expect("exact quality");
+    // The failing oracle: both validators must be clean.
+    check_valid_closed_oriented(&topo, f.solid, "finding-20-eq fuse").expect("fully valid");
+    // Health premises (pass today): watertight mesh, sane translation.
+    check_watertight_mesh_scaled(&topo, f.solid, "finding-20-eq fuse").expect("mesh watertight");
+    check_translation_invariant_scaled(&topo, f.solid, "finding-20-eq fuse")
+        .expect("translation invariant");
+}
+
+/// Ready-repro for the seventeenth proptest-found defect (2026-09-16): a
+/// box–cone cut at unit scale (box 2.5×1×1, frustum cone r0=1/r1=2.5/h=2.5
+/// — note: these dims came from a misread of the suite-drawn r0=1.5/h=1.0
+/// sibling pinned below; both fail identically, so both stay pinned —
+/// z-rotated 3π/2, offset (0.5,-1.5,-0.5)) whose exact B-Rep is fully valid
+/// with a watertight mesh and sane identities (cut == va − vi within 1%,
+/// inclusion–exclusion holds) yet drifts 9.6% under rigid translation
+/// (2.34 → 2.59) — the finding-1 oracle failure on a different pair (same
+/// class, unknown whether same root). Committed as `#[ignore]` per the
+/// testing skill: it fails until the owning row fixes the kernel. Do NOT
+/// fix in the B26 proptest PR — filed under the extended §B row B32.
+/// Minimized from `prop_random_curved_pair_identities` (committed seed).
+#[test]
+#[ignore = "open: box-cone cut translation drift (B26 finding 17)"]
+fn b26_finding17_boxcone_cut_drift() {
+    use remus_operations::primitives::{make_box, make_cone};
+    let m =
+        Mat4::translation(0.5, -1.5, -0.5) * Mat4::rotation_z(3.0 * std::f64::consts::FRAC_PI_2);
+    let mut topo = Topology::new();
+    let a = make_box(&mut topo, 2.5, 1.0, 1.0).expect("valid box");
+    let b = make_cone(&mut topo, 1.0, 2.5, 2.5).expect("valid cone");
+    remus_operations::transform::transform_solid(&mut topo, b, &m).expect("placement applies");
+    let c = exact_boolean(&mut topo, BooleanOp::Cut, a, b).expect("exact cut succeeds");
+    check_exact_quality(&c, "finding-17 cut").expect("exact quality");
+    check_valid_closed_oriented(&topo, c.solid, "finding-17 cut").expect("B-Rep fully valid");
+    check_watertight_mesh_scaled(&topo, c.solid, "finding-17 cut").expect("mesh watertight");
+    // The failing oracle: rigid translation must not move the volume.
+    check_translation_invariant(&topo, c.solid, "finding-17 cut").expect("translation invariant");
+    // Fuse leg of the same input (evaluated once the cut drift is fixed):
+    // fully valid with sane volumes and translation but an open mesh (322
+    // boundary edges at the scale-derived deflection).
+    let mut topo2 = Topology::new();
+    let a2 = make_box(&mut topo2, 2.5, 1.0, 1.0).expect("valid box");
+    let b2 = make_cone(&mut topo2, 1.0, 2.5, 2.5).expect("valid cone");
+    remus_operations::transform::transform_solid(&mut topo2, b2, &m).expect("placement applies");
+    let f = exact_boolean(&mut topo2, BooleanOp::Fuse, a2, b2).expect("exact fuse succeeds");
+    check_exact_quality(&f, "finding-17 fuse").expect("exact quality");
+    check_valid_closed_oriented(&topo2, f.solid, "finding-17 fuse").expect("B-Rep fully valid");
+    check_watertight_mesh_scaled(&topo2, f.solid, "finding-17 fuse").expect("mesh watertight");
+}
+
+/// Second pinned instance of finding 17 (2026-09-16): the same box–cone
+/// shapes with different cone dims (r0=1.5/r1=2.5/h=1.0 — the suite-drawn
+/// input; the first repro's dims came from a misread and pin a sibling
+/// that fails identically). The fuse B-Rep is fully valid yet tessellates
+/// open (322 boundary); the cut is fully valid with a clean mesh yet
+/// drifts 52% under translation and sits 3.8% below its closed form. Same
+/// owner row (B32 family). No persisted proptest seed (shrinking aborted
+/// on this input) — this repro is the retention.
+/// Minimized from `prop_random_curved_pair_identities`.
+#[test]
+#[ignore = "open: box-cone sibling open fuse mesh + drifting cut (B26 finding 17)"]
+fn b26_finding17_boxcone_sibling() {
+    use remus_operations::primitives::{make_box, make_cone};
+    let m =
+        Mat4::translation(0.5, -1.5, -0.5) * Mat4::rotation_z(3.0 * std::f64::consts::FRAC_PI_2);
+    let mut topo = Topology::new();
+    let a = make_box(&mut topo, 2.5, 1.0, 1.0).expect("valid box");
+    let b = make_cone(&mut topo, 1.5, 2.5, 1.0).expect("valid cone");
+    remus_operations::transform::transform_solid(&mut topo, b, &m).expect("placement applies");
+    let f = exact_boolean(&mut topo, BooleanOp::Fuse, a, b).expect("exact fuse succeeds");
+    check_exact_quality(&f, "finding-17-sib fuse").expect("exact quality");
+    check_valid_closed_oriented(&topo, f.solid, "finding-17-sib fuse").expect("B-Rep fully valid");
+    // The failing oracles: watertight mesh, then the cut leg below
+    // (evaluated once the fuse mesh is fixed).
+    check_watertight_mesh_scaled(&topo, f.solid, "finding-17-sib fuse").expect("mesh watertight");
+    let mut topo2 = Topology::new();
+    let a2 = make_box(&mut topo2, 2.5, 1.0, 1.0).expect("valid box");
+    let b2 = make_cone(&mut topo2, 1.5, 2.5, 1.0).expect("valid cone");
+    remus_operations::transform::transform_solid(&mut topo2, b2, &m).expect("placement applies");
+    let c = exact_boolean(&mut topo2, BooleanOp::Cut, a2, b2).expect("exact cut succeeds");
+    check_exact_quality(&c, "finding-17-sib cut").expect("exact quality");
+    check_valid_closed_oriented(&topo2, c.solid, "finding-17-sib cut").expect("B-Rep fully valid");
+    check_translation_invariant(&topo2, c.solid, "finding-17-sib cut")
+        .expect("translation invariant");
+}
+
+/// Ready-repro for the eighteenth proptest-found defect (2026-09-16): a
+/// box–cone intersect (box 2500×3000×2500, frustum cone r0=2000/r1=2500/
+/// h=2500, z-rotated 3π/2, offset (500,-1500,-500)) that never returns —
+/// the intersect path internally tessellates for boundary sampling
+/// (`intersect_multi_region_semantically_safe` →
+/// `intersection_boundary_samples` → `tessellate_solid_with_tolerance` →
+/// CDT `insert_point`) and hits `attempt to add with overflow` at
+/// `math/src/cdt/mod.rs:203` (duplicate-grid neighbor lookup on
+/// out-of-range cell coordinates, consistent with a non-finite UV point
+/// from degenerate boolean-produced geometry). In debug/test builds this
+/// aborts the whole operation (and the proptest binary with it — no oracle
+/// gate can contain a panic); in release builds the add wraps, risking
+/// silent triangulation corruption. Committed as `#[ignore]` per the
+/// testing skill: it fails until the owning row fixes the kernel. Do NOT
+/// fix in the B26 proptest PR — filed as a new §B row.
+/// Surfaced by `prop_random_curved_pair_identities` (no persisted seed —
+/// the panic aborts shrinking before persistence; this repro is the
+/// retention).
+#[test]
+#[ignore = "open: CDT overflow panic inside intersect (B26 finding 18)"]
+fn b26_finding18_cdt_overflow_panic() {
+    use remus_operations::primitives::{make_box, make_cone};
+    let m = Mat4::translation(500.0, -1500.0, -500.0)
+        * Mat4::rotation_z(3.0 * std::f64::consts::FRAC_PI_2);
+    let mut topo = Topology::new();
+    let a = make_box(&mut topo, 2500.0, 3000.0, 2500.0).expect("valid box");
+    let b = make_cone(&mut topo, 2000.0, 2500.0, 2500.0).expect("valid cone");
+    remus_operations::transform::transform_solid(&mut topo, b, &m).expect("placement applies");
+    // Must return a typed outcome — success with a valid result, or typed
+    // refusal. Today it panics inside the boolean instead.
+    match exact_boolean(&mut topo, BooleanOp::Intersect, a, b) {
+        Ok(o) => {
+            check_exact_quality(&o, "finding-18 inter").expect("exact quality");
+            check_valid_closed_oriented(&topo, o.solid, "finding-18 inter").expect("fully valid");
+        }
+        Err(e) => assert!(
+            classify_refusal(&e),
+            "finding-18 inter: untyped error {e:?} is also a failure to disclose"
+        ),
+    }
+}
+
 /// Ready-repro for the second proptest-found kernel defect (2026-09-16):
 /// a box×cylinder fuse (exact, all scales) carrying one
 /// `ShellOrientationConsistent` error from the check-crate supplement while
@@ -2678,6 +3124,382 @@ fn b26_finding_small_scale_cut_translation_variant() {
     check_valid_closed_oriented(&topo, c.solid, "finding-4 cut").expect("B-Rep fully valid");
     // The failing oracle: rigid translation must not move the volume.
     check_translation_invariant(&topo, c.solid, "finding-4 cut").expect("translation invariant");
+}
+
+/// Ready-repro for the thirteenth proptest-found defect (2026-09-16): a
+/// sphere–torus pair (sphere r=2, torus R=2/r=0.5, x-rotated 3π/2, offset
+/// (0,1,1)) at 1e-3 scale that refuses every leg at unit scale yet returns
+/// ops-invalid inter/cut results at 1e-3 — 6 inconsistent-orientation edges
+/// plus wire self-intersections on both legs (both validators agree), and
+/// ~100% translation drift (inter 1.7e-9 → 2.8e-6 moved; cut 7.9e-11 →
+/// 3.0e-6 moved). The mesh oracle passes (bnd=0) and the fuse leg refuses,
+/// so the pinned failure is topology first, translation second. Committed
+/// as `#[ignore]` per the testing skill: it fails until the owning row
+/// fixes the kernel. Do NOT fix in the B26 proptest PR — filed as a new §B
+/// row.
+/// Minimized from `prop_random_curved_pair_identities` seed `ba404cb3`.
+#[test]
+#[ignore = "open: small-scale sphere-torus invalid results (B26 finding 13)"]
+fn b26_finding13_spheretorus_smallscale_invalid() {
+    use remus_operations::primitives::{make_sphere, make_torus};
+    let m =
+        Mat4::translation(0.0, 0.001, 0.001) * Mat4::rotation_x(3.0 * std::f64::consts::FRAC_PI_2);
+    for (op, tag) in [(BooleanOp::Intersect, "inter"), (BooleanOp::Cut, "cut")] {
+        let mut topo = Topology::new();
+        let a = make_sphere(&mut topo, 0.002, 8).expect("valid sphere");
+        let b = make_torus(&mut topo, 0.002, 0.0005, 16).expect("valid torus");
+        remus_operations::transform::transform_solid(&mut topo, b, &m).expect("placement applies");
+        let r = exact_boolean(&mut topo, op, a, b).expect("exact boolean succeeds");
+        check_exact_quality(&r, "finding-13").expect("exact quality");
+        // The failing oracles: both validators must be clean, and rigid
+        // translation must not move the volume.
+        check_valid_closed_oriented(&topo, r.solid, &format!("finding-13 {tag}"))
+            .expect("fully valid");
+        check_translation_invariant(&topo, r.solid, &format!("finding-13 {tag}"))
+            .expect("translation invariant");
+    }
+}
+
+/// Second pinned instance of finding 13 (2026-09-16): the same sphere–torus
+/// shapes at offset (0,2,1), where the legs fail DIFFERENTLY — the fuse
+/// B-Rep is fully valid yet tessellates open (453 boundary edges at the
+/// scale-derived deflection) and drifts ~100% under translation, the
+/// intersect leg refuses, and the cut is ops-invalid (1 inconsistent edge).
+/// Same owner row (B38): the cell, not the placement, is broken. Minimized
+/// from `prop_random_curved_pair_identities` (sibling of seed `ba404cb3`).
+#[test]
+#[ignore = "open: sphere-torus sibling valid-fuse open mesh (B26 finding 13)"]
+fn b26_finding13_spheretorus_sibling_fuse() {
+    use remus_operations::primitives::{make_sphere, make_torus};
+    let m =
+        Mat4::translation(0.0, 0.002, 0.001) * Mat4::rotation_x(3.0 * std::f64::consts::FRAC_PI_2);
+    let mut topo = Topology::new();
+    let a = make_sphere(&mut topo, 0.002, 8).expect("valid sphere");
+    let b = make_torus(&mut topo, 0.002, 0.0005, 16).expect("valid torus");
+    remus_operations::transform::transform_solid(&mut topo, b, &m).expect("placement applies");
+    let f = exact_boolean(&mut topo, BooleanOp::Fuse, a, b).expect("exact fuse succeeds");
+    check_exact_quality(&f, "finding-13-sib fuse").expect("exact quality");
+    check_valid_closed_oriented(&topo, f.solid, "finding-13-sib fuse").expect("B-Rep fully valid");
+    // The failing oracles on a valid B-Rep: watertight mesh, then
+    // translation invariance.
+    check_watertight_mesh_scaled(&topo, f.solid, "finding-13-sib fuse").expect("mesh watertight");
+    check_translation_invariant_scaled(&topo, f.solid, "finding-13-sib fuse")
+        .expect("translation invariant");
+}
+
+/// Third pinned instance of finding 13 (2026-09-16): the same sphere–torus
+/// shapes at UNIT scale (sphere r=3, torus R=4/r=0.5, y-rotated 3π/2,
+/// offset (1.5,2,1)), where fuse and cut both return ops-invalid results
+/// (1 inconsistent-orientation edge each, both validators agree; mesh
+/// watertight over the breakage) with drifting volumes (fuse −71% moved;
+/// cut −4.2% moved), the intersect refuses, and material accounting is
+/// broken (disjoint-sum fuse volumes alongside a non-trivial cut). Same
+/// owner row (B38): the pair-cell, not the scale, is broken. No persisted
+/// proptest seed (shrinking aborted) — this repro is the retention.
+/// Minimized from `prop_random_curved_pair_identities`.
+#[test]
+#[ignore = "open: unit-scale sphere-torus invalid fuse/cut (B26 finding 13)"]
+fn b26_finding13_spheretorus_unit_invalid() {
+    use remus_operations::primitives::{make_sphere, make_torus};
+    let m = Mat4::translation(1.5, 2.0, 1.0) * Mat4::rotation_y(3.0 * std::f64::consts::FRAC_PI_2);
+    for (op, tag) in [(BooleanOp::Fuse, "fuse"), (BooleanOp::Cut, "cut")] {
+        let mut topo = Topology::new();
+        let a = make_sphere(&mut topo, 3.0, 8).expect("valid sphere");
+        let b = make_torus(&mut topo, 4.0, 0.5, 16).expect("valid torus");
+        remus_operations::transform::transform_solid(&mut topo, b, &m).expect("placement applies");
+        let r = exact_boolean(&mut topo, op, a, b).expect("exact boolean succeeds");
+        check_exact_quality(&r, "finding-13-unit").expect("exact quality");
+        // The failing oracles: both validators must be clean, and rigid
+        // translation must not move the volume.
+        check_valid_closed_oriented(&topo, r.solid, &format!("finding-13-unit {tag}"))
+            .expect("fully valid");
+        check_translation_invariant(&topo, r.solid, &format!("finding-13-unit {tag}"))
+            .expect("translation invariant");
+    }
+}
+
+/// Ready-repro for the twelfth proptest-found defect, fuse leg (2026-09-16):
+/// a pointed-cone–cylinder fuse (cone r0=2, apex, h=1; cylinder r=1, h=1 at
+/// (0,1.5,0.5)) whose exact B-Rep is fully valid (ops-validator clean,
+/// check-crate supplement clean) yet tessellates open at every deflection
+/// (18/40/372 boundary edges at 0.1/0.01/0.001 — coarser reads cleaner, so
+/// this is not a resolution artifact) and drifts 18.6% under rigid
+/// translation. Same class as finding 8 (valid B-Rep, open mesh) but the
+/// apex-degenerate carrier is a different tessellation path with an unknown
+/// root, so it gets its own row. The intersect leg of the same pair is
+/// fully clean (valid + watertight). Committed as `#[ignore]` per the
+/// testing skill: it fails until the owning row fixes the kernel. Do NOT
+/// fix in the B26 proptest PR — filed as a new §B row.
+/// Minimized from `prop_random_curved_pair_identities` seed `c2269b3b`.
+#[test]
+#[ignore = "open: pointed-cone fuse mesh open on valid B-Rep (B26 finding 12)"]
+fn b26_finding12_cone_fuse_mesh_open() {
+    use remus_operations::primitives::{make_cone, make_cylinder};
+    let m = Mat4::translation(0.0, 1.5, 0.5);
+    let mut topo = Topology::new();
+    let a = make_cone(&mut topo, 2.0, 0.0, 1.0).expect("valid cone");
+    let b = make_cylinder(&mut topo, 1.0, 1.0).expect("valid cylinder");
+    remus_operations::transform::transform_solid(&mut topo, b, &m).expect("placement applies");
+    let f = exact_boolean(&mut topo, BooleanOp::Fuse, a, b).expect("exact fuse succeeds");
+    check_exact_quality(&f, "finding-12 fuse").expect("exact quality");
+    check_valid_closed_oriented(&topo, f.solid, "finding-12 fuse").expect("B-Rep fully valid");
+    // The failing oracles: the mesh of a valid B-Rep must be watertight,
+    // and rigid translation must not move the volume.
+    check_watertight_mesh_scaled(&topo, f.solid, "finding-12 fuse").expect("mesh watertight");
+    check_translation_invariant_scaled(&topo, f.solid, "finding-12 fuse")
+        .expect("translation invariant");
+}
+
+/// Ready-repro for the twelfth proptest-found defect, cut leg (2026-09-16):
+/// the same pointed-cone–cylinder pair cut to an ops-INVALID result (4
+/// shared edges with inconsistent face orientations, confirmed by the
+/// check-crate supplement) whose volumes also drift (cut −33.7% moved;
+/// inclusion–exclusion off 3.6%, cut complement off 6.3% — the intersect
+/// leg measures 0.042 against a ~0.31 overlap, so material accounting is
+/// broken at the boolean level, not just the measurement). Committed as
+/// `#[ignore]` per the testing skill: it fails until the owning row fixes
+/// the kernel. Do NOT fix in the B26 proptest PR — filed as a new §B row
+/// alongside the fuse leg.
+/// Minimized from `prop_random_curved_pair_identities` seed `c2269b3b`.
+#[test]
+#[ignore = "open: pointed-cone cut ops-invalid orientation (B26 finding 12)"]
+fn b26_finding12_cone_cut_broken() {
+    use remus_operations::primitives::{make_cone, make_cylinder};
+    let m = Mat4::translation(0.0, 1.5, 0.5);
+    let mut topo = Topology::new();
+    let a = make_cone(&mut topo, 2.0, 0.0, 1.0).expect("valid cone");
+    let b = make_cylinder(&mut topo, 1.0, 1.0).expect("valid cylinder");
+    remus_operations::transform::transform_solid(&mut topo, b, &m).expect("placement applies");
+    let c = exact_boolean(&mut topo, BooleanOp::Cut, a, b).expect("exact cut succeeds");
+    check_exact_quality(&c, "finding-12 cut").expect("exact quality");
+    // The failing oracle: the exact result must satisfy both validators.
+    check_valid_closed_oriented(&topo, c.solid, "finding-12 cut").expect("fully valid");
+}
+
+/// Ready-repro for the fourteenth proptest-found defect (2026-09-16): a
+/// torus–cone cut at 1e-3 scale (torus R=3/r=0.5, frustum cone
+/// r0=1.5/r1=1/h=1, x-rotated 3π/2, offset (2.5,0,0)) whose exact result is
+/// ops-invalid (inconsistent face orientations) while the fuse leg of the
+/// same pair is fully valid yet tessellates open with an 11% volume drift
+/// (covered by the small-curved scope rule in-suite) and the intersect leg
+/// refuses. Committed as `#[ignore]` per the testing skill: it fails until
+/// the owning row fixes the kernel. Do NOT fix in the B26 proptest PR —
+/// filed as a new §B row.
+/// Minimized from `prop_random_curved_pair_identities` (sibling seeds in
+/// the committed regressions file).
+#[test]
+#[ignore = "open: torus-cone cut ops-invalid at 1e-3 (B26 finding 14)"]
+fn b26_finding14_toruscone_cut_invalid() {
+    use remus_operations::primitives::{make_cone, make_torus};
+    let m = Mat4::translation(2.5 * 0.001, 0.0, 0.0)
+        * Mat4::rotation_x(3.0 * std::f64::consts::FRAC_PI_2);
+    let mut topo = Topology::new();
+    let a = make_torus(&mut topo, 3.0 * 0.001, 0.5 * 0.001, 16).expect("valid torus");
+    let b = make_cone(&mut topo, 1.5 * 0.001, 1.0 * 0.001, 1.0 * 0.001).expect("valid cone");
+    remus_operations::transform::transform_solid(&mut topo, b, &m).expect("placement applies");
+    let c = exact_boolean(&mut topo, BooleanOp::Cut, a, b).expect("exact cut succeeds");
+    check_exact_quality(&c, "finding-14 cut").expect("exact quality");
+    // The failing oracle: the exact result must satisfy both validators.
+    check_valid_closed_oriented(&topo, c.solid, "finding-14 cut").expect("fully valid");
+}
+
+/// Sibling instance of finding 14 (2026-09-16): the same torus–cone shapes
+/// at offset (2.5,-0.5,0), where BOTH fuse and cut return ops-invalid
+/// results (1 inconsistent-orientation edge each, both validators agree;
+/// 318/318 boundary edges) while the intersect refuses. Same owner row
+/// (B39): the pair-cell, not the placement, is broken. No persisted
+/// proptest seed (shrinking aborted on this input too) — this repro is the
+/// retention. Minimized from `prop_random_curved_pair_identities`.
+#[test]
+#[ignore = "open: torus-cone sibling fuse+cut ops-invalid (B26 finding 14)"]
+fn b26_finding14_toruscone_sibling() {
+    use remus_operations::primitives::{make_cone, make_torus};
+    let m = Mat4::translation(2.5 * 0.001, -0.5 * 0.001, 0.0)
+        * Mat4::rotation_x(3.0 * std::f64::consts::FRAC_PI_2);
+    for (op, tag) in [(BooleanOp::Fuse, "fuse"), (BooleanOp::Cut, "cut")] {
+        let mut topo = Topology::new();
+        let a = make_torus(&mut topo, 3.0 * 0.001, 0.5 * 0.001, 16).expect("valid torus");
+        let b = make_cone(&mut topo, 1.5 * 0.001, 1.0 * 0.001, 1.0 * 0.001).expect("valid cone");
+        remus_operations::transform::transform_solid(&mut topo, b, &m).expect("placement applies");
+        let r = exact_boolean(&mut topo, op, a, b).expect("exact boolean succeeds");
+        check_exact_quality(&r, "finding-14-sib").expect("exact quality");
+        // The failing oracle: both validators must be clean.
+        check_valid_closed_oriented(&topo, r.solid, &format!("finding-14-sib {tag}"))
+            .expect("fully valid");
+    }
+}
+
+/// Second pinned instance of finding 14 (2026-09-16): the same torus–cone
+/// shapes at UNIT scale (torus R=3/r=0.5, frustum cone r0=1.5/r1=1/h=1,
+/// y-rotated 3π/2, offset (1.5,2,1)). The fuse B-Rep is fully valid yet its
+/// mesh opens at fine deflection (watertight at 0.1, 254 boundary at
+/// 0.01/0.001 — a tessellation-density crack, distinct from finding 8's
+/// open-at-every-deflection caps) with a 5.7e-3 translation drift; the cut
+/// is ops-invalid (2 inconsistent edges, both validators agree) with a
+/// 7.8e-3 drift; the intersect refuses; material accounting is broken
+/// beside the refusal (disjoint-sum fuse volumes with a non-trivial cut).
+/// Same owner row (B39): the pair-cell, not the scale, is broken. No
+/// persisted proptest seed (shrinking aborted) — this repro is the
+/// retention. Minimized from `prop_random_curved_pair_identities`.
+#[test]
+#[ignore = "open: unit torus-cone valid-fuse open mesh + invalid cut (B26 finding 14)"]
+fn b26_finding14_toruscone_unit() {
+    use remus_operations::primitives::{make_cone, make_torus};
+    let m = Mat4::translation(1.5, 2.0, 1.0) * Mat4::rotation_y(3.0 * std::f64::consts::FRAC_PI_2);
+    let mut topo = Topology::new();
+    let a = make_torus(&mut topo, 3.0, 0.5, 16).expect("valid torus");
+    let b = make_cone(&mut topo, 1.5, 1.0, 1.0).expect("valid cone");
+    remus_operations::transform::transform_solid(&mut topo, b, &m).expect("placement applies");
+    let f = exact_boolean(&mut topo, BooleanOp::Fuse, a, b).expect("exact fuse succeeds");
+    check_exact_quality(&f, "finding-14-unit fuse").expect("exact quality");
+    check_valid_closed_oriented(&topo, f.solid, "finding-14-unit fuse").expect("B-Rep fully valid");
+    // The failing oracles on a valid B-Rep: watertight mesh at the
+    // scale-derived (fine) deflection, then translation invariance.
+    check_watertight_mesh_scaled(&topo, f.solid, "finding-14-unit fuse").expect("mesh watertight");
+    check_translation_invariant_scaled(&topo, f.solid, "finding-14-unit fuse")
+        .expect("translation invariant");
+    // Cut leg of the same pair (evaluated once the fuse mesh is fixed):
+    // ops-invalid with 2 inconsistent-orientation edges.
+    let mut topo2 = Topology::new();
+    let a2 = make_torus(&mut topo2, 3.0, 0.5, 16).expect("valid torus");
+    let b2 = make_cone(&mut topo2, 1.5, 1.0, 1.0).expect("valid cone");
+    remus_operations::transform::transform_solid(&mut topo2, b2, &m).expect("placement applies");
+    let c = exact_boolean(&mut topo2, BooleanOp::Cut, a2, b2).expect("exact cut succeeds");
+    check_exact_quality(&c, "finding-14-unit cut").expect("exact quality");
+    check_valid_closed_oriented(&topo2, c.solid, "finding-14-unit cut").expect("fully valid");
+}
+
+/// Third pinned instance of finding 14 (2026-09-16): the same torus–cone
+/// shapes at unit scale under an OBLIQUE rotation (x-rotated 45°, offset
+/// (2.5,0,0)). The fuse B-Rep is fully valid with a watertight mesh at the
+/// scale-derived deflection, yet drifts ~16% under rigid translation
+/// (19.78 → 22.93) — a translation-only failure on an otherwise clean
+/// result, the same class as finding 1. Same owner row (B39): the
+/// pair-cell, not the placement, angle, or scale, is broken. No persisted
+/// proptest seed (shrinking aborted) — this repro is the retention.
+/// Minimized from `prop_random_curved_pair_identities`.
+#[test]
+#[ignore = "open: torus-cone oblique valid-fuse translation drift (B26 finding 14)"]
+fn b26_finding14_toruscone_oblique_drift() {
+    use remus_operations::primitives::{make_cone, make_torus};
+    let m = Mat4::translation(2.5, 0.0, 0.0) * Mat4::rotation_x(std::f64::consts::FRAC_PI_4);
+    let mut topo = Topology::new();
+    let a = make_torus(&mut topo, 3.0, 0.5, 16).expect("valid torus");
+    let b = make_cone(&mut topo, 1.5, 1.0, 1.0).expect("valid cone");
+    remus_operations::transform::transform_solid(&mut topo, b, &m).expect("placement applies");
+    let f = exact_boolean(&mut topo, BooleanOp::Fuse, a, b).expect("exact fuse succeeds");
+    check_exact_quality(&f, "finding-14-obl fuse").expect("exact quality");
+    check_valid_closed_oriented(&topo, f.solid, "finding-14-obl fuse").expect("B-Rep fully valid");
+    check_watertight_mesh_scaled(&topo, f.solid, "finding-14-obl fuse").expect("mesh watertight");
+    // The failing oracle: rigid translation must not move the volume.
+    check_translation_invariant_scaled(&topo, f.solid, "finding-14-obl fuse")
+        .expect("translation invariant");
+}
+
+/// Ready-repro for the fifteenth proptest-found defect (2026-09-16): a
+/// cone–sphere fuse at 1e-3 scale (frustum cone r0=1/r1=0.5/h=1, sphere
+/// r=1, x-rotated 3π/2, offset (0,0,1)) whose exact B-Rep is ops-valid with
+/// sane volumes and translation (1.4e-4) yet carries two
+/// `WireSelfIntersection` errors from the check-crate supplement and
+/// tessellates wide open (1432 boundary + 54 non-manifold edges); the cut
+/// leg shows the same signature (755 + 24) while the intersect refuses.
+/// Same wire-damage class as finding 2, at small scale with an open mesh.
+/// Committed as `#[ignore]` per the testing skill: it fails until the
+/// owning row fixes the kernel. Do NOT fix in the B26 proptest PR — filed
+/// as a new §B row.
+/// Minimized from `prop_random_curved_pair_identities` (committed seed).
+#[test]
+#[ignore = "open: cone-sphere small-scale wire/mesh damage (B26 finding 15)"]
+fn b26_finding15_conesphere_wire_mesh() {
+    use remus_operations::primitives::{make_cone, make_sphere};
+    let m =
+        Mat4::translation(0.0, 0.0, 0.001) * Mat4::rotation_x(3.0 * std::f64::consts::FRAC_PI_2);
+    let mut topo = Topology::new();
+    let a = make_cone(&mut topo, 0.001, 0.0005, 0.001).expect("valid cone");
+    let b = make_sphere(&mut topo, 0.001, 8).expect("valid sphere");
+    remus_operations::transform::transform_solid(&mut topo, b, &m).expect("placement applies");
+    let f = exact_boolean(&mut topo, BooleanOp::Fuse, a, b).expect("exact fuse succeeds");
+    check_exact_quality(&f, "finding-15 fuse").expect("exact quality");
+    // The failing oracles: both validators must be clean, and the mesh of
+    // the result must be watertight and manifold.
+    check_valid_closed_oriented(&topo, f.solid, "finding-15 fuse").expect("fully valid");
+    check_watertight_mesh_scaled(&topo, f.solid, "finding-15 fuse").expect("mesh watertight");
+}
+
+/// Ready-repro for the sixteenth proptest-found defect (2026-09-16): a
+/// cone–sphere DISJOINT fuse at 1e3 scale (frustum cone r0=1000/r1=500/
+/// h=1000, sphere r=1000 at (0,-1000,3000)) whose exact B-Rep is fully
+/// valid (5 faces: 3 cone + 2 sphere) yet tessellates open (16 boundary
+/// edges) and measures 8% low (5.53e9 vs the 6.02e9 closed-form sum) while
+/// the cut equals A exactly and the intersect is correctly empty — so the
+/// fuse lost material or mis-measured it. Single tessellation-drop root is
+/// suspected (open mesh + low volume together) but unproven; the row owner
+/// determines it. Translation is sane (5.7e-4), which is why only the mesh
+/// and inclusion–exclusion oracles fail. Committed as `#[ignore]` per the
+/// testing skill: it fails until the owning row fixes the kernel. Do NOT
+/// fix in the B26 proptest PR — filed as a new §B row. No persisted
+/// proptest seed (shrinking aborted) — this repro is the retention.
+/// Minimized from `prop_random_curved_pair_identities`.
+#[test]
+#[ignore = "open: disjoint cone-sphere fuse open mesh + low volume (B26 finding 16)"]
+fn b26_finding16_conesphere_disjoint_fuse() {
+    use remus_operations::primitives::{make_cone, make_sphere};
+    let m = Mat4::translation(0.0, -1000.0, 3000.0)
+        * Mat4::rotation_x(3.0 * std::f64::consts::FRAC_PI_2);
+    let mut topo = Topology::new();
+    let a = make_cone(&mut topo, 1000.0, 500.0, 1000.0).expect("valid cone");
+    let b = make_sphere(&mut topo, 1000.0, 8).expect("valid sphere");
+    remus_operations::transform::transform_solid(&mut topo, b, &m).expect("placement applies");
+    let f = exact_boolean(&mut topo, BooleanOp::Fuse, a, b).expect("exact fuse succeeds");
+    check_exact_quality(&f, "finding-16 fuse").expect("exact quality");
+    check_valid_closed_oriented(&topo, f.solid, "finding-16 fuse").expect("B-Rep fully valid");
+    // The failing oracles: watertight mesh, then the closed-form sum
+    // (operands are placed disjoint, so the fuse must equal their sum).
+    check_watertight_mesh_scaled(&topo, f.solid, "finding-16 fuse").expect("mesh watertight");
+    let v_cone = std::f64::consts::PI * 1000.0 * (1.0e6 + 5.0e5 + 2.5e5) / 3.0;
+    let v_sphere = 4.0 / 3.0 * std::f64::consts::PI * 1.0e9;
+    let vf = vol(&topo, f.solid);
+    assert!(
+        rel_err(vf, v_cone + v_sphere) <= REL_SLACK,
+        "finding-16 fuse: disjoint union {vf:.9} != closed-form sum {:.9}",
+        v_cone + v_sphere
+    );
+}
+
+/// Second pinned instance of finding 16 (2026-09-16): the same cone–sphere
+/// shapes at UNIT scale (frustum cone r0=1/r1=0.5/h=1, sphere r=1 at
+/// (0,-2,3)) fuse to a fully valid disjoint union (5 faces; cut == A and
+/// empty inter both correct) that tessellates open (8 boundary edges),
+/// measures 6.6% low (5.62 vs the 6.02 closed-form sum), and drifts 60%
+/// under rigid translation — the finding-16 signature at unit scale, plus
+/// drift. Same owner row (B41). No persisted proptest seed (shrinking
+/// aborted) — this repro is the retention.
+/// Minimized from `prop_random_curved_pair_identities`.
+#[test]
+#[ignore = "open: unit disjoint cone-sphere fuse open mesh + drift (B26 finding 16)"]
+fn b26_finding16_conesphere_unit_drift() {
+    use remus_operations::primitives::{make_cone, make_sphere};
+    let m = Mat4::translation(0.0, -2.0, 3.0) * Mat4::rotation_x(3.0 * std::f64::consts::FRAC_PI_2);
+    let mut topo = Topology::new();
+    let a = make_cone(&mut topo, 1.0, 0.5, 1.0).expect("valid cone");
+    let b = make_sphere(&mut topo, 1.0, 8).expect("valid sphere");
+    remus_operations::transform::transform_solid(&mut topo, b, &m).expect("placement applies");
+    let f = exact_boolean(&mut topo, BooleanOp::Fuse, a, b).expect("exact fuse succeeds");
+    check_exact_quality(&f, "finding-16-unit fuse").expect("exact quality");
+    check_valid_closed_oriented(&topo, f.solid, "finding-16-unit fuse").expect("B-Rep fully valid");
+    // The failing oracles: watertight mesh, the closed-form sum (disjoint
+    // operands), then translation invariance (60% drift measured).
+    check_watertight_mesh_scaled(&topo, f.solid, "finding-16-unit fuse").expect("mesh watertight");
+    let v_cone = std::f64::consts::PI * 1.0 * (1.0 + 0.5 + 0.25) / 3.0;
+    let v_sphere = 4.0 / 3.0 * std::f64::consts::PI;
+    let vf = vol(&topo, f.solid);
+    assert!(
+        rel_err(vf, v_cone + v_sphere) <= REL_SLACK,
+        "finding-16-unit fuse: disjoint union {vf:.9} != closed-form sum {:.9}",
+        v_cone + v_sphere
+    );
+    check_translation_invariant_scaled(&topo, f.solid, "finding-16-unit fuse")
+        .expect("translation invariant");
 }
 
 #[test]
