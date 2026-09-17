@@ -176,6 +176,17 @@ pub enum BlendError {
         reason: String,
     },
 
+    /// The walking builder's spine runs across a tangent seam: a G1 chain
+    /// whose edges do not all lie between the same two faces (a box edge
+    /// continuing onto the arc of an earlier fillet's band). Its stripe is
+    /// computed against one face pair, so it cannot follow such a chain; the
+    /// rolling-ball engine can.
+    #[error("walking blend cannot follow the ridgeline across the tangent seam at edge {edge:?}")]
+    UnsupportedSeamCrossing {
+        /// The first chain edge whose face pair differs from the spine's.
+        edge: EdgeId,
+    },
+
     /// Surface type not supported.
     #[error("unsupported surface on face {face:?}: {surface_tag}")]
     UnsupportedSurface {

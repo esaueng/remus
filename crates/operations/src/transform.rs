@@ -283,8 +283,16 @@ pub fn transform_solid(
                     // Extract uniform scale factor from column magnitudes
                     let m = &matrix.0;
                     let sx = (m[0][0] * m[0][0] + m[1][0] * m[1][0] + m[2][0] * m[2][0]).sqrt();
-                    let new_sph =
-                        remus_math::surfaces::SphericalSurface::new(new_center, sph.radius() * sx)?;
+                    // Carry the frame: a hemisphere's rim is the v = 0
+                    // circle of ITS frame, and a rebuilt world-axis frame
+                    // turns a rotated hemisphere into a tilted trimmed patch
+                    // that the mesher double-covers at the rim (B41).
+                    let new_sph = remus_math::surfaces::SphericalSurface::with_frame(
+                        new_center,
+                        sph.radius() * sx,
+                        transform_direction(matrix, sph.z_axis())?,
+                        transform_direction(matrix, sph.x_axis())?,
+                    )?;
                     topo.face_mut(fid)?
                         .set_surface(FaceSurface::Sphere(new_sph));
                 } else {
@@ -717,8 +725,12 @@ pub(crate) fn transform_face_surface(
                 let new_center = matrix.mul_point(sph.center());
                 let m = &matrix.0;
                 let sx = (m[0][0] * m[0][0] + m[1][0] * m[1][0] + m[2][0] * m[2][0]).sqrt();
-                let new_sph =
-                    remus_math::surfaces::SphericalSurface::new(new_center, sph.radius() * sx)?;
+                let new_sph = remus_math::surfaces::SphericalSurface::with_frame(
+                    new_center,
+                    sph.radius() * sx,
+                    transform_direction(matrix, sph.z_axis())?,
+                    transform_direction(matrix, sph.x_axis())?,
+                )?;
                 topo.face_mut(fid)?
                     .set_surface(FaceSurface::Sphere(new_sph));
             } else {

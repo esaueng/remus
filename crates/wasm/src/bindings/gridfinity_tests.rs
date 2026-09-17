@@ -1535,7 +1535,7 @@ fn gridfinity_d5_box_with_filleted_lip() {
         .expect("lip should have a peak rim edge near Z_PEAK");
 
     // K-S1 fail-closed contract on this exact consumer geometry. The walking
-    // builder refuses the peak rim (`trimming failure`), and the rolling-ball
+    // builder refuses the peak rim (a tangent-seam crossing), and the rolling-ball
     // fallback's answer — which this test historically accepted under the
     // `lip_val <= 2` bar — carries 22 orientation-inconsistent shared edges
     // (a closed, manifold, non-orientable shell: damaged goods that happened
@@ -1564,8 +1564,11 @@ fn gridfinity_d5_box_with_filleted_lip() {
     let error = p5c[0]["error"]
         .as_str()
         .expect("the peak-rim fillet must be a typed refusal, not a damaged success");
+    // The peak rim is one tangent ridgeline of lines and corner arcs; the seed
+    // expands around it, and the walking builder refuses the seam crossing by
+    // name before the rolling-ball engine declines the closed rim.
     assert!(
-        error.contains("trimming failure"),
+        error.contains("tangent seam"),
         "the refusal must name the failing configuration, got: {error}"
     );
 
