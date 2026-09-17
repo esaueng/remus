@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789625944645,
+  "lastUpdate": 1789627917833,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -41389,6 +41389,240 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 80803,
             "range": "± 813",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "281afaa5e101f4d55e09a3c4c4ecec46b3327c86",
+          "message": "fix(algo): trace closed tube-wrapping torus sections as band loops (B37) (#490)\n\nA torus tube that enters a tool through one face and leaves through\nanother (a cap plane through the torus axis, an oblique cone wall) yields\ntwo CLOSED sections that each wrap the tube angle. The band tracer\naccepted only stitched open arcs, so both went to the internal-loops path\nas inner wires of the untouched periodic outer wire. That form passes the\nfree-edge census, Euler and validate_solid; the torus mesher skins the\n\"holes\" over and both integrators misread it (solid_volume 743.58,\nmass_properties 742.66, true 738.30), inside the fuzz harness's agreement\nband. Found by Fuzz Smoke run 35180928629 (modifier_ops crash-71dbb118),\nwhich blamed the fillet that followed.\n\nClosed sections now enter split_torus_band_by_arrangement as one-edge\nloops; the existing phi-winding check still defers a closed section that\ndoes not wrap the tube (a disc hole). Junction snapping skips one-edge\nloops and each loop's ring angle is sampled along its edges. The gate no\nlonger requires all-open sections.\n\nRegression fixture pins the band form, 738.30 within 0.2 %, watertight\nmeshes at 0.1/0.01/harness deflection, and the fuzz's fillet assertion;\nthe crash unit is committed as a corpus seed. Files B37 (done) and B38\n(open: the fillet band meshes open at deflection 0.1 and 0.01; ignored\nwitness in the same fixture).\n\nCo-authored-by: Claude Fable 5.1 <noreply@anthropic.com>",
+          "timestamp": "2026-09-17T02:42:51-04:00",
+          "tree_id": "5f278bb59fb9a381c95c4e6fb1be39fea277bb9e",
+          "url": "https://github.com/esaueng/remus/commit/281afaa5e101f4d55e09a3c4c4ecec46b3327c86"
+        },
+        "date": 1789627916404,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1230231,
+            "range": "± 10390",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1333952,
+            "range": "± 2061",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 26831,
+            "range": "± 66",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 11075957,
+            "range": "± 21625",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 11090742,
+            "range": "± 74212",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 10677384,
+            "range": "± 45708",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 1038479,
+            "range": "± 1618",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 17653014,
+            "range": "± 138465",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 32136338,
+            "range": "± 428368",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 28,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 109,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 59,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 222,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 164,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 743,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 137,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 338,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 246,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 491,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 954,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 2652,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 12,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 30,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 61,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 61,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 579836,
+            "range": "± 1409",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 11226733,
+            "range": "± 11367",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 178487,
+            "range": "± 348",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 639600,
+            "range": "± 1061",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 119768,
+            "range": "± 218",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 979100,
+            "range": "± 1566",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 11511664,
+            "range": "± 80695",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 741426,
+            "range": "± 965",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 1141134,
+            "range": "± 4659",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 79017,
+            "range": "± 689",
             "unit": "ns/iter"
           }
         ]
