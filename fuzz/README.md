@@ -49,7 +49,11 @@ rim — reported an open mesh on the fillet that was really the fuse's: the two
 closed tube-wrapping pierce sections were filed as inner wires of the full
 periodic torus face, which the mesher skinned over and both volume routes
 misread by less than the agreement band. The band tracer now accepts closed
-sections (B45).
+sections (B45). Its third seed — a box fused with a disjoint sphere rotated 45°
+about Y, then a draft — failed the base body's closed-form volume before the
+modifier ran: the rotated sphere's two hemispheres swept the same pole after a
+rigid move rebuilt the surface on world axes, so the fused mesh was open and
+read 22 % low while the exact route was right (B41).
 
 `arena_roundtrip` builds bounded boxes and cylinders (census and closed-form
 volumes known by construction) with duplicate roots, shared-shell aliases,
