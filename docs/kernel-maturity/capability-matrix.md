@@ -364,11 +364,13 @@ does not itself promote or demote anything.
   input, with exact prism-volume native/direct/batch WASM oracles. Open and
   non-planar Wire profiles are Unsupported-typed and rollback exactly.
 - B12 qualifies disjoint rectangular iso-parametric holes on four-sided
-  bilinear sweep/pipe caps. Native B-Rep/manifold, watertight-mesh, classifier,
-  and converged-volume witnesses match an independently extruded annulus;
+  bilinear sweep/pipe caps, and — via the annular-Coons cell — the same hole
+  class on n-sided Coons-carrier caps as single trimmed faces. Native
+  B-Rep/manifold, watertight-mesh, classifier, and converged-volume witnesses
+  match an independently extruded annulus;
   direct WASM and `executeBatch` repeat the contract. Off-surface, curved,
-  touching/overlapping, and n-sided holed trims refuse typed. Loft-hole
-  correspondence and holed partial revolutions remain Unsupported-typed.
+  touching/overlapping, and multi-span-straddling hole trims refuse typed.
+  Loft-hole correspondence and holed partial revolutions remain Unsupported-typed.
 - Known gaps: degenerate/cavity matrices, topology and nonconvergence
   budgets, termination/performance evidence incomplete; guide rails, laws,
   periodic lofts, continuity options, and broader wire curve/scale matrices
