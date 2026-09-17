@@ -705,6 +705,62 @@ fn hole_rim(name: &str) -> Observed {
     successful_fillet(topo, input, &[rim], 0.75, name)
 }
 
+/// The seed beside the first fillet's band: the edge `fillet_the_fillet`
+/// selects, on a body it builds the same way.
+fn edge_beside_first_band(name: &str) -> (Topology, SolidId, EdgeId) {
+    let mut topo = Topology::new();
+    let input = make_box(&mut topo, 16.0, 14.0, 12.0).unwrap();
+    let first_edge = edge_between(
+        &topo,
+        input,
+        Point3::new(0.0, 0.0, 0.0),
+        Point3::new(0.0, 0.0, 12.0),
+    );
+    let first = fillet_v2(&mut topo, input, &[first_edge], 2.0).expect("first fillet");
+    assert_built(&topo, input, first.solid, &format!("{name}/first"));
+
+    let adjacency = topo.build_adjacency(first.solid).unwrap();
+    let candidates = filter_filletable_edges(
+        &topo,
+        first.solid,
+        &solid_edges(&topo, first.solid).unwrap(),
+    )
+    .unwrap();
+    let second_edge = candidates
+        .into_iter()
+        .find(|&edge_id| {
+            adjacency.faces_for_edge(edge_id).iter().any(|&face_id| {
+                matches!(
+                    topo.face(face_id).unwrap().surface(),
+                    FaceSurface::Cylinder(_) | FaceSurface::Nurbs(_)
+                )
+            })
+        })
+        .expect("filletable edge bordering the first blend band");
+    (topo, first.solid, second_edge)
+}
+
+/// The same seed through the production cascade: the walking engine's
+/// seam-crossing refusal must fall through to the rolling-ball engine, which
+/// follows the ridgeline across the band and builds it.
+fn fillet_the_fillet_cascade(name: &str) -> Observed {
+    let (mut topo, first, second_edge) = edge_beside_first_band(name);
+    let before = snapshot(&topo, first);
+    match remus_operations::blend_ops::fillet_cascade(&mut topo, first, &[second_edge], 0.5) {
+        Ok(second) => Observed::Built {
+            topo,
+            input: first,
+            output: second.solid,
+        },
+        Err(error) => Observed::TypedRefusal {
+            topo,
+            input: first,
+            error,
+            before,
+        },
+    }
+}
+
 fn fillet_the_fillet(name: &str) -> Observed {
     let mut topo = Topology::new();
     let input = make_box(&mut topo, 16.0, 14.0, 12.0).unwrap();
@@ -799,8 +855,13 @@ const CASES: &[TortureCase] = &[
     },
     TortureCase {
         name: "fillet-the-fillet",
-        expected: Expected::TypedRefusal("trimming-failure"),
+        expected: Expected::TypedRefusal("unsupported-seam-crossing"),
         run: fillet_the_fillet,
+    },
+    TortureCase {
+        name: "fillet-the-fillet-cascade",
+        expected: Expected::Built,
+        run: fillet_the_fillet_cascade,
     },
 ];
 
