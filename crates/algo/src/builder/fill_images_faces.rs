@@ -596,7 +596,11 @@ pub fn fill_images_faces<S: BuildHasher, S2: BuildHasher>(
                     .as_ref()
                     .and_then(|f| match f.surface() {
                         FaceSurface::Plane { normal, .. } => Some(*normal),
-                        _ => None,
+                        FaceSurface::Nurbs(_)
+                        | FaceSurface::Cylinder(_)
+                        | FaceSurface::Cone(_)
+                        | FaceSurface::Sphere(_)
+                        | FaceSurface::Torus(_) => None,
                     })
                     .unwrap_or(remus_math::vec::Vec3::new(0.0, 0.0, 1.0));
                 let wire_pts: Vec<_> = face
@@ -1687,7 +1691,14 @@ fn compute_winding_loop_cuts(topo: &Topology, arena: &GfaArena, tol: Tolerance) 
 fn equal_radius_cylinder_pair(topo: &Topology, a: FaceId, b: FaceId) -> bool {
     let radius = |f: FaceId| match topo.face(f).map(Face::surface) {
         Ok(FaceSurface::Cylinder(c)) => Some(c.radius()),
-        _ => None,
+        Ok(
+            FaceSurface::Plane { .. }
+            | FaceSurface::Nurbs(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_),
+        ) => None,
+        Err(_) => None,
     };
     match (radius(a), radius(b)) {
         (Some(ra), Some(rb)) => (ra - rb).abs() <= SEAM_ON_CIRCLE_TOL * ra.abs().max(1.0),
@@ -1992,7 +2003,11 @@ fn cap_disc_circle(topo: &Topology, face_id: FaceId) -> Option<remus_math::curve
     let edge = topo.edge(wire.edges()[0].edge()).ok()?;
     match edge.curve() {
         EdgeCurve::Circle(c) => Some(c.clone()),
-        _ => None,
+        EdgeCurve::Line
+        | EdgeCurve::NurbsCurve(_)
+        | EdgeCurve::Ellipse(_)
+        | EdgeCurve::Hyperbola(_)
+        | EdgeCurve::Parabola(_) => None,
     }
 }
 
@@ -2594,7 +2609,10 @@ fn circle_inside_face(
     let origin = Point3::new(0.0, 0.0, 0.0);
     let (t0, t1) = match curve {
         EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_) => (0.0, std::f64::consts::TAU),
-        _ => return Ok(false),
+        EdgeCurve::Line
+        | EdgeCurve::NurbsCurve(_)
+        | EdgeCurve::Hyperbola(_)
+        | EdgeCurve::Parabola(_) => return Ok(false),
     };
     for k in 0..16 {
         #[allow(clippy::cast_precision_loss)]
@@ -2670,7 +2688,15 @@ fn closed_curve_coincides_with_boundary(
             let coincides = match (curve, edge.curve()) {
                 (EdgeCurve::Circle(a), EdgeCurve::Circle(b)) => circles_match(a, b),
                 (EdgeCurve::Ellipse(a), EdgeCurve::Ellipse(b)) => ellipses_match(a, b),
-                _ => false,
+                (
+                    EdgeCurve::Line
+                    | EdgeCurve::NurbsCurve(_)
+                    | EdgeCurve::Circle(_)
+                    | EdgeCurve::Ellipse(_)
+                    | EdgeCurve::Hyperbola(_)
+                    | EdgeCurve::Parabola(_),
+                    _,
+                ) => false,
             };
             if coincides {
                 return true;
@@ -3314,7 +3340,11 @@ fn segment_between_boundary_arcs(
         .flatten()
         .filter_map(|(curve, _, _, _, _)| match curve {
             EdgeCurve::Circle(c) => Some((c.center() - line_start).length() + c.radius()),
-            _ => None,
+            EdgeCurve::Line
+            | EdgeCurve::NurbsCurve(_)
+            | EdgeCurve::Ellipse(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_) => None,
         })
         .fold(0.0_f64, f64::max)
         + line_len;
@@ -3446,7 +3476,11 @@ fn clip_line_to_face_extent(
             let ext_end = line_end + line_dir;
             let clip_plane_normal = match face.surface() {
                 FaceSurface::Plane { normal, .. } => Some(*normal),
-                _ => None,
+                FaceSurface::Nurbs(_)
+                | FaceSurface::Cylinder(_)
+                | FaceSurface::Cone(_)
+                | FaceSurface::Sphere(_)
+                | FaceSurface::Torus(_) => None,
             };
             let arc_hits = arc_segment_crossings(
                 curve,
@@ -3593,7 +3627,11 @@ fn clip_line_to_face_extent(
                 *normal, &pts,
             ))
         }
-        _ => None,
+        FaceSurface::Nurbs(_)
+        | FaceSurface::Cylinder(_)
+        | FaceSurface::Cone(_)
+        | FaceSurface::Sphere(_)
+        | FaceSurface::Torus(_) => None,
     };
     let poly: Option<Vec<remus_math::vec::Point2>> = plane_frame.as_ref().map(|frame| {
         let mut poly = Vec::new();
@@ -4189,7 +4227,11 @@ fn build_topology_face(
                 )
                 .is_some()
             }
-            _ => false,
+            remus_topology::face::FaceSurface::Plane { .. }
+            | remus_topology::face::FaceSurface::Cylinder(_)
+            | remus_topology::face::FaceSurface::Cone(_)
+            | remus_topology::face::FaceSurface::Sphere(_)
+            | remus_topology::face::FaceSurface::Torus(_) => false,
         };
         if !wall_pcurves_only {
             return Ok(Some(face_id));
@@ -5104,7 +5146,11 @@ mod tests {
         let edge = circle_wire_edge(Some(trim), false);
         let circle = match &edge.curve_3d {
             EdgeCurve::Circle(circle) => circle.clone(),
-            _ => unreachable!(),
+            EdgeCurve::Line
+            | EdgeCurve::NurbsCurve(_)
+            | EdgeCurve::Ellipse(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_) => unreachable!(),
         };
         let mut topo = Topology::new();
         let (edge_id, forward) = instantiate_test_edge(&mut topo, &edge).unwrap();
