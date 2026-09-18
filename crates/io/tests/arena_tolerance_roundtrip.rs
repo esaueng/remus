@@ -136,5 +136,13 @@ fn translated_certified_endpoint_survives_strict_arena_transfer() {
     let mut restored = Topology::new();
     let solids = deserialize_solids(&after, &mut restored).unwrap();
     assert_eq!(serialize_solids(&restored, &solids).unwrap(), after);
-    assert!(source.edge(edge_id).unwrap().tolerance().unwrap() - gap < 1e-15);
+    // The carried certificate keeps the coordinate-scale budget as slack for
+    // cross-platform re-evaluation (#483): budget-scale above the gap, not
+    // residual-ulp scale.
+    let carried = source.edge(edge_id).unwrap().tolerance().unwrap();
+    assert!(
+        carried - gap < 1e-12,
+        "carried tolerance must stay budget-scale, got {}",
+        carried - gap
+    );
 }
