@@ -210,6 +210,80 @@ pub(super) fn tessellate_analytic_with_boundary(
     })
 }
 
+/// Constraint segments of one cylindrical chart, bucketed along `v` so that a
+/// point-on-constraint query touches only the segments spanning its row.
+struct ConstraintIndex {
+    segments: Vec<(remus_math::vec::Point2, remus_math::vec::Point2)>,
+    buckets: Vec<Vec<usize>>,
+    v_min: f64,
+    inv_bucket: f64,
+    tol: f64,
+}
+
+impl ConstraintIndex {
+    fn new(
+        segments: Vec<(remus_math::vec::Point2, remus_math::vec::Point2)>,
+        v_range: (f64, f64),
+        tol: f64,
+    ) -> Self {
+        let bucket_count = segments.len().clamp(1, 4096);
+        let span = (v_range.1 - v_range.0).max(f64::EPSILON);
+        #[allow(clippy::cast_precision_loss)]
+        let inv_bucket = bucket_count as f64 / span;
+        let mut buckets = vec![Vec::new(); bucket_count];
+        let last = bucket_count - 1;
+        let bucket_of = |v: f64| -> usize {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let b = ((v - v_range.0) * inv_bucket).floor().max(0.0) as usize;
+            b.min(last)
+        };
+        for (i, &(a, b)) in segments.iter().enumerate() {
+            let lo = bucket_of(a.y().min(b.y()) - tol);
+            let hi = bucket_of(a.y().max(b.y()) + tol);
+            for bucket in &mut buckets[lo..=hi] {
+                bucket.push(i);
+            }
+        }
+        Self {
+            segments,
+            buckets,
+            v_min: v_range.0,
+            inv_bucket,
+            tol,
+        }
+    }
+
+    /// Whether `pt` lies within the index tolerance of any segment.
+    fn contains(&self, pt: remus_math::vec::Point2) -> bool {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let b = ((pt.y() - self.v_min) * self.inv_bucket).floor().max(0.0) as usize;
+        let Some(bucket) = self.buckets.get(b.min(self.buckets.len() - 1)) else {
+            return false;
+        };
+        let tol = self.tol;
+        bucket.iter().any(|&i| {
+            let (a, b) = self.segments[i];
+            let lo_x = a.x().min(b.x()) - tol;
+            let hi_x = a.x().max(b.x()) + tol;
+            let lo_y = a.y().min(b.y()) - tol;
+            let hi_y = a.y().max(b.y()) + tol;
+            if pt.x() < lo_x || pt.x() > hi_x || pt.y() < lo_y || pt.y() > hi_y {
+                return false;
+            }
+            let d = b - a;
+            let w = pt - a;
+            let len2 = d.dot(d);
+            let t = if len2 > 0.0 {
+                (w.dot(d) / len2).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let closest = a + d * t;
+            (pt - closest).length() <= tol
+        })
+    }
+}
+
 /// Sample one cylindrical face wire into exact 3D boundary positions and a
 /// continuous UV loop.
 fn sample_cylinder_wire(
@@ -524,6 +598,9 @@ pub(super) fn tessellate_revolved_with_holes(
     // the error of the limiting inscribed polygon without changing the caller's
     // deflection or angular tolerance.
     .saturating_add(1);
+    // Interior seeds and grid points are collected first and admitted below
+    // only when they stay clear of every wire constraint.
+    let mut interior_uvs: Vec<CylinderUv> = Vec::new();
     for iu in 0..=nu {
         #[allow(clippy::cast_precision_loss)]
         let u = (outer_u.1 - outer_u.0).mul_add(iu as f64 / nu as f64, outer_u.0);
@@ -541,8 +618,7 @@ pub(super) fn tessellate_revolved_with_holes(
                 .sum::<usize>()
                 .is_multiple_of(2);
             if kept {
-                all_positions.push(cyl.evaluate(u, v));
-                all_uvs.push((u, v));
+                interior_uvs.push((u, v));
             }
         }
     }
@@ -565,9 +641,46 @@ pub(super) fn tessellate_revolved_with_holes(
         for iv in 1..nv {
             #[allow(clippy::cast_precision_loss)]
             let v = (outer_v.1 - outer_v.0).mul_add(iv as f64 / nv as f64, outer_v.0);
-            all_positions.push(cyl.evaluate(u, v));
-            all_uvs.push((u, v));
+            interior_uvs.push((u, v));
         }
+    }
+
+    // An interior point that lands ON a wire constraint is not harmless: the
+    // CDT recovers the constraint through it, so the rim polyline gains a
+    // vertex the shared edge pool never sampled and the neighbouring face
+    // cannot close against it (B47: a box pocket straddling the wall's
+    // mid-height puts the column seeds exactly on its bottom arc). Drop such
+    // points; the surrounding rows and columns still seed every strip.
+    let constraint_segments = {
+        let mut segments: Vec<(Point2, Point2)> = Vec::new();
+        let chart = |&(u, v): &CylinderUv| Point2::new(radius * u, v);
+        let mut push_loop = |start: usize, end: usize| {
+            let count = end - start;
+            for i in 0..count {
+                let a = chart(&all_uvs[start + i]);
+                let b = chart(&all_uvs[start + (i + 1) % count]);
+                segments.push((a, b));
+            }
+        };
+        push_loop(0, outer_count);
+        for &(start, end) in &pocket_ranges {
+            push_loop(start, end);
+        }
+        for &(start, end) in &band_ranges {
+            for i in start..end.saturating_sub(1) {
+                segments.push((chart(&all_uvs[i]), chart(&all_uvs[i + 1])));
+            }
+        }
+        segments
+    };
+    let on_tol = 1e-9 * radius.mul_add(std::f64::consts::TAU, outer_v.1 - outer_v.0);
+    let constraints = ConstraintIndex::new(constraint_segments, outer_v, on_tol);
+    for (u, v) in interior_uvs {
+        if constraints.contains(Point2::new(radius * u, v)) {
+            continue;
+        }
+        all_positions.push(cyl.evaluate(u, v));
+        all_uvs.push((u, v));
     }
 
     let pts2d: Vec<Point2> = all_uvs
@@ -1857,6 +1970,22 @@ mod tests {
     #[test]
     fn cylinder_grid_rows_accepts_bounded_grid() {
         assert_eq!(cylinder_grid_rows(0.5, 10.0, 18).unwrap(), 20);
+    }
+
+    #[test]
+    fn interior_point_on_constraint_is_detected() {
+        use remus_math::vec::Point2;
+        let segments = vec![
+            (Point2::new(0.0, 0.0), Point2::new(2.0, 0.0)),
+            (Point2::new(2.0, 0.0), Point2::new(2.0, 1.0)),
+        ];
+        let index = super::ConstraintIndex::new(segments, (-1.0, 2.0), 1e-9);
+        assert!(index.contains(Point2::new(1.0, 0.0)));
+        assert!(index.contains(Point2::new(2.0, 0.5)));
+        assert!(index.contains(Point2::new(2.0, 1.0)));
+        assert!(!index.contains(Point2::new(1.0, 1e-6)));
+        assert!(!index.contains(Point2::new(3.0, 0.0)));
+        assert!(!index.contains(Point2::new(1.0, 1.5)));
     }
 
     #[test]
