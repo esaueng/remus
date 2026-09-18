@@ -209,7 +209,7 @@ harness's own option-honoured floor misreading a correct 0.05 fillet on an
   depth by geometric containment (stored winding cannot classify them).
 - **A wire with no angular gap is a wrapped face;** any consumer that
   polygon-approximates it inherits the parity flip.
-- **Two tube-wrapping torus rims bound an oriented band, not ordinary holes;** preserve opposite traversal through Fuse and integrate the retained side (`pclass_torus_notch_orientation.rs`).
+- **Two tube-wrapping torus rims bound an oriented band, not ordinary holes;** preserve opposite traversal through Fuse and integrate the retained side (`pclass_torus_notch_orientation.rs`). Closed pierce sections are band rims too: trace them as one-edge band loops, the φ-winding check still deferring non-wrapping disc holes (B45, `crates/operations/tests/regress_torus_pierce_band.rs`).
 - **Full mesh area + zero boundary/non-manifold edges + volume deficit + zero
   inverted normals = sparse-interior deep chords, not winding.**
 - **When a range and a mask disagree, instrument both before blaming either**
@@ -239,6 +239,9 @@ harness's own option-honoured floor misreading a correct 0.05 fillet on an
   counts below a pin are benign density difference; 10× above is a defect;
   a volume that disagrees with a pin can be Remus being MORE exact (the
   snapClip clip volume, the K0.1 parabolic fillet file).
+- **Rigid-motion paths must carry a placed carrier's frame, not rebuild it default-aligned:** re-creating a moved sphere from center + radius silently un-rotated it, tilting the equator against its hemispheres and breaking pole choice and CDT bounds three ways (B41, `crates/operations/tests/regress_sphere_transform_frame.rs`, PR #495).
+- **A seam that stops a blend chain walk is either a genuine surface transition (cross it) or a same-surface split (stop):** check outward normals pairwise plus an actual surface change before refusing; the equal-radius corner degenerates to a sphere with a singular Jacobian and needs the closed form (sequential fillet, `crates/blend/src/g1_chain.rs`, PR #496).
+- **Pin reusable-workflow callers only to main-reachable commits, never pre-squash branch SHAs:** a deleted source branch turns every PR's Classify Changes job into `fatal: path ... exists on disk, but not in ...` (`fuzz.yml` fleet-fuzz pin, PR #499, still OPEN).
 
 ## Subsystem trap notes (crates without their own skill)
 
