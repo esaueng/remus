@@ -1,0 +1,185 @@
+crate,enum,variant,message,has_code,reachable_from_wasm,embeds_values
+math,MathError,InvalidDegree,invalid NURBS degree {degree} with {control_points} control points: degree must be at least 1 and less than the control point count,yes (invalid_input/invalid_nurbs_degree),yes,yes
+math,MathError,InvalidKnotVector,invalid knot vector: expected {expected} knots got {got},yes (invalid_input/invalid_knot_vector),yes,yes
+math,MathError,InvalidKnotValue,"invalid NURBS knot at index {index}: expected a finite value not less than the previous knot, got {value}",yes (invalid_input/invalid_knot_value),yes,yes
+math,MathError,InvalidWeights,invalid weights: expected {expected} weights got {got},yes (invalid_input/invalid_weights),yes,yes
+math,MathError,InvalidWeightValue,"invalid NURBS weight at index {index}: expected a finite positive value, got {value}",yes (invalid_input/invalid_weight_value),yes,yes
+math,MathError,InvalidControlPointValue,"invalid NURBS control point at index {index}: expected finite coordinates, got ({x}, {y}, {z})",yes (invalid_input/invalid_control_point_value),yes,yes
+math,MathError,InvalidControlPointGrid,"invalid control point grid: expected {expected_rows}x{expected_cols}, got inconsistent dimensions",yes (invalid_input/invalid_control_point_grid),yes,yes
+math,MathError,ZeroVector,cannot normalize zero vector,yes (invalid_input/zero_vector),yes,no
+math,MathError,SingularMatrix,singular matrix cannot be inverted,yes (invalid_input/singular_matrix),yes,no
+math,MathError,EmptyInput,empty input where at least one element is required,yes (invalid_input/empty_input),yes,no
+math,MathError,ParameterOutOfRange,"parameter {value} out of range [{min}, {max}]",yes (invalid_input/parameter_out_of_range),yes,yes
+math,MathError,ConvergenceFailure,Newton iteration did not converge after {iterations} iterations,yes (nonconvergence/newton_nonconvergence),yes,yes
+math,MathError,Cancelled,operation cancelled,yes (cancelled/operation_cancelled),yes,no
+geometry,GeomError,Math,transparent (re-emits inner MathError Display),delegated (via MathError),transitive (via OperationsError::Geometry),no
+geometry,GeomError,DegenerateInput,degenerate input: {0},no,transitive (via OperationsError::Geometry),no
+geometry,GeomError,ConvergenceFailure,convergence failure after {iterations} iterations,no,transitive (via OperationsError::Geometry),yes
+geometry,GeomError,EmptyInput,empty input,no,transitive (via OperationsError::Geometry),no
+topology,TopologyError,VertexNotFound,vertex {0:?} not found,yes (invalid_input/entity_not_found),yes,yes
+topology,TopologyError,EdgeNotFound,edge {0:?} not found,yes (invalid_input/entity_not_found),yes,yes
+topology,TopologyError,WireNotFound,wire {0:?} not found,yes (invalid_input/entity_not_found),yes,yes
+topology,TopologyError,FaceNotFound,face {0:?} not found,yes (invalid_input/entity_not_found),yes,yes
+topology,TopologyError,ShellNotFound,shell {0:?} not found,yes (invalid_input/entity_not_found),yes,yes
+topology,TopologyError,SolidNotFound,solid {0:?} not found,yes (invalid_input/entity_not_found),yes,yes
+topology,TopologyError,CompoundNotFound,compound {0:?} not found,yes (invalid_input/entity_not_found),yes,yes
+topology,TopologyError,CompSolidNotFound,compsolid {0:?} not found,yes (invalid_input/entity_not_found),yes,yes
+topology,TopologyError,WireNotClosed,wire is not closed,yes (invalid_topology/wire_not_closed),yes,no
+topology,TopologyError,NonManifold,non-manifold topology: {reason},yes (invalid_topology/non_manifold),yes,no
+topology,TopologyError,Empty,"empty {entity} — at least one element is required",yes (invalid_input/empty_collection),yes,no
+topology,TopologyError,NotPlanar,wire is not planar,yes (invalid_topology/wire_not_planar),yes,no
+topology,TopologyError,LoopNotFound,loop {0:?} not found,yes (invalid_input/entity_not_found),yes,yes
+topology,TopologyError,CoedgeNotFound,coedge {0:?} not found,yes (invalid_input/entity_not_found),yes,yes
+topology,TopologyError,LoopWireMismatch,boundary loops of face {face:?} do not match its compatibility wires,yes (internal/loop_wire_mismatch),yes,yes
+topology,TopologyError,LoopNotConnected,loop of face {face:?} is not connected,yes (invalid_topology/loop_not_connected),yes,yes
+topology,TopologyError,SeamPcurveAmbiguous,"pcurve request for edge {edge:?} on face {face:?} is ambiguous: the face uses this edge twice (seam); address the use by orientation",yes (invalid_topology/seam_pcurve_ambiguous),yes,yes
+topology,TopologyError,InvalidColorChannel,"invalid color channel {channel}: {value} (expected finite in [0, 1])",yes (invalid_input/invalid_color_channel),yes,yes
+topology,TopologyError,InvalidToleranceValue,invalid {entity} tolerance {value}: must be finite and non-negative,yes (invalid_input/entity_tolerance_invalid),yes,yes
+topology,TopologyError,InvalidBodyClass,{entity} cannot be tagged as a {body_class} body,yes (invalid_topology/body_class_unresolved),yes,no
+topology,TopologyError,BodyClassMismatch,"{entity} has body class {actual}, expected {expected}",yes (invalid_topology/body_class_unresolved),yes,no
+topology,TopologyError,VertexBallExceeded,"edge {edge:?} leaves the ball of vertex {vertex:?}: curve endpoint is {deviation} from the vertex point (ball {tolerance})",yes (tolerance_violation/vertex_ball_violation),yes,yes
+topology,TopologyError,EdgeTubeExceeded,"pcurve of edge {edge:?} on face {face:?} deviates {max_deviation} from the 3D curve, beyond the effective tube tolerance {tolerance} at parameter {at_parameter}",yes (tolerance_violation/edge_tube_violation),yes,yes
+topology,TopologyError,SameParameterExceeded,"pcurve of edge {edge:?} on face {face:?} deviates {max_deviation} from the 3D curve (limit {tolerance}) at parameter {at_parameter}",yes (tolerance_violation/same_parameter_exceeded),yes,yes
+topology,TopologyError,JournalDuplicateEvent,journal entry records entity ordinal {ordinal} twice,yes (invalid_input/journal_duplicate_event),yes,yes
+topology,TopologyError,RefAmbiguous,persistent reference is ambiguous over {candidates} candidates: {reason},yes (invalid_input/ref_ambiguous),yes,yes
+topology,TopologyError,RefDangling,persistent reference dangles: target deleted by operation {deleted_at},yes (invalid_input/ref_dangling),yes,yes
+topology,TopologyError,RefUnresolvedAcrossOperation,"persistent reference cannot resolve across operation {op} ({operation_kind}): its records do not carry this entity",yes (unsupported/ref_unresolved_across_operation),yes,yes
+topology,TopologyError,RefUnknownOperation,persistent reference anchors to unknown operation {op},yes (invalid_input/ref_unknown_operation),yes,yes
+topology,TopologyError,RefNoMatch,persistent reference matches nothing: {reason},yes (invalid_input/ref_no_match),yes,no
+topology,TopologyError,JournalSnapshotInvalid,journal snapshot invalid: {reason},yes (invalid_input/journal_snapshot_invalid),yes,no
+topology,TopologyError,SameRangeExceeded,"pcurve of edge {edge:?} on face {face:?} misses the edge's endpoints by {max_deviation} (limit {tolerance})",yes (tolerance_violation/same_range_exceeded),yes,yes
+topology,DeleteSolidError,Topology,transparent (TopologyError),no,transitive (via LifecycleError::DeleteSolid),no
+topology,DeleteSolidError,Referenced,solid {solid:?} is referenced by live {dependent} {dependent_index},no,transitive (via LifecycleError::DeleteSolid),yes
+topology,EdgeDomainError,Missing,{curve_type} edge has no authoritative parameter range,yes (invalid_topology/edge_domain_missing),transitive (stringified via heal/check helpers),no
+topology,EdgeDomainError,Invalid,{curve_type} edge has invalid parameter range [{start} {end}],yes (invalid_topology/edge_domain_invalid),transitive (stringified via heal/check helpers),yes
+topology,BoundaryAuthorityError,Topology,transparent (TopologyError),delegated (via TopologyError),transitive (stringified into ValidationIssue),no
+topology,BoundaryAuthorityError,LoopOwnershipInvalid,loop {loop_id:?} has {owners} face owners (expected exactly one),yes (invalid_topology/loop_ownership_invalid),transitive (stringified into ValidationIssue),yes
+topology,BoundaryAuthorityError,CoedgeOwnershipInvalid,coedge {coedge:?} has {owners} loop owners (expected exactly one),yes (invalid_topology/coedge_ownership_invalid),transitive (stringified into ValidationIssue),yes
+topology,BoundaryAuthorityError,DuplicateOrientedUse,edge {edge:?} on face {face:?} has duplicate {orientation} boundary uses,yes (invalid_topology/boundary_use_ambiguous),transitive (stringified into ValidationIssue),yes
+topology,BoundaryAuthorityError,IndexMismatch,{orientation} use of edge {edge:?} on face {face:?} is not indexed to coedge {coedge:?},yes (internal/coedge_index_mismatch),transitive (stringified into ValidationIssue),yes
+topology,BoundaryAuthorityError,IncompleteSeamPcurves,seam edge {edge:?} on face {face:?} stores {stored} of {uses} required pcurve branches,yes (invalid_topology/seam_pcurve_incomplete),transitive (stringified into ValidationIssue),yes
+topology,BoundaryAuthorityError,WindingWithoutPcurve,coedge {coedge:?} carries periodic winding without a pcurve,yes (invalid_topology/coedge_winding_without_pcurve),transitive (stringified into ValidationIssue),yes
+topology,CurveUseValidationError,Topology,transparent (TopologyError),delegated (via TopologyError),transitive (stringified into ValidationIssue),no
+topology,CurveUseValidationError,EdgeDomain,transparent (EdgeDomainError),delegated (via EdgeDomainError),transitive (stringified into ValidationIssue),no
+topology,CurveUseValidationError,NonFinitePcurveUse,"pcurve of edge {edge:?} on face {face:?} ({orientation}) is non-finite in {component}",yes (invalid_topology/pcurve_non_finite),transitive (stringified into ValidationIssue),yes
+topology,CurveUseValidationError,InvalidTolerance,invalid curve-use validation tolerance {tolerance},yes (invalid_input/curve_use_tolerance_invalid),transitive (stringified into ValidationIssue),yes
+topology,CurveUseValidationError,SameParameterProofUnavailable,"SameParameter proof is unavailable for {pcurve_type} pcurve / {surface_type} surface / {edge_type} edge on {orientation} use of edge {edge:?} face {face:?}",yes (unsupported/same_parameter_proof_unavailable),transitive (stringified into ValidationIssue),yes
+topology,CurveUseValidationError,SameRangeProofUnavailable,"SameRange proof is unavailable for {surface_type} surface on {orientation} use of edge {edge:?} face {face:?}",yes (unsupported/same_range_proof_unavailable),transitive (stringified into ValidationIssue),yes
+algo,AlgoError,Topology,topology error: {0},delegated (via TopologyError),transitive (via OperationsError::Algo),no
+algo,AlgoError,Math,math error: {0},delegated (via MathError),transitive (via OperationsError::Algo),no
+algo,AlgoError,IntersectionFailed,intersection failed: {0},yes (internal/intersection_failed),transitive (via OperationsError::Algo),no
+algo,AlgoError,FaceSplitFailed,face splitting failed: {0},yes (internal/face_split_failed),transitive (via OperationsError::Algo),no
+algo,AlgoError,AssemblyFailed,assembly failed: {0},yes (internal/assembly_failed),transitive (via OperationsError::Algo),no
+algo,AlgoError,ClassificationFailed,classification failed: {0},yes (internal/classification_failed),transitive (via OperationsError::Algo),no
+algo,AlgoError,UnsupportedCurve,unsupported edge curve type `{variant}`: the boolean engine cannot intersect or split this curve yet,yes (unsupported/unsupported_edge_curve),transitive (via OperationsError::Algo),no
+algo,AlgoError,UnsupportedSurfacePair,unsupported surface pair `{a}` x `{b}`: no intersection arm exists for this face-surface combination,yes (unsupported/unsupported_surface_pair),transitive (via OperationsError::Algo),no
+algo,AlgoError,PcurveProjectionFailed,pcurve UV projection failed on `{surface}` surface during `{stage}`,yes (nonconvergence/pcurve_projection_failed),transitive (via OperationsError::Algo),no
+algo,AlgoError,UnsupportedSheetSplit,unsupported sheet split: {reason},yes (unsupported/unsupported_sheet_split),transitive (via OperationsError::Algo),no
+algo,AlgoError,UnsupportedSheetTrim,unsupported sheet trim: {reason},yes (unsupported/unsupported_sheet_trim),transitive (via OperationsError::Algo),no
+algo,AlgoError,UnsupportedImprint,unsupported imprint: {reason},yes (unsupported/unsupported_imprint),transitive (via OperationsError::Algo),no
+blend,BlendError,InvalidInput,invalid blend input: {reason},no,transitive (via OperationsError::Blend),yes
+blend,BlendError,StartSolutionFailure,"no start solution at edge {edge:?}, t={t}",no,transitive (via OperationsError::Blend),yes
+blend,BlendError,WalkingFailure,"walking failure at edge {edge:?}, t={t}, residual={residual}",no,transitive (via OperationsError::Blend),yes
+blend,BlendError,TwistedSurface,twisted surface on stripe {stripe_idx},no,transitive (via OperationsError::Blend),yes
+blend,BlendError,RadiusTooLarge,"radius too large for edge {edge:?}: max={max_radius}",no,transitive (via OperationsError::Blend),yes
+blend,BlendError,CliffEncountered,"blend cliff on face {face:?} at edge {edge:?}: requested radius {requested_radius}, available radius {available_radius}",no,transitive (via OperationsError::Blend),yes
+blend,BlendError,UnsupportedFaceFaceBlend,unsupported face-face blend: {reason},no,transitive (via OperationsError::Blend),yes
+blend,BlendError,TrimmingFailure,trimming failure on face {face:?},no,transitive (via OperationsError::Blend),yes
+blend,BlendError,CornerFailure,corner failure at vertex {vertex:?},no,transitive (via OperationsError::Blend),yes
+blend,BlendError,UnsupportedVertexBlend,unsupported vertex blend at {vertex:?}: {stripes} stripes meet,no,transitive (via OperationsError::Blend),yes
+blend,BlendError,SetbackMismatch,"setback mismatch on edge {edge:?} at vertex {vertex:?}: declared={declared}, required={required}",no,transitive (via OperationsError::Blend),yes
+blend,BlendError,UnsupportedSetbackCorner,unsupported setback corner at {vertex:?}: {stripes} stripes meet ({reason}),no,transitive (via OperationsError::Blend),yes
+blend,BlendError,EdgesNotBlended,{} of the edges named were not blended ({edges:?}): {reason},no,transitive (via OperationsError::Blend),yes
+blend,BlendError,UnsupportedSeamCrossing,walking blend cannot follow the ridgeline across the tangent seam at edge {edge:?},no,transitive (via OperationsError::Blend),yes
+blend,BlendError,UnsupportedSurface,unsupported surface on face {face:?}: {surface_tag},no,transitive (via OperationsError::Blend),yes
+blend,BlendError,Topology,transparent (TopologyError),no,transitive (via OperationsError::Blend),yes
+blend,BlendError,Math,transparent (MathError),no,transitive (via OperationsError::Blend),yes
+heal,HealError,Topology,transparent (TopologyError),no,transitive (via OperationsError::Heal),no
+heal,HealError,Math,transparent (MathError),no,transitive (via OperationsError::Heal),no
+heal,HealError,Geometry,transparent (GeomError),no,transitive (via OperationsError::Heal),no
+heal,HealError,AnalysisFailed,analysis failed: {0},no,transitive (via OperationsError::Heal),yes
+heal,HealError,FixFailed,fix failed: {0},no,transitive (via OperationsError::Heal),yes
+heal,HealError,RepairBudgetExceeded,repair achieved deviation {achieved} but the budget is {budget},no,transitive (via OperationsError::Heal),yes
+heal,HealError,UpgradeFailed,upgrade failed: {0},no,transitive (via OperationsError::Heal),yes
+heal,HealError,InvalidConfig,invalid configuration: {0},no,transitive (via OperationsError::Heal),yes
+check,CheckError,Topology,transparent (TopologyError),no,yes (via WasmError::Check and OperationsError::Check),yes
+check,CheckError,Math,transparent (MathError),no,yes (via WasmError::Check and OperationsError::Check),yes
+check,CheckError,ClassificationFailed,classification failed: {0},no,yes (via WasmError::Check and OperationsError::Check),yes
+check,CheckError,ValidationFailed,validation error: {0},no,yes (via WasmError::Check and OperationsError::Check),yes
+check,CheckError,IntegrationFailed,integration did not converge: {0},no,yes (via WasmError::Check and OperationsError::Check),yes
+check,CheckError,DistanceFailed,distance computation failed: {0},no,yes (via WasmError::Check and OperationsError::Check),yes
+check,CheckError,CurvatureFailed,curvature analysis failed: {0},no,yes (via WasmError::Check and OperationsError::Check),yes
+offset,OffsetError,Topology,topology error: {0},no,transitive (via OperationsError::Offset),yes
+offset,OffsetError,Math,math error: {0},no,transitive (via OperationsError::Offset),yes
+offset,OffsetError,InvalidInput,invalid input: {reason},no,transitive (via OperationsError::Offset),yes
+offset,OffsetError,FaceNotInSolid,face {face:?} is not part of solid {solid:?},no,transitive (via OperationsError::Offset),yes
+offset,OffsetError,UnsupportedMoveFace,move-face does not support face {face:?} ({surface_type}): {reason},no,transitive (via OperationsError::Offset),yes
+offset,OffsetError,MoveGroupMismatch,move-face group mismatch between reference face {reference:?} and face {face:?}: {reason},no,transitive (via OperationsError::Offset),yes
+offset,OffsetError,TopologyChange,"move-face would change topology at face {face:?}, edge {edge:?}: {reason}",no,transitive (via OperationsError::Offset),yes
+offset,OffsetError,AnalysisFailed,analysis failed for edge {edge:?}: {reason},no,transitive (via OperationsError::Offset),yes
+offset,OffsetError,IntersectionFailed,intersection failed between faces {face_a:?} and {face_b:?}: {reason},no,transitive (via OperationsError::Offset),yes
+offset,OffsetError,SelfIntersection,self-intersection: {reason},no,transitive (via OperationsError::Offset),yes
+offset,OffsetError,AssemblyFailed,assembly failed: {reason},no,transitive (via OperationsError::Offset),yes
+offset,OffsetError,CollapsedSolid,offset distance collapses the solid,no,transitive (via OperationsError::Offset),no
+sketch,SketchError,InvalidHandle,invalid or stale GCS entity handle,no,transitive (stringified into WasmError::InvalidInput),no
+sketch,SketchError,EntityInUse,GCS entity is still in use by other entities or constraints,no,no (raised only by unexposed remove_* paths),no
+sketch,SketchError,InvalidValue,constraint value is not finite or is outside its permitted range,no,transitive (stringified into WasmError::InvalidInput),no
+operations,OperationsError,ExactOnlyUnattainable,exact-only policy: the exact boolean pipeline could not produce this result and the approximate fallback was declined,no,yes (via WasmError::Operations),no
+operations,OperationsError,InvalidInput,invalid input: {reason},no,yes (via WasmError::Operations),yes
+operations,OperationsError,NonManifoldResult,non-manifold result,no,yes (via WasmError::Operations),no
+operations,OperationsError,EmptyResult,empty result: {reason},no,yes (via WasmError::Operations),yes
+operations,OperationsError,Unsupported,{operation}: unsupported configuration: {reason},no,yes (via WasmError::Operations),yes
+operations,OperationsError,BodyClassMeasureMismatch,{operation} requires a {expected} body but the supplied body is {actual},no,yes (via WasmError::Operations),yes
+operations,OperationsError,BodyClassOperationUnsupported,{operation} does not support {actual} bodies,no,yes (via WasmError::Operations),yes
+operations,OperationsError,BodyValidationFailed,constructed {body_class} body failed validation with {error_count} error(s),no,yes (via WasmError::Operations),yes
+operations,OperationsError,HealingValidationFailed,"healing result refused: operations validator found {operations_errors} error(s), check validator found {check_errors} error(s)",no,yes (via WasmError::Operations),yes
+operations,OperationsError,HealingVerificationUnavailable,healing verification unavailable from {validator}: {reason},no,yes (via WasmError::Operations),yes
+operations,OperationsError,HealingRepairRefused,configured healing refused {refusal_count} unresolved repair site(s),no,yes (via WasmError::Operations),yes
+operations,OperationsError,ConfiguredHealingValidationFailed,"configured healing result refused: operations validator found {operations_errors} error(s), check validator found {check_errors} error(s)",no,yes (via WasmError::Operations),yes
+operations,OperationsError,ConfiguredHealingVerificationUnavailable,configured healing verification unavailable from {validator}: {reason},no,yes (via WasmError::Operations),yes
+operations,OperationsError,PatternInstancesOverlap,"pattern instances {first} and {second} overlap by {overlap_volume:e} model-unit^3 (material-overlap floor {threshold:e}); exact instance fusing with face evolution is not yet supported",no,yes (via WasmError::Operations),yes
+operations,OperationsError,Topology,transparent (TopologyError),no,yes (via WasmError::Operations),yes
+operations,OperationsError,Math,transparent (MathError),no,yes (via WasmError::Operations),yes
+operations,OperationsError,Algo,algo: {0},no,yes (via WasmError::Operations),yes
+operations,OperationsError,Blend,blend: {0},no,yes (via WasmError::Operations),yes
+operations,OperationsError,ResizeBlend,resize blend: {0},no,yes (via WasmError::Operations),yes
+operations,OperationsError,Check,check: {0},no,yes (via WasmError::Operations),yes
+operations,OperationsError,Geometry,geometry: {0},no,yes (via WasmError::Operations),yes
+operations,OperationsError,Heal,heal: {0},no,yes (via WasmError::Operations),yes
+operations,OperationsError,Offset,offset: {0},no,yes (via WasmError::Operations),yes
+operations,OperationsError,PartialResult,{operation} produced a partial result: {succeeded} succeeded {failed} failed,no,yes (via WasmError::Operations),yes
+operations,ResizeBlendError,InvalidInput,invalid input: {reason},"adhoc (inherent code(): invalid-input; not ToDiagnostic)",transitive (via OperationsError::ResizeBlend),yes
+operations,ResizeBlendError,BandNotAnalytic,selected face is not an analytic torus/cylinder/sphere blend: {surface},"adhoc (inherent code(): blend-band-not-analytic; not ToDiagnostic)",transitive (via OperationsError::ResizeBlend),yes
+operations,ResizeBlendError,RadiusMismatch,"expected radius {expected} mm, but the exact band radius is {actual} mm","adhoc (inherent code(): blend-radius-mismatch; not ToDiagnostic)",transitive (via OperationsError::ResizeBlend),yes
+operations,ResizeBlendError,BandTouchesFreeform,blend band touches a freeform face,"adhoc (inherent code(): band-touches-freeform; not ToDiagnostic)",transitive (via OperationsError::ResizeBlend),no
+operations,ResizeBlendError,UnsupportedSupportPair,unsupported analytic support pair: {first} x {second},"adhoc (inherent code(): unsupported-support-pair; not ToDiagnostic)",transitive (via OperationsError::ResizeBlend),yes
+operations,ResizeBlendError,RadiusTooLarge,radius {radius} mm does not fit on the recovered sharp feature,"adhoc (inherent code(): radius-too-large; not ToDiagnostic)",transitive (via OperationsError::ResizeBlend),yes
+operations,ResizeBlendError,ReconstructionFailed,exact reconstruction refused: {reason},"adhoc (inherent code(): resize-blend-failed; not ToDiagnostic)",transitive (via OperationsError::ResizeBlend),yes
+io,IoError,LimitExceeded,import limit exceeded for {resource}: {actual} > {limit},no,yes (via IoWasmError::Io; in-kernel path feature-gated),yes
+io,IoError,ParseError,parse error: {reason},no,yes (via IoWasmError::Io; in-kernel path feature-gated),yes
+io,IoError,InvalidValidationProperties,invalid STEP validation properties ({code}): {reason},"adhoc (InvalidValidationProperties.code string forwarded as kernelCode; not ToDiagnostic)",yes (via IoWasmError::Io; in-kernel path feature-gated),yes
+io,IoError,UnsupportedEntity,unsupported STEP entity: {entity},no,yes (via IoWasmError::Io; in-kernel path feature-gated),yes
+io,IoError,InvalidTopology,invalid topology for export: {reason},no,yes (via IoWasmError::Io; in-kernel path feature-gated),yes
+io,IoError,Topology,transparent (TopologyError),no,yes (via IoWasmError::Io; in-kernel path feature-gated),no
+io,IoError,Io,transparent (std::io::Error),no,yes (via IoWasmError::Io; in-kernel path feature-gated),no
+io,IoError,Operations,transparent (OperationsError),no,yes (via IoWasmError::Io; in-kernel path feature-gated),no
+io,IoError,Zip,transparent (zip::Error; cfg feature formats),no,yes (via IoWasmError::Io; in-kernel path feature-gated),no
+wasm,WasmError,InvalidHandle,invalid {entity} handle: index {index} is out of bounds,wire (invalid_handle),yes (thrown as JsError Display),yes
+wasm,WasmError,InvalidInput,invalid input: {reason},wire (invalid_argument),yes (thrown as JsError Display),yes
+wasm,WasmError,Operations,transparent (OperationsError),wire (operation_failed + details.kernelCode),yes (thrown as JsError Display),yes
+wasm,WasmError,Topology,transparent (TopologyError),wire (topology_error + details.kernelCode),yes (thrown as JsError Display),yes
+wasm,WasmError,Math,transparent (MathError),wire (invalid_argument/operation_failed/cancelled + details.kernelCode),yes (thrown as JsError Display),yes
+wasm,WasmError,Check,transparent (CheckError),wire (topology_error/operation_failed + details.kernelCode for inner arms),yes (thrown as JsError Display),yes
+wasm,LifecycleError,Wasm,transparent (WasmError),no,yes (via deleteSolid as JsError Display),yes
+wasm,LifecycleError,DeleteSolid,transparent (DeleteSolidError),no,yes (via deleteSolid as JsError Display),yes
+wasm,ReproError,Parse,bundle parse error: {0},no,no (native-only bundle harness),yes
+wasm,ReproError,UnsupportedSchema,bundle schema {found} unsupported (runner reads current SCHEMA_VERSION),no,no (native-only bundle harness),yes
+wasm,ReproError,ReservedContext,context is reserved and must be empty in current schema version,no,no (native-only bundle harness),no
+wasm,ReproError,TooManyExpectations,bundle has {expectations} expectations but only {operations} operations,no,no (native-only bundle harness),yes
+wasm,ReproError,InvalidExpectation,expectation {index}: {reason},no,no (native-only bundle harness),yes
+wasm,ReproError,Nondeterministic,nondeterministic replay: run {run} differs from run 0,no,no (native-only bundle harness),yes
+wasm,ReproError,MalformedResult,malformed batch result JSON: {0},no,no (native-only bundle harness),yes
+wasm,ReproError,Failed,bundle `{name}` failed with listed failures,no,no (native-only bundle harness),yes
+wasm-io,IoWasmError,InvalidInput,invalid input: {reason},no,yes (RemusIo methods as JsError Display),yes
+wasm-io,IoWasmError,Io,transparent (IoError),no,yes (RemusIo methods as JsError Display),yes
+wasm-io,IoWasmError,Json,transparent (serde_json::Error),no,yes (RemusIo STEP-report imports as JsError Display),yes
