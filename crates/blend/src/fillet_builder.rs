@@ -1317,7 +1317,11 @@ fn closed_quadric_rim_info(
 fn closed_rim_info(topo: &Topology, stripe: &Stripe) -> Result<Option<ClosedRimInfo>, BlendError> {
     let requested_radius = match &stripe.surface {
         FaceSurface::Torus(torus) => torus.minor_radius(),
-        _ => return Ok(None),
+        FaceSurface::Plane { .. }
+        | FaceSurface::Nurbs(_)
+        | FaceSurface::Cylinder(_)
+        | FaceSurface::Cone(_)
+        | FaceSurface::Sphere(_) => return Ok(None),
     };
 
     // Spine must be a single closed circular edge.
@@ -1347,7 +1351,30 @@ fn closed_rim_info(topo: &Topology, stripe: &Stripe) -> Result<Option<ClosedRimI
         (FaceSurface::Cylinder(_) | FaceSurface::Cone(_), FaceSurface::Plane { .. }) => {
             (stripe.face2, stripe.face1)
         }
-        _ => return Ok(None),
+        (
+            FaceSurface::Plane { .. },
+            FaceSurface::Plane { .. }
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_)
+            | FaceSurface::Nurbs(_),
+        )
+        | (
+            FaceSurface::Cylinder(_) | FaceSurface::Cone(_),
+            FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_)
+            | FaceSurface::Nurbs(_),
+        )
+        | (
+            FaceSurface::Sphere(_) | FaceSurface::Torus(_) | FaceSurface::Nurbs(_),
+            FaceSurface::Plane { .. }
+            | FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_)
+            | FaceSurface::Nurbs(_),
+        ) => return Ok(None),
     };
 
     // The annular rebuild replaces exactly one of the cap's loops with the
@@ -1392,7 +1419,10 @@ fn closed_rim_info(topo: &Topology, stripe: &Stripe) -> Result<Option<ClosedRimI
     let (axis, axis_origin) = match &wall_surf {
         FaceSurface::Cylinder(c) => (c.axis(), c.origin()),
         FaceSurface::Cone(c) => (c.axis(), c.apex()),
-        _ => return Ok(None),
+        FaceSurface::Plane { .. }
+        | FaceSurface::Nurbs(_)
+        | FaceSurface::Sphere(_)
+        | FaceSurface::Torus(_) => return Ok(None),
     };
 
     // Each contact is a full circle perpendicular to the axis; recover its
@@ -1458,7 +1488,11 @@ fn closed_rim_info(topo: &Topology, stripe: &Stripe) -> Result<Option<ClosedRimI
             // cone.
             let radius = match &stripe.surface {
                 FaceSurface::Torus(t) => t.minor_radius(),
-                _ => setback.abs(),
+                FaceSurface::Plane { .. }
+                | FaceSurface::Nurbs(_)
+                | FaceSurface::Cylinder(_)
+                | FaceSurface::Cone(_)
+                | FaceSurface::Sphere(_) => setback.abs(),
             };
             let scale = if setback.abs() > 0.0 {
                 available / setback.abs()
@@ -1536,7 +1570,11 @@ fn closed_rim_info(topo: &Topology, stripe: &Stripe) -> Result<Option<ClosedRimI
     let wall_reversed = topo.face(wall_face)?.is_reversed();
     let convex = match wall_surf {
         FaceSurface::Cone(_) => !wall_reversed,
-        _ => rim_is_inner == wall_reversed,
+        FaceSurface::Plane { .. }
+        | FaceSurface::Nurbs(_)
+        | FaceSurface::Cylinder(_)
+        | FaceSurface::Sphere(_)
+        | FaceSurface::Torus(_) => rim_is_inner == wall_reversed,
     };
 
     Ok(Some(ClosedRimInfo {
@@ -1586,7 +1624,11 @@ fn assemble_closed_rim(
 
     let torus = match &stripe.surface {
         FaceSurface::Torus(t) => t.clone(),
-        _ => {
+        FaceSurface::Plane { .. }
+        | FaceSurface::Nurbs(_)
+        | FaceSurface::Cylinder(_)
+        | FaceSurface::Cone(_)
+        | FaceSurface::Sphere(_) => {
             return Err(BlendError::TrimmingFailure {
                 face: rim.wall_face,
             });
@@ -2447,12 +2489,18 @@ fn recognize_closed_cylinder_cone_torus(
     let (origin1, axis1) = match surface1 {
         FaceSurface::Cylinder(surface) => (surface.origin(), surface.axis()),
         FaceSurface::Cone(surface) => (surface.apex(), surface.axis()),
-        _ => return Ok(None),
+        FaceSurface::Plane { .. }
+        | FaceSurface::Nurbs(_)
+        | FaceSurface::Sphere(_)
+        | FaceSurface::Torus(_) => return Ok(None),
     };
     let (origin2, axis2) = match surface2 {
         FaceSurface::Cylinder(surface) => (surface.origin(), surface.axis()),
         FaceSurface::Cone(surface) => (surface.apex(), surface.axis()),
-        _ => return Ok(None),
+        FaceSurface::Plane { .. }
+        | FaceSurface::Nurbs(_)
+        | FaceSurface::Sphere(_)
+        | FaceSurface::Torus(_) => return Ok(None),
     };
     let axis1 = axis1.normalize()?;
     let axis2 = axis2.normalize()?;
