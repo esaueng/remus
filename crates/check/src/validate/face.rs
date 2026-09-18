@@ -563,4 +563,389 @@ mod tests {
             "seam-crossing opposite-wound hole must pass: {issues:?}"
         );
     }
+
+    #[test]
+    fn face_has_surface_errors_for_unknown_face() {
+        let mut other = Topology::new();
+        let fid = square_face(&mut other, true, 1.0, false);
+        assert!(check_face_has_surface(&other, fid).unwrap().is_empty());
+        // The same handle dangles in a fresh arena: the resolution error path.
+        let empty = Topology::new();
+        assert!(check_face_has_surface(&empty, fid).is_err());
+    }
+
+    #[test]
+    fn face_orientation_threshold_is_strict_at_minus_tenth() {
+        let mut topo = Topology::new();
+        // dot == -0.1 exactly (unit +z winding against a (0,0,-0.1) stored
+        // normal): strictly-less-than does not fire.
+        let fid = square_face(&mut topo, true, -0.1, false);
+        assert!(
+            check_face_orientation(&topo, fid).unwrap().is_empty(),
+            "dot == -0.1 is inside the tolerance band"
+        );
+    }
+
+    #[test]
+    fn face_orientation_passes_for_near_perpendicular_normal() {
+        let mut topo = Topology::new();
+        // dot == -0.05: inside the tolerance band, so no warning.
+        let fid = square_face(&mut topo, true, -0.05, false);
+        assert!(
+            check_face_orientation(&topo, fid).unwrap().is_empty(),
+            "dot == -0.05 must not warn"
+        );
+    }
+
+    /// Approximate vector equality for hand-computed Newell expectations.
+    fn assert_vec_close(actual: Vec3, expected: Vec3) {
+        let pairs = [
+            (actual.x(), expected.x()),
+            (actual.y(), expected.y()),
+            (actual.z(), expected.z()),
+        ];
+        for (a, e) in pairs {
+            assert!(
+                (a - e).abs() < 1e-9,
+                "expected {expected:?}, got {actual:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn raw_newell_normal_matches_hand_computed_values() {
+        let p = Point3::new;
+        // Unit square in z=0, CCW: (0,0,2).
+        let square = vec![
+            p(0.0, 0.0, 0.0),
+            p(1.0, 0.0, 0.0),
+            p(1.0, 1.0, 0.0),
+            p(0.0, 1.0, 0.0),
+        ];
+        assert_vec_close(
+            raw_newell_normal(&square).unwrap(),
+            Vec3::new(0.0, 0.0, 2.0),
+        );
+        // Unit square in x=0: (2,0,0).
+        let yzsq = vec![
+            p(0.0, 0.0, 0.0),
+            p(0.0, 1.0, 0.0),
+            p(0.0, 1.0, 1.0),
+            p(0.0, 0.0, 1.0),
+        ];
+        assert_vec_close(raw_newell_normal(&yzsq).unwrap(), Vec3::new(2.0, 0.0, 0.0));
+        // Triangle lifted to z=5: planar, so x/y vanish and z = 2*area = 2.
+        let tri = vec![p(0.0, 0.0, 5.0), p(2.0, 0.0, 5.0), p(0.0, 1.0, 5.0)];
+        assert_vec_close(raw_newell_normal(&tri).unwrap(), Vec3::new(0.0, 0.0, 2.0));
+        // Tilted triangle 1: (0,-2,2).
+        let t1 = vec![p(0.0, 0.0, 0.0), p(2.0, 0.0, 0.0), p(0.0, 1.0, 1.0)];
+        assert_vec_close(raw_newell_normal(&t1).unwrap(), Vec3::new(0.0, -2.0, 2.0));
+        // Tilted triangle 2: (-1,0,2).
+        let t2 = vec![p(0.0, 0.0, 0.0), p(2.0, 0.0, 1.0), p(0.0, 1.0, 0.0)];
+        assert_vec_close(raw_newell_normal(&t2).unwrap(), Vec3::new(-1.0, 0.0, 2.0));
+        // Diamond in z=1 (area 2): (0,0,4).
+        let diamond = vec![
+            p(1.0, 0.0, 1.0),
+            p(0.0, 1.0, 1.0),
+            p(-1.0, 0.0, 1.0),
+            p(0.0, -1.0, 1.0),
+        ];
+        assert_vec_close(
+            raw_newell_normal(&diamond).unwrap(),
+            Vec3::new(0.0, 0.0, 4.0),
+        );
+    }
+
+    #[test]
+    fn raw_newell_normal_rejects_short_and_degenerate_polygons() {
+        let p = Point3::new;
+        let empty: Vec<Point3> = vec![];
+        assert!(raw_newell_normal(&empty).is_none());
+        assert!(raw_newell_normal(&[p(0.0, 0.0, 0.0), p(1.0, 0.0, 0.0)]).is_none());
+        // A triangle carries area: the <3 guard is strict, so Some.
+        assert!(
+            raw_newell_normal(&[p(0.0, 0.0, 0.0), p(1.0, 0.0, 0.0), p(0.0, 1.0, 0.0)]).is_some()
+        );
+        // Collinear points: zero-length normal is rejected.
+        let line = vec![
+            p(0.0, 0.0, 0.0),
+            p(1.0, 0.0, 0.0),
+            p(2.0, 0.0, 0.0),
+            p(3.0, 0.0, 0.0),
+        ];
+        assert!(raw_newell_normal(&line).is_none());
+    }
+
+    #[test]
+    fn polygon_centroid_matches_hand_computed_average() {
+        let p = Point3::new;
+        let c = polygon_centroid(&[p(1.0, 2.0, 3.0), p(4.0, 5.0, 6.0), p(7.0, 8.0, 9.0)]);
+        assert!((c.x() - 4.0).abs() < 1e-12, "cx = {}, want 4.0", c.x());
+        assert!((c.y() - 5.0).abs() < 1e-12, "cy = {}, want 5.0", c.y());
+        assert!((c.z() - 6.0).abs() < 1e-12, "cz = {}, want 6.0", c.z());
+    }
+
+    #[test]
+    fn planar_inner_wire_tiny_hole_same_wound_fires() {
+        let mut topo = Topology::new();
+        let outer = remus_topology::builder::make_polygon_wire(
+            &mut topo,
+            &[
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(4.0, 0.0, 0.0),
+                Point3::new(4.0, 4.0, 0.0),
+                Point3::new(0.0, 4.0, 0.0),
+            ],
+            1e-7,
+        )
+        .unwrap();
+        // A 1e-3 hole: the alignment normalizes both Newell vectors, so it
+        // still scores +1.0 and must fire. Mutants that drop the
+        // normalization (length products/sums/quotients) score ~1e-6 and
+        // stay silent.
+        let tiny = remus_topology::builder::make_polygon_wire(
+            &mut topo,
+            &[
+                Point3::new(1.0, 1.0, 0.0),
+                Point3::new(1.001, 1.0, 0.0),
+                Point3::new(1.001, 1.001, 0.0),
+                Point3::new(1.0, 1.001, 0.0),
+            ],
+            1e-7,
+        )
+        .unwrap();
+        let face = topo.add_face(Face::new(
+            outer,
+            vec![tiny],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+        let issues = check_face_orientation(&topo, face).unwrap();
+        assert_eq!(
+            issues.len(),
+            1,
+            "tiny same-wound hole must fire: {issues:?}"
+        );
+        assert_eq!(issues[0].severity, Severity::Error);
+    }
+
+    /// Straight line-edge wire through `pts` (shared by the periodic fixtures).
+    fn line_wire(topo: &mut Topology, pts: &[Point3]) -> remus_topology::wire::WireId {
+        let vids: Vec<_> = pts
+            .iter()
+            .map(|&p| topo.add_vertex(Vertex::new(p, 1e-7)))
+            .collect();
+        let oes: Vec<_> = (0..pts.len())
+            .map(|i| {
+                let e = topo.add_edge(Edge::new(
+                    vids[i],
+                    vids[(i + 1) % pts.len()],
+                    EdgeCurve::Line,
+                ));
+                OrientedEdge::new(e, true)
+            })
+            .collect();
+        topo.add_wire(Wire::new(oes, true).unwrap())
+    }
+
+    fn unit_cylinder() -> remus_math::surfaces::CylindricalSurface {
+        remus_math::surfaces::CylindricalSurface::new(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            1.0,
+        )
+        .unwrap()
+    }
+
+    /// Full-turn ring around a cylinder: `u_dir` = +1/-1 traversal, with a
+    /// slightly convex `v` drift so the UV sliver has nonzero shoelace area
+    /// (a perfectly linear drift closes to exactly zero area and reads as
+    /// degenerate, never as a ring).
+    fn cylinder_u_ring(
+        topo: &mut Topology,
+        surf: &remus_math::surfaces::CylindricalSurface,
+        u_start: f64,
+        u_dir: f64,
+        v_base: f64,
+        v_lin: f64,
+        v_quad: f64,
+    ) -> remus_topology::wire::WireId {
+        const N: usize = 8;
+        let pts: Vec<Point3> = (0..N)
+            .map(|i| {
+                let f = i as f64;
+                let u = u_start + u_dir * f * std::f64::consts::TAU / (N as f64);
+                let v = v_base + v_lin * f + v_quad * f * f;
+                surf.evaluate(u, v)
+            })
+            .collect();
+        line_wire(topo, &pts)
+    }
+
+    /// Same-direction full-turn bands: both rings wind `-u`, so the pair must
+    /// fire. The starts (0.2 vs 3.0) split the `closing`/`progress` sum
+    /// mutants: one ring's endpoint sum stays past the 0.75-period bar while
+    /// the other's drops below it.
+    #[test]
+    fn cylinder_same_direction_rings_fire() {
+        let mut topo = Topology::new();
+        let surf = unit_cylinder();
+        let outer = cylinder_u_ring(&mut topo, &surf, 0.2, -1.0, 0.0, 0.01, 0.003);
+        let inner = cylinder_u_ring(&mut topo, &surf, 3.0, -1.0, 1.0, 0.01, 0.003);
+        let face = topo.add_face(Face::new(outer, vec![inner], FaceSurface::Cylinder(surf)));
+        let issues = check_face_inner_wire_orientation(&topo, face).unwrap();
+        assert_eq!(
+            issues.len(),
+            1,
+            "same-direction full-turn rings must fire: {issues:?}"
+        );
+    }
+
+    /// Same construction with starts (0.2 vs 5.6): splits the quotient
+    /// mutants instead (one endpoint ratio collapses, the other stays huge).
+    #[test]
+    fn cylinder_same_direction_rings_fire_shifted_start() {
+        let mut topo = Topology::new();
+        let surf = unit_cylinder();
+        let outer = cylinder_u_ring(&mut topo, &surf, 0.2, -1.0, 0.0, 0.01, 0.003);
+        let inner = cylinder_u_ring(&mut topo, &surf, 5.6, -1.0, 1.0, 0.01, 0.003);
+        let face = topo.add_face(Face::new(outer, vec![inner], FaceSurface::Cylinder(surf)));
+        let issues = check_face_inner_wire_orientation(&topo, face).unwrap();
+        assert_eq!(
+            issues.len(),
+            1,
+            "same-direction full-turn rings must fire: {issues:?}"
+        );
+    }
+
+    /// Opposite-direction full-turn bands must pass. Mutants that collapse
+    /// the ring gate (exact-equality, inverted, or raised thresholds) dump
+    /// both slivers into the area branch with the same shoelace sign and
+    /// fire spuriously.
+    #[test]
+    fn cylinder_opposite_direction_rings_pass() {
+        let mut topo = Topology::new();
+        let surf = unit_cylinder();
+        let outer = cylinder_u_ring(&mut topo, &surf, 0.1, 1.0, 0.0, 0.01, 0.003);
+        let inner = cylinder_u_ring(&mut topo, &surf, 3.0, -1.0, 1.0, -0.01, -0.003);
+        let face = topo.add_face(Face::new(outer, vec![inner], FaceSurface::Cylinder(surf)));
+        let issues = check_face_inner_wire_orientation(&topo, face).unwrap();
+        assert!(
+            issues.is_empty(),
+            "opposite-direction full-turn rings must pass: {issues:?}"
+        );
+    }
+
+    fn test_torus() -> remus_math::surfaces::ToroidalSurface {
+        remus_math::surfaces::ToroidalSurface::new(Point3::new(0.0, 0.0, 0.0), 5.0, 1.0).unwrap()
+    }
+
+    /// Full-turn ring around the tube (`v` winds, `u` drifts slightly convex
+    /// so the sliver is not degenerate).
+    fn torus_v_ring(
+        topo: &mut Topology,
+        surf: &remus_math::surfaces::ToroidalSurface,
+        v_start: f64,
+        v_dir: f64,
+        u_base: f64,
+        u_lin: f64,
+        u_quad: f64,
+    ) -> remus_topology::wire::WireId {
+        const N: usize = 8;
+        let pts: Vec<Point3> = (0..N)
+            .map(|i| {
+                let f = i as f64;
+                let u = u_base + u_lin * f + u_quad * f * f;
+                let v = v_start + v_dir * f * std::f64::consts::TAU / (N as f64);
+                surf.evaluate(u, v)
+            })
+            .collect();
+        line_wire(topo, &pts)
+    }
+
+    /// Same-direction tube bands (both `-v`), starts split the `v` sum
+    /// mutants the way the cylinder pair splits the `u` ones.
+    #[test]
+    fn torus_same_direction_v_rings_fire() {
+        let mut topo = Topology::new();
+        let surf = test_torus();
+        let outer = torus_v_ring(&mut topo, &surf, 0.2, -1.0, 0.5, 0.005, 0.001);
+        let inner = torus_v_ring(&mut topo, &surf, 3.0, -1.0, 0.7, 0.005, 0.001);
+        let face = topo.add_face(Face::new(outer, vec![inner], FaceSurface::Torus(surf)));
+        let issues = check_face_inner_wire_orientation(&topo, face).unwrap();
+        assert_eq!(
+            issues.len(),
+            1,
+            "same-direction tube rings must fire: {issues:?}"
+        );
+    }
+
+    /// Same with starts (0.2 vs 5.6): splits the `v` quotient mutants.
+    #[test]
+    fn torus_same_direction_v_rings_fire_shifted_start() {
+        let mut topo = Topology::new();
+        let surf = test_torus();
+        let outer = torus_v_ring(&mut topo, &surf, 0.2, -1.0, 0.5, 0.005, 0.001);
+        let inner = torus_v_ring(&mut topo, &surf, 5.6, -1.0, 0.7, 0.005, 0.001);
+        let face = topo.add_face(Face::new(outer, vec![inner], FaceSurface::Torus(surf)));
+        let issues = check_face_inner_wire_orientation(&topo, face).unwrap();
+        assert_eq!(
+            issues.len(),
+            1,
+            "same-direction tube rings must fire: {issues:?}"
+        );
+    }
+
+    /// Opposite-direction tube bands must pass; ring-gate collapses fire
+    /// spuriously here too.
+    #[test]
+    fn torus_opposite_direction_v_rings_pass() {
+        let mut topo = Topology::new();
+        let surf = test_torus();
+        let outer = torus_v_ring(&mut topo, &surf, 0.1, 1.0, 0.5, 0.005, 0.001);
+        let inner = torus_v_ring(&mut topo, &surf, 3.0, -1.0, 0.7, -0.005, -0.001);
+        let face = topo.add_face(Face::new(outer, vec![inner], FaceSurface::Torus(surf)));
+        let issues = check_face_inner_wire_orientation(&topo, face).unwrap();
+        assert!(
+            issues.is_empty(),
+            "opposite-direction tube rings must pass: {issues:?}"
+        );
+    }
+
+    /// Hole straddling the torus `v` seam (outer equator): only the
+    /// seam-unwrapped `v` branch keeps its winding verdict. Without `v`
+    /// unwrapping the torn polygon's shoelace area flips sign and a
+    /// same-wound hole reads as opposite.
+    #[test]
+    fn torus_hole_crossing_v_seam_keeps_its_winding_verdict() {
+        let mut topo = Topology::new();
+        let surf = test_torus();
+        let outer = line_wire(
+            &mut topo,
+            &[
+                surf.evaluate(0.4, 0.8),
+                surf.evaluate(0.9, 0.8),
+                surf.evaluate(0.9, 1.2),
+                surf.evaluate(0.4, 1.2),
+            ],
+        );
+        let hole = line_wire(
+            &mut topo,
+            &[
+                surf.evaluate(0.5, -0.15),
+                surf.evaluate(0.8, -0.15),
+                surf.evaluate(0.8, 0.15),
+                surf.evaluate(0.5, 0.15),
+            ],
+        );
+        let face = topo.add_face(Face::new(outer, vec![hole], FaceSurface::Torus(surf)));
+        let issues = check_face_inner_wire_orientation(&topo, face).unwrap();
+        assert_eq!(
+            issues.len(),
+            1,
+            "seam-crossing same-wound hole on a torus must fire: {issues:?}"
+        );
+    }
 }
