@@ -122,7 +122,7 @@ Testing had "no scheduled run in the last 100 runs" was a window artefact:
 the last-100 list only reaches back to 2026-09-14, while both are weekly
 Sunday jobs, so at most one scheduled run each can appear in it. No trigger
 was re-enabled or fixed because none was broken. Caller pins
-(`fuzz.yml` → fleet `de062d7c`, `mutants.yml` → fleet `dbb22761`,
+(`fuzz.yml` → fleet `055b7fc0`, `mutants.yml` → fleet `dbb22761`,
 `gauntlet.yml` → fleet `6da8b6a0`) are all reachable commits.
 
 Each workflow was run once by dispatch on 2026-09-16 and read back:
