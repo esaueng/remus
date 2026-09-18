@@ -3164,7 +3164,22 @@ fn conics_share_support(a: &EdgeCurve, b: &EdgeCurve, tol: f64) -> bool {
                 .zip(b_major.normalize().ok())
                 .is_some_and(|(ua, ub)| ua.cross(ub).length() <= 1e-9)
         }
-        _ => false,
+        (
+            EdgeCurve::Line
+            | EdgeCurve::NurbsCurve(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_),
+            _,
+        )
+        | (
+            _,
+            EdgeCurve::Line
+            | EdgeCurve::NurbsCurve(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_),
+        )
+        | (EdgeCurve::Circle(_), EdgeCurve::Ellipse(_))
+        | (EdgeCurve::Ellipse(_), EdgeCurve::Circle(_)) => false,
     }
 }
 
@@ -3652,7 +3667,10 @@ fn project_angle_on_curve(curve: &remus_topology::edge::EdgeCurve, p: Point3) ->
     match curve {
         EdgeCurve::Circle(c) => c.project(p),
         EdgeCurve::Ellipse(e) => e.project(p),
-        _ => 0.0,
+        EdgeCurve::Line
+        | EdgeCurve::NurbsCurve(_)
+        | EdgeCurve::Hyperbola(_)
+        | EdgeCurve::Parabola(_) => 0.0,
     }
 }
 
@@ -3712,7 +3730,7 @@ fn closed_pair_traversal_flipped(
                 }
                 n.tangent(proj.parameter).ok()
             }
-            _ => None,
+            EdgeCurve::Line | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => None,
         }
     };
     let a = tangent_at_seam(canon_edge)?;
@@ -3829,7 +3847,10 @@ fn point_on_edge_branch(
             }
             projection.point
         }
-        _ => return Ok(false),
+        EdgeCurve::Circle(_)
+        | EdgeCurve::Ellipse(_)
+        | EdgeCurve::Hyperbola(_)
+        | EdgeCurve::Parabola(_) => return Ok(false),
     };
     Ok((point - closest).length() <= tol)
 }
@@ -4089,7 +4110,13 @@ fn merge_duplicate_edges(topo: &mut Topology, face_ids: &mut [FaceId]) -> Result
                                             }
                                             projection.point
                                         }
-                                        _ => return point_on_edge_branch(topo, edge, point, band),
+                                        EdgeCurve::Line
+                                        | EdgeCurve::Circle(_)
+                                        | EdgeCurve::Ellipse(_)
+                                        | EdgeCurve::Hyperbola(_)
+                                        | EdgeCurve::Parabola(_) => {
+                                            return point_on_edge_branch(topo, edge, point, band);
+                                        }
                                     };
                                     Ok((point - closest).length() <= band)
                                 };
@@ -4135,7 +4162,24 @@ fn merge_duplicate_edges(topo: &mut Topology, face_ids: &mut [FaceId]) -> Result
                         // opposite traversal. Tangent direction is meaningless
                         // for a near-degenerate evaluation — decline the flip
                         // (keep no-flip) when either tangent is near-zero.
-                        _ => closed_pair_traversal_flipped(topo, canonical, dup).unwrap_or(false),
+                        (
+                            EdgeCurve::Line
+                            | EdgeCurve::NurbsCurve(_)
+                            | EdgeCurve::Hyperbola(_)
+                            | EdgeCurve::Parabola(_),
+                            _,
+                        )
+                        | (
+                            _,
+                            EdgeCurve::Line
+                            | EdgeCurve::NurbsCurve(_)
+                            | EdgeCurve::Hyperbola(_)
+                            | EdgeCurve::Parabola(_),
+                        )
+                        | (EdgeCurve::Circle(_), EdgeCurve::Ellipse(_))
+                        | (EdgeCurve::Ellipse(_), EdgeCurve::Circle(_)) => {
+                            closed_pair_traversal_flipped(topo, canonical, dup).unwrap_or(false)
+                        }
                     }
                 } else {
                     dup_qs == canon_qe && dup_qe == canon_qs
