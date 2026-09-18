@@ -2,6 +2,7 @@
 
 use std::collections::HashSet;
 
+use remus_math::context::DEFAULT_MAX_ENTITY_TOLERANCE;
 use remus_math::mat::Mat4;
 use remus_math::nurbs::curve::NurbsCurve;
 use remus_math::nurbs::surface::NurbsSurface;
@@ -342,7 +343,12 @@ pub fn transform_solid(
 // evaluated residual by a few ulps. Preserve an existing certificate only
 // within a coordinate-scale floating-point budget. Invalid source edges and
 // larger discrepancies are never repaired here; the strict I/O gate remains
-// unchanged. Store the measured residual, not the whole roundoff allowance.
+// unchanged. The carried tolerance keeps the full coordinate-scale budget as
+// headroom (not just the next ulp): re-evaluating the same edge on a
+// different FP stack (wasm simd128 vs native, FMA vs non-FMA, different libm
+// sin/cos) can shift the residual by a few ulps of the coordinates, which is
+// many ulps of the residual itself. The budget is ~1e-8 of the tolerance, so
+// this cannot mask a real geometric gap.
 #[allow(clippy::float_cmp)] // Exact identity is required; near-identity may scale geometry.
 pub(crate) fn translation_edge_certificates(
     topo: &Topology,
@@ -429,9 +435,21 @@ pub(crate) fn restore_translation_certificates(
             // budget is the transform's own rounding, not new geometry: carry
             // the certificate forward. Larger gaps are left alone — the
             // strict I/O gate still refuses them. Store the measured residual
-            // (rounded up), not the whole budget.
+            // plus the full budget (rounded up): the gate re-evaluates the
+            // edge, potentially on a different FP stack than the transform
+            // ran on, and that re-evaluation can drift by a few
+            // coordinate-ulps. A single residual-ulp of headroom strands the
+            // edge on wasm simd128 builds (#483); the budget is ~1e-8 of the
+            // tolerance, so the slack cannot hide a real gap.
             if residual - tolerance <= budget {
-                topo.edge_mut(id)?.set_tolerance(Some(residual.next_up()))?;
+                // Clamp to the arena's maximum entity tolerance so a
+                // near-max edge does not mint an unserializable value; when
+                // the residual itself exceeds the max the gate still refuses
+                // it below.
+                let carried = (residual + budget)
+                    .next_up()
+                    .min(DEFAULT_MAX_ENTITY_TOLERANCE);
+                topo.edge_mut(id)?.set_tolerance(Some(carried))?;
             }
         }
     }
@@ -1406,7 +1424,15 @@ mod translation_certificate_tests {
             let actual = edge.effective_tolerance(1e-7);
             if valid_source && !corrupt_after {
                 assert!(residual <= actual);
-                assert!(actual - gap < 1e-15);
+                // The carried tolerance keeps the coordinate-scale budget as
+                // slack for cross-platform re-evaluation (#483), so it sits
+                // ~1e-13 above the gap here — budget-scale, not residual-ulp
+                // scale, yet still tiny relative to the tolerance itself.
+                assert!(
+                    actual - gap < 1e-12,
+                    "carried tolerance must stay budget-scale, got {}",
+                    actual - gap
+                );
             } else {
                 assert_eq!(actual, tolerance);
                 assert!(residual > actual);
