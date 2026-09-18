@@ -2990,8 +2990,9 @@ fn b26_finding20_spherecone_equalradii() {
 /// until the owning row fixes the kernel. Do NOT fix in the B26 proptest
 /// PR — filed as a new §B row.
 /// Minimized from `prop_random_curved_pair_identities` (committed seed).
+/// Closed by PR #490 (closed tube-wrapping torus sections traced as band
+/// loops, B45); un-ignored 2026-09-17 after bisecting the fix to that merge.
 #[test]
-#[ignore = "open: oblique box-torus pervasive misbuilds (B26 finding 21)"]
 fn b26_finding21_oblique_boxtorus() {
     use remus_operations::primitives::{make_box, make_torus};
     let m = Mat4::translation(0.0, -1.5, 0.0) * Mat4::rotation_x(std::f64::consts::FRAC_PI_4);
@@ -3137,8 +3138,10 @@ fn b26_finding17_boxcone_sibling() {
 /// Surfaced by `prop_random_curved_pair_identities` (no persisted seed —
 /// the panic aborts shrinking before persistence; this repro is the
 /// retention).
+/// Closed by PR #495 (the CDT sliver-boundary decline in
+/// `tessellate_nonplanar_cdt`, B41); un-ignored 2026-09-17 after bisecting
+/// the fix to that merge.
 #[test]
-#[ignore = "open: CDT overflow panic inside intersect (B26 finding 18)"]
 fn b26_finding18_cdt_overflow_panic() {
     use remus_operations::primitives::{make_box, make_cone};
     let m = Mat4::translation(500.0, -1500.0, -500.0)
@@ -3226,8 +3229,10 @@ fn b26_finding_cylinder_cap_closed_circle_mesh_open() {
 /// until the owning row fixes the kernel. Do NOT fix in the B26 proptest
 /// PR — filed as a new §B row.
 /// Minimized from `prop_random_primitive_pair_identities` seed `ef0e66e3`.
+/// Closed by PR #495 (sphere frames carried through rigid moves, poles
+/// picked in-frame, B41); un-ignored 2026-09-17 after bisecting the fix to
+/// that merge.
 #[test]
-#[ignore = "open: small-scale cut translation-variant volume (B26 finding 4)"]
 fn b26_finding_small_scale_cut_translation_variant() {
     use remus_operations::primitives::{make_box, make_sphere};
     let m =
@@ -3404,8 +3409,10 @@ fn b26_finding12_cone_cut_broken() {
 /// filed as a new §B row.
 /// Minimized from `prop_random_curved_pair_identities` (sibling seeds in
 /// the committed regressions file).
+/// Closed by PR #490 (closed tube-wrapping torus sections traced as band
+/// loops, B45); un-ignored 2026-09-17 after bisecting the fix to that merge.
+/// The unit-scale and oblique-drift siblings of finding 14 are still open.
 #[test]
-#[ignore = "open: torus-cone cut ops-invalid at 1e-3 (B26 finding 14)"]
 fn b26_finding14_toruscone_cut_invalid() {
     use remus_operations::primitives::{make_cone, make_torus};
     let m = Mat4::translation(2.5 * 0.001, 0.0, 0.0)
@@ -3427,8 +3434,9 @@ fn b26_finding14_toruscone_cut_invalid() {
 /// (B39): the pair-cell, not the placement, is broken. No persisted
 /// proptest seed (shrinking aborted on this input too) — this repro is the
 /// retention. Minimized from `prop_random_curved_pair_identities`.
+/// Closed by PR #490 (closed tube-wrapping torus sections traced as band
+/// loops, B45); un-ignored 2026-09-17 after bisecting the fix to that merge.
 #[test]
-#[ignore = "open: torus-cone sibling fuse+cut ops-invalid (B26 finding 14)"]
 fn b26_finding14_toruscone_sibling() {
     use remus_operations::primitives::{make_cone, make_torus};
     let m = Mat4::translation(2.5 * 0.001, -0.5 * 0.001, 0.0)
