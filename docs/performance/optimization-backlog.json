@@ -40,7 +40,7 @@
     "phase": 0,
     "evidence": "S",
     "work": "Turn performance regression policy into an effective gate; the current reusable workflow needs the ci:benchmark PR label and only comments at 200%.",
-    "acceptance": "Calibrate noise on a controlled runner, then block reproducible material regressions on relevant PRs; preserve the untrusted-build/trusted-publisher separation.",
+    "acceptance": "Calibrate noise on a controlled runner, then block reproducible material regressions on relevant PRs; preserve the untrusted-build/trusted-publisher separation. Noise-calibration input: [perf-baseline-3785eebc](perf-baseline-3785eebc.md).",
     "effort_risk": "M/medium",
     "dependencies": ["M02", "M06"],
     "source_references": [
