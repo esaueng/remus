@@ -130,14 +130,21 @@ that does not exist yet; without it, stop.
 
 ## Open items with a repro
 
-The `#[ignore]` inventory (regenerated 2026-09-13 at `fba835c3`: 13
-actual attributes, excluding comment mentions) has one open engine witness:
-`qualify_boolean_anisotropic.rs::anisotropic_world_volume_resolves_small_feature_scale`
-(P-Class 2.6 in the master roadmap). The other twelve are one ~2 min perf run
+The `#[ignore]` inventory (regenerated 2026-09-18 at `3785eebc`: 43
+actual attributes, excluding comment mentions) has 31 open engine witnesses:
+24 B26 ready-repros in `crates/operations/tests/prop_boolean_invariants.rs`
+(findings 1/2/4/8/12–17/19/21/22 — five pass on main and are being un-ignored
+in #500: finding-14 cut/sibling, 18, 21, small-scale cut translation), one B46
+blend-band witness (`regress_torus_pierce_band.rs`, still fails 3/3), one
+P-Class 2.6 witness (`qualify_boolean_anisotropic.rs`, still fails 3/3), and
+five B10 seeds (`b10_curve_curve.rs` ×2, `b10_conic_distance.rs` ×3, all still
+fail 3/3). The other twelve are one ~2 min perf run
 (`boolean/tests.rs::staircase_fuse_with_cylinders`), two manual release-mode
 `unify_faces` scaling measurements (`regress_unify_scaling.rs`, issue #284),
 and nine print-only diagnostics (`profile_intersect.rs` ×3, the two #696
-dovetail probes, the four `diag_*tangency*` probes). The concave-notch fillet
+dovetail probes, the four `diag_*tangency*` probes). Zero stale ignores outside
+the five in flight (every other ignored test re-run 3× on 2026-09-18; `io`,
+`algo`, `math`, and `wasm` carry no actual ignores). The concave-notch fillet
 and obtuse-ridge chamfer pins are no longer ignored after #398. Re-run
 landscape diagnostics with `--ignored --nocapture` before re-opening a case.
 Current work lives in the master roadmap; closed narratives live in
@@ -210,7 +217,7 @@ harness's own option-honoured floor misreading a correct 0.05 fillet on an
   depth by geometric containment (stored winding cannot classify them).
 - **A wire with no angular gap is a wrapped face;** any consumer that
   polygon-approximates it inherits the parity flip.
-- **Two tube-wrapping torus rims bound an oriented band, not ordinary holes;** preserve opposite traversal through Fuse and integrate the retained side (`pclass_torus_notch_orientation.rs`).
+- **Two tube-wrapping torus rims bound an oriented band, not ordinary holes;** preserve opposite traversal through Fuse and integrate the retained side (`pclass_torus_notch_orientation.rs`). Closed pierce sections are band rims too: trace them as one-edge band loops, the φ-winding check still deferring non-wrapping disc holes (B45, `crates/operations/tests/regress_torus_pierce_band.rs`).
 - **Full mesh area + zero boundary/non-manifold edges + volume deficit + zero
   inverted normals = sparse-interior deep chords, not winding.**
 - **When a range and a mask disagree, instrument both before blaming either**
@@ -240,16 +247,19 @@ harness's own option-honoured floor misreading a correct 0.05 fillet on an
   counts below a pin are benign density difference; 10× above is a defect;
   a volume that disagrees with a pin can be Remus being MORE exact (the
   snapClip clip volume, the K0.1 parabolic fillet file).
+- **Rigid-motion paths must carry a placed carrier's frame, not rebuild it default-aligned:** re-creating a moved sphere from center + radius silently un-rotated it, tilting the equator against its hemispheres and breaking pole choice and CDT bounds three ways (B41, `crates/operations/tests/regress_sphere_transform_frame.rs`, PR #495).
+- **A seam that stops a blend chain walk is either a genuine surface transition (cross it) or a same-surface split (stop):** check outward normals pairwise plus an actual surface change before refusing; the equal-radius corner degenerates to a sphere with a singular Jacobian and needs the closed form (sequential fillet, `crates/blend/src/g1_chain.rs`, PR #496).
+- **Pin reusable-workflow callers only to main-reachable commits, never pre-squash branch SHAs:** a deleted source branch turns every PR's Classify Changes job into `fatal: path ... exists on disk, but not in ...` (`fuzz.yml` fleet-fuzz pin, PR #499, still OPEN).
 
-## Subsystem trap notes (crates without their own skill)
+## Subsystem trap notes
 
 - **heal `fix_duplicate_faces` IS implemented** (solid-scoped, `crates/heal/src/fix/solid.rs`,
   returns `Status::DONE2`), not a no-op stub. It compares only centroid, normal, and
   edge count, so it can miss true-but-differently-wound duplicates; do not rely on it
   for subtle cases. Verify current state before quoting either way.
-- **heal, offset, and sketch have no distilled campaign knowledge.** They follow the
-  same `debugging-doctrine`, but no skill covers their internals. Treat any diagnosis
-  there as first-of-kind and write findings down (a test comment or a new note).
+- **heal traps now live in the `heal` skill** (unify revert guard PR #1131, sew wire-use rewrite PR #94, closed-curve sampling commit `8b52ea7f`).
+- **offset traps now live in the `offset` skill** (thick-solid inversion PR #89, collapse refusal PR #86, torus analytic cell `a6200976`).
+- **sketch traps now live in the `sketch` skill** (NaN-fold convergence PR #453, scale-relative `check_jacobian_central`, solve vs `solve_detailed` publishing).
 - **The v1 fillet default was flipped to v2-first (2026-07, product decision):**
   `try_fillet` now tries `blend_ops::fillet_v2` first, rolling-ball second,
   bevel last. The v1 engines remain as fallbacks and behind `filletVariable`.

@@ -162,3 +162,85 @@ fn genuinely_invalid_edge_still_fails_after_rigid_transform() {
         "a real gap must still fail: {err:?}"
     );
 }
+
+/// Regression for #483: the carried certificate must survive re-evaluation
+/// on a different FP stack (wasm simd128 vs native, FMA vs non-FMA,
+/// different libm sin/cos).
+///
+/// Storing only `residual.next_up()` leaves ~1 ulp of the residual (~7e-21
+/// at this magnitude) as headroom, but cross-platform re-evaluation drifts
+/// by a few ulps of the *coordinates* (~1e-15) — the same rounding the
+/// transform itself introduces. The carried tolerance must therefore keep
+/// the coordinate-scale budget as slack. This test pins that the headroom
+/// is budget-scale (not residual-ulp-scale) and that a few-coordinate-ulp
+/// perturbation of the transformed frame — the magnitude of wasm/native
+/// divergence — still passes the strict arena gate, while a real gap still
+/// fails (pinned by the sibling test above).
+#[test]
+fn carried_certificate_survives_coordinate_ulp_reevaluation_drift() {
+    let (mut topo, solid) = quad_solid_with_import_circle();
+    let moved = copy_and_transform_solid(&mut topo, solid, &production_move()).unwrap();
+    let moved_edge = solid_edges(&topo, moved).unwrap()[0];
+    let edge = topo.edge(moved_edge).unwrap();
+    let (a, b) = edge.strict_domain().unwrap();
+    let p = topo.vertex(edge.start()).unwrap().point();
+    let q = topo.vertex(edge.end()).unwrap().point();
+    let residual = (edge.curve().evaluate_with_endpoints(a, p, q) - p)
+        .length()
+        .max((edge.curve().evaluate_with_endpoints(b, p, q) - q).length());
+    let carried = edge.effective_tolerance(
+        topo.vertex(edge.start())
+            .unwrap()
+            .tolerance()
+            .max(topo.vertex(edge.end()).unwrap().tolerance()),
+    );
+    assert!(
+        residual <= carried,
+        "rigid transform must carry the certificate"
+    );
+    // Headroom must be coordinate-scale: far above one residual-ulp
+    // (~7e-21 here) yet far below any geometric gap (the tolerance itself).
+    let headroom = carried - residual;
+    assert!(
+        headroom > 1e-14,
+        "carried tolerance must keep budget-scale slack for cross-platform \
+         re-evaluation, got headroom {headroom:e} over residual {residual:e}"
+    );
+    assert!(
+        headroom < carried * 1e-6,
+        "budget slack must stay tiny relative to the tolerance, got headroom \
+         {headroom:e} over carried {carried:e}"
+    );
+
+    // Simulate wasm/native re-evaluation drift: nudge the transformed circle
+    // frame by a few coordinate-ulps (8 * EPS * coordinate-scale ≈ 1e-13,
+    // within the 4e-13 budget but ~1e7× the old single-ulp headroom). The
+    // strict gate must still accept the edge.
+    let circle = match edge.curve() {
+        EdgeCurve::Circle(c) => c.clone(),
+        other => panic!(
+            "fixture edge 0 must stay a circle, got {}",
+            other.type_tag()
+        ),
+    };
+    let drift = 8.0 * f64::EPSILON * 64.0;
+    let perturbed_center = circle.center() + Vec3::new(drift, 0.0, 0.0);
+    let perturbed = Circle3D::with_axes(
+        perturbed_center,
+        circle.normal(),
+        circle.radius(),
+        circle.u_axis(),
+        circle.v_axis(),
+    )
+    .unwrap();
+    topo.edge_mut(moved_edge)
+        .unwrap()
+        .set_curve(EdgeCurve::Circle(perturbed));
+    let bytes = serialize_solids(&topo, &[moved]).unwrap();
+    let restored = deserialize_solids(&bytes, &mut Topology::new());
+    assert!(
+        restored.is_ok(),
+        "coordinate-ulp drift within the transform budget must still pass the gate: {:?}",
+        restored.err()
+    );
+}
