@@ -240,15 +240,15 @@ harness's own option-honoured floor misreading a correct 0.05 fillet on an
   a volume that disagrees with a pin can be Remus being MORE exact (the
   snapClip clip volume, the K0.1 parabolic fillet file).
 
-## Subsystem trap notes (crates without their own skill)
+## Subsystem trap notes
 
 - **heal `fix_duplicate_faces` IS implemented** (solid-scoped, `crates/heal/src/fix/solid.rs`,
   returns `Status::DONE2`), not a no-op stub. It compares only centroid, normal, and
   edge count, so it can miss true-but-differently-wound duplicates; do not rely on it
   for subtle cases. Verify current state before quoting either way.
-- **heal, offset, and sketch have no distilled campaign knowledge.** They follow the
-  same `debugging-doctrine`, but no skill covers their internals. Treat any diagnosis
-  there as first-of-kind and write findings down (a test comment or a new note).
+- **heal traps now live in the `heal` skill** (unify revert guard PR #1131, sew wire-use rewrite PR #94, closed-curve sampling commit `8b52ea7f`).
+- **offset traps now live in the `offset` skill** (thick-solid inversion PR #89, collapse refusal PR #86, torus analytic cell `a6200976`).
+- **sketch traps now live in the `sketch` skill** (NaN-fold convergence PR #453, scale-relative `check_jacobian_central`, solve vs `solve_detailed` publishing).
 - **The v1 fillet default was flipped to v2-first (2026-07, product decision):**
   `try_fillet` now tries `blend_ops::fillet_v2` first, rolling-ball second,
   bevel last. The v1 engines remain as fallbacks and behind `filletVariable`.
