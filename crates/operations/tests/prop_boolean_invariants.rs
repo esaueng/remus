@@ -2858,8 +2858,8 @@ fn b26_finding_cylinder_cut_translation_variant() {
 /// per the testing skill: it fails until the owning row fixes the kernel.
 /// Do NOT fix in the B26 proptest PR — filed as a new §B row.
 /// Minimized from `prop_random_primitive_pair_identities` (committed seed).
+/// Closed with B47: same root (hole-aware cylinder mesher seeding a column midpoint onto a pocket constraint); greens once those seeds are dropped.
 #[test]
-#[ignore = "open: grazing box-cylinder fuse open mesh (B26 finding 19)"]
 fn b26_finding19_grazing_fuse_mesh() {
     use remus_operations::primitives::{make_box, make_cylinder};
     let m = Mat4::translation(3.25, 4.25, 3.25) * Mat4::rotation_y(std::f64::consts::PI);
@@ -2881,8 +2881,8 @@ fn b26_finding19_grazing_fuse_mesh() {
 /// Same owner row (new §B row with the first instance). No persisted
 /// proptest seed (shrinking aborted) — this repro is the retention.
 /// Minimized from `prop_random_primitive_pair_identities`.
+/// Closed with B47 (see `b26_finding19_grazing_fuse_mesh`).
 #[test]
-#[ignore = "open: grazing fuse open mesh, taller-box sibling (B26 finding 19)"]
 fn b26_finding19_grazing_sibling() {
     use remus_operations::primitives::{make_box, make_cylinder};
     let m = Mat4::translation(3.25, 4.25, 3.25) * Mat4::rotation_y(std::f64::consts::PI);
@@ -3021,13 +3021,15 @@ fn b26_finding21_oblique_boxtorus() {
 /// tessellation-density crack on the fuse seam, same mesh-class signature as
 /// finding 19 (box–cylinder fuse, valid B-Rep, open mesh) on different
 /// shapes and placement, so a distinct finding and owner row until a shared
-/// root is proven. Committed as `#[ignore]` per the testing skill: it fails
-/// until the owning row fixes the kernel. Do NOT fix in the B26 proptest
-/// PR — filed as a new §B row.
+/// root is proven. Root (B47): the hole-aware cylinder mesher seeded every
+/// angular column at the midpoint between the outer rims, and this box
+/// straddles the wall's mid-height, so the seeds landed exactly on the
+/// pocket's bottom arc; the CDT recovered that constraint through them and
+/// the rim gained vertices the shared pool never sampled. Interior seeds
+/// on a wire constraint are now dropped (`tessellate_revolved_with_holes`).
 /// Minimized from `prop_random_primitive_pair_identities` (no persisted
 /// seed — shrinking aborted, this repro is the retention).
 #[test]
-#[ignore = "open: box-cylinder fuse open mesh at fine deflection (B26 finding 22)"]
 fn b26_finding22_boxcyl_fuse_mesh() {
     use remus_operations::primitives::{make_box, make_cylinder};
     let m = Mat4::translation(4.25, -1.25, -1.75) * Mat4::rotation_z(0.0);
@@ -3197,8 +3199,8 @@ fn b26_finding_box_cylinder_fuse_face_orientation() {
 /// as `#[ignore]` per the testing skill: it fails until the owning row
 /// fixes the kernel. Do NOT fix in the B26 proptest PR.
 /// Minimized from `prop_random_primitive_pair_identities` seed `b24e61be`.
+/// Closed with B47: the holed cylinder wall, not the cap, owned the crack — its column-midpoint seeds sat on the pocket constraint; greens once those seeds are dropped.
 #[test]
-#[ignore = "open: cylinder-cap closed-circle face tessellates open (B26 finding 8)"]
 fn b26_finding_cylinder_cap_closed_circle_mesh_open() {
     use remus_operations::primitives::make_cylinder;
     let m = Mat4::translation(0.0, 1.5, 1.0);
