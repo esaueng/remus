@@ -155,3 +155,178 @@ pub fn cylinder_area(radius: f64, height: f64) -> f64 {
 pub fn torus_area(major_r: f64, minor_r: f64) -> f64 {
     4.0 * PI * PI * major_r * minor_r
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used, clippy::unreadable_literal)]
+    // `unreadable_literal`: expected values are pasted bit-exact `repr` outputs;
+    // digit separators would obscure the exact-decimal correspondence.
+
+    use super::*;
+
+    /// Relative comparison with a tight tolerance; `expected` is always nonzero here.
+    fn assert_close(actual: f64, expected: f64) {
+        let tol = 1e-12 * expected.abs();
+        assert!(
+            (actual - expected).abs() <= tol,
+            "expected {expected}, got {actual}"
+        );
+    }
+
+    fn assert_zero(actual: f64) {
+        assert!(actual.abs() <= 1e-300, "expected 0.0, got {actual}");
+    }
+
+    #[test]
+    fn box_exact_props() {
+        // Box 2 x 3 x 5, corner at origin. V = 30, CoM = (1, 1.5, 2.5).
+        // Ixx = V/12*(dy^2+dz^2) = 30/12*(9+25) = 85
+        // Iyy = V/12*(dx^2+dz^2) = 30/12*(4+25) = 72.5
+        // Izz = V/12*(dx^2+dy^2) = 30/12*(4+9) = 32.5
+        let p = box_props(2.0, 3.0, 5.0);
+        assert_close(p.mass, 30.0);
+        assert_close(p.center.x(), 1.0);
+        assert_close(p.center.y(), 1.5);
+        assert_close(p.center.z(), 2.5);
+        assert_close(p.inertia[0], 85.0);
+        assert_close(p.inertia[1], 72.5);
+        assert_close(p.inertia[2], 32.5);
+        assert_zero(p.inertia[3]);
+        assert_zero(p.inertia[4]);
+        assert_zero(p.inertia[5]);
+    }
+
+    #[test]
+    fn sphere_exact_props() {
+        // r = 3: V = 4/3*pi*27, I = 2/5*V*r^2 (all axes).
+        // (r != 2 so `radius * radius` -> `+` stays visible: 9 != 6.)
+        let p = sphere_props(3.0);
+        assert_close(p.mass, 113.09733552923254);
+        assert_zero(p.center.x());
+        assert_zero(p.center.y());
+        assert_zero(p.center.z());
+        assert_close(p.inertia[0], 407.1504079052372);
+        assert_close(p.inertia[1], 407.1504079052372);
+        assert_close(p.inertia[2], 407.1504079052372);
+        assert_zero(p.inertia[3]);
+        assert_zero(p.inertia[4]);
+        assert_zero(p.inertia[5]);
+    }
+
+    #[test]
+    fn cylinder_exact_props() {
+        // r = 2, h = 5: V = pi*4*5 = 20*pi, CoM z = 2.5.
+        // Ixx = V/12*(3*r^2+h^2) = V/12*37; Izz = V/2*r^2 = 40*pi.
+        let p = cylinder_props(2.0, 5.0);
+        assert_close(p.mass, 62.83185307179586);
+        assert_zero(p.center.x());
+        assert_zero(p.center.y());
+        assert_close(p.center.z(), 2.5);
+        assert_close(p.inertia[0], 193.7315469713706);
+        assert_close(p.inertia[1], 193.7315469713706);
+        assert_close(p.inertia[2], 125.66370614359172);
+        assert_zero(p.inertia[3]);
+        assert_zero(p.inertia[4]);
+        assert_zero(p.inertia[5]);
+    }
+
+    #[test]
+    fn cone_frustum_exact_props() {
+        // rb = 4, rt = 3, h = 5: r_sum2 = 16+12+9 = 37, V = pi*5/3*37.
+        // z_com = h*(16+24+27)/(4*37) = 5*67/148.
+        // (Radii avoid 0/1 so no `*`->`+`/`/` mutant hides: rt+rt != rt^2.)
+        let p = cone_props(4.0, 3.0, 5.0);
+        assert_close(p.mass, 193.7315469713706);
+        assert_zero(p.center.x());
+        assert_zero(p.center.y());
+        assert_close(p.center.z(), 2.2635135135135136);
+        assert_close(p.inertia[0], 1008.3504136597253);
+        assert_close(p.inertia[1], 1008.3504136597253);
+        assert_close(p.inertia[2], 1226.7919312268143);
+        assert_zero(p.inertia[3]);
+        assert_zero(p.inertia[4]);
+        assert_zero(p.inertia[5]);
+    }
+
+    #[test]
+    fn cone_full_cone_exact_props() {
+        // Full cone rb = 2, rt = 0, h = 3: V = 4*pi, z_com = h/4,
+        // Izz = 3/10*V*rb^2 = 4.8*pi.
+        let p = cone_props(2.0, 0.0, 3.0);
+        assert_close(p.mass, 12.566370614359172);
+        assert_zero(p.center.x());
+        assert_zero(p.center.y());
+        assert_close(p.center.z(), 0.75);
+        assert_close(p.inertia[0], 11.780972450961723);
+        assert_close(p.inertia[1], 11.780972450961723);
+        assert_close(p.inertia[2], 15.079644737231007);
+        assert_zero(p.inertia[3]);
+        assert_zero(p.inertia[4]);
+        assert_zero(p.inertia[5]);
+    }
+
+    #[test]
+    fn cone_degenerate_zero_radii() {
+        // Both radii zero: zero-volume segment, CoM at h/2, zero inertia.
+        let p = cone_props(0.0, 0.0, 5.0);
+        assert_zero(p.mass);
+        assert_zero(p.center.x());
+        assert_zero(p.center.y());
+        assert_close(p.center.z(), 2.5);
+        for &c in &p.inertia {
+            assert_zero(c);
+        }
+    }
+
+    #[test]
+    fn cone_degenerate_threshold_boundary_takes_normal_path() {
+        // rb = 1e-15, rt = 0: r_sum2 == 1e-30 exactly, which is NOT < 1e-30,
+        // so the normal (non-degenerate) path applies: V = pi*h/3*1e-30,
+        // z_com = h/4 for a full cone.
+        let p = cone_props(1e-15, 0.0, 2.0);
+        assert_close(p.mass, 2.0943951023931956e-30);
+        assert_close(p.center.z(), 0.5);
+    }
+
+    #[test]
+    fn torus_exact_props() {
+        // R = 4, r = 2: V = 2*pi^2*4*4, Izz = V*(16+3), Ixx = V*(8+2.5).
+        // (R != 3 so `major_r * major_r / 2` -> `+` stays visible:
+        // R+R/2 == R^2/2 only at R = 3; r != 1 keeps `r * r` -> `/` visible.)
+        let p = torus_props(4.0, 2.0);
+        assert_close(p.mass, 315.82734083485946);
+        assert_zero(p.center.x());
+        assert_zero(p.center.y());
+        assert_zero(p.center.z());
+        assert_close(p.inertia[0], 3316.187078766024);
+        assert_close(p.inertia[1], 3316.187078766024);
+        assert_close(p.inertia[2], 6000.71947586233);
+        assert_zero(p.inertia[3]);
+        assert_zero(p.inertia[4]);
+        assert_zero(p.inertia[5]);
+    }
+
+    #[test]
+    fn box_area_exact() {
+        // 2*(6 + 15 + 10) = 62.
+        assert_close(box_area(2.0, 3.0, 5.0), 62.0);
+    }
+
+    #[test]
+    fn sphere_area_exact() {
+        // 4*pi*9 = 36*pi.
+        assert_close(sphere_area(3.0), 113.09733552923255);
+    }
+
+    #[test]
+    fn cylinder_area_exact() {
+        // 2*pi*2*5 + 2*pi*4 = 28*pi.
+        assert_close(cylinder_area(2.0, 5.0), 87.96459430051421);
+    }
+
+    #[test]
+    fn torus_area_exact() {
+        // 4*pi^2*3*2 = 24*pi^2.
+        assert_close(torus_area(3.0, 2.0), 236.8705056261446);
+    }
+}
