@@ -5,11 +5,9 @@
 # manifest update in the same change, so reductions are recorded where they land.
 # Convert an arm to exhaustive matches and lower its file's count in the same PR;
 # never raise a count except to record a genuinely required wildcard.
-6 crates/algo/src/builder/builder_solid.rs
 1 crates/algo/src/builder/face_splitter/conversion.rs
 5 crates/algo/src/builder/face_splitter/mod.rs
 7 crates/algo/src/builder/face_splitter/special_cases.rs
-10 crates/algo/src/builder/fill_images_faces.rs
 2 crates/algo/src/builder/mod.rs
 1 crates/algo/src/builder/pcurve_compute.rs
 5 crates/algo/src/builder/same_domain.rs
@@ -19,7 +17,6 @@
 1 crates/algo/src/pave_filler/phase_vf.rs
 2 crates/blend/src/chamfer_builder.rs
 1 crates/blend/src/face_face.rs
-8 crates/blend/src/fillet_builder.rs
 2 crates/blend/src/query.rs
 1 crates/blend/src/trimmer.rs
 1 crates/check/src/classify/mod.rs
