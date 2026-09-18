@@ -130,14 +130,21 @@ that does not exist yet; without it, stop.
 
 ## Open items with a repro
 
-The `#[ignore]` inventory (regenerated 2026-09-13 at `fba835c3`: 13
-actual attributes, excluding comment mentions) has one open engine witness:
-`qualify_boolean_anisotropic.rs::anisotropic_world_volume_resolves_small_feature_scale`
-(P-Class 2.6 in the master roadmap). The other twelve are one ~2 min perf run
+The `#[ignore]` inventory (regenerated 2026-09-18 at `3785eebc`: 43
+actual attributes, excluding comment mentions) has 31 open engine witnesses:
+24 B26 ready-repros in `crates/operations/tests/prop_boolean_invariants.rs`
+(findings 1/2/4/8/12–17/19/21/22 — five pass on main and are being un-ignored
+in #500: finding-14 cut/sibling, 18, 21, small-scale cut translation), one B46
+blend-band witness (`regress_torus_pierce_band.rs`, still fails 3/3), one
+P-Class 2.6 witness (`qualify_boolean_anisotropic.rs`, still fails 3/3), and
+five B10 seeds (`b10_curve_curve.rs` ×2, `b10_conic_distance.rs` ×3, all still
+fail 3/3). The other twelve are one ~2 min perf run
 (`boolean/tests.rs::staircase_fuse_with_cylinders`), two manual release-mode
 `unify_faces` scaling measurements (`regress_unify_scaling.rs`, issue #284),
 and nine print-only diagnostics (`profile_intersect.rs` ×3, the two #696
-dovetail probes, the four `diag_*tangency*` probes). The concave-notch fillet
+dovetail probes, the four `diag_*tangency*` probes). Zero stale ignores outside
+the five in flight (every other ignored test re-run 3× on 2026-09-18; `io`,
+`algo`, `math`, and `wasm` carry no actual ignores). The concave-notch fillet
 and obtuse-ridge chamfer pins are no longer ignored after #398. Re-run
 landscape diagnostics with `--ignored --nocapture` before re-opening a case.
 Current work lives in the master roadmap; closed narratives live in
