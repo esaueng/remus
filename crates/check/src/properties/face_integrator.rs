@@ -129,14 +129,23 @@ pub fn integrate_face(
             ))
         }
         FaceSurface::Cone(s) => {
+            // A cone's boundary extent alone under-spans a pointed face: the
+            // apex (v = 0) is an interior singular point, not a wire vertex,
+            // so a face bounded by one rim (and any holes) reaches it without
+            // any edge saying so. Include the apex in the full domain; a
+            // two-rim band still gets its own bounded range below, and a
+            // full-revolution hole clips the cap short of the apex the way a
+            // drilled tunnel's rim does on a sphere.
+            let extent = face_boundary_v_extent(topo, face_id, s)?;
             let full = (
                 (0.0, std::f64::consts::TAU),
-                face_boundary_v_extent(topo, face_id, s)?,
+                (extent.0.min(0.0), extent.1.max(0.0)),
             );
             let (u_range, v_range) =
                 face_uv_bounds(topo, face_id, &|p| s.project_point(p), true, false, full)?;
-            let uv = build_face_uv(topo, face_id, |p| s.project_point(p), true, false, true)?;
-            Ok(integrate_with_trimming(
+            let mut uv = build_face_uv(topo, face_id, |p| s.project_point(p), true, false, true)?;
+            uv.hole_vs = full_revolution_hole_vs(topo, face_id, s);
+            Ok(integrate_with_trimming_to_pole(
                 s,
                 u_range,
                 v_range,
@@ -144,6 +153,7 @@ pub fn integrate_face(
                 sign,
                 &uv,
                 PatchScale::ANGULAR,
+                Some(0.0),
             ))
         }
         FaceSurface::Sphere(s) => {
@@ -2819,6 +2829,33 @@ fn integrate_with_trimming<S: ParametricSurface>(
     uv: &FaceUv,
     scale: PatchScale,
 ) -> FaceContribution {
+    integrate_with_trimming_to_pole(
+        surface,
+        u_range,
+        v_range,
+        gauss_order,
+        sign,
+        uv,
+        scale,
+        None,
+    )
+}
+
+/// [`integrate_with_trimming`] with an explicit pole for the single-rim
+/// (polar cap) case. A sphere has two poles and the rim's winding picks the
+/// interior side; a cone has one apex, at `apex_v`, and a single-rim cone
+/// face always closes on it regardless of how the rim is wound.
+#[allow(clippy::too_many_arguments)]
+fn integrate_with_trimming_to_pole<S: ParametricSurface>(
+    surface: &S,
+    u_range: (f64, f64),
+    v_range: (f64, f64),
+    gauss_order: usize,
+    sign: f64,
+    uv: &FaceUv,
+    scale: PatchScale,
+    apex_v: Option<f64>,
+) -> FaceContribution {
     let holes_only = UvTrim::holes_of(uv);
     if uv.boundary.points.len() < 3 {
         return integrate_parametric(
@@ -2863,7 +2900,7 @@ fn integrate_with_trimming<S: ParametricSurface>(
         // circle): the cap runs from that latitude to a pole. The winding sign
         // (CCW vs CW boundary) selects which pole — the boundary's interior
         // side — so the two hemispheres do not both integrate the whole sphere.
-        let v_pole = if winding >= 0.0 { v_range.1 } else { v_range.0 };
+        let v_pole = apex_v.unwrap_or(if winding >= 0.0 { v_range.1 } else { v_range.0 });
         // A full-revolution hole at a latitude between the outer circle and the
         // pole (the drilled-tunnel rim) clips the cap into a band: integrate
         // only from the outer latitude to the hole, not on to the pole.

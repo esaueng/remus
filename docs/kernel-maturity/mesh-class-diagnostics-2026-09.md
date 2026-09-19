@@ -164,6 +164,31 @@ do not tune CDT density or snap proximity.
 
 ---
 
+**Resolution (2026-09-18):** the fuse leg closed, but not by the hypothesis
+above. Per-face twin accounting (not per-face boundary ownership) showed f1,
+the holed pointed cone, emitting ZERO triangles: its single-rim UV chart
+bounded nothing, so every crack credited to f0/f2/f3 was really the missing
+cone wall. A second root surfaced once f1 existed: the exact face integrator
+dropped the cone tip below the hole (the translation drift). Both are fixed;
+see row B37.
+
+A third defect was measured on the same body and is **not** fixed: f2's
+generic CDT with one interior row bridges the dense notch rim with chords
+through the solid. Every edge stays twinned, so no watertightness oracle
+sees it — the signed MESH volume is what shows it, and it does not
+converge: 7.063715 / 7.099480 / 7.137545 / 7.141582 at deflection
+0.1 / 1e-2 / 1e-3 / 6e-5 (1168 → 64888 triangles) against an exact
+7.286577, still 2.0 % low and flat at the finest reading, while the cut leg
+of the same pair converges normally. It is filed as row B49 — the first
+attempt at it (isotropic interior rows whenever the boundary leaves the
+rims) made the cylinder/cone grid quadratic in deflection and broke six
+unrelated suites, including a fail-open in the blend volume sign rule; that
+row records the measurements and the constraints a real fix has to meet.
+
+Lesson for the next reading: a face that owns 0 boundary edges and 0
+triangles is the defect, not the innocent party; print triangle counts per
+face before attributing a crack to its neighbour.
+
 ## B38 — Sphere–torus boolean misbuilds (finding 13)
 
 Repros: `b26_finding13_spheretorus_smallscale_invalid`,

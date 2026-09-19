@@ -503,6 +503,15 @@ fn cylinder_band_strands_above(uvs: &[CylinderUv], range: (usize, usize), u: f64
 /// Tessellate a cylindrical or conical face with inner wires in its unwrapped
 /// UV chart. All wire polylines become CDT constraints; inner-loop cells are
 /// then removed before the vertices are mapped back to the analytic surface.
+///
+/// `apex` names a cone's singular point `(v_apex, point)`. A pointed cone
+/// whose outer wire is one closed rim and nothing else (no seam line, no
+/// second rim) projects to a zero-area line at constant `v`, which bounds
+/// nothing; with `apex` given, the chart's missing boundary (seam down to
+/// the apex, the apex row, seam back up) is synthesized so the CDT has a
+/// domain, and the apex row is collapsed to one vertex afterwards. Both
+/// seam sides evaluate to identical 3D points, so they weld by position.
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 pub(super) fn tessellate_revolved_with_holes(
     topo: &Topology,
     face_data: &remus_topology::face::Face,
@@ -511,23 +520,91 @@ pub(super) fn tessellate_revolved_with_holes(
     deflection: f64,
     angular_tol: f64,
     edge_points: Option<&DetHashMap<usize, Vec<Point3>>>,
+    apex: Option<(f64, Point3)>,
 ) -> Result<TriangleMeshUV, crate::OperationsError> {
     use remus_math::cdt::Cdt;
     use remus_math::vec::Point2;
 
     let outer_wire = topo.wire(face_data.outer_wire())?;
-    let (mut all_positions, outer_uvs) =
+    let (mut all_positions, mut outer_uvs) =
         sample_cylinder_wire(topo, outer_wire, cyl, deflection, angular_tol, edge_points)?;
     if outer_uvs.len() < 3 {
         return Ok(TriangleMeshUV::default());
     }
 
-    let outer_count = outer_uvs.len();
-    let outer_u = outer_uvs
+    // A single-rim outer wire (all samples at one `v`) only bounds a chart
+    // when the face closes on a cone apex; synthesize that boundary.
+    let rim_v = outer_uvs
+        .iter()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &(_, v)| {
+            (lo.min(v), hi.max(v))
+        });
+    let single_rim = rim_v.1 - rim_v.0 <= 1e-9 * (rim_v.1.abs() + rim_v.0.abs() + 1.0);
+    let mut collapse_apex_v: Option<f64> = None;
+    let mut outer_u = outer_uvs
         .iter()
         .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &(u, _)| {
             (lo.min(u), hi.max(u))
         });
+    if single_rim {
+        let Some((v_apex, apex_point)) = apex else {
+            return Ok(TriangleMeshUV::default());
+        };
+        let v_rim = f64::midpoint(rim_v.0, rim_v.1);
+        if (v_rim - v_apex).abs() <= 1e-9 * (v_rim.abs() + 1.0) {
+            return Ok(TriangleMeshUV::default());
+        }
+        let u_first = outer_uvs[0].0;
+        let dir: f64 = if outer_uvs[outer_uvs.len() - 1].0 >= u_first {
+            1.0
+        } else {
+            -1.0
+        };
+        let seam_u = dir.mul_add(std::f64::consts::TAU, u_first);
+        outer_u = (u_first.min(seam_u), u_first.max(seam_u));
+        let nu = segments_for_chord_deviation_a(
+            radius,
+            std::f64::consts::TAU,
+            deflection,
+            angular_tol,
+            false,
+        )
+        .saturating_add(1);
+        let physical_u_step = radius * std::f64::consts::TAU / nu as f64;
+        let nv = cylinder_grid_rows(
+            physical_u_step,
+            (v_rim - v_apex).abs(),
+            nu.saturating_sub(1),
+        )?;
+        let push = |u: f64, v: f64, all_positions: &mut Vec<Point3>, uvs: &mut Vec<CylinderUv>| {
+            all_positions.push(cyl.evaluate(u, v));
+            uvs.push((u, v));
+        };
+        // Close the rim's full turn on the far seam, walk that seam down to
+        // the apex, cross the apex row back to the first sample's column, and
+        // climb the near seam to the rim again (the polygon closes on
+        // `outer_uvs[0]` itself).
+        push(seam_u, v_rim, &mut all_positions, &mut outer_uvs);
+        for k in (1..nv).rev() {
+            #[allow(clippy::cast_precision_loss)]
+            let v = (v_rim - v_apex).mul_add(k as f64 / nv as f64, v_apex);
+            push(seam_u, v, &mut all_positions, &mut outer_uvs);
+        }
+        for j in 0..=nu {
+            #[allow(clippy::cast_precision_loss)]
+            let u = (u_first - seam_u).mul_add(j as f64 / nu as f64, seam_u);
+            all_positions.push(apex_point);
+            outer_uvs.push((u, v_apex));
+        }
+        for k in 1..nv {
+            #[allow(clippy::cast_precision_loss)]
+            let v = (v_rim - v_apex).mul_add(k as f64 / nv as f64, v_apex);
+            push(u_first, v, &mut all_positions, &mut outer_uvs);
+        }
+        collapse_apex_v = Some(v_apex);
+    }
+
+    let outer_count = outer_uvs.len();
     let mut all_uvs = outer_uvs;
     let mut pocket_ranges = Vec::new();
     let mut band_ranges = Vec::new();
@@ -769,6 +846,53 @@ pub(super) fn tessellate_revolved_with_holes(
     #[allow(clippy::cast_possible_truncation)]
     for (a, b, c) in triangles {
         indices.extend_from_slice(&[a as u32, b as u32, c as u32]);
+    }
+
+    if let Some(v_apex) = collapse_apex_v {
+        // Every chart vertex on the apex row is the same 3D point. Fold them
+        // onto one vertex, drop the triangles that spanned the row (they
+        // collapse to zero area), and compact the arrays.
+        let v_tol = 1e-9 * (v_apex.abs() + (rim_v.1 - v_apex).abs() + 1.0);
+        let apex_rep = cdt_vertices
+            .iter()
+            .position(|uv| (uv.y() - v_apex).abs() <= v_tol);
+        if let Some(rep) = apex_rep {
+            let mut remap: Vec<u32> = (0..positions.len() as u32).collect();
+            for (i, uv) in cdt_vertices.iter().enumerate() {
+                if (uv.y() - v_apex).abs() <= v_tol {
+                    remap[i] = rep as u32;
+                }
+            }
+            let mut kept: Vec<u32> = Vec::with_capacity(indices.len());
+            for tri in indices.chunks_exact(3) {
+                let (a, b, c) = (
+                    remap[tri[0] as usize],
+                    remap[tri[1] as usize],
+                    remap[tri[2] as usize],
+                );
+                if a != b && b != c && a != c {
+                    kept.extend_from_slice(&[a, b, c]);
+                }
+            }
+            let mut used = vec![u32::MAX; positions.len()];
+            let mut new_positions = Vec::new();
+            let mut new_normals = Vec::new();
+            let mut new_uvs = Vec::new();
+            for idx in &mut kept {
+                let old = *idx as usize;
+                if used[old] == u32::MAX {
+                    used[old] = new_positions.len() as u32;
+                    new_positions.push(positions[old]);
+                    new_normals.push(normals[old]);
+                    new_uvs.push(uvs[old]);
+                }
+                *idx = used[old];
+            }
+            positions = new_positions;
+            normals = new_normals;
+            uvs = new_uvs;
+            indices = kept;
+        }
     }
 
     Ok(TriangleMeshUV {
