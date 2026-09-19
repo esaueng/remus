@@ -2227,6 +2227,121 @@ fn tessellate_small_torus_reasonable_count() {
     );
 }
 
+/// B37: a cylinder band whose boundary stays on its two rims keeps the
+/// two-row interior grid (#259 density), while a boundary run strictly
+/// between railed rims (a notch rim, a section curve) gets isotropic rows so
+/// the CDT cannot bridge it with chords through the solid. The rails matter:
+/// a section loop that merely grazes its `v` extremes (fewer than 8 rim
+/// samples) keeps two rows — those extra Steiner points only perturb the CDT
+/// (a bore wall with 4 grazes lost 0.6 of volume under 216 uniform rows,
+/// blinding the blend volume oracle). A constant-`v` run between railed rims
+/// is itself a rail and also keeps two rows (a mid-wall section circle drove
+/// 15391 columns by 512 rows past the work limit).
+#[test]
+fn cylinder_interior_rows_follow_boundary_between_rims() {
+    let cyl = remus_math::surfaces::CylindricalSurface::new(
+        Point3::new(0.0, 0.0, 0.0),
+        Vec3::new(0.0, 0.0, 1.0),
+        1.0,
+    )
+    .unwrap();
+    let surface = FaceSurface::Cylinder(cyl);
+    let du = std::f64::consts::TAU;
+    let (v0, v1) = (0.0, 1.0);
+    let rim_only = [(0.0, v0), (1.0, v0), (1.0, v1), (0.0, v1)];
+    assert_eq!(
+        super::nonplanar::interior_rows_for_boundary(&surface, &rim_only, (v0, v1), du, 64, 2),
+        2
+    );
+    // A notch dip between runs along both rims: 8 rail samples plus a dip
+    // that actually traverses v (a single mid-wall sample has no span to
+    // bridge, so the dip needs several heights), sampled densely the way a
+    // real section run is — the rows register the run, so the dip carries
+    // more samples than the ~11 isotropic rows it earns.
+    let notched = [
+        (0.0, v0),
+        (0.5, v0),
+        (1.0, 0.02),
+        (1.1, 0.05),
+        (1.2, 0.1),
+        (1.3, 0.15),
+        (1.4, 0.2),
+        (1.5, 0.24),
+        (1.6, 0.26),
+        (1.7, 0.24),
+        (1.8, 0.2),
+        (1.9, 0.15),
+        (1.95, 0.1),
+        (2.0, 0.05),
+        (2.05, 0.02),
+        (2.5, v0),
+        (3.0, v0),
+        (3.0, v1),
+        (2.0, v1),
+        (1.0, v1),
+        (0.0, v1),
+    ];
+    let rows =
+        super::nonplanar::interior_rows_for_boundary(&surface, &notched, (v0, v1), du, 64, 2);
+    // 64 columns over a full turn of radius 1 space 0.098 apart; a unit-tall
+    // wall wants about 11 rows to stay isotropic.
+    assert!(
+        (10..=12).contains(&rows),
+        "isotropic rows expected, got {rows}"
+    );
+    // The same dip with only extremal grazes (no rails) keeps two rows.
+    let grazing = [(0.0, v0), (1.5, 0.25), (3.0, v0), (3.0, v1), (0.0, v1)];
+    assert_eq!(
+        super::nonplanar::interior_rows_for_boundary(&surface, &grazing, (v0, v1), du, 64, 2),
+        2
+    );
+    // A constant-v run between railed rims is itself a rail (a mid-wall
+    // section circle): the two-row grid already hugs it, so it keeps two rows.
+    let mid_rail = [
+        (0.0, v0),
+        (1.0, v0),
+        (2.0, v0),
+        (3.0, v0),
+        (3.0, 0.5),
+        (2.0, 0.5),
+        (1.0, 0.5),
+        (0.0, 0.5),
+        (0.0, v1),
+        (1.0, v1),
+        (2.0, v1),
+        (3.0, v1),
+    ];
+    assert_eq!(
+        super::nonplanar::interior_rows_for_boundary(&surface, &mid_rail, (v0, v1), du, 64, 2),
+        2
+    );
+    // A mid-size run (tens of samples, the coarse export tier) stays at two
+    // rows even between rails: it is already resolved, and isotropic rows
+    // only multiply triangles (render-measure: 103 samples drove 105 columns
+    // by 84 rows to 41490 against a pinned 12290).
+    let mut mid_size = vec![
+        (0.0, v0),
+        (0.5, v0),
+        (2.5, v0),
+        (3.0, v0),
+        (3.0, v1),
+        (2.5, v1),
+        (0.5, v1),
+        (0.0, v1),
+    ];
+    for k in 0..60 {
+        #[allow(clippy::cast_precision_loss)]
+        let u = 1.0 + k as f64 * (1.5 / 60.0);
+        #[allow(clippy::cast_precision_loss)]
+        let v = 0.3 + (k as f64 * 0.7 / 60.0).fract() * 0.4;
+        mid_size.insert(2 + k, (u, v));
+    }
+    assert_eq!(
+        super::nonplanar::interior_rows_for_boundary(&surface, &mid_size, (v0, v1), du, 64, 2),
+        2
+    );
+}
+
 // -- Gridfinity tessellation reproducers (#259) --
 
 #[test]
