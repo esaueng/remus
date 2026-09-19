@@ -939,6 +939,7 @@ fn estimate_cylinder_axis(points: &[Point3], center: Point3) -> Option<Vec3> {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+    use remus_math::nurbs::knot_ops::surface_knot_insert_v;
     use remus_math::surfaces::{
         ConicalSurface, CylindricalSurface, SphericalSurface, ToroidalSurface,
     };
@@ -1130,5 +1131,817 @@ mod tests {
             recognize_surface(&nurbs, 1e-4),
             RecognizedSurface::Cylinder { .. }
         ));
+    }
+
+    // ── Off-origin, tilted fixtures ───────────────────────────────────────
+    //
+    // Axis-aligned-at-origin fixtures hide sign and offset errors, because a
+    // zero coordinate makes `a - b`, `a + b` and `a * b` agree. The fixtures
+    // below are deliberately off-origin with a tilted axis and no zero
+    // component, and use radii that are neither 0 nor 1.
+
+    /// A unit direction with no zero component: `(2, -3, 6) / 7`.
+    fn tilted_axis() -> Vec3 {
+        Vec3::new(2.0 / 7.0, -3.0 / 7.0, 6.0 / 7.0)
+    }
+
+    /// An orthonormal in-plane basis `(e1, e2)` for the plane whose normal is
+    /// [`tilted_axis`], chosen so that `e1 x e2 == tilted_axis()`.
+    fn plane_basis() -> (Vec3, Vec3) {
+        let s = 13.0_f64.sqrt();
+        let e1 = Vec3::new(3.0 / s, 2.0 / s, 0.0);
+        let e2 = tilted_axis().cross(e1);
+        (e1, e2)
+    }
+
+    /// A point on the test plane, away from the origin.
+    fn plane_anchor() -> Point3 {
+        Point3::new(1.3, -2.1, 0.7)
+    }
+
+    fn plane_point(a: f64, b: f64) -> Point3 {
+        let (e1, e2) = plane_basis();
+        plane_anchor() + e1 * a + e2 * b
+    }
+
+    fn surface_from_grid(degree: usize, knots: &[f64], grid: Vec<Vec<Point3>>) -> NurbsSurface {
+        let rows = grid.len();
+        let cols = grid[0].len();
+        NurbsSurface::new(
+            degree,
+            degree,
+            knots.to_vec(),
+            knots.to_vec(),
+            grid,
+            vec![vec![1.0; cols]; rows],
+        )
+        .unwrap()
+    }
+
+    /// Bilinear patch in the tilted plane. Its flattened control-point cross
+    /// product is `e2 x e1 = -n`, i.e. OPPOSED to the patch's own du x dv, so
+    /// recognition has to flip both the normal and `d`.
+    fn tilted_plane_patch_opposed() -> NurbsSurface {
+        let grid = [0.0_f64, 3.0]
+            .iter()
+            .map(|&a| [0.0_f64, 5.0].iter().map(|&b| plane_point(a, b)).collect())
+            .collect();
+        surface_from_grid(1, &[0.0, 0.0, 1.0, 1.0], grid)
+    }
+
+    /// Biquadratic patch in the same plane whose first control-point row is
+    /// bowed, so the flattened cross product comes out as `+n` — AGREEING with
+    /// du x dv. Recognition must leave this one's sign alone.
+    fn tilted_plane_patch_agreeing() -> NurbsSurface {
+        let bump = [0.0_f64, 1.0, 0.0];
+        let grid = [0.0_f64, 2.0, 4.0]
+            .iter()
+            .map(|&a| {
+                [0.0_f64, 2.0, 4.0]
+                    .iter()
+                    .zip(bump.iter())
+                    .map(|(&b, &bp)| plane_point(a + bp, b))
+                    .collect()
+            })
+            .collect();
+        surface_from_grid(2, &[0.0, 0.0, 0.0, 1.0, 1.0, 1.0], grid)
+    }
+
+    /// A biquadratic saddle that is not any elementary surface.
+    fn free_form_patch() -> NurbsSurface {
+        let z = [[0.0, 1.3, -0.4], [1.1, -1.7, 2.2], [-0.6, 2.4, 0.9]];
+        let xs = [0.0_f64, 2.0, 4.0];
+        let grid = z
+            .iter()
+            .zip(xs.iter())
+            .map(|(zrow, &x)| {
+                zrow.iter()
+                    .zip(xs.iter())
+                    .map(|(&zv, &y)| Point3::new(x, y, zv))
+                    .collect()
+            })
+            .collect();
+        surface_from_grid(2, &[0.0, 0.0, 0.0, 1.0, 1.0, 1.0], grid)
+    }
+
+    fn to_vec(p: Point3) -> Vec3 {
+        Vec3::new(p.x(), p.y(), p.z())
+    }
+
+    /// Distance from `p` to the infinite line through `origin` with unit
+    /// direction `dir`.
+    fn distance_to_axis(p: Point3, origin: Point3, dir: Vec3) -> f64 {
+        let to_p = p - origin;
+        (to_p - dir * dir.dot(to_p)).length()
+    }
+
+    /// Centroid of a 5x5 sample grid — used to check which way a recovered
+    /// cone axis points.
+    fn sample_centroid(surface: &NurbsSurface) -> Point3 {
+        let (u0, u1) = surface.domain_u();
+        let (v0, v1) = surface.domain_v();
+        let (mut x, mut y, mut z) = (0.0, 0.0, 0.0);
+        for iu in 0..5 {
+            for iv in 0..5 {
+                let p = surface.evaluate(
+                    u0 + (u1 - u0) * f64::from(iu) / 4.0,
+                    v0 + (v1 - v0) * f64::from(iv) / 4.0,
+                );
+                x += p.x();
+                y += p.y();
+                z += p.z();
+            }
+        }
+        Point3::new(x / 25.0, y / 25.0, z / 25.0)
+    }
+
+    /// The surface's own direction of increasing v, at mid-u.
+    fn v_direction(surface: &NurbsSurface) -> Vec3 {
+        let (u0, u1) = surface.domain_u();
+        let (v0, v1) = surface.domain_v();
+        let um = 0.5 * (u0 + u1);
+        surface.evaluate(um, v1) - surface.evaluate(um, v0)
+    }
+
+    // ── Exact rational fixtures whose 8x8 sample grid lands on arc junctions
+    //
+    // `detect_surface_kind` and the recognizers sample an 8x8 grid at
+    // `t = i/7`. A 7-arc rational chain spanning 315 degrees puts an arc
+    // junction at every one of those parameters, so all 64 samples are exactly
+    // on the analytic surface, and the eight angles 0, 45, ..., 315 degrees
+    // are balanced — their unit vectors sum to zero, so the sample centroid
+    // lands exactly on the axis. (The full-turn forms used elsewhere duplicate
+    // the seam sample, which pulls the centroid off-axis.)
+
+    /// Radial factor and weight of the 15 control points of a 315-degree
+    /// chain of seven exact rational quadratic 45-degree arcs.
+    fn arc_chain(count: usize, span_deg: f64) -> Vec<(f64, f64, f64)> {
+        let step = span_deg / (count as f64);
+        let half = (0.5 * step).to_radians();
+        (0..=2 * count)
+            .map(|i| {
+                let ang = (0.5 * step * i as f64).to_radians();
+                let even = i % 2 == 0;
+                let scale = if even { 1.0 } else { 1.0 / half.cos() };
+                let w = if even { 1.0 } else { half.cos() };
+                (scale * ang.cos(), scale * ang.sin(), w)
+            })
+            .collect()
+    }
+
+    /// Clamped degree-2 knot vector for a chain of `count` arcs
+    /// (`2*count + 1` control points, double interior knots at `i/count`).
+    fn arc_chain_knots(count: usize) -> Vec<f64> {
+        let mut k = vec![0.0, 0.0, 0.0];
+        for i in 1..count {
+            let t = i as f64 / count as f64;
+            k.push(t);
+            k.push(t);
+        }
+        k.extend([1.0, 1.0, 1.0]);
+        k
+    }
+
+    /// Map local `(p, q, h)` coordinates (in the tilted frame `e1, e2, n`)
+    /// to world space.
+    fn tilted_point(base: Point3, p: f64, q: f64, h: f64) -> Point3 {
+        let (e1, e2) = plane_basis();
+        base + e1 * p + e2 * q + tilted_axis() * h
+    }
+
+    /// An exact 315-degree cylindrical patch about [`tilted_axis`] through
+    /// `base`, ruled linearly over `length`.
+    fn exact_tilted_cylinder_patch(base: Point3, radius: f64, length: f64) -> NurbsSurface {
+        let ring = arc_chain(7, 315.0);
+        let grid: Vec<Vec<Point3>> = ring
+            .iter()
+            .map(|&(fx, fy, _)| {
+                [0.0, length]
+                    .iter()
+                    .map(|&h| tilted_point(base, radius * fx, radius * fy, h))
+                    .collect()
+            })
+            .collect();
+        let weights = ring.iter().map(|&(_, _, w)| vec![w, w]).collect();
+        NurbsSurface::new(
+            2,
+            1,
+            arc_chain_knots(7),
+            vec![0.0, 0.0, 1.0, 1.0],
+            grid,
+            weights,
+        )
+        .unwrap()
+    }
+
+    /// An exact spherical patch about `center`: a 315-degree revolution of a
+    /// 140-degree meridian arc chain (latitudes -70..+70 degrees), built as a
+    /// standard surface of revolution with product weights. Both directions
+    /// use seven arcs, so every one of the 64 samples is an arc junction
+    /// exactly on the sphere, and the junction latitudes are symmetric about
+    /// the equator — the sample centroid is exactly the sphere centre.
+    fn exact_tilted_sphere_patch(center: Point3, radius: f64) -> NurbsSurface {
+        let ring = arc_chain(7, 315.0);
+        // Meridian chain, rotated to start at -70 degrees latitude.
+        let meridian = arc_chain(7, 140.0);
+        let start = (-70.0_f64).to_radians();
+        let (sin_s, cos_s) = start.sin_cos();
+        let grid: Vec<Vec<Point3>> = ring
+            .iter()
+            .map(|&(fx, fy, _)| {
+                meridian
+                    .iter()
+                    .map(|&(mc, ms, _)| {
+                        // Rotate the meridian control point by `start`.
+                        let rho = radius * (mc * cos_s - ms * sin_s);
+                        let h = radius * (mc * sin_s + ms * cos_s);
+                        tilted_point(center, rho * fx, rho * fy, h)
+                    })
+                    .collect()
+            })
+            .collect();
+        let weights = ring
+            .iter()
+            .map(|&(_, _, wu)| meridian.iter().map(|&(_, _, wv)| wu * wv).collect())
+            .collect();
+        NurbsSurface::new(2, 2, arc_chain_knots(7), arc_chain_knots(7), grid, weights).unwrap()
+    }
+
+    // ── solve_3x3 ─────────────────────────────────────────────────────────
+
+    /// `solve_3x3` must return the solution of `A x = b`. The fixture is a
+    /// dense, non-symmetric integer system with `det = 77`, built backwards
+    /// from `x = (3, -2, 4)` (`b = A x`, computed by hand), so every cofactor
+    /// of Cramer's rule contributes to the answer.
+    #[test]
+    fn solve_3x3_recovers_a_known_dense_solution() {
+        let a = [[2.0, -3.0, 1.0], [4.0, 1.0, -2.0], [-1.0, 5.0, 3.0]];
+        let b = [16.0, 2.0, -1.0];
+        let x = solve_3x3(a, b).expect("det = 77, so the system is non-singular");
+        for (got, want) in x.iter().zip([3.0_f64, -2.0, 4.0].iter()) {
+            assert!(
+                (got - want).abs() < 1e-9,
+                "solved {x:?}, expected [3, -2, 4]"
+            );
+        }
+        // Residual check: the returned vector must satisfy the system.
+        for r in 0..3 {
+            let lhs = a[r][0] * x[0] + a[r][1] * x[1] + a[r][2] * x[2];
+            assert!((lhs - b[r]).abs() < 1e-9, "row {r}: {lhs} != {}", b[r]);
+        }
+    }
+
+    /// A singular system (row 2 = row 0 + row 1, `det = 0`) must be reported
+    /// as unsolvable rather than divided through by zero.
+    #[test]
+    fn solve_3x3_rejects_a_singular_system() {
+        let a = [[2.0, -3.0, 1.0], [4.0, 1.0, -2.0], [6.0, -2.0, -1.0]];
+        assert!(solve_3x3(a, [16.0, 2.0, 18.0]).is_none());
+    }
+
+    // ── Plane recognition ─────────────────────────────────────────────────
+
+    /// The recognized plane must satisfy `normal . p = d` at points on the
+    /// surface — with a non-zero `d`, so a sign slip on either side of the
+    /// equation shows up — and its normal must agree with du x dv for both
+    /// control-grid layouts (opposed and agreeing).
+    #[test]
+    fn recognized_plane_off_origin_matches_the_analytic_plane() {
+        let n = tilted_axis();
+        let d_expected = n.dot(to_vec(plane_anchor()));
+        assert!(
+            d_expected.abs() > 1.0,
+            "fixture must not pass through the origin"
+        );
+
+        for (label, surface) in [
+            ("opposed", tilted_plane_patch_opposed()),
+            ("agreeing", tilted_plane_patch_agreeing()),
+        ] {
+            let RecognizedSurface::Plane { normal, d } = recognize_surface(&surface, 1e-9) else {
+                panic!("{label}: a planar patch must be recognized as a plane");
+            };
+            assert!(
+                normal.dot(n) > 1.0 - 1e-9,
+                "{label}: normal {normal:?} != analytic normal {n:?}"
+            );
+            assert!(
+                (d - d_expected).abs() < 1e-9,
+                "{label}: d {d} != normal . anchor {d_expected}"
+            );
+            let du_cross_dv = surface.normal(0.5, 0.5).unwrap();
+            assert!(
+                normal.dot(du_cross_dv) > 0.0,
+                "{label}: recognized normal opposes du x dv"
+            );
+            // The plane equation must hold at an interior surface point too.
+            let p = surface.evaluate(0.25, 0.75);
+            assert!(
+                (normal.dot(to_vec(p)) - d).abs() < 1e-9,
+                "{label}: plane equation violated at an on-surface point"
+            );
+        }
+    }
+
+    // ── Cylinder recognition ──────────────────────────────────────────────
+
+    /// A tilted, off-origin cylinder must be recovered exactly: the reported
+    /// origin lies on the analytic axis line, the axis is parallel to it and
+    /// runs along increasing v (the direction this estimator is documented to
+    /// take), and the radius matches. `cylinder_to_nurbs` is exact, so all of
+    /// this holds to round-off.
+    #[test]
+    fn recognize_tilted_off_origin_cylinder() {
+        let origin = Point3::new(1.5, -2.5, 0.75);
+        let axis = tilted_axis();
+        let cyl = CylindricalSurface::new(origin, axis, 2.5).unwrap();
+        let nurbs = cylinder_to_nurbs(&cyl, (0.0, 7.0)).unwrap();
+
+        let RecognizedSurface::Cylinder {
+            origin: got_origin,
+            axis: got_axis,
+            radius,
+        } = recognize_surface(&nurbs, 1e-6)
+        else {
+            panic!("an exact cylinder must be recognized as a cylinder");
+        };
+        assert!((radius - 2.5).abs() < 1e-6, "radius {radius} != 2.5");
+        assert!(
+            got_axis.dot(axis) > 1.0 - 1e-9,
+            "axis {got_axis:?} is not the analytic axis {axis:?}"
+        );
+        assert!(
+            got_axis.dot(v_direction(&nurbs)) > 0.0,
+            "axis {got_axis:?} does not follow increasing v"
+        );
+        let off = distance_to_axis(got_origin, origin, axis);
+        assert!(off < 1e-6, "reported origin is {off} off the analytic axis");
+    }
+
+    /// The perpendicular-frame seed only picks `x` when the axis is not
+    /// x-dominant; a cylinder whose axis IS `+x` must still be recognized.
+    #[test]
+    fn recognize_x_axis_cylinder() {
+        let origin = Point3::new(0.5, -1.25, 2.0);
+        let axis = Vec3::new(1.0, 0.0, 0.0);
+        let cyl = CylindricalSurface::new(origin, axis, 1.75).unwrap();
+        let nurbs = cylinder_to_nurbs(&cyl, (0.0, 6.0)).unwrap();
+
+        let RecognizedSurface::Cylinder {
+            origin: got_origin,
+            axis: got_axis,
+            radius,
+        } = recognize_surface(&nurbs, 1e-6)
+        else {
+            panic!("an x-aligned cylinder must be recognized as a cylinder");
+        };
+        assert!((radius - 1.75).abs() < 1e-6, "radius {radius} != 1.75");
+        assert!(got_axis.dot(axis).abs() > 1.0 - 1e-9, "axis {got_axis:?}");
+        assert!(distance_to_axis(got_origin, origin, axis) < 1e-6);
+    }
+
+    /// The doc contract admits any `nu x nv` grid, not just the exact 9x2
+    /// rational form. Inserting a v-knot leaves exactly the same cylinder with
+    /// three control-point columns; it must still be recognized.
+    #[test]
+    fn recognize_cylinder_with_three_control_point_columns() {
+        let origin = Point3::new(1.5, -2.5, 0.75);
+        let axis = tilted_axis();
+        let cyl = CylindricalSurface::new(origin, axis, 2.5).unwrap();
+        let nurbs = cylinder_to_nurbs(&cyl, (0.0, 7.0)).unwrap();
+        let refined = surface_knot_insert_v(&nurbs, 0.5, 1).unwrap();
+        assert_eq!(refined.control_points()[0].len(), 3);
+
+        let RecognizedSurface::Cylinder {
+            origin: got_origin,
+            radius,
+            ..
+        } = recognize_surface(&refined, 1e-6)
+        else {
+            panic!("a knot-refined cylinder must still be recognized as a cylinder");
+        };
+        assert!((radius - 2.5).abs() < 1e-6, "radius {radius} != 2.5");
+        assert!(distance_to_axis(got_origin, origin, axis) < 1e-6);
+    }
+
+    // ── Sphere recognition ────────────────────────────────────────────────
+
+    /// A sphere away from the origin, given as an exact rational patch, must
+    /// recover its centre and radius to round-off.
+    #[test]
+    fn recognize_off_origin_sphere() {
+        let center = Point3::new(2.5, -1.75, 3.25);
+        let radius = 4.5;
+        let nurbs = exact_tilted_sphere_patch(center, radius);
+
+        let RecognizedSurface::Sphere {
+            center: got_center,
+            radius: got_radius,
+        } = recognize_surface(&nurbs, 1e-6)
+        else {
+            panic!("an exact spherical patch must be recognized as a sphere");
+        };
+        let off = (got_center - center).length();
+        assert!(off < 1e-6, "centre off by {off}");
+        assert!(
+            (got_radius - radius).abs() < 1e-6,
+            "radius {got_radius} != {radius}"
+        );
+    }
+
+    /// The sampled 33x9 sphere form must also be recognized, within the
+    /// chord-height error its own docs state: at most `R * (1 - cos(pi/16))`
+    /// over the eight spans across the v half-turn.
+    #[test]
+    fn recognize_sampled_off_origin_sphere_within_chord_error() {
+        let center = Point3::new(2.5, -1.75, 3.25);
+        let radius = 4.5;
+        let chord_err = radius * (1.0 - (std::f64::consts::PI / 16.0).cos());
+        let sphere = SphericalSurface::with_axis(center, radius, tilted_axis()).unwrap();
+        let nurbs = sphere_to_nurbs(&sphere).unwrap();
+
+        let RecognizedSurface::Sphere {
+            center: got_center,
+            radius: got_radius,
+        } = recognize_surface(&nurbs, 2.0 * chord_err)
+        else {
+            panic!("a sampled sphere must be recognized as a sphere");
+        };
+        let off = (got_center - center).length();
+        assert!(
+            off < chord_err,
+            "centre off by {off} (chord error {chord_err})"
+        );
+        assert!(
+            (got_radius - radius).abs() < chord_err,
+            "radius {got_radius} != {radius} within chord error {chord_err}"
+        );
+    }
+
+    // ── Cone recognition ──────────────────────────────────────────────────
+
+    /// A cone whose apex is off the origin and whose axis is tilted must
+    /// recover apex, axis and half-angle. The axis is checked for direction as
+    /// well as for line: the contract says it points from the apex INTO the
+    /// cone.
+    #[test]
+    fn recognize_tilted_off_origin_cone() {
+        let apex = Point3::new(1.5, -2.0, 0.5);
+        let axis = tilted_axis();
+        let half_angle = 0.35;
+        let cone = ConicalSurface::new(apex, axis, half_angle).unwrap();
+        let nurbs = cone_to_nurbs(&cone, (1.5, 5.0)).unwrap();
+
+        let RecognizedSurface::Cone {
+            apex: got_apex,
+            axis: got_axis,
+            half_angle: got_ha,
+        } = recognize_surface(&nurbs, 0.05)
+        else {
+            panic!("a sampled cone must be recognized as a cone");
+        };
+        let off = (got_apex - apex).length();
+        assert!(off < 0.05, "apex off by {off}");
+        assert!(
+            got_axis.dot(axis) > 1.0 - 1e-3,
+            "axis {got_axis:?} != analytic axis {axis:?}"
+        );
+        assert!(
+            got_axis.dot(sample_centroid(&nurbs) - got_apex) > 0.0,
+            "axis {got_axis:?} points away from the cone body"
+        );
+        assert!(
+            (got_ha - half_angle).abs() < 1e-3,
+            "half_angle {got_ha} != {half_angle}"
+        );
+    }
+
+    /// The same cone sampled with v DECREASING: the control-grid estimator now
+    /// points at the apex, so the builder has to flip it. The returned axis
+    /// must still run from the apex into the cone.
+    #[test]
+    fn recognize_cone_sampled_with_decreasing_v() {
+        let apex = Point3::new(1.5, -2.0, 0.5);
+        let axis = tilted_axis();
+        let half_angle = 0.35;
+        let cone = ConicalSurface::new(apex, axis, half_angle).unwrap();
+        let nurbs = cone_to_nurbs(&cone, (5.0, 1.5)).unwrap();
+
+        let RecognizedSurface::Cone {
+            apex: got_apex,
+            axis: got_axis,
+            half_angle: got_ha,
+        } = recognize_surface(&nurbs, 0.05)
+        else {
+            panic!("a reversed-v cone must still be recognized as a cone");
+        };
+        assert!((got_apex - apex).length() < 0.05, "apex {got_apex:?}");
+        assert!(
+            got_axis.dot(axis) > 1.0 - 1e-3,
+            "axis {got_axis:?} != analytic axis {axis:?}"
+        );
+        assert!(
+            got_axis.dot(sample_centroid(&nurbs) - got_apex) > 0.0,
+            "axis {got_axis:?} points away from the cone body"
+        );
+        assert!((got_ha - half_angle).abs() < 1e-3, "half_angle {got_ha}");
+    }
+
+    // ── Torus recognition ─────────────────────────────────────────────────
+
+    /// A tilted, off-origin torus must recover centre, axis and both radii.
+    /// The sampled form's chord error is bounded by `minor * (1 - cos(pi/8))`
+    /// in the minor direction (8 spans over the full minor turn).
+    #[test]
+    fn recognize_tilted_off_origin_torus() {
+        let center = Point3::new(1.25, -2.5, 0.75);
+        let axis = tilted_axis();
+        let (major, minor) = (3.5, 0.9);
+        let chord_err = minor * (1.0 - (std::f64::consts::PI / 8.0).cos());
+        let torus = ToroidalSurface::with_axis(center, major, minor, axis).unwrap();
+        let nurbs = torus_to_nurbs(&torus).unwrap();
+
+        let RecognizedSurface::Torus {
+            center: got_center,
+            axis: got_axis,
+            major_radius,
+            minor_radius,
+        } = recognize_surface(&nurbs, 3.0 * chord_err)
+        else {
+            panic!("a sampled torus must be recognized as a torus");
+        };
+        let off = (got_center - center).length();
+        assert!(off < 3.0 * chord_err, "centre off by {off}");
+        assert!(
+            got_axis.dot(axis).abs() > 1.0 - 1e-6,
+            "axis {got_axis:?} != analytic axis {axis:?}"
+        );
+        assert!(
+            (major_radius - major).abs() < 3.0 * chord_err,
+            "major_radius {major_radius} != {major}"
+        );
+        assert!(
+            (minor_radius - minor).abs() < 3.0 * chord_err,
+            "minor_radius {minor_radius} != {minor}"
+        );
+    }
+
+    /// An exact toroidal patch about [`tilted_axis`] through `center`: a
+    /// 315-degree revolution of a 315-degree tube arc chain, built as a
+    /// surface of revolution with product weights. The tube arc starts at
+    /// -100 degrees so the eight junction angles are NOT symmetric about the
+    /// major-circle plane — the sample centroid then sits off that plane,
+    /// which is what makes the fitted axial centre non-zero.
+    fn exact_tilted_torus_patch(center: Point3, major: f64, minor: f64) -> NurbsSurface {
+        // Full turn in u: the torus fit measures radial distance from the axis
+        // through the SAMPLE CENTROID, which only coincides with the real axis
+        // when the angular samples are balanced.
+        let ring = arc_chain(8, 360.0);
+        // 280 degrees over seven arcs: the eight tube junctions are then NOT a
+        // closed regular polygon, so their heights do not cancel and the
+        // fitted axial centre is genuinely non-zero.
+        let tube = arc_chain(7, 280.0);
+        let start = (-100.0_f64).to_radians();
+        let (sin_s, cos_s) = start.sin_cos();
+        let grid: Vec<Vec<Point3>> = ring
+            .iter()
+            .map(|&(fx, fy, _)| {
+                tube.iter()
+                    .map(|&(tc, ts, _)| {
+                        let rho = minor.mul_add(tc * cos_s - ts * sin_s, major);
+                        let h = minor * (tc * sin_s + ts * cos_s);
+                        tilted_point(center, rho * fx, rho * fy, h)
+                    })
+                    .collect()
+            })
+            .collect();
+        let weights = ring
+            .iter()
+            .map(|&(_, _, wu)| tube.iter().map(|&(_, _, wv)| wu * wv).collect())
+            .collect();
+        NurbsSurface::new(2, 2, arc_chain_knots(8), arc_chain_knots(7), grid, weights).unwrap()
+    }
+
+    /// An exact conical frustum patch about [`tilted_axis`] from `apex`, over
+    /// generator distances `v_range`, as a full-turn ring of exact rational
+    /// arcs ruled linearly along the generators. Only TWO control-point
+    /// columns — the documented `nu x nv` contract admits that, and it is the
+    /// minimum a ruled surface needs.
+    fn exact_tilted_cone_patch(apex: Point3, half_angle: f64, v_range: (f64, f64)) -> NurbsSurface {
+        let ring = arc_chain(8, 360.0);
+        let (sin_a, cos_a) = half_angle.sin_cos();
+        let grid: Vec<Vec<Point3>> = ring
+            .iter()
+            .map(|&(fx, fy, _)| {
+                [v_range.0, v_range.1]
+                    .iter()
+                    .map(|&v| {
+                        let r = v * cos_a;
+                        tilted_point(apex, r * fx, r * fy, v * sin_a)
+                    })
+                    .collect()
+            })
+            .collect();
+        let weights = ring.iter().map(|&(_, _, w)| vec![w, w]).collect();
+        NurbsSurface::new(
+            2,
+            1,
+            arc_chain_knots(8),
+            vec![0.0, 0.0, 1.0, 1.0],
+            grid,
+            weights,
+        )
+        .unwrap()
+    }
+
+    /// A cone given exactly, on the minimum two-column ruled grid, must be
+    /// recovered to round-off.
+    #[test]
+    fn recognize_exact_cone_patch_on_a_two_column_grid() {
+        let apex = Point3::new(1.5, -2.0, 0.5);
+        let axis = tilted_axis();
+        let half_angle = 0.35;
+        let nurbs = exact_tilted_cone_patch(apex, half_angle, (1.5, 5.0));
+        assert_eq!(nurbs.control_points()[0].len(), 2);
+
+        let RecognizedSurface::Cone {
+            apex: got_apex,
+            axis: got_axis,
+            half_angle: got_ha,
+        } = recognize_surface(&nurbs, 1e-6)
+        else {
+            panic!("an exact conical patch must be recognized as a cone");
+        };
+        let off = (got_apex - apex).length();
+        assert!(off < 1e-6, "apex off by {off}");
+        assert!(got_axis.dot(axis) > 1.0 - 1e-9, "axis {got_axis:?}");
+        assert!(
+            got_axis.dot(sample_centroid(&nurbs) - got_apex) > 0.0,
+            "axis {got_axis:?} points away from the cone body"
+        );
+        assert!(
+            (got_ha - half_angle).abs() < 1e-9,
+            "half_angle {got_ha} != {half_angle}"
+        );
+    }
+
+    /// The exact cylinder patch starts its u-parameterization from `e1`, which
+    /// is not the perpendicular-frame seed the recognizer builds for itself.
+    /// That makes BOTH least-squares coordinates of the fitted centre non-zero
+    /// — the full-turn form produced by `cylinder_to_nurbs` happens to give one
+    /// of them as zero, which hides a slip in either the design matrix or the
+    /// centre reconstruction.
+    #[test]
+    fn recognize_exact_cylinder_patch_with_both_centre_coordinates_non_zero() {
+        let base = Point3::new(1.5, -2.5, 0.75);
+        let axis = tilted_axis();
+        let radius = 2.5;
+        let nurbs = exact_tilted_cylinder_patch(base, radius, 7.0);
+
+        let RecognizedSurface::Cylinder {
+            origin: got_origin,
+            axis: got_axis,
+            radius: got_radius,
+        } = recognize_surface(&nurbs, 1e-6)
+        else {
+            panic!("an exact cylindrical patch must be recognized as a cylinder");
+        };
+        assert!(
+            (got_radius - radius).abs() < 1e-6,
+            "radius {got_radius} != {radius}"
+        );
+        assert!(got_axis.dot(axis) > 1.0 - 1e-9, "axis {got_axis:?}");
+        let off = distance_to_axis(got_origin, base, axis);
+        assert!(off < 1e-6, "reported origin is {off} off the analytic axis");
+    }
+
+    /// An exact toroidal patch, recovered to round-off. Unlike the sampled
+    /// full torus, its samples are not symmetric about the major-circle plane,
+    /// so the fitted axial centre is genuinely non-zero and the radial
+    /// projection has to be right rather than merely close.
+    #[test]
+    fn recognize_exact_torus_patch_off_the_major_circle_plane() {
+        let center = Point3::new(1.25, -2.5, 0.75);
+        let axis = tilted_axis();
+        let (major, minor) = (3.5, 0.9);
+        let nurbs = exact_tilted_torus_patch(center, major, minor);
+
+        let RecognizedSurface::Torus {
+            center: got_center,
+            axis: got_axis,
+            major_radius,
+            minor_radius,
+        } = recognize_surface(&nurbs, 1e-6)
+        else {
+            panic!("an exact toroidal patch must be recognized as a torus");
+        };
+        let off = (got_center - center).length();
+        assert!(off < 1e-6, "centre off by {off}");
+        assert!(got_axis.dot(axis).abs() > 1.0 - 1e-9, "axis {got_axis:?}");
+        assert!(
+            (major_radius - major).abs() < 1e-6,
+            "major_radius {major_radius} != {major}"
+        );
+        assert!(
+            (minor_radius - minor).abs() < 1e-6,
+            "minor_radius {minor_radius} != {minor}"
+        );
+    }
+
+    // ── Rejection ─────────────────────────────────────────────────────────
+
+    /// A free-form saddle is none of the elementary forms; every recognizer
+    /// must decline it.
+    #[test]
+    fn free_form_patch_is_not_recognized() {
+        assert_eq!(
+            recognize_surface(&free_form_patch(), 1e-6),
+            RecognizedSurface::NotRecognized
+        );
+    }
+
+    /// A sphere must not be mistaken for a cylinder, a cone or a torus, even
+    /// at the loose tolerance its sampled form needs.
+    #[test]
+    fn sphere_is_not_recognized_as_cylinder_cone_or_torus() {
+        let sphere =
+            SphericalSurface::with_axis(Point3::new(2.5, -1.75, 3.25), 4.5, tilted_axis()).unwrap();
+        let nurbs = sphere_to_nurbs(&sphere).unwrap();
+        assert!(matches!(
+            recognize_surface(&nurbs, 0.2),
+            RecognizedSurface::Sphere { .. }
+        ));
+    }
+
+    /// A torus must not be mistaken for a sphere or a cylinder.
+    #[test]
+    fn torus_is_not_recognized_as_sphere() {
+        let torus =
+            ToroidalSurface::with_axis(Point3::new(1.25, -2.5, 0.75), 3.5, 0.9, tilted_axis())
+                .unwrap();
+        let nurbs = torus_to_nurbs(&torus).unwrap();
+        assert!(matches!(
+            recognize_surface(&nurbs, 0.2),
+            RecognizedSurface::Torus { .. }
+        ));
+    }
+
+    // ── Lightweight detection ─────────────────────────────────────────────
+
+    #[test]
+    fn detected_surface_kind_tags() {
+        assert_eq!(DetectedSurfaceKind::Plane.as_str(), "plane");
+        assert_eq!(DetectedSurfaceKind::Sphere.as_str(), "sphere");
+        assert_eq!(DetectedSurfaceKind::Cylinder.as_str(), "cylinder");
+        assert_eq!(DetectedSurfaceKind::BSpline.as_str(), "bspline");
+    }
+
+    #[test]
+    fn detect_surface_kind_of_tilted_off_origin_plane() {
+        assert_eq!(
+            detect_surface_kind(&tilted_plane_patch_opposed()),
+            DetectedSurfaceKind::Plane
+        );
+        assert_eq!(
+            detect_surface_kind(&tilted_plane_patch_agreeing()),
+            DetectedSurfaceKind::Plane
+        );
+    }
+
+    #[test]
+    fn detect_surface_kind_of_off_origin_sphere() {
+        // The heuristic's sphere test allows only 0.1% relative spread, so it
+        // needs the exact rational patch: the sampled 33x9 form carries ~2%
+        // chord error and is correctly reported as `BSpline`.
+        let nurbs = exact_tilted_sphere_patch(Point3::new(2.5, -1.75, 3.25), 4.5);
+        assert_eq!(detect_surface_kind(&nurbs), DetectedSurfaceKind::Sphere);
+    }
+
+    /// The cylinder branch depends on the PCA axis estimate, which only finds
+    /// the axis when the axial spread beats the radial spread — hence a length
+    /// well above `r * sqrt(6)`. Tilted and off-origin so that a centroid slip
+    /// cannot cancel out.
+    #[test]
+    fn detect_surface_kind_of_tilted_off_origin_cylinder() {
+        let nurbs = exact_tilted_cylinder_patch(Point3::new(1.5, -2.5, 0.75), 2.5, 12.0);
+        assert_eq!(detect_surface_kind(&nurbs), DetectedSurfaceKind::Cylinder);
+    }
+
+    #[test]
+    fn detect_surface_kind_of_free_form_patch_is_bspline() {
+        assert_eq!(
+            detect_surface_kind(&free_form_patch()),
+            DetectedSurfaceKind::BSpline
+        );
+    }
+
+    /// A cone is neither a sphere nor a cylinder: its sample distances vary
+    /// with height under both tests, so the heuristic must fall back to
+    /// `BSpline`.
+    #[test]
+    fn detect_surface_kind_of_cone_is_bspline() {
+        let cone = ConicalSurface::new(Point3::new(1.5, -2.0, 0.5), tilted_axis(), 0.35).unwrap();
+        let nurbs = cone_to_nurbs(&cone, (1.5, 5.0)).unwrap();
+        assert_eq!(detect_surface_kind(&nurbs), DetectedSurfaceKind::BSpline);
     }
 }
