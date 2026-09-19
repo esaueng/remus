@@ -1,0 +1,1 @@
+crates/topology/src/vertex.rs:44:9: replace Vertex::set_point with ()

@@ -1,0 +1,13 @@
+crates/topology/src/adjacency.rs:93:17: delete match arm 1 in AdjacencyIndex::build_from_faces
+crates/topology/src/adjacency.rs:94:17: delete match arm 2 in AdjacencyIndex::build_from_faces
+crates/topology/src/adjacency.rs:123:9: replace AdjacencyIndex::faces_for_edge -> &[FaceId] with Vec::leak(Vec::new())
+crates/topology/src/adjacency.rs:92:17: delete match arm 0 in AdjacencyIndex::build_from_faces
+crates/topology/src/adjacency.rs:131:9: replace AdjacencyIndex::neighbors_of_face -> &[FaceId] with Vec::leak(Vec::new())
+crates/topology/src/adjacency.rs:140:9: replace AdjacencyIndex::is_manifold -> bool with true
+crates/topology/src/adjacency.rs:140:44: replace && with || in AdjacencyIndex::is_manifold
+crates/topology/src/adjacency.rs:146:9: replace AdjacencyIndex::non_manifold_edges -> &[EdgeId] with Vec::leak(Vec::new())
+crates/topology/src/adjacency.rs:152:9: replace AdjacencyIndex::boundary_edges -> &[EdgeId] with Vec::leak(Vec::new())
+crates/topology/src/adjacency.rs:158:9: replace AdjacencyIndex::edge_faces -> Option<&[FaceId]> with Some(Vec::leak(Vec::new()))
+crates/topology/src/adjacency.rs:158:9: replace AdjacencyIndex::edge_faces -> Option<&[FaceId]> with None
+crates/topology/src/adjacency.rs:164:9: replace AdjacencyIndex::edge_count -> usize with 0
+crates/topology/src/adjacency.rs:169:9: replace AdjacencyIndex::edge_faces_iter -> impl Iterator<Item =(EdgeId, &[FaceId])> with ::std::iter::empty()

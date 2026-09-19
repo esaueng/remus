@@ -1,0 +1,116 @@
+crates/topology/src/builder.rs:34:39: replace < with <= in make_line_edge
+crates/topology/src/builder.rs:34:52: replace * with + in make_line_edge
+crates/topology/src/builder.rs:34:52: replace * with / in make_line_edge
+crates/topology/src/builder.rs:71:31: replace || with && in make_circle_edge_with_ref
+crates/topology/src/builder.rs:149:31: replace || with && in make_ellipse_edge_with_ref
+crates/topology/src/builder.rs:268:9: replace || with && in make_ellipse_arc
+crates/topology/src/builder.rs:267:9: replace || with && in make_ellipse_arc
+crates/topology/src/builder.rs:268:13: delete ! in make_ellipse_arc
+crates/topology/src/builder.rs:307:10: replace < with <= in make_polygon_wire
+crates/topology/src/builder.rs:320:32: replace % with / in make_polygon_wire
+crates/topology/src/builder.rs:320:27: replace + with * in make_polygon_wire
+crates/topology/src/builder.rs:348:16: replace < with == in make_regular_polygon_wire
+crates/topology/src/builder.rs:348:16: replace < with <= in make_regular_polygon_wire
+crates/topology/src/builder.rs:362:47: replace / with % in make_regular_polygon_wire
+crates/topology/src/builder.rs:362:34: replace * with + in make_regular_polygon_wire
+crates/topology/src/builder.rs:362:29: replace * with + in make_regular_polygon_wire
+crates/topology/src/builder.rs:362:29: replace * with / in make_regular_polygon_wire
+crates/topology/src/builder.rs:363:32: replace * with + in make_regular_polygon_wire
+crates/topology/src/builder.rs:363:32: replace * with / in make_regular_polygon_wire
+crates/topology/src/builder.rs:363:54: replace * with + in make_regular_polygon_wire
+crates/topology/src/builder.rs:490:38: replace + with - in sample_wire_for_planarity
+crates/topology/src/builder.rs:554:39: replace + with - in sample_wire_for_planarity
+crates/topology/src/builder.rs:580:5: replace sample_open_conic with ()
+crates/topology/src/builder.rs:583:31: replace + with - in sample_open_conic
+crates/topology/src/builder.rs:583:31: replace + with * in sample_open_conic
+crates/topology/src/builder.rs:583:60: replace / with % in sample_open_conic
+crates/topology/src/builder.rs:583:60: replace / with * in sample_open_conic
+crates/topology/src/builder.rs:583:45: replace * with + in sample_open_conic
+crates/topology/src/builder.rs:583:45: replace * with / in sample_open_conic
+crates/topology/src/builder.rs:583:38: replace - with + in sample_open_conic
+crates/topology/src/builder.rs:583:38: replace - with / in sample_open_conic
+crates/topology/src/builder.rs:601:50: replace / with % in sample_conic
+crates/topology/src/builder.rs:598:5: replace sample_conic with ()
+crates/topology/src/builder.rs:601:50: replace / with * in sample_conic
+crates/topology/src/builder.rs:601:35: replace * with + in sample_conic
+crates/topology/src/builder.rs:601:35: replace * with / in sample_conic
+crates/topology/src/builder.rs:607:25: replace - with + in sample_conic
+crates/topology/src/builder.rs:608:14: replace > with == in sample_conic
+crates/topology/src/builder.rs:607:25: replace - with / in sample_conic
+crates/topology/src/builder.rs:608:14: replace > with < in sample_conic
+crates/topology/src/builder.rs:608:14: replace > with >= in sample_conic
+crates/topology/src/builder.rs:609:15: replace -= with += in sample_conic
+crates/topology/src/builder.rs:609:15: replace -= with /= in sample_conic
+crates/topology/src/builder.rs:610:21: replace < with == in sample_conic
+crates/topology/src/builder.rs:610:21: replace < with > in sample_conic
+crates/topology/src/builder.rs:610:21: replace < with <= in sample_conic
+crates/topology/src/builder.rs:610:23: delete - in sample_conic
+crates/topology/src/builder.rs:611:15: replace += with -= in sample_conic
+crates/topology/src/builder.rs:611:15: replace += with *= in sample_conic
+crates/topology/src/builder.rs:614:31: replace + with - in sample_conic
+crates/topology/src/builder.rs:614:31: replace + with * in sample_conic
+crates/topology/src/builder.rs:614:54: replace / with % in sample_conic
+crates/topology/src/builder.rs:614:54: replace / with * in sample_conic
+crates/topology/src/builder.rs:614:39: replace * with + in sample_conic
+crates/topology/src/builder.rs:614:39: replace * with / in sample_conic
+crates/topology/src/builder.rs:633:44: replace - with + in verified_plane
+crates/topology/src/builder.rs:634:24: replace > with >= in verified_plane
+crates/topology/src/builder.rs:645:39: replace < with <= in verified_plane
+crates/topology/src/builder.rs:648:13: delete - in verified_plane
+crates/topology/src/builder.rs:657:22: replace < with == in newell_normal
+crates/topology/src/builder.rs:657:22: replace < with <= in newell_normal
+crates/topology/src/builder.rs:667:12: replace += with -= in newell_normal
+crates/topology/src/builder.rs:667:12: replace += with *= in newell_normal
+crates/topology/src/builder.rs:667:37: replace * with + in newell_normal
+crates/topology/src/builder.rs:667:25: replace - with + in newell_normal
+crates/topology/src/builder.rs:667:49: replace + with - in newell_normal
+crates/topology/src/builder.rs:667:49: replace + with * in newell_normal
+crates/topology/src/builder.rs:668:12: replace += with -= in newell_normal
+crates/topology/src/builder.rs:668:12: replace += with *= in newell_normal
+crates/topology/src/builder.rs:668:37: replace * with + in newell_normal
+crates/topology/src/builder.rs:668:25: replace - with + in newell_normal
+crates/topology/src/builder.rs:668:49: replace + with - in newell_normal
+crates/topology/src/builder.rs:668:49: replace + with * in newell_normal
+crates/topology/src/builder.rs:669:49: replace + with * in newell_normal
+crates/topology/src/builder.rs:678:21: replace < with == in fit_plane
+crates/topology/src/builder.rs:678:21: replace < with <= in fit_plane
+crates/topology/src/builder.rs:687:42: replace > with >= in fit_plane
+crates/topology/src/builder.rs:696:42: replace > with >= in fit_plane
+crates/topology/src/builder.rs:703:70: replace * with + in fit_plane
+crates/topology/src/builder.rs:703:38: replace * with / in fit_plane
+crates/topology/src/builder.rs:716:21: replace < with == in bilinear_surface
+crates/topology/src/builder.rs:716:21: replace < with <= in bilinear_surface
+crates/topology/src/builder.rs:784:20: replace / with * in make_rectangle_face
+crates/topology/src/builder.rs:785:21: replace / with % in make_rectangle_face
+crates/topology/src/builder.rs:785:21: replace / with * in make_rectangle_face
+crates/topology/src/builder.rs:787:21: delete - in make_rectangle_face
+crates/topology/src/builder.rs:787:26: delete - in make_rectangle_face
+crates/topology/src/builder.rs:788:25: delete - in make_rectangle_face
+crates/topology/src/builder.rs:790:21: delete - in make_rectangle_face
+crates/topology/src/builder.rs:854:51: replace && with || in make_nurbs_edge
+crates/topology/src/builder.rs:857:9: delete - in make_nurbs_edge
+crates/topology/src/builder.rs:862:9: delete match arm (true, false) in make_nurbs_edge
+crates/topology/src/builder.rs:864:25: replace match guard forward_residual < reverse_residual with true in make_nurbs_edge
+crates/topology/src/builder.rs:864:25: replace match guard forward_residual < reverse_residual with false in make_nurbs_edge
+crates/topology/src/builder.rs:865:25: replace match guard reverse_residual < forward_residual with true in make_nurbs_edge
+crates/topology/src/builder.rs:865:25: replace match guard reverse_residual < forward_residual with false in make_nurbs_edge
+crates/topology/src/builder.rs:866:25: replace match guard (natural_start - natural_end).length() <= authority_band with true in make_nurbs_edge
+crates/topology/src/builder.rs:866:25: replace match guard (natural_start - natural_end).length() <= authority_band with false in make_nurbs_edge
+crates/topology/src/builder.rs:864:42: replace < with == in make_nurbs_edge
+crates/topology/src/builder.rs:864:42: replace < with > in make_nurbs_edge
+crates/topology/src/builder.rs:864:42: replace < with <= in make_nurbs_edge
+crates/topology/src/builder.rs:865:42: replace < with == in make_nurbs_edge
+crates/topology/src/builder.rs:865:42: replace < with > in make_nurbs_edge
+crates/topology/src/builder.rs:865:42: replace < with <= in make_nurbs_edge
+crates/topology/src/builder.rs:866:64: replace <= with > in make_nurbs_edge
+crates/topology/src/builder.rs:876:65: replace > with >= in make_nurbs_edge
+crates/topology/src/builder.rs:890:13: replace && with || in make_nurbs_edge
+crates/topology/src/builder.rs:883:17: replace > with >= in make_nurbs_edge
+crates/topology/src/builder.rs:882:29: replace - with + in make_nurbs_edge
+crates/topology/src/builder.rs:882:29: replace - with / in make_nurbs_edge
+crates/topology/src/builder.rs:883:25: replace * with / in make_nurbs_edge
+crates/topology/src/builder.rs:883:39: replace - with + in make_nurbs_edge
+crates/topology/src/builder.rs:951:66: replace % with / in make_nurbs_face
+crates/topology/src/builder.rs:951:66: replace % with + in make_nurbs_face
+crates/topology/src/builder.rs:951:61: replace + with - in make_nurbs_face
+crates/topology/src/builder.rs:951:61: replace + with * in make_nurbs_face

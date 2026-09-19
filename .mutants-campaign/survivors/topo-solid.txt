@@ -1,0 +1,2 @@
+crates/topology/src/solid.rs:39:9: replace Solid::set_outer_shell with ()
+crates/topology/src/solid.rs:50:9: replace Solid::add_inner_shell with ()
