@@ -1,0 +1,3 @@
+crates/topology/src/wire.rs:117:9: replace Wire::edges_mut -> &mut[OrientedEdge] with Vec::leak(Vec::new())
+crates/topology/src/wire.rs:123:9: replace Wire::is_closed -> bool with true
+crates/topology/src/wire.rs:133:9: replace Wire::set_body_class with ()

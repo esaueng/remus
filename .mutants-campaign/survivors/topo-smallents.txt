@@ -1,0 +1,25 @@
+crates/topology/src/pcurve.rs:168:48: replace && with || in PCurveRegistry::remove_for_retired_entities
+crates/topology/src/pcurve.rs:174:9: replace PCurveRegistry::remove_face with ()
+crates/topology/src/pcurve.rs:174:44: replace != with == in PCurveRegistry::remove_face
+crates/topology/src/pcurve.rs:181:9: replace PCurveRegistry::len -> usize with 0
+crates/topology/src/pcurve.rs:181:9: replace PCurveRegistry::len -> usize with 1
+crates/topology/src/pcurve.rs:187:9: replace PCurveRegistry::is_empty -> bool with true
+crates/topology/src/pcurve.rs:187:9: replace PCurveRegistry::is_empty -> bool with false
+crates/topology/src/coedge.rs:46:9: replace PeriodicWinding::u -> i32 with 0
+crates/topology/src/coedge.rs:46:9: replace PeriodicWinding::u -> i32 with 1
+crates/topology/src/coedge.rs:46:9: replace PeriodicWinding::u -> i32 with -1
+crates/topology/src/coedge.rs:52:9: replace PeriodicWinding::v -> i32 with 0
+crates/topology/src/coedge.rs:52:9: replace PeriodicWinding::v -> i32 with 1
+crates/topology/src/coedge.rs:52:9: replace PeriodicWinding::v -> i32 with -1
+crates/topology/src/wire.rs:117:9: replace Wire::edges_mut -> &mut[OrientedEdge] with Vec::leak(Vec::new())
+crates/topology/src/wire.rs:123:9: replace Wire::is_closed -> bool with true
+crates/topology/src/wire.rs:133:9: replace Wire::set_body_class with ()
+crates/topology/src/shell.rs:59:9: replace Shell::is_empty -> bool with true
+crates/topology/src/shell.rs:59:9: replace Shell::is_empty -> bool with false
+crates/topology/src/shell.rs:73:9: replace Shell::faces_mut -> &mut[FaceId] with Vec::leak(Vec::new())
+crates/topology/src/solid.rs:39:9: replace Solid::set_outer_shell with ()
+crates/topology/src/solid.rs:50:9: replace Solid::add_inner_shell with ()
+crates/topology/src/compsolid.rs:46:9: replace CompSolid::shared_faces -> &[FaceId] with Vec::leak(Vec::new())
+crates/topology/src/compsolid.rs:52:9: replace CompSolid::num_solids -> usize with 0
+crates/topology/src/vertex.rs:44:9: replace Vertex::set_point with ()
+crates/topology/src/face_loop.rs:53:9: replace Loop::is_closed -> bool with true

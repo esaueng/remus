@@ -1,0 +1,7 @@
+crates/topology/src/journal.rs:194:9: replace RecordedOrigin::as_str -> &'static str with "xyzzy"
+crates/topology/src/journal.rs:194:9: replace RecordedOrigin::as_str -> &'static str with ""
+crates/topology/src/journal.rs:394:9: replace JournalEntry::is_barrier -> bool with true
+crates/topology/src/journal.rs:405:9: replace JournalEntry::ticks_after -> u64 with 0
+crates/topology/src/journal.rs:405:9: replace JournalEntry::ticks_after -> u64 with 1
+crates/topology/src/journal.rs:455:9: replace PendingOp::add_scope with ()
+crates/topology/src/journal.rs:493:9: replace Journal::is_empty -> bool with true
