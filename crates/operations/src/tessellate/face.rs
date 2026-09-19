@@ -178,6 +178,7 @@ pub(super) fn tessellate_with_uvs_floor(
                     deflection,
                     angular_tol,
                     None,
+                    None,
                 )
             } else if cylinder_has_stepped_rims(topo, face_data, cyl)? {
                 let mut mesh = super::TriangleMesh::default();
@@ -294,6 +295,7 @@ pub(super) fn tessellate_with_uvs_floor(
                     deflection,
                     angular_tol,
                     None,
+                    Some((0.0, cone.apex())),
                 )
             }
         }

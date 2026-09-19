@@ -2227,6 +2227,44 @@ fn tessellate_small_torus_reasonable_count() {
     );
 }
 
+/// B37: a cylinder band whose boundary stays on its two rims keeps the
+/// two-row interior grid (#259 density), while a boundary run strictly
+/// between the rims (a notch rim, a section curve) gets isotropic rows so
+/// the CDT cannot bridge it with chords through the solid.
+#[test]
+fn cylinder_interior_rows_follow_boundary_between_rims() {
+    let cyl = remus_math::surfaces::CylindricalSurface::new(
+        Point3::new(0.0, 0.0, 0.0),
+        Vec3::new(0.0, 0.0, 1.0),
+        1.0,
+    )
+    .unwrap();
+    let surface = FaceSurface::Cylinder(cyl);
+    let du = std::f64::consts::TAU;
+    let (v0, v1) = (0.0, 1.0);
+    let rim_only = [(0.0, v0), (1.0, v0), (1.0, v1), (0.0, v1)];
+    assert_eq!(
+        super::nonplanar::interior_rows_for_boundary(&surface, &rim_only, (v0, v1), du, 64, 2),
+        2
+    );
+    let notched = [
+        (0.0, v0),
+        (1.0, v0),
+        (1.5, 0.25),
+        (2.0, v0),
+        (2.0, v1),
+        (0.0, v1),
+    ];
+    let rows =
+        super::nonplanar::interior_rows_for_boundary(&surface, &notched, (v0, v1), du, 64, 2);
+    // 64 columns over a full turn of radius 1 space 0.098 apart; a unit-tall
+    // wall wants about 11 rows to stay isotropic.
+    assert!(
+        (10..=12).contains(&rows),
+        "isotropic rows expected, got {rows}"
+    );
+}
+
 // -- Gridfinity tessellation reproducers (#259) --
 
 #[test]

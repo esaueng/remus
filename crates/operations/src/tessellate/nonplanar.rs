@@ -2948,6 +2948,14 @@ pub(super) fn tessellate_nonplanar_cdt(
     if du > 1e-15 && dv > 1e-15 {
         let (n_u, n_v) =
             interior_grid_resolution(face_data.surface(), du, dv, deflection, angular_tol);
+        let n_v = interior_rows_for_boundary(
+            face_data.surface(),
+            &boundary_uv,
+            (v_min, v_max),
+            du,
+            n_u,
+            n_v,
+        );
         validate_interior_grid_size(n_u, n_v)?;
 
         let boundary_uv_ref = &boundary_uv;
@@ -3689,6 +3697,39 @@ fn estimate_surface_radius(surface: &FaceSurface) -> f64 {
     }
 }
 
+/// Rows for a cylinder or cone whose boundary has samples strictly between
+/// its rims (a notch rim, a section curve, a stepped rim).
+///
+/// With the two-row default, such a run is bridged to the single interior
+/// row by triangles that are long in `u`, and those cut chords through the
+/// solid: the B37 cone–cylinder fuse wall measured 5 % too much area and the
+/// body 2 % low in volume with every mesh edge twinned, so no watertightness
+/// oracle noticed. Size the rows isotropically against the column spacing
+/// (the NURBS arm's rule) whenever the boundary leaves the rims; a band
+/// bounded only at its rims keeps `n_v` unchanged.
+pub(super) fn interior_rows_for_boundary(
+    surface: &FaceSurface,
+    boundary_uv: &[(f64, f64)],
+    v_range: (f64, f64),
+    du: f64,
+    n_u: usize,
+    n_v: usize,
+) -> usize {
+    if !matches!(surface, FaceSurface::Cylinder(_) | FaceSurface::Cone(_)) {
+        return n_v;
+    }
+    let dv = v_range.1 - v_range.0;
+    let tol = 1e-9 * dv.abs().max(1e-12);
+    let leaves_rims = boundary_uv
+        .iter()
+        .any(|&(_, v)| v > v_range.0 + tol && v < v_range.1 - tol);
+    if !leaves_rims {
+        return n_v;
+    }
+    let r = estimate_surface_radius(surface);
+    isotropic_rows(dv, Some(n_u), r * du).max(n_v)
+}
+
 /// Compute interior grid resolution for `tessellate_nonplanar_cdt`.
 pub(super) fn interior_grid_resolution(
     surface: &FaceSurface,
@@ -3732,7 +3773,10 @@ pub(super) fn interior_grid_resolution(
             // along the straight rulings (a length, not an angle): zero chord
             // sag, so feeding it to the chord formula would treat millimeters
             // as radians and emit hundreds of interior rows on a tall wall.
-            // Two rows suffice for CDT quality on a developable band.
+            // Two rows suffice for a band whose boundary sits on its two rims
+            // (issue #259 pins a filleted box at that density); a boundary
+            // run partway up the wall needs isotropic rows instead — see
+            // `interior_rows_for_boundary` in `tessellate_nonplanar_cdt`.
             let r = estimate_surface_radius(surface);
             let n_u = segments_for_chord_deviation_a(r, du, deflection, angular_tol, true).max(2);
             (n_u, 2)
@@ -5143,6 +5187,12 @@ pub(super) fn point_in_polygon_2d(polygon: &[(f64, f64)], pt: remus_math::vec::P
     winding != 0
 }
 
+/// The `shared_revolved` guard admits only cylinders and cones; any other
+/// surface reaching that match yields an empty face mesh (never a panic).
+fn unreachable_default_mesh() -> TriangleMesh {
+    TriangleMesh::default()
+}
+
 /// Snap-based fallback tessellation for non-planar faces.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn tessellate_nonplanar_snap(
@@ -5156,39 +5206,68 @@ pub(super) fn tessellate_nonplanar_snap(
     merged: &mut TriangleMesh,
     point_to_global: &mut DetHashMap<(i64, i64, i64), u32>,
 ) -> Result<(), crate::OperationsError> {
-    let shared_cylinder = matches!(face_data.surface(), FaceSurface::Cylinder(_))
-        && !face_data.inner_wires().is_empty();
-    let mut face_mesh = if let FaceSurface::Cylinder(cylinder) = face_data.surface()
-        && shared_cylinder
-    {
+    let shared_revolved = matches!(
+        face_data.surface(),
+        FaceSurface::Cylinder(_) | FaceSurface::Cone(_)
+    ) && !face_data.inner_wires().is_empty();
+    let mut face_mesh = if shared_revolved {
         // Preserve seam splits from the shared pool instead of independently
-        // interpolating an off-curve crossing in the cylinder's UV chart.
-        let points = remus_topology::explorer::face_edges(topo, face_id)?
-            .into_iter()
-            .filter_map(|edge| {
-                edge_global_indices
-                    .get(&edge.index())
-                    .map(|ids| (edge.index(), ids))
-            })
-            .map(|(edge, ids)| {
-                (
-                    edge,
-                    ids.iter()
-                        .map(|&id| merged.positions[id as usize])
-                        .collect(),
-                )
-            })
-            .collect();
-        super::planar::tessellate_revolved_with_holes(
-            topo,
-            face_data,
-            cylinder,
-            cylinder.radius(),
-            deflection,
-            angular_tol,
-            Some(&points),
-        )?
-        .mesh
+        // interpolating an off-curve crossing in the wall's UV chart, and
+        // keep every rim sample identical to the pool so the neighbouring
+        // faces close against this wall by construction.
+        let points: DetHashMap<usize, Vec<Point3>> =
+            remus_topology::explorer::face_edges(topo, face_id)?
+                .into_iter()
+                .filter_map(|edge| {
+                    edge_global_indices
+                        .get(&edge.index())
+                        .map(|ids| (edge.index(), ids))
+                })
+                .map(|(edge, ids)| {
+                    (
+                        edge,
+                        ids.iter()
+                            .map(|&id| merged.positions[id as usize])
+                            .collect(),
+                    )
+                })
+                .collect();
+        match face_data.surface() {
+            FaceSurface::Cylinder(cylinder) => {
+                super::planar::tessellate_revolved_with_holes(
+                    topo,
+                    face_data,
+                    cylinder,
+                    cylinder.radius(),
+                    deflection,
+                    angular_tol,
+                    Some(&points),
+                    None,
+                )?
+                .mesh
+            }
+            FaceSurface::Cone(cone) => {
+                let range = super::nurbs::compute_v_param_range(topo, face_data, |p| {
+                    cone.project_point(p).1
+                });
+                let radius = cone.radius_at(range.0.abs().max(range.1.abs()));
+                super::planar::tessellate_revolved_with_holes(
+                    topo,
+                    face_data,
+                    cone,
+                    radius,
+                    deflection,
+                    angular_tol,
+                    Some(&points),
+                    Some((0.0, cone.apex())),
+                )?
+                .mesh
+            }
+            FaceSurface::Plane { .. }
+            | FaceSurface::Nurbs(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_) => unreachable_default_mesh(),
+        }
     } else {
         super::face::tessellate_with_uvs_floor(
             topo,
@@ -5200,9 +5279,9 @@ pub(super) fn tessellate_nonplanar_snap(
         .mesh
     };
 
-    // The standalone face path applies reversal; the shared cylinder path
+    // The standalone face path applies reversal; the shared revolved path
     // and our caller leave that flip to tessellate_face_with_shared_edges.
-    if face_data.is_reversed() && !shared_cylinder {
+    if face_data.is_reversed() && !shared_revolved {
         for triangle in face_mesh.indices.chunks_exact_mut(3) {
             triangle.swap(1, 2);
         }

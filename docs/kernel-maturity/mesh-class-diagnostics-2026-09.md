@@ -164,6 +164,18 @@ do not tune CDT density or snap proximity.
 
 ---
 
+**Resolution (2026-09-18):** the fuse leg closed, but not by the hypothesis
+above. Per-face twin accounting (not per-face boundary ownership) showed f1,
+the holed pointed cone, emitting ZERO triangles: its single-rim UV chart
+bounded nothing, so every crack credited to f0/f2/f3 was really the missing
+cone wall. Two further roots surfaced once f1 existed: the exact face
+integrator dropped the cone tip below the hole (the translation drift), and
+f2's generic CDT with one interior row bridged the dense notch rim with
+chords through the solid (excess area, volume deficit, every edge twinned).
+Lesson for the next reading: a face that owns 0 boundary edges and 0
+triangles is the defect, not the innocent party; print triangle counts per
+face before attributing a crack to its neighbour. See row B37.
+
 ## B38 — Sphere–torus boolean misbuilds (finding 13)
 
 Repros: `b26_finding13_spheretorus_smallscale_invalid`,
