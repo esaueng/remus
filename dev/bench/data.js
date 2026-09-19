@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789800845666,
+  "lastUpdate": 1789802227003,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -44431,6 +44431,240 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 89631,
             "range": "± 293",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "2613c14d7c9f78010deb28bb272177fe534e64c8",
+          "message": "fix(tessellate,check): mesh and measure the holed pointed cone (B37 fuse leg) (#515)\n\n* fix(tessellate,check): mesh and measure the holed pointed cone (B37 fuse leg)\n\nThe pointed cone fused with a cylinder carries the cylinder footprint as\nan inner wire and meshed to nothing: its outer wire is one closed rim and\nno seam, which projects to a zero-area line at constant v, so the holed\nrevolved mesher's CDT bounded nothing. Every crack the diagnostics report\ncredited to the neighbouring faces was this missing wall.\n\nThree roots, three fixes:\n\n- tessellate_revolved_with_holes takes the cone apex and, for a\n  single-rim outer wire, synthesizes the chart's missing boundary (far\n  seam down to the apex, apex row, near seam back up), then collapses\n  the apex row to one vertex; both seam sides evaluate to identical 3D\n  points and weld by position. Cones join the pool-sharing snap branch.\n- check::face_integrator took a cone's v-extent from boundary samples\n  and dropped the tip below the hole (18.6 % translation drift). The\n  cone arm now includes the apex, collects full-revolution hole\n  positions like the sphere arm, and the polar-cap branch takes the\n  apex as the far side regardless of rim winding.\n- The wall's generic CDT hard-coded two interior rows, so a dense notch\n  rim was bridged by triangles long in u that cut chords through the\n  solid (5 % excess area, 2 % volume deficit, every edge twinned).\n  interior_rows_for_boundary sizes rows isotropically whenever boundary\n  samples sit strictly between the rims; rim-only bands keep two rows\n  (issue #259's filleted-box density).\n\nFuse: watertight at 0.1/1e-2/1e-3/6e-5, exact volume 7.286577 against\nthe closed form 7.286574 and translation-invariant; the repro is\nun-ignored. The cut leg's mesh and volume halves are fixed too; its\ncheck-crate orientation issue is a boolean defect and stays open.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n* fix(tessellate): drop the isotropic interior-row rule, file it as B49\n\nThe B37 fuse-leg PR carried three changes. The third — sizing a cylinder\nor cone's interior rows isotropically whenever the boundary leaves the\nrims — makes that grid quadratic in deflection instead of linear, and\nbroke six suites:\n\n- repro_bundles cross-drilled-render-measure: 12290 -> 45890 triangles\n- tessellation_parity_inmem hex cut: over its density bound at 8010\n- regress_seam_split_rim_band_mesh x2: past the 1e6-point work limit\n- resize_blend_step hammer holder: fixture volume off its pin\n- pclass_curved_blend wrong-side rim fillet: FAIL-OPEN. The blend's\n  mesh volume delta flipped from +0.473 to -0.145 against a 0.0016\n  noise floor, so validate_blend_volume's convex sign rule stopped\n  refusing a geometrically wrong blend.\n\nIt is also not needed for the row's exit gate: with it removed, both\nb26_finding12 legs are watertight with 0 non-manifold edges at\ndeflection 0.1 / 1e-2 / 1e-3 / 6e-5, the fuse measures the exact\n7.286577 and the cut 4.144984, and the un-ignored repro is green.\n\nThe defect it was aimed at is real and stays filed: the wall's\none-interior-row CDT bridges its dense notch rim with chords through\nthe solid, so the fuse's signed MESH volume does not converge —\n7.063715 / 7.099480 / 7.137545 / 7.141582 across those deflections\n(1168 -> 64888 triangles) against the exact 7.286577, 2.0 % low and\nflat at the finest reading, while the cut leg converges normally. New\nroadmap row B49 records that, the constraints a real fix must meet,\nand the fail-open above.\n\nChanges 1 (cone apex chart synthesis) and 2 (the integrator's cone\ntip) are unchanged.\n\nVerification: cargo nextest run --workspace --cargo-profile ci-test —\n5240 passed, 0 failed, 36 skipped. cargo fmt --check, clippy\n--all-targets -D warnings, check-boundaries, check-doc-paths,\ncheck-wildcard-arms all clean.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Fable 5.1 <noreply@anthropic.com>",
+          "timestamp": "2026-09-19T03:09:38-04:00",
+          "tree_id": "9f0673423b1182d86d22e634b47ae7c22ec0e874",
+          "url": "https://github.com/esaueng/remus/commit/2613c14d7c9f78010deb28bb272177fe534e64c8"
+        },
+        "date": 1789802225498,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1258052,
+            "range": "± 994",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1359502,
+            "range": "± 7078",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 26789,
+            "range": "± 76",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 11877158,
+            "range": "± 43170",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 11872473,
+            "range": "± 15486",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 11444996,
+            "range": "± 11607",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 1087183,
+            "range": "± 40215",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 17666909,
+            "range": "± 45754",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 33418502,
+            "range": "± 758174",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 39,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 106,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 65,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 224,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 161,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 787,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 168,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 356,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 228,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 524,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 758,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 3227,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 17,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 36,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 63,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 63,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 600596,
+            "range": "± 1237",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 11609956,
+            "range": "± 163245",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 177773,
+            "range": "± 1436",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 669753,
+            "range": "± 1221",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 129335,
+            "range": "± 325",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 933196,
+            "range": "± 7325",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 10833376,
+            "range": "± 129291",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 804352,
+            "range": "± 2904",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 1182175,
+            "range": "± 1661",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 88802,
+            "range": "± 737",
             "unit": "ns/iter"
           }
         ]
