@@ -7,13 +7,10 @@
 # never raise a count except to record a genuinely required wildcard.
 1 crates/algo/src/builder/face_splitter/conversion.rs
 5 crates/algo/src/builder/face_splitter/mod.rs
-7 crates/algo/src/builder/face_splitter/special_cases.rs
 2 crates/algo/src/builder/mod.rs
 1 crates/algo/src/builder/pcurve_compute.rs
-5 crates/algo/src/builder/same_domain.rs
 1 crates/algo/src/classifier/ray_cast.rs
 1 crates/algo/src/pave_filler/fill_face_info.rs
-5 crates/algo/src/pave_filler/phase_ef.rs
 1 crates/algo/src/pave_filler/phase_vf.rs
 2 crates/blend/src/chamfer_builder.rs
 1 crates/blend/src/face_face.rs
@@ -23,7 +20,6 @@
 1 crates/check/src/properties/face_integrator.rs
 1 crates/check/src/validate/face.rs
 1 crates/heal/src/fix/face.rs
-6 crates/io/src/step/reader.rs
 2 crates/io/src/step/writer.rs
 3 crates/offset/src/inter3d.rs
 2 crates/offset/src/loops.rs

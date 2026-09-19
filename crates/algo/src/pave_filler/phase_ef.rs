@@ -371,7 +371,11 @@ fn build_face_containment(
     {
         let planar = super::helpers::planar_nurbs_as_plane(&surface, tol).and_then(|p| match p {
             FaceSurface::Plane { normal, d } => Some((normal, d)),
-            _ => None,
+            FaceSurface::Nurbs(_)
+            | FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_) => None,
         });
         let wall = super::helpers::rational_cylinder_wall(nurbs, tol);
         if planar.is_some() || wall.is_some() {
@@ -467,13 +471,21 @@ fn check_edge_face_pairs(
         let surface = topo.face(fid)?.surface().clone();
         seed_grids.push(match &surface {
             FaceSurface::Nurbs(nurbs) => Some(SurfaceSeedGrid::for_surface(nurbs)),
-            _ => None,
+            FaceSurface::Plane { .. }
+            | FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_) => None,
         });
         carrier_aabbs.push(match &surface {
             FaceSurface::Nurbs(nurbs) => {
                 Aabb3::try_from_points(nurbs.control_points().iter().flatten().copied())
             }
-            _ => None,
+            FaceSurface::Plane { .. }
+            | FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_) => None,
         });
     }
     // Every threshold the crossing scan compares a distance against is at
@@ -630,7 +642,14 @@ fn check_edge_face_pairs(
                         Vec::new()
                     }
                 }
-                _ => find_edge_surface_crossings(
+                (FaceSurface::Nurbs(_), None)
+                | (
+                    FaceSurface::Cylinder(_)
+                    | FaceSurface::Cone(_)
+                    | FaceSurface::Sphere(_)
+                    | FaceSurface::Torus(_),
+                    _,
+                ) => find_edge_surface_crossings(
                     &curve, start_pos, end_pos, t0, t1, surface, tol, grid,
                 ),
             };
@@ -662,7 +681,13 @@ fn check_edge_face_pairs(
                     let tangent = curve.tangent_with_endpoints(t, start_pos, end_pos);
                     let normal = match surface {
                         FaceSurface::Plane { normal, .. } => Some(*normal),
-                        _ => surface.project_point(pt).map(|(u, v)| surface.normal(u, v)),
+                        FaceSurface::Nurbs(_)
+                        | FaceSurface::Cylinder(_)
+                        | FaceSurface::Cone(_)
+                        | FaceSurface::Sphere(_)
+                        | FaceSurface::Torus(_) => {
+                            surface.project_point(pt).map(|(u, v)| surface.normal(u, v))
+                        }
                     };
                     let sin_angle = match (tangent.normalize(), normal) {
                         (Ok(tangent_unit), Some(n)) => tangent_unit.dot(n).abs(),
