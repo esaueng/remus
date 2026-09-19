@@ -2,24 +2,16 @@
 //!
 //! Fixture `crates/io/tests/data/shapr_untrimmed_nurbs_domain.step` (6,600
 //! bytes; 4 faces Pl3 Nurb1, genuine source `B_SPLINE_SURFACE_WITH_KNOTS`)
-//! keeps topology/types/volume across the round trip (4→4 faces, identical
-//! hists, volume rel 6.3e-16) but its surface area collapses
-//! 19.495054989860726 → 17.67196035454634 (abs −1.823, rel 9.351575e-2,
-//! re-verified by the audit parent at deflection 0.01). Volume pinned while
-//! area moves 9% means the NURBS patch parameterization (not its closed
-//! volume) changed on the write→read leg.
+//! keeps topology/types/volume across the round trip. The historical reader
+//! physically split parameter-trimmed NURBS edge carriers while also storing
+//! the declared edge interval, replacing their exact control polygons and
+//! collapsing surface area by 9.35%. The reader now retains each complete
+//! carrier and stores the trim only as edge parameter authority.
 //!
-//! Suspected path (read-only, not fixed here): untrimmed-NURBS domain
-//! handling — reader `MAX_UNTRIMMED_NURBS_RECOVERY_*` + the
-//! `step_untrimmed_nurbs_domain_recovered` probe (`reader.rs` ~lines 56–133),
-//! `build_bspline_surface` and the periodic/untrimmed UV-domain helpers
-//! (~2335–2680), vs writer NURBS surface/edge-domain emission in
-//! `crates/io/src/step/writer.rs`. The re-import likely recovers a different
-//! (smaller) sub-domain. The owner should dump both carriers (control net,
-//! knots, recovered domain) before/after.
+//! This regression pins volume, area, and exact NURBS edge carrier identity.
 //!
 //! Full audit: `docs/kernel-maturity/step-roundtrip-audit-2026-09-18.md`.
-//! Remove the `#[ignore]` when area rel < 1e-9.
+//! Fixed by retaining the basis carrier for parameter-trimmed NURBS curves.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -32,7 +24,6 @@ fn fixture(name: &str) -> PathBuf {
 }
 
 #[test]
-#[ignore = "open: shapr_untrimmed_nurbs_domain STEP round-trip area drifts 9.35e-2; see step-roundtrip-audit-2026-09-18 Finding 3"]
 fn untrimmed_nurbs_area_survives_roundtrip() {
     let contents = std::fs::read_to_string(fixture("shapr_untrimmed_nurbs_domain.step")).unwrap();
     let mut topo = remus_topology::Topology::new();
@@ -51,6 +42,26 @@ fn untrimmed_nurbs_area_survives_roundtrip() {
     let mut topo2 = remus_topology::Topology::new();
     let solids2 = remus_io::step::reader::read_step(&exported, &mut topo2).unwrap();
     assert_eq!(solids2.len(), 1);
+
+    let carrier_signatures = |topology: &remus_topology::Topology,
+                              solid: remus_topology::solid::SolidId| {
+        let mut signatures = remus_topology::explorer::solid_edges(topology, solid)
+            .unwrap()
+            .into_iter()
+            .filter_map(|edge_id| {
+                let edge = topology.edge(edge_id).unwrap();
+                matches!(edge.curve(), remus_topology::edge::EdgeCurve::NurbsCurve(_))
+                    .then(|| format!("{:?}|{:?}", edge.curve(), edge.trim()))
+            })
+            .collect::<Vec<_>>();
+        signatures.sort();
+        signatures
+    };
+    assert_eq!(
+        carrier_signatures(&topo, solids[0]),
+        carrier_signatures(&topo2, solids2[0]),
+        "NURBS edge carriers and their authoritative trims must remain exact"
+    );
     let vol_after: f64 = solids2
         .iter()
         .map(|s| remus_operations::measure::solid_volume(&topo2, *s, 0.01).unwrap())
