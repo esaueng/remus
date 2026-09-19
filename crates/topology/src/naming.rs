@@ -1746,4 +1746,610 @@ mod tests {
         let err = r.into_entities().unwrap_err();
         assert!(matches!(err, TopologyError::RefNoMatch { .. }));
     }
+
+    // ── Stage 2 chase: sibling claims, kind filtering ───────────────────
+
+    #[test]
+    fn sibling_claims_in_one_entry_do_not_leak_into_this_lineage() {
+        let mut topo = Topology::new();
+        let op = record(
+            &mut topo,
+            "op_a",
+            (1..=4)
+                .map(|index| {
+                    (
+                        EntityKey::face(index),
+                        EventDraft::Generated {
+                            sources: Vec::new(),
+                        },
+                    )
+                })
+                .collect(),
+            Vec::new(),
+        );
+        // One entry that, in the same breath, modifies face 1, deletes an
+        // unrelated face 2, and merges faces 3 and 4 into face 9. Only the
+        // claim naming face 1 may move face 1's lineage.
+        record(
+            &mut topo,
+            "boolean_fuse",
+            vec![
+                modified(1, 5),
+                (EntityKey::face(2), EventDraft::Deleted),
+                (
+                    EntityKey::face(9),
+                    EventDraft::Merged {
+                        from: vec![EntityKey::face(3), EntityKey::face(4)],
+                    },
+                ),
+            ],
+            Vec::new(),
+        );
+
+        let r = resolve(
+            &topo,
+            &PersistentRef::operation_output(op, EntityKind::Face, 0),
+        );
+        assert_eq!(
+            r,
+            Resolution::Bound {
+                entity: EntityKey::face(5),
+                provenance: Provenance::Construction
+            },
+            "a deletion and a merge of other entities are not claims about this one"
+        );
+    }
+
+    #[test]
+    fn a_lineage_hop_into_another_kind_binds_nothing_rather_than_the_wrong_entity() {
+        let mut topo = Topology::new();
+        let op = record(
+            &mut topo,
+            "op_a",
+            vec![(
+                EntityKey::face(1),
+                EventDraft::Generated {
+                    sources: Vec::new(),
+                },
+            )],
+            Vec::new(),
+        );
+        // A (defective) record claiming the face flowed into an edge. The
+        // face reference must not bind that edge: wrong is worse than none.
+        record(
+            &mut topo,
+            "section",
+            vec![(
+                EntityKey::edge(7),
+                EventDraft::Merged {
+                    from: vec![EntityKey::face(1)],
+                },
+            )],
+            Vec::new(),
+        );
+
+        let r = resolve(
+            &topo,
+            &PersistentRef::operation_output(op, EntityKind::Face, 0),
+        );
+        assert!(
+            matches!(r, Resolution::NoMatch { ref reason } if reason.contains("no entity survived")),
+            "{r:?}"
+        );
+    }
+
+    // ── Discriminators over live geometry ───────────────────────────────
+
+    /// A triangle face on `z = 0` plus its three line edges; returns the
+    /// face and the first edge.
+    fn triangle_face(topo: &mut Topology) -> (crate::face::FaceId, crate::edge::EdgeId) {
+        use crate::edge::{Edge, EdgeCurve};
+        use crate::face::{Face, FaceSurface};
+        use crate::vertex::Vertex;
+        use crate::wire::{OrientedEdge, Wire};
+        use remus_math::vec::{Point3, Vec3};
+
+        let v0 = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
+        let v1 = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
+        let v2 = topo.add_vertex(Vertex::new(Point3::new(0.0, 1.0, 0.0), 1e-7));
+        let e0 = topo.add_edge(Edge::new(v0, v1, EdgeCurve::Line));
+        let e1 = topo.add_edge(Edge::new(v1, v2, EdgeCurve::Line));
+        let e2 = topo.add_edge(Edge::new(v2, v0, EdgeCurve::Line));
+        let wire = topo.add_wire(
+            Wire::new(
+                vec![
+                    OrientedEdge::new(e0, true),
+                    OrientedEdge::new(e1, true),
+                    OrientedEdge::new(e2, true),
+                ],
+                true,
+            )
+            .unwrap(),
+        );
+        let face = topo.add_face(Face::new(
+            wire,
+            Vec::new(),
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+        (face, e0)
+    }
+
+    #[test]
+    fn discriminators_filter_by_kind_and_by_geometry_type() {
+        let mut topo = Topology::new();
+        let (face, edge) = triangle_face(&mut topo);
+        let op = record(
+            &mut topo,
+            "extrude",
+            vec![
+                (
+                    EntityKey::face(face.index()),
+                    EventDraft::Generated {
+                        sources: Vec::new(),
+                    },
+                ),
+                (
+                    EntityKey::edge(edge.index()),
+                    EventDraft::Generated {
+                        sources: Vec::new(),
+                    },
+                ),
+            ],
+            Vec::new(),
+        );
+        let face_ref = PersistentRef::operation_output(op, EntityKind::Face, 0);
+        let edge_ref = PersistentRef::operation_output(op, EntityKind::Edge, 0);
+
+        // A matching tag keeps the candidate.
+        assert_eq!(
+            resolve(
+                &topo,
+                &face_ref
+                    .clone()
+                    .with_discriminator(Discriminator::SurfaceType("plane".into()))
+            ),
+            Resolution::Bound {
+                entity: EntityKey::face(face.index()),
+                provenance: Provenance::Construction
+            }
+        );
+        assert_eq!(
+            resolve(
+                &topo,
+                &edge_ref
+                    .clone()
+                    .with_discriminator(Discriminator::CurveType("line".into()))
+            ),
+            Resolution::Bound {
+                entity: EntityKey::edge(edge.index()),
+                provenance: Provenance::Construction
+            }
+        );
+
+        // A non-matching tag eliminates it.
+        for (reference, discriminator) in [
+            (&face_ref, Discriminator::SurfaceType("cylinder".into())),
+            (&edge_ref, Discriminator::CurveType("circle".into())),
+            // A curve filter never keeps a face (nor a surface filter an
+            // edge) just because some edge shares its arena index.
+            (&face_ref, Discriminator::CurveType("line".into())),
+            (&edge_ref, Discriminator::SurfaceType("plane".into())),
+        ] {
+            let described = discriminator.describe();
+            let r = resolve(&topo, &reference.clone().with_discriminator(discriminator));
+            assert!(
+                matches!(r, Resolution::NoMatch { ref reason } if reason.contains(&described)),
+                "{described}: {r:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn resolved_face_attributes_follow_the_binding() {
+        use crate::attributes::EntityAttributes;
+
+        let mut topo = Topology::new();
+        let (face, edge) = triangle_face(&mut topo);
+        topo.set_face_attributes(
+            face,
+            EntityAttributes {
+                name: Some("seat".to_owned()),
+                color: None,
+            },
+        )
+        .unwrap();
+        let op = record(
+            &mut topo,
+            "extrude",
+            vec![
+                (
+                    EntityKey::face(face.index()),
+                    EventDraft::Generated {
+                        sources: Vec::new(),
+                    },
+                ),
+                (
+                    EntityKey::edge(edge.index()),
+                    EventDraft::Generated {
+                        sources: Vec::new(),
+                    },
+                ),
+            ],
+            Vec::new(),
+        );
+
+        let bound = resolve_face_attributes(
+            &topo,
+            &PersistentRef::operation_output(op, EntityKind::Face, 0),
+        )
+        .unwrap();
+        assert_eq!(bound.len(), 1, "the binding must be reported, not dropped");
+        assert_eq!(bound[0].0, EntityKey::face(face.index()));
+        assert_eq!(
+            bound[0].1.and_then(|attributes| attributes.name.as_deref()),
+            Some("seat"),
+            "a face binding reads the face's attributes"
+        );
+
+        // A non-face binding carries no attributes (v1 store scope).
+        let bound = resolve_face_attributes(
+            &topo,
+            &PersistentRef::operation_output(op, EntityKind::Edge, 0),
+        )
+        .unwrap();
+        assert_eq!(bound.len(), 1);
+        assert!(bound[0].1.is_none());
+    }
+
+    // ── Signature capture and matching ──────────────────────────────────
+
+    #[test]
+    fn context_quantum_is_the_context_linear_tolerance() {
+        let mut context = remus_math::context::OperationContext::new();
+        context.tolerance.linear = 2.5e-4;
+        let quantum = EntitySignature::context_quantum(&context);
+        assert!(
+            (quantum - 2.5e-4).abs() < f64::EPSILON,
+            "the quantum is the context's linear tolerance, got {quantum}"
+        );
+    }
+
+    #[test]
+    fn a_quantum_that_is_not_positive_never_matches_anything() {
+        let mut topo = Topology::new();
+        let v = topo.add_vertex(crate::vertex::Vertex::new(
+            remus_math::vec::Point3::new(0.0, 0.0, 0.0),
+            1e-7,
+        ));
+        // Every stored parameter is the poison value and the quantum is
+        // degenerate: matching must refuse outright rather than let a
+        // zero-width window admit the origin.
+        let signature = EntitySignature::capture_vertex(&topo, v, 0.0).unwrap();
+        let r = resolve(&topo, &PersistentRef::signature(signature));
+        assert!(matches!(r, Resolution::NoMatch { .. }), "{r:?}");
+    }
+
+    #[test]
+    fn quantize_refuses_a_negative_quantum() {
+        assert_eq!(quantize(2.0, -1.0), i64::MAX, "negative quantum is poison");
+    }
+
+    #[test]
+    fn canonical_direction_flips_on_the_first_component_beyond_the_quantum() {
+        use remus_math::vec::Vec3;
+
+        let components = |v: Vec3| (v.x(), v.y(), v.z());
+
+        // The first significant component is negative: the whole vector
+        // flips, so both parameterizations of one axis sign identically.
+        assert_eq!(
+            components(canonical_direction(Vec3::new(-1.0, 0.0, 0.0), 1e-7)),
+            (1.0, 0.0, 0.0)
+        );
+        assert_eq!(
+            components(canonical_direction(Vec3::new(0.0, 0.0, -2.0), 1e-7)),
+            (0.0, 0.0, 2.0),
+            "components at or below the quantum are skipped, not decided on"
+        );
+        // Already positive: unchanged.
+        assert_eq!(
+            components(canonical_direction(Vec3::new(0.0, 3.0, -4.0), 1e-7)),
+            (0.0, 3.0, -4.0)
+        );
+        // A component exactly at the quantum is not "beyond" it: the
+        // decision falls to the next significant component.
+        assert_eq!(
+            components(canonical_direction(Vec3::new(-1e-7, 0.0, 1.0), 1e-7)),
+            (-1e-7, 0.0, 1.0)
+        );
+    }
+
+    /// Adds a one-edge open wire (fresh vertices) usable as a face boundary.
+    fn stub_wire(topo: &mut Topology, tag: f64) -> crate::wire::WireId {
+        use crate::edge::{Edge, EdgeCurve};
+        use crate::vertex::Vertex;
+        use crate::wire::{OrientedEdge, Wire};
+        use remus_math::vec::Point3;
+
+        let a = topo.add_vertex(Vertex::new(Point3::new(tag, 0.0, 0.0), 1e-7));
+        let b = topo.add_vertex(Vertex::new(Point3::new(tag, 1.0, 0.0), 1e-7));
+        let e = topo.add_edge(Edge::new(a, b, EdgeCurve::Line));
+        topo.add_wire(Wire::new(vec![OrientedEdge::new(e, true)], false).unwrap())
+    }
+
+    #[test]
+    fn face_signatures_separate_planes_by_their_surface_parameters() {
+        use crate::face::{Face, FaceSurface};
+        use remus_math::vec::Vec3;
+
+        let mut topo = Topology::new();
+        let w0 = stub_wire(&mut topo, 0.0);
+        let w1 = stub_wire(&mut topo, 10.0);
+        // Same normal, same adjacency (one wire, one edge use): only the
+        // plane offset tells the two faces apart.
+        let near = topo.add_face(Face::new(
+            w0,
+            Vec::new(),
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+        let far = topo.add_face(Face::new(
+            w1,
+            Vec::new(),
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 5.0,
+            },
+        ));
+        assert_ne!(near, far);
+
+        let signature = EntitySignature::capture_face(&topo, near, QUANTUM).unwrap();
+        let r = resolve(&topo, &PersistentRef::signature(signature));
+        assert_eq!(
+            r,
+            Resolution::Bound {
+                entity: EntityKey::face(near.index()),
+                provenance: Provenance::Inferred
+            },
+            "surface parameters must discriminate, {r:?}"
+        );
+    }
+
+    #[test]
+    fn cylinder_signatures_are_stable_across_axis_reparameterization() {
+        use crate::face::{Face, FaceSurface};
+        use remus_math::surfaces::CylindricalSurface;
+        use remus_math::vec::{Point3, Vec3};
+
+        let axis = Vec3::new(1.0, 2.0, 2.0);
+        let mut topo = Topology::new();
+        let w0 = stub_wire(&mut topo, 0.0);
+        let w1 = stub_wire(&mut topo, 10.0);
+        // One and the same infinite cylinder, described from two origins
+        // three units apart along its own axis.
+        let at_origin = topo.add_face(Face::new(
+            w0,
+            Vec::new(),
+            FaceSurface::Cylinder(
+                CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), axis, 1.0).unwrap(),
+            ),
+        ));
+        let shifted = topo.add_face(Face::new(
+            w1,
+            Vec::new(),
+            FaceSurface::Cylinder(
+                CylindricalSurface::new(Point3::new(1.0, 2.0, 2.0), axis, 1.0).unwrap(),
+            ),
+        ));
+
+        let signature = EntitySignature::capture_face(&topo, at_origin, QUANTUM).unwrap();
+        let r = resolve(&topo, &PersistentRef::signature(signature));
+        let Resolution::Ambiguous { candidates, .. } = &r else {
+            panic!("both parameterizations must sign identically: {r:?}");
+        };
+        assert_eq!(
+            candidates,
+            &vec![
+                EntityKey::face(at_origin.index()),
+                EntityKey::face(shifted.index())
+            ]
+        );
+    }
+
+    #[test]
+    fn edge_signatures_separate_circles_sharing_their_endpoints() {
+        use crate::edge::{Edge, EdgeCurve};
+        use crate::vertex::Vertex;
+        use remus_math::curves::Circle3D;
+        use remus_math::vec::{Point3, Vec3};
+
+        let mut topo = Topology::new();
+        let a = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
+        let b = topo.add_vertex(Vertex::new(Point3::new(0.0, 1.0, 0.0), 1e-7));
+        let circle = |radius: f64| {
+            EdgeCurve::Circle(
+                Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), radius)
+                    .unwrap(),
+            )
+        };
+        // Same endpoints, same adjacency, same curve type: only the
+        // circle's own parameters separate them.
+        let unit = topo.add_edge(Edge::new(a, b, circle(1.0)));
+        let wide = topo.add_edge(Edge::new(a, b, circle(2.0)));
+        assert_ne!(unit, wide);
+
+        let signature = EntitySignature::capture_edge(&topo, unit, QUANTUM).unwrap();
+        let r = resolve(&topo, &PersistentRef::signature(signature));
+        assert_eq!(
+            r,
+            Resolution::Bound {
+                entity: EntityKey::edge(unit.index()),
+                provenance: Provenance::Inferred
+            },
+            "curve parameters must discriminate, {r:?}"
+        );
+    }
+
+    #[test]
+    fn edge_signatures_require_both_endpoints_to_match() {
+        use crate::edge::{Edge, EdgeCurve};
+        use crate::vertex::Vertex;
+        use remus_math::vec::Point3;
+
+        let mut topo = Topology::new();
+        let shared = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
+        let b = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
+        let c = topo.add_vertex(Vertex::new(Point3::new(0.0, 1.0, 0.0), 1e-7));
+        // Two line edges out of one vertex: identical but for the far end.
+        let to_b = topo.add_edge(Edge::new(shared, b, EdgeCurve::Line));
+        let to_c = topo.add_edge(Edge::new(shared, c, EdgeCurve::Line));
+
+        for edge in [to_b, to_c] {
+            let signature = EntitySignature::capture_edge(&topo, edge, QUANTUM).unwrap();
+            let r = resolve(&topo, &PersistentRef::signature(signature));
+            assert_eq!(
+                r,
+                Resolution::Bound {
+                    entity: EntityKey::edge(edge.index()),
+                    provenance: Provenance::Inferred
+                },
+                "a shared start alone must not match, {r:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn vertex_signatures_separate_coincident_vertices_by_incident_edge_uses() {
+        use crate::edge::{Edge, EdgeCurve};
+        use crate::vertex::Vertex;
+        use remus_math::vec::Point3;
+
+        let origin = Point3::new(0.0, 0.0, 0.0);
+        let far = |i: f64| Point3::new(10.0 * (i + 1.0), 0.0, 0.0);
+
+        // Counted from the start side: one vertex starts one edge, its
+        // coincident twin starts two.
+        let mut topo = Topology::new();
+        let once = topo.add_vertex(Vertex::new(origin, 1e-7));
+        let twice = topo.add_vertex(Vertex::new(origin, 1e-7));
+        for (from, i) in [(once, 0.0), (twice, 1.0), (twice, 2.0)] {
+            let other = topo.add_vertex(Vertex::new(far(i), 1e-7));
+            topo.add_edge(Edge::new(from, other, EdgeCurve::Line));
+        }
+        let signature = EntitySignature::capture_vertex(&topo, once, QUANTUM).unwrap();
+        let r = resolve(&topo, &PersistentRef::signature(signature));
+        assert_eq!(
+            r,
+            Resolution::Bound {
+                entity: EntityKey::vertex(once.index()),
+                provenance: Provenance::Inferred
+            },
+            "edge uses on the start side must be counted, {r:?}"
+        );
+
+        // And from the end side.
+        let mut topo = Topology::new();
+        let once = topo.add_vertex(Vertex::new(origin, 1e-7));
+        let twice = topo.add_vertex(Vertex::new(origin, 1e-7));
+        for (to, i) in [(once, 0.0), (twice, 1.0), (twice, 2.0)] {
+            let other = topo.add_vertex(Vertex::new(far(i), 1e-7));
+            topo.add_edge(Edge::new(other, to, EdgeCurve::Line));
+        }
+        let signature = EntitySignature::capture_vertex(&topo, once, QUANTUM).unwrap();
+        let r = resolve(&topo, &PersistentRef::signature(signature));
+        assert_eq!(
+            r,
+            Resolution::Bound {
+                entity: EntityKey::vertex(once.index()),
+                provenance: Provenance::Inferred
+            },
+            "edge uses on the end side must be counted, {r:?}"
+        );
+    }
+
+    #[test]
+    fn edge_signatures_separate_twin_edges_by_face_uses() {
+        use crate::edge::{Edge, EdgeCurve};
+        use crate::face::{Face, FaceSurface};
+        use crate::vertex::Vertex;
+        use crate::wire::{OrientedEdge, Wire};
+        use remus_math::vec::{Point3, Vec3};
+
+        let mut topo = Topology::new();
+        let a = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
+        let b = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
+        // Two indistinguishable line edges; only one bounds a face.
+        let bounding = topo.add_edge(Edge::new(a, b, EdgeCurve::Line));
+        let free = topo.add_edge(Edge::new(a, b, EdgeCurve::Line));
+        let wire =
+            topo.add_wire(Wire::new(vec![OrientedEdge::new(bounding, true)], false).unwrap());
+        topo.add_face(Face::new(
+            wire,
+            Vec::new(),
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+        assert_ne!(bounding, free);
+
+        let signature = EntitySignature::capture_edge(&topo, bounding, QUANTUM).unwrap();
+        let r = resolve(&topo, &PersistentRef::signature(signature));
+        assert_eq!(
+            r,
+            Resolution::Bound {
+                entity: EntityKey::edge(bounding.index()),
+                provenance: Provenance::Inferred
+            },
+            "face uses must be counted and must discriminate, {r:?}"
+        );
+    }
+
+    #[test]
+    fn signatures_never_match_across_curve_types() {
+        use crate::edge::{Edge, EdgeCurve};
+        use crate::vertex::Vertex;
+        use remus_math::curves::Hyperbola3D;
+        use remus_math::vec::{Point3, Vec3};
+
+        let mut topo = Topology::new();
+        let a = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
+        let b = topo.add_vertex(Vertex::new(Point3::new(2.0, 1.0, 0.0), 1e-7));
+        // Two curve types that carry no analytic parameters at all, on the
+        // same endpoints with the same adjacency: the type tag is the only
+        // thing left to tell them apart, and it must.
+        let line = topo.add_edge(Edge::new(a, b, EdgeCurve::Line));
+        let hyperbola = topo.add_edge(Edge::new(
+            a,
+            b,
+            EdgeCurve::Hyperbola(
+                Hyperbola3D::new(
+                    Point3::new(0.0, 0.0, 0.0),
+                    Vec3::new(0.0, 0.0, 1.0),
+                    1.0,
+                    1.0,
+                )
+                .unwrap(),
+            ),
+        ));
+        assert_ne!(line, hyperbola);
+
+        for edge in [line, hyperbola] {
+            let signature = EntitySignature::capture_edge(&topo, edge, QUANTUM).unwrap();
+            let r = resolve(&topo, &PersistentRef::signature(signature));
+            assert_eq!(
+                r,
+                Resolution::Bound {
+                    entity: EntityKey::edge(edge.index()),
+                    provenance: Provenance::Inferred
+                },
+                "the type tag alone must separate them, {r:?}"
+            );
+        }
+    }
 }
