@@ -119,4 +119,55 @@ mod tests {
         assert!((pairs[0].0 - 0.0).abs() < 1e-12);
         assert!((pairs[4].0 - TAU).abs() < 1e-12);
     }
+
+    #[test]
+    fn params_are_evenly_spaced_over_an_asymmetric_range() {
+        // t in [1.1, 4.7] with n = 7: step = 3.6 / 6 = 0.6, so the documented
+        // evenly-spaced parameters are 1.1, 1.7, 2.3, 2.9, 3.5, 4.1, 4.7.
+        let c = unit_circle();
+        let expected = [1.1, 1.7, 2.3, 2.9, 3.5, 4.1, 4.7];
+        let pairs = sample_uniform_with_params(&c, 1.1, 4.7, 7);
+        assert_eq!(pairs.len(), expected.len());
+        for (i, (t, p)) in pairs.iter().enumerate() {
+            assert!(
+                (t - expected[i]).abs() < 1e-12,
+                "parameter {i} is {t}, expected {}",
+                expected[i]
+            );
+            // The point must be the curve evaluated at that same parameter.
+            let q = c.evaluate(expected[i]);
+            let d = ((p.x() - q.x()).powi(2) + (p.y() - q.y()).powi(2) + (p.z() - q.z()).powi(2))
+                .sqrt();
+            assert!(
+                d < 1e-12,
+                "point {i} is not curve({}): dist={d}",
+                expected[i]
+            );
+        }
+    }
+
+    #[test]
+    fn last_param_is_snapped_exactly_to_t_end() {
+        // The doc comment promises the final parameter is t_end itself, not the
+        // accumulated t_start + (n-1)*step. For this range the two differ:
+        // 1.1 + 6*((4.7 - 1.1)/6) is one ulp below 4.7.
+        let t_start = 1.1_f64;
+        let t_end = 4.7_f64;
+        let n = 7;
+        let step = (t_end - t_start) / 6.0;
+        assert_ne!(
+            (t_start + 6.0 * step).to_bits(),
+            t_end.to_bits(),
+            "fixture is degenerate: the unsnapped value already equals t_end"
+        );
+
+        let c = unit_circle();
+        let pairs = sample_uniform_with_params(&c, t_start, t_end, n);
+        assert_eq!(
+            pairs.last().unwrap().0.to_bits(),
+            t_end.to_bits(),
+            "final parameter must be snapped to t_end, got {}",
+            pairs.last().unwrap().0
+        );
+    }
 }

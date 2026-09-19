@@ -488,4 +488,225 @@ mod tests {
         let ellipse = Ellipse3D::new(origin(), z_axis(), 2.0, 1.0).unwrap();
         assert!(ellipse_to_nurbs(&ellipse, 1.0, 1.0).is_err());
     }
+
+    // ── circle_to_nurbs: segment-count contract ──────────────────────────────
+
+    /// The doc contract says the arc is split into quadratic Bezier segments
+    /// "each covering at most π/2 of arc angle", so the segment count is
+    /// `ceil(|span| / (π/2))` and the control-point count is `2 * n + 1`.
+    fn arc_count_from_control_points(nurbs: &NurbsCurve) -> usize {
+        assert_eq!(nurbs.degree(), 2, "arc construction must be degree 2");
+        let n_cps = nurbs.control_points().len();
+        assert!(
+            n_cps >= 3 && n_cps % 2 == 1,
+            "expected 2*n+1 control points"
+        );
+        (n_cps - 1) / 2
+    }
+
+    /// The span is `t_end - t_start`, so an arc that does not start at zero
+    /// must still cover exactly its own angular range.
+    #[test]
+    fn circle_arc_with_offset_start_uses_span_not_sum() {
+        let circle = Circle3D::new(origin(), z_axis(), 3.0).unwrap();
+        let t_start = 0.4;
+        let t_end = 1.5; // span 1.1 rad < π/2 → exactly one Bezier arc
+        let nurbs = circle_to_nurbs(&circle, t_start, t_end).unwrap();
+
+        assert_eq!(arc_count_from_control_points(&nurbs), 1);
+
+        let (u_min, u_max) = nurbs.domain();
+        assert!((nurbs.evaluate(u_min) - circle.evaluate(t_start)).length() < 1e-12);
+        assert!((nurbs.evaluate(u_max) - circle.evaluate(t_end)).length() < 1e-12);
+    }
+
+    /// A span that is an exact multiple of π/2 up to float jitter must snap to
+    /// that multiple rather than straddling the `ceil` boundary (documented on
+    /// `circle_to_nurbs`): a half circle is two arcs, not three.
+    #[test]
+    fn circle_segment_count_snaps_span_near_multiple_of_half_pi() {
+        let circle = Circle3D::new(origin(), z_axis(), 3.0).unwrap();
+
+        // Exactly π: two arcs of π/2.
+        let exact = circle_to_nurbs(&circle, 0.0, PI).unwrap();
+        assert_eq!(arc_count_from_control_points(&exact), 2);
+
+        // π plus float jitter: must still be two arcs.
+        let jittered = circle_to_nurbs(&circle, 0.0, PI + 1e-13).unwrap();
+        assert_eq!(
+            arc_count_from_control_points(&jittered),
+            2,
+            "a span within float jitter of π must not round up to three arcs"
+        );
+    }
+
+    /// A span genuinely above a multiple of π/2 still rounds up, preserving the
+    /// documented "at most π/2 per segment" invariant.
+    #[test]
+    fn circle_segment_count_rounds_up_for_non_multiple_span() {
+        let circle = Circle3D::new(origin(), z_axis(), 3.0).unwrap();
+        let span = 2.2 * FRAC_PI_2;
+        let nurbs = circle_to_nurbs(&circle, 0.0, span).unwrap();
+        let n_arcs = arc_count_from_control_points(&nurbs);
+        assert_eq!(n_arcs, 3, "ceil(2.2) segments");
+        #[allow(clippy::cast_precision_loss)]
+        let per_segment = span / n_arcs as f64;
+        assert!(
+            per_segment <= FRAC_PI_2 + 1e-9,
+            "segment span {per_segment}"
+        );
+    }
+
+    /// Rational quadratic arc construction: the interior control point of each
+    /// Bezier arc carries weight `cos(delta/2)`, the endpoints weight 1.
+    #[test]
+    fn circle_arc_weights_follow_cos_half_angle() {
+        let circle = Circle3D::new(origin(), z_axis(), 3.0).unwrap();
+        // Span 1.1 rad → one arc, half-angle 0.55.
+        let nurbs = circle_to_nurbs(&circle, 0.0, 1.1).unwrap();
+        let weights = nurbs.weights();
+        assert_eq!(weights.len(), 3);
+        assert!((weights[0] - 1.0).abs() < 1e-15);
+        assert!((weights[2] - 1.0).abs() < 1e-15);
+        assert!(
+            (weights[1] - (1.1_f64 * 0.5).cos()).abs() < 1e-12,
+            "interior weight {} != cos(delta/2)",
+            weights[1]
+        );
+    }
+
+    // ── circle_to_nurbs_with_segments ────────────────────────────────────────
+
+    #[test]
+    fn circle_with_segments_rejects_zero_span() {
+        let circle = Circle3D::new(origin(), z_axis(), 3.0).unwrap();
+        assert!(circle_to_nurbs_with_segments(&circle, 1.0, 1.0, 3).is_err());
+    }
+
+    #[test]
+    fn circle_with_segments_rejects_zero_segments() {
+        let circle = Circle3D::new(origin(), z_axis(), 3.0).unwrap();
+        assert!(circle_to_nurbs_with_segments(&circle, 0.0, FRAC_PI_2, 0).is_err());
+    }
+
+    /// Each segment must span at most π/2, so one segment cannot carry a half
+    /// circle.
+    #[test]
+    fn circle_with_segments_rejects_segment_span_over_half_pi() {
+        let circle = Circle3D::new(origin(), z_axis(), 3.0).unwrap();
+        assert!(circle_to_nurbs_with_segments(&circle, 0.0, PI, 1).is_err());
+    }
+
+    /// ...but exactly π/2 in one segment is inside the documented limit.
+    #[test]
+    fn circle_with_segments_accepts_exactly_half_pi_per_segment() {
+        let circle = Circle3D::new(origin(), z_axis(), 3.0).unwrap();
+        let nurbs = circle_to_nurbs_with_segments(&circle, 0.0, FRAC_PI_2, 1).unwrap();
+        assert_eq!(arc_count_from_control_points(&nurbs), 1);
+    }
+
+    /// A caller-chosen segment count subdivides the span uniformly: `n`
+    /// segments, `2n + 1` control points, and both endpoints exact.
+    #[test]
+    fn circle_with_segments_honours_count_and_offset_span() {
+        let circle = Circle3D::new(Point3::new(1.0, 2.0, 3.0), z_axis(), 5.0).unwrap();
+        let t_start = 0.4;
+        let t_end = t_start + FRAC_PI_2;
+        let nurbs = circle_to_nurbs_with_segments(&circle, t_start, t_end, 3).unwrap();
+
+        assert_eq!(arc_count_from_control_points(&nurbs), 3);
+
+        let (u_min, u_max) = nurbs.domain();
+        assert!((nurbs.evaluate(u_min) - circle.evaluate(t_start)).length() < 1e-12);
+        assert!((nurbs.evaluate(u_max) - circle.evaluate(t_end)).length() < 1e-12);
+
+        // Every sample must lie on the circle (radius and plane).
+        let r = circle.radius();
+        for i in 0..=32 {
+            #[allow(clippy::cast_precision_loss)]
+            let param = u_min + (u_max - u_min) * i as f64 / 32.0;
+            let v = nurbs.evaluate(param) - circle.center();
+            assert!((v.length() - r).abs() < 1e-10, "sample {i} radial error");
+            assert!(
+                circle.normal().dot(v).abs() < 1e-10,
+                "sample {i} out of plane"
+            );
+        }
+    }
+
+    // ── ellipse_to_nurbs: segment-count contract ─────────────────────────────
+
+    /// A full turn is `ceil(2π / (π/2)) = 4` quadratic arcs → 9 control points.
+    #[test]
+    fn ellipse_full_turn_uses_four_quadratic_arcs() {
+        let ellipse = Ellipse3D::new(origin(), z_axis(), 4.0, 2.0).unwrap();
+        let nurbs = ellipse_to_nurbs(&ellipse, 0.0, TAU).unwrap();
+        assert_eq!(nurbs.degree(), 2);
+        assert_eq!(nurbs.control_points().len(), 9);
+    }
+
+    // ── tangent_intersection ─────────────────────────────────────────────────
+
+    /// Cross product dominated by its y component → the solver uses the x and z
+    /// rows. The two rays below provably meet at (1, 5, 0).
+    #[test]
+    fn tangent_intersection_xz_rows_hits_known_point() {
+        let p0 = Point3::new(0.0, 5.0, 0.0);
+        let d0 = Vec3::new(1.0, 0.0, 0.0);
+        let p1 = Point3::new(3.0, 5.0, 4.0);
+        let d1 = Vec3::new(1.0, 0.0, 2.0);
+
+        let hit = tangent_intersection(p0, d0, p1, d1).expect("rays are not parallel");
+        assert!(
+            (hit - Point3::new(1.0, 5.0, 0.0)).length() < 1e-12,
+            "got {hit:?}"
+        );
+    }
+
+    /// Cross product dominated by its x component → the solver uses the y and z
+    /// rows. The two rays below provably meet at (5, 1, 0).
+    #[test]
+    fn tangent_intersection_yz_rows_hits_known_point() {
+        let p0 = Point3::new(5.0, 0.0, 0.0);
+        let d0 = Vec3::new(0.0, 1.0, 0.0);
+        let p1 = Point3::new(5.0, 3.0, 4.0);
+        let d1 = Vec3::new(0.0, 1.0, 2.0);
+
+        let hit = tangent_intersection(p0, d0, p1, d1).expect("rays are not parallel");
+        assert!(
+            (hit - Point3::new(5.0, 1.0, 0.0)).length() < 1e-12,
+            "got {hit:?}"
+        );
+    }
+
+    /// Parallel rays have no intersection: the contract says `None`.
+    #[test]
+    fn tangent_intersection_parallel_rays_return_none() {
+        let p0 = Point3::new(0.0, 0.0, 0.0);
+        let d0 = Vec3::new(1.0, 0.0, 0.0);
+        let p1 = Point3::new(0.0, 1.0, 0.0);
+        let d1 = Vec3::new(2.0, 0.0, 0.0);
+
+        assert!(tangent_intersection(p0, d0, p1, d1).is_none());
+    }
+
+    // ── midpoint ─────────────────────────────────────────────────────────────
+
+    /// The midpoint is the component-wise arithmetic mean. The fixture avoids
+    /// coordinates where sum, difference, product and quotient coincide.
+    #[test]
+    fn midpoint_is_componentwise_average() {
+        let a = Point3::new(3.0, -5.0, 7.0);
+        let b = Point3::new(11.0, 2.0, -1.0);
+        let m = midpoint(a, b);
+
+        assert!((m.x() - 7.0).abs() < 1e-15, "x = {}", m.x());
+        assert!((m.y() - (-1.5)).abs() < 1e-15, "y = {}", m.y());
+        assert!((m.z() - 3.0).abs() < 1e-15, "z = {}", m.z());
+
+        // Symmetry and the defining property: equidistant from both inputs.
+        let m2 = midpoint(b, a);
+        assert!((m - m2).length() < 1e-15);
+        assert!(((m - a).length() - (m - b).length()).abs() < 1e-15);
+    }
 }

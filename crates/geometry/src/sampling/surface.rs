@@ -169,4 +169,77 @@ mod tests {
             assert!(d < 1e-12, "v endpoint mismatch at row {i}: dist={d}");
         }
     }
+
+    fn point_distance(a: Point3, b: Point3) -> f64 {
+        ((a.x() - b.x()).powi(2) + (a.y() - b.y()).powi(2) + (a.z() - b.z()).powi(2)).sqrt()
+    }
+
+    fn same_point_bitwise(a: Point3, b: Point3) -> bool {
+        a.x().to_bits() == b.x().to_bits()
+            && a.y().to_bits() == b.y().to_bits()
+            && a.z().to_bits() == b.z().to_bits()
+    }
+
+    #[test]
+    fn interior_grid_parameters_follow_the_documented_formula() {
+        // u in [0.5, 2.9] with nu = 4: 0.5, 1.3, 2.1, 2.9.
+        // v in [0.4, 3.1] with nv = 4: 0.4, 1.3, 2.2, 3.1.
+        // Neither range is [0, 1] nor symmetric, and the two step sizes differ
+        // (0.8 vs 0.9), so every mutated form of the index arithmetic lands on a
+        // different (u, v).
+        let s = unit_cylinder();
+        let us = [0.5, 1.3, 2.1, 2.9];
+        let vs = [0.4, 1.3, 2.2, 3.1];
+        let grid = surface_grid(&s, (0.5, 2.9), (0.4, 3.1), 4, 4);
+        assert_eq!(grid.len(), 4, "expected 4 rows");
+        for (i, row) in grid.iter().enumerate() {
+            assert_eq!(row.len(), 4, "row {i} should have 4 columns");
+            for (j, p) in row.iter().enumerate() {
+                let expected = s.evaluate(us[i], vs[j]);
+                let d = point_distance(*p, expected);
+                assert!(
+                    d < 1e-9,
+                    "grid[{i}][{j}] is not the surface at (u={}, v={}): dist={d}",
+                    us[i],
+                    vs[j]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn last_row_and_column_sit_exactly_on_the_range_ends() {
+        // The grid must span the full uv domain: the last row is u_range.1 and
+        // the last column is v_range.1 exactly, not the accumulated closed form.
+        // These ranges make the difference observable -- with the code's
+        // evaluation order, 0.1 + (3*(2.9 - 0.1))/3 is one ulp below 2.9 and
+        // 0.1 + (3*(3.4 - 0.1))/3 one ulp below 3.4.
+        let (u0, u1, nu) = (0.1_f64, 2.9_f64, 4_usize);
+        let (v0, v1, nv) = (0.1_f64, 3.4_f64, 4_usize);
+        assert_ne!(
+            (u0 + (3.0 * (u1 - u0)) / 3.0).to_bits(),
+            u1.to_bits(),
+            "fixture is degenerate: the unsnapped u already equals u_range.1"
+        );
+        assert_ne!(
+            (v0 + (3.0 * (v1 - v0)) / 3.0).to_bits(),
+            v1.to_bits(),
+            "fixture is degenerate: the unsnapped v already equals v_range.1"
+        );
+
+        let s = unit_cylinder();
+        let grid = surface_grid(&s, (u0, u1), (v0, v1), nu, nv);
+        assert_eq!(grid.len(), nu);
+
+        // Column 0 is v_range.0 exactly, so the last row pins u_range.1.
+        assert!(
+            same_point_bitwise(grid[nu - 1][0], s.evaluate(u1, v0)),
+            "last row is not evaluated at u_range.1"
+        );
+        // Row 0 is u_range.0 exactly, so the last column pins v_range.1.
+        assert!(
+            same_point_bitwise(grid[0][nv - 1], s.evaluate(u0, v1)),
+            "last column is not evaluated at v_range.1"
+        );
+    }
 }
