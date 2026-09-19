@@ -3351,12 +3351,20 @@ fn b26_finding13_spheretorus_unit_invalid() {
 /// translation. Same class as finding 8 (valid B-Rep, open mesh) but the
 /// apex-degenerate carrier is a different tessellation path with an unknown
 /// root, so it gets its own row. The intersect leg of the same pair is
-/// fully clean (valid + watertight). Committed as `#[ignore]` per the
-/// testing skill: it fails until the owning row fixes the kernel. Do NOT
-/// fix in the B26 proptest PR — filed as a new §B row.
+/// fully clean (valid + watertight). Filed as §B row B37.
+/// Closed (fuse leg) with B37: two roots — the pointed cone carrying the
+/// cylinder footprint as an inner wire meshed to NOTHING (its single-rim
+/// chart bounds nothing; the apex boundary is now synthesized), and the
+/// exact per-face integrator dropped the cone tip below the hole
+/// (translation variance). A third defect on the same body — the wall's
+/// one-interior-row CDT bridging its dense notch rim with chords through
+/// the solid (2 % mesh volume deficit, every edge twinned) — is measured
+/// but NOT fixed; it is roadmap row B49. This test's oracles do not see it
+/// — the mesh is watertight and the EXACT volume is right; it is the
+/// signed MESH volume that flat-lines 2 % low (7.1416 against 7.2866) at
+/// every deflection.
 /// Minimized from `prop_random_curved_pair_identities` seed `c2269b3b`.
 #[test]
-#[ignore = "open: pointed-cone fuse mesh open on valid B-Rep (B26 finding 12)"]
 fn b26_finding12_cone_fuse_mesh_open() {
     use remus_operations::primitives::{make_cone, make_cylinder};
     let m = Mat4::translation(0.0, 1.5, 0.5);
@@ -3383,10 +3391,13 @@ fn b26_finding12_cone_fuse_mesh_open() {
 /// broken at the boolean level, not just the measurement). Committed as
 /// `#[ignore]` per the testing skill: it fails until the owning row fixes
 /// the kernel. Do NOT fix in the B26 proptest PR — filed as a new §B row
-/// alongside the fuse leg.
+/// alongside the fuse leg. The B37 fuse-leg fix (2026-09-18) also makes this
+/// cut's mesh watertight and its volume exact and translation-invariant
+/// (4.14498 vs closed form 4.14498); the remaining failure is the
+/// check-crate orientation issue, a boolean defect that stays open.
 /// Minimized from `prop_random_curved_pair_identities` seed `c2269b3b`.
 #[test]
-#[ignore = "open: pointed-cone cut ops-invalid orientation (B26 finding 12)"]
+#[ignore = "open: pointed-cone cut ops-invalid orientation (B26 finding 12; mesh/volume halves fixed with B37)"]
 fn b26_finding12_cone_cut_broken() {
     use remus_operations::primitives::{make_cone, make_cylinder};
     let m = Mat4::translation(0.0, 1.5, 0.5);

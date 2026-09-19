@@ -5143,6 +5143,12 @@ pub(super) fn point_in_polygon_2d(polygon: &[(f64, f64)], pt: remus_math::vec::P
     winding != 0
 }
 
+/// The `shared_revolved` guard admits only cylinders and cones; any other
+/// surface reaching that match yields an empty face mesh (never a panic).
+fn unreachable_default_mesh() -> TriangleMesh {
+    TriangleMesh::default()
+}
+
 /// Snap-based fallback tessellation for non-planar faces.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn tessellate_nonplanar_snap(
@@ -5156,39 +5162,68 @@ pub(super) fn tessellate_nonplanar_snap(
     merged: &mut TriangleMesh,
     point_to_global: &mut DetHashMap<(i64, i64, i64), u32>,
 ) -> Result<(), crate::OperationsError> {
-    let shared_cylinder = matches!(face_data.surface(), FaceSurface::Cylinder(_))
-        && !face_data.inner_wires().is_empty();
-    let mut face_mesh = if let FaceSurface::Cylinder(cylinder) = face_data.surface()
-        && shared_cylinder
-    {
+    let shared_revolved = matches!(
+        face_data.surface(),
+        FaceSurface::Cylinder(_) | FaceSurface::Cone(_)
+    ) && !face_data.inner_wires().is_empty();
+    let mut face_mesh = if shared_revolved {
         // Preserve seam splits from the shared pool instead of independently
-        // interpolating an off-curve crossing in the cylinder's UV chart.
-        let points = remus_topology::explorer::face_edges(topo, face_id)?
-            .into_iter()
-            .filter_map(|edge| {
-                edge_global_indices
-                    .get(&edge.index())
-                    .map(|ids| (edge.index(), ids))
-            })
-            .map(|(edge, ids)| {
-                (
-                    edge,
-                    ids.iter()
-                        .map(|&id| merged.positions[id as usize])
-                        .collect(),
-                )
-            })
-            .collect();
-        super::planar::tessellate_revolved_with_holes(
-            topo,
-            face_data,
-            cylinder,
-            cylinder.radius(),
-            deflection,
-            angular_tol,
-            Some(&points),
-        )?
-        .mesh
+        // interpolating an off-curve crossing in the wall's UV chart, and
+        // keep every rim sample identical to the pool so the neighbouring
+        // faces close against this wall by construction.
+        let points: DetHashMap<usize, Vec<Point3>> =
+            remus_topology::explorer::face_edges(topo, face_id)?
+                .into_iter()
+                .filter_map(|edge| {
+                    edge_global_indices
+                        .get(&edge.index())
+                        .map(|ids| (edge.index(), ids))
+                })
+                .map(|(edge, ids)| {
+                    (
+                        edge,
+                        ids.iter()
+                            .map(|&id| merged.positions[id as usize])
+                            .collect(),
+                    )
+                })
+                .collect();
+        match face_data.surface() {
+            FaceSurface::Cylinder(cylinder) => {
+                super::planar::tessellate_revolved_with_holes(
+                    topo,
+                    face_data,
+                    cylinder,
+                    cylinder.radius(),
+                    deflection,
+                    angular_tol,
+                    Some(&points),
+                    None,
+                )?
+                .mesh
+            }
+            FaceSurface::Cone(cone) => {
+                let range = super::nurbs::compute_v_param_range(topo, face_data, |p| {
+                    cone.project_point(p).1
+                });
+                let radius = cone.radius_at(range.0.abs().max(range.1.abs()));
+                super::planar::tessellate_revolved_with_holes(
+                    topo,
+                    face_data,
+                    cone,
+                    radius,
+                    deflection,
+                    angular_tol,
+                    Some(&points),
+                    Some((0.0, cone.apex())),
+                )?
+                .mesh
+            }
+            FaceSurface::Plane { .. }
+            | FaceSurface::Nurbs(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_) => unreachable_default_mesh(),
+        }
     } else {
         super::face::tessellate_with_uvs_floor(
             topo,
@@ -5200,9 +5235,9 @@ pub(super) fn tessellate_nonplanar_snap(
         .mesh
     };
 
-    // The standalone face path applies reversal; the shared cylinder path
+    // The standalone face path applies reversal; the shared revolved path
     // and our caller leave that flip to tessellate_face_with_shared_edges.
-    if face_data.is_reversed() && !shared_cylinder {
+    if face_data.is_reversed() && !shared_revolved {
         for triangle in face_mesh.indices.chunks_exact_mut(3) {
             triangle.swap(1, 2);
         }
