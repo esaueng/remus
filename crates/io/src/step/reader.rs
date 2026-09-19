@@ -5691,11 +5691,10 @@ impl<'a> StepBuilder<'a> {
     /// [`StepBuilder::import_edge_with_authority`] validates the topological
     /// endpoints and stores their exact carrier interval on the edge.
     ///
-    /// A B-spline is different: its parameterization is the knot vector, and
-    /// recovering the span means projecting the endpoints, which is
-    /// ambiguous on a closed or self-approaching curve. When the file states
-    /// the span as parameters, the curve is therefore split down to exactly
-    /// that span, so the resulting domain is the file's, not a projection's.
+    /// A B-spline's parameterization is its knot vector. The complete basis
+    /// carrier is retained while the declared span is stored as the edge's
+    /// exact parameter authority; physically splitting the carrier would
+    /// mutate its control polygon during an otherwise unchanged round trip.
     ///
     /// Trim parameters on a B-spline are knot-space values and carry no
     /// unit, so no unit scaling applies here.
@@ -5740,8 +5739,11 @@ impl<'a> StepBuilder<'a> {
             }));
         };
 
-        // Split on ascending knot values, then orient the resulting carrier
-        // from trim_1 toward trim_2 according to sense_agreement.
+        // The edge stores the declared interval as parameter authority. Keep
+        // the complete NURBS carrier here: splitting it would apply the trim
+        // twice (once to the geometry and once to the edge), replace the
+        // carrier's exact control polygon, and make a write/read cycle mutate
+        // otherwise unchanged topology.
         let (lo, hi) = if t0 <= t1 { (t0, t1) } else { (t1, t0) };
         let (d0, d1) = nurbs.domain();
         let span = d1 - d0;
@@ -5760,35 +5762,10 @@ impl<'a> StepBuilder<'a> {
                 reason: format!("TRIMMED_CURVE #{curve_ref} trims to the empty span [{lo}, {hi}]"),
             });
         }
-        if lo <= d0 + tol && hi >= d1 - tol {
-            // The trim is the whole curve.
-            return Ok(EdgeCurve::NurbsCurve(if reverse {
-                nurbs.reversed()
-            } else {
-                nurbs
-            }));
-        }
-
-        let split = |curve: &remus_math::nurbs::NurbsCurve, u: f64| {
-            remus_math::nurbs::knot_ops::curve_split(curve, u).map_err(|e| IoError::ParseError {
-                reason: format!("TRIMMED_CURVE #{curve_ref} could not be split at {u}: {e}"),
-            })
-        };
-
-        let trimmed = if lo > d0 + tol {
-            let (_, tail) = split(&nurbs, lo)?;
-            if hi < d1 - tol {
-                split(&tail, hi)?.0
-            } else {
-                tail
-            }
-        } else {
-            split(&nurbs, hi)?.0
-        };
         Ok(EdgeCurve::NurbsCurve(if reverse {
-            trimmed.reversed()
+            nurbs.reversed()
         } else {
-            trimmed
+            nurbs
         }))
     }
 
@@ -13499,7 +13476,7 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
 .UNSPECIFIED.,.F.,.F.,(4,4),(0.,4.),.UNSPECIFIED.);\n";
 
     #[test]
-    fn trimmed_bspline_is_narrowed_to_the_declared_span() {
+    fn trimmed_bspline_retains_basis_carrier_and_declared_span_authority() {
         let basis = {
             let body = TRIM_BASIS_BSPLINE.to_string();
             let EdgeCurve::NurbsCurve(n) = curve_geometry(&body, 5).unwrap() else {
@@ -13518,12 +13495,11 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
             panic!("expected a NURBS curve");
         };
 
-        let (d0, d1) = trimmed.domain();
-        assert!(
-            (d0 - 1.0).abs() < 1e-9 && (d1 - 3.0).abs() < 1e-9,
-            "trimmed domain should be [1, 3], got [{d0}, {d1}]"
-        );
-        // The trimmed curve must trace exactly the basis over that span.
+        assert_eq!(trimmed.domain(), basis.domain());
+        assert_eq!(trimmed.knots(), basis.knots());
+        assert_eq!(trimmed.control_points(), basis.control_points());
+        assert_eq!(trimmed.weights(), basis.weights());
+        // The retained carrier must trace exactly the basis over the declared span.
         for i in 0..=8 {
             let t = 1.0 + f64::from(i) * 0.25;
             let want = basis.evaluate(t);
@@ -13549,8 +13525,8 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
         assert_eq!(curve.control_points().len(), 4);
     }
 
-    /// A reversed trim states the same span; the edge's vertices, not the
-    /// curve, decide which way it is traversed.
+    /// A reversed trim retains the whole carrier but reverses its orientation;
+    /// the edge stores the declared sub-span separately.
     #[test]
     fn reversed_trim_bounds_give_the_same_span() {
         let body = format!(
@@ -13561,10 +13537,10 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
         let EdgeCurve::NurbsCurve(curve) = curve_geometry(&body, 6).unwrap() else {
             panic!("expected a NURBS curve");
         };
-        let (d0, d1) = curve.domain();
-        assert!(
-            (d0 - 1.0).abs() < 1e-9 && (d1 - 3.0).abs() < 1e-9,
-            "[{d0},{d1}]"
+        assert_eq!(curve.domain(), (0.0, 4.0));
+        assert_eq!(
+            curve.control_points().first(),
+            Some(&Point3::new(4.0, 0.0, 0.0))
         );
     }
 
