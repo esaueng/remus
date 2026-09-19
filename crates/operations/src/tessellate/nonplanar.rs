@@ -2948,14 +2948,6 @@ pub(super) fn tessellate_nonplanar_cdt(
     if du > 1e-15 && dv > 1e-15 {
         let (n_u, n_v) =
             interior_grid_resolution(face_data.surface(), du, dv, deflection, angular_tol);
-        let n_v = interior_rows_for_boundary(
-            face_data.surface(),
-            &boundary_uv,
-            (v_min, v_max),
-            du,
-            n_u,
-            n_v,
-        );
         validate_interior_grid_size(n_u, n_v)?;
 
         let boundary_uv_ref = &boundary_uv;
@@ -3697,39 +3689,6 @@ fn estimate_surface_radius(surface: &FaceSurface) -> f64 {
     }
 }
 
-/// Rows for a cylinder or cone whose boundary has samples strictly between
-/// its rims (a notch rim, a section curve, a stepped rim).
-///
-/// With the two-row default, such a run is bridged to the single interior
-/// row by triangles that are long in `u`, and those cut chords through the
-/// solid: the B37 cone–cylinder fuse wall measured 5 % too much area and the
-/// body 2 % low in volume with every mesh edge twinned, so no watertightness
-/// oracle noticed. Size the rows isotropically against the column spacing
-/// (the NURBS arm's rule) whenever the boundary leaves the rims; a band
-/// bounded only at its rims keeps `n_v` unchanged.
-pub(super) fn interior_rows_for_boundary(
-    surface: &FaceSurface,
-    boundary_uv: &[(f64, f64)],
-    v_range: (f64, f64),
-    du: f64,
-    n_u: usize,
-    n_v: usize,
-) -> usize {
-    if !matches!(surface, FaceSurface::Cylinder(_) | FaceSurface::Cone(_)) {
-        return n_v;
-    }
-    let dv = v_range.1 - v_range.0;
-    let tol = 1e-9 * dv.abs().max(1e-12);
-    let leaves_rims = boundary_uv
-        .iter()
-        .any(|&(_, v)| v > v_range.0 + tol && v < v_range.1 - tol);
-    if !leaves_rims {
-        return n_v;
-    }
-    let r = estimate_surface_radius(surface);
-    isotropic_rows(dv, Some(n_u), r * du).max(n_v)
-}
-
 /// Compute interior grid resolution for `tessellate_nonplanar_cdt`.
 pub(super) fn interior_grid_resolution(
     surface: &FaceSurface,
@@ -3773,10 +3732,7 @@ pub(super) fn interior_grid_resolution(
             // along the straight rulings (a length, not an angle): zero chord
             // sag, so feeding it to the chord formula would treat millimeters
             // as radians and emit hundreds of interior rows on a tall wall.
-            // Two rows suffice for a band whose boundary sits on its two rims
-            // (issue #259 pins a filleted box at that density); a boundary
-            // run partway up the wall needs isotropic rows instead — see
-            // `interior_rows_for_boundary` in `tessellate_nonplanar_cdt`.
+            // Two rows suffice for CDT quality on a developable band.
             let r = estimate_surface_radius(surface);
             let n_u = segments_for_chord_deviation_a(r, du, deflection, angular_tol, true).max(2);
             (n_u, 2)

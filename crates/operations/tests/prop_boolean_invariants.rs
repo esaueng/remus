@@ -3352,13 +3352,17 @@ fn b26_finding13_spheretorus_unit_invalid() {
 /// apex-degenerate carrier is a different tessellation path with an unknown
 /// root, so it gets its own row. The intersect leg of the same pair is
 /// fully clean (valid + watertight). Filed as §B row B37.
-/// Closed (fuse leg) with B37: three roots — the pointed cone carrying the
+/// Closed (fuse leg) with B37: two roots — the pointed cone carrying the
 /// cylinder footprint as an inner wire meshed to NOTHING (its single-rim
-/// chart bounds nothing; the apex boundary is now synthesized), the exact
-/// per-face integrator dropped the cone tip below the hole (translation
-/// variance), and the wall's generic CDT had one interior row, so its dense
-/// notch rim was bridged by chords through the solid (2 % mesh volume
-/// deficit with every edge twinned). Interior rows are isotropic now.
+/// chart bounds nothing; the apex boundary is now synthesized), and the
+/// exact per-face integrator dropped the cone tip below the hole
+/// (translation variance). A third defect on the same body — the wall's
+/// one-interior-row CDT bridging its dense notch rim with chords through
+/// the solid (2 % mesh volume deficit, every edge twinned) — is measured
+/// but NOT fixed; it is roadmap row B49. This test's oracles do not see it
+/// — the mesh is watertight and the EXACT volume is right; it is the
+/// signed MESH volume that flat-lines 2 % low (7.1416 against 7.2866) at
+/// every deflection.
 /// Minimized from `prop_random_curved_pair_identities` seed `c2269b3b`.
 #[test]
 fn b26_finding12_cone_fuse_mesh_open() {
