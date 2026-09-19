@@ -3035,13 +3035,23 @@ pub(super) fn tessellate_nonplanar_cdt(
             }
         }
 
-        let has_nurbs_revolved_wire = matches!(
-            face_data.surface(),
-            FaceSurface::Cylinder(_) | FaceSurface::Cone(_)
-        ) && wire.edges().iter().any(|oriented| {
-            topo.edge(oriented.edge())
-                .is_ok_and(|edge| matches!(edge.curve(), EdgeCurve::NurbsCurve(_)))
-        });
+        let v_extrema_tol = 1e-9 * dv.abs().max(1e-12);
+        let rim_sample_count = boundary_uv
+            .iter()
+            .filter(|&&(_, v)| v <= v_min + v_extrema_tol || v >= v_max - v_extrema_tol)
+            .count();
+        // Require sampled rails on the v extrema. Sparse contact loops (such
+        // as a four-point cross-drilled bore graze) are not trim bands, and
+        // densifying them can change the mesh oracle's material side.
+        let has_nurbs_revolved_wire = rim_sample_count >= 8
+            && matches!(
+                face_data.surface(),
+                FaceSurface::Cylinder(_) | FaceSurface::Cone(_)
+            )
+            && wire.edges().iter().any(|oriented| {
+                topo.edge(oriented.edge())
+                    .is_ok_and(|edge| matches!(edge.curve(), EdgeCurve::NurbsCurve(_)))
+            });
         if has_ellipse_wire || has_nurbs_revolved_wire {
             // A curved trim can bend through both parameter directions even on
             // a cylinder/cone with straight rulings. Two axial grid rows leave
