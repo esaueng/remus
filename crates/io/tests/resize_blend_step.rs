@@ -26,11 +26,15 @@ use remus_topology::solid::SolidId;
 const DEFLECTION: f64 = 0.01;
 /// The fixture's tessellated volume at [`DEFLECTION`]. The freeform faces
 /// mesh through the non-planar CDT, whose interior grid now keeps straight
-/// directions isotropic with the curved ones; the mesh volume converges
-/// upward towards the exact integrator's 50 245.4 as the deflection shrinks
-/// (50 242.96 at 0.002), and this value sits 0.16 closer to it than the
-/// previous grid's 50 240.48.
-const HAMMER_HOLDER_VOLUME: f64 = 50_240.643_126_845_04;
+/// directions isotropic with the curved ones on cylinder walls whose boundary
+/// leaves railed rims (B37/B49); the mesh volume converges upward towards the
+/// exact integrator's 50 245.39 (`mass_properties`) as the deflection shrinks
+/// (50 241.77 at 0.005, 50 243.83 at 0.002, 50 244.53 at 0.001), and this
+/// value sits 1.08 closer to it than the pre-B37 grid's 50 240.64. Walls
+/// whose boundary merely grazes its `v` extremes keep two rows, which is what
+/// preserves the blend refusal's volume oracle on bore walls (a 4-graze wall
+/// lost 0.6 of volume under 216 uniform rows, enough to blind it).
+const HAMMER_HOLDER_VOLUME: f64 = 50_241.718_498_692_12;
 
 fn assert_valid(topo: &Topology, solid: SolidId) {
     let report = validate_solid(topo, solid, &ValidateOptions::default()).expect("validate solid");
