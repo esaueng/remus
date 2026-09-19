@@ -24,13 +24,12 @@ use remus_topology::face::{FaceId, FaceSurface};
 use remus_topology::solid::SolidId;
 
 const DEFLECTION: f64 = 0.01;
-/// The fixture's tessellated volume at [`DEFLECTION`]. The freeform faces
-/// mesh through the non-planar CDT, whose interior grid now keeps straight
-/// directions isotropic with the curved ones; the mesh volume converges
-/// upward towards the exact integrator's 50 245.4 as the deflection shrinks
-/// (50 242.96 at 0.002), and this value sits 0.16 closer to it than the
-/// previous grid's 50 240.48.
-const HAMMER_HOLDER_VOLUME: f64 = 50_240.643_126_845_04;
+/// The fixture's approximate volume at [`DEFLECTION`]. Curved NURBS trims
+/// on cylindrical walls need extra axial samples in the trim band; retaining
+/// only two rows cut chords through those faces. The corrected 50 241.267
+/// moves toward the independent integrator's 50 245.4 (the full mesh at
+/// deflection 0.001 is 50 244.43). The 0.01 repeatability tolerance is unchanged.
+const HAMMER_HOLDER_VOLUME: f64 = 50_241.267_131;
 
 fn assert_valid(topo: &Topology, solid: SolidId) {
     let report = validate_solid(topo, solid, &ValidateOptions::default()).expect("validate solid");
