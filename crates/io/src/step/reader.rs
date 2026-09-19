@@ -2385,7 +2385,11 @@ impl<'a> StepBuilder<'a> {
             _ if periodic_uv_domain(surface).is_some() => {
                 self.resolve_generic_periodic_bounds(face_ref, candidates, surface, pending_by_wire)
             }
-            _ => Err(IoError::ParseError {
+            FaceSurface::Nurbs(_)
+            | FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_) => Err(IoError::ParseError {
                 reason: format!(
                     "ADVANCED_FACE #{face_ref} has multiple generic FACE_BOUND entities on an \
                      unsupported {} surface; outer-loop classification requires an unambiguous \
@@ -2922,7 +2926,15 @@ impl<'a> StepBuilder<'a> {
                     })?;
                 EdgeCurve::Circle(circle)
             }
-            _ => {
+            (
+                FaceSurface::Plane { .. }
+                | FaceSurface::Nurbs(_)
+                | FaceSurface::Cone(_)
+                | FaceSurface::Sphere(_),
+                _,
+            )
+            | (FaceSurface::Cylinder(_), PeriodicWindingAxis::V)
+            | (FaceSurface::Torus(_), PeriodicWindingAxis::U) => {
                 return Err(reject(
                     "the winding axis has no supported exact seam construction",
                 ));
@@ -4252,7 +4264,11 @@ impl<'a> StepBuilder<'a> {
                 let offset = point - frame.origin;
                 Ok(Point2::new(offset.dot(frame.x), offset.dot(frame.y)))
             }
-            _ => surface
+            FaceSurface::Nurbs(_)
+            | FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_) => surface
                 .project_point(point)
                 .map(|(u, v)| Point2::new(u, v))
                 .filter(|uv| uv.0.iter().all(|value| value.is_finite()))
@@ -5379,7 +5395,10 @@ impl<'a> StepBuilder<'a> {
                     EdgeCurve::Parabola(parabola) => {
                         Some((parabola.project(trim_1), parabola.project(trim_2)))
                     }
-                    _ => None,
+                    EdgeCurve::Line
+                    | EdgeCurve::NurbsCurve(_)
+                    | EdgeCurve::Circle(_)
+                    | EdgeCurve::Ellipse(_) => None,
                 };
                 let parameters = match parsed.master {
                     TrimMaster::Cartesian => projected_open_parameters,
@@ -5390,7 +5409,14 @@ impl<'a> StepBuilder<'a> {
                     (EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_), Some((first, second))) => {
                         Some(periodic_trim_span(curve_ref, first, second, reversed)?)
                     }
-                    _ => None,
+                    (
+                        EdgeCurve::Line
+                        | EdgeCurve::NurbsCurve(_)
+                        | EdgeCurve::Hyperbola(_)
+                        | EdgeCurve::Parabola(_),
+                        _,
+                    )
+                    | (EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_), None) => None,
                 };
                 if matches!(
                     &basis_curve,
@@ -14393,7 +14419,11 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
             .iter()
             .filter_map(|&fid| match topo.face(fid).unwrap().surface() {
                 FaceSurface::Cone(cone) => Some(cone.half_angle()),
-                _ => None,
+                FaceSurface::Plane { .. }
+                | FaceSurface::Nurbs(_)
+                | FaceSurface::Cylinder(_)
+                | FaceSurface::Sphere(_)
+                | FaceSurface::Torus(_) => None,
             })
             .collect()
     }

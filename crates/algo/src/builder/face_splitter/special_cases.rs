@@ -406,7 +406,11 @@ fn split_noseam_by_arrangement(
     };
     let area_tol = match surface {
         FaceSurface::Sphere(sphere) => (tol * sphere.radius()).max(tol * tol),
-        _ => tol * tol,
+        FaceSurface::Plane { .. }
+        | FaceSurface::Nurbs(_)
+        | FaceSurface::Cylinder(_)
+        | FaceSurface::Cone(_)
+        | FaceSurface::Torus(_) => tol * tol,
     };
     let bounded: Vec<(usize, Vec<OrientedPCurveEdge>)> = loops
         .into_iter()
@@ -693,7 +697,9 @@ fn sphere_loop_projected_area(
                     }
                 }
             }
-            _ => return None,
+            EdgeCurve::Ellipse(_) | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => {
+                return None;
+            }
         }
     }
     let area = integral.dot(normal);
@@ -1774,7 +1780,15 @@ pub(super) fn split_periodic_face_into_bands(
         match (&e.curve_3d, is_closed) {
             (EdgeCurve::Circle(_), true) => boundary_circles.push(e),
             (EdgeCurve::Line, false) => seam_edges.push(e),
-            _ => return None,
+            (
+                EdgeCurve::Line
+                | EdgeCurve::NurbsCurve(_)
+                | EdgeCurve::Circle(_)
+                | EdgeCurve::Ellipse(_)
+                | EdgeCurve::Hyperbola(_)
+                | EdgeCurve::Parabola(_),
+                _,
+            ) => return None,
         }
     }
     if boundary_circles.len() != 2 || seam_edges.is_empty() {
@@ -2184,7 +2198,15 @@ pub(super) fn split_periodic_face_into_sectors(
         match (&e.curve_3d, is_closed) {
             (EdgeCurve::Circle(_), true) => boundary_circles.push(e),
             (EdgeCurve::Line, false) => seam_edges.push(e),
-            _ => return None,
+            (
+                EdgeCurve::Line
+                | EdgeCurve::NurbsCurve(_)
+                | EdgeCurve::Circle(_)
+                | EdgeCurve::Ellipse(_)
+                | EdgeCurve::Hyperbola(_)
+                | EdgeCurve::Parabola(_),
+                _,
+            ) => return None,
         }
     }
     if boundary_circles.len() != 2 || seam_edges.is_empty() {
@@ -2299,7 +2321,11 @@ pub(super) fn split_periodic_face_into_sectors(
     let rim_circle = |e: &OrientedPCurveEdge| -> Option<remus_math::curves::Circle3D> {
         match &e.curve_3d {
             EdgeCurve::Circle(c) => Some(c.clone()),
-            _ => None,
+            EdgeCurve::Line
+            | EdgeCurve::NurbsCurve(_)
+            | EdgeCurve::Ellipse(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_) => None,
         }
     };
     let bot_circle = rim_circle(bot_edge)?;
@@ -2999,7 +3025,11 @@ pub(super) fn split_face_with_internal_loops(
                     // Offset INTO the solid (opposite to the face normal).
                     remus_math::vec::Vec3::new(-n.x(), -n.y(), -n.z()) * 1e-6
                 }
-                _ => remus_math::vec::Vec3::new(0.0, 0.0, 0.0),
+                FaceSurface::Nurbs(_)
+                | FaceSurface::Cylinder(_)
+                | FaceSurface::Cone(_)
+                | FaceSurface::Sphere(_)
+                | FaceSurface::Torus(_) => remus_math::vec::Vec3::new(0.0, 0.0, 0.0),
             };
             Point3::new(
                 centroid.x() + normal_offset.x(),
@@ -3192,7 +3222,10 @@ pub(super) fn split_face_with_internal_loops(
             {
                 converted_wall_remainder_interior(&remainder)
             }
-            _ => None,
+            FaceSurface::Plane { .. }
+            | FaceSurface::Nurbs(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_) => None,
         };
     }
     if matches!(remainder.surface, FaceSurface::Torus(_))
