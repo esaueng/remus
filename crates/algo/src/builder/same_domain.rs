@@ -1492,7 +1492,10 @@ fn project_points_through_surface(
     let samples: Vec<(f64, f64)> = match surface {
         FaceSurface::Cylinder(c) => pts.iter().map(|&p| c.project_point(p)).collect(),
         FaceSurface::Cone(c) => pts.iter().map(|&p| c.project_point(p)).collect(),
-        _ => return None,
+        FaceSurface::Plane { .. }
+        | FaceSurface::Nurbs(_)
+        | FaceSurface::Sphere(_)
+        | FaceSurface::Torus(_) => return None,
     };
     if samples.len() < 3 {
         return None;
@@ -1514,7 +1517,10 @@ fn project_points_through_surface(
             // tessellation path takes `.abs()` for the same reason).
             c.radius_at(0.5 * (v_min + v_max)).abs()
         }
-        _ => return None,
+        FaceSurface::Plane { .. }
+        | FaceSurface::Nurbs(_)
+        | FaceSurface::Sphere(_)
+        | FaceSurface::Torus(_) => return None,
     };
     // A degenerate (apex-touching) cone band has ~zero radius; the arc-length
     // scaling would collapse θ and make the 2D test meaningless.
@@ -1768,7 +1774,7 @@ fn repr_face_area(topo: &Topology, face_id: FaceId) -> Option<f64> {
     match face.surface() {
         FaceSurface::Plane { .. } => planar_face_area(topo, face_id),
         FaceSurface::Cylinder(_) | FaceSurface::Cone(_) => analytic_face_param_area(topo, face_id),
-        _ => None,
+        FaceSurface::Nurbs(_) | FaceSurface::Sphere(_) | FaceSurface::Torus(_) => None,
     }
 }
 
@@ -2051,7 +2057,10 @@ fn planar_support(surface: &FaceSurface, tol: Tolerance) -> Option<(remus_math::
                 .all(|p| ((*p - point).dot(normal)).abs() <= tol.linear)
                 .then(|| (normal, normal.dot(point - Point3::new(0.0, 0.0, 0.0))))
         }
-        _ => None,
+        FaceSurface::Cylinder(_)
+        | FaceSurface::Cone(_)
+        | FaceSurface::Sphere(_)
+        | FaceSurface::Torus(_) => None,
     }
 }
 
@@ -2166,7 +2175,36 @@ pub(crate) fn surfaces_same_domain(
             }
             Some(axis_dot > 0.0)
         }
-        _ => None,
+        (
+            FaceSurface::Plane { .. } | FaceSurface::Nurbs(_),
+            FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_),
+        )
+        | (
+            FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_),
+            FaceSurface::Plane { .. } | FaceSurface::Nurbs(_),
+        )
+        | (
+            FaceSurface::Cylinder(_),
+            FaceSurface::Cone(_) | FaceSurface::Sphere(_) | FaceSurface::Torus(_),
+        )
+        | (
+            FaceSurface::Cone(_),
+            FaceSurface::Cylinder(_) | FaceSurface::Sphere(_) | FaceSurface::Torus(_),
+        )
+        | (
+            FaceSurface::Sphere(_),
+            FaceSurface::Cylinder(_) | FaceSurface::Cone(_) | FaceSurface::Torus(_),
+        )
+        | (
+            FaceSurface::Torus(_),
+            FaceSurface::Cylinder(_) | FaceSurface::Cone(_) | FaceSurface::Sphere(_),
+        ) => None,
     }
 }
 
