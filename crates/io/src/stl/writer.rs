@@ -35,7 +35,8 @@ pub fn write_stl(
     let mut merged = TriangleMesh::default();
 
     for &solid_id in solids {
-        let mesh = tessellate::tessellate_solid(topo, solid_id, deflection)?;
+        let mut mesh = tessellate::tessellate_solid(topo, solid_id, deflection)?;
+        crate::retain_nondegenerate_triangles(&mut mesh);
 
         #[allow(clippy::cast_possible_truncation)]
         let offset = merged.positions.len() as u32;
