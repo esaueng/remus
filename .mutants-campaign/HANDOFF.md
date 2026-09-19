@@ -51,11 +51,11 @@ was taken, and `b13ff97b`, where this branch is based — verified, so the basel
 | sidetables | `attributes.rs`, `journal.rs` | 36 | yes | **yes** (36 rows, validated) | complete, unscoped |
 | traversal | `explorer.rs`, `adjacency.rs` | 36 | yes | **yes** (36 rows, validated) | complete, module-scoped |
 | smallents | `pcurve/coedge/wire/shell/solid/compsolid/vertex/face_loop` | 25 | yes | **yes** (25 rows, validated) | complete, module-scoped |
-| **arenacore** | `topology.rs`, `arena.rs` | 30 | yes | **NO** | complete but **unanalyzed** |
+| arenacore | `topology.rs`, `arena.rs` | 30 | yes | **yes** (30 rows, validated) | complete, module-scoped |
 
 "validated" means every row's mutant string was matched, in order, against the baseline
-survivor list for that file by `parse_tables.py`. 8 of 9 groups: 438 of the 468 survivors
-carry a finished, checked table.
+survivor list for that file by `parse_tables.py`. **All 9 groups are covered: every one of the
+468 survivors carries a finished, checked table.**
 
 ### builder.rs — finished (correcting an earlier read of its status)
 
@@ -64,19 +64,53 @@ wound down: 322-mutant proof run, **116 -> 13 missed (103 killed)**, all 13 resi
 classified `(b)` and the claimed-`(b)` set matches the measured still-missed set exactly.
 Table and outcomes are parked here. No further work needed beyond the authoritative sweep.
 
-### arenacore — the one real gap
+### arenacore — landed late, now complete
 
-Tests are written and the proof run completed (220 mutants), but the agent never analyzed it
-and never wrote a table. Its `missed.txt` shows **36**, which is more than the 30 baseline
-survivors — that looked alarming and was reconciled here:
+Its agent finished after the WIP commit and delivered its table; the tests it wrote were
+already in `ff0e35fa`, so that commit needed no amendment. **30 -> 3 missed (27 killed)**, all
+3 residuals `(b)`, and the claimed-`(b)` set matches the measured still-missed set exactly.
 
-- 27 of the 30 baseline survivors are **killed**.
-- 3 of the 30 still survive.
-- The other **33 "missed" are scoping artifacts**: mutants the crate-wide baseline caught via
-  tests in other modules, which the agent's narrowed test command no longer runs.
+Its raw `missed.txt` shows **36**, more than the 30 baseline survivors. That is a benign
+scoping artifact, independently reconciled two ways (by the orchestrator and by the agent):
+the extra **33 are mutants the crate-wide baseline caught via tests in other modules**
+(`journal.rs`, `validation.rs`, `naming.rs`), which the agent's narrowed test command no
+longer runs. Score against the survivor lists, never against the raw `missed.txt`.
 
-So the anomaly is explained and benign, but it is **not** a substitute for the table. Someone
-still has to classify those 30 survivors as (a)/(b)/(c).
+**One judgment call to review.** For `arena.rs:55:9 replace Hash::hash with ()`, a
+`HashMap`/`HashSet` round-trip cannot kill the mutant — `Eq` resolves every collision, so the
+map stays *correct*, just degenerate. The agent killed it with a `DefaultHasher` distinctness
+check, arguing the real contract is that the hash depends on the index, or every handle in a
+large model lands in one bucket and lookup degrades to a linear scan. That is a defensible
+performance contract but it does inspect hash values, which the brief steered away from.
+Decide whether to keep it as `(a)` or reclassify as `(b)`; it is the only verdict in the
+topology campaign flagged as arguable.
+
+### Claimed verdicts (NOT a verified kill count — read the next section)
+
+Every one of the 468 survivors is classified. This is the agents' triage, each backed by a
+per-file proof run, but those runs are mostly module-scoped and so are **not comparable to the
+crate-wide baseline**. Treat this as the hypothesis the authoritative sweep must confirm.
+
+| Group | Survivors | (a) | (b) | (c) |
+| --- | ---: | ---: | ---: | ---: |
+| `arenacore` | 30 | 27 | 3 | 0 |
+| `builder` | 116 | 103 | 13 | 0 |
+| `edge` | 58 | 53 | 5 | 0 |
+| `face` | 41 | 41 | 0 | 0 |
+| `naming` | 48 | 46 | 2 | 0 |
+| `sidetables` | 36 | 36 | 0 | 0 |
+| `smallents` | 25 | 25 | 0 | 0 |
+| `traversal` | 36 | 35 | 1 | 0 |
+| `validation` | 78 | 71 | 7 | 0 |
+| **Total** | **468** | **437** | **31** | **0** |
+
+Notably there are **zero `(c)` verdicts** — unlike geometry (87), nothing in this crate needed a
+geometry judgment call. That is expected: remus-topology is a data-structure layer, so a
+survivor is either a genuine coverage gap or a provable no-op.
+
+The 31 `(b)` equivalents cluster in the shapes you would expect: `Vec::with_capacity`/`reserve`
+hints with no observable effect, strict/non-strict flips at a boundary where both guarded
+statements are no-ops, guards re-checked downstream, and unreachable match arms.
 
 ### Why no kill count is claimed
 
@@ -91,9 +125,7 @@ and publish the total.
 
 ## 3. Remaining work, in order
 
-1. Write the `arenacore` triage table (30 rows: `topology.rs` 19 + `arena.rs` 11).
-   Survivor lists: `survivors/topo-topology.txt`, `survivors/topo-arena.txt`.
-   Its completed proof run is `outcomes/topo-after-arenacore.outcomes.json.gz`.
+1. Review the one arguable verdict (`arena.rs:55:9`, the `Hash` mutant — see above).
 2. Run **one authoritative full-crate after-sweep** on the final tree — unscoped, so it is
    comparable to the baseline:
    ```
@@ -127,7 +159,7 @@ and publish the total.
 
 ## 5. Contents
 
-- `tables-topo/*.md` — 8 finished topology triage tables.
+- `tables-topo/*.md` — all 9 topology triage tables (468 rows total).
 - `tables-geometry/*.md` — 10 geometry tables backing PR #528.
 - `survivors/topo-*.txt` — per-file baseline survivor lists (the `-all`, `-arenacore`,
   `-sidetables`, `-smallents`, `-traversal` files are concatenations used for grouped agents).
