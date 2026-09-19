@@ -32,7 +32,7 @@ jobs:
       id-token: write
       contents: read
       pull-requests: read
-    uses: esaueng/remus/.github/workflows/fleet-ci.yml@b8291d369f6a37bd4952e66fe2ed06b57b0a8241
+    uses: esaueng/remus/.github/workflows/fleet-ci.yml@c0080f1094c76f2bb4a4cd000075e214822a5f19
 
   wasm-size:
     needs: checks
