@@ -31,6 +31,21 @@ pub mod threemf;
 
 pub use limits::ImportLimits;
 
+#[cfg(feature = "formats")]
+fn retain_nondegenerate_triangles(mesh: &mut remus_operations::tessellate::TriangleMesh) {
+    let indices = std::mem::take(&mut mesh.indices);
+    mesh.indices.reserve(indices.len());
+    for triangle in indices.chunks_exact(3) {
+        let a = mesh.positions[triangle[0] as usize];
+        let b = mesh.positions[triangle[1] as usize];
+        let c = mesh.positions[triangle[2] as usize];
+        let area_squared = (b - a).cross(c - a).length_squared();
+        if area_squared.is_finite() && area_squared > 0.0 {
+            mesh.indices.extend_from_slice(triangle);
+        }
+    }
+}
+
 /// Errors from data exchange operations.
 #[derive(Debug, thiserror::Error)]
 pub enum IoError {
@@ -91,4 +106,31 @@ pub enum IoError {
     #[cfg(feature = "formats")]
     #[error(transparent)]
     Zip(#[from] zip::result::ZipError),
+}
+
+#[cfg(all(test, feature = "formats"))]
+mod tests {
+    use remus_math::vec::Point3;
+    use remus_operations::tessellate::TriangleMesh;
+
+    use super::retain_nondegenerate_triangles;
+
+    #[test]
+    fn export_mesh_filter_removes_only_exact_zero_area_triangles() {
+        let mut mesh = TriangleMesh {
+            positions: vec![
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(1.0, 0.0, 0.0),
+                Point3::new(0.0, 1.0, 0.0),
+                Point3::new(0.0, 1.0e-15, 0.0),
+                Point3::new(2.0, 0.0, 0.0),
+            ],
+            normals: Vec::new(),
+            indices: vec![0, 1, 2, 0, 0, 2, 0, 1, 4, 0, 1, 3],
+        };
+
+        retain_nondegenerate_triangles(&mut mesh);
+
+        assert_eq!(mesh.indices, vec![0, 1, 2, 0, 1, 3]);
+    }
 }
