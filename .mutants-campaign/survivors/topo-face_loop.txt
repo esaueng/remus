@@ -1,0 +1,1 @@
+crates/topology/src/face_loop.rs:53:9: replace Loop::is_closed -> bool with true

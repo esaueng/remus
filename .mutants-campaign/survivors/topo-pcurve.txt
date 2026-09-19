@@ -1,0 +1,7 @@
+crates/topology/src/pcurve.rs:168:48: replace && with || in PCurveRegistry::remove_for_retired_entities
+crates/topology/src/pcurve.rs:174:9: replace PCurveRegistry::remove_face with ()
+crates/topology/src/pcurve.rs:174:44: replace != with == in PCurveRegistry::remove_face
+crates/topology/src/pcurve.rs:181:9: replace PCurveRegistry::len -> usize with 0
+crates/topology/src/pcurve.rs:181:9: replace PCurveRegistry::len -> usize with 1
+crates/topology/src/pcurve.rs:187:9: replace PCurveRegistry::is_empty -> bool with true
+crates/topology/src/pcurve.rs:187:9: replace PCurveRegistry::is_empty -> bool with false

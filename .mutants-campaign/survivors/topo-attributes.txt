@@ -1,0 +1,29 @@
+crates/topology/src/attributes.rs:53:9: replace ColorRgb::r -> f64 with 0.0
+crates/topology/src/attributes.rs:53:9: replace ColorRgb::r -> f64 with 1.0
+crates/topology/src/attributes.rs:53:9: replace ColorRgb::r -> f64 with -1.0
+crates/topology/src/attributes.rs:59:9: replace ColorRgb::g -> f64 with 0.0
+crates/topology/src/attributes.rs:59:9: replace ColorRgb::g -> f64 with 1.0
+crates/topology/src/attributes.rs:59:9: replace ColorRgb::g -> f64 with -1.0
+crates/topology/src/attributes.rs:65:9: replace ColorRgb::b -> f64 with 0.0
+crates/topology/src/attributes.rs:65:9: replace ColorRgb::b -> f64 with 1.0
+crates/topology/src/attributes.rs:65:9: replace ColorRgb::b -> f64 with -1.0
+crates/topology/src/attributes.rs:84:9: replace EntityAttributes::is_empty -> bool with false
+crates/topology/src/attributes.rs:105:9: replace AttributeStore::solid -> Option<&EntityAttributes> with None
+crates/topology/src/attributes.rs:105:9: replace AttributeStore::solid -> Option<&EntityAttributes> with Some(Box::leak(Box::new(Default::default())))
+crates/topology/src/attributes.rs:116:9: replace AttributeStore::set_solid with ()
+crates/topology/src/attributes.rs:134:9: replace AttributeStore::remove_solid -> Option<EntityAttributes> with None
+crates/topology/src/attributes.rs:134:9: replace AttributeStore::remove_solid -> Option<EntityAttributes> with Some(Default::default())
+crates/topology/src/attributes.rs:139:9: replace AttributeStore::remove_face -> Option<EntityAttributes> with None
+crates/topology/src/attributes.rs:145:9: replace AttributeStore::len -> usize with 0
+crates/topology/src/attributes.rs:139:9: replace AttributeStore::remove_face -> Option<EntityAttributes> with Some(Default::default())
+crates/topology/src/attributes.rs:145:9: replace AttributeStore::len -> usize with 1
+crates/topology/src/attributes.rs:145:27: replace + with - in AttributeStore::len
+crates/topology/src/attributes.rs:145:27: replace + with * in AttributeStore::len
+crates/topology/src/attributes.rs:151:9: replace AttributeStore::is_empty -> bool with true
+crates/topology/src/attributes.rs:151:9: replace AttributeStore::is_empty -> bool with false
+crates/topology/src/attributes.rs:151:32: replace && with || in AttributeStore::is_empty
+crates/topology/src/attributes.rs:157:9: replace AttributeStore::faces_with_attributes -> Vec<(FaceId, &EntityAttributes)> with vec![]
+crates/topology/src/attributes.rs:165:9: replace AttributeStore::solids_with_attributes -> Vec<(SolidId, &EntityAttributes)> with vec![]
+crates/topology/src/attributes.rs:176:36: delete ! in AttributeStore::remove_for_retired_entities
+crates/topology/src/attributes.rs:176:9: replace AttributeStore::remove_for_retired_entities with ()
+crates/topology/src/attributes.rs:177:35: delete ! in AttributeStore::remove_for_retired_entities

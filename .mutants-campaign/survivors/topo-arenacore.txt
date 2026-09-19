@@ -1,0 +1,30 @@
+crates/topology/src/topology.rs:262:9: replace Topology::set_wire_body_class -> Result<(), TopologyError> with Ok(())
+crates/topology/src/topology.rs:262:23: replace != with == in Topology::set_wire_body_class
+crates/topology/src/topology.rs:289:9: replace Topology::allocated_slot_count -> usize with 0
+crates/topology/src/topology.rs:289:9: replace Topology::allocated_slot_count -> usize with 1
+crates/topology/src/topology.rs:376:37: delete ! in Topology::restore_preserving_handle_slots
+crates/topology/src/topology.rs:471:9: replace Topology::reserve with ()
+crates/topology/src/topology.rs:538:9: replace Topology::set_solid_attributes -> Result<(), TopologyError> with Ok(())
+crates/topology/src/topology.rs:706:25: delete match arm [] in Topology::propagate_attributes_for_op
+crates/topology/src/topology.rs:740:9: replace Topology::load_journal with ()
+crates/topology/src/topology.rs:831:9: replace Topology::face_id_from_index -> Option<FaceId> with None
+crates/topology/src/topology.rs:882:61: replace match guard replacement_id == wire_id with true in Topology::boundary_loop_specs
+crates/topology/src/topology.rs:1032:48: delete ! in Topology::replace_boundary_wire
+crates/topology/src/topology.rs:1354:9: replace Topology::is_empty_solid -> bool with true
+crates/topology/src/topology.rs:1354:9: replace Topology::is_empty_solid -> bool with false
+crates/topology/src/topology.rs:1356:17: replace && with || in Topology::is_empty_solid
+crates/topology/src/topology.rs:1436:13: delete match arm [] in Topology::pcurve
+crates/topology/src/topology.rs:1479:13: delete match arm [] in Topology::set_pcurve
+crates/topology/src/topology.rs:1503:13: delete match arm [] in Topology::remove_pcurve
+crates/topology/src/topology.rs:1624:9: replace Topology::validate_coedge_authority -> Result<(), TopologyError> with Ok(())
+crates/topology/src/arena.rs:21:9: replace <impl std::fmt::Debug for Id<T>>::fmt -> std::fmt::Result with Ok(Default::default())
+crates/topology/src/arena.rs:43:9: replace <impl PartialOrd for Id<T>>::partial_cmp -> Option<std::cmp::Ordering> with None
+crates/topology/src/arena.rs:55:9: replace <impl std::hash::Hash for Id<T>>::hash with ()
+crates/topology/src/arena.rs:102:9: replace Arena<T>::with_capacity -> Self with Default::default()
+crates/topology/src/arena.rs:129:51: replace - with + in Arena<T>::reserve
+crates/topology/src/arena.rs:130:60: replace >= with < in Arena<T>::reserve
+crates/topology/src/arena.rs:197:9: replace Arena<T>::slot_len -> usize with 0
+crates/topology/src/arena.rs:197:9: replace Arena<T>::slot_len -> usize with 1
+crates/topology/src/arena.rs:242:9: replace Arena<T>::iter_mut -> impl Iterator<Item =(Id<T>, &mut T)> with ::std::iter::empty()
+crates/topology/src/arena.rs:283:27: replace > with >= in Arena<T>::restore_preserving_slots
+crates/topology/src/arena.rs:308:27: replace > with >= in Arena<T>::restore_for_rollback
