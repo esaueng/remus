@@ -2948,6 +2948,14 @@ pub(super) fn tessellate_nonplanar_cdt(
     if du > 1e-15 && dv > 1e-15 {
         let (n_u, n_v) =
             interior_grid_resolution(face_data.surface(), du, dv, deflection, angular_tol);
+        let n_v = interior_rows_for_boundary(
+            face_data.surface(),
+            &boundary_uv,
+            (v_min, v_max),
+            du,
+            n_u,
+            n_v,
+        );
         validate_interior_grid_size(n_u, n_v)?;
 
         let boundary_uv_ref = &boundary_uv;
@@ -3689,6 +3697,111 @@ fn estimate_surface_radius(surface: &FaceSurface) -> f64 {
     }
 }
 
+/// Rows for a cylinder or cone whose boundary runs along its rims and also
+/// carries a run strictly between them (a notch rim, a section curve, a
+/// stepped rim).
+///
+/// With the two-row default, such a run is bridged to the single interior
+/// row by triangles that are long in `u`, and those cut chords through the
+/// solid: the B37 cone–cylinder fuse wall measured 5 % too much area and the
+/// body 2 % low in volume with every mesh edge twinned, so no watertightness
+/// oracle noticed. Size the rows isotropically against the column spacing
+/// (the NURBS arm's rule) when the boundary leaves railed rims; a band
+/// bounded only at its rims keeps `n_v` unchanged.
+///
+/// Rails, not grazes: the isotropic rows register the mid-wall run against
+/// rim rails. When the boundary merely touches its `v` extremes — a section
+/// loop spanning the chart, whose only rim samples are extremal grazes —
+/// there is nothing to register against, and the extra Steiner points only
+/// perturb the CDT. Measured: a bore wall whose 294 of 298 samples are a
+/// full-span NURBS contact loop (4 rim grazes) lost 0.6 of volume under 216
+/// uniform rows, enough to flip the blend volume oracle from a correct
+/// "convex edges added" refusal to an acceptance of a wrong-side blend; with
+/// two rows the refusal fires. A generic loop touches each extremum a couple
+/// of times, while genuine rails contribute a run of samples — observed gap
+/// is 4 grazes (harm) versus 8 on the shortest helping arc to thousands on
+/// full rims — so require at least 8 rim samples.
+///
+/// A constant-`v` run is itself a rail: the two-row grid already hugs rails,
+/// and uniform rows across it only multiply work. Measured: a mid-wall
+/// section circle sampled 3634 times at 1e-6 deflection drove 15391 columns
+/// by 512 rows past the interior-grid work limit (hard error); with two rows
+/// the tab/ring area reads to 1e-5. Require the interior run to actually
+/// traverse `v`.
+///
+/// Mid-size runs stay at two rows: tens of samples at a coarse export-tier
+/// deflection are already resolved (the render-measure bundle pins its
+/// cross-drilled shaft at exactly 12290 triangles; 103 interior samples
+/// drove 105 columns by 84 rows to 41490), while tiny runs get bounded
+/// support and dense runs get full isotropic support. Observed gaps: 15
+/// below, 103 inside, 154 above — the 32/128 bounds sit inside them.
+///
+/// No oversampling the run: the rows register the boundary run, so more rows
+/// than the run has samples is pure cost. Measured: a hex-cut corner cylinder
+/// whose 8-sample notch run drove 15 columns by 72 rows gained 0.06 of volume
+/// accuracy against the exact 19772.95 (5.6 % of the meshing error) at 2.1x
+/// the triangles, breaking the export-tier density bound; 8 rows keep the
+/// bound with the same accuracy. Cap the grown rows at the run's sample
+/// count.
+pub(super) fn interior_rows_for_boundary(
+    surface: &FaceSurface,
+    boundary_uv: &[(f64, f64)],
+    v_range: (f64, f64),
+    du: f64,
+    n_u: usize,
+    n_v: usize,
+) -> usize {
+    if !matches!(surface, FaceSurface::Cylinder(_) | FaceSurface::Cone(_)) {
+        return n_v;
+    }
+    let dv = v_range.1 - v_range.0;
+    let tol = 1e-9 * dv.abs().max(1e-12);
+    let interior_count = boundary_uv
+        .iter()
+        .filter(|&&(_, v)| v > v_range.0 + tol && v < v_range.1 - tol)
+        .count();
+    if interior_count == 0 {
+        return n_v;
+    }
+    let rim_count = boundary_uv.len() - interior_count;
+    if rim_count < 8 {
+        return n_v;
+    }
+    // Mid-size runs stay: tens of samples at a coarse export-tier deflection
+    // are already resolved at two rows (the render-measure bundle pins its
+    // cross-drilled shaft at exactly 12290 triangles), while tiny runs get
+    // bounded support and dense runs get full isotropic support. Observed
+    // gaps: 15 below, 103 inside, 154 above — the bounds sit inside them.
+    if interior_count > 32 && interior_count < 128 {
+        return n_v;
+    }
+    let interior_span = boundary_uv
+        .iter()
+        .filter(|&&(_, v)| v > v_range.0 + tol && v < v_range.1 - tol)
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &(_, v)| {
+            (lo.min(v), hi.max(v))
+        });
+    if interior_span.1 - interior_span.0 <= tol {
+        return n_v;
+    }
+    let r = estimate_surface_radius(surface);
+    let grown = isotropic_rows(dv, Some(n_u), r * du)
+        .max(n_v)
+        .min(interior_count)
+        .max(n_v);
+    // Respect the interior-grid work budget (`MAX_INTERIOR_GRID_POINTS`
+    // candidates): on huge faces at fine deflection the isotropic count can
+    // exceed it, which the caller reports as a hard error. Cap the grown rows
+    // so the grid fits; the cap stays far above the two-row default, and when
+    // even the default does not fit the caller still errors as before.
+    let row_cap = if n_u > 1 {
+        1 + MAX_INTERIOR_GRID_POINTS / (n_u - 1)
+    } else {
+        grown
+    };
+    grown.min(row_cap).max(n_v)
+}
+
 /// Compute interior grid resolution for `tessellate_nonplanar_cdt`.
 pub(super) fn interior_grid_resolution(
     surface: &FaceSurface,
@@ -3732,7 +3845,10 @@ pub(super) fn interior_grid_resolution(
             // along the straight rulings (a length, not an angle): zero chord
             // sag, so feeding it to the chord formula would treat millimeters
             // as radians and emit hundreds of interior rows on a tall wall.
-            // Two rows suffice for CDT quality on a developable band.
+            // Two rows suffice for a band whose boundary sits on its two rims
+            // (issue #259 pins a filleted box at that density); a mid-wall
+            // run between railed rims needs isotropic rows instead — see
+            // `interior_rows_for_boundary` in `tessellate_nonplanar_cdt`.
             let r = estimate_surface_radius(surface);
             let n_u = segments_for_chord_deviation_a(r, du, deflection, angular_tol, true).max(2);
             (n_u, 2)
