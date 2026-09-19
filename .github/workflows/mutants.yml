@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   checks:
-    uses: esaueng/remus/.github/workflows/fleet-mutants.yml@d4d8f715fb870839f70939cc9dd7645d61727a96
+    uses: esaueng/remus/.github/workflows/fleet-mutants.yml@c0080f1094c76f2bb4a4cd000075e214822a5f19
     permissions:
       contents: read
       pull-requests: read
