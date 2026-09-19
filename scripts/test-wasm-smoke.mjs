@@ -753,8 +753,8 @@ for (const operation of ['fillet', 'chamfer']) {
   assert.deepEqual(Array.from(hammerKernel.getEntityCounts(solid)), beforeCounts);
   // Same approximate-volume pin as HAMMER_HOLDER_VOLUME in
   // crates/io/tests/resize_blend_step.rs. The resolved cylinder-wall grid
-  // removes inward chords and moves this closer to the finer mesh and
-  // independent integrator; retain the 0.01 repeatability tolerance.
+  // and curved NURBS trim-band paths remove inward chords and move this closer
+  // to the finer mesh and independent integrator; retain the 0.01 tolerance.
   assert.ok(Math.abs(hammerKernel.volume(solid, 0.01) - 50_241.718_498_692_12) <= 0.01);
   const strict = JSON.parse(hammerKernel.validateSolidDetailed(solid));
   assert.equal(strict.errorCount, 0, 'refused edit must preserve strict topology');
