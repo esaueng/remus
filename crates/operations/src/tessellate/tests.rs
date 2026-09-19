@@ -2227,6 +2227,121 @@ fn tessellate_small_torus_reasonable_count() {
     );
 }
 
+/// B37: a cylinder band whose boundary stays on its two rims keeps the
+/// two-row interior grid (#259 density), while a boundary run strictly
+/// between railed rims (a notch rim, a section curve) gets isotropic rows so
+/// the CDT cannot bridge it with chords through the solid. The rails matter:
+/// a section loop that merely grazes its `v` extremes (fewer than 8 rim
+/// samples) keeps two rows — those extra Steiner points only perturb the CDT
+/// (a bore wall with 4 grazes lost 0.6 of volume under 216 uniform rows,
+/// blinding the blend volume oracle). A constant-`v` run between railed rims
+/// is itself a rail and also keeps two rows (a mid-wall section circle drove
+/// 15391 columns by 512 rows past the work limit).
+#[test]
+fn cylinder_interior_rows_follow_boundary_between_rims() {
+    let cyl = remus_math::surfaces::CylindricalSurface::new(
+        Point3::new(0.0, 0.0, 0.0),
+        Vec3::new(0.0, 0.0, 1.0),
+        1.0,
+    )
+    .unwrap();
+    let surface = FaceSurface::Cylinder(cyl);
+    let du = std::f64::consts::TAU;
+    let (v0, v1) = (0.0, 1.0);
+    let rim_only = [(0.0, v0), (1.0, v0), (1.0, v1), (0.0, v1)];
+    assert_eq!(
+        super::nonplanar::interior_rows_for_boundary(&surface, &rim_only, (v0, v1), du, 64, 2),
+        2
+    );
+    // A notch dip between runs along both rims: 8 rail samples plus a dip
+    // that actually traverses v (a single mid-wall sample has no span to
+    // bridge, so the dip needs several heights), sampled densely the way a
+    // real section run is — the rows register the run, so the dip carries
+    // more samples than the ~11 isotropic rows it earns.
+    let notched = [
+        (0.0, v0),
+        (0.5, v0),
+        (1.0, 0.02),
+        (1.1, 0.05),
+        (1.2, 0.1),
+        (1.3, 0.15),
+        (1.4, 0.2),
+        (1.5, 0.24),
+        (1.6, 0.26),
+        (1.7, 0.24),
+        (1.8, 0.2),
+        (1.9, 0.15),
+        (1.95, 0.1),
+        (2.0, 0.05),
+        (2.05, 0.02),
+        (2.5, v0),
+        (3.0, v0),
+        (3.0, v1),
+        (2.0, v1),
+        (1.0, v1),
+        (0.0, v1),
+    ];
+    let rows =
+        super::nonplanar::interior_rows_for_boundary(&surface, &notched, (v0, v1), du, 64, 2);
+    // 64 columns over a full turn of radius 1 space 0.098 apart; a unit-tall
+    // wall wants about 11 rows to stay isotropic.
+    assert!(
+        (10..=12).contains(&rows),
+        "isotropic rows expected, got {rows}"
+    );
+    // The same dip with only extremal grazes (no rails) keeps two rows.
+    let grazing = [(0.0, v0), (1.5, 0.25), (3.0, v0), (3.0, v1), (0.0, v1)];
+    assert_eq!(
+        super::nonplanar::interior_rows_for_boundary(&surface, &grazing, (v0, v1), du, 64, 2),
+        2
+    );
+    // A constant-v run between railed rims is itself a rail (a mid-wall
+    // section circle): the two-row grid already hugs it, so it keeps two rows.
+    let mid_rail = [
+        (0.0, v0),
+        (1.0, v0),
+        (2.0, v0),
+        (3.0, v0),
+        (3.0, 0.5),
+        (2.0, 0.5),
+        (1.0, 0.5),
+        (0.0, 0.5),
+        (0.0, v1),
+        (1.0, v1),
+        (2.0, v1),
+        (3.0, v1),
+    ];
+    assert_eq!(
+        super::nonplanar::interior_rows_for_boundary(&surface, &mid_rail, (v0, v1), du, 64, 2),
+        2
+    );
+    // A mid-size run (tens of samples, the coarse export tier) stays at two
+    // rows even between rails: it is already resolved, and isotropic rows
+    // only multiply triangles (render-measure: 103 samples drove 105 columns
+    // by 84 rows to 41490 against a pinned 12290).
+    let mut mid_size = vec![
+        (0.0, v0),
+        (0.5, v0),
+        (2.5, v0),
+        (3.0, v0),
+        (3.0, v1),
+        (2.5, v1),
+        (0.5, v1),
+        (0.0, v1),
+    ];
+    for k in 0..60 {
+        #[allow(clippy::cast_precision_loss)]
+        let u = 1.0 + k as f64 * (1.5 / 60.0);
+        #[allow(clippy::cast_precision_loss)]
+        let v = 0.3 + (k as f64 * 0.7 / 60.0).fract() * 0.4;
+        mid_size.insert(2 + k, (u, v));
+    }
+    assert_eq!(
+        super::nonplanar::interior_rows_for_boundary(&surface, &mid_size, (v0, v1), du, 64, 2),
+        2
+    );
+}
+
 // -- Gridfinity tessellation reproducers (#259) --
 
 #[test]
@@ -3853,4 +3968,166 @@ fn b24_exhaustive_carrier_arms_preserve_behavior() {
         local.is_none(),
         "a plane face must decline the local band path"
     );
+}
+
+/// Independent exact sector: its lower rim is a rational quadratic half
+/// circle sheared in z, on both the cylinder and the plane z = x / 4.
+fn nurbs_trimmed_cylinder_sector(
+    topo: &mut Topology,
+    scale: f64,
+) -> remus_topology::solid::SolidId {
+    use remus_math::{curves::Circle3D, nurbs::curve::NurbsCurve, surfaces::CylindricalSurface};
+    let point = |x, y, z| Point3::new(x * scale, y * scale, z * scale);
+    let positions = [
+        point(0.0, 0.0, 0.0),
+        point(0.0, -4.0, 0.0),
+        point(0.0, 4.0, 0.0),
+        point(0.0, 0.0, 10.0),
+        point(0.0, -4.0, 10.0),
+        point(0.0, 4.0, 10.0),
+    ];
+    let vertices = positions.map(|p| topo.add_vertex(Vertex::new(p, 1e-7)));
+    let lower = NurbsCurve::new(
+        2,
+        vec![0.0, 0.0, 0.0, 0.5, 0.5, 1.0, 1.0, 1.0],
+        vec![
+            positions[1],
+            point(4.0, -4.0, 1.0),
+            point(4.0, 0.0, 1.0),
+            point(4.0, 4.0, 1.0),
+            positions[2],
+        ],
+        vec![
+            1.0,
+            std::f64::consts::FRAC_1_SQRT_2,
+            1.0,
+            std::f64::consts::FRAC_1_SQRT_2,
+            1.0,
+        ],
+    )
+    .unwrap();
+    let upper = Circle3D::new_with_ref(
+        positions[3],
+        Vec3::new(0.0, 0.0, 1.0),
+        4.0 * scale,
+        Vec3::new(1.0, 0.0, 0.0),
+    )
+    .unwrap();
+    let mut edges = Vec::new();
+    for (a, b, curve, trim) in [
+        (0, 1, EdgeCurve::Line, None),
+        (1, 2, EdgeCurve::NurbsCurve(lower), Some((0.0, 1.0))),
+        (2, 0, EdgeCurve::Line, None),
+        (3, 4, EdgeCurve::Line, None),
+        (
+            4,
+            5,
+            EdgeCurve::Circle(upper),
+            Some((-std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_2)),
+        ),
+        (5, 3, EdgeCurve::Line, None),
+        (0, 3, EdgeCurve::Line, None),
+        (1, 4, EdgeCurve::Line, None),
+        (2, 5, EdgeCurve::Line, None),
+    ] {
+        let mut edge = Edge::new(vertices[a], vertices[b], curve);
+        edge.set_trim(trim);
+        edges.push(topo.add_edge(edge));
+    }
+    let mut face = |boundary: &[(usize, bool)], surface| {
+        let wire = topo.add_wire(
+            Wire::new(
+                boundary
+                    .iter()
+                    .map(|&(i, f)| OrientedEdge::new(edges[i], f))
+                    .collect(),
+                true,
+            )
+            .unwrap(),
+        );
+        topo.add_face(Face::new(wire, vec![], surface))
+    };
+    let bottom_normal = Vec3::new(0.25, 0.0, -1.0).normalize().unwrap();
+    let faces = vec![
+        face(
+            &[(1, true), (8, true), (4, false), (7, false)],
+            FaceSurface::Cylinder(
+                CylindricalSurface::new(
+                    point(0.0, 0.0, 0.0),
+                    Vec3::new(0.0, 0.0, 1.0),
+                    4.0 * scale,
+                )
+                .unwrap(),
+            ),
+        ),
+        face(
+            &[(2, false), (1, false), (0, false)],
+            FaceSurface::Plane {
+                normal: bottom_normal,
+                d: 0.0,
+            },
+        ),
+        face(
+            &[(3, true), (4, true), (5, true)],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 10.0 * scale,
+            },
+        ),
+        face(
+            &[(0, true), (7, true), (3, false), (6, false)],
+            FaceSurface::Plane {
+                normal: Vec3::new(-1.0, 0.0, 0.0),
+                d: 0.0,
+            },
+        ),
+        face(
+            &[(2, true), (6, true), (5, false), (8, false)],
+            FaceSurface::Plane {
+                normal: Vec3::new(-1.0, 0.0, 0.0),
+                d: 0.0,
+            },
+        ),
+    ];
+    let shell = topo.add_shell(Shell::new(faces).unwrap());
+    topo.add_solid(Solid::new(shell, vec![]))
+}
+
+#[test]
+fn nurbs_trimmed_cylinder_keeps_chords_near_surface() {
+    for scale in [0.1, 1.0, 10.0] {
+        let mut topo = Topology::new();
+        let solid = nurbs_trimmed_cylinder_sector(&mut topo, scale);
+        let deflection = 0.004 * scale;
+        let (mesh, offsets) =
+            tessellate_solid_grouped_with_tolerance(&topo, solid, deflection, 0.06).unwrap();
+        let mut worst = 0.0_f64;
+        for tri in mesh.indices[offsets[0] as usize..offsets[1] as usize].chunks_exact(3) {
+            let p = mesh.positions[tri[0] as usize];
+            let q = mesh.positions[tri[1] as usize];
+            let r = mesh.positions[tri[2] as usize];
+            for sample in [
+                p + ((q - p) + (r - p)) * (1.0 / 3.0),
+                p + (q - p) * 0.5,
+                q + (r - q) * 0.5,
+                r + (p - r) * 0.5,
+            ] {
+                worst = worst.max((sample.x().hypot(sample.y()) - 4.0 * scale).abs());
+            }
+        }
+        assert!(
+            worst < deflection,
+            "scale {scale}: wall chord error {worst} exceeds bounded display tolerance"
+        );
+        let mut uses = DetHashMap::default();
+        for tri in mesh.indices.chunks_exact(3) {
+            for (a, b) in [(tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])] {
+                *uses.entry((a.min(b), a.max(b))).or_insert(0) += 1;
+            }
+        }
+        assert!(
+            uses.values().all(|&n| n == 2),
+            "shared trim must stay watertight"
+        );
+    }
 }
