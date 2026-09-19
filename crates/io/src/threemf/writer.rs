@@ -86,7 +86,10 @@ fn tessellate_solid(
 ) -> Result<TriangleMesh, IoError> {
     // Use watertight tessellation that shares edge vertices between
     // adjacent faces, producing gap-free meshes for 3MF export.
-    tessellate::tessellate_solid(topo, solid_id, deflection).map_err(IoError::Operations)
+    let mut mesh =
+        tessellate::tessellate_solid(topo, solid_id, deflection).map_err(IoError::Operations)?;
+    crate::retain_nondegenerate_triangles(&mut mesh);
+    Ok(mesh)
 }
 
 /// Build the `3dmodel.model` XML document.
