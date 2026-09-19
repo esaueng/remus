@@ -32,9 +32,7 @@ pub mod threemf;
 pub use limits::ImportLimits;
 
 #[cfg(feature = "formats")]
-fn retain_nondegenerate_triangles(
-    mesh: &mut remus_operations::tessellate::TriangleMesh,
-) {
+fn retain_nondegenerate_triangles(mesh: &mut remus_operations::tessellate::TriangleMesh) {
     let indices = std::mem::take(&mut mesh.indices);
     mesh.indices.reserve(indices.len());
     for triangle in indices.chunks_exact(3) {
