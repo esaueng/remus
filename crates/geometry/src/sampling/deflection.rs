@@ -169,4 +169,51 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn chord_deviation_matches_closed_form_and_degenerate_chord_is_zero() {
+        // b - a = (4, 3, 0) has length 5; p is displaced from the chord line by
+        // exactly 7 along the in-plane perpendicular (-3, 4, 0)/5, so the
+        // documented |(p - a) x (b - a)| / |b - a| is 35 / 5 = 7.
+        let a = Point3::new(1.0, 1.0, 1.0);
+        let b = Point3::new(5.0, 4.0, 1.0);
+        let p = Point3::new(-1.6, 7.8, 1.0);
+        let dev = chord_deviation(p, a, b);
+        assert!((dev - 7.0).abs() < 1e-12, "deviation is {dev}, expected 7");
+
+        // Degenerate chord (a == b): the contract is a 0.0 return, not 0/0 = NaN.
+        let degenerate = chord_deviation(p, a, a);
+        assert!(
+            degenerate.is_finite() && degenerate.abs() < 1e-12,
+            "degenerate chord must give 0.0, got {degenerate}"
+        );
+    }
+
+    #[test]
+    fn subdivide_increments_depth_on_both_branches() {
+        // Entering two levels below MAX_DEPTH, the recursion may split at most
+        // twice, so at most three interior points can be appended no matter how
+        // far the curve is from its chords. Radius 10 over [0, 2] deviates by
+        // 10*(1 - cos 1) = 4.6 at the first midpoint and 10*(1 - cos 0.5) = 1.2
+        // at the second, both far above the 0.01 tolerance, so all three splits
+        // that the depth budget allows do happen.
+        let c = circle(10.0);
+        let mut out = Vec::new();
+        subdivide(
+            &c,
+            0.0,
+            c.evaluate(0.0),
+            2.0,
+            c.evaluate(2.0),
+            0.01,
+            MAX_DEPTH - 2,
+            &mut out,
+        );
+        assert_eq!(
+            out.len(),
+            3,
+            "depth budget allows exactly three interior points, got {}",
+            out.len()
+        );
+    }
 }
