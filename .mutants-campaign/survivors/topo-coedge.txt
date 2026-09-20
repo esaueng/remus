@@ -1,6 +1,0 @@
-crates/topology/src/coedge.rs:46:9: replace PeriodicWinding::u -> i32 with 0
-crates/topology/src/coedge.rs:46:9: replace PeriodicWinding::u -> i32 with 1
-crates/topology/src/coedge.rs:46:9: replace PeriodicWinding::u -> i32 with -1
-crates/topology/src/coedge.rs:52:9: replace PeriodicWinding::v -> i32 with 0
-crates/topology/src/coedge.rs:52:9: replace PeriodicWinding::v -> i32 with 1
-crates/topology/src/coedge.rs:52:9: replace PeriodicWinding::v -> i32 with -1
