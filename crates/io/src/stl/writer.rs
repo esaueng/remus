@@ -54,6 +54,27 @@ pub fn write_stl(
     }
 }
 
+/// Write one already-tessellated mesh to STL format as bytes.
+///
+/// The mesh is filtered through [`crate::retain_nondegenerate_triangles`] —
+/// the same degenerate-facet removal the solid writers apply — and then
+/// serialized verbatim. This is the mesh-level seam of [`write_stl`]: it
+/// exists so the export contract (no exact zero-area facet reaches a
+/// serialized file) can be exercised on a controlled mesh without a
+/// B-rep in the loop.
+///
+/// # Errors
+///
+/// Returns an error if serialization fails.
+pub fn write_mesh_stl(mesh: &TriangleMesh, format: StlFormat) -> Result<Vec<u8>, crate::IoError> {
+    let mut filtered = mesh.clone();
+    crate::retain_nondegenerate_triangles(&mut filtered);
+    match format {
+        StlFormat::Binary => Ok(write_binary_stl(&filtered)),
+        StlFormat::Ascii => write_ascii_stl(&filtered),
+    }
+}
+
 /// Resolve the vertices and face normal for the `t`-th triangle in a mesh.
 fn triangle_data(mesh: &TriangleMesh, t: usize) -> (Vec3, Point3, Point3, Point3) {
     let i0 = mesh.indices[t * 3] as usize;
