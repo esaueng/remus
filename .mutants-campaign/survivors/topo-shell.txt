@@ -1,3 +1,0 @@
-crates/topology/src/shell.rs:59:9: replace Shell::is_empty -> bool with true
-crates/topology/src/shell.rs:59:9: replace Shell::is_empty -> bool with false
-crates/topology/src/shell.rs:73:9: replace Shell::faces_mut -> &mut[FaceId] with Vec::leak(Vec::new())
