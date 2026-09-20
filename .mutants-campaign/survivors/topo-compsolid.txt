@@ -1,2 +1,0 @@
-crates/topology/src/compsolid.rs:46:9: replace CompSolid::shared_faces -> &[FaceId] with Vec::leak(Vec::new())
-crates/topology/src/compsolid.rs:52:9: replace CompSolid::num_solids -> usize with 0
