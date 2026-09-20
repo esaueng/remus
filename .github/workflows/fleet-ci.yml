@@ -315,7 +315,12 @@ jobs:
   coverage:
     name: Coverage
     needs: [changes, repo-policy, secrets-scan]
-    if: needs.changes.outputs.full == 'true'
+    # The job below holds id-token: write, which lets any process in the job
+    # mint this repo's OIDC tokens. Never run it on fork-PR code.
+    if: >-
+      needs.changes.outputs.full == 'true' &&
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: *fleet-runner
     env:
       CARGO_INCREMENTAL: "0"
