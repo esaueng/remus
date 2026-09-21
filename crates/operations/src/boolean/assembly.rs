@@ -321,6 +321,33 @@ fn copy_wire(
     Ok(topo.add_wire(wire))
 }
 
+/// Vertex positions of a source face's wires, in wire order.
+///
+/// Used only to snapshot `FaceSpec::Existing` boundaries for history mapping.
+/// Positions come from oriented starts so closed single-edge loops (a bore
+/// rim) yield one point, matching `substitute_wire` traversal order.
+fn existing_spec_wire_points(
+    topo: &Topology,
+    source: FaceId,
+) -> Result<(Vec<Point3>, Vec<Vec<Point3>>), crate::OperationsError> {
+    let face = topo.face(source)?;
+    let mut wire_ids = vec![face.outer_wire()];
+    wire_ids.extend(face.inner_wires().iter().copied());
+    let mut wires = Vec::with_capacity(wire_ids.len());
+    for wire_id in wire_ids {
+        let wire = topo.wire(wire_id)?;
+        let mut points = Vec::with_capacity(wire.edges().len());
+        for oriented in wire.edges() {
+            let edge = topo.edge(oriented.edge())?;
+            points.push(topo.vertex(oriented.oriented_start(edge))?.point());
+        }
+        wires.push(points);
+    }
+    let mut wires = wires.into_iter();
+    let outer = wires.next().unwrap_or_default();
+    Ok((outer, wires.collect()))
+}
+
 /// Build an outer wire from vertex positions, sharing vertices and edges with
 /// the rest of the assembly.
 fn build_polygon_wire(
@@ -985,12 +1012,33 @@ fn assemble_solid_mixed_traced(
 
     // Snapshot the actual allocation pool before refinement changes boundaries.
     // Consumers must check that each captured handle still belongs to the result.
+    // `FaceSpec::Existing` carries holes as topology rather than positions, so
+    // its wires are enumerated from the source face: the outer wire either
+    // from the replacement polygon or verbatim, inner wires always verbatim.
+    // Without this, preserved and hole-keeping faces would snapshot empty
+    // wires and every boundary-history consumer would see an incomplete map.
     let vertices_by_spec = if capture_boundaries {
         face_specs
             .iter()
             .map(|spec| {
-                std::iter::once(spec.vertices())
-                    .chain(spec.inner_wires().iter().map(Vec::as_slice))
+                let wire_points: Vec<Vec<Point3>> = match spec {
+                    FaceSpec::Existing { face, outer } => {
+                        let (outer_points, inner_points) =
+                            existing_spec_wire_points(topo, *face).unwrap_or_default();
+                        let mut wires = Vec::with_capacity(1 + inner_points.len());
+                        match outer {
+                            Some(positions) => wires.push(positions.clone()),
+                            None => wires.push(outer_points),
+                        }
+                        wires.extend(inner_points);
+                        wires
+                    }
+                    _ => std::iter::once(spec.vertices().to_vec())
+                        .chain(spec.inner_wires().iter().cloned())
+                        .collect(),
+                };
+                wire_points
+                    .iter()
                     .map(|points| {
                         points
                             .iter()
