@@ -157,16 +157,17 @@ pub(super) fn try_split_wire(
             // Extract inner cycle: edges from `peel_from` to end of
             // `current` form a closed loop at `start_v`.
             let inner: Vec<OrientedEdge> = current.split_off(peel_from);
+            // Vertices that were peeled off must be removed from the
+            // position map (they're no longer on the active walk). Remove
+            // only that suffix: rebuilding the surviving prefix for every
+            // pinch makes repeated short excursions after a long prefix
+            // quadratic in the wire length.
+            for oe2 in &inner {
+                let edge2 = topo.edge(oe2.edge())?;
+                stack_pos.remove(&oe2.oriented_start(edge2));
+            }
             if !inner.is_empty() {
                 cycles.push(inner);
-            }
-            // Vertices that were peeled off must be removed from the
-            // position map (they're no longer on the active walk).
-            // Rebuild the position map from the surviving prefix.
-            stack_pos.clear();
-            for (j, oe2) in current.iter().enumerate() {
-                let edge2 = topo.edge(oe2.edge())?;
-                stack_pos.insert(oe2.oriented_start(edge2), j);
             }
         }
         stack_pos.insert(start_v, current.len());
@@ -364,5 +365,51 @@ mod tests {
         assert_eq!(splits, 0, "well-formed wires should not split");
         let face = topo.face(fid).unwrap();
         assert_eq!(face.inner_wires().len(), 1);
+    }
+
+    /// Repeated short excursions after a long prefix must peel only the
+    /// excursion, rather than disturbing the surviving prefix.
+    #[test]
+    fn repeated_pinches_after_long_prefix_split_into_cycles() {
+        const PREFIX_LEN: u32 = 128;
+        const EXCURSIONS: u32 = 128;
+
+        let mut topo = Topology::new();
+        let start = vertex(&mut topo, Point3::new(0.0, 0.0, 0.0));
+        let mut previous = start;
+        let mut edges = Vec::new();
+        for i in 1..=PREFIX_LEN {
+            let next = vertex(&mut topo, Point3::new(f64::from(i), 0.0, 0.0));
+            let edge = edge_line(&mut topo, previous, next);
+            edges.push(OrientedEdge::new(edge, true));
+            previous = next;
+        }
+        let pinch = previous;
+
+        for i in 0..EXCURSIONS {
+            let tip = vertex(
+                &mut topo,
+                Point3::new(f64::from(PREFIX_LEN), f64::from(i) + 1.0, 0.0),
+            );
+            let out = edge_line(&mut topo, pinch, tip);
+            let back = edge_line(&mut topo, tip, pinch);
+            edges.push(OrientedEdge::new(out, true));
+            edges.push(OrientedEdge::new(back, true));
+        }
+
+        let closing = edge_line(&mut topo, pinch, start);
+        edges.push(OrientedEdge::new(closing, true));
+        let edge_count = edges.len();
+        let wire = topo.add_wire(Wire::new(edges, true).unwrap());
+
+        let cycles = try_split_wire(&topo, wire).unwrap().unwrap();
+        assert_eq!(cycles.len(), EXCURSIONS as usize + 1);
+        assert_eq!(cycles.iter().map(Vec::len).sum::<usize>(), edge_count);
+        assert!(
+            cycles[..EXCURSIONS as usize]
+                .iter()
+                .all(|cycle| cycle.len() == 2)
+        );
+        assert_eq!(cycles[EXCURSIONS as usize].len(), PREFIX_LEN as usize + 1);
     }
 }
