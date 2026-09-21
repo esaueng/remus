@@ -329,6 +329,113 @@ mod tests {
         assert!(uses[0].1, "stored under the forward use");
     }
 
+    /// A second, independent planar triangle face in the same topology.
+    fn extra_triangle_face(topo: &mut Topology) -> FaceId {
+        let v0 = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 2.0), 1e-7));
+        let v1 = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 2.0), 1e-7));
+        let v2 = topo.add_vertex(Vertex::new(Point3::new(0.0, 1.0, 2.0), 1e-7));
+        let e0 = topo.add_edge(Edge::new(v0, v1, EdgeCurve::Line));
+        let e1 = topo.add_edge(Edge::new(v1, v2, EdgeCurve::Line));
+        let e2 = topo.add_edge(Edge::new(v2, v0, EdgeCurve::Line));
+        let wire = topo.add_wire(
+            Wire::new(
+                vec![
+                    OrientedEdge::new(e0, true),
+                    OrientedEdge::new(e1, true),
+                    OrientedEdge::new(e2, true),
+                ],
+                true,
+            )
+            .unwrap(),
+        );
+        topo.add_face(Face::new(
+            wire,
+            vec![],
+            FaceSurface::Plane {
+                normal: remus_math::vec::Vec3::new(0.0, 0.0, 1.0),
+                d: 2.0,
+            },
+        ))
+    }
+
+    #[test]
+    fn registry_len_and_is_empty_track_indexed_uses() {
+        let (topo, edge, face) = make_simple_topology();
+        let coedge = topo.coedges_of_edge(edge)[0];
+
+        let mut registry = PCurveRegistry::new();
+        assert!(registry.is_empty(), "a fresh registry indexes nothing");
+        assert_eq!(registry.len(), 0);
+
+        // Two entries: neither the `0` nor the `1` constant matches.
+        registry.index_use(edge, face, true, coedge);
+        registry.index_use(edge, face, false, coedge);
+        assert!(!registry.is_empty(), "an indexed use makes it non-empty");
+        assert_eq!(registry.len(), 2);
+    }
+
+    #[test]
+    fn remove_face_drops_exactly_that_face_and_keeps_the_others() {
+        let (mut topo, edge, face_a) = make_simple_topology();
+        let face_b = extra_triangle_face(&mut topo);
+        assert_ne!(face_a, face_b);
+        let coedge = topo.coedges_of_edge(edge)[0];
+
+        let mut registry = PCurveRegistry::new();
+        registry.index_use(edge, face_a, true, coedge);
+        registry.index_use(edge, face_b, true, coedge);
+        assert_eq!(registry.len(), 2);
+
+        registry.remove_face(face_a);
+        assert_eq!(registry.len(), 1, "one entry removed, one retained");
+        assert!(
+            registry.get_use(edge, face_a, true).is_none(),
+            "the removed face keeps no index entry"
+        );
+        assert_eq!(
+            registry.get_use(edge, face_b, true),
+            Some(coedge),
+            "an unrelated face's entry survives"
+        );
+    }
+
+    #[test]
+    fn remove_for_retired_entities_drops_an_entry_when_either_side_retires() {
+        let (mut topo, edge, face_a) = make_simple_topology();
+        let face_b = extra_triangle_face(&mut topo);
+        let coedge = topo.coedges_of_edge(edge)[0];
+
+        let no_edges: HashSet<EdgeId> = HashSet::new();
+        let no_faces: HashSet<FaceId> = HashSet::new();
+        let retired_edge: HashSet<EdgeId> = std::iter::once(edge).collect();
+        let retired_face_a: HashSet<FaceId> = std::iter::once(face_a).collect();
+        let retired_face_b: HashSet<FaceId> = std::iter::once(face_b).collect();
+
+        // Only the edge retired — the live face must not rescue the entry.
+        let mut registry = PCurveRegistry::new();
+        registry.index_use(edge, face_a, true, coedge);
+        registry.remove_for_retired_entities(&retired_edge, &no_faces);
+        assert!(
+            registry.is_empty(),
+            "a retired edge drops the entry even though its face is live"
+        );
+
+        // Only the face retired — the live edge must not rescue the entry.
+        let mut registry = PCurveRegistry::new();
+        registry.index_use(edge, face_a, true, coedge);
+        registry.remove_for_retired_entities(&no_edges, &retired_face_a);
+        assert!(
+            registry.is_empty(),
+            "a retired face drops the entry even though its edge is live"
+        );
+
+        // Neither side retired — the entry survives.
+        let mut registry = PCurveRegistry::new();
+        registry.index_use(edge, face_a, true, coedge);
+        registry.remove_for_retired_entities(&no_edges, &retired_face_b);
+        assert_eq!(registry.len(), 1, "an unrelated retirement changes nothing");
+    }
+
     #[test]
     fn nurbs_pcurve() {
         let curve = NurbsCurve2D::from_line(Point2::new(0.0, 0.0), Point2::new(1.0, 1.0)).unwrap();

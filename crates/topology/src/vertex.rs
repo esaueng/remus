@@ -89,6 +89,17 @@ mod tests {
     }
 
     #[test]
+    fn set_point_replaces_the_stored_position() {
+        let mut v = Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7);
+        v.set_point(Point3::new(1.0, -2.0, 3.5));
+        assert_eq!(v.point().x(), 1.0);
+        assert_eq!(v.point().y(), -2.0);
+        assert_eq!(v.point().z(), 3.5);
+        // Moving the point must not disturb the tolerance ball radius.
+        assert_eq!(v.tolerance(), 1e-7);
+    }
+
+    #[test]
     fn set_tolerance_rejects_non_finite_and_negative_balls() {
         let mut v = Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7);
 
