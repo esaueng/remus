@@ -14,7 +14,7 @@ use crate::vec::{Point3, Vec3};
 
 use super::chaining::build_curves_from_points;
 use super::surface_marching::{
-    constrain_param, constrain_state, march_with_branches, near_existing_segment,
+    SsiScratch, constrain_param, constrain_state, march_with_branches, near_existing_segment,
     surface_newton_step,
 };
 use crate::context::{OperationContext, WorkBudgets};
@@ -78,6 +78,9 @@ pub fn intersect_nurbs_nurbs_with_context(
     let budgets: &WorkBudgets = &context.budgets;
     let n = samples.max(5);
     let tolerance = 1e-6;
+    // One scratch pair for the whole intersection: surface 1's half only
+    // ever sees `surface1`, surface 2's half only `surface2`.
+    let mut scratch = SsiScratch::new();
 
     // Compute adaptive initial step if not explicitly provided.
     let march_step = if march_step <= 0.0 || march_step > 1.0 {
@@ -101,10 +104,22 @@ pub fn intersect_nurbs_nurbs_with_context(
     // Phase 1: Find seed points using Bezier subdivision (robust, can't miss branches).
     // Falls back to grid sampling if decomposition fails.
     let seeds = {
-        let sub_seeds =
-            find_ssi_seeds_subdivision_with_context(surface1, surface2, tolerance, context)?;
+        let sub_seeds = find_ssi_seeds_subdivision_with_context(
+            surface1,
+            surface2,
+            tolerance,
+            context,
+            &mut scratch,
+        )?;
         if sub_seeds.is_empty() {
-            find_ssi_seeds_grid_with_context(surface1, surface2, n, tolerance, context)?
+            find_ssi_seeds_grid_with_context(
+                surface1,
+                surface2,
+                n,
+                tolerance,
+                context,
+                &mut scratch,
+            )?
         } else {
             sub_seeds
         }
@@ -138,8 +153,15 @@ pub fn intersect_nurbs_nurbs_with_context(
             continue;
         }
 
-        let (traced, branch_seeds) =
-            march_with_branches(surface1, surface2, &seed, march_step, tolerance, context)?;
+        let (traced, branch_seeds) = march_with_branches(
+            surface1,
+            surface2,
+            &seed,
+            march_step,
+            tolerance,
+            context,
+            &mut scratch,
+        )?;
 
         if !traced.is_empty() {
             traced_segments.push(traced);
@@ -309,8 +331,14 @@ pub(super) fn find_ssi_seeds_subdivision(
     s2: &NurbsSurface,
     tolerance: f64,
 ) -> Vec<IntersectionPoint> {
-    find_ssi_seeds_subdivision_with_context(s1, s2, tolerance, &OperationContext::new())
-        .unwrap_or_default()
+    find_ssi_seeds_subdivision_with_context(
+        s1,
+        s2,
+        tolerance,
+        &OperationContext::new(),
+        &mut SsiScratch::new(),
+    )
+    .unwrap_or_default()
 }
 
 pub(super) fn find_ssi_seeds_subdivision_with_context(
@@ -318,6 +346,7 @@ pub(super) fn find_ssi_seeds_subdivision_with_context(
     s2: &NurbsSurface,
     tolerance: f64,
     context: &OperationContext,
+    scratch: &mut SsiScratch,
 ) -> Result<Vec<IntersectionPoint>, MathError> {
     context.check_cancelled()?;
     let patches_a = match surface_to_bezier_patches(s1) {
@@ -364,6 +393,7 @@ pub(super) fn find_ssi_seeds_subdivision_with_context(
         tolerance,
         &mut seeds,
         context,
+        scratch,
     )?;
 
     Ok(seeds)
@@ -381,6 +411,7 @@ fn subdivide_for_seeds(
     tolerance: f64,
     seeds: &mut Vec<IntersectionPoint>,
     context: &OperationContext,
+    scratch: &mut SsiScratch,
 ) -> Result<(), MathError> {
     // Cap seed count: marching only needs a few seeds per intersection branch.
     // Near-tangential cases can generate thousands of subdivision candidates,
@@ -414,7 +445,7 @@ fn subdivide_for_seeds(
             let v2 = pb.v_mid();
 
             if let Some(refined) =
-                refine_ssi_point_with_context(s1, s2, u1, v1, u2, v2, tolerance, context)?
+                refine_ssi_point_with_context(s1, s2, u1, v1, u2, v2, tolerance, context, scratch)?
             {
                 // 100x dedup: multiple patches may converge to the same intersection
                 let is_dup = seeds
@@ -443,7 +474,7 @@ fn subdivide_for_seeds(
             let v2 = pb.v_mid();
 
             if let Some(refined) =
-                refine_ssi_point_with_context(s1, s2, u1, v1, u2, v2, tolerance, context)?
+                refine_ssi_point_with_context(s1, s2, u1, v1, u2, v2, tolerance, context, scratch)?
             {
                 // 100x dedup: multiple patches may converge to the same intersection
                 let is_dup = seeds
@@ -470,6 +501,7 @@ fn subdivide_for_seeds(
                 tolerance,
                 seeds,
                 context,
+                scratch,
             )?;
         } else {
             // Subdivide patch B.
@@ -484,6 +516,7 @@ fn subdivide_for_seeds(
                 tolerance,
                 seeds,
                 context,
+                scratch,
             )?;
         }
     }
@@ -728,8 +761,15 @@ pub(super) fn find_ssi_seeds_grid(
     n: usize,
     tolerance: f64,
 ) -> Vec<IntersectionPoint> {
-    find_ssi_seeds_grid_with_context(s1, s2, n, tolerance, &OperationContext::new())
-        .unwrap_or_default()
+    find_ssi_seeds_grid_with_context(
+        s1,
+        s2,
+        n,
+        tolerance,
+        &OperationContext::new(),
+        &mut SsiScratch::new(),
+    )
+    .unwrap_or_default()
 }
 
 fn find_ssi_seeds_grid_with_context(
@@ -738,6 +778,7 @@ fn find_ssi_seeds_grid_with_context(
     n: usize,
     tolerance: f64,
     context: &OperationContext,
+    scratch: &mut SsiScratch,
 ) -> Result<Vec<IntersectionPoint>, MathError> {
     context.check_cancelled()?;
     let (u1_min, u1_max) = s1.domain_u();
@@ -790,8 +831,9 @@ fn find_ssi_seeds_grid_with_context(
         for &(u2, v2, p2) in &pts2 {
             let dist = (p1 - p2).length();
             if dist < threshold
-                && let Some(refined) =
-                    refine_ssi_point_with_context(s1, s2, u1, v1, u2, v2, tolerance, context)?
+                && let Some(refined) = refine_ssi_point_with_context(
+                    s1, s2, u1, v1, u2, v2, tolerance, context, scratch,
+                )?
             {
                 // 100x dedup: multiple grid samples may converge to the same intersection
                 let dup = seeds.iter().any(|s: &IntersectionPoint| {
@@ -833,6 +875,7 @@ pub(super) fn refine_ssi_point(
         v2_guess,
         tolerance,
         &OperationContext::new(),
+        &mut SsiScratch::new(),
     )
     .ok()
     .flatten()
@@ -848,6 +891,7 @@ pub(super) fn refine_ssi_point_with_context(
     v2_guess: f64,
     tolerance: f64,
     context: &OperationContext,
+    scratch: &mut SsiScratch,
 ) -> Result<Option<IntersectionPoint>, MathError> {
     let mut state = [u1_guess, v1_guess, u2_guess, v2_guess];
     let mut prev_residual = f64::MAX;
@@ -877,9 +921,9 @@ pub(super) fn refine_ssi_point_with_context(
         prev_residual = residual;
 
         // Build 3x4 Jacobian: J = [dS1/du1, dS1/dv1, -dS2/du2, -dS2/dv2]
-        let d1 = s1.derivatives(cstate[0], cstate[1], 1);
-        let d2 = s2.derivatives(cstate[2], cstate[3], 1);
-        let j = [d1[1][0], d1[0][1], -d2[1][0], -d2[0][1]]; // 4 column vectors (Vec3)
+        let (su1, sv1) = scratch.partials1(s1, cstate[0], cstate[1]);
+        let (su2, sv2) = scratch.partials2(s2, cstate[2], cstate[3]);
+        let j = [su1, sv1, -su2, -sv2]; // 4 column vectors (Vec3)
 
         // Normal equations: JtJ (4x4) * d = -Jtr (4x1)
         // Use only the well-conditioned 4x4 system.
@@ -908,7 +952,7 @@ pub(super) fn refine_ssi_point_with_context(
             state[3] += delta[3];
         } else {
             // Still singular after regularization -- fall back to alternating projection.
-            let (du2, dv2) = surface_newton_step(s2, cstate[2], cstate[3], p1);
+            let (du2, dv2) = surface_newton_step(scratch.solve2(), s2, cstate[2], cstate[3], p1);
             state[2] += du2;
             state[3] += dv2;
             let p2_new = s2.evaluate(
@@ -925,7 +969,8 @@ pub(super) fn refine_ssi_point_with_context(
                     s2.is_periodic_v(),
                 ),
             );
-            let (du1, dv1) = surface_newton_step(s1, cstate[0], cstate[1], p2_new);
+            let (du1, dv1) =
+                surface_newton_step(scratch.solve1(), s1, cstate[0], cstate[1], p2_new);
             state[0] += du1;
             state[1] += dv1;
         }
