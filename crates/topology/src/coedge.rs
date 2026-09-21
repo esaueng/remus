@@ -132,3 +132,27 @@ impl Coedge {
         std::mem::replace(&mut self.periodic_winding, winding)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use super::*;
+
+    #[test]
+    fn periodic_winding_reports_u_and_v_independently() {
+        // u and v are distinct and neither 0, 1 nor -1, so each accessor is
+        // pinned to its own field and to the stored magnitude.
+        let winding = PeriodicWinding::new(3, -4);
+        assert_eq!(winding.u(), 3);
+        assert_eq!(winding.v(), -4);
+
+        let swapped = PeriodicWinding::new(-4, 3);
+        assert_eq!(swapped.u(), -4);
+        assert_eq!(swapped.v(), 3);
+
+        assert_eq!(PeriodicWinding::ZERO.u(), 0);
+        assert_eq!(PeriodicWinding::ZERO.v(), 0);
+        assert_eq!(PeriodicWinding::default(), PeriodicWinding::ZERO);
+    }
+}
