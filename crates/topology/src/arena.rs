@@ -472,4 +472,168 @@ mod tests {
         assert_eq!(arena.get(fresh).map(String::as_str), Some("fresh"));
         assert!(!arena.is_empty());
     }
+
+    /// `Id` ordering is by index, total, and consistent with insertion; its
+    /// `Debug` rendering must actually name the handle.
+    #[test]
+    fn ids_order_by_index_and_render_distinguishably() {
+        let mut arena: Arena<u32> = Arena::new();
+        let first = arena.alloc(10);
+        let second = arena.alloc(20);
+        let third = arena.alloc(30);
+
+        assert!(first < second);
+        assert!(second < third);
+        assert!(first < third);
+        assert_eq!(first.partial_cmp(&second), Some(std::cmp::Ordering::Less));
+        assert_eq!(second.partial_cmp(&second), Some(std::cmp::Ordering::Equal));
+        assert_eq!(third.partial_cmp(&first), Some(std::cmp::Ordering::Greater));
+
+        let mut sorted = vec![third, first, second];
+        sorted.sort();
+        assert_eq!(sorted, vec![first, second, third]);
+
+        let rendered = format!("{first:?}");
+        assert!(!rendered.is_empty(), "a handle must render as something");
+        assert!(
+            rendered.contains('0'),
+            "the rendering must carry the index: {rendered}"
+        );
+        assert_ne!(
+            rendered,
+            format!("{second:?}"),
+            "two different handles must not render identically"
+        );
+    }
+
+    /// Equal handles hash equal (the `Hash`/`Eq` contract) and the hash
+    /// depends on the index — otherwise every handle in a CAD-scale model
+    /// collides into one bucket and map lookups degrade to a linear scan.
+    #[test]
+    fn ids_hash_by_index_for_map_and_set_use() {
+        use std::collections::hash_map::DefaultHasher;
+        use std::collections::{HashMap, HashSet};
+        use std::hash::{Hash, Hasher};
+
+        fn hash_of<T>(id: Id<T>) -> u64 {
+            let mut hasher = DefaultHasher::new();
+            id.hash(&mut hasher);
+            hasher.finish()
+        }
+
+        let mut arena: Arena<u32> = Arena::new();
+        let first = arena.alloc(1);
+        let second = arena.alloc(2);
+
+        assert_eq!(hash_of(first), hash_of(arena.id_from_index(0).unwrap()));
+        assert_ne!(
+            hash_of(first),
+            hash_of(second),
+            "the hash must depend on the index"
+        );
+
+        let mut map = HashMap::new();
+        map.insert(first, "first");
+        map.insert(second, "second");
+        assert_eq!(map.get(&first), Some(&"first"));
+        assert_eq!(map.get(&second), Some(&"second"));
+
+        let set: HashSet<Id<u32>> = [first, second, first].into_iter().collect();
+        assert_eq!(set.len(), 2);
+        assert!(set.contains(&second));
+    }
+
+    #[test]
+    fn with_capacity_preallocates_both_slot_vectors() {
+        let mut preallocated: Arena<u32> = Arena::with_capacity(64);
+
+        assert_eq!(preallocated.len(), 0);
+        assert!(preallocated.is_empty());
+        assert!(
+            preallocated.items.capacity() >= 64,
+            "the value vector must be pre-allocated"
+        );
+        assert!(
+            preallocated.live.capacity() >= 64,
+            "the liveness vector must be pre-allocated too"
+        );
+
+        // Otherwise it behaves exactly like a default arena.
+        let mut fresh: Arena<u32> = Arena::default();
+        for value in 0..4 {
+            assert_eq!(preallocated.alloc(value), fresh.alloc(value));
+        }
+        assert_eq!(preallocated.len(), fresh.len());
+        assert_eq!(preallocated.slot_len(), fresh.slot_len());
+    }
+
+    /// Every `alloc` pushes to both vectors, so a hint that only covers the
+    /// value vector still reallocates the liveness vector on the next push.
+    #[test]
+    fn reserve_covers_the_liveness_vector_independently() {
+        let mut arena: Arena<u32> = Arena::new();
+        for i in 0..1_000 {
+            arena.alloc(i);
+        }
+        arena.items.reserve_exact(2_000);
+        arena.live.shrink_to_fit();
+
+        let live_len = arena.live.len();
+        assert!(
+            arena.items.capacity() - arena.items.len() >= 500,
+            "fixture: the value vector must already have headroom"
+        );
+        assert!(
+            arena.live.capacity() - live_len < 500,
+            "fixture: the liveness vector must be short of the request"
+        );
+
+        arena.reserve(500);
+
+        assert!(
+            arena.live.capacity() >= live_len + 500,
+            "the liveness vector must be reserved too: {live_len} slots, capacity {}",
+            arena.live.capacity()
+        );
+    }
+
+    #[test]
+    fn slot_len_counts_retired_slots_but_len_does_not() {
+        let mut arena: Arena<u32> = Arena::new();
+        assert_eq!(arena.slot_len(), 0);
+
+        let first = arena.alloc(1);
+        arena.alloc(2);
+        arena.alloc(3);
+        assert_eq!(arena.slot_len(), 3);
+        assert_eq!(arena.len(), 3);
+
+        assert!(arena.retire(first));
+        assert_eq!(arena.slot_len(), 3, "a retired slot stays allocated");
+        assert_eq!(arena.len(), 2);
+
+        arena.alloc(4);
+        assert_eq!(arena.slot_len(), 4);
+        assert_eq!(arena.len(), 3);
+    }
+
+    #[test]
+    fn iter_mut_visits_every_live_entry_once_and_writes_through() {
+        let mut arena: Arena<u32> = Arena::new();
+        let first = arena.alloc(1);
+        let retired = arena.alloc(2);
+        let last = arena.alloc(3);
+        assert!(arena.retire(retired));
+
+        let mut visited = Vec::new();
+        for (id, value) in arena.iter_mut() {
+            visited.push(id);
+            *value *= 10;
+        }
+
+        assert_eq!(visited, vec![first, last], "retired slots are skipped");
+        assert_eq!(arena.get(first).copied(), Some(10));
+        assert_eq!(arena.get(last).copied(), Some(30));
+        assert!(arena.get(retired).is_none());
+    }
 }

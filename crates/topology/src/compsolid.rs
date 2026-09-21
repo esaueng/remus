@@ -82,4 +82,63 @@ mod tests {
         let retrieved = topo.compsolid(cs_id).unwrap();
         assert_eq!(retrieved.num_solids(), 0);
     }
+
+    /// One planar triangular face at height `z`.
+    fn triangle_face(topo: &mut Topology, z: f64) -> FaceId {
+        use remus_math::vec::Vec3;
+
+        use crate::edge::{Edge, EdgeCurve};
+        use crate::face::{Face, FaceSurface};
+        use crate::wire::{OrientedEdge, Wire};
+
+        let v0 = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, z), 1e-7));
+        let v1 = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, z), 1e-7));
+        let v2 = topo.add_vertex(Vertex::new(Point3::new(0.0, 1.0, z), 1e-7));
+        let e0 = topo.add_edge(Edge::new(v0, v1, EdgeCurve::Line));
+        let e1 = topo.add_edge(Edge::new(v1, v2, EdgeCurve::Line));
+        let e2 = topo.add_edge(Edge::new(v2, v0, EdgeCurve::Line));
+        let wire = topo.add_wire(
+            Wire::new(
+                vec![
+                    OrientedEdge::new(e0, true),
+                    OrientedEdge::new(e1, true),
+                    OrientedEdge::new(e2, true),
+                ],
+                true,
+            )
+            .unwrap(),
+        );
+        topo.add_face(Face::new(
+            wire,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: z,
+            },
+        ))
+    }
+
+    #[test]
+    fn populated_compsolid_reports_its_solids_and_shared_faces() {
+        use crate::shell::Shell;
+        use crate::solid::Solid;
+
+        let mut topo = Topology::new();
+        let f0 = triangle_face(&mut topo, 0.0);
+        let f1 = triangle_face(&mut topo, 1.0);
+        assert_ne!(f0, f1);
+
+        let shell_a = topo.add_shell(Shell::empty());
+        let shell_b = topo.add_shell(Shell::empty());
+        let s0 = topo.add_solid(Solid::new(shell_a, vec![]));
+        let s1 = topo.add_solid(Solid::new(shell_b, vec![]));
+        assert_ne!(s0, s1);
+
+        let cs = CompSolid::new(vec![s0, s1], vec![f0, f1]);
+
+        // Two solids: neither the `0` nor a `1` constant matches.
+        assert_eq!(cs.num_solids(), 2);
+        assert_eq!(cs.solids(), &[s0, s1]);
+        assert_eq!(cs.shared_faces(), &[f0, f1]);
+    }
 }
