@@ -534,9 +534,8 @@ fn heal_planar_r1(y_sign: f64, what: &str) -> (Topology, SolidId, f64) {
     );
 
     // Failure rollback: a wrong radius witness refuses without mutation.
-    let faces_still = remus_topology::explorer::solid_faces(&topo, solid)
-        .unwrap()
-        .len();
+    // The input solid is untouched by heals, so its pre-heal snapshots apply.
+    let census_still = surface_census(&topo, solid);
     let error =
         remus_operations::resize_blend::resize_blend(&mut topo, solid, band, 2.0, 0.0).unwrap_err();
     assert!(
@@ -547,8 +546,13 @@ fn heal_planar_r1(y_sign: f64, what: &str) -> (Topology, SolidId, f64) {
         remus_topology::explorer::solid_faces(&topo, solid)
             .unwrap()
             .len(),
-        faces_still,
-        "{what}: refusal preserves the input"
+        faces_before,
+        "{what}: refusal preserves faces"
+    );
+    assert_eq!(
+        surface_census(&topo, solid),
+        census_still,
+        "{what}: refusal preserves carriers"
     );
     assert!(
         (remus_operations::measure::solid_volume(&topo, solid, 0.02).unwrap() - volume_before)
@@ -791,9 +795,10 @@ fn heal_r8_r1(y_sign: f64, what: &str) -> (Topology, SolidId, f64) {
     assert_eq!(faces.len(), faces_before - 1, "{what}: only the band goes");
     let volume_after = remus_operations::measure::solid_volume(&topo, result.solid, 0.02).unwrap();
     let loss = volume_before - volume_after;
+    // Scaled end-shape band: the native ~0.1 gap scales with volume.
     assert!(
-        loss > 0.0 && loss < prism,
-        "{what}: loss {loss:.6} inside (0, prism {prism:.6})"
+        loss > prism - 1.0 && loss < prism + 1e-3,
+        "synthetic: scaled loss {loss:.6} inside scaled prism {prism:.6}"
     );
     assert!(
         prism - loss < 0.5,
@@ -1864,6 +1869,7 @@ fn tampered_generatrix_proof_refuses_with_rollback() {
     let faces_before = remus_topology::explorer::solid_faces(&topo, solid)
         .unwrap()
         .len();
+    let census_before = surface_census(&topo, solid);
     let volume_before = remus_operations::measure::solid_volume(&topo, solid, 0.02).unwrap();
     let error =
         remus_operations::resize_blend::resize_blend(&mut topo, solid, band, 1.0, 0.0).unwrap_err();
@@ -1877,6 +1883,11 @@ fn tampered_generatrix_proof_refuses_with_rollback() {
             .len(),
         faces_before,
         "{what}: refusal preserves faces"
+    );
+    assert_eq!(
+        surface_census(&topo, solid),
+        census_before,
+        "{what}: refusal preserves carriers"
     );
     assert!(
         (remus_operations::measure::solid_volume(&topo, solid, 0.02).unwrap() - volume_before)
