@@ -3,11 +3,89 @@
 
 use crate::MathError;
 use crate::context::OperationContext;
-use crate::nurbs::surface::NurbsSurface;
+use crate::nurbs::surface::{DerivativeScratch, NurbsSurface};
 use crate::vec::{Point3, Vec3};
 
 use super::IntersectionPoint;
 use super::surface_seeding::refine_ssi_point_with_context;
+
+/// Per-surface derivative scratch pair threaded through SSI marching and
+/// refinement.
+///
+/// [`DerivativeScratch`] span hints are knot indices that mean nothing on any
+/// other knot vector, so each scratch must stay tied to one surface: surface
+/// 1's halves only ever see `surface1`, surface 2's halves only `surface2`.
+/// All state is overwritten per call; nothing is read before it is written.
+pub(super) struct SsiScratch {
+    /// Derivative-solve buffers tied to surface 1's knot vectors.
+    scratch1: DerivativeScratch,
+    /// Derivative-solve buffers tied to surface 2's knot vectors.
+    scratch2: DerivativeScratch,
+}
+
+impl SsiScratch {
+    /// Empty scratch; buffers grow on first use.
+    pub(super) fn new() -> Self {
+        Self {
+            scratch1: DerivativeScratch::new(),
+            scratch2: DerivativeScratch::new(),
+        }
+    }
+
+    /// `surface1.normal(u, v)` on the reusable buffers; bit-identical.
+    pub(super) fn normal1(&mut self, s1: &NurbsSurface, u: f64, v: f64) -> Result<Vec3, MathError> {
+        self.scratch1.normal_from(s1, u, v)
+    }
+
+    /// `surface2.normal(u, v)` on the reusable buffers; bit-identical.
+    pub(super) fn normal2(&mut self, s2: &NurbsSurface, u: f64, v: f64) -> Result<Vec3, MathError> {
+        self.scratch2.normal_from(s2, u, v)
+    }
+
+    /// `surface1`'s first partials on the reusable buffers; bit-identical to
+    /// `(partial_u, partial_v)`.
+    pub(super) fn partials1(&mut self, s1: &NurbsSurface, u: f64, v: f64) -> (Vec3, Vec3) {
+        self.scratch1.partials_from(s1, u, v)
+    }
+
+    /// `surface2`'s first partials on the reusable buffers; bit-identical to
+    /// `(partial_u, partial_v)`.
+    pub(super) fn partials2(&mut self, s2: &NurbsSurface, u: f64, v: f64) -> (Vec3, Vec3) {
+        self.scratch2.partials_from(s2, u, v)
+    }
+
+    /// `surface1`'s normal plus both first partials in one base solve;
+    /// bit-identical to `(normal, partial_u, partial_v)`.
+    pub(super) fn normal_partials1(
+        &mut self,
+        s1: &NurbsSurface,
+        u: f64,
+        v: f64,
+    ) -> (Result<Vec3, MathError>, Vec3, Vec3) {
+        self.scratch1.normal_partials_from(s1, u, v)
+    }
+
+    /// `surface2`'s normal plus both first partials in one base solve;
+    /// bit-identical to `(normal, partial_u, partial_v)`.
+    pub(super) fn normal_partials2(
+        &mut self,
+        s2: &NurbsSurface,
+        u: f64,
+        v: f64,
+    ) -> (Result<Vec3, MathError>, Vec3, Vec3) {
+        self.scratch2.normal_partials_from(s2, u, v)
+    }
+
+    /// The reusable derivative-solve scratch for surface 1.
+    pub(super) fn solve1(&mut self) -> &mut DerivativeScratch {
+        &mut self.scratch1
+    }
+
+    /// The reusable derivative-solve scratch for surface 2.
+    pub(super) fn solve2(&mut self) -> &mut DerivativeScratch {
+        &mut self.scratch2
+    }
+}
 
 /// March along an intersection curve, detecting branch points.
 ///
@@ -23,18 +101,19 @@ pub(super) fn march_with_branches(
     step_size: f64,
     tolerance: f64,
     context: &OperationContext,
+    scratch: &mut SsiScratch,
 ) -> Result<(Vec<IntersectionPoint>, Vec<IntersectionPoint>), MathError> {
     context.check_cancelled()?;
     let mut branch_seeds: Vec<IntersectionPoint> = Vec::new();
 
     // March forward, collecting branch points.
     let (forward, fwd_branches) =
-        march_direction_with_branches(s1, s2, seed, true, step_size, tolerance, context)?;
+        march_direction_with_branches(s1, s2, seed, true, step_size, tolerance, context, scratch)?;
     branch_seeds.extend(fwd_branches);
 
     // March backward, collecting branch points.
     let (backward, bwd_branches) =
-        march_direction_with_branches(s1, s2, seed, false, step_size, tolerance, context)?;
+        march_direction_with_branches(s1, s2, seed, false, step_size, tolerance, context, scratch)?;
     branch_seeds.extend(bwd_branches);
 
     // Combine: backward (reversed) + seed + forward.
@@ -51,6 +130,7 @@ pub(super) fn march_with_branches(
 /// sample perturbation directions and find viable SSI continuations
 /// that differ from the current march direction by > 30 deg. Each such
 /// direction produces a new seed offset slightly from the branch point.
+#[allow(clippy::too_many_arguments)]
 fn find_branch_directions(
     s1: &NurbsSurface,
     s2: &NurbsSurface,
@@ -59,6 +139,7 @@ fn find_branch_directions(
     step_size: f64,
     tolerance: f64,
     context: &OperationContext,
+    scratch: &mut SsiScratch,
 ) -> Result<Vec<IntersectionPoint>, MathError> {
     let eps = step_size * 0.1;
     let (u1, v1) = point.param1;
@@ -84,7 +165,7 @@ fn find_branch_directions(
         let v1p = v1 + dv;
 
         if let Some(refined) =
-            refine_ssi_point_with_context(s1, s2, u1p, v1p, u2, v2, tolerance, context)?
+            refine_ssi_point_with_context(s1, s2, u1p, v1p, u2, v2, tolerance, context, scratch)?
         {
             let d = refined.point - point.point;
             let dist = d.length();
@@ -108,7 +189,11 @@ fn find_branch_directions(
 
 /// March in one direction, detecting branch points where `|n1 x n2|`
 /// drops below threshold. Returns traced points and branch seed points.
-#[allow(clippy::too_many_lines, clippy::many_single_char_names)]
+#[allow(
+    clippy::too_many_lines,
+    clippy::many_single_char_names,
+    clippy::too_many_arguments
+)]
 fn march_direction_with_branches(
     s1: &NurbsSurface,
     s2: &NurbsSurface,
@@ -117,6 +202,7 @@ fn march_direction_with_branches(
     step_size: f64,
     tolerance: f64,
     context: &OperationContext,
+    scratch: &mut SsiScratch,
 ) -> Result<(Vec<IntersectionPoint>, Vec<IntersectionPoint>), MathError> {
     let traced = march_direction(
         s1,
@@ -127,6 +213,7 @@ fn march_direction_with_branches(
         tolerance,
         context.budgets.march_steps,
         context,
+        scratch,
     )?;
     let mut branch_seeds: Vec<IntersectionPoint> = Vec::new();
 
@@ -139,11 +226,11 @@ fn march_direction_with_branches(
             break;
         }
 
-        let n1 = match s1.normal(pt.param1.0, pt.param1.1) {
+        let n1 = match scratch.normal1(s1, pt.param1.0, pt.param1.1) {
             Ok(n) => n,
             Err(_) => continue,
         };
-        let n2 = match s2.normal(pt.param2.0, pt.param2.1) {
+        let n2 = match scratch.normal2(s2, pt.param2.0, pt.param2.1) {
             Ok(n) => n,
             Err(_) => continue,
         };
@@ -154,9 +241,19 @@ fn march_direction_with_branches(
         }
 
         // Near-tangential point found. Use second-order analysis to confirm.
+        // Reusable order-2 tables; zero-filled per call exactly like the heap
+        // path's fresh table, so degree-clamped entries read as zero.
+        let mut table1: Vec<Vec<Vec3>> = Vec::new();
+        let mut table2: Vec<Vec<Vec3>> = Vec::new();
+        scratch
+            .solve1()
+            .derivative_table_from(s1, pt.param1.0, pt.param1.1, 2, &mut table1);
+        scratch
+            .solve2()
+            .derivative_table_from(s2, pt.param2.0, pt.param2.1, 2, &mut table2);
+        let d1: &[Vec<Vec3>] = &table1;
+        let d2: &[Vec<Vec3>] = &table2;
         let has_branch = {
-            let d1 = s1.derivatives(pt.param1.0, pt.param1.1, 2);
-            let d2 = s2.derivatives(pt.param2.0, pt.param2.1, 2);
             if d1.len() >= 3 && d1[0].len() >= 3 && d2.len() >= 3 && d2[0].len() >= 3 {
                 // Check curvature difference eigenvalues.
                 let s1u = d1[1][0];
@@ -217,8 +314,16 @@ fn march_direction_with_branches(
                 .unwrap_or(Vec3::new(1.0, 0.0, 0.0))
         };
 
-        let new_seeds =
-            find_branch_directions(s1, s2, pt, current_tangent, step_size, tolerance, context)?;
+        let new_seeds = find_branch_directions(
+            s1,
+            s2,
+            pt,
+            current_tangent,
+            step_size,
+            tolerance,
+            context,
+            scratch,
+        )?;
         branch_seeds.extend(new_seeds);
     }
 
@@ -244,15 +349,32 @@ pub(super) fn march_intersection(
 ) -> Vec<IntersectionPoint> {
     let max_steps = 200;
     let context = OperationContext::new();
+    let mut scratch = SsiScratch::new();
 
     // March forward.
     let forward = march_direction(
-        s1, s2, seed, true, step_size, tolerance, max_steps, &context,
+        s1,
+        s2,
+        seed,
+        true,
+        step_size,
+        tolerance,
+        max_steps,
+        &context,
+        &mut scratch,
     )
     .unwrap_or_default();
     // March backward.
     let backward = march_direction(
-        s1, s2, seed, false, step_size, tolerance, max_steps, &context,
+        s1,
+        s2,
+        seed,
+        false,
+        step_size,
+        tolerance,
+        max_steps,
+        &context,
+        &mut scratch,
     )
     .unwrap_or_default();
 
@@ -276,9 +398,15 @@ fn ssi_tangent_params(
     v2: f64,
     sign: f64,
     context: &OperationContext,
+    scratch: &mut SsiScratch,
 ) -> Result<Option<[f64; 4]>, MathError> {
     context.check_cancelled()?;
-    let (Ok(n1), Ok(n2)) = (s1.normal(u1, v1), s2.normal(u2, v2)) else {
+    // One base solve per surface serves the normal and the tangent
+    // projection; both match the separate `normal`/`derivatives` calls
+    // bit-for-bit.
+    let (n1, su1, sv1) = scratch.normal_partials1(s1, u1, v1);
+    let (n2, su2, sv2) = scratch.normal_partials2(s2, u2, v2);
+    let (Ok(n1), Ok(n2)) = (n1, n2) else {
         return Ok(None);
     };
 
@@ -293,7 +421,7 @@ fn ssi_tangent_params(
             param1: (u1, v1),
             param2: (u2, v2),
         };
-        let Some(tangent) = singular_tangent_direction(s1, s2, &pt, context)? else {
+        let Some(tangent) = singular_tangent_direction(s1, s2, &pt, context, scratch)? else {
             return Ok(None);
         };
         tangent
@@ -301,11 +429,8 @@ fn ssi_tangent_params(
 
     let t = Vec3::new(tangent.x() * sign, tangent.y() * sign, tangent.z() * sign);
 
-    let d1 = s1.derivatives(u1, v1, 1);
-    let d2 = s2.derivatives(u2, v2, 1);
-
-    let (du1, dv1) = project_tangent_to_params(&d1, t, 1.0);
-    let (du2, dv2) = project_tangent_to_params(&d2, t, 1.0);
+    let (du1, dv1) = project_tangent_to_params(su1, sv1, t, 1.0);
+    let (du2, dv2) = project_tangent_to_params(su2, sv2, t, 1.0);
 
     // Normalize so the maximum component magnitude is 1.0.
     let max_comp = du1.abs().max(dv1.abs()).max(du2.abs()).max(dv2.abs());
@@ -346,17 +471,18 @@ fn singular_tangent_direction(
     s2: &NurbsSurface,
     point: &IntersectionPoint,
     context: &OperationContext,
+    scratch: &mut SsiScratch,
 ) -> Result<Option<Vec3>, MathError> {
     let (u1, v1) = point.param1;
     let (u2, v2) = point.param2;
 
     // Try second-order analysis first.
-    if let Some(dir) = second_order_tangent(s1, s2, u1, v1, u2, v2) {
+    if let Some(dir) = second_order_tangent(s1, s2, u1, v1, u2, v2, scratch) {
         return Ok(Some(dir));
     }
 
     // Fallback: perturbation-based search (original method).
-    perturbation_tangent(s1, s2, point, context)
+    perturbation_tangent(s1, s2, point, context, scratch)
 }
 
 /// Second-order curvature analysis for tangential intersection direction.
@@ -374,10 +500,20 @@ pub(super) fn second_order_tangent(
     v1: f64,
     u2: f64,
     v2: f64,
+    scratch: &mut SsiScratch,
 ) -> Option<Vec3> {
-    // Compute second-order derivatives for both surfaces.
-    let d1 = s1.derivatives(u1, v1, 2);
-    let d2 = s2.derivatives(u2, v2, 2);
+    // Compute second-order derivatives for both surfaces on the reusable
+    // tables; zero-filled per call exactly like the heap path's fresh table.
+    let mut table1: Vec<Vec<Vec3>> = Vec::new();
+    let mut table2: Vec<Vec<Vec3>> = Vec::new();
+    scratch
+        .solve1()
+        .derivative_table_from(s1, u1, v1, 2, &mut table1);
+    scratch
+        .solve2()
+        .derivative_table_from(s2, u2, v2, 2, &mut table2);
+    let d1: &[Vec<Vec3>] = &table1;
+    let d2: &[Vec<Vec3>] = &table2;
 
     // Check we have enough derivative data.
     if d1.len() < 3 || d1[0].len() < 3 || d2.len() < 3 || d2[0].len() < 3 {
@@ -474,6 +610,7 @@ fn perturbation_tangent(
     s2: &NurbsSurface,
     point: &IntersectionPoint,
     context: &OperationContext,
+    scratch: &mut SsiScratch,
 ) -> Result<Option<Vec3>, MathError> {
     let eps = 1e-4;
     let (u1, v1) = point.param1;
@@ -499,7 +636,7 @@ fn perturbation_tangent(
         let v1p = (v1 + dv).clamp(0.001, 0.999);
 
         if let Some(refined) =
-            refine_ssi_point_with_context(s1, s2, u1p, v1p, u2, v2, 1e-8, context)?
+            refine_ssi_point_with_context(s1, s2, u1p, v1p, u2, v2, 1e-8, context, scratch)?
         {
             let d = refined.point - point.point;
             let dist = d.length();
@@ -595,6 +732,7 @@ fn march_direction(
     tolerance: f64,
     max_steps: usize,
     context: &OperationContext,
+    scratch: &mut SsiScratch,
 ) -> Result<Vec<IntersectionPoint>, MathError> {
     // Maximum number of turning points (tangent reversals) to traverse.
     // Realistic SSI curves have at most 2-3 turning points; the limit
@@ -618,8 +756,8 @@ fn march_direction(
 
     // Track previous 3D tangent for angular deviation.
     let mut prev_tangent: Option<Vec3> = {
-        let n1 = s1.normal(seed.param1.0, seed.param1.1).ok();
-        let n2 = s2.normal(seed.param2.0, seed.param2.1).ok();
+        let n1 = scratch.normal1(s1, seed.param1.0, seed.param1.1).ok();
+        let n2 = scratch.normal2(s2, seed.param2.0, seed.param2.1).ok();
         match (n1, n2) {
             (Some(n1), Some(n2)) => {
                 let t = n1.cross(n2);
@@ -652,7 +790,7 @@ fn march_direction(
                 return Ok(points);
             }
 
-            let Some(result) = rkf45_step(s1, s2, &y, h, sign, context)? else {
+            let Some(result) = rkf45_step(s1, s2, &y, h, sign, context, scratch)? else {
                 return Ok(points);
             };
 
@@ -688,7 +826,7 @@ fn march_direction(
 
         // Newton-refine to stay on the intersection curve.
         if let Some(refined) = refine_ssi_point_with_context(
-            s1, s2, next[0], next[1], next[2], next[3], tolerance, context,
+            s1, s2, next[0], next[1], next[2], next[3], tolerance, context, scratch,
         )? {
             // Check that we actually moved.
             if (refined.point - current.point).length() < tolerance {
@@ -698,8 +836,8 @@ fn march_direction(
             // Curvature-based step adaptation: compute tangent at the new
             // point and check angular deviation from the previous tangent.
             let cur_tangent = {
-                let n1 = s1.normal(refined.param1.0, refined.param1.1).ok();
-                let n2 = s2.normal(refined.param2.0, refined.param2.1).ok();
+                let n1 = scratch.normal1(s1, refined.param1.0, refined.param1.1).ok();
+                let n2 = scratch.normal2(s2, refined.param2.0, refined.param2.1).ok();
                 match (n1, n2) {
                     (Some(n1), Some(n2)) => {
                         let t = n1.cross(n2);
@@ -817,12 +955,13 @@ fn rkf45_step(
     h: f64,
     sign: f64,
     context: &OperationContext,
+    scratch: &mut SsiScratch,
 ) -> Result<Option<([f64; 4], [f64; 4])>, MathError> {
     // Helper: evaluate f at a state, scaling by h.
-    let f = |state: &[f64; 4]| -> Result<Option<[f64; 4]>, MathError> {
+    let mut f = |state: &[f64; 4]| -> Result<Option<[f64; 4]>, MathError> {
         let clamped = constrain_state(state, s1, s2);
         let Some(t) = ssi_tangent_params(
-            s1, s2, clamped[0], clamped[1], clamped[2], clamped[3], sign, context,
+            s1, s2, clamped[0], clamped[1], clamped[2], clamped[3], sign, context, scratch,
         )?
         else {
             return Ok(None);
@@ -915,13 +1054,11 @@ fn rkf45_step(
 
 /// Project a 3D tangent vector onto surface parameter space.
 ///
-/// Given surface derivatives `derivs` (from `surface.derivatives(u, v, 1)`)
-/// and a 3D tangent direction scaled by `step`, compute the parameter
+/// Given a surface's first partials `(su, sv)` (the same values
+/// `surface.derivatives(u, v, 1)` returns at `[1][0]`/`[0][1]`) and a 3D
+/// tangent direction scaled by `step`, compute the parameter
 /// increments (du, dv) that move along the tangent on the surface.
-fn project_tangent_to_params(derivs: &[Vec<Vec3>], tangent: Vec3, step: f64) -> (f64, f64) {
-    let su = derivs[1][0]; // dS/du
-    let sv = derivs[0][1]; // dS/dv
-
+fn project_tangent_to_params(su: Vec3, sv: Vec3, tangent: Vec3, step: f64) -> (f64, f64) {
     let t = Vec3::new(tangent.x() * step, tangent.y() * step, tangent.z() * step);
 
     // Solve [su*su, su*sv; su*sv, sv*sv] [du; dv] = [su*t; sv*t]
@@ -944,7 +1081,9 @@ fn project_tangent_to_params(derivs: &[Vec<Vec3>], tangent: Vec3, step: f64) -> 
 
 /// Compute a Newton step to move (u, v) on the surface closer to a target
 /// 3D point. Solves the 2x2 system from the surface's first derivatives.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn surface_newton_step(
+    scratch: &mut DerivativeScratch,
     surface: &NurbsSurface,
     u: f64,
     v: f64,
@@ -954,9 +1093,7 @@ pub(super) fn surface_newton_step(
     let r = target - pt;
     let r_vec = Vec3::new(r.x(), r.y(), r.z());
 
-    let derivs = surface.derivatives(u, v, 1);
-    let su = derivs[1][0];
-    let sv = derivs[0][1];
+    let (su, sv) = scratch.partials_from(surface, u, v);
 
     // Solve: [su*su, su*sv; su*sv, sv*sv] [du; dv] = [su*r; sv*r]
     let a11 = su.dot(su);
