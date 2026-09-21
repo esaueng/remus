@@ -36,6 +36,7 @@ import {
   runTangencyBandRegression,
   runBooleanScaleRegression,
   runAnisotropicBooleanRegression,
+  runZeroAreaMeshExportRegression,
 } from './openzcad-wasm-consumer-regressions.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -914,5 +915,6 @@ runInnerWireHistoryRegression({ BrepKernel });
 runSplitVertexRefusalRegression({ BrepKernel });
 runBooleanScaleRegression({ BrepKernel });
 runAnisotropicBooleanRegression({ BrepKernel });
+runZeroAreaMeshExportRegression({ BrepKernel, RemusIo });
 
 console.log('\nAll smoke tests passed');
