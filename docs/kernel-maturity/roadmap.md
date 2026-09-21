@@ -328,6 +328,23 @@ measurement baseline is `39c7a7b7ccbfc746ed7d9e9b8f156d54d6cfe090`.
 | <a id="p-2-7"></a>2.7 Tangency and sliver contacts | Partial — merged bounded 162-cell scale/placement contract: 120 exact results and 42 typed refusals. General exact tangency and sliver construction remain unqualified | [#307](https://github.com/esaueng/remus/pull/307) |
 | <a id="p-2-8"></a>2.8 OperationContext budgets and cancellation | Partial — boolean/SSI cancellation and all six SSI work budgets are direct/batch WASM-callable; parameter-space tolerance and wider adoption remain | [PR #138](https://github.com/esaueng/remus/pull/138) + [PR #147](https://github.com/esaueng/remus/pull/147) + [PR #160](https://github.com/esaueng/remus/pull/160) + [PR #202](https://github.com/esaueng/remus/pull/202) |
 
+**P-Class 2.0 validator follow-up (2026-09-21):**
+`crates/check/tests/regress_authoritative_boundary.rs` reproduces false rejection
+of a physically unchanged cube under short NURBS parameterization, a missed
+collapsed subtrim, and a false closed-edge degeneracy warning between uniform
+samples at source `75cce2c9cfdb2c6f3b185c00045f75dc792d91b3`. The bounded
+`check/src/validate/edge.rs` correction uses stored trim authority, separates
+parameter validity from linear tolerance, and samples active knot spans for the
+existing approximate degeneracy warning. Reparameterization, reversal, scale,
+placement, both periodic seam uses, and inner-shell traversal have native
+witnesses. Invalid trims already refuse publicly; unsupported interior pcurve
+proofs remain typed refusals. This does not establish invalid-solid acceptance
+or general NURBS boundary proof. The small-trim witness also pins a separate
+carrier-endpoint warning in `check/src/validate/vertex.rs` for its owner; that
+warning remains unfixed. Completed 2.0 reader/mutation/coedge evidence above
+remains credited; package qualification after concurrent integration requires a
+serial rebuild from the combined source.
+
 </details>
 
 <details>
