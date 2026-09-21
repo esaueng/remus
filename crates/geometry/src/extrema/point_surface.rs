@@ -698,4 +698,749 @@ mod tests {
             generic.distance
         );
     }
+
+    // ── Contract helpers ─────────────────────────────────────────────────────
+
+    fn pt_approx(a: Point3, b: Point3, tol: f64) -> bool {
+        approx(a.x(), b.x(), tol) && approx(a.y(), b.y(), tol) && approx(a.z(), b.z(), tol)
+    }
+
+    /// Structural contract shared by every analytic fast path:
+    ///
+    /// * the result is finite,
+    /// * `u` lies in the documented `[0, 2π)` range,
+    /// * `distance` is the distance from the query point to `point`,
+    /// * `point` is the surface evaluated at the returned `(u, v)`.
+    fn assert_projection_contract(
+        query: Point3,
+        proj: &SurfaceProjection,
+        eval: impl Fn(f64, f64) -> Point3,
+        tol: f64,
+    ) {
+        assert!(
+            proj.distance.is_finite() && proj.u.is_finite() && proj.v.is_finite(),
+            "non-finite projection: d={} u={} v={}",
+            proj.distance,
+            proj.u,
+            proj.v
+        );
+        assert!(
+            proj.point.x().is_finite() && proj.point.y().is_finite() && proj.point.z().is_finite(),
+            "non-finite closest point"
+        );
+        assert!(
+            proj.u >= 0.0 && proj.u < TAU,
+            "u outside [0, 2pi): {}",
+            proj.u
+        );
+        let measured = (query - proj.point).length();
+        assert!(
+            approx(proj.distance, measured, tol),
+            "distance {} != |P - closest| {}",
+            proj.distance,
+            measured
+        );
+        let s = eval(proj.u, proj.v);
+        assert!(
+            pt_approx(s, proj.point, tol),
+            "closest ({}, {}, {}) != S(u, v) ({}, {}, {})",
+            proj.point.x(),
+            proj.point.y(),
+            proj.point.z(),
+            s.x(),
+            s.y(),
+            s.z()
+        );
+    }
+
+    // Off-origin, non-axis-aligned fixtures with radii that are neither 0 nor 1.
+    fn tilted_cylinder() -> CylindricalSurface {
+        CylindricalSurface::new(Point3::new(2.5, -1.5, 3.25), Vec3::new(2.0, 3.0, 6.0), 2.75)
+            .unwrap()
+    }
+
+    fn tilted_cone() -> ConicalSurface {
+        ConicalSurface::new(Point3::new(-1.5, 2.25, 0.75), Vec3::new(2.0, 3.0, 6.0), 0.6).unwrap()
+    }
+
+    fn tilted_sphere() -> SphericalSurface {
+        SphericalSurface::with_axis(Point3::new(2.5, -1.5, 3.25), 3.75, Vec3::new(2.0, 3.0, 6.0))
+            .unwrap()
+    }
+
+    fn tilted_torus() -> ToroidalSurface {
+        ToroidalSurface::with_axis(
+            Point3::new(2.5, -1.5, 3.25),
+            4.5,
+            1.75,
+            Vec3::new(2.0, 3.0, 6.0),
+        )
+        .unwrap()
+    }
+
+    /// Closed form: `| |P − C| ⟂ axis − R |` combined with the tube radius.
+    /// `|sqrt((ρ − R)² + z²) − r|` in the torus frame.
+    fn torus_closed_form(p: Point3, t: &ToroidalSurface) -> f64 {
+        let pv = p - t.center();
+        let h = pv.dot(t.z_axis());
+        let rho = (pv - t.z_axis() * h).length();
+        ((rho - t.major_radius()).hypot(h) - t.minor_radius()).abs()
+    }
+
+    /// Closed form: distance to the generating line in the meridian half-plane,
+    /// or to the apex when the perpendicular foot falls behind it.
+    fn cone_closed_form(p: Point3, c: &ConicalSurface) -> f64 {
+        let pv = p - c.apex();
+        let h = pv.dot(c.axis());
+        let rho = (pv - c.axis() * h).length();
+        let (sin_a, cos_a) = c.half_angle().sin_cos();
+        if h.mul_add(sin_a, rho * cos_a) <= 0.0 {
+            pv.length()
+        } else {
+            rho.mul_add(sin_a, -(h * cos_a)).abs()
+        }
+    }
+
+    /// Unit radial direction at angle `u` in a local `(x, y)` frame.
+    fn radial_at(x: Vec3, y: Vec3, u: f64) -> Vec3 {
+        x * u.cos() + y * u.sin()
+    }
+
+    // ── point_to_plane ───────────────────────────────────────────────────────
+
+    #[test]
+    fn plane_uv_axes_are_normalized_not_scaled() {
+        // normal = (0.6, 0, 0.8): |n.x| < 0.9 so candidate = (1,0,0) and
+        // u_raw = n × (1,0,0) = (0, 0.8, 0) has length 0.8 ≠ 1, so the
+        // normalization by 1/|u_raw| is observable.
+        // u_axis = (0,1,0), v_axis = n × u_axis = (-0.8, 0, 0.6).
+        let origin = Point3::new(1.5, -2.5, 3.5);
+        let normal = Vec3::new(0.6, 0.0, 0.8);
+        let point = Point3::new(4.5, 1.5, 6.0);
+        let proj = point_to_plane(point, origin, normal);
+        // d = (P-o)·n = 3.0*0.6 + 4.0*0.0 + 2.5*0.8 = 3.8
+        assert!(approx(proj.distance, 3.8, 1e-12), "dist={}", proj.distance);
+        assert!(
+            pt_approx(proj.point, Point3::new(2.22, 1.5, 2.96), 1e-12),
+            "closest=({}, {}, {})",
+            proj.point.x(),
+            proj.point.y(),
+            proj.point.z()
+        );
+        // delta = closest - origin = (0.72, 4.0, -0.54)
+        assert!(approx(proj.u, 4.0, 1e-12), "u={}", proj.u);
+        assert!(approx(proj.v, -0.9, 1e-12), "v={}", proj.v);
+    }
+
+    #[test]
+    fn plane_normal_x_exactly_at_candidate_threshold() {
+        // |n.x| == 0.9 is NOT < 0.9, so the y-candidate branch is taken:
+        // u_axis = normalize(n × (0,1,0)) = (-n.z, 0, n.x) (already unit).
+        let nz = (1.0_f64 - 0.81).sqrt();
+        let normal = Vec3::new(0.9, 0.0, nz);
+        let origin = Point3::new(1.0, -2.0, 0.5);
+        let point = Point3::new(3.0, 2.5, 4.0);
+        let proj = point_to_plane(point, origin, normal);
+        let u_axis = Vec3::new(-nz, 0.0, 0.9);
+        let v_axis = normal.cross(u_axis);
+        let delta = proj.point - origin;
+        assert!(approx(proj.u, delta.dot(u_axis), 1e-12), "u={}", proj.u);
+        assert!(approx(proj.v, delta.dot(v_axis), 1e-12), "v={}", proj.v);
+        // The x-candidate branch would give u_axis = (0,1,0), i.e. u = delta.y.
+        assert!(
+            !approx(proj.u, delta.y(), 1e-6),
+            "fixture does not separate the two candidate branches"
+        );
+    }
+
+    #[test]
+    fn plane_zero_normal_returns_finite_zero_uv() {
+        // Documented degenerate guard: a zero normal yields u = v = 0 rather
+        // than a division by the zero cross-product length.
+        let origin = Point3::new(1.5, -2.5, 3.5);
+        let point = Point3::new(4.5, 1.5, 6.0);
+        let proj = point_to_plane(point, origin, Vec3::new(0.0, 0.0, 0.0));
+        assert!(proj.u.is_finite() && proj.v.is_finite(), "uv not finite");
+        assert!(proj.u.abs() < 1e-15 && proj.v.abs() < 1e-15);
+        assert!(proj.distance.abs() < 1e-15, "dist={}", proj.distance);
+        assert!(pt_approx(proj.point, point, 1e-15));
+    }
+
+    // ── point_to_cylinder ────────────────────────────────────────────────────
+
+    #[test]
+    fn cylinder_normal_offset_recovers_parameters() {
+        let cyl = tilted_cylinder();
+        for (u, v, offset) in [(1.1_f64, 2.3_f64, 1.8_f64), (5.0, -4.25, -1.2)] {
+            let surf = cyl.evaluate(u, v);
+            let query = surf + cyl.normal(u, v) * offset;
+            let proj = point_to_cylinder(query, &cyl);
+            assert_projection_contract(query, &proj, |a, b| cyl.evaluate(a, b), 1e-9);
+            assert!(approx(proj.u, u, 1e-9), "u={} want {u}", proj.u);
+            assert!(approx(proj.v, v, 1e-9), "v={} want {v}", proj.v);
+            assert!(pt_approx(proj.point, surf, 1e-9));
+            // Closed form: |ρ − radius| with ρ measured perpendicular to the axis.
+            let pv = query - cyl.origin();
+            let rho = (pv - cyl.axis() * pv.dot(cyl.axis())).length();
+            let expected = (rho - cyl.radius()).abs();
+            assert!(approx(proj.distance, offset.abs(), 1e-9));
+            assert!(approx(proj.distance, expected, 1e-9));
+        }
+    }
+
+    #[test]
+    fn cylinder_zero_angle_and_axis_point() {
+        // Axis-aligned so the probe arithmetic is exact: x_axis = (0,1,0),
+        // y_axis = (-1,0,0) for axis = (0,0,1).
+        let cyl =
+            CylindricalSurface::new(Point3::new(2.5, -1.5, 3.25), Vec3::new(0.0, 0.0, 1.0), 2.75)
+                .unwrap();
+        // origin + 3.5*x_axis + 2.0*axis: atan2(0.0, 3.5) is exactly 0.0, so a
+        // normalization that wraps 0 to 2π is observable.
+        let query = Point3::new(2.5, 2.0, 5.25);
+        let proj = point_to_cylinder(query, &cyl);
+        assert!(proj.u.abs() < 1e-12, "u={}", proj.u);
+        assert!(approx(proj.v, 2.0, 1e-12), "v={}", proj.v);
+        assert!(approx(proj.distance, 0.75, 1e-12), "dist={}", proj.distance);
+        assert_projection_contract(query, &proj, |a, b| cyl.evaluate(a, b), 1e-12);
+
+        // On the axis: u collapses to 0 and the distance is the radius.
+        let on_axis = Point3::new(2.5, -1.5, 7.65);
+        let proj = point_to_cylinder(on_axis, &cyl);
+        assert!(proj.u.abs() < 1e-12, "u={}", proj.u);
+        assert!(approx(proj.v, 4.4, 1e-12), "v={}", proj.v);
+        assert!(approx(proj.distance, 2.75, 1e-12), "dist={}", proj.distance);
+        assert_projection_contract(on_axis, &proj, |a, b| cyl.evaluate(a, b), 1e-12);
+    }
+
+    // ── point_to_cone ────────────────────────────────────────────────────────
+
+    #[test]
+    fn cone_normal_offset_recovers_parameters() {
+        let cone = tilted_cone();
+        for (u, v, offset) in [(2.2_f64, 5.5_f64, 1.6_f64), (5.0, 3.25, -1.2)] {
+            let surf = cone.evaluate(u, v);
+            let query = surf + cone.normal(u, v) * offset;
+            let proj = point_to_cone(query, &cone);
+            assert_projection_contract(query, &proj, |a, b| cone.evaluate(a, b), 1e-9);
+            assert!(approx(proj.u, u, 1e-9), "u={} want {u}", proj.u);
+            assert!(approx(proj.v, v, 1e-9), "v={} want {v}", proj.v);
+            assert!(pt_approx(proj.point, surf, 1e-9));
+            assert!(approx(proj.distance, offset.abs(), 1e-9));
+            assert!(approx(proj.distance, cone_closed_form(query, &cone), 1e-9));
+        }
+    }
+
+    #[test]
+    fn cone_point_behind_apex_projects_to_apex() {
+        let cone = tilted_cone();
+        // h = -3, ρ = 0.5 ⇒ v = −3 sin a + 0.5 cos a < 0.
+        let query = cone.apex() + cone.axis() * -3.0 + cone.x_axis() * 0.5;
+        let proj = point_to_cone(query, &cone);
+        assert!(
+            approx(proj.distance, 3.0_f64.hypot(0.5), 1e-9),
+            "dist={}",
+            proj.distance
+        );
+        assert!(pt_approx(proj.point, cone.apex(), 1e-12));
+        assert!(proj.u.abs() < 1e-12 && proj.v.abs() < 1e-12);
+        assert!(approx(proj.distance, cone_closed_form(query, &cone), 1e-9));
+    }
+
+    #[test]
+    fn cone_below_apex_plane_but_outside_uses_generator() {
+        let cone = tilted_cone();
+        let (sin_a, cos_a) = 0.6_f64.sin_cos();
+        // h = -2, ρ = 8 ⇒ v = 8 cos a − 2 sin a > 0: the apex is NOT the answer.
+        let dir = radial_at(cone.x_axis(), cone.y_axis(), 2.2);
+        let query = cone.apex() + cone.axis() * -2.0 + dir * 8.0;
+        let proj = point_to_cone(query, &cone);
+        assert_projection_contract(query, &proj, |a, b| cone.evaluate(a, b), 1e-9);
+        assert!(approx(proj.u, 2.2, 1e-9), "u={}", proj.u);
+        let v_expected = 8.0_f64.mul_add(cos_a, -2.0 * sin_a);
+        assert!(v_expected > 0.0);
+        assert!(approx(proj.v, v_expected, 1e-9), "v={}", proj.v);
+        // Perpendicular distance to the generator: |ρ sin a − h cos a|.
+        let expected = 8.0_f64.mul_add(sin_a, 2.0 * cos_a);
+        assert!(
+            approx(proj.distance, expected, 1e-9),
+            "dist={}",
+            proj.distance
+        );
+        assert!(approx(proj.distance, cone_closed_form(query, &cone), 1e-9));
+    }
+
+    #[test]
+    fn cone_interior_axis_point_keeps_generator_parameter() {
+        // Axis-aligned so the radial component is exactly zero.
+        let cone =
+            ConicalSurface::new(Point3::new(-1.5, 2.25, 0.75), Vec3::new(0.0, 0.0, 1.0), 0.6)
+                .unwrap();
+        let query = Point3::new(-1.5, 2.25, 6.75); // apex + 6·axis
+        let proj = point_to_cone(query, &cone);
+        assert!(
+            proj.distance.is_finite() && proj.u.is_finite() && proj.v.is_finite(),
+            "non-finite: d={} u={} v={}",
+            proj.distance,
+            proj.u,
+            proj.v
+        );
+        assert!(proj.u.abs() < 1e-12, "u={}", proj.u);
+        // v is the generator arc-length of the perpendicular foot: h·sin a.
+        assert!(approx(proj.v, 6.0 * 0.6_f64.sin(), 1e-12), "v={}", proj.v);
+        let measured = (query - proj.point).length();
+        assert!(approx(proj.distance, measured, 1e-12));
+    }
+
+    // ── point_to_sphere ──────────────────────────────────────────────────────
+
+    #[test]
+    fn sphere_normal_offset_recovers_parameters() {
+        let sphere = tilted_sphere();
+        for (u, v, offset) in [(1.3_f64, 0.4_f64, 2.2_f64), (4.7, -0.85, -1.5)] {
+            let surf = sphere.evaluate(u, v);
+            let query = surf + sphere.normal(u, v) * offset;
+            let proj = point_to_sphere(query, &sphere);
+            assert_projection_contract(query, &proj, |a, b| sphere.evaluate(a, b), 1e-9);
+            assert!(approx(proj.u, u, 1e-9), "u={} want {u}", proj.u);
+            assert!(approx(proj.v, v, 1e-9), "v={} want {v}", proj.v);
+            assert!(pt_approx(proj.point, surf, 1e-9));
+            assert!(approx(proj.distance, offset.abs(), 1e-9));
+            let expected = ((query - sphere.center()).length() - sphere.radius()).abs();
+            assert!(approx(proj.distance, expected, 1e-9));
+        }
+    }
+
+    #[test]
+    fn sphere_center_query_returns_a_point_on_the_sphere() {
+        let sphere = tilted_sphere();
+        let proj = point_to_sphere(sphere.center(), &sphere);
+        assert!(
+            proj.point.x().is_finite() && proj.point.y().is_finite() && proj.point.z().is_finite(),
+            "non-finite closest point"
+        );
+        let radius = (proj.point - sphere.center()).length();
+        assert!(
+            approx(radius, 3.75, 1e-12),
+            "closest off the sphere: {radius}"
+        );
+        assert!(approx(proj.distance, 3.75, 1e-12), "dist={}", proj.distance);
+        let measured = (sphere.center() - proj.point).length();
+        assert!(approx(proj.distance, measured, 1e-12));
+    }
+
+    // ── point_to_torus ───────────────────────────────────────────────────────
+
+    #[test]
+    fn torus_normal_offset_recovers_parameters() {
+        let torus = tilted_torus();
+        for (u, v, offset) in [(2.1_f64, 0.9_f64, 1.4_f64), (5.3, 4.1, -1.05)] {
+            let surf = torus.evaluate(u, v);
+            let query = surf + torus.normal(u, v) * offset;
+            let proj = point_to_torus(query, &torus);
+            assert_projection_contract(query, &proj, |a, b| torus.evaluate(a, b), 1e-9);
+            assert!(approx(proj.u, u, 1e-9), "u={} want {u}", proj.u);
+            assert!(approx(proj.v, v, 1e-9), "v={} want {v}", proj.v);
+            assert!(pt_approx(proj.point, surf, 1e-9));
+            assert!(approx(proj.distance, offset.abs(), 1e-9));
+            assert!(approx(
+                proj.distance,
+                torus_closed_form(query, &torus),
+                1e-9
+            ));
+        }
+    }
+
+    #[test]
+    fn torus_point_inside_the_ring_hole() {
+        let torus = tilted_torus();
+        let dir = radial_at(torus.x_axis(), torus.y_axis(), 2.1);
+        // ρ = 1.2 (well inside the hole), z = 0.6.
+        let query = torus.center() + dir * 1.2 + torus.z_axis() * 0.6;
+        let proj = point_to_torus(query, &torus);
+        assert_projection_contract(query, &proj, |a, b| torus.evaluate(a, b), 1e-9);
+        assert!(approx(proj.u, 2.1, 1e-9), "u={}", proj.u);
+        // |sqrt((1.2 − 4.5)² + 0.6²) − 1.75|
+        let expected = (3.3_f64.hypot(0.6) - 1.75).abs();
+        assert!(
+            approx(proj.distance, expected, 1e-9),
+            "dist={}",
+            proj.distance
+        );
+        assert!(approx(
+            proj.distance,
+            torus_closed_form(query, &torus),
+            1e-9
+        ));
+    }
+
+    #[test]
+    fn torus_axis_point_seeds_the_x_axis_meridian() {
+        // Axis-aligned so the radial component is exactly zero.
+        let torus = ToroidalSurface::new(Point3::new(2.5, -1.5, 3.25), 4.5, 1.75).unwrap();
+        let query = Point3::new(2.5, -1.5, 6.25); // center + 3·z
+        let proj = point_to_torus(query, &torus);
+        assert_projection_contract(query, &proj, |a, b| torus.evaluate(a, b), 1e-12);
+        assert!(proj.u.abs() < 1e-12, "u={}", proj.u);
+        // v is the meridian angle atan2(z, ρ − R) = atan2(3, −4.5).
+        assert!(approx(proj.v, 3.0_f64.atan2(-4.5), 1e-12), "v={}", proj.v);
+        let expected = (4.5_f64.hypot(3.0) - 1.75).abs();
+        assert!(
+            approx(proj.distance, expected, 1e-12),
+            "dist={}",
+            proj.distance
+        );
+        assert!(approx(
+            proj.distance,
+            torus_closed_form(query, &torus),
+            1e-12
+        ));
+    }
+
+    #[test]
+    fn torus_axis_point_with_rotated_frames() {
+        // Two frames whose x_axis is exactly (0,1,0) and (0,0,-1): the axis
+        // probes stay exact while every component of `centre + R·x_axis` is
+        // exercised at least once with a non-zero factor.
+        let centre = Point3::new(2.5, -1.5, 3.25);
+        for (axis, query) in [
+            (Vec3::new(0.0, 0.0, 1.0), Point3::new(2.5, -1.5, 6.25)),
+            (Vec3::new(0.0, 1.0, 0.0), Point3::new(2.5, 1.5, 3.25)),
+        ] {
+            let torus = ToroidalSurface::with_axis(centre, 4.5, 1.75, axis).unwrap();
+            let proj = point_to_torus(query, &torus);
+            assert_projection_contract(query, &proj, |a, b| torus.evaluate(a, b), 1e-12);
+            assert!(proj.u.abs() < 1e-12, "u={}", proj.u);
+            // The seeded meridian is the one through centre + R·x_axis.
+            let major = centre + torus.x_axis() * 4.5;
+            assert!(
+                approx((proj.point - major).length(), 1.75, 1e-12),
+                "closest is not on the seeded meridian circle"
+            );
+            let expected = (4.5_f64.hypot(3.0) - 1.75).abs();
+            assert!(
+                approx(proj.distance, expected, 1e-12),
+                "dist={}",
+                proj.distance
+            );
+            assert!(approx(
+                proj.distance,
+                torus_closed_form(query, &torus),
+                1e-12
+            ));
+        }
+    }
+
+    #[test]
+    fn torus_points_on_the_major_circle_return_the_minor_radius() {
+        let center = Point3::new(2.5, -1.5, 3.25);
+        let torus = ToroidalSurface::new(center, 4.5, 1.75).unwrap();
+        // x_axis = (1,0,0), y_axis = (0,1,0): both probes are exact.
+        for (query, dir) in [
+            (Point3::new(7.0, -1.5, 3.25), Vec3::new(1.0, 0.0, 0.0)),
+            (Point3::new(2.5, 3.0, 3.25), Vec3::new(0.0, 1.0, 0.0)),
+        ] {
+            let proj = point_to_torus(query, &torus);
+            assert_projection_contract(query, &proj, |a, b| torus.evaluate(a, b), 1e-12);
+            assert!(approx(proj.distance, 1.75, 1e-12), "dist={}", proj.distance);
+            assert!(pt_approx(proj.point, query + dir * 1.75, 1e-12));
+        }
+        // A frame whose x_axis is (0,0,-1) exercises the radial z component.
+        let tilted =
+            ToroidalSurface::with_axis(center, 4.5, 1.75, Vec3::new(0.0, 1.0, 0.0)).unwrap();
+        let query = Point3::new(2.5, -1.5, -1.25); // center + 4.5·x_axis
+        let proj = point_to_torus(query, &tilted);
+        assert_projection_contract(query, &proj, |a, b| tilted.evaluate(a, b), 1e-12);
+        assert!(approx(proj.distance, 1.75, 1e-12), "dist={}", proj.distance);
+        assert!(pt_approx(proj.point, Point3::new(2.5, -1.5, -3.0), 1e-12));
+    }
+
+    // ── point_to_nurbs_surface ───────────────────────────────────────────────
+
+    fn wavy_nurbs() -> remus_math::nurbs::surface::NurbsSurface {
+        // Bi-quadratic patch over u ∈ [0.5, 2.0], v ∈ [-1.0, 1.5] so neither
+        // domain starts at 0 nor has unit width.
+        let knots_u = vec![0.5, 0.5, 0.5, 2.0, 2.0, 2.0];
+        let knots_v = vec![-1.0, -1.0, -1.0, 1.5, 1.5, 1.5];
+        let cps = vec![
+            vec![
+                Point3::new(-2.0, 1.0, 0.5),
+                Point3::new(0.5, 1.5, 2.0),
+                Point3::new(3.0, 0.75, -1.0),
+            ],
+            vec![
+                Point3::new(-1.5, 3.5, 1.25),
+                Point3::new(1.0, 4.0, 3.5),
+                Point3::new(3.5, 3.0, 0.25),
+            ],
+            vec![
+                Point3::new(-3.0, 6.0, -0.5),
+                Point3::new(0.25, 6.5, 1.5),
+                Point3::new(4.0, 5.5, 2.5),
+            ],
+        ];
+        let weights = vec![vec![1.0; 3]; 3];
+        remus_math::nurbs::surface::NurbsSurface::new(2, 2, knots_u, knots_v, cps, weights).unwrap()
+    }
+
+    #[test]
+    fn nurbs_grid_search_matches_the_documented_11x11_grid() {
+        let surface = wavy_nurbs();
+        let query = Point3::new(1.2, 2.8, 5.0);
+        let (u_min, u_max) = surface.domain_u();
+        let (v_min, v_max) = surface.domain_v();
+
+        // Independent evaluation of the documented 11×11 sampling.
+        let mut best = (f64::MAX, u_min, v_min);
+        for i in 0..=10_u32 {
+            for j in 0..=10_u32 {
+                let u = (u_max - u_min).mul_add(f64::from(i) / 10.0, u_min);
+                let v = (v_max - v_min).mul_add(f64::from(j) / 10.0, v_min);
+                let d2 = (surface.evaluate(u, v) - query).length_squared();
+                if d2 < best.0 {
+                    best = (d2, u, v);
+                }
+            }
+        }
+        // The minimum must be interior, otherwise a corrupted grid could still
+        // land on the same sample.
+        assert!(best.1 > u_min && best.1 < u_max, "u at the domain edge");
+        assert!(best.2 > v_min && best.2 < v_max, "v at the domain edge");
+
+        let proj = point_to_nurbs_surface(query, &surface);
+        assert!(
+            approx(proj.u, best.1, 1e-12),
+            "u={} want {}",
+            proj.u,
+            best.1
+        );
+        assert!(
+            approx(proj.v, best.2, 1e-12),
+            "v={} want {}",
+            proj.v,
+            best.2
+        );
+        assert!(
+            approx(proj.distance, best.0.sqrt(), 1e-12),
+            "dist={} want {}",
+            proj.distance,
+            best.0.sqrt()
+        );
+        assert!(pt_approx(
+            proj.point,
+            surface.evaluate(best.1, best.2),
+            1e-12
+        ));
+        let measured = (query - proj.point).length();
+        assert!(
+            approx(proj.distance, measured, 1e-9),
+            "dist != |P - closest|"
+        );
+    }
+
+    // ── point_to_surface (generic Newton) ────────────────────────────────────
+
+    #[test]
+    fn generic_solver_matches_the_analytic_torus_distance() {
+        let torus = tilted_torus();
+        for (u, v, offset) in [(2.1_f64, 0.9_f64, 1.4_f64), (4.4, 3.7, -1.05)] {
+            let surf = torus.evaluate(u, v);
+            let query = surf + torus.normal(u, v) * offset;
+            let proj = point_to_surface(query, &torus, (-1.0, 5.5), (-2.0, 5.0));
+            assert!(
+                proj.distance.is_finite() && proj.u.is_finite() && proj.v.is_finite(),
+                "non-finite result"
+            );
+            assert!(approx(proj.u, u, 1e-5), "u={} want {u}", proj.u);
+            assert!(approx(proj.v, v, 1e-5), "v={} want {v}", proj.v);
+            assert!(pt_approx(proj.point, surf, 1e-5));
+            assert!(
+                approx(proj.distance, offset.abs(), 1e-8),
+                "dist={} want {}",
+                proj.distance,
+                offset.abs()
+            );
+            assert!(approx(
+                proj.distance,
+                torus_closed_form(query, &torus),
+                1e-8
+            ));
+            let measured = (query - proj.point).length();
+            assert!(
+                approx(proj.distance, measured, 1e-12),
+                "dist != |P - closest|"
+            );
+            assert!(pt_approx(proj.point, torus.evaluate(proj.u, proj.v), 1e-12));
+        }
+    }
+
+    #[test]
+    fn generic_solver_matches_the_analytic_cylinder_distance() {
+        let cyl = tilted_cylinder();
+        let (u, v, offset) = (1.1_f64, -2.75_f64, 1.9_f64);
+        let surf = cyl.evaluate(u, v);
+        let query = surf + cyl.normal(u, v) * offset;
+        let proj = point_to_surface(query, &cyl, (-1.0, 5.5), (-3.5, 6.5));
+        assert!(approx(proj.u, u, 1e-5), "u={}", proj.u);
+        assert!(approx(proj.v, v, 1e-5), "v={}", proj.v);
+        assert!(
+            approx(proj.distance, offset, 1e-8),
+            "dist={} want {offset}",
+            proj.distance
+        );
+        assert!(pt_approx(proj.point, surf, 1e-5));
+        let measured = (query - proj.point).length();
+        assert!(
+            approx(proj.distance, measured, 1e-12),
+            "dist != |P - closest|"
+        );
+    }
+
+    #[test]
+    fn generic_solver_grid_seed_beats_the_range_midpoint() {
+        // Documented purpose of the grid phase: avoid local-minimum traps.
+        // The midpoint of both ranges is the far side of the ring and the
+        // inner side of the tube, which is a stationary point of the distance
+        // function, so a solver seeded there converges to the wrong extremum.
+        let torus = tilted_torus();
+        let (u, v, offset) = (0.2_f64, 0.6_f64, 1.3_f64);
+        let surf = torus.evaluate(u, v);
+        let query = surf + torus.normal(u, v) * offset;
+        let proj = point_to_surface(query, &torus, (0.0, TAU), (0.0, TAU));
+        assert!(
+            approx(proj.distance, offset, 1e-8),
+            "dist={} want {offset}",
+            proj.distance
+        );
+        assert!(approx(
+            proj.distance,
+            torus_closed_form(query, &torus),
+            1e-8
+        ));
+        assert!(pt_approx(proj.point, surf, 1e-5));
+        assert!(approx(proj.u, u, 1e-5), "u={}", proj.u);
+        assert!(approx(proj.v, v, 1e-5), "v={}", proj.v);
+    }
+
+    #[test]
+    fn generic_solver_grid_must_span_the_u_range() {
+        // A grid that collapses onto u0 seeds the solver more than a quarter
+        // turn away from the answer, which lands it on the opposite
+        // stationary point of the ring.
+        let torus = tilted_torus();
+        let (u, v, offset) = (4.0_f64, 4.0_f64, 1.3_f64);
+        let surf = torus.evaluate(u, v);
+        let query = surf + torus.normal(u, v) * offset;
+        let proj = point_to_surface(query, &torus, (0.5, 7.5), (0.5, 7.5));
+        assert!(
+            approx(proj.distance, offset, 1e-8),
+            "dist={} want {offset}",
+            proj.distance
+        );
+        assert!(approx(
+            proj.distance,
+            torus_closed_form(query, &torus),
+            1e-8
+        ));
+        assert!(pt_approx(proj.point, surf, 1e-5));
+    }
+
+    /// A gently warped, sheared patch: `Su·Sv ≠ 0`, so the Gauss-Newton cross
+    /// terms are live, but the surface is tame enough for the solver to
+    /// converge.
+    fn sheared_nurbs() -> remus_math::nurbs::surface::NurbsSurface {
+        let knots_u = vec![0.5, 0.5, 0.5, 2.0, 2.0, 2.0];
+        let knots_v = vec![-1.0, -1.0, -1.0, 1.5, 1.5, 1.5];
+        let cps = vec![
+            vec![
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(0.6, 1.5, 0.0),
+                Point3::new(1.2, 3.0, 0.25),
+            ],
+            vec![
+                Point3::new(2.0, 0.4, 0.1),
+                Point3::new(2.6, 1.9, 0.45),
+                Point3::new(3.2, 3.4, 0.8),
+            ],
+            vec![
+                Point3::new(4.0, 0.8, 0.0),
+                Point3::new(4.6, 2.3, 0.5),
+                Point3::new(5.2, 3.8, 1.1),
+            ],
+        ];
+        let weights = vec![vec![1.0; 3]; 3];
+        remus_math::nurbs::surface::NurbsSurface::new(2, 2, knots_u, knots_v, cps, weights).unwrap()
+    }
+
+    #[test]
+    fn generic_solver_meets_stationarity_on_a_non_orthogonal_patch() {
+        // A sheared NURBS patch has Su·Sv ≠ 0, so the cross terms of the
+        // Gauss-Newton system are live. The documented stopping conditions are
+        // dot(S − P, Su) = 0 and dot(S − P, Sv) = 0.
+        let surface = sheared_nurbs();
+        let (u0, u1) = surface.domain_u();
+        let (v0, v1) = surface.domain_v();
+        let (u, v, offset) = (1.3_f64, 0.2_f64, 1.2_f64);
+        let surf = surface.evaluate(u, v);
+        let normal = surface
+            .partial_u(u, v)
+            .cross(surface.partial_v(u, v))
+            .normalize()
+            .unwrap();
+        let query = surf + normal * offset;
+        let proj = point_to_surface(query, &surface, (u0, u1), (v0, v1));
+        assert!(
+            proj.u > u0 && proj.u < u1 && proj.v > v0 && proj.v < v1,
+            "solution sits on the clamp boundary: u={} v={}",
+            proj.u,
+            proj.v
+        );
+        let su = surface.partial_u(proj.u, proj.v);
+        let sv = surface.partial_v(proj.u, proj.v);
+        assert!(
+            su.dot(sv).abs() > 1e-3,
+            "fixture is orthogonal, cross terms unexercised"
+        );
+        let diff = proj.point - query;
+        assert!(diff.dot(su).abs() < 1e-8, "dot(S-P, Su)={}", diff.dot(su));
+        assert!(diff.dot(sv).abs() < 1e-8, "dot(S-P, Sv)={}", diff.dot(sv));
+        assert!(approx(proj.u, u, 1e-6), "u={}", proj.u);
+        assert!(approx(proj.v, v, 1e-6), "v={}", proj.v);
+        assert!(
+            approx(proj.distance, offset, 1e-8),
+            "dist={}",
+            proj.distance
+        );
+        assert!(pt_approx(
+            proj.point,
+            surface.evaluate(proj.u, proj.v),
+            1e-12
+        ));
+        let measured = (query - proj.point).length();
+        assert!(approx(proj.distance, measured, 1e-12));
+    }
+
+    #[test]
+    fn generic_solver_at_a_sphere_pole_stays_finite() {
+        // The pole is a parametric singularity: ∂S/∂u vanishes, so the
+        // Gauss-Newton determinant degenerates and the solver must bail out.
+        let sphere = SphericalSurface::new(Point3::new(2.5, -1.5, 3.25), 3.75).unwrap();
+        let query = Point3::new(2.5, -1.5, 12.25); // 9 above the centre
+        let proj = point_to_surface(query, &sphere, (0.0, TAU), (-FRAC_PI_2, FRAC_PI_2));
+        assert!(
+            proj.distance.is_finite() && proj.u.is_finite() && proj.v.is_finite(),
+            "non-finite result: d={} u={} v={}",
+            proj.distance,
+            proj.u,
+            proj.v
+        );
+        assert!(
+            approx(proj.distance, 9.0 - 3.75, 1e-9),
+            "dist={}",
+            proj.distance
+        );
+        assert!(approx(proj.v, FRAC_PI_2, 1e-9), "v={}", proj.v);
+        let measured = (query - proj.point).length();
+        assert!(approx(proj.distance, measured, 1e-12));
+    }
 }
