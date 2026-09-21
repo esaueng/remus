@@ -240,4 +240,90 @@ mod tests {
             dist3(pa, pb)
         );
     }
+
+    /// Point-to-point degenerate case with all three coordinate deltas
+    /// distinct and non-zero: (-2, -3, -6) has length exactly 7, so the
+    /// squared-norm sum `4 + 9 + 36 = 49` is pinned by the Pythagorean
+    /// closed form rather than by the current output.
+    #[test]
+    fn degenerate_both_points_distance_uses_every_component() {
+        let pa_in = Point3::new(1.0, -2.0, 0.5);
+        let pb_in = Point3::new(3.0, 1.0, 6.5);
+        let (dist, pa, pb) = segment_segment_distance(pa_in, pa_in, pb_in, pb_in);
+
+        // |(-2, -3, -6)| = sqrt(4 + 9 + 36) = sqrt(49) = 7.
+        assert!(approx_eq(dist, 7.0, 1e-12), "dist={dist}");
+        assert!(dist3(pa, pa_in) < 1e-12, "pa={pa:?}");
+        assert!(dist3(pb, pb_in) < 1e-12, "pb={pb:?}");
+        assert!(approx_eq(dist, dist3(pa, pb), 1e-12), "dist vs |pa-pb|");
+    }
+
+    /// Segment A collapses to a point whose foot on B falls *strictly inside*
+    /// B (t = 0.375), so the projection value is observable instead of being
+    /// swallowed by the clamp to [0, 1].
+    #[test]
+    fn degenerate_a_point_projects_to_interior_of_b() {
+        // B: b0 = (0.5, 0.5, 0.5), direction (2, 1, 0), |d2|^2 = 5.
+        let b0 = Point3::new(0.5, 0.5, 0.5);
+        let b1 = Point3::new(2.5, 1.5, 0.5);
+        // Foot at t = 0.375 is (1.25, 0.875, 0.5); lift it by 3 along +z.
+        let foot = Point3::new(1.25, 0.875, 0.5);
+        let a = Point3::new(1.25, 0.875, 3.5);
+
+        let (dist, pa, pb) = segment_segment_distance(a, a, b0, b1);
+
+        // r = a - b0 = (0.75, 0.375, 3), f = d2 . r = 1.875, t = f/e = 0.375.
+        assert!(approx_eq(dist, 3.0, 1e-12), "dist={dist}");
+        assert!(dist3(pa, a) < 1e-12, "pa={pa:?}");
+        assert!(dist3(pb, foot) < 1e-12, "pb={pb:?}");
+        assert!(approx_eq(dist, dist3(pa, pb), 1e-12), "dist vs |pa-pb|");
+
+        // Recovered parameter must be the interior value 0.375, in [0, 1].
+        let d2 = b1 - b0;
+        let w = pb - b0;
+        let e = d2.x() * d2.x() + d2.y() * d2.y() + d2.z() * d2.z();
+        let t = (w.x() * d2.x() + w.y() * d2.y() + w.z() * d2.z()) / e;
+        assert!((-1e-12..=1.0 + 1e-12).contains(&t), "t out of [0,1]: t={t}");
+        assert!(approx_eq(t, 0.375, 1e-12), "t={t}");
+    }
+
+    /// Skew, *non-perpendicular* segments whose closest approach is strictly
+    /// interior to both (s = 0.4, t = 0.6). The two support lines lie in the
+    /// parallel planes z = 0.5 and z = 2.5 and cross in projection, so the
+    /// minimum distance is exactly the plane separation, 2.
+    ///
+    /// Because d1 . d2 = 4 != 0, the single "recompute s from t" step cannot
+    /// recover the answer on its own: the full `(b*f - c*e) / (a*e - b*b)`
+    /// solve has to be right.
+    #[test]
+    fn skew_non_perpendicular_interior_closest_approach() {
+        // d1 = (2, 1, 0), d2 = (1, 2, 0); a = e = 5, b = 4, denom = 9.
+        let a0 = Point3::new(0.3, -0.25, 0.5);
+        let a1 = Point3::new(2.3, 0.75, 0.5);
+        let b0 = Point3::new(0.5, -1.05, 2.5);
+        let b1 = Point3::new(1.5, 0.95, 2.5);
+
+        let (dist, pa, pb) = segment_segment_distance(a0, a1, b0, b1);
+
+        // s = (b*f - c*e)/denom = (4*1.4 - 0.4*5)/9 = 0.4
+        // t = (b*s + f)/e       = (4*0.4 + 1.4)/5   = 0.6
+        assert!(approx_eq(dist, 2.0, 1e-12), "dist={dist}");
+        assert!(dist3(pa, Point3::new(1.1, 0.15, 0.5)) < 1e-12, "pa={pa:?}");
+        assert!(dist3(pb, Point3::new(1.1, 0.15, 2.5)) < 1e-12, "pb={pb:?}");
+        assert!(approx_eq(dist, dist3(pa, pb), 1e-12), "dist vs |pa-pb|");
+
+        // Both parameters are strictly interior and reproduce the points.
+        let da = a1 - a0;
+        let wa = pa - a0;
+        let aa = da.x() * da.x() + da.y() * da.y() + da.z() * da.z();
+        let s = (wa.x() * da.x() + wa.y() * da.y() + wa.z() * da.z()) / aa;
+        let db = b1 - b0;
+        let wb = pb - b0;
+        let bb = db.x() * db.x() + db.y() * db.y() + db.z() * db.z();
+        let t = (wb.x() * db.x() + wb.y() * db.y() + wb.z() * db.z()) / bb;
+        assert!((-1e-12..=1.0 + 1e-12).contains(&s), "s out of [0,1]: s={s}");
+        assert!((-1e-12..=1.0 + 1e-12).contains(&t), "t out of [0,1]: t={t}");
+        assert!(approx_eq(s, 0.4, 1e-12), "s={s}");
+        assert!(approx_eq(t, 0.6, 1e-12), "t={t}");
+    }
 }
