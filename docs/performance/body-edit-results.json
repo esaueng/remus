@@ -1,0 +1,257 @@
+{
+  "date": "2026-09-21",
+  "baseCommit": "c21eb02ab3302b1d1098cfc7d267d32b3516f344",
+  "change": "Remove redundant direct WASM extrude and moveFaces rollback snapshots",
+  "build": "Rust 1.96.0 release LTO, SIMD, wasm-opt -Oz",
+  "note": "Local synthetic benchmark. Other validation processes were active. Browser zero values reflect clock quantization. No OpenZCAD end-to-end measurement. Native API excludes WASM bindings.",
+  "baselineWasmSha256": "0af7953d0b81fee832a68cca0cd8390226f15021200bd475b1499200ee241910",
+  "optimizedWasmSha256": "8dd062f3cd447d434e774fa8fb4de6c906b9430ec8c1edbfea63c61dede2fe42",
+  "browserBaseline": {
+    "runtime": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.0.0 Safari/537.36",
+    "packageVersion": "2.130.2",
+    "results": [
+      {
+        "backgroundBodies": 0,
+        "operation": "extrude",
+        "samples": 30,
+        "editP50Ms": 0,
+        "editP95Ms": 0.09999999403953552,
+        "meshP50Ms": 0,
+        "meshP95Ms": 0.10000000894069672
+      },
+      {
+        "backgroundBodies": 0,
+        "operation": "moveFaces",
+        "samples": 30,
+        "editP50Ms": 0.20000000298023224,
+        "editP95Ms": 0.4000000059604645,
+        "meshP50Ms": 0,
+        "meshP95Ms": 0.10000000894069672
+      },
+      {
+        "backgroundBodies": 0,
+        "operation": "pushPullFace",
+        "samples": 30,
+        "editP50Ms": 0.20000000298023224,
+        "editP95Ms": 0.4000000059604645,
+        "meshP50Ms": 0,
+        "meshP95Ms": 0.10000000894069672
+      },
+      {
+        "backgroundBodies": 1000,
+        "operation": "extrude",
+        "samples": 30,
+        "editP50Ms": 1.199999988079071,
+        "editP95Ms": 1.6000000089406967,
+        "meshP50Ms": 0.09999999403953552,
+        "meshP95Ms": 0.19999998807907104
+      },
+      {
+        "backgroundBodies": 1000,
+        "operation": "moveFaces",
+        "samples": 30,
+        "editP50Ms": 2.0999999940395355,
+        "editP95Ms": 3.2000000029802322,
+        "meshP50Ms": 0.09999999403953552,
+        "meshP95Ms": 0.10000000894069672
+      },
+      {
+        "backgroundBodies": 1000,
+        "operation": "pushPullFace",
+        "samples": 30,
+        "editP50Ms": 2.5999999940395355,
+        "editP95Ms": 3.2999999970197678,
+        "meshP50Ms": 0,
+        "meshP95Ms": 0.10000000894069672
+      },
+      {
+        "backgroundBodies": 10000,
+        "operation": "extrude",
+        "samples": 30,
+        "editP50Ms": 14.299999997019768,
+        "editP95Ms": 17,
+        "meshP50Ms": 0.09999999403953552,
+        "meshP95Ms": 0.19999998807907104
+      },
+      {
+        "backgroundBodies": 10000,
+        "operation": "moveFaces",
+        "samples": 30,
+        "editP50Ms": 22.299999997019768,
+        "editP95Ms": 26.400000005960464,
+        "meshP50Ms": 0.09999999403953552,
+        "meshP95Ms": 0.20000000298023224
+      },
+      {
+        "backgroundBodies": 10000,
+        "operation": "pushPullFace",
+        "samples": 30,
+        "editP50Ms": 30.900000005960464,
+        "editP95Ms": 40.20000000298023,
+        "meshP50Ms": 0.09999999403953552,
+        "meshP95Ms": 0.20000000298023224
+      }
+    ]
+  },
+  "browserOptimized": {
+    "runtime": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.0.0 Safari/537.36",
+    "packageVersion": "2.130.39",
+    "results": [
+      {
+        "backgroundBodies": 0,
+        "operation": "extrude",
+        "samples": 30,
+        "editP50Ms": 0,
+        "editP95Ms": 0.09999999403953552,
+        "meshP50Ms": 0,
+        "meshP95Ms": 0.19999998807907104
+      },
+      {
+        "backgroundBodies": 0,
+        "operation": "moveFaces",
+        "samples": 30,
+        "editP50Ms": 0.20000000298023224,
+        "editP95Ms": 0.3999999910593033,
+        "meshP50Ms": 0,
+        "meshP95Ms": 0.10000000894069672
+      },
+      {
+        "backgroundBodies": 0,
+        "operation": "pushPullFace",
+        "samples": 30,
+        "editP50Ms": 0.20000000298023224,
+        "editP95Ms": 0.4000000059604645,
+        "meshP50Ms": 0,
+        "meshP95Ms": 0.10000000894069672
+      },
+      {
+        "backgroundBodies": 1000,
+        "operation": "extrude",
+        "samples": 30,
+        "editP50Ms": 0.5999999940395355,
+        "editP95Ms": 0.9000000059604645,
+        "meshP50Ms": 0.09999999403953552,
+        "meshP95Ms": 0.10000000894069672
+      },
+      {
+        "backgroundBodies": 1000,
+        "operation": "moveFaces",
+        "samples": 30,
+        "editP50Ms": 1.5999999940395355,
+        "editP95Ms": 2.1000000089406967,
+        "meshP50Ms": 0,
+        "meshP95Ms": 0.10000000894069672
+      },
+      {
+        "backgroundBodies": 1000,
+        "operation": "pushPullFace",
+        "samples": 30,
+        "editP50Ms": 2.7999999970197678,
+        "editP95Ms": 3.4000000059604645,
+        "meshP50Ms": 0.09999999403953552,
+        "meshP95Ms": 0.10000000894069672
+      },
+      {
+        "backgroundBodies": 10000,
+        "operation": "extrude",
+        "samples": 30,
+        "editP50Ms": 7.100000008940697,
+        "editP95Ms": 8.599999994039536,
+        "meshP50Ms": 0.09999999403953552,
+        "meshP95Ms": 0.10000000894069672
+      },
+      {
+        "backgroundBodies": 10000,
+        "operation": "moveFaces",
+        "samples": 30,
+        "editP50Ms": 15.299999997019768,
+        "editP95Ms": 24.599999994039536,
+        "meshP50Ms": 0.09999999403953552,
+        "meshP95Ms": 0.20000000298023224
+      },
+      {
+        "backgroundBodies": 10000,
+        "operation": "pushPullFace",
+        "samples": 30,
+        "editP50Ms": 30.900000005960464,
+        "editP95Ms": 38.79999999701977,
+        "meshP50Ms": 0.09999999403953552,
+        "meshP95Ms": 0.10000000894069672
+      }
+    ]
+  },
+  "native": [
+    {
+      "background_bodies": "0",
+      "operation": "extrude",
+      "edit_p50_ms": "0.004583",
+      "edit_p95_ms": "0.006917",
+      "mesh_p50_ms": "0.025792",
+      "mesh_p95_ms": "0.045041"
+    },
+    {
+      "background_bodies": "0",
+      "operation": "moveFaces",
+      "edit_p50_ms": "0.116333",
+      "edit_p95_ms": "0.168542",
+      "mesh_p50_ms": "0.025625",
+      "mesh_p95_ms": "0.028209"
+    },
+    {
+      "background_bodies": "0",
+      "operation": "pushPullFace",
+      "edit_p50_ms": "0.110708",
+      "edit_p95_ms": "0.123750",
+      "mesh_p50_ms": "0.022166",
+      "mesh_p95_ms": "0.023792"
+    },
+    {
+      "background_bodies": "1000",
+      "operation": "extrude",
+      "edit_p50_ms": "0.800792",
+      "edit_p95_ms": "1.077625",
+      "mesh_p50_ms": "0.045708",
+      "mesh_p95_ms": "0.093500"
+    },
+    {
+      "background_bodies": "1000",
+      "operation": "moveFaces",
+      "edit_p50_ms": "1.778375",
+      "edit_p95_ms": "2.091917",
+      "mesh_p50_ms": "0.030917",
+      "mesh_p95_ms": "0.062750"
+    },
+    {
+      "background_bodies": "1000",
+      "operation": "pushPullFace",
+      "edit_p50_ms": "2.496417",
+      "edit_p95_ms": "3.291667",
+      "mesh_p50_ms": "0.026625",
+      "mesh_p95_ms": "0.059625"
+    },
+    {
+      "background_bodies": "10000",
+      "operation": "extrude",
+      "edit_p50_ms": "13.509417",
+      "edit_p95_ms": "21.465125",
+      "mesh_p50_ms": "0.057208",
+      "mesh_p95_ms": "0.147167"
+    },
+    {
+      "background_bodies": "10000",
+      "operation": "moveFaces",
+      "edit_p50_ms": "18.600375",
+      "edit_p95_ms": "23.843125",
+      "mesh_p50_ms": "0.044292",
+      "mesh_p95_ms": "0.056833"
+    },
+    {
+      "background_bodies": "10000",
+      "operation": "pushPullFace",
+      "edit_p50_ms": "24.779916",
+      "edit_p95_ms": "28.567292",
+      "mesh_p50_ms": "0.023041",
+      "mesh_p95_ms": "0.050416"
+    }
+  ]
+}
