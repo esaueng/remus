@@ -341,14 +341,66 @@ pub enum AnalyticSurface<'a> {
     },
 }
 
+/// UV of a 3D point on one intersection support surface.
+///
+/// Quadrics use their native [`project_point`](CylindricalSurface::project_point)
+/// (angular parameter wrapped to the canonical `[0, TAU)`); a plane uses the
+/// deterministic `Frame3::from_normal` frame shared with `surface_closures`
+/// and `project_analytic` (`origin = normal * d`).
+///
+/// Returns an error instead of a fabricated `(0.0, 0.0)` when the plane frame
+/// cannot be built (a zero plane normal); every other support projects
+/// infallibly.
+///
+/// # Errors
+///
+/// Returns [`MathError`] when the plane frame construction fails.
+fn support_uv(surface: &AnalyticSurface<'_>, point: Point3) -> Result<(f64, f64), MathError> {
+    match surface {
+        AnalyticSurface::Cylinder(cyl) => Ok(cyl.project_point(point)),
+        AnalyticSurface::Cone(cone) => Ok(cone.project_point(point)),
+        AnalyticSurface::Sphere(sphere) => Ok(sphere.project_point(point)),
+        AnalyticSurface::Torus(torus) => Ok(torus.project_point(point)),
+        AnalyticSurface::Plane { normal, d } => {
+            let origin = Point3::new(normal.x() * d, normal.y() * d, normal.z() * d);
+            let frame = Frame3::from_normal(origin, *normal)?;
+            let dq = point - frame.origin;
+            Ok((dq.dot(frame.x), dq.dot(frame.y)))
+        }
+    }
+}
+
 /// Convert an exact plane/plane or plane/quadric result to the marcher's
-/// sampled-curve type. Circles and ellipses are sampled densely and refit;
-/// a line is a degree-1 NURBS over `±line_half_extent` (the marcher-API
-/// convention is that consumers re-trim against face bounds downstream).
+/// sampled-curve type.
+///
+/// Every returned sample carries valid parameters on both supports:
+/// `param1` is the UV on `a`, `param2` the UV on `b` (operand order of the
+/// caller), each projecting back to the sample point. Circles and ellipses
+/// are sampled densely and refit; a line is a degree-1 NURBS over the finite
+/// segment `base ± direction * line_half_extent` — an unbounded carrier has
+/// no finite extent of its own, so callers that need face-bounded pieces must
+/// re-trim downstream (phase FF clips lines exactly; the plane-pair default
+/// `±1.0` matches the marcher's `(-1, 1)` plane patch).
+///
+/// The refit NURBS remains an approximation between its samples — circle,
+/// ellipse, and line samples are exact points of the closed-form carrier,
+/// while `Points` chains are themselves sampled — so downstream the curve is
+/// classified like any other marched curve, never as an exact carrier. The
+/// exact `Circle`/`Ellipse`/`Line` variants stay available through
+/// [`exact_plane_analytic_bounded`] for callers that need exact geometry.
 fn exact_to_marched(
     exact: &ExactIntersectionCurve,
+    a: &AnalyticSurface<'_>,
+    b: &AnalyticSurface<'_>,
     line_half_extent: f64,
 ) -> Result<Option<IntersectionCurve>, MathError> {
+    let locate = |pt: Point3| -> Result<IntersectionPoint, MathError> {
+        Ok(IntersectionPoint {
+            point: pt,
+            param1: support_uv(a, pt)?,
+            param2: support_uv(b, pt)?,
+        })
+    };
     match exact {
         ExactIntersectionCurve::Circle(circle) => {
             let n_samples = 33;
@@ -359,11 +411,7 @@ fn exact_to_marched(
                 let theta = TAU * i as f64 / (n_samples - 1) as f64;
                 let pt = crate::traits::ParametricCurve::evaluate(circle, theta);
                 positions.push(pt);
-                points.push(IntersectionPoint {
-                    point: pt,
-                    param1: (0.0, 0.0),
-                    param2: (0.0, 0.0),
-                });
+                points.push(locate(pt)?);
             }
             let degree = 3.min(positions.len() - 1);
             let curve = interpolate(&positions, degree)?;
@@ -378,11 +426,7 @@ fn exact_to_marched(
                 let theta = TAU * i as f64 / (n_samples - 1) as f64;
                 let pt = crate::traits::ParametricCurve::evaluate(ellipse, theta);
                 positions.push(pt);
-                points.push(IntersectionPoint {
-                    point: pt,
-                    param1: (0.0, 0.0),
-                    param2: (0.0, 0.0),
-                });
+                points.push(locate(pt)?);
             }
             let degree = 3.min(positions.len() - 1);
             let curve = interpolate(&positions, degree)?;
@@ -395,12 +439,8 @@ fn exact_to_marched(
             ];
             let points = endpoints
                 .iter()
-                .map(|&pt| IntersectionPoint {
-                    point: pt,
-                    param1: (0.0, 0.0),
-                    param2: (0.0, 0.0),
-                })
-                .collect();
+                .map(|&pt| locate(pt))
+                .collect::<Result<Vec<_>, _>>()?;
             let curve = interpolate(&endpoints, 1)?;
             Ok(Some(IntersectionCurve { curve, points }))
         }
@@ -421,12 +461,8 @@ fn exact_to_marched(
             let curve = interpolate(&dedup, 3.min(dedup.len() - 1))?;
             let points = dedup
                 .iter()
-                .map(|&pt| IntersectionPoint {
-                    point: pt,
-                    param1: (0.0, 0.0),
-                    param2: (0.0, 0.0),
-                })
-                .collect();
+                .map(|&pt| locate(pt))
+                .collect::<Result<Vec<_>, _>>()?;
             Ok(Some(IntersectionCurve { curve, points }))
         }
     }
@@ -435,13 +471,17 @@ fn exact_to_marched(
 /// Convert exact intersection results to the marcher's sampled-curve type.
 /// Sampled-point chains are refit to NURBS (a tangential contact collapsing
 /// to a point is dropped, matching the boolean engine's Points arm).
+/// `a`/`b` are the two supporting surfaces in operand order: each sample's
+/// `param1`/`param2` is its UV on `a`/`b`.
 fn exacts_to_marched(
     exacts: &[ExactIntersectionCurve],
+    a: &AnalyticSurface<'_>,
+    b: &AnalyticSurface<'_>,
     line_half_extent: f64,
 ) -> Result<Vec<IntersectionCurve>, MathError> {
     let mut curves = Vec::new();
     for exact in exacts {
-        if let Some(curve) = exact_to_marched(exact, line_half_extent)? {
+        if let Some(curve) = exact_to_marched(exact, a, b, line_half_extent)? {
             curves.push(curve);
         }
     }
@@ -474,7 +514,8 @@ pub fn intersect_plane_analytic(
             normal: plane_n,
             d: plane_d,
         } => {
-            // Plane × plane: the exact line (nothing when parallel).
+            // Plane × plane: the exact line (nothing when parallel). The
+            // segment spans ±1.0 along the line; consumers re-trim downstream.
             let exacts = exact_plane_analytic_bounded(
                 AnalyticSurface::Plane {
                     normal: plane_n,
@@ -484,7 +525,8 @@ pub fn intersect_plane_analytic(
                 d,
                 None,
             )?;
-            exacts_to_marched(&exacts, 1.0)
+            let other = AnalyticSurface::Plane { normal, d };
+            exacts_to_marched(&exacts, &surface, &other, 1.0)
         }
     }
 }
@@ -1786,7 +1828,7 @@ fn try_algebraic_intersection(
                 *d2,
                 None,
             )?;
-            Ok(Some(exacts_to_marched(&exacts, 1.0)?))
+            Ok(Some(exacts_to_marched(&exacts, a, b, 1.0)?))
         }
         (AnalyticSurface::Plane { normal, d }, other)
         | (other, AnalyticSurface::Plane { normal, d }) => {
@@ -1800,7 +1842,7 @@ fn try_algebraic_intersection(
                 _ => 1.0,
             };
             let exacts = exact_plane_analytic_bounded(*other, *normal, *d, None)?;
-            Ok(Some(exacts_to_marched(&exacts, v_extent / 2.0)?))
+            Ok(Some(exacts_to_marched(&exacts, a, b, v_extent / 2.0)?))
         } // Every pair of the five variants has an arm above; a future variant
           // is flagged here by the compiler instead of silently marching.
     }
