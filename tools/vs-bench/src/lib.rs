@@ -1,4 +1,6 @@
 //! Versioned, fail-closed scorecards. Runner execution belongs to O1.2a.
+pub mod qualification;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
