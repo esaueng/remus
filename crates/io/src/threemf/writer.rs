@@ -78,6 +78,56 @@ pub fn write_threemf(
     write_zip(&model_xml)
 }
 
+/// Write already-tessellated meshes to 3MF format as bytes.
+///
+/// Each mesh is filtered through [`crate::retain_nondegenerate_triangles`] —
+/// the same degenerate-facet removal the solid writer applies — then
+/// validated the same way [`write_threemf`] validates its tessellation
+/// (at least one triangle, index count a multiple of three) and serialized
+/// verbatim. This is the mesh-level seam of [`write_threemf`]: it exists so
+/// the export contract (no exact zero-area facet reaches a serialized file)
+/// can be exercised on controlled meshes without a B-rep in the loop.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - `meshes` is empty
+/// - Any mesh has fewer than three indices, or a non-multiple-of-three
+///   index count, after filtering
+/// - ZIP or XML writing fails
+pub fn write_mesh_threemf(meshes: &[TriangleMesh]) -> Result<Vec<u8>, IoError> {
+    if meshes.is_empty() {
+        return Err(IoError::InvalidTopology {
+            reason: "no meshes to export".to_string(),
+        });
+    }
+    let filtered: Vec<TriangleMesh> = meshes
+        .iter()
+        .map(|mesh| {
+            let mut filtered = mesh.clone();
+            crate::retain_nondegenerate_triangles(&mut filtered);
+            filtered
+        })
+        .collect();
+    for (i, mesh) in filtered.iter().enumerate() {
+        if mesh.indices.len() < 3 {
+            return Err(IoError::InvalidTopology {
+                reason: format!("mesh {i} tessellated to zero triangles"),
+            });
+        }
+        if mesh.indices.len() % 3 != 0 {
+            return Err(IoError::InvalidTopology {
+                reason: format!(
+                    "mesh {i} has {} indices (not a multiple of 3)",
+                    mesh.indices.len()
+                ),
+            });
+        }
+    }
+    let model_xml = write_model_xml(&filtered)?;
+    write_zip(&model_xml)
+}
+
 /// Tessellate all faces of a solid into a single merged [`TriangleMesh`].
 fn tessellate_solid(
     topo: &Topology,

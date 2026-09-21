@@ -846,4 +846,58 @@ mod tests {
         let volumes = volumes(&document);
         assert!((volumes[0] - 1.0 / 6.0).abs() < 1e-9);
     }
+
+    /// Mesh exports must carry only finite, nonzero-area facets: an exact
+    /// zero-area record reads back as an open mesh (its two identical
+    /// directed edges cancel in a closure count). Regression for the
+    /// collapsed-seam facets the Tiny-Fox complete-history replay exposed.
+    #[test]
+    fn mesh_exports_carry_no_zero_area_facets() {
+        let document = box_document();
+        let stl =
+            RemusIo::export_stl_impl(&document, 0.05, remus_io::stl::writer::StlFormat::Binary)
+                .unwrap();
+        let stl_mesh = remus_io::stl::read_stl(&stl).unwrap();
+        assert_eq!(stl_mesh.indices.len() % 3, 0);
+        for tri in stl_mesh.indices.chunks_exact(3) {
+            let a = stl_mesh.positions[tri[0] as usize];
+            let b = stl_mesh.positions[tri[1] as usize];
+            let c = stl_mesh.positions[tri[2] as usize];
+            assert!(
+                a != b && b != c && a != c,
+                "binary STL export serialized a coincident-vertex facet"
+            );
+            let cross = (b - a).cross(c - a);
+            assert!(
+                cross.length_squared() > 0.0 && cross.length_squared().is_finite(),
+                "binary STL export serialized a zero-area facet"
+            );
+        }
+
+        let threemf = RemusIo::export_3mf_impl(&document, 0.05).unwrap();
+        let meshes = remus_io::threemf::read_threemf(&threemf).unwrap();
+        assert_eq!(meshes.len(), 1);
+        for tri in meshes[0].indices.chunks_exact(3) {
+            let a = meshes[0].positions[tri[0] as usize];
+            let b = meshes[0].positions[tri[1] as usize];
+            let c = meshes[0].positions[tri[2] as usize];
+            assert!(
+                a != b && b != c && a != c,
+                "3MF export serialized a coincident-vertex facet"
+            );
+            let cross = (b - a).cross(c - a);
+            assert!(
+                cross.length_squared() > 0.0 && cross.length_squared().is_finite(),
+                "3MF export serialized a zero-area facet"
+            );
+        }
+        #[allow(clippy::float_cmp)]
+        {
+            let volume = volumes(&RemusIo::import_3mf_impl(&threemf, None, None).unwrap())[0];
+            assert_eq!(
+                volume, 24.0,
+                "3MF round trip must preserve the exact box volume"
+            );
+        }
+    }
 }
