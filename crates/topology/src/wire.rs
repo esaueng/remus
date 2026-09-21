@@ -133,3 +133,77 @@ impl Wire {
         self.body_class = body_class;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use remus_math::vec::Point3;
+
+    use crate::edge::EdgeCurve;
+    use crate::topology::Topology;
+    use crate::vertex::Vertex;
+
+    use super::*;
+
+    /// Two distinct live edge handles to build wires from.
+    fn two_edges() -> (Topology, EdgeId, EdgeId) {
+        let mut topo = Topology::new();
+        let v0 = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
+        let v1 = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
+        let v2 = topo.add_vertex(Vertex::new(Point3::new(1.0, 1.0, 0.0), 1e-7));
+        let e0 = topo.add_edge(Edge::new(v0, v1, EdgeCurve::Line));
+        let e1 = topo.add_edge(Edge::new(v1, v2, EdgeCurve::Line));
+        (topo, e0, e1)
+    }
+
+    #[test]
+    fn closed_flag_round_trips_both_ways() {
+        let (_topo, e0, e1) = two_edges();
+        let open = Wire::new(
+            vec![OrientedEdge::new(e0, true), OrientedEdge::new(e1, true)],
+            false,
+        )
+        .unwrap();
+        assert!(!open.is_closed(), "a wire built open reports open");
+
+        let closed = Wire::new(vec![OrientedEdge::new(e0, true)], true).unwrap();
+        assert!(closed.is_closed(), "a wire built closed reports closed");
+    }
+
+    #[test]
+    fn edges_mut_exposes_the_stored_edges_for_in_place_replacement() {
+        let (_topo, e0, e1) = two_edges();
+        let mut wire = Wire::new(
+            vec![OrientedEdge::new(e0, true), OrientedEdge::new(e1, true)],
+            false,
+        )
+        .unwrap();
+
+        {
+            let edges = wire.edges_mut();
+            assert_eq!(edges.len(), 2, "edges_mut sees the wire's own storage");
+            edges[0] = OrientedEdge::new(e1, false);
+        }
+
+        // The write through the mutable slice is visible to the shared view.
+        assert_eq!(wire.edges().len(), 2);
+        assert_eq!(wire.edges()[0].edge(), e1);
+        assert!(!wire.edges()[0].is_forward());
+        assert_eq!(wire.edges()[1].edge(), e1);
+        assert!(wire.edges()[1].is_forward());
+    }
+
+    #[test]
+    fn set_body_class_replaces_the_stored_class() {
+        let (_topo, e0, _e1) = two_edges();
+        let mut wire = Wire::new(vec![OrientedEdge::new(e0, true)], false).unwrap();
+        assert_eq!(wire.body_class(), BodyClass::Wire);
+
+        wire.set_body_class(BodyClass::Sheet);
+        assert_eq!(wire.body_class(), BodyClass::Sheet);
+
+        wire.set_body_class(BodyClass::Solid);
+        assert_eq!(wire.body_class(), BodyClass::Solid);
+    }
+}

@@ -50,3 +50,56 @@ impl Solid {
         self.inner_shells.push(shell_id);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use crate::shell::Shell;
+    use crate::topology::Topology;
+
+    use super::*;
+
+    /// Three distinct live shell handles.
+    fn three_shells() -> (Topology, ShellId, ShellId, ShellId) {
+        let mut topo = Topology::new();
+        let s0 = topo.add_shell(Shell::empty());
+        let s1 = topo.add_shell(Shell::empty());
+        let s2 = topo.add_shell(Shell::empty());
+        (topo, s0, s1, s2)
+    }
+
+    #[test]
+    fn set_outer_shell_replaces_the_stored_boundary() {
+        let (_topo, s0, s1, _s2) = three_shells();
+        let mut solid = Solid::new(s0, vec![]);
+        assert_eq!(solid.outer_shell(), s0);
+
+        solid.set_outer_shell(s1);
+        assert_eq!(solid.outer_shell(), s1, "the new outer shell is stored");
+        assert!(
+            solid.inner_shells().is_empty(),
+            "replacing the outer shell does not invent cavities"
+        );
+    }
+
+    #[test]
+    fn add_inner_shell_appends_without_disturbing_the_outer_shell() {
+        let (_topo, s0, s1, s2) = three_shells();
+        let mut solid = Solid::new(s0, vec![]);
+        assert!(solid.inner_shells().is_empty());
+
+        solid.add_inner_shell(s1);
+        assert_eq!(solid.inner_shells().len(), 1);
+        assert_eq!(solid.inner_shells(), &[s1]);
+
+        solid.add_inner_shell(s2);
+        assert_eq!(solid.inner_shells().len(), 2, "the cavity count grows");
+        assert_eq!(solid.inner_shells(), &[s1, s2]);
+        assert_eq!(
+            solid.outer_shell(),
+            s0,
+            "adding a cavity leaves the outer shell untouched"
+        );
+    }
+}

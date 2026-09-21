@@ -345,3 +345,309 @@ mod tests {
         assert!(adj.faces_for_edge(fake_eid).is_empty());
     }
 }
+
+#[cfg(test)]
+mod index_contract_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use remus_math::vec::{Point3, Vec3};
+
+    use crate::edge::{Edge, EdgeCurve};
+    use crate::face::{Face, FaceSurface};
+    use crate::shell::Shell;
+    use crate::solid::Solid;
+    use crate::vertex::{Vertex, VertexId};
+    use crate::wire::{OrientedEdge, Wire};
+
+    use super::*;
+
+    const TOL: f64 = 1e-7;
+
+    fn vert(topo: &mut Topology, x: f64, y: f64, z: f64) -> VertexId {
+        topo.add_vertex(Vertex::new(Point3::new(x, y, z), TOL))
+    }
+
+    /// Builds a face from an already-ordered ring of oriented edges.
+    fn face_from(topo: &mut Topology, edges: Vec<(EdgeId, bool)>, normal: Vec3, d: f64) -> FaceId {
+        let wire = Wire::new(
+            edges
+                .into_iter()
+                .map(|(eid, fwd)| OrientedEdge::new(eid, fwd))
+                .collect(),
+            true,
+        )
+        .expect("fixture wire");
+        let wid = topo.add_wire(wire);
+        topo.add_face(Face::new(wid, vec![], FaceSurface::Plane { normal, d }))
+    }
+
+    /// A closed, manifold unit cube: 6 faces, 12 edges, every edge used once
+    /// forward and once reversed. Returns the solid and its 12 edges.
+    fn manifold_cube(topo: &mut Topology) -> (SolidId, Vec<EdgeId>) {
+        let v: [VertexId; 8] = [
+            vert(topo, 0.0, 0.0, 0.0),
+            vert(topo, 1.0, 0.0, 0.0),
+            vert(topo, 1.0, 1.0, 0.0),
+            vert(topo, 0.0, 1.0, 0.0),
+            vert(topo, 0.0, 0.0, 1.0),
+            vert(topo, 1.0, 0.0, 1.0),
+            vert(topo, 1.0, 1.0, 1.0),
+            vert(topo, 0.0, 1.0, 1.0),
+        ];
+        let eb: [EdgeId; 4] = [
+            topo.add_edge(Edge::new(v[0], v[1], EdgeCurve::Line)),
+            topo.add_edge(Edge::new(v[1], v[2], EdgeCurve::Line)),
+            topo.add_edge(Edge::new(v[2], v[3], EdgeCurve::Line)),
+            topo.add_edge(Edge::new(v[3], v[0], EdgeCurve::Line)),
+        ];
+        let et: [EdgeId; 4] = [
+            topo.add_edge(Edge::new(v[4], v[5], EdgeCurve::Line)),
+            topo.add_edge(Edge::new(v[5], v[6], EdgeCurve::Line)),
+            topo.add_edge(Edge::new(v[6], v[7], EdgeCurve::Line)),
+            topo.add_edge(Edge::new(v[7], v[4], EdgeCurve::Line)),
+        ];
+        let ev: [EdgeId; 4] = [
+            topo.add_edge(Edge::new(v[0], v[4], EdgeCurve::Line)),
+            topo.add_edge(Edge::new(v[1], v[5], EdgeCurve::Line)),
+            topo.add_edge(Edge::new(v[2], v[6], EdgeCurve::Line)),
+            topo.add_edge(Edge::new(v[3], v[7], EdgeCurve::Line)),
+        ];
+
+        let bottom = face_from(
+            topo,
+            vec![
+                (eb[0], false),
+                (eb[3], false),
+                (eb[2], false),
+                (eb[1], false),
+            ],
+            Vec3::new(0.0, 0.0, -1.0),
+            0.0,
+        );
+        let top = face_from(
+            topo,
+            vec![(et[0], true), (et[1], true), (et[2], true), (et[3], true)],
+            Vec3::new(0.0, 0.0, 1.0),
+            1.0,
+        );
+        let front = face_from(
+            topo,
+            vec![(eb[0], true), (ev[1], true), (et[0], false), (ev[0], false)],
+            Vec3::new(0.0, -1.0, 0.0),
+            0.0,
+        );
+        let back = face_from(
+            topo,
+            vec![(eb[2], true), (ev[3], true), (et[2], false), (ev[2], false)],
+            Vec3::new(0.0, 1.0, 0.0),
+            1.0,
+        );
+        let left = face_from(
+            topo,
+            vec![(eb[3], true), (ev[0], true), (et[3], false), (ev[3], false)],
+            Vec3::new(-1.0, 0.0, 0.0),
+            0.0,
+        );
+        let right = face_from(
+            topo,
+            vec![(eb[1], true), (ev[2], true), (et[1], false), (ev[1], false)],
+            Vec3::new(1.0, 0.0, 0.0),
+            1.0,
+        );
+
+        let shell = topo.add_shell(
+            Shell::new(vec![bottom, top, front, back, left, right]).expect("cube shell"),
+        );
+        let solid = topo.add_solid(Solid::new(shell, vec![]));
+
+        let mut edges = Vec::new();
+        edges.extend_from_slice(&eb);
+        edges.extend_from_slice(&et);
+        edges.extend_from_slice(&ev);
+        (solid, edges)
+    }
+
+    /// Two quads meeting along one edge: an open sheet with 6 free edges and
+    /// no non-manifold edge — the one configuration that violates exactly one
+    /// of `is_manifold`'s two conditions.
+    fn open_two_quad_sheet(topo: &mut Topology) -> (Vec<FaceId>, EdgeId) {
+        let v0 = vert(topo, 0.0, 0.0, 0.0);
+        let v1 = vert(topo, 1.0, 0.0, 0.0);
+        let v2 = vert(topo, 1.0, 1.0, 0.0);
+        let v3 = vert(topo, 0.0, 1.0, 0.0);
+        let v5 = vert(topo, 1.0, 0.0, 1.0);
+        let v6 = vert(topo, 1.0, 1.0, 1.0);
+
+        let a0 = topo.add_edge(Edge::new(v0, v1, EdgeCurve::Line));
+        let shared = topo.add_edge(Edge::new(v1, v2, EdgeCurve::Line));
+        let a2 = topo.add_edge(Edge::new(v2, v3, EdgeCurve::Line));
+        let a3 = topo.add_edge(Edge::new(v3, v0, EdgeCurve::Line));
+        let b1 = topo.add_edge(Edge::new(v2, v6, EdgeCurve::Line));
+        let b2 = topo.add_edge(Edge::new(v6, v5, EdgeCurve::Line));
+        let b3 = topo.add_edge(Edge::new(v5, v1, EdgeCurve::Line));
+
+        let fa = face_from(
+            topo,
+            vec![(a0, true), (shared, true), (a2, true), (a3, true)],
+            Vec3::new(0.0, 0.0, 1.0),
+            0.0,
+        );
+        let fb = face_from(
+            topo,
+            vec![(shared, false), (b1, true), (b2, true), (b3, true)],
+            Vec3::new(1.0, 0.0, 0.0),
+            1.0,
+        );
+        (vec![fa, fb], shared)
+    }
+
+    /// Three triangles fanned around one shared edge: a T-junction.
+    fn non_manifold_fan(topo: &mut Topology) -> (Vec<FaceId>, EdgeId) {
+        let v0 = vert(topo, 0.0, 0.0, 0.0);
+        let v1 = vert(topo, 1.0, 0.0, 0.0);
+        let apexes = [
+            vert(topo, 0.5, 1.0, 0.0),
+            vert(topo, 0.5, -1.0, 0.0),
+            vert(topo, 0.5, 0.0, 1.0),
+        ];
+        let shared = topo.add_edge(Edge::new(v0, v1, EdgeCurve::Line));
+
+        let mut faces = Vec::new();
+        for apex in apexes {
+            let e_a = topo.add_edge(Edge::new(v1, apex, EdgeCurve::Line));
+            let e_b = topo.add_edge(Edge::new(apex, v0, EdgeCurve::Line));
+            faces.push(face_from(
+                topo,
+                vec![(shared, true), (e_a, true), (e_b, true)],
+                Vec3::new(0.0, 0.0, 1.0),
+                0.0,
+            ));
+        }
+        (faces, shared)
+    }
+
+    #[test]
+    fn closed_manifold_cube_index() {
+        let mut topo = Topology::new();
+        let (solid, edges) = manifold_cube(&mut topo);
+        let adj = AdjacencyIndex::build(&topo, solid).unwrap();
+
+        assert!(adj.is_manifold(), "a closed cube is manifold");
+        assert!(adj.non_manifold_edges().is_empty());
+        assert!(adj.boundary_edges().is_empty());
+        assert_eq!(adj.edge_count(), 12, "a cube has 12 distinct edges");
+        assert_eq!(
+            adj.edge_faces_iter().count(),
+            12,
+            "the iterator must yield every indexed edge"
+        );
+        for (_, faces) in adj.edge_faces_iter() {
+            assert_eq!(faces.len(), 2, "every cube edge is used by 2 faces");
+        }
+
+        for &eid in &edges {
+            assert_eq!(
+                adj.faces_for_edge(eid).len(),
+                2,
+                "edge {} should map to both of its faces",
+                eid.index()
+            );
+            let looked_up = adj.edge_faces(eid).expect("known edge must be present");
+            assert_eq!(looked_up.len(), 2);
+            assert_eq!(looked_up, adj.faces_for_edge(eid));
+        }
+
+        let face_ids = topo
+            .shell(topo.solid(solid).unwrap().outer_shell())
+            .unwrap();
+        let face_ids = face_ids.faces().to_vec();
+        assert_eq!(face_ids.len(), 6);
+        for &fid in &face_ids {
+            let neighbors = adj.neighbors_of_face(fid);
+            assert_eq!(neighbors.len(), 4, "each cube face touches 4 others");
+            assert!(
+                neighbors.iter().all(|n| n.index() != fid.index()),
+                "a face is never its own neighbour"
+            );
+        }
+
+        // An edge the index never saw is absent, not empty-but-present.
+        let dangling = {
+            let a = vert(&mut topo, 9.0, 9.0, 9.0);
+            let b = vert(&mut topo, 9.0, 9.0, 10.0);
+            topo.add_edge(Edge::new(a, b, EdgeCurve::Line))
+        };
+        assert!(adj.edge_faces(dangling).is_none());
+        assert!(adj.faces_for_edge(dangling).is_empty());
+    }
+
+    #[test]
+    fn open_sheet_has_free_edges_and_is_not_manifold() {
+        let mut topo = Topology::new();
+        let (faces, shared) = open_two_quad_sheet(&mut topo);
+        let adj = AdjacencyIndex::build_from_faces(&topo, &faces).unwrap();
+
+        // Exactly one of `is_manifold`'s two conditions is violated here: the
+        // non-manifold list is empty but free edges exist.
+        assert!(
+            adj.non_manifold_edges().is_empty(),
+            "no edge is used by 3+ faces"
+        );
+        assert_eq!(adj.boundary_edges().len(), 6, "6 free edges on the rim");
+        assert!(
+            !adj.is_manifold(),
+            "an open sheet with free edges is not manifold"
+        );
+
+        assert_eq!(adj.edge_count(), 7, "4 + 4 edges with one shared");
+        assert_eq!(adj.faces_for_edge(shared).len(), 2);
+        assert_eq!(
+            adj.edge_faces(shared).expect("shared edge indexed").len(),
+            2
+        );
+
+        for (eid, used_by) in adj.edge_faces_iter() {
+            if eid.index() == shared.index() {
+                continue;
+            }
+            assert_eq!(used_by.len(), 1, "rim edges have a single face use");
+            assert!(
+                adj.boundary_edges()
+                    .iter()
+                    .any(|b| b.index() == eid.index()),
+                "edge {} with one face use must be reported free",
+                eid.index()
+            );
+        }
+
+        assert_eq!(adj.neighbors_of_face(faces[0]), &[faces[1]][..]);
+        assert_eq!(adj.neighbors_of_face(faces[1]), &[faces[0]][..]);
+    }
+
+    #[test]
+    fn t_junction_edge_is_reported_non_manifold() {
+        let mut topo = Topology::new();
+        let (faces, shared) = non_manifold_fan(&mut topo);
+        let adj = AdjacencyIndex::build_from_faces(&topo, &faces).unwrap();
+
+        assert_eq!(adj.non_manifold_edges().len(), 1);
+        assert_eq!(adj.non_manifold_edges()[0].index(), shared.index());
+        assert!(!adj.is_manifold(), "a 3-face edge is not manifold");
+        assert_eq!(
+            adj.faces_for_edge(shared).len(),
+            3,
+            "the fan edge is used by all three triangles"
+        );
+        assert_eq!(adj.edge_faces(shared).expect("indexed").len(), 3);
+        assert_eq!(adj.boundary_edges().len(), 6, "two free edges per triangle");
+        assert_eq!(adj.edge_count(), 7, "1 shared + 6 rim edges");
+
+        // A 3-face edge makes no face-neighbour links: only the 2-face arm does.
+        for &fid in &faces {
+            assert!(
+                adj.neighbors_of_face(fid).is_empty(),
+                "a non-manifold edge must not create neighbour links"
+            );
+        }
+    }
+}
