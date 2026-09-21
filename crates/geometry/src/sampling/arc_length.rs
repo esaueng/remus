@@ -152,7 +152,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
-    use remus_math::curves::Circle3D;
+    use remus_math::curves::{Circle3D, Ellipse3D};
     use remus_math::vec::{Point3, Vec3};
     use std::f64::consts::TAU;
 
@@ -208,6 +208,177 @@ mod tests {
             max_d / min_d <= 1.5,
             "spacing not uniform: max={max_d:.4}, min={min_d:.4}, ratio={:.4}",
             max_d / min_d
+        );
+    }
+
+    /// Centre of [`tilted_circle`].
+    fn tilt_center() -> Point3 {
+        Point3::new(0.7, -0.4, 1.3)
+    }
+
+    /// Radius of [`tilted_circle`].
+    const TILT_RADIUS: f64 = 2.3;
+
+    /// A circle whose plane is tilted against all three axes and whose centre
+    /// is off the origin. Every coordinate of the sampled points then moves,
+    /// and no coordinate *difference* collapses to zero — which is what makes
+    /// the `dx`/`dy`/`dz` terms of the chord formula observable.
+    fn tilted_circle() -> Circle3D {
+        Circle3D::new(tilt_center(), Vec3::new(0.3, -0.5, 0.8), TILT_RADIUS).unwrap()
+    }
+
+    /// Contract: `n >= 2` returns `n` points at equal arc-length spacing,
+    /// including both endpoints.
+    ///
+    /// On a circle equal arc length *is* equal angle, and the parameter of
+    /// `Circle3D` is the angle. So the returned parameters must be evenly
+    /// spaced by `(t_end - t_start) / (n - 1)`, and consecutive points must be
+    /// separated by the closed-form chord `2 * R * sin(dtheta / 2)`. Nothing
+    /// here is read off the current output: both numbers follow from the
+    /// geometry of a circle.
+    #[test]
+    fn arc_length_on_tilted_circle_is_equal_angle() {
+        let c = tilted_circle();
+        let t_start = 0.4_f64;
+        let t_end = 2.6_f64;
+        // 7 intervals: 256 / 7 is not an integer, so no arc-length target
+        // lands exactly on a chord-table knot.
+        let n = 8usize;
+        let pts = sample_arc_length(&c, t_start, t_end, n);
+        assert_eq!(pts.len(), n);
+
+        // Fixture guard: the arc has to move in all three coordinates.
+        let mut lo = [f64::INFINITY; 3];
+        let mut hi = [f64::NEG_INFINITY; 3];
+        for (_, p) in &pts {
+            for (k, v) in [p.x(), p.y(), p.z()].into_iter().enumerate() {
+                lo[k] = lo[k].min(v);
+                hi[k] = hi[k].max(v);
+            }
+        }
+        for (k, (h, l)) in hi.iter().zip(&lo).enumerate() {
+            assert!(h - l > 0.5, "fixture degenerate on axis {k}: {}", h - l);
+        }
+
+        // Both endpoints are included, exactly.
+        assert!((pts[0].0 - t_start).abs() < 1e-12, "start not included");
+        assert!((pts[n - 1].0 - t_end).abs() < 1e-12, "end not included");
+
+        // Parameters increase monotonically and stay inside the span.
+        for (i, w) in pts.windows(2).enumerate() {
+            assert!(
+                w[1].0 > w[0].0,
+                "parameters not increasing at {i}: {} then {}",
+                w[0].0,
+                w[1].0
+            );
+        }
+        for (i, (t, _)) in pts.iter().enumerate() {
+            assert!(
+                *t >= t_start - 1e-12 && *t <= t_end + 1e-12,
+                "parameter {i} = {t} outside [{t_start}, {t_end}]"
+            );
+        }
+
+        // Equal arc length on a circle => equal angle step.
+        let step = (t_end - t_start) / 7.0;
+        for (i, w) in pts.windows(2).enumerate() {
+            let d = w[1].0 - w[0].0;
+            assert!(
+                (d - step).abs() < 1e-3 * step,
+                "angle step {i} = {d}, expected {step}"
+            );
+        }
+
+        // ... and therefore an equal, closed-form chord between samples.
+        let expected_chord = 2.0 * TILT_RADIUS * (step / 2.0).sin();
+        for (i, w) in pts.windows(2).enumerate() {
+            let d = dist(w[0].1, w[1].1);
+            assert!(
+                (d - expected_chord).abs() < 1e-3 * expected_chord,
+                "chord {i} = {d}, expected {expected_chord}"
+            );
+        }
+
+        // Every sample still lies on the circle.
+        let center = tilt_center();
+        for (i, (_, p)) in pts.iter().enumerate() {
+            let r = dist(*p, center);
+            assert!(
+                (r - TILT_RADIUS).abs() < 1e-9,
+                "sample {i} off the circle: r={r}"
+            );
+        }
+    }
+
+    /// On an ellipse the parameter is *not* proportional to arc length:
+    /// `|dP/dt| = sqrt(a^2 sin^2 t + b^2 cos^2 t)` grows from `b` at `t = 0` to
+    /// `a` at `t = pi/2`. Arc-length sampling must therefore differ measurably
+    /// from uniform-parameter sampling. Because the arc-length function `s(t)`
+    /// is convex on this span, `s` lies below the chord joining its endpoints,
+    /// so every interior arc-length parameter must sit strictly to the *right*
+    /// of the corresponding uniform-parameter one.
+    #[test]
+    fn arc_length_beats_uniform_parameter_on_an_ellipse() {
+        let e = Ellipse3D::new(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            3.0,
+            1.6,
+        )
+        .unwrap();
+        let t_start = 0.1_f64;
+        let t_end = 1.4_f64;
+        // 9 intervals: 256 / 9 is not an integer.
+        let n = 10usize;
+        let step = (t_end - t_start) / 9.0;
+
+        let pts = sample_arc_length(&e, t_start, t_end, n);
+        assert_eq!(pts.len(), n);
+
+        // Interior parameters are pushed right of the uniform ones, by a
+        // margin far larger than the chord-table discretisation.
+        let mut t_uniform = t_start;
+        let mut max_shift = 0.0_f64;
+        for (i, (t, _)) in pts.iter().enumerate() {
+            if i > 0 && i < n - 1 {
+                assert!(
+                    *t > t_uniform,
+                    "sample {i}: arc-length t={t} not right of uniform t={t_uniform}"
+                );
+                max_shift = max_shift.max(*t - t_uniform);
+            }
+            t_uniform += step;
+        }
+        assert!(
+            max_shift > 0.05,
+            "arc-length sampling barely differs from uniform parameter: {max_shift}"
+        );
+
+        // Arc-length sampling makes the spatial spacing near-uniform ...
+        let chords: Vec<f64> = pts.windows(2).map(|w| dist(w[0].1, w[1].1)).collect();
+        let c_max = chords.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        let c_min = chords.iter().copied().fold(f64::INFINITY, f64::min);
+        assert!(
+            c_max / c_min < 1.3,
+            "arc-length spacing not uniform: max={c_max}, min={c_min}"
+        );
+
+        // ... whereas uniform-parameter sampling of the same span is not.
+        // (Fixture guard: proves the two strategies really do disagree here.)
+        let mut uniform = Vec::with_capacity(n);
+        let mut t = t_start;
+        for _ in 0..n {
+            uniform.push(e.evaluate(t));
+            t += step;
+        }
+        let u: Vec<f64> = uniform.windows(2).map(|w| dist(w[0], w[1])).collect();
+        let u_max = u.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        let u_min = u.iter().copied().fold(f64::INFINITY, f64::min);
+        assert!(
+            u_max / u_min > 1.5,
+            "fixture is not discriminating: uniform spacing ratio {}",
+            u_max / u_min
         );
     }
 
