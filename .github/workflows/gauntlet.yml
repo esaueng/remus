@@ -32,7 +32,7 @@ env:
 
 jobs:
   checks:
-    uses: esaueng/remus/.github/workflows/fleet-gauntlet.yml@f7269dfc454fba99bb3a908fb43a8873559135bd
+    uses: esaueng/remus/.github/workflows/fleet-gauntlet.yml@0771d6806848fc6a0ad9cb20c6acf27739b5941b
     permissions:
       contents: write
       pull-requests: read
