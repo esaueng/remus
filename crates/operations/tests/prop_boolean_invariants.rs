@@ -3480,7 +3480,7 @@ fn b26_finding14_toruscone_sibling() {
 /// persisted proptest seed (shrinking aborted) — this repro is the
 /// retention. Minimized from `prop_random_curved_pair_identities`.
 #[test]
-#[ignore = "open: unit torus-cone valid-fuse open mesh + invalid cut (B26 finding 14)"]
+#[ignore = "open: unit torus-cone GFA degenerates to 1-face open shell, typed refusal (B26 finding 14; root cause traced, see b39-bisect-2026-09.md appendix)"]
 fn b26_finding14_toruscone_unit() {
     use remus_operations::primitives::{make_cone, make_torus};
     let m = Mat4::translation(1.5, 2.0, 1.0) * Mat4::rotation_y(3.0 * std::f64::consts::FRAC_PI_2);
@@ -3517,7 +3517,7 @@ fn b26_finding14_toruscone_unit() {
 /// proptest seed (shrinking aborted) — this repro is the retention.
 /// Minimized from `prop_random_curved_pair_identities`.
 #[test]
-#[ignore = "open: torus-cone oblique valid-fuse translation drift (B26 finding 14)"]
+#[ignore = "open: torus-cone oblique composite-pierce assembly fails, typed refusal (B26 finding 14; root cause traced, see b39-bisect-2026-09.md appendix)"]
 fn b26_finding14_toruscone_oblique_drift() {
     use remus_operations::primitives::{make_cone, make_torus};
     let m = Mat4::translation(2.5, 0.0, 0.0) * Mat4::rotation_x(std::f64::consts::FRAC_PI_4);

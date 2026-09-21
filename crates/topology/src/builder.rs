@@ -1910,4 +1910,914 @@ mod tests {
             "beyond-tolerance wire must be rejected"
         );
     }
+
+    // ---------------------------------------------------------------
+    // Structural builder contracts (mutation-coverage regression tests).
+    // ---------------------------------------------------------------
+
+    fn assert_point_eq(actual: Point3, expected: Point3, what: &str) {
+        assert!(
+            (actual - expected).length() < 1e-9,
+            "{what}: expected {expected:?}, got {actual:?}"
+        );
+    }
+
+    /// Start/end vertex positions of every oriented edge of a wire, in
+    /// traversal order.
+    fn wire_links(topo: &Topology, wid: WireId) -> Vec<(Point3, Point3)> {
+        let wire = topo.wire(wid).unwrap();
+        wire.edges()
+            .iter()
+            .map(|oe| {
+                let edge = topo.edge(oe.edge()).unwrap();
+                let start = topo.vertex(oe.oriented_start(edge)).unwrap().point();
+                let end = topo.vertex(oe.oriented_end(edge)).unwrap().point();
+                (start, end)
+            })
+            .collect()
+    }
+
+    /// The coincidence guard is exactly the squared base linear tolerance:
+    /// a separation at the tolerance is a real edge, anything wider is never
+    /// mistaken for a degenerate one.
+    #[test]
+    fn make_line_edge_guard_is_the_squared_linear_tolerance() {
+        let linear = Tolerance::new().linear;
+        let origin = Point3::new(0.0, 0.0, 0.0);
+        let mut topo = Topology::new();
+
+        assert!(
+            make_line_edge(&mut topo, origin, Point3::new(linear, 0.0, 0.0), TOL).is_ok(),
+            "a separation exactly at the linear tolerance is not coincident"
+        );
+        assert!(
+            make_line_edge(&mut topo, origin, Point3::new(1e-4, 0.0, 0.0), TOL).is_ok(),
+            "a 1e-4 separation is far above the coincidence guard"
+        );
+        assert!(
+            make_line_edge(&mut topo, origin, Point3::new(1e-9, 0.0, 0.0), TOL).is_err(),
+            "a 1e-9 separation is below the coincidence guard"
+        );
+    }
+
+    /// Each polygon edge joins consecutive points and the last one closes
+    /// back onto the first; three points are the documented minimum.
+    #[test]
+    fn make_polygon_wire_links_consecutive_points_and_closes_the_loop() {
+        let pts = [
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(2.0, 0.0, 0.0),
+            Point3::new(2.0, 3.0, 0.0),
+            Point3::new(-1.0, 3.0, 0.0),
+        ];
+        let mut topo = Topology::new();
+        let wid = make_polygon_wire(&mut topo, &pts, TOL).unwrap();
+        let links = wire_links(&topo, wid);
+        assert_eq!(links.len(), pts.len());
+        for (i, (start, end)) in links.iter().enumerate() {
+            assert_point_eq(*start, pts[i], "polygon edge start");
+            assert_point_eq(*end, pts[(i + 1) % pts.len()], "polygon edge end");
+        }
+
+        let mut topo = Topology::new();
+        let triangle = make_polygon_wire(&mut topo, &pts[..3], TOL).unwrap();
+        assert_eq!(
+            topo.wire(triangle).unwrap().edges().len(),
+            3,
+            "three points are a legal polygon"
+        );
+    }
+
+    /// A regular polygon's vertices sit on the circle of the requested
+    /// radius at evenly spaced angles, starting on the +x axis.
+    #[test]
+    #[allow(clippy::cast_precision_loss)]
+    fn make_regular_polygon_wire_places_vertices_on_the_circle() {
+        let radius = 2.0;
+        for n in [3_usize, 5] {
+            let mut topo = Topology::new();
+            let wid = make_regular_polygon_wire(&mut topo, radius, n, TOL).unwrap();
+            let links = wire_links(&topo, wid);
+            assert_eq!(links.len(), n, "one edge per side");
+            for (i, (start, _)) in links.iter().enumerate() {
+                let angle = 2.0 * PI * (i as f64) / (n as f64);
+                let expected = Point3::new(radius * angle.cos(), radius * angle.sin(), 0.0);
+                assert_point_eq(*start, expected, "regular polygon vertex");
+            }
+        }
+    }
+
+    /// The rectangle is centred on the origin with half-extents
+    /// `width/2` and `height/2`, wound counter-clockwise.
+    #[test]
+    fn make_rectangle_face_corners_are_the_half_extents_in_ccw_order() {
+        let mut topo = Topology::new();
+        let fid = make_rectangle_face(&mut topo, 2.0, 6.0, TOL).unwrap();
+        let wid = topo.face(fid).unwrap().outer_wire();
+        let links = wire_links(&topo, wid);
+        let expected = [
+            Point3::new(-1.0, -3.0, 0.0),
+            Point3::new(1.0, -3.0, 0.0),
+            Point3::new(1.0, 3.0, 0.0),
+            Point3::new(-1.0, 3.0, 0.0),
+        ];
+        assert_eq!(links.len(), 4);
+        for (i, (start, end)) in links.iter().enumerate() {
+            assert_point_eq(*start, expected[i], "rectangle corner");
+            assert_point_eq(*end, expected[(i + 1) % 4], "rectangle corner");
+        }
+    }
+
+    /// The domain wire of a NURBS face visits the four surface corners in
+    /// order and closes the loop.
+    #[test]
+    fn make_nurbs_face_wire_visits_the_domain_corners_in_order() {
+        let grid = vec![
+            vec![Point3::new(0.0, 0.0, 0.0), Point3::new(0.0, 4.0, 1.0)],
+            vec![Point3::new(3.0, 0.0, -1.0), Point3::new(3.0, 4.0, 0.0)],
+        ];
+        let weights = vec![vec![1.0, 1.0], vec![1.0, 1.0]];
+        let knots = vec![0.0, 0.0, 1.0, 1.0];
+        let surface = NurbsSurface::new(1, 1, knots.clone(), knots, grid, weights).unwrap();
+        let (u_min, u_max) = surface.domain_u();
+        let (v_min, v_max) = surface.domain_v();
+        let corners = [
+            surface.evaluate(u_min, v_min),
+            surface.evaluate(u_max, v_min),
+            surface.evaluate(u_max, v_max),
+            surface.evaluate(u_min, v_max),
+        ];
+
+        let mut topo = Topology::new();
+        let fid = make_nurbs_face(&mut topo, surface, TOL).unwrap();
+        let wid = topo.face(fid).unwrap().outer_wire();
+        let links = wire_links(&topo, wid);
+        assert_eq!(links.len(), 4);
+        for (i, (start, end)) in links.iter().enumerate() {
+            assert_point_eq(*start, corners[i], "nurbs face corner");
+            assert_point_eq(*end, corners[(i + 1) % 4], "nurbs face corner");
+        }
+    }
+
+    /// The fitted plane carries the wire's own signed offset: every sample
+    /// satisfies `normal · p == d`, for both windings and away from the
+    /// origin.
+    #[test]
+    fn plane_face_records_the_signed_offset_of_the_wire() {
+        let z = 5.0;
+        let ccw = [
+            Point3::new(0.0, 0.0, z),
+            Point3::new(4.0, 0.0, z),
+            Point3::new(4.0, 4.0, z),
+            Point3::new(0.0, 4.0, z),
+        ];
+        let origin = Point3::new(0.0, 0.0, 0.0);
+
+        let mut topo = Topology::new();
+        let wid = make_polygon_wire(&mut topo, &ccw, TOL).unwrap();
+        let (normal, d) = wire_plane(&topo, wid).unwrap();
+        assert!((normal.z() - 1.0).abs() < 1e-12, "CCW square normal is +Z");
+        assert!((d - z).abs() < 1e-12, "plane offset is the wire's height");
+        for p in ccw {
+            assert!(
+                (normal.dot(p - origin) - d).abs() < 1e-12,
+                "wire point must satisfy normal . p == d"
+            );
+        }
+
+        let cw: Vec<Point3> = ccw.iter().rev().copied().collect();
+        let mut topo = Topology::new();
+        let wid = make_polygon_wire(&mut topo, &cw, TOL).unwrap();
+        let (normal, d) = wire_plane(&topo, wid).unwrap();
+        assert!((normal.z() + 1.0).abs() < 1e-12, "CW square normal is -Z");
+        assert!((d + z).abs() < 1e-12, "offset flips with the normal");
+        for p in cw {
+            assert!(
+                (normal.dot(p - origin) - d).abs() < 1e-12,
+                "wire point must satisfy normal . p == d"
+            );
+        }
+    }
+
+    /// A triangle's plane normal follows the right-hand rule of its own
+    /// winding, in every coordinate plane and whichever way the raw scatter
+    /// fit happened to point.
+    #[test]
+    fn triangle_plane_normal_follows_the_winding_in_every_axis_plane() {
+        let origin = Point3::new(0.0, 0.0, 0.0);
+        let cases: [[Point3; 3]; 5] = [
+            // z = 5: fit points +Z, winding is CW, so the result is -Z.
+            [
+                Point3::new(0.0, 0.0, 5.0),
+                Point3::new(1.0, 1.0, 5.0),
+                Point3::new(5.0, 0.0, 5.0),
+            ],
+            // x = 3, flip required.
+            [
+                Point3::new(3.0, 0.0, 0.0),
+                Point3::new(3.0, 1.0, 1.0),
+                Point3::new(3.0, 5.0, 0.0),
+            ],
+            // x = 3, no flip required.
+            [
+                Point3::new(3.0, 1.0, 1.0),
+                Point3::new(3.0, 2.0, 1.0),
+                Point3::new(3.0, 1.0, 2.0),
+            ],
+            // y = 3, flip required.
+            [
+                Point3::new(0.0, 3.0, 0.0),
+                Point3::new(1.0, 3.0, 1.0),
+                Point3::new(0.0, 3.0, 5.0),
+            ],
+            // y = 3, no flip required.
+            [
+                Point3::new(1.0, 3.0, 1.0),
+                Point3::new(1.0, 3.0, 2.0),
+                Point3::new(2.0, 3.0, 1.0),
+            ],
+        ];
+
+        for tri in cases {
+            let expected = (tri[1] - tri[0])
+                .cross(tri[2] - tri[0])
+                .normalize()
+                .unwrap();
+            let mut topo = Topology::new();
+            let wid = make_polygon_wire(&mut topo, &tri, TOL).unwrap();
+            let (normal, d) = wire_plane(&topo, wid).unwrap();
+            assert!(
+                (normal - expected).length() < 1e-9,
+                "triangle {tri:?}: normal {normal:?} must match the winding normal {expected:?}"
+            );
+            for p in tri {
+                assert!(
+                    (normal.dot(p - origin) - d).abs() < 1e-9,
+                    "triangle {tri:?}: vertex must lie on the reported plane"
+                );
+            }
+        }
+    }
+
+    /// A sample sitting exactly at the effective tolerance is still on the
+    /// plane: the planarity test rejects strictly beyond it.
+    #[test]
+    fn planarity_accepts_a_sample_exactly_at_the_effective_tolerance() {
+        let eps = 1e-6;
+        let circle = Circle3D::new_with_ref(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            1.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+
+        let mut topo = Topology::new();
+        let va = topo.add_vertex(Vertex::new(circle.evaluate(0.0), eps));
+        let vb = topo.add_vertex(Vertex::new(circle.evaluate(1.0), eps));
+        // Exactly `eps` off the circle's own plane.
+        let vc = topo.add_vertex(Vertex::new(Point3::new(2.0, 2.0, eps), eps));
+        let arc = topo.add_edge(Edge::new(va, vb, EdgeCurve::Circle(circle)));
+        let to_c = topo.add_edge(Edge::new(vb, vc, EdgeCurve::Line));
+        let back = topo.add_edge(Edge::new(vc, va, EdgeCurve::Line));
+        let wire = Wire::new(
+            vec![
+                OrientedEdge::new(arc, true),
+                OrientedEdge::new(to_c, true),
+                OrientedEdge::new(back, true),
+            ],
+            true,
+        )
+        .unwrap();
+        let wid = topo.add_wire(wire);
+
+        let fid = make_face_from_wire(&mut topo, wid).unwrap();
+        assert!(
+            matches!(topo.face(fid).unwrap().surface(), FaceSurface::Plane { .. }),
+            "a sample exactly at the tolerance is still coplanar"
+        );
+    }
+
+    /// A needle-thin loop is still planar: the collinearity rejection scales
+    /// with both edge vectors of the fitted triple, not with one of them or
+    /// with a widened angular tolerance.
+    #[test]
+    fn needle_thin_wire_still_fits_a_plane() {
+        let pts = [
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(2.0, 0.0, 0.0),
+            Point3::new(2.0, 5e-11, 0.0),
+            Point3::new(1e-4, 1e-10, 0.0),
+        ];
+        let mut topo = Topology::new();
+        let wid = make_polygon_wire(&mut topo, &pts, TOL).unwrap();
+        let (normal, d) = wire_plane(&topo, wid).unwrap();
+        assert!(
+            (normal.z().abs() - 1.0).abs() < 1e-9,
+            "needle loop lies in the XY plane"
+        );
+        assert!(d.abs() < 1e-9);
+    }
+
+    /// Builds a one-edge closed wire carrying `curve`.
+    fn closed_nurbs_edge_wire(topo: &mut Topology, curve: NurbsCurve) -> WireId {
+        let v = topo.add_vertex(Vertex::new(curve.evaluate(0.0), TOL));
+        let eid = topo.add_edge(Edge::new(v, v, EdgeCurve::NurbsCurve(curve)));
+        let wire = Wire::new(vec![OrientedEdge::new(eid, true)], true).unwrap();
+        topo.add_wire(wire)
+    }
+
+    /// Three control points are enough to fit a plane, and three collinear
+    /// ones are enough to fall back to a non-planar patch — the sample-count
+    /// guards are strict minima, not "three or fewer".
+    #[test]
+    fn three_sample_points_are_enough_for_both_plane_and_fallback() {
+        let planar = NurbsCurve::new(
+            2,
+            vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            vec![
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(1.0, 0.0, 0.0),
+                Point3::new(0.0, 1.0, 0.0),
+            ],
+            vec![1.0; 3],
+        )
+        .unwrap();
+        let mut topo = Topology::new();
+        let wid = closed_nurbs_edge_wire(&mut topo, planar);
+        let fid = make_face_from_wire(&mut topo, wid).unwrap();
+        assert!(
+            matches!(topo.face(fid).unwrap().surface(), FaceSurface::Plane { .. }),
+            "three non-collinear control points fit a plane"
+        );
+
+        let collinear = NurbsCurve::new(
+            2,
+            vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            vec![
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(1.0, 0.0, 0.0),
+                Point3::new(2.0, 0.0, 0.0),
+            ],
+            vec![1.0; 3],
+        )
+        .unwrap();
+        let mut topo = Topology::new();
+        let wid = closed_nurbs_edge_wire(&mut topo, collinear);
+        // Three collinear samples still build a fallback patch.
+        let fid = make_face_from_wire(&mut topo, wid).unwrap();
+        assert!(
+            !matches!(topo.face(fid).unwrap().surface(), FaceSurface::Plane { .. }),
+            "a collinear sample set cannot claim a plane"
+        );
+    }
+
+    /// The non-planar fallback patch is spanned by points that actually lie
+    /// on the wire — never by an extrapolation past an edge end.
+    #[test]
+    fn fallback_patch_corners_stay_inside_the_wire_bounds() {
+        let pts = [
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(10.0, 0.0, 0.0),
+            Point3::new(10.0, 10.0, 0.0),
+            Point3::new(5.0, 5.0, 5.0),
+        ];
+        let mut topo = Topology::new();
+        let wid = make_polygon_wire(&mut topo, &pts, TOL).unwrap();
+        let fid = make_face_from_wire(&mut topo, wid).unwrap();
+        let FaceSurface::Nurbs(surface) = topo.face(fid).unwrap().surface() else {
+            panic!("non-coplanar wire must fall back to a non-planar patch");
+        };
+
+        let lo = Point3::new(0.0, 0.0, 0.0);
+        let hi = Point3::new(10.0, 10.0, 5.0);
+        for row in surface.control_points() {
+            for p in row {
+                for axis in 0..3 {
+                    assert!(
+                        p.0[axis] >= lo.0[axis] - 1e-9 && p.0[axis] <= hi.0[axis] + 1e-9,
+                        "patch corner {p:?} lies outside the wire's bounds"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Distinct endpoints that project to the same ellipse parameter carry
+    /// no angular span, and the builder refuses them rather than storing a
+    /// zero-length range.
+    #[test]
+    fn make_ellipse_arc_refuses_endpoints_without_an_angular_span() {
+        let center = Point3::new(0.0, 0.0, 0.0);
+        let normal = Vec3::new(0.0, 0.0, 1.0);
+        let ref_dir = Vec3::new(1.0, 0.0, 0.0);
+        let offset = f64::from(2.0_f32).powi(-24);
+        let mut topo = Topology::new();
+        let result = make_ellipse_arc(
+            &mut topo,
+            center,
+            normal,
+            5.0,
+            2.0,
+            ref_dir,
+            Point3::new(5.0, 0.0, offset),
+            Point3::new(5.0, 0.0, -offset),
+            1e-7,
+        );
+        assert!(result.is_err(), "a zero angular span is not an arc");
+        assert_eq!(topo.vertices().len(), 0);
+        assert_eq!(topo.edges().len(), 0);
+    }
+
+    /// Builds `arc` (a circular sub-arc from `a` to `b`) closed by its chord.
+    fn arc_and_chord_wire(topo: &mut Topology, circle: &Circle3D, a: Point3, b: Point3) -> WireId {
+        let va = topo.add_vertex(Vertex::new(a, TOL));
+        let vb = topo.add_vertex(Vertex::new(b, TOL));
+        let arc = topo.add_edge(Edge::new(va, vb, EdgeCurve::Circle(circle.clone())));
+        let chord = topo.add_edge(Edge::new(vb, va, EdgeCurve::Line));
+        let wire = Wire::new(
+            vec![OrientedEdge::new(arc, true), OrientedEdge::new(chord, true)],
+            true,
+        )
+        .unwrap();
+        topo.add_wire(wire)
+    }
+
+    /// A circular sub-arc is sampled along the arc it actually spans — the
+    /// short way between its endpoints, in its own traversal direction — so
+    /// the face normal follows the boundary's winding.
+    #[test]
+    fn conic_sub_arc_is_sampled_along_the_traversed_arc() {
+        let circle = Circle3D::new_with_ref(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            1.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let pos = Point3::new(1.0, 0.0, 0.0);
+        let neg = Point3::new(-1.0, 0.0, 0.0);
+
+        let cases: [(Point3, Point3, f64); 5] = [
+            // clockwise minor arc
+            (circle.evaluate(1.0), circle.evaluate(0.0), -1.0),
+            // raw parameter difference above +pi: the real arc runs clockwise
+            (circle.evaluate(-2.0), circle.evaluate(2.0), -1.0),
+            // raw parameter difference below -pi: the real arc runs CCW
+            (circle.evaluate(2.0), circle.evaluate(-2.0), 1.0),
+            // exact half turns, both directions
+            (pos, neg, 1.0),
+            (neg, pos, -1.0),
+        ];
+
+        for (a, b, expected_z) in cases {
+            let mut topo = Topology::new();
+            let wid = arc_and_chord_wire(&mut topo, &circle, a, b);
+            let fid = make_face_from_wire(&mut topo, wid).unwrap();
+            let FaceSurface::Plane { normal, .. } = topo.face(fid).unwrap().surface() else {
+                panic!("an arc and its chord are coplanar");
+            };
+            assert!(
+                (normal.z() - expected_z).abs() < 1e-9,
+                "arc {a:?} -> {b:?}: normal z {} must be {expected_z}",
+                normal.z()
+            );
+        }
+    }
+
+    /// A degree-1 polyline NURBS through `points` over `[t0, t1]`.
+    fn polyline_curve(points: &[Point3], t0: f64, t1: f64) -> NurbsCurve {
+        let inner = points.len() - 2;
+        let mut knots = vec![t0, t0];
+        for i in 0..inner {
+            #[allow(clippy::cast_precision_loss)]
+            let frac = (i + 1) as f64 / (inner + 1) as f64;
+            knots.push(t0 + (t1 - t0) * frac);
+        }
+        knots.push(t1);
+        knots.push(t1);
+        NurbsCurve::new(1, knots, points.to_vec(), vec![1.0; points.len()]).unwrap()
+    }
+
+    /// An unusable tolerance grants no authority at all: the edge keeps no
+    /// parameter range even when its endpoints sit exactly on the curve.
+    #[test]
+    fn make_nurbs_edge_refuses_authority_for_an_unusable_tolerance() {
+        let curve = polyline_curve(
+            &[
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(1.0, 1.0, 0.0),
+                Point3::new(2.0, 0.0, 0.0),
+            ],
+            0.0,
+            2.0,
+        );
+        let (d0, d1) = remus_math::traits::ParametricCurve::domain(&curve);
+        let start = curve.evaluate(d0);
+        let end = curve.evaluate(d1);
+
+        for tolerance in [f64::NAN, -1.0] {
+            let mut topo = Topology::new();
+            let eid = make_nurbs_edge(&mut topo, start, end, curve.clone(), tolerance);
+            assert!(
+                topo.edge(eid).unwrap().strict_domain().is_err(),
+                "tolerance {tolerance} must not certify a parameter range"
+            );
+        }
+    }
+
+    /// On a curve whose ends are closer together than the authority band the
+    /// endpoint match is the only evidence available, and each of its
+    /// outcomes selects its own range: forward, reversed, or none at all.
+    #[test]
+    fn make_nurbs_edge_endpoint_match_selects_the_stored_range() {
+        let gap = 9e-8;
+        let curve = polyline_curve(
+            &[
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(0.5, 1.0, 0.0),
+                Point3::new(gap, 0.0, 0.0),
+            ],
+            0.0,
+            2.0,
+        );
+        let (d0, d1) = remus_math::traits::ParametricCurve::domain(&curve);
+        let natural_start = curve.evaluate(d0);
+        let natural_end = curve.evaluate(d1);
+
+        // Only the forward match is inside the band.
+        let mut topo = Topology::new();
+        let forward_only = make_nurbs_edge(
+            &mut topo,
+            Point3::new(-gap, 0.0, 0.0),
+            natural_end,
+            curve.clone(),
+            TOL,
+        );
+        assert_eq!(
+            topo.edge(forward_only).unwrap().strict_domain().unwrap(),
+            (d0, d1),
+            "a forward-only endpoint match stores the forward range"
+        );
+
+        // Both match, reverse is the closer one.
+        let mut topo = Topology::new();
+        let reversed = make_nurbs_edge(&mut topo, natural_end, natural_start, curve.clone(), TOL);
+        assert_eq!(
+            topo.edge(reversed).unwrap().strict_domain().unwrap(),
+            (d1, d0),
+            "the closer reverse match stores the reversed range"
+        );
+
+        // Both match and tie: the forward range is the documented winner.
+        let mut topo = Topology::new();
+        let tied = make_nurbs_edge(
+            &mut topo,
+            Point3::new(gap / 2.0, 0.0, 0.0),
+            Point3::new(gap / 2.0, 0.0, 0.0),
+            curve,
+            TOL,
+        );
+        assert_eq!(
+            topo.edge(tied).unwrap().strict_domain().unwrap(),
+            (d0, d1),
+            "a tie on a nearly closed curve stores the forward range"
+        );
+    }
+
+    /// The interior-span recovery is reserved for curves whose ends are
+    /// strictly further apart than the authority band: a gap exactly at the
+    /// band is still treated as closed, and stays trimless.
+    #[test]
+    fn make_nurbs_edge_interior_recovery_needs_a_gap_beyond_the_band() {
+        let gap = f64::from(2.0_f32).powi(-24);
+        let curve = polyline_curve(
+            &[
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(1.0, 0.0, 0.0),
+                Point3::new(0.0, 1.0, 0.0),
+                Point3::new(gap, 0.0, 0.0),
+            ],
+            0.0,
+            3.0,
+        );
+        let mut topo = Topology::new();
+        let eid = make_nurbs_edge(
+            &mut topo,
+            curve.evaluate(0.5),
+            curve.evaluate(1.5),
+            curve,
+            gap,
+        );
+        assert!(
+            topo.edge(eid).unwrap().strict_domain().is_err(),
+            "a gap exactly at the authority band is not an open curve"
+        );
+    }
+
+    /// A recovered interior span is proven by its own width and by both
+    /// endpoints landing back on the curve — never by one endpoint alone,
+    /// and never by the sum or ratio of its bounds.
+    #[test]
+    fn make_nurbs_edge_interior_span_is_proven_at_both_ends() {
+        let curve = polyline_curve(
+            &[
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(1.0, 1.0, 0.0),
+                Point3::new(2.0, 0.0, 0.0),
+            ],
+            -1.0,
+            1.0,
+        );
+
+        // Symmetric interior span: its bounds sum to zero but still span the
+        // curve.
+        let mut topo = Topology::new();
+        let symmetric = make_nurbs_edge(
+            &mut topo,
+            curve.evaluate(-0.5),
+            curve.evaluate(0.5),
+            curve.clone(),
+            TOL,
+        );
+        let range = topo.edge(symmetric).unwrap().strict_domain().unwrap();
+        assert!((range.0 + 0.5).abs() < 1e-6 && (range.1 - 0.5).abs() < 1e-6);
+
+        // Reversed span ending on the interior knot at t = 0.
+        let mut topo = Topology::new();
+        let to_zero = make_nurbs_edge(
+            &mut topo,
+            curve.evaluate(0.5),
+            curve.evaluate(0.0),
+            curve.clone(),
+            TOL,
+        );
+        let range = topo.edge(to_zero).unwrap().strict_domain().unwrap();
+        assert!((range.0 - 0.5).abs() < 1e-6 && range.1.abs() < 1e-6);
+
+        // Start off the curve, end exactly on its natural end: one proven
+        // endpoint is not enough.
+        let mut topo = Topology::new();
+        let half_proven = make_nurbs_edge(
+            &mut topo,
+            Point3::new(0.5, 0.5, 0.01),
+            Point3::new(2.0, 0.0, 0.0),
+            curve,
+            TOL,
+        );
+        assert!(
+            topo.edge(half_proven).unwrap().strict_domain().is_err(),
+            "one matching endpoint cannot certify a range"
+        );
+    }
+
+    /// The minimum recovered span scales with the domain's *width*, not with
+    /// the magnitude of its bounds.
+    #[test]
+    fn make_nurbs_edge_span_floor_scales_with_the_domain_width() {
+        let base = 1e6;
+        let curve = polyline_curve(
+            &[
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(0.5, 0.0, 0.0),
+                Point3::new(1.0, 0.0, 0.0),
+            ],
+            base,
+            base + 1.0,
+        );
+        let t0 = base + 0.4;
+        let mut topo = Topology::new();
+        let eid = make_nurbs_edge(
+            &mut topo,
+            curve.evaluate(t0),
+            curve.evaluate(t0 + 1.8e-6),
+            curve,
+            TOL,
+        );
+        let range = topo.edge(eid).unwrap().strict_domain().unwrap();
+        assert!(
+            (range.1 - range.0) > 1e-7,
+            "a span far above the floor must be stored"
+        );
+    }
+
+    /// Builds a closed wire from a circular arc in the z = 0 plane and a
+    /// parabola that meets it at both ends.
+    ///
+    /// The parabola is tilted so that its out-of-plane deviation is
+    /// `bulge * (t - r0) * (t - r1)`: zero at the two shared endpoints,
+    /// small between them, and growing without bound outside. The arc is
+    /// the first conic in the wire, so the z = 0 plane is the candidate
+    /// plane every sample is verified against. The loop runs
+    /// counter-clockwise while the arc's own normal points at -Z, so the
+    /// winding correction has to fire.
+    fn arc_and_parabola_wire(topo: &mut Topology, r0: f64, r1: f64, bulge: f64) -> WireId {
+        let parabola = remus_math::curves::Parabola3D::with_axes(
+            Point3::new(0.0, 0.0, bulge * r0 * r1),
+            Vec3::new(0.0, 1.0, 4.0 * bulge),
+            Vec3::new(1.0, 0.0, -bulge * (r0 + r1)),
+            1.0,
+        )
+        .unwrap();
+        let p0 = parabola.evaluate(r0);
+        let p1 = parabola.evaluate(r1);
+
+        let chord = p1 - p0;
+        let length = chord.length();
+        let dir = chord.normalize().unwrap();
+        let perp = Vec3::new(-dir.y(), dir.x(), 0.0);
+        let mid = Point3::new(
+            f64::midpoint(p0.x(), p1.x()),
+            f64::midpoint(p0.y(), p1.y()),
+            0.0,
+        );
+        let center = mid + perp * (0.5 * length);
+        let circle = Circle3D::new_with_ref(
+            center,
+            Vec3::new(0.0, 0.0, -1.0),
+            (p0 - center).length(),
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+
+        let v0 = topo.add_vertex(Vertex::new(p0, TOL));
+        let v1 = topo.add_vertex(Vertex::new(p1, TOL));
+        let arc = topo.add_edge(Edge::new(v0, v1, EdgeCurve::Circle(circle)));
+        let par = topo.add_edge(Edge::new(v1, v0, EdgeCurve::Parabola(parabola)));
+        let wire = Wire::new(
+            vec![OrientedEdge::new(arc, true), OrientedEdge::new(par, true)],
+            true,
+        )
+        .unwrap();
+        topo.add_wire(wire)
+    }
+
+    /// An open conic is sampled strictly between its own endpoints: a
+    /// parabola that stays within tolerance of the arc's plane over its
+    /// trimmed span keeps the face planar, and the winding correction still
+    /// sees every sample.
+    #[test]
+    fn open_conic_is_sampled_between_its_endpoints() {
+        // Symmetric span, and a short asymmetric one.
+        for (r0, r1, bulge) in [(-1.0, 1.0, 1.05e-7), (1.0, 1.3, 2e-6)] {
+            let mut topo = Topology::new();
+            let wid = arc_and_parabola_wire(&mut topo, r0, r1, bulge);
+            let fid = make_face_from_wire(&mut topo, wid).unwrap();
+            let FaceSurface::Plane { normal, .. } = topo.face(fid).unwrap().surface() else {
+                panic!("span [{r0}, {r1}] stays inside the plane tolerance");
+            };
+            assert!(
+                (normal.z() - 1.0).abs() < 1e-6,
+                "span [{r0}, {r1}]: CCW loop normal must be +Z, got {normal:?}"
+            );
+        }
+    }
+
+    /// The same construction with a bulge beyond tolerance is genuinely
+    /// non-planar — the open conic's samples are what prove it, so they
+    /// cannot be skipped.
+    #[test]
+    fn open_conic_samples_carry_the_non_planarity() {
+        let mut topo = Topology::new();
+        let wid = arc_and_parabola_wire(&mut topo, -1.0, 1.0, 2e-7);
+        let fid = make_face_from_wire(&mut topo, wid).unwrap();
+        assert!(
+            !matches!(topo.face(fid).unwrap().surface(), FaceSurface::Plane { .. }),
+            "a parabola bulging past tolerance is not coplanar with the arc"
+        );
+    }
+
+    /// A closed conic is sampled at its four quadrant points, which is what
+    /// keeps a gently tilted full circle inside the plane tolerance of a
+    /// companion arc — and what lets the winding correction see it at all.
+    #[test]
+    fn closed_conic_is_sampled_at_its_quadrant_points() {
+        // Deviation of the tilted circle from z = 0 is
+        // `k * cos(theta - pi/4)`, so the quadrant samples all sit at
+        // `k / sqrt(2)`; a sample nearer `pi/4` would break tolerance.
+        let k = 1.176e-7;
+        let root_half = 0.5_f64.sqrt();
+        let normal = Vec3::new(-k * root_half, -k * root_half, 1.0);
+        let tilted = Circle3D::new_with_ref(
+            Point3::new(5.0, 0.0, 0.0),
+            normal,
+            1.0,
+            Vec3::new(1.0, 0.0, k * root_half),
+        )
+        .unwrap();
+
+        let flat = Circle3D::new_with_ref(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            1.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+
+        let mut topo = Topology::new();
+        let va = topo.add_vertex(Vertex::new(flat.evaluate(0.3), TOL));
+        let vb = topo.add_vertex(Vertex::new(flat.evaluate(1.0), TOL));
+        let seam = topo.add_vertex(Vertex::new(tilted.evaluate(0.0), TOL));
+        let arc = topo.add_edge(Edge::new(va, vb, EdgeCurve::Circle(flat)));
+        let full = topo.add_edge(Edge::new(seam, seam, EdgeCurve::Circle(tilted)));
+        let wire = Wire::new(
+            vec![OrientedEdge::new(arc, true), OrientedEdge::new(full, true)],
+            true,
+        )
+        .unwrap();
+        let wid = topo.add_wire(wire);
+
+        let fid = make_face_from_wire(&mut topo, wid).unwrap();
+        let FaceSurface::Plane { normal, .. } = topo.face(fid).unwrap().surface() else {
+            panic!("quadrant samples of the tilted circle stay within tolerance");
+        };
+        assert!(
+            (normal.z() + 1.0).abs() < 1e-6,
+            "the sampled loop winds clockwise, so the normal is -Z, got {normal:?}"
+        );
+    }
+
+    /// A circle tilted by `slope` about the x-axis, centred on the x-axis at
+    /// z = 0: its point at parameter `theta` sits `slope * sin(theta)` off
+    /// the z = 0 plane.
+    fn tilted_circle(slope: f64) -> Circle3D {
+        Circle3D::new_with_ref(
+            Point3::new(5.0, 0.0, 0.0),
+            Vec3::new(0.0, -slope, 1.0),
+            1.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap()
+    }
+
+    /// A flat unit circle in the z = 0 plane, used as the leading conic so
+    /// that z = 0 is the candidate plane every later sample is judged
+    /// against.
+    fn flat_circle() -> Circle3D {
+        Circle3D::new_with_ref(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            1.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap()
+    }
+
+    /// Wire of a flat arc followed by `second`, an edge on the tilted circle.
+    fn seam_fixture_wire(topo: &mut Topology, second: Edge) -> WireId {
+        let flat = flat_circle();
+        let va = topo.add_vertex(Vertex::new(flat.evaluate(0.3), TOL));
+        let vb = topo.add_vertex(Vertex::new(flat.evaluate(1.0), TOL));
+        let arc = topo.add_edge(Edge::new(va, vb, EdgeCurve::Circle(flat)));
+        let other = topo.add_edge(second);
+        let wire = Wire::new(
+            vec![OrientedEdge::new(arc, true), OrientedEdge::new(other, true)],
+            true,
+        )
+        .unwrap();
+        topo.add_wire(wire)
+    }
+
+    /// An arc whose endpoint parameters straddle the +/-pi seam is sampled
+    /// across the seam, not the long way round the circle: only the short
+    /// arc hugs the companion plane closely enough to stay planar.
+    #[test]
+    fn conic_sub_arc_across_the_seam_samples_the_short_way() {
+        let slope = 1.4286e-7;
+        for span in [0.6, -0.6] {
+            let tilted = tilted_circle(slope);
+            let t_a = if span > 0.0 { 3.04 } else { -3.04 };
+            let a = tilted.evaluate(t_a);
+            let b = tilted.evaluate(t_a + span);
+
+            let mut topo = Topology::new();
+            let va = topo.add_vertex(Vertex::new(a, TOL));
+            let vb = topo.add_vertex(Vertex::new(b, TOL));
+            let edge = Edge::new(va, vb, EdgeCurve::Circle(tilted));
+            let wid = seam_fixture_wire(&mut topo, edge);
+
+            let fid = make_face_from_wire(&mut topo, wid).unwrap();
+            assert!(
+                matches!(topo.face(fid).unwrap().surface(), FaceSurface::Plane { .. }),
+                "span {span}: the short seam-crossing arc stays within tolerance"
+            );
+        }
+    }
+
+    /// A closed conic is sampled around its whole turn, so a tilt that only
+    /// shows up away from the seam still makes the wire non-planar.
+    #[test]
+    fn closed_conic_samples_span_the_whole_turn() {
+        let tilted = tilted_circle(2e-7);
+        let mut topo = Topology::new();
+        let seam = topo.add_vertex(Vertex::new(tilted.evaluate(0.0), TOL));
+        let edge = Edge::new(seam, seam, EdgeCurve::Circle(tilted));
+        let wid = seam_fixture_wire(&mut topo, edge);
+
+        let fid = make_face_from_wire(&mut topo, wid).unwrap();
+        assert!(
+            !matches!(topo.face(fid).unwrap().surface(), FaceSurface::Plane { .. }),
+            "a full turn of the tilted circle leaves the companion plane"
+        );
+    }
 }

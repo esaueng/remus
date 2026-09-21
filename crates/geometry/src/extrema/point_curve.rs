@@ -428,4 +428,334 @@ mod tests {
             proj.distance
         );
     }
+
+    // ── Test curves for the generic solver ───────────────────────────────────
+
+    /// Circular helix `C(t) = (r·cos t, r·sin t, pitch·t)`.
+    ///
+    /// A negative `pitch` descends. Several turns give the distance function
+    /// one local minimum per turn, so a solver that starts its refinement on
+    /// the wrong turn cannot recover.
+    struct Helix {
+        radius: f64,
+        pitch: f64,
+        t_start: f64,
+        t_end: f64,
+    }
+
+    impl ParametricCurve for Helix {
+        fn evaluate(&self, t: f64) -> Point3 {
+            Point3::new(self.radius * t.cos(), self.radius * t.sin(), self.pitch * t)
+        }
+
+        fn tangent(&self, t: f64) -> Vec3 {
+            Vec3::new(-self.radius * t.sin(), self.radius * t.cos(), self.pitch)
+                .normalize()
+                .unwrap()
+        }
+
+        fn domain(&self) -> (f64, f64) {
+            (self.t_start, self.t_end)
+        }
+    }
+
+    /// Ellipse lying in the plane `y = 0`: `C(t) = (a·cos t, 0, b·sin t)`.
+    ///
+    /// Used for queries that also lie in `y = 0`, so every sampled point has a
+    /// zero y-offset from the query.
+    struct EllipseXz {
+        a: f64,
+        b: f64,
+    }
+
+    impl ParametricCurve for EllipseXz {
+        fn evaluate(&self, t: f64) -> Point3 {
+            Point3::new(self.a * t.cos(), 0.0, self.b * t.sin())
+        }
+
+        fn tangent(&self, t: f64) -> Vec3 {
+            Vec3::new(-self.a * t.sin(), 0.0, self.b * t.cos())
+                .normalize()
+                .unwrap()
+        }
+
+        fn domain(&self) -> (f64, f64) {
+            (-PI, PI)
+        }
+    }
+
+    /// Circular arc whose parameter is offset and scaled:
+    /// `C(t) = (r·cos(rate·(t - origin)), r·sin(rate·(t - origin)), 0)`.
+    ///
+    /// The sweep per unit parameter is `rate`, so the finite-difference step
+    /// used by the solver must scale with the *length* of the parameter
+    /// domain, not with the magnitude of the parameter values.
+    struct ScaledArc {
+        radius: f64,
+        origin: f64,
+        rate: f64,
+    }
+
+    impl ScaledArc {
+        fn angle(&self, t: f64) -> f64 {
+            self.rate * (t - self.origin)
+        }
+    }
+
+    impl ParametricCurve for ScaledArc {
+        fn evaluate(&self, t: f64) -> Point3 {
+            let a = self.angle(t);
+            Point3::new(self.radius * a.cos(), self.radius * a.sin(), 0.0)
+        }
+
+        fn tangent(&self, t: f64) -> Vec3 {
+            let a = self.angle(t);
+            Vec3::new(-a.sin(), a.cos(), 0.0)
+        }
+
+        fn domain(&self) -> (f64, f64) {
+            (self.origin, self.origin + ARC_DOMAIN_LEN)
+        }
+    }
+
+    /// Length of the [`ScaledArc`] parameter domain.
+    const ARC_DOMAIN_LEN: f64 = 1.0e-4;
+
+    /// Degenerate curve: every parameter evaluates to the same point, so the
+    /// velocity vanishes everywhere.
+    struct ConstantCurve {
+        position: Point3,
+    }
+
+    impl ParametricCurve for ConstantCurve {
+        fn evaluate(&self, _t: f64) -> Point3 {
+            self.position
+        }
+
+        fn tangent(&self, _t: f64) -> Vec3 {
+            Vec3::new(1.0, 0.0, 0.0)
+        }
+
+        fn domain(&self) -> (f64, f64) {
+            (0.0, 2.0)
+        }
+    }
+
+    // ── Reference helpers (independent of the solver under test) ─────────────
+
+    /// Minimum distance from `point` to `curve` over `[t_start, t_end]`, found
+    /// by a dense uniform scan. Ground truth for the "globally closest point"
+    /// contract of [`point_to_curve`].
+    fn brute_force_min<C: ParametricCurve>(
+        point: Point3,
+        curve: &C,
+        t_start: f64,
+        t_end: f64,
+    ) -> f64 {
+        const STEPS: usize = 20_000;
+        let mut best = f64::INFINITY;
+        for i in 0..=STEPS {
+            let t = (t_end - t_start).mul_add(i as f64 / STEPS as f64, t_start);
+            let d = (curve.evaluate(t) - point).length();
+            if d < best {
+                best = d;
+            }
+        }
+        best
+    }
+
+    /// `dot(C(t) - P, unit_tangent(t))` — zero at an interior minimum.
+    fn stationarity<C: ParametricCurve>(point: Point3, curve: &C, t: f64) -> f64 {
+        let diff = curve.evaluate(t) - point;
+        let tan = curve.tangent(t);
+        diff.x() * tan.x() + diff.y() * tan.y() + diff.z() * tan.z()
+    }
+
+    // ── point_to_line ────────────────────────────────────────────────────────
+
+    #[test]
+    fn line_distance_uses_every_component_of_the_offset() {
+        // Line along X; the query is offset 3 in Y and 4 in Z from the foot of
+        // the perpendicular at t = 5, so the distance is the 3-4-5 hypotenuse.
+        let line = Line3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(1.0, 0.0, 0.0)).unwrap();
+        let proj = point_to_line(Point3::new(5.0, 3.0, 4.0), &line, 0.0, 10.0);
+        assert!(
+            (proj.parameter - 5.0).abs() < 1e-12,
+            "param={}",
+            proj.parameter
+        );
+        assert!(
+            (proj.distance - 5.0).abs() < 1e-12,
+            "dist={}",
+            proj.distance
+        );
+        assert!((proj.point.z()).abs() < 1e-12, "z={}", proj.point.z());
+    }
+
+    // ── point_to_curve (generic) ─────────────────────────────────────────────
+
+    #[test]
+    fn generic_circle_off_plane_query_matches_closed_form() {
+        // Circle of radius 3 in the XY plane; the query sits 4 above the plane
+        // on the ray at angle 0.7 rad, 5 out from the axis. The closed-form
+        // distance is sqrt((5 - 3)^2 + 4^2) = sqrt(20), attained at t = 0.7.
+        let circle = Circle3D::new_with_ref(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            3.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let angle = 0.7_f64;
+        let query = Point3::new(5.0 * angle.cos(), 5.0 * angle.sin(), 4.0);
+        let proj = point_to_curve(query, &circle, 0.0, TAU);
+
+        assert!(
+            (proj.distance - 20.0_f64.sqrt()).abs() < 1e-9,
+            "dist={}",
+            proj.distance
+        );
+        assert!(
+            (proj.parameter - angle).abs() < 1e-6,
+            "param={}",
+            proj.parameter
+        );
+        // The reported point must be the curve point at the reported parameter.
+        let on_curve = circle.evaluate(proj.parameter);
+        assert!(
+            (on_curve - proj.point).length() < 1e-9,
+            "reported point is not on the curve"
+        );
+    }
+
+    #[test]
+    fn generic_multi_turn_helix_picks_the_closest_turn() {
+        // Three turns; the query lies beside the middle turn. Each turn carries
+        // its own local minimum, so the global sampling phase decides which one
+        // the refinement lands in.
+        let helix = Helix {
+            radius: 3.0,
+            pitch: 0.3,
+            t_start: -2.0 * TAU,
+            t_end: TAU,
+        };
+        let query = Point3::new(5.0, 0.0, 0.7);
+        let proj = point_to_curve(query, &helix, helix.t_start, helix.t_end);
+
+        let reference = brute_force_min(query, &helix, helix.t_start, helix.t_end);
+        assert!(
+            proj.distance <= reference + 1e-6,
+            "not the global minimum: got {} reference {}",
+            proj.distance,
+            reference
+        );
+        let residual = stationarity(query, &helix, proj.parameter);
+        assert!(residual.abs() < 1e-6, "stationarity violated: {residual}");
+        assert!(
+            proj.parameter >= helix.t_start && proj.parameter <= helix.t_end,
+            "param out of domain: {}",
+            proj.parameter
+        );
+    }
+
+    #[test]
+    fn generic_steep_descending_helix_keeps_interior_minimum() {
+        // One turn of a steeply descending helix: the axial velocity dominates
+        // the circumferential one, and the minimum is interior to the domain.
+        let helix = Helix {
+            radius: 2.0,
+            pitch: -5.0,
+            t_start: 0.0,
+            t_end: TAU,
+        };
+        let query = Point3::new(4.0, 0.0, -10.0);
+        let proj = point_to_curve(query, &helix, helix.t_start, helix.t_end);
+
+        let reference = brute_force_min(query, &helix, helix.t_start, helix.t_end);
+        assert!(
+            proj.distance <= reference + 1e-6,
+            "not the global minimum: got {} reference {}",
+            proj.distance,
+            reference
+        );
+        let residual = stationarity(query, &helix, proj.parameter);
+        assert!(residual.abs() < 1e-6, "stationarity violated: {residual}");
+        // The minimum is strictly interior; an endpoint answer is wrong.
+        assert!(
+            proj.parameter > 1e-3 && proj.parameter < TAU - 1e-3,
+            "expected interior minimum, got t={}",
+            proj.parameter
+        );
+    }
+
+    #[test]
+    fn generic_curve_coplanar_with_query_finds_global_minimum() {
+        // Ellipse in the plane y = 0 with the query also at y = 0: every
+        // sampled point has a zero y-offset. The query sits on the minor axis,
+        // so the closest point is the near minor-axis vertex (0, 0, 2) at
+        // distance 2 - 0.3 = 1.7; the far vertex is a competing local minimum
+        // at distance 2.3.
+        let ellipse = EllipseXz { a: 5.0, b: 2.0 };
+        let query = Point3::new(0.0, 0.0, 0.3);
+        let proj = point_to_curve(query, &ellipse, -PI, PI);
+
+        assert!((proj.distance - 1.7).abs() < 1e-9, "dist={}", proj.distance);
+        assert!(
+            (proj.parameter - PI / 2.0).abs() < 1e-6,
+            "param={}",
+            proj.parameter
+        );
+    }
+
+    #[test]
+    fn generic_offset_parameter_domain_uses_domain_scaled_step() {
+        // The arc sweeps 90 degrees over a parameter domain of length 1e-4
+        // placed at t = 100. The query lies on the ray at 22.5 degrees, 3 out
+        // from the centre of a radius-2 arc, so the distance is exactly 1.
+        let rate = (PI / 2.0) / ARC_DOMAIN_LEN;
+        let arc = ScaledArc {
+            radius: 2.0,
+            origin: 100.0,
+            rate,
+        };
+        let (t_start, t_end) = arc.domain();
+        let angle = PI / 8.0;
+        let query = Point3::new(3.0 * angle.cos(), 3.0 * angle.sin(), 0.0);
+        let proj = point_to_curve(query, &arc, t_start, t_end);
+
+        assert!((proj.distance - 1.0).abs() < 1e-6, "dist={}", proj.distance);
+        // Convergence is declared on |dt| < 1e-10, which at this parameter
+        // scale bounds the angular residual near 1e-6 — far below the error a
+        // mis-scaled difference step produces.
+        let residual = stationarity(query, &arc, proj.parameter);
+        assert!(residual.abs() < 1e-3, "stationarity violated: {residual}");
+        assert!(
+            proj.parameter >= t_start && proj.parameter <= t_end,
+            "param out of domain: {}",
+            proj.parameter
+        );
+    }
+
+    #[test]
+    fn generic_zero_velocity_curve_returns_finite_result() {
+        // Degenerate curve: the velocity vanishes, so the Newton phase must
+        // bail out instead of dividing by it.
+        let curve = ConstantCurve {
+            position: Point3::new(1.0, 2.0, 3.0),
+        };
+        let (t_start, t_end) = curve.domain();
+        let proj = point_to_curve(Point3::new(1.0, 2.0, 7.0), &curve, t_start, t_end);
+
+        assert!(proj.distance.is_finite(), "dist={}", proj.distance);
+        assert!(
+            (proj.distance - 4.0).abs() < 1e-12,
+            "dist={}",
+            proj.distance
+        );
+        assert!(
+            proj.parameter.is_finite() && proj.parameter >= t_start && proj.parameter <= t_end,
+            "param={}",
+            proj.parameter
+        );
+    }
 }
