@@ -3106,35 +3106,48 @@ pub(super) fn tessellate_nonplanar_cdt(
                 let hi = (curved_v_max + dense_dv).min(v_max);
                 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                 let rows = (((hi - lo) / dense_dv).ceil() as usize).max(1);
-                validate_interior_grid_size(n_u, rows)?;
-
-                let boundary_cdt: Vec<Point2> =
-                    boundary_uv_ref.iter().map(|&(u, v)| to_cdt(u, v)).collect();
-                let clearance = 0.4 * du / n_u as f64;
-                let clear_of_boundary = |point: Point2| {
-                    (0..boundary_cdt.len()).all(|index| {
-                        let a = boundary_cdt[index];
-                        let b = boundary_cdt[(index + 1) % boundary_cdt.len()];
-                        let ab = b - a;
-                        let length_squared = ab.dot(ab);
-                        let t = if length_squared > 1.0e-30 {
-                            ((point - a).dot(ab) / length_squared).clamp(0.0, 1.0)
-                        } else {
-                            0.0
-                        };
-                        let foot = Point2::new(a.x() + ab.x() * t, a.y() + ab.y() * t);
-                        (point - foot).length() > clearance
-                    })
-                };
-                for row in 0..=rows {
-                    let v = lo + (hi - lo) * (row as f64 / rows as f64);
-                    for column in 1..n_u {
-                        let u = u_min + du * (column as f64 / n_u as f64);
-                        let point = to_cdt(u, v);
-                        if point_in_polygon_2d(boundary_uv_ref, Point2::new(u, v))
-                            && clear_of_boundary(point)
-                        {
-                            interior_pts.push(point);
+                // This loop includes both end rows and scans the complete
+                // boundary once for containment and (for interior points)
+                // once more for clearance. Bound that multiplicative work
+                // before doing any classification or allocation.
+                let dense_candidates = n_u.saturating_sub(1).checked_mul(rows.saturating_add(1));
+                // If the dense refinement alone would exceed the polygon
+                // classification budget, keep the already-bounded base grid
+                // and let the CDT triangulate from the shared boundary. Do
+                // not fail the whole face here: that routes valid cylinder
+                // walls to the independent snap fallback, which can crack at
+                // shared rims.
+                if validate_interior_polygon_work(dense_candidates, Some(boundary_uv_ref.len()), 2)
+                    .is_ok()
+                {
+                    let boundary_cdt: Vec<Point2> =
+                        boundary_uv_ref.iter().map(|&(u, v)| to_cdt(u, v)).collect();
+                    let clearance = 0.4 * du / n_u as f64;
+                    let clear_of_boundary = |point: Point2| {
+                        (0..boundary_cdt.len()).all(|index| {
+                            let a = boundary_cdt[index];
+                            let b = boundary_cdt[(index + 1) % boundary_cdt.len()];
+                            let ab = b - a;
+                            let length_squared = ab.dot(ab);
+                            let t = if length_squared > 1.0e-30 {
+                                ((point - a).dot(ab) / length_squared).clamp(0.0, 1.0)
+                            } else {
+                                0.0
+                            };
+                            let foot = Point2::new(a.x() + ab.x() * t, a.y() + ab.y() * t);
+                            (point - foot).length() > clearance
+                        })
+                    };
+                    for row in 0..=rows {
+                        let v = lo + (hi - lo) * (row as f64 / rows as f64);
+                        for column in 1..n_u {
+                            let u = u_min + du * (column as f64 / n_u as f64);
+                            let point = to_cdt(u, v);
+                            if point_in_polygon_2d(boundary_uv_ref, Point2::new(u, v))
+                                && clear_of_boundary(point)
+                            {
+                                interior_pts.push(point);
+                            }
                         }
                     }
                 }
@@ -3374,6 +3387,34 @@ pub(super) fn tessellate_nonplanar_cdt(
 /// Bounding it prevents attacker-controlled surface scale and deflection from
 /// causing an unbounded Cartesian-product allocation.
 const MAX_INTERIOR_GRID_POINTS: usize = 1_000_000;
+
+/// Maximum boundary-segment tests performed while classifying an interior
+/// grid. Unlike the point limit, this also bounds work when a finely sampled
+/// trim is tested against every grid candidate.
+const MAX_INTERIOR_POLYGON_TESTS: usize = 10_000_000;
+
+fn interior_grid_work_limit_error() -> crate::OperationsError {
+    crate::OperationsError::InvalidInput {
+        reason: format!(
+            "non-planar face tessellation exceeds the {MAX_INTERIOR_POLYGON_TESTS}-boundary-test work limit"
+        ),
+    }
+}
+
+fn validate_interior_polygon_work(
+    candidates: Option<usize>,
+    boundary_segments: Option<usize>,
+    scans_per_candidate: usize,
+) -> Result<(), crate::OperationsError> {
+    let work = candidates
+        .filter(|&count| count <= MAX_INTERIOR_GRID_POINTS)
+        .and_then(|count| count.checked_mul(boundary_segments?))
+        .and_then(|count| count.checked_mul(scans_per_candidate));
+    if work.is_none_or(|count| count > MAX_INTERIOR_POLYGON_TESTS) {
+        return Err(interior_grid_work_limit_error());
+    }
+    Ok(())
+}
 
 pub(super) fn validate_interior_grid_size(
     n_u: usize,
@@ -5539,7 +5580,9 @@ mod torus_winding_tests {
 mod interior_grid_limit_tests {
     #![allow(clippy::unwrap_used)]
 
-    use super::{MAX_INTERIOR_GRID_POINTS, validate_interior_grid_size};
+    use super::{
+        MAX_INTERIOR_GRID_POINTS, validate_interior_grid_size, validate_interior_polygon_work,
+    };
 
     #[test]
     fn accepts_grid_at_work_limit() {
@@ -5559,5 +5602,26 @@ mod interior_grid_limit_tests {
     #[test]
     fn rejects_grid_size_overflow() {
         assert!(validate_interior_grid_size(usize::MAX, usize::MAX).is_err());
+    }
+
+    #[test]
+    fn rejects_multiplicative_polygon_work() {
+        assert!(validate_interior_polygon_work(Some(10_000), Some(1_001), 1).is_err());
+    }
+
+    #[test]
+    fn rejects_dense_grid_actual_row_count() {
+        // The dense loop visits rows + 1 rather than rows - 1. With two full
+        // boundary scans, that actual candidate count exceeds the work cap.
+        let columns = 1_000_usize;
+        let rows = 1_000_usize;
+        let actual_candidates = (columns - 1).checked_mul(rows + 1);
+        assert!(validate_interior_polygon_work(actual_candidates, Some(6), 2).is_err());
+    }
+
+    #[test]
+    fn rejects_polygon_work_overflow() {
+        assert!(validate_interior_polygon_work(Some(usize::MAX), Some(2), 2).is_err());
+        assert!(validate_interior_polygon_work(Some(2), None, 2).is_err());
     }
 }
