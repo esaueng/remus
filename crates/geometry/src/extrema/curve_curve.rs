@@ -297,7 +297,7 @@ mod tests {
     use super::*;
     use remus_math::curves::Circle3D;
     use remus_math::vec::{Point3, Vec3};
-    use std::f64::consts::TAU;
+    use std::f64::consts::{FRAC_1_SQRT_2, PI, TAU};
 
     fn approx(a: f64, b: f64, tol: f64) -> bool {
         (a - b).abs() < tol
@@ -394,5 +394,290 @@ mod tests {
         let tan1 = c1.tangent(sol.param_a);
         let dot = diff.dot(tan1);
         assert!(dot.abs() < 1e-4, "stationarity: dot={dot}");
+    }
+
+    // ── Added coverage ───────────────────────────────────────────────────────
+
+    /// Invariants every [`ExtremaSolution`] must satisfy, whichever branch
+    /// produced it: the distance is finite, both parameters lie inside their
+    /// documented domains, the reported points are exactly those parameters
+    /// evaluated on their curves, and `distance` is the distance between the
+    /// two reported points.
+    fn assert_solution_invariants(
+        sol: &ExtremaSolution,
+        expected_a: Point3,
+        expected_b: Point3,
+        t1_range: (f64, f64),
+        t2_range: (f64, f64),
+    ) {
+        assert!(sol.distance.is_finite(), "distance={}", sol.distance);
+        assert!(
+            sol.param_a >= t1_range.0 - 1e-12 && sol.param_a <= t1_range.1 + 1e-12,
+            "param_a={} outside {t1_range:?}",
+            sol.param_a
+        );
+        assert!(
+            sol.param_b >= t2_range.0 - 1e-12 && sol.param_b <= t2_range.1 + 1e-12,
+            "param_b={} outside {t2_range:?}",
+            sol.param_b
+        );
+        assert!(
+            (sol.point_a - expected_a).length() < 1e-12,
+            "point_a is not curve_a(param_a)"
+        );
+        assert!(
+            (sol.point_b - expected_b).length() < 1e-12,
+            "point_b is not curve_b(param_b)"
+        );
+        let span = (sol.point_a - sol.point_b).length();
+        assert!(
+            approx(sol.distance, span, 1e-12),
+            "distance={} but |point_a - point_b|={span}",
+            sol.distance
+        );
+    }
+
+    #[test]
+    fn skew_lines_common_perpendicular_closed_form() {
+        // L1: origin (0,0,0), unit direction +X.
+        // L2: origin (2,1,5), unit direction (0.6, 0.8, 0).
+        //
+        // d1 × d2 = (0, 0, 0.8), so with (o2 - o1)·(d1 × d2) = 4.0 the
+        // skew-line distance is |4.0| / 0.8 = 5.0.
+        //
+        // Closed form for the minimisers, with a = d1·d1 = 1, e = d2·d2 = 1,
+        // b = d1·d2 = 0.6, r = o1 - o2 = (-2,-1,-5), c = d1·r = -2,
+        // f = d2·r = -2:
+        //   s = (b·f - c·e) / (a·e - b²) = 0.8 / 0.64 = 1.25
+        //   t = (b·s + f) / e = -1.25
+        // Both lie strictly inside the domains below, so no clamping applies.
+        let l1 = Line3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(1.0, 0.0, 0.0)).unwrap();
+        let l2 = Line3D::new(Point3::new(2.0, 1.0, 5.0), Vec3::new(0.6, 0.8, 0.0)).unwrap();
+        let t1_range = (-10.0, 10.0);
+        let t2_range = (-10.0, 10.0);
+        let sol = line_to_line(&l1, t1_range, &l2, t2_range);
+
+        assert!(approx(sol.distance, 5.0, 1e-12), "dist={}", sol.distance);
+        assert!(approx(sol.param_a, 1.25, 1e-10), "t1={}", sol.param_a);
+        assert!(approx(sol.param_b, -1.25, 1e-10), "t2={}", sol.param_b);
+
+        // An interior optimum means the connecting segment is the common
+        // perpendicular: it is orthogonal to both directions.
+        let diff = sol.point_a - sol.point_b;
+        assert!(
+            diff.dot(l1.direction()).abs() < 1e-12,
+            "not perpendicular to d1: {}",
+            diff.dot(l1.direction())
+        );
+        assert!(
+            diff.dot(l2.direction()).abs() < 1e-12,
+            "not perpendicular to d2: {}",
+            diff.dot(l2.direction())
+        );
+
+        assert_solution_invariants(
+            &sol,
+            l1.evaluate(sol.param_a),
+            l2.evaluate(sol.param_b),
+            t1_range,
+            t2_range,
+        );
+    }
+
+    #[test]
+    fn clamping_the_second_parameter_refits_the_first() {
+        // Same two skew lines, but the second segment starts at its own
+        // origin: the unconstrained optimum t = -1.25 is outside [0, 8] and
+        // clamps to t = 0, pinning point_b at l2's origin (2,1,5).
+        //
+        // With point_b pinned the best s is the foot of the perpendicular
+        // from (2,1,5) onto the X axis, i.e. s = d1·(pb - o1) = 2, and the
+        // distance is the point-to-line distance sqrt(1² + 5²) = sqrt(26).
+        let l1 = Line3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(1.0, 0.0, 0.0)).unwrap();
+        let l2 = Line3D::new(Point3::new(2.0, 1.0, 5.0), Vec3::new(0.6, 0.8, 0.0)).unwrap();
+        let t1_range = (-10.0, 10.0);
+        let t2_range = (0.0, 8.0);
+        let sol = line_to_line(&l1, t1_range, &l2, t2_range);
+
+        assert!(approx(sol.param_b, 0.0, 1e-12), "t2={}", sol.param_b);
+        assert!(approx(sol.param_a, 2.0, 1e-10), "t1={}", sol.param_a);
+        assert!(
+            approx(sol.distance, 26.0_f64.sqrt(), 1e-12),
+            "dist={}",
+            sol.distance
+        );
+
+        // s is still interior, so the segment stays perpendicular to d1.
+        let diff = sol.point_a - sol.point_b;
+        assert!(
+            diff.dot(l1.direction()).abs() < 1e-12,
+            "not perpendicular to d1: {}",
+            diff.dot(l1.direction())
+        );
+
+        assert_solution_invariants(
+            &sol,
+            l1.evaluate(sol.param_a),
+            l2.evaluate(sol.param_b),
+            t1_range,
+            t2_range,
+        );
+    }
+
+    #[test]
+    fn degenerate_first_range_yields_a_finite_endpoint_solution() {
+        // An empty first range must short-circuit to a plain endpoint
+        // evaluation. Running the sampled/Newton path on a zero-width range
+        // divides by a zero-width finite-difference step, so the guard is the
+        // only thing keeping the answer finite.
+        let c1 = Circle3D::new_with_ref(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            1.5,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let c2 = Circle3D::new_with_ref(
+            Point3::new(7.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            2.5,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let t1_range = (0.9, 0.9);
+        let t2_range = (0.0, TAU);
+        let sol = curve_to_curve(&c1, t1_range, &c2, t2_range);
+
+        assert_solution_invariants(
+            &sol,
+            c1.evaluate(sol.param_a),
+            c2.evaluate(sol.param_b),
+            t1_range,
+            t2_range,
+        );
+    }
+
+    /// A pair of circles in two differently tilted planes whose closest
+    /// approach is known in closed form.
+    ///
+    /// Both circles are built around the unit direction `e = (1,0,1)/√2`:
+    /// `c1` has radius 12 and centre `-12e`, `c2` has radius 18 and centre
+    /// `18.6e`. The centres are `12 + 0.6 + 18 = 30.6` apart, so every pair of
+    /// points is at least `30.6 - 12 - 18 = 0.6` apart, and that bound is
+    /// reached only at the single pair on the centre line: the origin on `c1`
+    /// and `0.6e` on `c2`.
+    ///
+    /// The reference directions are chosen so those two points sit at
+    /// `t = π` on `c1` and `t = 3π/2` on `c2`. The two tangents there (`q`
+    /// and `t2v`, 50° apart) are neither parallel nor perpendicular to the
+    /// z axis, so the connecting segment and both velocities all have
+    /// non-zero z components.
+    fn tilted_circle_pair() -> (Circle3D, Circle3D) {
+        let e = Vec3::new(FRAC_1_SQRT_2, 0.0, FRAC_1_SQRT_2);
+        let q = Vec3::new(FRAC_1_SQRT_2, 0.0, -FRAC_1_SQRT_2);
+        let p = Vec3::new(0.0, 1.0, 0.0);
+        let phi = 50.0_f64.to_radians();
+        let t2v = p * phi.cos() + q * phi.sin();
+
+        let along = |s: f64| Point3::new(e.x() * s, e.y() * s, e.z() * s);
+        let c1 = Circle3D::new_with_ref(
+            along(-12.0),
+            q.cross(e),
+            12.0,
+            Vec3::new(-e.x(), -e.y(), -e.z()),
+        )
+        .unwrap();
+        let c2 = Circle3D::new_with_ref(along(18.6), t2v.cross(e), 18.0, t2v).unwrap();
+
+        // Fixture sanity: the contact points sit where the derivation says.
+        assert!((c1.evaluate(PI) - along(0.0)).length() < 1e-12);
+        assert!((c2.evaluate(1.5 * PI) - along(0.6)).length() < 1e-12);
+        (c1, c2)
+    }
+
+    #[test]
+    fn tilted_circles_closest_approach_on_the_centre_line() {
+        let (c1, c2) = tilted_circle_pair();
+        let t1_range = (0.35, 5.8);
+        let t2_range = (0.0, TAU);
+        let sol = curve_to_curve(&c1, t1_range, &c2, t2_range);
+
+        assert!(approx(sol.distance, 0.6, 1e-9), "dist={}", sol.distance);
+        assert!(approx(sol.param_a, PI, 1e-8), "t1={}", sol.param_a);
+        assert!(approx(sol.param_b, 1.5 * PI, 1e-8), "t2={}", sol.param_b);
+
+        // The documented stationarity system, evaluated with exact tangents:
+        // an interior extremum is orthogonal to both curve directions.
+        let diff = sol.point_a - sol.point_b;
+        assert!(
+            diff.dot(c1.tangent(sol.param_a)).abs() < 1e-7,
+            "not stationary in t1: {}",
+            diff.dot(c1.tangent(sol.param_a))
+        );
+        assert!(
+            diff.dot(c2.tangent(sol.param_b)).abs() < 1e-7,
+            "not stationary in t2: {}",
+            diff.dot(c2.tangent(sol.param_b))
+        );
+
+        assert_solution_invariants(
+            &sol,
+            c1.evaluate(sol.param_a),
+            c2.evaluate(sol.param_b),
+            t1_range,
+            t2_range,
+        );
+    }
+
+    #[test]
+    fn second_domain_narrower_than_param_tol_still_refines_the_first() {
+        // Same contact geometry, but c2 is restricted to a window of width
+        // 6e-11 centred on its contact parameter 3π/2 — narrower than
+        // PARAM_TOL. Every clamped step in t2 is therefore already below the
+        // convergence threshold, while t1 starts a fifth of a grid cell away
+        // and needs several Newton steps to reach π. The answer is still the
+        // closed-form closest approach of 0.6.
+        let (c1, c2) = tilted_circle_pair();
+        let half = 3e-11;
+        let t1_range = (0.35, 5.8);
+        let t2_range = (1.5 * PI - half, 1.5 * PI + half);
+        assert!(t2_range.1 - t2_range.0 < PARAM_TOL);
+        let sol = curve_to_curve(&c1, t1_range, &c2, t2_range);
+
+        assert!(approx(sol.distance, 0.6, 1e-9), "dist={}", sol.distance);
+        assert!(approx(sol.param_a, PI, 1e-6), "t1={}", sol.param_a);
+
+        assert_solution_invariants(
+            &sol,
+            c1.evaluate(sol.param_a),
+            c2.evaluate(sol.param_b),
+            t1_range,
+            t2_range,
+        );
+    }
+
+    #[test]
+    fn first_domain_narrower_than_param_tol_still_refines_the_second() {
+        // The mirror image of the test above: this time c1 is pinned inside a
+        // 6e-11 window around its contact parameter π, so its clamped steps
+        // are below PARAM_TOL from the start while t2 still has to walk in
+        // from the grid. The closest approach is again 0.6, at t2 = 3π/2.
+        let (c1, c2) = tilted_circle_pair();
+        let half = 3e-11;
+        let t1_range = (PI - half, PI + half);
+        let t2_range = (0.0, TAU);
+        assert!(t1_range.1 - t1_range.0 < PARAM_TOL);
+        let sol = curve_to_curve(&c1, t1_range, &c2, t2_range);
+
+        assert!(approx(sol.distance, 0.6, 1e-9), "dist={}", sol.distance);
+        assert!(approx(sol.param_b, 1.5 * PI, 1e-6), "t2={}", sol.param_b);
+
+        assert_solution_invariants(
+            &sol,
+            c1.evaluate(sol.param_a),
+            c2.evaluate(sol.param_b),
+            t1_range,
+            t2_range,
+        );
     }
 }

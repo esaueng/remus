@@ -345,6 +345,26 @@ mod tests {
     }
 
     #[test]
+    fn loop_closed_flag_round_trips_both_ways() {
+        use crate::face_loop::Loop;
+
+        let mut topo = Topology::new();
+        let (face, _) = triangle_face(&mut topo);
+        let derived = topo.loops_of_face(face).unwrap().to_vec();
+        let coedges = topo.face_loop(derived[0]).unwrap().coedges().to_vec();
+        assert!(
+            topo.face_loop(derived[0]).unwrap().is_closed(),
+            "a closed boundary wire derives a closed loop"
+        );
+
+        // An open loop must report open; the flag is stored, never assumed.
+        let open = Loop::new(face, coedges.clone(), false);
+        assert!(!open.is_closed(), "a loop built open reports open");
+        assert_eq!(open.face(), face);
+        assert_eq!(open.coedges(), coedges.as_slice());
+    }
+
+    #[test]
     fn new_diagnostic_codes_are_pinned() {
         use remus_math::diagnostic::{FailureCategory, ToDiagnostic};
 
