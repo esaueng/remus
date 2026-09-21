@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { inflateRawSync } from 'node:zlib';
 
 const DEFLECTION = 0.1;
 
@@ -279,6 +280,7 @@ export const runOpenZcadConsumerRegressions = (exports) => {
   runTangencyBandRegression(exports);
   runBooleanScaleRegression(exports);
   runAnisotropicBooleanRegression(exports);
+  runZeroAreaMeshExportRegression(exports);
 };
 
 export const runWideSphereCapRegression = ({ BrepKernel, RemusIo }) => {
@@ -1783,3 +1785,183 @@ export const runBlendResizeHistoryRegression = ({ BrepKernel, RemusIo }) => {
   }
   console.log('ok - cylindrical blend resize history: all entity refs, direct/batch, arena/STEP, removal, rollback');
 };
+
+// A boolean or an import can leave a face whose tessellation contains
+// collapsed facets (two vertices at the same position). A serialized facet
+// with zero area reads back as an open mesh: its two identical directed
+// edges cancel in a closure count, so a consumer sees a hole where there is
+// none. The Tiny-Fox complete-history replay exposed two such facets in the
+// binary STL and 3MF exports (Remus PR #520 carries the writer-side filter;
+// the consumer regression pins the shipped packages' bytes). The exported
+// meshes must carry only finite, nonzero-area facets, be closed and
+// consistently oriented, and agree with the exact B-rep volume.
+export const runZeroAreaMeshExportRegression = ({ BrepKernel, RemusIo }) => {
+  const io = new RemusIo();
+  try {
+    const kernel = new BrepKernel();
+    try {
+      const plate = kernel.makeBox(80, 40, 8);
+      const bore = kernel.makeCylinder(5, 16);
+      kernel.transformSolid(
+        bore,
+        new Float64Array([1, 0, 0, 40, 0, 1, 0, 20, 0, 0, 1, -4, 0, 0, 0, 1]),
+      );
+      const solid = kernel.cut(plate, bore);
+      assert.equal(kernel.validateSolid(solid), 0, 'export fixture: closed, valid shell');
+      const expectedVolume = 80 * 40 * 8 - Math.PI * 25 * 8;
+      const kernelVolume = kernel.volume(solid, 0.01);
+      assert.ok(
+        Math.abs(kernelVolume - expectedVolume) < expectedVolume * 1e-9,
+        `export fixture: volume=${kernelVolume}, expected ${expectedVolume}`,
+      );
+      const document = kernel.serializeSolids(Uint32Array.of(solid));
+
+      // Facet census over quantized coordinates (9 numbers per triangle):
+      // every facet has three distinct quantized vertex keys, every
+      // undirected edge is used exactly twice, once per direction, and the
+      // facet volume agrees with the exact B-rep volume.
+      const quantizedCensus = (flat, label) => {
+        const vertexIds = new Map();
+        let degenerate = 0;
+        const edges = new Map();
+        for (let i = 0; i < flat.length; i += 9) {
+          const keys = [0, 1, 2].map((vertex) =>
+            flat.slice(i + vertex * 3, i + vertex * 3 + 3).join(','),
+          );
+          const ids3 = keys.map((key) => {
+            if (!vertexIds.has(key)) vertexIds.set(key, vertexIds.size);
+            return vertexIds.get(key);
+          });
+          if (new Set(ids3).size !== 3) degenerate++;
+          for (const [a, b] of [
+            [ids3[0], ids3[1]],
+            [ids3[1], ids3[2]],
+            [ids3[2], ids3[0]],
+          ]) {
+            const key = `${Math.min(a, b)}|${Math.max(a, b)}`;
+            const use = edges.get(key) ?? [0, 0];
+            use[0]++;
+            use[1] += a < b ? 1 : -1;
+            edges.set(key, use);
+          }
+        }
+        for (const [count, balance] of edges.values()) {
+          assert.ok(count === 2 && balance === 0, `${label}: open or inconsistently oriented edge`);
+        }
+        assert.equal(degenerate, 0, `${label}: zero-area facet serialized`);
+        let volume = 0;
+        for (let i = 0; i < flat.length; i += 9) {
+          volume += triangleVolume(flat, i, i + 3, i + 6);
+        }
+        assert.ok(
+          Math.abs(Math.abs(volume) - kernelVolume) / kernelVolume < 0.02,
+          `${label}: volume ${volume} vs kernel ${kernelVolume}`,
+        );
+      };
+
+      const triangleVolume = (points, a, b, c) =>
+        (points[a] * (points[b + 1] * points[c + 2] - points[b + 2] * points[c + 1]) +
+          points[a + 1] * (points[b + 2] * points[c] - points[b] * points[c + 2]) +
+          points[a + 2] * (points[b] * points[c + 1] - points[b + 1] * points[c])) / 6;
+
+      // Binary STL: f32 records; weld by exact f32 key before the census.
+      {
+        const stl = io.exportStl(document, 0.1);
+        const view = new DataView(stl.buffer, stl.byteOffset, stl.byteLength);
+        const declared = view.getUint32(80, true);
+        assert.equal(stl.length, 84 + declared * 50, 'binary STL: record length');
+        assert.ok(declared > 0, 'binary STL: nonempty');
+        const flat = [];
+        for (let t = 0; t < declared; t++) {
+          for (let coordinate = 0; coordinate < 9; coordinate++) {
+            flat.push(view.getFloat32(84 + t * 50 + 12 + coordinate * 4, true));
+          }
+        }
+        assert.ok(flat.every(Number.isFinite), 'binary STL: non-finite coordinate');
+        quantizedCensus(flat, 'binary STL');
+      }
+
+      // ASCII STL: text records; weld by exact text key.
+      {
+        const ascii = new TextDecoder().decode(io.exportStlAscii(document, 0.1));
+        const facets = [...ascii.matchAll(
+          /facet normal[^]*?vertex\s+(\S+)\s+(\S+)\s+(\S+)\s+vertex\s+(\S+)\s+(\S+)\s+(\S+)\s+vertex\s+(\S+)\s+(\S+)\s+(\S+)/g,
+        )].map((match) => match.slice(1, 10).map(Number));
+        assert.ok(facets.length > 0, 'ASCII STL: nonempty');
+        quantizedCensus(facets.flat(), 'ASCII STL');
+      }
+
+      // 3MF: exact f64 vertex text; the cross product must be exactly
+      // nonzero, which is the class the collapsed-seam export leaked.
+      {
+        const threemf = io.export3mf(document, 0.01);
+        const model = unzip3mfModelPart(threemf);
+        const vertices = [...model.matchAll(/<vertex\b[^>]*\/>/g)].map((tag) =>
+          ['x', 'y', 'z'].map((axis) =>
+            Number(tag[0].match(new RegExp(`\\b${axis}="([^"]*)"`))?.[1]),
+          ),
+        );
+        for (const point of vertices) {
+          assert.ok(point.every(Number.isFinite), '3MF: non-finite vertex');
+        }
+        const triangles = [...model.matchAll(/<triangle\b[^>]*\/>/g)].map((tag) =>
+          ['v1', 'v2', 'v3'].map((name) => Number(tag[0].match(new RegExp(`\\b${name}="([^"]*)"`))?.[1])),
+        );
+        assert.ok(triangles.length > 0, '3MF: nonempty mesh');
+        const edges = new Map();
+        let volume = 0;
+        for (const [v1, v2, v3] of triangles) {
+          assert.ok(v1 !== v2 && v2 !== v3 && v1 !== v3, '3MF: coincident vertex index');
+          const [a, b, c] = [vertices[v1], vertices[v2], vertices[v3]];
+          const cross = [
+            (b[1] - a[1]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[1] - a[1]),
+            (b[2] - a[2]) * (c[0] - a[0]) - (b[0] - a[0]) * (c[2] - a[2]),
+            (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]),
+          ];
+          assert.ok(
+            cross.every(Number.isFinite) && cross.some((component) => component !== 0),
+            `3MF: exact zero-area facet ${JSON.stringify([vertices[v1], vertices[v2], vertices[v3]])}`,
+          );
+          volume += triangleVolume([...a, ...b, ...c], 0, 3, 6);
+          for (const [x, y] of [[v1, v2], [v2, v3], [v3, v1]]) {
+            const key = `${Math.min(x, y)}|${Math.max(x, y)}`;
+            const use = edges.get(key) ?? [0, 0];
+            use[0]++;
+            use[1] += x < y ? 1 : -1;
+            edges.set(key, use);
+          }
+        }
+        for (const [count, balance] of edges.values()) {
+          assert.ok(count === 2 && balance === 0, '3MF: open or inconsistently oriented edge');
+        }
+        assert.ok(
+          Math.abs(Math.abs(volume) - kernelVolume) / kernelVolume < 0.02,
+          `3MF: volume ${volume} vs kernel ${kernelVolume}`,
+        );
+      }
+      console.log('ok - zero-area mesh export contract: binary/ASCII STL and 3MF carry only finite nonzero-area facets');
+    } finally { kernel.free(); }
+  } finally { io.free(); }
+};
+
+/** Extract and inflate the `3D/3dmodel.model` part of a 3MF zip archive. */
+function unzip3mfModelPart(bytes) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let offset = 0;
+  while (offset + 4 <= bytes.length && view.getUint32(offset, true) === 0x04034b50) {
+    const method = view.getUint16(offset + 8, true);
+    const compressedSize = view.getUint32(offset + 18, true);
+    const nameLength = view.getUint16(offset + 26, true);
+    const extraLength = view.getUint16(offset + 28, true);
+    const name = new TextDecoder().decode(bytes.subarray(offset + 30, offset + 30 + nameLength));
+    const dataStart = offset + 30 + nameLength + extraLength;
+    if (name === '3D/3dmodel.model') {
+      const compressed = bytes.subarray(dataStart, dataStart + compressedSize);
+      return method === 0
+        ? new TextDecoder().decode(compressed)
+        : new TextDecoder().decode(inflateRawSync(compressed));
+    }
+    offset = dataStart + compressedSize;
+  }
+  throw new Error('3MF export is missing the 3D/3dmodel.model part');
+}
