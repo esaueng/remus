@@ -3024,7 +3024,7 @@ pub(super) fn tessellate_nonplanar_cdt(
                 (u_min, u_max, v_min, v_max),
                 &boundary_uv,
                 n_u,
-            )
+            )?
         {
             validate_interior_grid_size(n_u, extra.len() / n_u.max(1) + 2)?;
             for (u, v) in extra {
@@ -3431,6 +3431,27 @@ pub(super) fn validate_interior_grid_size(
     Ok(())
 }
 
+fn validate_stepped_rim_level_count(
+    level_count: usize,
+    n_u: usize,
+) -> Result<(), crate::OperationsError> {
+    // Each level contributes at most itself, two flanks, and six subdivision
+    // rows in the following band.
+    let columns = n_u.saturating_sub(1).max(1);
+    let max_rows = MAX_INTERIOR_GRID_POINTS / columns;
+    if level_count
+        .checked_mul(9)
+        .is_none_or(|rows| rows > max_rows)
+    {
+        return Err(crate::OperationsError::InvalidInput {
+            reason: format!(
+                "non-planar face tessellation grid exceeds the {MAX_INTERIOR_GRID_POINTS}-point work limit"
+            ),
+        });
+    }
+    Ok(())
+}
+
 /// Project a 3D point onto a face surface, returning (u, v) parameters.
 fn project_to_surface_uv(
     surface: &FaceSurface,
@@ -3535,11 +3556,12 @@ fn stepped_rim_interior_points(
     uv_range: (f64, f64, f64, f64),
     boundary_uv: &[(f64, f64)],
     n_u: usize,
-) -> Option<Vec<(f64, f64)>> {
+) -> Result<Option<Vec<(f64, f64)>>, crate::OperationsError> {
     let (u_min, u_max, v_min, v_max) = uv_range;
     let du = u_max - u_min;
     let tolerance = remus_math::tolerance::Tolerance::default().linear;
-    let wire = topo.wire(face_data.outer_wire()).ok()?;
+    let wire = topo.wire(face_data.outer_wire()).ok();
+    let Some(wire) = wire else { return Ok(None) };
     let level_of = |point: Point3| -> Option<f64> {
         match face_data.surface() {
             FaceSurface::Cylinder(cyl) => Some((point - cyl.origin()).dot(cyl.axis())),
@@ -3571,31 +3593,35 @@ fn stepped_rim_interior_points(
             .is_ok_and(|edge| matches!(edge.curve(), EdgeCurve::Line | EdgeCurve::Circle(_)))
     });
     let mut levels = Vec::<f64>::new();
-    let mut push_level = |rim_v: f64| {
-        if !levels
-            .iter()
-            .any(|&existing| (existing - rim_v).abs() <= tolerance)
-        {
-            levels.push(rim_v);
-        }
-    };
     for oriented in wire.edges() {
-        let edge = topo.edge(oriented.edge()).ok()?;
+        let Ok(edge) = topo.edge(oriented.edge()) else {
+            return Ok(None);
+        };
         if rim_and_axial_only {
             for vertex in [edge.start(), edge.end()] {
-                push_level(level_of(topo.vertex(vertex).ok()?.point())?);
+                let Ok(vertex) = topo.vertex(vertex) else {
+                    return Ok(None);
+                };
+                let Some(level) = level_of(vertex.point()) else {
+                    return Ok(None);
+                };
+                levels.push(level);
             }
         } else if let EdgeCurve::Circle(circle) = edge.curve() {
-            push_level(level_of(circle.center())?);
+            let Some(level) = level_of(circle.center()) else {
+                return Ok(None);
+            };
+            levels.push(level);
         }
     }
-    if levels.len() < 3 {
-        return None;
-    }
     levels.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    levels.dedup_by(|a, b| (*a - *b).abs() <= tolerance);
+    if levels.len() < 3 {
+        return Ok(None);
+    }
     let span = levels[levels.len() - 1] - levels[0];
     if !span.is_finite() || span <= tolerance {
-        return None;
+        return Ok(None);
     }
     // Subdivide every inter-level band to the base grid's u density: no band
     // may be taller than one u-column spacing, so no triangle spanning a
@@ -3606,7 +3632,11 @@ fn stepped_rim_interior_points(
     } else {
         span
     };
-    let mut rows = Vec::with_capacity(4 * levels.len());
+    // Reject before constructing rows or points; imported topology can
+    // otherwise supply arbitrarily many seam levels.
+    let columns = n_u.saturating_sub(1).max(1);
+    validate_stepped_rim_level_count(levels.len(), n_u)?;
+    let mut rows = Vec::with_capacity(9 * levels.len());
     // Include each interior level's own line: the constrained boundary
     // already carries vertices at the rim arcs, so coincident samples are
     // dropped by the caller's `on_boundary` filter — but along a PARTIAL
@@ -3640,6 +3670,9 @@ fn stepped_rim_interior_points(
             }
         }
     }
+    // Hard cap: at most a handful of subdivision rows per inter-level band.
+    // Level rows and their flanks are inserted separately above, so thinning
+    // cannot drop the supports that pin boundary vertices.
     for pair in levels.windows(2) {
         let (lo, hi) = (pair[0], pair[1]);
         let width = hi - lo;
@@ -3648,7 +3681,9 @@ fn stepped_rim_interior_points(
         }
         #[allow(clippy::cast_precision_loss)]
         let want = ((width / row_pitch).ceil().max(2.0) as usize).max(2);
-        for j in 1..want {
+        let candidate_count = want - 1;
+        let stride = candidate_count.div_ceil(6).max(1);
+        for j in (1..want).step_by(stride).take(6) {
             #[allow(clippy::cast_precision_loss)]
             let v = lo + width * (j as f64 / want as f64);
             if v > v_min + tolerance && v < v_max - tolerance {
@@ -3658,60 +3693,8 @@ fn stepped_rim_interior_points(
     }
     rows.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     rows.dedup_by(|a, b| (*a - *b).abs() <= tolerance);
-    // Hard cap: at most a handful of SUBDIVISION rows per inter-level band.
-    // The level rows and their flanks are exempt — they are what pin the
-    // boundary vertices, and thinning a band by stride used to drop exactly
-    // those (a 117 mm band kept six evenly spread rows and lost the flank
-    // one unit above its step, so the step corner fanned 19 mm up to the
-    // first surviving row). Applied per band so thinning one tall band never
-    // touches another. The caller enforces the same overall work bound.
-    let pinned: Vec<f64> = rows
-        .iter()
-        .copied()
-        .filter(|&v| {
-            levels.iter().any(|&level| {
-                let gap_below = levels
-                    .iter()
-                    .filter(|&&other| other < level - tolerance)
-                    .map(|&other| level - other)
-                    .fold(f64::INFINITY, f64::min);
-                let gap_above = levels
-                    .iter()
-                    .filter(|&&other| other > level + tolerance)
-                    .map(|&other| other - level)
-                    .fold(f64::INFINITY, f64::min);
-                let flank = gap_below.min(gap_above) / 8.0;
-                (v - level).abs() <= tolerance
-                    || (flank.is_finite() && ((v - level).abs() - flank).abs() <= tolerance)
-            })
-        })
-        .collect();
-    let mut capped = pinned.clone();
-    for pair in levels.windows(2) {
-        let (lo, hi) = (pair[0], pair[1]);
-        let mut band: Vec<f64> = rows
-            .iter()
-            .copied()
-            .filter(|&v| v > lo + tolerance && v < hi - tolerance)
-            .filter(|&v| !pinned.iter().any(|&p| (p - v).abs() <= tolerance))
-            .collect();
-        if band.len() > 6 {
-            let stride = band.len().div_ceil(6);
-            let mut thinned = Vec::with_capacity(6);
-            for (i, &v) in band.iter().enumerate() {
-                if i % stride == 0 && thinned.len() < 6 {
-                    thinned.push(v);
-                }
-            }
-            band = thinned;
-        }
-        capped.extend(band);
-    }
-    capped.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    capped.dedup_by(|a, b| (*a - *b).abs() <= tolerance);
-    rows = capped;
     if rows.is_empty() {
-        return None;
+        return Ok(None);
     }
     // Pin each step corner's neighborhood columns: at every outer-wire
     // vertex, take the samples where the two NEIGHBORING base-grid columns
@@ -3748,7 +3731,16 @@ fn stepped_rim_interior_points(
     corner_us.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     corner_us.dedup_by(|a, b| (*a - *b).abs() <= tolerance);
 
-    let mut points = Vec::with_capacity(rows.len() * n_u.max(1));
+    let emitted_columns = if n_u > 1 { columns } else { corner_us.len() };
+    let point_count = rows.len().checked_mul(emitted_columns);
+    if point_count.is_none_or(|count| count > MAX_INTERIOR_GRID_POINTS) {
+        return Err(crate::OperationsError::InvalidInput {
+            reason: format!(
+                "non-planar face tessellation grid exceeds the {MAX_INTERIOR_GRID_POINTS}-point work limit"
+            ),
+        });
+    }
+    let mut points = Vec::with_capacity(point_count.unwrap_or(0));
     if n_u > 1 {
         // Full rows already visit every base-grid column, and the pinned
         // corner columns ARE base-grid columns (floor/ceil of the sample's
@@ -3770,7 +3762,7 @@ fn stepped_rim_interior_points(
             }
         }
     }
-    (!points.is_empty()).then_some(points)
+    Ok((!points.is_empty()).then_some(points))
 }
 
 /// Estimate the effective radius of a surface for sample density calculation.
@@ -5582,6 +5574,7 @@ mod interior_grid_limit_tests {
 
     use super::{
         MAX_INTERIOR_GRID_POINTS, validate_interior_grid_size, validate_interior_polygon_work,
+        validate_stepped_rim_level_count,
     };
 
     #[test]
@@ -5602,6 +5595,17 @@ mod interior_grid_limit_tests {
     #[test]
     fn rejects_grid_size_overflow() {
         assert!(validate_interior_grid_size(usize::MAX, usize::MAX).is_err());
+    }
+
+    #[test]
+    fn rejects_excessive_stepped_rim_levels_before_row_allocation() {
+        let excessive_levels = MAX_INTERIOR_GRID_POINTS / 9 + 1;
+        assert!(validate_stepped_rim_level_count(excessive_levels, 2).is_err());
+    }
+
+    #[test]
+    fn rejects_stepped_rim_level_count_overflow() {
+        assert!(validate_stepped_rim_level_count(usize::MAX, 2).is_err());
     }
 
     #[test]
