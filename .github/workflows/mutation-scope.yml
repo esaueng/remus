@@ -30,7 +30,7 @@ permissions:
 
 jobs:
   checks:
-    uses: esaueng/remus/.github/workflows/fleet-mutation-scope.yml@dbb227610933985440f18eb38adb24323cb6c391
+    uses: esaueng/remus/.github/workflows/fleet-mutation-scope.yml@f7269dfc454fba99bb3a908fb43a8873559135bd
     permissions:
       contents: read
       pull-requests: read

@@ -9,11 +9,12 @@ or face count changes, or volume relative drift > 1e-9. Area drift is
 reported alongside volume; one area-only drift is filed as a finding because
 it exceeds any reasonable mass-property tolerance.
 
-Status: audit complete, 2026-09-18. 30/31 fixtures import; 28/30 readable
-fixtures round-trip exactly (identical histograms, face counts, volume and
-area to ≤3e-16 relative). 3 findings filed below, each with an `#[ignore]`
-ready-repro in `crates/io/tests/`. No reader/writer fix in this PR (read-only
-audit). Roadmap rows that own STEP fidelity point here.
+Status: audit complete 2026-09-18; first exact repair 2026-09-19. 30/31
+fixtures import; 29/30 readable fixtures now satisfy the audit oracle.
+Finding 3 is fixed and active. Findings 1 and 2 remain ignored: the former
+would require accepting a carrier miss 61.6 times larger than the file's
+declared uncertainty, while the latter is isolated to the tessellated
+measurement oracle (exact per-face integration is stable to 1.2e-15 relative).
 
 Method (per the io-formats skill's analytic round-trip check):
 - Reader: `remus_io::step::reader::read_step(&str, &mut Topology) -> Vec<SolidId>`.
@@ -71,13 +72,14 @@ file. Volume/area at deflection 0.01.
 | scoop_scoop_0.step | 1→1 | 56→56 | Pl56 → identical | Ln156 → identical | 6.37612080524401517e3 → same (0.0) | 7.98525208325882249e3 → same (0.0) | pass |
 | shapr3d_hammer_holder.step | 1→1 | 160→160 | Pl52 Cyl42 Cone2 Sph8 Tor14 Nurb42 → identical | Ln200 Cir96 NurbC90 → identical | 5.02406431268449305e4 → 5.02406460872056996e4 (5.89e-8) | 1.39388151664662237e4 → same (0.0) | FINDING 2 (volume drift) |
 | shapr3d_walking_stick_foot.step | 1→1 | 11→11 | Pl3 Cyl3 Cone2 Tor3 → identical | Ln5 Cir17 → identical | 3.23649016740484731e4 → same (0.0) | 1.08920564412322947e4 → same (1.7e-16) | pass |
-| shapr_untrimmed_nurbs_domain.step | 1→1 | 4→4 | Pl3 Nurb1 → identical | Ln4 NurbC2 → identical | 1.06290637561401069e0 → 1.06290637561401002e0 (6.3e-16) | 1.94950549898607264e1 → 1.76719603545463393e1 (9.35e-2) | FINDING 3 (area drift) |
+| shapr_untrimmed_nurbs_domain.step | 1→1 | 4→4 | Pl3 Nurb1 → identical | Ln4 NurbC2 → identical | stable (<1e-9 rel) | stable (<1e-9 rel) | pass (Finding 3 fixed 2026-09-19; exact NURBS carriers retained) |
 | wallcut_body.step | 1→1 | 19→19 | Pl11 Cyl8 → identical | Ln32 Cir16 → identical | 1.41027608948542875e4 → same (0.0) | 2.38976758253055596e4 → same (0.0) | pass |
 | wallcut_tool_0.step | 1→1 | 56→56 | Pl24 Cyl32 → identical | Ln80 Cir64 → identical | 7.24309284579545056e3 → same (0.0) | 6.03454981586510166e3 → same (0.0) | pass |
 | wide_sphere_cap.step | 1→1 | 2→2 | Pl1 Sph1 → identical | Cir1 → identical | 2.99333758546055424e3 → same (0.0) | 1.01080743629251526e3 → same (0.0) | pass |
 | wide_sphere_cap_with_seam.step | 1→1 | 2→2 | Pl1 Sph1 → identical | Cir2 → identical | 2.99333758546055424e3 → same (0.0) | 1.62544777961459630e2 → same (0.0) | pass |
 
-Totals: 31 fixtures, 30 import, 28 pass exactly, 3 findings. Zero
+Totals after the 2026-09-19 repair: 31 fixtures, 30 import, 29 readable
+fixtures pass the audit oracle, 2 findings remain open/qualified. Zero
 analytic→NURBS degradations on the export→re-import leg; zero face-count
 changes on any readable fixture.
 
@@ -109,10 +111,11 @@ changes on any readable fixture.
   ignored because import fails; when the reader (or the documented
   heal-after-import path) accepts the file, remove the `#[ignore]` and
   extend it with the round-trip histogram/volume asserts.
-- Heal-after-import note: per the io-formats skill, the next step for the
-  owner is to try `heal_solid`/`repair_solid` and `convert_to_elementary`
-  after a (currently impossible) import — or to decide the file is genuinely
-  out of tolerance. This audit did not heal; it records the refusal.
+- 2026-09-19 diagnosis: the file declares 1e-6 mm uncertainty, while #253's
+  closest carrier foot remains 6.164947e-5 mm away. Raising the local or
+  global cap would be a tolerance relaxation/heal, not an exact STEP reader
+  repair. The refusal therefore remains fail-closed and the repro stays
+  ignored pending a corrected carrier or explicit non-exact policy.
 
 ## Finding 2 — `shapr3d_hammer_holder.step` volume drift 5.89e-8
 
@@ -124,8 +127,7 @@ changes on any readable fixture.
   bit-identical (1.39388151664662237e4 → same, rel 0.0), but volume drifts:
   5.02406431268449305e4 → 5.02406460872056996e4 (abs +0.00296, rel
   5.892362e-8 > 1e-9 threshold). Re-verified by parent at deflection 0.01.
-- Code path suspected (read-only, not fixed): the NURBS
-  write→read leg. The writer emits full double precision
+- 2026-09-19 diagnosis: the writer emits full double precision
   (`fmt_f64`/`fmt_weight` use `{:.17E}` in `crates/io/src/step/writer.rs`,
   ~line 1660), so decimal rounding is unlikely to explain +0.003 on 5e4.
   With 42 NURBS faces the volume goes through tessellation at the 0.01
@@ -133,16 +135,18 @@ changes on any readable fixture.
   text, edge-domain re-derivation in
   `crates/io/src/step/reader.rs::build_bspline_surface` and the
   periodic/untrimmed domain helpers ~lines 2335–2680) can re-tessellate
-  slightly differently. Whether the drift is I/O parameter churn or
-  measure-side tessellation noise at 0.01 is the open question — the owner
-  should re-measure both sides at finer deflection and compare
-  `oriented_solid_volume` before calling it a writer bug.
+  slightly differently. Exact per-face integration measures
+  5.02453877914920740e4 before and 5.02453877914920158e4 after (about 1.2e-15
+  relative), while the legacy tessellated oracle retains its 5.89e-8 delta
+  at both 0.03 and 0.01 requested deflection. No exact carrier/surface change
+  supports a reader/writer repair, so the legacy repro remains ignored and is
+  now classified as a measurement-order/tessellation witness.
 - Ready-repro: `crates/io/tests/step_roundtrip_hammer_holder_repro.rs`
   (`hammer_holder_volume_survives_roundtrip`, `#[ignore = "open: ..."]`).
   Asserts rel drift < 1e-9; fails today (≈5.9e-8), passes when the drift
   closes. Doc comment carries this finding.
 
-## Finding 3 — `shapr_untrimmed_nurbs_domain.step` area drift 9.35e-2
+## Finding 3 — `shapr_untrimmed_nurbs_domain.step` area drift 9.35e-2 (fixed 2026-09-19)
 
 - Fixture: `crates/io/tests/data/shapr_untrimmed_nurbs_domain.step` (6,600
   bytes; 4 faces: Pl3 Nurb1; edges Ln4 NurbC2). The single NURBS face is
@@ -154,23 +158,16 @@ changes on any readable fixture.
   9.351575e-2). Re-verified by parent at deflection 0.01. A 9% area move
   with volume pinned means the NURBS patch's parameterization (not its
   closed volume contribution) changed across the write→read leg.
-- Code path suspected (read-only, not fixed): untrimmed-NURBS domain
-  handling. Reader side: `MAX_UNTRIMMED_NURBS_RECOVERY_CONTROL_POINTS`
-  (4,096), `MAX_UNTRIMMED_NURBS_RECOVERY_TOLERANCE_MM` (1e-4), and the
-  `step_untrimmed_nurbs_domain_recovered` probe (lines ~56–133), plus
-  `build_bspline_surface` and the periodic/untrimmed UV-domain helpers
-  (~lines 2335–2680, `periodic_uv_domain`, unwrapped-domain interior probes).
-  Writer side: NURBS surface/edge-domain emission in
-  `crates/io/src/step/writer.rs` (NURBS arms; `edge.strict_domain()` reads
-  at ~lines 1050/1996/2057/2075/2115 in reader tests show how domains are
-  re-derived). The re-imported face likely recovers a different (smaller)
-  sub-domain than the first import. The owner should dump both NURBS
-  carriers (control net, knots, recovered domain) before and after.
-- Ready-repro: `crates/io/tests/step_roundtrip_untrimmed_nurbs_repro.rs`
-  (`untrimmed_nurbs_area_survives_roundtrip`, `#[ignore = "open: ..."]`).
-  Asserts area rel < 1e-9 (and volume rel < 1e-9); fails today on area
-  (≈9.35e-2), passes when the domain round-trips. Doc comment carries this
-  finding.
+- Root cause and repair: `build_trimmed_curve` physically split a
+  parameter-trimmed NURBS carrier even though `import_edge_with_authority`
+  also stored the declared interval. Re-import therefore replaced the full
+  carrier/control polygon while applying the same trim again at the topology
+  boundary. The reader now retains the exact basis carrier and uses the
+  declared interval only as edge parameter authority. The regression pins
+  knots, control points, weights, trims, volume, area, and analytic face types.
+- Regression: `crates/io/tests/step_roundtrip_untrimmed_nurbs_repro.rs`
+  (`untrimmed_nurbs_area_survives_roundtrip`) is active and asserts volume and
+  area relative drift below 1e-9 plus exact NURBS carrier identity.
 
 ## Observations (not findings)
 
@@ -202,8 +199,5 @@ changes on any readable fixture.
 - `crates/io/tests/step_roundtrip_hammer_holder_repro.rs` (Finding 2)
 - `crates/io/tests/step_roundtrip_untrimmed_nurbs_repro.rs` (Finding 3)
 
-All three follow the testing skill's ready-repro pattern: file-level doc
-comment states the finding, `#![allow(clippy::unwrap_used,
-clippy::expect_used)]` header, `#[ignore = "open: ..."]` on the failing
-assert, runnable via
-`cargo test -p remus-io --test <name> -- --ignored`.
+Findings 1 and 2 remain ignored ready-repros. Finding 3 is an active regression
+and runs with the normal `remus-io` integration-test suite.
