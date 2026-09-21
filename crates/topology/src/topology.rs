@@ -2346,4 +2346,342 @@ mod tests {
         let (fresh, _, _) = make_triangle_solid(&mut topo, 10.0);
         assert!(fresh.index() > retired.index());
     }
+
+    #[test]
+    fn wire_body_class_accepts_only_the_wire_tag() {
+        let mut topo = Topology::new();
+        let start = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
+        let end = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
+        let edge = topo.add_edge(Edge::new(start, end, EdgeCurve::Line));
+        let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], false).unwrap());
+
+        topo.set_wire_body_class(wire, BodyClass::Wire).unwrap();
+        assert_eq!(topo.wire(wire).unwrap().body_class(), BodyClass::Wire);
+
+        for rejected in [BodyClass::Solid, BodyClass::Sheet, BodyClass::General] {
+            let error = topo.set_wire_body_class(wire, rejected).unwrap_err();
+            assert!(
+                matches!(
+                    error,
+                    TopologyError::InvalidBodyClass {
+                        entity: "wire",
+                        body_class,
+                    } if body_class == rejected.as_str()
+                ),
+                "expected InvalidBodyClass for {rejected:?}, got {error:?}"
+            );
+            assert_eq!(topo.wire(wire).unwrap().body_class(), BodyClass::Wire);
+        }
+
+        let mut elsewhere = Topology::new();
+        assert!(matches!(
+            elsewhere.set_wire_body_class(wire, BodyClass::Wire),
+            Err(TopologyError::WireNotFound(id)) if id == wire
+        ));
+    }
+
+    #[test]
+    fn allocated_slot_count_is_a_lifetime_high_water_mark() {
+        let mut topo = Topology::new();
+        assert_eq!(topo.allocated_slot_count(), 0);
+
+        let a = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
+        let b = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
+        assert_eq!(topo.allocated_slot_count(), 2);
+        topo.add_edge(Edge::new(a, b, EdgeCurve::Line));
+        assert_eq!(topo.allocated_slot_count(), 3);
+
+        // Restoring a snapshot never lowers it: slots are reserved for life.
+        let snapshot = topo.clone();
+        topo.add_vertex(Vertex::new(Point3::new(2.0, 0.0, 0.0), 1e-7));
+        assert_eq!(topo.allocated_slot_count(), 4);
+        topo.restore_preserving_handle_slots(&snapshot);
+        assert_eq!(topo.allocated_slot_count(), 4);
+        assert_eq!(topo.num_vertices(), 2);
+    }
+
+    #[test]
+    fn restore_preserving_handle_slots_keeps_live_face_authority_handles() {
+        let mut topo = Topology::new();
+        let (_, face, edge) = make_triangle_solid(&mut topo, 0.0);
+        topo.set_pcurve_oriented(edge, face, true, test_pcurve(0.0))
+            .unwrap();
+        let loops = topo.loops_of_face(face).unwrap().to_vec();
+        let coedges = topo.face_loop(loops[0]).unwrap().coedges().to_vec();
+        let counts = (topo.num_loops(), topo.num_coedges());
+
+        let snapshot = topo.clone();
+        topo.add_vertex(Vertex::new(Point3::new(9.0, 9.0, 9.0), 1e-7));
+        topo.restore_preserving_handle_slots(&snapshot);
+
+        // The face's authority survived the restore intact, so it keeps its
+        // Loop/Coedge identities instead of being re-promoted onto fresh ones.
+        assert_eq!(topo.loops_of_face(face).unwrap(), loops.as_slice());
+        assert_eq!(
+            topo.face_loop(loops[0]).unwrap().coedges(),
+            coedges.as_slice()
+        );
+        assert_eq!((topo.num_loops(), topo.num_coedges()), counts);
+        assert!(topo.pcurve_oriented(edge, face, true).is_some());
+        crate::validation::validate_face_loops(&topo, face).unwrap();
+    }
+
+    #[test]
+    fn solid_attributes_are_stored_cleared_and_validated() {
+        use crate::attributes::EntityAttributes;
+
+        let mut topo = Topology::new();
+        let (solid, _, _) = make_triangle_solid(&mut topo, 0.0);
+        let named = EntityAttributes {
+            name: Some("housing".to_owned()),
+            ..Default::default()
+        };
+
+        topo.set_solid_attributes(solid, named.clone()).unwrap();
+        assert_eq!(
+            topo.attributes().solid(solid).unwrap().name.as_deref(),
+            Some("housing")
+        );
+
+        topo.set_solid_attributes(solid, EntityAttributes::default())
+            .unwrap();
+        assert!(topo.attributes().solid(solid).is_none());
+
+        let mut elsewhere = Topology::new();
+        assert!(matches!(
+            elsewhere.set_solid_attributes(solid, named),
+            Err(TopologyError::SolidNotFound(id)) if id == solid
+        ));
+        assert!(elsewhere.attributes().solid(solid).is_none());
+    }
+
+    #[test]
+    fn a_merge_with_no_attributed_inputs_is_not_a_conflict() {
+        use crate::journal::EventDraft;
+
+        let mut topo = Topology::new();
+        let (_, source_a, _) = make_triangle_solid(&mut topo, 0.0);
+        let (_, source_b, _) = make_triangle_solid(&mut topo, 10.0);
+        let (_, merged, _) = make_triangle_solid(&mut topo, 20.0);
+
+        let pending = topo.journal_begin("unify_same_domain");
+        let mut draft = EvolutionDraft::construction();
+        draft.push(
+            EntityKey::face(merged.index()),
+            EventDraft::Merged {
+                from: vec![
+                    EntityKey::face(source_a.index()),
+                    EntityKey::face(source_b.index()),
+                ],
+            },
+        );
+        let op = topo.journal_record_evolution(pending, draft).unwrap();
+
+        let report = topo.propagate_attributes_for_op(op, false).unwrap();
+
+        // Nothing to carry is not a disagreement: the conflict counter
+        // reports merges whose *attributed* inputs clashed.
+        assert_eq!(report.merge_conflicts, 0);
+        assert_eq!(report.carried, 0);
+        assert!(topo.attributes().face(merged).is_none());
+    }
+
+    #[test]
+    fn load_journal_installs_the_given_history() {
+        use crate::journal::EventDraft;
+
+        let mut source = Topology::new();
+        let (_, face, _) = make_triangle_solid(&mut source, 0.0);
+        let pending = source.journal_begin("import");
+        let mut draft = EvolutionDraft::construction();
+        draft.push(
+            EntityKey::face(face.index()),
+            EventDraft::Generated {
+                sources: Vec::new(),
+            },
+        );
+        let op = source.journal_record_evolution(pending, draft).unwrap();
+        let loaded = source.journal().clone();
+        assert_eq!(loaded.len(), 1);
+
+        let mut target = Topology::new();
+        assert!(target.journal().is_empty());
+        target.load_journal(loaded);
+
+        assert_eq!(target.journal().len(), 1);
+        assert_eq!(target.journal().entries()[0].op(), op);
+        assert_eq!(target.journal().entries()[0].kind(), "import");
+        // A clean load is not an unjournaled gap: the tick counter is synced,
+        // so opening the next operation records no barrier.
+        let _ = target.journal_begin("next");
+        assert_eq!(target.journal().len(), 1);
+    }
+
+    #[test]
+    fn face_id_from_index_resolves_live_faces_only() {
+        let mut topo = Topology::new();
+        let (solid, face, _) = make_triangle_solid(&mut topo, 0.0);
+
+        assert_eq!(topo.face_id_from_index(face.index()), Some(face));
+        assert!(topo.face_id_from_index(face.index() + 999).is_none());
+
+        topo.delete_solid(solid).unwrap();
+        assert!(topo.face_id_from_index(face.index()).is_none());
+    }
+
+    #[test]
+    fn wire_replacement_rebuilds_only_the_replaced_wires_loop() {
+        fn loop_signature(topo: &Topology, loop_id: LoopId) -> Vec<(EdgeId, bool)> {
+            topo.face_loop(loop_id)
+                .unwrap()
+                .coedges()
+                .iter()
+                .map(|&coedge_id| {
+                    let coedge = topo.coedge(coedge_id).unwrap();
+                    (coedge.edge(), coedge.is_forward())
+                })
+                .collect()
+        }
+
+        let mut topo = Topology::new();
+        let (_, host_face, _) = make_triangle_solid(&mut topo, 0.0);
+        let (_, donor_face, _) = make_triangle_solid(&mut topo, 10.0);
+        let outer_wire = topo.face(host_face).unwrap().outer_wire();
+        let inner_wire = topo.face(donor_face).unwrap().outer_wire();
+        topo.set_face_boundary_wires(host_face, outer_wire, vec![inner_wire])
+            .unwrap();
+        let outer_signature = wire_signature(&topo, outer_wire);
+
+        let reversed: Vec<_> = topo
+            .wire(inner_wire)
+            .unwrap()
+            .edges()
+            .iter()
+            .rev()
+            .map(|oriented| OrientedEdge::new(oriented.edge(), !oriented.is_forward()))
+            .collect();
+        let replacement = Wire::new(reversed, true).unwrap();
+        let replacement_signature: Vec<(EdgeId, bool)> = replacement
+            .edges()
+            .iter()
+            .map(|oriented| (oriented.edge(), oriented.is_forward()))
+            .collect();
+        assert_ne!(outer_signature, replacement_signature);
+
+        topo.replace_boundary_wire(inner_wire, replacement).unwrap();
+
+        let loops = topo.loops_of_face(host_face).unwrap().to_vec();
+        assert_eq!(loops.len(), 2);
+        assert_eq!(
+            loop_signature(&topo, loops[0]),
+            outer_signature,
+            "the untouched outer wire keeps its own boundary"
+        );
+        assert_eq!(loop_signature(&topo, loops[1]), replacement_signature);
+        crate::validation::validate_face_loops(&topo, host_face).unwrap();
+    }
+
+    #[test]
+    fn wire_replacement_leaves_unrelated_face_authority_untouched() {
+        let mut topo = Topology::new();
+        let (_, target_face, _) = make_triangle_solid(&mut topo, 0.0);
+        let (_, bystander, _) = make_triangle_solid(&mut topo, 10.0);
+        let target_wire = topo.face(target_face).unwrap().outer_wire();
+        let bystander_loops = topo.loops_of_face(bystander).unwrap().to_vec();
+        let bystander_coedges = topo
+            .face_loop(bystander_loops[0])
+            .unwrap()
+            .coedges()
+            .to_vec();
+        let counts = (topo.num_loops(), topo.num_coedges());
+
+        let replacement = topo.wire(target_wire).unwrap().clone();
+        topo.replace_boundary_wire(target_wire, replacement)
+            .unwrap();
+
+        // Only faces that reference the replaced wire are rebuilt.
+        assert_eq!(
+            topo.loops_of_face(bystander).unwrap(),
+            bystander_loops.as_slice()
+        );
+        assert_eq!(
+            topo.face_loop(bystander_loops[0]).unwrap().coedges(),
+            bystander_coedges.as_slice()
+        );
+        for coedge_id in bystander_coedges {
+            assert!(topo.coedge(coedge_id).is_ok());
+        }
+        assert_eq!((topo.num_loops(), topo.num_coedges()), counts);
+    }
+
+    #[test]
+    fn empty_result_solids_are_distinguished_from_faced_ones() {
+        let mut topo = Topology::new();
+        let empty = topo.add_empty_solid();
+        let (faced, _, _) = make_triangle_solid(&mut topo, 0.0);
+
+        assert!(topo.is_empty_solid(empty));
+        // A faced outer shell is not an empty result, inner shells or not.
+        assert!(!topo.is_empty_solid(faced));
+
+        // Nor is a faceless outer shell that carries an inner shell.
+        let faced_shell = topo.solid(faced).unwrap().outer_shell();
+        let faceless = topo.add_shell(Shell::empty());
+        let hollow = topo.add_solid(Solid::new(faceless, vec![faced_shell]));
+        assert!(!topo.is_empty_solid(hollow));
+
+        // A handle that is not live here is not an empty solid either.
+        let elsewhere = Topology::new();
+        assert!(!elsewhere.is_empty_solid(empty));
+    }
+
+    #[test]
+    fn an_edge_absent_from_a_face_boundary_is_not_a_seam() {
+        let mut topo = Topology::new();
+        let (_, face, _) = make_triangle_solid(&mut topo, 0.0);
+        let (_, _, foreign_edge) = make_triangle_solid(&mut topo, 10.0);
+
+        // Nothing is stored, and there is no ambiguity to report.
+        assert!(topo.pcurve(foreign_edge, face).unwrap().is_none());
+        assert!(!topo.has_pcurve(foreign_edge, face).unwrap());
+        assert!(topo.remove_pcurve(foreign_edge, face).unwrap().is_none());
+
+        // Storing one is a non-manifold request, distinct from a seam.
+        let error = topo
+            .set_pcurve(foreign_edge, face, test_pcurve(0.0))
+            .unwrap_err();
+        assert!(
+            matches!(error, TopologyError::NonManifold { .. }),
+            "expected NonManifold, got {error:?}"
+        );
+    }
+
+    #[test]
+    fn coedge_writes_are_refused_without_loop_ownership() {
+        let mut topo = Topology::new();
+        let (_, face, edge) = make_triangle_solid(&mut topo, 0.0);
+        let parent = topo.loops_of_face(face).unwrap()[0];
+        // A coedge naming a loop that does not own it has no authority.
+        let orphan = topo.coedges.alloc(Coedge::new(edge, true, parent));
+
+        let error = topo
+            .set_coedge_pcurve(orphan, test_pcurve(0.0))
+            .unwrap_err();
+        assert!(
+            matches!(error, TopologyError::NonManifold { .. }),
+            "expected NonManifold, got {error:?}"
+        );
+        let error = topo.remove_coedge_pcurve(orphan).unwrap_err();
+        assert!(matches!(error, TopologyError::NonManifold { .. }));
+        let error = topo
+            .set_coedge_periodic_winding(orphan, PeriodicWinding::new(1, 0))
+            .unwrap_err();
+        assert!(matches!(error, TopologyError::NonManifold { .. }));
+
+        assert!(topo.coedge(orphan).unwrap().pcurve().is_none());
+        assert_eq!(
+            topo.coedge(orphan).unwrap().periodic_winding(),
+            PeriodicWinding::ZERO
+        );
+    }
 }
