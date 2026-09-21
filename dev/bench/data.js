@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789976148401,
+  "lastUpdate": 1789977606905,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -49579,6 +49579,240 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 88528,
             "range": "± 704",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f9b81bdaf7207174936ca9117ce61591caaa5273",
+          "message": "fix(operations): selective extend heal preserves unrelated curved faces (#550)\n\n* fix(operations): selective extend heal preserves unrelated curved faces\n\nheal_by_extending required every kept face to be planar and rebuilt the\nwhole shell as planar polygons, so any solid carrying an unrelated\ncylinder, sphere, torus, or cone refused blend removal even when the two\nblend supports were planar. Simply deleting the guard would facet the\ncurved faces.\n\nPartition kept faces into wound-adjacent (share a wound edge or a vertex\nwith the removed patch) and preserved. Only wound-adjacent faces need\nplanar supports and enter the corner solver; preserved faces travel\nverbatim through FaceSpec::Existing with exact surface, curves,\norientation, and holes. Wound-adjacent faces without deleted holes keep\ntheir inner wires verbatim too (Existing with a re-trimmed outer wire);\nonly faces with fully-wound deleted holes use the positional path, now\nwith its own curved-hole guard. A curved wound neighbor or a wound edge\nreaching a preserved inner wire is an explicit typed refusal.\n\nThe mixed-spec assembler now snapshots FaceSpec::Existing wires from\nsource topology for boundary history, so journaled callers keep a total\nedge/vertex map.\n\nAdds regress_mixed_planar_blend_removal: exact fillet-prism volume gain,\nbore-wall radius/pose survival, hole rims, sharp-edge recovery, surface\nidentity, STEP round-trip, evolution, and rollback/refusal coverage.\n\n* chore(wasm): refresh packages to v2.130.34 from 5073d11f\n\n* fix(operations): surgical plane-plane blend removal preserving shared wires\n\nAdd heal_cylinder_plane_band_surgical: in-place wire surgery on a copied\nsolid for isolated single-face cylindrical bands between two planar\nsupports. Collapsing cross arcs are deleted, spring contacts become one\nshared sharp edge, and surviving boundary edges are re-anchored as new\nlines only with exact carrier and neighbor containment proofs. Sibling\narcs, holes, and unrelated curved faces keep their entities untouched.\nScope declines (multi-face bands, split springs, unprovable extensions)\nfall back to the positional defeature healer with identical outcomes;\ncurved end faces and non-planar wound neighbors refuse definitively with\nthe missing-construction reason.\n\nRoute public defeature cylinder bands through the same path. Harden the\npositional path: preserved holes that substitution would silently fill\nnow refuse, and the Existing-hole comment no longer overclaims pcurves.\n\nTests: towel-rack R1 fixture (sanitized, geometry-identical) with\nanalytic volume oracles, sharp-edge recovery, sibling preservation,\nedge-count deltas, STEP round-trips, evolution totality, sequential\nshared-support removal, journaled history, and precise R8-end refusals.\n\n* chore(wasm): refresh packages to v2.130.36 from 7f137524\n\n* fix(operations): document decline-time arena garbage in surgical heal\n\n* chore(wasm): refresh packages to v2.130.37 from 2272ecae",
+          "timestamp": "2026-09-21T07:52:22Z",
+          "tree_id": "308d82243c2f905c7d2a1578f086b3797743482d",
+          "url": "https://github.com/esaueng/remus/commit/f9b81bdaf7207174936ca9117ce61591caaa5273"
+        },
+        "date": 1789977605646,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1260908,
+            "range": "± 2388",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1356573,
+            "range": "± 14533",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 27097,
+            "range": "± 80",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 11885101,
+            "range": "± 10942",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 11874434,
+            "range": "± 9707",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 11462808,
+            "range": "± 29010",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 1086769,
+            "range": "± 13951",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 17699713,
+            "range": "± 943187",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 32422616,
+            "range": "± 532515",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 39,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 107,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 65,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 224,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 160,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 826,
+            "range": "± 7",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 166,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 357,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 224,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 528,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 753,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 3260,
+            "range": "± 33",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 17,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 36,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 61,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 61,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 541189,
+            "range": "± 1727",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 10229800,
+            "range": "± 881589",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 160159,
+            "range": "± 292",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 565707,
+            "range": "± 3106",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 130614,
+            "range": "± 171",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 927269,
+            "range": "± 7243",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 10803177,
+            "range": "± 71542",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 793729,
+            "range": "± 3855",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 1180769,
+            "range": "± 2014",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 90810,
+            "range": "± 739",
             "unit": "ns/iter"
           }
         ]
