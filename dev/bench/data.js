@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789959334437,
+  "lastUpdate": 1789960753670,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -47005,6 +47005,240 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 68596,
             "range": "± 118",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "cb35bffc077eed409bf6318372c52db6157a9652",
+          "message": "docs(kernel-maturity): trace B39 torus-cone composite pierce root cause (#542)\n\n* docs(kernel-maturity): trace B39 torus-cone composite pierce root cause\n\nThe two remaining B39 ready-repros (b26_finding14_toruscone_unit,\nb26_finding14_toruscone_oblique_drift) still fail on b13ff97b, both as\ntyped ExactOnly refusals — fail-closed, not regressions. Traced below\nthe gate: the tube pierce boundary is a composite of per-pair FF\nsections (cone-wall arcs + cap-plane ovals) whose chain junctions never\nland on the same exact rim-torus crossing (the analytic marcher ends\nits arcs one full step short of the band boundary), so the arrangement\nband tracer defers and the generic paths misbuild (unit: the torus\nface drops, GFA degenerates to a 1-face open shell; oblique: the two\ncomposite loops concatenate into one malformed outer wire).\n\nA repair prototype (marcher band-boundary bisection + analytic-extent\nendpoint refinement) made the oblique band emit but broke two WASM\nqualification cells (batch_offset_torus_sphere/cone_sphere retains\nexact carriers) and did not close the unit cell; reverted per the\nqualification contract. The bisect doc's appendix records the\nmechanism and the remaining phase-FF path (exact shared junctions +\ncap-oval splitting for NURBS ovals). Ignore strings updated to name\nthe traced condition; repros stay ignored.\n\nNo kernel code changed.\n\n* docs(kernel-maturity): record B39 repair-isolation findings\n\nPins the qualification regression to the closed-window endpoint snap\nalone (the whole-torus margin made its band ~0.06 wide, converting\ninterior window ends to boundary-crossing ends on the sphere/cylinder\ncells); documents the oblique band ground truth in tube coordinates\n(phi-wrapping band around u~348deg, the B45 notch family) and the\nthree remaining assembly pieces (duplicate wall-trace suppression,\ncap-oval splitting at exact rim crossings, endpoint exactness without\ntouching the closed-window path). No kernel code changed.",
+          "timestamp": "2026-09-21T03:08:32Z",
+          "tree_id": "fa32c410a02eefed9d5c92f4bb3766a5583701b5",
+          "url": "https://github.com/esaueng/remus/commit/cb35bffc077eed409bf6318372c52db6157a9652"
+        },
+        "date": 1789960751892,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1332243,
+            "range": "± 3583",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1434998,
+            "range": "± 5782",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 28007,
+            "range": "± 30",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 12369704,
+            "range": "± 13407",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 12361771,
+            "range": "± 31414",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 11901964,
+            "range": "± 18177",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 1137252,
+            "range": "± 2941",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 18859908,
+            "range": "± 24835",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 34484763,
+            "range": "± 523618",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 36,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 105,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 63,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 219,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 164,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 795,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 161,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 350,
+            "range": "± 18",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 217,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 517,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 791,
+            "range": "± 10",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 3398,
+            "range": "± 8",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 25,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 34,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 67,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 66,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 603242,
+            "range": "± 3015",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 11806911,
+            "range": "± 20512",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 177752,
+            "range": "± 605",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 657459,
+            "range": "± 27582",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 136771,
+            "range": "± 101",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 974997,
+            "range": "± 5715",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 11480561,
+            "range": "± 29693",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 819587,
+            "range": "± 32737",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 1227831,
+            "range": "± 2475",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 106629,
+            "range": "± 1139",
             "unit": "ns/iter"
           }
         ]
