@@ -20,6 +20,11 @@ type CylinderLoop = (Vec<Point3>, Vec<CylinderUv>);
 /// radius-to-height ratios from turning a compact face into unbounded work.
 const MAX_CYLINDER_GRID_POINTS: usize = 1_000_000;
 
+/// Maximum number of segment references stored by a cylindrical constraint
+/// index. The bucket count is reduced as needed so long axial constraints
+/// cannot amplify a valid boundary into an unbounded allocation.
+const MAX_CONSTRAINT_INDEX_ENTRIES: usize = 1_000_000;
+
 fn cylinder_grid_rows(
     physical_u_step: f64,
     v_span: f64,
@@ -225,8 +230,19 @@ impl ConstraintIndex {
         segments: Vec<(remus_math::vec::Point2, remus_math::vec::Point2)>,
         v_range: (f64, f64),
         tol: f64,
-    ) -> Self {
-        let bucket_count = segments.len().clamp(1, 4096);
+    ) -> Result<Self, crate::OperationsError> {
+        if segments.len() > MAX_CONSTRAINT_INDEX_ENTRIES {
+            return Err(crate::OperationsError::InvalidInput {
+                reason: format!(
+                    "cylindrical face constraint index exceeds the {MAX_CONSTRAINT_INDEX_ENTRIES}-entry work limit"
+                ),
+            });
+        }
+        let max_buckets = MAX_CONSTRAINT_INDEX_ENTRIES
+            .checked_div(segments.len().max(1))
+            .unwrap_or(1)
+            .max(1);
+        let bucket_count = segments.len().clamp(1, 4096).min(max_buckets);
         let span = (v_range.1 - v_range.0).max(f64::EPSILON);
         #[allow(clippy::cast_precision_loss)]
         let inv_bucket = bucket_count as f64 / span;
@@ -244,13 +260,13 @@ impl ConstraintIndex {
                 bucket.push(i);
             }
         }
-        Self {
+        Ok(Self {
             segments,
             buckets,
             v_min: v_range.0,
             inv_bucket,
             tol,
-        }
+        })
     }
 
     /// Whether `pt` lies within the index tolerance of any segment.
@@ -674,7 +690,7 @@ pub(super) fn tessellate_revolved_with_holes(
         segments
     };
     let on_tol = 1e-9 * radius.mul_add(std::f64::consts::TAU, outer_v.1 - outer_v.0);
-    let constraints = ConstraintIndex::new(constraint_segments, outer_v, on_tol);
+    let constraints = ConstraintIndex::new(constraint_segments, outer_v, on_tol)?;
     for (u, v) in interior_uvs {
         if constraints.contains(Point2::new(radius * u, v)) {
             continue;
@@ -1965,7 +1981,7 @@ pub(super) fn run_planar_cdt(
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use super::{MAX_CYLINDER_GRID_POINTS, cylinder_grid_rows};
+    use super::{MAX_CONSTRAINT_INDEX_ENTRIES, MAX_CYLINDER_GRID_POINTS, cylinder_grid_rows};
 
     #[test]
     fn cylinder_grid_rows_accepts_bounded_grid() {
@@ -1979,13 +1995,25 @@ mod tests {
             (Point2::new(0.0, 0.0), Point2::new(2.0, 0.0)),
             (Point2::new(2.0, 0.0), Point2::new(2.0, 1.0)),
         ];
-        let index = super::ConstraintIndex::new(segments, (-1.0, 2.0), 1e-9);
+        let index = super::ConstraintIndex::new(segments, (-1.0, 2.0), 1e-9).unwrap();
         assert!(index.contains(Point2::new(1.0, 0.0)));
         assert!(index.contains(Point2::new(2.0, 0.5)));
         assert!(index.contains(Point2::new(2.0, 1.0)));
         assert!(!index.contains(Point2::new(1.0, 1e-6)));
         assert!(!index.contains(Point2::new(3.0, 0.0)));
         assert!(!index.contains(Point2::new(1.0, 1.5)));
+    }
+
+    #[test]
+    fn constraint_index_bounds_long_segment_amplification() {
+        use remus_math::vec::Point2;
+
+        let segments = vec![(Point2::new(0.0, 0.0), Point2::new(1.0, 1.0)); 20_000];
+        let index = super::ConstraintIndex::new(segments, (0.0, 1.0), 1e-9).unwrap();
+        let entries: usize = index.buckets.iter().map(Vec::len).sum();
+
+        assert!(entries <= MAX_CONSTRAINT_INDEX_ENTRIES);
+        assert!(index.contains(Point2::new(0.5, 0.5)));
     }
 
     #[test]
