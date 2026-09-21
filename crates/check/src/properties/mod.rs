@@ -16,13 +16,33 @@ use remus_topology::solid::SolidId;
 use crate::CheckError;
 
 /// Options for property computation.
+///
+/// Adaptive quadrature is supported on analytic curved faces resolved by the
+/// existing trim resolver to unmasked UV rectangles (full-revolution bands and
+/// spherical caps). Polygon masks remain unsupported even if rectangular.
+/// The estimator compares a Gauss rule with its four subdivided rules for all
+/// area, volume and raw moment components. It is a numerical convergence test,
+/// not a certified geometric error bound or a bound on the assembled centroid
+/// or inertia after cancellation.
+///
+/// Exact planar boundary integrals need no refinement. NURBS faces, sampled
+/// planar boundaries, polygon-trimmed curved faces and special torus tube bands
+/// retain fixed quadrature only with the default adaptive controls. Non-default
+/// adaptive controls on those paths return [`CheckError::IntegrationFailed`].
+/// In particular, tightening `adaptive_eps` cannot improve a sampled trim.
+/// The order-only [`face_integrator::integrate_face`] API remains fixed-order.
 #[derive(Debug, Clone)]
 pub struct PropertiesOptions {
-    /// Gauss quadrature order (default 5).
+    /// Gauss quadrature order in `1..=20` (default 5).
     pub gauss_order: usize,
-    /// Adaptive integration tolerance (default 1e-6).
+    /// Positive finite relative quadrature-estimator tolerance (default 1e-6).
+    /// Component scales use absolute integrals grouped by physical dimension,
+    /// per initial patch, so zero moments do not require a dimensional floor.
     pub adaptive_eps: f64,
-    /// Maximum adaptive subdivision depth (default 8).
+    /// Maximum recursive subdivisions beyond the initial patches (default 8).
+    /// Zero permits only the initial coarse/fine convergence comparison.
+    /// Depth exhaustion, a safety depth of 32, or 32,768 Gauss-rule evaluations
+    /// per face returns an error. The latter limits apply even to larger requests.
     pub max_depth: usize,
 }
 
@@ -33,6 +53,22 @@ impl Default for PropertiesOptions {
             adaptive_eps: 1e-6,
             max_depth: 8,
         }
+    }
+}
+
+impl PropertiesOptions {
+    pub(crate) fn validate(&self) -> Result<(), CheckError> {
+        if !self.adaptive_eps.is_finite() || self.adaptive_eps <= 0.0 {
+            return Err(CheckError::IntegrationFailed(
+                "adaptive_eps must be positive and finite".into(),
+            ));
+        }
+        if !(1..=remus_math::quadrature::MAX_ORDER).contains(&self.gauss_order) {
+            return Err(CheckError::IntegrationFailed(
+                "gauss_order must be in 1..=20".into(),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -59,11 +95,12 @@ pub fn solid_volume(
     solid: SolidId,
     options: &PropertiesOptions,
 ) -> Result<f64, CheckError> {
+    options.validate()?;
     let faces = remus_topology::explorer::solid_faces(topo, solid)?;
 
     let mut total_volume = 0.0;
     for fid in faces {
-        let contrib = face_integrator::integrate_face(topo, fid, options.gauss_order)?;
+        let contrib = face_integrator::integrate_face_with_options(topo, fid, options)?;
         total_volume += contrib.volume;
     }
     Ok(total_volume)
@@ -82,11 +119,12 @@ pub fn solid_area(
     solid: SolidId,
     options: &PropertiesOptions,
 ) -> Result<f64, CheckError> {
+    options.validate()?;
     let faces = remus_topology::explorer::solid_faces(topo, solid)?;
 
     let mut total_area = 0.0;
     for fid in faces {
-        let contrib = face_integrator::integrate_face(topo, fid, options.gauss_order)?;
+        let contrib = face_integrator::integrate_face_with_options(topo, fid, options)?;
         total_area += contrib.area;
     }
     Ok(total_area)
@@ -107,6 +145,7 @@ pub fn center_of_mass(
     solid: SolidId,
     options: &PropertiesOptions,
 ) -> Result<Point3, CheckError> {
+    options.validate()?;
     let faces = remus_topology::explorer::solid_faces(topo, solid)?;
 
     let mut total_volume = 0.0;
@@ -115,7 +154,7 @@ pub fn center_of_mass(
     let mut mz = 0.0;
 
     for fid in faces {
-        let contrib = face_integrator::integrate_face(topo, fid, options.gauss_order)?;
+        let contrib = face_integrator::integrate_face_with_options(topo, fid, options)?;
         total_volume += contrib.volume;
         mx += contrib.volume_moment_x;
         my += contrib.volume_moment_y;
@@ -151,6 +190,7 @@ pub fn solid_properties(
     solid: SolidId,
     options: &PropertiesOptions,
 ) -> Result<GProps, CheckError> {
+    options.validate()?;
     let faces = remus_topology::explorer::solid_faces(topo, solid)?;
 
     let mut volume = 0.0;
@@ -165,7 +205,7 @@ pub fn solid_properties(
     let mut qyz = 0.0;
 
     for fid in faces {
-        let contribution = face_integrator::integrate_face(topo, fid, options.gauss_order)?;
+        let contribution = face_integrator::integrate_face_with_options(topo, fid, options)?;
         volume += contribution.volume;
         mx += contribution.volume_moment_x;
         my += contribution.volume_moment_y;
