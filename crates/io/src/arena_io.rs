@@ -739,6 +739,21 @@ pub fn serialize_solid(topo: &Topology, solid_id: SolidId) -> Result<Vec<u8>, Io
     serialize_solids(topo, &[solid_id])
 }
 
+/// Serializes a solid while enforcing the same entity and byte budgets used
+/// when arena documents are deserialized.
+///
+/// # Errors
+///
+/// Returns [`IoError::LimitExceeded`] before JSON output can grow beyond the
+/// configured budget, or when the selected topology exceeds the entity budget.
+pub fn serialize_solid_with_limits(
+    topo: &Topology,
+    solid_id: SolidId,
+    limits: ImportLimits,
+) -> Result<Vec<u8>, IoError> {
+    serialize_document_impl(topo, &[solid_id], &[], Some(limits))
+}
+
 /// Serializes explicit solid roots into a version 3 arena document.
 ///
 /// Shared topology is emitted once using dense local indices. Root order and
@@ -751,6 +766,20 @@ pub fn serialize_solid(topo: &Topology, solid_id: SolidId) -> Result<Vec<u8>, Io
 /// serialization fails.
 pub fn serialize_solids(topo: &Topology, solid_ids: &[SolidId]) -> Result<Vec<u8>, IoError> {
     serialize_document(topo, solid_ids, &[])
+}
+
+/// Serializes solid roots while enforcing arena-document resource limits.
+///
+/// # Errors
+///
+/// Returns [`IoError::LimitExceeded`] when the selected topology or encoded
+/// document exceeds the configured budget.
+pub fn serialize_solids_with_limits(
+    topo: &Topology,
+    solid_ids: &[SolidId],
+    limits: ImportLimits,
+) -> Result<Vec<u8>, IoError> {
+    serialize_document_impl(topo, solid_ids, &[], Some(limits))
 }
 
 /// Serializes solid and compound roots into one version 3 arena document.
@@ -769,6 +798,15 @@ pub fn serialize_document(
     topo: &Topology,
     solid_ids: &[SolidId],
     compound_ids: &[CompoundId],
+) -> Result<Vec<u8>, IoError> {
+    serialize_document_impl(topo, solid_ids, compound_ids, None)
+}
+
+fn serialize_document_impl(
+    topo: &Topology,
+    solid_ids: &[SolidId],
+    compound_ids: &[CompoundId],
+    limits: Option<ImportLimits>,
 ) -> Result<Vec<u8>, IoError> {
     let mut builder = Builder::new(topo);
     let mut solid_roots = Vec::with_capacity(solid_ids.len());
@@ -807,9 +845,76 @@ pub fn serialize_document(
         attributes,
     };
 
-    serde_json::to_vec(&dump).map_err(|e| IoError::ParseError {
-        reason: format!("arena serialization failed: {e}"),
-    })
+    if let Some(limits) = limits {
+        let total_entities = checked_reference_count(
+            "arena total entities",
+            [
+                dump.vertices.len(),
+                dump.edges.len(),
+                dump.wires.len(),
+                dump.faces.len(),
+                dump.shells.len(),
+                dump.solids.len(),
+                dump.compounds.len(),
+                dump.boundary_authority.loops.len(),
+                dump.boundary_authority.coedges.len(),
+            ],
+            limits.max_model_entities,
+        )?;
+        ensure_limit(
+            "arena total entities",
+            total_entities,
+            limits.max_model_entities,
+        )?;
+        serialize_json_with_limit(&dump, limits.max_input_bytes)
+    } else {
+        serde_json::to_vec(&dump).map_err(|e| IoError::ParseError {
+            reason: format!("arena serialization failed: {e}"),
+        })
+    }
+}
+
+struct LimitedJsonWriter {
+    bytes: Vec<u8>,
+    limit: usize,
+    exceeded: bool,
+}
+
+impl std::io::Write for LimitedJsonWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if bytes.len() > self.limit.saturating_sub(self.bytes.len()) {
+            self.exceeded = true;
+            return Err(std::io::Error::other("arena document byte limit exceeded"));
+        }
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn serialize_json_with_limit<T: serde::Serialize>(
+    value: &T,
+    limit: usize,
+) -> Result<Vec<u8>, IoError> {
+    let mut writer = LimitedJsonWriter {
+        bytes: Vec::with_capacity(limit.min(64 * 1024)),
+        limit,
+        exceeded: false,
+    };
+    match serde_json::to_writer(&mut writer, value) {
+        Ok(()) => Ok(writer.bytes),
+        Err(_) if writer.exceeded => Err(IoError::LimitExceeded {
+            resource: "arena document bytes",
+            limit,
+            actual: limit.saturating_add(1),
+        }),
+        Err(error) => Err(IoError::ParseError {
+            reason: format!("arena serialization failed: {error}"),
+        }),
+    }
 }
 
 /// Serializes one standalone sheet root into a version 4 arena document.
