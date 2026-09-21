@@ -196,6 +196,17 @@ fn solids_document(topo: &Topology, solids: &[SolidId]) -> Result<Vec<u8>, IoErr
     arena_io::serialize_solids(topo, solids)
 }
 
+fn solids_document_with_limits(
+    topo: &Topology,
+    solids: &[SolidId],
+    limits: ImportLimits,
+) -> Result<Vec<u8>, IoError> {
+    if solids.is_empty() {
+        return Ok(Vec::new());
+    }
+    arena_io::serialize_solids_with_limits(topo, solids, limits)
+}
+
 fn sheets_document(
     topo: &Topology,
     sheets: &[remus_topology::shell::ShellId],
@@ -230,10 +241,34 @@ fn step_result(
 
 fn mesh_solid_document(
     mesh: &remus_operations::tessellate::TriangleMesh,
+    limits: ImportLimits,
 ) -> Result<Vec<u8>, IoWasmError> {
+    // import_mesh creates at most one vertex per position and, per triangle,
+    // three edges, three coedges, one wire, one face, and one loop. Refuse the
+    // expansion before constructing the scratch topology.
+    let generated_entities = mesh_generated_entity_bound(mesh).ok_or(IoError::LimitExceeded {
+        resource: "generated arena entities",
+        limit: limits.max_model_entities,
+        actual: usize::MAX,
+    })?;
+    if generated_entities > limits.max_model_entities {
+        return Err(IoError::LimitExceeded {
+            resource: "generated arena entities",
+            limit: limits.max_model_entities,
+            actual: generated_entities,
+        }
+        .into());
+    }
     let mut topo = Topology::new();
     let solid = remus_io::stl::import::import_mesh(&mut topo, mesh, MESH_TOL)?;
-    Ok(arena_io::serialize_solid(&topo, solid)?)
+    Ok(arena_io::serialize_solid_with_limits(&topo, solid, limits)?)
+}
+
+fn mesh_generated_entity_bound(mesh: &remus_operations::tessellate::TriangleMesh) -> Option<usize> {
+    (mesh.indices.len() / 3)
+        .checked_mul(9)
+        .and_then(|count| count.checked_add(mesh.positions.len()))
+        .and_then(|count| count.checked_add(2))
 }
 
 // ── Native implementation (testable without a JS runtime) ─────────
@@ -368,7 +403,7 @@ impl RemusIo {
     ) -> Result<Vec<u8>, IoWasmError> {
         let limits = import_limits_from(max_input_bytes, max_entities)?;
         let mesh = remus_io::stl::reader::read_stl_with_limits(data, limits)?;
-        mesh_solid_document(&mesh)
+        mesh_solid_document(&mesh, limits)
     }
 
     fn import_obj_impl(
@@ -379,7 +414,7 @@ impl RemusIo {
         let limits = import_limits_from(max_input_bytes, max_entities)?;
         let text = utf8(data, "OBJ")?;
         let mesh = remus_io::obj::read_obj_with_limits(text, limits)?;
-        mesh_solid_document(&mesh)
+        mesh_solid_document(&mesh, limits)
     }
 
     fn import_glb_impl(
@@ -389,7 +424,7 @@ impl RemusIo {
     ) -> Result<Vec<u8>, IoWasmError> {
         let limits = import_limits_from(max_input_bytes, max_entities)?;
         let mesh = remus_io::gltf::read_glb_with_limits(data, limits)?;
-        mesh_solid_document(&mesh)
+        mesh_solid_document(&mesh, limits)
     }
 
     fn import_ply_impl(
@@ -399,7 +434,7 @@ impl RemusIo {
     ) -> Result<Vec<u8>, IoWasmError> {
         let limits = import_limits_from(max_input_bytes, max_entities)?;
         let mesh = remus_io::ply::read_ply_with_limits(data, limits)?;
-        mesh_solid_document(&mesh)
+        mesh_solid_document(&mesh, limits)
     }
 
     fn import_3mf_impl(
@@ -409,6 +444,22 @@ impl RemusIo {
     ) -> Result<Vec<u8>, IoWasmError> {
         let limits = import_limits_from(max_input_bytes, max_entities)?;
         let meshes = remus_io::threemf::reader::read_threemf_with_limits(data, limits)?;
+        let generated_entities = meshes.iter().try_fold(0usize, |total, mesh| {
+            mesh_generated_entity_bound(mesh).and_then(|count| total.checked_add(count))
+        });
+        let generated_entities = generated_entities.ok_or(IoError::LimitExceeded {
+            resource: "generated arena entities",
+            limit: limits.max_model_entities,
+            actual: usize::MAX,
+        })?;
+        if generated_entities > limits.max_model_entities {
+            return Err(IoError::LimitExceeded {
+                resource: "generated arena entities",
+                limit: limits.max_model_entities,
+                actual: generated_entities,
+            }
+            .into());
+        }
         let mut topo = Topology::new();
         let mut solids = Vec::with_capacity(meshes.len());
         for mesh in &meshes {
@@ -416,7 +467,7 @@ impl RemusIo {
                 &mut topo, mesh, MESH_TOL,
             )?);
         }
-        Ok(solids_document(&topo, &solids)?)
+        Ok(solids_document_with_limits(&topo, &solids, limits)?)
     }
 
     fn import_indexed_mesh_impl(
@@ -443,7 +494,7 @@ impl RemusIo {
             normals: Vec::new(),
             indices: indices.to_vec(),
         };
-        mesh_solid_document(&mesh)
+        mesh_solid_document(&mesh, ImportLimits::default())
     }
 }
 
@@ -845,5 +896,98 @@ mod tests {
         let document = RemusIo::import_indexed_mesh_impl(&positions, &indices).unwrap();
         let volumes = volumes(&document);
         assert!((volumes[0] - 1.0 / 6.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn mesh_bridge_enforces_generated_entity_and_document_byte_budgets() {
+        let mesh = remus_operations::tessellate::TriangleMesh {
+            positions: vec![
+                remus_math::vec::Point3::new(0.0, 0.0, 0.0),
+                remus_math::vec::Point3::new(1.0, 0.0, 0.0),
+                remus_math::vec::Point3::new(0.0, 1.0, 0.0),
+            ],
+            normals: Vec::new(),
+            indices: vec![0, 1, 2],
+        };
+        let entity_limited = ImportLimits {
+            max_model_entities: 13,
+            ..ImportLimits::default()
+        };
+        assert!(matches!(
+            mesh_solid_document(&mesh, entity_limited),
+            Err(IoWasmError::Io(IoError::LimitExceeded {
+                resource: "generated arena entities",
+                limit: 13,
+                actual: 14,
+            }))
+        ));
+
+        let byte_limited = ImportLimits {
+            max_input_bytes: 16,
+            max_model_entities: 100,
+            ..ImportLimits::default()
+        };
+        assert!(matches!(
+            mesh_solid_document(&mesh, byte_limited),
+            Err(IoWasmError::Io(IoError::LimitExceeded {
+                resource: "arena document bytes",
+                limit: 16,
+                actual: 17,
+            }))
+        ));
+    }
+
+    /// Mesh exports must carry only finite, nonzero-area facets: an exact
+    /// zero-area record reads back as an open mesh (its two identical
+    /// directed edges cancel in a closure count). Regression for the
+    /// collapsed-seam facets the Tiny-Fox complete-history replay exposed.
+    #[test]
+    fn mesh_exports_carry_no_zero_area_facets() {
+        let document = box_document();
+        let stl =
+            RemusIo::export_stl_impl(&document, 0.05, remus_io::stl::writer::StlFormat::Binary)
+                .unwrap();
+        let stl_mesh = remus_io::stl::read_stl(&stl).unwrap();
+        assert_eq!(stl_mesh.indices.len() % 3, 0);
+        for tri in stl_mesh.indices.chunks_exact(3) {
+            let a = stl_mesh.positions[tri[0] as usize];
+            let b = stl_mesh.positions[tri[1] as usize];
+            let c = stl_mesh.positions[tri[2] as usize];
+            assert!(
+                a != b && b != c && a != c,
+                "binary STL export serialized a coincident-vertex facet"
+            );
+            let cross = (b - a).cross(c - a);
+            assert!(
+                cross.length_squared() > 0.0 && cross.length_squared().is_finite(),
+                "binary STL export serialized a zero-area facet"
+            );
+        }
+
+        let threemf = RemusIo::export_3mf_impl(&document, 0.05).unwrap();
+        let meshes = remus_io::threemf::read_threemf(&threemf).unwrap();
+        assert_eq!(meshes.len(), 1);
+        for tri in meshes[0].indices.chunks_exact(3) {
+            let a = meshes[0].positions[tri[0] as usize];
+            let b = meshes[0].positions[tri[1] as usize];
+            let c = meshes[0].positions[tri[2] as usize];
+            assert!(
+                a != b && b != c && a != c,
+                "3MF export serialized a coincident-vertex facet"
+            );
+            let cross = (b - a).cross(c - a);
+            assert!(
+                cross.length_squared() > 0.0 && cross.length_squared().is_finite(),
+                "3MF export serialized a zero-area facet"
+            );
+        }
+        #[allow(clippy::float_cmp)]
+        {
+            let volume = volumes(&RemusIo::import_3mf_impl(&threemf, None, None).unwrap())[0];
+            assert_eq!(
+                volume, 24.0,
+                "3MF round trip must preserve the exact box volume"
+            );
+        }
     }
 }

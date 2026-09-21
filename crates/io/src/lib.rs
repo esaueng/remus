@@ -31,8 +31,17 @@ pub mod threemf;
 
 pub use limits::ImportLimits;
 
+/// Drop triangles whose exact cross-product area is zero or non-finite from a
+/// tessellated mesh, keeping every finite nonzero-area triangle.
+///
+/// The STL and 3MF writers apply this before serialization: a boolean or
+/// import can leave a face whose tessellation contains collapsed facets
+/// (coincident or exactly collinear vertices), and a file whose records
+/// carry zero area reads back as an open mesh. The filter never welds or
+/// moves vertices and never touches a triangle with any nonzero area, no
+/// matter how small (a `1e-15`-height sliver survives).
 #[cfg(feature = "formats")]
-fn retain_nondegenerate_triangles(mesh: &mut remus_operations::tessellate::TriangleMesh) {
+pub fn retain_nondegenerate_triangles(mesh: &mut remus_operations::tessellate::TriangleMesh) {
     let indices = std::mem::take(&mut mesh.indices);
     mesh.indices.reserve(indices.len());
     for triangle in indices.chunks_exact(3) {
