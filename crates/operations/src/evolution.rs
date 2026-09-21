@@ -164,13 +164,121 @@ impl EvolutionMap {
         self.unresolved.insert(output, candidates);
     }
 
-    /// Whether every output face this map saw was attributed.
+    /// Whether this map recorded no explicit refusal.
     ///
-    /// A consumer rebinding stored selections should check this before trusting
-    /// the map as a complete account of the operation.
+    /// This is the helper's limited contract: it checks only that the
+    /// `unresolved` bucket is empty. It does **not** compare the map against
+    /// the operation's actual result entities, so it cannot see a result
+    /// face the map never mentions (omitted) or a claimed face that is not
+    /// in the result (phantom). An empty map for a nonempty result reports
+    /// `true` here.
+    ///
+    /// Consumers rebinding stored selections across a concrete result must
+    /// use the result-aware check instead — [`EvolutionMap::accounts_for_result`]
+    /// for complete accounting (explicit `unresolved` records count as
+    /// accounted) or [`EvolutionMap::is_resolved_for_result`] for fully
+    /// resolved provenance — and branch on [`EvolutionOrigin`] for
+    /// construction versus inference. Callers that gate boundary
+    /// construction on this helper alone (for example the draft/split
+    /// journal wrappers) accept that limited contract; see
+    /// [`CompletenessReport`].
     #[must_use]
     pub fn is_complete(&self) -> bool {
         self.unresolved.is_empty()
+    }
+
+    /// Every output identity this map attributes, over `modified`,
+    /// `generated` and `unresolved`.
+    ///
+    /// The union is a set: one output claimed by several inputs (a
+    /// same-domain merge, or one blend band generated from both base faces)
+    /// appears once. This helper therefore imposes no one-parent or
+    /// one-record rule on many-to-many construction history.
+    #[must_use]
+    pub fn attributed_outputs(&self) -> BTreeSet<usize> {
+        let mut set = BTreeSet::new();
+        for outs in self.modified.values().chain(self.generated.values()) {
+            set.extend(outs.iter().copied());
+        }
+        set.extend(self.unresolved.keys().copied());
+        set
+    }
+
+    /// Attributed outputs with resolved provenance, over `modified` and
+    /// `generated` only (explicit `unresolved` records excluded).
+    #[must_use]
+    pub fn resolved_outputs(&self) -> BTreeSet<usize> {
+        let mut set = BTreeSet::new();
+        for outs in self.modified.values().chain(self.generated.values()) {
+            set.extend(outs.iter().copied());
+        }
+        set
+    }
+
+    /// Compare attributed outputs against the actual result-entity set.
+    ///
+    /// `result` is the identities of the operation's actual result faces
+    /// (arena indices). Pass any owned or borrowed collection by value
+    /// through an owned iterator, for example `map.completeness_for_result(result.iter().copied())`.
+    ///
+    /// Like [`EvolutionMap::attributed_outputs`], the comparison is set
+    /// based: shared outputs and multi-parent generated faces are
+    /// legitimate, not conflicts.
+    #[must_use]
+    pub fn completeness_for_result(
+        &self,
+        result: impl IntoIterator<Item = usize>,
+    ) -> CompletenessReport {
+        let result_set: BTreeSet<usize> = result.into_iter().collect();
+        let attributed = self.attributed_outputs();
+        let omitted: Vec<usize> = result_set.difference(&attributed).copied().collect();
+        let phantom: Vec<usize> = attributed.difference(&result_set).copied().collect();
+        let unresolved_outputs: Vec<usize> = self
+            .unresolved
+            .keys()
+            .copied()
+            .filter(|out| result_set.contains(out))
+            .collect();
+        CompletenessReport {
+            omitted,
+            phantom,
+            unresolved_outputs,
+        }
+    }
+
+    /// Whether the map accounts for every result face, counting explicit
+    /// `unresolved` records as accounted.
+    ///
+    /// This is complete accounting, not resolved provenance: a split cap
+    /// honestly recorded as unresolved passes here and fails
+    /// [`EvolutionMap::is_resolved_for_result`]. An empty map for a
+    /// nonempty result never passes here, even though
+    /// [`EvolutionMap::is_complete`] reports `true` for it.
+    #[must_use]
+    pub fn accounts_for_result(&self, result: impl IntoIterator<Item = usize>) -> bool {
+        self.completeness_for_result(result).is_accounted()
+    }
+
+    /// Whether every result face has resolved provenance (attributed in
+    /// `modified` or `generated`, nothing omitted, phantom, or unresolved).
+    ///
+    /// This still says nothing about *how* the map was derived; combine
+    /// with [`EvolutionOrigin::is_exact`] — see
+    /// [`EvolutionMap::is_construction_resolved_for_result`] — when the
+    /// caller needs construction-derived fact rather than inference.
+    #[must_use]
+    pub fn is_resolved_for_result(&self, result: impl IntoIterator<Item = usize>) -> bool {
+        self.completeness_for_result(result).is_resolved()
+    }
+
+    /// Whether every result face has construction-derived resolved
+    /// provenance: exact origin plus [`EvolutionMap::is_resolved_for_result`].
+    #[must_use]
+    pub fn is_construction_resolved_for_result(
+        &self,
+        result: impl IntoIterator<Item = usize>,
+    ) -> bool {
+        self.origin.is_exact() && self.is_resolved_for_result(result)
     }
 
     /// Serialize to JSON without serde.
@@ -220,6 +328,52 @@ impl EvolutionMap {
 
 /// A face's matching signature: `(index, normal, centroid)`.
 pub type FaceSignature = (usize, Vec3, Point3);
+
+/// Result-aware completeness of one [`EvolutionMap`] against the actual
+/// result-entity set.
+///
+/// `omitted` are result faces the map never mentions; a consumer can tell
+/// them from faces that are not in the result in no way at all. `phantom`
+/// are attributed faces that are not in the result; they would hand a
+/// consumer a dead reference. `unresolved_outputs` are result faces the map
+/// explicitly records as unresolved — accounted, but without resolved
+/// provenance.
+///
+/// All three lists are sorted. An output claimed by several inputs (a merge,
+/// or one generated band with several legitimate parents) appears once in
+/// `attributed_outputs` and is never reported here: the report enforces set
+/// coverage, not a one-parent or one-record rule.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CompletenessReport {
+    /// Result faces with no record in `modified`, `generated` or `unresolved`.
+    pub omitted: Vec<usize>,
+    /// Attributed faces that are not in the result.
+    pub phantom: Vec<usize>,
+    /// Result faces explicitly recorded as `unresolved`.
+    pub unresolved_outputs: Vec<usize>,
+}
+
+impl CompletenessReport {
+    /// Complete accounting: nothing omitted and nothing phantom.
+    ///
+    /// Explicit `unresolved` records count as accounted here. Use
+    /// [`CompletenessReport::is_resolved`] when the caller needs every
+    /// result face to carry resolved provenance.
+    #[must_use]
+    pub fn is_accounted(&self) -> bool {
+        self.omitted.is_empty() && self.phantom.is_empty()
+    }
+
+    /// Fully resolved provenance: accounted plus no unresolved outputs.
+    ///
+    /// This still says nothing about derivation quality; the caller must
+    /// also check [`EvolutionOrigin::is_exact`] when construction-derived
+    /// fact is required.
+    #[must_use]
+    pub fn is_resolved(&self) -> bool {
+        self.is_accounted() && self.unresolved_outputs.is_empty()
+    }
+}
 
 /// A modified face is a trimmed piece of the same surface, so its normal barely
 /// moves; the cone is wide only because non-planar face normals are sampled
