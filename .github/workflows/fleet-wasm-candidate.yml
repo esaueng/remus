@@ -14,7 +14,7 @@ jobs:
       contents: read
       pull-requests: read
     steps:
-      - uses: esaueng/remus/.github/actions/fleet-guard@0f19a7af22d91142222428982823ae14b6d51cf3
+      - uses: esaueng/remus/.github/actions/fleet-guard@433709b06f94bba091e0e8fa96fd661da015867a
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
