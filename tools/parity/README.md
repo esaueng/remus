@@ -13,8 +13,31 @@ both targets: once through the native facade (`crates/remus`, `Model`) and
 once through the real WASM batch build. The installed entry is resolved and
 checked before any observation is accepted; the committed package directory
 is never overlaid or rewritten. The first-slice JSON report is written to
-`$CARGO_TARGET_DIR/o15-parity.json` and the extended-slice report to
-`$CARGO_TARGET_DIR/o15-parity-extended.json` (normally `target/`).
+`$CARGO_TARGET_DIR/o15-parity.json`, the extended-slice report to
+`$CARGO_TARGET_DIR/o15-parity-extended.json`, and the contract-slice report
+to `$CARGO_TARGET_DIR/o15-contract.json` (normally `target/`).
+
+## Evidence modes and provenance
+
+Every report carries a `provenance` block distinguishing three evidence
+modes where supported:
+
+- `native`: the source-built facade runner (`remus-parity-native`,
+  `remus::Model`), with the source revision, dirty flag, and toolchain.
+- `fresh` / `fresh-tarball`: the freshly built Node WASM package packed and
+  installed from that source, with the package version, tarball SHA-256,
+  WASM SHA-256, build options (target, profile, features), and the resolved
+  installed entry path.
+- `committed`: the existing committed/distributed package directory
+  (`crates/wasm/pkg`), installed into its own disposable consumer for the
+  contract slice only. Its provenance records the harness baseline revision
+  for comparison but labels the relationship `unverified` — committed bytes
+  are never labeled with the current source SHA unless a rebuild
+  establishes it. `provenance.mjs` owns this vocabulary
+  (`collectFreshProvenance`, `collectCommittedProvenance`,
+  `describeStaleness`, `validateProvenance`, `validateInstalledEntry`,
+  `requireObservations`); the contract report also records a
+  version/hash staleness verdict between the fresh and committed bytes.
 
 ## First matrix slice
 
@@ -73,3 +96,34 @@ evidence only; they are not a competitive benchmark.
 This extends but does not complete O1.5. Byte identity, failure/evolution
 fixtures, and the Linux/macOS/Windows x86-64/arm64 nightly matrix remain
 open.
+
+## Contract slice
+
+`contract-matrix.mjs` adds the small contract-focused matrix the geometric
+slices do not cover, executed on all three evidence modes (native,
+fresh-tarball, committed-package) plus direct installed JS calls alongside
+batch where the API exists:
+
+- exact result (overlapping boxes fuse, quality `exact`, volume 15);
+- exact-only refusal (tangent-boss fuse with `exactOnly`, typed
+  `operation_failed` instead of a silent mesh);
+- opted-in disclosed approximation (same boss without `exactOnly`,
+  quality `approximate` with its deflection);
+- invalid handle (stale solid refuses `invalid_handle`);
+- transactional rollback (a mid-batch failure leaves earlier solids
+  measurable with identical volume and face count on every surface);
+- supported cancellation via a pre-cancelled cooperative token
+  (`OperationCancellationToken` + `booleanWithCancellation` direct on WASM,
+  `booleanWithCancelledContext` on the native runner).
+
+Cancellation scope is labeled honestly: a synchronous WASM call cannot
+process a later JS cancellation message on the same thread, so only the
+pre-cancelled token is asserted; concurrent mid-call cancellation needs a
+worker/shared-memory transport and remains unqualified. Batch has no
+cancellation op, so that cell is direct-only by construction. Direct-vs-batch
+consistency per installed surface is recorded as non-gating evidence; the
+cross-target gates are outcome, diagnostic-code, quality, oracle-volume
+(where applicable), and rollback preservation. The geometric matrices and
+their known approximate partition differences are unchanged: byte identity
+stays visible and non-gating, and no tolerance was relaxed to make a cell
+pass.
