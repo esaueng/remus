@@ -2238,4 +2238,135 @@ mod evolution_contract_tests {
         assert_eq!(response[0]["error"]["category"], "unsupported");
         assert_eq!(kernel.topo().allocated_slot_count(), counts_before);
     }
+
+    #[test]
+    fn entity_evolution_face_indices_are_live_in_the_result() {
+        use std::collections::BTreeSet;
+        let mut kernel = BrepKernel::new();
+        let a = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
+        let b = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
+        kernel
+            .transform_solid_binding(
+                b,
+                vec![
+                    1.0, 0.0, 0.0, 5.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+                ],
+            )
+            .unwrap();
+        let inputs: BTreeSet<u32> = kernel
+            .get_solid_faces(a)
+            .unwrap()
+            .into_iter()
+            .chain(kernel.get_solid_faces(b).unwrap())
+            .collect();
+        let payload: serde_json::Value =
+            serde_json::from_str(&kernel.fuse_with_entity_evolution(a, b).unwrap()).unwrap();
+        let solid = u32::try_from(payload["solid"].as_u64().unwrap()).unwrap();
+        let live: BTreeSet<u32> = kernel.get_solid_faces(solid).unwrap().into_iter().collect();
+        // Native-to-WASM payload consistency: every reported result face
+        // is a live face of the result solid, and every named source is a
+        // pre-operation face of an operand. Consumed inputs are absent
+        // rather than listed — the payload has no deleted bucket, so a
+        // missing input is unknown, never implicitly surviving.
+        let faces = payload["evolution"]["faces"].as_array().unwrap();
+        assert!(!faces.is_empty());
+        assert!(
+            payload["evolution"].get("deleted").is_none(),
+            "the Issue-12 payload has no deleted bucket: consumed inputs are \
+             absent, never listed"
+        );
+        let mut sourced = 0;
+        for face in faces {
+            let output = u32::try_from(face["face"].as_u64().unwrap()).unwrap();
+            assert!(
+                live.contains(&output),
+                "result face {output} must be live on the fused solid"
+            );
+            if !face["source"].is_null() {
+                let source = u32::try_from(face["source"].as_u64().unwrap()).unwrap();
+                assert!(
+                    inputs.contains(&source),
+                    "source {source} must be a pre-operation operand face"
+                );
+                sourced += 1;
+            }
+        }
+        assert!(
+            sourced > 0,
+            "an all-generated payload would pass vacuously: overlapping boxes \
+             must carry at least one sourced face"
+        );
+        let edges = payload["evolution"]["edges"].as_array().unwrap();
+        assert!(!edges.is_empty());
+        for edge in edges {
+            assert!(
+                ["preserved", "modified", "generated", "unresolved"]
+                    .contains(&edge["event"].as_str().unwrap())
+            );
+        }
+        assert!(
+            edges
+                .iter()
+                .any(|edge| edge["event"].as_str().unwrap() == "modified"),
+            "crossing edges of overlapping boxes must be modified, got {edges:?}"
+        );
+    }
+
+    #[test]
+    fn journaled_move_op_resolves_through_naming_and_summary() {
+        let mut kernel = BrepKernel::new();
+        let source = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
+        let face = kernel.get_solid_faces(source).unwrap()[0];
+        let moved: serde_json::Value = serde_json::from_str(
+            &kernel
+                .move_faces_journaled_js(source, &[face], 2.0)
+                .unwrap(),
+        )
+        .unwrap();
+        let op = u32::try_from(moved["op"].as_u64().unwrap()).unwrap();
+        let result_solid = u32::try_from(moved["solid"].as_u64().unwrap()).unwrap();
+        let live: std::collections::BTreeSet<u32> = kernel
+            .get_solid_faces(result_solid)
+            .unwrap()
+            .into_iter()
+            .collect();
+        // The op id returned in the payload feeds the naming path: every
+        // face output resolves bound through it, to a live result face.
+        for index in 0..6u32 {
+            let resolution: serde_json::Value =
+                serde_json::from_str(&kernel.resolve_operation_output(op, "face", index).unwrap())
+                    .unwrap();
+            assert_eq!(
+                resolution["status"], "bound",
+                "face output {index} must resolve bound, got {resolution}"
+            );
+            let handles: Vec<u32> = resolution["entities"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|entity| u32::try_from(entity["handle"].as_u64().unwrap()).unwrap())
+                .collect();
+            assert_eq!(
+                handles.len(),
+                1,
+                "one output binds one face, got {resolution}"
+            );
+            assert!(
+                live.contains(&handles[0]),
+                "bound face {} must be live on the result solid",
+                handles[0]
+            );
+        }
+        // The read-only summary exposes the same entry with its origin.
+        let summary: serde_json::Value = serde_json::from_str(&kernel.journal_summary()).unwrap();
+        let entry = summary
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["op"].as_u64() == Some(u64::from(op)))
+            .unwrap();
+        assert_eq!(entry["kind"], "move_faces");
+        assert_eq!(entry["type"], "evolution");
+        assert_eq!(entry["detail"]["origin"], "construction");
+    }
 }
