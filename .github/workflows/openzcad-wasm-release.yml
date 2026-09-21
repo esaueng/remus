@@ -8,7 +8,7 @@ permissions:
 
 jobs:
   checks:
-    uses: esaueng/remus/.github/workflows/fleet-wasm-candidate.yml@eae25c0460ddc956914413ade081a09ed6982dbe
+    uses: esaueng/remus/.github/workflows/fleet-wasm-candidate.yml@4611cb20889b84fa343da3c2cdd74543647d1e78
     permissions:
       contents: read
       pull-requests: read
