@@ -9,4 +9,4 @@ pub mod writer;
 
 pub use import::import_mesh;
 pub use reader::{read_stl, read_stl_solid, read_stl_with_limits};
-pub use writer::write_stl;
+pub use writer::{write_mesh_stl, write_stl};
