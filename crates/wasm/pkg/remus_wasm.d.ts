@@ -844,11 +844,14 @@ export class BrepKernel {
      *
      * `op` is `"fuse"`/`"union"`, `"cut"`/`"difference"`, or
      * `"intersect"`/`"intersection"`. The plain `fuse`/`cut`/`intersect`
-     * bindings silently accept the mesh (co-refinement) fallback, which
-     * discards analytic surface types; this binding reports whether that
-     * happened (`quality: "approximate"` plus the fallback deflection), and
-     * `exact_only = true` turns the fallback into a typed refusal so an
-     * exact-or-nothing caller never receives a faceted body.
+     * bindings are exact-only since B21: a pair the exact pipeline cannot
+     * handle returns the typed `exact_only_unattainable` refusal instead of
+     * a mesh. This binding is the explicitly permissive opt-in — it reports
+     * whether the mesh (co-refinement) fallback ran (`quality:
+     * "approximate"` plus the fallback deflection, which discards analytic
+     * surface types), and `exact_only = true` turns that fallback into the
+     * same typed refusal so an exact-or-nothing caller never receives a
+     * faceted body.
      *
      * `newton_iterations` optionally caps the coupled Newton refinement
      * iterations of every NURBS surface-surface intersection inside the
@@ -1047,6 +1050,9 @@ export class BrepKernel {
      * faces at each step.
      *
      * `tool_ids` is a JS `Uint32Array` or array of solid handles.
+     *
+     * Exact-only, like `cut`: a tool the exact engine cannot cut returns the
+     * typed `exact_only_unattainable` refusal rather than a mesh.
      *
      * # Errors
      *
