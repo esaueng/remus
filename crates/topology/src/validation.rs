@@ -1855,13 +1855,249 @@ mod tests {
             "expected NonManifold, got {err:?}"
         );
     }
+
+    /// Plane surface used by the loop/wire divergence fixtures.
+    fn unit_plane() -> FaceSurface {
+        FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: 0.0,
+        }
+    }
+
+    #[test]
+    fn wire_closure_rejects_an_open_chain_and_a_broken_ring() {
+        use crate::vertex::Vertex;
+
+        let mut topo = Topology::new();
+        let v0 = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
+        let v1 = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
+        let v2 = topo.add_vertex(Vertex::new(Point3::new(0.0, 1.0, 0.0), 1e-7));
+        // Far enough that no position fallback can bridge the gap.
+        let far = topo.add_vertex(Vertex::new(Point3::new(5.0, 5.0, 5.0), 1e-7));
+
+        let e0 = topo.add_edge(Edge::new(v0, v1, EdgeCurve::Line));
+        let e1 = topo.add_edge(Edge::new(v1, v2, EdgeCurve::Line));
+        let e2 = topo.add_edge(Edge::new(v2, v0, EdgeCurve::Line));
+        // Same ring, but its second edge starts a long way from the first's end.
+        let gap = topo.add_edge(Edge::new(far, v2, EdgeCurve::Line));
+
+        let open_ring = topo.add_wire(
+            Wire::new(
+                vec![
+                    OrientedEdge::new(e0, true),
+                    OrientedEdge::new(e1, true),
+                    OrientedEdge::new(e2, true),
+                ],
+                false,
+            )
+            .unwrap(),
+        );
+        let broken_ring = topo.add_wire(
+            Wire::new(
+                vec![
+                    OrientedEdge::new(e0, true),
+                    OrientedEdge::new(gap, true),
+                    OrientedEdge::new(e2, true),
+                ],
+                true,
+            )
+            .unwrap(),
+        );
+        // The wrap-around alone is broken: consecutive pairs all connect.
+        let unclosed_ring = topo.add_wire(
+            Wire::new(
+                vec![OrientedEdge::new(e0, true), OrientedEdge::new(e1, true)],
+                true,
+            )
+            .unwrap(),
+        );
+
+        for wid in [open_ring, broken_ring, unclosed_ring] {
+            let wire = topo.wire(wid).unwrap();
+            let err = validate_wire_closed(wire, &topo).unwrap_err();
+            assert!(
+                matches!(err, TopologyError::WireNotClosed),
+                "expected WireNotClosed, got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn wire_closure_accepts_coincident_but_distinct_endpoint_vertices() {
+        use crate::vertex::Vertex;
+
+        // Every junction is chained through a *distinct* vertex id at the
+        // same position, so closure can only be proved by the coincident
+        // position fallback, never by id equality.
+        let mut topo = Topology::new();
+        let corners = [
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(0.0, 1.0, 0.0),
+        ];
+        let starts: Vec<_> = corners
+            .iter()
+            .map(|&p| topo.add_vertex(Vertex::new(p, 1e-7)))
+            .collect();
+        let ends: Vec<_> = corners
+            .iter()
+            .map(|&p| topo.add_vertex(Vertex::new(p, 1e-7)))
+            .collect();
+        assert_ne!(starts[1], ends[1], "the fixture needs distinct ids");
+
+        let edges: Vec<_> = (0..3)
+            .map(|i| topo.add_edge(Edge::new(starts[i], ends[(i + 1) % 3], EdgeCurve::Line)))
+            .collect();
+        let wid = topo.add_wire(
+            Wire::new(
+                edges.iter().map(|&e| OrientedEdge::new(e, true)).collect(),
+                true,
+            )
+            .unwrap(),
+        );
+
+        let wire = topo.wire(wid).unwrap();
+        validate_wire_closed(wire, &topo).unwrap();
+    }
+
+    #[test]
+    fn closed_shell_report_names_free_and_over_shared_edges() {
+        // One triangular face: every edge is used once.
+        let mut topo = Topology::new();
+        let wid = make_triangle(&mut topo);
+        let open_face = topo.add_face(Face::new(wid, vec![], unit_plane()));
+        let open_shell = Shell::new(vec![open_face]).unwrap();
+        let err = validate_shell_closed(&open_shell, &topo).unwrap_err();
+        let TopologyError::NonManifold { reason } = err else {
+            unreachable!("expected NonManifold, got {err:?}")
+        };
+        assert!(
+            reason.contains("free edge"),
+            "a once-used edge is a free edge, got {reason}"
+        );
+
+        // Three faces over the same ring: every edge is used three times.
+        let back: Vec<OrientedEdge> = topo
+            .wire(wid)
+            .unwrap()
+            .edges()
+            .iter()
+            .rev()
+            .map(|oe| OrientedEdge::new(oe.edge(), !oe.is_forward()))
+            .collect();
+        let back_wid = topo.add_wire(Wire::new(back.clone(), true).unwrap());
+        let third_wid = topo.add_wire(Wire::new(back, true).unwrap());
+        let f1 = topo.add_face(Face::new(back_wid, vec![], unit_plane()));
+        let f2 = topo.add_face(Face::new(third_wid, vec![], unit_plane()));
+        let crowded = Shell::new(vec![open_face, f1, f2]).unwrap();
+        let err = validate_shell_closed(&crowded, &topo).unwrap_err();
+        let TopologyError::NonManifold { reason } = err else {
+            unreachable!("expected NonManifold, got {err:?}")
+        };
+        assert!(
+            reason.contains("over-shared"),
+            "a thrice-used edge is over-shared, got {reason}"
+        );
+    }
+
+    /// A face over a closed two-edge ring, plus the ring's edges.
+    fn two_gon_face(
+        topo: &mut Topology,
+    ) -> (
+        crate::face::FaceId,
+        crate::edge::EdgeId,
+        crate::edge::EdgeId,
+    ) {
+        use crate::vertex::Vertex;
+
+        let v0 = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
+        let v1 = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
+        let e0 = topo.add_edge(Edge::new(v0, v1, EdgeCurve::Line));
+        let e1 = topo.add_edge(Edge::new(v1, v0, EdgeCurve::Line));
+        let wid = topo.add_wire(
+            Wire::new(
+                vec![OrientedEdge::new(e0, true), OrientedEdge::new(e1, true)],
+                true,
+            )
+            .unwrap(),
+        );
+        let face = topo.add_face(Face::new(wid, vec![], unit_plane()));
+        (face, e0, e1)
+    }
+
+    #[test]
+    #[allow(deprecated)] // the divergence under test needs the unsynchronized setter
+    fn face_loops_reject_a_diverging_closure_flag() {
+        let mut topo = Topology::new();
+        let (face, e0, e1) = two_gon_face(&mut topo);
+        validate_face_loops(&topo, face).unwrap();
+
+        // Same edges, same order, same count — only the closure flag moves.
+        let open_copy = topo.add_wire(
+            Wire::new(
+                vec![OrientedEdge::new(e0, true), OrientedEdge::new(e1, true)],
+                false,
+            )
+            .unwrap(),
+        );
+        topo.face_mut(face).unwrap().set_outer_wire(open_copy);
+        let err = validate_face_loops(&topo, face).unwrap_err();
+        assert!(
+            matches!(err, TopologyError::LoopWireMismatch { face: f } if f == face),
+            "expected LoopWireMismatch, got {err:?}"
+        );
+    }
+
+    #[test]
+    #[allow(deprecated)] // the divergence under test needs the unsynchronized setter
+    fn face_loops_reject_a_diverging_use_count() {
+        let mut topo = Topology::new();
+        let (face, e0, e1) = two_gon_face(&mut topo);
+        validate_face_loops(&topo, face).unwrap();
+
+        // Same closure flag, same leading edges — only the count moves.
+        let longer = topo.add_wire(
+            Wire::new(
+                vec![
+                    OrientedEdge::new(e0, true),
+                    OrientedEdge::new(e1, true),
+                    OrientedEdge::new(e0, false),
+                ],
+                true,
+            )
+            .unwrap(),
+        );
+        topo.face_mut(face).unwrap().set_outer_wire(longer);
+        let err = validate_face_loops(&topo, face).unwrap_err();
+        assert!(
+            matches!(err, TopologyError::LoopWireMismatch { face: f } if f == face),
+            "expected LoopWireMismatch, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn face_loops_reject_a_flipped_compatibility_orientation() {
+        let mut topo = Topology::new();
+        let (face, e0, _) = two_gon_face(&mut topo);
+        validate_face_loops(&topo, face).unwrap();
+
+        // Same edge at the same position, same loop parent — only the
+        // traversal direction of the compatibility wire moves.
+        let wire_id = topo.face(face).unwrap().outer_wire();
+        topo.wire_mut(wire_id).unwrap().edges_mut()[0] = OrientedEdge::new(e0, false);
+        let err = validate_face_loops(&topo, face).unwrap_err();
+        assert!(
+            matches!(err, TopologyError::LoopWireMismatch { face: f } if f == face),
+            "expected LoopWireMismatch, got {err:?}"
+        );
+    }
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::float_cmp)]
 mod same_parameter_tests {
     use remus_math::curves::Circle3D;
-    use remus_math::curves2d::{Curve2D, Line2D, NurbsCurve2D};
+    use remus_math::curves2d::{Circle2D, Curve2D, Ellipse2D, Line2D, NurbsCurve2D};
     use remus_math::diagnostic::ToDiagnostic;
     use remus_math::surfaces::CylindricalSurface;
     use remus_math::vec::{Point2, Point3, Vec2, Vec3};
@@ -1877,9 +2113,10 @@ mod same_parameter_tests {
     use crate::wire::{OrientedEdge, Wire};
 
     use super::{
-        BoundaryAuthorityError, CurveUseValidationError, check_same_parameter_strict,
-        validate_boundary_authority, validate_same_parameter_strict, validate_same_range_strict,
-        validate_solid_pcurve_contracts,
+        BoundaryAuthorityError, CurveUseValidationError, check_same_parameter,
+        check_same_parameter_strict, check_same_range, check_same_range_strict,
+        validate_boundary_authority, validate_same_parameter, validate_same_parameter_strict,
+        validate_same_range, validate_same_range_strict, validate_solid_pcurve_contracts,
     };
 
     const TAU: f64 = std::f64::consts::TAU;
@@ -2431,6 +2668,721 @@ mod same_parameter_tests {
         assert_eq!(d.category(), FailureCategory::ToleranceViolation);
         assert_eq!(d.code(), "same_range_exceeded");
     }
+
+    // ── Typed refusal payloads ──────────────────────────────────────────
+
+    fn stored_seam_pcurve(curve: Curve2D) -> (Topology, EdgeId, FaceId) {
+        let (mut topo, seam, face) = cylinder_seam();
+        topo.set_pcurve_oriented(seam, face, true, PCurve::new(curve, 0.0, 1.0))
+            .unwrap();
+        (topo, seam, face)
+    }
+
+    fn proof_refusal_pcurve_type(curve: Curve2D) -> &'static str {
+        let (topo, seam, face) = stored_seam_pcurve(curve);
+        let error = check_same_parameter_strict(&topo, seam, face, true, 8).unwrap_err();
+        let CurveUseValidationError::SameParameterProofUnavailable { pcurve_type, .. } = error
+        else {
+            unreachable!("expected a typed proof refusal, got {error:?}")
+        };
+        pcurve_type
+    }
+
+    #[test]
+    fn proof_refusal_names_the_stored_pcurve_type() {
+        // A slanted line on the cylinder is not the certified vertical-line
+        // case, so each stored kind reaches the refusal and must name itself.
+        assert_eq!(
+            proof_refusal_pcurve_type(Curve2D::Line(
+                Line2D::new(Point2::new(0.0, 0.0), Vec2::new(0.6, 0.8)).unwrap()
+            )),
+            "line"
+        );
+        assert_eq!(
+            proof_refusal_pcurve_type(Curve2D::Circle(
+                Circle2D::new(Point2::new(0.0, 0.0), 1.0).unwrap()
+            )),
+            "circle"
+        );
+        assert_eq!(
+            proof_refusal_pcurve_type(Curve2D::Ellipse(
+                Ellipse2D::new(Point2::new(0.0, 0.0), 1.0, 0.5, 0.0).unwrap()
+            )),
+            "ellipse"
+        );
+        assert_eq!(
+            proof_refusal_pcurve_type(Curve2D::Nurbs(
+                NurbsCurve2D::new(
+                    1,
+                    vec![0.0, 0.0, 1.0, 1.0],
+                    vec![Point2::new(0.0, 0.0), Point2::new(0.5, 1.0)],
+                    vec![1.0; 2],
+                )
+                .unwrap()
+            )),
+            "nurbs"
+        );
+    }
+
+    fn non_finite_component(curve: Curve2D) -> &'static str {
+        let (topo, seam, face) = stored_seam_pcurve(curve);
+        let error = check_same_parameter_strict(&topo, seam, face, true, 8).unwrap_err();
+        let CurveUseValidationError::NonFinitePcurveUse { component, .. } = error else {
+            unreachable!("expected a non-finite refusal, got {error:?}")
+        };
+        component
+    }
+
+    #[test]
+    fn non_finite_pcurve_definitions_are_caught_before_evaluation() {
+        // One poisoned sub-field per curve kind: the definition scan must
+        // catch each of them, and name the definition — not a downstream
+        // evaluation — as the failing component.
+        assert_eq!(
+            non_finite_component(Curve2D::Line(
+                Line2D::new(Point2::new(f64::NAN, 0.0), Vec2::new(0.0, 1.0)).unwrap()
+            )),
+            "curve_definition",
+            "a line's origin is part of its definition"
+        );
+        assert_eq!(
+            non_finite_component(Curve2D::Circle(
+                Circle2D::new(Point2::new(f64::NAN, 0.0), 1.0).unwrap()
+            )),
+            "curve_definition",
+            "a circle's centre is part of its definition"
+        );
+        assert_eq!(
+            non_finite_component(Curve2D::Ellipse(
+                Ellipse2D::new(Point2::new(f64::NAN, 0.0), 1.0, 0.5, 0.0).unwrap()
+            )),
+            "curve_definition",
+            "an ellipse's centre is part of its definition"
+        );
+        assert_eq!(
+            non_finite_component(Curve2D::Nurbs(
+                NurbsCurve2D::new(
+                    1,
+                    vec![0.0, 0.0, 1.0, 1.0],
+                    vec![Point2::new(0.0, 0.0), Point2::new(0.0, 1.0)],
+                    vec![1.0, f64::NAN],
+                )
+                .unwrap()
+            )),
+            "curve_definition",
+            "a NURBS weight is part of its definition"
+        );
+    }
+
+    #[test]
+    fn non_finite_parameter_bounds_are_caught_before_evaluation() {
+        // Only the END bound is poisoned: a guard that demanded *both*
+        // bounds be non-finite would fall through to the evaluation check.
+        let (mut topo, seam, face) = cylinder_seam();
+        topo.set_pcurve_oriented(
+            seam,
+            face,
+            true,
+            PCurve::new(
+                Curve2D::Line(Line2D::new(Point2::new(0.0, 0.0), Vec2::new(0.0, 1.0)).unwrap()),
+                0.0,
+                f64::NAN,
+            ),
+        )
+        .unwrap();
+
+        for error in [
+            check_same_parameter_strict(&topo, seam, face, true, 8).unwrap_err(),
+            check_same_range_strict(&topo, seam, face, true).unwrap_err(),
+        ] {
+            let CurveUseValidationError::NonFinitePcurveUse { component, .. } = error else {
+                unreachable!("expected a non-finite refusal, got {error:?}")
+            };
+            assert_eq!(component, "parameter_bounds");
+        }
+    }
+
+    /// A pcurve whose definition is finite but whose evaluation overflows at
+    /// its START bound only (a huge homogeneous weight at the first control
+    /// point); the end bound evaluates cleanly.
+    fn one_sided_overflowing_pcurve() -> PCurve {
+        PCurve::new(
+            Curve2D::Nurbs(
+                NurbsCurve2D::new(
+                    1,
+                    vec![0.0, 0.0, 1.0, 1.0],
+                    vec![Point2::new(1e10, 0.0), Point2::new(0.0, 1.0)],
+                    vec![1e308, 1.0],
+                )
+                .unwrap(),
+            ),
+            0.0,
+            1.0,
+        )
+    }
+
+    #[test]
+    fn a_single_non_finite_pcurve_endpoint_is_caught_before_the_surface() {
+        let pcurve = one_sided_overflowing_pcurve();
+        assert!(
+            !pcurve.evaluate(0.0).0.iter().all(|v| v.is_finite()),
+            "fixture: the start bound must evaluate non-finite"
+        );
+        assert!(
+            pcurve.evaluate(1.0).0.iter().all(|v| v.is_finite()),
+            "fixture: the end bound must evaluate finite"
+        );
+
+        let (mut topo, seam, face) = cylinder_seam();
+        topo.set_pcurve_oriented(seam, face, true, pcurve).unwrap();
+
+        for error in [
+            check_same_parameter_strict(&topo, seam, face, true, 8).unwrap_err(),
+            check_same_range_strict(&topo, seam, face, true).unwrap_err(),
+        ] {
+            let CurveUseValidationError::NonFinitePcurveUse { component, .. } = error else {
+                unreachable!("expected a non-finite refusal, got {error:?}")
+            };
+            assert_eq!(component, "pcurve_evaluation");
+        }
+    }
+
+    #[test]
+    fn a_single_non_finite_endpoint_distance_refuses_the_strict_parameter_proof() {
+        // The surface images stay finite; only the oriented START vertex is
+        // poisoned, so exactly one of the two endpoint distances is NaN.
+        let (mut topo, seam, face) = cylinder_seam();
+        let bottom = topo.edge(seam).unwrap().start();
+        topo.vertex_mut(bottom)
+            .unwrap()
+            .set_point(Point3::new(f64::NAN, 0.0, 0.0));
+        topo.set_pcurve_oriented(seam, face, true, seam_pcurve(0.0, true))
+            .unwrap();
+
+        let error = check_same_parameter_strict(&topo, seam, face, true, 8).unwrap_err();
+        let CurveUseValidationError::NonFinitePcurveUse { component, .. } = error else {
+            unreachable!("expected a non-finite refusal, got {error:?}")
+        };
+        assert_eq!(component, "surface_or_curve_evaluation");
+
+        // The same one-sided poisoning must fail both range checks closed.
+        // `f64::max` swallows a NaN operand, so a guard that missed the
+        // poisoned endpoint would report the *clean* endpoint's distance
+        // as the whole measurement.
+        assert_eq!(
+            check_same_range(&topo, seam, face, true).unwrap(),
+            Some(f64::MAX)
+        );
+        let error = check_same_range_strict(&topo, seam, face, true).unwrap_err();
+        let CurveUseValidationError::NonFinitePcurveUse { component, .. } = error else {
+            unreachable!("expected a non-finite refusal, got {error:?}")
+        };
+        assert_eq!(component, "surface_or_endpoint_evaluation");
+    }
+
+    /// A cylinder so large that its surface point at u = 0 overflows while
+    /// its point at u = π/2 stays finite, with a horizontal pcurve joining
+    /// the two and finite bounding vertices.
+    fn overflowing_surface_use() -> (Topology, EdgeId, FaceId) {
+        let mut topo = Topology::new();
+        let cylinder = CylindricalSurface::with_ref_dir(
+            Point3::new(1e308, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            1e308,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let v0 = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
+        let v1 = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
+        let edge = topo.add_edge(Edge::new(v0, v1, EdgeCurve::Line));
+        let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], false).unwrap());
+        let face = topo.add_face(Face::new(wire, vec![], FaceSurface::Cylinder(cylinder)));
+        topo.set_pcurve_oriented(
+            edge,
+            face,
+            true,
+            PCurve::new(
+                Curve2D::Line(Line2D::new(Point2::new(0.0, 0.0), Vec2::new(1.0, 0.0)).unwrap()),
+                0.0,
+                std::f64::consts::FRAC_PI_2,
+            ),
+        )
+        .unwrap();
+        (topo, edge, face)
+    }
+
+    #[test]
+    fn a_single_non_finite_surface_endpoint_fails_the_range_checks_closed() {
+        let (topo, edge, face) = overflowing_surface_use();
+        let surface = topo.face(face).unwrap().surface().clone();
+        assert!(
+            !surface
+                .evaluate(0.0, 0.0)
+                .unwrap()
+                .0
+                .iter()
+                .all(|v| v.is_finite()),
+            "fixture: the start image must overflow"
+        );
+        assert!(
+            surface
+                .evaluate(std::f64::consts::FRAC_PI_2, 0.0)
+                .unwrap()
+                .0
+                .iter()
+                .all(|v| v.is_finite()),
+            "fixture: the end image must stay finite"
+        );
+
+        assert_eq!(
+            check_same_range(&topo, edge, face, true).unwrap(),
+            Some(f64::MAX),
+            "the sampled check reports its fail-closed sentinel, not an overflowed distance"
+        );
+
+        let error = check_same_range_strict(&topo, edge, face, true).unwrap_err();
+        let CurveUseValidationError::NonFinitePcurveUse { component, .. } = error else {
+            unreachable!("expected a non-finite refusal, got {error:?}")
+        };
+        assert_eq!(component, "surface_or_endpoint_evaluation");
+    }
+
+    #[test]
+    fn a_non_finite_uv_on_a_plane_is_reported_before_the_surface_declines() {
+        // A planar face has no UV evaluation, so a guard that let the
+        // non-finite uv through would report "not applicable" instead of
+        // the fail-closed sentinel.
+        let (mut topo, seam, face) = cylinder_seam();
+        topo.face_mut(face)
+            .unwrap()
+            .set_surface(FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            });
+        topo.set_pcurve_oriented(seam, face, true, one_sided_overflowing_pcurve())
+            .unwrap();
+
+        assert_eq!(
+            check_same_range(&topo, seam, face, true).unwrap(),
+            Some(f64::MAX)
+        );
+        let report = check_same_parameter(&topo, seam, face, true, 8)
+            .unwrap()
+            .expect("a non-finite uv is measured, not declined");
+        assert_eq!(report.max_deviation, f64::MAX);
+        assert_eq!(report.at_parameter, 0.0);
+    }
+
+    #[test]
+    fn an_overflowing_sampled_deviation_reports_the_fail_closed_sentinel() {
+        // Both evaluations are finite; only their difference overflows.
+        let mut topo = Topology::new();
+        let cylinder = CylindricalSurface::with_ref_dir(
+            Point3::new(1e308, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            1.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let v0 = topo.add_vertex(Vertex::new(Point3::new(-1e308, 0.0, 0.0), 1e-7));
+        let v1 = topo.add_vertex(Vertex::new(Point3::new(-1e308, 0.0, 1.0), 1e-7));
+        let edge = topo.add_edge(Edge::new(v0, v1, EdgeCurve::Line));
+        let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], false).unwrap());
+        let face = topo.add_face(Face::new(wire, vec![], FaceSurface::Cylinder(cylinder)));
+        topo.set_pcurve_oriented(edge, face, true, seam_pcurve(0.0, true))
+            .unwrap();
+
+        let surface = topo.face(face).unwrap().surface().clone();
+        assert!(
+            surface
+                .evaluate(0.0, 0.0)
+                .unwrap()
+                .0
+                .iter()
+                .all(|v| v.is_finite()),
+            "fixture: the surface image itself must stay finite"
+        );
+
+        let report = check_same_parameter(&topo, edge, face, true, 4)
+            .unwrap()
+            .unwrap();
+        assert_eq!(report.max_deviation, f64::MAX);
+    }
+
+    // ── Sampled SameParameter: the parameter maps ───────────────────────
+
+    /// A unit-cylinder seam whose stored pcurve deliberately disagrees with
+    /// the edge, with a pcurve range (`[0.6, 1.8]`) and an edge domain
+    /// (`[1.0, 0.4]`) that share neither an origin nor a span — so every
+    /// term of both parameter maps is observable.
+    fn mismatched_parameter_maps(forward: bool) -> (Topology, EdgeId, FaceId) {
+        let mut topo = Topology::new();
+        let cylinder = CylindricalSurface::with_ref_dir(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            1.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let bottom = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
+        let top = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 1.0), 1e-7));
+        let mut edge = Edge::new(bottom, top, EdgeCurve::Line);
+        edge.set_trim(Some((1.0, 0.4)));
+        let edge_id = topo.add_edge(edge);
+        let wire = topo.add_wire(
+            Wire::new(
+                vec![
+                    OrientedEdge::new(edge_id, true),
+                    OrientedEdge::new(edge_id, false),
+                ],
+                true,
+            )
+            .unwrap(),
+        );
+        let face = topo.add_face(Face::new(wire, vec![], FaceSurface::Cylinder(cylinder)));
+        topo.set_pcurve_oriented(
+            edge_id,
+            face,
+            forward,
+            PCurve::new(
+                Curve2D::Line(Line2D::new(Point2::new(0.0, 2.0), Vec2::new(1.0, 0.0)).unwrap()),
+                0.6,
+                1.8,
+            ),
+        )
+        .unwrap();
+        (topo, edge_id, face)
+    }
+
+    /// Closed form of the fixture's deviation: the surface point is
+    /// `(cos u, sin u, 2)` and the line's point is `(1, 0, g)`.
+    fn mismatch_deviation(u: f64, g: f64) -> f64 {
+        (2.0 - 2.0 * u.cos() + (2.0 - g) * (2.0 - g)).sqrt()
+    }
+
+    #[test]
+    fn sampled_parameter_pins_the_forward_map() {
+        let (topo, edge, face) = mismatched_parameter_maps(true);
+        let report = check_same_parameter(&topo, edge, face, true, 4)
+            .unwrap()
+            .unwrap();
+
+        // At the last sample the pcurve parameter is its end bound 1.8 and
+        // the edge parameter is its domain end 0.4.
+        assert!((report.max_deviation - mismatch_deviation(1.8, 0.4)).abs() < 1e-12);
+        assert!((report.at_parameter - 1.8).abs() < 1e-12);
+        assert_eq!(report.samples, 5, "samples + 1 evaluation points");
+    }
+
+    #[test]
+    fn sampled_parameter_pins_the_reversed_map() {
+        // A reversed use walks the edge domain backwards: the pcurve's end
+        // bound pairs with the edge domain's START.
+        let (topo, edge, face) = mismatched_parameter_maps(false);
+        let report = check_same_parameter(&topo, edge, face, false, 4)
+            .unwrap()
+            .unwrap();
+
+        assert!((report.max_deviation - mismatch_deviation(1.8, 1.0)).abs() < 1e-12);
+        assert!((report.at_parameter - 1.8).abs() < 1e-12);
+    }
+
+    #[test]
+    fn sampled_parameter_reports_max_for_a_half_open_parameter_range() {
+        let (mut topo, seam, face) = cylinder_seam();
+        topo.set_pcurve_oriented(
+            seam,
+            face,
+            true,
+            PCurve::new(
+                Curve2D::Line(Line2D::new(Point2::new(0.0, 0.0), Vec2::new(0.0, 1.0)).unwrap()),
+                2.0,
+                f64::INFINITY,
+            ),
+        )
+        .unwrap();
+
+        let report = check_same_parameter(&topo, seam, face, true, 8)
+            .unwrap()
+            .unwrap();
+        assert_eq!(report.max_deviation, f64::MAX);
+        assert_eq!(
+            report.at_parameter, 2.0,
+            "the finite start bound is the witness"
+        );
+        assert_eq!(report.samples, 9);
+    }
+
+    #[test]
+    fn sampled_parameter_witnesses_the_first_maximal_sample() {
+        // A pcurve offset in u alone deviates by the same chord at every
+        // sample, so the witness parameter pins which sample is kept.
+        let (mut topo, seam, face) = cylinder_seam();
+        topo.set_pcurve_oriented(seam, face, true, seam_pcurve(0.3, true))
+            .unwrap();
+
+        let report = check_same_parameter(&topo, seam, face, true, 8)
+            .unwrap()
+            .unwrap();
+        assert!((report.max_deviation - 2.0 * 0.15_f64.sin()).abs() < 1e-12);
+        assert_eq!(
+            report.at_parameter, 0.0,
+            "the first sample attaining the maximum is the witness"
+        );
+    }
+
+    // ── Strict SameParameter: the certified endpoint bound ──────────────
+
+    #[test]
+    fn strict_parameter_certifies_exactly_at_the_linear_tolerance() {
+        // Scale chosen so the arithmetic bound lands exactly on the global
+        // linear tolerance: the certificate is issued at the bound, and
+        // refused once past it.
+        let scale = 1e-7 * f64::from(1u32 << 23) * f64::from(1u32 << 23);
+        let mut topo = Topology::new();
+        let cylinder = CylindricalSurface::with_ref_dir(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            1.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let bottom = topo.add_vertex(Vertex::new(cylinder.evaluate(0.0, 0.0), 1e-7));
+        let top = topo.add_vertex(Vertex::new(cylinder.evaluate(0.0, scale), 1e-7));
+        let seam = topo.add_edge(Edge::new(bottom, top, EdgeCurve::Line));
+        let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(seam, true)], false).unwrap());
+        let face = topo.add_face(Face::new(wire, vec![], FaceSurface::Cylinder(cylinder)));
+        let vertical = |t_end: f64| {
+            PCurve::new(
+                Curve2D::Line(Line2D::new(Point2::new(0.0, 0.0), Vec2::new(0.0, 1.0)).unwrap()),
+                0.0,
+                t_end,
+            )
+        };
+
+        topo.set_pcurve_oriented(seam, face, true, vertical(scale))
+            .unwrap();
+        let report = check_same_parameter_strict(&topo, seam, face, true, 2)
+            .unwrap()
+            .expect("a bound exactly at the linear tolerance is still certified");
+        assert!((report.max_deviation - 1e-7).abs() < 1e-20);
+
+        topo.set_pcurve_oriented(seam, face, true, vertical(scale * 2.0))
+            .unwrap();
+        let error = check_same_parameter_strict(&topo, seam, face, true, 2).unwrap_err();
+        assert!(matches!(
+            error,
+            CurveUseValidationError::SameParameterProofUnavailable { .. }
+        ));
+    }
+
+    #[test]
+    fn strict_parameter_reports_the_larger_endpoint_deviation_plus_its_bound() {
+        let (mut topo, seam, face) = cylinder_seam();
+        topo.set_pcurve_oriented(seam, face, true, seam_pcurve(0.0, true))
+            .unwrap();
+
+        // Exact use: the reported deviation is the arithmetic bound alone,
+        // which is strictly positive and well inside the linear tolerance.
+        let exact = check_same_parameter_strict(&topo, seam, face, true, 2)
+            .unwrap()
+            .unwrap();
+        assert!(
+            exact.max_deviation > 0.0 && exact.max_deviation < 1e-7,
+            "the certificate carries its own round-off allowance, got {}",
+            exact.max_deviation
+        );
+
+        // Push the END vertex off the surface: the larger of the two
+        // endpoint deviations, and its parameter, must be the one reported.
+        let top = topo.edge(seam).unwrap().end();
+        topo.vertex_mut(top)
+            .unwrap()
+            .set_point(Point3::new(1.01, 0.0, 1.0));
+        let report = check_same_parameter_strict(&topo, seam, face, true, 2)
+            .unwrap()
+            .unwrap();
+        assert!((report.max_deviation - 0.01).abs() < 1e-12);
+        assert_eq!(report.at_parameter, 1.0, "the end bound is the witness");
+    }
+
+    // ── Tolerance guards ────────────────────────────────────────────────
+
+    #[test]
+    fn every_tolerance_guard_rejects_a_negative_and_a_nan_bound() {
+        let (mut topo, seam, face) = cylinder_seam();
+        topo.set_pcurve_oriented(seam, face, true, seam_pcurve(0.0, true))
+            .unwrap();
+        topo.set_pcurve_oriented(seam, face, false, seam_pcurve(TAU, false))
+            .unwrap();
+        let shell = topo.add_shell(Shell::new(vec![face]).unwrap());
+        let solid = topo.add_solid(Solid::new(shell, vec![]));
+
+        for bad in [-1.0, f64::NAN] {
+            let err = validate_same_parameter(&topo, seam, face, true, bad, 8).unwrap_err();
+            assert!(
+                matches!(
+                    err,
+                    TopologyError::InvalidToleranceValue {
+                        entity: "same-parameter validation",
+                        ..
+                    }
+                ),
+                "got {err:?}"
+            );
+            let err = validate_same_range(&topo, seam, face, true, bad).unwrap_err();
+            assert!(
+                matches!(
+                    err,
+                    TopologyError::InvalidToleranceValue {
+                        entity: "same-range validation",
+                        ..
+                    }
+                ),
+                "got {err:?}"
+            );
+            assert!(matches!(
+                validate_same_range_strict(&topo, seam, face, true, bad),
+                Err(CurveUseValidationError::InvalidTolerance { .. })
+            ));
+            assert!(matches!(
+                validate_solid_pcurve_contracts(&topo, solid, bad, 8),
+                Err(CurveUseValidationError::InvalidTolerance { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn entity_tolerance_guards_reject_negative_vertex_and_edge_claims() {
+        let plane = FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: 0.0,
+        };
+        let build = |vertex_tolerance: f64, edge_tolerance: Option<f64>| {
+            let mut topo = Topology::new();
+            let v0 = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), vertex_tolerance));
+            let v1 = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
+            let edge = topo.add_edge(Edge::with_tolerance(
+                v0,
+                v1,
+                EdgeCurve::Line,
+                edge_tolerance,
+            ));
+            let wire =
+                topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], false).unwrap());
+            let face = topo.add_face(Face::new(wire, vec![], plane.clone()));
+            (topo, edge, face)
+        };
+
+        let (topo, edge, face) = build(1e-7, None);
+        validate_same_range(&topo, edge, face, true, 1e-7).unwrap();
+
+        let (topo, edge, face) = build(-1.0, None);
+        let err = validate_same_range(&topo, edge, face, true, 1e-7).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                TopologyError::InvalidToleranceValue {
+                    entity: "vertex",
+                    ..
+                }
+            ),
+            "got {err:?}"
+        );
+
+        let (topo, edge, face) = build(1e-7, Some(-1.0));
+        let err = validate_same_range(&topo, edge, face, true, 1e-7).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                TopologyError::InvalidToleranceValue { entity: "edge", .. }
+            ),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn same_range_rejects_an_offset_pcurve_and_accepts_it_at_its_own_bound() {
+        let (mut topo, seam, face) = cylinder_seam();
+        topo.set_pcurve_oriented(seam, face, true, seam_pcurve(0.3, true))
+            .unwrap();
+        let measured = check_same_range(&topo, seam, face, true).unwrap().unwrap();
+        assert!(
+            measured > 1e-7,
+            "the fixture must deviate past the entity tolerance"
+        );
+
+        let err = validate_same_range(&topo, seam, face, true, 1e-7).unwrap_err();
+        assert!(
+            matches!(err, TopologyError::SameRangeExceeded { .. }),
+            "got {err:?}"
+        );
+        // Exactly at its own measured deviation the use is inside the band.
+        validate_same_range(&topo, seam, face, true, measured).unwrap();
+    }
+
+    #[test]
+    fn a_deviation_exactly_at_the_bound_is_inside_every_band() {
+        let (mut topo, seam, face) = cylinder_seam();
+        topo.set_pcurve_oriented(seam, face, true, seam_pcurve(0.3, true))
+            .unwrap();
+
+        let sampled = check_same_parameter(&topo, seam, face, true, 16)
+            .unwrap()
+            .unwrap()
+            .max_deviation;
+        assert!(sampled > 1e-7);
+        validate_same_parameter(&topo, seam, face, true, sampled, 16).unwrap();
+        assert!(validate_same_parameter(&topo, seam, face, true, 1e-7, 16).is_err());
+
+        let strict = check_same_parameter_strict(&topo, seam, face, true, 16)
+            .unwrap()
+            .unwrap()
+            .max_deviation;
+        assert!(strict > 1e-7);
+        validate_same_parameter_strict(&topo, seam, face, true, strict, 16).unwrap();
+        assert!(validate_same_parameter_strict(&topo, seam, face, true, 1e-7, 16).is_err());
+
+        let range = check_same_range_strict(&topo, seam, face, true)
+            .unwrap()
+            .unwrap();
+        assert!(range > 1e-7);
+        validate_same_range_strict(&topo, seam, face, true, range).unwrap();
+        assert!(validate_same_range_strict(&topo, seam, face, true, 1e-7).is_err());
+    }
+
+    #[test]
+    fn solid_pcurve_contracts_accept_a_use_exactly_at_the_bound() {
+        let (mut topo, seam, face) = cylinder_seam();
+        topo.set_pcurve_oriented(seam, face, true, seam_pcurve(0.0, true))
+            .unwrap();
+        topo.set_pcurve_oriented(seam, face, false, seam_pcurve(TAU, false))
+            .unwrap();
+        // Zero balls so the caller's tolerance alone is the acting bound.
+        for vid in [
+            topo.edge(seam).unwrap().start(),
+            topo.edge(seam).unwrap().end(),
+        ] {
+            topo.vertex_mut(vid).unwrap().set_tolerance(0.0).unwrap();
+        }
+        let shell = topo.add_shell(Shell::new(vec![face]).unwrap());
+        let solid = topo.add_solid(Solid::new(shell, vec![]));
+
+        let widest = [true, false]
+            .into_iter()
+            .map(|forward| {
+                check_same_parameter_strict(&topo, seam, face, forward, 8)
+                    .unwrap()
+                    .unwrap()
+                    .max_deviation
+            })
+            .fold(0.0_f64, f64::max);
+        assert!(widest > 0.0);
+
+        let summary = validate_solid_pcurve_contracts(&topo, solid, widest, 8).unwrap();
+        assert_eq!(summary.validated_uses, 2);
+        assert!(validate_solid_pcurve_contracts(&topo, solid, 0.0, 8).is_err());
+    }
 }
 
 /// RFC 0004 Stage 1: the entity-tolerance validators.
@@ -2844,5 +3796,74 @@ mod tolerant_checks_tests {
         .diagnostic();
         assert_eq!(d.category(), FailureCategory::InvalidInput);
         assert_eq!(d.code(), "entity_tolerance_invalid");
+    }
+
+    #[test]
+    fn vertex_ball_reports_exactly_the_incident_edge_ends() {
+        // One edge meets the vertex at its END, one at its START, and one
+        // misses it entirely.
+        let mut topo = Topology::new();
+        let v0 = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
+        let v1 = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
+        let v2 = topo.add_vertex(Vertex::new(Point3::new(2.0, 0.0, 0.0), 1e-7));
+        let incoming = topo.add_edge(Edge::new(v0, v1, EdgeCurve::Line));
+        let outgoing = topo.add_edge(Edge::new(v1, v2, EdgeCurve::Line));
+        let bypass = topo.add_edge(Edge::new(v0, v2, EdgeCurve::Line));
+
+        let reports = check_vertex_ball(&topo, v1).unwrap();
+        assert_eq!(reports.len(), 2, "exactly the two incident ends");
+        let incoming_report = reports
+            .iter()
+            .find(|report| report.edge == incoming)
+            .expect("an edge that ENDS at the vertex is incident to it");
+        assert!(!incoming_report.at_start);
+        let outgoing_report = reports
+            .iter()
+            .find(|report| report.edge == outgoing)
+            .expect("an edge that STARTS at the vertex is incident to it");
+        assert!(outgoing_report.at_start);
+        assert!(
+            reports.iter().all(|report| report.edge != bypass),
+            "an edge touching neither end is never measured"
+        );
+    }
+
+    #[test]
+    fn vertex_ball_reports_max_for_a_non_finite_curve_evaluation() {
+        // The parameter is finite but the far endpoint poisons the curve
+        // evaluation: the measurement must fail closed, not report NaN.
+        let mut topo = Topology::new();
+        let anchored = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
+        let poisoned = topo.add_vertex(Vertex::new(Point3::new(f64::NAN, 0.0, 0.0), 1e-7));
+        let edge = topo.add_edge(Edge::new(anchored, poisoned, EdgeCurve::Line));
+
+        let reports = check_vertex_ball(&topo, anchored).unwrap();
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].edge, edge);
+        assert_eq!(reports[0].deviation, f64::MAX);
+    }
+
+    #[test]
+    fn edge_tube_accepts_a_declared_bound_exactly_at_its_measured_deviation() {
+        let (mut topo, seam, face) = cylinder_seam();
+        topo.set_pcurve_oriented(seam, face, true, seam_pcurve(0.3))
+            .unwrap();
+        let measured = check_edge_tube(&topo, seam, face, true, 32)
+            .unwrap()
+            .unwrap()
+            .max_deviation;
+        assert!(measured > 1e-7, "the fixture must deviate past the floor");
+        assert!(validate_edge_tube(&topo, seam, face, true, 32).is_err());
+
+        // A claim that exactly covers the measured deviation is covered.
+        topo.edge_mut(seam)
+            .unwrap()
+            .set_tolerance(Some(measured))
+            .unwrap();
+        let report = check_edge_tube(&topo, seam, face, true, 32)
+            .unwrap()
+            .unwrap();
+        assert_eq!(report.effective_tolerance, measured);
+        validate_edge_tube(&topo, seam, face, true, 32).unwrap();
     }
 }
