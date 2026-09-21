@@ -597,19 +597,44 @@ fn heal_by_extending(
 ) -> Result<DefeatureOutcome, OperationsError> {
     let tol = Tolerance::new();
 
+    let adjacency = build_adjacency(topo, all_faces)?;
+
+    // Wound-adjacent kept faces bound the gap and must be extended within
+    // their own planes. All other kept faces (unrelated curved bodies, distant
+    // planes, holes far from the wound) travel verbatim through
+    // `FaceSpec::Existing` so no unrelated geometry is faceted or moved.
+    // A kept face is wound-adjacent when it shares a wound edge or any
+    // vertex with the removed patch.
+    let mut wound_adjacent: BTreeSet<usize> = wound.kept_side.values().copied().collect();
+    for faces in adjacency.at_vertex.values() {
+        if faces.iter().any(|p| removed[*p]) {
+            for &p in faces {
+                if !removed[p] {
+                    wound_adjacent.insert(p);
+                }
+            }
+        }
+    }
+
     // Extending a face means growing its boundary within its own surface.
-    // Only planes support that here. Curved kept edges are checked after the
-    // healed corners are known: a wound arc may disappear exactly when both
-    // of its endpoints collapse to the same recovered corner, but every curve
-    // that would survive the rebuild is still refused rather than chorded.
+    // Only planes support that here, and only for wound-adjacent faces.
+    // Curved kept edges are checked after the healed corners are known: a
+    // wound arc may disappear exactly when both of its endpoints collapse to
+    // the same recovered corner, but every curve that would survive the
+    // rebuild is still refused rather than chorded. Unrelated curved faces
+    // away from the wound are preserved verbatim, never rebuilt.
     let mut planes: Vec<Option<Plane>> = vec![None; all_faces.len()];
     for &pos in kept_positions {
+        if !wound_adjacent.contains(&pos) {
+            continue;
+        }
         let fid = all_faces[pos];
         let face = topo.face(fid)?;
         let FaceSurface::Plane { normal, .. } = face.surface() else {
             return Err(unsupported(format!(
-                "kept face {} is a {} surface; extending the shell to close the \
-                 gap is only implemented for planar faces",
+                "wound-neighbor face {} is a {} surface; extending the shell \
+                 to close the gap is only implemented for planar wound \
+                 neighbors (unrelated curved faces are preserved)",
                 fid.index(),
                 face.surface().type_tag()
             )));
@@ -618,8 +643,6 @@ fn heal_by_extending(
         let anchor = first_wire_vertex(topo, fid)?;
         planes[pos] = Some(Plane::new(normal, dot_normal_point(normal, anchor)));
     }
-
-    let adjacency = build_adjacency(topo, all_faces)?;
 
     // Scale-relative epsilon for "the corner lies on this plane" tests. It only
     // ever makes the heal refuse more; the result itself is still checked by
@@ -658,44 +681,90 @@ fn heal_by_extending(
         moved.insert(vertex, corner);
     }
 
-    // `assemble_solid_mixed` rebuilds planar wires from vertices and therefore
-    // emits straight edges. That is exact for a curved wound edge only when
-    // the edge vanishes: both of its endpoints move to the same healed corner.
-    // This is how the circular end arcs of a removed plane-plane fillet
-    // disappear. Any unrelated or surviving curve remains a typed refusal.
+    // `assemble_solid_mixed` rebuilds positional wires from vertices and
+    // therefore emits straight edges. That is exact for a curved wound edge
+    // only when the edge vanishes: both of its endpoints move to the same
+    // healed corner. This is how the circular end arcs of a removed
+    // plane-plane fillet disappear. Any surviving curve on a rebuilt outer
+    // wire remains a typed refusal. Inner hole wires travel verbatim through
+    // `FaceSpec::Existing` (see below) and are never chorded, so they are
+    // not examined here; a wound edge reaching an inner wire needs the
+    // positional path and is refused below unless that wire is fully wound
+    // and deleted.
     for &pos in kept_positions {
+        if !wound_adjacent.contains(&pos) {
+            continue;
+        }
         let fid = all_faces[pos];
         let face = topo.face(fid)?;
-        for wire_id in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
-        {
-            for oe in topo.wire(wire_id)?.edges() {
-                let edge = topo.edge(oe.edge())?;
-                if matches!(edge.curve(), EdgeCurve::Line) {
-                    continue;
-                }
-                let collapsed_wound =
-                    wound_edge_collapses(topo, edge, oe.edge(), &moved, wound, tol.linear)?;
-                if !collapsed_wound {
-                    return Err(unsupported(format!(
-                        "kept face {} has a curved edge that survives the heal; \
-                         extending the shell is exact only when a curved wound \
-                         edge collapses to one recovered corner",
-                        fid.index()
-                    )));
-                }
+        for oe in topo.wire(face.outer_wire())?.edges() {
+            let edge = topo.edge(oe.edge())?;
+            if matches!(edge.curve(), EdgeCurve::Line) {
+                continue;
+            }
+            let collapsed_wound =
+                wound_edge_collapses(topo, edge, oe.edge(), &moved, wound, tol.linear)?;
+            if !collapsed_wound {
+                return Err(unsupported(format!(
+                    "kept face {} has a curved edge that survives the heal; \
+                     extending the shell is exact only when a curved wound \
+                     edge collapses to one recovered corner",
+                    fid.index()
+                )));
             }
         }
     }
 
-    // Rebuild every kept face with its relocated corners substituted.
+    // Rebuild wound-adjacent faces with relocated corners substituted.
+    // Preserved faces away from the wound travel verbatim through
+    // `FaceSpec::Existing` (exact surface, curves, orientation, holes), so
+    // unrelated cylinders, spheres, tori, cones and distant planes survive
+    // bit-exact. Their boundary history maps to no positional source; the
+    // journaled path therefore fail-closes on mixed bodies while the
+    // face-evolution contract (face_map) stays total.
     let mut specs: Vec<FaceSpec> = Vec::with_capacity(kept_positions.len());
     let mut sources: Vec<FaceId> = Vec::with_capacity(kept_positions.len());
     let mut vertex_sources = Vec::new();
     let mut retained_edges = BTreeSet::new();
     for &pos in kept_positions {
         let fid = all_faces[pos];
+        if !wound_adjacent.contains(&pos) {
+            // Verbatim carry-through. History sources enumerate every wire
+            // corner without dedup, matching the assembler's verbatim
+            // snapshot exactly.
+            let face = topo.face(fid)?;
+            let mut wire_sources = vec![verbatim_wire_source_groups(topo, face.outer_wire())?];
+            retained_edges.extend(
+                topo.wire(face.outer_wire())?
+                    .edges()
+                    .iter()
+                    .map(remus_topology::OrientedEdge::edge),
+            );
+            for &wire_id in face.inner_wires() {
+                wire_sources.push(verbatim_wire_source_groups(topo, wire_id)?);
+                retained_edges.extend(
+                    topo.wire(wire_id)?
+                        .edges()
+                        .iter()
+                        .map(remus_topology::OrientedEdge::edge),
+                );
+            }
+            specs.push(FaceSpec::Existing {
+                face: fid,
+                outer: None,
+            });
+            sources.push(fid);
+            vertex_sources.push(wire_sources);
+            continue;
+        }
         let face = topo.face(fid)?;
         let plane = planes[pos].ok_or_else(|| unsupported("kept face lost its plane"))?;
+
+        let drop_slots: &[usize] = plan
+            .drop_inner
+            .iter()
+            .find(|(p, _)| *p == pos)
+            .map_or(&[], |(_, slots)| slots.as_slice());
 
         let (outer, outer_sources) = substitute_wire(topo, face.outer_wire(), &moved)?;
         if outer.len() < 3 {
@@ -705,6 +774,18 @@ fn heal_by_extending(
             continue;
         }
 
+        // A relocated corner must stay on its own face's plane, otherwise the
+        // "extension" bent the face instead of growing it.
+        for p in &outer {
+            if !plane.contains(*p, eps) {
+                return Err(unsupported(format!(
+                    "healing would pull face {} off its own plane; the removed \
+                     patch does not meet its neighbours in a single corner",
+                    fid.index()
+                )));
+            }
+        }
+
         retained_edges.extend(
             topo.wire(face.outer_wire())?
                 .edges()
@@ -712,19 +793,83 @@ fn heal_by_extending(
                 .map(remus_topology::OrientedEdge::edge),
         );
 
-        let drop_slots: &[usize] = plan
-            .drop_inner
-            .iter()
-            .find(|(p, _)| *p == pos)
-            .map_or(&[], |(_, slots)| slots.as_slice());
+        // Faces without deleted holes keep every hole verbatim through
+        // `FaceSpec::Existing`: exact curves, orientation, and pcurves survive,
+        // and only the outer wire is re-trimmed from corner positions. This is
+        // what lets a fillet end face keep an unrelated bore rim while its
+        // wound cross arc collapses. A wound edge reaching an inner wire
+        // cannot travel verbatim, so it is refused here rather than silently
+        // kept or chorded.
+        if drop_slots.is_empty() {
+            for &wire_id in face.inner_wires() {
+                for oe in topo.wire(wire_id)?.edges() {
+                    if wound.contains(oe.edge()) {
+                        return Err(unsupported(format!(
+                            "kept face {} has a wound edge on an inner wire; \
+                             extending the shell is exact only for outer-wire \
+                             wounds when holes are preserved verbatim",
+                            fid.index()
+                        )));
+                    }
+                }
+            }
+            // Inner holes travel verbatim; their source groups still enter the
+            // boundary history so journaled callers see a total map. Verbatim
+            // groups enumerate every corner without dedup, matching the
+            // assembler's verbatim snapshot.
+            let mut wire_sources = vec![outer_sources];
+            for &wire_id in face.inner_wires() {
+                wire_sources.push(verbatim_wire_source_groups(topo, wire_id)?);
+                retained_edges.extend(
+                    topo.wire(wire_id)?
+                        .edges()
+                        .iter()
+                        .map(remus_topology::OrientedEdge::edge),
+                );
+            }
+            specs.push(FaceSpec::Existing {
+                face: fid,
+                outer: Some(outer),
+            });
+            sources.push(fid);
+            vertex_sources.push(wire_sources);
+            continue;
+        }
+
         let mut inner_wires = Vec::new();
         let mut wire_sources = vec![outer_sources];
         for (slot, &wire_id) in face.inner_wires().iter().enumerate() {
             if drop_slots.contains(&slot) {
                 continue;
             }
+            // Positional inner rebuilds can only express straight chords.
+            for oe in topo.wire(wire_id)?.edges() {
+                let edge = topo.edge(oe.edge())?;
+                if matches!(edge.curve(), EdgeCurve::Line) {
+                    continue;
+                }
+                let collapsed_wound =
+                    wound_edge_collapses(topo, edge, oe.edge(), &moved, wound, tol.linear)?;
+                if !collapsed_wound {
+                    return Err(unsupported(format!(
+                        "kept face {} has a curved hole edge that survives the heal; \
+                         extending the shell is exact only when a curved wound \
+                         edge collapses to one recovered corner",
+                        fid.index()
+                    )));
+                }
+            }
             let (pts, point_sources) = substitute_wire(topo, wire_id, &moved)?;
             if pts.len() >= 3 {
+                for p in &pts {
+                    if !plane.contains(*p, eps) {
+                        return Err(unsupported(format!(
+                            "healing would pull face {} off its own plane; the removed \
+                             patch does not meet its neighbours in a single corner",
+                            fid.index()
+                        )));
+                    }
+                }
                 inner_wires.push(pts);
                 wire_sources.push(point_sources);
                 retained_edges.extend(
@@ -733,18 +878,6 @@ fn heal_by_extending(
                         .iter()
                         .map(remus_topology::OrientedEdge::edge),
                 );
-            }
-        }
-
-        // A relocated corner must stay on its own face's plane, otherwise the
-        // "extension" bent the face instead of growing it.
-        for p in outer.iter().chain(inner_wires.iter().flatten()) {
-            if !plane.contains(*p, eps) {
-                return Err(unsupported(format!(
-                    "healing would pull face {} off its own plane; the removed \
-                     patch does not meet its neighbours in a single corner",
-                    fid.index()
-                )));
             }
         }
 
@@ -1163,6 +1296,26 @@ fn substitute_wire(
         }
     }
     Ok((points, sources))
+}
+
+/// Source groups for a verbatim-copied wire: one single-vertex group per
+/// oriented edge start, with no position dedup.
+///
+/// This mirrors `existing_spec_wire_points` in the assembler exactly (one
+/// entry per edge), unlike `substitute_wire` which collapses coincident
+/// corners. Verbatim wires keep every edge, so their history sources must
+/// keep every corner too, or the source/target corner counts diverge and the
+/// boundary history refuses.
+fn verbatim_wire_source_groups(
+    topo: &Topology,
+    wire: remus_topology::wire::WireId,
+) -> Result<Vec<Vec<remus_topology::VertexId>>, OperationsError> {
+    let mut groups = Vec::new();
+    for oe in topo.wire(wire)?.edges() {
+        let edge = topo.edge(oe.edge())?;
+        groups.push(vec![oe.oriented_start(edge)]);
+    }
+    Ok(groups)
 }
 
 /// Auto-detect small features in a solid.
