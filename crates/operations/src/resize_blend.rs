@@ -12,18 +12,19 @@ use remus_blend::BlendResult;
 use remus_blend::fillet_builder::FilletBuilder;
 use remus_math::curves::Circle3D;
 use remus_math::tolerance::Tolerance;
-use remus_math::vec::Vec3;
+use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
 use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
 use remus_topology::face::{FaceId, FaceSurface};
 use remus_topology::journal::EntityKey;
 use remus_topology::shell::Shell;
 use remus_topology::solid::{Solid, SolidId};
-use remus_topology::vertex::Vertex;
+use remus_topology::vertex::{Vertex, VertexId};
 use remus_topology::wire::{OrientedEdge, Wire, WireId};
 
 use crate::OperationsError;
 use crate::blend_ops::{BlendFaceOrigins, fillet_v2};
+use crate::dot_normal_point;
 use crate::evolution::EvolutionMap;
 
 /// Stable, machine-readable refusal from [`resize_blend`].
@@ -435,6 +436,37 @@ pub(crate) fn defeature_curved_band(
     let Some(&seed) = selected.first() else {
         return Ok(None);
     };
+    if matches!(topo.face(seed)?.surface(), FaceSurface::Cylinder(_)) {
+        // Plane-to-plane cylindrical bands heal through the surgical path so
+        // unrelated curved geometry survives. Anything outside the surgical
+        // scope (multi-face bands, non-planar supports, bores and other plain
+        // cylinders) declines here and keeps the established defeature logic.
+        let band = match describe_band(topo, solid, seed) {
+            Ok(band) => band,
+            Err(_) => return Ok(None),
+        };
+        if band.faces.len() != 1
+            || band.supports.len() != 2
+            || band.supports.iter().any(|support| {
+                topo.face(*support)
+                    .is_ok_and(|face| !face.surface().is_planar())
+            })
+        {
+            return Ok(None);
+        }
+        let selection: std::collections::BTreeSet<_> = selected.iter().copied().collect();
+        let members: std::collections::BTreeSet<_> = band.faces.iter().copied().collect();
+        if selection != members {
+            return Err(reconstruction(
+                "delete-face selection must contain exactly the complete analytic blend band",
+            ));
+        }
+        let Some(sharp) = heal_cylinder_plane_band_surgical(topo, solid, &band)? else {
+            return Ok(None);
+        };
+        validate_exact_result(topo, sharp.solid, "deleted planar blend reconstruction")?;
+        return Ok(Some(sharp));
+    }
     if !matches!(topo.face(seed)?.surface(), FaceSurface::Torus(_)) {
         return Ok(None);
     }
@@ -1897,6 +1929,599 @@ fn copy_unchanged(
     })
 }
 
+/// Solve `n·p = d` for three unit-normal planes, or `None` when they are too
+/// near-parallel to define a corner. Same gate as
+/// [`crate::defeature::MIN_PLANE_TRIPLE_DET`]: below it the corner position
+/// is meaningless and the heal is refused rather than emitting a far-away
+/// intersection point.
+fn sharp_triple_corner(a: (Vec3, f64), b: (Vec3, f64), c: (Vec3, f64)) -> Option<Point3> {
+    let bc = b.0.cross(c.0);
+    let det = a.0.dot(bc);
+    if det.abs() < crate::defeature::MIN_PLANE_TRIPLE_DET {
+        return None;
+    }
+    let ca = c.0.cross(a.0);
+    let ab = a.0.cross(b.0);
+    let v = (bc * a.1 + ca * b.1 + ab * c.1) * (1.0 / det);
+    Some(Point3::new(v.x(), v.y(), v.z()))
+}
+
+/// Unit plane equation of a planar face: normalized normal with matching
+/// offset, so corner solves and containment tests share one convention.
+fn unit_plane_of(face: &remus_topology::face::Face) -> Result<(Vec3, f64), OperationsError> {
+    match face.surface() {
+        FaceSurface::Plane { normal, d } => {
+            let unit = normal
+                .normalize()
+                .map_err(|error| reconstruction(format!("invalid plane normal: {error}")))?;
+            let scale = unit.dot(*normal);
+            if scale.abs() <= Tolerance::new().angular {
+                return Err(reconstruction("degenerate plane normal".to_string()));
+            }
+            Ok((unit, *d / scale))
+        }
+        // Callers gate on planarity first; any other carrier here (or a
+        // future variant) is classification drift, refused explicitly.
+        FaceSurface::Nurbs(_)
+        | FaceSurface::Cylinder(_)
+        | FaceSurface::Cone(_)
+        | FaceSurface::Sphere(_)
+        | FaceSurface::Torus(_) => Err(reconstruction("support face lost its plane".to_string())),
+    }
+}
+
+/// Distance from a point to the infinite line through two points.
+fn point_line_distance(point: Point3, line_a: Point3, line_b: Point3) -> f64 {
+    let direction = line_b - line_a;
+    let length = direction.length();
+    if length <= Tolerance::new().linear {
+        return (point - line_a).length();
+    }
+    (direction.cross(point - line_a)).length() / length
+}
+
+/// Surgical removal of one cylindrical plane-to-plane blend band.
+///
+/// The copied solid's wound wires are edited in place: each collapsing cross
+/// arc is deleted, each spring contact becomes one shared sharp edge between
+/// the two supports, and surviving boundary edges are re-anchored as new
+/// lines only when the recovered corner lies exactly on their carrier and on
+/// every adjacent face. Sibling arcs, holes, cone shoulders, and every face
+/// away from the wound keep their entities untouched, so unrelated analytic
+/// geometry (and any pcurves registered on surviving uses) survives exactly.
+///
+/// Scope and fallback contract: `Ok(None)` declines anything outside the
+/// isolated-strip scope (non-cylindrical bands, support counts, split or
+/// non-line springs, non-two-cross topologies, unprovable extensions such as
+/// off-carrier corners or point contacts) so callers fall back to the
+/// positional healer, which still owns those shapes with identical outcomes
+/// to before. Definitive `Err` is reserved for configurations the fallback
+/// cannot heal either: bands ending on curved geometry (missing
+/// curved-carrier sharp termination) and non-planar wound neighbors.
+#[allow(clippy::too_many_lines)]
+fn heal_cylinder_plane_band_surgical(
+    topo: &mut Topology,
+    solid: SolidId,
+    band: &BandDescription,
+) -> Result<Option<crate::defeature::DefeatureOutcome>, OperationsError> {
+    let tol = Tolerance::new();
+    if band.faces.len() != 1 {
+        return Ok(None);
+    }
+    let band_source = band.faces[0];
+    if !matches!(topo.face(band_source)?.surface(), FaceSurface::Cylinder(_)) {
+        return Ok(None);
+    }
+    if band.supports.len() != 2
+        || band.supports.iter().any(|support| {
+            topo.face(*support)
+                .is_ok_and(|face| !face.surface().is_planar())
+        })
+    {
+        return Ok(None);
+    }
+    if !topo.solid(solid)?.inner_shells().is_empty() {
+        // The positional fallback owns the cavity refusal.
+        return Ok(None);
+    }
+
+    let copied_entities = crate::copy::copy_solid_with_entity_map(topo, solid)?;
+    // Note: scope declines (`Ok(None)`) below leave these copied entities
+    // plus any partial splice products unreachable in the arena. That garbage
+    // is harmless: the positional fallback operates on the pristine original
+    // solid, and nothing published ever references the copies.
+    let copy = copied_entities.solid;
+    let mut face_map_indices: HashMap<_, _> = copied_entities
+        .face_map
+        .iter()
+        .map(|(&source, face)| (source, face.index()))
+        .collect();
+    let copied = |map: &HashMap<usize, usize>, source: FaceId| {
+        map.get(&source.index())
+            .and_then(|index| topo.face_id_from_index(*index))
+            .ok_or_else(|| reconstruction(format!("face {} was not copied", source.index())))
+    };
+    let band_face = copied(&face_map_indices, band_source)?;
+    let supports = [
+        copied(&face_map_indices, band.supports[0])?,
+        copied(&face_map_indices, band.supports[1])?,
+    ];
+    let support_set: HashSet<FaceId> = supports.iter().copied().collect();
+    let (support_plane0, support_plane1) = (
+        unit_plane_of(topo.face(supports[0])?)?,
+        unit_plane_of(topo.face(supports[1])?)?,
+    );
+
+    // Spring contacts: exactly one line edge per support. Anything else
+    // (missing contact, split springs, non-line contacts) is outside the
+    // isolated-strip scope and declines to the positional fallback.
+    let mut springs = Vec::new();
+    for &support in &supports {
+        let contacts = shared_edges(topo, copy, support, band_face)?;
+        if contacts.is_empty() {
+            return Ok(None);
+        }
+        if contacts.len() != 1 {
+            return Ok(None);
+        }
+        if !matches!(topo.edge(contacts[0])?.curve(), EdgeCurve::Line) {
+            return Ok(None);
+        }
+        springs.push(contacts[0]);
+    }
+    let spring_set: HashSet<EdgeId> = springs.iter().copied().collect();
+
+    // Cross arcs: every remaining band outer edge. The isolated strip carries
+    // exactly two, each meeting exactly one end face.
+    let band_data = topo.face(band_face)?;
+    if !band_data.inner_wires().is_empty() {
+        return Ok(None);
+    }
+    let band_edges: Vec<OrientedEdge> = topo.wire(band_data.outer_wire())?.edges().to_vec();
+    let crosses: Vec<EdgeId> = band_edges
+        .iter()
+        .map(OrientedEdge::edge)
+        .filter(|edge| !spring_set.contains(edge))
+        .collect();
+    let adjacency = topo.build_adjacency(copy)?;
+    // A cross edge ending on curved geometry names the missing construction
+    // precisely and refuses, even outside the two-cross strip scope: no
+    // fallback healer owns curved-carrier sharp terminations either.
+    for &cross in &crosses {
+        for face in adjacency
+            .faces_for_edge(cross)
+            .iter()
+            .copied()
+            .filter(|face| *face != band_face)
+        {
+            let neighbor = topo.face(face)?;
+            if !neighbor.surface().is_planar() {
+                return Err(OperationsError::Unsupported {
+                    operation: "resize blend",
+                    reason: format!(
+                        "blend end face {} is a {} surface; exact removal of a band \
+                         ending on curved geometry needs a curved-carrier sharp \
+                         termination (line-surface piercing plus curved wire re-cut), \
+                         which is not implemented",
+                        face.index(),
+                        neighbor.surface().type_tag()
+                    ),
+                });
+            }
+        }
+    }
+    if crosses.len() != 2 {
+        return Ok(None);
+    }
+    let mut endfaces: Vec<FaceId> = Vec::new();
+    for &cross in &crosses {
+        let mut neighbors: Vec<FaceId> = adjacency
+            .faces_for_edge(cross)
+            .iter()
+            .copied()
+            .filter(|face| *face != band_face)
+            .collect();
+        neighbors.sort_unstable_by_key(|face| face.index());
+        neighbors.dedup();
+        if neighbors.len() != 1 {
+            return Ok(None);
+        }
+        if support_set.contains(&neighbors[0]) {
+            return Ok(None);
+        }
+        if !endfaces.contains(&neighbors[0]) {
+            endfaces.push(neighbors[0]);
+        }
+    }
+    endfaces.sort_unstable_by_key(|face| face.index());
+    if endfaces.len() != 2 {
+        return Ok(None);
+    }
+    let mut end_planes = Vec::new();
+    for &end in &endfaces {
+        let face = topo.face(end)?;
+        if !face.surface().is_planar() {
+            return Err(OperationsError::Unsupported {
+                operation: "resize blend",
+                reason: format!(
+                    "blend end face {} is a {} surface; exact removal of a band \
+                     ending on curved geometry needs a curved-carrier sharp \
+                     termination (line-surface piercing plus curved wire re-cut), \
+                     which is not implemented",
+                    end.index(),
+                    face.surface().type_tag()
+                ),
+            });
+        }
+        end_planes.push(unit_plane_of(face)?);
+    }
+
+    // Sharp corners: support/support/endface triples, one per end face.
+    let mut corner_points = Vec::new();
+    for (i, _) in endfaces.iter().enumerate() {
+        let Some(point) = sharp_triple_corner(support_plane0, support_plane1, end_planes[i]) else {
+            // The positional fallback owns the parallel-neighbour refusal.
+            return Ok(None);
+        };
+        corner_points.push(point);
+    }
+    if (corner_points[0] - corner_points[1]).length() <= tol.linear {
+        return Ok(None);
+    }
+
+    // Every band vertex maps through its single incident cross edge to that
+    // cross edge's end-face corner. Mid-strip split vertices (or any
+    // non-strip topology) decline to the fallback.
+    let mut corner_of_vertex: HashMap<VertexId, Point3> = HashMap::new();
+    for (&cross, &point) in crosses.iter().zip(corner_points.iter()) {
+        let edge = topo.edge(cross)?;
+        for vertex in [edge.start(), edge.end()] {
+            match corner_of_vertex.entry(vertex) {
+                std::collections::hash_map::Entry::Vacant(slot) => {
+                    slot.insert(point);
+                }
+                std::collections::hash_map::Entry::Occupied(slot) => {
+                    if (*slot.get() - point).length() > tol.linear {
+                        return Ok(None);
+                    }
+                }
+            }
+        }
+    }
+    let band_vertices: HashSet<VertexId> = band_edges
+        .iter()
+        .filter_map(|oriented| {
+            topo.edge(oriented.edge())
+                .ok()
+                .map(|edge| [edge.start(), edge.end()])
+        })
+        .flatten()
+        .collect();
+    if corner_of_vertex.len() != band_vertices.len() {
+        return Ok(None);
+    }
+
+    // Displacement bound: a healed corner moves by roughly the feature size.
+    let (mut patch_lo, mut patch_hi): (Option<Point3>, Option<Point3>) = (None, None);
+    for &vertex in &band_vertices {
+        let p = topo.vertex(vertex)?.point();
+        patch_lo = Some(match patch_lo {
+            None => p,
+            Some(lo) => Point3::new(lo.x().min(p.x()), lo.y().min(p.y()), lo.z().min(p.z())),
+        });
+        patch_hi = Some(match patch_hi {
+            None => p,
+            Some(hi) => Point3::new(hi.x().max(p.x()), hi.y().max(p.y()), hi.z().max(p.z())),
+        });
+    }
+    let max_displacement = patch_lo.zip(patch_hi).map_or(0.0, |(lo, hi)| {
+        (hi - lo).length() * crate::defeature::MAX_HEAL_DISPLACEMENT_FACTOR
+    });
+    for &vertex in &band_vertices {
+        let original = topo.vertex(vertex)?.point();
+        let Some(&target) = corner_of_vertex.get(&vertex) else {
+            return Ok(None);
+        };
+        if (target - original).length() > max_displacement {
+            return Ok(None);
+        }
+    }
+
+    // Wound-adjacent kept faces share a wound edge with the band. Any other
+    // kept face containing a band vertex is a corner-touch the surgery cannot
+    // close exactly (rebuilding it would bend it off its own surface, leaving
+    // it would crack the shell), so it is refused rather than corrupted.
+    let wound_edges: HashSet<EdgeId> = springs.iter().chain(crosses.iter()).copied().collect();
+    let mut wound_adjacent: HashSet<FaceId> = HashSet::new();
+    for &edge in &wound_edges {
+        for face in adjacency.faces_for_edge(edge).iter().copied() {
+            if face != band_face {
+                wound_adjacent.insert(face);
+            }
+        }
+    }
+    let mut vertex_users: HashMap<VertexId, Vec<FaceId>> = HashMap::new();
+    for &face in &remus_topology::explorer::solid_faces(topo, copy)? {
+        let face_data = topo.face(face)?;
+        for wire_id in
+            std::iter::once(face_data.outer_wire()).chain(face_data.inner_wires().iter().copied())
+        {
+            for oriented in topo.wire(wire_id)?.edges() {
+                let edge = topo.edge(oriented.edge())?;
+                for vertex in [edge.start(), edge.end()] {
+                    vertex_users.entry(vertex).or_default().push(face);
+                }
+            }
+        }
+    }
+    // A kept face that only touches the band at a point (no shared wound
+    // edge) declines to the positional fallback: rebuilding it would bend it
+    // off its own surface, and leaving it would crack the shell.
+    for &vertex in &band_vertices {
+        let empty: &[FaceId] = &[];
+        for &user in vertex_users.get(&vertex).map_or(empty, Vec::as_slice) {
+            if user != band_face && !wound_adjacent.contains(&user) {
+                return Ok(None);
+            }
+        }
+    }
+    for &face in &wound_adjacent {
+        let face_data = topo.face(face)?;
+        if !face_data.surface().is_planar() {
+            return Err(OperationsError::Unsupported {
+                operation: "resize blend",
+                reason: format!(
+                    "wound-neighbor face {} is a {} surface; extending the shell \
+                     to close the gap is only implemented for planar wound \
+                     neighbors",
+                    face.index(),
+                    face_data.surface().type_tag()
+                ),
+            });
+        }
+    }
+
+    // New corner vertices, one per end face, plus the shared sharp edge.
+    let mut corner_vertices: HashMap<usize, VertexId> = HashMap::new();
+    for (i, &end) in endfaces.iter().enumerate() {
+        corner_vertices.insert(
+            end.index(),
+            topo.add_vertex(Vertex::new(corner_points[i], tol.linear)),
+        );
+    }
+    let corner_vertex_for = |vertex: VertexId,
+                             corner_of_vertex: &HashMap<VertexId, Point3>,
+                             endfaces: &[FaceId],
+                             corner_points: &[Point3],
+                             corner_vertices: &HashMap<usize, VertexId>|
+     -> Result<VertexId, OperationsError> {
+        let Some(&target) = corner_of_vertex.get(&vertex) else {
+            return Err(reconstruction(format!(
+                "wound vertex {} has no recovered corner",
+                vertex.index()
+            )));
+        };
+        for (i, &end) in endfaces.iter().enumerate() {
+            if (corner_points[i] - target).length() <= tol.linear {
+                return corner_vertices
+                    .get(&end.index())
+                    .copied()
+                    .ok_or_else(|| reconstruction("recovered corner has no vertex".to_string()));
+            }
+        }
+        Err(reconstruction(
+            "recovered corner matches no end face".to_string(),
+        ))
+    };
+    let sharp_edge = topo.add_edge(Edge::new(
+        corner_vertices[&endfaces[0].index()],
+        corner_vertices[&endfaces[1].index()],
+        EdgeCurve::Line,
+    ));
+
+    // Splice every wound-adjacent wire that carries a band contact. Untouched
+    // wires keep their entities, which also keeps registered pcurves valid.
+    let mut edge_replacements: HashMap<EdgeId, EdgeId> = HashMap::new();
+    let mut ordered_adjacent: Vec<FaceId> = wound_adjacent.iter().copied().collect();
+    ordered_adjacent.sort_unstable_by_key(|face| face.index());
+    for &face in &ordered_adjacent {
+        let face_data = topo.face(face)?;
+        let wires: Vec<WireId> = std::iter::once(face_data.outer_wire())
+            .chain(face_data.inner_wires().iter().copied())
+            .collect();
+        for wire_id in wires {
+            let old_sequence = topo.wire(wire_id)?.edges().to_vec();
+            if !old_sequence
+                .iter()
+                .any(|oriented| wound_edges.contains(&oriented.edge()))
+            {
+                continue;
+            }
+            let mut new_sequence = Vec::with_capacity(old_sequence.len());
+            for oriented in &old_sequence {
+                if wound_edges.contains(&oriented.edge()) {
+                    let edge = topo.edge(oriented.edge())?;
+                    let Some(&start_corner) = corner_of_vertex.get(&edge.start()) else {
+                        return Ok(None);
+                    };
+                    let Some(&end_corner) = corner_of_vertex.get(&edge.end()) else {
+                        return Ok(None);
+                    };
+                    if (start_corner - end_corner).length() <= tol.linear {
+                        // Collapsing cross arc: deleted with the band.
+                        continue;
+                    }
+                    // Spring contact on a support: the full sharp edge.
+                    // Anything else declines to the positional fallback.
+                    if !spring_set.contains(&oriented.edge()) {
+                        return Ok(None);
+                    }
+                    if !support_set.contains(&face) {
+                        return Ok(None);
+                    }
+                    let sharp_data = topo.edge(sharp_edge)?;
+                    let (sharp_start, sharp_end) = (sharp_data.start(), sharp_data.end());
+                    let sharp_start_point = topo.vertex(sharp_start)?.point();
+                    let sharp_end_point = topo.vertex(sharp_end)?.point();
+                    let aligned = (start_corner - sharp_start_point).length() <= tol.linear
+                        && (end_corner - sharp_end_point).length() <= tol.linear;
+                    let flipped = (start_corner - sharp_end_point).length() <= tol.linear
+                        && (end_corner - sharp_start_point).length() <= tol.linear;
+                    if !aligned && !flipped {
+                        return Ok(None);
+                    }
+                    new_sequence.push(OrientedEdge::new(
+                        sharp_edge,
+                        if aligned {
+                            oriented.is_forward()
+                        } else {
+                            !oriented.is_forward()
+                        },
+                    ));
+                    continue;
+                }
+                let edge = topo.edge(oriented.edge())?;
+                let remap = |vertex: VertexId| -> Result<VertexId, OperationsError> {
+                    if corner_of_vertex.contains_key(&vertex) {
+                        corner_vertex_for(
+                            vertex,
+                            &corner_of_vertex,
+                            &endfaces,
+                            &corner_points,
+                            &corner_vertices,
+                        )
+                    } else {
+                        Ok(vertex)
+                    }
+                };
+                let new_start = remap(edge.start())?;
+                let new_end = remap(edge.end())?;
+                if new_start == new_end {
+                    // Both corners merged: dropping the zero-length survivor
+                    // is exact.
+                    continue;
+                }
+                if new_start == edge.start() && new_end == edge.end() {
+                    new_sequence.push(*oriented);
+                    continue;
+                }
+                // Surviving boundary extended to the recovered corner. Exact
+                // only for lines whose carrier and every adjacent face still
+                // contain the corner; anything else declines to the
+                // positional fallback, which owns those topologies.
+                if !matches!(edge.curve(), EdgeCurve::Line) {
+                    return Ok(None);
+                }
+                let old_start = topo.vertex(edge.start())?.point();
+                let old_end = topo.vertex(edge.end())?.point();
+                let new_start_point = topo.vertex(new_start)?.point();
+                let new_end_point = topo.vertex(new_end)?.point();
+                if point_line_distance(new_start_point, old_start, old_end) > tol.linear
+                    || point_line_distance(new_end_point, old_start, old_end) > tol.linear
+                {
+                    return Ok(None);
+                }
+                for other in adjacency.faces_for_edge(oriented.edge()).iter().copied() {
+                    if other == face || other == band_face {
+                        continue;
+                    }
+                    if !wound_adjacent.contains(&other) {
+                        return Ok(None);
+                    }
+                    let (normal, d) = unit_plane_of(topo.face(other)?)?;
+                    for point in [new_start_point, new_end_point] {
+                        if (dot_normal_point(normal, point) - d).abs() > tol.linear {
+                            return Ok(None);
+                        }
+                    }
+                }
+                let replacement = *edge_replacements.entry(oriented.edge()).or_insert_with(|| {
+                    topo.add_edge(Edge::new(new_start, new_end, EdgeCurve::Line))
+                });
+                new_sequence.push(OrientedEdge::new(replacement, oriented.is_forward()));
+            }
+            if new_sequence.is_empty() {
+                return Ok(None);
+            }
+            let new_wire = match Wire::new(new_sequence, true) {
+                Ok(wire) => topo.add_wire(wire),
+                Err(_) => return Ok(None),
+            };
+            replace_face_wire(topo, face, wire_id, new_wire)?;
+        }
+    }
+
+    let old_shell = topo.solid(copy)?.outer_shell();
+    let kept_faces: Vec<FaceId> = topo
+        .shell(old_shell)?
+        .faces()
+        .iter()
+        .copied()
+        .filter(|face| *face != band_face)
+        .collect();
+    let shell = topo.add_shell(Shell::new(kept_faces)?);
+    let sharp_solid = topo.add_solid(Solid::new(shell, Vec::new()));
+    face_map_indices.remove(&band_source.index());
+    let face_map = face_map_indices
+        .into_iter()
+        .filter_map(|(source, result)| topo.face_id_from_index(result).map(|face| (source, face)))
+        .collect();
+    let live_edges: HashSet<_> = remus_topology::explorer::solid_edges(topo, sharp_solid)?
+        .into_iter()
+        .collect();
+    let live_vertices: HashSet<_> = remus_topology::explorer::solid_vertices(topo, sharp_solid)?
+        .into_iter()
+        .collect();
+    // Every copied boundary maps: springs to the sharp edge, extended edges
+    // to their replacements, vanished wound edges to nothing, and untouched
+    // entities to themselves.
+    let mut replaced_edges: HashMap<EdgeId, EdgeId> = HashMap::new();
+    for &spring in &springs {
+        replaced_edges.insert(spring, sharp_edge);
+    }
+    for (&old, &new) in &edge_replacements {
+        replaced_edges.insert(old, new);
+    }
+    let mut boundary_history = Vec::new();
+    for (source, copied) in copied_entities.edge_map {
+        let target = replaced_edges.get(&copied).copied().unwrap_or(copied);
+        boundary_history.push((
+            EntityKey::edge(source),
+            live_edges
+                .contains(&target)
+                .then_some(EntityKey::edge(target.index())),
+        ));
+    }
+    // Wound vertices merge into their recovered corners; every other copied
+    // vertex survives on its own face.
+    let mut merged_vertices: HashMap<VertexId, VertexId> = HashMap::new();
+    for &vertex in corner_of_vertex.keys() {
+        if let Ok(target) = corner_vertex_for(
+            vertex,
+            &corner_of_vertex,
+            &endfaces,
+            &corner_points,
+            &corner_vertices,
+        ) {
+            merged_vertices.insert(vertex, target);
+        }
+    }
+    for (source, copied) in copied_entities.vertex_map {
+        let target = merged_vertices.get(&copied).copied().unwrap_or(copied);
+        boundary_history.push((
+            EntityKey::vertex(source),
+            live_vertices
+                .contains(&target)
+                .then_some(EntityKey::vertex(target.index())),
+        ));
+    }
+    Ok(Some(crate::defeature::DefeatureOutcome {
+        solid: sharp_solid,
+        face_map,
+        boundary_history: Some(boundary_history),
+    }))
+}
+
 fn heal_planar_band(
     topo: &mut Topology,
     solid: SolidId,
@@ -1912,8 +2537,16 @@ fn heal_planar_band(
                 .is_some_and(|(kind, _)| kind != BlendKind::Sphere)
         })
         .count();
-    let outcome = crate::defeature::defeature_blend_band(topo, solid, &band.faces)
-        .map_err(|error| reconstruction(format!("planar support heal failed: {error}")))?;
+    // Prefer the surgical healer: it edits wound wires in place and carries
+    // every surviving edge, wire, face, and pcurve untouched. Multi-face
+    // bands and non-cylindrical carriers decline (`Ok(None)`) and fall back
+    // to the positional defeature healer, which still owns those shapes on
+    // all-planar bodies.
+    let outcome = match heal_cylinder_plane_band_surgical(topo, solid, band)? {
+        Some(outcome) => outcome,
+        None => crate::defeature::defeature_blend_band(topo, solid, &band.faces)
+            .map_err(|error| reconstruction(format!("planar support heal failed: {error}")))?,
+    };
     let supports: HashSet<FaceId> = band
         .supports
         .iter()
