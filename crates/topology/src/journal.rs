@@ -1006,7 +1006,7 @@ impl Journal {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use remus_math::vec::Point3;
 
@@ -1696,5 +1696,137 @@ mod tests {
             "pre-journal history is absent, not a barrier: there is no \
              continuity claim before the first entry to protect"
         );
+    }
+
+    #[test]
+    fn recorded_origin_names_are_stable() {
+        // Serialized and diagnostic output depends on these exact names.
+        assert_eq!(RecordedOrigin::Construction.as_str(), "construction");
+        assert_eq!(RecordedOrigin::Geometry.as_str(), "geometry");
+        assert_ne!(
+            RecordedOrigin::Construction.as_str(),
+            RecordedOrigin::Geometry.as_str(),
+            "the two origins must not share a name"
+        );
+    }
+
+    #[test]
+    fn only_barrier_payloads_are_barriers() {
+        let mut topo = Topology::new();
+        let pending = topo.journal_begin("boolean_fuse");
+        topo.journal_record_evolution(
+            pending,
+            draft_one(
+                EntityKey::face(1),
+                EventDraft::Modified {
+                    from: EntityKey::face(0),
+                },
+            ),
+        )
+        .unwrap();
+        let pending = topo.journal_begin("offset_solid");
+        topo.journal_record_barrier(pending, vec![EntityKey::face(1)]);
+        // An unjournaled mutation between entries forces the synthetic
+        // global barrier as the third entry.
+        topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
+        let pending = topo.journal_begin("op_c");
+        topo.journal_record_evolution(pending, draft_one(EntityKey::face(2), EventDraft::Deleted))
+            .unwrap();
+
+        let entries = topo.journal().entries();
+        assert_eq!(entries.len(), 4);
+        assert!(
+            !entries[0].is_barrier(),
+            "an evolution entry does not sever continuity"
+        );
+        assert!(entries[1].is_barrier(), "an explicit barrier severs");
+        assert!(entries[2].is_barrier(), "a global barrier severs");
+        assert!(!entries[3].is_barrier());
+    }
+
+    #[test]
+    fn entries_carry_distinct_tick_counts_derived_from_their_position() {
+        let mut topo = Topology::new();
+        for index in 0..3 {
+            let pending = topo.journal_begin(format!("op_{index}"));
+            topo.journal_record_evolution(
+                pending,
+                draft_one(EntityKey::face(index), EventDraft::Deleted),
+            )
+            .unwrap();
+        }
+        // A snapshot re-derives ticks from entry position, so the restored
+        // journal's counts are the documented 0, 1, 2 — a per-entry value,
+        // never one constant shared by every entry.
+        let rebuilt = Journal::from_snapshot(topo.journal().snapshot()).unwrap();
+        let ticks: Vec<u64> = rebuilt
+            .entries()
+            .iter()
+            .map(JournalEntry::ticks_after)
+            .collect();
+        assert_eq!(ticks, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn pre_operation_scope_from_the_pending_token_reaches_the_entry() {
+        let mut topo = Topology::new();
+
+        // Evolution path: a pre-op entity the events never mention is
+        // still interned and in scope (so it reads as severed, not
+        // carried through).
+        let mut pending = topo.journal_begin("boolean_cut");
+        pending.add_scope([EntityKey::face(40), EntityKey::edge(41)]);
+        topo.journal_record_evolution(pending, draft_one(EntityKey::face(0), EventDraft::Deleted))
+            .unwrap();
+
+        let pre_face = topo
+            .journal()
+            .ordinal_of(EntityKey::face(40))
+            .expect("a pre-operation scope entity is interned");
+        let pre_edge = topo
+            .journal()
+            .ordinal_of(EntityKey::edge(41))
+            .expect("a pre-operation scope entity is interned");
+        let EntryPayload::Evolution { scope, .. } = topo.journal().entries()[0].payload() else {
+            panic!("expected an evolution entry");
+        };
+        assert!(scope.contains(&pre_face));
+        assert!(scope.contains(&pre_edge));
+
+        // Barrier path: the pre-op scope is severed alongside `affected`.
+        let mut pending = topo.journal_begin("offset_solid");
+        pending.add_scope([EntityKey::face(50)]);
+        let barrier = topo.journal_record_barrier(pending, vec![EntityKey::face(51)]);
+        let pre_operand = topo
+            .journal()
+            .ordinal_of(EntityKey::face(50))
+            .expect("a pre-operation scope entity is interned");
+        assert_eq!(
+            topo.journal().barriers_crossing(pre_operand),
+            vec![barrier],
+            "an operand captured before the operation is severed by it"
+        );
+    }
+
+    #[test]
+    fn a_recorded_journal_is_not_empty() {
+        let mut topo = Topology::new();
+        assert!(topo.journal().is_empty(), "a fresh journal is empty");
+        assert_eq!(topo.journal().len(), 0);
+
+        let pending = topo.journal_begin("op_a");
+        topo.journal_record_evolution(pending, draft_one(EntityKey::face(0), EventDraft::Deleted))
+            .unwrap();
+        assert!(
+            !topo.journal().is_empty(),
+            "a recorded entry makes the journal non-empty"
+        );
+        assert_eq!(topo.journal().len(), 1);
+
+        // A barrier-only journal is recorded history too.
+        let mut barriers_only = Topology::new();
+        let pending = barriers_only.journal_begin("offset_solid");
+        barriers_only.journal_record_barrier(pending, Vec::new());
+        assert!(!barriers_only.journal().is_empty());
     }
 }

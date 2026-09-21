@@ -397,3 +397,366 @@ mod tests {
         assert_eq!(wires.len(), 1, "cube face should have 1 wire (outer only)");
     }
 }
+
+#[cfg(test)]
+mod traversal_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use remus_math::vec::{Point3, Vec3};
+
+    use crate::edge::{Edge, EdgeCurve};
+    use crate::face::{Face, FaceSurface};
+    use crate::shell::{Shell, ShellId};
+    use crate::solid::Solid;
+    use crate::vertex::Vertex;
+    use crate::wire::{OrientedEdge, Wire};
+
+    use super::*;
+
+    const TOL: f64 = 1e-7;
+
+    /// Builds a closed, manifold axis-aligned cube shell whose corner sits at
+    /// `(origin, origin, origin)` with the given edge `size`.
+    ///
+    /// Every one of the 12 edges is used exactly twice — once forward, once
+    /// reversed — so the shell is a genuine closed manifold, not six
+    /// independent quads.
+    fn cube_shell(topo: &mut Topology, origin: f64, size: f64) -> ShellId {
+        let p = |x: f64, y: f64, z: f64| {
+            Point3::new(origin + x * size, origin + y * size, origin + z * size)
+        };
+        let v: [VertexId; 8] = [
+            topo.add_vertex(Vertex::new(p(0.0, 0.0, 0.0), TOL)),
+            topo.add_vertex(Vertex::new(p(1.0, 0.0, 0.0), TOL)),
+            topo.add_vertex(Vertex::new(p(1.0, 1.0, 0.0), TOL)),
+            topo.add_vertex(Vertex::new(p(0.0, 1.0, 0.0), TOL)),
+            topo.add_vertex(Vertex::new(p(0.0, 0.0, 1.0), TOL)),
+            topo.add_vertex(Vertex::new(p(1.0, 0.0, 1.0), TOL)),
+            topo.add_vertex(Vertex::new(p(1.0, 1.0, 1.0), TOL)),
+            topo.add_vertex(Vertex::new(p(0.0, 1.0, 1.0), TOL)),
+        ];
+
+        // Bottom ring, top ring, then the four verticals.
+        let eb: [EdgeId; 4] = [
+            topo.add_edge(Edge::new(v[0], v[1], EdgeCurve::Line)),
+            topo.add_edge(Edge::new(v[1], v[2], EdgeCurve::Line)),
+            topo.add_edge(Edge::new(v[2], v[3], EdgeCurve::Line)),
+            topo.add_edge(Edge::new(v[3], v[0], EdgeCurve::Line)),
+        ];
+        let et: [EdgeId; 4] = [
+            topo.add_edge(Edge::new(v[4], v[5], EdgeCurve::Line)),
+            topo.add_edge(Edge::new(v[5], v[6], EdgeCurve::Line)),
+            topo.add_edge(Edge::new(v[6], v[7], EdgeCurve::Line)),
+            topo.add_edge(Edge::new(v[7], v[4], EdgeCurve::Line)),
+        ];
+        let ev: [EdgeId; 4] = [
+            topo.add_edge(Edge::new(v[0], v[4], EdgeCurve::Line)),
+            topo.add_edge(Edge::new(v[1], v[5], EdgeCurve::Line)),
+            topo.add_edge(Edge::new(v[2], v[6], EdgeCurve::Line)),
+            topo.add_edge(Edge::new(v[3], v[7], EdgeCurve::Line)),
+        ];
+
+        let mk =
+            |topo: &mut Topology, edges: [(EdgeId, bool); 4], normal: Vec3, d: f64| -> FaceId {
+                let wire = Wire::new(
+                    edges
+                        .iter()
+                        .map(|&(eid, fwd)| OrientedEdge::new(eid, fwd))
+                        .collect(),
+                    true,
+                )
+                .expect("cube wire");
+                let wid = topo.add_wire(wire);
+                topo.add_face(Face::new(wid, vec![], FaceSurface::Plane { normal, d }))
+            };
+
+        let lo = origin;
+        let hi = origin + size;
+        let bottom = mk(
+            topo,
+            [
+                (eb[0], false),
+                (eb[3], false),
+                (eb[2], false),
+                (eb[1], false),
+            ],
+            Vec3::new(0.0, 0.0, -1.0),
+            -lo,
+        );
+        let top = mk(
+            topo,
+            [(et[0], true), (et[1], true), (et[2], true), (et[3], true)],
+            Vec3::new(0.0, 0.0, 1.0),
+            hi,
+        );
+        let front = mk(
+            topo,
+            [(eb[0], true), (ev[1], true), (et[0], false), (ev[0], false)],
+            Vec3::new(0.0, -1.0, 0.0),
+            -lo,
+        );
+        let back = mk(
+            topo,
+            [(eb[2], true), (ev[3], true), (et[2], false), (ev[2], false)],
+            Vec3::new(0.0, 1.0, 0.0),
+            hi,
+        );
+        let left = mk(
+            topo,
+            [(eb[3], true), (ev[0], true), (et[3], false), (ev[3], false)],
+            Vec3::new(-1.0, 0.0, 0.0),
+            -lo,
+        );
+        let right = mk(
+            topo,
+            [(eb[1], true), (ev[2], true), (et[1], false), (ev[1], false)],
+            Vec3::new(1.0, 0.0, 0.0),
+            hi,
+        );
+
+        topo.add_shell(Shell::new(vec![bottom, top, front, back, left, right]).expect("cube shell"))
+    }
+
+    /// A solid whose outer shell is a unit cube and which has no cavity.
+    fn solid_cube(topo: &mut Topology) -> SolidId {
+        let outer = cube_shell(topo, 0.0, 1.0);
+        topo.add_solid(Solid::new(outer, vec![]))
+    }
+
+    /// A solid with one inner (cavity) shell: a unit cube containing a
+    /// half-size cube-shaped void.
+    fn solid_cube_with_cavity(topo: &mut Topology) -> (SolidId, ShellId, ShellId) {
+        let outer = cube_shell(topo, 0.0, 1.0);
+        let inner = cube_shell(topo, 0.25, 0.5);
+        let solid = topo.add_solid(Solid::new(outer, vec![inner]));
+        (solid, outer, inner)
+    }
+
+    /// A single planar face carrying one square hole: 4 outer + 4 inner edges.
+    fn holed_face(topo: &mut Topology) -> FaceId {
+        let mut ring = |x0: f64, y0: f64, x1: f64, y1: f64| -> WireId {
+            let a = topo.add_vertex(Vertex::new(Point3::new(x0, y0, 0.0), TOL));
+            let b = topo.add_vertex(Vertex::new(Point3::new(x1, y0, 0.0), TOL));
+            let c = topo.add_vertex(Vertex::new(Point3::new(x1, y1, 0.0), TOL));
+            let d = topo.add_vertex(Vertex::new(Point3::new(x0, y1, 0.0), TOL));
+            let e0 = topo.add_edge(Edge::new(a, b, EdgeCurve::Line));
+            let e1 = topo.add_edge(Edge::new(b, c, EdgeCurve::Line));
+            let e2 = topo.add_edge(Edge::new(c, d, EdgeCurve::Line));
+            let e3 = topo.add_edge(Edge::new(d, a, EdgeCurve::Line));
+            topo.add_wire(
+                Wire::new(
+                    vec![
+                        OrientedEdge::new(e0, true),
+                        OrientedEdge::new(e1, true),
+                        OrientedEdge::new(e2, true),
+                        OrientedEdge::new(e3, true),
+                    ],
+                    true,
+                )
+                .expect("ring wire"),
+            )
+        };
+
+        let outer = ring(0.0, 0.0, 3.0, 3.0);
+        let inner = ring(1.0, 1.0, 2.0, 2.0);
+        topo.add_face(Face::new(
+            outer,
+            vec![inner],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ))
+    }
+
+    #[test]
+    fn solid_faces_covers_outer_and_inner_shells() {
+        // The project's own guidance: a function that visits only
+        // `outer_shell()` silently drops cavity faces. This is the fixture
+        // that notices.
+        let mut topo = Topology::new();
+        let (solid, outer, inner) = solid_cube_with_cavity(&mut topo);
+
+        let faces = solid_faces(&topo, solid).unwrap();
+        assert_eq!(faces.len(), 12, "6 outer + 6 cavity faces");
+
+        let mut unique: Vec<usize> = faces.iter().map(|f| f.index()).collect();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), 12, "solid_faces must not repeat a face");
+
+        for shell_id in [outer, inner] {
+            for fid in topo.shell(shell_id).unwrap().faces() {
+                assert!(
+                    faces.iter().any(|f| f.index() == fid.index()),
+                    "face {} of shell {} missing from solid_faces",
+                    fid.index(),
+                    shell_id.index()
+                );
+            }
+        }
+
+        // A solid with no cavity still reports exactly its outer faces.
+        let mut plain_topo = Topology::new();
+        let plain = solid_cube(&mut plain_topo);
+        assert_eq!(solid_faces(&plain_topo, plain).unwrap().len(), 6);
+    }
+
+    #[test]
+    fn solid_entity_counts_sum_over_every_shell() {
+        let mut topo = Topology::new();
+        let plain = solid_cube(&mut topo);
+        assert_eq!(
+            solid_entity_counts(&topo, plain).unwrap(),
+            (6, 12, 8),
+            "a cube is 6 faces / 12 edges / 8 vertices"
+        );
+        assert_eq!(solid_edges(&topo, plain).unwrap().len(), 12);
+        assert_eq!(solid_vertices(&topo, plain).unwrap().len(), 8);
+
+        let mut cavity_topo = Topology::new();
+        let (cavity, _, _) = solid_cube_with_cavity(&mut cavity_topo);
+        assert_eq!(
+            solid_entity_counts(&cavity_topo, cavity).unwrap(),
+            (12, 24, 16),
+            "cavity shell doubles every count"
+        );
+        assert_eq!(solid_edges(&cavity_topo, cavity).unwrap().len(), 24);
+        assert_eq!(solid_vertices(&cavity_topo, cavity).unwrap().len(), 16);
+    }
+
+    #[test]
+    fn face_edges_and_vertices_include_inner_wires() {
+        let mut topo = Topology::new();
+        let holed = holed_face(&mut topo);
+
+        assert_eq!(
+            face_edges(&topo, holed).unwrap().len(),
+            8,
+            "4 outer + 4 hole edges"
+        );
+        assert_eq!(
+            face_vertices(&topo, holed).unwrap().len(),
+            8,
+            "4 outer + 4 hole corners"
+        );
+
+        let mut cube_topo = Topology::new();
+        let cube = solid_cube(&mut cube_topo);
+        for fid in solid_faces(&cube_topo, cube).unwrap() {
+            assert_eq!(face_edges(&cube_topo, fid).unwrap().len(), 4);
+            assert_eq!(face_vertices(&cube_topo, fid).unwrap().len(), 4);
+        }
+    }
+
+    #[test]
+    fn face_wires_returns_outer_then_inner() {
+        let mut topo = Topology::new();
+        let holed = holed_face(&mut topo);
+
+        let wires = face_wires(&topo, holed).unwrap();
+        let face_data = topo.face(holed).unwrap();
+        assert_eq!(wires.len(), 2, "outer wire plus one hole wire");
+        assert_eq!(wires[0], face_data.outer_wire(), "outer wire comes first");
+        assert_eq!(wires[1], face_data.inner_wires()[0]);
+
+        let mut cube_topo = Topology::new();
+        let cube = solid_cube(&mut cube_topo);
+        let fid = solid_faces(&cube_topo, cube).unwrap()[0];
+        assert_eq!(face_wires(&cube_topo, fid).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn edge_to_face_map_indexes_every_shell_edge_twice() {
+        let mut topo = Topology::new();
+        let (cavity, _, _) = solid_cube_with_cavity(&mut topo);
+
+        let map = edge_to_face_map(&topo, cavity).unwrap();
+        assert_eq!(map.len(), 24, "12 outer + 12 cavity edges are all indexed");
+        for (edge_idx, faces) in &map {
+            assert_eq!(
+                faces.len(),
+                2,
+                "edge {edge_idx} should be used by exactly 2 faces"
+            );
+        }
+
+        let keys: Vec<usize> = map.keys().copied().collect();
+        let mut sorted = keys.clone();
+        sorted.sort_unstable();
+        assert_eq!(keys, sorted, "keys must come out in ascending edge order");
+    }
+
+    #[test]
+    fn edge_to_face_map_for_faces_indexes_only_the_given_faces() {
+        let mut topo = Topology::new();
+        let (cavity, outer, _) = solid_cube_with_cavity(&mut topo);
+
+        let outer_faces = topo.shell(outer).unwrap().faces().to_vec();
+        let map = edge_to_face_map_for_faces(&topo, &outer_faces).unwrap();
+        assert_eq!(map.len(), 12, "only the outer shell's 12 edges");
+        for (edge_idx, faces) in &map {
+            assert_eq!(faces.len(), 2, "edge {edge_idx} is shared by 2 faces");
+            for fid in faces {
+                assert!(
+                    outer_faces.iter().any(|f| f.index() == fid.index()),
+                    "map must only mention the supplied faces"
+                );
+            }
+        }
+
+        // A single face on its own gives its 4 edges, each with one use.
+        let single = edge_to_face_map_for_faces(&topo, &outer_faces[..1]).unwrap();
+        assert_eq!(single.len(), 4);
+        for faces in single.values() {
+            assert_eq!(faces.len(), 1);
+        }
+
+        // And the whole solid's faces reproduce `edge_to_face_map`.
+        let all = solid_faces(&topo, cavity).unwrap();
+        assert_eq!(
+            edge_to_face_map_for_faces(&topo, &all).unwrap().len(),
+            edge_to_face_map(&topo, cavity).unwrap().len()
+        );
+    }
+
+    #[test]
+    fn adjacent_faces_and_shared_edges_on_a_cube() {
+        let mut topo = Topology::new();
+        let cube = solid_cube(&mut topo);
+        let faces = solid_faces(&topo, cube).unwrap();
+        let map = edge_to_face_map(&topo, cube).unwrap();
+
+        // `cube_shell` emits bottom, top, front, back, left, right — so
+        // faces[0] and faces[1] are the opposing pair.
+        let bottom = faces[0];
+        let top = faces[1];
+
+        let neighbors = adjacent_faces(&topo, bottom, &map).unwrap();
+        assert_eq!(neighbors.len(), 4, "a cube face touches exactly 4 others");
+        assert!(
+            neighbors.iter().all(|f| f.index() != bottom.index()),
+            "a face is never its own neighbour"
+        );
+        let mut unique: Vec<usize> = neighbors.iter().map(|f| f.index()).collect();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), 4, "neighbours must be deduplicated");
+        assert!(
+            neighbors.iter().all(|f| f.index() != top.index()),
+            "the opposing face shares no edge"
+        );
+
+        for &neighbor in &neighbors {
+            assert_eq!(
+                shared_edges(&topo, bottom, neighbor).unwrap().len(),
+                1,
+                "adjacent cube faces share exactly 1 edge"
+            );
+        }
+        assert!(
+            shared_edges(&topo, bottom, top).unwrap().is_empty(),
+            "opposing cube faces share no edge"
+        );
+    }
+}
