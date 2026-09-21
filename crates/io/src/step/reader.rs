@@ -943,6 +943,10 @@ fn parse_validation_properties(
     entities: &HashMap<u64, StepEntity>,
     units: UnitScale,
 ) -> Result<HashMap<u64, StepValidationProperties>, IoError> {
+    // Resolve the two validation-link entity types once. Looking them up by
+    // rescanning `entities` for every property makes hostile, otherwise
+    // size-compliant files quadratic in their declaration count.
+    let links = ValidationLinkIndex::build(entities);
     let mut assignment_ids: Vec<u64> = entities
         .iter()
         .filter(|(_, entity)| entity.entity_type == "PROPERTY_DEFINITION")
@@ -984,8 +988,7 @@ fn parse_validation_properties(
                 ),
             ));
         }
-        let representation = unique_validation_link(
-            entities,
+        let representation = links.unique(
             "SHAPE_DEFINITION_REPRESENTATION",
             assignment_id,
             "step_validation_broken_assignment",
@@ -1067,8 +1070,7 @@ fn parse_validation_properties(
             // they are valid but cannot be assigned to one imported solid.
             continue;
         };
-        let representation = unique_validation_link(
-            entities,
+        let representation = links.unique(
             "PROPERTY_DEFINITION_REPRESENTATION",
             property_id,
             "step_validation_broken_property_chain",
@@ -1153,38 +1155,72 @@ fn merge_validation_slot<T>(
     Ok(())
 }
 
-fn unique_validation_link(
-    entities: &HashMap<u64, StepEntity>,
-    link_type: &str,
-    definition: u64,
-    code: &'static str,
-) -> Result<u64, IoError> {
-    let mut links: Vec<(u64, u64)> = entities
-        .iter()
-        .filter(|(_, entity)| entity.entity_type == link_type)
-        .filter_map(|(&id, entity)| {
+#[derive(Clone, Copy)]
+struct ValidationLink {
+    target: u64,
+    count: usize,
+}
+
+#[derive(Default)]
+struct ValidationLinkIndex {
+    shape_definitions: HashMap<u64, ValidationLink>,
+    property_definitions: HashMap<u64, ValidationLink>,
+}
+
+impl ValidationLinkIndex {
+    fn build(entities: &HashMap<u64, StepEntity>) -> Self {
+        let mut index = Self::default();
+        for entity in entities.values() {
+            let links = match entity.entity_type.as_str() {
+                "SHAPE_DEFINITION_REPRESENTATION" => &mut index.shape_definitions,
+                "PROPERTY_DEFINITION_REPRESENTATION" => &mut index.property_definitions,
+                _ => continue,
+            };
             let slots = split_attr_slots(&entity.attrs);
-            (slots.first().and_then(AttrSlot::as_ref_id) == Some(definition))
-                .then(|| {
-                    slots
-                        .get(1)
-                        .and_then(AttrSlot::as_ref_id)
-                        .map(|target| (id, target))
-                })
-                .flatten()
-        })
-        .collect();
-    links.sort_unstable();
-    let [(_, target)] = links.as_slice() else {
-        return Err(invalid_validation(
-            code,
-            format!(
-                "{link_type} for definition #{definition} must occur exactly once, found {}",
-                links.len()
-            ),
-        ));
-    };
-    Ok(*target)
+            let (Some(definition), Some(target)) = (
+                slots.first().and_then(AttrSlot::as_ref_id),
+                slots.get(1).and_then(AttrSlot::as_ref_id),
+            ) else {
+                continue;
+            };
+            links
+                .entry(definition)
+                .and_modify(|link| link.count += 1)
+                .or_insert(ValidationLink { target, count: 1 });
+        }
+        index
+    }
+
+    fn unique(&self, link_type: &str, definition: u64, code: &'static str) -> Result<u64, IoError> {
+        let links = match link_type {
+            "SHAPE_DEFINITION_REPRESENTATION" => &self.shape_definitions,
+            "PROPERTY_DEFINITION_REPRESENTATION" => &self.property_definitions,
+            _ => {
+                return Err(invalid_validation(
+                    code,
+                    format!("unsupported validation link type {link_type}"),
+                ));
+            }
+        };
+        let Some(link) = links.get(&definition) else {
+            return Err(invalid_validation(
+                code,
+                format!(
+                    "{link_type} for definition #{definition} must occur exactly once, found 0"
+                ),
+            ));
+        };
+        if link.count != 1 {
+            return Err(invalid_validation(
+                code,
+                format!(
+                    "{link_type} for definition #{definition} must occur exactly once, found {}",
+                    link.count
+                ),
+            ));
+        }
+        Ok(link.target)
+    }
 }
 
 fn parse_validation_representation(
@@ -9625,6 +9661,47 @@ mod tests {
 
     use super::*;
     use crate::step::writer;
+
+    #[test]
+    fn validation_links_are_indexed_once_with_duplicate_counts() {
+        let mut entities = HashMap::new();
+        for definition in 1..=10_000 {
+            entities.insert(
+                definition + 20_000,
+                StepEntity {
+                    entity_type: "SHAPE_DEFINITION_REPRESENTATION".to_string(),
+                    attrs: format!("#{definition},#{}", definition + 10_000),
+                },
+            );
+        }
+        entities.insert(
+            40_001,
+            StepEntity {
+                entity_type: "SHAPE_DEFINITION_REPRESENTATION".to_string(),
+                attrs: "#1,#50000".to_string(),
+            },
+        );
+
+        let links = ValidationLinkIndex::build(&entities);
+        assert_eq!(
+            links
+                .unique(
+                    "SHAPE_DEFINITION_REPRESENTATION",
+                    10_000,
+                    "test_validation_link",
+                )
+                .unwrap(),
+            20_000
+        );
+        let error = links
+            .unique("SHAPE_DEFINITION_REPRESENTATION", 1, "test_validation_link")
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            IoError::InvalidValidationProperties { reason, .. }
+                if reason.ends_with("found 2")
+        ));
+    }
 
     #[test]
     fn rejects_entity_count_above_explicit_limit() {
