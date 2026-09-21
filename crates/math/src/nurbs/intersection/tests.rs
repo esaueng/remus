@@ -4,7 +4,7 @@ use crate::nurbs::surface::NurbsSurface;
 use crate::vec::{Point3, Vec3};
 
 use super::surface_marching::march_intersection;
-use super::surface_marching::{near_existing_segment, second_order_tangent};
+use super::surface_marching::{SsiScratch, near_existing_segment, second_order_tangent};
 use super::surface_seeding::{
     find_ssi_seeds_grid, find_ssi_seeds_subdivision, find_ssi_seeds_subdivision_with_context,
     refine_ssi_point, refine_ssi_point_with_context,
@@ -486,9 +486,15 @@ fn caller_subdivision_depth_budget_is_authoritative_for_ssi_seeding() {
         .map(|depth| {
             let context = OperationContext::new()
                 .with_budgets(WorkBudgets::new().with_subdivision_depth(depth));
-            find_ssi_seeds_subdivision_with_context(&dome, &plane, 1e-6, &context)
-                .unwrap()
-                .len()
+            find_ssi_seeds_subdivision_with_context(
+                &dome,
+                &plane,
+                1e-6,
+                &context,
+                &mut SsiScratch::new(),
+            )
+            .unwrap()
+            .len()
         })
         .collect();
 
@@ -574,7 +580,7 @@ fn second_order_tangent_finds_direction() {
     let plane = flat_plane_at_z(peak_z);
 
     // Try the second-order analysis.
-    let result = second_order_tangent(&dome, &plane, 0.5, 0.5, 0.5, 0.5);
+    let result = second_order_tangent(&dome, &plane, 0.5, 0.5, 0.5, 0.5, &mut SsiScratch::new());
 
     // The result should be Some (a direction was found) or None
     // (degenerate -- surfaces osculate to second order).
@@ -1411,14 +1417,25 @@ fn caller_newton_budget_is_authoritative_for_ssi_refinement() {
         0.5,
         1e-6,
         &OperationContext::new(),
+        &mut SsiScratch::new(),
     )
     .unwrap();
     assert!(full.is_some(), "default Newton budget must converge");
 
     let disabled =
         OperationContext::new().with_budgets(WorkBudgets::new().with_newton_iterations(0));
-    let bounded =
-        refine_ssi_point_with_context(&s1, &s2, 0.5263, 0.5, 0.5263, 0.5, 1e-6, &disabled).unwrap();
+    let bounded = refine_ssi_point_with_context(
+        &s1,
+        &s2,
+        0.5263,
+        0.5,
+        0.5263,
+        0.5,
+        1e-6,
+        &disabled,
+        &mut SsiScratch::new(),
+    )
+    .unwrap();
     assert!(
         bounded.is_none(),
         "a zero-iteration caller budget must perform no Newton step"
@@ -1443,6 +1460,7 @@ fn cancellation_is_polled_inside_ssi_newton_refinement() {
         0.5,
         1e-6,
         &context,
+        &mut SsiScratch::new(),
     );
     assert!(matches!(result, Err(MathError::Cancelled)));
 }
@@ -1534,6 +1552,76 @@ fn plane_nurbs_open_tube_gap_is_independent_of_chart_and_rotation() {
             assert!(
                 (gap - 2.0 * (0.01_f64).sin()).abs() < 0.001,
                 "open tube closed: swap={swap}, rotation={rotation}, gap={gap}"
+            );
+        }
+    }
+}
+
+/// Scale every control-point weight by a common positive factor: the surface
+/// geometry is projectively invariant, so the traced intersection must be the
+/// same curve as the unscaled pair. Guards the weight-scale normalization the
+/// derivative scratch solves rely on against scale-dependent decisions in the
+/// SSI pipeline.
+#[test]
+fn ssi_results_are_invariant_under_projective_weight_scaling() {
+    use crate::context::OperationContext;
+    use crate::nurbs::intersection::intersect_nurbs_nurbs_with_context;
+
+    let scale_weights = |s: &NurbsSurface, k: f64| {
+        let weights = s
+            .weights()
+            .iter()
+            .map(|row| row.iter().map(|&w| w * k).collect())
+            .collect();
+        NurbsSurface::new(
+            s.degree_u(),
+            s.degree_v(),
+            s.knots_u().to_vec(),
+            s.knots_v().to_vec(),
+            s.control_points().to_vec(),
+            weights,
+        )
+        .unwrap()
+    };
+
+    let base = intersect_nurbs_nurbs_with_context(
+        &saddle_surface(),
+        &tilted_surface(),
+        10,
+        0.02,
+        &OperationContext::new(),
+    )
+    .unwrap();
+    let base_points: Vec<Point3> = base
+        .iter()
+        .flat_map(|c| c.points.iter().map(|p| p.point))
+        .collect();
+    assert!(!base_points.is_empty(), "unscaled pair intersects");
+
+    for k in [0.37, 4.2] {
+        let curves = {
+            let a = scale_weights(&saddle_surface(), k);
+            let b = scale_weights(&tilted_surface(), k);
+            intersect_nurbs_nurbs_with_context(&a, &b, 10, 0.02, &OperationContext::new()).unwrap()
+        };
+        assert!(!curves.is_empty(), "scaled pair still intersects");
+        let scaled_points: Vec<Point3> = curves
+            .iter()
+            .flat_map(|c| c.points.iter().map(|p| p.point))
+            .collect();
+        assert_eq!(
+            scaled_points.len(),
+            base_points.len(),
+            "scaled pair traces the same point count (k={k})"
+        );
+        for p in &scaled_points {
+            let nearest = base_points
+                .iter()
+                .map(|q| (*p - *q).length())
+                .fold(f64::MAX, f64::min);
+            assert!(
+                nearest < 1e-6,
+                "scaled point {p:?} has no unscaled witness within 1e-6 (k={k}): nearest {nearest:.3e}"
             );
         }
     }
