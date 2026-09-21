@@ -792,6 +792,554 @@ mod tests {
         let pb = remus_math::traits::ParametricCurve::evaluate(n, tb) + off;
         assert_full_domain(curve.domain_with_endpoints(pa, pb), d0, d1);
     }
+
+    // ---- analytic arc domains (Circle / Ellipse) ----
+
+    fn seam_circle(radius: f64) -> Circle3D {
+        Circle3D::new_with_ref(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            radius,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap()
+    }
+
+    fn seam_ellipse(semi_major: f64, semi_minor: f64) -> Ellipse3D {
+        Ellipse3D::new_with_ref(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            semi_major,
+            semi_minor,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn circle_arc_domain_is_the_ccw_span_between_the_projected_endpoints() {
+        // Native parameters: radians on the circle's own frame. The arc from
+        // 30° to 150° must come back as exactly that span — not the
+        // complementary 240° arc, not a full turn, not a [0, 1] rescale.
+        use std::f64::consts::FRAC_PI_6;
+        let circle = seam_circle(2.0);
+        let (a0, a1) = (FRAC_PI_6, 5.0 * FRAC_PI_6);
+        let start = circle.evaluate(a0);
+        let end = circle.evaluate(a1);
+        let curve = EdgeCurve::Circle(circle);
+
+        let (t0, t1) = curve.domain_with_endpoints(start, end);
+        assert!((t0 - a0).abs() < 1e-12, "t0={t0} expected {a0}");
+        assert!((t1 - a1).abs() < 1e-12, "t1={t1} expected {a1}");
+
+        // Closed form: the midpoint of the 30°..150° arc is the top of the
+        // circle. The complementary arc would put it at the bottom.
+        let mid = curve.evaluate_with_endpoints(t0.midpoint(t1), start, end);
+        assert!(
+            (mid - Point3::new(0.0, 2.0, 0.0)).length() < 1e-12,
+            "{mid:?}"
+        );
+    }
+
+    #[test]
+    fn ellipse_arc_domain_is_the_ccw_span_between_the_projected_endpoints() {
+        use std::f64::consts::FRAC_PI_6;
+        let ellipse = seam_ellipse(3.0, 2.0);
+        let (a0, a1) = (FRAC_PI_6, 5.0 * FRAC_PI_6);
+        let start = ellipse.evaluate(a0);
+        let end = ellipse.evaluate(a1);
+        let curve = EdgeCurve::Ellipse(ellipse);
+
+        let (t0, t1) = curve.domain_with_endpoints(start, end);
+        assert!((t0 - a0).abs() < 1e-12, "t0={t0} expected {a0}");
+        assert!((t1 - a1).abs() < 1e-12, "t1={t1} expected {a1}");
+
+        // Eccentric angle π/2 is (0, semi_minor, 0) in closed form.
+        let mid = curve.evaluate_with_endpoints(t0.midpoint(t1), start, end);
+        assert!(
+            (mid - Point3::new(0.0, 2.0, 0.0)).length() < 1e-12,
+            "{mid:?}"
+        );
+    }
+
+    #[test]
+    fn closed_conic_edges_use_the_curves_own_full_domain_not_an_anchored_turn() {
+        // A closed edge (start ≈ end) must report the curve's own [0, TAU]
+        // domain. Re-deriving it by projecting the coincident vertex would
+        // return the equally long but differently anchored
+        // [θ, θ + TAU] — same arc, different seam, and a caller comparing
+        // against the curve's domain would disagree.
+        let on_circle = Point3::new(0.0, 2.0, 0.0); // exactly at π/2
+        let circle = EdgeCurve::Circle(seam_circle(2.0));
+        assert_full_domain(
+            circle.domain_with_endpoints(on_circle, on_circle),
+            0.0,
+            std::f64::consts::TAU,
+        );
+
+        let ellipse = EdgeCurve::Ellipse(seam_ellipse(3.0, 2.0));
+        assert_full_domain(
+            ellipse.domain_with_endpoints(on_circle, on_circle),
+            0.0,
+            std::f64::consts::TAU,
+        );
+    }
+
+    #[test]
+    fn conic_endpoints_on_the_closed_threshold_stay_open_and_take_a_full_turn() {
+        // The closed test is a strict `chord < 1e-9`. A chord of exactly the
+        // threshold is NOT closed, so the open branch runs: both endpoints
+        // project to the same angle, the zero delta is promoted to a full
+        // turn, and the span is anchored at that angle — [π/2, π/2 + TAU],
+        // not the curve's own [0, TAU].
+        let start = Point3::new(0.0, 2.0, 0.0);
+        let end = Point3::new(0.0, 2.0, 1e-9);
+        let chord = (start - end).length();
+        assert!(
+            chord >= 1e-9,
+            "fixture must sit on the closed threshold, not below it: {chord}"
+        );
+        let anchor = std::f64::consts::FRAC_PI_2;
+
+        for curve in [
+            EdgeCurve::Circle(seam_circle(2.0)),
+            EdgeCurve::Ellipse(seam_ellipse(3.0, 2.0)),
+        ] {
+            let (t0, t1) = curve.domain_with_endpoints(start, end);
+            assert!(
+                (t0 - anchor).abs() < 1e-12,
+                "{} anchored at {t0}, expected {anchor}",
+                curve.type_tag()
+            );
+            assert!(
+                (t1 - t0 - std::f64::consts::TAU).abs() < 1e-12,
+                "{} span {t0}..{t1} is not a full turn",
+                curve.type_tag()
+            );
+        }
+    }
+
+    #[test]
+    fn edge_curve_type_tags_are_distinct_across_every_variant() {
+        let circle = seam_circle(1.0);
+        let ellipse = seam_ellipse(2.0, 1.0);
+        let hyperbola = remus_math::curves::Hyperbola3D::new(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            1.0,
+            1.0,
+        )
+        .unwrap();
+        let parabola = remus_math::curves::Parabola3D::new(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            1.0,
+        )
+        .unwrap();
+        let EdgeCurve::NurbsCurve(nurbs) = open_nurbs() else {
+            unreachable!()
+        };
+
+        let tags = [
+            EdgeCurve::Line.type_tag(),
+            EdgeCurve::Circle(circle).type_tag(),
+            EdgeCurve::Ellipse(ellipse).type_tag(),
+            EdgeCurve::Hyperbola(hyperbola).type_tag(),
+            EdgeCurve::Parabola(parabola).type_tag(),
+            EdgeCurve::NurbsCurve(nurbs).type_tag(),
+        ];
+        assert_eq!(
+            tags,
+            [
+                "line",
+                "circle",
+                "ellipse",
+                "hyperbola",
+                "parabola",
+                "nurbs_curve"
+            ]
+        );
+        for (i, a) in tags.iter().enumerate() {
+            for b in &tags[i + 1..] {
+                assert_ne!(a, b, "type tags must be distinct");
+            }
+        }
+    }
+
+    // ---- NURBS domain reconstruction ----
+
+    /// An open fitted curve that passes within the whole-edge match band
+    /// (1e-6) of its own start point at mid-parameter.
+    fn near_return_nurbs() -> NurbsCurve {
+        let pts = [
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(2.0, 1.5, 0.0),
+            Point3::new(5e-7, 0.0, 0.0),
+            Point3::new(-2.0, 1.5, 0.0),
+            Point3::new(-4.0, 0.0, 0.0),
+        ];
+        remus_math::nurbs::fitting::interpolate(&pts, 3).unwrap()
+    }
+
+    #[test]
+    fn nurbs_whole_edge_match_needs_both_ends_within_the_band() {
+        // The edge runs from the curve's own start to an interior point.
+        // Only ONE end matches the curve's natural ends, so the fast path
+        // must not fire: the edge owns the sub-span [d0, t_b], not the
+        // whole shared curve.
+        let curve = open_nurbs();
+        let EdgeCurve::NurbsCurve(n) = &curve else {
+            unreachable!()
+        };
+        let (d0, d1) = remus_math::traits::ParametricCurve::domain(n);
+        let tb = d0 + 0.7 * (d1 - d0);
+        let p0 = remus_math::traits::ParametricCurve::evaluate(n, d0);
+        let pb = remus_math::traits::ParametricCurve::evaluate(n, tb);
+
+        let (t0, t1) = curve.domain_with_endpoints(p0, pb);
+        assert!((t0 - d0).abs() < 1e-6, "t0={t0} expected {d0}");
+        assert!((t1 - tb).abs() < 1e-6, "t1={t1} expected {tb}");
+        assert!(t1 < d1 - 1e-3, "the full span must not be returned");
+    }
+
+    #[test]
+    fn nurbs_reversed_whole_edge_match_needs_both_ends_within_the_band() {
+        // Mirror image: interior point -> the curve's own start. The
+        // reversed-orientation fast path must not fire on one end alone;
+        // the edge owns the reversed sub-span [t_a, d0].
+        let curve = open_nurbs();
+        let EdgeCurve::NurbsCurve(n) = &curve else {
+            unreachable!()
+        };
+        let (d0, d1) = remus_math::traits::ParametricCurve::domain(n);
+        let ta = d0 + 0.3 * (d1 - d0);
+        let pa = remus_math::traits::ParametricCurve::evaluate(n, ta);
+        let p0 = remus_math::traits::ParametricCurve::evaluate(n, d0);
+
+        let (t0, t1) = curve.domain_with_endpoints(pa, p0);
+        assert!((t0 - ta).abs() < 1e-6, "t0={t0} expected {ta}");
+        assert!((t1 - d0).abs() < 1e-6, "t1={t1} expected {d0}");
+        assert!(t0 > d0 + 1e-3, "the full span must not be returned");
+    }
+
+    #[test]
+    fn nurbs_whole_edge_match_band_is_measured_against_the_curve_ends() {
+        // The curve re-approaches its own start point (to 5e-7) at
+        // mid-parameter. An edge from that near-return point to the curve's
+        // far end is WITHIN the 1e-6 whole-edge band at both ends, so the
+        // fast path fires and the full knot span is returned. Widening or
+        // inverting that band would instead trim the edge to the second
+        // half of the curve.
+        let n = near_return_nurbs();
+        let (d0, d1) = remus_math::traits::ParametricCurve::domain(&n);
+        let p0 = remus_math::traits::ParametricCurve::evaluate(&n, d0);
+        let start = Point3::new(5e-7, 0.0, 0.0);
+        let end = remus_math::traits::ParametricCurve::evaluate(&n, d1);
+        let gap = (start - p0).length();
+        assert!(
+            gap > 1e-9 && gap < 1e-6,
+            "fixture must sit inside the match band: {gap}"
+        );
+        let curve = EdgeCurve::NurbsCurve(n);
+        assert_full_domain(curve.domain_with_endpoints(start, end), d0, d1);
+    }
+
+    /// A curve whose knot domain is `[1, 5]` — neither zero-based nor
+    /// unit-length, so a span threshold really has to use `d1 - d0`.
+    fn shifted_domain_nurbs() -> NurbsCurve {
+        NurbsCurve::new(
+            3,
+            vec![1.0, 1.0, 1.0, 1.0, 3.0, 5.0, 5.0, 5.0, 5.0],
+            vec![
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(1.0, 1.0, 0.0),
+                Point3::new(2.0, 1.5, 0.0),
+                Point3::new(3.0, 1.0, 0.0),
+                Point3::new(4.0, 0.0, 0.0),
+            ],
+            vec![1.0; 5],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn nurbs_degenerate_span_threshold_is_relative_to_the_knot_domain() {
+        // The non-degeneracy test is `|dt| > 1e-6 * (d1 - d0)`: a fraction
+        // of the curve's OWN domain, not an absolute parameter step and not
+        // a fraction of its far end. On a [1, 5] curve the threshold is
+        // 4e-6, so a 1e-6 span is refused (full domain) while a 5e-6 span
+        // is a real sub-span.
+        let n = shifted_domain_nurbs();
+        let (d0, d1) = remus_math::traits::ParametricCurve::domain(&n);
+        assert!((d0 - 1.0).abs() < f64::EPSILON && (d1 - 5.0).abs() < f64::EPSILON);
+        let base = 3.0;
+        let eval = |t| remus_math::traits::ParametricCurve::evaluate(&n, t);
+
+        let curve = EdgeCurve::NurbsCurve(n.clone());
+        assert_full_domain(
+            curve.domain_with_endpoints(eval(base), eval(base + 1e-6)),
+            d0,
+            d1,
+        );
+
+        let (t0, t1) = curve.domain_with_endpoints(eval(base), eval(base + 5e-6));
+        assert!((t0 - base).abs() < 1e-9, "t0={t0} expected {base}");
+        assert!(
+            (t1 - (base + 5e-6)).abs() < 1e-9,
+            "t1={t1} expected {}",
+            base + 5e-6
+        );
+    }
+
+    #[test]
+    fn nurbs_forward_sub_span_on_a_closed_curve_is_trimmed() {
+        // On a closed loop a FORWARD projection pair is unambiguous and must
+        // be trimmed; only a reversed pair falls back to the full domain
+        // (covered by the sibling test). The two cases share one predicate,
+        // so the forward one needs its own fixture.
+        let pts: Vec<Point3> = (0..=12)
+            .map(|k| {
+                let a = std::f64::consts::TAU * f64::from(k) / 12.0;
+                Point3::new(a.cos(), a.sin(), 0.0)
+            })
+            .collect();
+        let n = remus_math::nurbs::fitting::interpolate(&pts, 3).unwrap();
+        let (d0, d1) = remus_math::traits::ParametricCurve::domain(&n);
+        let ta = d0 + 0.2 * (d1 - d0);
+        let tb = d0 + 0.6 * (d1 - d0);
+        let pa = remus_math::traits::ParametricCurve::evaluate(&n, ta);
+        let pb = remus_math::traits::ParametricCurve::evaluate(&n, tb);
+        let curve = EdgeCurve::NurbsCurve(n);
+
+        let (t0, t1) = curve.domain_with_endpoints(pa, pb);
+        assert!((t0 - ta).abs() < 1e-6, "t0={t0} expected {ta}");
+        assert!((t1 - tb).abs() < 1e-6, "t1={t1} expected {tb}");
+    }
+
+    // ---- private periodic-domain helpers ----
+
+    #[test]
+    fn periodic_domain_guard_refuses_a_negative_tolerance_claim() {
+        let closed_at = |_| Point3::new(1.0, 2.0, 3.0);
+        let tau = std::f64::consts::TAU;
+
+        // A full turn that closes exactly is valid under a sane tolerance.
+        assert!(periodic_domain_is_valid(0.0, tau, true, 1e-7, closed_at));
+
+        // ...and refused outright when the claimed tolerance is not a
+        // usable non-negative number, even though the curve does close.
+        assert!(!periodic_domain_is_valid(0.0, tau, true, -0.0, closed_at));
+        assert!(!periodic_domain_is_valid(0.0, tau, true, -1e-7, closed_at));
+        assert!(!periodic_domain_is_valid(
+            0.0,
+            tau,
+            true,
+            f64::NAN,
+            closed_at
+        ));
+    }
+
+    #[test]
+    fn periodic_curve_is_finite_multiplies_axis_components_by_their_extent() {
+        // A unit frame with a huge extent: each component's bound is one
+        // extent, which is finite. Adding the extent to every component
+        // instead of scaling by it would double-count into an overflow.
+        assert!(periodic_curve_is_finite(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            1e308,
+            1e308,
+        ));
+    }
+
+    #[test]
+    fn periodic_curve_is_finite_rejects_a_center_plus_extent_overflow() {
+        // Center and v-extent each near f64::MAX: the position bound
+        // overflows, so the curve is refused. Dividing by the extent (or
+        // subtracting the two axis bounds) would hide the overflow.
+        assert!(!periodic_curve_is_finite(
+            Point3::new(0.0, 1e308, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            1.0,
+            1e308,
+        ));
+    }
+
+    #[test]
+    fn periodic_curve_is_finite_adds_the_center_to_the_tangent_bound() {
+        // Center and extents at 1e300: the sums stay finite, so the curve
+        // is accepted. Multiplying center by the tangent bound would
+        // overflow and refuse a perfectly representable circle.
+        assert!(periodic_curve_is_finite(
+            Point3::new(1e300, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            1e300,
+            1e300,
+        ));
+    }
+
+    #[test]
+    fn line_delegates_interpolate_between_the_bounding_vertices() {
+        // `Line` carries no stored geometry: the delegates are defined by
+        // the bounding vertices alone, on the native [0, 1] chord
+        // parameterization.
+        let start = Point3::new(1.0, 2.0, 3.0);
+        let end = Point3::new(1.0, 6.0, 3.0);
+        let line = EdgeCurve::Line;
+
+        assert_full_domain(line.domain_with_endpoints(start, end), 0.0, 1.0);
+        assert!((line.evaluate_with_endpoints(0.0, start, end) - start).length() < 1e-15);
+        assert!((line.evaluate_with_endpoints(1.0, start, end) - end).length() < 1e-15);
+        // Closed form: a quarter of the way along a chord of length 4.
+        let quarter = line.evaluate_with_endpoints(0.25, start, end);
+        assert!(
+            (quarter - Point3::new(1.0, 3.0, 3.0)).length() < 1e-15,
+            "{quarter:?}"
+        );
+        let tangent = line.tangent_with_endpoints(0.5, start, end);
+        assert!(
+            (tangent - Vec3::new(0.0, 1.0, 0.0)).length() < 1e-15,
+            "{tangent:?}"
+        );
+        // A degenerate chord has no direction; the documented fallback is +X.
+        let fallback = line.tangent_with_endpoints(0.5, start, start);
+        assert!((fallback - Vec3::new(1.0, 0.0, 0.0)).length() < 1e-15);
+    }
+
+    #[test]
+    fn conic_delta_exactly_at_the_degenerate_threshold_stays_a_sliver_arc() {
+        // The "endpoints project to the same angle" test is a strict
+        // `delta < 1e-12`. A delta of exactly 1e-12 on a large conic is a
+        // resolvable sliver (1e-8 of arc here, ten times the closed-edge
+        // chord band) and must be kept as such, not promoted to a full turn.
+        let circle = Circle3D::new_with_ref(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            10_000.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let ellipse = Ellipse3D::new_with_ref(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            10_000.0,
+            5_000.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+
+        for (curve, start, end) in [
+            (
+                EdgeCurve::Circle(circle),
+                Point3::new(10_000.0, 0.0, 0.0),
+                Point3::new(10_000.0, 1e-8, 0.0),
+            ),
+            (
+                EdgeCurve::Ellipse(ellipse),
+                Point3::new(10_000.0, 0.0, 0.0),
+                Point3::new(10_000.0, 5e-9, 0.0),
+            ),
+        ] {
+            let tag = curve.type_tag();
+            let chord = (start - end).length();
+            assert!(chord >= 1e-9, "{tag} fixture is closed, not open: {chord}");
+
+            let (t0, t1) = curve.domain_with_endpoints(start, end);
+            assert!(t0.abs() < 1e-15, "{tag} anchored at {t0}, expected 0");
+            let span = t1 - t0;
+            assert!(
+                (1e-12..1e-11).contains(&span),
+                "{tag} sliver span {span} was promoted to a full turn"
+            );
+        }
+    }
+
+    /// A fitted curve that revisits a point exactly `END_EPS` (1e-6) from one
+    /// of its own natural ends at mid-parameter.
+    fn band_edge_nurbs(return_near_start: bool) -> NurbsCurve {
+        let mut pts = vec![
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(2.0, 1.5, 0.0),
+            Point3::new(0.0, 0.0, 1e-6),
+            Point3::new(-2.0, 1.5, 0.0),
+            Point3::new(-4.0, 0.0, 0.0),
+        ];
+        if !return_near_start {
+            pts.reverse();
+        }
+        remus_math::nurbs::fitting::interpolate(&pts, 3).unwrap()
+    }
+
+    #[test]
+    fn nurbs_whole_edge_match_band_excludes_its_own_edge() {
+        // The whole-edge fast path is a strict `distance < 1e-6`. An
+        // endpoint sitting at exactly 1e-6 from the curve's natural end is
+        // NOT that end: it is the mid-curve point the fitted curve actually
+        // passes through, and the edge owns only the span from there. All
+        // four distance tests (both orientations, both ends) share that
+        // strictness.
+        use remus_math::traits::ParametricCurve;
+
+        let revisited = Point3::new(0.0, 0.0, 1e-6);
+        for return_near_start in [true, false] {
+            let n = band_edge_nurbs(return_near_start);
+            let (d0, d1) = ParametricCurve::domain(&n);
+            let p0 = ParametricCurve::evaluate(&n, d0);
+            let p1 = ParametricCurve::evaluate(&n, d1);
+            let (near, far) = if return_near_start {
+                ((p0 - revisited).length(), (p1 - revisited).length())
+            } else {
+                ((p1 - revisited).length(), (p0 - revisited).length())
+            };
+            assert!(
+                near >= 1e-6 && far > 1.0,
+                "fixture must revisit exactly one end at the band edge: {near}, {far}"
+            );
+            let own_end = if return_near_start { p1 } else { p0 };
+            let own_param = if return_near_start { d1 } else { d0 };
+            let curve = EdgeCurve::NurbsCurve(n);
+
+            // Forward: band-edge point -> the curve's other natural end.
+            let (t0, t1) = curve.domain_with_endpoints(revisited, own_end);
+            assert!(
+                (t0 - 0.5).abs() < 1e-3,
+                "expected the revisit parameter, got {t0}"
+            );
+            assert!((t1 - own_param).abs() < 1e-9, "t1={t1}");
+
+            // Reversed: the curve's natural end -> band-edge point.
+            let (r0, r1) = curve.domain_with_endpoints(own_end, revisited);
+            assert!((r0 - own_param).abs() < 1e-9, "r0={r0}");
+            assert!(
+                (r1 - 0.5).abs() < 1e-3,
+                "expected the revisit parameter, got {r1}"
+            );
+        }
+    }
+
+    #[test]
+    fn nurbs_on_curve_weld_band_excludes_its_own_edge() {
+        // The sub-span projections must be strictly inside the weld band:
+        // an endpoint exactly 1e-5 off the curve is off it, and the domain
+        // falls back to the full knot span. Each endpoint is tested on its
+        // own, so one off-curve end is enough.
+        use remus_math::traits::ParametricCurve;
+
+        let curve = open_nurbs();
+        let EdgeCurve::NurbsCurve(n) = &curve else {
+            unreachable!()
+        };
+        let (d0, d1) = ParametricCurve::domain(n);
+        let on_a = ParametricCurve::evaluate(n, d0 + 0.25 * (d1 - d0));
+        let on_b = ParametricCurve::evaluate(n, d0 + 0.7 * (d1 - d0));
+        let lifted = |p: Point3| Point3::new(p.x(), p.y(), p.z() + 1e-5);
+
+        assert_full_domain(curve.domain_with_endpoints(lifted(on_a), on_b), d0, d1);
+        assert_full_domain(curve.domain_with_endpoints(on_a, lifted(on_b)), d0, d1);
+    }
 }
 
 #[cfg(test)]
@@ -1219,5 +1767,224 @@ mod trim_tests {
             parabolic.strict_domain(),
             Err(EdgeDomainError::Invalid { .. })
         ));
+    }
+
+    #[test]
+    fn set_start_and_set_end_rewire_the_bounding_vertices() {
+        let mut arena: Arena<Vertex> = Arena::new();
+        let a = arena.alloc(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
+        let b = arena.alloc(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
+        let c = arena.alloc(Vertex::new(Point3::new(0.0, 1.0, 0.0), 1e-7));
+
+        let mut edge = Edge::new(a, b, EdgeCurve::Line);
+        assert!(!edge.is_closed());
+
+        edge.set_start(c);
+        assert!(edge.start() == c, "set_start must replace the start vertex");
+        assert!(edge.end() == b, "set_start must leave the end vertex alone");
+
+        edge.set_end(c);
+        assert!(edge.end() == c, "set_end must replace the end vertex");
+        assert!(
+            edge.is_closed(),
+            "an edge rewired onto one vertex is closed"
+        );
+    }
+
+    #[test]
+    fn invalid_domain_diagnostic_omits_non_finite_bounds() {
+        use remus_math::diagnostic::{DetailValue, ToDiagnostic};
+
+        let finite = EdgeDomainError::Invalid {
+            curve_type: "circle",
+            start: 0.25,
+            end: 1.5,
+        };
+        let details = finite.diagnostic();
+        let keys: Vec<&str> = details.details().iter().map(|(key, _)| *key).collect();
+        assert_eq!(keys, ["curveType", "start", "end"]);
+        assert_eq!(details.details()[1].1, DetailValue::Float(0.25));
+        assert_eq!(details.details()[2].1, DetailValue::Float(1.5));
+
+        // A bound that is not a number is not a machine-actionable value:
+        // BOTH bounds must be finite before either is reported.
+        for (start, end) in [
+            (f64::NAN, 1.5),
+            (0.25, f64::INFINITY),
+            (f64::NEG_INFINITY, f64::NAN),
+        ] {
+            let err = EdgeDomainError::Invalid {
+                curve_type: "circle",
+                start,
+                end,
+            };
+            let keys: Vec<&str> = err
+                .diagnostic()
+                .details()
+                .iter()
+                .map(|(key, _)| *key)
+                .collect();
+            assert_eq!(
+                keys,
+                ["curveType"],
+                "({start}, {end}) must not be reported as numeric detail"
+            );
+        }
+    }
+
+    #[test]
+    fn strict_domain_rejects_a_line_trim_matching_only_one_end() {
+        // `Line` is intrinsically endpoint-local on [0, 1]; a stored trim is
+        // authority only when it is exactly that interval. Half a match is
+        // no match.
+        let (v0, v1) = vertices(Point3::new(1.0, 0.0, 0.0), Point3::new(0.0, 1.0, 0.0));
+        for trim in [(0.0, 0.8), (0.2, 1.0)] {
+            let mut line = Edge::new(v0, v1, EdgeCurve::Line);
+            line.set_trim(Some(trim));
+            assert!(
+                matches!(line.strict_domain(), Err(EdgeDomainError::Invalid { .. })),
+                "{trim:?} is not the canonical Line domain"
+            );
+        }
+    }
+
+    #[test]
+    fn strict_domain_rejects_a_single_non_finite_bound() {
+        // NaN compares false against every domain bound, so the per-curve
+        // range test cannot see it. The shared finiteness guard has to
+        // reject EACH bound on its own, not only a pair that is non-finite
+        // at both ends.
+        let (v0, v1) = vertices(Point3::new(1.0, 0.0, 0.0), Point3::new(0.0, 1.0, 0.0));
+        let nurbs = fitted_open_nurbs();
+        let (d0, d1) = nurbs.domain();
+        for trim in [(f64::NAN, d1), (d0, f64::NAN)] {
+            let mut edge = Edge::new(v0, v1, EdgeCurve::NurbsCurve(nurbs.clone()));
+            edge.trim = Some(trim);
+            assert!(
+                matches!(edge.strict_domain(), Err(EdgeDomainError::Invalid { .. })),
+                "{trim:?} must not be accepted as authority"
+            );
+        }
+    }
+
+    #[test]
+    fn strict_domain_rejects_every_out_of_range_nurbs_bound() {
+        // Four independent ways to leave the knot domain; each one alone
+        // invalidates the stored authority.
+        let (v0, v1) = vertices(Point3::new(1.0, 0.0, 0.0), Point3::new(0.0, 1.0, 0.0));
+        let nurbs = fitted_open_nurbs();
+        let (d0, d1) = nurbs.domain();
+        let mid = d0.midpoint(d1);
+        for trim in [
+            (d0 - 1.0, mid),
+            (d1 + 1.0, mid),
+            (mid, d0 - 1.0),
+            (mid, d1 + 1.0),
+        ] {
+            let mut edge = Edge::new(v0, v1, EdgeCurve::NurbsCurve(nurbs.clone()));
+            edge.set_trim(Some(trim));
+            assert!(
+                matches!(edge.strict_domain(), Err(EdgeDomainError::Invalid { .. })),
+                "{trim:?} leaves the knot domain [{d0}, {d1}]"
+            );
+        }
+
+        // ...while a span inside the domain is authority, in either
+        // orientation, and the closed domain bounds themselves are inside.
+        for trim in [(d0, mid), (mid, d0), (d0, d1), (d1, d0)] {
+            let mut edge = Edge::new(v0, v1, EdgeCurve::NurbsCurve(nurbs.clone()));
+            edge.set_trim(Some(trim));
+            assert_eq!(edge.strict_domain().unwrap(), trim);
+        }
+    }
+
+    #[test]
+    fn strict_domain_validates_an_elliptical_span_against_the_period() {
+        // The Ellipse arm pairs a finiteness check on the stored geometry
+        // with the periodic-span check; an edge passing one of them is not
+        // authority. An open elliptical edge may not claim more than a full
+        // period, while an ordinary arc is authority as stored.
+        use remus_math::curves::Ellipse3D;
+
+        let (v0, v1) = vertices(Point3::new(3.0, 0.0, 0.0), Point3::new(0.0, 2.0, 0.0));
+        let ellipse = Ellipse3D::new_with_ref(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            3.0,
+            2.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+
+        let mut overrun = Edge::new(v0, v1, EdgeCurve::Ellipse(ellipse.clone()));
+        overrun.set_trim(Some((0.0, std::f64::consts::TAU + 1.0)));
+        assert!(matches!(
+            overrun.strict_domain(),
+            Err(EdgeDomainError::Invalid { .. })
+        ));
+
+        let mut arc = Edge::new(v0, v1, EdgeCurve::Ellipse(ellipse));
+        arc.set_trim(Some((0.5, 2.0)));
+        assert_eq!(arc.strict_domain().unwrap(), (0.5, 2.0));
+    }
+
+    #[test]
+    fn strict_domain_accepts_a_finite_open_conic_span() {
+        // The unbounded conics are validated by *finiteness* of the sampled
+        // point and tangent at both ends. A well-formed span must survive
+        // that test — the existing coverage only pins the overflow refusals.
+        use remus_math::curves::{Hyperbola3D, Parabola3D};
+
+        let (v0, v1) = vertices(Point3::new(1.0, 0.0, 0.0), Point3::new(0.0, 1.0, 0.0));
+
+        let hyperbola = Hyperbola3D::new(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            3.0,
+            2.0,
+        )
+        .unwrap();
+        for trim in [(-1.25, 2.0), (2.0, -1.25)] {
+            let mut edge = Edge::new(v0, v1, EdgeCurve::Hyperbola(hyperbola.clone()));
+            edge.set_trim(Some(trim));
+            assert_eq!(edge.strict_domain().unwrap(), trim);
+        }
+
+        let parabola =
+            Parabola3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.7).unwrap();
+        for trim in [(-2.5, 4.0), (4.0, -2.5)] {
+            let mut edge = Edge::new(v0, v1, EdgeCurve::Parabola(parabola.clone()));
+            edge.set_trim(Some(trim));
+            assert_eq!(edge.strict_domain().unwrap(), trim);
+        }
+    }
+
+    #[test]
+    fn strict_domain_rejects_a_closed_turn_overrunning_by_more_than_roundoff() {
+        // A closed periodic edge may store an anchored full turn that
+        // subtracts to a few ULPs above TAU. It may NOT store a turn that
+        // overruns by 1e-6 — not even on a circle small enough that the
+        // extra arc closes back within linear tolerance, which is exactly
+        // what the second half of the guard would accept on its own.
+        let (v0, _) = vertices(Point3::new(1e-3, 0.0, 0.0), Point3::new(1e-3, 0.0, 0.0));
+        let small =
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1e-3).unwrap();
+        let overrun = std::f64::consts::TAU + 1e-6;
+        assert!(
+            (small.evaluate(0.0) - small.evaluate(overrun)).length() < Tolerance::new().linear,
+            "fixture closes numerically: only the span guard can refuse it"
+        );
+
+        let mut closed = Edge::new(v0, v0, EdgeCurve::Circle(small.clone()));
+        closed.set_trim(Some((0.0, overrun)));
+        assert!(matches!(
+            closed.strict_domain(),
+            Err(EdgeDomainError::Invalid { .. })
+        ));
+
+        // The exact full turn on the same circle is authority.
+        let mut exact = Edge::new(v0, v0, EdgeCurve::Circle(small));
+        exact.set_trim(Some((0.0, std::f64::consts::TAU)));
+        assert_eq!(exact.strict_domain().unwrap(), (0.0, std::f64::consts::TAU));
     }
 }
