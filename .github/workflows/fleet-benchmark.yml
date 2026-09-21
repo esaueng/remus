@@ -16,7 +16,7 @@ jobs:
       pull-requests: read
       contents: read
     steps:
-      - uses: esaueng/remus/.github/actions/fleet-guard@29779e3185e8582b59bf58692a307b1018a98e68
+      - uses: esaueng/remus/.github/actions/fleet-guard@0f19a7af22d91142222428982823ae14b6d51cf3
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false # no write token reachable by bench build scripts
@@ -75,7 +75,7 @@ jobs:
       contents: write # push the baseline to gh-pages (main only)
       pull-requests: write # comment on a regression (PR)
     steps:
-      - uses: esaueng/remus/.github/actions/fleet-guard@29779e3185e8582b59bf58692a307b1018a98e68
+      - uses: esaueng/remus/.github/actions/fleet-guard@0f19a7af22d91142222428982823ae14b6d51cf3
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false # the steps below use their own token
