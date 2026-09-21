@@ -8,6 +8,11 @@ import { tmpdir } from 'node:os';
 import { dirname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { performance } from 'node:perf_hooks';
+import {
+  collectFreshProvenance,
+  collectSourceProvenance,
+  validateInstalledEntry,
+} from './provenance.mjs';
 
 const self = fileURLToPath(import.meta.url);
 const scriptDir = dirname(self);
@@ -291,6 +296,7 @@ function installPackage(packageDir, temporaryRoot) {
     { encoding: 'utf8', env: npmEnvironment },
   ));
   assert.equal(packed.length, 1, 'npm pack must produce exactly one tarball');
+  const tarballPath = resolve(temporaryRoot, packed[0].filename);
   execFileSync('npm', [
     'install',
     '--prefix', consumerDir,
@@ -299,13 +305,13 @@ function installPackage(packageDir, temporaryRoot) {
     '--ignore-scripts',
     '--no-audit',
     '--no-fund',
-    resolve(temporaryRoot, packed[0].filename),
+    tarballPath,
   ], { env: npmEnvironment, stdio: 'ignore' });
   const consumerRequire = createRequire(resolve(consumerDir, 'consumer.cjs'));
   const entry = consumerRequire.resolve('remus-wasm');
   const installedDir = realpathSync(resolve(consumerDir, 'node_modules/remus-wasm'));
-  assert.ok(entry.startsWith(`${installedDir}${sep}`), `package resolved outside install: ${entry}`);
-  return entry;
+  validateInstalledEntry(entry, installedDir);
+  return { entry, installedDir, tarballPath };
 }
 
 export function readManifest() {
@@ -327,11 +333,27 @@ async function main() {
   const temporaryRoot = mkdtempSync(resolve(tmpdir(), 'remus-o15-parity-'));
   const started = performance.now();
   try {
-    const installedEntry = installPackage(resolve(packageDir), temporaryRoot);
+    const installed = installPackage(resolve(packageDir), temporaryRoot);
+    const repoRoot = resolve(scriptDir, '..', '..');
+    const provenance = collectFreshProvenance({
+      repoRoot,
+      packageDir: resolve(packageDir),
+      tarballPath: installed.tarballPath,
+      installedEntry: installed.entry,
+      installedDir: installed.installedDir,
+      buildOptions: {
+        target: 'nodejs',
+        profile: 'release',
+        features: 'no-default-features',
+        extraArgs: ['--no-opt'],
+        tool: 'wasm-pack build crates/wasm --target nodejs --release --no-opt -- --no-default-features',
+      },
+    });
+    const source = collectSourceProvenance(repoRoot);
     const observations = cases.map((c) => ({
       case: c.id,
       native: attempt(resolve(nativeRunner), [], c),
-      wasm: attempt(process.execPath, [self, '--wasm-child', installedEntry], c),
+      wasm: attempt(process.execPath, [self, '--wasm-child', installed.entry], c),
     }));
     const stages = cases.flatMap((c, index) => scoreCase(c, observations[index]));
     const failedStages = stages.filter((stage) => stage.required && !stage.passed);
@@ -342,7 +364,16 @@ async function main() {
       schema_version: 1,
       scope: 'O1.5 first slice: qualified quadric boolean matrix',
       manifest_sha256: createHash('sha256').update(bytes).digest('hex'),
-      installed_package_entry: installedEntry,
+      installed_package_entry: installed.entry,
+      provenance: {
+        native: {
+          mode: 'native',
+          sourceRevision: source.sourceRevision,
+          sourceDirty: source.sourceDirty,
+          toolchain: source.toolchain,
+        },
+        fresh: provenance,
+      },
       timeout_ms: timeoutMs,
       matrix: {
         cases: cases.length,
