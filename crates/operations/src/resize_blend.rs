@@ -2026,6 +2026,10 @@ fn heal_cylinder_plane_band_surgical(
     }
 
     let copied_entities = crate::copy::copy_solid_with_entity_map(topo, solid)?;
+    // Note: scope declines (`Ok(None)`) below leave these copied entities
+    // plus any partial splice products unreachable in the arena. That garbage
+    // is harmless: the positional fallback operates on the pristine original
+    // solid, and nothing published ever references the copies.
     let copy = copied_entities.solid;
     let mut face_map_indices: HashMap<_, _> = copied_entities
         .face_map
