@@ -2368,7 +2368,10 @@ fn heal_cylinder_plane_band_surgical(
             lines.dedup();
             lines
         };
-        // E_z at A: kept line shared by R8 and a support.
+        // E_z at A: kept line shared by R8 and a support. Exactly one: a
+        // split collinear generatrix (two edges where one would do) is a
+        // conservative refusal — fail-closed and fixture-correct, documented
+        // as a known limitation, not a silent merge.
         let ez_candidates: Vec<EdgeId> = kept_lines_at(a)
             .into_iter()
             .filter(|edge| {
@@ -2986,13 +2989,17 @@ fn heal_cylinder_plane_band_surgical(
                         } else {
                             (end_corner, start_corner)
                         };
-                        // The arc spans P2 to Q* in either order.
+                        // The arc spans P2 to Q* in either order; any other
+                        // corner pair means the mapping is broken, which
+                        // is definitive this far into verified scope.
                         let matches_p2_qstar = (t0 - entry.p2).length() <= tol.linear
                             && (t1 - entry.qstar).length() <= tol.linear;
                         let matches_qstar_p2 = (t0 - entry.qstar).length() <= tol.linear
                             && (t1 - entry.p2).length() <= tol.linear;
                         if !matches_p2_qstar && !matches_qstar_p2 {
-                            return Ok(None);
+                            return Err(reconstruction(
+                                "compound R8 contact does not span P2 to Q*".to_string(),
+                            ));
                         }
                         new_sequence.push(if matches_p2_qstar {
                             orient_corners(topo, circle, entry.p2, entry.qstar)?
