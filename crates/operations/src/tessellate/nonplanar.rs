@@ -3035,31 +3035,75 @@ pub(super) fn tessellate_nonplanar_cdt(
             }
         }
 
-        if has_ellipse_wire {
-            // An ellipse boundary bends through both parameter directions while
-            // a cylinder/cone grid has only two rows in its straight ruling
-            // direction.  Densify only the v-band occupied by conic samples;
+        let v_extrema_tol = 1e-9 * dv.abs().max(1e-12);
+        let rim_sample_count = boundary_uv
+            .iter()
+            .filter(|&&(_, v)| v <= v_min + v_extrema_tol || v >= v_max - v_extrema_tol)
+            .count();
+        // Require sampled rails on the v extrema. Sparse contact loops (such
+        // as a four-point cross-drilled bore graze) are not trim bands, and
+        // densifying them can change the mesh oracle's material side.
+        let has_nurbs_revolved_wire = rim_sample_count >= 8
+            && matches!(
+                face_data.surface(),
+                FaceSurface::Cylinder(_) | FaceSurface::Cone(_)
+            )
+            && wire.edges().iter().any(|oriented| {
+                topo.edge(oriented.edge())
+                    .is_ok_and(|edge| matches!(edge.curve(), EdgeCurve::NurbsCurve(_)))
+            });
+        if has_ellipse_wire || has_nurbs_revolved_wire {
+            // A curved trim can bend through both parameter directions even on
+            // a cylinder/cone with straight rulings. Two axial grid rows leave
+            // the trim valley bridged by long chords through the solid.
+            // Densify only the v-band occupied by ellipse or NURBS samples;
             // otherwise boundary-only triangles span the lens valley with
             // chords that cut through the solid.
-            let mut ellipse_by_edge: DetHashMap<usize, bool> = DetHashMap::default();
-            let mut ellipse_v_min = f64::INFINITY;
-            let mut ellipse_v_max = f64::NEG_INFINITY;
+            let mut curved_by_edge: DetHashMap<usize, bool> = DetHashMap::default();
+            let mut curved_v_min = f64::INFINITY;
+            let mut curved_v_max = f64::NEG_INFINITY;
             for (index, &(_, v)) in boundary_uv.iter().enumerate() {
                 let edge_id = boundary_3d[index].2;
-                let is_ellipse = *ellipse_by_edge.entry(edge_id.index()).or_insert_with(|| {
-                    topo.edge(edge_id)
-                        .is_ok_and(|edge| matches!(edge.curve(), EdgeCurve::Ellipse(_)))
+                let is_curved = *curved_by_edge.entry(edge_id.index()).or_insert_with(|| {
+                    topo.edge(edge_id).is_ok_and(|edge| {
+                        if matches!(edge.curve(), EdgeCurve::Ellipse(_)) {
+                            return true;
+                        }
+                        if !has_nurbs_revolved_wire
+                            || !matches!(edge.curve(), EdgeCurve::NurbsCurve(_))
+                        {
+                            return false;
+                        }
+                        // NURBS also represents level rims and straight seams.
+                        // Those do not bend across the ruling grid: leave their
+                        // existing sampling and measurements unchanged.
+                        let mut span = (
+                            f64::INFINITY,
+                            f64::NEG_INFINITY,
+                            f64::INFINITY,
+                            f64::NEG_INFINITY,
+                        );
+                        for (&(u, v), sample) in boundary_uv.iter().zip(&boundary_3d) {
+                            if sample.2 == edge_id {
+                                span.0 = span.0.min(u);
+                                span.1 = span.1.max(u);
+                                span.2 = span.2.min(v);
+                                span.3 = span.3.max(v);
+                            }
+                        }
+                        span.1 - span.0 > 1e-9 * du && span.3 - span.2 > 1e-9 * dv
+                    })
                 });
-                if is_ellipse {
-                    ellipse_v_min = ellipse_v_min.min(v);
-                    ellipse_v_max = ellipse_v_max.max(v);
+                if is_curved {
+                    curved_v_min = curved_v_min.min(v);
+                    curved_v_max = curved_v_max.max(v);
                 }
             }
 
             let dense_dv = dv / n_u as f64;
-            if ellipse_v_max > ellipse_v_min && dense_dv > 1.0e-15 {
-                let lo = (ellipse_v_min - dense_dv).max(v_min);
-                let hi = (ellipse_v_max + dense_dv).min(v_max);
+            if curved_v_max > curved_v_min && dense_dv > 1.0e-15 {
+                let lo = (curved_v_min - dense_dv).max(v_min);
+                let hi = (curved_v_max + dense_dv).min(v_max);
                 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                 let rows = (((hi - lo) / dense_dv).ceil() as usize).max(1);
                 validate_interior_grid_size(n_u, rows)?;
@@ -3095,7 +3139,9 @@ pub(super) fn tessellate_nonplanar_cdt(
                     }
                 }
             }
+        }
 
+        if has_ellipse_wire {
             // Shared ellipse arcs give adjacent cylinder faces identical chord
             // vertices.  Without a face-own interior point near each segment,
             // both CDTs can emit the same opposite-winding boundary-only
