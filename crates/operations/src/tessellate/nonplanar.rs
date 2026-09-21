@@ -2744,9 +2744,8 @@ pub(super) fn tessellate_nonplanar_cdt(
                 (u_min, u_max, v_min, v_max),
                 &boundary_uv,
                 n_u,
-            )
+            )?
         {
-            validate_interior_grid_size(n_u, extra.len() / n_u.max(1) + 2)?;
             for (u, v) in extra {
                 let point = Point2::new(u, v);
                 if point_in_polygon_2d(boundary_uv_ref, point) && !on_boundary(point) {
@@ -3027,6 +3026,17 @@ pub(super) fn validate_interior_grid_size(
     Ok(())
 }
 
+fn validated_interior_point_count(count: Option<usize>) -> Result<usize, crate::OperationsError> {
+    match count {
+        Some(count) if count <= MAX_INTERIOR_GRID_POINTS => Ok(count),
+        _ => Err(crate::OperationsError::InvalidInput {
+            reason: format!(
+                "non-planar face tessellation grid exceeds the {MAX_INTERIOR_GRID_POINTS}-point work limit"
+            ),
+        }),
+    }
+}
+
 /// Project a 3D point onto a face surface, returning (u, v) parameters.
 fn project_to_surface_uv(
     surface: &FaceSurface,
@@ -3124,11 +3134,13 @@ fn stepped_rim_interior_points(
     uv_range: (f64, f64, f64, f64),
     boundary_uv: &[(f64, f64)],
     n_u: usize,
-) -> Option<Vec<(f64, f64)>> {
+) -> Result<Option<Vec<(f64, f64)>>, crate::OperationsError> {
     let (u_min, u_max, v_min, v_max) = uv_range;
     let du = u_max - u_min;
     let tolerance = remus_math::tolerance::Tolerance::default().linear;
-    let wire = topo.wire(face_data.outer_wire()).ok()?;
+    let Some(wire) = topo.wire(face_data.outer_wire()).ok() else {
+        return Ok(None);
+    };
     let level_of = |point: Point3| -> Option<f64> {
         match face_data.surface() {
             FaceSurface::Cylinder(cyl) => Some((point - cyl.origin()).dot(cyl.axis())),
@@ -3153,32 +3165,45 @@ fn stepped_rim_interior_points(
         topo.edge(oriented.edge())
             .is_ok_and(|edge| matches!(edge.curve(), EdgeCurve::Line | EdgeCurve::Circle(_)))
     });
-    let mut levels = Vec::<f64>::new();
-    let mut push_level = |rim_v: f64| {
-        if !levels
-            .iter()
-            .any(|&existing| (existing - rim_v).abs() <= tolerance)
-        {
-            levels.push(rim_v);
-        }
-    };
+    let mut levels = Vec::<f64>::with_capacity(wire.edges().len().saturating_mul(2));
     for oriented in wire.edges() {
-        let edge = topo.edge(oriented.edge()).ok()?;
+        let Some(edge) = topo.edge(oriented.edge()).ok() else {
+            return Ok(None);
+        };
         if rim_and_axial_only {
             for vertex in [edge.start(), edge.end()] {
-                push_level(level_of(topo.vertex(vertex).ok()?.point())?);
+                let Some(vertex) = topo.vertex(vertex).ok() else {
+                    return Ok(None);
+                };
+                let Some(level) = level_of(vertex.point()) else {
+                    return Ok(None);
+                };
+                levels.push(level);
             }
         } else if let EdgeCurve::Circle(circle) = edge.curve() {
-            push_level(level_of(circle.center())?);
+            let Some(level) = level_of(circle.center()) else {
+                return Ok(None);
+            };
+            levels.push(level);
         }
     }
-    if levels.len() < 3 {
-        return None;
-    }
     levels.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    levels.dedup_by(|a, b| (*a - *b).abs() <= tolerance);
+    if levels.len() < 3 {
+        return Ok(None);
+    }
+    // Every distinct level contributes up to three pinned rows. Reject an
+    // attacker-controlled split seam before generating those rows.
+    let columns = n_u.saturating_sub(1).max(1);
+    validated_interior_point_count(
+        levels
+            .len()
+            .checked_mul(3)
+            .and_then(|rows| rows.checked_mul(columns)),
+    )?;
     let span = levels[levels.len() - 1] - levels[0];
     if !span.is_finite() || span <= tolerance {
-        return None;
+        return Ok(None);
     }
     // Subdivide every inter-level band to the base grid's u density: no band
     // may be taller than one u-column spacing, so no triangle spanning a
@@ -3231,9 +3256,10 @@ fn stepped_rim_interior_points(
         }
         #[allow(clippy::cast_precision_loss)]
         let want = ((width / row_pitch).ceil().max(2.0) as usize).max(2);
-        for j in 1..want {
+        let subdivision_count = want.saturating_sub(1).min(6);
+        for j in 1..=subdivision_count {
             #[allow(clippy::cast_precision_loss)]
-            let v = lo + width * (j as f64 / want as f64);
+            let v = lo + width * (j as f64 / (subdivision_count + 1) as f64);
             if v > v_min + tolerance && v < v_max - tolerance {
                 rows.push(v);
             }
@@ -3241,60 +3267,15 @@ fn stepped_rim_interior_points(
     }
     rows.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     rows.dedup_by(|a, b| (*a - *b).abs() <= tolerance);
-    // Hard cap: at most a handful of SUBDIVISION rows per inter-level band.
-    // The level rows and their flanks are exempt — they are what pin the
+    // Subdivision rows were capped while generating them above. Preserve all
+    // level rows and their flanks — they are what pin the
     // boundary vertices, and thinning a band by stride used to drop exactly
     // those (a 117 mm band kept six evenly spread rows and lost the flank
     // one unit above its step, so the step corner fanned 19 mm up to the
     // first surviving row). Applied per band so thinning one tall band never
     // touches another. The caller enforces the same overall work bound.
-    let pinned: Vec<f64> = rows
-        .iter()
-        .copied()
-        .filter(|&v| {
-            levels.iter().any(|&level| {
-                let gap_below = levels
-                    .iter()
-                    .filter(|&&other| other < level - tolerance)
-                    .map(|&other| level - other)
-                    .fold(f64::INFINITY, f64::min);
-                let gap_above = levels
-                    .iter()
-                    .filter(|&&other| other > level + tolerance)
-                    .map(|&other| other - level)
-                    .fold(f64::INFINITY, f64::min);
-                let flank = gap_below.min(gap_above) / 8.0;
-                (v - level).abs() <= tolerance
-                    || (flank.is_finite() && ((v - level).abs() - flank).abs() <= tolerance)
-            })
-        })
-        .collect();
-    let mut capped = pinned.clone();
-    for pair in levels.windows(2) {
-        let (lo, hi) = (pair[0], pair[1]);
-        let mut band: Vec<f64> = rows
-            .iter()
-            .copied()
-            .filter(|&v| v > lo + tolerance && v < hi - tolerance)
-            .filter(|&v| !pinned.iter().any(|&p| (p - v).abs() <= tolerance))
-            .collect();
-        if band.len() > 6 {
-            let stride = band.len().div_ceil(6);
-            let mut thinned = Vec::with_capacity(6);
-            for (i, &v) in band.iter().enumerate() {
-                if i % stride == 0 && thinned.len() < 6 {
-                    thinned.push(v);
-                }
-            }
-            band = thinned;
-        }
-        capped.extend(band);
-    }
-    capped.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    capped.dedup_by(|a, b| (*a - *b).abs() <= tolerance);
-    rows = capped;
     if rows.is_empty() {
-        return None;
+        return Ok(None);
     }
     // Pin each step corner's neighborhood columns: at every outer-wire
     // vertex, take the samples where the two NEIGHBORING base-grid columns
@@ -3331,7 +3312,12 @@ fn stepped_rim_interior_points(
     corner_us.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     corner_us.dedup_by(|a, b| (*a - *b).abs() <= tolerance);
 
-    let mut points = Vec::with_capacity(rows.len() * n_u.max(1));
+    let full_rows = rows.len().checked_mul(n_u.saturating_sub(1));
+    let corner_rows = rows.len().checked_mul(corner_us.len());
+    let point_count =
+        full_rows.and_then(|full| corner_rows.and_then(|corners| full.checked_add(corners)));
+    let point_count = validated_interior_point_count(point_count)?;
+    let mut points = Vec::with_capacity(point_count);
     if n_u > 1 {
         for &v in &rows {
             for iu in 1..n_u {
@@ -3352,7 +3338,7 @@ fn stepped_rim_interior_points(
             }
         }
     }
-    (!points.is_empty()).then_some(points)
+    Ok((!points.is_empty()).then_some(points))
 }
 
 /// Estimate the effective radius of a surface for sample density calculation.
