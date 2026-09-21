@@ -56,14 +56,27 @@ pub fn check_edge_range(
             Ok(vec![])
         }
         EdgeCurve::NurbsCurve(nc) => {
-            let (t0, t1) = nc.domain();
-            if (t1 - t0).abs() < tolerance {
+            // Knot parameters have no universal length scale. Preserve the
+            // legacy untrimmed carrier path; stored trims use topology's authority.
+            let domain = if edge.trim().is_some() {
+                edge.strict_domain()
+            } else {
+                Ok(nc.domain())
+            };
+            let invalid = match domain {
+                Ok((t0, t1)) => (!t0.is_finite()
+                    || !t1.is_finite()
+                    || t0.partial_cmp(&t1) == Some(std::cmp::Ordering::Equal))
+                .then(|| format!("edge NURBS domain [{t0}, {t1}] has zero or non-finite extent")),
+                Err(error) => Some(error.to_string()),
+            };
+            if let Some(description) = invalid {
                 return Ok(vec![ValidationIssue {
                     check: CheckId::EdgeRangeValid,
                     severity: Severity::Error,
                     entity: EntityRef::Edge(edge_id),
-                    description: format!("edge NURBS domain [{t0}, {t1}] has zero extent"),
-                    deviation: Some((t1 - t0).abs()),
+                    description,
+                    deviation: None,
                 }]);
             }
             Ok(vec![])
@@ -117,23 +130,48 @@ pub fn check_edge_degenerate(
             }
         }
         EdgeCurve::NurbsCurve(nc) => {
-            let (t0, t1) = nc.domain();
-            let n_samples = 10;
+            let (t0, t1) = if edge.trim().is_some() {
+                let Ok(domain) = edge.strict_domain() else {
+                    // Invalid authority belongs to EdgeRangeValid, not a length estimate.
+                    return Ok(vec![]);
+                };
+                domain
+            } else {
+                nc.domain()
+            };
+            let start = t0.min(t1);
+            let end = t0.max(t1);
             let mut length = 0.0;
-            let mut prev = nc.evaluate(t0);
-            #[allow(clippy::cast_precision_loss)]
-            for i in 1..=n_samples {
-                let t = t0 + (t1 - t0) * (i as f64) / (n_samples as f64);
-                let curr = nc.evaluate(t);
-                length += (curr - prev).length();
-                prev = curr;
+            let mut prev = nc.evaluate(start);
+            let mut span_start = start;
+            // Include every active knot span so a localized closed excursion
+            // cannot disappear between samples of the whole carrier domain.
+            for span_end in nc
+                .knots()
+                .iter()
+                .copied()
+                .filter(|&knot| knot > start && knot < end)
+                .chain(std::iter::once(end))
+            {
+                if span_end <= span_start {
+                    continue;
+                }
+                for i in 1..=10 {
+                    let t = span_start + (span_end - span_start) * f64::from(i) / 10.0;
+                    let curr = nc.evaluate(t);
+                    length += (curr - prev).length();
+                    prev = curr;
+                }
+                span_start = span_end;
             }
             if length < tolerance {
                 return Ok(vec![ValidationIssue {
                     check: CheckId::EdgeDegenerate,
                     severity: Severity::Warning,
                     entity: EntityRef::Edge(edge_id),
-                    description: format!("degenerate NURBS edge: length {length:.2e}"),
+                    description: format!(
+                        "possibly degenerate NURBS edge: sampled trim length {length:.2e}"
+                    ),
                     deviation: Some(length),
                 }]);
             }
