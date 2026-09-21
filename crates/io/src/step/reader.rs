@@ -4931,6 +4931,16 @@ impl<'a> StepBuilder<'a> {
         if curve.degree() == 0 {
             return Ok(None);
         }
+        // Reject hostile degree/span combinations before the projector builds
+        // its coarse-seed vector.  A seed is not a constant-cost entity:
+        // evaluation and Newton refinement both perform degree-squared basis
+        // work, so account for that cost as well as the allocation count.
+        let recovery_work = Self::untrimmed_recovery_work_units(curve);
+        ensure_limit(
+            "work units per untrimmed NURBS domain recovery",
+            recovery_work,
+            limits.max_model_entities,
+        )?;
         let (domain_start, domain_end) = curve.domain();
         if !(domain_start.is_finite() && domain_end.is_finite() && domain_end > domain_start) {
             return Ok(None);
@@ -5106,6 +5116,32 @@ impl<'a> StepBuilder<'a> {
             .into_iter()
             .filter(|seed| (seed - found).abs() >= keep_out)
             .collect())
+    }
+
+    /// Conservative work estimate for projection and uniqueness recovery.
+    ///
+    /// This mirrors `curve_coarse_seeds_public` without evaluating the curve
+    /// or allocating its seed vector. Saturation makes arithmetic overflow a
+    /// fail-closed limit violation.
+    fn untrimmed_recovery_work_units(curve: &remus_math::nurbs::NurbsCurve) -> usize {
+        let degree = curve.degree();
+        let knots = curve.knots();
+        let span_end = knots.len().saturating_sub(degree);
+        let non_empty_spans = knots.get(degree..span_end).map_or(0, |domain_knots| {
+            domain_knots
+                .windows(2)
+                .filter(|span| span[1] > span[0])
+                .count()
+        });
+        let samples_per_span = degree
+            .saturating_add(1)
+            .max(5)
+            .saturating_mul(2)
+            .saturating_add(1);
+        let basis_work_per_seed = degree.saturating_add(1).saturating_pow(2);
+        non_empty_spans
+            .saturating_mul(samples_per_span)
+            .saturating_mul(basis_work_per_seed)
     }
 
     /// Parameter-space radius of the tolerance ball around a projected foot.
@@ -10712,6 +10748,47 @@ mod tests {
                 limit: MAX_UNTRIMMED_NURBS_RECOVERY_CONTROL_POINTS,
                 actual,
             } if actual == count
+        ));
+    }
+
+    #[test]
+    fn untrimmed_nurbs_domain_recovery_rejects_excess_work_before_sampling() {
+        let degree = 20;
+        let count = 60;
+        #[allow(clippy::cast_precision_loss)]
+        let control_points: Vec<_> = (0..count)
+            .map(|index| Point3::new(index as f64, 0.0, 0.0))
+            .collect();
+        let mut knots = vec![0.0; degree + 1];
+        #[allow(clippy::cast_precision_loss)]
+        knots.extend((1..count - degree).map(|index| index as f64));
+        #[allow(clippy::cast_precision_loss)]
+        knots.extend(vec![(count - degree) as f64; degree + 1]);
+        let curve =
+            remus_math::nurbs::NurbsCurve::new(degree, knots, control_points, vec![1.0; count])
+                .unwrap();
+        let limits = ImportLimits {
+            max_model_entities: 1_000,
+            ..ImportLimits::default()
+        };
+
+        let work = StepBuilder::untrimmed_recovery_work_units(&curve);
+        let error = StepBuilder::projected_nurbs_domain(
+            1,
+            &limits,
+            &curve,
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            MAX_UNTRIMMED_NURBS_RECOVERY_TOLERANCE_MM,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            IoError::LimitExceeded {
+                resource: "work units per untrimmed NURBS domain recovery",
+                limit: 1_000,
+                actual,
+            } if actual == work
         ));
     }
 
