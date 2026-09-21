@@ -1,0 +1,276 @@
+[
+  {
+    "case": "box-fuse-half-overlap",
+    "detail": null,
+    "elapsed_secs": 0.020434825,
+    "evidence": {
+      "area": 8.0,
+      "case": "box-fuse-half-overlap",
+      "diagnostic": null,
+      "evolution_completeness": 1.0,
+      "faces": 14,
+      "import_validity": null,
+      "journal_note": null,
+      "post_import_success": null,
+      "round_trip": null,
+      "status": "success",
+      "valid": true,
+      "volume": 1.4999999999999987,
+      "watertight": true
+    },
+    "outcome": "evidence",
+    "repetition": 0
+  },
+  {
+    "case": "box-fuse-half-overlap",
+    "detail": null,
+    "elapsed_secs": 0.020435046,
+    "evidence": {
+      "area": 8.0,
+      "case": "box-fuse-half-overlap",
+      "diagnostic": null,
+      "evolution_completeness": 1.0,
+      "faces": 14,
+      "import_validity": null,
+      "journal_note": null,
+      "post_import_success": null,
+      "round_trip": null,
+      "status": "success",
+      "valid": true,
+      "volume": 1.4999999999999987,
+      "watertight": true
+    },
+    "outcome": "evidence",
+    "repetition": 1
+  },
+  {
+    "case": "box-fuse-identical",
+    "detail": null,
+    "elapsed_secs": 0.015357633,
+    "evidence": {
+      "area": 6.0,
+      "case": "box-fuse-identical",
+      "diagnostic": null,
+      "evolution_completeness": 1.0,
+      "faces": 6,
+      "import_validity": null,
+      "journal_note": null,
+      "post_import_success": null,
+      "round_trip": null,
+      "status": "success",
+      "valid": true,
+      "volume": 0.9999999999999991,
+      "watertight": true
+    },
+    "outcome": "evidence",
+    "repetition": 0
+  },
+  {
+    "case": "box-fuse-identical",
+    "detail": null,
+    "elapsed_secs": 0.015326685,
+    "evidence": {
+      "area": 6.0,
+      "case": "box-fuse-identical",
+      "diagnostic": null,
+      "evolution_completeness": 1.0,
+      "faces": 6,
+      "import_validity": null,
+      "journal_note": null,
+      "post_import_success": null,
+      "round_trip": null,
+      "status": "success",
+      "valid": true,
+      "volume": 0.9999999999999991,
+      "watertight": true
+    },
+    "outcome": "evidence",
+    "repetition": 1
+  },
+  {
+    "case": "box-cut-contained-cavity",
+    "detail": null,
+    "elapsed_secs": 0.010290842,
+    "evidence": {
+      "area": 30.0,
+      "case": "box-cut-contained-cavity",
+      "diagnostic": null,
+      "evolution_completeness": 1.0,
+      "faces": 12,
+      "import_validity": null,
+      "journal_note": null,
+      "post_import_success": null,
+      "round_trip": null,
+      "status": "success",
+      "valid": true,
+      "volume": 6.999999999999991,
+      "watertight": true
+    },
+    "outcome": "evidence",
+    "repetition": 0
+  },
+  {
+    "case": "box-cut-contained-cavity",
+    "detail": null,
+    "elapsed_secs": 0.010293316,
+    "evidence": {
+      "area": 30.0,
+      "case": "box-cut-contained-cavity",
+      "diagnostic": null,
+      "evolution_completeness": 1.0,
+      "faces": 12,
+      "import_validity": null,
+      "journal_note": null,
+      "post_import_success": null,
+      "round_trip": null,
+      "status": "success",
+      "valid": true,
+      "volume": 6.999999999999991,
+      "watertight": true
+    },
+    "outcome": "evidence",
+    "repetition": 1
+  },
+  {
+    "case": "box-cut-identical-empty",
+    "detail": null,
+    "elapsed_secs": 0.005278493,
+    "evidence": {
+      "area": null,
+      "case": "box-cut-identical-empty",
+      "diagnostic": "EmptyResult: Cut of identical solids",
+      "evolution_completeness": null,
+      "faces": null,
+      "import_validity": null,
+      "journal_note": null,
+      "post_import_success": null,
+      "round_trip": null,
+      "status": "refused",
+      "valid": null,
+      "volume": null,
+      "watertight": null
+    },
+    "outcome": "evidence",
+    "repetition": 0
+  },
+  {
+    "case": "box-cut-identical-empty",
+    "detail": null,
+    "elapsed_secs": 0.005248025,
+    "evidence": {
+      "area": null,
+      "case": "box-cut-identical-empty",
+      "diagnostic": "EmptyResult: Cut of identical solids",
+      "evolution_completeness": null,
+      "faces": null,
+      "import_validity": null,
+      "journal_note": null,
+      "post_import_success": null,
+      "round_trip": null,
+      "status": "refused",
+      "valid": null,
+      "volume": null,
+      "watertight": null
+    },
+    "outcome": "evidence",
+    "repetition": 1
+  },
+  {
+    "case": "box-intersect-disjoint-empty",
+    "detail": null,
+    "elapsed_secs": 0.005241763,
+    "evidence": {
+      "area": null,
+      "case": "box-intersect-disjoint-empty",
+      "diagnostic": null,
+      "evolution_completeness": null,
+      "faces": 0,
+      "import_validity": null,
+      "journal_note": null,
+      "post_import_success": null,
+      "round_trip": null,
+      "status": "empty_success",
+      "valid": true,
+      "volume": 0.0,
+      "watertight": true
+    },
+    "outcome": "evidence",
+    "repetition": 0
+  },
+  {
+    "case": "box-intersect-disjoint-empty",
+    "detail": null,
+    "elapsed_secs": 0.005228669,
+    "evidence": {
+      "area": null,
+      "case": "box-intersect-disjoint-empty",
+      "diagnostic": null,
+      "evolution_completeness": null,
+      "faces": 0,
+      "import_validity": null,
+      "journal_note": null,
+      "post_import_success": null,
+      "round_trip": null,
+      "status": "empty_success",
+      "valid": true,
+      "volume": 0.0,
+      "watertight": true
+    },
+    "outcome": "evidence",
+    "repetition": 1
+  },
+  {
+    "case": "step-cylinder-preservation",
+    "detail": null,
+    "elapsed_secs": 0.400325,
+    "evidence": {
+      "area": 351.8583772020233,
+      "case": "step-cylinder-preservation",
+      "diagnostic": null,
+      "evolution_completeness": null,
+      "faces": 3,
+      "import_validity": true,
+      "journal_note": "step import records no journal evolution events; import transcribes foreign topology rather than constructing it",
+      "post_import_success": true,
+      "round_trip": {
+        "area_rel": 0.0,
+        "bounds_abs": 0.0,
+        "centroid_abs": 0.0,
+        "volume_rel": 0.0
+      },
+      "status": "success",
+      "valid": true,
+      "volume": 502.65482457444307,
+      "watertight": true
+    },
+    "outcome": "evidence",
+    "repetition": 0
+  },
+  {
+    "case": "step-cylinder-preservation",
+    "detail": null,
+    "elapsed_secs": 0.40512153,
+    "evidence": {
+      "area": 351.8583772020233,
+      "case": "step-cylinder-preservation",
+      "diagnostic": null,
+      "evolution_completeness": null,
+      "faces": 3,
+      "import_validity": true,
+      "journal_note": "step import records no journal evolution events; import transcribes foreign topology rather than constructing it",
+      "post_import_success": true,
+      "round_trip": {
+        "area_rel": 0.0,
+        "bounds_abs": 0.0,
+        "centroid_abs": 0.0,
+        "volume_rel": 0.0
+      },
+      "status": "success",
+      "valid": true,
+      "volume": 502.65482457444307,
+      "watertight": true
+    },
+    "outcome": "evidence",
+    "repetition": 1
+  }
+]
