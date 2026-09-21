@@ -97,7 +97,27 @@ class ConvergenceTests(unittest.TestCase):
                            ("wasm", "wasm"), ("docs", "docs")]:
             with self.subTest(name=name):
                 header = JOBS[name].split("    steps:", 1)[0]
-                self.assertIn(f"needs.changes.outputs.{flag} == 'true'", header)
+                lines = header.splitlines()
+                fragment = f"needs.changes.outputs.{flag} == 'true'"
+                selected = False
+                for index, line in enumerate(lines):
+                    if not line.strip().startswith("if:"):
+                        continue
+                    indent = len(line) - len(line.lstrip())
+                    condition = [line.split("if:", 1)[1]]
+                    for continuation in lines[index + 1:]:
+                        continuation_indent = (len(continuation)
+                                               - len(continuation.lstrip()))
+                        if continuation.strip() and continuation_indent <= indent:
+                            break
+                        condition.append(continuation)
+                    selected = fragment in " ".join(condition)
+                    if selected:
+                        break
+                self.assertTrue(
+                    selected,
+                    header,
+                )
         self.assertNotIn("clippy:", FLEET)
         self.assertIn("cargo clippy --all-targets --all-features -- -D warnings", JOBS["test"])
         self.assertLess(JOBS["test"].index("cargo clippy"), JOBS["test"].index("cargo nextest run"))
