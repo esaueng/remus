@@ -196,7 +196,7 @@ pub struct CaseEvidence {
     pub area: Option<f64>,
     /// Face count over outer plus inner shells, where measurable.
     pub faces: Option<usize>,
-    /// Tessellation watertightness at [`DEFLECTION`], where measured.
+    /// Tessellation watertightness at the configured deflection, where measured.
     pub watertight: Option<bool>,
     /// Strict validation verdict, where measured.
     pub valid: Option<bool>,
