@@ -54,6 +54,10 @@ use crate::IoError;
 use crate::limits::{ImportLimits, ensure_input_size, ensure_limit};
 
 const MAX_UNTRIMMED_NURBS_RECOVERY_CONTROL_POINTS: usize = 4_096;
+const MAX_UNTRIMMED_NURBS_RECOVERY_DEGREE: usize = 32;
+const MAX_UNTRIMMED_NURBS_RECOVERY_SPANS: usize = 4_096;
+const MAX_UNTRIMMED_NURBS_RECOVERY_SAMPLES: usize = 65_536;
+const MAX_UNTRIMMED_NURBS_RECOVERY_WORK: usize = 50_000_000;
 const MAX_UNTRIMMED_NURBS_RECOVERY_TOLERANCE_MM: f64 = 1.0e-4;
 /// Absolute ceiling for projection-based untrimmed NURBS domain recovery, in
 /// millimetres. The recovery projector runs under the caller tolerance, but
@@ -4931,6 +4935,7 @@ impl<'a> StepBuilder<'a> {
         if curve.degree() == 0 {
             return Ok(None);
         }
+        Self::ensure_projected_nurbs_recovery_budget(curve, limits)?;
         let (domain_start, domain_end) = curve.domain();
         if !(domain_start.is_finite() && domain_end.is_finite() && domain_end > domain_start) {
             return Ok(None);
@@ -5024,6 +5029,80 @@ impl<'a> StepBuilder<'a> {
                     domain_end,
                 )
             }))
+    }
+
+    /// Reject attacker-sized projection work before the projector evaluates
+    /// or allocates any coarse samples.
+    fn ensure_projected_nurbs_recovery_budget(
+        curve: &remus_math::nurbs::NurbsCurve,
+        limits: &ImportLimits,
+    ) -> Result<(), IoError> {
+        let degree = curve.degree();
+        ensure_limit(
+            "degree per untrimmed NURBS domain recovery",
+            degree,
+            MAX_UNTRIMMED_NURBS_RECOVERY_DEGREE,
+        )?;
+
+        let knots = curve.knots();
+        let span_end = knots.len().saturating_sub(degree + 1);
+        let non_empty_spans = (degree..span_end)
+            .filter(|&span| knots[span + 1] > knots[span])
+            .count();
+        ensure_limit(
+            "non-empty spans per untrimmed NURBS domain recovery",
+            non_empty_spans,
+            MAX_UNTRIMMED_NURBS_RECOVERY_SPANS,
+        )?;
+
+        let samples_per_span = degree
+            .checked_add(1)
+            .map(|value| value.max(5))
+            .and_then(|value| value.checked_mul(2))
+            .and_then(|value| value.checked_add(1))
+            .ok_or(IoError::LimitExceeded {
+                resource: "coarse samples per untrimmed NURBS domain recovery",
+                limit: MAX_UNTRIMMED_NURBS_RECOVERY_SAMPLES,
+                actual: usize::MAX,
+            })?;
+        let sample_count =
+            non_empty_spans
+                .checked_mul(samples_per_span)
+                .ok_or(IoError::LimitExceeded {
+                    resource: "coarse samples per untrimmed NURBS domain recovery",
+                    limit: MAX_UNTRIMMED_NURBS_RECOVERY_SAMPLES,
+                    actual: usize::MAX,
+                })?;
+        ensure_limit(
+            "coarse samples per untrimmed NURBS domain recovery",
+            sample_count,
+            MAX_UNTRIMMED_NURBS_RECOVERY_SAMPLES.min(limits.max_model_entities),
+        )?;
+
+        // Two endpoints each perform one projection sweep plus exact-anchor
+        // and uniqueness sweeps whose seeds can each take 50 Newton steps.
+        // Weight those evaluations by the quadratic degree cost of basis
+        // evaluation to provide a total CPU-work ceiling, not merely a
+        // buffer-size ceiling.
+        let work = sample_count
+            .checked_mul(degree.checked_add(1).and_then(|d| d.checked_mul(d)).ok_or(
+                IoError::LimitExceeded {
+                    resource: "work per untrimmed NURBS domain recovery",
+                    limit: MAX_UNTRIMMED_NURBS_RECOVERY_WORK,
+                    actual: usize::MAX,
+                },
+            )?)
+            .and_then(|value| value.checked_mul(206))
+            .ok_or(IoError::LimitExceeded {
+                resource: "work per untrimmed NURBS domain recovery",
+                limit: MAX_UNTRIMMED_NURBS_RECOVERY_WORK,
+                actual: usize::MAX,
+            })?;
+        ensure_limit(
+            "work per untrimmed NURBS domain recovery",
+            work,
+            MAX_UNTRIMMED_NURBS_RECOVERY_WORK,
+        )
     }
 
     /// Span seeds for the [`StepBuilder::projected_nurbs_domain`] uniqueness
@@ -10712,6 +10791,90 @@ mod tests {
                 limit: MAX_UNTRIMMED_NURBS_RECOVERY_CONTROL_POINTS,
                 actual,
             } if actual == count
+        ));
+    }
+
+    #[test]
+    fn projected_nurbs_recovery_rejects_excessive_degree_before_sampling() {
+        let degree = MAX_UNTRIMMED_NURBS_RECOVERY_DEGREE + 1;
+        let count = degree + 1;
+        #[allow(clippy::cast_precision_loss)]
+        let control_points = (0..count)
+            .map(|index| Point3::new(index as f64, 0.0, 0.0))
+            .collect();
+        let mut knots = vec![0.0; count];
+        knots.extend(vec![1.0; count]);
+        let curve =
+            remus_math::nurbs::NurbsCurve::new(degree, knots, control_points, vec![1.0; count])
+                .unwrap();
+
+        let error =
+            StepBuilder::ensure_projected_nurbs_recovery_budget(&curve, &ImportLimits::default())
+                .unwrap_err();
+        assert!(matches!(
+            error,
+            IoError::LimitExceeded {
+                resource: "degree per untrimmed NURBS domain recovery",
+                limit: MAX_UNTRIMMED_NURBS_RECOVERY_DEGREE,
+                actual,
+            } if actual == degree
+        ));
+    }
+
+    #[test]
+    fn projected_nurbs_recovery_checks_sample_count_before_projection() {
+        let count = 12;
+        #[allow(clippy::cast_precision_loss)]
+        let control_points = (0..count)
+            .map(|index| Point3::new(index as f64, 0.0, 0.0))
+            .collect();
+        let mut knots = vec![0.0, 0.0];
+        knots.extend((1..count - 1).map(|index| index as f64));
+        knots.extend([11.0, 11.0]);
+        let curve =
+            remus_math::nurbs::NurbsCurve::new(1, knots, control_points, vec![1.0; count]).unwrap();
+        let limits = ImportLimits {
+            max_model_entities: 100,
+            ..ImportLimits::default()
+        };
+
+        let error =
+            StepBuilder::ensure_projected_nurbs_recovery_budget(&curve, &limits).unwrap_err();
+        assert!(matches!(
+            error,
+            IoError::LimitExceeded {
+                resource: "coarse samples per untrimmed NURBS domain recovery",
+                limit: 100,
+                actual: 121,
+            }
+        ));
+    }
+
+    #[test]
+    fn projected_nurbs_recovery_has_a_total_work_budget() {
+        let degree = MAX_UNTRIMMED_NURBS_RECOVERY_DEGREE;
+        let count = degree + 4;
+        #[allow(clippy::cast_precision_loss)]
+        let control_points = (0..count)
+            .map(|index| Point3::new(index as f64, 0.0, 0.0))
+            .collect();
+        let mut knots = vec![0.0; degree + 1];
+        knots.extend([1.0, 2.0, 3.0]);
+        knots.extend(vec![4.0; degree + 1]);
+        let curve =
+            remus_math::nurbs::NurbsCurve::new(degree, knots, control_points, vec![1.0; count])
+                .unwrap();
+
+        let error =
+            StepBuilder::ensure_projected_nurbs_recovery_budget(&curve, &ImportLimits::default())
+                .unwrap_err();
+        assert!(matches!(
+            error,
+            IoError::LimitExceeded {
+                resource: "work per untrimmed NURBS domain recovery",
+                limit: MAX_UNTRIMMED_NURBS_RECOVERY_WORK,
+                actual,
+            } if actual > MAX_UNTRIMMED_NURBS_RECOVERY_WORK
         ));
     }
 
