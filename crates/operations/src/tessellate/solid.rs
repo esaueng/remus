@@ -29,6 +29,48 @@ use super::planar::{
 };
 use super::{MERGE_GRID, point_merge_key};
 
+const MAX_PLANAR_CONTACT_CANDIDATE_PAIRS: usize = 4_000_000;
+
+fn add_planar_contact_work(
+    total: &mut usize,
+    line_count: usize,
+    sample_count: usize,
+) -> Result<(), crate::OperationsError> {
+    *total = total.saturating_add(line_count.saturating_mul(sample_count));
+    if *total > MAX_PLANAR_CONTACT_CANDIDATE_PAIRS {
+        return Err(crate::OperationsError::InvalidInput {
+            reason: "planar edge-contact refinement exceeds its work budget".into(),
+        });
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod contact_budget_tests {
+    use super::{MAX_PLANAR_CONTACT_CANDIDATE_PAIRS, add_planar_contact_work};
+    use crate::OperationsError;
+
+    #[test]
+    fn planar_contact_budget_rejects_excess_and_overflow() {
+        let mut work = 0;
+        assert!(
+            add_planar_contact_work(&mut work, 4_000, 1_000).is_ok(),
+            "the documented candidate budget should remain available"
+        );
+        assert_eq!(work, MAX_PLANAR_CONTACT_CANDIDATE_PAIRS);
+        assert!(matches!(
+            add_planar_contact_work(&mut work, 1, 1),
+            Err(OperationsError::InvalidInput { .. })
+        ));
+
+        let mut overflow_work = 0;
+        assert!(matches!(
+            add_planar_contact_work(&mut overflow_work, usize::MAX, 2),
+            Err(OperationsError::InvalidInput { .. })
+        ));
+    }
+}
+
 fn has_trimmed_same_sphere_neighbor<V>(
     topo: &Topology,
     face_id: FaceId,
@@ -655,7 +697,10 @@ fn tessellate_faces_core(
     {
         let tol_linear = remus_math::tolerance::Tolerance::new().linear;
         let refine_tol = tol_linear * 10.0;
-        let mut line_contacts: DetHashMap<usize, DetHashSet<u32>> = DetHashMap::default();
+        // Keep each face's circular samples once, rather than materializing the
+        // Cartesian product of every line and sample in `line_contacts`.
+        let mut contact_groups = Vec::new();
+        let mut contact_work = 0;
         for &face_id in all_faces {
             let face = topo.face(face_id)?;
             if !matches!(face.surface(), FaceSurface::Plane { .. }) {
@@ -682,12 +727,42 @@ fn tessellate_faces_core(
                     }
                 }
             }
-            if !curved_samples.is_empty() {
-                for index in lines {
-                    line_contacts
-                        .entry(index)
-                        .or_default()
-                        .extend(curved_samples.iter().copied());
+            lines.sort_unstable();
+            lines.dedup();
+            curved_samples.sort_unstable();
+            curved_samples.dedup();
+            if !lines.is_empty() && !curved_samples.is_empty() {
+                add_planar_contact_work(&mut contact_work, lines.len(), curved_samples.len())?;
+                contact_groups.push((lines, curved_samples));
+            }
+        }
+
+        // Retain only genuine contacts. Memory is now proportional to the
+        // input groups plus the subdivisions that can reach the output.
+        let mut line_contacts: DetHashMap<usize, DetHashSet<u32>> = DetHashMap::default();
+        for (lines, curved_samples) in contact_groups {
+            for index in lines {
+                let Some(edge_id) = topo.edge_id_from_index(index) else {
+                    continue;
+                };
+                let edge = topo.edge(edge_id)?;
+                let start = topo.vertex(edge.start())?.point();
+                let end = topo.vertex(edge.end())?.point();
+                let direction = end - start;
+                let length_squared = direction.length_squared();
+                let boundary_tol = 1e-10;
+                if length_squared <= boundary_tol * boundary_tol {
+                    continue;
+                }
+                for &gid in &curved_samples {
+                    let point = merged.positions[gid as usize];
+                    let t = (point - start).dot(direction) / length_squared;
+                    if t > 0.0
+                        && t < 1.0
+                        && (point - (start + direction * t)).length() < boundary_tol
+                    {
+                        line_contacts.entry(index).or_default().insert(gid);
+                    }
                 }
             }
         }
