@@ -5,7 +5,11 @@ and remaining work.** Start here, choose one bounded item, and update its row in
 the PR that changes it. Specifications define scope and acceptance; audits retain
 source-pinned evidence. Neither maintains a competing work queue.
 
-**Reconciled:** 2026-09-13 against `main` at `f325142a834b722f1e7e70e625f598fb1a40c422`.
+**Priority review:** 2026-09-21 against `main` at
+`a072e6a9ee9b09e4c820f3b8c2e5d3c5cc337ca9`. This review updates sequencing and
+acceptance gates, not implementation completion or measured kernel rankings.
+The full-register reconciliation below remains the 2026-09-13 snapshot at
+`f325142a834b722f1e7e70e625f598fb1a40c422`.
 Open PRs below are a dated snapshot, not completion evidence or permanent ownership.
 This documentation review preserves existing qualification limits; it does not
 re-run geometry suites or certify the current scheduled jobs.
@@ -42,22 +46,81 @@ public labels. Consolidating planning does not change either authority.
 
 ## Current priorities
 
-Order by correctness risk, dependency unlock, consumer impact and measured cost.
+Prioritize reliably supported workflows: consistent operation contracts, verified
+source/package behavior, authoritative boundaries, and independent qualification
+before broader operation coverage. Existing completed subsets remain completed;
+the follow-up gates below do not reopen them without a reproduced regression.
 The lanes permit independent work after a live file-overlap check; they are not
-permission to launch several changes in one session.
+permission to launch several changes in one session. These are dependency gates,
+not engineer-week estimates or calendar commitments.
 
-| Priority / lane | Next bounded work | Dependency / completion boundary |
+| Priority / lane | Next bounded work and owner | Completion boundary |
 | --- | --- | --- |
-| 1 — Correctness and proof | Finish/review the in-flight B26 native/fuzz oracles and B24 wildcard ratchet. Route each reproduced defect to its owning geometry row. | #410 and #417 share B26; #422 owns the current B24 slice. Tests-only campaigns must retain minimized failures rather than silently turn into kernel fixes. |
-| 2 — Consumer APIs | B16: first reconcile the consumer use of `unifyFacesChecked`, then one missing topology query; O4.7 for one further typed operation family. | A kernel binding does not close its adapter-deletion acceptance criterion. Broader B18 history work follows the existing B16 three-row consumer milestone unless a specific defect requires it. |
-| 3 — Geometry | P-Class 2.4 integration qualification and 2.5's named curved-NURBS slices; remaining 2.6/2.7 cells; B7/B8 as their witnesses require. | #416 is an in-flight 2.5 math slice. B4's four planar gaps landed in #398; its curved-face refusal remainder belongs with M5, not another planar-trimmer rewrite. Serialize GFA/splitter work. |
-| 4 — Interactive performance | B28 / PERF-N04: qualify the landed fused NURBS evaluation and the landed scratch and in-flight budget slices. Then extend profiles (PERF-M04/M05/M07), calibrate gates (PERF-M03), and select one measured cost. | #411 is landed; #418 is merged; #413 and the SSI scratch slice (#530) are in flight. Preserve source/package provenance and numerical behavior. O3.1a already provides a maintained baseline; extend it. |
-| 5 — Independent qualification | One B6 family, B10, B17 fixer, B19 target, or O1.5 parity slice. | Independent oracle, explicit unsupported cells, direct/batch WASM where public; no family promotion from one fixture. |
-| 6 — Foundation work with clear gates | O4.4 error registry, O4.6 serialization policy, O5.1/O5.4 assembly exchange, B29 transaction design, O3.2 prepared queries. | Respect the dependency table and choose a file-disjoint slice. Cache and transaction proposals require invalidation/rollback evidence before reuse. |
+| 1 — Exactness and disclosure | Preserve [B21](#b21)'s landed exact-only Booleans; reconcile stale comments and audit remaining public entry points with [O4.7](#o-o4-7), [B1](#b1), and P-Class 3.6. | Native facade, direct WASM, and batch agree on exact success, disclosed approximation, repair, and typed refusal. Approximation requires an explicit permissive call; no bare-handle success may hide fallback. |
+| 1 — Distributed behavior | [O1.5](#o-o1-5), O4.2a/b and O3.1a: qualify the installed package alongside source contracts. | Record source SHA, artifact hashes and build configuration; run positive, refusal, rollback and disclosure witnesses through native and npm-installed WASM. A source test or package-refresh PR alone is insufficient. |
+| 2 — Boundary and result authority | P-Class 2.0 follow-up validation audit, 2.6 and M3; [B20](#b20) property-option follow-up; [B18](#b18) result-entity coverage. | Trace concrete public call paths before changing behavior. Check full edge trims and per-use pcurves, dimensional tolerances, effective measurement options, and complete result attribution. Preserve existing migration and measurement qualification. |
+| 3 — Independent qualification baseline | [B26](#b26), B19, B6, B10 and O1.2a–f; extend the existing O1.2d schema, O1.5 matrix and gauntlet. | A pinned representative suite reports correct exact/empty results, disclosed approximation, refusal, incorrect success, timeout, crash and resource failure separately. Independent geometry checks and explicit skipped cells accompany coverage and timing. |
+| 4 — Bounded geometry expansion | P-Class 2.4/2.5/2.7 and B7/B8 as prerequisites; then named M5 curved-blend and 5.7b offset families. | Each slice declares supported geometry and boundary refusals, passes the qualification gates below, and updates only its own supported domain. B4's planar completion and 5.7's bounded collapse case remain credited. Serialize shared GFA/splitter work. |
+| 5 — Consumer and performance follow-through | B16 adapter adoption, B28 / PERF-N04, O3.1a baseline extensions and one profile-selected cost. | Retire a named consumer heuristic or demonstrate a measured improvement on equivalent-quality successful workloads. Separate refusal rate, geometry validity, native/WASM behavior and latency; preserve numerical and rollback contracts. |
+| 6 — Broader platform scope | O4.4/O4.6, O5.1/O5.4 assembly exchange, B29 transactions and O3.2 prepared queries. | Follow existing dependencies. Assembly/PMI fidelity, caching, concurrency and general imported-body editing need their own evidence; geometry-only STEP success does not close them. |
+
+### Qualification gates for the priority lanes
+
+These gates refine the linked owners' remaining work; they are not a second
+implementation register. A milestone names one operation family, its supported
+inputs, its numerical/error contract and the evidence needed for promotion.
+
+| Owner / milestone | Required acceptance evidence |
+| --- | --- |
+| B21 / O4.7 / B1 — trustworthy outcomes | Inventory public native, direct and batch entry points, including options/evolution wrappers. Retain B21's existing refusal/rollback tests; add witnesses only for uncovered paths. Quality, repair actions and verification status must be observable where applicable. An exact-only request cannot publish a faceted fallback. Correct documentation to match actual dispatch. |
+| O1.5 / O4.2a/b — source-to-package parity | Build generated packages from the recorded source; test the installed tarball, not only a native binding helper. Pin exact-result, approximation-opt-in, typed-refusal, cancellation and transactional-state cases. Record target/toolchain/package identity and artifact hashes. Reuse the existing parity harness; retain its known approximation-partition differences as separately reported cells. |
+| P-Class 2.0 / 2.6 / M3 — boundary consistency | Audit residual legacy validators and compatibility mutation paths against authoritative trims/coedges. Verify 3D edge versus each face-use pcurve over the full trim, periodic seams and parameter remapping; exercise rotation, translation, and both scaled tolerances and fixed physical tolerances. Keep the landed reader/mutation ratchets. Never widen global tolerances to clear a witness. |
+| B20 follow-up / B18 — measurement and history | Determine which public paths expose `adaptive_eps` and `max_depth`; make advertised controls effective or explicitly unsupported with compatibility documentation. Check convergence against independent analytic or adaptive reference values, not another wrapper over the same integrator. Compare attributed entities against the actual result-entity set; test deliberately omitted records, split/merge events and typed unresolved outcomes. Extend face/edge/vertex coverage one family at a time. |
+| B26 / B19 / B6 / B10 / O1.2 — qualified workload baseline | Pin fixture rights/hashes, source/build/configuration, seeds and family denominators. Include application-representative construction chains, STEP round trips, seams, tangencies, cavities and scale/placement variants. Track incorrect accepted results separately from useful-operation coverage; refusals and skipped/expensive checks remain visible. Use independent geometry/occupancy/property checks alongside topology and mesh checks. Time the same correct, equivalent-quality successes on each kernel; report native and WASM separately. |
+| M5 / 6.1 / 7.4 — curved blends | Select one named support/contact/corner family. Prove neighboring-face relimitation, shared edges and pcurves, orientation, declared continuity and geometric error, complete construction history, and transactional refusal beyond the family. A lower-level untrimmed return first needs a public-operation reproduction; it is not by itself evidence of an accepted invalid solid. |
+| P-Class 5.7b — cavity and global offset interference | Separate joint semantics and both offset signs. Include two expanding cavities that collide while their extents remain inside the outer extent, thin-wall collapse and nonlocal intersections. Independently verify material regions and shell separation, or require a typed transactional refusal. Bounding-box containment and a watertight preview are insufficient; retain 5.7's existing bounded qualification. |
+
+### Evidence triage (2026-09-21)
+
+Source observations below were checked at the priority-review SHA. They are
+investigation inputs, not newly reproduced runtime failures or reopened completed
+milestones. Record **evidence class, impact, confidence, public-path witness and
+owner** before promoting an observation to a defect. Distinguish implementation
+behavior, reproduced incorrect success, missing qualification and vendor claims.
+
+- **B21 remains Done.** The comparison's silent-fallback claim follows a stale
+  `booleanWithQuality` comment. Plain `fuse`/`cut`/`intersect` dispatch to
+  `boolean()` and `exact_only_context()`; this is also true at the comparison's
+  `76dbffd` snapshot. The follow-up is documentation consistency and contract/
+  package verification, not reimplementing the already-landed default.
+- **P-Class 2.0 migration remains credited.** Residual NURBS checks in
+  `crates/check/src/validate/edge.rs` use the carrier domain and compare a
+  parameter span with linear tolerance. Trace their public validation impact
+  before claiming that strict validation accepts invalid geometry. Compatibility
+  facades alone do not prove the completed ownership migration failed.
+- **B20's bounded measurement completion remains credited.** The property
+  wrappers in `crates/check/src/properties/mod.rs` forward quadrature order but
+  not the advertised adaptive controls. Audit exposed options and independent
+  error evidence; do not infer that all existing measurements are wrong.
+- **B18 owns the history follow-up.** `EvolutionMap::is_complete()` checks the
+  unresolved bucket, not a census of result entities. Test actual producers and
+  consumers before attributing a lost persistent selection to this helper.
+- **M5 and 5.7b retain their named limits.** Nonplanar blend trimming and global
+  cavity interference need the witnesses above. The fixed NURBS STEP carrier
+  regression stays fixed; an inconsistent-input refusal is not automatically an
+  import defect. Preserve the [STEP audit](step-roundtrip-audit-2026-09-18.md)'s
+  distinction between geometry, measurement and explicit rejection.
+
+Representation quality, geometric error and topology validity are separate
+claims: retaining analytic/NURBS B-Rep does not make numerical intersection or
+fitting symbolically exact. Cross-kernel rankings require the same measured
+workloads; vendor documentation and source inspection establish different kinds
+of evidence. This roadmap adds no competitive ranking or schedule estimate.
 
 ## In-flight work
 
-Snapshot from GitHub on 2026-09-13. Re-fetch before claiming or changing any row.
+Historical snapshot from GitHub on 2026-09-13, retained as integration evidence,
+not the current PR queue. Re-fetch before claiming or changing any row.
 Several PRs edit this document or the retired status files: port their status
 updates to the owner rows here during integration, retaining their geometry/tests.
 No PR check result or reviewer approval is inferred from this inventory.
@@ -195,6 +258,11 @@ milestone; the existing 2.x package numbering is a different release channel.
 
 ### Scheduling constraints
 
+- Contract and installed-package qualification begin together. Boundary and
+  independent-oracle gates precede promotion of broader blend/offset families;
+  a named consumer-blocking regression may be fixed immediately with its own
+  witness. Existing performance baselines and completed subsets remain valid
+  within their recorded scope.
 - O2.3b–d and 2.4/2.5 share the splitter. An integration slice waits for its
   prerequisite geometry contract; do not run overlapping changes independently.
 - M3 tolerance integration and M2 share GFA acceptance bands. Stop and re-stage
@@ -217,7 +285,9 @@ milestone; the existing 2.x package numbering is a different release channel.
 ### H4 release gates
 
 No completion counts are asserted by this consolidation. Each release candidate
-must attach a fresh evidence checklist for these four gates:
+must attach a fresh evidence checklist for these four gates, including the
+[contract, installed-package and independent qualification evidence](#qualification-gates-for-the-priority-lanes)
+for the domains claimed by that release:
 
 | Gate | Required evidence |
 | --- | --- |
