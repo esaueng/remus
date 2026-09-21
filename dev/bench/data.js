@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789962044041,
+  "lastUpdate": 1789963450783,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -47473,6 +47473,240 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 59060,
             "range": "± 240",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "65ec25f9959709d0a80e9b3ecf9b149a68807f74",
+          "message": "perf(math): reuse NURBS derivative scratch across SSI marching and refinement (#540)\n\n* perf(math): reuse NURBS derivative scratch across SSI marching and refinement\n\nFollow-up to #411/#418 on audit work item N04. Selection, measured on\none host (release, counting global allocator, production-shaped\nfixtures): the SSI consumer costs 51,595 allocations and 2.82 ms for a\ntransversal bicubic pair at the GFA FF parameters (32 samples, 0.01\nstep) versus 3,176 allocations and 359 us for a full NURBS-support\nconstant-radius walker fillet (21 sections) - 16x the allocations and\n8x the time - so the SSI path is the higher-cost remaining consumer and\nthe one this change threads.\n\n- DerivativeScratch grows partials_from, normal_partials_from,\n  normal_from and derivative_table_from entry points (all\n  #[doc(hidden)]); NurbsSurface::derivatives and NurbsSurface::normal\n  now delegate to the same solves, so scratch and heap paths share one\n  implementation.\n- SsiScratch (one scratch half per surface, span hints are knot\n  indices) is threaded through SSI seed subdivision, grid seeding,\n  refinement, marching, the RKF45 stages, branch detection and the\n  second-order tangent analysis; the coupled-Newton refinement fuses\n  each surface's normal and both partials into one base solve per\n  stage.\n- No tolerance, budget, threshold or trim changes. A two-pair bitwise\n  oracle (all traced 3D points and parameters) is identical before and\n  after; 594 math, 142 blend, 331 algo, 144 check, 1114 operations and\n  384 io lib tests pass; clippy/fmt/boundaries/doc-paths clean.\n\nNew regressions: scratch vs allocating-path bitwise equality across\norders 0..=3, both weight factors and 50-call reuse; scratch solves\ntracked against central finite differences of evaluate; a collapsed\npatch pins the degenerate normal fallback outcome; SSI traced points\nunder 0.37x/4.2x uniform weight scaling match the unscaled point set.\n\n* docs(roadmap): record PERF-N04 SSI scratch slice in review (#530)",
+          "timestamp": "2026-09-21T03:56:28Z",
+          "tree_id": "3e402b6bad9f2db1507a762070e962732ae0eb71",
+          "url": "https://github.com/esaueng/remus/commit/65ec25f9959709d0a80e9b3ecf9b149a68807f74"
+        },
+        "date": 1789963449038,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1262912,
+            "range": "± 3261",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1358238,
+            "range": "± 8708",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 27013,
+            "range": "± 26",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 11937428,
+            "range": "± 72061",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 11944356,
+            "range": "± 34306",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 11512748,
+            "range": "± 14943",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 1090169,
+            "range": "± 1449",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 17892809,
+            "range": "± 28152",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 32396839,
+            "range": "± 199299",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 39,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 107,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 65,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 226,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 159,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 807,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 166,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 359,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 225,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 532,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 760,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 3264,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 17,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 36,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 62,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 62,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 539856,
+            "range": "± 1635",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 9890655,
+            "range": "± 94622",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 162305,
+            "range": "± 414",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 521369,
+            "range": "± 854",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 130230,
+            "range": "± 132",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 925962,
+            "range": "± 1701",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 10683738,
+            "range": "± 23198",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 795961,
+            "range": "± 2023",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 1188202,
+            "range": "± 7547",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 89190,
+            "range": "± 777",
             "unit": "ns/iter"
           }
         ]
