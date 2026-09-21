@@ -25,13 +25,13 @@ const OP: &str = "defeature";
 /// corner. Below this the three planes are too near-parallel for the corner
 /// position to be meaningful, and the heal is refused rather than emitting a
 /// far-away intersection point.
-const MIN_PLANE_TRIPLE_DET: f64 = 1e-6;
+pub(crate) const MIN_PLANE_TRIPLE_DET: f64 = 1e-6;
 
 /// A healed corner may move at most this multiple of the wound loop's own
 /// bounding-box diagonal. A face extension that restores a feature moves
 /// corners by roughly the feature's size; anything far beyond that is a
 /// runaway extension, not a heal.
-const MAX_HEAL_DISPLACEMENT_FACTOR: f64 = 4.0;
+pub(crate) const MAX_HEAL_DISPLACEMENT_FACTOR: f64 = 4.0;
 
 fn unsupported(reason: impl Into<String>) -> OperationsError {
     OperationsError::Unsupported {
@@ -794,12 +794,14 @@ fn heal_by_extending(
         );
 
         // Faces without deleted holes keep every hole verbatim through
-        // `FaceSpec::Existing`: exact curves, orientation, and pcurves survive,
-        // and only the outer wire is re-trimmed from corner positions. This is
-        // what lets a fillet end face keep an unrelated bore rim while its
-        // wound cross arc collapses. A wound edge reaching an inner wire
-        // cannot travel verbatim, so it is refused here rather than silently
-        // kept or chorded.
+        // `FaceSpec::Existing`: exact curves and orientation survive, and only
+        // the outer wire is re-trimmed from corner positions. (No pcurves are
+        // published on this path; uses that carried registry entries keep
+        // them, new uses rely on the geometric fallback.) This is what lets a
+        // fillet end face keep an unrelated bore rim while its wound cross
+        // arc collapses. A wound edge reaching an inner wire cannot travel
+        // verbatim, so it is refused here rather than silently kept or
+        // chorded.
         if drop_slots.is_empty() {
             for &wire_id in face.inner_wires() {
                 for oe in topo.wire(wire_id)?.edges() {
@@ -878,6 +880,15 @@ fn heal_by_extending(
                         .iter()
                         .map(remus_topology::OrientedEdge::edge),
                 );
+            } else {
+                // A preserved hole that substitution collapses below three
+                // corners would be silently filled: the closed shell still
+                // validates, so only an explicit refusal is fail-closed here.
+                return Err(unsupported(format!(
+                    "kept face {} loses a hole boundary during the heal; the \
+                     hole does not survive the corner substitution",
+                    fid.index()
+                )));
             }
         }
 
