@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789958252986,
+  "lastUpdate": 1789959334437,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -46771,6 +46771,240 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 90183,
             "range": "± 1054",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "acc56ed6cf312fcc288b1c2afc73b67f2f7889ef",
+          "message": "test(topology): kill 437 trivially-surviving mutants across 19 files (#539)\n\n* test(topology): add mutation-triage tests (UNFINISHED campaign, kills unmeasured)\n\nWORK IN PROGRESS — do not read the kill counts here as verified.\n\nAdds 161 unit tests across 19 files of remus-topology, produced by a\ncargo-mutants triage campaign that was stopped before its authoritative\nmeasurement. Test-only: production regions of all 19 files are\nbyte-identical to HEAD; every hunk is an append or lands inside a\n`#[cfg(test)] mod tests` block. No existing assertion weakened or removed.\n\nWhat IS verified here:\n- `cargo test -p remus-topology` green: 200 -> 361 lib tests.\n- `cargo clippy -p remus-topology --all-targets -- -D warnings` clean.\n- `cargo fmt --all` clean.\n\nWhat is NOT verified here:\n- The kill counts. Per-file proof runs exist for 8 of 9 file groups, but\n  most narrowed their test command to their own module to avoid picking up\n  sibling agents' work-in-progress in the shared worktree. That narrowing\n  also drops kill credit the crate-wide baseline had, so those numbers are\n  neither comparable to the baseline nor authoritative.\n- `topology.rs` + `arena.rs` have tests but no triage table at all, and\n  their proof run is unreconciled against the baseline.\n\nThe campaign needs one full-crate after-sweep before any kill count is\nclaimed. Handoff state, the before-baseline measurement, and the finished\nper-file triage tables are parked in `.mutants-campaign/` in the following\ncommit; see `.mutants-campaign/HANDOFF.md`.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>\n\n* chore(mutants): park campaign handoff state for machine transfer\n\nTEMPORARY — delete `.mutants-campaign/` before opening the topology PR.\n\nThe cargo-mutants campaign state lived in a session scratchpad under\n/private/tmp and would not survive moving machines, so it is committed\nhere with `git add -f`.\n\nThe load-bearing file is `outcomes/topo-base.outcomes.json.gz`: the\nremus-topology BEFORE baseline (1557 mutants, 515 missed, of which 47 are\nin the never-compiled `test_utils.rs`, leaving a real pool of 468). Now\nthat the topology tests are committed, that measurement cannot be retaken\non this branch without checking out origin/main again.\n\nAlso parked: 8 of 9 finished topology triage tables, the 10 geometry\ntables backing PR #528, per-file survivor lists, the completed proof runs\nfor `builder` and `arenacore`, the agent briefs, and the table parser.\n\nFull cargo-mutants JSON is gzipped (15M -> 2.1M); a slimmed\n`summary/file/mutant` TSV sits beside each one, which is all the counting\nneeds.\n\nSee `.mutants-campaign/HANDOFF.md` for per-file status and the remaining\nwork.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>\n\n* chore(mutants): park the late arenacore triage table, completing the set\n\nThe arenacore agent (topology.rs + arena.rs) finished after the WIP commit\nand delivered its table. Its tests were already in 1785f4fd, so no code\nchanges here — this parks the table before the scratchpad is discarded.\n\narenacore: 30 survivors -> 3 missed (27 killed), all 3 residuals (b), and\nthe claimed-(b) set matches the measured still-missed set exactly. Its\n36-entry missed.txt is a narrowed-test-command artifact, reconciled\nindependently by the agent and the orchestrator: the extra 33 are mutants\nthe crate-wide baseline caught via tests in other modules.\n\nAll 9 file groups now carry a validated table — every one of the 468 real\nsurvivors is classified (437 (a), 31 (b), 0 (c)). That is still the\nhypothesis, not a verified kill count: most per-file proof runs were\nmodule-scoped and are not comparable to the baseline. The authoritative\nfull-crate sweep remains the next step.\n\nFlagged for review in HANDOFF.md: arena.rs:55:9 (Hash -> ()) was killed by\na DefaultHasher distinctness check rather than a map round-trip, because a\nround-trip cannot kill it (Eq resolves collisions). Defensible as a perf\ncontract, but it is the one arguable verdict in the crate.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>\n\n* test(topology): record measured mutant-kill results (437 killed, 31 equivalent)\n\nFollow-up to 1785f4fd, whose message correctly said kills were\nunmeasured. The authoritative full-crate after-sweep is now done:\n\n  cargo mutants -p remus-topology --no-config --baseline skip     --timeout 60 -j 8 -- -p remus-topology\n\n1557 mutants: 78 missed, 1136 caught, 343 unviable, 0 timeout.\nExcluding the 47 test_utils.rs missed-by-construction mutants, the 468\nreal baseline survivors resolve exactly as triaged: all 437 (a) killed,\nall 31 (b) still survive, 0 new survivors.\n\nAdds docs/kernel-maturity/mutants-topology-2026-09-20.md with the\nmethod, run provenance, per-file before/after, and one row per\nsurvivor. Test-only change; production regions byte-identical.\n\n* chore(mutants): drop topology campaign scaffolding before PR\n\nThe .mutants-campaign directory (baselines, triage tables, handoff\nnotes) was committed with git add -f only to survive a machine move.\nEverything still useful is now in\ndocs/kernel-maturity/mutants-topology-2026-09-20.md. It must not reach\nthe PR.\n\n* chore(policy): register 22 topology test identities in edge-domain ratchet\n\nThe mutation-triage tests added 18 domain_with_endpoints readers\n(edge.rs) and 4 direct boundary-mutation uses (face.rs test,\nvalidation.rs tests), all inside #[cfg(test)] modules. The RFC 0002\nedge-domain authority ratchet rejects unknown identities, so register\nthem: DOMAIN_TEST_MANIFEST 25 -> 43 entries, BOUNDARY_EXCLUDED_MANIFEST\n8 -> 12 entries. No production identity added, none removed.\n\n---------\n\nCo-authored-by: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-21T02:48:24Z",
+          "tree_id": "b82ff7fbc5f557e1b3438e9a116a1111b33cd046",
+          "url": "https://github.com/esaueng/remus/commit/acc56ed6cf312fcc288b1c2afc73b67f2f7889ef"
+        },
+        "date": 1789959333144,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1045807,
+            "range": "± 2095",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1130607,
+            "range": "± 3826",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 22056,
+            "range": "± 239",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 9264343,
+            "range": "± 9698",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 9288961,
+            "range": "± 17290",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 8944617,
+            "range": "± 9516",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 877145,
+            "range": "± 1648",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 14667403,
+            "range": "± 27509",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 26282960,
+            "range": "± 76707",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 21,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 74,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 35,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 164,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 124,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 531,
+            "range": "± 9",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 113,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 268,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 186,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 381,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 750,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 2050,
+            "range": "± 7",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 9,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 30,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 55,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 56,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 467476,
+            "range": "± 594",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 8182733,
+            "range": "± 18688",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 143663,
+            "range": "± 250",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 485957,
+            "range": "± 1395",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 82079,
+            "range": "± 164",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 809486,
+            "range": "± 1160",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 9567965,
+            "range": "± 298877",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 620845,
+            "range": "± 955",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 962951,
+            "range": "± 27750",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 68596,
+            "range": "± 118",
             "unit": "ns/iter"
           }
         ]
