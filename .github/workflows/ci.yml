@@ -32,12 +32,12 @@ jobs:
       id-token: write
       contents: read
       pull-requests: read
-    uses: esaueng/remus/.github/workflows/fleet-ci.yml@71c9bfe23cf0c417434cdd25adb95c5f8265cb69
+    uses: esaueng/remus/.github/workflows/fleet-ci.yml@34afb42bd5e3399556d85288de7a55889ae9306d
 
   wasm-size:
     needs: checks
     if: github.event_name == 'pull_request' && needs.checks.outputs.wasm == 'true'
-    uses: esaueng/remus/.github/workflows/fleet-wasm-size.yml@71c9bfe23cf0c417434cdd25adb95c5f8265cb69
+    uses: esaueng/remus/.github/workflows/fleet-wasm-size.yml@34afb42bd5e3399556d85288de7a55889ae9306d
     permissions:
       contents: read
       pull-requests: write
