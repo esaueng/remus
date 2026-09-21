@@ -225,3 +225,48 @@ fn fuse_solids_refuses_like_the_handle_entry_point() {
     );
     assert_eq!(live_counts(&topo), before);
 }
+
+#[test]
+fn compound_cut_refuses_like_the_handle_entry_point() {
+    use remus_operations::OperationsError;
+    use remus_operations::boolean::{BooleanOptions, compound_cut};
+    use remus_operations::primitives::make_cylinder;
+    // Two cylinders near-tangent (centers 9.999 apart, radii 5+5): both Fuse
+    // and Cut require the mesh fallback (verified via `boolean` refusing and
+    // `boolean_with_context` reporting Approximate), so the bare-handle
+    // `compound_cut` must refuse rather than hand back the fallback silently.
+    let mut topo = Topology::new();
+    let target = make_cylinder(&mut topo, 5.0, 10.0).unwrap();
+    let tool = make_cylinder(&mut topo, 5.0, 10.0).unwrap();
+    transform_solid(&mut topo, tool, &Mat4::translation(9.999, 0.0, 0.0)).unwrap();
+    // Guard the fixture: exact Cut must still need the fallback.
+    {
+        let mut guard = topo.clone();
+        let err = boolean(&mut guard, BooleanOp::Cut, target, tool).unwrap_err();
+        assert!(
+            matches!(err, OperationsError::ExactOnlyUnattainable),
+            "fixture must still require fallback for Cut; got {err}"
+        );
+    }
+    let before = live_counts(&topo);
+    let err = compound_cut(&mut topo, target, &[tool], BooleanOptions::default()).unwrap_err();
+    assert!(
+        matches!(err, OperationsError::ExactOnlyUnattainable),
+        "compoundCut returns a bare handle too; got {err}"
+    );
+    assert_eq!(
+        live_counts(&topo),
+        before,
+        "a refusal must not mutate the arena"
+    );
+    assert!(topo.solid(target).is_ok());
+    assert!(topo.solid(tool).is_ok());
+
+    // Exact-path control: overlapping boxes still cut exactly.
+    let mut topo = Topology::new();
+    let a = make_box(&mut topo, 2.0, 2.0, 2.0).unwrap();
+    let b = make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+    let result = compound_cut(&mut topo, a, &[b], BooleanOptions::default()).unwrap();
+    let v = solid_volume(&topo, result, 0.05).unwrap();
+    assert!((v - 7.0).abs() < 1e-6, "notched box volume {v}");
+}
