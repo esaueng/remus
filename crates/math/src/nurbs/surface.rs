@@ -174,6 +174,153 @@ impl DerivativeScratch {
     pub fn point_and_partials_out_mut(&mut self) -> &mut [Vec<Vec3>] {
         &mut self.point_and_partials_out
     }
+
+    /// One fused partials solve into the reusable buffers: returns
+    /// `(∂S/∂u, ∂S/∂v)` at `(u, v)`.
+    ///
+    /// Bit-identical to `(surface.partial_u(u, v), surface.partial_v(u, v))`:
+    /// each separate call runs the same `derivatives(u, v, 1)` solve and reads
+    /// entries `[1][0]`/`[0][1]`; this runs that solve once. Callers must use
+    /// one scratch per surface (span hints are knot indices) and must not
+    /// share one scratch across threads.
+    #[doc(hidden)]
+    pub fn partials_from(&mut self, surface: &NurbsSurface, u: f64, v: f64) -> (Vec3, Vec3) {
+        self.ensure_point_and_partials_out();
+        self.ensure_basis_for(surface, 1);
+        self.ensure_sk_for(1);
+        let Self {
+            basis,
+            sk,
+            point_and_partials_out: out,
+            last_span_u,
+            last_span_v,
+        } = self;
+        let (span_u, _) = surface.find_span_hinted_u(u, last_span_u.unwrap_or(usize::MAX));
+        let (span_v, _) = surface.find_span_hinted_v(v, last_span_v.unwrap_or(usize::MAX));
+        *last_span_u = Some(span_u);
+        *last_span_v = Some(span_v);
+        surface.derivatives_into_with_spans(u, v, 1, span_u, span_v, basis, sk, out);
+        (out[1][0], out[0][1])
+    }
+
+    /// [`NurbsSurface::normal`] plus both first partials in one base solve:
+    /// returns `(normal, ∂S/∂u, ∂S/∂v)` at `(u, v)`.
+    ///
+    /// The normal is bit-identical to `NurbsSurface::normal(u, v)`, including
+    /// its L'Hôpital-style degenerate-point fallback; the partials are
+    /// bit-identical to `partial_u`/`partial_v` at the base parameters (the
+    /// fallback's perturbed re-solves feed the normal only, matching what the
+    /// separate calls would return). Callers must use one scratch per surface
+    /// and must not share one across threads.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same [`MathError::ZeroVector`] as
+    /// [`NurbsSurface::normal`] when the surface is degenerate at this point
+    /// and all fallback perturbations also fail.
+    #[doc(hidden)]
+    pub fn normal_partials_from(
+        &mut self,
+        surface: &NurbsSurface,
+        u: f64,
+        v: f64,
+    ) -> (Result<Vec3, crate::MathError>, Vec3, Vec3) {
+        let (du, dv) = self.partials_from(surface, u, v);
+        let normal = Self::normal_from_partials(self, surface, u, v, du, dv);
+        (normal, du, dv)
+    }
+
+    /// [`NurbsSurface::normal`]-equivalent using the reusable buffers.
+    ///
+    /// Bit-identical to `NurbsSurface::normal(u, v)`, including the
+    /// degenerate-point fallback. Callers must use one scratch per surface
+    /// and must not share one across threads.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same [`MathError::ZeroVector`] as
+    /// [`NurbsSurface::normal`] when every fallback also fails.
+    #[doc(hidden)]
+    pub fn normal_from(
+        &mut self,
+        surface: &NurbsSurface,
+        u: f64,
+        v: f64,
+    ) -> Result<Vec3, crate::MathError> {
+        let (du, dv) = self.partials_from(surface, u, v);
+        Self::normal_from_partials(self, surface, u, v, du, dv)
+    }
+
+    /// Degenerate-aware normal from one base solve's partials, re-solving at
+    /// the same perturbations `NurbsSurface::normal` uses when the cross
+    /// product vanishes.
+    fn normal_from_partials(
+        &mut self,
+        surface: &NurbsSurface,
+        u: f64,
+        v: f64,
+        du: Vec3,
+        dv: Vec3,
+    ) -> Result<Vec3, crate::MathError> {
+        let cross = du.cross(dv);
+        if cross.length_squared() > 1e-30 {
+            return cross.normalize();
+        }
+
+        // Degenerate point — try perturbing the parameter slightly.
+        let (u0, u1) = surface.domain_u();
+        let (v0, v1) = surface.domain_v();
+        let eps_u = (u1 - u0) * 1e-6;
+        let eps_v = (v1 - v0) * 1e-6;
+
+        let perturbations = [
+            (u + eps_u, v),
+            (u - eps_u, v),
+            (u, v + eps_v),
+            (u, v - eps_v),
+        ];
+
+        for (pu, pv) in perturbations {
+            let pu = pu.clamp(u0, u1);
+            let pv = pv.clamp(v0, v1);
+            let (pdu, pdv) = self.partials_from(surface, pu, pv);
+            let pcross = pdu.cross(pdv);
+            if pcross.length_squared() > 1e-30 {
+                return pcross.normalize();
+            }
+        }
+
+        Err(crate::MathError::ZeroVector)
+    }
+
+    /// One `NurbsSurface::derivatives`-equivalent solve into a caller-owned
+    /// reusable table: zero-fills the first `d + 1` rows of `out` to
+    /// `d + 1` entries, then solves into them.
+    ///
+    /// Bit-identical to `NurbsSurface::derivatives(u, v, d)`, including the
+    /// zeroed entries a degree clamp leaves untouched (the heap path
+    /// zero-initializes its fresh table; this re-zeroes the reused one).
+    /// Callers must use one scratch per surface and must not share one
+    /// across threads.
+    #[doc(hidden)]
+    pub fn derivative_table_from(
+        &mut self,
+        surface: &NurbsSurface,
+        u: f64,
+        v: f64,
+        d: usize,
+        out: &mut Vec<Vec<Vec3>>,
+    ) {
+        let zero = Vec3::new(0.0, 0.0, 0.0);
+        if out.len() < d + 1 {
+            out.resize(d + 1, Vec::new());
+        }
+        for row in out.iter_mut().take(d + 1) {
+            row.clear();
+            row.resize(d + 1, zero);
+        }
+        surface.derivatives_into(u, v, d, self, out);
+    }
 }
 
 impl NurbsSurface {
@@ -524,8 +671,8 @@ impl NurbsSurface {
     #[allow(clippy::many_single_char_names, clippy::cast_precision_loss)]
     pub fn derivatives(&self, u: f64, v: f64, d: usize) -> Vec<Vec<Vec3>> {
         let mut scratch = DerivativeScratch::new();
-        let mut out = vec![vec![Vec3::new(0.0, 0.0, 0.0); d + 1]; d + 1];
-        self.derivatives_into(u, v, d, &mut scratch, &mut out);
+        let mut out = Vec::new();
+        scratch.derivative_table_from(self, u, v, d, &mut out);
         out
     }
 
@@ -795,41 +942,7 @@ impl NurbsSurface {
     /// Returns [`MathError::ZeroVector`] if the surface is degenerate at
     /// this point and all fallback perturbations also fail.
     pub fn normal(&self, u: f64, v: f64) -> Result<Vec3, MathError> {
-        let d = self.derivatives(u, v, 1);
-        let du = d[1][0];
-        let dv = d[0][1];
-        let cross = du.cross(dv);
-
-        if cross.length_squared() > 1e-30 {
-            return cross.normalize();
-        }
-
-        // Degenerate point — try perturbing the parameter slightly.
-        let (u0, u1) = self.domain_u();
-        let (v0, v1) = self.domain_v();
-        let eps_u = (u1 - u0) * 1e-6;
-        let eps_v = (v1 - v0) * 1e-6;
-
-        let perturbations = [
-            (u + eps_u, v),
-            (u - eps_u, v),
-            (u, v + eps_v),
-            (u, v - eps_v),
-        ];
-
-        for (pu, pv) in perturbations {
-            let pu = pu.clamp(u0, u1);
-            let pv = pv.clamp(v0, v1);
-            let pd = self.derivatives(pu, pv, 1);
-            let pdu = pd[1][0];
-            let pdv = pd[0][1];
-            let pcross = pdu.cross(pdv);
-            if pcross.length_squared() > 1e-30 {
-                return pcross.normalize();
-            }
-        }
-
-        Err(MathError::ZeroVector)
+        DerivativeScratch::new().normal_from(self, u, v)
     }
 
     /// Compute an axis-aligned bounding box from control point extrema.
@@ -1573,7 +1686,7 @@ mod tests {
 
 #[cfg(test)]
 mod weight_cache_tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
     use crate::traits::ParametricSurface;
@@ -1887,6 +2000,201 @@ mod weight_cache_tests {
             hit_v += usize::from(hv);
         }
         assert_eq!((hit_u, hit_v), (199, 199));
+    }
+
+    #[test]
+    fn ssi_scratch_entry_points_match_the_separate_calls_bitwise() {
+        // The partials/normal scratch entry points must reproduce the
+        // allocating call paths exactly: same spans, same basis values, same
+        // contraction and quotient order, including the degenerate-point
+        // fallback outcome. Cover both weight scales and 30 sample params.
+        for factor in [1.0, 1e-120] {
+            let s = rational_patch(factor);
+            let mut scratch = DerivativeScratch::new();
+            for k in 0..30 {
+                let (u, v) = (f64::from(k) / 29.0, (f64::from(k) * 0.37) % 1.0);
+
+                let (du, dv) = scratch.partials_from(&s, u, v);
+                assert_eq!(bits(du), bits(ParametricSurface::partial_u(&s, u, v)));
+                assert_eq!(bits(dv), bits(ParametricSurface::partial_v(&s, u, v)));
+
+                let (n_fused, du_fused, dv_fused) = scratch.normal_partials_from(&s, u, v);
+                assert_eq!(bits(du_fused), bits(ParametricSurface::partial_u(&s, u, v)));
+                assert_eq!(bits(dv_fused), bits(ParametricSurface::partial_v(&s, u, v)));
+                match (n_fused, s.normal(u, v)) {
+                    (Ok(n), Ok(expected)) => assert_eq!(bits(n), bits(expected)),
+                    (Err(e), Err(expected)) => assert_eq!(e.to_string(), expected.to_string()),
+                    (n, expected) => panic!("normal mismatch at ({u}, {v}): {n:?} vs {expected:?}"),
+                }
+
+                let n_alone = scratch.normal_from(&s, u, v);
+                match (n_alone, s.normal(u, v)) {
+                    (Ok(n), Ok(expected)) => assert_eq!(bits(n), bits(expected)),
+                    (Err(e), Err(expected)) => assert_eq!(e.to_string(), expected.to_string()),
+                    (n, expected) => panic!("normal mismatch at ({u}, {v}): {n:?} vs {expected:?}"),
+                }
+            }
+        }
+        // Reusing one scratch across many calls stays exact (no stale state).
+        let s = rational_patch(1.0);
+        let mut scratch = DerivativeScratch::new();
+        for k in 0..50 {
+            let (u, v) = (f64::from(k) / 49.0, 1.0 - f64::from(k) / 49.0);
+            let (n, du, dv) = scratch.normal_partials_from(&s, u, v);
+            let expected = s.normal(u, v);
+            assert_eq!(bits(du), bits(ParametricSurface::partial_u(&s, u, v)));
+            assert_eq!(bits(dv), bits(ParametricSurface::partial_v(&s, u, v)));
+            match (n, expected) {
+                (Ok(n), Ok(expected)) => assert_eq!(bits(n), bits(expected)),
+                (Err(e), Err(expected)) => assert_eq!(e.to_string(), expected.to_string()),
+                (n, expected) => {
+                    panic!("reused-scratch normal mismatch at ({u}, {v}): {n:?} vs {expected:?}")
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ssi_scratch_degenerate_normal_fallback_matches_the_allocating_path() {
+        // A patch whose rows are all identical has a zero u-partial at every
+        // point, so the cross product vanishes everywhere: the
+        // degenerate-point fallback re-solves at perturbed params and must
+        // fail with the same error the allocating `normal` returns.
+        let pts: Vec<Vec<Point3>> = (0..4)
+            .map(|_| {
+                (0..3)
+                    .map(|j| Point3::new(f64::from(j), 0.0, 0.0))
+                    .collect()
+            })
+            .collect();
+        let degenerate = NurbsSurface::new(
+            2,
+            2,
+            vec![0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0],
+            vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            pts,
+            vec![vec![1.0; 3]; 4],
+        )
+        .unwrap();
+        let mut scratch = DerivativeScratch::new();
+        for (u, v) in [(0.2, 0.3), (0.7, 0.5), (0.5, 0.5)] {
+            let n = scratch.normal_from(&degenerate, u, v);
+            assert!(matches!(n, Err(crate::MathError::ZeroVector)));
+            let (n_fused, _, _) = scratch.normal_partials_from(&degenerate, u, v);
+            assert!(matches!(n_fused, Err(crate::MathError::ZeroVector)));
+            assert!(s_std_normal_is_zero_vector(&degenerate, u, v));
+        }
+    }
+
+    #[test]
+    fn ssi_scratch_table_matches_derivatives_bitwise() {
+        // The caller-owned table path must reproduce the allocating
+        // `derivatives` exactly, including zeroed entries a degree clamp
+        // leaves untouched, across orders and both weight factors.
+        for factor in [1.0, 1e-120] {
+            let s = rational_patch(factor);
+            let mut scratch = DerivativeScratch::new();
+            for d in 0..=3 {
+                for k in 0..30 {
+                    let (u, v) = (f64::from(k) / 29.0, (f64::from(k) * 0.37) % 1.0);
+                    let mut table = Vec::new();
+                    scratch.derivative_table_from(&s, u, v, d, &mut table);
+                    let expected = s.derivatives(u, v, d);
+                    assert_eq!(table.len(), expected.len(), "row count d={d}");
+                    for (row, expected_row) in table.iter().zip(&expected) {
+                        assert_eq!(row.len(), expected_row.len(), "row len d={d}");
+                        for (cell, expected_cell) in row.iter().zip(expected_row) {
+                            assert_eq!(bits(*cell), bits(*expected_cell), "S^(d={d}) cell");
+                        }
+                    }
+                }
+            }
+        }
+        // Reusing one table across many calls stays exact.
+        let s = rational_patch(1.0);
+        let mut scratch = DerivativeScratch::new();
+        let mut table = Vec::new();
+        for k in 0..50 {
+            let (u, v) = (f64::from(k) / 49.0, 1.0 - f64::from(k) / 49.0);
+            scratch.derivative_table_from(&s, u, v, 2, &mut table);
+            let expected = s.derivatives(u, v, 2);
+            for a in 0..=2 {
+                for b in 0..=2 {
+                    assert_eq!(
+                        bits(table[a][b]),
+                        bits(expected[a][b]),
+                        "S^({a},{b}) reused table"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ssi_scratch_solves_track_finite_differences() {
+        // The scratch-backed partials and normal agree with central finite
+        // differences of the surface evaluation: the same derivative
+        // information the SSI marching loops consume, verified against an
+        // independent estimate of the same quantity.
+        let s = rational_patch(1.0);
+        let h = 1e-4;
+        let mut scratch = DerivativeScratch::new();
+        for k in 0..20 {
+            // Stay inside one knot span: this biquadratic patch has a knot at
+            // u = 0.5 with a second-derivative jump, and a central difference
+            // straddling it measures the average of the one-sided derivatives,
+            // not the derivative at the point.
+            let u = 0.1 + f64::from(k) * 0.015;
+            let v = 0.05 + (f64::from(k) * 0.173) % 0.85;
+            let (du, dv) = scratch.partials_from(&s, u, v);
+
+            let p_up = s.evaluate(u + h, v);
+            let p_dn = s.evaluate(u - h, v);
+            let p_ur = s.evaluate(u, v + h);
+            let p_dr = s.evaluate(u, v - h);
+            let fd_u = Vec3::new(
+                (p_up.x() - p_dn.x()) / (2.0 * h),
+                (p_up.y() - p_dn.y()) / (2.0 * h),
+                (p_up.z() - p_dn.z()) / (2.0 * h),
+            );
+            let fd_v = Vec3::new(
+                (p_ur.x() - p_dr.x()) / (2.0 * h),
+                (p_ur.y() - p_dr.y()) / (2.0 * h),
+                (p_ur.z() - p_dr.z()) / (2.0 * h),
+            );
+            for (name, analytic, fd) in [("du", du, fd_u), ("dv", dv, fd_v)] {
+                let scale = fd.x().abs().max(fd.y().abs()).max(fd.z().abs()).max(1e-12);
+                let drift = (analytic.x() - fd.x())
+                    .abs()
+                    .max((analytic.y() - fd.y()).abs())
+                    .max((analytic.z() - fd.z()).abs());
+                assert!(
+                    drift < 1e-5 * scale,
+                    "{name} at ({u}, {v}): drift {drift:.3e} (scale {scale:.3e})"
+                );
+            }
+
+            // The scratch normal must agree with a finite-differenced normal
+            // built from independently finite-differenced partials.
+            let (n, _, _) = scratch.normal_partials_from(&s, u, v);
+            let n = n.expect("analytic normal is nonzero on this patch");
+            let n_fd = fd_u
+                .cross(fd_v)
+                .normalize()
+                .expect("finite-difference normal is nonzero on this patch");
+            let alignment = n
+                .normalize()
+                .expect("analytic normal is nonzero here")
+                .dot(n_fd);
+            assert!(
+                (alignment - 1.0).abs() < 1e-6,
+                "normal at ({u}, {v}): alignment {alignment:.9}"
+            );
+        }
+    }
+
+    fn s_std_normal_is_zero_vector(s: &NurbsSurface, u: f64, v: f64) -> bool {
+        matches!(s.normal(u, v), Err(crate::MathError::ZeroVector))
     }
 
     #[test]

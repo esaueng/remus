@@ -1503,4 +1503,558 @@ mod tests {
         )
         .unwrap()
     }
+
+    // ── Hand-built sample sets ────────────────────────────────────────────────
+    //
+    // The `try_recognize_*` helpers take a sample set directly, so the cases
+    // below exercise their documented preconditions (minimum sample count,
+    // coplanarity, residual budget) without having to smuggle each shape
+    // through a NURBS first.
+
+    /// `n` points evenly spaced in angle on a circle parallel to the xy-plane.
+    fn planar_circle_samples(center: Point3, radius: f64, n: usize) -> Vec<Point3> {
+        (0..n)
+            .map(|i| {
+                #[allow(clippy::cast_precision_loss)]
+                let a = TAU * (i as f64) / (n as f64);
+                Point3::new(
+                    center.x() + radius * a.cos(),
+                    center.y() + radius * a.sin(),
+                    center.z(),
+                )
+            })
+            .collect()
+    }
+
+    /// Raise `samples.last()` off the plane of the rest by `lift` along `dir`.
+    fn lift_last(samples: &mut [Point3], dir: Vec3, lift: f64) {
+        let last = samples.len() - 1;
+        samples[last] = samples[last] + dir * lift;
+    }
+
+    #[test]
+    fn detected_curve_kind_tags_are_stable() {
+        // `as_str` feeds the JS-facing edge-type tag, so each variant must
+        // keep its own lowercase name.
+        assert_eq!(DetectedCurveKind::Line.as_str(), "line");
+        assert_eq!(DetectedCurveKind::Circle.as_str(), "circle");
+        assert_eq!(DetectedCurveKind::BSpline.as_str(), "bspline");
+    }
+
+    #[test]
+    fn every_recognizer_rejects_an_empty_sample_set() {
+        let empty: [Point3; 0] = [];
+        assert!(try_recognize_line(&empty, 1e-6).is_none());
+        assert!(try_recognize_circle(&empty, 1e-6).is_none());
+        assert!(try_recognize_ellipse(&empty, 1e-6).is_none());
+        assert!(try_recognize_hyperbola(&empty, 1e-6).is_none());
+        assert!(try_recognize_parabola(&empty, 1e-6).is_none());
+    }
+
+    #[test]
+    fn line_accepts_its_two_sample_minimum() {
+        // Two distinct points are the documented minimum, and they define the
+        // line exactly: origin = first sample, direction = the unit chord.
+        let pts = [Point3::new(0.0, 0.0, 0.0), Point3::new(3.0, 4.0, 0.0)];
+        let (origin, direction) = try_recognize_line(&pts, 1e-9).expect("two samples are enough");
+        assert!((origin - pts[0]).length() < 1e-12, "origin {origin:?}");
+        assert!(
+            (direction - Vec3::new(0.6, 0.8, 0.0)).length() < 1e-12,
+            "direction {direction:?}"
+        );
+    }
+
+    #[test]
+    fn circle_accepts_its_three_sample_minimum() {
+        // Three points are the documented minimum and determine the circle
+        // exactly. This circle passes through (0,0,0) and (1,0,0), so its
+        // centre is on x = 0.5; putting it at y = 2 gives R = sqrt(4.25).
+        let r = 4.25_f64.sqrt();
+        let pts = [
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(0.5 + r, 2.0, 0.0),
+        ];
+        let (center, normal, radius) =
+            try_recognize_circle(&pts, 1e-9).expect("three samples are enough");
+        assert!(
+            (center - Point3::new(0.5, 2.0, 0.0)).length() < 1e-9,
+            "centre {center:?}"
+        );
+        assert!((radius - r).abs() < 1e-9, "radius {radius} vs {r}");
+        assert!((normal.dot(z_axis()).abs() - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn conic_recognizers_accept_their_five_sample_minimum() {
+        // Five points are the documented minimum for the algebraic conic fit
+        // (five unknowns), and they pin the conic exactly.
+        let ell = Ellipse3D::new(Point3::new(1.0, -2.0, 0.5), z_axis(), 3.0, 1.2).unwrap();
+        let e_pts: Vec<Point3> = [0.3, 1.0, 1.9, 2.8, 4.4]
+            .into_iter()
+            .map(|t| ell.evaluate(t))
+            .collect();
+        let (c, _, _, a, b) = try_recognize_ellipse(&e_pts, 1e-7).expect("five ellipse samples");
+        assert!((c - ell.center()).length() < 1e-7, "ellipse centre {c:?}");
+        assert!(
+            (a - 3.0).abs() < 1e-7 && (b - 1.2).abs() < 1e-7,
+            "axes {a} {b}"
+        );
+
+        let hyp = Hyperbola3D::new(Point3::new(-1.0, 0.5, 2.0), z_axis(), 2.0, 1.5).unwrap();
+        let h_pts: Vec<Point3> = [-1.2, -0.5, 0.1, 0.8, 1.4]
+            .into_iter()
+            .map(|t| hyp.evaluate(t))
+            .collect();
+        let (c, _, _, a, b) =
+            try_recognize_hyperbola(&h_pts, 1e-7).expect("five hyperbola samples");
+        assert!((c - hyp.center()).length() < 1e-6, "hyperbola centre {c:?}");
+        assert!(
+            (a - 2.0).abs() < 1e-6 && (b - 1.5).abs() < 1e-6,
+            "axes {a} {b}"
+        );
+
+        let par = Parabola3D::with_axes(
+            Point3::new(0.7, -1.3, 2.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            0.6,
+        )
+        .unwrap();
+        let p_pts: Vec<Point3> = [-2.0, -0.7, 0.5, 1.6, 3.0]
+            .into_iter()
+            .map(|t| par.evaluate(t))
+            .collect();
+        let (v, _, _, f) = try_recognize_parabola(&p_pts, 1e-7).expect("five parabola samples");
+        assert!((v - par.vertex()).length() < 1e-6, "parabola vertex {v:?}");
+        assert!((f - 0.6).abs() < 1e-6, "focal length {f}");
+    }
+
+    #[test]
+    fn degenerate_quadratic_part_has_no_discriminant() {
+        // Documented: `None` when the quadratic part is degenerate.
+        assert!(normalized_conic_discriminant(0.0, 0.0, 0.0).is_none());
+        // x² + y²: norm = 1, (B² − 4AC)/(4·norm²) = −4/4 = −1.
+        let circular = normalized_conic_discriminant(1.0, 0.0, 1.0).unwrap();
+        assert!((circular + 1.0).abs() < 1e-12, "{circular}");
+        // 2xy: norm = 0.5·2 = 1, (4 − 0)/4 = +1.
+        let saddle = normalized_conic_discriminant(0.0, 2.0, 0.0).unwrap();
+        assert!((saddle - 1.0).abs() < 1e-12, "{saddle}");
+    }
+
+    #[test]
+    fn a_sample_lifted_out_of_plane_is_rejected_by_every_coplanar_recognizer() {
+        // Each conic recognizer documents a coplanarity gate. The lift is
+        // along the plane normal, so the in-plane projection (and therefore
+        // the algebraic fit and its residuals) is untouched — the gate is
+        // the only thing standing between these samples and a match.
+        const TOL: f64 = 1e-6;
+        const LIFT: f64 = 1e-3;
+
+        let mut circ = planar_circle_samples(origin(), 10.0, 16);
+        lift_last(&mut circ, z_axis(), 0.5);
+        assert!(try_recognize_circle(&circ, 0.1).is_none(), "lifted circle");
+
+        let ell = Ellipse3D::new(Point3::new(1.0, -2.0, 0.5), z_axis(), 3.0, 1.2).unwrap();
+        #[allow(clippy::cast_precision_loss)]
+        let mut e_pts: Vec<Point3> = (0..16)
+            .map(|i| ell.evaluate(0.2 + TAU * (i as f64) / 17.0))
+            .collect();
+        assert!(try_recognize_ellipse(&e_pts, TOL).is_some(), "flat ellipse");
+        lift_last(&mut e_pts, z_axis(), LIFT);
+        assert!(
+            try_recognize_ellipse(&e_pts, TOL).is_none(),
+            "lifted ellipse"
+        );
+
+        let hyp = Hyperbola3D::new(Point3::new(-1.0, 0.5, 2.0), z_axis(), 2.0, 1.5).unwrap();
+        #[allow(clippy::cast_precision_loss)]
+        let mut h_pts: Vec<Point3> = (0..16)
+            .map(|i| hyp.evaluate(-1.1 + 0.15 * (i as f64)))
+            .collect();
+        assert!(
+            try_recognize_hyperbola(&h_pts, TOL).is_some(),
+            "flat hyperbola"
+        );
+        lift_last(&mut h_pts, z_axis(), LIFT);
+        assert!(
+            try_recognize_hyperbola(&h_pts, TOL).is_none(),
+            "lifted hyperbola"
+        );
+
+        let par = Parabola3D::with_axes(
+            Point3::new(0.7, -1.3, 2.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            0.6,
+        )
+        .unwrap();
+        #[allow(clippy::cast_precision_loss)]
+        let mut p_pts: Vec<Point3> = (0..16)
+            .map(|i| par.evaluate(-0.8 + 0.26 * (i as f64)))
+            .collect();
+        assert!(
+            try_recognize_parabola(&p_pts, TOL).is_some(),
+            "flat parabola"
+        );
+        lift_last(&mut p_pts, Vec3::new(0.0, 1.0, 0.0), LIFT);
+        assert!(
+            try_recognize_parabola(&p_pts, TOL).is_none(),
+            "lifted parabola"
+        );
+    }
+
+    #[test]
+    fn a_circle_smaller_than_the_tolerance_is_degenerate() {
+        // The whole circle fits inside the tolerance ball around its centre,
+        // so it is indistinguishable from a point and must not be reported as
+        // a circle. (The plane search still succeeds: the sample triangles
+        // span ~1.3e3, well above the tolerance.)
+        let pts = planar_circle_samples(origin(), 150.0, 16);
+        assert!(try_recognize_circle(&pts, 500.0).is_none());
+        // The same samples with a workable tolerance do recognize.
+        let (_, _, radius) = try_recognize_circle(&pts, 1e-6).expect("R=150 circle");
+        assert!((radius - 150.0).abs() < 1e-6, "radius {radius}");
+    }
+
+    #[test]
+    fn samples_displaced_off_the_fitted_conic_fail_the_residual_check() {
+        // Every other sample is pushed 0.1% outward from the centre — three
+        // orders of magnitude past the tolerance — while staying in the plane
+        // and keeping the fit's discriminant sign. Only the documented
+        // residual gate can reject these.
+        const TOL: f64 = 1e-6;
+
+        let ell = Ellipse3D::new(Point3::new(1.0, -2.0, 0.5), z_axis(), 3.0, 1.2).unwrap();
+        #[allow(clippy::cast_precision_loss)]
+        let mut e_pts: Vec<Point3> = (0..16)
+            .map(|i| ell.evaluate(0.2 + TAU * (i as f64) / 17.0))
+            .collect();
+        for (i, p) in e_pts.iter_mut().enumerate() {
+            if i % 2 == 1 {
+                *p = ell.center() + (*p - ell.center()) * 1.001;
+            }
+        }
+        assert!(
+            try_recognize_ellipse(&e_pts, TOL).is_none(),
+            "bumpy ellipse"
+        );
+
+        let hyp = Hyperbola3D::new(Point3::new(-1.0, 0.5, 2.0), z_axis(), 2.0, 1.5).unwrap();
+        #[allow(clippy::cast_precision_loss)]
+        let mut h_pts: Vec<Point3> = (0..16)
+            .map(|i| hyp.evaluate(-1.1 + 0.15 * (i as f64)))
+            .collect();
+        for (i, p) in h_pts.iter_mut().enumerate() {
+            if i % 2 == 1 {
+                *p = hyp.center() + (*p - hyp.center()) * 1.001;
+            }
+        }
+        assert!(
+            try_recognize_hyperbola(&h_pts, TOL).is_none(),
+            "bumpy hyperbola"
+        );
+    }
+
+    // ── solve_5x5 ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn solve_5x5_pivots_past_a_zero_leading_entry() {
+        // m[0][0] is zero, so the documented partial pivoting has to find the
+        // largest first-column entry and swap it in. Without the swap (or
+        // with the wrong row chosen) the elimination divides by zero.
+        let m = [
+            [0.0, 2.0, 1.0, 0.0, 3.0],
+            [4.0, 0.0, 1.0, 2.0, 0.0],
+            [1.0, 3.0, 0.0, 5.0, 1.0],
+            [2.0, 1.0, 4.0, 0.0, 6.0],
+            [3.0, 0.0, 2.0, 1.0, 7.0],
+        ];
+        let want = [1.5_f64, -2.25, 3.75, 0.5, -1.25];
+        let mut rhs = [0.0_f64; 5];
+        for (i, row) in m.iter().enumerate() {
+            rhs[i] = row.iter().zip(want).map(|(a, x)| a * x).sum();
+        }
+        let got = solve_5x5(&m, &rhs).expect("non-singular system");
+        for (g, w) in got.iter().zip(want) {
+            assert!((g - w).abs() < 1e-9, "solved {got:?} want {want:?}");
+        }
+    }
+
+    #[test]
+    fn solve_5x5_reports_a_singular_system() {
+        // Documented: `None` if the matrix is singular.
+        let m = [[0.0_f64; 5]; 5];
+        let rhs = [1.0_f64, 2.0, 3.0, 4.0, 5.0];
+        assert!(solve_5x5(&m, &rhs).is_none());
+
+        // Rank-deficient but not all-zero: row 3 is twice row 0.
+        let mut m2 = [
+            [1.0, 2.0, 3.0, 4.0, 5.0],
+            [0.0, 1.0, 4.0, 2.0, 1.0],
+            [3.0, 0.0, 1.0, 5.0, 2.0],
+            [2.0, 4.0, 6.0, 8.0, 10.0],
+            [1.0, 1.0, 1.0, 7.0, 3.0],
+        ];
+        m2[3] = [2.0, 4.0, 6.0, 8.0, 10.0];
+        assert!(solve_5x5(&m2, &rhs).is_none());
+    }
+
+    // ── detect_curve_kind gates ───────────────────────────────────────────────
+
+    #[test]
+    fn detect_non_rational_quadratic_is_bspline() {
+        // Only degree-1 curves are lines by definition; a non-rational
+        // degree-2 curve (here a parabola) is neither a line nor a conic the
+        // classifier claims, so it must report BSpline.
+        let par = Parabola3D::new(origin(), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+        let nurbs = parabola_to_nurbs_inline(&par, -3.0, 3.0);
+        assert!(!nurbs.is_rational() && nurbs.degree() == 2);
+        assert_eq!(detect_curve_kind(&nurbs), DetectedCurveKind::BSpline);
+    }
+
+    #[test]
+    fn detect_uses_the_sample_extent_for_its_deviation_budget() {
+        // Documented budget: 1e-4 of the sample extent. This ellipse is 0.01%
+        // off round (a = 100.01, b = 100), so its radial deviation from the
+        // best-fit circle is ~5e-3 — well inside 1e-4 · 200 = 2e-2, and it
+        // must classify as a circle. A budget keyed to anything but the
+        // extent (e.g. a fixed 1e-4) rejects it.
+        let ell = Ellipse3D::new(Point3::new(30.0, -20.0, 5.0), z_axis(), 100.01, 100.0).unwrap();
+        let nurbs = ellipse_to_nurbs(&ell, 0.0, TAU).unwrap();
+        assert_eq!(detect_curve_kind(&nurbs), DetectedCurveKind::Circle);
+    }
+
+    #[test]
+    fn detect_extent_is_a_span_not_a_coordinate_sum() {
+        // A 50:45 ellipse is not a circle: its radial deviation (~2.5) is
+        // hundreds of times the 1e-4 · 100 = 1e-2 budget its 100-unit span
+        // earns. Keying the budget to the sum of the coordinate bounds
+        // instead of their difference inflates it by the 5e4 offset from the
+        // origin (to ~10) and swallows the deviation.
+        let ell = Ellipse3D::new(Point3::new(50_000.0, 0.0, 0.0), z_axis(), 50.0, 45.0).unwrap();
+        let nurbs = ellipse_to_nurbs(&ell, 0.0, TAU).unwrap();
+        assert_eq!(detect_curve_kind(&nurbs), DetectedCurveKind::BSpline);
+    }
+
+    // ── sampling covers the whole domain ─────────────────────────────────────
+
+    #[test]
+    fn recognize_curve_samples_the_whole_parameter_domain() {
+        // A degree-1 curve that runs straight along x for the first 95% of
+        // its domain and then kinks 0.5 off-axis. Only a sampler that
+        // reaches the end of the domain sees the kink, and a curve with a
+        // kink is not a line.
+        let nurbs = NurbsCurve::new(
+            1,
+            vec![0.0, 0.0, 1.0, 1.05, 1.05],
+            vec![
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(1.0, 0.0, 0.0),
+                Point3::new(1.0, 0.5, 0.0),
+            ],
+            vec![1.0, 1.0, 1.0],
+        )
+        .unwrap();
+        let got = recognize_curve(&nurbs, 1e-9);
+        assert!(
+            !matches!(got, RecognizedCurve::Line { .. }),
+            "kinked polyline reported as a line: {got:?}"
+        );
+    }
+
+    // ── parabola canonical form ──────────────────────────────────────────────
+
+    #[test]
+    fn recognize_asymmetric_parabola_arc_recovers_vertex_and_opening() {
+        // The arc is deliberately lopsided about the vertex: a symmetric arc
+        // puts the sample centroid on the axis, which zeroes the linear
+        // coefficient of the rotated-frame refit and hides every error in the
+        // vertex reconstruction. `axis_dir` is checked with its SIGN, since
+        // it is documented to point from the vertex into the parabola.
+        let vertex = Point3::new(0.7, -1.3, 2.0);
+        let axis = Vec3::new(0.0, 0.0, 1.0);
+        let par = Parabola3D::with_axes(vertex, axis, Vec3::new(1.0, 0.0, 0.0), 0.6).unwrap();
+        let nurbs = parabola_to_nurbs_inline(&par, -0.8, 3.1);
+
+        match recognize_curve(&nurbs, 1e-7) {
+            RecognizedCurve::Parabola {
+                vertex: v,
+                axis_dir,
+                focal_length,
+                ..
+            } => {
+                assert!((v - vertex).length() < 1e-6, "vertex {v:?} vs {vertex:?}");
+                assert!(
+                    axis_dir.dot(axis) > 1.0 - 1e-9,
+                    "axis_dir {axis_dir:?} does not point into the parabola"
+                );
+                assert!((focal_length - 0.6).abs() < 1e-8, "focal {focal_length}");
+            }
+            other => panic!("expected Parabola, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parabola_recognition_is_rotation_invariant_in_its_plane() {
+        // Rotating the parabola inside its own plane changes which of the two
+        // candidate null-vectors of the fitted quadratic form is the larger,
+        // and therefore which branch of the axis recovery runs.
+        let vertex = Point3::new(0.4, 1.1, -0.6);
+        for angle in [0.0_f64, 0.3, 1.1, 2.0, 2.9, 4.2, 5.5] {
+            let axis = Vec3::new(angle.cos(), angle.sin(), 0.0);
+            let u = Vec3::new(-angle.sin(), angle.cos(), 0.0);
+            let par = Parabola3D::with_axes(vertex, axis, u, 0.75).unwrap();
+            let nurbs = parabola_to_nurbs_inline(&par, -0.9, 2.6);
+            match recognize_curve(&nurbs, 1e-7) {
+                RecognizedCurve::Parabola {
+                    vertex: v,
+                    axis_dir,
+                    focal_length,
+                    ..
+                } => {
+                    assert!(
+                        (v - vertex).length() < 1e-6,
+                        "vertex {v:?} at rotation {angle}"
+                    );
+                    assert!(
+                        axis_dir.dot(par.axis_dir()) > 1.0 - 1e-9,
+                        "axis_dir {axis_dir:?} at rotation {angle}"
+                    );
+                    assert!(
+                        (focal_length - 0.75).abs() < 1e-8,
+                        "focal {focal_length} at rotation {angle}"
+                    );
+                }
+                other => panic!("parabola not recognized at rotation {angle}: {other:?}"),
+            }
+        }
+    }
+
+    // ── recovered axes ────────────────────────────────────────────────────────
+
+    #[test]
+    fn recovered_conic_axes_match_the_original_axes() {
+        // `u_axis` is documented as the semi-major (real) axis direction, so
+        // it must be parallel to the source curve's own major axis — not some
+        // other direction in the plane that happens to share its angle to the
+        // projection seed.
+        let ell = Ellipse3D::new(Point3::new(2.0, -1.0, 5.0), z_axis(), 3.0, 1.5).unwrap();
+        let nurbs = ellipse_to_nurbs(&ell, 0.0, TAU).unwrap();
+        match recognize_curve(&nurbs, 1e-5) {
+            RecognizedCurve::Ellipse { u_axis, .. } => {
+                assert!(
+                    u_axis.dot(ell.u_axis()).abs() > 1.0 - 1e-6,
+                    "ellipse u_axis {u_axis:?} vs {:?}",
+                    ell.u_axis()
+                );
+            }
+            other => panic!("expected Ellipse, got {other:?}"),
+        }
+
+        let hyp = Hyperbola3D::new(Point3::new(2.0, -1.0, 5.0), z_axis(), 3.0, 1.5).unwrap();
+        let nurbs = hyperbola_to_nurbs_inline(&hyp, -1.5, 1.5);
+        match recognize_curve(&nurbs, 1e-5) {
+            RecognizedCurve::Hyperbola { u_axis, .. } => {
+                assert!(
+                    u_axis.dot(hyp.u_axis()).abs() > 1.0 - 1e-6,
+                    "hyperbola u_axis {u_axis:?} vs {:?}",
+                    hyp.u_axis()
+                );
+            }
+            other => panic!("expected Hyperbola, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_circular_arc_is_not_a_parabola() {
+        // The conic through these samples is a circle (normalized
+        // discriminant −1), which the parabola arm's discriminant gate must
+        // reject however well a parabola would fit such a short arc.
+        let pts: Vec<Point3> = (0..16)
+            .map(|i| {
+                #[allow(clippy::cast_precision_loss)]
+                let a = 0.35 * (i as f64) / 15.0;
+                Point3::new(5.0 * a.cos(), 5.0 * a.sin(), 1.0)
+            })
+            .collect();
+        assert!(
+            try_recognize_circle(&pts, 1e-9).is_some(),
+            "arc is circular"
+        );
+        assert!(try_recognize_parabola(&pts, 1e-3).is_none());
+    }
+
+    #[test]
+    fn detect_curve_kind_samples_the_whole_parameter_domain() {
+        // A rational quadratic in two Bezier segments: the first is an exact
+        // 100° arc of the circle R = 10 about the origin, the second occupies
+        // only the final 5% of the parameter domain and leaves that circle,
+        // ending 3 units outside it. Every sample but the last lands on the
+        // arc, so a sampler that stops short of the domain end calls the
+        // whole curve a circle.
+        let r = 10.0_f64;
+        let sweep = 100.0_f64.to_radians();
+        let half = 0.5 * sweep;
+        let p0 = Point3::new(r, 0.0, 0.0);
+        let p1 = Point3::new(r, r * half.tan(), 0.0);
+        let p2 = Point3::new(r * sweep.cos(), r * sweep.sin(), 0.0);
+        let p4 = Point3::new(1.3 * p2.x(), 1.3 * p2.y(), 0.0);
+        let p3 = Point3::new(
+            f64::midpoint(p2.x(), p4.x()),
+            f64::midpoint(p2.y(), p4.y()),
+            0.0,
+        );
+        let nurbs = NurbsCurve::new(
+            2,
+            vec![-0.2, -0.2, -0.2, 0.94, 0.94, 1.0, 1.0, 1.0],
+            vec![p0, p1, p2, p3, p4],
+            vec![1.0, half.cos(), 1.0, 1.0, 1.0],
+        )
+        .unwrap();
+
+        // Everything up to the last sample really is a circular arc...
+        #[allow(clippy::cast_precision_loss)]
+        let arc_only: Vec<Point3> = (0..15)
+            .map(|i| nurbs.evaluate(-0.2 + 1.2 * (i as f64) / 15.0))
+            .collect();
+        let (_, _, radius) = try_recognize_circle(&arc_only, 1e-6).expect("arc is circular");
+        assert!((radius - r).abs() < 1e-6, "arc radius {radius}");
+        // ...and the curve as a whole is not.
+        assert_eq!(detect_curve_kind(&nurbs), DetectedCurveKind::BSpline);
+    }
+
+    #[test]
+    fn detect_curve_kind_samples_the_start_of_the_domain() {
+        // Mirror of the previous case with the excursion at the HEAD of the
+        // domain: the first Bezier segment covers only the first 0.1% of the
+        // parameter range and runs in from a point 3 units off the circle,
+        // and the rest is an exact 100° arc of R = 10. Only the first sample
+        // lands on the excursion.
+        let r = 10.0_f64;
+        let sweep = 100.0_f64.to_radians();
+        let half = 0.5 * sweep;
+        let p2 = Point3::new(r, 0.0, 0.0);
+        let p0 = Point3::new(13.0, -2.0, 0.0);
+        let p1 = Point3::new(
+            f64::midpoint(p0.x(), p2.x()),
+            f64::midpoint(p0.y(), p2.y()),
+            0.0,
+        );
+        let p3 = Point3::new(r, r * half.tan(), 0.0);
+        let p4 = Point3::new(r * sweep.cos(), r * sweep.sin(), 0.0);
+        let nurbs = NurbsCurve::new(
+            2,
+            vec![0.0, 0.0, 0.0, 0.001, 0.001, 1.0, 1.0, 1.0],
+            vec![p0, p1, p2, p3, p4],
+            vec![1.0, 1.0, 1.0, half.cos(), 1.0],
+        )
+        .unwrap();
+
+        #[allow(clippy::cast_precision_loss)]
+        let arc_only: Vec<Point3> = (1..16).map(|i| nurbs.evaluate((i as f64) / 15.0)).collect();
+        let (_, _, radius) = try_recognize_circle(&arc_only, 1e-6).expect("tail is circular");
+        assert!((radius - r).abs() < 1e-6, "arc radius {radius}");
+        assert_eq!(detect_curve_kind(&nurbs), DetectedCurveKind::BSpline);
+    }
 }
