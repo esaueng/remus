@@ -335,7 +335,17 @@ fn remove_blend_with_entity_evolution(
     let sources: HashSet<_> = history.iter().map(|(source, _)| *source).collect();
     let targets: HashSet<_> = history.iter().filter_map(|(_, target)| *target).collect();
     // Partial construction records must not silently sever a surviving boundary.
-    if sources.len() != history.len()
+    // A split boundary has multiple distinct live targets. It must not also
+    // be marked deleted, and duplicate source/target records are invalid.
+    let records: HashSet<_> = history.iter().copied().collect();
+    let deleted_sources: HashSet<_> = history
+        .iter()
+        .filter_map(|(source, target)| target.is_none().then_some(*source))
+        .collect();
+    if records.len() != history.len()
+        || history
+            .iter()
+            .any(|(source, target)| target.is_some() && deleted_sources.contains(source))
         || sources != boundaries(solid)?
         || targets != boundaries(sharp.solid)?
         || history
@@ -3151,7 +3161,10 @@ fn heal_cylinder_plane_band_surgical(
                                 }
                             }
                         }
-                        _ => return Ok(None),
+                        FaceSurface::Cone(_)
+                        | FaceSurface::Sphere(_)
+                        | FaceSurface::Torus(_)
+                        | FaceSurface::Nurbs(_) => return Ok(None),
                     }
                 }
                 let replacement = *edge_replacements.entry(oriented.edge()).or_insert_with(|| {
@@ -3218,11 +3231,9 @@ fn heal_cylinder_plane_band_surgical(
     // R8 contact to the R8 arc, extended edges to their replacements,
     // vanished wound edges to nothing, and untouched entities to themselves.
     // New edges are therefore all covered, which the journaled path requires.
-    // Convention note: a compound oblique-side spring spans sharp-plus-arc
-    // in the rebuilt wires but maps to the sharp edge only, exactly like the
-    // other springs; the arc leg is covered via the R8 contact mapping. The
-    // journal checks set coverage (every result boundary is hit), not
-    // per-source span accounting, so this stays total.
+    // The oblique-side spring splits into the sharp edge and the arc.
+    // Preserve both descendants; output coverage alone is not enough to
+    // resolve a reference to that source boundary correctly.
     let mut replaced_edges: HashMap<EdgeId, EdgeId> = HashMap::new();
     for &spring in &springs {
         replaced_edges.insert(spring, sharp_edge);
@@ -3235,6 +3246,12 @@ fn heal_cylinder_plane_band_surgical(
     for (&old, &new) in &edge_replacements {
         replaced_edges.insert(old, new);
     }
+    let split_spring = compound.as_ref().and_then(|entry| {
+        springs.iter().copied().find(|edge| {
+            topo.edge(*edge)
+                .is_ok_and(|data| data.start() == entry.d || data.end() == entry.d)
+        })
+    });
     let mut boundary_history = Vec::new();
     for (source, copied) in copied_entities.edge_map {
         let target = replaced_edges.get(&copied).copied().unwrap_or(copied);
@@ -3244,6 +3261,13 @@ fn heal_cylinder_plane_band_surgical(
                 .contains(&target)
                 .then_some(EntityKey::edge(target.index())),
         ));
+        if Some(copied) == split_spring {
+            let entry = compound
+                .as_ref()
+                .ok_or_else(|| reconstruction("split spring lost compound end"))?;
+            let arc = compound_circles[&entry.r8.index()];
+            boundary_history.push((EntityKey::edge(source), Some(EntityKey::edge(arc.index()))));
+        }
     }
     // Wound vertices merge into their recovered corners; every other copied
     // vertex survives on its own face.
