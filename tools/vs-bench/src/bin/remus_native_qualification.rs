@@ -26,6 +26,13 @@ fn stderr_line(message: &str) {
 }
 
 fn worker_mode(case: &str) -> i32 {
+    if let Ok(delay_ms) = std::env::var("REMUS_VS_BENCH_TEST_WORKER_DELAY_MS") {
+        let Ok(delay_ms) = delay_ms.parse::<u64>() else {
+            stderr_line("invalid REMUS_VS_BENCH_TEST_WORKER_DELAY_MS");
+            return 2;
+        };
+        std::thread::sleep(Duration::from_millis(delay_ms));
+    }
     match execute_case(case) {
         Ok(evidence) => match serde_json::to_string(&evidence) {
             Ok(json) => {
