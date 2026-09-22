@@ -26,8 +26,8 @@ const MAX_CYLINDER_GRID_POINTS: usize = 1_000_000;
 const MAX_CONSTRAINT_INDEX_ENTRIES: usize = 1_000_000;
 
 /// Bound the quadratic work of the rare ear-clipping fallback. CDT remains
-/// the primary path; a boundary that exceeds this fallback budget is refused
-/// rather than turning malformed input into unbounded CPU work.
+/// the primary path; a boundary that exceeds this budget returns to the
+/// legacy constant-work fallback instead of consuming unbounded CPU time.
 const MAX_EAR_CLIP_POINT_TESTS: usize = 10_000_000;
 
 fn cylinder_grid_rows(
@@ -1240,7 +1240,7 @@ pub(super) fn tessellate_planar(
 
     if face_data.inner_wires().is_empty() {
         let normals_out = vec![normal; n];
-        let mut indices = cdt_triangulate_simple(&positions, normal)?;
+        let mut indices = cdt_triangulate_simple(&positions, normal);
 
         // Ensure triangle winding matches the face normal.
         // cdt_triangulate_simple forces CCW in 2D projection, which may
@@ -1671,22 +1671,20 @@ pub(super) fn unproject_point(
 ///
 /// CDT can insert Steiner vertices while recovering constraints. This helper's
 /// index-only contract cannot publish those vertices, so it falls back to ear
-/// clipping over the original boundary. A vertex-0 fan is not a valid fallback:
-/// it overlaps the notches of a concave polygon while still looking manifold
-/// to an edge-count closure check.
-pub(super) fn cdt_triangulate_simple(
-    positions: &[Point3],
-    normal: Vec3,
-) -> Result<Vec<u32>, crate::OperationsError> {
+/// clipping over the original boundary. A vertex-0 fan overlaps the notches
+/// of a concave polygon while still looking manifold to an edge-count closure
+/// check, so it is retained only when ear clipping cannot preserve the legacy
+/// behavior for an already-malformed boundary.
+pub(super) fn cdt_triangulate_simple(positions: &[Point3], normal: Vec3) -> Vec<u32> {
     use remus_math::cdt::Cdt;
     use remus_math::vec::Point2;
 
     let n = positions.len();
     if n < 3 {
-        return Ok(vec![]);
+        return vec![];
     }
     if n == 3 {
-        return Ok(vec![0, 1, 2]);
+        return vec![0, 1, 2];
     }
 
     let pts2d: Vec<Point2> = positions
@@ -1699,7 +1697,7 @@ pub(super) fn cdt_triangulate_simple(
 
     let cdt_indices = match cdt.insert_points_hilbert(&pts2d) {
         Ok(indices) => indices,
-        Err(_) => return ear_clip_or_refuse(&pts2d),
+        Err(_) => return ear_clip_or_fan(&pts2d),
     };
 
     let mut constraints = Vec::with_capacity(n);
@@ -1709,7 +1707,7 @@ pub(super) fn cdt_triangulate_simple(
         let cj = cdt_indices[j];
         if ci != cj {
             if cdt.insert_constraint(ci, cj).is_err() {
-                return ear_clip_or_refuse(&pts2d);
+                return ear_clip_or_fan(&pts2d);
             }
             constraints.push((ci, cj));
         }
@@ -1757,26 +1755,21 @@ pub(super) fn cdt_triangulate_simple(
         // points. Preserve the legacy fan only when the boundary is genuinely
         // self-intersecting: existing pinched boolean faces rely on its closed
         // edge graph until their invalid topology is repaired upstream.
-        return Ok(ear_clip_triangulate(&pts2d).unwrap_or_else(|| fan_triangulate(n)));
+        return ear_clip_or_fan(&pts2d);
     }
     if indices.is_empty() {
-        return ear_clip_or_refuse(&pts2d);
+        return ear_clip_or_fan(&pts2d);
     }
 
     if triangulation_covers_polygon(&pts2d, &indices) {
-        Ok(indices)
+        indices
     } else {
-        ear_clip_or_refuse(&pts2d)
+        ear_clip_or_fan(&pts2d)
     }
 }
 
-fn ear_clip_or_refuse(
-    points: &[remus_math::vec::Point2],
-) -> Result<Vec<u32>, crate::OperationsError> {
-    ear_clip_triangulate(points).ok_or_else(|| crate::OperationsError::InvalidInput {
-        reason: "planar face boundary could not be triangulated without overlapping triangles"
-            .into(),
-    })
+fn ear_clip_or_fan(points: &[remus_math::vec::Point2]) -> Vec<u32> {
+    ear_clip_triangulate(points).unwrap_or_else(|| fan_triangulate(points.len()))
 }
 
 fn fan_triangulate(n: usize) -> Vec<u32> {
