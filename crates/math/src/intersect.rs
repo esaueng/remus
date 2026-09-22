@@ -26,11 +26,13 @@
 
 use crate::MathError;
 use crate::analytic_intersection::{
-    AnalyticSurface, ExactIntersectionCurve, exact_plane_analytic, intersect_analytic_analytic,
+    AnalyticSurface, EXACT_SECTION_IDENTITY_EPS, ExactIntersectionCurve, ExactSectionContact,
+    exact_plane_analytic, exact_plane_cone_special, exact_plane_torus_special,
+    intersect_analytic_analytic, normalize_plane_equation,
 };
 use crate::context::OperationContext;
 use crate::curves::{Circle3D, Ellipse3D};
-use crate::surfaces::{CylindricalSurface, SphericalSurface};
+use crate::surfaces::{ConicalSurface, CylindricalSurface, SphericalSurface, ToroidalSurface};
 use crate::vec::{Point3, Vec3};
 
 /// How two geometric entities touch along one intersection element.
@@ -157,7 +159,7 @@ impl SurfaceIntersection {
 /// qualified API models operands as plane-or-surface explicitly.
 #[derive(Debug, Clone, Copy)]
 pub struct PlaneOperand {
-    /// Unit plane normal.
+    /// Finite, non-zero plane normal. Intersection entry points normalize it.
     pub normal: Vec3,
     /// Signed offset: the plane satisfies `dot(normal, p) = d`.
     pub d: f64,
@@ -172,20 +174,40 @@ pub enum SurfaceOperand<'a> {
     Analytic(AnalyticSurface<'a>),
 }
 
+fn normalize_surface_operand(operand: SurfaceOperand<'_>) -> Result<SurfaceOperand<'_>, MathError> {
+    match operand {
+        SurfaceOperand::Plane(plane) => {
+            let (normal, d) = normalize_plane_equation(plane.normal, plane.d)?;
+            Ok(SurfaceOperand::Plane(PlaneOperand { normal, d }))
+        }
+        SurfaceOperand::Analytic(AnalyticSurface::Plane { normal, d }) => {
+            let (normal, d) = normalize_plane_equation(normal, d)?;
+            Ok(SurfaceOperand::Analytic(AnalyticSurface::Plane {
+                normal,
+                d,
+            }))
+        }
+        other @ SurfaceOperand::Analytic(_) => Ok(other),
+    }
+}
+
 /// Intersect two surface operands, classifying contact where the pair is
 /// decided in closed form.
 ///
 /// Certified pairs (classification and geometry exact): plane–plane,
-/// plane–sphere, plane–cylinder, sphere–sphere, coaxial sphere–cylinder,
-/// and parallel-axis cylinder–cylinder — including their tangential and
-/// coincident configurations. Every other pair (and every non-certified
+/// plane–sphere, plane–cylinder, closed circle/ellipse sections of a cone, the
+/// axis-normal and meridian sections of a ring torus, sphere–sphere, coaxial
+/// sphere–cylinder, and parallel-axis cylinder–cylinder — including their
+/// tangential and coincident
+/// configurations. Every other pair (and every non-certified
 /// sub-configuration) delegates to the legacy analytic path and is wrapped
 /// as [`ContactKind::Unclassified`] with `complete = false`.
 ///
-/// Tolerances come from `context.tolerance` and are scale-aware through
-/// its `approx_eq`; classification of near-tangency follows the declared
-/// tolerance, so the same configuration uniformly scaled with a matching
-/// tolerance classifies identically.
+/// Pairs using `context.tolerance` remain scale-aware through its
+/// `approx_eq`. Recognition of an exact analytic special configuration uses
+/// only a floating-point roundoff envelope, because a nearby configuration
+/// has different closed-form geometry and cannot be promoted by modeling
+/// tolerance.
 ///
 /// # Errors
 ///
@@ -195,19 +217,32 @@ pub fn intersect_surfaces(
     b: SurfaceOperand<'_>,
     context: &OperationContext,
 ) -> Result<SurfaceIntersection, MathError> {
+    let a = normalize_surface_operand(a)?;
+    let b = normalize_surface_operand(b)?;
     let tol = &context.tolerance;
     match (a, b) {
         (SurfaceOperand::Plane(p), SurfaceOperand::Plane(q)) => Ok(plane_plane(p, q, tol)),
         (SurfaceOperand::Plane(p), SurfaceOperand::Analytic(s))
         | (SurfaceOperand::Analytic(s), SurfaceOperand::Plane(p)) => match s {
             AnalyticSurface::Sphere(sphere) => Ok(plane_sphere(p, sphere, tol)),
-            AnalyticSurface::Cylinder(cyl) => plane_cylinder(p, cyl, tol),
-            AnalyticSurface::Cone(_) | AnalyticSurface::Torus(_) => legacy_plane_analytic(p, s),
+            AnalyticSurface::Cylinder(cyl) => plane_cylinder(p, cyl),
+            AnalyticSurface::Cone(cone) => plane_cone(p, cone),
+            AnalyticSurface::Torus(torus) => plane_torus(p, torus),
             AnalyticSurface::Plane { normal, d } => {
                 Ok(plane_plane(p, PlaneOperand { normal, d }, tol))
             }
         },
         (SurfaceOperand::Analytic(sa), SurfaceOperand::Analytic(sb)) => match (sa, sb) {
+            (AnalyticSurface::Plane { normal, d }, other) => intersect_surfaces(
+                SurfaceOperand::Plane(PlaneOperand { normal, d }),
+                SurfaceOperand::Analytic(other),
+                context,
+            ),
+            (other, AnalyticSurface::Plane { normal, d }) => intersect_surfaces(
+                SurfaceOperand::Analytic(other),
+                SurfaceOperand::Plane(PlaneOperand { normal, d }),
+                context,
+            ),
             (AnalyticSurface::Sphere(s1), AnalyticSurface::Sphere(s2)) => {
                 Ok(sphere_sphere(s1, s2, tol))
             }
@@ -308,50 +343,56 @@ fn plane_sphere(
 fn plane_cylinder(
     p: PlaneOperand,
     cyl: &CylindricalSurface,
-    tol: &crate::tolerance::Tolerance,
 ) -> Result<SurfaceIntersection, MathError> {
     let axis = cyl.axis();
-    let origin = cyl.origin();
-    let r = cyl.radius();
     let align = p.normal.dot(axis).abs();
+    let cross = p.normal.cross(axis).length();
 
-    if align <= tol.angular.max(1e-12) {
-        // Plane parallel to the axis: 0, 1 (tangent), or 2 lines.
+    if align <= EXACT_SECTION_IDENTITY_EPS {
+        // This is a geometry identity, not a modeling-tolerance decision.
+        let origin = cyl.origin();
+        let radius = cyl.radius();
         let signed = p.normal.dot(Vec3::new(origin.x(), origin.y(), origin.z())) - p.d;
-        let dist = signed.abs();
-        if scale_eq(tol, dist, r) {
-            let touch = origin - p.normal * signed;
-            return Ok(SurfaceIntersection::certified(vec![
-                IntersectionElement::Curve(QualifiedCurve {
-                    geometry: CurveGeometry::Line {
-                        origin: touch,
-                        direction: axis,
-                    },
-                    kind: ContactKind::Tangential,
-                    quality: ResultQuality::Exact,
-                    method: SourceMethod::ClosedForm,
-                }),
-            ]));
-        }
-        if dist > r {
+        let distance = signed.abs();
+        if distance > radius {
             return Ok(SurfaceIntersection::certified(vec![]));
         }
-        let half_chord = (r * r - dist * dist).sqrt();
         let foot = origin - p.normal * signed;
-        let in_plane = p.normal.cross(axis).normalize()?;
-        let mut elements = Vec::with_capacity(2);
-        for sign in [-1.0, 1.0] {
-            elements.push(IntersectionElement::Curve(QualifiedCurve {
-                geometry: CurveGeometry::Line {
-                    origin: foot + in_plane * (sign * half_chord),
-                    direction: axis,
-                },
-                kind: ContactKind::Transversal,
-                quality: ResultQuality::Exact,
-                method: SourceMethod::ClosedForm,
-            }));
-        }
+        let tangent = distance.to_bits() == radius.to_bits();
+        let half_chord = if tangent {
+            0.0
+        } else {
+            radius.mul_add(radius, -(distance * distance)).sqrt()
+        };
+        let chord_direction = p.normal.cross(axis).normalize()?;
+        let signs: &[f64] = if tangent { &[0.0] } else { &[-1.0, 1.0] };
+        let elements = signs
+            .iter()
+            .map(|sign| {
+                IntersectionElement::Curve(QualifiedCurve {
+                    geometry: CurveGeometry::Line {
+                        origin: foot + chord_direction * (*sign * half_chord),
+                        direction: axis,
+                    },
+                    kind: if tangent {
+                        ContactKind::Tangential
+                    } else {
+                        ContactKind::Transversal
+                    },
+                    quality: ResultQuality::Exact,
+                    method: SourceMethod::ClosedForm,
+                })
+            })
+            .collect();
         return Ok(SurfaceIntersection::certified(elements));
+    }
+
+    // A generic public plane carries no provenance proving that a non-zero
+    // near-special angle is roundoff from an intended identity. Keep those
+    // numerically ill-conditioned configurations explicit rather than
+    // promoting a nearby ellipse to a line or circle family.
+    if align < 1e-10 || (cross > EXACT_SECTION_IDENTITY_EPS && cross < (2.0e-10_f64).sqrt()) {
+        return legacy_plane_analytic(p, AnalyticSurface::Cylinder(cyl));
     }
 
     // Oblique or perpendicular: the legacy closed form already produces the
@@ -391,15 +432,61 @@ fn plane_cylinder(
             })
         })
         .collect();
-    // The legacy closed form applies its own (coarser, 1e-10) parallel test
-    // and can hand back sampled Points where the branch above judged the
-    // plane oblique; an Unresolved element must never ride in a `complete`
-    // result.
+    // Keep the exhaustiveness guard honest: an unresolved fallback must never
+    // ride in a `complete` result even if a future cylinder branch adds one.
     let complete = elements.iter().all(|element| match element {
         IntersectionElement::Curve(c) => c.quality != ResultQuality::Unresolved,
         _ => true,
     });
     Ok(SurfaceIntersection { elements, complete })
+}
+
+fn plane_torus(p: PlaneOperand, torus: &ToroidalSurface) -> Result<SurfaceIntersection, MathError> {
+    let Some(section) = exact_plane_torus_special(torus, p.normal, p.d)? else {
+        return legacy_plane_analytic(p, AnalyticSurface::Torus(torus));
+    };
+    let kind = match section.contact {
+        ExactSectionContact::Transversal => ContactKind::Transversal,
+        ExactSectionContact::Tangential => ContactKind::Tangential,
+    };
+    let elements = section
+        .circles
+        .into_iter()
+        .map(|circle| {
+            IntersectionElement::Curve(QualifiedCurve {
+                geometry: CurveGeometry::Circle(circle),
+                kind,
+                quality: ResultQuality::Exact,
+                method: SourceMethod::ClosedForm,
+            })
+        })
+        .collect();
+    Ok(SurfaceIntersection::certified(elements))
+}
+
+fn plane_cone(p: PlaneOperand, cone: &ConicalSurface) -> Result<SurfaceIntersection, MathError> {
+    let Some(curves) = exact_plane_cone_special(cone, p.normal, p.d)? else {
+        return legacy_plane_analytic(p, AnalyticSurface::Cone(cone));
+    };
+    let elements = curves
+        .into_iter()
+        .map(|curve| {
+            let geometry = match curve {
+                ExactIntersectionCurve::Circle(circle) => CurveGeometry::Circle(circle),
+                ExactIntersectionCurve::Ellipse(ellipse) => CurveGeometry::Ellipse(ellipse),
+                ExactIntersectionCurve::Line { .. } | ExactIntersectionCurve::Points(_) => {
+                    unreachable!("certified cone section must be a circle or ellipse")
+                }
+            };
+            IntersectionElement::Curve(QualifiedCurve {
+                geometry,
+                kind: ContactKind::Transversal,
+                quality: ResultQuality::Exact,
+                method: SourceMethod::ClosedForm,
+            })
+        })
+        .collect();
+    Ok(SurfaceIntersection::certified(elements))
 }
 
 fn sphere_sphere(
