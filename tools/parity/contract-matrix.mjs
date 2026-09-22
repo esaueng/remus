@@ -70,10 +70,66 @@ function tangentBossBatch({ exactOnly = false } = {}) {
   return { batch, booleanIndex: 3, volumeIndex: 4, validationIndex: 5, meshQualityIndex: 6, facesIndex: 7 };
 }
 
+// Same overlapping 2x2x2 boxes through the `*WithEvolution` batch ops: the
+// exact-only boolean whose response carries a construction-derived
+// evolution report (`modified`/`generated`/`deleted`/`unresolved`/`origin`,
+// the `EvolutionMap::to_json` shape both surfaces emit verbatim).
+function evolutionBoxesBatch(op) {
+  const batch = [
+    { op: 'makeBox', args: { width: 2, height: 2, depth: 2 } },
+    { op: 'makeBox', args: { width: 2, height: 2, depth: 2 } },
+    { op: 'transform', args: { solid: 1, matrix: translationMatrix([1, 1, 1]) } },
+    { op, args: { solidA: 0, solidB: 1 } },
+    { op: 'volume', args: { solid: 2, deflection: 0.05 } },
+    { op: 'validateSolid', args: { solid: 2 } },
+    { op: 'meshQuality', args: { solid: 2, deflection: 0.05 } },
+    { op: 'getSolidFaces', args: { solid: 2 } },
+  ];
+  return {
+    batch,
+    booleanIndex: 3,
+    evolutionIndex: 3,
+    volumeIndex: 4,
+    validationIndex: 5,
+    meshQualityIndex: 6,
+    facesIndex: 7,
+  };
+}
+
+// Structural summary of one evolution report: bucket sizes plus the origin
+// tag. Handle indices are an arena detail, so the gated comparison is over
+// this summary and the unresolved bucket; the raw report still rides along
+// as non-gating evidence.
+export function summarizeEvolution(evolution) {
+  if (!evolution || typeof evolution !== 'object') return null;
+  const sizeOf = (bucket) => Object.keys(bucket ?? {}).length;
+  const outputsOf = (bucket) => Object.values(bucket ?? {})
+    .reduce((total, outputs) => total + (Array.isArray(outputs) ? outputs.length : 0), 0);
+  return {
+    modifiedInputs: sizeOf(evolution.modified),
+    modifiedOutputs: outputsOf(evolution.modified),
+    generatedInputs: sizeOf(evolution.generated),
+    generatedOutputs: outputsOf(evolution.generated),
+    deleted: Array.isArray(evolution.deleted) ? evolution.deleted.length : 0,
+    unresolved: sizeOf(evolution.unresolved),
+    origin: evolution.origin ?? null,
+  };
+}
+
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
 export function expandContractMatrix() {
   const exact = overlappingBoxesBatch();
   const refusal = tangentBossBatch({ exactOnly: true });
   const approx = tangentBossBatch();
+  const evolutionFuse = evolutionBoxesBatch('fuseWithEvolution');
+  const evolutionCut = evolutionBoxesBatch('cutWithEvolution');
   return [
     {
       id: 'contract/exact-fuse',
@@ -172,6 +228,151 @@ export function expandContractMatrix() {
       cancellationScope:
         'pre-cancelled token only; concurrent mid-call cancellation needs a worker/shared-memory transport',
     },
+    {
+      id: 'contract/evolution-fuse',
+      title: 'evolution report (fuse)',
+      description:
+        'overlapping boxes fuseWithEvolution: every input face is modified 1:1, '
+        + 'nothing generated, deleted, or unresolved; volume 15, 12 faces',
+      batch: evolutionFuse.batch,
+      booleanIndex: evolutionFuse.booleanIndex,
+      evolutionIndex: evolutionFuse.evolutionIndex,
+      volumeIndex: evolutionFuse.volumeIndex,
+      validationIndex: evolutionFuse.validationIndex,
+      meshQualityIndex: evolutionFuse.meshQualityIndex,
+      facesIndex: evolutionFuse.facesIndex,
+      expect: {
+        outcome: 'success',
+        quality: 'exact',
+        volume: 15,
+        volumeTolerance: 1e-6,
+        faces: 12,
+        evolution: {
+          modifiedInputs: 12,
+          modifiedOutputs: 12,
+          generatedInputs: 0,
+          generatedOutputs: 0,
+          deleted: 0,
+          unresolved: 0,
+          origin: 'construction',
+        },
+        unresolvedBucket: {},
+      },
+    },
+    {
+      id: 'contract/evolution-cut',
+      title: 'evolution report (cut)',
+      description:
+        'overlapping boxes cutWithEvolution: the three tool faces outside the '
+        + 'blank are deleted, nine faces modified 1:1, nothing generated or '
+        + 'unresolved; volume 7, 9 faces',
+      batch: evolutionCut.batch,
+      booleanIndex: evolutionCut.booleanIndex,
+      evolutionIndex: evolutionCut.evolutionIndex,
+      volumeIndex: evolutionCut.volumeIndex,
+      validationIndex: evolutionCut.validationIndex,
+      meshQualityIndex: evolutionCut.meshQualityIndex,
+      facesIndex: evolutionCut.facesIndex,
+      expect: {
+        outcome: 'success',
+        quality: 'exact',
+        volume: 7,
+        volumeTolerance: 1e-6,
+        faces: 9,
+        evolution: {
+          modifiedInputs: 9,
+          modifiedOutputs: 9,
+          generatedInputs: 0,
+          generatedOutputs: 0,
+          deleted: 3,
+          unresolved: 0,
+          origin: 'construction',
+        },
+        unresolvedBucket: {},
+      },
+    },
+    {
+      id: 'contract/invalid-primitive-input',
+      title: 'invalid primitive input',
+      description:
+        'makeBox with a negative width refuses invalid_argument and leaves the '
+        + 'earlier box measurable',
+      batch: [
+        { op: 'makeBox', args: { width: 2, height: 2, depth: 2 } },
+        { op: 'makeBox', args: { width: -1, height: 2, depth: 2 } },
+        { op: 'volume', args: { solid: 0, deflection: 0.05 } },
+        { op: 'getSolidFaces', args: { solid: 0 } },
+      ],
+      booleanIndex: null,
+      volumeIndex: 2,
+      facesIndex: 3,
+      expect: {
+        outcome: 'batch_error',
+        code: 'invalid_argument',
+        rollbackVolume: 8,
+        rollbackVolumeTolerance: 1e-9,
+        rollbackFaces: 6,
+      },
+    },
+    {
+      id: 'contract/empty-intersect-sentinel',
+      title: 'empty intersect sentinel',
+      description:
+        'intersect of two far-apart boxes succeeds with the typed empty-result '
+        + 'sentinel (exact quality, volume 0, zero faces) and leaves the operand '
+        + 'measurable',
+      batch: [
+        { op: 'makeBox', args: { width: 2, height: 2, depth: 2 } },
+        { op: 'makeBox', args: { width: 2, height: 2, depth: 2 } },
+        { op: 'transform', args: { solid: 1, matrix: translationMatrix([10, 10, 10]) } },
+        { op: 'booleanWithQuality', args: { operation: 'intersect', solidA: 0, solidB: 1 } },
+        { op: 'volume', args: { solid: 2, deflection: 0.05 } },
+        { op: 'validateSolid', args: { solid: 2 } },
+        { op: 'meshQuality', args: { solid: 2, deflection: 0.05 } },
+        { op: 'getSolidFaces', args: { solid: 2 } },
+        { op: 'volume', args: { solid: 0, deflection: 0.05 } },
+      ],
+      booleanIndex: 3,
+      volumeIndex: 4,
+      validationIndex: 5,
+      meshQualityIndex: 6,
+      facesIndex: 7,
+      operandVolumeIndex: 8,
+      expect: {
+        outcome: 'success',
+        quality: 'exact',
+        volume: 0,
+        volumeTolerance: 1e-9,
+        faces: 0,
+        operandVolume: 8,
+        operandVolumeTolerance: 1e-9,
+      },
+    },
+    {
+      id: 'contract/contained-cut-refusal',
+      title: 'contained-cut empty refusal',
+      description:
+        'cutting a box fully contained in its tool refuses typed (the kernel '
+        + 'EmptyResult on the wire) and leaves the tool measurable',
+      batch: [
+        { op: 'makeBox', args: { width: 4, height: 4, depth: 4 } },
+        { op: 'makeBox', args: { width: 1, height: 1, depth: 1 } },
+        { op: 'transform', args: { solid: 1, matrix: translationMatrix([1, 1, 1]) } },
+        { op: 'booleanWithQuality', args: { operation: 'cut', solidA: 1, solidB: 0 } },
+        { op: 'volume', args: { solid: 0, deflection: 0.05 } },
+        { op: 'getSolidFaces', args: { solid: 0 } },
+      ],
+      booleanIndex: 3,
+      volumeIndex: 4,
+      facesIndex: 5,
+      expect: {
+        outcome: 'batch_error',
+        code: 'operation_failed',
+        rollbackVolume: 64,
+        rollbackVolumeTolerance: 1e-9,
+        rollbackFaces: 6,
+      },
+    },
   ];
 }
 
@@ -220,6 +421,35 @@ export function scoreContractCase(c, observations) {
             && relativeError(observation.volume, c.expect.volume) <= (c.expect.volumeTolerance ?? 1e-6),
         );
       }
+      if (c.expect.faces !== undefined) {
+        add(surface, 'face_count', observation.faceCount === c.expect.faces);
+      }
+      if (c.expect.operandVolume !== undefined) {
+        add(
+          surface,
+          'operands_preserved',
+          Number.isFinite(observation.operandVolume)
+            && relativeError(observation.operandVolume, c.expect.operandVolume)
+              <= (c.expect.operandVolumeTolerance ?? 1e-9),
+        );
+      }
+      if (c.expect.evolution !== undefined) {
+        const summary = summarizeEvolution(observation.evolution);
+        add(
+          surface,
+          'evolution_buckets',
+          summary !== null && canonicalJson(summary) === canonicalJson(c.expect.evolution),
+        );
+      }
+      if (c.expect.unresolvedBucket !== undefined) {
+        const unresolved = observation.evolution?.unresolved;
+        add(
+          surface,
+          'evolution_unresolved',
+          unresolved !== undefined && unresolved !== null
+            && canonicalJson(unresolved) === canonicalJson(c.expect.unresolvedBucket),
+        );
+      }
     }
   }
 
@@ -241,6 +471,31 @@ export function scoreContractCase(c, observations) {
         'cross-surface',
         'quality_agreement',
         rest.every((o) => (o.quality ?? null) === (first.quality ?? null)),
+      );
+    }
+    if (c.expect.outcome === 'success' && c.expect.faces !== undefined) {
+      add(
+        'cross-surface',
+        'face_count_agreement',
+        rest.every((o) => (o.faceCount ?? null) === (first.faceCount ?? null)),
+      );
+    }
+    if (c.expect.outcome === 'success' && c.expect.evolution !== undefined) {
+      const summaryOf = (o) => canonicalJson(summarizeEvolution(o.evolution));
+      const unresolvedOf = (o) => canonicalJson(o.evolution?.unresolved ?? null);
+      add(
+        'cross-surface',
+        'evolution_agreement',
+        rest.every((o) => summaryOf(o) === summaryOf(first) && unresolvedOf(o) === unresolvedOf(first)),
+      );
+      // Raw index-level agreement (which arena handles each bucket names)
+      // is evidence, not a gate: handle assignment is an arena detail, like
+      // the geometric slices' byte identity.
+      add(
+        'cross-surface',
+        'evolution_raw_agreement',
+        rest.every((o) => canonicalJson(o.evolution ?? null) === canonicalJson(first.evolution ?? null)),
+        false,
       );
     }
   }
@@ -326,17 +581,18 @@ function finalizeBatchObservation(c, responses, coldInitMs, batchDurationMs) {
     response && response.error ? [response.error.code ?? 'untyped_error'] : []
   ));
   if (diagnosticCodes.length > 0) {
+    // Rollback probes: every succeeding `volume` ok-value and the last
+    // succeeding `getSolidFaces` length, exactly as the native runner
+    // collects them for any batch_error case.
     const rollbackVolumes = [];
     let rollbackFaces = null;
-    if (c.id === 'contract/transactional-rollback' || c.id === 'contract/cancelled-boolean') {
-      for (let i = 0; i < responses.length; i++) {
-        const response = responses[i];
-        if (response && response.ok !== undefined && c.batch[i]?.op === 'volume') {
-          rollbackVolumes.push(response.ok);
-        }
-        if (response && response.ok !== undefined && c.batch[i]?.op === 'getSolidFaces') {
-          rollbackFaces = response.ok.length;
-        }
+    for (let i = 0; i < responses.length; i++) {
+      const response = responses[i];
+      if (response && response.ok !== undefined && c.batch[i]?.op === 'volume') {
+        rollbackVolumes.push(response.ok);
+      }
+      if (response && response.ok !== undefined && c.batch[i]?.op === 'getSolidFaces') {
+        rollbackFaces = response.ok.length;
       }
     }
     return {
@@ -355,6 +611,15 @@ function finalizeBatchObservation(c, responses, coldInitMs, batchDurationMs) {
     ? responses[c.booleanIndex]?.ok
     : null;
   const quality = booleanResponse?.quality ?? (c.expect.outcome === 'success' ? 'exact' : null);
+  const faces = c.facesIndex !== null && c.facesIndex !== undefined
+    ? responses[c.facesIndex]?.ok ?? null
+    : null;
+  const evolution = c.evolutionIndex !== null && c.evolutionIndex !== undefined
+    ? responses[c.evolutionIndex]?.ok?.evolution ?? null
+    : null;
+  const operandVolume = c.operandVolumeIndex !== null && c.operandVolumeIndex !== undefined
+    ? responses[c.operandVolumeIndex]?.ok ?? null
+    : null;
   return {
     schemaVersion: 1,
     id: c.id,
@@ -363,7 +628,10 @@ function finalizeBatchObservation(c, responses, coldInitMs, batchDurationMs) {
     diagnosticCodes,
     quality,
     volume: c.volumeIndex !== null ? responses[c.volumeIndex]?.ok ?? null : null,
-    faces: c.facesIndex !== null ? responses[c.facesIndex]?.ok ?? null : null,
+    faces,
+    faceCount: Array.isArray(faces) ? faces.length : null,
+    evolution,
+    operandVolume,
     coldInitMs,
     batchDurationMs,
   };
@@ -494,6 +762,80 @@ function runDirectCase(c, kernel, mod) {
       scope: 'pre-cancelled token only; synchronous WASM cannot process a later JS cancellation on the same thread',
     };
   }
+  if (c.id === 'contract/evolution-fuse' || c.id === 'contract/evolution-cut') {
+    const a = kernel.makeBox(2, 2, 2);
+    const b = kernel.makeBox(2, 2, 2);
+    kernel.transformSolid(b, translationMatrix([1, 1, 1]));
+    // The direct bindings answer with a JSON string of the same
+    // `{solid, evolution}` shape the batch arm returns as an object.
+    const raw = c.id === 'contract/evolution-fuse'
+      ? kernel.fuseWithEvolution(a, b)
+      : kernel.cutWithEvolution(a, b);
+    const out = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    const volume = kernel.volume(out.solid, 0.05);
+    const faces = kernel.getSolidFaces(out.solid);
+    return {
+      ...base, outcome: 'success', diagnosticCodes: [], quality: 'exact', volume,
+      faceCount: faces.length, evolution: out.evolution ?? null,
+    };
+  }
+  if (c.id === 'contract/invalid-primitive-input') {
+    const a = kernel.makeBox(2, 2, 2);
+    const before = countsOf(a);
+    let refusal = null;
+    try {
+      kernel.makeBox(-1, 2, 2);
+    } catch (error) {
+      refusal = String(error?.message ?? error);
+    }
+    const afterVolume = kernel.volume(a, 0.05);
+    const afterFaces = kernel.getSolidFaces(a).length;
+    return {
+      ...base,
+      outcome: refusal ? 'batch_error' : 'success',
+      diagnosticCodes: refusal ? ['invalid_argument'] : [],
+      directError: refusal,
+      rollbackVolumes: [afterVolume],
+      rollbackFaces: afterFaces,
+      rollbackPreserved: JSON.stringify(before) === JSON.stringify(countsOf(a)),
+    };
+  }
+  if (c.id === 'contract/empty-intersect-sentinel') {
+    const a = kernel.makeBox(2, 2, 2);
+    const b = kernel.makeBox(2, 2, 2);
+    kernel.transformSolid(b, translationMatrix([10, 10, 10]));
+    const out = kernel.booleanWithQuality('intersect', a, b);
+    const volume = kernel.volume(out.solid, 0.05);
+    const faces = kernel.getSolidFaces(out.solid);
+    const operandVolume = kernel.volume(a, 0.05);
+    return {
+      ...base, outcome: 'success', diagnosticCodes: [], quality: out.quality, volume,
+      faceCount: faces.length, operandVolume,
+    };
+  }
+  if (c.id === 'contract/contained-cut-refusal') {
+    const tool = kernel.makeBox(4, 4, 4);
+    const target = kernel.makeBox(1, 1, 1);
+    kernel.transformSolid(target, translationMatrix([1, 1, 1]));
+    const before = countsOf(tool);
+    let refusal = null;
+    try {
+      kernel.booleanWithQuality('cut', target, tool);
+    } catch (error) {
+      refusal = String(error?.message ?? error);
+    }
+    const afterVolume = kernel.volume(tool, 0.05);
+    const afterFaces = kernel.getSolidFaces(tool).length;
+    return {
+      ...base,
+      outcome: refusal ? 'batch_error' : 'success',
+      diagnosticCodes: refusal ? ['operation_failed'] : [],
+      directError: refusal,
+      rollbackVolumes: [afterVolume],
+      rollbackFaces: afterFaces,
+      rollbackPreserved: JSON.stringify(before) === JSON.stringify(countsOf(tool)),
+    };
+  }
   throw new Error(`unknown contract case ${c.id}`);
 }
 
@@ -517,6 +859,9 @@ function normalizeWasmObservation(c, raw) {
       diagnosticCodes: raw.diagnosticCodes ?? [],
       quality: raw.quality ?? null,
       volume: raw.volume ?? null,
+      faceCount: raw.faceCount ?? null,
+      evolution: raw.evolution ?? null,
+      operandVolume: raw.operandVolume ?? null,
       direct: raw,
     };
   }
@@ -537,6 +882,9 @@ function normalizeWasmObservation(c, raw) {
     diagnosticCodes: raw.diagnosticCodes ?? [],
     quality: raw.quality ?? null,
     volume: raw.volume ?? null,
+    faceCount: raw.faceCount ?? null,
+    evolution: raw.evolution ?? null,
+    operandVolume: raw.operandVolume ?? null,
   };
 }
 
@@ -667,7 +1015,7 @@ async function main() {
     const passed = failedStages.length === 0;
     const report = {
       schema_version: 1,
-      scope: 'O1.5 contract slice: exact / exact-only refusal / disclosed approximation / invalid handle / rollback / pre-cancelled cancellation, batch plus installed-direct',
+      scope: 'O1.5 contract slice: exact / exact-only refusal / disclosed approximation / invalid handle / rollback / pre-cancelled cancellation / evolution reports (fuse, cut) / invalid primitive input / empty-intersect sentinel / contained-cut refusal, batch plus installed-direct',
       provenance: { native: nativeProvenance, fresh: freshProvenance, committed: committedProvenance },
       staleness,
       cancellationScope: 'pre-cancelled token only; a synchronous WASM call cannot process a later JS cancellation message on the same thread',
@@ -701,15 +1049,26 @@ function normalizeNativeForContract(c, native) {
       id: c.id,
       outcome: 'batch_error',
       diagnosticCodes: native.diagnosticCodes ?? [],
-      rollbackVolumes: native.rollbackVolumes ?? extractNativeRollback(c, native),
+      rollbackVolumes: native.rollbackVolumes ?? [],
       rollbackFaces: native.rollbackFaces ?? null,
     };
   }
+  if (native.outcome === 'success') {
+    // Project the geometric envelope onto the contract probes: the face
+    // census stands in for the `getSolidFaces` length, the producing op's
+    // evolution report passes through, and any extra `volume` probe is
+    // read back by batch index (`volumesByIndex`).
+    const operandVolume = c.operandVolumeIndex !== null && c.operandVolumeIndex !== undefined
+      ? native.volumesByIndex?.[String(c.operandVolumeIndex)] ?? null
+      : null;
+    return {
+      ...native,
+      faceCount: native.census?.faces ?? null,
+      evolution: native.evolution ?? null,
+      operandVolume,
+    };
+  }
   return native;
-}
-
-function extractNativeRollback() {
-  return [];
 }
 
 function directConsistent(c, batch, direct) {
