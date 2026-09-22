@@ -307,7 +307,34 @@ fn classify_sphere_end(
         (FaceSurface::Sphere(_), FaceSurface::Plane { .. }) => {
             (*second_cross, second_end, *first_cross, first_end)
         }
-        _ => return Ok(None),
+        (
+            FaceSurface::Plane { .. },
+            FaceSurface::Plane { .. }
+            | FaceSurface::Nurbs(_)
+            | FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Torus(_),
+        )
+        | (
+            FaceSurface::Sphere(_),
+            FaceSurface::Nurbs(_)
+            | FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_),
+        )
+        | (
+            FaceSurface::Nurbs(_)
+            | FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Torus(_),
+            FaceSurface::Plane { .. }
+            | FaceSurface::Nurbs(_)
+            | FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_),
+        ) => return Ok(None),
     };
     let Some(planar_end_plane) = unit_plane(topo, planar_end)? else {
         return Ok(None);
@@ -952,7 +979,33 @@ fn register_pcurve(
             )?);
             (curve, 0.0, 1.0)
         }
-        _ => {
+        (
+            FaceSurface::Plane { .. },
+            EdgeCurve::NurbsCurve(_)
+            | EdgeCurve::Ellipse(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_),
+        )
+        | (
+            FaceSurface::Sphere(_),
+            EdgeCurve::Line
+            | EdgeCurve::NurbsCurve(_)
+            | EdgeCurve::Ellipse(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_),
+        )
+        | (
+            FaceSurface::Nurbs(_)
+            | FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Torus(_),
+            EdgeCurve::Line
+            | EdgeCurve::NurbsCurve(_)
+            | EdgeCurve::Circle(_)
+            | EdgeCurve::Ellipse(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_),
+        ) => {
             return Err(reconstruction(format!(
                 "exact local-wound p-curve is unavailable for {} on {}",
                 edge.curve().type_tag(),
