@@ -33,13 +33,20 @@ fn temp_paths(tag: &str) -> (String, String) {
 }
 
 fn run_parent(extra: &[&str]) -> (i32, String) {
-    let child = Command::new(runner_bin())
+    run_parent_with_env(extra, &[])
+}
+
+fn run_parent_with_env(extra: &[&str], env: &[(&str, &str)]) -> (i32, String) {
+    let mut command = Command::new(runner_bin());
+    command
         .args(extra)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
+        .stderr(Stdio::piped());
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    let child = command.spawn().unwrap();
     let output = child.wait_with_output().unwrap();
     (
         output.status.code().unwrap(),
@@ -198,17 +205,20 @@ fn missing_observation_is_rejected() {
 
 #[test]
 fn timed_out_child_yields_no_job() {
-    // A zero-millisecond ceiling cannot admit any real child: the runner
-    // must record the timeouts and refuse to emit a partial job.
+    // Keep every worker alive past the zero-millisecond ceiling so this
+    // exercises the timeout path without racing a fast child exit.
     let (job_path, attempts_path) = temp_paths("timeout");
-    let (code, stderr) = run_parent(&[
-        "--out",
-        &job_path,
-        "--attempts",
-        &attempts_path,
-        "--timeout-ms",
-        "0",
-    ]);
+    let (code, stderr) = run_parent_with_env(
+        &[
+            "--out",
+            &job_path,
+            "--attempts",
+            &attempts_path,
+            "--timeout-ms",
+            "0",
+        ],
+        &[("REMUS_VS_BENCH_TEST_WORKER_DELAY_MS", "1000")],
+    );
     assert_eq!(code, 2, "{stderr}");
     assert!(!std::path::Path::new(&job_path).exists());
     let attempts: Value =
