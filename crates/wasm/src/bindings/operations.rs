@@ -726,8 +726,10 @@ impl BrepKernel {
             .map(|face| self.resolve_face(face))
             .collect::<Result<Vec<_>, _>>()?;
         validate_move_faces_topology_work(&self.topo, solid_id, &face_ids)?;
-        let result =
-            self.with_topology_transaction(|topo| move_faces(topo, solid_id, &face_ids, distance))?;
+        // `move_faces` owns its native rollback transaction. Avoid taking a
+        // second full arena snapshot at the WASM boundary; the operation
+        // restores the exact pre-call topology on every failure.
+        let result = move_faces(self.topo_mut(), solid_id, &face_ids, distance)?;
         Ok(solid_id_to_u32(result))
     }
 
@@ -928,8 +930,9 @@ impl BrepKernel {
 
         let face_id = self.resolve_face(face)?;
         let direction = Vec3::new(dir_x, dir_y, dir_z);
-        let solid_id =
-            self.with_topology_transaction(|topo| extrude(topo, face_id, direction, distance))?;
+        // `extrude` owns its native rollback transaction. Taking another
+        // snapshot here duplicates the full topology clone on every call.
+        let solid_id = extrude(self.topo_mut(), face_id, direction, distance)?;
 
         Ok(solid_id_to_u32(solid_id))
     }

@@ -145,6 +145,10 @@ struct Observation {
     serialized_sha256: Option<String>,
     cold_init_ms: f64,
     batch_duration_ms: f64,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    rollback_volumes: Vec<f64>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    rollback_faces: Option<usize>,
 }
 
 fn err(message: impl Into<String>) -> RunnerError {
@@ -877,12 +881,66 @@ fn dispatch(
                 args.get("solidB")
                     .ok_or_else(|| ops_err("missing 'solidB'"))?,
             )?;
-            // Disclosure is whatever the facade returns under its default
-            // policy: `exact` for exact geometry, disclosed `approximate`
-            // for mesh-fallback geometry, typed refusal otherwise. The
-            // scorer's `disclosure_match` gate pins the declared
-            // per-family expectation — never a tolerance widening.
-            let outcome = model.boolean(boolean_op, a, b)?;
+            // Honor the batch `exactOnly` flag exactly as the WASM
+            // `booleanWithQuality` arm does: omitted/null means the default
+            // allow-approximate policy, `true` selects the exact-only
+            // refusal. Ignoring it would let the native side disclose
+            // `approximate` where the WASM side refuses, breaking the
+            // contract matrix's refusal/approximation cells.
+            let exact_only = match args.get("exactOnly") {
+                None | Some(Value::Null) => false,
+                Some(value) => value
+                    .as_bool()
+                    .ok_or_else(|| ops_err("invalid 'exactOnly': expected boolean"))?,
+            };
+            let outcome = if exact_only {
+                let context = OperationContext::new().with_fallback(FallbackPolicy::ExactOnly);
+                boolean_with_context(model.topology_mut(), boolean_op, a, b, &context)?
+            } else {
+                model.boolean(boolean_op, a, b)?
+            };
+            *quality = Some(match outcome.quality {
+                BooleanQuality::Exact => "exact".to_owned(),
+                BooleanQuality::Approximate { .. } => "approximate".to_owned(),
+            });
+            Ok(serde_json::json!({
+                "solid": u64::from(outcome.solid.index() as u32),
+                "quality": quality.clone(),
+            }))
+        }
+        "booleanWithCancelledContext" => {
+            // Contract-matrix cancellation probe: runs the boolean under a
+            // pre-cancelled cooperative token, mirroring the WASM direct
+            // `booleanWithCancellation` path with `token.cancel()` called
+            // before the call. A synchronous WASM call cannot process a
+            // later JS cancellation message on the same thread, so only
+            // the pre-cancelled scope is asserted on either surface.
+            let operation = args
+                .get("operation")
+                .and_then(Value::as_str)
+                .ok_or_else(|| ops_err("missing or invalid 'operation'"))?;
+            let boolean_op = match operation {
+                "fuse" | "union" => BooleanOp::Fuse,
+                "cut" | "difference" => BooleanOp::Cut,
+                "intersect" | "intersection" => BooleanOp::Intersect,
+                _ => {
+                    return Err(ops_err(&format!("unknown boolean operation '{operation}'")));
+                }
+            };
+            let a = as_solid(
+                model,
+                args.get("solidA")
+                    .ok_or_else(|| ops_err("missing 'solidA'"))?,
+            )?;
+            let b = as_solid(
+                model,
+                args.get("solidB")
+                    .ok_or_else(|| ops_err("missing 'solidB'"))?,
+            )?;
+            let token = CancellationToken::new();
+            token.cancel();
+            let context = OperationContext::new().with_cancellation(token);
+            let outcome = boolean_with_context(model.topology_mut(), boolean_op, a, b, &context)?;
             *quality = Some(match outcome.quality {
                 BooleanQuality::Exact => "exact".to_owned(),
                 BooleanQuality::Approximate { .. } => "approximate".to_owned(),
@@ -1295,6 +1353,12 @@ fn observe(case: Case) -> Result<Observation, RunnerError> {
             .ok_or_else(|| err("batch item is missing 'op'"))?;
         let args = item.get("args").cloned().unwrap_or(Value::Null);
         let resolved = resolve_args(&args, &ok_values, &model)?;
+        // Mirror the WASM `dispatch_with_rollback` envelope: a failed op
+        // restores the exact pre-operation topology so later ops observe
+        // the same state on both surfaces. Without this, a native partial
+        // mutation would diverge from the WASM rollback the contract
+        // matrix's rollback cell asserts.
+        let snapshot = model.topology().clone();
         let mut quality = None;
         match dispatch(&mut model, op, &resolved, &mut quality) {
             Ok(ok) => {
@@ -1311,6 +1375,7 @@ fn observe(case: Case) -> Result<Observation, RunnerError> {
                 );
             }
             Err(error) => {
+                *model.topology_mut() = snapshot;
                 responses.push(disclosure(op, index, &error));
                 ok_values.push(Value::Null);
             }
@@ -1320,6 +1385,30 @@ fn observe(case: Case) -> Result<Observation, RunnerError> {
     let diagnostic_codes = diagnostics(&responses);
 
     if !diagnostic_codes.is_empty() {
+        // Rollback probes for the contract matrix: every succeeding `volume`
+        // ok-value and the last succeeding `getSolidFaces` length ride along
+        // so the scorer can assert later ops still observe pre-failure state.
+        // Geometric scorers ignore these fields.
+        let mut rollback_volumes = Vec::new();
+        let mut rollback_faces = None;
+        for (response, item) in responses.iter().zip(case.batch.iter()) {
+            let Some(ok) = response.get("ok") else {
+                continue;
+            };
+            match item.get("op").and_then(Value::as_str) {
+                Some("volume") => {
+                    if let Some(volume) = ok.as_f64() {
+                        rollback_volumes.push(volume);
+                    }
+                }
+                Some("getSolidFaces") => {
+                    if let Some(faces) = ok.as_array() {
+                        rollback_faces = Some(faces.len());
+                    }
+                }
+                _ => {}
+            }
+        }
         return Ok(Observation {
             schema_version: response_schema,
             id: case.id,
@@ -1337,6 +1426,8 @@ fn observe(case: Case) -> Result<Observation, RunnerError> {
             serialized_sha256: None,
             cold_init_ms,
             batch_duration_ms,
+            rollback_volumes,
+            rollback_faces,
         });
     }
 
@@ -1481,6 +1572,8 @@ fn observe(case: Case) -> Result<Observation, RunnerError> {
         serialized_sha256: Some(serialized_sha256),
         cold_init_ms,
         batch_duration_ms,
+        rollback_volumes: Vec::new(),
+        rollback_faces: None,
     })
 }
 

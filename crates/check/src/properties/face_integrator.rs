@@ -13,7 +13,35 @@ use remus_topology::Topology;
 use remus_topology::edge::EdgeCurve;
 use remus_topology::face::{FaceId, FaceSurface};
 
+use super::PropertiesOptions;
 use crate::CheckError;
+
+mod adaptive;
+
+#[derive(Clone, Copy)]
+struct IntegrationRule<'a> {
+    order: usize,
+    adaptive: Option<&'a PropertiesOptions>,
+}
+
+impl IntegrationRule<'_> {
+    fn fixed(self) -> Result<Self, CheckError> {
+        if let Some(options) = self.adaptive {
+            let defaults = PropertiesOptions::default();
+            if options.adaptive_eps.to_bits() != defaults.adaptive_eps.to_bits()
+                || options.max_depth != defaults.max_depth
+            {
+                return Err(CheckError::IntegrationFailed(
+                    "adaptive controls unsupported for this sampled trim or freeform domain; default controls retain fixed quadrature".into(),
+                ));
+            }
+        }
+        Ok(Self {
+            order: self.order,
+            adaptive: None,
+        })
+    }
+}
 
 /// Contribution of a single face to global geometric properties.
 #[derive(Debug, Clone)]
@@ -101,6 +129,48 @@ pub fn integrate_face(
     face_id: FaceId,
     gauss_order: usize,
 ) -> Result<FaceContribution, CheckError> {
+    integrate_face_impl(
+        topo,
+        face_id,
+        IntegrationRule {
+            order: gauss_order,
+            adaptive: None,
+        },
+    )
+}
+
+/// Integrate a face with the validated numerical controls in [`PropertiesOptions`].
+///
+/// See that type for the supported adaptive domain and the distinction between
+/// quadrature convergence and sampled boundary error. All contribution components
+/// participate in convergence, even when a caller needs only area or volume.
+///
+/// # Errors
+///
+/// Returns [`CheckError::IntegrationFailed`] for invalid options, unsupported
+/// non-default adaptive controls, non-finite integrals, or exhausted depth/work.
+/// Also propagates missing topology and geometry errors.
+pub fn integrate_face_with_options(
+    topo: &Topology,
+    face_id: FaceId,
+    options: &PropertiesOptions,
+) -> Result<FaceContribution, CheckError> {
+    options.validate()?;
+    integrate_face_impl(
+        topo,
+        face_id,
+        IntegrationRule {
+            order: options.gauss_order,
+            adaptive: Some(options),
+        },
+    )
+}
+
+fn integrate_face_impl(
+    topo: &Topology,
+    face_id: FaceId,
+    rule: IntegrationRule<'_>,
+) -> Result<FaceContribution, CheckError> {
     let face = topo.face(face_id)?;
     let reversed = face.is_reversed();
     let sign = if reversed { -1.0 } else { 1.0 };
@@ -108,7 +178,7 @@ pub fn integrate_face(
     match face.surface() {
         FaceSurface::Plane { normal, .. } => {
             let effective_normal = if reversed { -*normal } else { *normal };
-            integrate_planar_face(topo, face_id, effective_normal)
+            integrate_planar_face(topo, face_id, effective_normal, rule)
         }
         FaceSurface::Cylinder(s) => {
             let full = (
@@ -118,15 +188,7 @@ pub fn integrate_face(
             let (u_range, v_range) =
                 face_uv_bounds(topo, face_id, &|p| s.project_point(p), true, false, full)?;
             let uv = build_face_uv(topo, face_id, |p| s.project_point(p), true, false, true)?;
-            Ok(integrate_with_trimming(
-                s,
-                u_range,
-                v_range,
-                gauss_order,
-                sign,
-                &uv,
-                PatchScale::ANGULAR,
-            ))
+            integrate_with_trimming(s, u_range, v_range, rule, sign, &uv, PatchScale::ANGULAR)
         }
         FaceSurface::Cone(s) => {
             // A cone's boundary extent alone under-spans a pointed face: the
@@ -145,16 +207,16 @@ pub fn integrate_face(
                 face_uv_bounds(topo, face_id, &|p| s.project_point(p), true, false, full)?;
             let mut uv = build_face_uv(topo, face_id, |p| s.project_point(p), true, false, true)?;
             uv.hole_vs = full_revolution_hole_vs(topo, face_id, s);
-            Ok(integrate_with_trimming_to_pole(
+            integrate_with_trimming_to_pole(
                 s,
                 u_range,
                 v_range,
-                gauss_order,
+                rule,
                 sign,
                 &uv,
                 PatchScale::ANGULAR,
                 Some(0.0),
-            ))
+            )
         }
         FaceSurface::Sphere(s) => {
             let mut framed = None;
@@ -333,29 +395,22 @@ pub fn integrate_face(
                         .fold(f64::NEG_INFINITY, f64::max);
                     uv.boundary.u_center = f64::midpoint(u_min, u_max);
                     uv.u_periodic = false;
-                    return Ok(integrate_parametric(
+                    return integrate_parametric(
                         s,
                         (u_min, u_max),
                         full.1,
-                        gauss_order,
+                        rule,
                         sign,
                         &UvTrim::boundary_of(&uv),
                         PatchScale::ANGULAR,
-                    ));
+                    );
                 }
             }
-            Ok(integrate_with_trimming(
-                s,
-                u_range,
-                v_range,
-                gauss_order,
-                sign,
-                &uv,
-                PatchScale::ANGULAR,
-            ))
+            integrate_with_trimming(s, u_range, v_range, rule, sign, &uv, PatchScale::ANGULAR)
         }
         FaceSurface::Torus(s) => {
-            if let Some(band) = integrate_torus_tube_band(topo, face_id, s, gauss_order, sign)? {
+            if let Some(band) = integrate_torus_tube_band(topo, face_id, s, rule.order, sign)? {
+                rule.fixed()?;
                 return Ok(band);
             }
             let full = ((0.0, std::f64::consts::TAU), (0.0, std::f64::consts::TAU));
@@ -365,17 +420,10 @@ pub fn integrate_face(
             // to be unwrapped on that axis too or a seam-crossing band lands in
             // a different branch than the range above.
             let uv = build_face_uv(topo, face_id, |p| s.project_point(p), true, true, false)?;
-            Ok(integrate_with_trimming(
-                s,
-                u_range,
-                v_range,
-                gauss_order,
-                sign,
-                &uv,
-                PatchScale::ANGULAR,
-            ))
+            integrate_with_trimming(s, u_range, v_range, rule, sign, &uv, PatchScale::ANGULAR)
         }
         FaceSurface::Nurbs(s) => {
+            let rule = rule.fixed()?;
             let full = (s.domain_u(), s.domain_v());
             let periodic_u = s.is_periodic_u();
             let periodic_v = s.is_periodic_v();
@@ -396,18 +444,18 @@ pub fn integrate_face(
             let (u_range, v_range) =
                 face_uv_bounds(topo, face_id, &project, periodic_u, periodic_v, full)?;
             let uv = build_face_uv(topo, face_id, project, periodic_u, false, false)?;
-            Ok(integrate_with_trimming(
+            integrate_with_trimming(
                 s,
                 u_range,
                 v_range,
-                gauss_order,
+                rule,
                 sign,
                 &uv,
                 PatchScale {
                     u: knot_axis_patch_scale(s.knots_u(), s.domain_u()),
                     v: knot_axis_patch_scale(s.knots_v(), s.domain_v()),
                 },
-            ))
+            )
         }
     }
 }
@@ -1325,6 +1373,7 @@ fn integrate_planar_face(
     topo: &Topology,
     face_id: FaceId,
     normal: Vec3,
+    rule: IntegrationRule<'_>,
 ) -> Result<FaceContribution, CheckError> {
     let normal = normal.normalize().map_err(|_| {
         CheckError::IntegrationFailed("planar face has a zero or non-finite normal".into())
@@ -1337,6 +1386,7 @@ fn integrate_planar_face(
     if let Some(contrib) = integrate_planar_face_exact(topo, face_id, normal)? {
         return Ok(contrib);
     }
+    rule.fixed()?;
     let polygon = crate::util::face_polygon(topo, face_id)?;
     let mut contrib = integrate_planar_polygon(&polygon, normal);
 
@@ -2726,12 +2776,17 @@ fn integrate_parametric<S: ParametricSurface>(
     surface: &S,
     u_range: (f64, f64),
     v_range: (f64, f64),
-    gauss_order: usize,
+    rule: IntegrationRule<'_>,
     sign: f64,
     trim: &UvTrim<'_>,
     scale: PatchScale,
-) -> FaceContribution {
-    let gauss_pts = gauss_legendre_points(gauss_order);
+) -> Result<FaceContribution, CheckError> {
+    if trim.splits_domain() {
+        rule.fixed()?;
+    } else if let Some(options) = rule.adaptive {
+        return adaptive::integrate(surface, u_range, v_range, sign, scale, options);
+    }
+    let gauss_pts = gauss_legendre_points(rule.order);
     let nu = patch_count(u_range.1 - u_range.0, scale.u);
     let du_patch = (u_range.1 - u_range.0) / nu as f64;
     let u_scale = du_patch / 2.0;
@@ -2777,7 +2832,7 @@ fn integrate_parametric<S: ParametricSurface>(
                 }
             }
         }
-        return acc.finish(sign);
+        return Ok(acc.finish(sign));
     }
 
     let nv = patch_count(v_range.1 - v_range.0, scale.v);
@@ -2805,7 +2860,7 @@ fn integrate_parametric<S: ParametricSurface>(
             }
         }
     }
-    acc.finish(sign)
+    Ok(acc.finish(sign))
 }
 
 /// Choose the UV domain a face's quadrature runs over, and how its boundary
@@ -2824,21 +2879,12 @@ fn integrate_with_trimming<S: ParametricSurface>(
     surface: &S,
     u_range: (f64, f64),
     v_range: (f64, f64),
-    gauss_order: usize,
+    rule: IntegrationRule<'_>,
     sign: f64,
     uv: &FaceUv,
     scale: PatchScale,
-) -> FaceContribution {
-    integrate_with_trimming_to_pole(
-        surface,
-        u_range,
-        v_range,
-        gauss_order,
-        sign,
-        uv,
-        scale,
-        None,
-    )
+) -> Result<FaceContribution, CheckError> {
+    integrate_with_trimming_to_pole(surface, u_range, v_range, rule, sign, uv, scale, None)
 }
 
 /// [`integrate_with_trimming`] with an explicit pole for the single-rim
@@ -2850,23 +2896,15 @@ fn integrate_with_trimming_to_pole<S: ParametricSurface>(
     surface: &S,
     u_range: (f64, f64),
     v_range: (f64, f64),
-    gauss_order: usize,
+    rule: IntegrationRule<'_>,
     sign: f64,
     uv: &FaceUv,
     scale: PatchScale,
     apex_v: Option<f64>,
-) -> FaceContribution {
+) -> Result<FaceContribution, CheckError> {
     let holes_only = UvTrim::holes_of(uv);
     if uv.boundary.points.len() < 3 {
-        return integrate_parametric(
-            surface,
-            u_range,
-            v_range,
-            gauss_order,
-            sign,
-            &holes_only,
-            scale,
-        );
+        return integrate_parametric(surface, u_range, v_range, rule, sign, &holes_only, scale);
     }
 
     let u_min = uv
@@ -2918,7 +2956,7 @@ fn integrate_with_trimming_to_pole<S: ParametricSurface>(
             surface,
             (u_min, u_min + tau),
             v_dom,
-            gauss_order,
+            rule,
             sign,
             &UvTrim::pockets_of(uv),
             scale,
@@ -2930,7 +2968,7 @@ fn integrate_with_trimming_to_pole<S: ParametricSurface>(
             surface,
             (u_min, u_min + tau),
             (v_min, v_max),
-            gauss_order,
+            rule,
             sign,
             &holes_only,
             scale,
@@ -2938,21 +2976,13 @@ fn integrate_with_trimming_to_pole<S: ParametricSurface>(
     } else if uv.boundary.area() <= DEGENERATE_UV_AREA {
         // Collapsed polygon (e.g. a closed torus whose seam projects to a
         // point): trust the analytic full-domain range from `face_uv_bounds`.
-        integrate_parametric(
-            surface,
-            u_range,
-            v_range,
-            gauss_order,
-            sign,
-            &holes_only,
-            scale,
-        )
+        integrate_parametric(surface, u_range, v_range, rule, sign, &holes_only, scale)
     } else {
         integrate_parametric(
             surface,
             u_range,
             v_range,
-            gauss_order,
+            rule,
             sign,
             &UvTrim::boundary_of(uv),
             scale,

@@ -3855,10 +3855,15 @@ mod batch_contract_tests {
         // disclose a mesh fallback. On the tangent-boss pair they must refuse
         // with the typed exact-only code and leave the operands untouched;
         // `booleanWithQuality` remains the opt-in, disclosed path.
+        // `fuseAll` joins this pin: it returns a bare handle and runs
+        // exact-only as well. (`compoundCut` is pinned separately below on a
+        // cylinder-cylinder tangent Cut, since the tangent-boss Cut succeeds
+        // exactly.)
         for op in [
             r#"{"op":"fuse","args":{"solidA":0,"solidB":1}}"#,
             r#"{"op":"fuseWithOptions","args":{"solidA":0,"solidB":1,"unifyFaces":false}}"#,
             r#"{"op":"fuseWithEvolution","args":{"solidA":0,"solidB":1}}"#,
+            r#"{"op":"fuseAll","args":{"solids":[0,1]}}"#,
         ] {
             let mut kernel = BrepKernel::new();
             let response = parse(&kernel.execute_batch_v2(&format!(
@@ -3883,6 +3888,40 @@ mod batch_contract_tests {
             assert_eq!(response[4]["ok"], 19_200.0, "{op}: refusal must roll back");
             assert_eq!(response[5]["ok"]["quality"], "approximate", "{op}");
         }
+    }
+
+    #[test]
+    fn compound_cut_batch_refuses_instead_of_silently_approximating() {
+        // Contract-audit gap pin: `compoundCut` returns a bare handle, so it
+        // runs exact-only like every other bare-handle Boolean. Two cylinders
+        // near-tangent (centers 9.999 apart, radii 5+5) need the mesh fallback
+        // for Cut — verified natively — so batch must refuse typed with
+        // rollback, while `booleanWithQuality` without `exactOnly` discloses
+        // the approximation on the same pair.
+        let mut kernel = BrepKernel::new();
+        let response = parse(&kernel.execute_batch_v2(
+            r#"[
+                {"op":"makeCylinder","args":{"radius":5,"height":10}},
+                {"op":"makeCylinder","args":{"radius":5,"height":10}},
+                {"op":"transform","args":{"solid":1,"matrix":[1,0,0,9.999,0,1,0,0,0,0,1,0,0,0,0,1]}},
+                {"op":"compoundCut","args":{"target":0,"tools":[1]}},
+                {"op":"booleanWithQuality","args":{"operation":"cut","solidA":0,"solidB":1}}
+            ]"#,
+        ));
+        assert_eq!(
+            response[3]["error"]["code"], "operation_failed",
+            "compoundCut must refuse: {response}"
+        );
+        assert_eq!(response[3]["error"]["category"], "quality_refused");
+        assert_eq!(
+            response[3]["error"]["details"]["kernelCode"],
+            "exact_only_unattainable"
+        );
+        assert_eq!(
+            response[4]["ok"]["quality"], "approximate",
+            "same pair discloses fallback via opt-in: {response}"
+        );
+        assert_eq!(response[4]["ok"]["deflection"], 0.1);
     }
 
     #[test]

@@ -311,6 +311,69 @@ const [batchPairs] = JSON.parse(
 assert.equal(batchPairs.ok.length, 3);
 console.log('ok - opposing planar pairs and moveFaces direct edit');
 
+// Direct body-edit transaction coverage. The native moveFaces/extrude
+// implementations own rollback; the WASM bindings must not add another full
+// topology snapshot around them. Exercise a refused edit, then prove the
+// source and its checkpoint remain usable. The
+// successful paths also prove exact volume and source-handle preservation.
+{
+  const editKernel = new BrepKernel();
+  const source = editKernel.makeBox(10, 10, 10);
+  const sourceFace = Array.from(editKernel.getSolidFaces(source)).find((face) => {
+    if (editKernel.getSurfaceType(face) !== 'plane') return false;
+    const normal = editKernel.getFaceNormal(face);
+    return Math.abs(normal[2] - 1) < 1e-6;
+  });
+  assert.ok(sourceFace !== undefined, 'body-edit transaction fixture needs a +Z face');
+  const checkpoint = editKernel.checkpoint();
+  const sourceVolume = editKernel.volume(source, DEFLECTION);
+  const sourceBytes = editKernel.serializeSolids(Uint32Array.of(source));
+  const assertSourceUnchanged = (label) => {
+    assert.deepEqual(
+      Array.from(editKernel.serializeSolids(Uint32Array.of(source))),
+      Array.from(sourceBytes),
+      `${label}: source arena document changed`,
+    );
+  };
+
+  // This distance collapses the source body. The direct WASM call must
+  // preserve the source regardless of which native guard refuses the move.
+  assert.throws(
+    () => editKernel.moveFaces(source, new Uint32Array([sourceFace]), -10),
+    'a collapsing move must fail without changing the source',
+  );
+  assert.ok(Math.abs(editKernel.volume(source, DEFLECTION) - sourceVolume) < 1e-6);
+  assertSourceUnchanged('failed move');
+  assert.equal(editKernel.checkpointCount(), 1);
+  editKernel.restore(checkpoint);
+  assert.ok(Math.abs(editKernel.volume(source, DEFLECTION) - sourceVolume) < 1e-6);
+  assertSourceUnchanged('checkpoint restore');
+
+  const moved = editKernel.moveFaces(source, new Uint32Array([sourceFace]), 2);
+  assert.ok(Math.abs(editKernel.volume(moved, DEFLECTION) - 1200) < 1e-6);
+  assert.ok(Math.abs(editKernel.volume(source, DEFLECTION) - sourceVolume) < 1e-6);
+  assertSourceUnchanged('successful move');
+
+  const extruded = editKernel.extrude(sourceFace, 0, 0, 1, 5);
+  assert.ok(Math.abs(editKernel.volume(extruded, DEFLECTION) - 500) < 1e-6);
+  assert.ok(Math.abs(editKernel.volume(source, DEFLECTION) - sourceVolume) < 1e-6);
+  assertSourceUnchanged('successful extrude');
+
+  // Keep the direct extrude error contract covered as well. This invalid
+  // distance is rejected before geometry work, while the native transaction
+  // remains the owner of every later extrusion rollback.
+  assert.throws(() => editKernel.extrude(sourceFace, 0, 0, 1, 0));
+  assertSourceUnchanged('failed extrude input');
+
+  editKernel.restore(checkpoint);
+  assert.ok(Math.abs(editKernel.volume(source, DEFLECTION) - sourceVolume) < 1e-6);
+  assertSourceUnchanged('final checkpoint restore');
+  assert.throws(() => editKernel.volume(moved, DEFLECTION));
+  assert.throws(() => editKernel.volume(extruded, DEFLECTION));
+  editKernel.free();
+  console.log('ok - direct body-edit rollback, checkpoint, exact volume, and source preservation');
+}
+
 // Detailed validation must preserve every operations-layer diagnostic while
 // leaving the existing numeric validator unchanged.
 const validation = JSON.parse(kernel.validateSolidDetailed(boxId));
