@@ -949,64 +949,83 @@ pub fn check_same_parameter_strict(
         ));
     }
     let (oriented_start, oriented_end) = if forward { (start, end) } else { (end, start) };
-    let proof = match (pcurve.curve(), &surface, edge.curve()) {
-        (
-            remus_math::curves2d::Curve2D::Line(line),
-            crate::face::FaceSurface::Plane { normal, d },
-            crate::edge::EdgeCurve::Line,
-        ) => Some(same_parameter_proof::plane_line(
-            line,
-            *normal,
-            *d,
-            p0,
-            p1,
-            oriented_start,
-            oriented_end,
-        )),
-        (
-            remus_math::curves2d::Curve2D::Circle(circle_2d),
-            crate::face::FaceSurface::Plane { normal, d },
-            crate::edge::EdgeCurve::Circle(circle_3d),
-        ) => Some(same_parameter_proof::plane_circle(
-            circle_2d,
-            *normal,
-            *d,
-            circle_3d,
-            same_parameter_proof::CurveUse {
-                p0,
-                p1,
-                edge_domain: domain,
-                forward,
+    let proof = match edge.curve() {
+        crate::edge::EdgeCurve::Line => match &surface {
+            crate::face::FaceSurface::Plane { normal, d } => match pcurve.curve() {
+                remus_math::curves2d::Curve2D::Line(line) => {
+                    Some(same_parameter_proof::plane_line(
+                        line,
+                        *normal,
+                        *d,
+                        p0,
+                        p1,
+                        oriented_start,
+                        oriented_end,
+                    ))
+                }
+                _ => None,
             },
-        )),
-        (
-            remus_math::curves2d::Curve2D::Line(line),
-            crate::face::FaceSurface::Nurbs(nurbs),
-            crate::edge::EdgeCurve::Line,
-        ) => Some(same_parameter_proof::affine_nurbs_line(
-            nurbs,
-            line,
-            p0,
-            p1,
-            oriented_start,
-            oriented_end,
-        )),
-        (
-            remus_math::curves2d::Curve2D::Nurbs(nurbs),
-            crate::face::FaceSurface::Sphere(sphere),
-            crate::edge::EdgeCurve::Circle(circle),
-        ) => Some(same_parameter_proof::sphere_circle_nurbs(
-            sphere,
-            nurbs,
-            circle,
-            same_parameter_proof::CurveUse {
-                p0,
-                p1,
-                edge_domain: domain,
-                forward,
+            crate::face::FaceSurface::Nurbs(nurbs) => match pcurve.curve() {
+                remus_math::curves2d::Curve2D::Line(line) => {
+                    Some(same_parameter_proof::affine_nurbs_line(
+                        nurbs,
+                        line,
+                        p0,
+                        p1,
+                        oriented_start,
+                        oriented_end,
+                    ))
+                }
+                _ => None,
             },
-        )),
-        _ => None,
+            crate::face::FaceSurface::Cylinder(_)
+            | crate::face::FaceSurface::Cone(_)
+            | crate::face::FaceSurface::Sphere(_)
+            | crate::face::FaceSurface::Torus(_) => None,
+        },
+        crate::edge::EdgeCurve::Circle(circle) => match &surface {
+            crate::face::FaceSurface::Plane { normal, d } => match pcurve.curve() {
+                remus_math::curves2d::Curve2D::Circle(circle_2d) => {
+                    Some(same_parameter_proof::plane_circle(
+                        circle_2d,
+                        *normal,
+                        *d,
+                        circle,
+                        same_parameter_proof::CurveUse {
+                            p0,
+                            p1,
+                            edge_domain: domain,
+                            forward,
+                        },
+                    ))
+                }
+                _ => None,
+            },
+            crate::face::FaceSurface::Sphere(sphere) => match pcurve.curve() {
+                remus_math::curves2d::Curve2D::Nurbs(nurbs) => {
+                    Some(same_parameter_proof::sphere_circle_nurbs(
+                        sphere,
+                        nurbs,
+                        circle,
+                        same_parameter_proof::CurveUse {
+                            p0,
+                            p1,
+                            edge_domain: domain,
+                            forward,
+                        },
+                    ))
+                }
+                _ => None,
+            },
+            crate::face::FaceSurface::Nurbs(_)
+            | crate::face::FaceSurface::Cylinder(_)
+            | crate::face::FaceSurface::Cone(_)
+            | crate::face::FaceSurface::Torus(_) => None,
+        },
+        crate::edge::EdgeCurve::NurbsCurve(_)
+        | crate::edge::EdgeCurve::Ellipse(_)
+        | crate::edge::EdgeCurve::Hyperbola(_)
+        | crate::edge::EdgeCurve::Parabola(_) => None,
     };
     if let Some(proof) = proof {
         match proof {
