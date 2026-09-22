@@ -15,6 +15,73 @@ use crate::surfaces::{ConicalSurface, CylindricalSurface, SphericalSurface, Toro
 use crate::tolerance::Tolerance;
 use crate::vec::{Point3, Vec3};
 
+/// Tight arithmetic envelope for identities assembled from normalized carrier
+/// axes. A wider band is left unresolved by qualified callers; it is never
+/// promoted to a different exact section family.
+pub(crate) const EXACT_SECTION_IDENTITY_EPS: f64 = 4.0 * f64::EPSILON;
+
+/// Roundoff envelope used to make a deterministic orientation choice after an
+/// exact special-section identity has already been proven.
+const EXACT_SECTION_ANGULAR_EPS: f64 = 64.0 * f64::EPSILON;
+
+/// Normalize a finite plane equation without changing the represented plane.
+///
+/// Public plane operands are intentionally accepted up to a non-zero scalar
+/// multiple. Every closed-form routine below assumes a unit normal, so this is
+/// the single boundary at which that invariant is established.
+pub(crate) fn normalize_plane_equation(normal: Vec3, d: f64) -> Result<(Vec3, f64), MathError> {
+    let finite_normal = normal.x().is_finite() && normal.y().is_finite() && normal.z().is_finite();
+    if !finite_normal || !d.is_finite() {
+        return Err(MathError::ParameterOutOfRange {
+            value: if d.is_finite() { normal.length() } else { d },
+            min: -f64::MAX,
+            max: f64::MAX,
+        });
+    }
+
+    // Analytic carriers and transformed placement axes are already normalized
+    // to floating-point roundoff. Preserve their components verbatim so an
+    // identity such as `plane_normal == carrier_axis` remains provable after
+    // crossing this API boundary.
+    let original_length = normal.length();
+    if original_length.is_finite() && (original_length - 1.0).abs() <= 8.0 * f64::EPSILON {
+        return Ok((normal, d));
+    }
+
+    // Scale first so a finite but very large normal does not overflow its
+    // squared length. Dividing `d` in the same two stages preserves the plane.
+    let scale = normal.x().abs().max(normal.y().abs()).max(normal.z().abs());
+    if scale == 0.0 {
+        return Err(MathError::ZeroVector);
+    }
+    let scaled = Vec3::new(normal.x() / scale, normal.y() / scale, normal.z() / scale);
+    let scaled_length = scaled.length();
+    if !scaled_length.is_finite() || scaled_length < f64::MIN_POSITIVE {
+        return Err(MathError::ZeroVector);
+    }
+    let unit = scaled * (1.0 / scaled_length);
+    let unit_d = (d / scale) / scaled_length;
+    if !unit_d.is_finite() {
+        return Err(MathError::ParameterOutOfRange {
+            value: unit_d,
+            min: -f64::MAX,
+            max: f64::MAX,
+        });
+    }
+    Ok((unit, unit_d))
+}
+
+fn normalize_analytic_plane(
+    surface: AnalyticSurface<'_>,
+) -> Result<AnalyticSurface<'_>, MathError> {
+    if let AnalyticSurface::Plane { normal, d } = surface {
+        let (normal, d) = normalize_plane_equation(normal, d)?;
+        Ok(AnalyticSurface::Plane { normal, d })
+    } else {
+        Ok(surface)
+    }
+}
+
 /// Exact curve type resulting from plane-analytic surface intersection.
 #[derive(Debug, Clone)]
 pub enum ExactIntersectionCurve {
@@ -30,16 +97,36 @@ pub enum ExactIntersectionCurve {
         /// Unit direction along the line.
         direction: Vec3,
     },
-    /// Fallback to sampled point chain (torus, degenerate cases).
+    /// Fallback to sampled point chain (general torus and degenerate cases).
     Points(Vec<Point3>),
+}
+
+/// Contact classification for a proven exact plane-torus special section.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ExactSectionContact {
+    /// The plane crosses the torus along every returned circle.
+    Transversal,
+    /// The plane is tangent to the torus along the returned circle.
+    Tangential,
+}
+
+/// A plane-torus configuration whose complete intersection is known in
+/// closed form.
+pub(crate) struct ExactPlaneTorusSection {
+    pub(crate) circles: Vec<Circle3D>,
+    pub(crate) contact: ExactSectionContact,
 }
 
 /// Compute exact intersection curves between a plane and an analytic surface.
 ///
-/// Returns exact `Circle3D` or `Ellipse3D` where possible, falling back to
-/// sampled points for complex cases (torus).
+/// Returns exact circles, ellipses, or lines for the established legacy
+/// surface families. Plane-torus intersections remain sampled here even for
+/// special sections: boolean trimming currently depends on their sampled-chain
+/// representation. Call [`crate::intersect::intersect_surfaces`] for qualified
+/// exact axis-normal and meridian ring-torus sections.
 ///
-/// The plane is defined by `dot(normal, p) = d`.
+/// The plane is defined by `dot(normal, p) = d`. Any finite non-zero scaling
+/// of both `normal` and `d` is accepted and normalized before dispatch.
 ///
 /// # Errors
 ///
@@ -68,12 +155,13 @@ pub fn exact_plane_analytic_bounded(
     plane_d: f64,
     cone_v_max: Option<f64>,
 ) -> Result<Vec<ExactIntersectionCurve>, MathError> {
+    let (plane_normal, plane_d) = normalize_plane_equation(plane_normal, plane_d)?;
+    let surface = normalize_analytic_plane(surface)?;
     match surface {
         AnalyticSurface::Cylinder(cyl) => exact_plane_cylinder(cyl, plane_normal, plane_d),
         AnalyticSurface::Sphere(sphere) => exact_plane_sphere(sphere, plane_normal, plane_d),
         AnalyticSurface::Cone(cone) => exact_plane_cone(cone, plane_normal, plane_d, cone_v_max),
         AnalyticSurface::Torus(torus) => {
-            // Torus intersections are degree-4 — fall back to sampling.
             let chains = sample_plane_torus(torus, plane_normal, plane_d)?;
             Ok(chains
                 .into_iter()
@@ -97,7 +185,7 @@ pub fn exact_plane_analytic_bounded(
 ///
 /// - Plane perpendicular to axis → `Circle3D`
 /// - Plane oblique to axis → `Ellipse3D`
-/// - Plane parallel to axis → `Points` fallback (0 or 2 lines)
+/// - Plane parallel to axis → legacy sampled-point chains
 fn exact_plane_cylinder(
     cyl: &CylindricalSurface,
     normal: Vec3,
@@ -108,8 +196,6 @@ fn exact_plane_cylinder(
     let r = cyl.radius();
 
     if cos_theta < 1e-10 {
-        // Plane parallel to cylinder axis → 0 or 2 line segments.
-        // Fall back to sampled points.
         let chains = sample_plane_cylinder(cyl, normal, d)?;
         return Ok(chains
             .into_iter()
@@ -162,6 +248,118 @@ fn exact_plane_cylinder(
     }
 }
 
+/// Recognize the two complete, closed-form plane sections of a ring torus.
+///
+/// - A plane normal to the torus axis produces zero, one tangent, or two
+///   concentric circles.
+/// - A meridian plane containing the torus axis produces the two tube
+///   circles.
+///
+/// `None` means the configuration is outside this deliberately bounded
+/// support and must use the general degree-four fallback. `Some` with no
+/// circles is a proven disjoint axis-normal section. Horn and spindle tori
+/// are left to the fallback because their degenerate/overlapping special
+/// sections need a richer result model than disjoint ring-torus circles.
+pub(crate) fn exact_plane_torus_special(
+    torus: &ToroidalSurface,
+    normal: Vec3,
+    d: f64,
+) -> Result<Option<ExactPlaneTorusSection>, MathError> {
+    let major = torus.major_radius();
+    let minor = torus.minor_radius();
+    if major <= minor {
+        return Ok(None);
+    }
+
+    let axis = torus.z_axis();
+    let center = torus.center();
+    let n_dot_axis = normal.dot(axis);
+    let center_signed = dot_np(normal, center) - d;
+    let linear_eps =
+        plane_section_roundoff(normal, d, center, major + minor) / n_dot_axis.abs().max(1.0);
+
+    if normal.cross(axis).length() <= EXACT_SECTION_IDENTITY_EPS {
+        let height = -center_signed / n_dot_axis;
+        let abs_height = height.abs();
+        if !height.is_finite() {
+            return Ok(None);
+        }
+
+        // Topology may only collapse to one tangent circle when the computed
+        // height is exactly the minor radius. A placement-sized roundoff band
+        // must never merge a genuine pair of nearby circles. Values whose
+        // inside/outside sign is not resolved by the arithmetic bound remain
+        // explicitly unsupported.
+        let gap = minor - abs_height;
+        let local_tangent_eps = 8.0 * f64::EPSILON * minor.max(f64::MIN_POSITIVE);
+        if abs_height.to_bits() == minor.to_bits() || gap.abs() <= local_tangent_eps {
+            let section_center = center + axis * height;
+            let circle = Circle3D::new_with_ref(section_center, axis, major, torus.x_axis())?;
+            return Ok(Some(ExactPlaneTorusSection {
+                circles: vec![circle],
+                contact: ExactSectionContact::Tangential,
+            }));
+        }
+        if gap.abs() <= linear_eps {
+            return Ok(None);
+        }
+        if gap < 0.0 {
+            return Ok(Some(ExactPlaneTorusSection {
+                circles: vec![],
+                contact: ExactSectionContact::Transversal,
+            }));
+        }
+
+        let section_center = center + axis * height;
+        let radial_offset = (minor.mul_add(minor, -(height * height))).sqrt();
+        if !radial_offset.is_finite() || radial_offset == 0.0 {
+            return Ok(None);
+        }
+        let inner =
+            Circle3D::new_with_ref(section_center, axis, major - radial_offset, torus.x_axis())?;
+        let outer =
+            Circle3D::new_with_ref(section_center, axis, major + radial_offset, torus.x_axis())?;
+        return Ok(Some(ExactPlaneTorusSection {
+            circles: vec![inner, outer],
+            contact: ExactSectionContact::Transversal,
+        }));
+    }
+
+    if n_dot_axis.abs() <= EXACT_SECTION_IDENTITY_EPS && center_signed == 0.0 {
+        let mut radial = normal.cross(axis).normalize()?;
+        // Fix branch ordering against the torus placement rather than the
+        // arbitrary sign of the plane equation.
+        let x_component = radial.dot(torus.x_axis());
+        let y_component = radial.dot(torus.y_axis());
+        if x_component < -EXACT_SECTION_ANGULAR_EPS
+            || (x_component.abs() <= EXACT_SECTION_ANGULAR_EPS && y_component < 0.0)
+        {
+            radial = -radial;
+        }
+        let positive = Circle3D::new_with_ref(center + radial * major, normal, minor, axis)?;
+        let negative = Circle3D::new_with_ref(center - radial * major, normal, minor, axis)?;
+        return Ok(Some(ExactPlaneTorusSection {
+            circles: vec![positive, negative],
+            contact: ExactSectionContact::Transversal,
+        }));
+    }
+
+    Ok(None)
+}
+
+fn plane_section_roundoff(normal: Vec3, d: f64, point: Point3, feature_size: f64) -> f64 {
+    let coordinate_scale = normal
+        .x()
+        .abs()
+        .mul_add(point.x().abs(), normal.y().abs() * point.y().abs())
+        + normal.z().abs() * point.z().abs();
+    // Two fused multiply-adds plus the final subtraction need only a small
+    // first-order envelope. Summing operand magnitudes retains cancellation
+    // safety without the old 64-ulp placement allowance that could erase
+    // resolvable feature topology after a large translation.
+    8.0 * f64::EPSILON * (d.abs() + coordinate_scale + feature_size.abs()).max(f64::MIN_POSITIVE)
+}
+
 /// Exact plane-sphere intersection.
 ///
 /// Always produces a `Circle3D` (or empty if no intersection).
@@ -202,23 +400,54 @@ fn exact_plane_cone(
     d: f64,
     v_max_hint: Option<f64>,
 ) -> Result<Vec<ExactIntersectionCurve>, MathError> {
+    if let Some(curves) = exact_plane_cone_special(cone, normal, d)? {
+        return Ok(curves);
+    }
+
+    // Parabola / hyperbola, an apex-only degeneracy, and the deliberately
+    // unresolved near-parabolic margin stay on the bounded sampled path.
+    let chains = sample_plane_cone(cone, normal, d, v_max_hint)?;
+    Ok(chains
+        .into_iter()
+        .map(ExactIntersectionCurve::Points)
+        .collect())
+}
+
+/// Return the complete exact circle/ellipse section of a single-nappe cone.
+///
+/// `Some([])` is reserved for a proven plane wholly outside the real nappe.
+/// `None` covers unbounded parabola/hyperbola sections, the apex degeneracy,
+/// the near-parabolic stability margin, and any non-finite construction; those
+/// cases must remain explicitly unresolved in the qualified API.
+pub(crate) fn exact_plane_cone_special(
+    cone: &ConicalSurface,
+    normal: Vec3,
+    d: f64,
+) -> Result<Option<Vec<ExactIntersectionCurve>>, MathError> {
     let axis = cone.axis();
-    let cos_theta = normal.dot(axis).abs();
     let half_angle = cone.half_angle();
 
-    if cos_theta > 1.0 - 1e-10 {
+    if normal.cross(axis).length() <= EXACT_SECTION_IDENTITY_EPS {
         // Plane perpendicular to axis → Circle
         // Find where axis meets the plane
         let n_dot_axis = normal.dot(axis);
         let n_dot_apex = dot_np(normal, cone.apex());
-        let t = (d - n_dot_apex) / n_dot_axis;
+        let axial_offset = d - n_dot_apex;
+        let linear_eps = plane_section_roundoff(normal, d, cone.apex(), 0.0);
+        if axial_offset.abs() <= linear_eps {
+            return Ok(None);
+        }
+        let t = axial_offset / n_dot_axis;
 
         // t is the signed distance from apex to plane along the axis.
         // The real cone is a single nappe; the perpendicular-plane section is a
-        // circle whose radius follows from the axial offset |t|.
-        // |t| ≈ 0 means the plane passes through the apex → degenerate point.
-        if t.abs() < 1e-10 {
-            return Ok(vec![]);
+        // circle whose radius follows from the positive axial offset `t`.
+        // `t = 0` means the plane passes through the apex → degenerate point.
+        if !t.is_finite() {
+            return Ok(None);
+        }
+        if t < 0.0 {
+            return Ok(Some(vec![]));
         }
 
         let center = Point3::new(
@@ -229,13 +458,13 @@ fn exact_plane_cone(
         // half_angle is the angle from the radial plane to the surface.
         // Axial distance t = v * sin(half_angle), so v = t / sin(half_angle).
         // Radius at v = v * cos(half_angle) = t * cos(half_angle) / sin(half_angle).
-        let circle_r = t.abs() * half_angle.cos() / half_angle.sin();
-        if circle_r < 1e-15 {
-            return Ok(vec![]);
+        let circle_r = t * half_angle.cos() / half_angle.sin();
+        if !circle_r.is_finite() || circle_r <= 0.0 {
+            return Ok(None);
         }
 
         let circle = Circle3D::new(center, normal, circle_r)?;
-        return Ok(vec![ExactIntersectionCurve::Circle(circle)]);
+        return Ok(Some(vec![ExactIntersectionCurve::Circle(circle)]));
     }
 
     // Oblique plane. Classify the conic in the plane-aligned frame.
@@ -263,18 +492,15 @@ fn exact_plane_cone(
     );
     let m_len = m.length();
     if m_len < 1e-12 {
-        // Axis parallel to normal — handled by the perpendicular branch above;
-        // fall back to sampling for safety.
-        let chains = sample_plane_cone(cone, normal, d, v_max_hint)?;
-        return Ok(chains
-            .into_iter()
-            .map(ExactIntersectionCurve::Points)
-            .collect());
+        return Ok(None);
     }
     let e1 = m * (1.0 / m_len);
     let e2 = normal.cross(e1);
     let apex = cone.apex();
     let e = d - dot_np(normal, apex);
+    if e.abs() <= plane_section_roundoff(normal, d, apex, 0.0) {
+        return Ok(None);
+    }
 
     // Ellipse → closed form. A = p²−k < 0 with a margin to keep the
     // near-parabolic regime on the robust sampled path.
@@ -285,20 +511,21 @@ fn exact_plane_cone(
         // plane is offset to the far side of the apex from the cone's opening —
         // the section lies entirely on the phantom nappe, so there is no real
         // curve (RHS below is positive regardless of sign, so it can't catch this).
-        if e * c < 0.0 {
-            return Ok(vec![]);
+        let nappe_side = e * c;
+        if nappe_side < 0.0 {
+            return Ok(Some(vec![]));
         }
         // |A|(s − s_c)² + k·t² = RHS, with s_c = ecp/|A| and
         // RHS = e²·k·(1−k)/|A| (always > 0 for a real ellipse).
         let s_c = e * c * p / abs_a;
         let rhs = e * e * k * (1.0 - k) / abs_a;
-        if rhs <= 0.0 {
-            return Ok(vec![]);
+        if !rhs.is_finite() || rhs <= 0.0 {
+            return Ok(None);
         }
         let semi_s = (rhs / abs_a).sqrt(); // extent along e1
         let semi_t = (rhs / k).sqrt(); // extent along e2
-        if semi_s < 1e-12 || semi_t < 1e-12 {
-            return Ok(vec![]);
+        if !semi_s.is_finite() || !semi_t.is_finite() || semi_s <= 0.0 || semi_t <= 0.0 {
+            return Ok(None);
         }
         let center = apex + normal * e + e1 * s_c;
         let (semi_major, semi_minor, u_axis, v_axis) = if semi_s >= semi_t {
@@ -307,16 +534,10 @@ fn exact_plane_cone(
             (semi_t, semi_s, e2, e1)
         };
         let ellipse = Ellipse3D::with_axes(center, normal, semi_major, semi_minor, u_axis, v_axis)?;
-        return Ok(vec![ExactIntersectionCurve::Ellipse(ellipse)]);
+        return Ok(Some(vec![ExactIntersectionCurve::Ellipse(ellipse)]));
     }
 
-    // Parabola / hyperbola (and the near-parabolic ellipse margin): the section
-    // is unbounded, so emit bounded, branch-separated sample chains.
-    let chains = sample_plane_cone(cone, normal, d, v_max_hint)?;
-    Ok(chains
-        .into_iter()
-        .map(ExactIntersectionCurve::Points)
-        .collect())
+    Ok(None)
 }
 
 /// Reference to an analytic surface for intersection dispatch.
@@ -1492,6 +1713,8 @@ pub fn intersect_analytic_analytic_bounded(
     v_range_hint_a: Option<(f64, f64)>,
     v_range_hint_b: Option<(f64, f64)>,
 ) -> Result<Vec<IntersectionCurve>, MathError> {
+    let a = normalize_analytic_plane(a)?;
+    let b = normalize_analytic_plane(b)?;
     // Try algebraic specialization for known surface pairs before falling
     // back to the general marching approach.
     if let Some(result) = try_algebraic_intersection(&a, &b, v_range_hint_a, v_range_hint_b)? {
