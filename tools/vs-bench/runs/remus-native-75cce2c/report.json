@@ -1,0 +1,483 @@
+{
+  "schema_version": 1,
+  "run_id": "remus-native-qualification-75cce2c-1789977141",
+  "repetitions": 2,
+  "harness_sha": "75cce2c9cfdb2c6f3b185c00045f75dc792d91b3",
+  "manifest_sha256": "779fcc7fc7488b9f1a05d0361aec94acc3c2d5cf44e81729e670b58bc24c3186",
+  "passed": true,
+  "rows": [
+    {
+      "scenario": "box-cut-contained-cavity",
+      "kernel": "remus-native@75cce2c9cfdb2c6f3b185c00045f75dc792d91b3",
+      "oracle": "closed-form: outer-minus-cavity volume 8 - 1, whole-boundary area 24 + 6",
+      "diagnostic": null,
+      "defect_repro": null,
+      "quality_requirement": {
+        "representation": "exact",
+        "deflection": 0.01,
+        "tolerance_model": "linear=1e-7;angular=1e-12",
+        "error_budget": 0.0
+      },
+      "approximation": null,
+      "repairs": [],
+      "outcomes": {
+        "correct_success": 0,
+        "crash": 0,
+        "disclosed_approximate_success": 0,
+        "exact_success": 1,
+        "hang_or_budget_overrun": 0,
+        "invalid_success": 0,
+        "nondeterminism": 0,
+        "silent_wrong": 0,
+        "typed_refusal": 0,
+        "untyped_error": 0,
+        "verified_repair_success": 0
+      },
+      "metrics": {
+        "browser": {
+          "module_size_brotli": null,
+          "module_size_gzip": null,
+          "module_size_raw": null,
+          "native_wasm_agreement": null,
+          "wasm_cold_init": null
+        },
+        "concurrency": {
+          "thread_scaling_efficiency": null
+        },
+        "geometry_quality": {
+          "area_error": 0.0,
+          "centroid_error": null,
+          "inertia_error": null,
+          "tessellation_watertight": true,
+          "volume_error": 1.2688263138573218e-15
+        },
+        "history": {
+          "evolution_completeness": 1.0,
+          "persistent_ref_survival": null
+        },
+        "interchange": {
+          "assembly_metadata_fidelity": null,
+          "import_validity": null,
+          "post_import_operation_success": null,
+          "round_trip_geometry_fidelity": null
+        },
+        "resources": {
+          "cancellation_latency": null,
+          "entity_growth": null,
+          "peak_memory": null
+        }
+      },
+      "gates": {
+        "approximation_disclosed": true,
+        "defect_reproduction": true,
+        "deterministic": true,
+        "evolution_explicit": true,
+        "native_wasm_agreement": true,
+        "no_crash_or_hang": true,
+        "no_silent_wrong": true,
+        "no_untyped_error": true,
+        "quality_label_consistent": true,
+        "quality_requirement": true,
+        "repair_disclosed_verified": true,
+        "reproducible_identity": true,
+        "typed_non_success": true,
+        "valid_success": true
+      }
+    },
+    {
+      "scenario": "box-cut-identical-empty",
+      "kernel": "remus-native@75cce2c9cfdb2c6f3b185c00045f75dc792d91b3",
+      "oracle": "algebraic empty set: A - A = {}; typed EmptyResult only",
+      "diagnostic": "EmptyResult: Cut of identical solids",
+      "defect_repro": null,
+      "quality_requirement": {
+        "representation": "exact",
+        "deflection": 0.01,
+        "tolerance_model": "linear=1e-7;angular=1e-12",
+        "error_budget": 0.0
+      },
+      "approximation": null,
+      "repairs": [],
+      "outcomes": {
+        "correct_success": 0,
+        "crash": 0,
+        "disclosed_approximate_success": 0,
+        "exact_success": 0,
+        "hang_or_budget_overrun": 0,
+        "invalid_success": 0,
+        "nondeterminism": 0,
+        "silent_wrong": 0,
+        "typed_refusal": 1,
+        "untyped_error": 0,
+        "verified_repair_success": 0
+      },
+      "metrics": {
+        "browser": {
+          "module_size_brotli": null,
+          "module_size_gzip": null,
+          "module_size_raw": null,
+          "native_wasm_agreement": null,
+          "wasm_cold_init": null
+        },
+        "concurrency": {
+          "thread_scaling_efficiency": null
+        },
+        "geometry_quality": {
+          "area_error": null,
+          "centroid_error": null,
+          "inertia_error": null,
+          "tessellation_watertight": null,
+          "volume_error": null
+        },
+        "history": {
+          "evolution_completeness": null,
+          "persistent_ref_survival": null
+        },
+        "interchange": {
+          "assembly_metadata_fidelity": null,
+          "import_validity": null,
+          "post_import_operation_success": null,
+          "round_trip_geometry_fidelity": null
+        },
+        "resources": {
+          "cancellation_latency": null,
+          "entity_growth": null,
+          "peak_memory": null
+        }
+      },
+      "gates": {
+        "approximation_disclosed": true,
+        "defect_reproduction": true,
+        "deterministic": true,
+        "evolution_explicit": true,
+        "native_wasm_agreement": true,
+        "no_crash_or_hang": true,
+        "no_silent_wrong": true,
+        "no_untyped_error": true,
+        "quality_label_consistent": true,
+        "quality_requirement": true,
+        "repair_disclosed_verified": true,
+        "reproducible_identity": true,
+        "typed_non_success": true,
+        "valid_success": true
+      }
+    },
+    {
+      "scenario": "box-fuse-half-overlap",
+      "kernel": "remus-native@75cce2c9cfdb2c6f3b185c00045f75dc792d91b3",
+      "oracle": "closed-form: 1 + 1 - 0.5 overlap arithmetic",
+      "diagnostic": null,
+      "defect_repro": null,
+      "quality_requirement": {
+        "representation": "exact",
+        "deflection": 0.01,
+        "tolerance_model": "linear=1e-7;angular=1e-12",
+        "error_budget": 0.0
+      },
+      "approximation": null,
+      "repairs": [],
+      "outcomes": {
+        "correct_success": 0,
+        "crash": 0,
+        "disclosed_approximate_success": 0,
+        "exact_success": 1,
+        "hang_or_budget_overrun": 0,
+        "invalid_success": 0,
+        "nondeterminism": 0,
+        "silent_wrong": 0,
+        "typed_refusal": 0,
+        "untyped_error": 0,
+        "verified_repair_success": 0
+      },
+      "metrics": {
+        "browser": {
+          "module_size_brotli": null,
+          "module_size_gzip": null,
+          "module_size_raw": null,
+          "native_wasm_agreement": null,
+          "wasm_cold_init": null
+        },
+        "concurrency": {
+          "thread_scaling_efficiency": null
+        },
+        "geometry_quality": {
+          "area_error": null,
+          "centroid_error": null,
+          "inertia_error": null,
+          "tessellation_watertight": true,
+          "volume_error": 8.881784197001252e-16
+        },
+        "history": {
+          "evolution_completeness": 1.0,
+          "persistent_ref_survival": null
+        },
+        "interchange": {
+          "assembly_metadata_fidelity": null,
+          "import_validity": null,
+          "post_import_operation_success": null,
+          "round_trip_geometry_fidelity": null
+        },
+        "resources": {
+          "cancellation_latency": null,
+          "entity_growth": null,
+          "peak_memory": null
+        }
+      },
+      "gates": {
+        "approximation_disclosed": true,
+        "defect_reproduction": true,
+        "deterministic": true,
+        "evolution_explicit": true,
+        "native_wasm_agreement": true,
+        "no_crash_or_hang": true,
+        "no_silent_wrong": true,
+        "no_untyped_error": true,
+        "quality_label_consistent": true,
+        "quality_requirement": true,
+        "repair_disclosed_verified": true,
+        "reproducible_identity": true,
+        "typed_non_success": true,
+        "valid_success": true
+      }
+    },
+    {
+      "scenario": "box-fuse-identical",
+      "kernel": "remus-native@75cce2c9cfdb2c6f3b185c00045f75dc792d91b3",
+      "oracle": "closed-form: coincident fuse preserves unit volume",
+      "diagnostic": null,
+      "defect_repro": null,
+      "quality_requirement": {
+        "representation": "exact",
+        "deflection": 0.01,
+        "tolerance_model": "linear=1e-7;angular=1e-12",
+        "error_budget": 0.0
+      },
+      "approximation": null,
+      "repairs": [],
+      "outcomes": {
+        "correct_success": 0,
+        "crash": 0,
+        "disclosed_approximate_success": 0,
+        "exact_success": 1,
+        "hang_or_budget_overrun": 0,
+        "invalid_success": 0,
+        "nondeterminism": 0,
+        "silent_wrong": 0,
+        "typed_refusal": 0,
+        "untyped_error": 0,
+        "verified_repair_success": 0
+      },
+      "metrics": {
+        "browser": {
+          "module_size_brotli": null,
+          "module_size_gzip": null,
+          "module_size_raw": null,
+          "native_wasm_agreement": null,
+          "wasm_cold_init": null
+        },
+        "concurrency": {
+          "thread_scaling_efficiency": null
+        },
+        "geometry_quality": {
+          "area_error": null,
+          "centroid_error": null,
+          "inertia_error": null,
+          "tessellation_watertight": true,
+          "volume_error": 8.881784197001252e-16
+        },
+        "history": {
+          "evolution_completeness": 1.0,
+          "persistent_ref_survival": null
+        },
+        "interchange": {
+          "assembly_metadata_fidelity": null,
+          "import_validity": null,
+          "post_import_operation_success": null,
+          "round_trip_geometry_fidelity": null
+        },
+        "resources": {
+          "cancellation_latency": null,
+          "entity_growth": null,
+          "peak_memory": null
+        }
+      },
+      "gates": {
+        "approximation_disclosed": true,
+        "defect_reproduction": true,
+        "deterministic": true,
+        "evolution_explicit": true,
+        "native_wasm_agreement": true,
+        "no_crash_or_hang": true,
+        "no_silent_wrong": true,
+        "no_untyped_error": true,
+        "quality_label_consistent": true,
+        "quality_requirement": true,
+        "repair_disclosed_verified": true,
+        "reproducible_identity": true,
+        "typed_non_success": true,
+        "valid_success": true
+      }
+    },
+    {
+      "scenario": "box-intersect-disjoint-empty",
+      "kernel": "remus-native@75cce2c9cfdb2c6f3b185c00045f75dc792d91b3",
+      "oracle": "algebraic empty set: zero faces with ~0 volume, or typed EmptyResult",
+      "diagnostic": null,
+      "defect_repro": null,
+      "quality_requirement": {
+        "representation": "exact",
+        "deflection": 0.01,
+        "tolerance_model": "linear=1e-7;angular=1e-12",
+        "error_budget": 0.0
+      },
+      "approximation": null,
+      "repairs": [],
+      "outcomes": {
+        "correct_success": 0,
+        "crash": 0,
+        "disclosed_approximate_success": 0,
+        "exact_success": 1,
+        "hang_or_budget_overrun": 0,
+        "invalid_success": 0,
+        "nondeterminism": 0,
+        "silent_wrong": 0,
+        "typed_refusal": 0,
+        "untyped_error": 0,
+        "verified_repair_success": 0
+      },
+      "metrics": {
+        "browser": {
+          "module_size_brotli": null,
+          "module_size_gzip": null,
+          "module_size_raw": null,
+          "native_wasm_agreement": null,
+          "wasm_cold_init": null
+        },
+        "concurrency": {
+          "thread_scaling_efficiency": null
+        },
+        "geometry_quality": {
+          "area_error": null,
+          "centroid_error": null,
+          "inertia_error": null,
+          "tessellation_watertight": null,
+          "volume_error": null
+        },
+        "history": {
+          "evolution_completeness": null,
+          "persistent_ref_survival": null
+        },
+        "interchange": {
+          "assembly_metadata_fidelity": null,
+          "import_validity": null,
+          "post_import_operation_success": null,
+          "round_trip_geometry_fidelity": null
+        },
+        "resources": {
+          "cancellation_latency": null,
+          "entity_growth": null,
+          "peak_memory": null
+        }
+      },
+      "gates": {
+        "approximation_disclosed": true,
+        "defect_reproduction": true,
+        "deterministic": true,
+        "evolution_explicit": true,
+        "native_wasm_agreement": true,
+        "no_crash_or_hang": true,
+        "no_silent_wrong": true,
+        "no_untyped_error": true,
+        "quality_label_consistent": true,
+        "quality_requirement": true,
+        "repair_disclosed_verified": true,
+        "reproducible_identity": true,
+        "typed_non_success": true,
+        "valid_success": true
+      }
+    },
+    {
+      "scenario": "step-cylinder-preservation",
+      "kernel": "remus-native@75cce2c9cfdb2c6f3b185c00045f75dc792d91b3",
+      "oracle": "closed-form cylinder 160*pi plus write/reimport stability",
+      "diagnostic": null,
+      "defect_repro": null,
+      "quality_requirement": {
+        "representation": "exact",
+        "deflection": 0.01,
+        "tolerance_model": "linear=1e-7;angular=1e-12",
+        "error_budget": 0.0
+      },
+      "approximation": null,
+      "repairs": [],
+      "outcomes": {
+        "correct_success": 0,
+        "crash": 0,
+        "disclosed_approximate_success": 0,
+        "exact_success": 1,
+        "hang_or_budget_overrun": 0,
+        "invalid_success": 0,
+        "nondeterminism": 0,
+        "silent_wrong": 0,
+        "typed_refusal": 0,
+        "untyped_error": 0,
+        "verified_repair_success": 0
+      },
+      "metrics": {
+        "browser": {
+          "module_size_brotli": null,
+          "module_size_gzip": null,
+          "module_size_raw": null,
+          "native_wasm_agreement": null,
+          "wasm_cold_init": null
+        },
+        "concurrency": {
+          "thread_scaling_efficiency": null
+        },
+        "geometry_quality": {
+          "area_error": null,
+          "centroid_error": null,
+          "inertia_error": null,
+          "tessellation_watertight": true,
+          "volume_error": 1.5153576082348325e-13
+        },
+        "history": {
+          "evolution_completeness": null,
+          "persistent_ref_survival": null
+        },
+        "interchange": {
+          "assembly_metadata_fidelity": null,
+          "import_validity": true,
+          "post_import_operation_success": true,
+          "round_trip_geometry_fidelity": {
+            "area_error": 0.0,
+            "bounds_error": 0.0,
+            "centroid_error": 0.0,
+            "volume_error": 0.0
+          }
+        },
+        "resources": {
+          "cancellation_latency": null,
+          "entity_growth": null,
+          "peak_memory": null
+        }
+      },
+      "gates": {
+        "approximation_disclosed": true,
+        "defect_reproduction": true,
+        "deterministic": true,
+        "evolution_explicit": true,
+        "native_wasm_agreement": true,
+        "no_crash_or_hang": true,
+        "no_silent_wrong": true,
+        "no_untyped_error": true,
+        "quality_label_consistent": true,
+        "quality_requirement": true,
+        "repair_disclosed_verified": true,
+        "reproducible_identity": true,
+        "typed_non_success": true,
+        "valid_success": true
+      }
+    }
+  ]
+}

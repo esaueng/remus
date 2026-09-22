@@ -1693,9 +1693,12 @@ fn run_mesh_fallback(
     tol: remus_math::tolerance::Tolerance,
     opts: &BooleanOptions,
 ) -> Result<SolidId, crate::OperationsError> {
-    // `warn`, not `debug`: this is the one place a plain `boolean()` call can
-    // silently hand back a mesh, and every caller that did not opt into
-    // `boolean_with_context` has no other way to learn it happened.
+    // `warn`, not `debug`: this is the disclosed mesh-fallback path. It is
+    // reachable only through a permissive context (`boolean_with_context`,
+    // `boolean_outcome_with_options`, or `ApproximateOnly`); every plain
+    // handle-returning entry point (`boolean`, `boolean_with_options`,
+    // `compound_cut`, `fuse_solids`) runs `ExactOnly` and refuses with
+    // `ExactOnlyUnattainable` instead of arriving here.
     log::warn!(
         target: "remus_approx",
         "boolean {op:?}: GFA unusable — using mesh (co-refinement) fallback; analytic surface types will be lost"
@@ -1864,18 +1867,30 @@ pub const MAX_COMPOUND_CUT_TOOLS: usize = 256;
 /// Cuts the `target` solid by each tool in order using sequential
 /// `boolean(Cut)` calls.
 ///
+/// Like [`boolean`], this entry point is exact-only: `opts.deflection` is
+/// validated but never reached, and a tool the exact pipeline cannot cut
+/// returns
+/// [`OperationsError::ExactOnlyUnattainable`](crate::OperationsError::ExactOnlyUnattainable)
+/// rather than a silently mesh-approximated cut. Callers that accept an
+/// approximate result use [`boolean_with_context`] or
+/// [`boolean_outcome_with_options`] per cut and read the disclosed
+/// [`BooleanQuality`].
+///
 /// # Errors
 ///
 /// Returns an error if the tool count exceeds [`MAX_COMPOUND_CUT_TOOLS`] or
-/// any individual cut fails.
+/// any individual cut fails. Every error rolls back the operation.
 pub fn compound_cut(
     topo: &mut Topology,
     target: SolidId,
     tools: &[SolidId],
     opts: BooleanOptions,
 ) -> Result<SolidId, crate::OperationsError> {
-    let context = operation_context_from_options(&opts);
-    validate_operation_context(&context)?;
+    // Validate the option-derived context (tolerance, deflection) before
+    // pinning the policy to exact-only, mirroring `boolean_with_options`.
+    validate_operation_context(&operation_context_from_options(&opts))?;
+    let context = operation_context_from_options(&opts)
+        .with_fallback(remus_math::context::FallbackPolicy::ExactOnly);
     remus_topology::transaction::run_transacted(topo, |topo| {
         compound_cut_impl(topo, target, tools, opts, &context)
     })
