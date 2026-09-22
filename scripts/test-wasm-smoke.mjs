@@ -707,6 +707,38 @@ for (const operation of ['fillet', 'chamfer']) {
   console.log('ok - evolution decoder and degenerate-operation rejection');
 }
 
+// Explicit blend-group removal is atomic through both shipped entry points.
+{
+  const results = [];
+  for (const batch of [false, true]) {
+    const groupKernel = new BrepKernel();
+    try {
+      const source = groupKernel.makeBox(10, 10, 10);
+      const edge = groupKernel.getSolidEdges(source)[0];
+      const rounded = groupKernel.filletWithEvolution(source, Uint32Array.of(edge), 1);
+      const solid = rounded.result.solid;
+      const seed = rounded.evolution.generated[0].results[0];
+      const before = groupKernel.journalSummary();
+      assert.throws(() => groupKernel.removeBlendsJournaled(solid, new Uint32Array()), /seed/i);
+      assert.equal(groupKernel.journalSummary(), before);
+      const result = batch
+        ? JSON.parse(groupKernel.executeBatchV2(JSON.stringify([
+          { op: 'removeBlendsJournaled', args: { solid, seeds: [seed, seed] } },
+        ])))[0].ok
+        : JSON.parse(groupKernel.removeBlendsJournaled(solid, Uint32Array.of(seed, seed)));
+      assert.ok(result && Number.isInteger(result.solid));
+      assert.ok(Math.abs(groupKernel.volume(result.solid, DEFLECTION) - 1000) < 1e-6);
+      assert.equal(groupKernel.getSolidFaces(result.solid).length, 6);
+      assert.equal(JSON.parse(groupKernel.validateSolidDetailed(result.solid)).errorCount, 0);
+      results.push(result);
+    } finally {
+      groupKernel.free();
+    }
+  }
+  assert.deepEqual(results[0], results[1]);
+  console.log('ok - atomic blend-group direct/batch removal and rollback');
+}
+
 // 13. Generic periodic STEP bounds must import as an exact analytic band, and
 // an ambiguous band must fail transactionally through the shipped JS binding.
 {
