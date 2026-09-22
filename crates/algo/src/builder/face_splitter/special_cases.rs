@@ -5466,6 +5466,102 @@ mod tests {
         );
     }
 
+    #[test]
+    fn converted_wall_with_one_transverse_ring_splits_into_two_bands() {
+        // The band path proper: the same r=5, z∈[0,10] exact-rational wall
+        // with ONE closed transverse Circle section at z=7.5 must split into
+        // exactly two stacked bands (below and above the ring). Pins the
+        // weld-scale `close_tol = tol * 100` calibration: an additive
+        // `tol + 100` would swallow the whole 10-unit wall height in the
+        // "degenerate axial extent" guard and decline the split entirely.
+        use crate::ds::Rank;
+        use remus_topology::topology::Topology;
+
+        let mut dummy_topo = Topology::new();
+        let parent = remus_topology::test_utils::make_unit_square_face(&mut dummy_topo);
+
+        let cyl =
+            CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 5.0)
+                .unwrap();
+        let surface = FaceSurface::Nurbs(cyl.to_nurbs(0.0, 10.0).unwrap());
+
+        let bot = Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 5.0).unwrap();
+        let top =
+            Circle3D::new(Point3::new(0.0, 0.0, 10.0), Vec3::new(0.0, 0.0, 1.0), 5.0).unwrap();
+        let boundary = vec![
+            arc_edge(&bot, 0.0, TAU, true),
+            line_chord(Point3::new(5.0, 0.0, 0.0), Point3::new(5.0, 0.0, 10.0)),
+            arc_edge(&top, 0.0, TAU, true),
+            line_chord(Point3::new(5.0, 0.0, 10.0), Point3::new(5.0, 0.0, 0.0)),
+        ];
+
+        let ring =
+            Circle3D::new(Point3::new(0.0, 0.0, 7.5), Vec3::new(0.0, 0.0, 1.0), 5.0).unwrap();
+        let seam = ring.evaluate(0.0);
+        let section = SectionEdge {
+            curve_3d: EdgeCurve::Circle(ring),
+            trim: None,
+            pcurve_a: dummy_pcurve(),
+            pcurve_b: dummy_pcurve(),
+            start: seam,
+            end: seam,
+            start_uv_a: None,
+            end_uv_a: None,
+            start_uv_b: None,
+            end_uv_b: None,
+            target_face: None,
+            pave_block_id: None,
+        };
+
+        let tol = 1e-7;
+        let bands = super::split_converted_wall_into_bands(
+            &surface,
+            &boundary,
+            std::slice::from_ref(&section),
+            Rank::A,
+            false,
+            parent,
+            tol,
+        )
+        .expect("one transverse ring on a converted wall must take the band path");
+        assert_eq!(bands.len(), 2, "one ring splits the wall into two bands");
+
+        // Every band is a closed four-piece loop (lower level, seam up,
+        // upper level, seam down) whose interior probe sits on the wall
+        // strictly between its own two levels.
+        let mut mids: Vec<f64> = Vec::new();
+        for band in &bands {
+            assert_eq!(band.outer_wire.len(), 4, "band wire pieces");
+            assert!(band.inner_wires.is_empty());
+            for w in band.outer_wire.windows(2) {
+                assert!(
+                    (w[0].end_3d - w[1].start_3d).length() <= tol * 100.0,
+                    "band wire must chain: {:?} -> {:?}",
+                    w[0].end_3d,
+                    w[1].start_3d
+                );
+            }
+            let first = band.outer_wire.first().unwrap();
+            let last = band.outer_wire.last().unwrap();
+            assert!((last.end_3d - first.start_3d).length() <= tol * 100.0);
+            let p = band.precomputed_interior.expect("band interior probe");
+            let radial = (p.x() * p.x() + p.y() * p.y()).sqrt();
+            assert!((radial - 5.0).abs() < 1e-6, "interior on the wall: {p:?}");
+            mids.push(p.z());
+        }
+        mids.sort_by(f64::total_cmp);
+        assert!(
+            (mids[0] - 3.75).abs() < 1e-6,
+            "lower band mid-height {}",
+            mids[0]
+        );
+        assert!(
+            (mids[1] - 8.75).abs() < 1e-6,
+            "upper band mid-height {}",
+            mids[1]
+        );
+    }
+
     // ── build_seam_arcs ────────────────────────────────────────────────────
 
     fn chord_edge(start: Point3, end: Point3) -> OrientedPCurveEdge {
