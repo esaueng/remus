@@ -335,7 +335,17 @@ fn remove_blend_with_entity_evolution(
     let sources: HashSet<_> = history.iter().map(|(source, _)| *source).collect();
     let targets: HashSet<_> = history.iter().filter_map(|(_, target)| *target).collect();
     // Partial construction records must not silently sever a surviving boundary.
-    if sources.len() != history.len()
+    // A split boundary has multiple distinct live targets. It must not also
+    // be marked deleted, and duplicate source/target records are invalid.
+    let records: HashSet<_> = history.iter().copied().collect();
+    let deleted_sources: HashSet<_> = history
+        .iter()
+        .filter_map(|(source, target)| target.is_none().then_some(*source))
+        .collect();
+    if records.len() != history.len()
+        || history
+            .iter()
+            .any(|(source, target)| target.is_some() && deleted_sources.contains(source))
         || sources != boundaries(solid)?
         || targets != boundaries(sharp.solid)?
         || history
@@ -1980,24 +1990,99 @@ fn point_line_distance(point: Point3, line_a: Point3, line_b: Point3) -> f64 {
     (direction.cross(point - line_a)).length() / length
 }
 
+/// Orient an edge to traverse from one corner point to another, matching
+/// stored endpoints within tolerance.
+fn orient_corners(
+    topo: &Topology,
+    edge: EdgeId,
+    from: Point3,
+    to: Point3,
+) -> Result<OrientedEdge, OperationsError> {
+    let tol = Tolerance::new();
+    let data = topo.edge(edge)?;
+    let start = topo.vertex(data.start())?.point();
+    let end = topo.vertex(data.end())?.point();
+    if (start - from).length() <= tol.linear && (end - to).length() <= tol.linear {
+        return Ok(OrientedEdge::new(edge, true));
+    }
+    if (start - to).length() <= tol.linear && (end - from).length() <= tol.linear {
+        return Ok(OrientedEdge::new(edge, false));
+    }
+    Err(reconstruction(format!(
+        "edge {} does not span the requested corners",
+        edge.index()
+    )))
+}
+
+/// A verified transverse-cylinder strip end: the R8 contact (N) and oblique
+/// contact (C) share band vertex B; A reaches the sharp corner P2 along the
+/// kept R8/support generatrix; D reaches Q* along the kept oblique/support
+/// line; Q* is the transverse generatrix/support-plane crossing.
+struct CompoundEnd {
+    r8: FaceId,
+    n_edge: EdgeId,
+    c_edge: EdgeId,
+    a: VertexId,
+    b: VertexId,
+    d: VertexId,
+    sy: FaceId,
+    p2: Point3,
+    qstar: Point3,
+    west: FaceId,
+    west_point: Point3,
+}
+
+/// Intersection of two coplanar lines, or `None` when parallel. Coplanarity
+/// itself is verified by the caller comparing the result against both lines.
+fn line_line_intersection(
+    point_a: Point3,
+    direction_a: Vec3,
+    point_b: Point3,
+    direction_b: Vec3,
+) -> Option<Point3> {
+    let cross = direction_a.cross(direction_b);
+    if cross.length() <= 1e-9 {
+        return None;
+    }
+    // Solve point_a + t * direction_a == point_b + s * direction_b in the
+    // least-squares sense; exact for coplanar lines.
+    let difference = point_b - point_a;
+    let t = difference.cross(direction_b).dot(cross) / cross.dot(cross);
+    Some(point_a + direction_a * t)
+}
+
+/// Intersection of a line with a unit plane, or `None` when parallel.
+fn line_plane_intersection(point: Point3, direction: Vec3, normal: Vec3, d: f64) -> Option<Point3> {
+    let denominator = normal.dot(direction);
+    if denominator.abs() <= 1e-9 {
+        return None;
+    }
+    Some(point + direction * ((d - crate::dot_normal_point(normal, point)) / denominator))
+}
+
 /// Surgical removal of one cylindrical plane-to-plane blend band.
 ///
 /// The copied solid's wound wires are edited in place: each collapsing cross
 /// arc is deleted, each spring contact becomes one shared sharp edge between
 /// the two supports, and surviving boundary edges are re-anchored as new
 /// lines only when the recovered corner lies exactly on their carrier and on
-/// every adjacent face. Sibling arcs, holes, cone shoulders, and every face
-/// away from the wound keep their entities untouched, so unrelated analytic
-/// geometry (and any pcurves registered on surviving uses) survives exactly.
+/// every adjacent face. A strip end capped by one plane resolves to its sharp
+/// triple; a transverse-cylinder compound end (one R8 contact plus one
+/// oblique contact sharing a band vertex) resolves to the R8 piercing P2 and
+/// the transverse generatrix/support crossing Q*, with an analytic circle
+/// arc P2→Q* on the support/R8 intersection. Sibling arcs, holes, cone
+/// shoulders, and every face away from the wound keep their entities
+/// untouched, so unrelated analytic geometry (and any pcurves registered on
+/// surviving uses) survives exactly.
 ///
 /// Scope and fallback contract: `Ok(None)` declines anything outside the
 /// isolated-strip scope (non-cylindrical bands, support counts, split or
-/// non-line springs, non-two-cross topologies, unprovable extensions such as
-/// off-carrier corners or point contacts) so callers fall back to the
-/// positional healer, which still owns those shapes with identical outcomes
-/// to before. Definitive `Err` is reserved for configurations the fallback
-/// cannot heal either: bands ending on curved geometry (missing
-/// curved-carrier sharp termination) and non-planar wound neighbors.
+/// non-line springs, unprovable extensions such as off-carrier corners or
+/// point contacts) so callers fall back to the positional healer, which
+/// still owns those shapes with identical outcomes to before. Definitive
+/// `Err` is reserved for configurations the fallback cannot heal either:
+/// bands ending on curved geometry outside the compound scope, non-planar
+/// wound neighbors, and malformed compound ends.
 #[allow(clippy::too_many_lines)]
 fn heal_cylinder_plane_band_surgical(
     topo: &mut Topology,
@@ -2084,9 +2169,11 @@ fn heal_cylinder_plane_band_surgical(
         .filter(|edge| !spring_set.contains(edge))
         .collect();
     let adjacency = topo.build_adjacency(copy)?;
-    // A cross edge ending on curved geometry names the missing construction
-    // precisely and refuses, even outside the two-cross strip scope: no
-    // fallback healer owns curved-carrier sharp terminations either.
+    // A cross edge ending on curved geometry outside the transverse-cylinder
+    // compound scope names the missing construction precisely and refuses: no
+    // fallback healer owns curved-carrier sharp terminations either. A single
+    // cylindrical neighbor diverts to the compound-end reconstruction below.
+    let mut curved_cylinder_endfaces: Vec<FaceId> = Vec::new();
     for &cross in &crosses {
         for face in adjacency
             .faces_for_edge(cross)
@@ -2095,25 +2182,22 @@ fn heal_cylinder_plane_band_surgical(
             .filter(|face| *face != band_face)
         {
             let neighbor = topo.face(face)?;
-            if !neighbor.surface().is_planar() {
-                return Err(OperationsError::Unsupported {
-                    operation: "resize blend",
-                    reason: format!(
-                        "blend end face {} is a {} surface; exact removal of a band \
-                         ending on curved geometry needs a curved-carrier sharp \
-                         termination (line-surface piercing plus curved wire re-cut), \
-                         which is not implemented",
-                        face.index(),
-                        neighbor.surface().type_tag()
-                    ),
-                });
+            if neighbor.surface().is_planar() {
+                continue;
             }
+            if matches!(neighbor.surface(), FaceSurface::Cylinder(_)) {
+                if !curved_cylinder_endfaces.contains(&face) {
+                    curved_cylinder_endfaces.push(face);
+                }
+                continue;
+            }
+            return Err(curved_end_refusal(face, topo));
         }
     }
-    if crosses.len() != 2 {
-        return Ok(None);
-    }
-    let mut endfaces: Vec<FaceId> = Vec::new();
+    // End grouping. Planar crosses group by neighbor face; each R8-cylinder
+    // cross joins the planar crosses sharing its band vertices into one
+    // compound end. Crosses touching any other curved surface refuse above.
+    let mut cross_neighbor: HashMap<EdgeId, FaceId> = HashMap::new();
     for &cross in &crosses {
         let mut neighbors: Vec<FaceId> = adjacency
             .faces_for_edge(cross)
@@ -2129,52 +2213,483 @@ fn heal_cylinder_plane_band_surgical(
         if support_set.contains(&neighbors[0]) {
             return Ok(None);
         }
-        if !endfaces.contains(&neighbors[0]) {
-            endfaces.push(neighbors[0]);
+        cross_neighbor.insert(cross, neighbors[0]);
+    }
+    let mut endfaces: Vec<FaceId> = cross_neighbor.values().copied().collect();
+    endfaces.sort_unstable_by_key(|face| face.index());
+    endfaces.dedup();
+    // A compound R8 end groups one cylindrical cross-neighbor with the planar
+    // crosses sharing its band vertices; every other end must be a single
+    // planar face. Anything else declines to the positional fallback, except
+    // a second curved neighbor, which no fallback healer owns either.
+    let mut curved_endfaces: Vec<FaceId> = Vec::new();
+    let mut planar_endfaces: Vec<FaceId> = Vec::new();
+    for &end in &endfaces {
+        if topo.face(end)?.surface().is_planar() {
+            planar_endfaces.push(end);
+        } else {
+            curved_endfaces.push(end);
         }
     }
-    endfaces.sort_unstable_by_key(|face| face.index());
-    if endfaces.len() != 2 {
+    // Supported end counts: two planar ends (isolated strip), or planar ends
+    // plus one transverse-cylinder compound end.
+    let compound_r8 = match curved_endfaces.as_slice() {
+        [] => None,
+        [r8] => {
+            if !matches!(topo.face(*r8)?.surface(), FaceSurface::Cylinder(_)) {
+                return Err(curved_end_refusal(*r8, topo));
+            }
+            Some(*r8)
+        }
+        [first, ..] => {
+            return Err(curved_end_refusal(*first, topo));
+        }
+    };
+    // Compound-end reconstruction. The R8 cross (N) and the oblique cross (C)
+    // must share exactly one band vertex (B); the remaining planar crosses
+    // belong to plane-capped ends. Every structural violation below is
+    // definitive: the positional fallback refuses R8-ending bands as well.
+    let compound: Option<CompoundEnd> = if let Some(r8) = compound_r8 {
+        // R8 crosses: exactly one contact with the cylinder.
+        let r8_crosses: Vec<EdgeId> = crosses
+            .iter()
+            .copied()
+            .filter(|cross| cross_neighbor.get(cross).is_some_and(|face| *face == r8))
+            .collect();
+        if r8_crosses.len() != 1 {
+            return Err(reconstruction(format!(
+                "compound R8 end needs exactly one R8 contact edge, found {}",
+                r8_crosses.len()
+            )));
+        }
+        let n_edge = r8_crosses[0];
+        let n_data = topo.edge(n_edge)?;
+        if n_data.start() == n_data.end() {
+            return Err(reconstruction(
+                "compound R8 contact edge is a closed loop".to_string(),
+            ));
+        }
+        // Oblique cross: exactly one planar cross sharing a band vertex with N.
+        let n_vertices = [n_data.start(), n_data.end()];
+        let mut obl_crosses: Vec<EdgeId> = Vec::new();
+        for &cross in &crosses {
+            if cross == n_edge {
+                continue;
+            }
+            let edge = topo.edge(cross)?;
+            if [edge.start(), edge.end()]
+                .iter()
+                .any(|vertex| n_vertices.contains(vertex))
+                && matches!(
+                    topo.face(cross_neighbor[&cross])?.surface(),
+                    FaceSurface::Plane { .. }
+                )
+            {
+                obl_crosses.push(cross);
+            }
+        }
+        if obl_crosses.len() != 1 {
+            return Err(reconstruction(format!(
+                "compound R8 end needs exactly one oblique contact edge, found {}",
+                obl_crosses.len()
+            )));
+        }
+        let c_edge = obl_crosses[0];
+        let c_data = topo.edge(c_edge)?;
+        if c_data.start() == c_data.end() {
+            return Err(reconstruction(
+                "compound oblique contact edge is a closed loop".to_string(),
+            ));
+        }
+        // Shared vertex B; A on N with a spring; D on C with a spring.
+        let b = [c_data.start(), c_data.end()]
+            .into_iter()
+            .find(|vertex| n_vertices.contains(vertex))
+            .ok_or_else(|| reconstruction("compound contacts share no band vertex".to_string()))?;
+        let a = [n_data.start(), n_data.end()]
+            .into_iter()
+            .find(|vertex| *vertex != b)
+            .ok_or_else(|| reconstruction("compound R8 contact is degenerate".to_string()))?;
+        let d = [c_data.start(), c_data.end()]
+            .into_iter()
+            .find(|vertex| *vertex != b)
+            .ok_or_else(|| reconstruction("compound oblique contact is degenerate".to_string()))?;
+        if a == d {
+            return Err(reconstruction(
+                "compound end contacts share both band vertices".to_string(),
+            ));
+        }
+        // Role verification by incidence: A meets a spring and a kept
+        // R8/support generatrix; B meets no spring; D meets a spring and a
+        // kept oblique/support line.
+        let springs_at = |vertex: VertexId| -> Vec<EdgeId> {
+            band_edges
+                .iter()
+                .map(OrientedEdge::edge)
+                .filter(|edge| spring_set.contains(edge))
+                .filter(|edge| {
+                    topo.edge(*edge)
+                        .is_ok_and(|data| data.start() == vertex || data.end() == vertex)
+                })
+                .collect()
+        };
+        if springs_at(a).len() != 1 || !springs_at(b).is_empty() {
+            return Err(reconstruction(
+                "compound end spring incidence is not one spring at A, none at B".to_string(),
+            ));
+        }
+        if springs_at(d).len() != 1 {
+            return Err(reconstruction(
+                "compound end spring incidence is not one spring at D".to_string(),
+            ));
+        }
+        let kept_lines_at = |vertex: VertexId| -> Vec<EdgeId> {
+            let mut lines = Vec::new();
+            for &face in &remus_topology::explorer::solid_faces(topo, copy).unwrap_or_default() {
+                if face == band_face {
+                    continue;
+                }
+                let face_data = match topo.face(face) {
+                    Ok(face_data) => face_data,
+                    Err(_) => continue,
+                };
+                for wire_id in std::iter::once(face_data.outer_wire())
+                    .chain(face_data.inner_wires().iter().copied())
+                {
+                    let wire = match topo.wire(wire_id) {
+                        Ok(wire) => wire,
+                        Err(_) => continue,
+                    };
+                    for oriented in wire.edges() {
+                        let edge_id = oriented.edge();
+                        if spring_set.contains(&edge_id) || crosses.contains(&edge_id) {
+                            continue;
+                        }
+                        if topo.edge(edge_id).is_ok_and(|data| {
+                            matches!(data.curve(), EdgeCurve::Line)
+                                && (data.start() == vertex || data.end() == vertex)
+                        }) {
+                            lines.push(edge_id);
+                        }
+                    }
+                }
+            }
+            lines.sort_unstable_by_key(|edge| edge.index());
+            lines.dedup();
+            lines
+        };
+        // E_z at A: kept line shared by R8 and a support. Exactly one: a
+        // split collinear generatrix (two edges where one would do) is a
+        // conservative refusal — fail-closed and fixture-correct, documented
+        // as a known limitation, not a silent merge.
+        let ez_candidates: Vec<EdgeId> = kept_lines_at(a)
+            .into_iter()
+            .filter(|edge| {
+                adjacency
+                    .faces_for_edge(*edge)
+                    .iter()
+                    .copied()
+                    .filter(|face| *face != band_face)
+                    .any(|face| face == r8)
+                    && adjacency
+                        .faces_for_edge(*edge)
+                        .iter()
+                        .any(|face| supports.contains(face) && *face != band_face)
+            })
+            .collect();
+        if ez_candidates.len() != 1 {
+            return Err(reconstruction(format!(
+                "compound end needs exactly one kept R8/support generatrix at A, found {}",
+                ez_candidates.len()
+            )));
+        }
+        let ez = ez_candidates[0];
+        let ez_support = adjacency
+            .faces_for_edge(ez)
+            .iter()
+            .copied()
+            .find(|face| supports.contains(face))
+            .ok_or_else(|| reconstruction("kept generatrix lost its support".to_string()))?;
+        // E_o at B: kept line shared by R8 and the oblique face.
+        let obl = cross_neighbor[&c_edge];
+        let eo_candidates: Vec<EdgeId> = kept_lines_at(b)
+            .into_iter()
+            .filter(|edge| {
+                let mut adjacent: Vec<FaceId> = adjacency
+                    .faces_for_edge(*edge)
+                    .iter()
+                    .copied()
+                    .filter(|face| *face != band_face)
+                    .collect();
+                adjacent.sort_unstable_by_key(|face| face.index());
+                adjacent.dedup();
+                adjacent == vec![obl, r8] || adjacent == vec![r8, obl]
+            })
+            .collect();
+        if eo_candidates.len() != 1 {
+            return Err(reconstruction(format!(
+                "compound end needs exactly one kept R8/oblique generatrix at B, found {}",
+                eo_candidates.len()
+            )));
+        }
+        let eo = eo_candidates[0];
+        // E_yo at D: kept line shared by the oblique face and a support.
+        let eyo_candidates: Vec<EdgeId> = kept_lines_at(d)
+            .into_iter()
+            .filter(|edge| {
+                adjacency.faces_for_edge(*edge).contains(&obl)
+                    && adjacency
+                        .faces_for_edge(*edge)
+                        .iter()
+                        .any(|face| supports.contains(face))
+            })
+            .collect();
+        if eyo_candidates.len() != 1 {
+            return Err(reconstruction(format!(
+                "compound end needs exactly one kept oblique/support line at D, found {}",
+                eyo_candidates.len()
+            )));
+        }
+        let eyo = eyo_candidates[0];
+        // S_y: the support containing Q*; S_z: E_z's support. Distinct.
+        let sy = supports
+            .iter()
+            .copied()
+            .find(|support| *support != ez_support)
+            .ok_or_else(|| reconstruction("compound end supports coincide".to_string()))?;
+        // Generatrix proofs: kept lines run along the R8 axis with both
+        // endpoints on the carrier, so extensions stay exact.
+        let FaceSurface::Cylinder(r8_surface) = topo.face(r8)?.surface().clone() else {
+            return Err(reconstruction(
+                "compound R8 face lost its cylinder".to_string(),
+            ));
+        };
+        let r8_axis = r8_surface
+            .axis()
+            .normalize()
+            .map_err(|error| reconstruction(format!("invalid R8 axis: {error}")))?;
+        for (label, edge) in [("E_z", ez), ("E_o", eo)] {
+            let data = topo.edge(edge)?;
+            let direction = (topo.vertex(data.end())?.point() - topo.vertex(data.start())?.point())
+                .normalize()
+                .map_err(|error| reconstruction(format!("degenerate {label}: {error}")))?;
+            if 1.0 - direction.dot(r8_axis).abs() > 1e-9 {
+                return Err(reconstruction(format!(
+                    "{label} is not an R8 generatrix; the compound end is not transverse"
+                )));
+            }
+            for vertex in [data.start(), data.end()] {
+                let point = topo.vertex(vertex)?.point();
+                let radial = (point - r8_surface.origin())
+                    - r8_axis * (point - r8_surface.origin()).dot(r8_axis);
+                if (radial.length() - r8_surface.radius()).abs() > tol.linear {
+                    return Err(reconstruction(format!(
+                        "{label} leaves the R8 carrier; the compound end is not exact"
+                    )));
+                }
+            }
+        }
+        // P2: sharp line meets E_z's line inside the support plane; the
+        // piercing must land on R8.
+        let (sy_plane, sz_plane) = (
+            unit_plane_of(topo.face(sy)?)?,
+            unit_plane_of(topo.face(ez_support)?)?,
+        );
+        let sharp_direction = (sy_plane.0.cross(sz_plane.0))
+            .normalize()
+            .map_err(|error| reconstruction(format!("compound supports are parallel: {error}")))?;
+        let ez_data = topo.edge(ez)?;
+        let ez_a = topo.vertex(ez_data.start())?.point();
+        let ez_b = topo.vertex(ez_data.end())?.point();
+        let ez_direction = (ez_b - ez_a)
+            .normalize()
+            .map_err(|error| reconstruction(format!("degenerate kept generatrix: {error}")))?;
+        if sharp_direction.cross(ez_direction).length() <= 1e-9 {
+            return Err(reconstruction(
+                "sharp line runs parallel to the kept generatrix".to_string(),
+            ));
+        }
+        // Both lines lie in the support plane; solve there and certify.
+        // The west cap triple anchors the sharp line for the solve; the
+        // plane-capped west end is resolved once, here.
+        let west_planar: Vec<FaceId> = planar_endfaces
+            .iter()
+            .copied()
+            .filter(|face| *face != obl)
+            .collect();
+        if west_planar.len() != 1 {
+            return Err(reconstruction(
+                "compound strip needs exactly one plane-capped end".to_string(),
+            ));
+        }
+        let west_plane = unit_plane_of(topo.face(west_planar[0])?)?;
+        let Some(sharp_point) = sharp_triple_corner(sy_plane, sz_plane, west_plane) else {
+            return Err(reconstruction(
+                "compound west cap is parallel to the supports".to_string(),
+            ));
+        };
+        let p2 = line_line_intersection(sharp_point, sharp_direction, ez_a, ez_direction)
+            .ok_or_else(|| reconstruction("sharp line misses the kept generatrix".to_string()))?;
+        // Both lines lie in the support plane, but the generatrix endpoints
+        // are only known on it to validation tolerance: certify P2 back on
+        // both lines so a skewed solve cannot smuggle in a wrong piercing.
+        if point_line_distance(p2, ez_a, ez_b) > tol.linear
+            || point_line_distance(p2, sharp_point, sharp_point + sharp_direction) > tol.linear
+        {
+            return Err(reconstruction(
+                "sharp/generatrix solve is skewed; no exact piercing".to_string(),
+            ));
+        }
+        let r8_residual = ((p2 - r8_surface.origin())
+            - r8_axis * (p2 - r8_surface.origin()).dot(r8_axis))
+        .length()
+            - r8_surface.radius();
+        if r8_residual.abs() > tol.linear {
+            return Err(reconstruction(format!(
+                "sharp/R8 piercing misses the R8 carrier by {r8_residual:.3e} mm"
+            )));
+        }
+        // Q*: E_o meets the Sy support plane transversely; the corner must
+        // lie on R8 and the oblique face.
+        let eo_data = topo.edge(eo)?;
+        let eo_a = topo.vertex(eo_data.start())?.point();
+        let eo_b = topo.vertex(eo_data.end())?.point();
+        let eo_direction = (eo_b - eo_a)
+            .normalize()
+            .map_err(|error| reconstruction(format!("degenerate oblique generatrix: {error}")))?;
+        if eo_direction.dot(sy_plane.0).abs() <= 1e-6 {
+            return Err(reconstruction(
+                "kept R8/oblique generatrix runs parallel to the support plane".to_string(),
+            ));
+        }
+        let qstar = line_plane_intersection(eo_a, eo_direction, sy_plane.0, sy_plane.1)
+            .ok_or_else(|| reconstruction("generatrix misses the support plane".to_string()))?;
+        for (label, residual) in [
+            ("R8", {
+                let offset = qstar - r8_surface.origin();
+                (offset - r8_axis * offset.dot(r8_axis)).length() - r8_surface.radius()
+            }),
+            (
+                "oblique face",
+                dot_normal_point(unit_plane_of(topo.face(obl)?)?.0, qstar)
+                    - unit_plane_of(topo.face(obl)?)?.1,
+            ),
+        ] {
+            if residual.abs() > tol.linear {
+                return Err(reconstruction(format!(
+                    "recovered Q* misses {label} by {residual:.3e} mm"
+                )));
+            }
+        }
+        if (p2 - qstar).length() <= tol.linear {
+            return Err(reconstruction(
+                "compound end corners coincide; the strip has no R8 boundary".to_string(),
+            ));
+        }
+        // The R8 section in the Sy plane must be a circle (transverse
+        // cylinder); an oblique section would need ellipse machinery.
+        if 1.0 - sy_plane.0.dot(r8_axis).abs() > 1e-9 {
+            return Err(reconstruction(
+                "support plane is not transverse to the R8 axis".to_string(),
+            ));
+        }
+        // E_yo must join exactly the oblique face and the Q* support;
+        // otherwise D's corner has no consistent carrier pair.
+        {
+            let mut adjacent: Vec<FaceId> = adjacency
+                .faces_for_edge(eyo)
+                .iter()
+                .copied()
+                .filter(|face| *face != band_face)
+                .collect();
+            adjacent.sort_unstable_by_key(|face| face.index());
+            adjacent.dedup();
+            let mut expected = [obl, sy];
+            expected.sort_unstable_by_key(|face| face.index());
+            if adjacent != expected {
+                return Err(reconstruction(format!(
+                    "kept line at D joins faces {:?}, not the oblique/support pair",
+                    adjacent.iter().map(|face| face.index()).collect::<Vec<_>>()
+                )));
+            }
+        }
+        Some(CompoundEnd {
+            r8,
+            n_edge,
+            c_edge,
+            a,
+            b,
+            d,
+            sy,
+            p2,
+            qstar,
+            west: west_planar[0],
+            west_point: sharp_point,
+        })
+    } else {
+        None
+    };
+    // End corners: plane-capped ends get support/support/endface triples;
+    // a compound end contributes its R8 piercing P2 (Q* joins the mapping
+    // separately below). Parallel triples decline to the positional fallback,
+    // which owns those refusals. End keys/points stay aligned for the sharp
+    // edge; keys are face indices (R8 for a compound end), sorted for
+    // determinism.
+    let mut end_keys: Vec<usize> = Vec::new();
+    let mut end_corners: Vec<Point3> = Vec::new();
+    let mut triples_by_endface: HashMap<usize, Point3> = HashMap::new();
+    if compound.is_none() {
+        if crosses.len() != 2 || endfaces.len() != 2 {
+            return Ok(None);
+        }
+        let mut planes = Vec::new();
+        for &end in &endfaces {
+            planes.push(unit_plane_of(topo.face(end)?)?);
+        }
+        for (i, &end) in endfaces.iter().enumerate() {
+            let Some(point) = sharp_triple_corner(support_plane0, support_plane1, planes[i]) else {
+                return Ok(None);
+            };
+            end_keys.push(end.index());
+            end_corners.push(point);
+            triples_by_endface.insert(end.index(), point);
+        }
+    } else {
+        let entry = compound
+            .as_ref()
+            .ok_or_else(|| reconstruction("compound end disappeared".to_string()))?;
+        triples_by_endface.insert(entry.west.index(), entry.west_point);
+        let mut keys = [
+            (entry.west.index(), entry.west_point),
+            (entry.r8.index(), entry.p2),
+        ];
+        keys.sort_unstable_by_key(|(key, _)| *key);
+        for (key, point) in keys {
+            end_keys.push(key);
+            end_corners.push(point);
+        }
+    }
+    if (end_corners[0] - end_corners[1]).length() <= tol.linear {
         return Ok(None);
     }
-    let mut end_planes = Vec::new();
-    for &end in &endfaces {
-        let face = topo.face(end)?;
-        if !face.surface().is_planar() {
-            return Err(OperationsError::Unsupported {
-                operation: "resize blend",
-                reason: format!(
-                    "blend end face {} is a {} surface; exact removal of a band \
-                     ending on curved geometry needs a curved-carrier sharp \
-                     termination (line-surface piercing plus curved wire re-cut), \
-                     which is not implemented",
-                    end.index(),
-                    face.surface().type_tag()
-                ),
-            });
-        }
-        end_planes.push(unit_plane_of(face)?);
-    }
 
-    // Sharp corners: support/support/endface triples, one per end face.
-    let mut corner_points = Vec::new();
-    for (i, _) in endfaces.iter().enumerate() {
-        let Some(point) = sharp_triple_corner(support_plane0, support_plane1, end_planes[i]) else {
-            // The positional fallback owns the parallel-neighbour refusal.
+    // Every band vertex maps to a recovered corner: plane-capped crosses
+    // through their endface triple, compound roles explicitly. Mid-strip
+    // split vertices (or any non-strip topology) decline to the fallback.
+    let mut corner_of_vertex: HashMap<VertexId, Point3> = HashMap::new();
+    for &cross in &crosses {
+        if compound
+            .as_ref()
+            .is_some_and(|entry| cross == entry.n_edge || cross == entry.c_edge)
+        {
+            continue;
+        }
+        let neighbor = cross_neighbor[&cross];
+        let Some(&point) = triples_by_endface.get(&neighbor.index()) else {
             return Ok(None);
         };
-        corner_points.push(point);
-    }
-    if (corner_points[0] - corner_points[1]).length() <= tol.linear {
-        return Ok(None);
-    }
-
-    // Every band vertex maps through its single incident cross edge to that
-    // cross edge's end-face corner. Mid-strip split vertices (or any
-    // non-strip topology) decline to the fallback.
-    let mut corner_of_vertex: HashMap<VertexId, Point3> = HashMap::new();
-    for (&cross, &point) in crosses.iter().zip(corner_points.iter()) {
         let edge = topo.edge(cross)?;
+        let mut consistent = true;
         for vertex in [edge.start(), edge.end()] {
             match corner_of_vertex.entry(vertex) {
                 std::collections::hash_map::Entry::Vacant(slot) => {
@@ -2182,7 +2697,35 @@ fn heal_cylinder_plane_band_surgical(
                 }
                 std::collections::hash_map::Entry::Occupied(slot) => {
                     if (*slot.get() - point).length() > tol.linear {
-                        return Ok(None);
+                        consistent = false;
+                    }
+                }
+            }
+        }
+        if !consistent {
+            return Ok(None);
+        }
+    }
+    if let Some(entry) = compound.as_ref() {
+        // Compound roles: A reaches P2 along the kept generatrix, B and D
+        // reach Q* (B is abandoned when its generatrix re-anchors, D rides
+        // the re-anchored oblique/support line). A colliding earlier mapping
+        // means the strip ends overlap, which has no exact closure.
+        for (vertex, point) in [
+            (entry.a, entry.p2),
+            (entry.b, entry.qstar),
+            (entry.d, entry.qstar),
+        ] {
+            match corner_of_vertex.entry(vertex) {
+                std::collections::hash_map::Entry::Vacant(slot) => {
+                    slot.insert(point);
+                }
+                std::collections::hash_map::Entry::Occupied(slot) => {
+                    if (*slot.get() - point).length() > tol.linear {
+                        return Err(reconstruction(format!(
+                            "compound end vertex {} maps to two corners",
+                            vertex.index()
+                        )));
                     }
                 }
             }
@@ -2266,6 +2809,11 @@ fn heal_cylinder_plane_band_surgical(
         }
     }
     for &face in &wound_adjacent {
+        // The compound R8 face is rebuilt by the dedicated re-cut below, not
+        // by planar extension.
+        if compound.as_ref().is_some_and(|entry| face == entry.r8) {
+            continue;
+        }
         let face_data = topo.face(face)?;
         if !face_data.surface().is_planar() {
             return Err(OperationsError::Unsupported {
@@ -2281,19 +2829,29 @@ fn heal_cylinder_plane_band_surgical(
         }
     }
 
-    // New corner vertices, one per end face, plus the shared sharp edge.
+    // New corner vertices, one per strip end, plus Q* vertices for compound
+    // ends, plus the shared sharp edge spanning the two end corners.
     let mut corner_vertices: HashMap<usize, VertexId> = HashMap::new();
-    for (i, &end) in endfaces.iter().enumerate() {
-        corner_vertices.insert(
-            end.index(),
-            topo.add_vertex(Vertex::new(corner_points[i], tol.linear)),
+    for (key, point) in end_keys.iter().zip(end_corners.iter()) {
+        corner_vertices.insert(*key, topo.add_vertex(Vertex::new(*point, tol.linear)));
+    }
+    // Q* vertices, one per compound end: point plus vertex by R8 key.
+    let mut qstars: HashMap<usize, (Point3, VertexId)> = HashMap::new();
+    if let Some(entry) = compound.as_ref() {
+        qstars.insert(
+            entry.r8.index(),
+            (
+                entry.qstar,
+                topo.add_vertex(Vertex::new(entry.qstar, tol.linear)),
+            ),
         );
     }
     let corner_vertex_for = |vertex: VertexId,
                              corner_of_vertex: &HashMap<VertexId, Point3>,
-                             endfaces: &[FaceId],
-                             corner_points: &[Point3],
-                             corner_vertices: &HashMap<usize, VertexId>|
+                             end_keys: &[usize],
+                             end_corners: &[Point3],
+                             corner_vertices: &HashMap<usize, VertexId>,
+                             qstars: &HashMap<usize, (Point3, VertexId)>|
      -> Result<VertexId, OperationsError> {
         let Some(&target) = corner_of_vertex.get(&vertex) else {
             return Err(reconstruction(format!(
@@ -2301,12 +2859,17 @@ fn heal_cylinder_plane_band_surgical(
                 vertex.index()
             )));
         };
-        for (i, &end) in endfaces.iter().enumerate() {
-            if (corner_points[i] - target).length() <= tol.linear {
+        for (i, &key) in end_keys.iter().enumerate() {
+            if (end_corners[i] - target).length() <= tol.linear {
                 return corner_vertices
-                    .get(&end.index())
+                    .get(&key)
                     .copied()
                     .ok_or_else(|| reconstruction("recovered corner has no vertex".to_string()));
+            }
+        }
+        for (point, vertex_id) in qstars.values() {
+            if (*point - target).length() <= tol.linear {
+                return Ok(*vertex_id);
             }
         }
         Err(reconstruction(
@@ -2314,13 +2877,84 @@ fn heal_cylinder_plane_band_surgical(
         ))
     };
     let sharp_edge = topo.add_edge(Edge::new(
-        corner_vertices[&endfaces[0].index()],
-        corner_vertices[&endfaces[1].index()],
+        corner_vertices[&end_keys[0]],
+        corner_vertices[&end_keys[1]],
         EdgeCurve::Line,
     ));
 
+    // Compound R8 boundary arcs: analytic circle P2→Q* on the support/R8
+    // intersection, with certified trim and a minor-arc gate. One per
+    // compound end, shared by its support and R8 wires. The endpoints are
+    // already proven on both carriers during classification; the trim
+    // certification below re-proves curve-on-surface consistency.
+    let mut compound_circles: HashMap<usize, EdgeId> = HashMap::new();
+    if let Some(entry) = compound.as_ref() {
+        let FaceSurface::Cylinder(r8c) = topo.face(entry.r8)?.surface().clone() else {
+            return Err(reconstruction(
+                "compound R8 face lost its cylinder".to_string(),
+            ));
+        };
+        let (sy_n, sy_d) = unit_plane_of(topo.face(entry.sy)?)?;
+        let r8_axis = r8c
+            .axis()
+            .normalize()
+            .map_err(|error| reconstruction(format!("invalid R8 axis: {error}")))?;
+        let axial = sy_n.dot(r8_axis);
+        if axial.abs() < 1e-9 {
+            return Err(reconstruction(
+                "support plane is parallel to the R8 axis".to_string(),
+            ));
+        }
+        let center =
+            r8c.origin() + r8_axis * ((sy_d - crate::dot_normal_point(sy_n, r8c.origin())) / axial);
+        let p2_vertex = corner_vertices[&entry.r8.index()];
+        let (qstar_point, qstar_vertex) = qstars[&entry.r8.index()];
+        let ref_direction = entry.p2 - center;
+        if ref_direction.length() <= tol.linear {
+            return Err(reconstruction(
+                "R8 piercing coincides with the circle center".to_string(),
+            ));
+        }
+        let circle = Circle3D::new_with_ref(center, sy_n, r8c.radius(), ref_direction)
+            .map_err(|error| reconstruction(format!("sharp circle failed: {error}")))?;
+        // Minor arc between the two corners; an antipodal span has no unique
+        // minor arc and is refused. The trim range must start at the edge's
+        // start vertex: swapped order flips the stored endpoints to match.
+        let (t0, t1) = crate::boolean::assembly::ccw_arc_trim(&circle, entry.p2, qstar_point, tol)?;
+        let (trim, start_is_p2) = if t1 - t0 <= std::f64::consts::PI + 1e-9 {
+            if (t1 - t0 - std::f64::consts::PI).abs() <= 1e-9 {
+                return Err(reconstruction(
+                    "R8 boundary arc is antipodal; the minor arc is ambiguous".to_string(),
+                ));
+            }
+            ((t0, t1), true)
+        } else {
+            let (s0, s1) =
+                crate::boolean::assembly::ccw_arc_trim(&circle, qstar_point, entry.p2, tol)?;
+            if s1 - s0 >= std::f64::consts::PI - 1e-9 {
+                return Err(reconstruction(
+                    "R8 boundary arc is antipodal; the minor arc is ambiguous".to_string(),
+                ));
+            }
+            ((s0, s1), false)
+        };
+        let (first_vertex, second_vertex) = if start_is_p2 {
+            (p2_vertex, qstar_vertex)
+        } else {
+            (qstar_vertex, p2_vertex)
+        };
+        let mut arc_edge = Edge::new(first_vertex, second_vertex, EdgeCurve::Circle(circle));
+        arc_edge.set_trim(Some(trim));
+        arc_edge.strict_domain().map_err(|error| {
+            reconstruction(format!("R8 boundary arc has no exportable domain: {error}"))
+        })?;
+        compound_circles.insert(entry.r8.index(), topo.add_edge(arc_edge));
+    }
+
     // Splice every wound-adjacent wire that carries a band contact. Untouched
     // wires keep their entities, which also keeps registered pcurves valid.
+    // Rebuilt wire IDs are tracked for the abandonment scan below.
+    let mut rebuilt_wires: HashSet<WireId> = HashSet::new();
     let mut edge_replacements: HashMap<EdgeId, EdgeId> = HashMap::new();
     let mut ordered_adjacent: Vec<FaceId> = wound_adjacent.iter().copied().collect();
     ordered_adjacent.sort_unstable_by_key(|face| face.index());
@@ -2351,34 +2985,108 @@ fn heal_cylinder_plane_band_surgical(
                         // Collapsing cross arc: deleted with the band.
                         continue;
                     }
-                    // Spring contact on a support: the full sharp edge.
-                    // Anything else declines to the positional fallback.
+                    // Compound R8 contact: replaced by the certified R8
+                    // boundary arc, oriented to the old traversal.
+                    if let Some(entry) = compound.as_ref()
+                        && oriented.edge() == entry.n_edge
+                    {
+                        let Some(&circle) = compound_circles.get(&entry.r8.index()) else {
+                            return Err(reconstruction("compound R8 arc missing".to_string()));
+                        };
+                        // Old traversal corners, ordered.
+                        let (t0, t1) = if oriented.is_forward() {
+                            (start_corner, end_corner)
+                        } else {
+                            (end_corner, start_corner)
+                        };
+                        // The arc spans P2 to Q* in either order; any other
+                        // corner pair means the mapping is broken, which
+                        // is definitive this far into verified scope.
+                        let matches_p2_qstar = (t0 - entry.p2).length() <= tol.linear
+                            && (t1 - entry.qstar).length() <= tol.linear;
+                        let matches_qstar_p2 = (t0 - entry.qstar).length() <= tol.linear
+                            && (t1 - entry.p2).length() <= tol.linear;
+                        if !matches_p2_qstar && !matches_qstar_p2 {
+                            return Err(reconstruction(
+                                "compound R8 contact does not span P2 to Q*".to_string(),
+                            ));
+                        }
+                        new_sequence.push(if matches_p2_qstar {
+                            orient_corners(topo, circle, entry.p2, entry.qstar)?
+                        } else {
+                            orient_corners(topo, circle, entry.qstar, entry.p2)?
+                        });
+                        continue;
+                    }
+                    // Spring contact on a support: the full sharp edge when it
+                    // spans both sharp corners. A compound oblique-side spring
+                    // spans a sharp corner to Q*: it contributes the sharp
+                    // edge plus the R8 arc covering the old traversal.
                     if !spring_set.contains(&oriented.edge()) {
                         return Ok(None);
                     }
                     if !support_set.contains(&face) {
                         return Ok(None);
                     }
+                    // Ordered traversal corners.
+                    let (t0, t1) = if oriented.is_forward() {
+                        (start_corner, end_corner)
+                    } else {
+                        (end_corner, start_corner)
+                    };
                     let sharp_data = topo.edge(sharp_edge)?;
                     let (sharp_start, sharp_end) = (sharp_data.start(), sharp_data.end());
                     let sharp_start_point = topo.vertex(sharp_start)?.point();
                     let sharp_end_point = topo.vertex(sharp_end)?.point();
-                    let aligned = (start_corner - sharp_start_point).length() <= tol.linear
-                        && (end_corner - sharp_end_point).length() <= tol.linear;
-                    let flipped = (start_corner - sharp_end_point).length() <= tol.linear
-                        && (end_corner - sharp_start_point).length() <= tol.linear;
-                    if !aligned && !flipped {
-                        return Ok(None);
+                    let at_end = |point: Point3| {
+                        (point - sharp_start_point).length() <= tol.linear
+                            || (point - sharp_end_point).length() <= tol.linear
+                    };
+                    // Full sharp span in either order.
+                    if at_end(t0) && at_end(t1) {
+                        new_sequence.push(orient_corners(topo, sharp_edge, t0, t1)?);
+                        continue;
                     }
-                    new_sequence.push(OrientedEdge::new(
-                        sharp_edge,
-                        if aligned {
-                            oriented.is_forward()
-                        } else {
-                            !oriented.is_forward()
-                        },
-                    ));
-                    continue;
+                    // Compound oblique-side spring: spans a sharp corner to
+                    // Q*. Covered by the sharp edge plus the R8 arc in
+                    // traversal order. Applies only to the spring touching
+                    // the D-role vertex identified during classification;
+                    // anything else declines to the positional fallback.
+                    if let Some(entry) = compound.as_ref() {
+                        let touches_d = topo
+                            .edge(oriented.edge())
+                            .is_ok_and(|data| data.start() == entry.d || data.end() == entry.d);
+                        let Some(&circle) = compound_circles.get(&entry.r8.index()) else {
+                            return Err(reconstruction("compound R8 arc missing".to_string()));
+                        };
+                        // The west corner: the sharp end distinct from P2.
+                        let west = end_corners
+                            .iter()
+                            .copied()
+                            .find(|corner| (*corner - entry.p2).length() > tol.linear)
+                            .ok_or_else(|| {
+                                reconstruction("sharp chain has no far corner".to_string())
+                            })?;
+                        // Chain order along the old traversal: sharp covers
+                        // the W–P2 leg, the arc the P2–Q* leg.
+                        let forward = touches_d
+                            && (t0 - west).length() <= tol.linear
+                            && (t1 - entry.qstar).length() <= tol.linear;
+                        let reverse = touches_d
+                            && (t0 - entry.qstar).length() <= tol.linear
+                            && (t1 - west).length() <= tol.linear;
+                        if forward {
+                            new_sequence.push(orient_corners(topo, sharp_edge, t0, entry.p2)?);
+                            new_sequence.push(orient_corners(topo, circle, entry.p2, t1)?);
+                            continue;
+                        }
+                        if reverse {
+                            new_sequence.push(orient_corners(topo, circle, t0, entry.p2)?);
+                            new_sequence.push(orient_corners(topo, sharp_edge, entry.p2, t1)?);
+                            continue;
+                        }
+                    }
+                    return Ok(None);
                 }
                 let edge = topo.edge(oriented.edge())?;
                 let remap = |vertex: VertexId| -> Result<VertexId, OperationsError> {
@@ -2386,9 +3094,10 @@ fn heal_cylinder_plane_band_surgical(
                         corner_vertex_for(
                             vertex,
                             &corner_of_vertex,
-                            &endfaces,
-                            &corner_points,
+                            &end_keys,
+                            &end_corners,
                             &corner_vertices,
+                            &qstars,
                         )
                     } else {
                         Ok(vertex)
@@ -2428,11 +3137,34 @@ fn heal_cylinder_plane_band_surgical(
                     if !wound_adjacent.contains(&other) {
                         return Ok(None);
                     }
-                    let (normal, d) = unit_plane_of(topo.face(other)?)?;
-                    for point in [new_start_point, new_end_point] {
-                        if (dot_normal_point(normal, point) - d).abs() > tol.linear {
-                            return Ok(None);
+                    // The re-anchored corner must stay on every adjacent
+                    // face's carrier: planes directly, cylinders radially.
+                    // Any other carrier declines.
+                    match topo.face(other)?.surface() {
+                        FaceSurface::Plane { .. } => {
+                            let (normal, d) = unit_plane_of(topo.face(other)?)?;
+                            for point in [new_start_point, new_end_point] {
+                                if (dot_normal_point(normal, point) - d).abs() > tol.linear {
+                                    return Ok(None);
+                                }
+                            }
                         }
+                        FaceSurface::Cylinder(cylinder) => {
+                            let axis = cylinder.axis().normalize().map_err(|error| {
+                                reconstruction(format!("invalid cylinder axis: {error}"))
+                            })?;
+                            for point in [new_start_point, new_end_point] {
+                                let radial = (point - cylinder.origin())
+                                    - axis * (point - cylinder.origin()).dot(axis);
+                                if (radial.length() - cylinder.radius()).abs() > tol.linear {
+                                    return Ok(None);
+                                }
+                            }
+                        }
+                        FaceSurface::Cone(_)
+                        | FaceSurface::Sphere(_)
+                        | FaceSurface::Torus(_)
+                        | FaceSurface::Nurbs(_) => return Ok(None),
                     }
                 }
                 let replacement = *edge_replacements.entry(oriented.edge()).or_insert_with(|| {
@@ -2447,7 +3179,30 @@ fn heal_cylinder_plane_band_surgical(
                 Ok(wire) => topo.add_wire(wire),
                 Err(_) => return Ok(None),
             };
+            rebuilt_wires.insert(new_wire);
             replace_face_wire(topo, face, wire_id, new_wire)?;
+        }
+    }
+
+    // Abandoned vertices (mapped olds superseded by new corner vertices)
+    // must not leak into any rebuilt wire; such a leak would duplicate or
+    // split a boundary. Untouched wires keep old vertices by design.
+    {
+        let mut referenced: HashSet<VertexId> = HashSet::new();
+        for &wire in &rebuilt_wires {
+            for oriented in topo.wire(wire)?.edges() {
+                let edge = topo.edge(oriented.edge())?;
+                referenced.insert(edge.start());
+                referenced.insert(edge.end());
+            }
+        }
+        for &vertex in corner_of_vertex.keys() {
+            if referenced.contains(&vertex) {
+                return Err(reconstruction(format!(
+                    "rebuilt wires still reference superseded vertex {}",
+                    vertex.index()
+                )));
+            }
         }
     }
 
@@ -2472,16 +3227,31 @@ fn heal_cylinder_plane_band_surgical(
     let live_vertices: HashSet<_> = remus_topology::explorer::solid_vertices(topo, sharp_solid)?
         .into_iter()
         .collect();
-    // Every copied boundary maps: springs to the sharp edge, extended edges
-    // to their replacements, vanished wound edges to nothing, and untouched
-    // entities to themselves.
+    // Every copied boundary maps: springs to the sharp edge, the compound
+    // R8 contact to the R8 arc, extended edges to their replacements,
+    // vanished wound edges to nothing, and untouched entities to themselves.
+    // New edges are therefore all covered, which the journaled path requires.
+    // The oblique-side spring splits into the sharp edge and the arc.
+    // Preserve both descendants; output coverage alone is not enough to
+    // resolve a reference to that source boundary correctly.
     let mut replaced_edges: HashMap<EdgeId, EdgeId> = HashMap::new();
     for &spring in &springs {
         replaced_edges.insert(spring, sharp_edge);
     }
+    if let Some(entry) = compound.as_ref()
+        && let Some(&circle) = compound_circles.get(&entry.r8.index())
+    {
+        replaced_edges.insert(entry.n_edge, circle);
+    }
     for (&old, &new) in &edge_replacements {
         replaced_edges.insert(old, new);
     }
+    let split_spring = compound.as_ref().and_then(|entry| {
+        springs.iter().copied().find(|edge| {
+            topo.edge(*edge)
+                .is_ok_and(|data| data.start() == entry.d || data.end() == entry.d)
+        })
+    });
     let mut boundary_history = Vec::new();
     for (source, copied) in copied_entities.edge_map {
         let target = replaced_edges.get(&copied).copied().unwrap_or(copied);
@@ -2491,6 +3261,13 @@ fn heal_cylinder_plane_band_surgical(
                 .contains(&target)
                 .then_some(EntityKey::edge(target.index())),
         ));
+        if Some(copied) == split_spring {
+            let entry = compound
+                .as_ref()
+                .ok_or_else(|| reconstruction("split spring lost compound end"))?;
+            let arc = compound_circles[&entry.r8.index()];
+            boundary_history.push((EntityKey::edge(source), Some(EntityKey::edge(arc.index()))));
+        }
     }
     // Wound vertices merge into their recovered corners; every other copied
     // vertex survives on its own face.
@@ -2499,11 +3276,38 @@ fn heal_cylinder_plane_band_surgical(
         if let Ok(target) = corner_vertex_for(
             vertex,
             &corner_of_vertex,
-            &endfaces,
-            &corner_points,
+            &end_keys,
+            &end_corners,
             &corner_vertices,
+            &qstars,
         ) {
             merged_vertices.insert(vertex, target);
+        }
+    }
+    // Abandoned vertices (mapped olds superseded by new corner vertices)
+    // must not leak into any rebuilt wire; such a leak would duplicate or
+    // split a boundary, so it is a definitive internal error.
+    {
+        let mut referenced: HashSet<VertexId> = HashSet::new();
+        for &face in &remus_topology::explorer::solid_faces(topo, sharp_solid)? {
+            let face_data = topo.face(face)?;
+            for wire_id in std::iter::once(face_data.outer_wire())
+                .chain(face_data.inner_wires().iter().copied())
+            {
+                for oriented in topo.wire(wire_id)?.edges() {
+                    let edge = topo.edge(oriented.edge())?;
+                    referenced.insert(edge.start());
+                    referenced.insert(edge.end());
+                }
+            }
+        }
+        for &vertex in corner_of_vertex.keys() {
+            if referenced.contains(&vertex) {
+                return Err(reconstruction(format!(
+                    "rebuilt wires still reference superseded vertex {}",
+                    vertex.index()
+                )));
+            }
         }
     }
     for (source, copied) in copied_entities.vertex_map {
@@ -2520,6 +3324,26 @@ fn heal_cylinder_plane_band_surgical(
         face_map,
         boundary_history: Some(boundary_history),
     }))
+}
+
+/// Typed refusal for a blend band ending on curved geometry outside the
+/// transverse-cylinder compound scope: no fallback healer owns
+/// curved-carrier sharp terminations either.
+fn curved_end_refusal(face: FaceId, topo: &Topology) -> OperationsError {
+    let surface = topo
+        .face(face)
+        .map(|face| face.surface().type_tag())
+        .unwrap_or("unknown");
+    OperationsError::Unsupported {
+        operation: "resize blend",
+        reason: format!(
+            "blend end face {} is a {surface} surface; exact removal of a band \
+             ending on curved geometry needs a curved-carrier sharp \
+             termination (line-surface piercing plus curved wire re-cut), \
+             which is not implemented",
+            face.index(),
+        ),
+    }
 }
 
 fn heal_planar_band(
