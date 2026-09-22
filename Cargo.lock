@@ -2295,8 +2295,13 @@ dependencies = [
 name = "remus-vs-bench"
 version = "0.1.0"
 dependencies = [
+ "remus",
+ "remus-math",
+ "remus-operations",
+ "remus-topology",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.20",
 ]
 
