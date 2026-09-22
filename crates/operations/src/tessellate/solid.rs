@@ -1462,7 +1462,7 @@ pub(super) fn tessellate_face_with_shared_edges(
             .collect();
 
         if face_data.inner_wires().is_empty() {
-            let mut local_indices = cdt_triangulate_simple(&local_positions, normal);
+            let mut local_indices = cdt_triangulate_simple(&local_positions, normal)?;
 
             if local_indices.len() >= 3 {
                 let i0 = local_indices[0] as usize;
