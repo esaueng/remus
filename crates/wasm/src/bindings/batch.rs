@@ -218,6 +218,7 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "imprint"
         | "draftJournaled"
         | "resizeBlendJournaled"
+        | "removeBlendsJournaled"
         | "resizeCylindricalFaceJournaled"
         | "replaceSurfaceJournaled"
         | "moveFacesJournaled"

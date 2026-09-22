@@ -3067,6 +3067,14 @@ export class BrepKernel {
      */
     recognizeFeatures(solid: number, deflection: number): string;
     /**
+     * Remove selected blend regions atomically with complete construction history.
+     *
+     * Returns JSON `{"solid", "op"}`. Seeds expand to recognized blend regions;
+     * unsupported reconstruction or ambiguous history refuses without mutation.
+     * Batch arguments are `solid` and the face-handle array `seeds`.
+     */
+    removeBlendsJournaled(solid: number, seeds: Uint32Array): string;
+    /**
      * Remove degenerate (zero-length) edges from a solid.
      *
      * Returns the number of edges removed.
