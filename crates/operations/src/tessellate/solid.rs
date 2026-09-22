@@ -524,6 +524,114 @@ fn tessellate_faces_core(
         }
     }
 
+    // Densify torus two-rim band rims to the band mesher's own wrap density
+    // so the shared pool and the interior rows agree by construction.
+    //
+    // `tessellate_torus_two_rim_band` sizes its interior rows with the
+    // curvature floor (`R + r` over a full turn) while the shared pool
+    // samples circles floor-free. At coarse deflection the sparse pool rims
+    // stitch against far denser interior rows and the band cracks (B46: a
+    // 0.05 fillet band open at 0.1 and 0.01). Densifying only (never
+    // coarsening) the band's once-used rim circles to the mesher's density
+    // keeps every neighbour on the same vertices. Split rims share the full
+    // turn proportionally by arc so independently split rims stay matched.
+    {
+        for &face_id in all_faces {
+            let face_data = topo.face(face_id)?;
+            let FaceSurface::Torus(torus) = face_data.surface() else {
+                continue;
+            };
+            if !face_data.inner_wires().is_empty() {
+                continue;
+            }
+            let wire = topo.wire(face_data.outer_wire())?;
+            let mut uses: DetHashMap<usize, usize> = DetHashMap::default();
+            for oe in wire.edges() {
+                *uses.entry(oe.edge().index()).or_default() += 1;
+            }
+            let mut seam_found = false;
+            let mut rim_edges = Vec::new();
+            let mut seen: DetHashSet<usize> = DetHashSet::default();
+            let mut is_band = true;
+            for oe in wire.edges() {
+                if !seen.insert(oe.edge().index()) {
+                    continue;
+                }
+                let edge = topo.edge(oe.edge())?;
+                let count = uses.get(&oe.edge().index()).copied().unwrap_or(0);
+                if count == 2 {
+                    if edge.start() == edge.end() || seam_found {
+                        is_band = false;
+                        break;
+                    }
+                    seam_found = true;
+                } else if count == 1 {
+                    if matches!(edge.curve(), EdgeCurve::Circle(_)) {
+                        rim_edges.push(oe.edge());
+                    } else {
+                        is_band = false;
+                        break;
+                    }
+                } else {
+                    is_band = false;
+                    break;
+                }
+            }
+            if !is_band || !seam_found || rim_edges.is_empty() {
+                continue;
+            }
+            let wrap_radius = torus.major_radius() + torus.minor_radius();
+            let full_cols = segments_for_chord_deviation_a(
+                wrap_radius,
+                std::f64::consts::TAU,
+                deflection,
+                angular_tol,
+                true,
+            );
+            for rim in rim_edges {
+                let edge_idx = rim.index();
+                let Some(edge_id) = topo.edge_id_from_index(edge_idx) else {
+                    continue;
+                };
+                let Ok(edge_data) = topo.edge(edge_id) else {
+                    continue;
+                };
+                let EdgeCurve::Circle(circle) = edge_data.curve() else {
+                    continue;
+                };
+                let (t_start, t_end) = match circle_param_range(edge_data) {
+                    Ok(range) => range,
+                    Err(_) => continue,
+                };
+                let arc = (t_end - t_start).abs();
+                if arc <= 0.0 {
+                    continue;
+                }
+                #[allow(
+                    clippy::cast_precision_loss,
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss
+                )]
+                let expected =
+                    ((full_cols as f64 * arc / std::f64::consts::TAU).ceil() as usize + 1).max(2);
+                let needs_densify = edge_points
+                    .get(&edge_idx)
+                    .is_some_and(|pts| pts.len() < expected);
+                if needs_densify {
+                    let mut new_pts =
+                        remus_geometry::sampling::sample_uniform(circle, t_start, t_end, expected);
+                    if let Some(first) = new_pts.first_mut() {
+                        first.clone_from(&topo.vertex(edge_data.start())?.point());
+                    }
+                    if let Some(last) = new_pts.last_mut() {
+                        last.clone_from(&topo.vertex(edge_data.end())?.point());
+                    }
+                    edge_points.insert(edge_idx, new_pts);
+                }
+            }
+        }
+    }
+
     // A holed periodic wall (cylinder with inner wires) is meshed in its
     // developed chart; a hole loop crossing the chart's seam meridian gets cut
     // there, which fabricates a boundary vertex ON the seam that no shared
