@@ -8,6 +8,26 @@ use remus_topology::validation::CurveUseValidationError;
 use super::checks::{CheckId, EntityRef, Severity, ValidationIssue};
 use crate::CheckError;
 
+/// Maximum number of basis-function loop iterations spent estimating the
+/// length of one closed NURBS edge.
+const MAX_NURBS_DEGENERACY_BASIS_STEPS: u128 = 1_000_000;
+
+fn active_span_count(knots: &[f64], start: f64, end: f64) -> usize {
+    let mut count = 0;
+    let mut span_start = start;
+    for knot in knots
+        .iter()
+        .copied()
+        .filter(|&knot| knot > start && knot < end)
+    {
+        if knot > span_start {
+            count += 1;
+            span_start = knot;
+        }
+    }
+    count + usize::from(end > span_start)
+}
+
 fn curve_use_error_issue(error: &CurveUseValidationError, edge_id: EdgeId) -> ValidationIssue {
     use remus_math::diagnostic::ToDiagnostic;
 
@@ -141,6 +161,31 @@ pub fn check_edge_degenerate(
             };
             let start = t0.min(t1);
             let end = t0.max(t1);
+            let span_count = active_span_count(nc.knots(), start, end);
+            // One evaluation performs degree*(degree+1)/2 iterations in
+            // basis_funs_into. Refuse the estimate before the first expensive
+            // evaluation when hostile degree/span combinations exceed this
+            // check's fixed work budget.
+            let degree = nc.degree() as u128;
+            let evaluation_count =
+                1_u128.saturating_add(10_u128.saturating_mul(span_count as u128));
+            let basis_steps = degree
+                .saturating_mul(degree.saturating_add(1))
+                .saturating_div(2)
+                .saturating_mul(evaluation_count);
+            if basis_steps > MAX_NURBS_DEGENERACY_BASIS_STEPS {
+                return Ok(vec![ValidationIssue {
+                    check: CheckId::EdgeDegenerate,
+                    severity: Severity::Warning,
+                    entity: EntityRef::Edge(edge_id),
+                    description: format!(
+                        "edge_degenerate_proof_unavailable: NURBS sampling requires an estimated \
+                         {basis_steps} basis steps, exceeding the \
+                         {MAX_NURBS_DEGENERACY_BASIS_STEPS}-step validation budget"
+                    ),
+                    deviation: None,
+                }]);
+            }
             let mut length = 0.0;
             let mut prev = nc.evaluate(start);
             let mut span_start = start;
@@ -336,13 +381,14 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use remus_math::curves::Circle3D;
+    use remus_math::nurbs::curve::NurbsCurve;
     use remus_math::nurbs::fitting::interpolate;
     use remus_math::vec::{Point3, Vec3};
     use remus_topology::Topology;
     use remus_topology::edge::{Edge, EdgeCurve};
     use remus_topology::vertex::Vertex;
 
-    use super::{CheckId, check_edge_curve_direction};
+    use super::{CheckId, check_edge_curve_direction, check_edge_degenerate};
 
     fn interpolated_open_nurbs() -> remus_math::nurbs::curve::NurbsCurve {
         let pts = [
@@ -353,6 +399,36 @@ mod tests {
             Point3::new(4.0, 0.0, 0.0),
         ];
         interpolate(&pts, 3).unwrap()
+    }
+
+    #[test]
+    fn closed_nurbs_degeneracy_sampling_has_a_derived_work_budget() {
+        let degree = 1_000;
+        let control_point_count = 2_001;
+        let mut knots = vec![0.0; degree + 1];
+        knots.extend((1..=1_000).map(f64::from));
+        knots.extend(vec![1_001.0; degree + 1]);
+        let curve = NurbsCurve::new(
+            degree,
+            knots,
+            vec![Point3::new(0.0, 0.0, 0.0); control_point_count],
+            vec![1.0; control_point_count],
+        )
+        .unwrap();
+
+        let mut topo = Topology::new();
+        let vertex = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
+        let edge = topo.add_edge(Edge::new(vertex, vertex, EdgeCurve::NurbsCurve(curve)));
+
+        let issues = check_edge_degenerate(&topo, edge, 1e-7).unwrap();
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].check, CheckId::EdgeDegenerate);
+        assert!(
+            issues[0]
+                .description
+                .contains("edge_degenerate_proof_unavailable")
+        );
+        assert_eq!(issues[0].deviation, None);
     }
 
     // Issue #269: a curve authored opposite to the edge's declared endpoints
