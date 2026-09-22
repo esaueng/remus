@@ -404,6 +404,27 @@ impl BrepKernel {
         }))
     }
 
+    fn remove_blends_journaled_json(
+        &mut self,
+        solid: u32,
+        seeds: &[u32],
+    ) -> Result<serde_json::Value, StructuredWasmError> {
+        let solid_id = self
+            .resolve_solid(solid)
+            .map_err(StructuredWasmError::from)?;
+        let faces = seeds
+            .iter()
+            .map(|&face| self.resolve_face(face))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(StructuredWasmError::from)?;
+        let result = journal_ops::remove_blends_journaled(self.topo_mut(), solid_id, &faces)
+            .map_err(StructuredWasmError::from)?;
+        Ok(serde_json::json!({
+            "solid": crate::handles::solid_id_to_u32(result.solid),
+            "op": u32::try_from(result.op.value()).unwrap_or(u32::MAX),
+        }))
+    }
+
     fn resize_cylindrical_face_journaled_json(
         &mut self,
         solid: u32,
@@ -623,6 +644,11 @@ impl BrepKernel {
                 let radius = get_f64(args, "newRadius")?;
                 self.resize_blend_journaled_json(solid, face, expected, radius)
             })(),
+            "removeBlendsJournaled" => (|| {
+                let solid = get_u32(args, "solid")?;
+                let seeds = get_u32_array(args, "seeds")?;
+                self.remove_blends_journaled_json(solid, &seeds)
+            })(),
             "resizeCylindricalFaceJournaled" => (|| {
                 let solid = get_u32(args, "solid")?;
                 let face = get_u32(args, "face")?;
@@ -821,6 +847,22 @@ impl BrepKernel {
         new_radius: f64,
     ) -> Result<String, JsError> {
         self.resize_blend_journaled_json(solid, face, expected_radius, new_radius)
+            .map(|value| value.to_string())
+            .map_err(structured_to_js)
+    }
+
+    /// Remove selected blend regions atomically with complete construction history.
+    ///
+    /// Returns JSON `{"solid", "op"}`. Seeds expand to recognized blend regions;
+    /// unsupported reconstruction or ambiguous history refuses without mutation.
+    /// Batch arguments are `solid` and the face-handle array `seeds`.
+    #[wasm_bindgen(js_name = "removeBlendsJournaled")]
+    pub fn remove_blends_journaled_js(
+        &mut self,
+        solid: u32,
+        seeds: &[u32],
+    ) -> Result<String, JsError> {
+        self.remove_blends_journaled_json(solid, seeds)
             .map(|value| value.to_string())
             .map_err(structured_to_js)
     }
@@ -1682,6 +1724,115 @@ mod evolution_contract_tests {
                 assert_eq!(kernel.topo().journal().snapshot(), before);
             }
             payloads.push(second);
+        }
+        assert_eq!(payloads[0], payloads[1]);
+    }
+
+    #[test]
+    fn remove_blends_has_direct_batch_parity_total_history_and_rollback() {
+        use remus_operations::{
+            blend_ops::fillet_v2, journal_ops::solid_entity_keys, primitives::make_box,
+        };
+        use remus_topology::{
+            explorer::{solid_edges, solid_faces},
+            face::FaceSurface,
+            journal::{EntityKind, EventDraft, EvolutionDraft},
+            naming::{PersistentRef, Provenance, Resolution, resolve},
+        };
+        let mut payloads = Vec::new();
+        for batch in [false, true] {
+            let mut kernel = BrepKernel::new();
+            let sharp = make_box(kernel.topo_mut(), 10.0, 10.0, 10.0).unwrap();
+            let edge = solid_edges(kernel.topo(), sharp).unwrap()[0];
+            let solid = fillet_v2(kernel.topo_mut(), sharp, &[edge], 1.0)
+                .unwrap()
+                .solid;
+            let keys = solid_entity_keys(kernel.topo(), solid).unwrap();
+            let pending = kernel.topo_mut().journal_begin("group_fixture");
+            let mut draft = EvolutionDraft::construction();
+            draft.add_scope(keys.iter().copied());
+            for &key in &keys {
+                draft.push(key, EventDraft::Generated { sources: vec![] });
+            }
+            let anchor = kernel
+                .topo_mut()
+                .journal_record_evolution(pending, draft)
+                .unwrap();
+            let face = solid_faces(kernel.topo(), solid)
+                .unwrap()
+                .into_iter()
+                .find(|&face| {
+                    matches!(
+                        kernel.topo().face(face).unwrap().surface(),
+                        FaceSurface::Cylinder(_)
+                    )
+                })
+                .unwrap();
+            let source = super::index_u32(solid.index());
+            let seed = super::index_u32(face.index());
+            let before = kernel.topo().journal().snapshot();
+            let slots = kernel.topo().allocated_slot_count();
+            assert!(kernel.remove_blends_journaled_json(source, &[]).is_err());
+            assert!(
+                kernel
+                    .remove_blends_journaled_json(source, &[u32::MAX])
+                    .is_err()
+            );
+            let failed: serde_json::Value = serde_json::from_str(&kernel.execute_batch_v2(
+                &serde_json::json!([{"op":"removeBlendsJournaled", "args":{"solid":source,"seeds":[]}}]).to_string()
+            )).unwrap();
+            assert!(failed[0]["error"].is_object());
+            assert_eq!(kernel.topo().journal().snapshot(), before);
+            assert_eq!(kernel.topo().allocated_slot_count(), slots);
+            let output: serde_json::Value = if batch {
+                run(&mut kernel, serde_json::json!([{"op":"removeBlendsJournaled", "args":{"solid":source,"seeds":[seed,seed]}}])).remove(0)
+            } else {
+                serde_json::from_str(
+                    &kernel
+                        .remove_blends_journaled_js(source, &[seed, seed])
+                        .unwrap(),
+                )
+                .unwrap()
+            };
+            let result = kernel
+                .resolve_solid(u32::try_from(output["solid"].as_u64().unwrap()).unwrap())
+                .unwrap();
+            assert!(
+                (remus_operations::measure::solid_volume(kernel.topo(), result, 0.01).unwrap()
+                    - 1000.0)
+                    .abs()
+                    < 1e-6
+            );
+            let live: std::collections::BTreeSet<_> = solid_entity_keys(kernel.topo(), result)
+                .unwrap()
+                .into_iter()
+                .collect();
+            let mut found = std::collections::BTreeSet::new();
+            let mut deleted_faces = 0;
+            for kind in [EntityKind::Face, EntityKind::Edge, EntityKind::Vertex] {
+                for index in 0..keys.iter().filter(|key| key.kind == kind).count() {
+                    match resolve(
+                        kernel.topo(),
+                        &PersistentRef::operation_output(anchor, kind, index),
+                    ) {
+                        Resolution::Bound {
+                            entity,
+                            provenance: Provenance::Construction,
+                        } => {
+                            found.insert(entity);
+                        }
+                        Resolution::Dangling { .. } => {
+                            if kind == EntityKind::Face {
+                                deleted_faces += 1;
+                            }
+                        }
+                        other => panic!("unresolved group history: {other:?}"),
+                    }
+                }
+            }
+            assert_eq!(found, live);
+            assert_eq!(deleted_faces, 1);
+            payloads.push(output);
         }
         assert_eq!(payloads[0], payloads[1]);
     }

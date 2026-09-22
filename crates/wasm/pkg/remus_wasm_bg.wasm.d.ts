@@ -248,6 +248,7 @@ export const brepkernel_projectPointOnSurface: (a: number, b: number, c: number,
 export const brepkernel_propagateAttributesForOp: (a: number, b: number, c: number) => [number, number, number, number];
 export const brepkernel_pushPullFace: (a: number, b: number, c: number, d: number) => [number, number, number];
 export const brepkernel_recognizeFeatures: (a: number, b: number, c: number) => [number, number, number, number];
+export const brepkernel_removeBlendsJournaled: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const brepkernel_removeDegenerateEdges: (a: number, b: number, c: number) => [number, number, number];
 export const brepkernel_removeHolesFromFace: (a: number, b: number) => [number, number, number];
 export const brepkernel_repairSolid: (a: number, b: number) => [number, number, number];
