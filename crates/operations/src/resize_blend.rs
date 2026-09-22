@@ -4889,7 +4889,12 @@ mod tests {
                 {
                     Some((cylinder.radius(), face))
                 }
-                _ => None,
+                FaceSurface::Plane { .. }
+                | FaceSurface::Nurbs(_)
+                | FaceSurface::Cylinder(_)
+                | FaceSurface::Cone(_)
+                | FaceSurface::Sphere(_)
+                | FaceSurface::Torus(_) => None,
             })
             .collect();
         bands.sort_by(|left, right| left.0.total_cmp(&right.0));
