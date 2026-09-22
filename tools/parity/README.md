@@ -93,9 +93,9 @@ finding: seed plus new §B row. Serialized arena SHA-256 is compared as a
 visible non-gating gap, as in the first slice. Timings are recorded as
 evidence only; they are not a competitive benchmark.
 
-This extends but does not complete O1.5. Byte identity, failure/evolution
-fixtures, and the Linux/macOS/Windows x86-64/arm64 nightly matrix remain
-open.
+This extends but does not complete O1.5. Byte identity and the
+Linux/macOS/Windows x86-64/arm64 nightly matrix remain open; the contract
+slice below carries the failure/evolution fixtures.
 
 ## Contract slice
 
@@ -114,7 +114,33 @@ batch where the API exists:
   measurable with identical volume and face count on every surface);
 - supported cancellation via a pre-cancelled cooperative token
   (`OperationCancellationToken` + `booleanWithCancellation` direct on WASM,
-  `booleanWithCancelledContext` on the native runner).
+  `booleanWithCancelledContext` on the native runner);
+- evolution reports (overlapping boxes through `fuseWithEvolution` and
+  `cutWithEvolution`): the exact-only boolean's `{solid, evolution}` response
+  is gated per surface on the bucket counts (`modified` inputs/outputs,
+  `generated` inputs/outputs, `deleted`, `unresolved`) plus `origin`
+  (`construction`), on an empty `unresolved` bucket, and on oracle volume
+  (15 / 7) and face count (12 / 9); across surfaces the summary, the
+  unresolved bucket, and the face count must agree, while raw index-level
+  agreement (which arena handles each bucket names) rides along as
+  non-gating evidence like byte identity. The native runner dispatches the
+  same `remus_operations::boolean::boolean_with_evolution` entry point the
+  WASM batch arm calls and passes `EvolutionMap::to_json` through verbatim;
+- invalid primitive input (`makeBox` with a negative width refuses
+  `invalid_argument`; the earlier box still measures volume 8 with 6 faces);
+- empty-intersect sentinel (two far-apart boxes `intersect` succeed with the
+  kernel's typed empty-result solid: quality `exact`, volume 0, zero faces,
+  and the operand still measures volume 8 through an `operandVolumeIndex`
+  probe the native runner answers via `volumesByIndex`);
+- contained-cut refusal (cutting a box fully inside its tool refuses typed:
+  the kernel `EmptyResult` reaches the wire as `operation_failed`, and the
+  tool still measures volume 64 with 6 faces).
+
+The failure-class cells assert the same coarse wire `code` on every surface
+(the native runner mirrors `StructuredWasmError`'s `From<OperationsError>`
+mapping); the empty-result refusal maps through that mapping's catch-all
+arm, so its `code` is `operation_failed` with category `internal` on all
+three surfaces — a vocabulary observation, not a parity gap.
 
 Cancellation scope is labeled honestly: a synchronous WASM call cannot
 process a later JS cancellation message on the same thread, so only the
