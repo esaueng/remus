@@ -84,8 +84,7 @@ fn concave_comb_planar_face_has_no_overlapping_triangles() {
         Point3::new(84.0, 0.0, 17.0),
         Point3::new(87.5, 0.0, 17.0),
     ];
-    let indices =
-        super::planar::cdt_triangulate_simple(&positions, Vec3::new(0.0, -1.0, 0.0)).unwrap();
+    let indices = super::planar::cdt_triangulate_simple(&positions, Vec3::new(0.0, -1.0, 0.0));
     let projected: Vec<_> = positions
         .iter()
         .map(|point| super::planar::project_by_normal(*point, Vec3::new(0.0, -1.0, 0.0)))
