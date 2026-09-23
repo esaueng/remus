@@ -796,6 +796,88 @@ pub(crate) struct BlendMoveEntities {
     pub boundary_pairs: Vec<(EntityKey, EntityKey)>,
 }
 
+/// Exact construction data for a caller-proven explicit blend-face union.
+///
+/// This stays crate-private so higher-level removal can journal one atomic
+/// reconstruction without exposing the internal band description publicly.
+pub(crate) struct RecognizedBlendRemoval {
+    pub solid: SolidId,
+    pub face_map: HashMap<usize, FaceId>,
+    pub boundary_history: BlendBoundaryHistory,
+}
+
+/// Remove an explicit union of already-recognized analytic blend faces in one
+/// wound reconstruction.
+///
+/// The explicit union must have one common radius. Mixed-radius group healing
+/// remains unqualified even when every support is planar: the planar healer's
+/// unused radius witness is not evidence that such a wound reconstructs with
+/// exact carriers and total construction history. The caller owns the outer
+/// transaction.
+pub(crate) fn remove_recognized_blend_faces(
+    topo: &mut Topology,
+    solid: SolidId,
+    faces: &[FaceId],
+) -> Result<RecognizedBlendRemoval, OperationsError> {
+    if faces.is_empty() {
+        return Err(invalid(
+            "recognized blend removal requires at least one face",
+        ));
+    }
+    let solid_faces: HashSet<FaceId> = remus_topology::explorer::solid_faces(topo, solid)?
+        .into_iter()
+        .collect();
+    let mut explicit = faces.to_vec();
+    explicit.sort_unstable_by_key(|face| face.index());
+    explicit.dedup();
+    if explicit.iter().any(|face| !solid_faces.contains(face)) {
+        return Err(invalid(
+            "recognized blend removal contains a face outside the input solid",
+        ));
+    }
+    let mut radii = Vec::with_capacity(explicit.len());
+    for &face in &explicit {
+        let Some((_, radius)) = blend_surface(topo.face(face)?.surface()) else {
+            return Err(reconstruction(format!(
+                "face {} is not constant-radius analytic blend geometry",
+                face.index()
+            )));
+        };
+        radii.push(radius);
+    }
+    let supports = blend_region_supports(topo, solid, &explicit)?;
+    if supports.len() < 2 {
+        return Err(reconstruction(format!(
+            "recognized blend union has {} tangent supports; at least two are required",
+            supports.len()
+        )));
+    }
+    let tol = Tolerance::new();
+    if radii.iter().any(|radius| !tol.approx_eq(*radius, radii[0])) {
+        return Err(reconstruction(
+            "mixed-radius recognized blend groups are not qualified".to_string(),
+        ));
+    }
+    let band = BandDescription {
+        faces: explicit,
+        supports,
+        // Every selected carrier was proven common-radius immediately above.
+        radius: radii[0],
+    };
+    let sharp = remove_blend_region(topo, solid, &band)?;
+    validate_exact_result(topo, sharp.solid, "recognized blend union removal")?;
+    let mut boundary_history = sharp.boundary_history.ok_or_else(|| {
+        reconstruction("recognized blend union has no construction boundary history")
+    })?;
+    boundary_history.sort_unstable();
+    boundary_history.dedup();
+    Ok(RecognizedBlendRemoval {
+        solid: sharp.solid,
+        face_map: sharp.face_map,
+        boundary_history,
+    })
+}
+
 /// Move planar support faces through their tangent analytic blend neighborhood.
 ///
 /// The primary path temporarily restores every incident sharp edge, moves the
@@ -2032,6 +2114,216 @@ struct CompoundEnd {
     west_point: Point3,
 }
 
+/// One topologically split contact between the cylindrical band and a planar
+/// support.  The edges are allowed to be split, but only when they form one
+/// connected, non-branching line chain on the same exact generatrix.
+struct SpringChain {
+    edges: Vec<EdgeId>,
+    endpoints: [VertexId; 2],
+    interior_vertices: Vec<VertexId>,
+}
+
+fn face_contains_contiguous_chain(
+    topo: &Topology,
+    face: FaceId,
+    ordered_edges: &[EdgeId],
+    ordered_vertices: &[VertexId],
+) -> Result<bool, OperationsError> {
+    let face = topo.face(face)?;
+    for wire_id in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+        let wire = topo.wire(wire_id)?;
+        let uses = wire.edges();
+        if ordered_edges.len() > uses.len() {
+            continue;
+        }
+        for start in 0..uses.len() {
+            let forward = ordered_edges.iter().enumerate().all(|(offset, edge)| {
+                let oriented = uses[(start + offset) % uses.len()];
+                let Ok(data) = topo.edge(oriented.edge()) else {
+                    return false;
+                };
+                oriented.edge() == *edge
+                    && oriented.oriented_start(data) == ordered_vertices[offset]
+                    && oriented.oriented_end(data) == ordered_vertices[offset + 1]
+            });
+            let reverse = ordered_edges
+                .iter()
+                .rev()
+                .enumerate()
+                .all(|(offset, edge)| {
+                    let oriented = uses[(start + offset) % uses.len()];
+                    let Ok(data) = topo.edge(oriented.edge()) else {
+                        return false;
+                    };
+                    let vertex = ordered_vertices.len() - 1 - offset;
+                    oriented.edge() == *edge
+                        && oriented.oriented_start(data) == ordered_vertices[vertex]
+                        && oriented.oriented_end(data) == ordered_vertices[vertex - 1]
+                });
+            if forward || reverse {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// Prove that all contacts with one support are one collinear cylindrical
+/// generatrix.  A multi-edge contact is claimed by the surgical path once it
+/// has line geometry; malformed split topology is therefore a typed refusal
+/// rather than a fall-through to the positional healer.
+fn prove_spring_chain(
+    topo: &Topology,
+    support: FaceId,
+    band: FaceId,
+    contacts: Vec<EdgeId>,
+) -> Result<Option<SpringChain>, OperationsError> {
+    if contacts.is_empty() {
+        return Ok(None);
+    }
+    let split = contacts.len() > 1;
+    if contacts.iter().any(|edge| {
+        !matches!(
+            topo.edge(*edge).map(remus_topology::edge::Edge::curve),
+            Ok(EdgeCurve::Line)
+        )
+    }) {
+        return if split {
+            Err(reconstruction(
+                "split spring chain contains a non-line edge".to_string(),
+            ))
+        } else {
+            Ok(None)
+        };
+    }
+
+    let fail = |reason: String| {
+        if split {
+            Err(reconstruction(reason))
+        } else {
+            Ok(None)
+        }
+    };
+    let mut incidence: HashMap<VertexId, Vec<EdgeId>> = HashMap::new();
+    for &edge_id in &contacts {
+        let edge = topo.edge(edge_id)?;
+        if edge.start() == edge.end() {
+            return fail("spring chain contains a closed line edge".to_string());
+        }
+        incidence.entry(edge.start()).or_default().push(edge_id);
+        incidence.entry(edge.end()).or_default().push(edge_id);
+    }
+    let mut endpoints: Vec<VertexId> = incidence
+        .iter()
+        .filter_map(|(&vertex, edges)| (edges.len() == 1).then_some(vertex))
+        .collect();
+    if endpoints.len() != 2 || incidence.values().any(|edges| edges.len() > 2) {
+        return fail(format!(
+            "spring chain is branched or closed ({} endpoints)",
+            endpoints.len()
+        ));
+    }
+
+    endpoints.sort_unstable_by_key(|vertex| vertex.index());
+    // Walk the topology from one terminal to the other. The resulting vertex
+    // order is later proved strictly monotone on the common line, excluding
+    // overlapping/backtracking chains such as 0→2→1→3.
+    let mut ordered_edges = Vec::with_capacity(contacts.len());
+    let mut ordered_vertices = Vec::with_capacity(contacts.len() + 1);
+    let mut visited = HashSet::new();
+    let mut current = endpoints[0];
+    ordered_vertices.push(current);
+    while current != endpoints[1] {
+        let candidates: Vec<EdgeId> = incidence
+            .get(&current)
+            .map_or(&[][..], Vec::as_slice)
+            .iter()
+            .copied()
+            .filter(|edge| !visited.contains(edge))
+            .collect();
+        let [edge_id] = candidates.as_slice() else {
+            return fail("spring chain is disconnected or has an ambiguous walk".to_string());
+        };
+        visited.insert(*edge_id);
+        ordered_edges.push(*edge_id);
+        let edge = topo.edge(*edge_id)?;
+        current = if edge.start() == current {
+            edge.end()
+        } else {
+            edge.start()
+        };
+        ordered_vertices.push(current);
+    }
+    if visited.len() != contacts.len() {
+        return fail("spring chain is disconnected".to_string());
+    }
+
+    let start = topo.vertex(endpoints[0])?.point();
+    let end = topo.vertex(endpoints[1])?.point();
+    let span = (end - start).length();
+    let direction = (end - start)
+        .normalize()
+        .map_err(|error| reconstruction(format!("degenerate spring chain: {error}")))?;
+    let tol = Tolerance::new();
+    let support_plane = unit_plane_of(topo.face(support)?)?;
+    let FaceSurface::Cylinder(cylinder) = topo.face(band)?.surface() else {
+        return Err(reconstruction(
+            "spring-chain proof lost its cylindrical band".to_string(),
+        ));
+    };
+    let axis = cylinder
+        .axis()
+        .normalize()
+        .map_err(|error| reconstruction(format!("invalid blend cylinder axis: {error}")))?;
+    if 1.0 - direction.dot(axis).abs() > tol.angular {
+        return fail("spring chain is not a cylinder generatrix".to_string());
+    }
+    let mut previous_parameter: Option<f64> = None;
+    for &vertex in &ordered_vertices {
+        let parameter = (topo.vertex(vertex)?.point() - start).dot(direction);
+        if !parameter.is_finite()
+            || previous_parameter.is_some_and(|previous| parameter <= previous + tol.linear)
+            || parameter < -tol.linear
+            || parameter > span + tol.linear
+        {
+            return fail("spring chain backtracks or overlaps on its carrier".to_string());
+        }
+        previous_parameter = Some(parameter);
+    }
+    for &vertex in incidence.keys() {
+        let point = topo.vertex(vertex)?.point();
+        if point_line_distance(point, start, end) > tol.linear {
+            return fail("spring chain segments are not collinear".to_string());
+        }
+        if (dot_normal_point(support_plane.0, point) - support_plane.1).abs() > tol.linear {
+            return fail("spring chain leaves its planar support".to_string());
+        }
+        let radial = (point - cylinder.origin()) - axis * (point - cylinder.origin()).dot(axis);
+        if (radial.length() - cylinder.radius()).abs() > tol.linear {
+            return fail("spring chain leaves the cylindrical band carrier".to_string());
+        }
+    }
+
+    if !face_contains_contiguous_chain(topo, support, &ordered_edges, &ordered_vertices)?
+        || !face_contains_contiguous_chain(topo, band, &ordered_edges, &ordered_vertices)?
+    {
+        return fail(
+            "spring chain is not one contiguous boundary run on both incident faces".to_string(),
+        );
+    }
+
+    let mut interior_vertices: Vec<VertexId> = incidence
+        .into_iter()
+        .filter_map(|(vertex, edges)| (edges.len() == 2).then_some(vertex))
+        .collect();
+    interior_vertices.sort_unstable_by_key(|vertex| vertex.index());
+    Ok(Some(SpringChain {
+        edges: ordered_edges,
+        endpoints: [endpoints[0], endpoints[1]],
+        interior_vertices,
+    }))
+}
+
 /// Intersection of two coplanar lines, or `None` when parallel. Coplanarity
 /// itself is verified by the caller comparing the result against both lines.
 fn line_line_intersection(
@@ -2076,8 +2368,8 @@ fn line_plane_intersection(point: Point3, direction: Vec3, normal: Vec3, d: f64)
 /// surviving uses) survives exactly.
 ///
 /// Scope and fallback contract: `Ok(None)` declines anything outside the
-/// isolated-strip scope (non-cylindrical bands, support counts, split or
-/// non-line springs, unprovable extensions such as off-carrier corners or
+/// isolated-strip scope (non-cylindrical bands, support counts, non-line or
+/// unprovable spring chains, extensions such as off-carrier corners or
 /// point contacts) so callers fall back to the positional healer, which
 /// still owns those shapes with identical outcomes to before. Definitive
 /// `Err` is reserved for configurations the fallback cannot heal either:
@@ -2109,6 +2401,22 @@ fn heal_cylinder_plane_band_surgical(
         // The positional fallback owns the cavity refusal.
         return Ok(None);
     }
+    if let Some(outcome) = crate::affine_blend_caps::heal_cylinder_plane_band_affine_cap(
+        topo,
+        solid,
+        band_source,
+        [band.supports[0], band.supports[1]],
+    )? {
+        return Ok(Some(outcome));
+    }
+    if let Some(outcome) = crate::local_wound::heal_cylinder_plane_band_sphere_end(
+        topo,
+        solid,
+        band_source,
+        [band.supports[0], band.supports[1]],
+    )? {
+        return Ok(Some(outcome));
+    }
 
     let copied_entities = crate::copy::copy_solid_with_entity_map(topo, solid)?;
     // Note: scope declines (`Ok(None)`) below leave these copied entities
@@ -2137,24 +2445,31 @@ fn heal_cylinder_plane_band_surgical(
         unit_plane_of(topo.face(supports[1])?)?,
     );
 
-    // Spring contacts: exactly one line edge per support. Anything else
-    // (missing contact, split springs, non-line contacts) is outside the
-    // isolated-strip scope and declines to the positional fallback.
-    let mut springs = Vec::new();
+    // Spring contacts: one proven line chain per support. STEP importers and
+    // prior exact operations may retain harmless split vertices along a
+    // generatrix, so edge count alone is not a geometric ambiguity.
+    let mut spring_chains = Vec::new();
     for &support in &supports {
         let contacts = shared_edges(topo, copy, support, band_face)?;
-        if contacts.is_empty() {
+        let Some(chain) = prove_spring_chain(topo, support, band_face, contacts)? else {
             return Ok(None);
-        }
-        if contacts.len() != 1 {
-            return Ok(None);
-        }
-        if !matches!(topo.edge(contacts[0])?.curve(), EdgeCurve::Line) {
-            return Ok(None);
-        }
-        springs.push(contacts[0]);
+        };
+        spring_chains.push(chain);
     }
+    let springs: Vec<EdgeId> = spring_chains
+        .iter()
+        .flat_map(|chain| chain.edges.iter().copied())
+        .collect();
     let spring_set: HashSet<EdgeId> = springs.iter().copied().collect();
+    let spring_chain_by_edge: HashMap<EdgeId, usize> = spring_chains
+        .iter()
+        .enumerate()
+        .flat_map(|(index, chain)| chain.edges.iter().copied().map(move |edge| (edge, index)))
+        .collect();
+    let spring_interior_vertices: HashSet<VertexId> = spring_chains
+        .iter()
+        .flat_map(|chain| chain.interior_vertices.iter().copied())
+        .collect();
 
     // Cross arcs: every remaining band outer edge. The isolated strip carries
     // exactly two, each meeting exactly one end face.
@@ -2168,6 +2483,31 @@ fn heal_cylinder_plane_band_surgical(
         .map(OrientedEdge::edge)
         .filter(|edge| !spring_set.contains(edge))
         .collect();
+    for chain in &spring_chains {
+        let malformed = chain.endpoints.iter().any(|endpoint| {
+            crosses
+                .iter()
+                .filter(|edge| {
+                    topo.edge(**edge)
+                        .is_ok_and(|edge| edge.start() == *endpoint || edge.end() == *endpoint)
+                })
+                .count()
+                != 1
+        }) || chain.interior_vertices.iter().any(|interior| {
+            crosses.iter().any(|edge| {
+                topo.edge(*edge)
+                    .is_ok_and(|edge| edge.start() == *interior || edge.end() == *interior)
+            })
+        });
+        if malformed {
+            if chain.edges.len() > 1 {
+                return Err(reconstruction(
+                    "split spring chain terminals do not meet exactly one end contact".to_string(),
+                ));
+            }
+            return Ok(None);
+        }
+    }
     let adjacency = topo.build_adjacency(copy)?;
     // A cross edge ending on curved geometry outside the transverse-cylinder
     // compound scope names the missing construction precisely and refuses: no
@@ -2673,9 +3013,10 @@ fn heal_cylinder_plane_band_surgical(
         return Ok(None);
     }
 
-    // Every band vertex maps to a recovered corner: plane-capped crosses
-    // through their endface triple, compound roles explicitly. Mid-strip
-    // split vertices (or any non-strip topology) decline to the fallback.
+    // Every terminal band vertex maps to a recovered corner: plane-capped
+    // crosses through their endface triple, compound roles explicitly.
+    // Proven interior spring-chain vertices disappear with the split contact
+    // edges and therefore intentionally have no result vertex.
     let mut corner_of_vertex: HashMap<VertexId, Point3> = HashMap::new();
     for &cross in &crosses {
         if compound
@@ -2740,7 +3081,12 @@ fn heal_cylinder_plane_band_surgical(
         })
         .flatten()
         .collect();
-    if corner_of_vertex.len() != band_vertices.len() {
+    let terminal_band_vertices: HashSet<VertexId> = band_vertices
+        .iter()
+        .copied()
+        .filter(|vertex| !spring_interior_vertices.contains(vertex))
+        .collect();
+    if corner_of_vertex.keys().copied().collect::<HashSet<_>>() != terminal_band_vertices {
         return Ok(None);
     }
 
@@ -2760,7 +3106,7 @@ fn heal_cylinder_plane_band_surgical(
     let max_displacement = patch_lo.zip(patch_hi).map_or(0.0, |(lo, hi)| {
         (hi - lo).length() * crate::defeature::MAX_HEAL_DISPLACEMENT_FACTOR
     });
-    for &vertex in &band_vertices {
+    for &vertex in &terminal_band_vertices {
         let original = topo.vertex(vertex)?.point();
         let Some(&target) = corner_of_vertex.get(&vertex) else {
             return Ok(None);
@@ -2972,9 +3318,86 @@ fn heal_cylinder_plane_band_surgical(
                 continue;
             }
             let mut new_sequence = Vec::with_capacity(old_sequence.len());
+            let mut emitted_spring_chains = HashSet::new();
             for oriented in &old_sequence {
                 if wound_edges.contains(&oriented.edge()) {
                     let edge = topo.edge(oriented.edge())?;
+                    if spring_set.contains(&oriented.edge()) {
+                        if !support_set.contains(&face) {
+                            return Ok(None);
+                        }
+                        let chain_index = spring_chain_by_edge[&oriented.edge()];
+                        if !emitted_spring_chains.insert(chain_index) {
+                            // Every segment of a proven split chain is replaced
+                            // by the same single result boundary.
+                            continue;
+                        }
+                        let chain = &spring_chains[chain_index];
+                        let chain_start = topo.vertex(chain.endpoints[0])?.point();
+                        let chain_end = topo.vertex(chain.endpoints[1])?.point();
+                        let oriented_start = topo.vertex(oriented.oriented_start(edge))?.point();
+                        let oriented_end = topo.vertex(oriented.oriented_end(edge))?.point();
+                        let forward =
+                            (oriented_end - oriented_start).dot(chain_end - chain_start) > 0.0;
+                        let (first, second) = if forward {
+                            (chain.endpoints[0], chain.endpoints[1])
+                        } else {
+                            (chain.endpoints[1], chain.endpoints[0])
+                        };
+                        let Some(&t0) = corner_of_vertex.get(&first) else {
+                            return Ok(None);
+                        };
+                        let Some(&t1) = corner_of_vertex.get(&second) else {
+                            return Ok(None);
+                        };
+
+                        let sharp_data = topo.edge(sharp_edge)?;
+                        let sharp_start_point = topo.vertex(sharp_data.start())?.point();
+                        let sharp_end_point = topo.vertex(sharp_data.end())?.point();
+                        let at_end = |point: Point3| {
+                            (point - sharp_start_point).length() <= tol.linear
+                                || (point - sharp_end_point).length() <= tol.linear
+                        };
+                        if at_end(t0) && at_end(t1) {
+                            new_sequence.push(orient_corners(topo, sharp_edge, t0, t1)?);
+                            continue;
+                        }
+
+                        // Compound oblique-side spring: the complete chain
+                        // spans a sharp corner to Q*. It contributes the sharp
+                        // edge and R8 arc once, regardless of contact splits.
+                        if let Some(entry) = compound.as_ref() {
+                            let touches_d = chain.endpoints.contains(&entry.d);
+                            let Some(&circle) = compound_circles.get(&entry.r8.index()) else {
+                                return Err(reconstruction("compound R8 arc missing".to_string()));
+                            };
+                            let west = end_corners
+                                .iter()
+                                .copied()
+                                .find(|corner| (*corner - entry.p2).length() > tol.linear)
+                                .ok_or_else(|| {
+                                    reconstruction("sharp chain has no far corner".to_string())
+                                })?;
+                            let goes_forward = touches_d
+                                && (t0 - west).length() <= tol.linear
+                                && (t1 - entry.qstar).length() <= tol.linear;
+                            let goes_reverse = touches_d
+                                && (t0 - entry.qstar).length() <= tol.linear
+                                && (t1 - west).length() <= tol.linear;
+                            if goes_forward {
+                                new_sequence.push(orient_corners(topo, sharp_edge, t0, entry.p2)?);
+                                new_sequence.push(orient_corners(topo, circle, entry.p2, t1)?);
+                                continue;
+                            }
+                            if goes_reverse {
+                                new_sequence.push(orient_corners(topo, circle, t0, entry.p2)?);
+                                new_sequence.push(orient_corners(topo, sharp_edge, entry.p2, t1)?);
+                                continue;
+                            }
+                        }
+                        return Ok(None);
+                    }
+
                     let Some(&start_corner) = corner_of_vertex.get(&edge.start()) else {
                         return Ok(None);
                     };
@@ -3018,74 +3441,7 @@ fn heal_cylinder_plane_band_surgical(
                         });
                         continue;
                     }
-                    // Spring contact on a support: the full sharp edge when it
-                    // spans both sharp corners. A compound oblique-side spring
-                    // spans a sharp corner to Q*: it contributes the sharp
-                    // edge plus the R8 arc covering the old traversal.
-                    if !spring_set.contains(&oriented.edge()) {
-                        return Ok(None);
-                    }
-                    if !support_set.contains(&face) {
-                        return Ok(None);
-                    }
-                    // Ordered traversal corners.
-                    let (t0, t1) = if oriented.is_forward() {
-                        (start_corner, end_corner)
-                    } else {
-                        (end_corner, start_corner)
-                    };
-                    let sharp_data = topo.edge(sharp_edge)?;
-                    let (sharp_start, sharp_end) = (sharp_data.start(), sharp_data.end());
-                    let sharp_start_point = topo.vertex(sharp_start)?.point();
-                    let sharp_end_point = topo.vertex(sharp_end)?.point();
-                    let at_end = |point: Point3| {
-                        (point - sharp_start_point).length() <= tol.linear
-                            || (point - sharp_end_point).length() <= tol.linear
-                    };
-                    // Full sharp span in either order.
-                    if at_end(t0) && at_end(t1) {
-                        new_sequence.push(orient_corners(topo, sharp_edge, t0, t1)?);
-                        continue;
-                    }
-                    // Compound oblique-side spring: spans a sharp corner to
-                    // Q*. Covered by the sharp edge plus the R8 arc in
-                    // traversal order. Applies only to the spring touching
-                    // the D-role vertex identified during classification;
-                    // anything else declines to the positional fallback.
-                    if let Some(entry) = compound.as_ref() {
-                        let touches_d = topo
-                            .edge(oriented.edge())
-                            .is_ok_and(|data| data.start() == entry.d || data.end() == entry.d);
-                        let Some(&circle) = compound_circles.get(&entry.r8.index()) else {
-                            return Err(reconstruction("compound R8 arc missing".to_string()));
-                        };
-                        // The west corner: the sharp end distinct from P2.
-                        let west = end_corners
-                            .iter()
-                            .copied()
-                            .find(|corner| (*corner - entry.p2).length() > tol.linear)
-                            .ok_or_else(|| {
-                                reconstruction("sharp chain has no far corner".to_string())
-                            })?;
-                        // Chain order along the old traversal: sharp covers
-                        // the W–P2 leg, the arc the P2–Q* leg.
-                        let forward = touches_d
-                            && (t0 - west).length() <= tol.linear
-                            && (t1 - entry.qstar).length() <= tol.linear;
-                        let reverse = touches_d
-                            && (t0 - entry.qstar).length() <= tol.linear
-                            && (t1 - west).length() <= tol.linear;
-                        if forward {
-                            new_sequence.push(orient_corners(topo, sharp_edge, t0, entry.p2)?);
-                            new_sequence.push(orient_corners(topo, circle, entry.p2, t1)?);
-                            continue;
-                        }
-                        if reverse {
-                            new_sequence.push(orient_corners(topo, circle, t0, entry.p2)?);
-                            new_sequence.push(orient_corners(topo, sharp_edge, entry.p2, t1)?);
-                            continue;
-                        }
-                    }
+                    // Every wound edge left here is a cross contact.
                     return Ok(None);
                 }
                 let edge = topo.edge(oriented.edge())?;
@@ -3196,7 +3552,7 @@ fn heal_cylinder_plane_band_surgical(
                 referenced.insert(edge.end());
             }
         }
-        for &vertex in corner_of_vertex.keys() {
+        for &vertex in &band_vertices {
             if referenced.contains(&vertex) {
                 return Err(reconstruction(format!(
                     "rebuilt wires still reference superseded vertex {}",
@@ -3301,7 +3657,7 @@ fn heal_cylinder_plane_band_surgical(
                 }
             }
         }
-        for &vertex in corner_of_vertex.keys() {
+        for &vertex in &band_vertices {
             if referenced.contains(&vertex) {
                 return Err(reconstruction(format!(
                     "rebuilt wires still reference superseded vertex {}",
@@ -4485,6 +4841,114 @@ mod tests {
     #![allow(clippy::panic, clippy::unwrap_used)]
 
     use super::*;
+
+    #[test]
+    fn recognized_group_refuses_mixed_radii_before_mutation() {
+        use remus_topology::explorer::{solid_edges, solid_entity_counts, solid_faces};
+
+        fn vertical_edge_at(topo: &Topology, solid: SolidId, x: f64, y: f64) -> EdgeId {
+            solid_edges(topo, solid)
+                .unwrap()
+                .into_iter()
+                .find(|&edge| {
+                    let edge = topo.edge(edge).unwrap();
+                    let start = topo.vertex(edge.start()).unwrap().point();
+                    let end = topo.vertex(edge.end()).unwrap().point();
+                    matches!(edge.curve(), EdgeCurve::Line)
+                        && (start.x() - x).abs() <= Tolerance::new().linear
+                        && (end.x() - x).abs() <= Tolerance::new().linear
+                        && (start.y() - y).abs() <= Tolerance::new().linear
+                        && (end.y() - y).abs() <= Tolerance::new().linear
+                        && (start.z() - end.z()).abs() > 1.0
+                })
+                .unwrap()
+        }
+
+        let mut topo = Topology::new();
+        let sharp = crate::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+        let first_edge = vertical_edge_at(&topo, sharp, 0.0, 0.0);
+        let first = fillet_v2(&mut topo, sharp, &[first_edge], 1.0)
+            .unwrap()
+            .solid;
+        let second_edge = vertical_edge_at(&topo, first, 10.0, 10.0);
+        let combined = fillet_v2(&mut topo, first, &[second_edge], 2.0)
+            .unwrap()
+            .solid;
+        assert!(
+            crate::validate::validate_solid(&topo, combined)
+                .unwrap()
+                .is_valid()
+        );
+        let mut bands: Vec<_> = solid_faces(&topo, combined)
+            .unwrap()
+            .into_iter()
+            .filter_map(|face| match topo.face(face).unwrap().surface() {
+                FaceSurface::Cylinder(cylinder)
+                    if Tolerance::new().approx_eq(cylinder.radius(), 1.0)
+                        || Tolerance::new().approx_eq(cylinder.radius(), 2.0) =>
+                {
+                    Some((cylinder.radius(), face))
+                }
+                FaceSurface::Plane { .. }
+                | FaceSurface::Nurbs(_)
+                | FaceSurface::Cylinder(_)
+                | FaceSurface::Cone(_)
+                | FaceSurface::Sphere(_)
+                | FaceSurface::Torus(_) => None,
+            })
+            .collect();
+        bands.sort_by(|left, right| left.0.total_cmp(&right.0));
+        let [(first_radius, first_band), (second_radius, second_band)] = bands.as_slice() else {
+            panic!("expected two retained distinct-radius bands, got {bands:?}");
+        };
+        assert!(Tolerance::new().approx_eq(*first_radius, 1.0));
+        assert!(Tolerance::new().approx_eq(*second_radius, 2.0));
+        let before_arena = (
+            topo.num_vertices(),
+            topo.num_edges(),
+            topo.num_wires(),
+            topo.num_faces(),
+            topo.num_shells(),
+            topo.num_solids(),
+            topo.num_loops(),
+            topo.num_coedges(),
+            topo.num_pcurves(),
+        );
+        let before_entities = solid_entity_counts(&topo, combined).unwrap();
+
+        let error = match remove_recognized_blend_faces(
+            &mut topo,
+            combined,
+            &[*first_band, *second_band],
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("mixed-radius recognized group unexpectedly succeeded"),
+        };
+        assert!(
+            format!("{error}").contains("mixed-radius recognized blend groups are not qualified"),
+            "unexpected refusal: {error}"
+        );
+        assert_eq!(
+            (
+                topo.num_vertices(),
+                topo.num_edges(),
+                topo.num_wires(),
+                topo.num_faces(),
+                topo.num_shells(),
+                topo.num_solids(),
+                topo.num_loops(),
+                topo.num_coedges(),
+                topo.num_pcurves(),
+            ),
+            before_arena,
+            "mixed-radius refusal must not allocate"
+        );
+        assert_eq!(
+            solid_entity_counts(&topo, combined).unwrap(),
+            before_entities,
+            "mixed-radius refusal preserves the source topology"
+        );
+    }
 
     /// The remove/rebuild path is the primary blend-aware planar move; its
     /// caller silently falls back to the rigid translation path when it

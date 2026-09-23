@@ -174,6 +174,7 @@ Quick reference — find the right file for any task:
 | Analytic surfaces → NURBS | `convert/surface_to_nurbs.rs` |
 | NURBS → analytic curve recognition | `convert/recognize_curve.rs` |
 | NURBS → analytic surface recognition | `convert/recognize_surface.rs` |
+| Algebraic qualification of affine degree-one NURBS plane patches | `convert/certified_plane.rs` |
 | Error types | `error.rs` |
 
 ### L1: topology (`crates/topology/src/`)
@@ -188,6 +189,7 @@ Quick reference — find the right file for any task:
 | Shape explorer (iterate children) | `explorer.rs` |
 | PCurve registry | `pcurve.rs` |
 | Topology validation | `validation.rs` |
+| Narrow whole-interval SameParameter certificates | `validation/same_parameter_proof.rs` |
 | Test utilities (`test-utils` feature) | `test_utils.rs` |
 | Coedge — one directed use of an edge by a face boundary | `coedge.rs` |
 | Loop — ordered cycle of coedges bounding a face | `face_loop.rs` |
@@ -413,6 +415,9 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Direct push/pull face editing | `push_pull.rs` |
 | Exact support-surface replacement with topology-preserving re-limitation | `replace_surface.rs` |
 | Exact constant-radius blend-band resizing | `resize_blend.rs` |
+| Exact local reconstruction of analytic wounds | `local_wound.rs` |
+| Cylindrical blend removal with certified affine NURBS caps | `affine_blend_caps.rs` |
+| Atomic removal of explicitly selected connected blend groups | `remove_blends.rs` |
 | Full-turn rim chain recognition | `tessellate/rim_chain.rs` |
 | Shared test assertion helpers | `test_helpers.rs` |
 
