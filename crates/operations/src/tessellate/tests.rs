@@ -42,6 +42,82 @@ fn tessellate_triangle() {
 }
 
 #[test]
+fn concave_comb_planar_face_has_no_overlapping_triangles() {
+    // Synthetic heat-sink silhouette: a base with eight repeated fins. This
+    // is deliberately authored here rather than copied from a user document.
+    // The old CDT fallback formed a fan from vertex 0, crossing every notch.
+    let positions = vec![
+        Point3::new(87.5, 0.0, -4.0),
+        Point3::new(2.5, 0.0, -4.0),
+        Point3::new(2.5, 0.0, 6.0),
+        Point3::new(4.0, 0.0, 6.0),
+        Point3::new(4.0, 0.0, 27.5),
+        Point3::new(7.0, 0.0, 27.5),
+        Point3::new(7.0, 0.0, 6.0),
+        Point3::new(15.0, 0.0, 6.0),
+        Point3::new(15.0, 0.0, 27.5),
+        Point3::new(18.0, 0.0, 27.5),
+        Point3::new(18.0, 0.0, 6.0),
+        Point3::new(26.0, 0.0, 6.0),
+        Point3::new(26.0, 0.0, 27.5),
+        Point3::new(29.0, 0.0, 27.5),
+        Point3::new(29.0, 0.0, 6.0),
+        Point3::new(37.0, 0.0, 6.0),
+        Point3::new(37.0, 0.0, 27.5),
+        Point3::new(40.0, 0.0, 27.5),
+        Point3::new(40.0, 0.0, 6.0),
+        Point3::new(48.0, 0.0, 6.0),
+        Point3::new(48.0, 0.0, 27.5),
+        Point3::new(51.0, 0.0, 27.5),
+        Point3::new(51.0, 0.0, 6.0),
+        Point3::new(59.0, 0.0, 6.0),
+        Point3::new(59.0, 0.0, 27.5),
+        Point3::new(62.0, 0.0, 27.5),
+        Point3::new(62.0, 0.0, 6.0),
+        Point3::new(70.0, 0.0, 6.0),
+        Point3::new(70.0, 0.0, 27.5),
+        Point3::new(76.0, 0.0, 27.5),
+        Point3::new(76.0, 0.0, 6.0),
+        Point3::new(81.0, 0.0, 6.0),
+        Point3::new(81.0, 0.0, 27.5),
+        Point3::new(84.0, 0.0, 27.5),
+        Point3::new(84.0, 0.0, 17.0),
+        Point3::new(87.5, 0.0, 17.0),
+    ];
+    let indices = super::planar::cdt_triangulate_simple(&positions, Vec3::new(0.0, -1.0, 0.0));
+    let projected: Vec<_> = positions
+        .iter()
+        .map(|point| super::planar::project_by_normal(*point, Vec3::new(0.0, -1.0, 0.0)))
+        .collect();
+    let ear_indices = super::planar::ear_clip_triangulate(&projected).unwrap();
+
+    let polygon_area = positions
+        .iter()
+        .zip(positions.iter().cycle().skip(1))
+        .take(positions.len())
+        .map(|(a, b)| a.x().mul_add(b.z(), -b.x() * a.z()))
+        .sum::<f64>()
+        .abs()
+        / 2.0;
+    let triangle_area = indices
+        .chunks_exact(3)
+        .map(|triangle| {
+            let a = positions[triangle[0] as usize];
+            let b = positions[triangle[1] as usize];
+            let c = positions[triangle[2] as usize];
+            ((b - a).cross(c - a)).length() / 2.0
+        })
+        .sum::<f64>();
+
+    assert!((polygon_area - 1469.0).abs() < 1e-9);
+    assert!(
+        (triangle_area - polygon_area).abs() < 1e-9,
+        "triangles cover {triangle_area} square units for a {polygon_area}-square-unit face"
+    );
+    assert_eq!(ear_indices.len(), indices.len());
+}
+
+#[test]
 fn planar_tessellation_rejects_excessive_circle_trim_sampling() {
     let mut topo = Topology::new();
     let solid = crate::primitives::make_cylinder(&mut topo, 1.0, 2.0).unwrap();
