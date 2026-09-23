@@ -341,12 +341,32 @@ pub enum AnalyticSurface<'a> {
     },
 }
 
+/// UV of a 3D point on a plane `normal . p = d`, in the deterministic
+/// `Frame3::from_normal` frame shared with `surface_closures` and
+/// `project_analytic` (`origin = normal * d`).
+///
+/// The frame axes are perpendicular to `normal`, so the normal component of
+/// `point - origin` contributes nothing: this agrees with `project_analytic`'s
+/// orthogonal projection for on-plane points (up to float rounding).
+///
+/// Returns an error instead of a fabricated `(0.0, 0.0)` when the plane frame
+/// cannot be built (a zero plane normal).
+///
+/// # Errors
+///
+/// Returns [`MathError`] when the plane frame construction fails.
+fn plane_uv(normal: Vec3, d: f64, point: Point3) -> Result<(f64, f64), MathError> {
+    let origin = Point3::new(normal.x() * d, normal.y() * d, normal.z() * d);
+    let frame = Frame3::from_normal(origin, normal)?;
+    let dq = point - frame.origin;
+    Ok((dq.dot(frame.x), dq.dot(frame.y)))
+}
+
 /// UV of a 3D point on one intersection support surface.
 ///
 /// Quadrics use their native [`project_point`](CylindricalSurface::project_point)
 /// (angular parameter wrapped to the canonical `[0, TAU)`); a plane uses the
-/// deterministic `Frame3::from_normal` frame shared with `surface_closures`
-/// and `project_analytic` (`origin = normal * d`).
+/// deterministic [`plane_uv`] frame.
 ///
 /// Returns an error instead of a fabricated `(0.0, 0.0)` when the plane frame
 /// cannot be built (a zero plane normal); every other support projects
@@ -361,12 +381,7 @@ fn support_uv(surface: &AnalyticSurface<'_>, point: Point3) -> Result<(f64, f64)
         AnalyticSurface::Cone(cone) => Ok(cone.project_point(point)),
         AnalyticSurface::Sphere(sphere) => Ok(sphere.project_point(point)),
         AnalyticSurface::Torus(torus) => Ok(torus.project_point(point)),
-        AnalyticSurface::Plane { normal, d } => {
-            let origin = Point3::new(normal.x() * d, normal.y() * d, normal.z() * d);
-            let frame = Frame3::from_normal(origin, *normal)?;
-            let dq = point - frame.origin;
-            Ok((dq.dot(frame.x), dq.dot(frame.y)))
-        }
+        AnalyticSurface::Plane { normal, d } => plane_uv(*normal, *d, point),
     }
 }
 
@@ -852,7 +867,8 @@ fn sample_plane_torus(
 ///
 /// # Errors
 ///
-/// Returns an error if curve fitting fails.
+/// Returns an error if curve fitting fails or the plane frame cannot be
+/// built (a zero plane normal).
 #[allow(clippy::cast_precision_loss)]
 pub fn intersect_plane_cylinder(
     cyl: &CylindricalSurface,
@@ -879,7 +895,7 @@ pub fn intersect_plane_cylinder(
                 ipoints.push(IntersectionPoint {
                     point: pt,
                     param1: (u, 0.0),
-                    param2: (0.0, 0.0),
+                    param2: plane_uv(normal, d, pt)?,
                 });
             }
         } else {
@@ -891,7 +907,7 @@ pub fn intersect_plane_cylinder(
                 ipoints.push(IntersectionPoint {
                     point: pt,
                     param1: (u, v),
-                    param2: (0.0, 0.0),
+                    param2: plane_uv(normal, d, pt)?,
                 });
             }
         }
@@ -907,7 +923,8 @@ pub fn intersect_plane_cylinder(
 ///
 /// # Errors
 ///
-/// Returns an error if curve fitting fails.
+/// Returns an error if curve fitting fails or the plane frame cannot be
+/// built (a zero plane normal).
 #[allow(clippy::cast_precision_loss)]
 pub fn intersect_plane_sphere(
     sphere: &SphericalSurface,
@@ -946,7 +963,7 @@ pub fn intersect_plane_sphere(
         ipoints.push(IntersectionPoint {
             point: pt,
             param1: (theta, 0.0),
-            param2: (0.0, 0.0),
+            param2: plane_uv(normal, d, pt)?,
         });
     }
 
@@ -960,7 +977,8 @@ pub fn intersect_plane_sphere(
 ///
 /// # Errors
 ///
-/// Returns an error if curve fitting fails.
+/// Returns an error if curve fitting fails or the plane frame cannot be
+/// built (a zero plane normal).
 #[allow(clippy::cast_precision_loss)]
 pub fn intersect_plane_cone(
     cone: &ConicalSurface,
@@ -994,7 +1012,7 @@ pub fn intersect_plane_cone(
             ipoints.push(IntersectionPoint {
                 point: pt,
                 param1: (u, v),
-                param2: (0.0, 0.0),
+                param2: plane_uv(normal, d, pt)?,
             });
         }
     }
@@ -1009,7 +1027,8 @@ pub fn intersect_plane_cone(
 ///
 /// # Errors
 ///
-/// Returns an error if curve fitting fails.
+/// Returns an error if curve fitting fails or the plane frame cannot be
+/// built (a zero plane normal).
 #[allow(
     clippy::cast_precision_loss,
     clippy::too_many_lines,
@@ -1111,12 +1130,14 @@ pub fn intersect_plane_torus(
             let mut pts: Vec<Point3> = chain.iter().map(|&i| crossing_pts[i].2).collect();
             let mut ipts: Vec<IntersectionPoint> = chain
                 .iter()
-                .map(|&i| IntersectionPoint {
-                    point: crossing_pts[i].2,
-                    param1: (crossing_pts[i].0, crossing_pts[i].1),
-                    param2: (0.0, 0.0),
+                .map(|&i| {
+                    Ok::<_, MathError>(IntersectionPoint {
+                        point: crossing_pts[i].2,
+                        param1: (crossing_pts[i].0, crossing_pts[i].1),
+                        param2: plane_uv(normal, d, crossing_pts[i].2)?,
+                    })
                 })
-                .collect();
+                .collect::<Result<Vec<_>, _>>()?;
 
             // Plane × full torus is always a set of CLOSED loops, but the greedy
             // nearest-neighbour chaining stops one step short of closing: the
