@@ -12,6 +12,8 @@ use crate::TopologyError;
 use crate::shell::Shell;
 use crate::wire::{Wire, WireId};
 
+mod same_parameter_proof;
+
 /// Linear tolerance for treating two distinct vertices as coincident during
 /// wire-closure checks. Matches the default linear tolerance (`1e-7`) and the
 /// quantization step used when wires are chained by endpoint position, so a
@@ -762,6 +764,40 @@ fn pcurve_definition_is_finite(curve: &remus_math::curves2d::Curve2D) -> bool {
     }
 }
 
+fn pcurve_definition_is_evaluable(curve: &remus_math::curves2d::Curve2D) -> bool {
+    let remus_math::curves2d::Curve2D::Nurbs(nurbs) = curve else {
+        return true;
+    };
+    let degree = nurbs.degree();
+    let points = nurbs.control_points();
+    let knots = nurbs.knots();
+    let weights = nurbs.weights();
+    degree > 0
+        && degree < points.len()
+        && knots.len() == points.len() + degree + 1
+        && weights.len() == points.len()
+        && knots.windows(2).all(|pair| pair[0] <= pair[1])
+        && weights.iter().all(|weight| *weight > 0.0)
+}
+
+fn same_parameter_proof_unavailable(
+    edge: crate::edge::EdgeId,
+    face: crate::face::FaceId,
+    forward: bool,
+    curve: &remus_math::curves2d::Curve2D,
+    surface: &crate::face::FaceSurface,
+    edge_curve: &crate::edge::EdgeCurve,
+) -> CurveUseValidationError {
+    CurveUseValidationError::SameParameterProofUnavailable {
+        edge,
+        face,
+        orientation: orientation_label(forward),
+        pcurve_type: pcurve_type_label(curve),
+        surface_type: surface.type_tag(),
+        edge_type: edge_curve.type_tag(),
+    }
+}
+
 /// Measures how far a pcurve's surface image deviates from its 3D edge
 /// under the shared normalized parameterization (`SameParameter`).
 ///
@@ -873,7 +909,7 @@ pub fn check_same_parameter_strict(
     };
     let start = topo.vertex(edge.start())?.point();
     let end = topo.vertex(edge.end())?.point();
-    let _domain = edge.strict_domain()?;
+    let domain = edge.strict_domain()?;
     let (p0, p1) = (pcurve.t_start(), pcurve.t_end());
     if !p0.is_finite() || !p1.is_finite() {
         return Err(non_finite_pcurve_use(
@@ -891,6 +927,16 @@ pub fn check_same_parameter_strict(
             "curve_definition",
         ));
     }
+    if !pcurve_definition_is_evaluable(pcurve.curve()) {
+        return Err(same_parameter_proof_unavailable(
+            edge_id,
+            face_id,
+            forward,
+            pcurve.curve(),
+            &surface,
+            edge.curve(),
+        ));
+    }
     let uv0 = pcurve.evaluate(p0);
     let uv1 = pcurve.evaluate(p1);
     if !uv0.0.iter().all(|value| value.is_finite()) || !uv1.0.iter().all(|value| value.is_finite())
@@ -902,6 +948,114 @@ pub fn check_same_parameter_strict(
             "pcurve_evaluation",
         ));
     }
+    let (oriented_start, oriented_end) = if forward { (start, end) } else { (end, start) };
+    let proof = match edge.curve() {
+        crate::edge::EdgeCurve::Line => match &surface {
+            crate::face::FaceSurface::Plane { normal, d } => match pcurve.curve() {
+                remus_math::curves2d::Curve2D::Line(line) => {
+                    Some(same_parameter_proof::plane_line(
+                        line,
+                        *normal,
+                        *d,
+                        p0,
+                        p1,
+                        oriented_start,
+                        oriented_end,
+                    ))
+                }
+                _ => None,
+            },
+            crate::face::FaceSurface::Nurbs(nurbs) => match pcurve.curve() {
+                remus_math::curves2d::Curve2D::Line(line) => {
+                    Some(same_parameter_proof::affine_nurbs_line(
+                        nurbs,
+                        line,
+                        p0,
+                        p1,
+                        oriented_start,
+                        oriented_end,
+                    ))
+                }
+                _ => None,
+            },
+            crate::face::FaceSurface::Cylinder(_)
+            | crate::face::FaceSurface::Cone(_)
+            | crate::face::FaceSurface::Sphere(_)
+            | crate::face::FaceSurface::Torus(_) => None,
+        },
+        crate::edge::EdgeCurve::Circle(circle) => match &surface {
+            crate::face::FaceSurface::Plane { normal, d } => match pcurve.curve() {
+                remus_math::curves2d::Curve2D::Circle(circle_2d) => {
+                    Some(same_parameter_proof::plane_circle(
+                        circle_2d,
+                        *normal,
+                        *d,
+                        circle,
+                        same_parameter_proof::CurveUse {
+                            p0,
+                            p1,
+                            edge_domain: domain,
+                            forward,
+                        },
+                    ))
+                }
+                _ => None,
+            },
+            crate::face::FaceSurface::Sphere(sphere) => match pcurve.curve() {
+                remus_math::curves2d::Curve2D::Nurbs(nurbs) => {
+                    Some(same_parameter_proof::sphere_circle_nurbs(
+                        sphere,
+                        nurbs,
+                        circle,
+                        same_parameter_proof::CurveUse {
+                            p0,
+                            p1,
+                            edge_domain: domain,
+                            forward,
+                        },
+                    ))
+                }
+                _ => None,
+            },
+            crate::face::FaceSurface::Nurbs(_)
+            | crate::face::FaceSurface::Cylinder(_)
+            | crate::face::FaceSurface::Cone(_)
+            | crate::face::FaceSurface::Torus(_) => None,
+        },
+        crate::edge::EdgeCurve::NurbsCurve(_)
+        | crate::edge::EdgeCurve::Ellipse(_)
+        | crate::edge::EdgeCurve::Hyperbola(_)
+        | crate::edge::EdgeCurve::Parabola(_) => None,
+    };
+    if let Some(proof) = proof {
+        match proof {
+            same_parameter_proof::ProofResult::Certified(bound) => {
+                return Ok(Some(SameParameterReport {
+                    max_deviation: bound.max_deviation,
+                    at_parameter: bound.at_parameter,
+                    samples: bound.evaluations,
+                }));
+            }
+            same_parameter_proof::ProofResult::NonFinite => {
+                return Err(non_finite_pcurve_use(
+                    edge_id,
+                    face_id,
+                    forward,
+                    "surface_or_curve_evaluation",
+                ));
+            }
+            same_parameter_proof::ProofResult::Unavailable => {
+                return Err(same_parameter_proof_unavailable(
+                    edge_id,
+                    face_id,
+                    forward,
+                    pcurve.curve(),
+                    &surface,
+                    edge.curve(),
+                ));
+            }
+        }
+    }
     if let (
         remus_math::curves2d::Curve2D::Line(line),
         crate::face::FaceSurface::Cylinder(cylinder),
@@ -912,7 +1066,6 @@ pub fn check_same_parameter_strict(
     {
         let on_surface_start = cylinder.evaluate(uv0.x(), uv0.y());
         let on_surface_end = cylinder.evaluate(uv1.x(), uv1.y());
-        let (oriented_start, oriented_end) = if forward { (start, end) } else { (end, start) };
         let d0 = (on_surface_start - oriented_start).length();
         let d1 = (on_surface_end - oriented_end).length();
         if !on_surface_start.0.iter().all(|value| value.is_finite())
@@ -950,14 +1103,14 @@ pub fn check_same_parameter_strict(
         }
         let arithmetic_bound = 64.0 * f64::EPSILON * coordinate_scale;
         if arithmetic_bound > remus_math::tolerance::Tolerance::new().linear {
-            return Err(CurveUseValidationError::SameParameterProofUnavailable {
-                edge: edge_id,
-                face: face_id,
-                orientation: orientation_label(forward),
-                pcurve_type: pcurve_type_label(pcurve.curve()),
-                surface_type: surface.type_tag(),
-                edge_type: edge.curve().type_tag(),
-            });
+            return Err(same_parameter_proof_unavailable(
+                edge_id,
+                face_id,
+                forward,
+                pcurve.curve(),
+                &surface,
+                edge.curve(),
+            ));
         }
         let (endpoint_deviation, at_parameter) = if d0 >= d1 { (d0, p0) } else { (d1, p1) };
         return Ok(Some(SameParameterReport {
@@ -967,14 +1120,14 @@ pub fn check_same_parameter_strict(
         }));
     }
 
-    Err(CurveUseValidationError::SameParameterProofUnavailable {
-        edge: edge_id,
-        face: face_id,
-        orientation: orientation_label(forward),
-        pcurve_type: pcurve_type_label(pcurve.curve()),
-        surface_type: surface.type_tag(),
-        edge_type: edge.curve().type_tag(),
-    })
+    Err(same_parameter_proof_unavailable(
+        edge_id,
+        face_id,
+        forward,
+        pcurve.curve(),
+        &surface,
+        edge.curve(),
+    ))
 }
 
 /// Strictly enforces `SameParameter` for one oriented edge use.
@@ -1143,6 +1296,14 @@ pub fn check_same_range_strict(
             "curve_definition",
         ));
     }
+    if !pcurve_definition_is_evaluable(pcurve.curve()) {
+        return Err(CurveUseValidationError::SameRangeProofUnavailable {
+            edge: edge_id,
+            face: face_id,
+            orientation: orientation_label(forward),
+            surface_type: surface.type_tag(),
+        });
+    }
     let uv0 = pcurve.evaluate(pcurve.t_start());
     let uv1 = pcurve.evaluate(pcurve.t_end());
     if !uv0.0.iter().all(|value| value.is_finite()) || !uv1.0.iter().all(|value| value.is_finite())
@@ -1153,6 +1314,51 @@ pub fn check_same_range_strict(
             forward,
             "pcurve_evaluation",
         ));
+    }
+    if let crate::face::FaceSurface::Plane { normal, d } = &surface {
+        let supported = matches!(
+            (pcurve.curve(), edge.curve()),
+            (
+                remus_math::curves2d::Curve2D::Line(_),
+                crate::edge::EdgeCurve::Line
+            ) | (
+                remus_math::curves2d::Curve2D::Circle(_),
+                crate::edge::EdgeCurve::Circle(_)
+            )
+        );
+        let proof = if supported {
+            same_parameter_proof::plane_range(
+                *normal,
+                *d,
+                same_parameter_proof::PlaneEndpoints {
+                    uv0,
+                    uv1,
+                    oriented_start,
+                    oriented_end,
+                    p0: pcurve.t_start(),
+                    p1: pcurve.t_end(),
+                },
+            )
+        } else {
+            same_parameter_proof::ProofResult::Unavailable
+        };
+        return match proof {
+            same_parameter_proof::ProofResult::Certified(bound) => Ok(Some(bound.max_deviation)),
+            same_parameter_proof::ProofResult::NonFinite => Err(non_finite_pcurve_use(
+                edge_id,
+                face_id,
+                forward,
+                "surface_or_endpoint_evaluation",
+            )),
+            same_parameter_proof::ProofResult::Unavailable => {
+                Err(CurveUseValidationError::SameRangeProofUnavailable {
+                    edge: edge_id,
+                    face: face_id,
+                    orientation: orientation_label(forward),
+                    surface_type: surface.type_tag(),
+                })
+            }
+        };
     }
     let (Some(s0), Some(s1)) = (
         surface.evaluate(uv0.x(), uv0.y()),
@@ -2099,7 +2305,8 @@ mod same_parameter_tests {
     use remus_math::curves::Circle3D;
     use remus_math::curves2d::{Circle2D, Curve2D, Ellipse2D, Line2D, NurbsCurve2D};
     use remus_math::diagnostic::ToDiagnostic;
-    use remus_math::surfaces::CylindricalSurface;
+    use remus_math::nurbs::surface::NurbsSurface;
+    use remus_math::surfaces::{CylindricalSurface, SphericalSurface};
     use remus_math::vec::{Point2, Point3, Vec2, Vec3};
 
     use crate::TopologyError;
@@ -2434,7 +2641,7 @@ mod same_parameter_tests {
     }
 
     #[test]
-    fn stored_planar_pcurve_is_typed_unproven() {
+    fn stored_planar_pcurve_in_the_wrong_canonical_chart_is_rejected() {
         let (mut topo, seam, face) = cylinder_seam();
         topo.face_mut(face)
             .unwrap()
@@ -2449,19 +2656,277 @@ mod same_parameter_tests {
             validate_same_parameter_strict(&topo, seam, face, true, 1e-7, 32).unwrap_err();
         assert!(matches!(
             parameter,
-            CurveUseValidationError::SameParameterProofUnavailable { .. }
+            CurveUseValidationError::Topology(TopologyError::SameParameterExceeded { .. })
         ));
-        assert_eq!(
-            parameter.diagnostic().code(),
-            "same_parameter_proof_unavailable"
-        );
+        assert_eq!(parameter.diagnostic().code(), "same_parameter_exceeded");
 
         let range = validate_same_range_strict(&topo, seam, face, true, 1e-7).unwrap_err();
         assert!(matches!(
             range,
-            CurveUseValidationError::SameRangeProofUnavailable { .. }
+            CurveUseValidationError::Topology(TopologyError::SameRangeExceeded { .. })
         ));
-        assert_eq!(range.diagnostic().code(), "same_range_proof_unavailable");
+        assert_eq!(range.diagnostic().code(), "same_range_exceeded");
+    }
+
+    fn canonical_plane_line_use() -> (Topology, EdgeId, FaceId) {
+        let mut topo = Topology::new();
+        // For +Z, the canonical plane chart is u=+Y, v=-X, anchored at
+        // n*d/|n|^2.  This is the exact chart used by local reconstruction.
+        let start = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
+        let end = topo.add_vertex(Vertex::new(Point3::new(0.0, 3.0, 0.0), 1e-7));
+        let edge = topo.add_edge(Edge::new(start, end, EdgeCurve::Line));
+        let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], false).unwrap());
+        let face = topo.add_face(Face::new(
+            wire,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+        topo.set_pcurve_oriented(
+            edge,
+            face,
+            true,
+            PCurve::new(
+                Curve2D::Line(Line2D::new(Point2::new(0.0, 0.0), Vec2::new(1.0, 0.0)).unwrap()),
+                0.0,
+                3.0,
+            ),
+        )
+        .unwrap();
+        (topo, edge, face)
+    }
+
+    #[test]
+    fn canonical_plane_line_has_algebraic_parameter_and_range_proofs() {
+        let (topo, edge, face) = canonical_plane_line_use();
+        validate_same_parameter_strict(&topo, edge, face, true, 1e-7, 2).unwrap();
+        validate_same_range_strict(&topo, edge, face, true, 1e-7).unwrap();
+    }
+
+    #[test]
+    fn canonical_plane_circle_has_a_closed_form_full_arc_bound() {
+        let mut topo = Topology::new();
+        let circle = Circle3D::new_with_ref(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            2.0,
+            Vec3::new(0.0, 1.0, 0.0),
+        )
+        .unwrap();
+        let domain = (0.2, 1.4);
+        let start = topo.add_vertex(Vertex::new(circle.evaluate(domain.0), 1e-7));
+        let end = topo.add_vertex(Vertex::new(circle.evaluate(domain.1), 1e-7));
+        let mut edge_data = Edge::new(start, end, EdgeCurve::Circle(circle));
+        edge_data.set_trim(Some(domain));
+        let edge = topo.add_edge(edge_data);
+        let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], false).unwrap());
+        let face = topo.add_face(Face::new(
+            wire,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+        topo.set_pcurve_oriented(
+            edge,
+            face,
+            true,
+            PCurve::new(
+                Curve2D::Circle(Circle2D::new(Point2::new(0.0, 0.0), 2.0).unwrap()),
+                domain.0,
+                domain.1,
+            ),
+        )
+        .unwrap();
+
+        validate_same_parameter_strict(&topo, edge, face, true, 1e-7, 2).unwrap();
+        validate_same_range_strict(&topo, edge, face, true, 1e-7).unwrap();
+
+        // SameRange is independently vertex-authoritative: carrier-to-carrier
+        // agreement must not hide a stale bounding vertex.
+        let stale = topo.edge(edge).unwrap().end();
+        let point = topo.vertex(stale).unwrap().point();
+        topo.vertex_mut(stale)
+            .unwrap()
+            .set_point(point + Vec3::new(0.0, 0.0, 1e-3));
+        assert!(matches!(
+            validate_same_range_strict(&topo, edge, face, true, 1e-7),
+            Err(CurveUseValidationError::Topology(
+                TopologyError::SameRangeExceeded { .. }
+            ))
+        ));
+    }
+
+    fn affine_surface(twist: f64, weights: Vec<Vec<f64>>) -> NurbsSurface {
+        NurbsSurface::new(
+            1,
+            1,
+            vec![2.0, 2.0, 6.0, 6.0],
+            vec![-3.0, -3.0, 5.0, 5.0],
+            vec![
+                vec![Point3::new(1.0, 2.0, 3.0), Point3::new(1.0, 6.0, 3.0)],
+                vec![
+                    Point3::new(4.0, 2.0, 3.0),
+                    Point3::new(4.0, 6.0, 3.0 + twist),
+                ],
+            ],
+            weights,
+        )
+        .unwrap()
+    }
+
+    fn affine_line_use(surface: NurbsSurface) -> (Topology, EdgeId, FaceId) {
+        let mut topo = Topology::new();
+        let uv0 = Point2::new(2.0, -3.0);
+        let uv1 = Point2::new(6.0, 5.0);
+        let start = topo.add_vertex(Vertex::new(surface.evaluate(uv0.x(), uv0.y()), 1e-7));
+        let end = topo.add_vertex(Vertex::new(surface.evaluate(uv1.x(), uv1.y()), 1e-7));
+        let edge = topo.add_edge(Edge::new(start, end, EdgeCurve::Line));
+        let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], false).unwrap());
+        let face = topo.add_face(Face::new(wire, vec![], FaceSurface::Nurbs(surface)));
+        let direction = uv1 - uv0;
+        let length = direction.length();
+        topo.set_pcurve_oriented(
+            edge,
+            face,
+            true,
+            PCurve::new(
+                Curve2D::Line(Line2D::new(uv0, direction).unwrap()),
+                0.0,
+                length,
+            ),
+        )
+        .unwrap();
+        (topo, edge, face)
+    }
+
+    #[test]
+    fn affine_safe_equal_weight_nurbs_line_is_proved_but_unsafe_weights_refuse() {
+        let (topo, edge, face) = affine_line_use(affine_surface(0.0, vec![vec![3.0; 2]; 2]));
+        validate_same_parameter_strict(&topo, edge, face, true, 1e-7, 2).unwrap();
+
+        for unsupported in [
+            affine_surface(1e-9, vec![vec![3.0; 2]; 2]),
+            affine_surface(0.0, vec![vec![3.0, 3.0], vec![3.0, 3.000_000_000_001]]),
+            affine_surface(0.0, vec![vec![f64::from_bits(1); 2]; 2]),
+            affine_surface(0.0, vec![vec![f64::MAX / 2.0; 2]; 2]),
+        ] {
+            let (topo, edge, face) = affine_line_use(unsupported);
+            assert!(matches!(
+                check_same_parameter_strict(&topo, edge, face, true, 2),
+                Err(CurveUseValidationError::SameParameterProofUnavailable { .. })
+            ));
+        }
+    }
+
+    fn sphere_circle_use(
+        forward: bool,
+        control_points: Vec<Point2>,
+        weights: Vec<f64>,
+    ) -> (Topology, EdgeId, FaceId) {
+        let mut topo = Topology::new();
+        let sphere = SphericalSurface::new(Point3::new(0.0, 0.0, 0.0), 2.0).unwrap();
+        let circle = Circle3D::new_with_ref(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            2.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let domain = (0.0, 1.0);
+        let start = topo.add_vertex(Vertex::new(circle.evaluate(domain.0), 1e-7));
+        let end = topo.add_vertex(Vertex::new(circle.evaluate(domain.1), 1e-7));
+        let mut edge_data = Edge::new(start, end, EdgeCurve::Circle(circle));
+        edge_data.set_trim(Some(domain));
+        let edge = topo.add_edge(edge_data);
+        let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, forward)], false).unwrap());
+        let face = topo.add_face(Face::new(wire, vec![], FaceSurface::Sphere(sphere)));
+        let curve = NurbsCurve2D::new(
+            3,
+            vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+            control_points,
+            weights,
+        )
+        .unwrap();
+        let bounds = if forward { (0.0, 1.0) } else { (1.0, 0.0) };
+        topo.set_pcurve_oriented(
+            edge,
+            face,
+            forward,
+            PCurve::new(Curve2D::Nurbs(curve), bounds.0, bounds.1),
+        )
+        .unwrap();
+        (topo, edge, face)
+    }
+
+    fn exact_equator_uv() -> Vec<Point2> {
+        vec![
+            Point2::new(0.0, 0.0),
+            Point2::new(1.0 / 3.0, 0.0),
+            Point2::new(2.0 / 3.0, 0.0),
+            Point2::new(1.0, 0.0),
+        ]
+    }
+
+    #[test]
+    fn sphere_circle_cubic_certificate_is_oriented_and_not_a_sample_alias() {
+        for forward in [true, false] {
+            let (topo, edge, face) = sphere_circle_use(forward, exact_equator_uv(), vec![1.0; 4]);
+            validate_same_parameter_strict(&topo, edge, face, forward, 1e-7, 2).unwrap();
+            validate_same_range_strict(&topo, edge, face, forward, 1e-7).unwrap();
+        }
+
+        // Endpoints remain exact, while a control point creates a latitude
+        // excursion strictly between them.  Two caller samples would inspect
+        // only t={0, 0.5, 1}; the certificate's derivative bound and bounded
+        // subdivision must still reject the off-node interior residual.
+        let mut bumped = exact_equator_uv();
+        bumped[1] = Point2::new(1.0 / 3.0, 1e-3);
+        bumped[2] = Point2::new(2.0 / 3.0, -1e-3);
+        let (topo, edge, face) = sphere_circle_use(true, bumped, vec![1.0; 4]);
+        assert!(matches!(
+            validate_same_parameter_strict(&topo, edge, face, true, 1e-7, 2),
+            Err(CurveUseValidationError::Topology(
+                TopologyError::SameParameterExceeded { .. }
+            ))
+        ));
+    }
+
+    #[test]
+    fn sphere_circle_wrong_orientation_nonfinite_and_rational_nurbs_refuse() {
+        let (mut topo, edge, face) = sphere_circle_use(false, exact_equator_uv(), vec![1.0; 4]);
+        let wrong = topo.pcurve_oriented(edge, face, false).unwrap().clone();
+        topo.set_pcurve_oriented(
+            edge,
+            face,
+            false,
+            PCurve::new(wrong.curve().clone(), 0.0, 1.0),
+        )
+        .unwrap();
+        assert!(matches!(
+            validate_same_parameter_strict(&topo, edge, face, false, 1e-7, 2),
+            Err(CurveUseValidationError::Topology(
+                TopologyError::SameParameterExceeded { .. }
+            ))
+        ));
+
+        let (topo, edge, face) =
+            sphere_circle_use(true, exact_equator_uv(), vec![1.0, 1.0, 1.0 + 1e-12, 1.0]);
+        assert!(matches!(
+            check_same_parameter_strict(&topo, edge, face, true, 2),
+            Err(CurveUseValidationError::SameParameterProofUnavailable { .. })
+        ));
+
+        let mut poisoned = exact_equator_uv();
+        poisoned[1] = Point2::new(1.0 / 3.0, f64::NAN);
+        let (topo, edge, face) = sphere_circle_use(true, poisoned, vec![1.0; 4]);
+        assert!(matches!(
+            check_same_parameter_strict(&topo, edge, face, true, 2),
+            Err(CurveUseValidationError::NonFinitePcurveUse { .. })
+        ));
     }
 
     #[test]
