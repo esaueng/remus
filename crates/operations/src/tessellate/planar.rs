@@ -25,6 +25,11 @@ const MAX_CYLINDER_GRID_POINTS: usize = 1_000_000;
 /// cannot amplify a valid boundary into an unbounded allocation.
 const MAX_CONSTRAINT_INDEX_ENTRIES: usize = 1_000_000;
 
+/// Bound the quadratic work of the rare ear-clipping fallback. CDT remains
+/// the primary path; a boundary that exceeds this budget returns to the
+/// legacy constant-work fallback instead of consuming unbounded CPU time.
+const MAX_EAR_CLIP_POINT_TESTS: usize = 10_000_000;
+
 fn cylinder_grid_rows(
     physical_u_step: f64,
     v_span: f64,
@@ -1663,6 +1668,13 @@ pub(super) fn unproject_point(
 }
 
 /// Triangulate a simple polygon (no holes) in 3D using CDT.
+///
+/// CDT can insert Steiner vertices while recovering constraints. This helper's
+/// index-only contract cannot publish those vertices, so it falls back to ear
+/// clipping over the original boundary. A vertex-0 fan overlaps the notches
+/// of a concave polygon while still looking manifold to an edge-count closure
+/// check, so it is retained only when ear clipping cannot preserve the legacy
+/// behavior for an already-malformed boundary.
 pub(super) fn cdt_triangulate_simple(positions: &[Point3], normal: Vec3) -> Vec<u32> {
     use remus_math::cdt::Cdt;
     use remus_math::vec::Point2;
@@ -1685,7 +1697,7 @@ pub(super) fn cdt_triangulate_simple(positions: &[Point3], normal: Vec3) -> Vec<
 
     let cdt_indices = match cdt.insert_points_hilbert(&pts2d) {
         Ok(indices) => indices,
-        Err(_) => return fan_triangulate(n),
+        Err(_) => return ear_clip_or_fan(&pts2d),
     };
 
     let mut constraints = Vec::with_capacity(n);
@@ -1695,7 +1707,7 @@ pub(super) fn cdt_triangulate_simple(positions: &[Point3], normal: Vec3) -> Vec<
         let cj = cdt_indices[j];
         if ci != cj {
             if cdt.insert_constraint(ci, cj).is_err() {
-                return fan_triangulate(n);
+                return ear_clip_or_fan(&pts2d);
             }
             constraints.push((ci, cj));
         }
@@ -1735,28 +1747,141 @@ pub(super) fn cdt_triangulate_simple(positions: &[Point3], normal: Vec3) -> Vec<
     // vertex at the crossing; triangles touching it have no input-vertex mapping
     // and would be dropped here, leaving a hole. The Steiner vertex also splits
     // the shared boundary edges, which cracks against the neighbouring faces.
-    // Fall back to a fan, which uses only the original boundary vertices and is
-    // manifold by construction (each boundary edge used once, each diagonal
-    // twice) regardless of the self-overlap.
-    if mapped < cdt_triangles.len() || indices.is_empty() {
-        return fan_triangulate(n);
+    // Ear clipping uses only the original boundary vertices and therefore
+    // preserves the shared-edge pool without crossing concave notches.
+    if mapped < cdt_triangles.len() {
+        // A Steiner vertex proves that the boundary constraints cross. Ear
+        // clipping handles an ordinary concave boundary without Steiner
+        // points. Preserve the legacy fan only when the boundary is genuinely
+        // self-intersecting: existing pinched boolean faces rely on its closed
+        // edge graph until their invalid topology is repaired upstream.
+        return ear_clip_or_fan(&pts2d);
+    }
+    if indices.is_empty() {
+        return ear_clip_or_fan(&pts2d);
     }
 
+    if triangulation_covers_polygon(&pts2d, &indices) {
+        indices
+    } else {
+        ear_clip_or_fan(&pts2d)
+    }
+}
+
+fn ear_clip_or_fan(points: &[remus_math::vec::Point2]) -> Vec<u32> {
+    ear_clip_triangulate(points).unwrap_or_else(|| fan_triangulate(points.len()))
+}
+
+fn fan_triangulate(n: usize) -> Vec<u32> {
+    let mut indices = Vec::with_capacity(n.saturating_sub(2) * 3);
+    for index in 1..n - 1 {
+        #[allow(clippy::cast_possible_truncation)]
+        indices.extend_from_slice(&[0, index as u32, (index + 1) as u32]);
+    }
     indices
 }
 
-/// Fan triangulation as a last-resort fallback.
-pub(super) fn fan_triangulate(n: usize) -> Vec<u32> {
-    let mut indices = Vec::with_capacity((n - 2) * 3);
-    for i in 1..n - 1 {
-        #[allow(clippy::cast_possible_truncation)]
-        {
-            indices.push(0_u32);
-            indices.push(i as u32);
-            indices.push((i + 1) as u32);
+pub(super) fn ear_clip_triangulate(points: &[remus_math::vec::Point2]) -> Option<Vec<u32>> {
+    use remus_math::predicates::orient2d;
+
+    let signed_area_twice = points
+        .iter()
+        .zip(points.iter().cycle().skip(1))
+        .take(points.len())
+        .map(|(a, b)| a.x().mul_add(b.y(), -b.x() * a.y()))
+        .sum::<f64>();
+    if !signed_area_twice.is_finite() || signed_area_twice == 0.0 {
+        return None;
+    }
+    let ccw = signed_area_twice > 0.0;
+    let mut remaining: Vec<usize> = (0..points.len()).collect();
+    let mut indices = Vec::with_capacity(points.len().saturating_sub(2) * 3);
+    let mut point_tests = 0_usize;
+
+    while remaining.len() > 3 {
+        let mut clipped = false;
+        for at in 0..remaining.len() {
+            let previous = remaining[(at + remaining.len() - 1) % remaining.len()];
+            let current = remaining[at];
+            let next = remaining[(at + 1) % remaining.len()];
+            let turn = orient2d(points[previous], points[current], points[next]);
+            if (ccw && turn <= 0.0) || (!ccw && turn >= 0.0) {
+                continue;
+            }
+
+            let mut contains_vertex = false;
+            for candidate in remaining.iter().copied() {
+                if candidate == previous || candidate == current || candidate == next {
+                    continue;
+                }
+                if point_tests >= MAX_EAR_CLIP_POINT_TESTS {
+                    return None;
+                }
+                point_tests += 1;
+                let point = points[candidate];
+                let a = orient2d(points[previous], points[current], point);
+                let b = orient2d(points[current], points[next], point);
+                let c = orient2d(points[next], points[previous], point);
+                let inside = if ccw {
+                    a >= 0.0 && b >= 0.0 && c >= 0.0
+                } else {
+                    a <= 0.0 && b <= 0.0 && c <= 0.0
+                };
+                if inside {
+                    contains_vertex = true;
+                    break;
+                }
+            }
+            if contains_vertex {
+                continue;
+            }
+
+            #[allow(clippy::cast_possible_truncation)]
+            indices.extend_from_slice(&[previous as u32, current as u32, next as u32]);
+            remaining.remove(at);
+            clipped = true;
+            break;
+        }
+        if !clipped {
+            return None;
         }
     }
-    indices
+    #[allow(clippy::cast_possible_truncation)]
+    indices.extend(remaining.iter().map(|&index| index as u32));
+    triangulation_covers_polygon(points, &indices).then_some(indices)
+}
+
+fn triangulation_covers_polygon(points: &[remus_math::vec::Point2], indices: &[u32]) -> bool {
+    use remus_math::predicates::orient2d;
+
+    if !indices.len().is_multiple_of(3)
+        || indices.iter().any(|&index| index as usize >= points.len())
+    {
+        return false;
+    }
+    let polygon_area_twice = points
+        .iter()
+        .zip(points.iter().cycle().skip(1))
+        .take(points.len())
+        .map(|(a, b)| a.x().mul_add(b.y(), -b.x() * a.y()))
+        .sum::<f64>()
+        .abs();
+    let mut triangle_area_twice = 0.0;
+    let mut winding = 0.0_f64;
+    for triangle in indices.chunks_exact(3) {
+        let area = orient2d(
+            points[triangle[0] as usize],
+            points[triangle[1] as usize],
+            points[triangle[2] as usize],
+        );
+        if area == 0.0 || (winding != 0.0 && area.signum() != winding.signum()) {
+            return false;
+        }
+        winding = area;
+        triangle_area_twice += area.abs();
+    }
+    let tolerance = polygon_area_twice.max(1.0) * 1e-10;
+    (triangle_area_twice - polygon_area_twice).abs() <= tolerance
 }
 
 /// Collect global vertex IDs from a wire, deduplicating consecutive vertices.
