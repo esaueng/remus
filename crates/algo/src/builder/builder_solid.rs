@@ -479,12 +479,24 @@ pub(super) fn orient_revolved_face_wires(
             let outer_area = revolved_wire_uv_area(topo, oriented_outer, &surface)?;
             for &inner in &inners {
                 let inner_area = revolved_wire_uv_area(topo, inner, &surface)?;
-                if matches!((outer_area, inner_area), (Some(a), Some(b)) if a.is_sign_positive() == b.is_sign_positive())
-                {
-                    oriented_inners.push(reverse_wire(topo, inner)?);
-                    changed = true;
-                } else {
-                    oriented_inners.push(inner);
+                match (outer_area, inner_area) {
+                    (Some(a), Some(b)) if a.is_sign_positive() == b.is_sign_positive() => {
+                        oriented_inners.push(reverse_wire(topo, inner)?);
+                        changed = true;
+                    }
+                    // The outer loop had no contractible UV area (a pointed
+                    // cone remainder whose rim reaches the apex, B37 cut leg)
+                    // and was aligned to the surface normal by
+                    // `orient_wire_to_surface(.., true)` above; hold every
+                    // hole to the same oracle in the opposite sense instead
+                    // of leaving it in whatever winding the splitter chose.
+                    (None, _) => {
+                        let (inner, inner_changed) =
+                            orient_wire_to_surface(topo, inner, &surface, false)?;
+                        changed |= inner_changed;
+                        oriented_inners.push(inner);
+                    }
+                    _ => oriented_inners.push(inner),
                 }
             }
         }
