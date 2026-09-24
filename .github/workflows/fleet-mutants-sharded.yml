@@ -34,7 +34,9 @@ env:
 #   a baseline that did not finish green, and ANY listed mutant the budget
 #   left unexamined: a partial run is an incomplete verdict, not a pass.
 # - max-parallel keeps the Sunday run to eight of the organization's twenty
-#   hosted runner slots; larger weeks run in a second wave.
+#   hosted runner slots; larger weeks run in a second wave. The cost model
+#   assumes those 4-vCPU hosted runners: routed to the self-hosted fleet, the
+#   shards would queue on its two slots instead.
 jobs:
   plan:
     name: Plan Mutation Shards
