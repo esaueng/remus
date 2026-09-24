@@ -3405,8 +3405,12 @@ fn b26_finding12_cone_fuse_mesh_open() {
 /// (4.14498 vs closed form 4.14498); the remaining failure is the
 /// check-crate orientation issue, a boolean defect that stays open.
 /// Minimized from `prop_random_curved_pair_identities` seed `c2269b3b`.
+/// Closed with B37 cut leg (2026-09-22): the cone A-Outside remainder needs
+/// the same stored-CW hole correction as the fuse remainder
+/// (`algo::builder::orient_selected_fuse_analytic_holes` now runs for Cut;
+/// the splitter's generic hole winding leaves the 4-edge loop traversing
+/// every shared edge the same effective way as its neighbours). Un-ignored.
 #[test]
-#[ignore = "open: pointed-cone cut ops-invalid orientation (B26 finding 12; mesh/volume halves fixed with B37)"]
 fn b26_finding12_cone_cut_broken() {
     use remus_operations::primitives::{make_cone, make_cylinder};
     let m = Mat4::translation(0.0, 1.5, 0.5);
@@ -3418,6 +3422,88 @@ fn b26_finding12_cone_cut_broken() {
     check_exact_quality(&c, "finding-12 cut").expect("exact quality");
     // The failing oracle: the exact result must satisfy both validators.
     check_valid_closed_oriented(&topo, c.solid, "finding-12 cut").expect("fully valid");
+}
+
+/// B37 cut-orientation discriminating regression (2026-09-22): the same
+/// pointed-cone–cylinder pair must now pass all four gates on every leg —
+/// strict topology validation, material accounting, mesh watertightness, and
+/// translation invariance — with the fuse and intersect legs preserved.
+/// Fails before the cut fix on the orientation gate (4 shared edges, both
+/// validators agree) while mesh/volume already read exact, so it
+/// discriminates the orientation defect from tessellation or measurement
+/// drift. No tolerance relaxation, no heal, no tessellation substitution:
+/// the census asserts analytic faces throughout.
+#[test]
+fn b37_cone_cylinder_cut_orientation_identities() {
+    use remus_operations::primitives::{make_cone, make_cylinder};
+    let m = Mat4::translation(0.0, 1.5, 0.5);
+    let cone_closed = PI * 4.0 / 3.0;
+    let cyl_closed = PI;
+    let run = |op: BooleanOp, tag: &str| -> (Topology, SolidId) {
+        let mut topo = Topology::new();
+        let a = make_cone(&mut topo, 2.0, 0.0, 1.0).expect("valid cone");
+        let b = make_cylinder(&mut topo, 1.0, 1.0).expect("valid cylinder");
+        remus_operations::transform::transform_solid(&mut topo, b, &m).expect("placement applies");
+        // Pin operand closed forms through the kernel reading first.
+        let va = vol(&topo, a);
+        let vb = vol(&topo, b);
+        assert!(
+            rel_err(va, cone_closed) <= REL_SLACK,
+            "{tag}: cone operand {va:.6} vs closed {cone_closed:.6}"
+        );
+        assert!(
+            rel_err(vb, cyl_closed) <= REL_SLACK,
+            "{tag}: cylinder operand {vb:.6} vs closed {cyl_closed:.6}"
+        );
+        let out = exact_boolean(&mut topo, op, a, b).expect("exact boolean succeeds");
+        check_exact_quality(&out, tag).expect("exact quality");
+        // Strict topology validation (ops + check-crate + position-closed).
+        check_valid_closed_oriented(&topo, out.solid, tag).expect("fully valid");
+        // Analytic-only: no mesh-fallback tessellation substitution.
+        let faces = solid_faces(&topo, out.solid).expect("faces readable");
+        assert!(
+            faces.len() <= 10,
+            "{tag}: {n} faces, expected analytic handful, not fallback",
+            n = faces.len()
+        );
+        let mut has_cone = false;
+        let mut has_cylinder = false;
+        for fid in &faces {
+            let surface = topo.face(*fid).expect("face readable").surface().clone();
+            match surface.type_tag() {
+                "cone" => has_cone = true,
+                "cylinder" => has_cylinder = true,
+                _ => {}
+            }
+        }
+        assert!(
+            has_cone && has_cylinder,
+            "{tag}: expected cone + cylinder survivors, has_cone={has_cone} has_cylinder={has_cylinder}"
+        );
+        // Mesh watertightness at the scale-derived deflection.
+        check_watertight_mesh_scaled(&topo, out.solid, tag).expect("mesh watertight");
+        // Translation invariance (doubled-boundary detector).
+        check_translation_invariant_scaled(&topo, out.solid, tag).expect("translation invariant");
+        (topo, out.solid)
+    };
+    let (topo_f, f) = run(BooleanOp::Fuse, "b37 fuse");
+    let vf = vol(&topo_f, f);
+    let (topo_c, c) = run(BooleanOp::Cut, "b37 cut");
+    let vc = vol(&topo_c, c);
+    let (topo_i, i) = run(BooleanOp::Intersect, "b37 intersect");
+    let vi = vol(&topo_i, i);
+    // Material accounting over closed forms: cut complement and
+    // inclusion–exclusion. The overlap has no hand closed form, so the
+    // identities are checked against each other and the operand pins above.
+    assert!(
+        rel_err(vc + vi, cone_closed) <= REL_SLACK,
+        "b37 cut complement fails: cut {vc:.6} + inter {vi:.6} != cone {cone_closed:.6}"
+    );
+    assert!(
+        rel_err(vf + vi, cone_closed + cyl_closed) <= REL_SLACK,
+        "b37 inclusion-exclusion fails: fuse {vf:.6} + inter {vi:.6} != sum {:.6}",
+        cone_closed + cyl_closed
+    );
 }
 
 /// Ready-repro for the fourteenth proptest-found defect (2026-09-16): a
