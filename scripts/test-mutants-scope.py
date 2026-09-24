@@ -101,8 +101,11 @@ def check_versions(version):
     for path in sorted(WORKFLOWS.glob("*.yml")):
         for found in re.findall(r"cargo-mutants@([0-9.]+)", path.read_text()):
             installs.setdefault(path.name, set()).add(found)
-    if not {"fleet-mutants.yml", "fleet-mutants-sharded.yml"} & set(installs):
-        raise AssertionError("no weekly mutation workflow installs cargo-mutants")
+    if "fleet-mutants-sharded.yml" not in installs:
+        raise AssertionError("the weekly sharded mutation workflow does not install cargo-mutants")
+    caller = (WORKFLOWS / "mutants.yml").read_text()
+    if not re.search(r"uses: esaueng/remus/\.github/workflows/fleet-mutants-sharded\.yml@[0-9a-f]{40}", caller):
+        raise AssertionError("mutants.yml does not call the sharded mutation workflow at a pinned commit")
     for name, found in sorted(installs.items()):
         if {f"cargo-mutants {v}" for v in found} != {version}:
             raise AssertionError(f"{name} pins cargo-mutants {sorted(found)}; this check runs {version}")
