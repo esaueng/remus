@@ -2199,3 +2199,115 @@ fn build_fuse_n_three_axis_aligned_row_watertight() {
         "three-box row watertight; two={two} other={other}"
     );
 }
+
+/// Box `[0,1]×[0,2.5]×[0,1.5]` and a radius-2.5, height-1 cylinder standing on
+/// z = 0 at `(cx, cy)` with its seam line through `(cx, cy) + 2.5·seam_dir`.
+/// Returns `(start, midpoint, end)` of every FF curve emitted between the
+/// box's bottom face and the cylinder's wall.
+fn b33_bottom_wall_sections(
+    cx: f64,
+    cy: f64,
+    seam_dir: (f64, f64),
+) -> Vec<(Point3, Point3, Point3)> {
+    use remus_math::curves::Circle3D;
+    use remus_math::tolerance::Tolerance;
+    use remus_topology::explorer::solid_faces;
+
+    const RADIUS: f64 = 2.5;
+    // The circle's own parameter frame decides which angle is which: project
+    // the intended seam point instead of assuming a frame convention.
+    let seam_point = Point3::new(cx + RADIUS * seam_dir.0, cy + RADIUS * seam_dir.1, 0.0);
+    let seam_u = Circle3D::new(Point3::new(cx, cy, 0.0), Vec3::new(0.0, 0.0, 1.0), RADIUS)
+        .unwrap()
+        .project(seam_point);
+
+    let mut topo = Topology::default();
+    let box_id = make_box(&mut topo, [0.0, 0.0, 0.0], [1.0, 2.5, 1.5]);
+    let (cyl_id, seam, _) = make_cylinder_with_seam_u(&mut topo, cx, cy, 0.0, RADIUS, 1.0, seam_u);
+    assert!(
+        (topo.vertex(seam[0]).unwrap().point() - seam_point).length() < 1e-12,
+        "the cylinder seam must sit where the case needs it"
+    );
+    let box_bottom = solid_faces(&topo, box_id)
+        .unwrap()
+        .into_iter()
+        .find(|&f| {
+            matches!(topo.face(f).unwrap().surface(),
+                FaceSurface::Plane { normal, d } if normal.z() < -0.5 && d.abs() < 1e-12)
+        })
+        .expect("box bottom face");
+    let wall = solid_faces(&topo, cyl_id)
+        .unwrap()
+        .into_iter()
+        .find(|&f| matches!(topo.face(f).unwrap().surface(), FaceSurface::Cylinder(_)))
+        .expect("cylinder wall face");
+
+    let mut arena = GfaArena::new();
+    PaveFiller::with_tolerance(&mut topo, box_id, cyl_id, Tolerance::default())
+        .perform(&mut arena)
+        .unwrap();
+    arena
+        .curves
+        .iter()
+        .filter(|c| {
+            (c.face_a == box_bottom && c.face_b == wall)
+                || (c.face_a == wall && c.face_b == box_bottom)
+        })
+        .map(|c| {
+            let (t0, t1) = c.t_range;
+            let at = |t: f64| match &c.curve {
+                EdgeCurve::Circle(circle) => circle.evaluate(t),
+                other => panic!("bottom-plane × wall section must be a circle, got {other:?}"),
+            };
+            (at(t0), at(0.5 * (t0 + t1)), at(t1))
+        })
+        .collect()
+}
+
+/// B33 degeneracy: the cylinder is tangent to the box's x = 1 wall along its
+/// own seam line (seam at angle π, centre 2.5 from the wall). The z = 0
+/// section circle touches the box's bottom rectangle at ONE point — the seam
+/// vertex on the rectangle's edge — so the boundary-crossing collector
+/// returns a single hit. That circle lies outside the rectangle everywhere
+/// else and must not become a section of the box bottom face (it used to be
+/// emitted whole, and the splitter carved it in as a phantom hole wound the
+/// same way as the cylinder wall's use of that circle).
+#[test]
+fn ff_one_hit_seam_tangent_circle_is_not_a_section_of_the_touched_face() {
+    let sections = b33_bottom_wall_sections(3.5, 0.5, (-1.0, 0.0));
+    assert!(
+        sections.is_empty(),
+        "a circle touching the box bottom at one point from outside is a graze, got {sections:?}"
+    );
+}
+
+/// General-position twins of the B33 degeneracy, proving the one-hit veto
+/// leaves the normal paths alone: the same tangency with the seam rotated
+/// away (two hits, split-arc path, nothing in the face) still emits nothing,
+/// and a genuine overlap still emits the in-face arcs of the bottom circle.
+#[test]
+fn ff_seam_tangent_twins_keep_their_general_position_sections() {
+    let rotated = b33_bottom_wall_sections(3.5, 0.5, (1.0, 0.0));
+    assert!(
+        rotated.is_empty(),
+        "seam away from the tangency: still no section in the box bottom, got {rotated:?}"
+    );
+
+    // Overlap by 0.1: the circle enters the rectangle across x = 1 at
+    // y = 1.25 ± 0.7 and bulges to x = 0.9 (seam inside the face).
+    let overlap = b33_bottom_wall_sections(3.4, 1.25, (-1.0, 0.0));
+    assert!(
+        !overlap.is_empty(),
+        "an overlapping cylinder must still section the box bottom"
+    );
+    for (start, mid, end) in overlap {
+        assert!(
+            (start - end).length() > 1e-6,
+            "the in-face section is an open arc, got a closed circle at {start:?}"
+        );
+        assert!(
+            mid.x() < 1.0 && mid.x() > 0.9 - 1e-9 && mid.y() > 0.55 && mid.y() < 1.95,
+            "arc midpoint {mid:?} must lie inside the rectangle's overlap lens"
+        );
+    }
+}
