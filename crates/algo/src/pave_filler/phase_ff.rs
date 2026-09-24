@@ -952,6 +952,23 @@ pub fn perform_with_context(
                             )?;
                             continue;
                         }
+                        // One hit is a touch, not a crossing: drop the circle
+                        // when it touches the pair from OUTSIDE (B33).
+                        if let [(t_hit, _)] = crossings.as_slice()
+                            && single_hit_circle_is_graze(
+                                topo,
+                                [(fa, surf_a, v_range_a), (fb, surf_b, v_range_b)],
+                                circle,
+                                *t_hit,
+                                tol,
+                            )?
+                        {
+                            log::debug!(
+                                "FF: faces {fa:?} × {fb:?} — dropping closed circle touching \
+                                 the pair at one point from outside"
+                            );
+                            continue;
+                        }
                     }
                 }
 
@@ -6429,6 +6446,53 @@ fn circle_arc_crossings(
             })
         })
         .collect())
+}
+
+/// One face of a section pair, as [`FaceExtent::new`] consumes it.
+type SectionFace<'a> = (FaceId, &'a FaceSurface, Option<(f64, f64)>);
+
+/// Is a closed section circle that meets the pair's boundaries at exactly ONE
+/// point a tangency graze lying outside the pair?
+///
+/// A single boundary hit is never a crossing — a closed curve crosses a
+/// closed boundary an even number of times — so it is a touch point (or a
+/// lone seam crossing) and the rest of the circle lies on one side of every
+/// boundary. [`emit_split_circle_arcs`] keeps each arc between consecutive
+/// hits by its midpoint; a one-hit circle is one closed arc whose midpoint is
+/// the ANTIPODE of the hit, so this applies that same survival test.
+///
+/// Degeneracy (B33): a box fused with a cylinder tangent to a box wall along
+/// the cylinder's own seam line. The box-bottom plane × cylinder-wall circle
+/// touches the box's bottom rectangle at one point — where the seam vertex
+/// sits on the rectangle's edge. Seam and tangency coincide, so the collector
+/// returns one hit instead of two, the split path (≥ 2 hits) never runs, and
+/// the whole circle used to be emitted as a section of the box face, which
+/// the splitter carved in as a phantom hole wound the same way as the
+/// cylinder wall's use of that circle (`ShellOrientationConsistent`).
+///
+/// "Outside" is decisive only: outside the extent even with its boundary
+/// margin AND farther from its boundary than the sampled outline's sagitta
+/// plus a weld band. Analytic extents never fire (their
+/// `contains_or_on_boundary` always passes), and a face whose extent cannot
+/// be built keeps the circle — both the previous behavior.
+fn single_hit_circle_is_graze(
+    topo: &Topology,
+    faces: [SectionFace<'_>; 2],
+    circle: &remus_math::curves::Circle3D,
+    t_hit: f64,
+    tol: Tolerance,
+) -> Result<bool, AlgoError> {
+    let antipode = circle.evaluate(t_hit + std::f64::consts::PI);
+    for (face_id, surface, v_range) in faces {
+        let Some(extent) = FaceExtent::new(topo, face_id, surface, v_range, tol)? else {
+            continue;
+        };
+        let band = extent.outline_sagitta() + tol.linear * 100.0;
+        if !extent.contains(antipode) && !extent.contains_or_on_boundary(antipode, band) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn closed_circle_boundary_crossings(
