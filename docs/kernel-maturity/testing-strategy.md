@@ -167,6 +167,33 @@ still provides a consistent undirected key, but this bounded run does not
 claim mutation completeness. The
 weekly changed-lines filter and mutation-result failure policy are unchanged.
 
+The weekly budget follow-up (B19, 2026-09-24) found that the single
+150-minute job had examined 0, 0 and 1 of the 4,620, 3,375 and 1,966 mutants
+it listed on 2026-09-13/16/20, and passed both zero-coverage runs. Its
+dev-profile baseline spent ~7.5 ks testing, 99.8% of the CPU in
+`remus-operations` and ~6 ks in one test. `.cargo/mutants.toml` now runs
+mutants under the `ci-test` profile (11.2x on the hosted runner for the same
+operations tests), builds only test targets (not the 17 operations examples),
+stops each mutant's tests at the first failure, keeps the per-mutant oracle
+to the mutated package, and drops the five operations regression pins over
+60 s (859 of 1,367 CPU-s) by exact name; `scripts/test-mutants-scope.py`
+fails if one is renamed. The staged
+`fleet-mutants-sharded.yml` sizes a round-robin shard matrix from
+`scripts/plan-mutation-shards.py`'s measured cost model, gives every shard
+its own baseline and a 300-minute budget, and judges each with
+`scripts/mutants-verdict.py`, which fails on any missed, timed-out or
+unexamined mutant and on a baseline that did not finish green
+(`python3 scripts/test-mutants-verdict.py` proves each failure path). A
+bounded runner probe of the sharded callee (run 36059529895: math, blend
+and offset, three 45-minute shards) partitioned the week's 121 listed
+mutants exactly and examined every one; each shard failed closed on its
+missed mutants. Under the still-pinned single-job callee the new config
+cut the runner's baseline from 129 s build + 7,667 s test to 229 s + 133 s
+and examined 34 mutants in the first ~80 minutes (dispatch run
+36055955228); the planner's per-package costs come from those two runs.
+`mutants.yml` switches to the sharded callee in a follow-up that pins the
+merge commit.
+
 ## Corpus
 
 Licensed or generated corpora: primitive adversarial cases, imported STEP,
