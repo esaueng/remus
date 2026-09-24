@@ -187,12 +187,12 @@ unexamined mutant and on a baseline that did not finish green
 bounded runner probe of the sharded callee (run 36059529895: math, blend
 and offset, three 45-minute shards) partitioned the week's 121 listed
 mutants exactly and examined every one; each shard failed closed on its
-missed mutants. Under the still-pinned single-job callee the new config
-cut the runner's baseline from 129 s build + 7,667 s test to 229 s + 133 s
-and examined 34 mutants in the first ~80 minutes (dispatch run
-36055955228); the planner's per-package costs come from those two runs.
-`mutants.yml` switches to the sharded callee in a follow-up that pins the
-merge commit.
+missed mutants. Under the former single-job callee the new config cut the
+runner's baseline from 129 s build + 7,667 s test to 229 s + 133 s and
+examined 34 mutants in the first ~80 minutes (dispatch run 36055955228);
+the planner's per-package costs come from those two runs. The weekly
+`mutants.yml` now calls the sharded callee pinned at `2a735434` (the PR #614
+squash), and the single-job `fleet-mutants.yml` is gone.
 
 ## Corpus
 
