@@ -224,7 +224,11 @@ fn nurbs_edge_is_iso_v_parallel(
         return false;
     };
     let (sp, ep) = (sv.point(), ev.point());
-    let (t0, t1) = edge.curve().domain_with_endpoints(sp, ep);
+    let Ok((t0, t1)) =
+        crate::authoritative_edge_domain(edge, "quadric wall NURBS-trim classification")
+    else {
+        return false;
+    };
     let mut v_min = f64::INFINITY;
     let mut v_max = f64::NEG_INFINITY;
     for i in 0..=16 {
