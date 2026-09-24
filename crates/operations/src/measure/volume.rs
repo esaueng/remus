@@ -177,15 +177,18 @@ fn mesh_boundary_edge_count(mesh: &tessellate::TriangleMesh) -> usize {
 /// decline the analytic path and measure through the closed whole-solid mesh
 /// (shared rim vertices) or the boundary-trimmed Gauss integrator instead.
 ///
-/// Scope is deliberately narrow: only the outer-wire NURBS presence is tested.
-/// Untrimmed primitives and revolve walls (Line + Circle edges) keep the exact
-/// path; only NURBS-trimmed walls are re-routed.
+/// Scope is deliberately narrow: only NURBS edges that leave an iso-`v`
+/// parallel are trims. Untrimmed primitives and revolve walls (Line + Circle
+/// edges, or the rational-NURBS rim arcs a partial revolve emits, which sit at
+/// constant `v` exactly like a coaxial Circle) keep the exact path; only walls
+/// bounded by a genuine intersection curve are re-routed.
 fn quadric_face_has_nurbs_trim(topo: &Topology, fid: FaceId) -> bool {
     let Ok(face) = topo.face(fid) else {
         return false;
     };
+    let surface = face.surface();
     if !matches!(
-        face.surface(),
+        surface,
         FaceSurface::Cylinder(_)
             | FaceSurface::Cone(_)
             | FaceSurface::Sphere(_)
@@ -198,11 +201,48 @@ fn quadric_face_has_nurbs_trim(topo: &Topology, fid: FaceId) -> bool {
     wires.into_iter().any(|wid| {
         topo.wire(wid).is_ok_and(|wire| {
             wire.edges().iter().any(|oe| {
-                topo.edge(oe.edge())
-                    .is_ok_and(|edge| matches!(edge.curve(), EdgeCurve::NurbsCurve(_)))
+                topo.edge(oe.edge()).is_ok_and(|edge| {
+                    matches!(edge.curve(), EdgeCurve::NurbsCurve(_))
+                        && !nurbs_edge_is_iso_v_parallel(topo, edge, surface)
+                })
             })
         })
     })
+}
+
+/// Whether a NURBS edge on a quadric wall runs along one iso-`v` parallel
+/// (a coaxial circle or arc) — the same boundary the Circle arm of the
+/// rectangle integrators accepts. Sampled along the edge, not at its
+/// endpoints, so an intersection curve that returns to its start height
+/// still reads as a trim. Unresolvable edges count as trims (fail closed).
+fn nurbs_edge_is_iso_v_parallel(
+    topo: &Topology,
+    edge: &remus_topology::edge::Edge,
+    surface: &FaceSurface,
+) -> bool {
+    let (Ok(sv), Ok(ev)) = (topo.vertex(edge.start()), topo.vertex(edge.end())) else {
+        return false;
+    };
+    let (sp, ep) = (sv.point(), ev.point());
+    let (t0, t1) = edge.curve().domain_with_endpoints(sp, ep);
+    let mut v_min = f64::INFINITY;
+    let mut v_max = f64::NEG_INFINITY;
+    for i in 0..=16 {
+        let t = t0 + (t1 - t0) * (f64::from(i) / 16.0);
+        let Some((_, v)) = surface.project_point(edge.curve().evaluate_with_endpoints(t, sp, ep))
+        else {
+            return false;
+        };
+        if !v.is_finite() {
+            return false;
+        }
+        v_min = v_min.min(v);
+        v_max = v_max.max(v);
+    }
+    // Relative to |v| so the check is scale-free on length-valued charts
+    // (cylinder/cone axial `v`); a real intersection trim spreads by a large
+    // fraction of the wall.
+    v_max - v_min <= 1e-9 * v_min.abs().max(v_max.abs()).max(1.0)
 }
 
 /// Whether a cylinder/cone wall is a NOTCHED band — a trimmed region whose UV
