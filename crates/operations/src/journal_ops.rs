@@ -677,6 +677,49 @@ pub fn resize_blend_journaled(
     })
 }
 
+/// Remove an explicitly selected blend group with construction-derived history.
+///
+/// Recognized connected bands and their corner patches are reconstructed in one
+/// operation. Every surviving boundary is mapped and consumed boundaries are
+/// deleted; an unsupported wound or incomplete history rolls back the topology
+/// and unpublished journal together.
+///
+/// # Errors
+///
+/// Returns the removal or history-validation error without publishing a result.
+pub fn remove_blends_journaled(
+    topo: &mut Topology,
+    solid: SolidId,
+    seeds: &[remus_topology::FaceId],
+) -> Result<JournaledSolidOp, OperationsError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let pending = begin_scoped(topo, "remove_blends", &[solid])?;
+        let result = crate::remove_blends::remove_blends(topo, solid, seeds)?;
+        let mut pairs = Vec::new();
+        let mut deleted = Vec::new();
+        for (source, target) in result.boundary_history {
+            match target {
+                Some(target) => pairs.push((source, target)),
+                None => deleted.push((source, EventDraft::Deleted)),
+            }
+        }
+        deleted.sort_unstable_by_key(|(source, _)| *source);
+        let op = record_entity_evolution_with_outputs(
+            topo,
+            pending,
+            &result.evolution,
+            &[result.solid],
+            &pairs,
+            &deleted,
+        )?;
+        Ok(JournaledSolidOp {
+            solid: result.solid,
+            op,
+            map: result.evolution,
+        })
+    })
+}
+
 /// Applies a planar draft with construction-derived face and boundary history.
 ///
 /// Geometry and journal recording form one transaction. Boundary identities

@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -158,9 +158,7 @@ pub fn check_tools() -> Result<()> {
 
     // wasm-bindgen-cli version check
     if command_exists("wasm-bindgen") {
-        let version = run_cmd_output(
-            Command::new("wasm-bindgen").arg("--version"),
-        )?;
+        let version = run_cmd_output(Command::new("wasm-bindgen").arg("--version"))?;
         // Output is like "wasm-bindgen 0.2.126"
         let installed = version.split_whitespace().last().unwrap_or("");
         if installed != WASM_BINDGEN_VERSION {
@@ -206,13 +204,7 @@ pub fn build_both_targets(spec: &PackageSpec, simd: bool) -> Result<()> {
     let mut node = Command::new("wasm-pack");
     // Only the Node glue is merged into the distributable package; its WASM
     // is discarded in favour of the optimized bundler binary above.
-    node.args([
-        "build",
-        "--target",
-        "nodejs",
-        "--release",
-        "--no-opt",
-    ]);
+    node.args(["build", "--target", "nodejs", "--release", "--no-opt"]);
     node.args(["--out-dir", "pkg-node"])
         .current_dir(&wasm_crate)
         .env("RUSTFLAGS", &rustflags);
@@ -457,9 +449,15 @@ fn count_dts_methods(dts: &str) -> usize {
 
 fn wasm_size_error(size: u64, budget: &SizeBudget) -> Option<String> {
     if size < budget.min {
-        Some(format!(".wasm too small: {size} bytes (min {})", budget.min))
+        Some(format!(
+            ".wasm too small: {size} bytes (min {})",
+            budget.min
+        ))
     } else if size > budget.max {
-        Some(format!(".wasm too large: {size} bytes (max {})", budget.max))
+        Some(format!(
+            ".wasm too large: {size} bytes (max {})",
+            budget.max
+        ))
     } else {
         None
     }
@@ -628,8 +626,8 @@ pub fn run_installed_tarball_test() -> Result<()> {
 pub fn publish(dry_run: bool) -> Result<()> {
     let pkg = KERNEL.pkg_dir()?;
 
-    let tag_name = std::env::var("TAG_NAME")
-        .context("TAG_NAME env var not set — required for publish")?;
+    let tag_name =
+        std::env::var("TAG_NAME").context("TAG_NAME env var not set — required for publish")?;
     let tag_version = tag_name.strip_prefix('v').unwrap_or(&tag_name);
 
     let pkg_json: serde_json::Value = serde_json::from_str(
@@ -737,7 +735,10 @@ mod tests {
     #[test]
     fn kernel_and_translator_crates_share_one_version() {
         check_versions_match().unwrap();
-        assert_eq!(manifest_version("[package]\nversion = \"1.2.3\"\n").as_deref(), Some("1.2.3"));
+        assert_eq!(
+            manifest_version("[package]\nversion = \"1.2.3\"\n").as_deref(),
+            Some("1.2.3")
+        );
         assert!(manifest_version("[package]\nname = \"x\"\n").is_none());
     }
 
@@ -757,12 +758,28 @@ mod tests {
     #[test]
     fn consumer_workflows_cannot_skip_wasm_optimization() {
         let root = project_root().unwrap();
-        for relative in [
-            ".github/workflows/ci.yml",
-            ".github/workflows/publish.yml",
-            ".github/workflows/openzcad-wasm-release.yml",
+        for (relative, delegated) in [
+            (
+                ".github/workflows/ci.yml",
+                Some(".github/workflows/fleet-ci.yml"),
+            ),
+            (".github/workflows/publish.yml", None),
+            (
+                ".github/workflows/openzcad-wasm-release.yml",
+                Some(".github/workflows/fleet-wasm-candidate.yml"),
+            ),
         ] {
-            let workflow = fs::read_to_string(root.join(relative)).unwrap();
+            let caller = fs::read_to_string(root.join(relative)).unwrap();
+            let workflow = if let Some(target) = delegated {
+                assert!(
+                    caller.contains(&format!("uses: esaueng/remus/{target}@")),
+                    "{relative} must delegate to {target}"
+                );
+                assert!(!caller.contains("wasm-build --skip-opt"));
+                fs::read_to_string(root.join(target)).unwrap()
+            } else {
+                caller
+            };
             assert!(
                 workflow.contains("cargo xtask wasm-build"),
                 "{relative} must use the validated package builder"

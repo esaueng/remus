@@ -149,6 +149,39 @@ struct Observation {
     rollback_volumes: Vec<f64>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     rollback_faces: Option<usize>,
+    /// The producing op's evolution report (`*WithEvolution` ops only),
+    /// passed through verbatim in the WASM wire shape so the contract
+    /// scorer compares the same buckets on every surface.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    evolution: Option<Value>,
+    /// Every succeeding `volume` response keyed by batch index, so a
+    /// contract cell can read an operand-preservation probe beside the
+    /// result volume without a second envelope.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty", default)]
+    volumes_by_index: BTreeMap<usize, f64>,
+}
+
+/// Whether a batch op answers with a `{solid, ...}` object rather than a bare
+/// handle: the quality-disclosing booleans and the evolution-reporting
+/// booleans, exactly as the WASM batch arms shape them.
+fn returns_solid_object(op: &str) -> bool {
+    matches!(
+        op,
+        "booleanWithQuality"
+            | "booleanWithCancelledContext"
+            | "fuseWithEvolution"
+            | "cutWithEvolution"
+            | "intersectWithEvolution"
+    )
+}
+
+fn boolean_op_from_name(operation: &str) -> Result<BooleanOp, DispatchError> {
+    match operation {
+        "fuse" | "union" => Ok(BooleanOp::Fuse),
+        "cut" | "difference" => Ok(BooleanOp::Cut),
+        "intersect" | "intersection" => Ok(BooleanOp::Intersect),
+        _ => Err(ops_err(&format!("unknown boolean operation '{operation}'"))),
+    }
 }
 
 fn err(message: impl Into<String>) -> RunnerError {
@@ -863,14 +896,7 @@ fn dispatch(
                 .get("operation")
                 .and_then(Value::as_str)
                 .ok_or_else(|| ops_err("missing or invalid 'operation'"))?;
-            let boolean_op = match operation {
-                "fuse" | "union" => BooleanOp::Fuse,
-                "cut" | "difference" => BooleanOp::Cut,
-                "intersect" | "intersection" => BooleanOp::Intersect,
-                _ => {
-                    return Err(ops_err(&format!("unknown boolean operation '{operation}'")));
-                }
-            };
+            let boolean_op = boolean_op_from_name(operation)?;
             let a = as_solid(
                 model,
                 args.get("solidA")
@@ -919,14 +945,7 @@ fn dispatch(
                 .get("operation")
                 .and_then(Value::as_str)
                 .ok_or_else(|| ops_err("missing or invalid 'operation'"))?;
-            let boolean_op = match operation {
-                "fuse" | "union" => BooleanOp::Fuse,
-                "cut" | "difference" => BooleanOp::Cut,
-                "intersect" | "intersection" => BooleanOp::Intersect,
-                _ => {
-                    return Err(ops_err(&format!("unknown boolean operation '{operation}'")));
-                }
-            };
+            let boolean_op = boolean_op_from_name(operation)?;
             let a = as_solid(
                 model,
                 args.get("solidA")
@@ -948,6 +967,44 @@ fn dispatch(
             Ok(serde_json::json!({
                 "solid": u64::from(outcome.solid.index() as u32),
                 "quality": quality.clone(),
+            }))
+        }
+        "fuseWithEvolution" | "cutWithEvolution" | "intersectWithEvolution" => {
+            // Same entry point and wire shape as the WASM batch arm
+            // (`bindings/batch.rs`): the exact-only boolean with a
+            // construction-derived evolution report, serialized through
+            // `EvolutionMap::to_json` so the buckets (`modified`,
+            // `generated`, `deleted`, `unresolved`, `origin`) compare like
+            // with like across surfaces.
+            let boolean_op = match op {
+                "fuseWithEvolution" => BooleanOp::Fuse,
+                "cutWithEvolution" => BooleanOp::Cut,
+                _ => BooleanOp::Intersect,
+            };
+            let a = as_solid(
+                model,
+                args.get("solidA")
+                    .ok_or_else(|| ops_err("missing 'solidA'"))?,
+            )?;
+            let b = as_solid(
+                model,
+                args.get("solidB")
+                    .ok_or_else(|| ops_err("missing 'solidB'"))?,
+            )?;
+            let (result, evolution) = remus_operations::boolean::boolean_with_evolution(
+                model.topology_mut(),
+                boolean_op,
+                a,
+                b,
+            )?;
+            let evolution: Value = serde_json::from_str(&evolution.to_json())
+                .map_err(|e| ops_err(&format!("evolution report is not JSON: {e}")))?;
+            // The evolution path never approximates (a mesh result has no
+            // construction history), so a success is exact by contract.
+            *quality = Some("exact".to_owned());
+            Ok(serde_json::json!({
+                "solid": solid_handle(result),
+                "evolution": evolution,
             }))
         }
         "fillet" => {
@@ -1428,28 +1485,37 @@ fn observe(case: Case) -> Result<Observation, RunnerError> {
             batch_duration_ms,
             rollback_volumes,
             rollback_faces,
+            evolution: None,
+            volumes_by_index: BTreeMap::new(),
         });
     }
 
-    let quality =
-        if case.batch[op_index].get("op").and_then(Value::as_str) == Some("booleanWithQuality") {
-            response_ok(&responses, op_index, "boolean")?
-                .get("quality")
-                .and_then(Value::as_str)
-                .ok_or_else(|| err("boolean response is missing quality"))?
-                .to_owned()
-        } else {
-            last_quality.ok_or_else(|| err("modifier response is missing quality"))?
-        };
-    let result_handle_value =
-        if case.batch[op_index].get("op").and_then(Value::as_str) == Some("booleanWithQuality") {
-            response_ok(&responses, op_index, "boolean")?
-                .get("solid")
-                .cloned()
-                .ok_or_else(|| err("boolean response is missing solid handle"))?
-        } else {
-            response_ok(&responses, op_index, "operation")?.clone()
-        };
+    let producing_op = case.batch[op_index]
+        .get("op")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let quality = if producing_op == "booleanWithQuality" {
+        response_ok(&responses, op_index, "boolean")?
+            .get("quality")
+            .and_then(Value::as_str)
+            .ok_or_else(|| err("boolean response is missing quality"))?
+            .to_owned()
+    } else {
+        last_quality.ok_or_else(|| err("modifier response is missing quality"))?
+    };
+    let result_handle_value = if returns_solid_object(producing_op) {
+        response_ok(&responses, op_index, "boolean")?
+            .get("solid")
+            .cloned()
+            .ok_or_else(|| err("boolean response is missing solid handle"))?
+    } else {
+        response_ok(&responses, op_index, "operation")?.clone()
+    };
+    // `*WithEvolution` responses carry the evolution report beside the
+    // handle; pass it through untouched for the contract scorer.
+    let evolution = response_ok(&responses, op_index, "operation")?
+        .get("evolution")
+        .cloned();
     let result_handle_u64 = result_handle_value
         .as_u64()
         .ok_or_else(|| err("result handle is not an integer"))?;
@@ -1461,9 +1527,7 @@ fn observe(case: Case) -> Result<Observation, RunnerError> {
     // ({fromOp}) assert the reference points at the producing op.
     match case.result.handle {
         HandleRef::Direct(expected) => {
-            if case.batch[op_index].get("op").and_then(Value::as_str) != Some("booleanWithQuality")
-                && result_handle != expected
-            {
+            if !returns_solid_object(producing_op) && result_handle != expected {
                 return Err(err(format!(
                     "result handle {result_handle} does not match fixture handle {expected}"
                 )));
@@ -1484,6 +1548,18 @@ fn observe(case: Case) -> Result<Observation, RunnerError> {
     let volume = response_ok(&responses, case.result.volume_index, "volume")?
         .as_f64()
         .ok_or_else(|| err("volume response is not numeric"))?;
+    let volumes_by_index: BTreeMap<usize, f64> = responses
+        .iter()
+        .zip(case.batch.iter())
+        .enumerate()
+        .filter(|(_, (_, item))| item.get("op").and_then(Value::as_str) == Some("volume"))
+        .filter_map(|(index, (response, _))| {
+            response
+                .get("ok")
+                .and_then(Value::as_f64)
+                .map(|volume| (index, volume))
+        })
+        .collect();
     let validation_errors = response_ok(&responses, case.result.validation_index, "validation")?
         .as_u64()
         .ok_or_else(|| err("validation response is not an integer"))?;
@@ -1574,6 +1650,8 @@ fn observe(case: Case) -> Result<Observation, RunnerError> {
         batch_duration_ms,
         rollback_volumes: Vec::new(),
         rollback_faces: None,
+        evolution,
+        volumes_by_index,
     })
 }
 
