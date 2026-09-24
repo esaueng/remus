@@ -10,10 +10,44 @@
 # the blend, offset and modifier code that produced every defect closed in this
 # batch. Those crates are added below.
 
-# No fixed `timeout`: it also caps the unmutated baseline run, and the five
-# examined packages' tests take longer than any per-mutant cap we would want
-# (the weekly job died on "baseline TIMEOUT" every run once operations was
-# added). The per-mutant timeout is derived from the measured baseline instead.
+# No fixed `timeout`: it also caps the unmutated baseline run. The per-mutant
+# timeout is derived from the measured baseline (5x its test time), floored by
+# `minimum_test_timeout` below so a shard whose baseline is only the
+# seconds-long math/algo suites cannot report a slow-but-passing mutant as a
+# TIMEOUT while the other job saturates the runner.
+minimum_test_timeout = 120
+
+# Test cost, not mutant count, is what the weekly budget buys (B19). Measured
+# on the hosted runner (4 vCPU): the unmutated baseline took 7,483-7,812 s of
+# test time on 2026-09-13/16/20, 99.8% of it in remus-operations, and a single
+# test (`exposed_boss_wall_matches_geometry_across_half_radius`) ran 6,011-
+# 6,353 s of it. Those three runs examined 0, 0 and 1 of 4,620 / 3,375 / 1,966
+# listed mutants before `timeout` stopped them.
+#
+# `ci-test` is the profile CI's Test job already uses (opt-level 1, no debug
+# info). The same 2,042 operations tests take 14,511 CPU-s in the dev profile
+# and 1,293 CPU-s under ci-test on that runner: 11.2x.
+profile = "ci-test"
+
+additional_cargo_test_args = [
+  # A mutant is caught by its first failing test. `.config/nextest.toml` sets
+  # `fail-fast = false` for CI, so every caught operations mutant used to run
+  # the whole suite (1,219-1,252 s each on 2026-09-06, the same as a missed
+  # one). Stop at the first failure and terminate the tests still running.
+  "--max-fail=1:immediate",
+  # The five operations tests over 60 s under ci-test (500, 103, 98, 96 and
+  # 62 s on the runner) are 859 of the package's 1,367 CPU-s, and the 500 s one
+  # is a floor on every surviving mutant. They are regression pins for single
+  # seam/torus fixtures that CI's Test and Coverage jobs run on every PR;
+  # dropping them from the per-mutant oracle can only turn a caught mutant into
+  # a reported MISSED, never hide one. Exact names: a renamed test fails
+  # `scripts/test-mutants-scope.py` instead of silently rejoining the oracle.
+  "-E",
+  "not (test(=exposed_boss_wall_matches_geometry_across_half_radius) | test(=the_reported_body_measures_its_closed_form) | test(=offset_torus_sphere_fuse_retains_both_operands) | test(=offset_torus_sphere_cut_matches_annulus_overlap) | test(=offset_torus_sphere_intersect_matches_annulus_overlap))",
+]
+
+# The arguments above are nextest syntax; plain `cargo mutants` must use it too.
+test_tool = "nextest"
 
 examine_globs = [
   # Core numerics and the boolean algorithm.
