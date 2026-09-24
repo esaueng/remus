@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790270879093,
+  "lastUpdate": 1790287424709,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -57067,6 +57067,240 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 59352,
             "range": "± 1541",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3fcb1bc49da3de0132674331189e77f9aae2da04",
+          "message": "fix(algo): drop one-hit section circles that touch a face from outside (B33) (#615)\n\nA cylinder tangent to a box wall along its own seam line produced a\nbox-bottom x cylinder-wall section circle that met the pair's boundaries\nat a single point: the seam vertex and the tangency coincide, so the\ncrossing collector returned one hit, the two-hit arc split never ran,\nand phase FF emitted the whole circle as a section of the box bottom.\nThe splitter carved it in as a phantom hole outside the rectangle, wound\nthe same way as the cylinder wall's use of that circle, and the\ncylinder's bottom cap vanished: a genuine same-sense shared edge that\nboth the operations strict validator and the check crate report\n(ShellOrientationConsistent), plus an open mesh. Volume could not see it.\n\nsingle_hit_circle_is_graze applies the split path's own survival test\nto the one-hit case: a one-hit circle is one closed arc whose midpoint\nis the antipode of the hit, and it is dropped when that antipode is\ndecisively outside a polygon face extent (beyond the margin and the\noutline sagitta plus a weld band). Analytic extents never fire. No\ntolerance change, no healing, no fallback.\n\nUn-ignore b26_finding_box_cylinder_fuse_face_orientation, remove the\nclosed finding-2 arms (pinned, cyl(1.5,1) quarter-turn family) from the\nB26 supplement carve-out, add regress_b33_tangent_seam_fuse.rs and two\nPaveFiller-level tests, and update the B33 roadmap row.\n\nCo-authored-by: Claude Fable 5.1 <noreply@anthropic.com>",
+          "timestamp": "2026-09-24T14:55:42-07:00",
+          "tree_id": "19549c540d37003019ed7c33fd510d7a7d7c6e0f",
+          "url": "https://github.com/esaueng/remus/commit/3fcb1bc49da3de0132674331189e77f9aae2da04"
+        },
+        "date": 1790287422470,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1284134,
+            "range": "± 15566",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1378226,
+            "range": "± 7348",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 26913,
+            "range": "± 456",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 12088990,
+            "range": "± 48311",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 11985609,
+            "range": "± 39415",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 11682211,
+            "range": "± 24851",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 1135614,
+            "range": "± 2196",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 17997324,
+            "range": "± 32866",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 34329608,
+            "range": "± 585252",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 39,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 107,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 65,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 220,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 159,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 817,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 166,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 358,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 228,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 521,
+            "range": "± 8",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 754,
+            "range": "± 7",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 3275,
+            "range": "± 16",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 17,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 36,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 63,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 62,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 543854,
+            "range": "± 1322",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 9869377,
+            "range": "± 17665",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 163047,
+            "range": "± 363",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 518652,
+            "range": "± 2782",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 130846,
+            "range": "± 234",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 929526,
+            "range": "± 6610",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 10819429,
+            "range": "± 98095",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 830008,
+            "range": "± 4599",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 1187935,
+            "range": "± 3461",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 88746,
+            "range": "± 577",
             "unit": "ns/iter"
           }
         ]
