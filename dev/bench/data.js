@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790290834013,
+  "lastUpdate": 1790291754323,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -57535,6 +57535,240 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 89345,
             "range": "± 322",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "2a7354348933bf4b213662240bfd3b7a0cf1294d",
+          "message": "ci(mutants): give the weekly mutation job a baseline that fits its budget (B19) (#614)\n\n* ci(mutants): run mutants under ci-test, stop at first failure, drop long-tail pins\n\nThe weekly baseline spent ~7.5 ks of its 150-minute budget in the dev\nprofile, 99.8% of it in remus-operations and ~6 ks in one test, so the\n2026-09-13/16/20 runs examined 0, 0 and 1 mutant of 4,620/3,375/1,966.\nBuild and test under the ci-test profile (11.2x on the runner for the\nsame operations tests), stop each mutant's test run at its first failing\ntest, and leave the five >60 s operations regression pins to CI.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n* ci(mutants): stage a sharded, fail-closed weekly mutation workflow (B19)\n\nThe single-job callee reported green after examining none of the week's\nmutants. fleet-mutants-sharded.yml plans the week once, sizes a\nround-robin shard matrix from a measured per-package cost model, gives\neach shard its own baseline and a 300-minute budget, and judges it with\nscripts/mutants-verdict.py: any missed, timed-out or unexamined mutant,\nor a baseline that did not finish green, fails the shard.\n\nThe callee is staged beside the pinned fleet-mutants.yml because a caller\npin must name a main-reachable commit with identical content; switching\nmutants.yml to it is a follow-up that pins this change's merge commit.\nThe mutation-scope contract now checks every cargo-mutants pin, the\nexact-name long-tail exclusions, and the verdict and planner tests.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n* ci(mutants): build only test targets and harden the shard verdict\n\nBuild and run mutants with `--tests`: cargo's default test build also\nrelinks the 17 operations examples for every operations mutant, none of\nwhich runs as a test. The verdict now compares listed and examined\nmutants as multisets, the planner sizes shards at 85% of their slot time\nand accepts a smaller shard cap for bounded probes, and the workflow\ncontract test reads the shard job's own timeout.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n* ci(mutants): note the hosted-runner assumption of the shard cost model\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n* docs(roadmap): record the B19 mutation budget decision and runner probe\n\nThe B19 row now carries the decision with its evidence: the three\nweekly runs examined 0, 0 and 1 listed mutants, the dev baseline was\nalmost entirely one operations test, and a bounded runner probe of the\nstaged sharded callee partitioned and fully examined its list. The\ntesting strategy notes the probe and the follow-up pin switch.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n* ci(mutants): upload the shard plan's diff and listing\n\nThe plan job now keeps week.diff and the full in-diff listing as an\nartifact, so a week's plan can be reproduced locally with\n`cargo mutants --list --in-diff week.diff` and the shards' partition\naudited against it. Also end the B19 row's previous sentence cleanly.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n* ci(mutants): calibrate the shard planner on runner measurements\n\nDispatch run 36055955228 ran this branch's config through the pinned\nsingle-job callee: baseline 229 s build + 133 s test (was 129 s +\n7,667 s), auto per-mutant timeout 670 s (was 38,336 s), and 34 mutants\nexamined in the first ~80 minutes, an operations mutant costing ~305 s\n(caught 211 + 74 s, missed 215 + 272 s medians). With those costs and\nthe probe's math/blend figures, the planner needs 10-22 shards for the\n2026-09 weeks, so the cap rises to 24 (three waves at max-parallel 8);\nonly the 09-06 scope-expansion week would still exceed it and fail as\nincomplete. The B19 row and testing strategy record the measurements.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Fable 5.1 <noreply@anthropic.com>",
+          "timestamp": "2026-09-24T16:09:51-07:00",
+          "tree_id": "1b574aaf2b9be015b3dcf59c44e99d35372c5ca0",
+          "url": "https://github.com/esaueng/remus/commit/2a7354348933bf4b213662240bfd3b7a0cf1294d"
+        },
+        "date": 1790291752575,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 729096,
+            "range": "± 167289",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 779312,
+            "range": "± 11882",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 15819,
+            "range": "± 1026",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 7329571,
+            "range": "± 63346",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 7420781,
+            "range": "± 124658",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 7068002,
+            "range": "± 145749",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 654291,
+            "range": "± 8545",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 10538935,
+            "range": "± 133572",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 19589739,
+            "range": "± 655104",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 17,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 55,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 32,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 134,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 95,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 439,
+            "range": "± 7",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 129,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 190,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 175,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 306,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 589,
+            "range": "± 39",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 2096,
+            "range": "± 47",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 10,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 20,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 37,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 38,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 325069,
+            "range": "± 904",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 5914875,
+            "range": "± 160159",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 97760,
+            "range": "± 518",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 311733,
+            "range": "± 1847",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 69695,
+            "range": "± 428",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 575472,
+            "range": "± 36883",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 6966243,
+            "range": "± 149434",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 450742,
+            "range": "± 3842",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 647037,
+            "range": "± 83320",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 55007,
+            "range": "± 604",
             "unit": "ns/iter"
           }
         ]
