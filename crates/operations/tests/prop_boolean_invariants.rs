@@ -450,8 +450,8 @@ fn check_valid_closed_oriented(topo: &Topology, solid: SolidId, what: &str) -> R
     check_valid_closed_oriented_impl(topo, solid, what, false)
 }
 
-/// [`check_valid_closed_oriented`] with the known-open finding-2 carve-out:
-/// when `skip_finding2_supplement` is set, the check-crate supplement is
+/// [`check_valid_closed_oriented`] with the known-open B33 carve-out
+/// ([`is_finding2`]): when `skip_finding2_supplement` is set, the check-crate supplement is
 /// skipped (the ops-validator, the position-quantized recount, the mesh,
 /// and the volumes still judge the result).
 fn check_valid_closed_oriented_finding2(
@@ -506,39 +506,19 @@ fn check_valid_closed_oriented_impl(
     check_supplements(topo, solid, what)
 }
 
-/// Known-open finding 2 (ignored ready-repro
-/// `b26_finding_box_cylinder_fuse_face_orientation` + new §B row): one
-/// box×cylinder fuse at any scale carries a single
-/// `ShellOrientationConsistent` error from the check-crate supplement while
-/// the ops-validator, the position-quantized recount, the mesh, and the
-/// volumes all pass. Skip only the check-crate supplement for that exact
-/// input; every other oracle still judges it.
+/// Known-open B33 supplement carve-out (owner row B33): the check-crate
+/// supplement is skipped for the still-open arms below while the
+/// ops-validator, the position-quantized recount, the mesh, and the volumes
+/// still judge every leg.
+///
+/// Finding 2 itself is CLOSED (B33): its pinned arm (seed 721153df, box ×
+/// cylinder tangent along the cylinder's seam line) and the cylinder(1.5, 1)
+/// × quarter-turn box family arm (seed e3ff8db5, the stock cylinder's seam
+/// line tangent to a box wall) were the same phase-FF defect — a one-hit
+/// closed section circle emitted whole as a phantom hole — and were removed
+/// with the fix; `b26_finding_box_cylinder_fuse_face_orientation` and
+/// `regress_b33_tangent_seam_fuse.rs` are their permanent regressions.
 fn is_finding2(input: &BoolPairInput) -> bool {
-    // Pinned case (seed 721153df): box(1, 2.5, 1.5) × cyl(2.5, 1), z-rotated
-    // π, offset (3.5, 0.5, 0), scale 1e-3 — one ShellOrientationConsistent
-    // error, everything else green, at every scale.
-    #[allow(clippy::float_cmp)]
-    let pinned = matches!(
-        (input.a, input.b, input.axis, input.angle, input.offset, input.scale),
-        (
-            GenPrim::Box { dx, dy, dz },
-            GenPrim::Cylinder { r, h },
-            2,
-            a,
-            (ox, oy, oz),
-            sc,
-        )
-        if dx == 1.0
-            && dy == 2.5
-            && dz == 1.5
-            && r == 2.5
-            && h == 1.0
-            && a == std::f64::consts::PI
-            && ox == 3.5
-            && oy == 0.5
-            && oz == 0.0
-            && sc == 0.001
-    );
     // Pinned-2 family (seed fd003939 and siblings): cylinder(3, *) ×
     // sphere(1) at unit scale under x-axis rotation — the fuse carries
     // supplement wire self-intersections + vertex-on-curve warnings while
@@ -553,31 +533,13 @@ fn is_finding2(input: &BoolPairInput) -> bool {
             sc,
         ) if r == 3.0 && rs == 1.0 && sc == 1.0
     );
-    // Family gate (seed e3ff8db5 and siblings): cylinder(1.5, 1.0) fused
-    // with a quarter-turn z-rotated box — the fuse carries
-    // ShellOrientationConsistent errors while the ops-validator reports the
-    // same inconsistent-orientation issue, i.e. the boolean's own assembly
-    // orientation is suspect, not just the supplement. Same carve-out (the
-    // pinned ready-repro below covers the class), same new §B row.
-    #[allow(clippy::float_cmp)]
-    let family = matches!(
-        (input.a, input.b, input.axis, input.angle, input.scale),
-        (
-            GenPrim::Cylinder { r, h },
-            GenPrim::Box { .. },
-            2,
-            a,
-            sc,
-        ) if r == 1.5 && h == 1.0
-            && (a == std::f64::consts::FRAC_PI_2 || a == 3.0 * std::f64::consts::FRAC_PI_2)
-            && sc == 1.0
-    );
     // Near-miss disjoint-fuse class (seed 6ff4466e and siblings):
     // box(1,1,1) × cyl(2,1) fused disjoint at cap-grazing distance
     // (tool base z=-1 = stock base z=0 minus one tool height, footprints
     // overlapping in xy) — the fuse carries ShellOrientationConsistent
-    // errors while siblings one unit further out are clean. Same
-    // carve-out, same new §B row.
+    // errors while siblings one unit further out are clean. Still open
+    // after the finding-2 fix (a coplanar opposite-normal cap contact, not
+    // the one-hit section circle): same carve-out, row B33.
     #[allow(clippy::float_cmp)]
     let nearmiss = matches!(
         (input.a, input.b, input.axis, input.angle, input.offset),
@@ -613,7 +575,7 @@ fn is_finding2(input: &BoolPairInput) -> bool {
             && (a == std::f64::consts::FRAC_PI_2 || a == 3.0 * std::f64::consts::FRAC_PI_2)
             && sc == 1.0
     );
-    pinned || pinned2 || family || nearmiss || spherecone
+    pinned2 || nearmiss || spherecone
 }
 
 /// Finding-8 class gate: cylinder-stock/cylinder-tool fuse legs whose
@@ -3187,8 +3149,12 @@ fn b26_finding18_cdt_overflow_panic() {
 /// fails until the owning geometry row fixes the kernel. Do NOT fix the
 /// kernel in the B26 proptest PR — file it as a new §B row.
 /// Minimized from `prop_random_primitive_pair_identities` seed `721153df`.
+/// Closed with B33: the cylinder is tangent to the box's x = 1 wall along
+/// its own seam line, so the box-bottom × cylinder-wall section circle met
+/// the pair's boundaries at ONE point (seam and tangency coincide) and was
+/// emitted whole as a phantom hole in the box bottom; phase FF now drops a
+/// one-hit closed circle whose antipode lies outside the pair.
 #[test]
-#[ignore = "open: box-cylinder fuse face-orientation error (B26 finding 2)"]
 fn b26_finding_box_cylinder_fuse_face_orientation() {
     use remus_operations::primitives::{make_box, make_cylinder};
     let m = Mat4::translation(3.5, 0.5, 0.0) * Mat4::rotation_z(std::f64::consts::PI);
