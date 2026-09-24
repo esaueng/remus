@@ -407,6 +407,43 @@ console.log(
   `ok - tessellation: ${mesh.positions.length / 3} verts, ${mesh.indices.length / 3} tris`,
 );
 
+// A concave repeated-notch silhouette must be covered exactly once. The old
+// planar fallback used a vertex-0 fan, which produced a closed-looking mesh
+// whose triangles overlapped the notches and rendered as large visual spikes.
+{
+  const comb = [
+    [87.5, -4], [2.5, -4], [2.5, 6], [4, 6], [4, 27.5], [7, 27.5],
+    [7, 6], [15, 6], [15, 27.5], [18, 27.5], [18, 6], [26, 6],
+    [26, 27.5], [29, 27.5], [29, 6], [37, 6], [37, 27.5], [40, 27.5],
+    [40, 6], [48, 6], [48, 27.5], [51, 27.5], [51, 6], [59, 6],
+    [59, 27.5], [62, 27.5], [62, 6], [70, 6], [70, 27.5], [76, 27.5],
+    [76, 6], [81, 6], [81, 27.5], [84, 27.5], [84, 17], [87.5, 17],
+  ];
+  const face = kernel.makePolygon(Float64Array.from(comb.flatMap(([x, y]) => [x, y, 0])));
+  const combMesh = kernel.tessellateFace(face, DEFLECTION);
+  try {
+    let unsignedArea = 0;
+    let winding = 0;
+    for (let index = 0; index < combMesh.indices.length; index += 3) {
+      const [a, b, c] = Array.from(combMesh.indices.slice(index, index + 3), (vertex) => [
+        combMesh.positions[vertex * 3],
+        combMesh.positions[vertex * 3 + 1],
+      ]);
+      const signedArea = ((b[0] - a[0]) * (c[1] - a[1]) -
+        (b[1] - a[1]) * (c[0] - a[0])) / 2;
+      assert.notEqual(signedArea, 0, 'comb tessellation must not contain degenerate triangles');
+      if (winding === 0) winding = Math.sign(signedArea);
+      assert.equal(Math.sign(signedArea), winding, 'comb triangles must have consistent winding');
+      unsignedArea += Math.abs(signedArea);
+    }
+    assert.equal(combMesh.indices.length, (comb.length - 2) * 3);
+    assert.ok(Math.abs(unsignedArea - 1469) < 1e-9, `comb mesh area=${unsignedArea}`);
+  } finally {
+    combMesh.free();
+  }
+  console.log('ok - concave planar comb tessellates without overlap');
+}
+
 // 5. Mass properties
 const props = JSON.parse(kernel.massProperties(boxId));
 assert.ok(
@@ -668,6 +705,38 @@ for (const operation of ['fillet', 'chamfer']) {
     'failed evolution fillet must leave the input unchanged',
   );
   console.log('ok - evolution decoder and degenerate-operation rejection');
+}
+
+// Explicit blend-group removal is atomic through both shipped entry points.
+{
+  const results = [];
+  for (const batch of [false, true]) {
+    const groupKernel = new BrepKernel();
+    try {
+      const source = groupKernel.makeBox(10, 10, 10);
+      const edge = groupKernel.getSolidEdges(source)[0];
+      const rounded = groupKernel.filletWithEvolution(source, Uint32Array.of(edge), 1);
+      const solid = rounded.result.solid;
+      const seed = rounded.evolution.generated[0].results[0];
+      const before = groupKernel.journalSummary();
+      assert.throws(() => groupKernel.removeBlendsJournaled(solid, new Uint32Array()), /seed/i);
+      assert.equal(groupKernel.journalSummary(), before);
+      const result = batch
+        ? JSON.parse(groupKernel.executeBatchV2(JSON.stringify([
+          { op: 'removeBlendsJournaled', args: { solid, seeds: [seed, seed] } },
+        ])))[0].ok
+        : JSON.parse(groupKernel.removeBlendsJournaled(solid, Uint32Array.of(seed, seed)));
+      assert.ok(result && Number.isInteger(result.solid));
+      assert.ok(Math.abs(groupKernel.volume(result.solid, DEFLECTION) - 1000) < 1e-6);
+      assert.equal(groupKernel.getSolidFaces(result.solid).length, 6);
+      assert.equal(JSON.parse(groupKernel.validateSolidDetailed(result.solid)).errorCount, 0);
+      results.push(result);
+    } finally {
+      groupKernel.free();
+    }
+  }
+  assert.deepEqual(results[0], results[1]);
+  console.log('ok - atomic blend-group direct/batch removal and rollback');
 }
 
 // 13. Generic periodic STEP bounds must import as an exact analytic band, and

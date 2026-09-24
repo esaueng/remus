@@ -13,11 +13,13 @@
 //! [`Circle3D`]: remus_math::curves::Circle3D
 //! [`Ellipse3D`]: remus_math::curves::Ellipse3D
 
+pub mod certified_plane;
 pub mod curve_to_nurbs;
 pub mod recognize_curve;
 pub mod recognize_surface;
 pub mod surface_to_nurbs;
 
+pub use certified_plane::{CertifiedAffinePlane, certify_affine_nurbs_plane};
 pub use curve_to_nurbs::{
     circle_to_nurbs, circle_to_nurbs_with_segments, ellipse_to_nurbs, line_to_nurbs,
 };
