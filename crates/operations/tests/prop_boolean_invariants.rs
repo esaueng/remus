@@ -1709,7 +1709,11 @@ fn is_sphere_torus_pair(a: &GenPrim, b: &GenPrim) -> bool {
 /// Broken at 1e-3 (ops-invalid cut; valid-but-open/drifting fuse) and at
 /// unit scale (valid fuse with open-at-fine mesh; ops-invalid cut;
 /// translation-drifting valid fuse) across placements — the pair-cell, not
-/// the placement or scale, is broken. Pinned repros + row B38 own it.
+/// the placement or scale, is broken. Pinned repros + row B39 own it. All
+/// four pinned repros are green since B39 (2026-09-24), but a deterministic
+/// 60-draw torus–cone sweep of the slow lattice still fails 3 draws
+/// (two open fuse meshes, one disjoint 1e3 fuse that drops the torus), so
+/// the exclusion stays until those placements close.
 fn is_torus_cone_pair(a: &GenPrim, b: &GenPrim) -> bool {
     matches!(
         (a, b),
@@ -3574,8 +3578,10 @@ fn b26_finding14_toruscone_sibling() {
 /// Same owner row (B39): the pair-cell, not the scale, is broken. No
 /// persisted proptest seed (shrinking aborted) — this repro is the
 /// retention. Minimized from `prop_random_curved_pair_identities`.
+/// Closed by B39 (composite pierce loops chained at exact rim crossings;
+/// `regress_b39_toruscone_composite_pierce.rs`, b39-bisect-2026-09.md);
+/// un-ignored 2026-09-24.
 #[test]
-#[ignore = "open: unit torus-cone GFA degenerates to 1-face open shell, typed refusal (B26 finding 14; root cause traced, see b39-bisect-2026-09.md appendix)"]
 fn b26_finding14_toruscone_unit() {
     use remus_operations::primitives::{make_cone, make_torus};
     let m = Mat4::translation(1.5, 2.0, 1.0) * Mat4::rotation_y(3.0 * std::f64::consts::FRAC_PI_2);
@@ -3611,8 +3617,10 @@ fn b26_finding14_toruscone_unit() {
 /// pair-cell, not the placement, angle, or scale, is broken. No persisted
 /// proptest seed (shrinking aborted) — this repro is the retention.
 /// Minimized from `prop_random_curved_pair_identities`.
+/// Closed by B39 (composite pierce loops chained at exact rim crossings;
+/// `regress_b39_toruscone_composite_pierce.rs`, b39-bisect-2026-09.md);
+/// un-ignored 2026-09-24.
 #[test]
-#[ignore = "open: torus-cone oblique composite-pierce assembly fails, typed refusal (B26 finding 14; root cause traced, see b39-bisect-2026-09.md appendix)"]
 fn b26_finding14_toruscone_oblique_drift() {
     use remus_operations::primitives::{make_cone, make_torus};
     let m = Mat4::translation(2.5, 0.0, 0.0) * Mat4::rotation_x(std::f64::consts::FRAC_PI_4);
