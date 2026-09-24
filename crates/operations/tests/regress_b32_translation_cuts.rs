@@ -469,7 +469,7 @@ fn b32_box_cone_sibling_fuse_is_seam_placement_invariant() {
     }
 }
 
-/// Ready-repro, discovered while closing B32 (2026-09-24), owner row B51:
+/// Ready-repro, discovered while closing B32 (2026-09-24), owner row B52:
 /// the CYLINDER twin of the sibling (box 2.5×1×1 with a cylinder r=2, h=1
 /// at the same `translation(0.5,-1.5,-0.5) · rotation_z(rot)` placement)
 /// refuses all three legs `ExactOnlyUnattainable` at seam rotations 0.3 and
@@ -482,8 +482,8 @@ fn b32_box_cone_sibling_fuse_is_seam_placement_invariant() {
 /// cone arm's orphaned-rim rescue does not apply — there is no section in
 /// the trace input to recover. Acceptance target encoded below.
 #[test]
-#[ignore = "open: box-cylinder rim notch refuses at seam rotations 0.3 and 2.0 (B51)"]
-fn b51_box_cylinder_notch_is_seam_placement_invariant() {
+#[ignore = "open: box-cylinder rim notch refuses at seam rotations 0.3 and 2.0 (B52)"]
+fn b52_box_cylinder_notch_is_seam_placement_invariant() {
     let build = |topo: &mut Topology, rot: f64| {
         let m = Mat4::translation(0.5, -1.5, -0.5) * Mat4::rotation_z(rot);
         let a = make_box(topo, 2.5, 1.0, 1.0).expect("box");
