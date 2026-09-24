@@ -2652,6 +2652,50 @@ fn analytic_cone_signed_volume(
     Ok(if face.is_reversed() { -vol } else { vol })
 }
 
+/// Signed u-winding (radians) of a wire in the sphere's own frame; ±2π for a
+/// full parallel ring, near zero for a contractible loop.
+///
+/// Sampled along every edge in traversal order, not only at vertices: a ring
+/// built from one closed circle edge has a single vertex and would otherwise
+/// read zero winding.
+fn sphere_wire_u_winding(
+    topo: &Topology,
+    wire: &remus_topology::wire::Wire,
+    sph: &remus_math::surfaces::SphericalSurface,
+) -> Result<f64, crate::OperationsError> {
+    const SAMPLES_PER_EDGE: u32 = 8;
+    let mut us = Vec::with_capacity(wire.edges().len() * SAMPLES_PER_EDGE as usize);
+    for oe in wire.edges() {
+        let edge = topo.edge(oe.edge())?;
+        let sp = topo.vertex(edge.start())?.point();
+        let ep = topo.vertex(edge.end())?.point();
+        let (t0, t1) = crate::authoritative_edge_domain(edge, "sphere cap ring winding")?;
+        for i in 0..SAMPLES_PER_EDGE {
+            let f = f64::from(i) / f64::from(SAMPLES_PER_EDGE);
+            let t = if oe.is_forward() {
+                t0 + (t1 - t0) * f
+            } else {
+                t1 - (t1 - t0) * f
+            };
+            us.push(
+                sph.project_point(edge.curve().evaluate_with_endpoints(t, sp, ep))
+                    .0,
+            );
+        }
+    }
+    let wrap = |d: f64| {
+        (d + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU) - std::f64::consts::PI
+    };
+    let mut winding = 0.0;
+    for pair in us.windows(2) {
+        winding += wrap(pair[1] - pair[0]);
+    }
+    if let (Some(first), Some(last)) = (us.first(), us.last()) {
+        winding += wrap(first - last);
+    }
+    Ok(winding)
+}
+
 /// Exact signed volume contribution of a spherical face via the divergence
 /// theorem: `V = (1/3) integral P.n dA`.
 ///
@@ -2721,18 +2765,32 @@ fn analytic_sphere_signed_volume(
     // Determine which pole the face covers by checking a face interior point.
     if (v_max - v_min).abs() < 0.01 {
         let v_boundary = f64::midpoint(v_min, v_max);
-        let positions = crate::boolean::face_polygon(topo, face_id)?;
-        if positions.is_empty() {
-            return Ok(0.0);
-        }
-        let n = positions.len() as f64;
-        let avg = Point3::new(
-            positions.iter().map(|p| p.x()).sum::<f64>() / n,
-            positions.iter().map(|p| p.y()).sum::<f64>() / n,
-            positions.iter().map(|p| p.z()).sum::<f64>() / n,
-        );
-        let (_, v_interior) = sph.project_point(avg);
-        if v_interior > v_boundary {
+        // A constant-v boundary is a full parallel ring. Its polygon centroid
+        // sits on the sphere's axis, so projecting it carries no side
+        // information: on a translated sphere both hemispheres chose the
+        // same cap and their centre terms stopped cancelling (the rotated
+        // hollow sphere read 22.41 for 11.08; Fuzz Smoke 2026-09-22). A full
+        // ring's u-winding in the sphere frame is the authoritative side —
+        // a +u traversal bounds the cap above the ring — and the centroid
+        // probe is kept only for a boundary that does not wind a full turn.
+        let winding = sphere_wire_u_winding(topo, wire, sph)?;
+        let upper = if winding.abs() > std::f64::consts::PI {
+            winding > 0.0
+        } else {
+            let positions = crate::boolean::face_polygon(topo, face_id)?;
+            if positions.is_empty() {
+                return Ok(0.0);
+            }
+            let n = positions.len() as f64;
+            let avg = Point3::new(
+                positions.iter().map(|p| p.x()).sum::<f64>() / n,
+                positions.iter().map(|p| p.y()).sum::<f64>() / n,
+                positions.iter().map(|p| p.z()).sum::<f64>() / n,
+            );
+            let (_, v_interior) = sph.project_point(avg);
+            v_interior > v_boundary
+        };
+        if upper {
             v_min = v_boundary;
             v_max = std::f64::consts::FRAC_PI_2;
         } else {
