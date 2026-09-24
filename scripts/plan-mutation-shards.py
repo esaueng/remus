@@ -21,23 +21,36 @@ import sys
 
 # Mean wall seconds each mutant occupies one of the two `--jobs 2` slots,
 # build plus test, under the `.cargo/mutants.toml` settings (ci-test profile,
-# first-failure stop, long-tail pins excluded). Unviable mutants (a quarter of
-# the 2026-09-06 sample) are included at their observed ~10 s.
+# first-failure stop, long-tail pins excluded), unviable mutants included.
+# Measured on the hosted runner, 2026-09-24:
+# - remus-operations: 305 s mean over 30 mutants (dispatch run 36055955228):
+#   caught 211 s build + 74 s test (medians), missed 215 s + 272 s, unviable
+#   12 s. That run still built the 17 examples `--tests` now skips.
+# - remus-algo: 57 s over 3 (same run; builds contend with the other slot's
+#   operations build).
+# - remus-math / remus-blend: 24 s / 31 s over 113 / 7 in math-and-blend-only
+#   shards (probe run 36059529895); 84 s for the one math mutant next to
+#   operations builds, so mixed shards are costed higher.
+# - remus-offset: 80 s over 1.
 SECONDS_PER_MUTANT = {
-    "remus-operations": 240.0,
-    "remus-algo": 45.0,
-    "remus-math": 45.0,
-    "remus-blend": 25.0,
-    "remus-offset": 45.0,
+    "remus-operations": 300.0,
+    "remus-algo": 60.0,
+    "remus-math": 50.0,
+    "remus-blend": 40.0,
+    "remus-offset": 80.0,
 }
-# Per shard: toolchain and cache restore, the cold ci-test build of both
-# scratch directories, and the unmutated baseline test run.
-SHARD_OVERHEAD_SECONDS = 20 * 60
+# Per shard: toolchain and cache restore (~1 min), the cold ci-test baseline
+# (229 s build + 133 s test on the runner) and the second scratch directory's
+# cold build.
+SHARD_OVERHEAD_SECONDS = 12 * 60
 JOBS_PER_SHARD = 2
 # Plan each shard to 85% of its slot time: round-robin evens the package mix,
 # but not which mutants survive and run their package's whole suite.
 TARGET_UTILIZATION = 0.85
-MAX_SHARDS = 16
+# 24 shards at 300 minutes cover every 2026-09 week except the one that added
+# the operations/blend/offset scope; with `max-parallel: 8` that is at most
+# three waves. A larger week fails its shards' verdicts as incomplete.
+MAX_SHARDS = 24
 
 
 def plan(mutants, budget_minutes, max_shards=MAX_SHARDS):

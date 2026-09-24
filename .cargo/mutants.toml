@@ -26,7 +26,11 @@ minimum_test_timeout = 120
 #
 # `ci-test` is the profile CI's Test job already uses (opt-level 1, no debug
 # info). The same 2,042 operations tests take 14,511 CPU-s in the dev profile
-# and 1,293 CPU-s under ci-test on that runner: 11.2x.
+# and 1,293 CPU-s under ci-test on that runner: 11.2x. With this profile, the
+# first-failure stop and the exclusions below (before `--tests` was added),
+# the runner's baseline for the same five packages took 229 s build + 133 s
+# test (dispatch run 36055955228, 2026-09-24), and the auto-set per-mutant
+# timeout fell from 38,336 s to 670 s.
 profile = "ci-test"
 
 # `cargo test --no-run`, and so nextest's build, also compiles every example by

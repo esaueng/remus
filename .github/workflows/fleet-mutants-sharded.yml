@@ -20,10 +20,11 @@ env:
 # 3,375 and 1,966 mutants listed on 2026-09-13/16/20: its dev-profile baseline
 # alone took ~7.5 ks, ~6 ks of it one operations test, and its summary passed
 # the two runs that examined nothing. `.cargo/mutants.toml` now makes each
-# mutant cheap (ci-test profile, stop at the first failing test, long-tail
-# regression pins left to CI), but a typical week still costs tens of
-# runner-hours, so the week is split into round-robin shards that each run
-# their own baseline and budget:
+# mutant cheap (ci-test profile, test targets only, stop at the first failing
+# test, long-tail regression pins left to CI): the baseline fell to 229 s
+# build + 133 s test and an operations mutant to ~305 s on this runner. Even
+# so a typical week is 70-180 slot-hours, so the week is split into
+# round-robin shards that each run their own baseline and budget:
 #
 # - `plan` lists the week's in-diff mutants once, pins the diff base for every
 #   shard, and sizes the matrix from scripts/plan-mutation-shards.py's measured
@@ -34,9 +35,9 @@ env:
 #   a baseline that did not finish green, and ANY listed mutant the budget
 #   left unexamined: a partial run is an incomplete verdict, not a pass.
 # - max-parallel keeps the Sunday run to eight of the organization's twenty
-#   hosted runner slots; larger weeks run in a second wave. The cost model
-#   assumes those 4-vCPU hosted runners: routed to the self-hosted fleet, the
-#   shards would queue on its two slots instead.
+#   hosted runner slots; the planner's 24-shard cap is at most three waves
+#   (~16 hours). The cost model assumes those 4-vCPU hosted runners: routed
+#   to the self-hosted fleet, the shards would queue on its two slots instead.
 jobs:
   plan:
     name: Plan Mutation Shards
