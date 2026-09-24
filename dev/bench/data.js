@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790291754323,
+  "lastUpdate": 1790293480132,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -57769,6 +57769,240 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 55007,
             "range": "± 604",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8539b266bc78ec5731dd8bc0179345cef4c720c3",
+          "message": "fix(algo): chain torus–cone composite pierce loops at exact rim crossings (B39) (#618)\n\n* fix(algo): chain torus–cone composite pierce loops at exact rim crossings (B39)\n\nA torus tube pierced by a frustum through its wall and a cap at once has a\ncomposite pierce loop: torus × wall arcs that end on the rim circles, plus\ntorus × cap-plane arcs that the rims cut. Every junction is one exact\nrim∩torus crossing. None of them chained, so B26 finding 14's unit cell\ndegenerated to a 1-face open shell and the oblique cell misbuilt. Six\nlayers, in pipeline order:\n\n- math: a torus × frustum/cylinder-wall trace now ends ON the band edge it\n  leaves (the exiting step is bisected), not up to a step short (0.016–0.057\n  off the crossing). Scoped to that family: other marched pairs' consumers\n  are calibrated to the old ends (the tapered-feet fuse and the hammer\n  opening replay regressed when it was general). Corner exits keep the old\n  end.\n- phase FF: the exact plane×torus oval trim serves disk caps. Rim∩torus\n  crossings are bracketed and bisected exactly, and the kept arcs are\n  picked by the exact disk test.\n- phase FF: a wall arc that notches ONE rim is split at its midpoint into\n  two independent curves (`curve_split`), so it shares no endpoint pair\n  with the rim span.\n- builder: `split_periodic_face_by_rim_chains` emits the notch lens and\n  band, and the two sectors of a rim-to-rim pair of marched chains. The\n  greedy walker closes a notched annulus early and discards the sector clear\n  of the seam as a 2π false closure.\n- math: the plane×torus chain no longer starts on the far member of a\n  grid-corner near-duplicate pair. It doubled back and the fitted oval\n  retraced its seam, folding both meshes at fine deflection.\n- tessellation: torus notch-band rows are ruled between the loops per tube\n  angle, not placed at constant ring angle past a wandering loop's spread,\n  where triangles sat 3e-2 off the tube.\n\nThe two open finding-14 witnesses are un-ignored. The new\nregress_b39_toruscone_composite_pierce.rs pins fuse/cut/intersect for both\ncells against independent oracles: a semi-analytic torus∩frustum integral\nfor inclusion–exclusion, and mesh-parity material accounting.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n* docs(roadmap): close B39, file torus–cone sweep placements as B51\n\nB39's exit is met: all four finding-14 repros are green. The torus–cone\ngeneration exclusion stays. A deterministic 60-draw torus–cone sweep of the\nB26 slow lattice fails 3 draws, identically on unmodified main (3fcb1bc4):\ntwo open fuse meshes and one disjoint 1e3 fuse that drops the torus. They\nare pinned as #[ignore] ready-repros and owned by the new row B51.\n\nAlso: the band-mesh regression now asserts the valid band form first, so it\ndiscriminates against main too. The solid-verification skill notes that the\ncheck crate's classify_point misreads trimmed torus faces. The exhaustive\nsection_notches_one_rim match is formatted.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Fable 5.1 <noreply@anthropic.com>",
+          "timestamp": "2026-09-24T16:35:59-07:00",
+          "tree_id": "26cfc8da530d5100ca1f278c05de7bbc61d5c7fe",
+          "url": "https://github.com/esaueng/remus/commit/8539b266bc78ec5731dd8bc0179345cef4c720c3"
+        },
+        "date": 1790293478045,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1279950,
+            "range": "± 4297",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1376402,
+            "range": "± 34493",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 27160,
+            "range": "± 56",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 12113306,
+            "range": "± 68698",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 12206305,
+            "range": "± 21279",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 11720218,
+            "range": "± 100529",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 1129841,
+            "range": "± 5381",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 17853907,
+            "range": "± 51601",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 33307998,
+            "range": "± 323908",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 39,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 108,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 65,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 218,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 159,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 808,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 166,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 356,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 225,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 521,
+            "range": "± 60",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 760,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 3253,
+            "range": "± 7",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 17,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 36,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 63,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 63,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 547508,
+            "range": "± 2883",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 9861645,
+            "range": "± 18625",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 160507,
+            "range": "± 357",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 515199,
+            "range": "± 713",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 130190,
+            "range": "± 151",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 927014,
+            "range": "± 1959",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 11085765,
+            "range": "± 183000",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 836503,
+            "range": "± 6055",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 1189500,
+            "range": "± 21908",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 89359,
+            "range": "± 2323",
             "unit": "ns/iter"
           }
         ]
