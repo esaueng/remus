@@ -9403,12 +9403,12 @@ mod tests {
         let wire_pts = [pt(0.0, z_bot), pt(0.0, z_top)];
 
         let section = |curve: EdgeCurve, start: Point3, end: Point3| {
-            let trim = match &curve {
-                EdgeCurve::Circle(c) => {
-                    let a = c.project(start);
-                    Some((a, a + (c.project(end) - a).rem_euclid(TAU)))
-                }
-                _ => None,
+            // Circle sections carry their exact angular trim; lines need none.
+            let trim = if let EdgeCurve::Circle(c) = &curve {
+                let a = c.project(start);
+                Some((a, a + (c.project(end) - a).rem_euclid(TAU)))
+            } else {
+                None
             };
             let pcurve = crate::builder::pcurve_compute::compute_pcurve_on_surface(
                 &curve, start, end, &surface, &wire_pts, None,
@@ -9461,17 +9461,20 @@ mod tests {
         split
             .iter()
             .flat_map(|sf| sf.outer_wire.iter().chain(sf.inner_wires.iter().flatten()))
-            .filter_map(|e| match &e.curve_3d {
-                EdgeCurve::Circle(c) if (c.center().z() - z).abs() < 1e-9 => {
-                    let (ns, ne) = if e.forward {
-                        (e.start_3d, e.end_3d)
-                    } else {
-                        (e.end_3d, e.start_3d)
-                    };
-                    let a = c.project(ns);
-                    Some((c.project(ne) - a).rem_euclid(std::f64::consts::TAU))
+            .filter_map(|e| {
+                let EdgeCurve::Circle(c) = &e.curve_3d else {
+                    return None;
+                };
+                if (c.center().z() - z).abs() >= 1e-9 {
+                    return None;
                 }
-                _ => None,
+                let (ns, ne) = if e.forward {
+                    (e.start_3d, e.end_3d)
+                } else {
+                    (e.end_3d, e.start_3d)
+                };
+                let a = c.project(ns);
+                Some((c.project(ne) - a).rem_euclid(std::f64::consts::TAU))
             })
             .sum()
     }
