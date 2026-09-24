@@ -1675,7 +1675,8 @@ fn is_sphere_torus_pair(a: &GenPrim, b: &GenPrim) -> bool {
 /// four pinned repros are green since B39 (2026-09-24), but a deterministic
 /// 60-draw torus–cone sweep of the slow lattice still fails 3 draws
 /// (two open fuse meshes, one disjoint 1e3 fuse that drops the torus), so
-/// the exclusion stays until those placements close.
+/// the exclusion stays until those placements close (row B51,
+/// `b51_toruscone_sweep_*`).
 fn is_torus_cone_pair(a: &GenPrim, b: &GenPrim) -> bool {
     matches!(
         (a, b),
@@ -3601,6 +3602,88 @@ fn b26_finding14_toruscone_oblique_drift() {
     // The failing oracle: rigid translation must not move the volume.
     check_translation_invariant_scaled(&topo, f.solid, "finding-14-obl fuse")
         .expect("translation invariant");
+}
+
+/// Ready-repros for the torus–cone placements that keep the generation
+/// exclusion in place after B39 (row B51). A deterministic 60-draw sweep of
+/// the slow lattice (`TestRunner::deterministic()` over `arb_gen_prim(true)`
+/// filtered to torus–cone pairs, through `check_bool_pair`) failed these
+/// three on the B39 branch AND identically on unmodified `origin/main`
+/// (`3fcb1bc4`, 2026-09-24): they are not the composite-pierce cell B39
+/// closed. Committed as `#[ignore]` per the testing skill.
+fn b51_sweep_input(a: GenPrim, b: GenPrim, angle: f64, offset: (f64, f64, f64), scale: f64) {
+    let input = BoolPairInput {
+        a,
+        b,
+        axis: 2,
+        angle,
+        offset,
+        scale,
+    };
+    check_bool_pair(&input).expect("torus–cone pair satisfies the B26 battery");
+}
+
+/// Sweep draw #5: the fuse mesh opens (6 boundary edges at the scaled
+/// deflection).
+#[test]
+#[ignore = "open: torus-cone slow-lattice fuse mesh opens (B51)"]
+fn b51_toruscone_sweep_oblique_fuse_mesh() {
+    b51_sweep_input(
+        GenPrim::Cone {
+            r0: 3.0,
+            r1: 1.0,
+            h: 2.5,
+        },
+        GenPrim::Torus {
+            major: 2.5,
+            minor: 0.75,
+        },
+        std::f64::consts::FRAC_PI_4,
+        (-1.0, 1.5, 1.5),
+        1.0,
+    );
+}
+
+/// Sweep draw #19: the fuse mesh opens (6 boundary edges at the scaled
+/// deflection).
+#[test]
+#[ignore = "open: torus-cone slow-lattice fuse mesh opens (B51)"]
+fn b51_toruscone_sweep_axis_aligned_fuse_mesh() {
+    b51_sweep_input(
+        GenPrim::Cone {
+            r0: 1.0,
+            r1: 2.5,
+            h: 3.0,
+        },
+        GenPrim::Torus {
+            major: 4.0,
+            minor: 0.75,
+        },
+        0.0,
+        (3.0, 4.0, 2.0),
+        1.0,
+    );
+}
+
+/// Sweep draw #25: a DISJOINT torus–cone fuse at 1e3 scale returns only the
+/// cone (fuse 4.97e9 against 2.22e10 + 4.97e9): the torus is dropped.
+#[test]
+#[ignore = "open: disjoint torus-cone fuse at 1e3 drops the torus (B51)"]
+fn b51_toruscone_sweep_disjoint_fuse_drops_torus() {
+    b51_sweep_input(
+        GenPrim::Torus {
+            major: 2.0,
+            minor: 0.75,
+        },
+        GenPrim::Cone {
+            r0: 1.0,
+            r1: 1.5,
+            h: 1.0,
+        },
+        std::f64::consts::FRAC_PI_2,
+        (0.0, 0.0, 3.0),
+        1000.0,
+    );
 }
 
 /// Ready-repro for the fifteenth proptest-found defect (2026-09-16): a

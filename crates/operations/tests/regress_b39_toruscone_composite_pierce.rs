@@ -423,6 +423,7 @@ fn unit_fuse_cuts_one_composite_disc_from_the_torus() {
 #[test]
 fn oblique_band_mesh_stays_on_the_torus() {
     let (topo, solid) = exact(Cell::Oblique, BooleanOp::Fuse);
+    assert_valid(&topo, solid, "oblique fuse");
     let deflection = 5e-4;
     let (mesh, offsets) = tessellate_solid_grouped_with_tolerance(
         &topo,

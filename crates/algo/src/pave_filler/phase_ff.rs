@@ -5081,10 +5081,7 @@ fn section_notches_one_rim(
         }
         // B24: exhaustive over the `FaceSurface` pair — only a torus against
         // a frustum/cylinder wall notches a rim here.
-        (
-            FaceSurface::Plane { .. } | FaceSurface::Nurbs(_) | FaceSurface::Sphere(_),
-            _,
-        )
+        (FaceSurface::Plane { .. } | FaceSurface::Nurbs(_) | FaceSurface::Sphere(_), _)
         | (
             FaceSurface::Cone(_) | FaceSurface::Cylinder(_),
             FaceSurface::Plane { .. }
