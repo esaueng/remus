@@ -162,6 +162,93 @@ fn mesh_boundary_edge_count(mesh: &tessellate::TriangleMesh) -> usize {
     counts.values().filter(|&&c| c != 2).count()
 }
 
+/// Whether a quadric wall's boundary carries a NURBS trim — an intersection
+/// curve no iso-`u`/`v` rectangle can bound.
+///
+/// The per-face analytic integrators below (`analytic_cylinder_signed_volume`,
+/// `analytic_cone_signed_volume`, and their sphere/torus siblings) integrate
+/// over the bounding rectangle `[u_min, u_max] x [v_min, v_max]`. That is the
+/// face itself only when every trim runs along the parameter lines (axial
+/// lines and coaxial circles on a cylinder; generators and latitude circles
+/// on a cone). A boolean-trimmed wall bounded by a NURBS intersection curve
+/// (e.g. a box–cone cut wall) is not that rectangle: the bounding box credits
+/// uncut regions and drops cut ones, and the residual carries the surface
+/// origin — so the error moves with rigid translation (B32). Such faces must
+/// decline the analytic path and measure through the closed whole-solid mesh
+/// (shared rim vertices) or the boundary-trimmed Gauss integrator instead.
+///
+/// Scope is deliberately narrow: only NURBS edges that leave an iso-`v`
+/// parallel are trims. Untrimmed primitives and revolve walls (Line + Circle
+/// edges, or the rational-NURBS rim arcs a partial revolve emits, which sit at
+/// constant `v` exactly like a coaxial Circle) keep the exact path; only walls
+/// bounded by a genuine intersection curve are re-routed.
+fn quadric_face_has_nurbs_trim(topo: &Topology, fid: FaceId) -> bool {
+    let Ok(face) = topo.face(fid) else {
+        return false;
+    };
+    let surface = face.surface();
+    if !matches!(
+        surface,
+        FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_)
+    ) {
+        return false;
+    }
+    let mut wires = vec![face.outer_wire()];
+    wires.extend(face.inner_wires().iter().copied());
+    wires.into_iter().any(|wid| {
+        topo.wire(wid).is_ok_and(|wire| {
+            wire.edges().iter().any(|oe| {
+                topo.edge(oe.edge()).is_ok_and(|edge| {
+                    matches!(edge.curve(), EdgeCurve::NurbsCurve(_))
+                        && !nurbs_edge_is_iso_v_parallel(topo, edge, surface)
+                })
+            })
+        })
+    })
+}
+
+/// Whether a NURBS edge on a quadric wall runs along one iso-`v` parallel
+/// (a coaxial circle or arc) — the same boundary the Circle arm of the
+/// rectangle integrators accepts. Sampled along the edge, not at its
+/// endpoints, so an intersection curve that returns to its start height
+/// still reads as a trim. Unresolvable edges count as trims (fail closed).
+fn nurbs_edge_is_iso_v_parallel(
+    topo: &Topology,
+    edge: &remus_topology::edge::Edge,
+    surface: &FaceSurface,
+) -> bool {
+    let (Ok(sv), Ok(ev)) = (topo.vertex(edge.start()), topo.vertex(edge.end())) else {
+        return false;
+    };
+    let (sp, ep) = (sv.point(), ev.point());
+    let Ok((t0, t1)) =
+        crate::authoritative_edge_domain(edge, "quadric wall NURBS-trim classification")
+    else {
+        return false;
+    };
+    let mut v_min = f64::INFINITY;
+    let mut v_max = f64::NEG_INFINITY;
+    for i in 0..=16 {
+        let t = t0 + (t1 - t0) * (f64::from(i) / 16.0);
+        let Some((_, v)) = surface.project_point(edge.curve().evaluate_with_endpoints(t, sp, ep))
+        else {
+            return false;
+        };
+        if !v.is_finite() {
+            return false;
+        }
+        v_min = v_min.min(v);
+        v_max = v_max.max(v);
+    }
+    // Relative to |v| so the check is scale-free on length-valued charts
+    // (cylinder/cone axial `v`); a real intersection trim spreads by a large
+    // fraction of the wall.
+    v_max - v_min <= 1e-9 * v_min.abs().max(v_max.abs()).max(1.0)
+}
+
 /// Whether a cylinder/cone wall is a NOTCHED band — a trimmed region whose UV
 /// outline is not the rectangle `[u_min, u_max] x [v_min, v_max]`.
 ///
@@ -542,12 +629,23 @@ fn analytic_revolution_solid_volume(topo: &Topology, solid: SolidId) -> Option<f
     // All faces fit — sum the exact per-face divergence-theorem contributions
     // (quadric walls + analytic planar disc caps; the on-axis NURBS bands are
     // zero-area and contribute nothing). No tessellation occurs.
+    //
+    // Cylinder walls must carry trim authority (`line_circle_...`, which only
+    // integrates axial-Line / coaxial-Circle boundaries): a wall whose rim
+    // runs along chords or other non-surface curves is not the rectangle the
+    // closed form integrates, and the residual is origin-dependent (B32).
+    // Cone walls with NURBS trims decline the same way.
     let mut total = 0.0;
     for &fid in &faces {
         let face = topo.face(fid).ok()?;
         let c = match face.surface() {
-            FaceSurface::Cylinder(_) => analytic_cylinder_signed_volume(topo, fid).ok()?,
-            FaceSurface::Cone(_) => analytic_cone_signed_volume(topo, fid).ok()?,
+            FaceSurface::Cylinder(_) => line_circle_cylinder_signed_volume(topo, fid)?,
+            FaceSurface::Cone(_) => {
+                if quadric_face_has_nurbs_trim(topo, fid) {
+                    return None;
+                }
+                analytic_cone_signed_volume(topo, fid).ok()?
+            }
             FaceSurface::Torus(_) => analytic_torus_signed_volume(topo, fid).ok()?,
             FaceSurface::Plane { .. } => *cap_volumes.get(&fid)?,
             FaceSurface::Nurbs(_) => 0.0, // degenerate on-axis band
@@ -1721,7 +1819,14 @@ pub fn solid_volume(
         // whole-solid mesh above. Drill one hole and the same body routed here
         // instead, and its corner fillets read as removing half of what the
         // undrilled plate's removed.
-        if has_nurbs || has_non_band_sphere {
+        // The same holds for a quadric wall bounded by a NURBS intersection
+        // curve: the analytic rectangle over/under-counts the trimmed region
+        // (B32 box–cone cuts), while the closed whole-solid mesh follows the
+        // shared trimmed boundary. Re-route those bodies here too.
+        let has_quadric_nurbs_trim = outer_faces
+            .iter()
+            .any(|&fid| quadric_face_has_nurbs_trim(topo, fid));
+        if has_nurbs || has_quadric_nurbs_trim || has_non_band_sphere {
             let mesh = tessellate::tessellate_solid(topo, solid, deflection)?;
             if !mesh.indices.is_empty() && mesh_boundary_edge_count(&mesh) == 0 {
                 let vol = signed_volume_from_mesh(&mesh);
