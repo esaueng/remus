@@ -770,7 +770,7 @@ impl Builder {
             &self.sd_pairs,
             &self.sd_within_rank_dups,
         );
-        if matches!(op, BooleanOp::Fuse | BooleanOp::Cut) {
+        if op == BooleanOp::Fuse {
             orient_selected_fuse_analytic_holes(&mut self.topo, &self.sub_faces, &selected);
         }
         builder_solid::orient_revolved_face_wires(&mut self.topo, &selected)?;
@@ -808,7 +808,7 @@ impl Builder {
             &self.sd_pairs,
             &self.sd_within_rank_dups,
         );
-        if matches!(op, BooleanOp::Fuse | BooleanOp::Cut) {
+        if op == BooleanOp::Fuse {
             orient_selected_fuse_analytic_holes(&mut self.topo, &self.sub_faces, &selected);
         }
         builder_solid::orient_revolved_face_wires(&mut self.topo, &selected)?;
@@ -849,7 +849,7 @@ impl Builder {
             &self.sd_pairs,
             &self.sd_within_rank_dups,
         );
-        if matches!(op, BooleanOp::Fuse | BooleanOp::Cut) {
+        if op == BooleanOp::Fuse {
             orient_selected_fuse_analytic_holes(&mut self.topo, &self.sub_faces, &selected);
         }
         builder_solid::orient_revolved_face_wires(&mut self.topo, &selected)?;
@@ -1352,16 +1352,13 @@ pub fn build_fuse_n<S: std::hash::BuildHasher>(
     Ok((topo, solid_id))
 }
 
-/// Restore the stored-CW hole convention on selected analytic fuse/cut remainders.
+/// Restore the stored-CW hole convention on selected analytic fuse remainders.
 ///
 /// The face splitter reverses internal loops into a generic hole orientation
-/// before classification. A selected analytic fuse remainder needs the
-/// historical stored-CW winding at assembly; B37 shows a pointed-cone cut
-/// remainder (cone r0=2/h=1 × cylinder r=1/h=1 at (0,1.5,0.5)) needs the same:
-/// without it the cut's 4 shared loop edges read inconsistently oriented
-/// while fuse (flipped) and intersect (hole-free) stay clean. Apply the
-/// correction only after selection so classification and intersect behavior
-/// remain unchanged.
+/// before classification. That representation is required by cuts, but a
+/// selected analytic fuse remainder needs the historical stored-CW winding at
+/// assembly. Apply the correction only after selection so classification and
+/// non-fuse operations remain unchanged.
 fn orient_selected_fuse_analytic_holes(
     topo: &mut Topology,
     sub_faces: &[SubFace],
