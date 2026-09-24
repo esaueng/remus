@@ -13,6 +13,12 @@ env:
 permissions:
   contents: read
 
+# B19 budget: `.cargo/mutants.toml` (read from the checkout, so it applies to
+# this pinned callee immediately) makes each mutant affordable; the sharded,
+# fail-closed callee `fleet-mutants-sharded.yml` covers a typical week's whole
+# in-diff list. A callee pin must be a main-reachable commit with identical
+# content (scripts/test-ubuntu-ci-routing.py), so switching to the sharded
+# callee is a follow-up that pins the commit which introduced it.
 jobs:
   checks:
     uses: esaueng/remus/.github/workflows/fleet-mutants.yml@0771d6806848fc6a0ad9cb20c6acf27739b5941b

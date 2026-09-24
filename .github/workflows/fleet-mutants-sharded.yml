@@ -1,0 +1,179 @@
+name: Trusted sharded mutants
+on:
+  workflow_call:
+permissions:
+  contents: read
+  pull-requests: read
+env:
+  CARGO_TERM_COLOR: always
+  # Minutes cargo-mutants gets per shard. The planner sizes the matrix against
+  # the same number, and `timeout-minutes` below leaves room for setup,
+  # the verdict and the upload.
+  MUTANTS_BUDGET_MINUTES: "300"
+  # Packages whose sources .cargo/mutants.toml examines. The list and the
+  # config's examine_globs INTERSECT: a glob for a package not named here is
+  # silently inert.
+  MUTANTS_PACKAGES: remus-math remus-algo remus-blend remus-offset remus-operations
+# Why this shape (B19, docs/kernel-maturity/roadmap.md):
+#
+# The single 150-minute job this replaces examined 0, 0 and 1 of the 4,620,
+# 3,375 and 1,966 mutants listed on 2026-09-13/16/20: its dev-profile baseline
+# alone took ~7.5 ks, ~6 ks of it one operations test, and its summary passed
+# the two runs that examined nothing. `.cargo/mutants.toml` now makes each
+# mutant cheap (ci-test profile, test targets only, stop at the first failing
+# test, long-tail regression pins left to CI): the baseline fell to 229 s
+# build + 133 s test and an operations mutant to ~305 s on this runner. Even
+# so a typical week is 70-180 slot-hours, so the week is split into
+# round-robin shards that each run their own baseline and budget:
+#
+# - `plan` lists the week's in-diff mutants once, pins the diff base for every
+#   shard, and sizes the matrix from scripts/plan-mutation-shards.py's measured
+#   per-package cost model (tunable without touching this pinned file).
+# - each `mutants` shard runs `--shard k/n --sharding round-robin`, so every
+#   shard gets the same package mix and the shards partition the list exactly.
+# - scripts/mutants-verdict.py fails a shard on any MISSED or TIMEOUT mutant,
+#   a baseline that did not finish green, and ANY listed mutant the budget
+#   left unexamined: a partial run is an incomplete verdict, not a pass.
+# - max-parallel keeps the Sunday run to eight of the organization's twenty
+#   hosted runner slots; the planner's 24-shard cap is at most three waves
+#   (~16 hours). The cost model assumes those 4-vCPU hosted runners: routed
+#   to the self-hosted fleet, the shards would queue on its two slots instead.
+jobs:
+  plan:
+    name: Plan Mutation Shards
+    runs-on: &fleet-runner ${{ fromJSON((vars.CI_FLEET_ENABLED == 'true' || (vars.CI_FLEET_VALIDATION_REF != '' && vars.CI_FLEET_VALIDATION_REF == github.ref)) && (github.repository == 'esaueng/remus' && github.repository_id == '1334765869' && github.actor == 'petergstfsn' && github.actor_id == '171875562' && github.triggering_actor == 'petergstfsn' && ((github.event_name == 'pull_request' && github.event.pull_request.state == 'open' && github.event.pull_request.user.login == 'petergstfsn' && github.event.pull_request.user.id == 171875562 && github.event.pull_request.head.repo.id == 1334765869 && github.event.pull_request.base.repo.id == 1334765869 && github.event.pull_request.head.repo.fork == false && github.event.pull_request.base.repo.fork == false && github.event.pull_request.base.ref == 'main' && github.ref == format('refs/pull/{0}/merge', github.event.pull_request.number)) || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') && github.ref == 'refs/heads/main' && github.ref_protected == true))) && (vars.CI_FLEET_TARGET == 'ci-server-jane' && '{"group":"ci-trusted-main","labels":"ci-server-jane"}' || vars.CI_FLEET_TARGET == 'ci-server-john' && '{"group":"ci-trusted-main","labels":"ci-server-john"}') || '"ubuntu-latest"') }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      since: ${{ steps.scope.outputs.since }}
+      mutants: ${{ steps.plan.outputs.mutants }}
+      shards: ${{ steps.plan.outputs.shards }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: esaueng/remus/.github/actions/fleet-guard@433709b06f94bba091e0e8fa96fd661da015867a
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Install pinned Rust on disposable runners
+        if: runner.environment == 'self-hosted'
+        uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
+        with:
+          toolchain: "1.96.0"
+          components: clippy,rustfmt,rust-src
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: taiki-e/install-action@3f74d7c16a4242f1c95561e98edc25d36adb4375 # v2.62.30
+        with:
+          tool: cargo-mutants@27.0.0
+      # Every shard diffs against this one base: `7 days ago` evaluated at
+      # each shard's own start time could pick a different commit and break
+      # the partition.
+      - name: Scope to the week's changes
+        id: scope
+        run: |
+          since=$(git rev-list -1 --before="7 days ago" HEAD)
+          if [ -z "$since" ]; then
+            since=$(git rev-list --max-parents=0 HEAD | tail -1)
+          fi
+          git diff "$since" HEAD -- crates/ > week.diff
+          echo "since=$since" >> "$GITHUB_OUTPUT"
+          echo "Mutating changes since $since ($(git log -1 --format=%cs "$since")): $(wc -l < week.diff) diff lines"
+      # cargo-mutants exits 0 with no output when the diff selects nothing;
+      # the planner reads an empty listing as zero shards.
+      - name: List the week's mutants and size the matrix
+        id: plan
+        run: |
+          read -r -a packages <<< "$MUTANTS_PACKAGES"
+          args=(--list --json --in-diff week.diff)
+          for package in "${packages[@]}"; do args+=(--package "$package"); done
+          cargo mutants "${args[@]}" > week-mutants.json
+          python3 scripts/plan-mutation-shards.py week-mutants.json \
+            --budget-minutes "$MUTANTS_BUDGET_MINUTES"
+      # The diff and the full listing reproduce the plan locally
+      # (`cargo mutants --list --in-diff week.diff`) and audit the shards'
+      # partition against it.
+      - name: Upload the plan
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mutants-plan
+          path: |
+            week.diff
+            week-mutants.json
+          retention-days: 30
+  mutants:
+    name: Cargo Mutants (shard ${{ matrix.shard }})
+    needs: plan
+    if: needs.plan.outputs.shards != '0'
+    runs-on: *fleet-runner
+    # MUTANTS_BUDGET_MINUTES plus setup, the 2-minute kill grace, the verdict
+    # and the upload; the hosted-runner ceiling is 360.
+    timeout-minutes: 330
+    permissions:
+      contents: read
+      pull-requests: read
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: esaueng/remus/.github/actions/fleet-guard@433709b06f94bba091e0e8fa96fd661da015867a
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Install pinned Rust on disposable runners
+        if: runner.environment == 'self-hosted'
+        uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
+        with:
+          toolchain: "1.96.0"
+          components: clippy,rustfmt,rust-src
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: taiki-e/install-action@3f74d7c16a4242f1c95561e98edc25d36adb4375 # v2.62.30
+        with:
+          tool: nextest,cargo-mutants@27.0.0
+      - name: Recreate the planned diff
+        env:
+          SINCE: ${{ needs.plan.outputs.since }}
+        run: git diff "$SINCE" HEAD -- crates/ > week.diff
+      # The profile, the per-mutant test arguments and the timeout floor come
+      # from .cargo/mutants.toml. No fixed --timeout: it would also cap the
+      # baseline; cargo-mutants derives the per-mutant limit from it.
+      - name: Run mutation testing on this shard
+        env:
+          SHARD: ${{ matrix.shard }}
+          SHARDS: ${{ needs.plan.outputs.shards }}
+        run: |
+          read -r -a packages <<< "$MUTANTS_PACKAGES"
+          args=(--in-diff week.diff --shard "$SHARD/$SHARDS" --sharding round-robin --shuffle --jobs 2)
+          for package in "${packages[@]}"; do args+=(--package "$package"); done
+          set +e
+          timeout --foreground --signal=INT --kill-after=2m "${MUTANTS_BUDGET_MINUTES}m" \
+            cargo mutants "${args[@]}" --output=mutants-output
+          echo "$?" > mutants-exit-code
+      - name: Judge this shard
+        if: always()
+        env:
+          SHARD: ${{ matrix.shard }}
+          SHARDS: ${{ needs.plan.outputs.shards }}
+        run: |
+          python3 scripts/mutants-verdict.py \
+            --output mutants-output/mutants.out \
+            --exit-code "$(cat mutants-exit-code 2>/dev/null || echo 255)" \
+            --label "shard $SHARD of $SHARDS"
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mutants-report-shard-${{ matrix.shard }}
+          path: mutants-output/
+          retention-days: 30

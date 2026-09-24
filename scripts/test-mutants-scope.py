@@ -1,16 +1,26 @@
 #!/usr/bin/env python3
-"""Exercise cargo-mutants' real default config discovery and CDT selection."""
+"""Exercise cargo-mutants' real default config discovery and CDT selection.
+
+Also guards the weekly job's budget settings (B19): every workflow that installs
+cargo-mutants pins the version this check runs, each long-tail test that
+`.cargo/mutants.toml` drops from the per-mutant oracle still exists under its
+exact name (a renamed test would silently rejoin it), and the verdict/planner
+tests in scripts/test-mutants-verdict.py pass.
+"""
 
 import collections
 import json
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / ".cargo/mutants.toml"
 CDT = "crates/math/src/cdt/"
+WORKFLOWS = ROOT / ".github/workflows"
+EXCLUDED_TEST = re.compile(r"test\(=([A-Za-z_][A-Za-z0-9_]*)\)")
 
 
 def selected(*args):
@@ -59,15 +69,51 @@ def rejects(mutants, label):
         raise AssertionError(f"scope oracle accepted {label}")
 
 
+def test_definitions(name):
+    """Count `fn NAME(` definitions under crates/ (git grep: rg is absent on runners)."""
+    result = subprocess.run(
+        ["git", "grep", "-c", "-E", rf"fn {name}\(", "--", "crates"],
+        cwd=ROOT, capture_output=True, text=True, timeout=60,
+    )
+    if result.returncode == 1:
+        return 0
+    if result.returncode != 0:
+        raise RuntimeError(f"git grep failed ({result.returncode}): {result.stderr.strip()}")
+    return sum(int(line.rsplit(":", 1)[1]) for line in result.stdout.splitlines())
+
+
+def check_excluded_tests(config):
+    """Every exact-name exclusion must still name exactly one test."""
+    names = EXCLUDED_TEST.findall(config)
+    if not names:
+        raise AssertionError("no long-tail test exclusions found in the mutation config")
+    if 'test_tool = "nextest"' not in config:
+        raise AssertionError('nextest filter arguments need test_tool = "nextest" in the config')
+    stale = [name for name in names if test_definitions(name) != 1]
+    if stale:
+        raise AssertionError(f"excluded tests no longer defined exactly once: {stale}")
+    return names
+
+
+def check_versions(version):
+    """Every workflow that installs cargo-mutants pins the version this check runs."""
+    installs = {}
+    for path in sorted(WORKFLOWS.glob("*.yml")):
+        for found in re.findall(r"cargo-mutants@([0-9.]+)", path.read_text()):
+            installs.setdefault(path.name, set()).add(found)
+    if not {"fleet-mutants.yml", "fleet-mutants-sharded.yml"} & set(installs):
+        raise AssertionError("no weekly mutation workflow installs cargo-mutants")
+    for name, found in sorted(installs.items()):
+        if {f"cargo-mutants {v}" for v in found} != {version}:
+            raise AssertionError(f"{name} pins cargo-mutants {sorted(found)}; this check runs {version}")
+
+
 def main():
-    weekly = (ROOT / ".github/workflows/fleet-mutants.yml").read_text()
-    versions = re.findall(r"cargo-mutants@([0-9.]+)", weekly)
     version = subprocess.run(
         ["cargo", "mutants", "--version"], cwd=ROOT, check=True,
         capture_output=True, text=True, timeout=30,
     ).stdout.strip()
-    if len(versions) != 1 or version != f"cargo-mutants {versions[0]}":
-        raise AssertionError("scope check must use the weekly workflow's cargo-mutants version")
+    check_versions(version)
     if (ROOT / "mutants.toml").exists():
         raise AssertionError("ambiguous root-level cargo-mutants config remains")
     mutants = selected()
@@ -84,6 +130,24 @@ def main():
     counts = collections.Counter(m["file"] for m in mutants if m["file"].startswith(CDT))
     print(json.dumps(dict(sorted(counts.items())), indent=2))
     print(f"Scope passed: {sum(counts.values())} CDT mutants in {len(counts)} modules")
+
+    excluded = check_excluded_tests(config)
+    renamed = config.replace(f"test(={excluded[0]})", f"test(={excluded[0]}_renamed)")
+    try:
+        check_excluded_tests(renamed)
+    except AssertionError:
+        print("Rejected negative control: renamed long-tail test exclusion")
+    else:
+        raise AssertionError("exclusion oracle accepted a test name that no longer exists")
+    print(f"Exclusions passed: {len(excluded)} long-tail tests still defined once each")
+
+    verdict = subprocess.run(
+        [sys.executable, str(ROOT / "scripts/test-mutants-verdict.py")],
+        cwd=ROOT, capture_output=True, text=True, timeout=120,
+    )
+    if verdict.returncode != 0:
+        raise AssertionError("verdict/planner tests failed:\n" + verdict.stdout + verdict.stderr)
+    print("Verdict and planner tests passed")
 
 
 if __name__ == "__main__":
