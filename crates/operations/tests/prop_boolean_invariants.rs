@@ -1742,8 +1742,11 @@ fn is_oblique_boxtorus(input: &BoolPairInput) -> bool {
 /// observed inputs sharing box × cone(r1=2.5) at axis 2, angle 3π/2,
 /// offset (0.5,-1.5,-0.5) — drifting cut volumes, open fuse meshes, low
 /// closed-form agreement, and (decisively) a CDT integer-overflow PANIC
-/// inside the intersect path that no oracle gate can contain. Pinned
-/// repros + rows B32 (wrong answers) and the panic row own it.
+/// inside the intersect path that no oracle gate can contain. The panic
+/// (B42, #495) and the finding-17 repros (B32) are closed; an exhaustive
+/// 2026-09-24 sweep of all 17,150 members found no panic and no fuse
+/// failure but 23 unit-scale cut legs still failing (two families, pinned
+/// by `b26_finding17_nbhd_*`), so the exclusion stays on row B52's account.
 #[allow(clippy::float_cmp)]
 fn is_finding17_neighborhood(input: &BoolPairInput) -> bool {
     matches!(
@@ -1821,7 +1824,7 @@ fn arb_bool_pair_slow() -> impl Strategy<Value = BoolPairInput> {
         // from generation at every scale — pervasively broken across
         // placements and scales, up to a CDT integer-overflow PANIC inside
         // the intersect path that no oracle gate can contain (pinned
-        // repros + rows B32/B38/B39/B42/B44). Rejection rate is ~1/5 of draws
+        // repros + rows B38/B39/B44/B52). Rejection rate is ~1/5 of draws
         // — far below the abort threshold.
         .prop_filter(
             "broken cells excluded until their rows close",
@@ -2095,11 +2098,11 @@ fn check_bool_pair(input: &BoolPairInput) -> Result<(), TestCaseError> {
             && sc == 1.0
     );
     // (No finding-17 gate here by design: the neighborhood is excluded
-    // from generation entirely — see `arb_bool_pair_slow` — because one
-    // member panics inside the boolean where no oracle gate can contain
-    // it. The pinned repros + rows B32 (wrong answers) and the panic row
-    // own the cell; if the exclusion is ever lifted, these legs fail LOUD
-    // through the standard oracles below.)
+    // from generation entirely — see `arb_bool_pair_slow`. Its panic and
+    // its B32 repros are closed; the residual cut families
+    // (`b26_finding17_nbhd_*`, row B52) own the cell now. If the exclusion
+    // is ever lifted, these legs fail LOUD through the standard oracles
+    // below.)
     // Finding-16 pair-cell gate (pinned repros + row B41): cone–sphere
     // disjoint fuses carry open meshes (16/8 boundary at 1e3/unit) with
     // low volumes (8%/6.6%) on fully valid B-Reps, identically across
@@ -3104,8 +3107,15 @@ fn b26_finding17_boxcone_cut_drift() {
 /// owner row (B32 family). No persisted proptest seed (shrinking aborted
 /// on this input) — this repro is the retention.
 /// Minimized from `prop_random_curved_pair_identities`.
+/// Closed with B32: the cut leg by #603 (NURBS-trimmed quadric walls
+/// declined to the closed whole-solid mesh); the fuse leg — by then an
+/// `ExactOnlyUnattainable` refusal, the below-box cone extent dropped — by
+/// the face splitter's orphaned-rim rescue: the box notches the cone
+/// lateral from one rim away from the seam, the greedy wire walker closed
+/// the annulus early (both seam uses share one stored `u`) and discarded
+/// the far rim, and the DCEL trace now recovers it. Un-ignored 2026-09-24;
+/// `regress_b32_translation_cuts.rs` carries the independent oracles.
 #[test]
-#[ignore = "open: box-cone sibling open fuse mesh + drifting cut (B26 finding 17)"]
 fn b26_finding17_boxcone_sibling() {
     use remus_operations::primitives::{make_box, make_cone};
     let m =
@@ -3129,6 +3139,51 @@ fn b26_finding17_boxcone_sibling() {
     check_valid_closed_oriented(&topo2, c.solid, "finding-17-sib cut").expect("B-Rep fully valid");
     check_translation_invariant(&topo2, c.solid, "finding-17-sib cut")
         .expect("translation invariant");
+}
+
+/// Neighborhood member of the finding-17 generation exclusion
+/// (`is_finding17_neighborhood`: box × cone r1=2.5, axis 2, 3π/2, offset
+/// (0.5,-1.5,-0.5)) at unit scale.
+fn finding17_nbhd_input(box_dims: (f64, f64, f64), r0: f64, h: f64) -> BoolPairInput {
+    BoolPairInput {
+        a: GenPrim::Box {
+            dx: box_dims.0,
+            dy: box_dims.1,
+            dz: box_dims.2,
+        },
+        b: GenPrim::Cone { r0, r1: 2.5, h },
+        axis: 2,
+        angle: 3.0 * std::f64::consts::FRAC_PI_2,
+        offset: (0.5, -1.5, -0.5),
+        scale: 1.0,
+    }
+}
+
+/// Ready-repro (2026-09-24, owner row B52): why the finding-17 generation
+/// exclusion outlives B32. An exhaustive sweep of the excluded neighborhood
+/// through `check_bool_pair` (343 boxes × 25 cones × scales 1/1e3 = 17,150
+/// inputs) found no panic (finding 18 stays closed) and no fuse failure, but
+/// 23 unit-scale CUT legs fail identically with and without the B32 fix. This
+/// is the coplanar-cap family (20 of its 21 members: box(dx ∈ [1,4], 1, dz ∈
+/// {1.5, 2, 2.5}) × cone(r0=3, h=dz+0.5)): the cone's top cap lands on the
+/// box's top face, and the cut — Exact quality, ops-valid — carries one
+/// check-crate `WireSelfIntersection` error (deviation ~3e-15).
+#[test]
+#[ignore = "open: coplanar cone-cap box cut wire self-intersection (B52)"]
+fn b26_finding17_nbhd_coplanar_cap_cut() {
+    check_bool_pair(&finding17_nbhd_input((2.5, 1.0, 2.0), 3.0, 2.5)).expect("full B26 battery");
+}
+
+/// Ready-repro (2026-09-24, owner row B52), second family of the finding-17
+/// neighborhood residue (see `b26_finding17_nbhd_coplanar_cap_cut`):
+/// box(3,3,1), (3.5,2.5,1), (4,2,1) × cone(r0=1, r1=2.5, h=2.5). The cut
+/// B-Rep is valid on both validators with Gauss = kernel volume, yet its
+/// mesh at the harness deflection (bbox · 1e-5) carries 87 non-manifold
+/// edges — the fine-deflection mesh class of findings 19/22.
+#[test]
+#[ignore = "open: box-cone cut non-manifold mesh at harness deflection (B52)"]
+fn b26_finding17_nbhd_cut_mesh() {
+    check_bool_pair(&finding17_nbhd_input((3.0, 3.0, 1.0), 1.0, 2.5)).expect("full B26 battery");
 }
 
 /// Ready-repro for the eighteenth proptest-found defect (2026-09-16): a

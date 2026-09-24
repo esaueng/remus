@@ -15,6 +15,17 @@
 //!   Fixed by declining NURBS-trimmed quadric walls to the closed whole-solid
 //!   mesh (`quadric_face_has_nurbs_trim`; revolution path requires cylinder
 //!   trim authority).
+//! - Box–cone sibling FUSE (2026-09-24, refused `ExactOnlyUnattainable`):
+//!   the box walls notch the cone lateral from its TOP rim only, away from
+//!   the seam, so the kept wall piece is an annulus (bottom rim, seam,
+//!   notched top rim, seam back). Both seam uses carry the same stored `u`,
+//!   so the greedy wire walker closed "seam up → notched rim → seam down" as
+//!   a disc and discarded the bottom rim; assembly then dropped the rim and
+//!   the whole below-box cap (Gauss 10.17 vs true 14.70). Seam-placement
+//!   dependent: 7 of 8 rotations of the cone about its own axis refused.
+//!   Fixed in the face splitter: an orphaned-boundary-edge signature
+//!   (`loops_orphan_boundary_edges`) routes the cone lateral to the DCEL
+//!   trace, whose glued seam emits the annulus as one zero-winding orbit.
 //!
 //! Each test proves rigid-translation-invariant volume, material identities
 //! (where the boolean is exact), strict validation, and watertight meshes.
@@ -198,11 +209,9 @@ fn b32_box_cone_cut_drift_conserves_material() {
     assert_watertight(&t_inter, i, "box-cone inter");
 }
 
-/// B32 box–cone sibling dims: the cut leg (measured without the refusing
-/// fuse leg) is translation-invariant, agrees with Gauss, strict-valid,
-/// and watertight. The sibling *fuse* remains `ExactOnlyUnattainable`
-/// (below-box cone extent dropped by GFA assembly — documented in B32,
-/// not healed here).
+/// B32 box–cone sibling dims: the cut leg is translation-invariant, agrees
+/// with Gauss, strict-valid, and watertight. (The sibling *fuse* leg is
+/// pinned separately below.)
 #[test]
 fn b32_box_cone_sibling_cut_conserves_material() {
     let m =
@@ -239,4 +248,272 @@ fn b32_box_cone_sibling_cut_conserves_material() {
     assert_strict_valid(&t_cut, c, "sibling cut");
     assert_watertight(&t_cut, c, "sibling cut");
     assert_translation_invariant(&t_cut, c, "sibling cut");
+}
+
+/// Sibling placement: box 2.5×1×1 ∪ frustum (r0=1.5, r1=2.5, h=1) moved by
+/// `translation(0.5,-1.5,-0.5) · rotation_z(rot)`. Rotation about the cone's
+/// own axis leaves the solid unchanged and only moves its seam.
+fn build_sibling(topo: &mut Topology, rot: f64) -> (SolidId, SolidId) {
+    let m = Mat4::translation(0.5, -1.5, -0.5) * Mat4::rotation_z(rot);
+    let a = make_box(topo, 2.5, 1.0, 1.0).expect("box");
+    let b = make_cone(topo, 1.5, 2.5, 1.0).expect("cone");
+    remus_operations::transform::transform_solid(topo, b, &m).expect("place");
+    (a, b)
+}
+
+/// Closed-form frustum volume `πh/3 (r0² + r0·r1 + r1²)`.
+fn frustum_volume(r0: f64, r1: f64, h: f64) -> f64 {
+    std::f64::consts::PI * h / 3.0 * r0.mul_add(r0, r0.mul_add(r1, r1 * r1))
+}
+
+/// Face census of an exact sibling fuse: exactly one cone face, every other
+/// face a plane, and the cone's bottom cap (z = −0.5, outward −z, area
+/// π·1.5²) present — the face the refusing build dropped.
+fn assert_sibling_fuse_census(topo: &Topology, s: SolidId, what: &str) {
+    use remus_topology::face::FaceSurface;
+    let faces = remus_topology::explorer::solid_faces(topo, s).unwrap();
+    let cones = faces
+        .iter()
+        .filter(|&&f| matches!(topo.face(f).unwrap().surface(), FaceSurface::Cone(_)))
+        .count();
+    let planes = faces
+        .iter()
+        .filter(|&&f| matches!(topo.face(f).unwrap().surface(), FaceSurface::Plane { .. }))
+        .count();
+    assert_eq!(cones, 1, "{what}: cone face count");
+    assert_eq!(planes + cones, faces.len(), "{what}: non-analytic face");
+    assert!(faces.len() <= 16, "{what}: {} faces", faces.len());
+    let cap_area = std::f64::consts::PI * 1.5 * 1.5;
+    let caps: Vec<f64> = faces
+        .iter()
+        .filter_map(|&f| {
+            let face = topo.face(f).unwrap();
+            let FaceSurface::Plane { normal, d } = face.surface() else {
+                return None;
+            };
+            // Plane `n·x = d`; the bottom cap is z = −0.5 facing −z.
+            let outward_z = if face.is_reversed() {
+                -normal.z()
+            } else {
+                normal.z()
+            };
+            let on_bottom = (normal.z().abs() - 1.0).abs() < 1e-9
+                && (d * normal.z() + 0.5).abs() < 1e-9
+                && outward_z < 0.0;
+            on_bottom.then(|| remus_operations::measure::face_area(topo, f, 1e-4).unwrap())
+        })
+        .collect();
+    assert_eq!(caps.len(), 1, "{what}: bottom cap at z=-0.5 missing");
+    assert!(
+        (caps[0] - cap_area).abs() / cap_area <= 1e-4,
+        "{what}: bottom cap area {} vs π·1.5² {cap_area}",
+        caps[0]
+    );
+}
+
+/// B32 box–cone sibling FUSE: the below-box cone extent and its cap survive.
+/// Independent oracles: inclusion–exclusion against the closed-form box and
+/// frustum volumes with an independently built intersect, the
+/// cut-complement identity (fuse = cut + cone), the kernel's measured volume
+/// against Gauss, ray-cast material probes in the formerly dropped region,
+/// strict validation on both validators, watertight meshes at 0.1 / 0.01 /
+/// 1e-4 and the proptest harness deflection, and translation invariance.
+#[test]
+fn b32_box_cone_sibling_fuse_keeps_below_box_extent() {
+    use remus_check::classify::{ClassifyOptions, PointClassification, classify_point};
+    use remus_math::vec::Point3;
+    let rot = 3.0 * std::f64::consts::FRAC_PI_2;
+    let v_box = 2.5;
+    let v_cone = frustum_volume(1.5, 2.5, 1.0);
+
+    let mut t_fuse = Topology::new();
+    let (af, bf) = build_sibling(&mut t_fuse, rot);
+    let f = exact_boolean(&mut t_fuse, BooleanOp::Fuse, af, bf).expect("exact fuse");
+    let mut t_inter = Topology::new();
+    let (ai, bi) = build_sibling(&mut t_inter, rot);
+    let i = exact_boolean(&mut t_inter, BooleanOp::Intersect, ai, bi).expect("exact inter");
+    let mut t_cut = Topology::new();
+    let (ac, bc) = build_sibling(&mut t_cut, rot);
+    let c = exact_boolean(&mut t_cut, BooleanOp::Cut, ac, bc).expect("exact cut");
+
+    let gf = gauss_volume(&t_fuse, f);
+    let gi = gauss_volume(&t_inter, i);
+    let gc = gauss_volume(&t_cut, c);
+    // Inclusion–exclusion: |A ∪ B| = |A| + |B| − |A ∩ B| (closed-form A, B).
+    let ie = v_box + v_cone - gi;
+    assert!(
+        (gf - ie).abs() / ie <= 1e-6,
+        "fuse Gauss {gf:.9} != box + cone − inter {ie:.9}"
+    );
+    // Cut complement: |A ∪ B| = |A − B| + |B|.
+    assert!(
+        (gf - (gc + v_cone)).abs() / gf <= 1e-6,
+        "fuse Gauss {gf:.9} != cut {gc:.9} + cone {v_cone:.9}"
+    );
+    for d in [0.1, 1e-4] {
+        let sf = solid_volume(&t_fuse, f, d).unwrap();
+        assert!(
+            (sf - gf).abs() / gf <= 1e-4,
+            "measured fuse {sf:.9} != Gauss {gf:.9} at d={d}"
+        );
+    }
+
+    assert_sibling_fuse_census(&t_fuse, f, "sibling fuse");
+    assert_strict_valid(&t_fuse, f, "sibling fuse");
+    assert_watertight(&t_fuse, f, "sibling fuse");
+    let diag = remus_operations::measure::solid_bounding_box(&t_fuse, f)
+        .map(|b| (b.max - b.min).length())
+        .unwrap();
+    let mesh = tessellate_solid(&t_fuse, f, (diag * 1e-5).max(1e-7)).unwrap();
+    assert_eq!(boundary_edge_count(&mesh), 0, "harness-deflection boundary");
+    assert_eq!(
+        non_manifold_edge_count(&mesh),
+        0,
+        "harness-deflection non-manifold"
+    );
+    assert_translation_invariant(&t_fuse, f, "sibling fuse");
+
+    // Ray-cast material probes (cone axis at (0.5,−1.5), z ∈ [−0.5, 0.5],
+    // r(z) = 2 + z; box [0,2.5]×[0,1]×[0,1]). The first three sit in the
+    // below-box extent the refusing build dropped.
+    let opts = ClassifyOptions::default();
+    for (p, want, tag) in [
+        (
+            Point3::new(0.5, -1.5, -0.25),
+            PointClassification::Inside,
+            "below-box cone extent",
+        ),
+        (
+            Point3::new(0.5, -1.5, -0.45),
+            PointClassification::Inside,
+            "just above bottom cap",
+        ),
+        (
+            Point3::new(1.6, -1.5, -0.4),
+            PointClassification::Inside,
+            "near bottom rim",
+        ),
+        (
+            Point3::new(0.5, -1.5, -0.6),
+            PointClassification::Outside,
+            "below bottom cap",
+        ),
+        (
+            Point3::new(0.5, -3.0, 0.25),
+            PointClassification::Inside,
+            "cone beside the box",
+        ),
+        (
+            Point3::new(2.0, 0.8, 0.8),
+            PointClassification::Inside,
+            "box beyond the cone",
+        ),
+        (
+            Point3::new(0.5, -3.0, 0.7),
+            PointClassification::Outside,
+            "above the top cap",
+        ),
+        (
+            Point3::new(3.0, 2.0, 0.5),
+            PointClassification::Outside,
+            "outside both",
+        ),
+    ] {
+        let got = classify_point(&t_fuse, f, p, &opts).unwrap();
+        assert_eq!(got, want, "probe {tag} at {p:?}");
+    }
+}
+
+/// General-position family for the sibling fuse: rotating the cone about its
+/// own axis only moves its seam, so every placement must fuse exact with the
+/// same volume and the bottom cap present. Before the orphaned-rim rescue,
+/// seven of these eight seam placements refused (`ExactOnlyUnattainable`);
+/// only π/2 — the seam inside the notch — assembled.
+#[test]
+fn b32_box_cone_sibling_fuse_is_seam_placement_invariant() {
+    let v_true = frustum_volume(1.5, 2.5, 1.0) + 2.5 - {
+        let mut t = Topology::new();
+        let (a, b) = build_sibling(&mut t, 3.0 * std::f64::consts::FRAC_PI_2);
+        let s = exact_boolean(&mut t, BooleanOp::Intersect, a, b).expect("reference inter");
+        gauss_volume(&t, s)
+    };
+    for rot in [
+        0.0,
+        0.3,
+        std::f64::consts::FRAC_PI_2,
+        2.0,
+        std::f64::consts::PI,
+        4.0,
+        3.0 * std::f64::consts::FRAC_PI_2,
+        5.5,
+    ] {
+        let what = format!("sibling fuse rot={rot}");
+        let mut t = Topology::new();
+        let (a, b) = build_sibling(&mut t, rot);
+        let f =
+            exact_boolean(&mut t, BooleanOp::Fuse, a, b).unwrap_or_else(|e| panic!("{what}: {e}"));
+        let g = gauss_volume(&t, f);
+        assert!(
+            (g - v_true).abs() / v_true <= 1e-6,
+            "{what}: Gauss {g:.9} != inclusion–exclusion {v_true:.9}"
+        );
+        assert_sibling_fuse_census(&t, f, &what);
+        assert_strict_valid(&t, f, &what);
+        let mesh = tessellate_solid(&t, f, 0.01).unwrap();
+        assert_eq!(boundary_edge_count(&mesh), 0, "{what}: boundary at d=0.01");
+        assert_eq!(
+            non_manifold_edge_count(&mesh),
+            0,
+            "{what}: non-manifold at d=0.01"
+        );
+    }
+}
+
+/// Ready-repro, discovered while closing B32 (2026-09-24), owner row B51:
+/// the CYLINDER twin of the sibling (box 2.5×1×1 with a cylinder r=2, h=1
+/// at the same `translation(0.5,-1.5,-0.5) · rotation_z(rot)` placement)
+/// refuses all three legs `ExactOnlyUnattainable` at seam rotations 0.3 and
+/// 2.0 rad about the cylinder's own axis, while 0, 1.0, π/2, 2.5, π, 4.0,
+/// 3π/2 and 5.5 fuse exact (Gauss 14.71997). The raw GFA fuse at 2.0 drops
+/// the bottom cap and leaves the lateral with zero area (V−E+F = 1): the
+/// lateral reaches the wire builder with none of its notch sections, and the
+/// greedy walker discards the bottom rim as at the cone (same
+/// `discarding incomplete loop` warning at the seam's bottom vertex). The
+/// cone arm's orphaned-rim rescue does not apply — there is no section in
+/// the trace input to recover. Acceptance target encoded below.
+#[test]
+#[ignore = "open: box-cylinder rim notch refuses at seam rotations 0.3 and 2.0 (B51)"]
+fn b51_box_cylinder_notch_is_seam_placement_invariant() {
+    let build = |topo: &mut Topology, rot: f64| {
+        let m = Mat4::translation(0.5, -1.5, -0.5) * Mat4::rotation_z(rot);
+        let a = make_box(topo, 2.5, 1.0, 1.0).expect("box");
+        let b = make_cylinder(topo, 2.0, 1.0).expect("cylinder");
+        remus_operations::transform::transform_solid(topo, b, &m).expect("place");
+        (a, b)
+    };
+    let v_box = 2.5;
+    let v_cyl = std::f64::consts::PI * 4.0;
+    for rot in [0.3, 2.0] {
+        let what = format!("box-cylinder rot={rot}");
+        let run = |op: BooleanOp| {
+            let mut t = Topology::new();
+            let (a, b) = build(&mut t, rot);
+            let s = exact_boolean(&mut t, op, a, b).unwrap_or_else(|e| panic!("{what}: {e}"));
+            assert_strict_valid(&t, s, &format!("{what} {op:?}"));
+            gauss_volume(&t, s)
+        };
+        let (gf, gc, gi) = (
+            run(BooleanOp::Fuse),
+            run(BooleanOp::Cut),
+            run(BooleanOp::Intersect),
+        );
+        assert!(
+            (gf - (v_box + v_cyl - gi)).abs() / gf <= 1e-6,
+            "{what}: fuse {gf:.9} != box + cylinder − inter"
+        );
+        assert!(
+            (gc + gi - v_box).abs() / v_box <= 1e-6,
+            "{what}: cut {gc:.9} + inter {gi:.9} != box"
+        );
+    }
 }

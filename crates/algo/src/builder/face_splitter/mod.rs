@@ -2223,6 +2223,76 @@ fn wire_loops_duplicate_cover(loops: &[Vec<OrientedPCurveEdge>], tol: f64) -> bo
     false
 }
 
+/// Whether some face-boundary edge lies in no loop: the partition silently
+/// dropped part of the face's own rim.
+///
+/// Every boundary edge borders exactly one region of a correct subdivision, so
+/// an orphaned rim edge is lost material, never a legitimate outcome. The
+/// greedy walker produces it on a u-periodic lateral whose section chain
+/// notches ONE rim away from the seam: the seam's two uses carry the same
+/// stored `u` copy, so the tour "seam up → notched rim → seam down" returns to
+/// its start key with zero raw `Δu` even though it wound a full period. The
+/// closure test accepts it, and the far rim's arcs are discarded as an
+/// incomplete loop (the box–cone sibling fuse, B32).
+///
+/// Identity is direction-agnostic and period-copy-free: the unordered pair of
+/// quantized 3D endpoints plus the curve kind, and for circle arcs the 3D
+/// midpoint of the arc's native span, so the two co-endpoint halves of one
+/// rim never alias. Loop edges are clones (or DCEL twin swaps) of the boundary
+/// entries, so the keys agree bit-for-bit. Zero-extent boundary edges carry
+/// no region and are skipped.
+fn loops_orphan_boundary_edges(
+    loops: &[Vec<OrientedPCurveEdge>],
+    boundary: &[OrientedPCurveEdge],
+    tol: f64,
+) -> bool {
+    type Key3 = (i64, i64, i64);
+    let qscale = 1.0 / tol.max(1e-12);
+    let q3 = |p: Point3| -> Key3 {
+        (
+            (p.x() * qscale).round() as i64,
+            (p.y() * qscale).round() as i64,
+            (p.z() * qscale).round() as i64,
+        )
+    };
+    let key = |e: &OrientedPCurveEdge| -> Option<(Key3, Key3, u8, Option<Key3>)> {
+        let (kind, mid) = match &e.curve_3d {
+            EdgeCurve::Line => (0u8, None),
+            EdgeCurve::Circle(c) => {
+                let (ns, ne) = if e.forward {
+                    (e.start_3d, e.end_3d)
+                } else {
+                    (e.end_3d, e.start_3d)
+                };
+                let s_ang = c.project(ns);
+                let span = (c.project(ne) - s_ang).rem_euclid(std::f64::consts::TAU);
+                if span * c.radius() <= tol {
+                    return None;
+                }
+                (1, Some(q3(c.evaluate(s_ang + 0.5 * span))))
+            }
+            EdgeCurve::Ellipse(_) => (2, None),
+            EdgeCurve::NurbsCurve(_) => (3, None),
+            EdgeCurve::Hyperbola(_) => (4, None),
+            EdgeCurve::Parabola(_) => (5, None),
+        };
+        if mid.is_none() && (e.start_3d - e.end_3d).length() <= tol {
+            return None;
+        }
+        let (a, b) = (q3(e.start_3d), q3(e.end_3d));
+        Some(if a <= b {
+            (a, b, kind, mid)
+        } else {
+            (b, a, kind, mid)
+        })
+    };
+    let covered: std::collections::BTreeSet<_> = loops.iter().flatten().filter_map(&key).collect();
+    boundary
+        .iter()
+        .filter_map(&key)
+        .any(|k| !covered.contains(&k))
+}
+
 /// Whether the greedy wire loops form an INVALID (overlapping) partition: one
 /// OUTER (positive-area) loop's material directly covers another outer loop,
 /// with no hole region between them.
@@ -7324,6 +7394,49 @@ fn split_face_2d_impl(
         {
             loops = dcel;
         }
+    } else if u_periodic
+        && !v_periodic
+        && !sections.is_empty()
+        && original_inner_wires.is_empty()
+        && matches!(&surface, FaceSurface::Cone(_))
+        && loops_orphan_boundary_edges(
+            &loops,
+            &all_edges[..n_boundary_edges.min(all_edges.len())],
+            tol.linear,
+        )
+    {
+        // Orphaned-rim rescue for a cone lateral (B32 box–cone sibling fuse).
+        // A section chain notching ONE rim away from the seam leaves the
+        // complement region an annulus: far rim, seam, the notched rim, seam
+        // back. The greedy walker closes "seam up → notched rim → seam down"
+        // early (both seam uses store the same `u` copy, so the full-period
+        // tour reads as raw Δu = 0) and discards the far rim's arcs, and the
+        // result then drops that rim and the cap beyond it. The cone arm of
+        // the rescue above is gated to the duplicated-ring signature only, so
+        // nothing else recovers it. The DCEL trace glues the seam pair as
+        // twins, drops the pure-synthetic rim rings as unbounded, and emits
+        // the annulus as one zero-winding orbit. Adopt it only when it covers
+        // every boundary edge and is clean by the same health bars as the
+        // duplicated-ring adoption (period-aware area, no duplicate cover, no
+        // new self-cross or nesting); otherwise the greedy result stands.
+        let dcel = build_wire_loops_dcel(&all_edges, tol.linear, u_periodic, v_periodic);
+        let boundary = &all_edges[..n_boundary_edges.min(all_edges.len())];
+        if !loops_orphan_boundary_edges(&dcel, boundary, tol.linear)
+            && !wire_loops_duplicate_cover(&dcel, tol.linear)
+            && !wire_loops_have_degenerate_area_periodic(
+                &dcel,
+                tol.linear,
+                Some(std::f64::consts::TAU),
+                None,
+            )
+            && (!wire_loops_self_cross(&dcel, tol.linear)
+                || wire_loops_self_cross(&loops, tol.linear))
+            && (!greedy_outer_loops_nested(&dcel, cw_loops)
+                || greedy_outer_loops_nested(&loops, cw_loops))
+        {
+            loops = dcel;
+            split_coendpoint_loop_arcs(&mut loops, &surface);
+        }
     }
 
     // A section chain can meet a concave boundary at a straight continuation.
@@ -9233,5 +9346,185 @@ mod tests {
         assert_eq!(split.len(), 1);
         assert_eq!(split[0].inner_wires.len(), 1);
         assert_eq!(split[0].inner_wires[0].len(), 2);
+    }
+
+    /// Frustum lateral `r(z) = 2 + z`, `z ∈ [-0.5, 0.5]` (apex `(0,0,-2)`,
+    /// 45°), seam at `+x` exactly as `make_cone` builds it, notched from its
+    /// TOP rim at `θ ∈ [θ1, θ2]` by ruling → parallel arc (`z = 0`) → ruling,
+    /// split through `split_face_2d` with the pipeline's periodicity info.
+    fn split_cone_top_rim_notch(theta1: f64, theta2: f64) -> Vec<SplitSubFace> {
+        use remus_math::curves::Circle3D;
+        use remus_math::surfaces::ConicalSurface;
+        use remus_topology::edge::Edge;
+        use remus_topology::face::Face;
+        use remus_topology::vertex::Vertex;
+        use remus_topology::wire::{OrientedEdge, Wire};
+        use std::f64::consts::{FRAC_PI_4, TAU};
+
+        let (z_bot, z_mid, z_top) = (-0.5, 0.0, 0.5);
+        let r = |z: f64| 2.0 + z;
+        let pt = |theta: f64, z: f64| Point3::new(r(z) * theta.cos(), r(z) * theta.sin(), z);
+        let ring = |z: f64| Circle3D::new(Point3::new(0.0, 0.0, z), Vec3::new(0.0, 0.0, 1.0), r(z));
+
+        let mut topo = Topology::new();
+        let surface = FaceSurface::Cone(
+            ConicalSurface::new(
+                Point3::new(0.0, 0.0, -2.0),
+                Vec3::new(0.0, 0.0, 1.0),
+                FRAC_PI_4,
+            )
+            .unwrap(),
+        );
+        let v_bot = topo.add_vertex(Vertex::new(pt(0.0, z_bot), 1e-7));
+        let v_top = topo.add_vertex(Vertex::new(pt(0.0, z_top), 1e-7));
+        let closed_rim = |topo: &mut Topology, v, z: f64| {
+            let c = ring(z).unwrap();
+            let start = c.project(pt(0.0, z));
+            let mut e = Edge::new(v, v, EdgeCurve::Circle(c));
+            e.set_trim(Some((start, start + TAU)));
+            topo.add_edge(e)
+        };
+        let e_bot = closed_rim(&mut topo, v_bot, z_bot);
+        let e_top = closed_rim(&mut topo, v_top, z_top);
+        let e_seam = topo.add_edge(Edge::new(v_bot, v_top, EdgeCurve::Line));
+        let wire = topo.add_wire(
+            Wire::new(
+                vec![
+                    OrientedEdge::new(e_bot, true),
+                    OrientedEdge::new(e_seam, true),
+                    OrientedEdge::new(e_top, false),
+                    OrientedEdge::new(e_seam, false),
+                ],
+                true,
+            )
+            .unwrap(),
+        );
+        let fid = topo.add_face(Face::new(wire, vec![], surface.clone()));
+        let wire_pts = [pt(0.0, z_bot), pt(0.0, z_top)];
+
+        let section = |curve: EdgeCurve, start: Point3, end: Point3| {
+            let trim = match &curve {
+                EdgeCurve::Circle(c) => {
+                    let a = c.project(start);
+                    Some((a, a + (c.project(end) - a).rem_euclid(TAU)))
+                }
+                _ => None,
+            };
+            let pcurve = crate::builder::pcurve_compute::compute_pcurve_on_surface(
+                &curve, start, end, &surface, &wire_pts, None,
+            )
+            .unwrap();
+            SectionEdge {
+                curve_3d: curve,
+                trim,
+                pcurve_a: pcurve.clone(),
+                pcurve_b: pcurve,
+                start,
+                end,
+                start_uv_a: None,
+                end_uv_a: None,
+                start_uv_b: None,
+                end_uv_b: None,
+                target_face: None,
+                pave_block_id: None,
+            }
+        };
+        let sections = [
+            section(EdgeCurve::Line, pt(theta1, z_top), pt(theta1, z_mid)),
+            section(
+                EdgeCurve::Circle(ring(z_mid).unwrap()),
+                pt(theta1, z_mid),
+                pt(theta2, z_mid),
+            ),
+            section(EdgeCurve::Line, pt(theta2, z_mid), pt(theta2, z_top)),
+        ];
+        split_face_2d(
+            &topo,
+            fid,
+            &sections,
+            Rank::A,
+            &remus_math::tolerance::Tolerance::default(),
+            None,
+            Some(&SurfaceInfo::Parametric {
+                u_periodic: true,
+                v_periodic: false,
+            }),
+            &std::collections::HashMap::new(),
+            None,
+        )
+        .unwrap()
+    }
+
+    /// Total angular span of the circle-arc edges lying on the rim `z`,
+    /// summed over every sub-face wire (outer and inner).
+    fn rim_span(split: &[SplitSubFace], z: f64) -> f64 {
+        split
+            .iter()
+            .flat_map(|sf| sf.outer_wire.iter().chain(sf.inner_wires.iter().flatten()))
+            .filter_map(|e| match &e.curve_3d {
+                EdgeCurve::Circle(c) if (c.center().z() - z).abs() < 1e-9 => {
+                    let (ns, ne) = if e.forward {
+                        (e.start_3d, e.end_3d)
+                    } else {
+                        (e.end_3d, e.start_3d)
+                    };
+                    let a = c.project(ns);
+                    Some((c.project(ne) - a).rem_euclid(std::f64::consts::TAU))
+                }
+                _ => None,
+            })
+            .sum()
+    }
+
+    /// B32 (box–cone sibling fuse): a cone lateral notched from ONE rim, away
+    /// from the seam. The complement region is an annulus (bottom rim, seam,
+    /// notched top rim, seam back). Both seam uses carry the same stored `u`,
+    /// so the greedy walker closed "seam up → notched rim → seam down" as if
+    /// it bounded a disc and discarded the bottom rim; the GFA then dropped
+    /// that rim and the cap beyond it. The split must keep every rim arc in
+    /// exactly one sub-face: the bottom rim sums to a full turn, the top rim
+    /// to a full turn (notch arc + complement arcs), for every seam-relative
+    /// notch placement — including one straddling the antipodal rim split.
+    #[test]
+    fn cone_rim_notch_away_from_seam_keeps_far_rim() {
+        use std::f64::consts::TAU;
+        for (theta1, theta2) in [(2.2, 3.3), (0.6, 1.4), (4.0, 5.2), (2.8, 3.6)] {
+            let split = split_cone_top_rim_notch(theta1, theta2);
+            assert_eq!(
+                split.len(),
+                2,
+                "notch [{theta1}, {theta2}]: notch + annulus"
+            );
+            let bottom = rim_span(&split, -0.5);
+            let top = rim_span(&split, 0.5);
+            assert!(
+                (bottom - TAU).abs() < 1e-9,
+                "notch [{theta1}, {theta2}]: bottom rim covers {bottom:.6} rad of a full \
+                 turn (orphaned by the split)"
+            );
+            assert!(
+                (top - TAU).abs() < 1e-9,
+                "notch [{theta1}, {theta2}]: top rim covers {top:.6} rad of a full turn"
+            );
+            // The annulus carries the seam (both uses) and the bottom rim; the
+            // notch carries neither.
+            let seam_uses = |sf: &SplitSubFace| {
+                sf.outer_wire
+                    .iter()
+                    .filter(|e| {
+                        matches!(e.curve_3d, EdgeCurve::Line)
+                            && (e.start_3d.y().abs() < 1e-9 && e.end_3d.y().abs() < 1e-9)
+                            && e.start_3d.x() > 0.0
+                    })
+                    .count()
+            };
+            let mut uses: Vec<usize> = split.iter().map(seam_uses).collect();
+            uses.sort_unstable();
+            assert_eq!(
+                uses,
+                vec![0, 2],
+                "notch [{theta1}, {theta2}]: seam pair placement"
+            );
+        }
     }
 }
