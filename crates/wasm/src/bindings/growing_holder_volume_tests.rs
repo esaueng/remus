@@ -1,4 +1,4 @@
-//! WASM contract test for `volume` across a growing-holder width change (B51).
+//! WASM contract test for `volume` across a growing-holder width change (B54).
 //!
 //! OpenZCAD's growing-holder recipe asserts that opening a countersunk
 //! U-bracket from 44 to 10 mm changes `kernel.volume(solid, 0.001)` by

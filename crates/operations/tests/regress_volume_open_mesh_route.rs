@@ -1,4 +1,4 @@
-//! B51: OpenZCAD's growing-holder recipe measures every width on one route.
+//! B54: OpenZCAD's growing-holder recipe measures every width on one route.
 //!
 //! Native port of `test/growing-holder-recipe.test.ts` (OpenZCAD, 2026-09-24):
 //! a 60 × 32 × 20 U-bracket (8 mm floor and arms) with a Ø5 through hole in

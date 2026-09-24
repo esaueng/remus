@@ -486,7 +486,7 @@ fn edge_uses(indices: &[u32]) -> DetHashMap<(u32, u32), usize> {
     uses
 }
 
-/// B51: two planar CDT jobs share the segment 0–1. Job A's constraint
+/// B54: two planar CDT jobs share the segment 0–1. Job A's constraint
 /// recovery Steiner-split it at 4 (triangles 0-4-2, 4-1-2); job B, already
 /// triangulated, still spans it with 1-0-3. The repair must split B's
 /// triangle at 4 with its winding kept, leave A untouched, and keep the
