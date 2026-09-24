@@ -124,7 +124,14 @@ pub fn build_offset_faces(
                         ),
                     });
                 }
-                FaceSurface::Sphere(SphericalSurface::new(sph.center(), new_radius)?)
+                // Carry the frame (B41 class): the offset skin must share
+                // the source sphere's pole and seam, not world axes.
+                FaceSurface::Sphere(SphericalSurface::with_frame(
+                    sph.center(),
+                    new_radius,
+                    sph.z_axis(),
+                    sph.x_axis(),
+                )?)
             }
 
             FaceSurface::Torus(tor) => {

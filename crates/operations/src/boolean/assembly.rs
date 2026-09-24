@@ -1482,7 +1482,7 @@ fn validate_boolean_result_lenient_with_tolerance(
 /// Two faces are adjacent if they share an edge. Returns each connected
 /// group as a Vec<FaceId> — a single-component solid produces one group,
 /// a multi-region solid (disjoint pieces in one shell) produces N groups.
-pub(super) fn face_components(topo: &Topology, solid: SolidId) -> Vec<Vec<FaceId>> {
+pub(crate) fn face_components(topo: &Topology, solid: SolidId) -> Vec<Vec<FaceId>> {
     let shell = match topo.solid(solid).and_then(|s| topo.shell(s.outer_shell())) {
         Ok(sh) => sh,
         Err(_) => return Vec::new(),
