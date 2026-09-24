@@ -342,11 +342,26 @@ fn shell_with_evolution_impl(
     // A pocket or bore gives the generated skin additional, legitimate face
     // connectivity that geometry alone cannot distinguish from the collapsed
     // component proof, so those solids stay on the established shell gate.
-    let inspect_planar_folds = all_face_ids.iter().all(|face_id| {
-        topo.face(*face_id).is_ok_and(|face| {
-            matches!(face.surface(), FaceSurface::Plane { .. }) && face.inner_wires().is_empty()
-        })
-    });
+    // Judged per connected lump of the outer shell, not per body: a disjoint
+    // fuse (box + far sphere, Fuzz Smoke 2026-09-22) carries an all-planar
+    // lump whose inner prism can fully collapse while the curved lump keeps
+    // the whole-body test false, and the inverted cavity then shipped through
+    // the ordinary gate. The fold remover only ever sees the generated skins
+    // of the planar lumps.
+    let planar_fold_sources: HashSet<usize> =
+        crate::boolean::assembly::face_components(topo, solid)
+            .into_iter()
+            .filter(|component| {
+                component.iter().all(|face_id| {
+                    topo.face(*face_id).is_ok_and(|face| {
+                        matches!(face.surface(), FaceSurface::Plane { .. })
+                            && face.inner_wires().is_empty()
+                    })
+                })
+            })
+            .flatten()
+            .map(remus_topology::arena::Id::index)
+            .collect();
 
     let open_set: HashSet<usize> = open_faces.iter().map(|f| f.index()).collect();
 
@@ -768,8 +783,17 @@ fn shell_with_evolution_impl(
                         ),
                     });
                 }
-                let new_sph = remus_math::surfaces::SphericalSurface::new(sphere.center(), new_r)
-                    .map_err(crate::OperationsError::Math)?;
+                // Carry the outer sphere's frame: a default-aligned inner
+                // sphere under a rotated outer one puts the cavity's
+                // hemispheres and equator in different frames and the
+                // hollow meshes open (B41 class; Fuzz Smoke 2026-09-22).
+                let new_sph = remus_math::surfaces::SphericalSurface::with_frame(
+                    sphere.center(),
+                    new_r,
+                    sphere.z_axis(),
+                    sphere.x_axis(),
+                )
+                .map_err(crate::OperationsError::Math)?;
                 result_specs.push(FaceSpec::Surface {
                     vertices: inner_verts_fwd,
                     surface: FaceSurface::Sphere(new_sph),
@@ -832,7 +856,7 @@ fn shell_with_evolution_impl(
     if boundary_edge_ids.is_empty() {
         // No open boundary — shell is already closed (no open faces, or all faces present).
         let quality = quality_of(&sampled, approximation);
-        return finish_shell(topo, solid, evolution, tol.linear, inspect_planar_folds)
+        return finish_shell(topo, solid, evolution, tol.linear, &planar_fold_sources)
             .map(|(solid, evolution)| (solid, evolution, quality));
     }
 
@@ -1029,7 +1053,7 @@ fn shell_with_evolution_impl(
     *topo.shell_mut(shell_id)? = new_shell;
 
     let quality = quality_of(&sampled, approximation);
-    finish_shell(topo, solid, evolution, tol.linear, inspect_planar_folds)
+    finish_shell(topo, solid, evolution, tol.linear, &planar_fold_sources)
         .map(|(solid, evolution)| (solid, evolution, quality))
 }
 
@@ -1078,15 +1102,16 @@ fn finish_shell(
     solid: SolidId,
     mut evolution: crate::evolution::EvolutionMap,
     tolerance: f64,
-    inspect_planar_folds: bool,
+    planar_fold_sources: &HashSet<usize>,
 ) -> Result<(SolidId, crate::evolution::EvolutionMap), crate::OperationsError> {
-    if !inspect_planar_folds {
+    if planar_fold_sources.is_empty() {
         return Ok((gate(topo, solid)?, evolution));
     }
     let removable_faces: Vec<_> = evolution
         .generated
-        .values()
-        .flatten()
+        .iter()
+        .filter(|(source, _)| planar_fold_sources.contains(*source))
+        .flat_map(|(_, outputs)| outputs.iter())
         .filter_map(|output| topo.face_id_from_index(*output))
         .collect();
     let removal = remus_offset::remove_folded_uniform_l_prism_region(
