@@ -2830,8 +2830,12 @@ fn wrong_success_is_not_hidden_by_sibling_refusals() {
 /// fails until the owning geometry row fixes the kernel. Do NOT fix the
 /// kernel in the B26 proptest PR — file it as a new §B row.
 /// Minimized from `prop_random_primitive_pair_identities` seed `65c59077`.
+/// Closed with B32: near-miss operands (0.54 solid distance, touching AABBs)
+/// whose FF infinite-carrier contact lines split the stock wall; the exact
+/// drop-only disc check in `clip_line_to_face` drops the clean misses, and
+/// the revolution path requires cylinder trim authority so the measured
+/// volume is translation-invariant (4.7895 → 4.7895). Un-ignored 2026-09-22.
 #[test]
-#[ignore = "open: cylinder-cut translation-variant volume (B26 finding 1)"]
 fn b26_finding_cylinder_cut_translation_variant() {
     use remus_operations::primitives::make_cylinder;
     let m = Mat4::translation(4.0, 3.5, -2.0) * Mat4::rotation_x(std::f64::consts::FRAC_PI_2);
@@ -3057,8 +3061,13 @@ fn b26_finding22_boxcyl_fuse_mesh() {
 /// testing skill: it fails until the owning row fixes the kernel. Do NOT
 /// fix in the B26 proptest PR — filed under the extended §B row B32.
 /// Minimized from `prop_random_curved_pair_identities` (committed seed).
+/// Closed with B32 (cut leg): the boolean was already correct
+/// (cut+inter=box via Gauss); only the NURBS-trimmed cone wall measured
+/// through the analytic rectangle, undercounting and drifting. Declining
+/// NURBS-trimmed quadrics to the closed whole-solid mesh greens the cut
+/// translation oracle. Un-ignored 2026-09-22 (the fuse leg below was green
+/// throughout; the sibling repro stays ignored for its refusing fuse).
 #[test]
-#[ignore = "open: box-cone cut translation drift (B26 finding 17)"]
 fn b26_finding17_boxcone_cut_drift() {
     use remus_operations::primitives::{make_box, make_cone};
     let m =
