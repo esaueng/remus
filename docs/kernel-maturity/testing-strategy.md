@@ -173,10 +173,11 @@ it listed on 2026-09-13/16/20, and passed both zero-coverage runs. Its
 dev-profile baseline spent ~7.5 ks testing, 99.8% of the CPU in
 `remus-operations` and ~6 ks in one test. `.cargo/mutants.toml` now runs
 mutants under the `ci-test` profile (11.2x on the hosted runner for the same
-operations tests), stops each mutant's tests at the first failure, keeps the
-per-mutant oracle to the mutated package, and drops the five operations
-regression pins over 60 s (859 of 1,367 CPU-s) by exact name;
-`scripts/test-mutants-scope.py` fails if one is renamed. The staged
+operations tests), builds only test targets (not the 17 operations examples),
+stops each mutant's tests at the first failure, keeps the per-mutant oracle
+to the mutated package, and drops the five operations regression pins over
+60 s (859 of 1,367 CPU-s) by exact name; `scripts/test-mutants-scope.py`
+fails if one is renamed. The staged
 `fleet-mutants-sharded.yml` sizes a round-robin shard matrix from
 `scripts/plan-mutation-shards.py`'s measured cost model, gives every shard
 its own baseline and a 300-minute budget, and judges each with

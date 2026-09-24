@@ -12,6 +12,7 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import re
 import tempfile
 import unittest
 
@@ -138,6 +139,14 @@ class VerdictTests(unittest.TestCase):
                 result = self.run_verdict([mutant(A)], [BASELINE, outcome(A, "CaughtMutant")], exit_code)
                 self.assertEqual(result[0], 1)
 
+    def test_repeated_names_are_counted_as_a_multiset(self):
+        listed = [mutant(A), mutant(A)]
+        code, text, unexamined = self.run_verdict(listed, [BASELINE, outcome(A, "CaughtMutant")], 124)
+        self.assertEqual(code, 1, text)
+        self.assertEqual(unexamined.splitlines(), [A])
+        both = [BASELINE, outcome(A, "CaughtMutant"), outcome(A, "Unviable")]
+        self.assertEqual(self.run_verdict(listed, both, 0)[0], 0)
+
     def test_outcomes_outside_the_listing_fail(self):
         self.assertEqual(self.run_verdict(
             [mutant(A)], [BASELINE, outcome(A, "CaughtMutant"), outcome(B, "CaughtMutant")], 0)[0], 1)
@@ -219,8 +228,9 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn('--shard "$SHARD/$SHARDS" --sharding round-robin', text)
         self.assertIn("shard: ${{ fromJSON(needs.plan.outputs.matrix) }}", text)
         self.assertIn("SINCE: ${{ needs.plan.outputs.since }}", text)
-        budget = int(text.split('MUTANTS_BUDGET_MINUTES: "', 1)[1].split('"', 1)[0])
-        job = int(text.split("timeout-minutes: ", 3)[2].split("\n", 1)[0])
+        budget = int(re.search(r'MUTANTS_BUDGET_MINUTES: "(\d+)"', text)[1])
+        shard_job = text.split("\n  mutants:\n", 1)[1]
+        job = int(re.search(r"^    timeout-minutes: (\d+)$", shard_job, re.M)[1])
         self.assertGreater(job, budget + 2)
         self.assertLessEqual(job, 360)
 

@@ -19,15 +19,21 @@ minimum_test_timeout = 120
 
 # Test cost, not mutant count, is what the weekly budget buys (B19). Measured
 # on the hosted runner (4 vCPU): the unmutated baseline took 7,483-7,812 s of
-# test time on 2026-09-13/16/20, 99.8% of it in remus-operations, and a single
-# test (`exposed_boss_wall_matches_geometry_across_half_radius`) ran 6,011-
-# 6,353 s of it. Those three runs examined 0, 0 and 1 of 4,620 / 3,375 / 1,966
-# listed mutants before `timeout` stopped them.
+# test time on 2026-09-13/16/20, 99.8% of its CPU in remus-operations, and a
+# single test (`exposed_boss_wall_matches_geometry_across_half_radius`) took
+# 6,011-6,353 s and finished last. Those three runs examined 0, 0 and 1 of
+# 4,620 / 3,375 / 1,966 listed mutants before `timeout` stopped them.
 #
 # `ci-test` is the profile CI's Test job already uses (opt-level 1, no debug
 # info). The same 2,042 operations tests take 14,511 CPU-s in the dev profile
 # and 1,293 CPU-s under ci-test on that runner: 11.2x.
 profile = "ci-test"
+
+# `cargo test --no-run`, and so nextest's build, also compiles every example by
+# default: 17 in remus-operations, each relinked for every operations mutant
+# although no example runs as a test. `--tests` selects exactly the targets
+# that do (the library, binaries and integration tests), for build and run.
+additional_cargo_args = ["--tests"]
 
 additional_cargo_test_args = [
   # A mutant is caught by its first failing test. `.config/nextest.toml` sets

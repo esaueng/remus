@@ -34,6 +34,9 @@ SECONDS_PER_MUTANT = {
 # scratch directories, and the unmutated baseline test run.
 SHARD_OVERHEAD_SECONDS = 20 * 60
 JOBS_PER_SHARD = 2
+# Plan each shard to 85% of its slot time: round-robin evens the package mix,
+# but not which mutants survive and run their package's whole suite.
+TARGET_UTILIZATION = 0.85
 MAX_SHARDS = 16
 
 
@@ -43,7 +46,7 @@ def plan(mutants, budget_minutes, max_shards=MAX_SHARDS):
         counts[mutant["package"]] = counts.get(mutant["package"], 0) + 1
     fallback = max(SECONDS_PER_MUTANT.values())
     estimate = sum(n * SECONDS_PER_MUTANT.get(p, fallback) for p, n in counts.items())
-    capacity = (budget_minutes * 60 - SHARD_OVERHEAD_SECONDS) * JOBS_PER_SHARD
+    capacity = (budget_minutes * 60 - SHARD_OVERHEAD_SECONDS) * JOBS_PER_SHARD * TARGET_UTILIZATION
     if capacity <= 0:
         raise ValueError("the budget does not cover the per-shard overhead")
     if max_shards < 1:
@@ -78,7 +81,8 @@ def main(argv=None):
         f"| **total** | **{len(mutants)}** | **{estimate / 3600:.1f}** |",
         "",
         f"Capacity per shard: {capacity / 3600:.1f} slot-hours "
-        f"({args.budget_minutes} min budget, {JOBS_PER_SHARD} jobs, {SHARD_OVERHEAD_SECONDS // 60} min overhead).",
+        f"({args.budget_minutes} min budget, {JOBS_PER_SHARD} jobs, {SHARD_OVERHEAD_SECONDS // 60} min overhead, "
+        f"{TARGET_UTILIZATION:.0%} planned utilization).",
         f"Shards: {shards} (needed {needed}, cap {args.max_shards}).",
         "",
     ]

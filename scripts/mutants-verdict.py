@@ -21,6 +21,7 @@ and `unexamined.txt` next to the outcomes when coverage is incomplete.
 """
 
 import argparse
+from collections import Counter
 import json
 import os
 from pathlib import Path
@@ -106,16 +107,16 @@ def verdict(output_dir, exit_code, label):
         lines.append(f"Baseline: {build:.0f} s build + {test:.0f} s test")
         lines.append("")
 
+    # Multisets, not sets: names have been unique in every weekly listing so
+    # far, but a repeated name must still be examined as often as it is listed.
     by_summary = {}
     per_package = {}
-    examined = set()
+    examined = Counter()
     for outcome in outcomes:
         name, package = mutant_name(outcome)
         if name is None:
             continue
-        if name in examined:
-            errors.append(f"mutant examined twice: {name}")
-        examined.add(name)
+        examined[name] += 1
         summary = outcome.get("summary", "missing")
         by_summary.setdefault(summary, []).append(name)
         stats = per_package.setdefault(package, {"n": 0, "build": [], "test": []})
@@ -125,10 +126,16 @@ def verdict(output_dir, exit_code, label):
             if seconds is not None:
                 stats[key].append(seconds)
 
-    unknown = examined - set(listed_names)
+    listed_counts = Counter(listed_names)
+    unknown = examined - listed_counts
     if unknown:
-        errors.append(f"{len(unknown)} examined mutants were never listed for this shard")
-    unexamined = [n for n in listed_names if n not in examined]
+        errors.append(f"{sum(unknown.values())} outcomes do not match a listed mutant of this shard")
+    remaining = listed_counts - examined
+    unexamined = []
+    for name in listed_names:
+        if remaining[name]:
+            remaining[name] -= 1
+            unexamined.append(name)
 
     count = lambda key: len(by_summary.get(key, []))
     other = sum(len(v) for k, v in by_summary.items() if k not in CLEAN | {"MissedMutant", "Timeout"})
@@ -136,7 +143,7 @@ def verdict(output_dir, exit_code, label):
         "| Outcome | Count |",
         "| --- | ---: |",
         f"| listed | {len(listed_names)} |",
-        f"| examined | {len(examined)} |",
+        f"| examined | {sum(examined.values())} |",
         f"| not examined | {len(unexamined)} |",
         f"| caught | {count('CaughtMutant')} |",
         f"| missed | {count('MissedMutant')} |",
