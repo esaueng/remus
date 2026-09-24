@@ -1816,6 +1816,497 @@ fn split_periodic_face_by_winding_chain(
     Some(bands)
 }
 
+/// Split a u-periodic cylinder/cone lateral cut by MARCHED section chains
+/// that run between its rims (B39's torus–cone cells: a torus tube biting a
+/// frustum wall). Two configurations, both beyond the greedy walker:
+///
+/// - **Notch** — one chain leaves a rim and re-enters the SAME rim. The
+///   remainder is still an annulus, so its wire needs the seam both ways, and
+///   under periodic vertex keys the walker closes on its first return to the
+///   start vertex (up the seam, round the notched rim, back down the same
+///   seam) and drops the far rim.
+/// - **Sectors** — two chains, each from one rim to the other, cut the
+///   lateral into two sectors. The rims' pcurves are anchored at the seam
+///   and unwrap in opposite senses, so the sector clear of the seam, traced
+///   from a rim piece, closes 2π away from where it started; the walker reads
+///   that as a seam false-closure and discards it. The seam-side sector
+///   survives, which is all a fuse keeps — a cut or common needs the other.
+///
+/// Both are assembled directly in the band-wire convention of
+/// [`split_periodic_face_by_winding_chain`] (lower rim, seam up, upper rim,
+/// seam down; rims in their stored traversal from the seam vertex): each
+/// touched rim is split at the chain ends, the rim span between them bounds
+/// the region clear of the seam, and the chains are spliced in its place.
+///
+/// Returns `None` (caller falls through) unless: the boundary is exactly two
+/// closed rim circles plus seam lines; every section is a marched NURBS piece
+/// (lines, rings and conics keep the calibrated ruling/rectilinear paths); the
+/// sections chain into one same-rim chain or two rim-to-rim chains; every
+/// chain stays strictly between the rims away from its ends, spans less than
+/// half a period and keeps off the seam meridian; and the rim spans pair up
+/// with the chains without crossing.
+#[allow(clippy::too_many_lines)]
+fn split_periodic_face_by_rim_chains(
+    surface: &FaceSurface,
+    boundary_edges: &[OrientedPCurveEdge],
+    sections: &[SectionEdge],
+    rank: Rank,
+    reversed: bool,
+    face_id: FaceId,
+    tol: f64,
+) -> Result<Option<Vec<SplitSubFace>>, AlgoError> {
+    use std::f64::consts::{PI, TAU};
+
+    /// One open section chain with its rim ends and unwrapped `(u, v)` samples.
+    struct Chain {
+        entries: Vec<(usize, bool)>,
+        start: Point3,
+        end: Point3,
+        start_bot: bool,
+        end_bot: bool,
+        samples: Vec<(f64, f64)>,
+    }
+
+    if !matches!(surface, FaceSurface::Cylinder(_) | FaceSurface::Cone(_)) || sections.is_empty() {
+        return Ok(None);
+    }
+    let close_tol = tol * 100.0;
+    if sections.iter().any(|s| {
+        !matches!(s.curve_3d, EdgeCurve::NurbsCurve(_)) || (s.start - s.end).length() < close_tol
+    }) {
+        return Ok(None);
+    }
+
+    // Boundary: exactly two closed rim circles plus seam Line edges.
+    let mut rims: Vec<&OrientedPCurveEdge> = Vec::new();
+    let mut seam_edges: Vec<&OrientedPCurveEdge> = Vec::new();
+    for e in boundary_edges {
+        let is_closed = (e.start_3d - e.end_3d).length() < close_tol;
+        match (&e.curve_3d, is_closed) {
+            (EdgeCurve::Circle(_), true) => rims.push(e),
+            (EdgeCurve::Line, false) => seam_edges.push(e),
+            // B24: exhaustive over `EdgeCurve` — only closed rim circles and
+            // open seam lines bound the lateral here; anything else declines.
+            (EdgeCurve::Circle(_), false)
+            | (EdgeCurve::Line, true)
+            | (
+                EdgeCurve::NurbsCurve(_)
+                | EdgeCurve::Ellipse(_)
+                | EdgeCurve::Hyperbola(_)
+                | EdgeCurve::Parabola(_),
+                _,
+            ) => return Ok(None),
+        }
+    }
+    if rims.len() != 2 || seam_edges.is_empty() {
+        return Ok(None);
+    }
+    let Some((seam_u, _)) = surface.project_point(seam_edges[0].start_3d) else {
+        return Ok(None);
+    };
+    let wrap_pi = |d: f64| -> f64 { (d + PI).rem_euclid(TAU) - PI };
+    let rim_v = |e: &OrientedPCurveEdge| -> Option<f64> {
+        let (_, v) = surface.project_point(e.start_3d)?;
+        let on_seam = surface.evaluate(seam_u, v)?;
+        ((on_seam - e.start_3d).length() < close_tol).then_some(v)
+    };
+    let (Some(v0), Some(v1)) = (rim_v(rims[0]), rim_v(rims[1])) else {
+        return Ok(None);
+    };
+    let (v_bot, bot_edge, v_top, top_edge) = if v0 < v1 {
+        (v0, rims[0], v1, rims[1])
+    } else {
+        (v1, rims[1], v0, rims[0])
+    };
+    if v_top - v_bot < close_tol {
+        return Ok(None);
+    }
+    // Which rim a chain end sits on: `Some(true)` bottom, `Some(false)` top.
+    let rim_of = |p: Point3| -> Option<bool> {
+        let (_, v) = surface.project_point(p)?;
+        if (v - v_bot).abs() < close_tol {
+            Some(true)
+        } else if (v - v_top).abs() < close_tol {
+            Some(false)
+        } else {
+            None
+        }
+    };
+
+    // Chain the sections into open chains by shared 3D endpoints.
+    let start_of = |&(i, fwd): &(usize, bool)| {
+        if fwd {
+            sections[i].start
+        } else {
+            sections[i].end
+        }
+    };
+    let end_of = |&(i, fwd): &(usize, bool)| {
+        if fwd {
+            sections[i].end
+        } else {
+            sections[i].start
+        }
+    };
+    let mut used = vec![false; sections.len()];
+    let mut chains: Vec<Vec<(usize, bool)>> = Vec::new();
+    while let Some(seed) = used.iter().position(|u| !u) {
+        used[seed] = true;
+        let mut chain = vec![(seed, true)];
+        loop {
+            let (Some(tail), Some(head)) = (chain.last().map(end_of), chain.first().map(start_of))
+            else {
+                return Ok(None);
+            };
+            let next = sections.iter().enumerate().find_map(|(i, s)| {
+                if used[i] {
+                    None
+                } else if (s.start - tail).length() < close_tol {
+                    Some((i, true, true))
+                } else if (s.end - tail).length() < close_tol {
+                    Some((i, false, true))
+                } else if (s.end - head).length() < close_tol {
+                    Some((i, true, false))
+                } else if (s.start - head).length() < close_tol {
+                    Some((i, false, false))
+                } else {
+                    None
+                }
+            });
+            let Some((i, fwd, at_tail)) = next else {
+                break;
+            };
+            used[i] = true;
+            if at_tail {
+                chain.push((i, fwd));
+            } else {
+                chain.insert(0, (i, fwd));
+            }
+        }
+        chains.push(chain);
+    }
+    if chains.is_empty() || chains.len() > 2 {
+        return Ok(None);
+    }
+
+    // Per chain: its ends' rims and (u, v) samples with u unwrapped along the
+    // chain. Interior samples must sit strictly between the rims; the u span
+    // must stay under half a period and clear of the seam meridian.
+    let mut infos: Vec<Chain> = Vec::with_capacity(chains.len());
+    for entries in chains {
+        let (Some(start), Some(end)) = (entries.first().map(start_of), entries.last().map(end_of))
+        else {
+            return Ok(None);
+        };
+        if (start - end).length() < close_tol {
+            return Ok(None); // closed: an internal loop, not a rim chain
+        }
+        let (Some(start_bot), Some(end_bot)) = (rim_of(start), rim_of(end)) else {
+            return Ok(None);
+        };
+        let mut samples: Vec<(f64, f64)> = Vec::new();
+        for &(i, fwd) in &entries {
+            let s = &sections[i];
+            let (d0, d1) = s.domain();
+            for k in 0..=16 {
+                let f = f64::from(k) / 16.0;
+                let f = if fwd { f } else { 1.0 - f };
+                let p =
+                    s.curve_3d
+                        .evaluate_with_endpoints((d1 - d0).mul_add(f, d0), s.start, s.end);
+                let Some((u, v)) = surface.project_point(p) else {
+                    return Ok(None);
+                };
+                let u = samples
+                    .last()
+                    .map_or(u, |&(u_prev, _)| u_prev + wrap_pi(u - u_prev));
+                samples.push((u, v));
+            }
+        }
+        if samples.len() < 3
+            || !samples[1..samples.len() - 1]
+                .iter()
+                .all(|&(_, v)| v > v_bot + close_tol && v < v_top - close_tol)
+        {
+            return Ok(None);
+        }
+        let u_min = samples.iter().map(|s| s.0).fold(f64::INFINITY, f64::min);
+        let u_max = samples
+            .iter()
+            .map(|s| s.0)
+            .fold(f64::NEG_INFINITY, f64::max);
+        if u_max - u_min > PI {
+            return Ok(None);
+        }
+        let seam_off = (seam_u - u_min).rem_euclid(TAU);
+        if seam_off <= u_max - u_min + close_tol || seam_off >= TAU - close_tol {
+            return Ok(None);
+        }
+        infos.push(Chain {
+            entries,
+            start,
+            end,
+            start_bot,
+            end_bot,
+            samples,
+        });
+    }
+    let notch = infos.len() == 1 && infos[0].start_bot == infos[0].end_bot;
+    let sectors = infos.len() == 2 && infos.iter().all(|c| c.start_bot != c.end_bot);
+    if !notch && !sectors {
+        return Ok(None);
+    }
+
+    // Split a rim at two chain ends. Pieces run in the rim's own traversal
+    // from its seam vertex (the splitter also halves any piece past half a
+    // turn), so the span between the ends is the one clear of the seam.
+    // Returns the pieces and the indices of the pieces ending at the first
+    // and second end met along the traversal.
+    let split_rim = |rim: &OrientedPCurveEdge,
+                     p: Point3,
+                     q: Point3|
+     -> Result<Option<(Vec<OrientedPCurveEdge>, usize, usize)>, AlgoError> {
+        let pieces =
+            split_boundary_edges_at_3d_points(vec![rim.clone()], &[p, q], None, surface, tol)?;
+        let ends_at = |x: Point3| {
+            pieces
+                .iter()
+                .position(|e| (e.end_3d - x).length() < close_tol)
+        };
+        let (Some(ip), Some(iq)) = (ends_at(p), ends_at(q)) else {
+            return Ok(None);
+        };
+        let (ix, iy) = if ip < iq { (ip, iq) } else { (iq, ip) };
+        if ix == iy || iy + 1 >= pieces.len() {
+            return Ok(None);
+        }
+        Ok(Some((pieces, ix, iy)))
+    };
+
+    // A chain materialized as pcurve edges from `from` to its other end,
+    // walking u with nearest-copy continuity from `u_start`.
+    let build_chain = |c: &Chain, from: Point3, u_start: f64| -> Option<Vec<OrientedPCurveEdge>> {
+        let entries: Vec<(usize, bool)> = if (c.start - from).length() < close_tol {
+            c.entries.clone()
+        } else {
+            c.entries.iter().rev().map(|&(i, f)| (i, !f)).collect()
+        };
+        let mut out = Vec::with_capacity(entries.len());
+        let mut u_prev = u_start;
+        for (idx, fwd) in entries {
+            let s = &sections[idx];
+            let (a, b) = if fwd {
+                (s.start, s.end)
+            } else {
+                (s.end, s.start)
+            };
+            let (u_raw0, va) = surface.project_point(a)?;
+            let (u_raw1, vb) = surface.project_point(b)?;
+            let u0 = u_prev + wrap_pi(u_raw0 - u_prev);
+            let u1 = u0 + wrap_pi(u_raw1 - u_raw0);
+            u_prev = u1;
+            out.push(OrientedPCurveEdge {
+                curve_3d: s.curve_3d.clone(),
+                trim: s.trim,
+                pcurve: match rank {
+                    Rank::A => s.pcurve_a.clone(),
+                    Rank::B => s.pcurve_b.clone(),
+                },
+                start_uv: Point2::new(u0, va),
+                end_uv: Point2::new(u1, vb),
+                start_3d: a,
+                end_3d: b,
+                forward: fwd,
+                source_edge_idx: None,
+                pave_block_id: s.pave_block_id,
+                source_topo_edge: None,
+            });
+        }
+        Some(out)
+    };
+    let mk_seam = |va: f64, vb: f64, pa: Point3, pb: Point3| -> Option<OrientedPCurveEdge> {
+        let dir = remus_math::vec::Vec2::new(0.0, if vb > va { 1.0 } else { -1.0 });
+        let pcurve = remus_math::curves2d::Curve2D::Line(
+            remus_math::curves2d::Line2D::new(Point2::new(seam_u, va), dir).ok()?,
+        );
+        Some(OrientedPCurveEdge {
+            curve_3d: EdgeCurve::Line,
+            trim: None,
+            pcurve,
+            start_uv: Point2::new(seam_u, va),
+            end_uv: Point2::new(seam_u, vb),
+            start_3d: pa,
+            end_3d: pb,
+            forward: true,
+            source_edge_idx: None,
+            pave_block_id: None,
+            source_topo_edge: None,
+        })
+    };
+    // `(u, v)` of a rim span's middle piece midpoint.
+    let span_mid = |span: &[OrientedPCurveEdge]| -> Option<(f64, f64)> {
+        let e = span.get(span.len() / 2)?;
+        let (d0, d1) = e.traversal_domain();
+        let p = e
+            .curve_3d
+            .evaluate_with_endpoints(f64::midpoint(d0, d1), e.start_3d, e.end_3d);
+        surface.project_point(p)
+    };
+    // Interior point of a region on the meridian through a rim point: from
+    // that rim toward `v_to`, halfway to the first chain crossing (or `v_to`).
+    // Also reports whether a chain was met.
+    let interior_toward = |(u0, v_from): (f64, f64), v_to: f64| -> Option<(Point3, bool)> {
+        let mut reach = v_to;
+        let mut met = false;
+        for c in &infos {
+            for w in c.samples.windows(2) {
+                let (d0, d1) = (wrap_pi(w[0].0 - u0), wrap_pi(w[1].0 - u0));
+                if d0 * d1 > 0.0 || (d1 - d0).abs() > PI || (d1 - d0).abs() < f64::EPSILON {
+                    continue;
+                }
+                let v = w[0].1 + (w[1].1 - w[0].1) * (d0 / (d0 - d1));
+                if (v - v_from) * (reach - v) > 0.0 {
+                    reach = v;
+                    met = true;
+                }
+            }
+        }
+        Some((surface.evaluate(u0, f64::midpoint(v_from, reach))?, met))
+    };
+    let region = |wire: Vec<OrientedPCurveEdge>, interior: Point3| SplitSubFace {
+        surface: surface.clone(),
+        outer_wire: wire,
+        inner_wires: Vec::new(),
+        reversed,
+        parent: face_id,
+        rank,
+        precomputed_interior: Some(interior),
+    };
+    let (Some(seam_up), Some(seam_down)) = (
+        mk_seam(v_bot, v_top, bot_edge.start_3d, top_edge.start_3d),
+        mk_seam(v_top, v_bot, top_edge.start_3d, bot_edge.start_3d),
+    ) else {
+        return Ok(None);
+    };
+
+    if notch {
+        let c = &infos[0];
+        let (notched, v_rim, far, v_far) = if c.start_bot {
+            (bot_edge, v_bot, top_edge, v_top)
+        } else {
+            (top_edge, v_top, bot_edge, v_bot)
+        };
+        let Some((pieces, ix, iy)) = split_rim(notched, c.start, c.end)? else {
+            return Ok(None);
+        };
+        let floor = &pieces[ix + 1..=iy];
+        let (x, y) = (pieces[ix].end_3d, pieces[iy].end_3d);
+        let (Some(chain_xy), Some(chain_yx), Some(floor_uv), Some(far_uv)) = (
+            build_chain(c, x, pieces[ix].end_uv.x()),
+            build_chain(c, y, pieces[iy].end_uv.x()),
+            span_mid(floor),
+            span_mid(std::slice::from_ref(far)),
+        ) else {
+            return Ok(None);
+        };
+        // The floor span must lie under the chain: the meridian through its
+        // midpoint meets the chain before the far rim.
+        let (Some((lens_interior, floor_covered)), Some((band_interior, _))) = (
+            interior_toward(floor_uv, v_far),
+            interior_toward(far_uv, v_rim),
+        ) else {
+            return Ok(None);
+        };
+        if !floor_covered {
+            return Ok(None);
+        }
+        let notched_rim: Vec<OrientedPCurveEdge> = pieces[..=ix]
+            .iter()
+            .cloned()
+            .chain(chain_xy)
+            .chain(pieces[iy + 1..].iter().cloned())
+            .collect();
+        let (bot_wire, top_wire) = if c.start_bot {
+            (notched_rim, vec![top_edge.clone()])
+        } else {
+            (vec![bot_edge.clone()], notched_rim)
+        };
+        let mut band = bot_wire;
+        band.push(seam_up);
+        band.extend(top_wire);
+        band.push(seam_down);
+        let mut lens: Vec<OrientedPCurveEdge> = floor.to_vec();
+        lens.extend(chain_yx);
+        return Ok(Some(vec![
+            region(band, band_interior),
+            region(lens, lens_interior),
+        ]));
+    }
+
+    // Sectors: split both rims at the chain ends.
+    let bot_end = |c: &Chain| if c.start_bot { c.start } else { c.end };
+    let top_end = |c: &Chain| if c.start_bot { c.end } else { c.start };
+    let (Some((bp, bx, by)), Some((tp, tx, ty))) = (
+        split_rim(bot_edge, bot_end(&infos[0]), bot_end(&infos[1]))?,
+        split_rim(top_edge, top_end(&infos[0]), top_end(&infos[1]))?,
+    ) else {
+        return Ok(None);
+    };
+    let (xb, yb, xt, yt) = (bp[bx].end_3d, bp[by].end_3d, tp[tx].end_3d, tp[ty].end_3d);
+    let chain_at = |p: Point3| {
+        infos
+            .iter()
+            .position(|c| (bot_end(c) - p).length() < close_tol)
+    };
+    let (Some(c_yb), Some(c_xb)) = (chain_at(yb), chain_at(xb)) else {
+        return Ok(None);
+    };
+    // The sector clear of the seam is bounded by both middle spans: the chain
+    // leaving the bottom span's far end must land on the top span's near end
+    // (and vice versa), else the chains cross or the pairing wraps the seam.
+    if (top_end(&infos[c_yb]) - xt).length() >= close_tol
+        || (top_end(&infos[c_xb]) - yt).length() >= close_tol
+    {
+        return Ok(None);
+    }
+    let (Some(up_yb), Some(down_yt), Some(down_xt), Some(up_xb)) = (
+        build_chain(&infos[c_yb], yb, bp[by].end_uv.x()),
+        build_chain(&infos[c_xb], yt, tp[ty].end_uv.x()),
+        build_chain(&infos[c_yb], xt, tp[tx].end_uv.x()),
+        build_chain(&infos[c_xb], xb, bp[bx].end_uv.x()),
+    ) else {
+        return Ok(None);
+    };
+    let (Some(clear_mid), Some(seam_mid)) = (span_mid(&bp[bx + 1..=by]), span_mid(&bp[..=bx]))
+    else {
+        return Ok(None);
+    };
+    let (Some((clear_interior, _)), Some((seam_interior, _))) = (
+        interior_toward(clear_mid, v_top),
+        interior_toward(seam_mid, v_top),
+    ) else {
+        return Ok(None);
+    };
+    // Clear sector: bottom span, chain up, top span, chain down.
+    let mut clear: Vec<OrientedPCurveEdge> = bp[bx + 1..=by].to_vec();
+    clear.extend(up_yb);
+    clear.extend(tp[tx + 1..=ty].iter().cloned());
+    clear.extend(down_yt);
+    // Seam sector: the band wire with both middle spans bypassed.
+    let mut seam_side = vec![seam_up];
+    seam_side.extend(tp[..=tx].iter().cloned());
+    seam_side.extend(down_xt);
+    seam_side.extend(bp[by + 1..].iter().cloned());
+    seam_side.extend(bp[..=bx].iter().cloned());
+    seam_side.extend(up_xb);
+    seam_side.extend(tp[ty + 1..].iter().cloned());
+    seam_side.push(seam_down);
+    Ok(Some(vec![
+        region(seam_side, seam_interior),
+        region(clear, clear_interior),
+    ]))
+}
+
 /// Every disjoint section chain that closes and WINDS the surface's periodic
 /// `u`, as `(piece index, traversed start→end)` entries. Returns `None` unless
 /// EVERY section belongs to one of them — a leftover piece would be silently
@@ -5648,6 +6139,27 @@ fn split_face_2d_impl(
         )
     {
         return Ok(bands);
+    }
+
+    // Rim-chain shortcut: marched section chains running between the rims —
+    // one notching a single rim, or two cutting the lateral into sectors (a
+    // torus tube biting a frustum wall, B39). The greedy walker closes the
+    // notched annulus early and discards the sector clear of the seam as a
+    // false closure; emit both regions directly.
+    if u_periodic
+        && !is_plane
+        && original_inner_wires.is_empty()
+        && let Some(parts) = split_periodic_face_by_rim_chains(
+            &surface,
+            &boundary_edges,
+            sections,
+            rank,
+            reversed,
+            face_id,
+            tol.linear,
+        )?
+    {
+        return Ok(parts);
     }
 
     // Converted-wall band shortcut: a transverse section ring on a
