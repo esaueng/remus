@@ -93,6 +93,18 @@ jobs:
           cargo mutants "${args[@]}" > week-mutants.json
           python3 scripts/plan-mutation-shards.py week-mutants.json \
             --budget-minutes "$MUTANTS_BUDGET_MINUTES"
+      # The diff and the full listing reproduce the plan locally
+      # (`cargo mutants --list --in-diff week.diff`) and audit the shards'
+      # partition against it.
+      - name: Upload the plan
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mutants-plan
+          path: |
+            week.diff
+            week-mutants.json
+          retention-days: 30
   mutants:
     name: Cargo Mutants (shard ${{ matrix.shard }})
     needs: plan
