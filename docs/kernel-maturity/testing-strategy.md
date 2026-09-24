@@ -183,8 +183,12 @@ fails if one is renamed. The staged
 its own baseline and a 300-minute budget, and judges each with
 `scripts/mutants-verdict.py`, which fails on any missed, timed-out or
 unexamined mutant and on a baseline that did not finish green
-(`python3 scripts/test-mutants-verdict.py` proves each failure path).
-`mutants.yml` switches to it in a follow-up that pins the merge commit.
+(`python3 scripts/test-mutants-verdict.py` proves each failure path). A
+bounded runner probe of the sharded callee (run 36059529895: math, blend
+and offset, three 45-minute shards) partitioned the week's 121 listed
+mutants exactly and examined every one; each shard failed closed on its
+missed mutants. `mutants.yml` switches to the sharded callee in a follow-up
+that pins the merge commit.
 
 ## Corpus
 
