@@ -7339,6 +7339,63 @@ fn clip_line_to_face(topo: &Topology, face_id: FaceId, raw: &RawCurve, tol: Tole
     let FaceSurface::Plane { normal, .. } = face.surface() else {
         return FaceClip::Indeterminate;
     };
+    // Exact disc check (B32): a planar face bounded by a single closed circle
+    // is a disc cap. A section line lying entirely outside the disc cannot
+    // split the face — it touches only the infinite carrier plane (e.g. a
+    // disjoint tool cap plane grazing a stock wall 0.27 outside the disc).
+    // The polygon clipper below only handles straight-edge outlines and keeps
+    // such lines conservatively, so they survive as spurious splits.
+    // DROP-ONLY: a line touching the disc keeps the historic conservative
+    // behavior (Indeterminate) — trimming overlapping lines to the disc
+    // interval disturbed tangent wall/cap contacts that need their full
+    // sections. Only a clean miss is dropped.
+    if face.inner_wires().is_empty()
+        && let Ok(wire) = topo.wire(face.outer_wire())
+        && wire.edges().len() == 1
+        && let Some(oe) = wire.edges().first()
+        && let Ok(edge) = topo.edge(oe.edge())
+        && edge.start() == edge.end()
+        && let EdgeCurve::Circle(circle) = edge.curve()
+    {
+        let frame = super::super::builder::plane_frame::PlaneFrame::from_normal_and_point(
+            *normal,
+            circle.center(),
+        );
+        let c2 = frame.project(circle.center());
+        let s2 = frame.project(raw.p_start);
+        let e2 = frame.project(raw.p_end);
+        let (cx, cy) = (c2.x(), c2.y());
+        let (sx, sy) = (s2.x(), s2.y());
+        let (ex, ey) = (e2.x(), e2.y());
+        let r_tol = circle.radius() + tol.linear;
+        // Line-disc overlap fractions for the segment p(t) = s + t*(e-s).
+        // Solved in the plane frame (orthonormal: distances preserved).
+        let dx = ex - sx;
+        let dy = ey - sy;
+        let fx = sx - cx;
+        let fy = sy - cy;
+        let a = dx * dx + dy * dy;
+        // Degenerate (point) segment: keep iff the point touches the disc.
+        if a <= 1e-24 {
+            if fx * fx + fy * fy <= r_tol * r_tol {
+                return FaceClip::Indeterminate;
+            }
+            return FaceClip::Empty;
+        }
+        let b = 2.0 * (fx * dx + fy * dy);
+        let c = fx * fx + fy * fy - r_tol * r_tol;
+        let disc = b * b - 4.0 * a * c;
+        if disc < 0.0 {
+            return FaceClip::Empty;
+        }
+        let sq = disc.sqrt();
+        let r0 = (-b - sq) / (2.0 * a);
+        let r1 = (-b + sq) / (2.0 * a);
+        if r1.min(1.0) < r0.max(0.0) {
+            return FaceClip::Empty;
+        }
+        return FaceClip::Indeterminate;
+    }
     let Ok(wire) = topo.wire(face.outer_wire()) else {
         return FaceClip::Indeterminate;
     };
