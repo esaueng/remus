@@ -184,13 +184,23 @@ fn project_point_on_edge(
     let (t0, t1) =
         super::helpers::authoritative_edge_domain(edge, edge_id, "vertex-edge projection")?;
 
+    // PERF-M04: every call here is a (vertex, edge) pair that survived the
+    // AABB broad-phase and endpoint rejection. Count the generic-path
+    // projection and each curve evaluation inside it; the analytic `Line`
+    // fast path (PERF-B01) bumps its own counter and performs no evaluations.
+    crate::perf::bump_ve_sampled_projection();
+    let project = |t: f64| -> Point3 {
+        crate::perf::bump_ve_projection_eval();
+        edge.curve().evaluate_with_endpoints(t, start_pos, end_pos)
+    };
+
     let n_samples: usize = 32;
     let mut best_t = t0;
     let mut best_dist_sq = f64::MAX;
 
     for i in 0..=n_samples {
         let t = t0 + (t1 - t0) * (i as f64 / n_samples as f64);
-        let pt = edge.curve().evaluate_with_endpoints(t, start_pos, end_pos);
+        let pt = project(t);
         let d_sq = (point - pt).length_squared();
         if d_sq < best_dist_sq {
             best_dist_sq = d_sq;
@@ -207,10 +217,8 @@ fn project_point_on_edge(
     for _ in 0..20 {
         let m1 = lo + (hi - lo) / 3.0;
         let m2 = hi - (hi - lo) / 3.0;
-        let d1 =
-            (point - edge.curve().evaluate_with_endpoints(m1, start_pos, end_pos)).length_squared();
-        let d2 =
-            (point - edge.curve().evaluate_with_endpoints(m2, start_pos, end_pos)).length_squared();
+        let d1 = (point - project(m1)).length_squared();
+        let d2 = (point - project(m2)).length_squared();
         if d1 < d2 {
             hi = m2;
         } else {
