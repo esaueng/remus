@@ -150,11 +150,13 @@ the five in flight (every other ignored test re-run 3× on 2026-09-18; `io`,
 and obtuse-ridge chamfer pins are no longer ignored after #398. Re-run
 landscape diagnostics with `--ignored --nocapture` before re-opening a case.
 Added since that snapshot: the B55 curved-offset scale witness
-(`crates/offset/tests/regress_curved_offset_scale.rs`, fails on `main`), and
-the B64/B65 lidded box–sphere witnesses
+(`crates/offset/tests/regress_curved_offset_scale.rs`, fails on `main`), the
+B64/B65 lidded box–sphere witnesses
 (`crates/operations/tests/regress_sphere_lidded_box_collar.rs`, plus the B65
-collar-sample repro in `crates/algo/src/builder/face_splitter/closed_form_split_tests.rs`;
-both fail on `main`).
+collar-sample repro in `crates/algo/src/builder/face_splitter/closed_form_split_tests.rs`),
+the B66 SSI branch-point witness (`math/src/nurbs/intersection/tests.rs`), and the
+two B67 plane–cone rim fillet witnesses (`blend/src/fillet_builder.rs`
+`closed_rim_oracles`), all failing on `main`.
 Current work lives in the master roadmap; closed narratives live in
 `campaign-history.md`.
 
@@ -193,6 +195,8 @@ harness's own option-honoured floor misreading a correct 0.05 fillet on an
 
 - **Tightening a section to its opposing face's true extent exposes arrangement gaps the overlong section masked;** a curved face must pre-split sections at its own wire vertices, and a section arc's endpoint-T test must use the true curve, not its chord (deepened-notch foil, PR #363).
 - **Exact circular trims on bilinear/Coons caps are vacuous — a planar section of one is a hyperbola or ruling line, never a circle;** curved cap holes stay typed-refused (with rollback), chase the certified iso-rect class or converged-approximate paths instead (`crates/operations/tests/qualify_b12_annular_coons.rs`, B12).
+- **A closed-rim fillet that passes validity can be the mirror-image blend;** check that the ball centre sits inside the material and that the removed volume matches Pappus — the plane–cone arm shipped a flared-foot torus behind validity-only tests (B67, `blend/src/fillet_builder.rs::closed_rim_oracles`).
+- **A test that accepts `None` or "any direction" kills no mutant;** the existing SSI tangency tests did, so the B19 marcher survivors ran free — build the exact case (a cylinder resting on a plane, a saddle cut by its tangent plane) whose answer is a closed form (`math/src/nurbs/intersection/tests.rs::marching_oracles`).
 - **Replay a fuzz artifact natively and print BOTH measurements before believing its message;** an assertion that formats one reading twice reads exactly like a no-op that never happened (`modifier_ops`, 2026-09-02).
 - **Not every scenario failure is a boolean fallback.** Tessellation density,
   shared-rim meshing, and face orientation produced whole failure families with
