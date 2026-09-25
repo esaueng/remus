@@ -148,7 +148,9 @@ the five in flight (every other ignored test re-run 3× on 2026-09-18; `io`,
 and obtuse-ridge chamfer pins are no longer ignored after #398. Re-run
 landscape diagnostics with `--ignored --nocapture` before re-opening a case.
 Added since that snapshot: the B55 curved-offset scale witness
-(`crates/offset/tests/regress_curved_offset_scale.rs`, fails on `main`).
+(`crates/offset/tests/regress_curved_offset_scale.rs`, fails on `main`), and
+the B63, B64 and B65 tessellation witnesses in
+`crates/operations/src/tessellate/tests/mutation_oracles.rs` (all fail).
 Current work lives in the master roadmap; closed narratives live in
 `campaign-history.md`.
 
@@ -256,6 +258,7 @@ harness's own option-honoured floor misreading a correct 0.05 fillet on an
 - **Holed planes are all CDT-triangulated before any Steiner splice runs:** a boundary Steiner point one holed plane inserts must be split into an already-meshed holed-plane neighbour, not only spliced into the edge chain for later faces (B54, `tessellate/solid.rs::split_triangles_spanning_boundary_splits`).
 - **A seam that stops a blend chain walk is either a genuine surface transition (cross it) or a same-surface split (stop):** check outward normals pairwise plus an actual surface change before refusing; the equal-radius corner degenerates to a sphere with a singular Jacobian and needs the closed form (sequential fillet, `crates/blend/src/g1_chain.rs`, PR #496).
 - **Pin reusable-workflow callers only to main-reachable commits, never pre-squash branch SHAs:** a deleted source branch turns every PR's Classify Changes job into `fatal: path ... exists on disk, but not in ...` (`fuzz.yml` fleet-fuzz pin, PR #499, still OPEN).
+- **A loose mesh oracle hides load-bearing densification:** at twice the deflection the curved-trim rows, NURBS-rail rows and torus rim densify all looked optional, and a 2 % volume band hid a bore wall sagging 397 × the deflection; hold each wall to the deflection its mesher promises and a closed mesh's volume to a closed form within the chord slab (B19 tessellate tranche, B63/B65, `tessellate/tests/mutation_oracles.rs`).
 
 ## Subsystem trap notes
 
