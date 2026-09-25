@@ -1,4 +1,4 @@
-//! B59 ready-repro: the variable-radius fillet accepts a radius its support
+//! B63 ready-repro: the variable-radius fillet accepts a radius its support
 //! faces cannot hold and returns wrong geometry that still validates.
 //!
 //! Found while adding the O4.7 `filletVariableDetailed` twin (2026-09-25). On
@@ -19,7 +19,7 @@ use remus_topology::Topology;
 use remus_topology::explorer::{solid_edges, solid_entity_counts};
 
 #[test]
-#[ignore = "open: B59 variable fillet accepts a radius wider than its support faces"]
+#[ignore = "open: B63 variable fillet accepts a radius wider than its support faces"]
 fn variable_fillet_refuses_a_radius_wider_than_its_support_faces() {
     for radius in [11.0, 20.0] {
         let mut topo = Topology::new();
