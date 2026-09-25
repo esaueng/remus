@@ -5,7 +5,7 @@
     {
       "id": "hammer-holder",
       "path": "crates/io/tests/data/shapr3d_hammer_holder.step",
-      "sha256": "709bb3d2dad8ec6bcc6930d69114c827ec084b2ecc6f37c59399be31cbb870bc"
+      "sha256": "2403b4c9868cbb56292a09ec2f2d37baca16cc4b789d11e97ff8df3f1e46bef8"
     }
   ],
   "procedural_fixtures": {
@@ -115,6 +115,90 @@
       "id": "wasm_transform_batch_400",
       "family": "transform",
       "scenario": "wasm_transform_batch",
+      "size": 400,
+      "fixture": "unit-boxes"
+    },
+    {
+      "id": "native_bool_fuse_50",
+      "family": "boolean",
+      "scenario": "native_bool_fuse",
+      "size": 50,
+      "fixture": "unit-boxes"
+    },
+    {
+      "id": "native_bool_refused_50",
+      "family": "boolean",
+      "scenario": "native_bool_refused",
+      "size": 50,
+      "fixture": "unit-boxes"
+    },
+    {
+      "id": "wasm_bool_fuse_50",
+      "family": "boolean",
+      "scenario": "wasm_bool_fuse",
+      "size": 50,
+      "fixture": "unit-boxes"
+    },
+    {
+      "id": "wasm_bool_refused_50",
+      "family": "boolean",
+      "scenario": "wasm_bool_refused",
+      "size": 50,
+      "fixture": "unit-boxes"
+    },
+    {
+      "id": "native_bool_fuse_200",
+      "family": "boolean",
+      "scenario": "native_bool_fuse",
+      "size": 200,
+      "fixture": "unit-boxes"
+    },
+    {
+      "id": "native_bool_refused_200",
+      "family": "boolean",
+      "scenario": "native_bool_refused",
+      "size": 200,
+      "fixture": "unit-boxes"
+    },
+    {
+      "id": "wasm_bool_fuse_200",
+      "family": "boolean",
+      "scenario": "wasm_bool_fuse",
+      "size": 200,
+      "fixture": "unit-boxes"
+    },
+    {
+      "id": "wasm_bool_refused_200",
+      "family": "boolean",
+      "scenario": "wasm_bool_refused",
+      "size": 200,
+      "fixture": "unit-boxes"
+    },
+    {
+      "id": "native_bool_fuse_400",
+      "family": "boolean",
+      "scenario": "native_bool_fuse",
+      "size": 400,
+      "fixture": "unit-boxes"
+    },
+    {
+      "id": "native_bool_refused_400",
+      "family": "boolean",
+      "scenario": "native_bool_refused",
+      "size": 400,
+      "fixture": "unit-boxes"
+    },
+    {
+      "id": "wasm_bool_fuse_400",
+      "family": "boolean",
+      "scenario": "wasm_bool_fuse",
+      "size": 400,
+      "fixture": "unit-boxes"
+    },
+    {
+      "id": "wasm_bool_refused_400",
+      "family": "boolean",
+      "scenario": "wasm_bool_refused",
       "size": 400,
       "fixture": "unit-boxes"
     },

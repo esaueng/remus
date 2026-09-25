@@ -233,7 +233,7 @@ def run(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, help="new results directory; never overwrite a baseline")
-    parser.add_argument("--family", action="append", choices=["nurbs", "transform", "chain"], help="repeat to select families; default: all")
+    parser.add_argument("--family", action="append", choices=["nurbs", "transform", "chain", "boolean"], help="repeat to select families; default: all")
     parser.add_argument("--processes", type=positive, default=3)
     parser.add_argument("--samples", type=positive, default=5)
     parser.add_argument("--warmup", type=positive, default=1)
