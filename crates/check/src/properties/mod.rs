@@ -94,7 +94,23 @@ pub fn bounding_box(topo: &Topology, solid: SolidId) -> Result<Aabb3, CheckError
 /// the vertex box is the cheapest such point and does not depend on how the
 /// faces are listed. A solid whose faces carry no vertex (none of the shipped
 /// primitives) keeps the historic origin.
-fn integration_reference(topo: &Topology, faces: &[FaceId]) -> Result<Point3, CheckError> {
+///
+/// A trimmed curved face integrates over its sampled UV outline, so a body
+/// with such faces does not close exactly and its volume moves with the
+/// reference by the reference dotted with that chord-sized residual. Callers
+/// that must reproduce [`solid_properties`]' volume to round-off sum
+/// [`face_integrator::integrate_face_about`] about this same point.
+///
+/// # Errors
+///
+/// Returns an error if any topology entity is missing.
+pub fn integration_reference(topo: &Topology, solid: SolidId) -> Result<Point3, CheckError> {
+    let faces = remus_topology::explorer::solid_faces(topo, solid)?;
+    faces_reference(topo, &faces)
+}
+
+/// [`integration_reference`] over an already collected face list.
+fn faces_reference(topo: &Topology, faces: &[FaceId]) -> Result<Point3, CheckError> {
     let mut bounds: Option<(Point3, Point3)> = None;
     for &fid in faces {
         let face = topo.face(fid)?;
@@ -140,7 +156,7 @@ pub fn solid_volume(
 ) -> Result<f64, CheckError> {
     options.validate()?;
     let faces = remus_topology::explorer::solid_faces(topo, solid)?;
-    let reference = integration_reference(topo, &faces)?;
+    let reference = faces_reference(topo, &faces)?;
 
     let mut total_volume = 0.0;
     for fid in faces {
@@ -193,7 +209,7 @@ pub fn center_of_mass(
 ) -> Result<Point3, CheckError> {
     options.validate()?;
     let faces = remus_topology::explorer::solid_faces(topo, solid)?;
-    let reference = integration_reference(topo, &faces)?;
+    let reference = faces_reference(topo, &faces)?;
 
     let mut total_volume = 0.0;
     let mut mx = 0.0;
@@ -241,7 +257,7 @@ pub fn solid_properties(
 ) -> Result<GProps, CheckError> {
     options.validate()?;
     let faces = remus_topology::explorer::solid_faces(topo, solid)?;
-    let reference = integration_reference(topo, &faces)?;
+    let reference = faces_reference(topo, &faces)?;
 
     let mut volume = 0.0;
     let mut mx = 0.0;

@@ -236,12 +236,18 @@ fn open_mesh_exact_volume(
             )));
         }
     }
+    // The same point, order and controls as `mass_properties`, so the two
+    // agree to round-off even where chord-sampled trims leave the integrated
+    // boundary a residual short of closed (B58).
+    let reference = remus_check::properties::integration_reference(topo, solid)?;
+    let options = remus_check::properties::PropertiesOptions {
+        gauss_order: OPEN_MESH_GAUSS_ORDER,
+        ..Default::default()
+    };
     let mut total = 0.0;
     for fid in faces {
-        total += remus_check::properties::face_integrator::integrate_face(
-            topo,
-            fid,
-            OPEN_MESH_GAUSS_ORDER,
+        total += remus_check::properties::face_integrator::integrate_face_about(
+            topo, fid, &options, reference,
         )?
         .volume;
     }
