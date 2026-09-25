@@ -52,6 +52,16 @@
 
 ### Features
 
+* **operations,wasm:** result-aware face, edge and vertex history for the
+  default V2 offset (B18). `boundary_evolution` induces each result edge's
+  and vertex's claim from an exact face map by incidence (`modified`,
+  `merged`, `generated`, or `unresolved` with a typed `UnresolvedReason`)
+  and checks every claim against the actual result entity sets
+  (`EntityCompletenessReport`). `offset_solid_v2_with_entity_evolution` and
+  `offset_journaled_with_entities` return it; `offset_journaled` now
+  journals edges and vertices too, so their references follow an offset
+  instead of severing. Torus seams and a sphere's equator ring stay typed
+  unresolved (`ambiguous_incidence`). Offset geometry is unchanged.
 * **offset,operations,wasm:** retain the default V2 offset builder's exact
   one-to-one source-face map, expose it as construction-derived evolution,
   journal offsets transactionally, and add direct plus batch

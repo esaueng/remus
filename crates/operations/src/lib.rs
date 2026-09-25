@@ -83,6 +83,7 @@ pub(crate) mod cap;
 /// profile builders (and their fixtures) construct hole loops at exactly
 /// the carrier-evaluated positions the cap certifier requires.
 pub use cap::nonplanar_ring_surface;
+pub mod boundary_evolution;
 pub mod compound_ops;
 pub mod evolution;
 pub mod journal_ops;

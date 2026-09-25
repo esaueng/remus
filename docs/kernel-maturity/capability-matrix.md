@@ -571,7 +571,9 @@ does not itself promote or demote anything.
   one-call journaled wrappers `journal_ops::{fillet_journaled,
   chamfer_journaled, linear_pattern_journaled, offset_journaled}` — the
   journal is populated by the construction-evolution producers (booleans,
-  v2 blends, patterns, default V2 offsets) per the RFC 0003 Stage 1 goal; WASM
+  v2 blends, patterns, default V2 offsets — offsets with face, edge and
+  vertex claims plus a result-aware completeness report, B18) per the RFC
+  0003 Stage 1 goal; WASM
   `fuseWithEntityEvolution` (+cut/intersect) exposing the full
   vertex/edge/face event payload as stable JSON, `filletJournaled` /
   `chamferJournaled` / `linearPatternJournaled` / `offsetJournaled`, and the

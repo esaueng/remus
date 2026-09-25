@@ -132,7 +132,11 @@ fn journaled_offsets_carry_face_references_through_exact_evolution() {
         panic!("an offset must journal evolution, not a barrier");
     };
     assert_eq!(*origin, RecordedOrigin::Construction);
-    assert_eq!(events.len(), 6, "one exact event per source face");
+    assert_eq!(
+        events.len(),
+        6 + 12 + 8,
+        "one exact event per result face, edge and vertex (B18)"
+    );
 
     let reference = PersistentRef::operation_output(first.op, EntityKind::Face, 0);
     let Resolution::Bound {
