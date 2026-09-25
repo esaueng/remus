@@ -2173,10 +2173,11 @@ fn directed_edges_cancel<K: Copy + Ord + std::hash::Hash>(
 /// dotted with the uncancelled vector area. It keeps the historic
 /// world-origin sum, so B56 changes no such reading. That is not a claim the
 /// origin is right. It is right only by symmetry when the defect lies in a
-/// plane through the origin: the slotted no-lip bin body tessellates at
-/// deflection 0.05 with 48 edges run twice the same way on its x = 0 and
-/// y = 0 planes, and reads 106091.8 about the origin, against
-/// `solid_volume`'s 106099.5, but 49075.1 about its box centre. Such meshes
+/// plane through the origin: the slotted no-lip bin body fixture, as first
+/// captured (repaired as B59), tessellated at deflection 0.05 with 48 edges
+/// run twice the same way on its x = 0 and y = 0 planes, and read 106091.8
+/// about the origin, against `solid_volume`'s 106099.5, but 49075.1 about
+/// its box centre. Such meshes
 /// are the business of the open-mesh routing around
 /// [`closed_mesh_or_exact_volume`], not of the summation point.
 fn summation_point(edges_cancel: bool, points: impl IntoIterator<Item = Point3>) -> Point3 {
