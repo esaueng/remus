@@ -32,6 +32,18 @@
 
 ### Features
 
+* Add `filletDetailed`, `chamferDetailed`, `shellDetailed`, and
+  `offsetDetailed` (direct methods and `executeBatch`/`executeBatchV2` ops of
+  the same names), typed O4.7 twins of `fillet`, `chamfer`, `shell`, and
+  `offsetSolid`. Each returns a `SolidOperationDetailedResult`: success
+  discloses `details.quality` (`exact` or `approximate`, plus
+  `approximateFaces`, `sampledFaces`, or `deflection`) and, for blends,
+  `details.engine`; a refusal is data carrying the kernel code and category,
+  with topology rolled back. `exactOnly` (fillet, chamfer, offset) refuses an
+  approximate result with `quality_refused` / `exact_only_unattainable`;
+  shell stays exact-only unless `approximationSpacing` is given. The batch
+  ops return the same envelope as their `ok` value. Legacy methods are
+  unchanged.
 * Add `offsetJournaled` to the direct and `executeBatch` APIs, returning the
   result solid and operation id while recording total construction-derived
   face evolution instead of an offset barrier.
