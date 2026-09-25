@@ -213,9 +213,11 @@ fn long_parameter_interval_with_tiny_physical_loop_keeps_warning() {
 }
 
 #[test]
-fn small_trim_inside_large_carrier_is_valid_but_vertex_warning_is_separate() {
-    // At baseline 75cce2c9, vertex.rs still checks carrier endpoints. Keep this
-    // public witness as a handoff; this PR owns edge.rs, not that warning.
+fn small_trim_inside_large_carrier_is_valid_without_vertex_warning() {
+    // The vertices sit at the trim ends, 40 carrier-lengths from either
+    // carrier end. `check_vertex_on_curve` now measures against the edge's
+    // trim ends (it used to measure against the carrier's knot-span ends and
+    // warn here; this witness pinned that handoff until the fix).
     for scale in [1e-3, 1.0, 1e3] {
         let (mut topo, solid, edge) = cube_edge(scale, true, 1.0);
         let data = topo.edge(edge).unwrap();
@@ -242,10 +244,12 @@ fn small_trim_inside_large_carrier_is_valid_but_vertex_warning_is_separate() {
             assert!(!has(&report, CheckId::EdgeRangeValid, edge));
             assert!(!has(&report, CheckId::EdgeDegenerate, edge));
             assert!(
-                report
+                !report
                     .issues
                     .iter()
-                    .any(|issue| issue.check == CheckId::VertexOnCurve)
+                    .any(|issue| issue.check == CheckId::VertexOnCurve),
+                "{:?}",
+                report.issues
             );
         }
     }
