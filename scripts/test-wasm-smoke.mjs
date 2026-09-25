@@ -636,8 +636,9 @@ for (const operation of ['fillet', 'chamfer']) {
   console.log(`ok - ${method}: typed, complete, exact-geometry parity`);
 }
 
-// Offset face identity is construction-derived and reaches both public WASM
-// routes as a real journal evolution entry, never a barrier.
+// Offset face, edge and vertex identity is construction-derived and reaches
+// both public WASM routes as a real journal evolution entry, never a barrier
+// (B18). Every result entity is attributed or typed unresolved.
 {
   const directKernel = new BrepKernel();
   const source = directKernel.makeBox(2, 2, 2);
@@ -651,7 +652,12 @@ for (const operation of ['fillet', 'chamfer']) {
       origin: directEntry.detail.origin,
       events: directEntry.detail.events,
     },
-    { kind: 'offset', type: 'evolution', origin: 'construction', events: 6 },
+    { kind: 'offset', type: 'evolution', origin: 'construction', events: 6 + 12 + 8 },
+  );
+  assert.equal(direct.evolution.completeness.resolved, true);
+  assert.deepEqual(
+    [direct.evolution.faces.length, direct.evolution.edges.length, direct.evolution.vertices.length],
+    [6, 12, 8],
   );
 
   const batchKernel = new BrepKernel();
@@ -667,8 +673,124 @@ for (const operation of ['fillet', 'chamfer']) {
   assert.deepEqual(batch[1].ok, direct);
   assert.equal(batch[2].ok.at(-1).kind, 'offset');
   assert.equal(batch[2].ok.at(-1).type, 'evolution');
-  assert.equal(batch[2].ok.at(-1).detail.events, 6);
-  console.log('ok - offsetJournaled direct/batch construction evolution');
+  assert.equal(batch[2].ok.at(-1).detail.events, 6 + 12 + 8);
+
+  // A torus's two seams share one incidence: typed unresolved, never guessed,
+  // and identical through the direct binding and executeBatchV2.
+  const torusKernel = new BrepKernel();
+  const torus = torusKernel.makeTorus(3, 1, 16);
+  const seams = Array.from(torusKernel.getSolidEdges(torus));
+  const torusDirect = JSON.parse(torusKernel.offsetJournaled(torus, 0.3));
+  assert.equal(torusDirect.evolution.completeness.accounted, true);
+  assert.equal(torusDirect.evolution.completeness.resolved, false);
+  assert.equal(torusDirect.evolution.edges.length, 2);
+  for (const edge of torusDirect.evolution.edges) {
+    assert.equal(edge.event, 'unresolved');
+    assert.equal(edge.reason, 'ambiguous_incidence');
+    assert.deepEqual(edge.candidates, seams);
+  }
+  const torusBatch = JSON.parse(
+    new BrepKernel().executeBatchV2(
+      JSON.stringify([
+        { op: 'makeTorus', args: { majorRadius: 3, minorRadius: 1, segments: 16 } },
+        { op: 'offsetJournaled', args: { solid: 0, distance: 0.3 } },
+      ]),
+    ),
+  );
+  assert.deepEqual(torusBatch[1].ok, torusDirect);
+  console.log('ok - offsetJournaled direct/batch face, edge and vertex evolution');
+}
+
+// O4.7 modifier twins: each returns the typed envelope (never throws on a
+// refusal), discloses quality, matches the `executeBatchV2` op of the same
+// name exactly, and rolls a refusal back.
+{
+  const twin = (label, direct, batchOp, check) => {
+    const directKernel = new BrepKernel();
+    const box = directKernel.makeBox(10, 10, 10);
+    const edge = directKernel.getSolidEdges(box)[0];
+    const face = directKernel.getSolidFaces(box)[0];
+    const result = direct(directKernel, box, edge, face);
+    assert.equal(result.status, 'ok', `${label}: ${JSON.stringify(result)}`);
+    assert.equal(result.code, null);
+    assert.equal(result.category, null);
+    assert.equal(result.details.quality, 'exact', `${label}: exact analytic input`);
+    check(directKernel, result);
+
+    const batchKernel = new BrepKernel();
+    const batch = JSON.parse(
+      batchKernel.executeBatchV2(
+        JSON.stringify([
+          { op: 'makeBox', args: { width: 10, height: 10, depth: 10 } },
+          { op: batchOp, args: { solid: box, ...batchArgsFor(batchOp, edge, face) } },
+        ]),
+      ),
+    );
+    assert.deepEqual(batch[1].ok, result, `${label}: direct/executeBatchV2 parity`);
+    console.log(`ok - ${label}: exact, disclosed, direct/batch parity`);
+  };
+  const batchArgsFor = (op, edge, face) =>
+    ({
+      filletDetailed: { edges: [edge], radius: 1 },
+      chamferDetailed: { edges: [edge], distance: 1 },
+      shellDetailed: { thickness: 1, faces: [face] },
+      offsetDetailed: { distance: 1 },
+    })[op];
+
+  twin(
+    'filletDetailed',
+    (k, box, edge) => k.filletDetailed(box, Uint32Array.of(edge), 1),
+    'filletDetailed',
+    (k, r) => {
+      assert.equal(r.details.engine, 'rollingBall');
+      const expected = 1000 - (1 - Math.PI / 4) * 10;
+      assert.ok(Math.abs(k.volume(r.value, DEFLECTION) - expected) < 1e-6);
+    },
+  );
+  twin(
+    'chamferDetailed',
+    (k, box, edge) => k.chamferDetailed(box, Uint32Array.of(edge), 1),
+    'chamferDetailed',
+    (k, r) => {
+      assert.equal(r.details.engine, 'planarBevel');
+      assert.ok(Math.abs(k.volume(r.value, DEFLECTION) - 995) < 1e-6);
+    },
+  );
+  twin(
+    'shellDetailed',
+    (k, box, _edge, face) => k.shellDetailed(box, 1, Uint32Array.of(face)),
+    'shellDetailed',
+    (k, r) => assert.ok(Math.abs(k.volume(r.value, DEFLECTION) - (1000 - 8 * 8 * 9)) < 1e-6),
+  );
+  twin(
+    'offsetDetailed',
+    (k, box) => k.offsetDetailed(box, 1),
+    'offsetDetailed',
+    (k, r) => assert.ok(Math.abs(k.volume(r.value, DEFLECTION) - 1728) < 1e-6),
+  );
+
+  // Refusals are data with the kernel code, and leave the model untouched.
+  const refusalKernel = new BrepKernel();
+  const box = refusalKernel.makeBox(10, 10, 10);
+  const edge = refusalKernel.getSolidEdges(box)[0];
+  const before = refusalKernel.volume(box, DEFLECTION);
+  const badRadius = refusalKernel.filletDetailed(box, Uint32Array.of(edge), 0);
+  assert.equal(badRadius.status, 'error');
+  assert.equal(badRadius.code, 'invalid_argument');
+  assert.equal(badRadius.category, 'invalid_input');
+  assert.equal(badRadius.value, null);
+  assert.equal(badRadius.details.operation, 'fillet');
+  const converted = JSON.parse(
+    refusalKernel.executeBatchV2(JSON.stringify([{ op: 'convertToBspline', args: { solid: box } }])),
+  );
+  assert.ok(converted[0].ok, `convertToBspline: ${JSON.stringify(converted)}`);
+  const exactOnly = refusalKernel.offsetDetailed(box, 1, true);
+  assert.equal(exactOnly.status, 'error');
+  assert.equal(exactOnly.code, 'exact_only_unattainable');
+  assert.equal(exactOnly.category, 'quality_refused');
+  assert.equal(exactOnly.details.sampledFaces.length, 6);
+  assert.ok(Math.abs(refusalKernel.volume(box, DEFLECTION) - before) < 1e-6);
+  console.log('ok - modifier twins: typed refusals with rollback');
 }
 
 // A stored/transported payload is untrusted input: malformed versions,

@@ -148,6 +148,8 @@ the five in flight (every other ignored test re-run 3× on 2026-09-18; `io`,
 `algo`, `math`, and `wasm` carry no actual ignores). The concave-notch fillet
 and obtuse-ridge chamfer pins are no longer ignored after #398. Re-run
 landscape diagnostics with `--ignored --nocapture` before re-opening a case.
+Added since that snapshot: the B55 curved-offset scale witness
+(`crates/offset/tests/regress_curved_offset_scale.rs`, fails on `main`).
 Current work lives in the master roadmap; closed narratives live in
 `campaign-history.md`.
 
@@ -161,6 +163,8 @@ harness's own option-honoured floor misreading a correct 0.05 fillet on an
 - **A NURBS carrier with a coplanar control net is the plane it is; recognise it before FF/EF/face-info, and gate that recognition on exact planarity:** applying the trimmed-extent and chart-crossing machinery to a genuinely curved import paved 12,408 noise crossings and broke its splitter (`helpers::planar_nurbs_as_plane`, PR #396). Also: never feed a NURBS knot span to the arc-chord formula as radians (`tessellate/nonplanar.rs` grid sizer).
 - **Prune NURBS pairs with conservative boxes that are result-identical by construction:** control-net box (convex hull) on the face side, endpoint-padded edge box on the edge side, gate at a multiple of every threshold the scan uses, and count survivors with a `perf-counters` scaling guard (`phase_ef.rs`, `distance.rs`, PRs #394/#395).
 - **Blend resize identity requires construction support lineage plus a complete unique boundary incidence map:** a rebuilt band is not automatically a preserved face (`crates/operations/tests/journal_resize_blend.rs`); removal additionally requires complete boundary merge/deletion coverage, and broader regions refuse the journaled path.
+
+- **A total exact face map induces edge/vertex history by incidence, but only where incidence is unique;** shared incidence (torus seams, a sphere's equator ring) must stay typed unresolved, and seams are parametrisation artifacts the offset engine rebuilds elsewhere, so a nearest-geometry oracle misjudges them (`crates/operations/src/boundary_evolution.rs`, `qualify_offset_entity_evolution.rs`, B18).
 
 - **Journal setup belongs inside the operation transaction:** `journal_begin` can publish an outstanding global barrier before geometry runs; refusal must restore it (`crates/operations/tests/journal.rs`, shell/split and boolean/pattern unpublished-history regressions).
 

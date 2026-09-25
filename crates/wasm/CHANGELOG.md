@@ -32,6 +32,27 @@
 
 ### Features
 
+* Add `filletDetailed`, `chamferDetailed`, `shellDetailed`, and
+  `offsetDetailed` (direct methods and `executeBatch`/`executeBatchV2` ops of
+  the same names), typed O4.7 twins of `fillet`, `chamfer`, `shell`, and
+  `offsetSolid`. Each returns a `SolidOperationDetailedResult`: success
+  discloses `details.quality` (`exact` or `approximate`, plus
+  `approximateFaces`, `sampledFaces`, or `deflection`) and, for blends,
+  `details.engine`; a refusal is data carrying the kernel code and category,
+  with topology rolled back. `exactOnly` (fillet, chamfer, offset) refuses an
+  approximate result with `quality_refused` / `exact_only_unattainable`;
+  shell stays exact-only unless `approximationSpacing` is given. The batch
+  ops return the same envelope as their `ok` value. Legacy methods are
+  unchanged.
+* `offsetJournaled` (direct, `executeBatch`, `executeBatchV2`) adds an
+  `evolution` field beside `solid` and `op`. It lists every result face,
+  edge and vertex as `modified`, `merged`, `generated`, or `unresolved`
+  with `candidates` and a typed `reason` (`ambiguous_incidence`,
+  `unmapped_incident_face`, `unresolved_face_origin`). It also carries a
+  `completeness` report (`accounted`, `resolved`, per-kind `omitted`,
+  `phantom` and `unresolved` lists) checked against the actual result. The
+  journal entry now records edges and vertices, so a box offset journals
+  26 events instead of 6, and edge and vertex references resolve across it.
 * Add `offsetJournaled` to the direct and `executeBatch` APIs, returning the
   result solid and operation id while recording total construction-derived
   face evolution instead of an offset barrier.

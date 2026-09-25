@@ -16,6 +16,7 @@ pub mod heal;
 pub mod io;
 pub mod lifecycle;
 pub mod measure;
+pub mod modifier_detailed;
 pub mod naming;
 pub mod nurbs;
 pub mod operations;

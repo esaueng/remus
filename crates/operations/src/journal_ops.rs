@@ -478,8 +478,13 @@ pub struct JournaledSolidOp {
     pub map: EvolutionMap,
 }
 
-/// Runs an offset and journals its one-to-one, construction-derived face
-/// evolution as one entry (kind `offset`).
+/// Runs an offset and journals its construction-derived face, edge and
+/// vertex evolution as one entry (kind `offset`).
+///
+/// This is [`offset_journaled_with_entities`] without the boundary claims
+/// and completeness report in the return value; the journal entry is the
+/// same, so edge and vertex references resolve across the offset (or fail
+/// closed on its typed unresolved records) instead of severing.
 ///
 /// The whole call is transactional: a failed offset, postcondition, or
 /// journal recording restores both topology and history.
@@ -492,15 +497,66 @@ pub fn offset_journaled(
     solid: SolidId,
     distance: f64,
 ) -> Result<JournaledSolidOp, OperationsError> {
+    let journaled = offset_journaled_with_entities(topo, solid, distance)?;
+    Ok(JournaledSolidOp {
+        solid: journaled.solid,
+        op: journaled.op,
+        map: journaled.map,
+    })
+}
+
+/// A journaled operation's result with result-aware face, edge and vertex
+/// history.
+#[derive(Debug, Clone)]
+pub struct JournaledEntityOp {
+    /// The result solid.
+    pub solid: SolidId,
+    /// The journal entry recording the operation's evolution.
+    pub op: OpId,
+    /// The recorded face-evolution map.
+    pub map: EvolutionMap,
+    /// The recorded edge and vertex claims, with typed unresolved reasons
+    /// (the journal keeps the candidates; the reasons live here).
+    pub boundary: crate::boundary_evolution::BoundaryEvolution,
+    /// `map` and `boundary` compared against every result entity; always
+    /// accounted when returned.
+    pub completeness: crate::boundary_evolution::EntityCompletenessReport,
+}
+
+/// Runs an offset and journals face, edge and vertex evolution, returning
+/// the claims and their result-aware completeness (kind `offset`).
+///
+/// Every result face, edge and vertex is recorded as modified, generated
+/// or unresolved; see
+/// [`offset_solid_v2_with_entity_evolution`](crate::offset_v2::offset_solid_v2_with_entity_evolution).
+///
+/// # Errors
+///
+/// Returns [`OperationsError`] if the offset, its completeness check, or
+/// the recording fails; topology and history roll back together.
+pub fn offset_journaled_with_entities(
+    topo: &mut Topology,
+    solid: SolidId,
+    distance: f64,
+) -> Result<JournaledEntityOp, OperationsError> {
     remus_topology::transaction::run_transacted(topo, |topo| {
         let pending = begin_scoped(topo, "offset", &[solid])?;
-        let (result, map) =
-            crate::offset_v2::offset_solid_v2_with_evolution(topo, solid, distance)?;
-        let op = record_face_evolution(topo, pending, &map, &[result])?;
-        Ok(JournaledSolidOp {
-            solid: result,
+        let result =
+            crate::offset_v2::offset_solid_v2_with_entity_evolution(topo, solid, distance)?;
+        let op = record_entity_evolution_with_outputs(
+            topo,
+            pending,
+            &result.faces,
+            &[result.solid],
+            &[],
+            &result.boundary.journal_events(),
+        )?;
+        Ok(JournaledEntityOp {
+            solid: result.solid,
             op,
-            map,
+            map: result.faces,
+            boundary: result.boundary,
+            completeness: result.completeness,
         })
     })
 }
