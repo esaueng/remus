@@ -32,7 +32,48 @@ pub use point_surface::{
 };
 pub use segment::segment_segment_distance;
 
-use remus_math::vec::Point3;
+use remus_math::traits::ParametricCurve;
+use remus_math::vec::{Point3, Vec3};
+
+/// Finite-difference step for curve derivatives, relative to the range.
+const FD_STEP_REL: f64 = 1e-4;
+
+/// Position, first derivative and second derivative of `curve` at `t`.
+///
+/// Exact when the carrier provides [`ParametricCurve::derivative_pair`]
+/// (NURBS and every analytic conic). Otherwise the derivatives come from
+/// central differences: the fourth-order stencil for `C'` (its error sets
+/// how exactly a solver's stationary point is located) and the five-point
+/// stencil for `C''` (which only sets the Newton convergence rate). The
+/// step is relative to the parameter range, and the stencil is shifted
+/// inward so every sample stays inside `[t_start, t_end]`; the position is
+/// taken at `t` itself.
+pub(crate) fn curve_derivatives<C: ParametricCurve>(
+    curve: &C,
+    t: f64,
+    t_start: f64,
+    t_end: f64,
+) -> (Point3, Vec3, Vec3) {
+    if let Some((vel, acc)) = curve.derivative_pair(t)
+        && vel.x().is_finite()
+        && vel.y().is_finite()
+        && vel.z().is_finite()
+        && acc.x().is_finite()
+        && acc.y().is_finite()
+        && acc.z().is_finite()
+    {
+        return (curve.evaluate(t), vel, acc);
+    }
+    let h = (t_end - t_start) * FD_STEP_REL;
+    let tc = t.clamp(t_start + 2.0 * h, t_end - 2.0 * h);
+    let c0 = curve.evaluate(tc);
+    let (m2, m1) = (curve.evaluate(tc - 2.0 * h), curve.evaluate(tc - h));
+    let (p1, p2) = (curve.evaluate(tc + h), curve.evaluate(tc + 2.0 * h));
+    let vel = ((p1 - m1) * 8.0 - (p2 - m2)) * (1.0 / (12.0 * h));
+    let acc =
+        ((p1 - c0) * 16.0 + (m1 - c0) * 16.0 - (p2 - c0) - (m2 - c0)) * (1.0 / (12.0 * h * h));
+    (curve.evaluate(t), vel, acc)
+}
 
 /// Result of a distance/extrema computation between two geometric entities.
 #[derive(Debug, Clone, Copy)]
