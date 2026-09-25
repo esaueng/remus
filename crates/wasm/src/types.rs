@@ -28,7 +28,10 @@ pub enum SolidOperationDetailedResult {
         /// No failure category is present on success.
         #[tsify(type = "null")]
         category: Option<String>,
-        /// Reserved structured context; empty on success.
+        /// Structured success context. Empty for the exact-only boolean
+        /// family; the modifier family (`filletDetailed`, `chamferDetailed`,
+        /// `shellDetailed`, `offsetDetailed`) discloses the result's
+        /// `quality` (`"exact"` or `"approximate"`) and what was approximated.
         #[tsify(type = "Record<string, unknown>")]
         details: Map<String, Value>,
         /// Handle of the committed solid.
@@ -59,6 +62,17 @@ impl SolidOperationDetailedResult {
             code: None,
             category: None,
             details: Map::new(),
+            value,
+        }
+    }
+
+    /// Success carrying disclosed structured context (quality and what was
+    /// approximated) for operations whose result is not exact by contract.
+    pub(crate) const fn success_with_details(value: u32, details: Map<String, Value>) -> Self {
+        Self::Ok {
+            code: None,
+            category: None,
+            details,
             value,
         }
     }
