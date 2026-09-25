@@ -9,14 +9,14 @@
 //! sphere ∩ box column heights (cut checked by `sphere − intersect`).
 //!
 //! Two open defects ride here as ready-repros:
-//! - B61: the cut drops the lid-cap lump (the sphere above the lid), so it
+//! - B64: the cut drops the lid-cap lump (the sphere above the lid), so it
 //!   returns only the four wall caps — a silent wrong volume on `main`.
-//! - B62: with the walls close under the lid (`a = 0.75·r`) the collar's
+//! - B65: with the walls close under the lid (`a = 0.75·r`) the collar's
 //!   classification sample, the lid latitude nudged a fixed amount toward
 //!   the equator, lands beyond a wall, and the exact boolean is refused.
 //!   Bounding the nudge by the first wall arc on its meridian fixes the
-//!   intersect but turns the cut from refused into B61's wrong result, so it
-//!   waits on B61.
+//!   intersect but turns the cut from refused into B64's wrong result, so it
+//!   waits on B64.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use remus_check::classify::{ClassifyOptions, PointClassification, classify_point};
@@ -149,16 +149,16 @@ fn lidded_box_intersects_a_sphere_exactly() {
 }
 
 #[test]
-#[ignore = "open: B61 — the cut drops the lid-cap lump and returns only the wall caps"]
-fn b61_lidded_box_cut_keeps_the_lid_cap_lump() {
+#[ignore = "open: B64 — the cut drops the lid-cap lump and returns only the wall caps"]
+fn b64_lidded_box_cut_keeps_the_lid_cap_lump() {
     for r in [1.0, 50.0] {
         check(r, 0.9, BooleanOp::Cut);
     }
 }
 
 #[test]
-#[ignore = "open: B62 — the collar sample overshoots a wall close under the lid; exact boolean refused"]
-fn b62_lidded_box_with_walls_close_under_the_lid_intersects_exactly() {
+#[ignore = "open: B65 — the collar sample overshoots a wall close under the lid; exact boolean refused"]
+fn b65_lidded_box_with_walls_close_under_the_lid_intersects_exactly() {
     for r in [1.0, 50.0] {
         check(r, 0.75, BooleanOp::Intersect);
     }
