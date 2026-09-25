@@ -5812,3 +5812,6 @@ mod tests {
         assert_eq!(edge.strict_domain().unwrap(), (0.0, 1.0));
     }
 }
+
+#[cfg(test)]
+mod helper_oracle_tests;

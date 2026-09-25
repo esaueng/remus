@@ -9640,3 +9640,6 @@ mod conic_crossing_tests {
         assert!(hits.is_empty());
     }
 }
+
+#[cfg(test)]
+mod helper_oracle_tests;
