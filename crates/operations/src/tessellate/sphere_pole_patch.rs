@@ -35,6 +35,13 @@ use super::{MERGE_GRID, TriangleMesh, point_merge_key};
 /// has no reliable azimuth, so the winding cannot be certified.
 const POLE_CLEARANCE_COS: f64 = 1e-9;
 
+/// A loop whose samples all sit within this spread of one latitude (as the
+/// sine of the latitude, i.e. `direction · axis`) is a level ring, such as a
+/// primitive hemisphere's equator. The parametric CDT declines those on its
+/// own negligible-height guard, and the established latitude-cap and sweep
+/// paths mesh them; this path leaves them there.
+const LEVEL_RING_SPREAD: f64 = 1e-8;
+
 /// The loop's azimuth winding must be this close to one full turn.
 const WINDING_TOL: f64 = 1e-6;
 
@@ -55,8 +62,9 @@ const CLEARANCE_FRACTION: f64 = 0.25;
 /// outward normal; the caller flips them for a reversed face.
 ///
 /// Returns `false` without emitting anything unless the loop certifiably
-/// winds exactly once around the axis, keeps clear of both poles, and charts
-/// to a simple polygon whose constrained triangulation succeeds.
+/// winds exactly once around the axis, keeps clear of both poles, is not a
+/// level ring at one latitude, and charts to a simple polygon whose
+/// constrained triangulation succeeds.
 #[allow(clippy::too_many_lines)]
 pub(super) fn fill_sphere_pole_winding_patch(
     sphere: &SphericalSurface,
@@ -93,6 +101,14 @@ pub(super) fn fill_sphere_pole_winding_patch(
             return false;
         }
         directions.push(direction);
+    }
+    let (level_lo, level_hi) = directions
+        .iter()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), d| {
+            (lo.min(d.dot(axis)), hi.max(d.dot(axis)))
+        });
+    if level_hi - level_lo <= LEVEL_RING_SPREAD {
+        return false;
     }
 
     // Signed azimuth winding about `axis`. Each step must stay well under a

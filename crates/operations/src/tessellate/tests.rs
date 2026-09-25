@@ -4410,9 +4410,30 @@ fn b40_pole_patch_meshes_the_enclosed_pole_on_either_winding() {
 }
 
 #[test]
-fn b40_pole_patch_latitude_loop_matches_cap_area() {
-    // A constant 60° colatitude loop bounds a cap of area 2 pi r^2 (1 - cos).
-    let (sphere, mut mesh, ids) = b40_loop(360, true, |_| 1.047_197_551, |_| 0.0);
+fn b40_pole_patch_tilted_circle_matches_cap_area() {
+    // A small circle of angular radius 60 deg about an axis tilted 20 deg
+    // from +z still encloses the +z pole and is not a level ring. Any such
+    // cap has area 2 pi r^2 (1 - cos(60 deg)).
+    let sphere =
+        remus_math::surfaces::SphericalSurface::new(Point3::new(0.5, -0.25, 1.0), 2.0).unwrap();
+    let (alpha, beta) = (std::f64::consts::FRAC_PI_3, 20.0_f64.to_radians());
+    let axis = Vec3::new(beta.sin(), 0.0, beta.cos());
+    let (e1, e2) = (
+        Vec3::new(beta.cos(), 0.0, -beta.sin()),
+        Vec3::new(0.0, 1.0, 0.0),
+    );
+    let mut mesh = TriangleMesh::default();
+    let ids: Vec<u32> = (0..360)
+        .map(|i| {
+            let t = std::f64::consts::TAU * f64::from(i) / 360.0;
+            let d = axis * alpha.cos() + (e1 * t.cos() + e2 * t.sin()) * alpha.sin();
+            #[allow(clippy::cast_possible_truncation)]
+            let id = mesh.positions.len() as u32;
+            mesh.positions.push(sphere.center() + d * 2.0);
+            mesh.normals.push(d);
+            id
+        })
+        .collect();
     let mut lookup = DetHashMap::default();
     assert!(super::sphere_pole_patch::fill_sphere_pole_winding_patch(
         &sphere,
@@ -4434,7 +4455,7 @@ fn b40_pole_patch_latitude_loop_matches_cap_area() {
             (b - a).cross(c - a).length() / 2.0
         })
         .sum();
-    let exact = std::f64::consts::TAU * 4.0 * (1.0 - 1.047_197_551_f64.cos());
+    let exact = std::f64::consts::TAU * 4.0 * (1.0 - alpha.cos());
     assert!(
         (area - exact).abs() / exact < 1e-3,
         "cap area {area} vs {exact}"
@@ -4482,6 +4503,10 @@ fn b40_pole_patch_declines_loops_that_do_not_wind_once() {
     assert!(!fill(&sphere, &mut mesh, &ids));
     // A loop through the pole has no certifiable azimuth.
     let (sphere, mut mesh, ids) = b40_loop(64, true, |t| 1.0 + t.cos(), |_| 0.0);
+    assert!(!fill(&sphere, &mut mesh, &ids));
+    // A level ring (one latitude, like a primitive hemisphere's equator)
+    // stays on the latitude-cap and sweep paths.
+    let (sphere, mut mesh, ids) = b40_loop(128, true, |_| 1.2, |_| 0.0);
     assert!(!fill(&sphere, &mut mesh, &ids));
     // A loop that winds twice is not a pole cap boundary.
     let (sphere, mut mesh, ids) = b40_loop(128, true, |_| 1.2, |_| 0.0);
