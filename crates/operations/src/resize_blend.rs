@@ -3836,6 +3836,17 @@ fn replace_face_wire(
     Ok(())
 }
 
+/// Normal about which an exact circle edge travels from its start vertex to
+/// its end vertex.  A decreasing trim runs the stored circle clockwise, so its
+/// travel normal is the opposite of the stored one; comparing stored normals
+/// alone would flip the replacement of such an edge.
+fn circle_travel_normal(edge: &Edge, circle: &Circle3D) -> Vec3 {
+    match edge.strict_domain() {
+        Ok((start, end)) if end < start => circle.normal() * -1.0,
+        _ => circle.normal(),
+    }
+}
+
 fn oriented_replacement(
     topo: &Topology,
     old: OrientedEdge,
@@ -3846,7 +3857,7 @@ fn oriented_replacement(
     let EdgeCurve::Circle(old_circle) = old_edge.curve() else {
         return Ok(OrientedEdge::new(new_edge, old.is_forward()));
     };
-    let aligned = old_circle.normal().dot(new_curve_normal) >= 0.0;
+    let aligned = circle_travel_normal(old_edge, old_circle).dot(new_curve_normal) >= 0.0;
     Ok(OrientedEdge::new(
         new_edge,
         if aligned {
@@ -4368,10 +4379,11 @@ fn contact_direction(
     let Some(oriented) = wire.iter().find(|edge| contacts.contains(&edge.edge())) else {
         return Err(reconstruction("support contact is empty"));
     };
-    let EdgeCurve::Circle(circle) = topo.edge(oriented.edge())?.curve() else {
+    let edge = topo.edge(oriented.edge())?;
+    let EdgeCurve::Circle(circle) = edge.curve() else {
         return Err(reconstruction("support contact is not circular"));
     };
-    Ok(if circle.normal().dot(axis) >= 0.0 {
+    Ok(if circle_travel_normal(edge, circle).dot(axis) >= 0.0 {
         oriented.is_forward()
     } else {
         !oriented.is_forward()
@@ -5218,6 +5230,234 @@ mod tests {
         ];
         for (error, expected) in cases {
             assert_eq!(error.code(), expected);
+        }
+    }
+
+    /// How a band's exact cylinder-side contact circles are stored; every
+    /// variant is the same point set traversed the same way by every face.
+    #[derive(Clone, Copy, Debug)]
+    enum CircleStorage {
+        AsBuilt,
+        /// Opposite stored normal with a decreasing trim.
+        DecreasingTrim,
+        /// The same arcs stored end-to-start on the opposite normal with an
+        /// increasing trim; every face use flips.
+        ReversedEdge,
+    }
+
+    fn restore_band_circles(
+        topo: &mut Topology,
+        solid: SolidId,
+        band: FaceId,
+        storage: CircleStorage,
+    ) {
+        use remus_topology::explorer::solid_faces;
+        // Only the contact with the cylindrical support changes storage; its
+        // sibling contact keeps the fillet's own convention, so the rebuilt
+        // sharp edge must be oriented from each contact's actual travel.
+        let adjacency = topo.build_adjacency(solid).unwrap();
+        let circles: Vec<_> = face_edges(topo, band)
+            .unwrap()
+            .into_iter()
+            .filter(|edge| {
+                matches!(topo.edge(*edge).unwrap().curve(), EdgeCurve::Circle(_))
+                    && adjacency.faces_for_edge(*edge).iter().any(|face| {
+                        *face != band
+                            && matches!(
+                                topo.face(*face).unwrap().surface(),
+                                FaceSurface::Cylinder(_)
+                            )
+                    })
+            })
+            .collect();
+        assert!(!circles.is_empty());
+        for edge_id in circles {
+            let data = topo.edge(edge_id).unwrap();
+            let (start, end, tolerance) = (data.start(), data.end(), data.tolerance());
+            let EdgeCurve::Circle(circle) = data.curve().clone() else {
+                unreachable!("filtered circles");
+            };
+            let (t0, t1) = data.strict_domain().unwrap();
+            // flipped(-t) == circle(t)
+            let flipped = EdgeCurve::Circle(
+                Circle3D::new_with_ref(
+                    circle.center(),
+                    circle.normal() * -1.0,
+                    circle.radius(),
+                    circle.u_axis(),
+                )
+                .unwrap(),
+            );
+            let uses: Vec<_> = topo
+                .pcurves_for_edge(edge_id)
+                .into_iter()
+                .map(|(face, forward, _)| (face, forward))
+                .collect();
+            match storage {
+                CircleStorage::AsBuilt => {}
+                CircleStorage::DecreasingTrim => {
+                    for (face, forward) in uses {
+                        topo.remove_pcurve_oriented(edge_id, face, forward).unwrap();
+                    }
+                    let edge = topo.edge_mut(edge_id).unwrap();
+                    edge.set_curve(flipped);
+                    edge.set_trim(Some((-t0, -t1)));
+                }
+                CircleStorage::ReversedEdge => {
+                    // The same arc from `end` to `start`, increasing on the
+                    // flipped circle; every face use flips.
+                    let mut reversed = Edge::with_tolerance(end, start, flipped, tolerance);
+                    reversed.set_trim(Some((-t1, -t0)));
+                    let reversed = topo.add_edge(reversed);
+                    for face in solid_faces(topo, solid).unwrap() {
+                        let data = topo.face(face).unwrap();
+                        let wires: Vec<_> = std::iter::once(data.outer_wire())
+                            .chain(data.inner_wires().iter().copied())
+                            .collect();
+                        let mut rebuilt = Vec::new();
+                        let mut touched = false;
+                        for wire in wires {
+                            let uses: Vec<_> = topo
+                                .wire(wire)
+                                .unwrap()
+                                .edges()
+                                .iter()
+                                .map(|oriented| {
+                                    if oriented.edge() == edge_id {
+                                        touched = true;
+                                        OrientedEdge::new(reversed, !oriented.is_forward())
+                                    } else {
+                                        *oriented
+                                    }
+                                })
+                                .collect();
+                            rebuilt.push(topo.add_wire(Wire::new(uses, true).unwrap()));
+                        }
+                        if touched {
+                            topo.set_face_boundary_wires(face, rebuilt[0], rebuilt[1..].to_vec())
+                                .unwrap();
+                        }
+                    }
+                }
+            }
+        }
+        let report = crate::validate::validate_solid(topo, solid).unwrap();
+        assert!(report.is_valid(), "{storage:?} input: {:?}", report.issues);
+    }
+
+    fn torus_band(topo: &Topology, solid: SolidId) -> FaceId {
+        remus_topology::explorer::solid_faces(topo, solid)
+            .unwrap()
+            .into_iter()
+            .find(|face| matches!(topo.face(*face).unwrap().surface(), FaceSurface::Torus(_)))
+            .unwrap()
+    }
+
+    fn assert_rim_removal(
+        topo: &mut Topology,
+        solid: SolidId,
+        band: FaceId,
+        radius: f64,
+        sharp_volume: f64,
+        what: String,
+    ) {
+        let result = resize_blend(topo, solid, band, radius, 0.0)
+            .unwrap_or_else(|error| panic!("{what}: {error}"));
+        let report = crate::validate::validate_solid(topo, result.solid).unwrap();
+        assert!(report.is_valid(), "{what}: {:?}", report.issues);
+        let volume = crate::measure::solid_volume(topo, result.solid, 0.001).unwrap();
+        assert!(
+            (volume - sharp_volume).abs() < sharp_volume * 1e-6,
+            "{what}: volume {volume} vs sharp {sharp_volume}"
+        );
+    }
+
+    #[test]
+    fn plane_cylinder_rim_removal_is_independent_of_circle_storage() {
+        use remus_topology::explorer::solid_edges;
+        for storage in [
+            CircleStorage::AsBuilt,
+            CircleStorage::DecreasingTrim,
+            CircleStorage::ReversedEdge,
+        ] {
+            let mut topo = Topology::new();
+            let sharp = crate::primitives::make_cylinder(&mut topo, 10.0, 20.0).unwrap();
+            let rim = solid_edges(&topo, sharp)
+                .unwrap()
+                .into_iter()
+                .find(|edge| matches!(topo.edge(*edge).unwrap().curve(), EdgeCurve::Circle(_)))
+                .unwrap();
+            let solid = fillet_v2(&mut topo, sharp, &[rim], 2.0).unwrap().solid;
+            let band = torus_band(&topo, solid);
+            restore_band_circles(&mut topo, solid, band, storage);
+            // Closed-form sharp body: the plain 10 x 20 cylinder.
+            let sharp_volume = std::f64::consts::PI * 100.0 * 20.0;
+            assert_rim_removal(
+                &mut topo,
+                solid,
+                band,
+                2.0,
+                sharp_volume,
+                format!("{storage:?}"),
+            );
+        }
+    }
+
+    #[test]
+    fn cylinder_cone_rim_removal_is_independent_of_circle_storage() {
+        use remus_topology::explorer::solid_edges;
+        for storage in [
+            CircleStorage::AsBuilt,
+            CircleStorage::DecreasingTrim,
+            CircleStorage::ReversedEdge,
+        ] {
+            let mut topo = Topology::new();
+            // Radius-3 cylinder (height 5) fused to a 3 -> 1 cone of height 4:
+            // the sharp shoulder volume is pi*9*5 + pi*4*(9 + 3 + 1)/3.
+            let cylinder = crate::primitives::make_cylinder(&mut topo, 3.0, 5.0).unwrap();
+            let cone = crate::primitives::make_cone(&mut topo, 3.0, 1.0, 4.0).unwrap();
+            crate::transform::transform_solid(
+                &mut topo,
+                cone,
+                &remus_math::mat::Mat4::translation(0.0, 0.0, 5.0),
+            )
+            .unwrap();
+            let sharp =
+                crate::boolean::boolean(&mut topo, crate::boolean::BooleanOp::Fuse, cylinder, cone)
+                    .unwrap();
+            let adjacency = topo.build_adjacency(sharp).unwrap();
+            let shoulder = solid_edges(&topo, sharp)
+                .unwrap()
+                .into_iter()
+                .find(|edge| {
+                    let faces = adjacency.faces_for_edge(*edge);
+                    faces.len() == 2
+                        && faces.iter().any(|face| {
+                            matches!(topo.face(*face).unwrap().surface(), FaceSurface::Cone(_))
+                        })
+                        && faces.iter().any(|face| {
+                            matches!(
+                                topo.face(*face).unwrap().surface(),
+                                FaceSurface::Cylinder(_)
+                            )
+                        })
+                })
+                .unwrap();
+            let solid = fillet_v2(&mut topo, sharp, &[shoulder], 0.25)
+                .unwrap()
+                .solid;
+            let band = torus_band(&topo, solid);
+            restore_band_circles(&mut topo, solid, band, storage);
+            let pi = std::f64::consts::PI;
+            let sharp_volume = pi * 9.0 * 5.0 + pi * 4.0 * (9.0 + 3.0 + 1.0) / 3.0;
+            assert_rim_removal(
+                &mut topo,
+                solid,
+                band,
+                0.25,
+                sharp_volume,
+                format!("{storage:?}"),
+            );
         }
     }
 }
