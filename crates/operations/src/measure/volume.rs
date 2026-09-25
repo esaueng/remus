@@ -3542,6 +3542,9 @@ pub fn solid_volume_from_faces(
 /// Bodies whose boundary falls entirely in the first two families measure at
 /// ≤ 1e-6 relative against closed forms at every model scale (1e-3/1/1e3)
 /// and every caller deflection (see `b20_exact_measurement_scale_matrix`).
+/// The boundary integrals are taken about a point on the body rather than
+/// the world origin, so none of this degrades with distance from the origin
+/// (B58, `regress_b58_mass_properties_local_reference.rs`).
 ///
 /// # Errors
 ///
