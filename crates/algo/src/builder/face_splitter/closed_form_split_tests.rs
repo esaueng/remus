@@ -37,15 +37,21 @@ const WELD: f64 = 1e-5;
 /// through the origin, bottom rim at `z = 0` traversed forward, seam up the
 /// +x meridian, top rim at `z = h` traversed reversed, seam back down.
 fn lateral(r: f64, h: f64, reversed: bool) -> (Topology, FaceId) {
+    lateral_between(r, 0.0, h, reversed)
+}
+
+/// [`lateral`] with its rims at `z = z0` and `z = z1` on the same carrier,
+/// so the rims' `v` is neither zero nor necessarily positive.
+fn lateral_between(r: f64, z0: f64, z1: f64, reversed: bool) -> (Topology, FaceId) {
     let mut topo = Topology::new();
     let z = Vec3::new(0.0, 0.0, 1.0);
     let surface = CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), z, r).unwrap();
-    let v_bot = topo.add_vertex(Vertex::new(Point3::new(r, 0.0, 0.0), TOL));
-    let v_top = topo.add_vertex(Vertex::new(Point3::new(r, 0.0, h), TOL));
-    let bot = Circle3D::new(Point3::new(0.0, 0.0, 0.0), z, r).unwrap();
-    let top = Circle3D::new(Point3::new(0.0, 0.0, h), z, r).unwrap();
-    let b0 = bot.project(Point3::new(r, 0.0, 0.0));
-    let t0 = top.project(Point3::new(r, 0.0, h));
+    let v_bot = topo.add_vertex(Vertex::new(Point3::new(r, 0.0, z0), TOL));
+    let v_top = topo.add_vertex(Vertex::new(Point3::new(r, 0.0, z1), TOL));
+    let bot = Circle3D::new(Point3::new(0.0, 0.0, z0), z, r).unwrap();
+    let top = Circle3D::new(Point3::new(0.0, 0.0, z1), z, r).unwrap();
+    let b0 = bot.project(Point3::new(r, 0.0, z0));
+    let t0 = top.project(Point3::new(r, 0.0, z1));
     let mut be = Edge::new(v_bot, v_bot, EdgeCurve::Circle(bot));
     be.set_trim(Some((b0, b0 + TAU)));
     let mut te = Edge::new(v_top, v_top, EdgeCurve::Circle(top));
@@ -75,8 +81,18 @@ fn on_cyl(r: f64, theta: f64, z: f64) -> Point3 {
     Point3::new(r * theta.cos(), r * theta.sin(), z)
 }
 
-/// A marched (fitted cubic NURBS) section through `pts`.
+/// A marched (fitted cubic NURBS) section through `pts`. Its knot vector is
+/// shifted to start at 2.5: marched curves carry arbitrary parameter
+/// domains, and a `[0, 1]` domain hides any slip between `d0` and zero.
 fn marched(pts: &[Point3]) -> SectionEdge {
+    let fit = remus_math::nurbs::fitting::interpolate(pts, 3).unwrap();
+    let shifted = remus_math::nurbs::curve::NurbsCurve::new(
+        fit.degree(),
+        fit.knots().iter().map(|k| k + 2.5).collect(),
+        fit.control_points().to_vec(),
+        fit.weights().to_vec(),
+    )
+    .unwrap();
     let dummy = remus_math::curves2d::Curve2D::Line(
         remus_math::curves2d::Line2D::new(
             Point2::new(0.0, 0.0),
@@ -85,7 +101,7 @@ fn marched(pts: &[Point3]) -> SectionEdge {
         .unwrap(),
     );
     SectionEdge {
-        curve_3d: EdgeCurve::NurbsCurve(remus_math::nurbs::fitting::interpolate(pts, 3).unwrap()),
+        curve_3d: EdgeCurve::NurbsCurve(shifted),
         trim: None,
         pcurve_a: dummy.clone(),
         pcurve_b: dummy,
@@ -318,197 +334,314 @@ fn notch_area(r: f64, alpha: f64, depth: f64) -> f64 {
     r * depth * 2.0 * alpha.cos().mul_add(-alpha, alpha.sin()) / (1.0 - alpha.cos())
 }
 
+/// Angular distance from `a` to `b` on the circle, in `[0, π]`.
+fn ang_dist(a: f64, b: f64) -> f64 {
+    ((a - b + PI).rem_euclid(TAU) - PI).abs()
+}
+
+/// The chart contract of an emitted region, checked against the cylinder
+/// map itself: every section edge's stored `(u, v)` ends map back to its 3D
+/// ends and consecutive section edges continue in `u` (no period jump inside
+/// a chain), and every seam line synthesized here runs its pcurve from its
+/// start `(u, v)` toward its end.
+fn assert_chart_consistent(region: &SplitSubFace, surface: &FaceSurface, scale: f64, ctx: &str) {
+    let on_surface = |uv: Point2, p: Point3| {
+        surface
+            .evaluate(uv.x(), uv.y())
+            .is_some_and(|q| (q - p).length() < 1e-7 * scale.max(1.0))
+    };
+    let wire = &region.outer_wire;
+    for (i, e) in wire.iter().enumerate() {
+        match (&e.curve_3d, &e.pcurve) {
+            (EdgeCurve::NurbsCurve(_), _) => {
+                assert!(
+                    on_surface(e.start_uv, e.start_3d) && on_surface(e.end_uv, e.end_3d),
+                    "{ctx}: section edge {i} uv {:?}->{:?} is off its 3D ends",
+                    e.start_uv,
+                    e.end_uv
+                );
+                let next = &wire[(i + 1) % wire.len()];
+                if matches!(next.curve_3d, EdgeCurve::NurbsCurve(_)) {
+                    assert!(
+                        (e.end_uv.x() - next.start_uv.x()).abs() < 1e-9,
+                        "{ctx}: chain jumps in u at edge {i}: {} -> {}",
+                        e.end_uv.x(),
+                        next.start_uv.x()
+                    );
+                }
+            }
+            (EdgeCurve::Line, remus_math::curves2d::Curve2D::Line(l)) => {
+                assert!(
+                    on_surface(e.start_uv, e.start_3d) && on_surface(e.end_uv, e.end_3d),
+                    "{ctx}: seam edge {i} uv is off its 3D ends"
+                );
+                let o = l.evaluate(0.0);
+                assert!(
+                    (o.x() - e.start_uv.x()).abs() < 1e-9 && (o.y() - e.start_uv.y()).abs() < 1e-9,
+                    "{ctx}: seam pcurve does not start at the seam's start"
+                );
+                let t = l.tangent(0.0);
+                let d = e.end_uv - e.start_uv;
+                assert!(
+                    t.x().mul_add(d.x(), t.y() * d.y()) > 0.0,
+                    "{ctx}: seam pcurve runs away from the seam's end"
+                );
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Notch configurations: `(centre, half-width)`. The first is symmetric
+/// about the antipode of the seam; the second sits in the far half, past
+/// the rim's half-turn split; the last two hug the seam from either side.
+const NOTCHES: [(f64, f64); 4] = [(PI, PI / 3.0), (4.5, 0.5), (0.9, 0.6), (TAU - 0.9, 0.6)];
+
 /// A chain notching one rim of a cylinder lateral splits it into the lens
 /// under the chain and the annular band that keeps both rims, seam and the
 /// rest of the notched rim — whether the notch sits on the bottom or the top
-/// rim, whatever the scale, the piece order and the piece directions, and
-/// whether the face is reversed.
+/// rim, wherever it sits around the axis, whatever the scale and the rims'
+/// heights, the piece order and the piece directions, and whether the face
+/// is reversed.
 #[test]
 fn rim_notch_splits_lateral_into_band_and_lens_of_closed_form_area() {
-    let alpha = PI / 3.0;
     for (r, h) in [(1.0, 2.0), (25.0, 10.0), (0.2, 0.5)] {
         let depth = 0.45 * h;
-        for on_bottom in [true, false] {
-            for reversed in [false, true] {
-                let (topo, face) = lateral(r, h, reversed);
-                let z_of = |t: f64| {
-                    let d = notch_depth(t, alpha, depth);
-                    if on_bottom { d } else { h - d }
-                };
-                let pieces = chain_pieces(r, &[0.0, 0.3, 0.7, 1.0], |s| {
-                    let t = (2.0 * alpha).mul_add(s, PI - alpha);
-                    (t, z_of(t))
-                });
-                // Scrambled order, the first piece reversed.
-                let sections = vec![
-                    marched(&pieces[1]),
-                    marched(&reversed_pts(&pieces[0])),
-                    marched(&pieces[2]),
-                ];
-                let ctx = format!("r={r} bottom={on_bottom} reversed={reversed}");
-                let regions = split(&topo, face, &sections);
-                assert_eq!(regions.len(), 2, "{ctx}: want band + lens");
-                let lens_area = notch_area(r, alpha, depth);
-                let total = TAU * r * h;
-                let m: Vec<Measured> = regions.iter().map(|sf| measure(sf, r)).collect();
-                let (band, lens) = if m[0].area > m[1].area {
-                    (0, 1)
-                } else {
-                    (1, 0)
-                };
-                // Fitted cubic chords against the exact ellipse: ~1e-5 relative.
-                assert_close(m[lens].area, lens_area, 1e-4, &format!("{ctx}: lens area"));
-                assert_close(
-                    m[band].area,
-                    total - lens_area,
-                    1e-4,
-                    &format!("{ctx}: band area"),
-                );
-                for (k, mk) in m.iter().enumerate() {
-                    assert!(
-                        mk.net_turn.abs() < 1e-6,
-                        "{ctx}: region {k} winds {}",
-                        mk.net_turn
-                    );
-                    assert!(
-                        (mk.interior.2 - r).abs() < 1e-9 * r.max(1.0),
-                        "{ctx}: interior off the wall"
-                    );
-                    assert_eq!(regions[k].reversed, reversed, "{ctx}");
-                    assert_eq!(regions[k].parent, face, "{ctx}");
-                    assert_eq!(regions[k].rank, Rank::A, "{ctx}");
-                    assert!(regions[k].inner_wires.is_empty(), "{ctx}");
+        for z0 in [0.0, -1.5 * h, 0.5 * h] {
+            for (centre, alpha) in NOTCHES {
+                for on_bottom in [true, false] {
+                    for reversed in [false, true] {
+                        for order in 0..2 {
+                            let ctx = format!(
+                                "r={r} z0={z0} centre={centre} bottom={on_bottom} \
+                                 reversed={reversed} order={order}"
+                            );
+                            check_notch(
+                                r, h, z0, depth, centre, alpha, on_bottom, reversed, order, &ctx,
+                            );
+                        }
+                    }
                 }
-                // The lens interior lies under the chain, the band's above it
-                // or outside the notch.
-                let depth_at = |(_, z, _): (f64, f64, f64)| if on_bottom { z } else { h - z };
-                let (lt, _, _) = m[lens].interior;
-                let ld = depth_at(m[lens].interior);
-                assert!(
-                    (lt - PI).abs() < alpha && ld > 0.0 && ld < notch_depth(lt, alpha, depth),
-                    "{ctx}: lens interior {:?} is not under the chain",
-                    m[lens].interior
-                );
-                let (bt, bz, _) = m[band].interior;
-                let bd = depth_at(m[band].interior);
-                assert!(
-                    bz > 0.0
-                        && bz < h
-                        && ((bt - PI).abs() >= alpha || bd > notch_depth(bt, alpha, depth)),
-                    "{ctx}: band interior {:?} is inside the lens",
-                    m[band].interior
-                );
-                assert_sections_shared(&regions, &sections, &ctx);
-                // The band keeps the whole far rim and both seam uses.
-                let far_z = if on_bottom { h } else { 0.0 };
-                let band_wire = &regions[band].outer_wire;
-                assert_eq!(
-                    band_wire
-                        .iter()
-                        .filter(|e| matches!(e.curve_3d, EdgeCurve::Line))
-                        .count(),
-                    2,
-                    "{ctx}: band must carry the seam both ways"
-                );
-                assert!(
-                    band_wire
-                        .iter()
-                        .any(|e| matches!(e.curve_3d, EdgeCurve::Circle(_))
-                            && (e.start_3d - e.end_3d).length() < WELD
-                            && (e.start_3d.z() - far_z).abs() < WELD),
-                    "{ctx}: band lost the far rim"
-                );
             }
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn check_notch(
+    r: f64,
+    h: f64,
+    z0: f64,
+    depth: f64,
+    centre: f64,
+    alpha: f64,
+    on_bottom: bool,
+    reversed: bool,
+    order: u32,
+    ctx: &str,
+) {
+    let (topo, face) = lateral_between(r, z0, z0 + h, reversed);
+    let surface = topo.face(face).unwrap().surface().clone();
+    let d_at = |t: f64| notch_depth(t - centre + PI, alpha, depth);
+    let z_of = |t: f64| {
+        if on_bottom {
+            z0 + d_at(t)
+        } else {
+            z0 + h - d_at(t)
+        }
+    };
+    let pieces = chain_pieces(r, &[0.0, 0.3, 0.7, 1.0], |s| {
+        let t = (2.0 * alpha).mul_add(s, centre - alpha);
+        (t, z_of(t))
+    });
+    // Scrambled orders with reversed pieces, so the chainer attaches
+    // pieces at both ends and in both senses.
+    let sections = if order == 0 {
+        vec![
+            marched(&pieces[1]),
+            marched(&reversed_pts(&pieces[0])),
+            marched(&pieces[2]),
+        ]
+    } else {
+        vec![
+            marched(&pieces[0]),
+            marched(&reversed_pts(&pieces[1])),
+            marched(&reversed_pts(&pieces[2])),
+        ]
+    };
+    let regions = split(&topo, face, &sections);
+    assert_eq!(regions.len(), 2, "{ctx}: want band + lens");
+    let lens_area = notch_area(r, alpha, depth);
+    let total = TAU * r * h;
+    let m: Vec<Measured> = regions.iter().map(|sf| measure(sf, r)).collect();
+    let (band, lens) = if m[0].area > m[1].area {
+        (0, 1)
+    } else {
+        (1, 0)
+    };
+    // Fitted cubic chords against the exact ellipse: ~1e-5 relative.
+    assert_close(m[lens].area, lens_area, 1e-4, &format!("{ctx}: lens area"));
+    assert_close(
+        m[band].area,
+        total - lens_area,
+        1e-4,
+        &format!("{ctx}: band area"),
+    );
+    for (k, mk) in m.iter().enumerate() {
+        assert!(
+            mk.net_turn.abs() < 1e-6,
+            "{ctx}: region {k} winds {}",
+            mk.net_turn
+        );
+        assert!(
+            (mk.interior.2 - r).abs() < 1e-9 * r.max(1.0),
+            "{ctx}: interior off the wall"
+        );
+        assert_eq!(regions[k].reversed, reversed, "{ctx}");
+        assert_eq!(regions[k].parent, face, "{ctx}");
+        assert_eq!(regions[k].rank, Rank::A, "{ctx}");
+        assert!(regions[k].inner_wires.is_empty(), "{ctx}");
+        assert_chart_consistent(&regions[k], &surface, r, ctx);
+    }
+    // The lens interior lies under the chain, the band's above it or
+    // outside the notch.
+    let depth_at = |z: f64| if on_bottom { z - z0 } else { z0 + h - z };
+    let (lt, lz, _) = m[lens].interior;
+    assert!(
+        ang_dist(lt, centre) < alpha && depth_at(lz) > 0.0 && depth_at(lz) < d_at(lt),
+        "{ctx}: lens interior {:?} is not under the chain",
+        m[lens].interior
+    );
+    let (bt, bz, _) = m[band].interior;
+    assert!(
+        bz > z0 && bz < z0 + h && (ang_dist(bt, centre) >= alpha || depth_at(bz) > d_at(bt)),
+        "{ctx}: band interior {:?} is inside the lens",
+        m[band].interior
+    );
+    assert_sections_shared(&regions, &sections, ctx);
+    // The band keeps the whole far rim and both seam uses.
+    let far_z = if on_bottom { z0 + h } else { z0 };
+    let band_wire = &regions[band].outer_wire;
+    assert_eq!(
+        band_wire
+            .iter()
+            .filter(|e| matches!(e.curve_3d, EdgeCurve::Line))
+            .count(),
+        2,
+        "{ctx}: band must carry the seam both ways"
+    );
+    assert!(
+        band_wire
+            .iter()
+            .any(|e| matches!(e.curve_3d, EdgeCurve::Circle(_))
+                && (e.start_3d - e.end_3d).length() < WELD
+                && (e.start_3d.z() - far_z).abs() < WELD),
+        "{ctx}: band lost the far rim"
+    );
+}
+
 /// Two chains, each from one rim to the other, cut the lateral into the
 /// sector clear of the seam and the seam-side sector. The chains are helices
-/// `θ = θ_i + 0.2·z/h`, so both sectors have a constant angular width and a
-/// closed-form area.
+/// `θ = θ_i + λ_i·(z − z0)/h` of different leans, so the clear sector's area
+/// is `r·h·((θ_b − θ_a) + (λ_b − λ_a)/2)`.
 #[test]
 fn rim_to_rim_chains_split_lateral_into_two_sectors_of_closed_form_area() {
-    let (ta, tb, lean): (f64, f64, f64) = (2.0 * PI / 3.0, 4.0 * PI / 3.0, 0.4);
+    // (θ_a, λ_a, θ_b, λ_b): symmetric, asymmetric, and a clear span past
+    // the rim's half-turn split.
+    let configs: [(f64, f64, f64, f64); 3] = [
+        (2.0 * PI / 3.0, 0.4, 4.0 * PI / 3.0, 0.4),
+        (2.0, 0.4, 3.9, -0.3),
+        (0.5, 0.3, 4.6, -0.2),
+    ];
     for (r, h) in [(1.0, 2.0), (25.0, 10.0), (0.2, 0.5)] {
-        for reversed in [false, true] {
-            for flip in [false, true] {
-                let (topo, face) = lateral(r, h, reversed);
-                let a = chain_pieces(r, &[0.0, 0.5, 1.0], |s| (lean.mul_add(s, ta), h * s));
-                let b = chain_pieces(r, &[0.0, 0.4, 1.0], |s| (lean.mul_add(s, tb), h * s));
-                // One chain walks top-down; pieces interleave across chains.
-                let sections = if flip {
-                    vec![
-                        marched(&reversed_pts(&b[1])),
-                        marched(&a[0]),
-                        marched(&reversed_pts(&b[0])),
-                        marched(&a[1]),
-                    ]
-                } else {
-                    vec![
-                        marched(&a[1]),
-                        marched(&b[0]),
-                        marched(&a[0]),
-                        marched(&b[1]),
-                    ]
-                };
-                let ctx = format!("r={r} reversed={reversed} flip={flip}");
-                let regions = split(&topo, face, &sections);
-                assert_eq!(regions.len(), 2, "{ctx}: want two sectors");
-                let m: Vec<Measured> = regions.iter().map(|sf| measure(sf, r)).collect();
-                let (seam_side, clear) = if m[0].area > m[1].area {
-                    (0, 1)
-                } else {
-                    (1, 0)
-                };
-                let clear_area = r * (tb - ta) * h;
-                assert_close(
-                    m[clear].area,
-                    clear_area,
-                    1e-6,
-                    &format!("{ctx}: clear sector"),
-                );
-                assert_close(
-                    m[seam_side].area,
-                    TAU.mul_add(r * h, -clear_area),
-                    1e-6,
-                    &format!("{ctx}: seam sector"),
-                );
-                for (k, mk) in m.iter().enumerate() {
-                    assert!(
-                        mk.net_turn.abs() < 1e-6,
-                        "{ctx}: region {k} winds {}",
-                        mk.net_turn
-                    );
-                    assert!((mk.interior.2 - r).abs() < 1e-9 * r.max(1.0), "{ctx}");
-                    assert!(mk.interior.1 > 0.0 && mk.interior.1 < h, "{ctx}");
-                    assert_eq!(regions[k].reversed, reversed, "{ctx}");
+        for z0 in [0.0, -1.5 * h, 0.5 * h] {
+            for (ta, la, tb, lb) in configs {
+                for reversed in [false, true] {
+                    for flip in [false, true] {
+                        let ctx = format!(
+                            "r={r} z0={z0} chains=({ta},{la})/({tb},{lb}) reversed={reversed} flip={flip}"
+                        );
+                        let (topo, face) = lateral_between(r, z0, z0 + h, reversed);
+                        let surface = topo.face(face).unwrap().surface().clone();
+                        let a = chain_pieces(r, &[0.0, 0.5, 1.0], |s| {
+                            (la.mul_add(s, ta), h.mul_add(s, z0))
+                        });
+                        let b = chain_pieces(r, &[0.0, 0.4, 1.0], |s| {
+                            (lb.mul_add(s, tb), h.mul_add(s, z0))
+                        });
+                        // One chain walks top-down; pieces interleave across chains.
+                        let sections = if flip {
+                            vec![
+                                marched(&reversed_pts(&b[1])),
+                                marched(&a[0]),
+                                marched(&reversed_pts(&b[0])),
+                                marched(&a[1]),
+                            ]
+                        } else {
+                            vec![
+                                marched(&a[1]),
+                                marched(&b[0]),
+                                marched(&a[0]),
+                                marched(&b[1]),
+                            ]
+                        };
+                        let regions = split(&topo, face, &sections);
+                        assert_eq!(regions.len(), 2, "{ctx}: want two sectors");
+                        let m: Vec<Measured> = regions.iter().map(|sf| measure(sf, r)).collect();
+                        let clear_area = r * h * (tb - ta + 0.5 * (lb - la));
+                        let clear_is_0 =
+                            (m[0].area - clear_area).abs() < (m[1].area - clear_area).abs();
+                        let (clear, seam_side) = if clear_is_0 { (0, 1) } else { (1, 0) };
+                        assert_close(
+                            m[clear].area,
+                            clear_area,
+                            1e-6,
+                            &format!("{ctx}: clear sector"),
+                        );
+                        assert_close(
+                            m[seam_side].area,
+                            TAU.mul_add(r * h, -clear_area),
+                            1e-6,
+                            &format!("{ctx}: seam sector"),
+                        );
+                        for (k, mk) in m.iter().enumerate() {
+                            assert!(
+                                mk.net_turn.abs() < 1e-6,
+                                "{ctx}: region {k} winds {}",
+                                mk.net_turn
+                            );
+                            assert!((mk.interior.2 - r).abs() < 1e-9 * r.max(1.0), "{ctx}");
+                            assert!(mk.interior.1 > z0 && mk.interior.1 < z0 + h, "{ctx}");
+                            assert_eq!(regions[k].reversed, reversed, "{ctx}");
+                            assert_chart_consistent(&regions[k], &surface, r, &ctx);
+                        }
+                        let between = |(t, z, _): (f64, f64, f64)| {
+                            let f = (z - z0) / h;
+                            t > la.mul_add(f, ta) && t < lb.mul_add(f, tb)
+                        };
+                        assert!(
+                            between(m[clear].interior),
+                            "{ctx}: clear interior {:?}",
+                            m[clear].interior
+                        );
+                        assert!(
+                            !between(m[seam_side].interior),
+                            "{ctx}: seam interior {:?}",
+                            m[seam_side].interior
+                        );
+                        assert_sections_shared(&regions, &sections, &ctx);
+                        // Only the seam-side sector touches the seam, and it
+                        // carries it both ways.
+                        let seams = |k: usize| {
+                            regions[k]
+                                .outer_wire
+                                .iter()
+                                .filter(|e| matches!(e.curve_3d, EdgeCurve::Line))
+                                .count()
+                        };
+                        assert_eq!((seams(seam_side), seams(clear)), (2, 0), "{ctx}");
+                    }
                 }
-                let between = |(t, z, _): (f64, f64, f64)| {
-                    let lean_z = lean * z / h;
-                    t > ta + lean_z && t < tb + lean_z
-                };
-                assert!(
-                    between(m[clear].interior),
-                    "{ctx}: clear interior {:?}",
-                    m[clear].interior
-                );
-                assert!(
-                    !between(m[seam_side].interior),
-                    "{ctx}: seam interior {:?}",
-                    m[seam_side].interior
-                );
-                assert_sections_shared(&regions, &sections, &ctx);
-                // Only the seam-side sector touches the seam, and it carries
-                // it both ways.
-                let seams = |k: usize| {
-                    regions[k]
-                        .outer_wire
-                        .iter()
-                        .filter(|e| matches!(e.curve_3d, EdgeCurve::Line))
-                        .count()
-                };
-                assert_eq!((seams(seam_side), seams(clear)), (2, 0), "{ctx}");
             }
         }
     }
@@ -634,6 +767,62 @@ fn rim_chains_decline_outside_their_cell() {
     three.extend(notch_sections(r, 0.3, 0.5, 3.0));
     three.extend(notch_sections(r, 0.3, 0.5, 4.2));
     assert!(rim_chains(&topo, face, &three).is_none(), "three chains");
+    // A lone rim-to-rim chain is neither a notch nor a sector pair.
+    let lone = chain_pieces(r, &[0.0, 1.0], |s| (0.3f64.mul_add(s, 2.0), h * s));
+    assert!(
+        rim_chains(&topo, face, &[marched(&lone[0])]).is_none(),
+        "lone rim-to-rim chain"
+    );
+    // A sector pair whose second chain crosses the seam meridian.
+    let a = chain_pieces(r, &[0.0, 1.0], |s| (0.3f64.mul_add(s, 2.8), h * s));
+    let b = chain_pieces(r, &[0.0, 1.0], |s| (0.4f64.mul_add(s, -0.2), h * s));
+    assert!(
+        rim_chains(&topo, face, &[marched(&a[0]), marched(&b[0])]).is_none(),
+        "sector chain across the seam"
+    );
+    // A boundary with one rim (the top rim dropped) is not a two-rim lateral.
+    {
+        let f = topo.face(face).unwrap();
+        let surface = f.surface().clone();
+        let pts = collect_wire_points(&topo, f.outer_wire());
+        let mut boundary =
+            boundary_edges_to_pcurve(&topo, f.outer_wire(), &surface, &pts, None).unwrap();
+        boundary.retain(|e| !(matches!(e.curve_3d, EdgeCurve::Circle(_)) && e.start_3d.z() > 1.0));
+        assert!(
+            split_periodic_face_by_rim_chains(
+                &surface,
+                &boundary,
+                &notch_sections(r, alpha, 0.9, PI),
+                Rank::A,
+                false,
+                face,
+                TOL
+            )
+            .unwrap()
+            .is_none(),
+            "one-rim boundary"
+        );
+    }
+    // A W-shaped chain whose middle joint touches the rim is two notches
+    // sharing a rim point, not one; the rims sit off `z = 0` so no
+    // tolerance band can be mistaken for the rim height.
+    let (lifted, lifted_face) = lateral_between(r, 0.5, 2.5, false);
+    let bump = |t: f64, t0: f64, t1: f64| 0.6 * ((t - t0) * PI / (t1 - t0)).sin();
+    let w: Vec<SectionEdge> = [(2.5_f64, 3.1_f64), (3.1, 3.7)]
+        .iter()
+        .map(|&(t0, t1)| {
+            marched(
+                &chain_pieces(r, &[0.0, 1.0], |s| {
+                    let t = (t1 - t0).mul_add(s, t0);
+                    (t, 0.5 + bump(t, t0, t1))
+                })[0],
+            )
+        })
+        .collect();
+    assert!(
+        rim_chains(&lifted, lifted_face, &w).is_none(),
+        "chain touching the rim mid-way"
+    );
     // Two rim-to-rim chains that cross each other.
     let a = chain_pieces(r, &[0.0, 1.0], |s| (1.2f64.mul_add(s, 2.0), h * s));
     let b = chain_pieces(r, &[0.0, 1.0], |s| (1.2f64.mul_add(-s, 3.2), h * s));
