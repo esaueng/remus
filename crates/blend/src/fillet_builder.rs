@@ -3479,3 +3479,397 @@ mod tests {
         assert_eq!(result.solid, solid);
     }
 }
+
+/// Closed-rim fillets against the rolling-ball closed form (B19 survivor
+/// tranche, 2026-09-25 run). A ball of radius `r` rolled around a circular rim
+/// of a body of revolution sweeps a torus whose tube-centre circle, contact
+/// circles and outward side all follow from the two support surfaces alone;
+/// nothing here compares against earlier output.
+#[cfg(test)]
+mod closed_rim_oracles {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+    use remus_math::surfaces::{ConicalSurface, CylindricalSurface};
+    use remus_topology::adjacency::AdjacencyIndex;
+    use remus_topology::explorer::solid_faces;
+
+    const TOL: f64 = 1e-7;
+
+    /// A solid of revolution about +z through the `(radius, z)` rings, bottom
+    /// to top: a cylinder or cone wall between consecutive rings (the same
+    /// surface conventions as the primitive builders) and a plane cap at each
+    /// end. Returns the solid and the rings' closed circle edges.
+    fn revolved_stack(topo: &mut Topology, rings: &[(f64, f64)]) -> (SolidId, Vec<EdgeId>) {
+        let z_axis = Vec3::new(0.0, 0.0, 1.0);
+        let mut vertices = Vec::new();
+        let mut circles = Vec::new();
+        for &(radius, z) in rings {
+            let v = topo.add_vertex(Vertex::new(Point3::new(radius, 0.0, z), TOL));
+            let circle = Circle3D::new(Point3::new(0.0, 0.0, z), z_axis, radius).unwrap();
+            let start = circle.project(Point3::new(radius, 0.0, z));
+            let mut edge = Edge::new(v, v, EdgeCurve::Circle(circle));
+            edge.set_trim(Some((start, start + std::f64::consts::TAU)));
+            vertices.push(v);
+            circles.push(topo.add_edge(edge));
+        }
+        let mut faces = Vec::new();
+        for i in 0..rings.len() - 1 {
+            let ((r_lo, z_lo), (r_hi, z_hi)) = (rings[i], rings[i + 1]);
+            let surface = if (r_lo - r_hi).abs() < TOL {
+                FaceSurface::Cylinder(
+                    CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), z_axis, r_lo).unwrap(),
+                )
+            } else {
+                // Apex beyond the small end, axis pointing from apex to base.
+                let (r_big, r_small, z_big, z_small) = if r_lo > r_hi {
+                    (r_lo, r_hi, z_lo, z_hi)
+                } else {
+                    (r_hi, r_lo, z_hi, z_lo)
+                };
+                let sign = (z_big - z_small).signum();
+                let to_apex = r_small * (z_small - z_big).abs() / (r_big - r_small);
+                let apex = Point3::new(0.0, 0.0, z_small - sign * to_apex);
+                let half_angle = (to_apex + (z_small - z_big).abs()).atan2(r_big);
+                FaceSurface::Cone(
+                    ConicalSurface::new(apex, Vec3::new(0.0, 0.0, sign), half_angle).unwrap(),
+                )
+            };
+            let seam = topo.add_edge(Edge::new(vertices[i], vertices[i + 1], EdgeCurve::Line));
+            let wire = Wire::new(
+                vec![
+                    OrientedEdge::new(circles[i], true),
+                    OrientedEdge::new(seam, true),
+                    OrientedEdge::new(circles[i + 1], false),
+                    OrientedEdge::new(seam, false),
+                ],
+                true,
+            )
+            .unwrap();
+            let wid = topo.add_wire(wire);
+            faces.push(topo.add_face(Face::new(wid, vec![], surface)));
+        }
+        let (_, z_bottom) = rings[0];
+        let (_, z_top) = rings[rings.len() - 1];
+        for (edge, forward, normal_z, z) in [
+            (circles[0], false, -1.0, z_bottom),
+            (circles[rings.len() - 1], true, 1.0, z_top),
+        ] {
+            let wire = Wire::new(vec![OrientedEdge::new(edge, forward)], true).unwrap();
+            let wid = topo.add_wire(wire);
+            faces.push(topo.add_face(Face::new(
+                wid,
+                vec![],
+                FaceSurface::Plane {
+                    normal: Vec3::new(0.0, 0.0, normal_z),
+                    d: normal_z * z,
+                },
+            )));
+        }
+        let shell = topo.add_shell(Shell::new(faces).unwrap());
+        (topo.add_solid(Solid::new(shell, vec![])), circles)
+    }
+
+    /// The single toroidal face of a filleted body, with its reversed flag.
+    fn torus_band(topo: &Topology, solid: SolidId) -> (ToroidalSurface, bool) {
+        let bands: Vec<_> = solid_faces(topo, solid)
+            .unwrap()
+            .into_iter()
+            .filter_map(|f| {
+                let face = topo.face(f).unwrap();
+                if let FaceSurface::Torus(t) = face.surface() {
+                    Some((t.clone(), face.is_reversed()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(bands.len(), 1, "expected exactly one exact toroidal band");
+        bands.into_iter().next().unwrap()
+    }
+
+    /// Every closed circle edge of the result, as `(centre z, radius)`.
+    fn circle_edges(topo: &Topology, solid: SolidId) -> Vec<(f64, f64)> {
+        let mut out = Vec::new();
+        for f in solid_faces(topo, solid).unwrap() {
+            let face = topo.face(f).unwrap();
+            for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+            {
+                for oe in topo.wire(wid).unwrap().edges() {
+                    if let EdgeCurve::Circle(c) = topo.edge(oe.edge()).unwrap().curve() {
+                        out.push((c.center().z(), c.radius()));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    fn has_circle(circles: &[(f64, f64)], z: f64, radius: f64) -> bool {
+        circles
+            .iter()
+            .any(|&(cz, cr)| (cz - z).abs() < 1e-6 && (cr - radius).abs() < 1e-6)
+    }
+
+    /// The torus carries the rolling ball: axis ±z through the origin, tube
+    /// centre at height `zc`, major radius `rho_c`, minor radius `r`.
+    fn assert_rolling_ball_torus(t: &ToroidalSurface, zc: f64, rho_c: f64, r: f64) {
+        let c = t.center();
+        assert!(
+            c.x().abs() < 1e-9 && c.y().abs() < 1e-9,
+            "centre off axis: {c:?}"
+        );
+        assert!(
+            (c.z() - zc).abs() < 1e-6,
+            "tube centre height {} vs {zc}",
+            c.z()
+        );
+        assert!(
+            (t.major_radius() - rho_c).abs() < 1e-6,
+            "major {} vs {rho_c}",
+            t.major_radius()
+        );
+        assert!(
+            (t.minor_radius() - r).abs() < 1e-9,
+            "minor {} vs {r}",
+            t.minor_radius()
+        );
+        assert!(
+            (t.z_axis().z().abs() - 1.0).abs() < 1e-12,
+            "axis {:?}",
+            t.z_axis()
+        );
+    }
+
+    /// For a convex rim the ball sits inside the material, so the body's
+    /// outward normal on the band points from the ball centre to the surface.
+    /// Checked at the point halfway (in angle) between the two contacts.
+    fn assert_band_faces_away_from_ball(
+        t: &ToroidalSurface,
+        reversed: bool,
+        ball_centre: Point3,
+        mid_dir: Vec3,
+        r: f64,
+    ) {
+        let p = ball_centre + mid_dir * r;
+        let (u, v) = t.project_point(p);
+        assert!(
+            (t.evaluate(u, v) - p).length() < 1e-6,
+            "mid point not on the band"
+        );
+        let n = t.normal(u, v);
+        let outward = if reversed { -n } else { n };
+        assert!(
+            outward.dot(mid_dir) > 0.999,
+            "band outward normal {outward:?} does not face away from the ball along {mid_dir:?}"
+        );
+    }
+
+    /// Outward normal of `face` at `p` (on its surface).
+    fn outward_normal(topo: &Topology, face: FaceId, p: Point3) -> Vec3 {
+        let face = topo.face(face).unwrap();
+        let surface = face.surface();
+        let (u, v) = surface.project_point(p).unwrap_or((0.0, 0.0));
+        if let Some(q) = surface.evaluate(u, v) {
+            assert!((q - p).length() < 1e-6, "{p:?} is not on the face surface");
+        }
+        let n = surface.normal(u, v).normalize().unwrap();
+        if face.is_reversed() { -n } else { n }
+    }
+
+    /// A fillet band meets each support face tangentially along a contact
+    /// circle, so across that edge the two outward normals must coincide.
+    /// Holds for any correctly oriented closed blend, whatever its radii.
+    fn assert_band_normals_continuous(topo: &Topology, solid: SolidId) {
+        let adjacency = AdjacencyIndex::build(topo, solid).unwrap();
+        let band = solid_faces(topo, solid)
+            .unwrap()
+            .into_iter()
+            .find(|&f| matches!(topo.face(f).unwrap().surface(), FaceSurface::Torus(_)))
+            .expect("toroidal band");
+        let mut checked = 0;
+        let face = topo.face(band).unwrap();
+        for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+            for oe in topo.wire(wid).unwrap().edges() {
+                let EdgeCurve::Circle(circle) = topo.edge(oe.edge()).unwrap().curve() else {
+                    continue;
+                };
+                // The minor-circle seam joins the band to itself; only the two
+                // contact circles have a support face on the other side.
+                let Some(support) = adjacency
+                    .faces_for_edge(oe.edge())
+                    .iter()
+                    .copied()
+                    .find(|&f| f != band)
+                else {
+                    continue;
+                };
+                for t in [0.3, 1.9, 4.4] {
+                    let p = circle.evaluate(t);
+                    let (nb, ns) = (
+                        outward_normal(topo, band, p),
+                        outward_normal(topo, support, p),
+                    );
+                    assert!(
+                        nb.dot(ns) > 1.0 - 1e-6,
+                        "band normal {nb:?} breaks from its support's {ns:?} at {p:?}"
+                    );
+                }
+                checked += 1;
+            }
+        }
+        assert_eq!(checked, 2, "a closed band has two contact circles");
+    }
+
+    fn fillet_one(topo: &mut Topology, solid: SolidId, edge: EdgeId, r: f64) -> BlendResult {
+        let mut builder = FilletBuilder::new(topo, solid);
+        builder.add_edges(&[edge], r);
+        let result = builder.build().expect("closed-rim fillet should succeed");
+        assert_eq!(result.succeeded, vec![edge]);
+        assert!(result.failed.is_empty() && !result.is_partial);
+        result
+    }
+
+    /// Top rim of a cylinder `R = 2, H = 3`, `r = 0.5`: the ball centre rides
+    /// the circle `ρ = R − r` at `z = H − r`; it touches the cap on
+    /// `ρ = R − r, z = H` and the wall on `ρ = R, z = H − r`.
+    #[test]
+    fn cylinder_disc_rim_fillet_is_the_rolling_ball_torus() {
+        let (big_r, h, r) = (2.0, 3.0, 0.5);
+        let mut topo = Topology::new();
+        let (solid, rims) = revolved_stack(&mut topo, &[(big_r, 0.0), (big_r, h)]);
+        let result = fillet_one(&mut topo, solid, rims[1], r);
+
+        let (torus, reversed) = torus_band(&topo, result.solid);
+        let (zc, rho_c) = (h - r, big_r - r);
+        assert_rolling_ball_torus(&torus, zc, rho_c, r);
+
+        let circles = circle_edges(&topo, result.solid);
+        assert!(
+            has_circle(&circles, h, rho_c),
+            "no cap contact circle: {circles:?}"
+        );
+        assert!(
+            has_circle(&circles, zc, big_r),
+            "no wall contact circle: {circles:?}"
+        );
+        assert!(
+            !has_circle(&circles, h, big_r),
+            "original rim survived: {circles:?}"
+        );
+
+        let half = std::f64::consts::FRAC_1_SQRT_2;
+        assert_band_faces_away_from_ball(
+            &torus,
+            reversed,
+            Point3::new(rho_c, 0.0, zc),
+            Vec3::new(half, 0.0, half),
+            r,
+        );
+        assert_band_normals_continuous(&topo, result.solid);
+    }
+
+    /// Base rim of a frustum narrowing from `ρ = 2` at `z = 0` to `ρ = 1.5` at
+    /// `z = 2`. The wall is the line `ρ = 2 − k·z` (`k = 0.25`), outward unit
+    /// normal `(1, k)/√(1 + k²)`. The ball touches the base, so `zc = r`, and
+    /// sits `r` inside the wall: `ρc = 2 − k·zc − r·√(1 + k²)`.
+    ///
+    /// Ready-repro for B67: the analytic plane-cone arm places the ball on the
+    /// empty side of the rim (tube centre at `z = −r`, major radius
+    /// `r_p + r·cot(α/2)`), growing the base disc past the rim instead of
+    /// rounding the corner.
+    #[test]
+    #[ignore = "open: B67 — plane-cone rim fillet builds the mirrored torus (ball outside the material)"]
+    fn frustum_base_rim_fillet_matches_the_cone_plane_rolling_ball() {
+        let (k, h, r) = (0.25_f64, 2.0, 0.3);
+        let mut topo = Topology::new();
+        let (solid, rims) = revolved_stack(&mut topo, &[(2.0, 0.0), (2.0 - k * h, h)]);
+        let result = fillet_one(&mut topo, solid, rims[0], r);
+
+        let (torus, reversed) = torus_band(&topo, result.solid);
+        let secant = k.hypot(1.0);
+        let zc = r;
+        let rho_c = (2.0 - k * zc) - r * secant;
+        assert_rolling_ball_torus(&torus, zc, rho_c, r);
+
+        let wall_normal = Vec3::new(1.0 / secant, 0.0, k / secant);
+        let wall_contact = Point3::new(rho_c, 0.0, zc) + wall_normal * r;
+        let circles = circle_edges(&topo, result.solid);
+        assert!(
+            has_circle(&circles, 0.0, rho_c),
+            "no base contact circle: {circles:?}"
+        );
+        assert!(
+            has_circle(&circles, wall_contact.z(), wall_contact.x()),
+            "no wall contact circle at {wall_contact:?}: {circles:?}"
+        );
+
+        // Halfway between the base direction (−z) and the wall normal.
+        let mid = (Vec3::new(0.0, 0.0, -1.0) + wall_normal)
+            .normalize()
+            .unwrap();
+        assert_band_faces_away_from_ball(&torus, reversed, Point3::new(rho_c, 0.0, zc), mid, r);
+        assert_band_normals_continuous(&topo, result.solid);
+    }
+
+    /// Top rim of a frustum narrowing from `ρ = 2` at `z = 0` to `ρ = 1.5` at
+    /// `z = 2`. The wall is the line `ρ = 2 − k·z` (`k = 0.25`), outward unit
+    /// normal `(1, k)/√(1 + k²)`. The ball touches the cap, so `zc = H − r`,
+    /// and sits `r` inside the wall: `ρc = 2 − k·zc − r·√(1 + k²)`.
+    ///
+    /// Ready-repro for B67: the analytic plane-cone arm declines a cone that
+    /// flares away from the plate, the walker's NURBS band has no closed-rim
+    /// assembler, and the trim path refuses with `TrimmingFailure`.
+    #[test]
+    #[ignore = "open: B67 — small-end frustum rim fillet refuses (TrimmingFailure)"]
+    fn frustum_small_end_rim_fillet_matches_the_cone_plane_rolling_ball() {
+        let (k, h, r) = (0.25_f64, 2.0, 0.3);
+        let mut topo = Topology::new();
+        let (solid, rims) = revolved_stack(&mut topo, &[(2.0, 0.0), (2.0 - k * h, h)]);
+        let result = fillet_one(&mut topo, solid, rims[1], r);
+
+        let (torus, reversed) = torus_band(&topo, result.solid);
+        let secant = k.hypot(1.0);
+        let zc = h - r;
+        let rho_c = (2.0 - k * zc) - r * secant;
+        assert_rolling_ball_torus(&torus, zc, rho_c, r);
+
+        let wall_normal = Vec3::new(1.0 / secant, 0.0, k / secant);
+        let wall_contact = Point3::new(rho_c, 0.0, zc) + wall_normal * r;
+        let circles = circle_edges(&topo, result.solid);
+        assert!(
+            has_circle(&circles, h, rho_c),
+            "no cap contact circle: {circles:?}"
+        );
+        assert!(
+            has_circle(&circles, wall_contact.z(), wall_contact.x()),
+            "no wall contact circle at {wall_contact:?}: {circles:?}"
+        );
+
+        // Halfway between the cap direction (+z) and the wall normal.
+        let mid = (Vec3::new(0.0, 0.0, 1.0) + wall_normal)
+            .normalize()
+            .unwrap();
+        assert_band_faces_away_from_ball(&torus, reversed, Point3::new(rho_c, 0.0, zc), mid, r);
+        assert_band_normals_continuous(&topo, result.solid);
+    }
+
+    /// The convex junction of a cylinder `ρ = 2` (below `z = 2`) and a cone
+    /// narrowing as `ρ = 2 − k·(z − 2)` above it. The ball touches the
+    /// cylinder, so `ρc = 2 − r`, and sits `r` inside the cone, which puts its
+    /// centre `r·tan(β/2)` below the junction (`tan β = k`). The walked band
+    /// between the two curved walls must be recognised as that exact torus.
+    #[test]
+    fn cylinder_cone_junction_fillet_is_the_exact_rolling_ball_torus() {
+        let (k, r) = (0.25_f64, 0.3);
+        let mut topo = Topology::new();
+        let (solid, rims) =
+            revolved_stack(&mut topo, &[(2.0, 0.0), (2.0, 2.0), (2.0 - 2.0 * k, 4.0)]);
+        let result = fillet_one(&mut topo, solid, rims[1], r);
+
+        let (torus, _) = torus_band(&topo, result.solid);
+        let zc = 2.0 - r * (k.atan() / 2.0).tan();
+        assert_rolling_ball_torus(&torus, zc, 2.0 - r, r);
+        assert_band_normals_continuous(&topo, result.solid);
+    }
+}
