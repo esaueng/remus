@@ -66,23 +66,6 @@ fn get_angular_tolerance(args: &serde_json::Value) -> Result<f64, StructuredWasm
     Ok(angular_tolerance)
 }
 
-/// An optional numeric argument: absent or `null` is `None`; anything else
-/// present must be a JSON number.
-fn get_optional_f64(
-    args: &serde_json::Value,
-    name: &'static str,
-) -> Result<Option<f64>, StructuredWasmError> {
-    match args.get(name) {
-        None | Some(serde_json::Value::Null) => Ok(None),
-        Some(value) => value.as_f64().map(Some).ok_or_else(|| {
-            StructuredWasmError::invalid_argument(
-                format!("invalid '{name}': expected number"),
-                Some(name),
-            )
-        }),
-    }
-}
-
 fn get_optional_work_budget(
     args: &serde_json::Value,
     name: &str,
@@ -102,6 +85,39 @@ fn get_optional_work_budget(
                     StructuredWasmError::invalid_argument(error.to_string(), Some(name))
                 })
         }
+    }
+}
+
+/// Optional boolean argument: absent or `null` reads as `None`.
+fn get_optional_bool(
+    args: &serde_json::Value,
+    name: &str,
+) -> Result<Option<bool>, StructuredWasmError> {
+    match args.get(name) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(value) => value.as_bool().map(Some).ok_or_else(|| {
+            StructuredWasmError::invalid_argument(
+                format!("invalid '{name}': expected boolean"),
+                Some(name),
+            )
+        }),
+    }
+}
+
+/// Optional number argument: absent or `null` reads as `None`. Range checks
+/// stay with the operation so direct and batch calls refuse identically.
+fn get_optional_f64(
+    args: &serde_json::Value,
+    name: &str,
+) -> Result<Option<f64>, StructuredWasmError> {
+    match args.get(name) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(value) => value.as_f64().map(Some).ok_or_else(|| {
+            StructuredWasmError::invalid_argument(
+                format!("invalid '{name}': expected number"),
+                Some(name),
+            )
+        }),
     }
 }
 
@@ -275,7 +291,9 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "guidedSweep"
         | "minkowskiSum"
         | "chamfer"
+        | "chamferDetailed"
         | "fillet"
+        | "filletDetailed"
         | "filletVariable"
         | "filletV2"
         | "faceFaceBlend"
@@ -283,6 +301,7 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "chamferV2"
         | "chamferDistanceAngle"
         | "shell"
+        | "shellDetailed"
         | "shellWithQuality"
         | "mirror"
         | "unifyFaces"
@@ -308,6 +327,7 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "offsetFace"
         | "offsetFaceWithQuality"
         | "offsetSolid"
+        | "offsetDetailed"
         | "offsetSolidV2"
         | "section"
         | "split"
@@ -2022,6 +2042,42 @@ impl BrepKernel {
                 )
                 .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(result)))
+            }
+            // O4.7 modifier twins: the `ok` value is the same typed envelope
+            // the direct `*Detailed` method returns, from the same body, so a
+            // refusal is data here too (already rolled back by that body).
+            "filletDetailed" => {
+                let solid = get_u32(args, "solid")?;
+                let radius = get_f64(args, "radius")?;
+                let edges = get_u32_array_optional(args, "edges")?;
+                let exact_only = get_optional_bool(args, "exactOnly")?.unwrap_or(false);
+                serde_json::to_value(self.fillet_detailed_impl(solid, &edges, radius, exact_only))
+                    .map_err(StructuredWasmError::from)
+            }
+            "chamferDetailed" => {
+                let solid = get_u32(args, "solid")?;
+                let distance = get_f64(args, "distance")?;
+                let edges = get_u32_array_optional(args, "edges")?;
+                let exact_only = get_optional_bool(args, "exactOnly")?.unwrap_or(false);
+                serde_json::to_value(
+                    self.chamfer_detailed_impl(solid, &edges, distance, exact_only),
+                )
+                .map_err(StructuredWasmError::from)
+            }
+            "shellDetailed" => {
+                let solid = get_u32(args, "solid")?;
+                let thickness = get_f64(args, "thickness")?;
+                let faces = get_u32_array_optional(args, "faces")?;
+                let spacing = get_optional_f64(args, "approximationSpacing")?;
+                serde_json::to_value(self.shell_detailed_impl(solid, thickness, &faces, spacing))
+                    .map_err(StructuredWasmError::from)
+            }
+            "offsetDetailed" => {
+                let solid = get_u32(args, "solid")?;
+                let distance = get_f64(args, "distance")?;
+                let exact_only = get_optional_bool(args, "exactOnly")?.unwrap_or(false);
+                serde_json::to_value(self.offset_detailed_impl(solid, distance, exact_only))
+                    .map_err(StructuredWasmError::from)
             }
             "shellWithQuality" => {
                 use remus_operations::shell_op::{ShellQuality, shell_outcome_with_evolution};
