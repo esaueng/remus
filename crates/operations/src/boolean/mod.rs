@@ -1392,7 +1392,10 @@ fn boolean_with_context_impl(
                     #[allow(clippy::cast_possible_wrap)]
                     let expected = (comps.len() as i64) * 2;
                     if comps.len() >= 2
-                        && euler_pre2 - inner_shell_surplus - inner_wire_count_pre == expected
+                        && euler_pre2 + shared_vertex_surplus(topo, &comps)?
+                            - inner_shell_surplus
+                            - inner_wire_count_pre
+                            == expected
                         && components_are_disjoint_pieces(topo, &comps)
                     {
                         let m = is_closed_manifold(topo, result)?;
@@ -1518,6 +1521,11 @@ fn boolean_with_context_impl(
                 // cannot represent cavities at all).
                 let components_vec = crate::boolean::assembly::face_components(topo, result);
                 let components = components_vec.len();
+                // Lumps that touch at a point share that vertex: the
+                // whole-solid V counts it once, while each lump's own
+                // V - E + F = 2 counts it once per lump (B53). Balance the
+                // component-wise sum, as the operations validator does.
+                let euler_components = euler + shared_vertex_surplus(topo, &components_vec)?;
                 // For Cut, also verify no component is a "B-interior piece" —
                 // GFA can produce N closed manifolds where one of them is the
                 // tool's interior (sphere - cylinder example: 3 pieces =
@@ -1561,7 +1569,7 @@ fn boolean_with_context_impl(
                 if matches!(op, BooleanOp::Cut | BooleanOp::Fuse | BooleanOp::Intersect)
                     && components >= 2
                     && euler_balanced(
-                        euler - inner_shell_surplus,
+                        euler_components - inner_shell_surplus,
                         inner_wire_count,
                         i64::try_from(components).unwrap_or(i64::MAX),
                     )
@@ -1594,11 +1602,11 @@ fn boolean_with_context_impl(
                      cut_safe={cut_safe} intersect_safe={intersect_safe} \
                      euler_multi_ok={} surplus={} bound={} disjoint={}",
                     euler_balanced(
-                        euler,
+                        euler_components,
                         inner_wire_count,
                         i64::try_from(components).unwrap_or(i64::MAX)
                     ),
-                    euler - inner_wire_count,
+                    euler_components - inner_wire_count,
                     i64::try_from(components)
                         .unwrap_or(i64::MAX)
                         .saturating_mul(2),
@@ -4172,10 +4180,71 @@ fn all_component_centers_outside(
             (min.z() + max.z()) * 0.5,
         );
         if matches!(classifier.classify(centre, tol), Some(FaceClass::Inside)) {
-            return false;
+            // The box centre speaks for the component only when the component
+            // encloses it. A crescent lobe's centre can sit in the removed
+            // material (B53: the finding-17 coplanar-cap cut leaves a lobe
+            // hugging the box corner whose box centre lies inside the cone),
+            // so re-probe from a point the component genuinely encloses.
+            match component_interior_probe(topo, comp, centre, (min, max)) {
+                Some(probe)
+                    if matches!(classifier.classify(probe, tol), Some(FaceClass::Outside)) => {}
+                _ => return false,
+            }
         }
     }
     true
+}
+
+/// A point strictly inside the closed component `faces`, for a component whose
+/// box `centre` it does NOT enclose; `None` when the centre is enclosed (it is
+/// then the right sample) or no enclosed probe is found.
+///
+/// Candidates step inward from the centroids of the component's largest
+/// triangles by 1 % and 0.3 % of its box diagonal (both normal senses, so the
+/// stored winding is not trusted); ray parity against the component's own
+/// tessellation, at a chord error of 0.1 % of the diagonal, certifies each one
+/// — every step clears that chord error at least threefold.
+fn component_interior_probe(
+    topo: &Topology,
+    faces: &[FaceId],
+    centre: Point3,
+    (min, max): (Point3, Point3),
+) -> Option<Point3> {
+    const MAX_SEED_TRIANGLES: usize = 16;
+    let diag = (max - min).length();
+    if !diag.is_finite() || diag <= 0.0 {
+        return None;
+    }
+    let triangles = component_triangles(topo, faces, diag / 1000.0)?;
+    if triangles_enclose_points(&triangles, &[centre])?.first() == Some(&true) {
+        return None;
+    }
+    let mut seeds: Vec<(f64, Point3, Vec3)> = triangles
+        .iter()
+        .filter_map(|&[a, b, c]| {
+            let n = (b - a).cross(c - a);
+            let centroid = Point3::new(
+                (a.x() + b.x() + c.x()) / 3.0,
+                (a.y() + b.y() + c.y()) / 3.0,
+                (a.z() + b.z() + c.z()) / 3.0,
+            );
+            n.normalize().ok().map(|unit| (n.length(), centroid, unit))
+        })
+        .collect();
+    seeds.sort_by(|x, y| y.0.total_cmp(&x.0));
+    let mut candidates = Vec::new();
+    for &(_, centroid, unit) in seeds.iter().take(MAX_SEED_TRIANGLES) {
+        for fraction in [1e-2, 3e-3] {
+            for sense in [1.0, -1.0] {
+                candidates.push(centroid + unit * (sense * fraction * diag));
+            }
+        }
+    }
+    let enclosed = triangles_enclose_points(&triangles, &candidates)?;
+    candidates
+        .into_iter()
+        .zip(enclosed)
+        .find_map(|(p, inside)| inside.then_some(p))
 }
 
 /// Does the closed surface made of `faces` enclose `p`?
@@ -4240,6 +4309,58 @@ pub(crate) fn component_encloses_any_point(
     any_triangle.then_some(crossings.into_iter().any(|count| count % 2 == 1))
 }
 
+/// Trim-honouring triangles of one closed face component (B53): the
+/// shared-edge-pool face-set mesher, so a trimmed cone wall meshes its trimmed
+/// region rather than its parametric rectangle. `None` when the component
+/// cannot be tessellated or exceeds the narrow-phase triangle budget.
+fn component_triangles(
+    topo: &Topology,
+    faces: &[FaceId],
+    deflection: f64,
+) -> Option<Vec<[Point3; 3]>> {
+    let mesh = crate::tessellate::tessellate_closed_face_set(topo, faces, deflection).ok()?;
+    if mesh.indices.len() / 3 > MAX_COMPONENT_TRIANGLES || mesh.indices.is_empty() {
+        return None;
+    }
+    mesh.indices
+        .chunks_exact(3)
+        .map(|tri| {
+            Some([
+                *mesh.positions.get(tri[0] as usize)?,
+                *mesh.positions.get(tri[1] as usize)?,
+                *mesh.positions.get(tri[2] as usize)?,
+            ])
+        })
+        .collect()
+}
+
+/// Per-point ray parity against a closed triangle soup (the generic-direction
+/// ray of [`component_encloses_any_point`]): entry `k` is true when
+/// `points[k]` is enclosed.
+fn triangles_enclose_points(triangles: &[[Point3; 3]], points: &[Point3]) -> Option<Vec<bool>> {
+    let dir = Vec3::new(2.0_f64.sqrt(), 3.0_f64.sqrt(), 5.0_f64.sqrt())
+        .normalize()
+        .ok()?;
+    Some(
+        points
+            .iter()
+            .map(|&point| {
+                triangles
+                    .iter()
+                    .filter(|[a, b, c]| {
+                        remus_math::ray_triangle::watertight_ray_triangle_intersect(
+                            point, dir, *a, *b, *c,
+                        )
+                        .is_some_and(|hit| hit.t > 1e-9)
+                    })
+                    .count()
+                    % 2
+                    == 1
+            })
+            .collect(),
+    )
+}
+
 /// Any vertex position on `faces`, for use as a probe point.
 pub(crate) fn any_vertex_of(topo: &Topology, faces: &[FaceId]) -> Option<Point3> {
     for &fid in faces {
@@ -4250,6 +4371,31 @@ pub(crate) fn any_vertex_of(topo: &Topology, faces: &[FaceId]) -> Option<Point3>
             && let Ok(v) = topo.vertex(edge.start())
         {
             return Some(v.point());
+        }
+    }
+    None
+}
+
+/// [`any_vertex_of`] skipping positions within tolerance of `exclude`.
+fn any_vertex_of_except(topo: &Topology, faces: &[FaceId], exclude: &[Point3]) -> Option<Point3> {
+    let band = COMPONENT_OVERLAP_MARGIN_MM * 100.0;
+    for &fid in faces {
+        let Ok(face) = topo.face(fid) else { continue };
+        let Ok(wire) = topo.wire(face.outer_wire()) else {
+            continue;
+        };
+        for oe in wire.edges() {
+            let Ok(edge) = topo.edge(oe.edge()) else {
+                continue;
+            };
+            for vid in [edge.start(), edge.end()] {
+                if let Ok(v) = topo.vertex(vid) {
+                    let p = v.point();
+                    if exclude.iter().all(|q| (p - *q).length() > band) {
+                        return Some(p);
+                    }
+                }
+            }
         }
     }
     None
@@ -4344,26 +4490,22 @@ fn components_are_disjoint_pieces(topo: &Topology, components: &[Vec<FaceId>]) -
                     + (max.z() - min.z()).powi(2))
                 .sqrt();
                 let deflection = (diagonal / 200.0).max(1e-4);
-                let mut triangles = Vec::new();
-                for &fid in &components[component_index] {
-                    let Ok(mesh) = crate::tessellate::tessellate_with_uvs(topo, fid, deflection)
-                    else {
-                        return false;
-                    };
-                    for tri in mesh.mesh.indices.chunks_exact(3) {
-                        if triangles.len() >= MAX_COMPONENT_TRIANGLES {
-                            return false;
-                        }
-                        triangles.push([
-                            mesh.mesh.positions[tri[0] as usize],
-                            mesh.mesh.positions[tri[1] as usize],
-                            mesh.mesh.positions[tri[2] as usize],
-                        ]);
-                    }
-                }
+                // Trim-honouring component mesh: the standalone per-face
+                // mesher skins a trimmed cone wall's whole parametric
+                // rectangle, which reached into a neighbouring piece that the
+                // real wall never touches (B53).
+                let Some(triangles) =
+                    component_triangles(topo, &components[component_index], deflection)
+                else {
+                    return false;
+                };
                 cached_meshes[component_index] = Some(triangles);
             }
 
+            // Vertices the two pieces share (lumps touching at a point):
+            // both meshes carry them, and contact confined to them is not
+            // overlap (B53).
+            let shared_contacts = shared_vertex_points(topo, &components[i], &components[j]);
             let Some(a_triangles) = cached_meshes[i].as_ref() else {
                 return false;
             };
@@ -4401,7 +4543,13 @@ fn components_are_disjoint_pieces(topo: &Topology, components: &[Vec<FaceId>]) -
                         return false;
                     }
                     triangle_tests += 1;
-                    if crate::mesh_boolean::triangle_surfaces_intersect(a, b, eps) {
+                    if crate::mesh_boolean::triangle_surfaces_intersect_off_contacts(
+                        a,
+                        b,
+                        eps,
+                        &shared_contacts,
+                        eps * 100.0,
+                    ) {
                         return false;
                     }
                 }
@@ -4414,19 +4562,20 @@ fn components_are_disjoint_pieces(topo: &Topology, components: &[Vec<FaceId>]) -
             } else {
                 continue;
             };
-            let (o_min, o_max) = aabbs[outer];
-            let diag = ((o_max.x() - o_min.x()).powi(2)
-                + (o_max.y() - o_min.y()).powi(2)
-                + (o_max.z() - o_min.z()).powi(2))
-            .sqrt();
-            let deflection = (diag / 200.0).max(1e-4);
-            let Some(probe) = any_vertex_of(topo, &components[inner]) else {
+            // Probe from a vertex the outer piece does not share: a shared
+            // contact vertex lies ON the outer surface, where parity is
+            // undefined (B53). Parity runs against the outer piece's
+            // trim-honouring mesh, already built above.
+            let Some(probe) = any_vertex_of_except(topo, &components[inner], &shared_contacts)
+            else {
                 return false;
             };
-            match component_encloses_point(topo, &components[outer], probe, deflection) {
-                Some(true) => return false,
-                Some(false) => {}
-                None => return false,
+            let Some(outer_triangles) = cached_meshes[outer].as_ref() else {
+                return false;
+            };
+            match triangles_enclose_points(outer_triangles, &[probe]).as_deref() {
+                Some([false]) => {}
+                _ => return false,
             }
         }
     }
@@ -4625,6 +4774,82 @@ fn solid_inner_wire_count(topo: &Topology, solid: SolidId) -> Result<i64, crate:
         }
     }
     Ok(count)
+}
+
+/// Positions of the vertices used by both face sets.
+fn shared_vertex_points(topo: &Topology, a: &[FaceId], b: &[FaceId]) -> Vec<Point3> {
+    let vertex_ids = |faces: &[FaceId]| -> HashMap<usize, remus_topology::vertex::VertexId> {
+        let mut ids = HashMap::default();
+        for &fid in faces {
+            let Ok(face) = topo.face(fid) else { continue };
+            for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+            {
+                let Ok(wire) = topo.wire(wid) else { continue };
+                for oe in wire.edges() {
+                    if let Ok(edge) = topo.edge(oe.edge()) {
+                        for vid in [edge.start(), edge.end()] {
+                            ids.insert(vid.index(), vid);
+                        }
+                    }
+                }
+            }
+        }
+        ids
+    };
+    let in_b = vertex_ids(b);
+    let mut shared: Vec<(usize, remus_topology::vertex::VertexId)> = vertex_ids(a)
+        .into_iter()
+        .filter(|(index, _)| in_b.contains_key(index))
+        .collect();
+    shared.sort_unstable_by_key(|(index, _)| *index);
+    shared
+        .into_iter()
+        .filter_map(|(_, vid)| {
+            topo.vertex(vid)
+                .ok()
+                .map(remus_topology::vertex::Vertex::point)
+        })
+        .collect()
+}
+
+/// Extra vertex incidences a component-wise Euler count sees over the
+/// whole-solid count: `Σ V_c − |∪ V_c|` over the edge-connected face
+/// components.
+///
+/// Degeneracy (B53): lumps that touch at a single point — the finding-17
+/// coplanar-cap cut leaves two box lobes meeting only where the cone's top rim
+/// is tangent to the box edge, and two cubes fused corner to corner do the
+/// same — share that vertex. The whole-solid `V − E + F` counts it once, so
+/// two genus-0 lumps read 3 instead of `2 · 2`. Each lump is still a closed
+/// genus-0 manifold; adding this surplus balances the component-wise sum,
+/// the convention `validate::validate_solid` already applies per component.
+/// Zero for a single component and for components that share no vertex.
+fn shared_vertex_surplus(
+    topo: &Topology,
+    components: &[Vec<FaceId>],
+) -> Result<i64, crate::OperationsError> {
+    if components.len() < 2 {
+        return Ok(0);
+    }
+    let mut union: HashSet<usize> = HashSet::default();
+    let mut per_component_total: i64 = 0;
+    for component in components {
+        let mut vertices: HashSet<usize> = HashSet::default();
+        for &fid in component {
+            let face = topo.face(fid)?;
+            for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+            {
+                for oe in topo.wire(wid)?.edges() {
+                    let edge = topo.edge(oe.edge())?;
+                    vertices.insert(edge.start().index());
+                    vertices.insert(edge.end().index());
+                }
+            }
+        }
+        per_component_total += i64::try_from(vertices.len()).unwrap_or(i64::MAX);
+        union.extend(vertices);
+    }
+    Ok(per_component_total - i64::try_from(union.len()).unwrap_or(i64::MAX))
 }
 
 /// Genus-aware Euler balance for `components` closed orientable surfaces with
