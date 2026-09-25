@@ -1848,7 +1848,10 @@ pub fn solid_is_inverted(topo: &Topology, solid: SolidId) -> Result<bool, crate:
 /// revolution); only solids outside those families fall through to the
 /// signed-tetrahedra method on a surface tessellation, where for each
 /// triangle `(v0, v1, v2)` the signed volume of the tetrahedron it forms
-/// with the origin is `v0 . (v1 x v2) / 6`.
+/// with a reference point `r` is `(v0 - r) . ((v1 - r) x (v2 - r)) / 6`. For
+/// a closed mesh the reference is the centre of the mesh's bounding box
+/// rather than the world origin, so the reading does not change when the
+/// body is moved (B56).
 ///
 /// On every exact path the result is deflection-independent: `deflection`
 /// only controls the tessellation fallback. See
@@ -2275,42 +2278,145 @@ pub fn oriented_solid_volume(
     deflection: f64,
 ) -> Result<f64, crate::OperationsError> {
     let mesh = tessellate::tessellate_solid(topo, solid, deflection)?;
-    let idx = &mesh.indices;
-    let pos = &mesh.positions;
-    let mut total = 0.0;
-    for t in 0..idx.len() / 3 {
-        let v0 = pos[idx[t * 3] as usize];
-        let v1 = pos[idx[t * 3 + 1] as usize];
-        let v2 = pos[idx[t * 3 + 2] as usize];
-        let a = Vec3::new(v0.x(), v0.y(), v0.z());
-        let b = Vec3::new(v1.x(), v1.y(), v1.z());
-        let c = Vec3::new(v2.x(), v2.y(), v2.z());
-        total += a.dot(b.cross(c));
+    Ok(whole_mesh_six_volume(&mesh) / 6.0)
+}
+
+/// The centre of the axis-aligned bounding box of `points`, or `None` when
+/// there are none: the point the mesh-sum routes in this module take their
+/// signed tetrahedra about (see [`summation_point`]).
+///
+/// Not the world origin (B56). A tetrahedron `(o, a, b, c)` spanned from the
+/// origin to a triangle `offset` away from it has a triple product of order
+/// `|offset|²·L` whose rounding error is of order `ε·|offset|³`, while the
+/// body's volume is of order `L³`. A 1e-3 cone–sphere boolean moved by
+/// (13, −7, 5) kept a mesh of identical shape yet read up to 0.7 % off.
+/// About a point of the body the terms are of order `L³` and the reading does
+/// not move with the body. The bounding-box centre also leaves the reading
+/// independent of vertex order, and so of the tessellator's traversal.
+fn local_reference(points: impl IntoIterator<Item = Point3>) -> Option<Point3> {
+    let mut points = points.into_iter();
+    let first = points.next()?;
+    let (lo, hi) = points.fold((first, first), |(lo, hi), p| {
+        (
+            Point3::new(lo.x().min(p.x()), lo.y().min(p.y()), lo.z().min(p.z())),
+            Point3::new(hi.x().max(p.x()), hi.y().max(p.y()), hi.z().max(p.z())),
+        )
+    });
+    Some(lo + (hi - lo) * 0.5)
+}
+
+/// Whether every directed edge of `triangles` is cancelled by the same edge
+/// run the other way: each undirected edge is used as often in one direction
+/// as in the other.
+///
+/// That is exactly when the triangles' vector areas sum to zero, so exactly
+/// when their signed tetrahedra sum is the same about every point. A mesh
+/// with a hole fails it, and so does a closed one with a face wound the
+/// wrong way, whose edges run twice in the same direction.
+fn directed_edges_cancel<K: Copy + Ord + std::hash::Hash>(
+    triangles: impl IntoIterator<Item = [K; 3]>,
+) -> bool {
+    use remus_math::det_hash::DetHashMap;
+    let mut net: DetHashMap<(K, K), i64> = DetHashMap::default();
+    for [a, b, c] in triangles {
+        for (p, q) in [(a, b), (b, c), (c, a)] {
+            match p.cmp(&q) {
+                std::cmp::Ordering::Less => *net.entry((p, q)).or_insert(0) += 1,
+                std::cmp::Ordering::Greater => *net.entry((q, p)).or_insert(0) -= 1,
+                std::cmp::Ordering::Equal => {}
+            }
+        }
     }
-    Ok(total / 6.0)
+    net.values().all(|&n| n == 0)
+}
+
+/// The point a whole-body triangle sum is taken about: the
+/// [`local_reference`] of `points` when the triangles' directed edges cancel
+/// (see [`directed_edges_cancel`]), else the world origin.
+///
+/// A body whose edges cancel encloses the same volume about every point, so
+/// it is summed about its own bounding-box centre and reads the same
+/// wherever it sits (B56).
+///
+/// One whose edges do not cancel (a hole, or a face wound the wrong way) has
+/// no reference-free volume: moving the reference by `t` moves the sum by `t`
+/// dotted with the uncancelled vector area. It keeps the historic
+/// world-origin sum, so B56 changes no such reading. That is not a claim the
+/// origin is right. It is right only by symmetry when the defect lies in a
+/// plane through the origin: the slotted no-lip bin body fixture, as first
+/// captured (repaired as B59), tessellated at deflection 0.05 with 48 edges
+/// run twice the same way on its x = 0 and y = 0 planes, and read 106091.8
+/// about the origin, against `solid_volume`'s 106099.5, but 49075.1 about
+/// its box centre. Such meshes
+/// are the business of the open-mesh routing around
+/// [`closed_mesh_or_exact_volume`], not of the summation point.
+fn summation_point(edges_cancel: bool, points: impl IntoIterator<Item = Point3>) -> Point3 {
+    let origin = Point3::new(0.0, 0.0, 0.0);
+    if edges_cancel {
+        local_reference(points).unwrap_or(origin)
+    } else {
+        origin
+    }
+}
+
+/// Six times the signed volume of the tetrahedron spanned from `reference`
+/// to the triangle `(p0, p1, p2)`. See [`summation_point`].
+fn six_tetra_volume(reference: Point3, p0: Point3, p1: Point3, p2: Point3) -> f64 {
+    (p0 - reference).dot((p1 - reference).cross(p2 - reference))
+}
+
+/// Six times the signed tetrahedra sum over a whole-solid mesh, about its
+/// [`summation_point`].
+fn whole_mesh_six_volume(mesh: &tessellate::TriangleMesh) -> f64 {
+    let triangles = || mesh.indices.chunks_exact(3).map(|t| [t[0], t[1], t[2]]);
+    let reference = summation_point(
+        directed_edges_cancel(triangles()),
+        mesh.indices.iter().map(|&i| mesh.positions[i as usize]),
+    );
+    triangles()
+        .map(|t| {
+            let [p0, p1, p2] = t.map(|i| mesh.positions[i as usize]);
+            six_tetra_volume(reference, p0, p1, p2)
+        })
+        .sum()
+}
+
+/// Six times the signed tetrahedra sum over separately tessellated face
+/// meshes that together bound one body, about ONE [`local_reference`] for
+/// all of them: the pieces sum to the body's volume only about a common
+/// point, and per-piece references would leave each piece's share depending
+/// on its own placement. The pieces share no vertex indices, so their edges
+/// never cancel by index; the seam cracks between them are chord-sized, and
+/// about a point of the body their error does not grow with its distance
+/// from the origin.
+fn meshes_six_volume(meshes: &[tessellate::TriangleMesh]) -> f64 {
+    let Some(reference) = local_reference(
+        meshes
+            .iter()
+            .flat_map(|mesh| mesh.indices.iter().map(|&i| mesh.positions[i as usize])),
+    ) else {
+        return 0.0;
+    };
+    meshes
+        .iter()
+        .flat_map(|mesh| {
+            mesh.indices.chunks_exact(3).map(|t| {
+                six_tetra_volume(
+                    reference,
+                    mesh.positions[t[0] as usize],
+                    mesh.positions[t[1] as usize],
+                    mesh.positions[t[2] as usize],
+                )
+            })
+        })
+        .sum()
 }
 
 /// Compute signed volume from a watertight triangle mesh using
-/// the divergence theorem (signed tetrahedra method).
+/// the divergence theorem (signed tetrahedra method), about the mesh's
+/// [`summation_point`].
 fn signed_volume_from_mesh(mesh: &tessellate::TriangleMesh) -> f64 {
-    let idx = &mesh.indices;
-    let pos = &mesh.positions;
-    let tri_count = idx.len() / 3;
-
-    let mut total = 0.0;
-    for t in 0..tri_count {
-        let v0 = pos[idx[t * 3] as usize];
-        let v1 = pos[idx[t * 3 + 1] as usize];
-        let v2 = pos[idx[t * 3 + 2] as usize];
-
-        let a = Vec3::new(v0.x(), v0.y(), v0.z());
-        let b = Vec3::new(v1.x(), v1.y(), v1.z());
-        let c = Vec3::new(v2.x(), v2.y(), v2.z());
-
-        total += a.dot(b.cross(c));
-    }
-
-    (total / 6.0).abs()
+    (whole_mesh_six_volume(mesh) / 6.0).abs()
 }
 
 /// Compute volume by tessellating each face independently and summing
@@ -2329,28 +2435,15 @@ fn volume_from_per_face_tessellation(
     // subtract the void without any extra sign handling here.
     let faces = remus_topology::explorer::solid_faces(topo, solid)?;
 
-    let mut total: f64 = 0.0;
+    let mut meshes = Vec::with_capacity(faces.len());
     for fid in faces {
         let mesh = tessellate::tessellate(topo, fid, deflection)?;
         let idx = &mesh.indices;
         vol_trace(|| format!("per-face face {} tris={}", fid.index(), idx.len() / 3));
-        let pos = &mesh.positions;
-        let tri_count = idx.len() / 3;
-
-        for t in 0..tri_count {
-            let v0 = pos[idx[t * 3] as usize];
-            let v1 = pos[idx[t * 3 + 1] as usize];
-            let v2 = pos[idx[t * 3 + 2] as usize];
-
-            let a = Vec3::new(v0.x(), v0.y(), v0.z());
-            let b = Vec3::new(v1.x(), v1.y(), v1.z());
-            let c = Vec3::new(v2.x(), v2.y(), v2.z());
-
-            total += a.dot(b.cross(c));
-        }
+        meshes.push(mesh);
     }
 
-    let signed_volume = total / 6.0;
+    let signed_volume = meshes_six_volume(&meshes) / 6.0;
     if signed_volume < 0.0 {
         log::debug!(
             "volume_from_per_face_tessellation: raw signed volume is negative ({signed_volume:.6}), \
@@ -3581,28 +3674,52 @@ pub fn volume_from_direct_face_tessellation(
             FaceSurface::Plane { .. } | FaceSurface::Nurbs(_) => {}
         }
 
+        // The analytic terms above are taken about the world origin, so this
+        // face's tetrahedra must be too. Each is split exactly as
+        // `det(a, b, c) = det(a - r, b - r, c - r) + r . ((b - a) x (c - a))`
+        // about a local `r`: both parts are formed from differences, which
+        // keeps the rounding error of order `ε·|r|·L²`, like the analytic
+        // terms', instead of the `ε·|r|³` of the triple product about the
+        // origin (B56).
         let mesh = tessellate::tessellate(topo, fid, deflection)?;
-        let idx = &mesh.indices;
-        let pos = &mesh.positions;
-        let tri_count = idx.len() / 3;
-
-        let mut face_total = 0.0;
-        for t in 0..tri_count {
-            let v0 = pos[idx[t * 3] as usize];
-            let v1 = pos[idx[t * 3 + 1] as usize];
-            let v2 = pos[idx[t * 3 + 2] as usize];
-
-            let a = Vec3::new(v0.x(), v0.y(), v0.z());
-            let b = Vec3::new(v1.x(), v1.y(), v1.z());
-            let c = Vec3::new(v2.x(), v2.y(), v2.z());
-
-            face_total += a.dot(b.cross(c));
+        let Some(reference) = local_reference(mesh.positions.iter().copied()) else {
+            continue;
+        };
+        let r = reference - Point3::new(0.0, 0.0, 0.0);
+        for t in mesh.indices.chunks_exact(3) {
+            let [p0, p1, p2] = [t[0], t[1], t[2]].map(|i| mesh.positions[i as usize]);
+            total += six_tetra_volume(reference, p0, p1, p2) + r.dot((p1 - p0).cross(p2 - p0));
         }
-
-        total += face_total;
     }
 
     Ok((total / 6.0).abs())
+}
+
+/// One planar triangle face of an all-triangle body (a mesh import), as the
+/// face-based volume and centroid routes read it.
+struct SignedTriangle {
+    /// `-1` for a face carried reversed, else `1`.
+    orientation: f64,
+    /// Vertex indices in wire order.
+    ids: [usize; 3],
+    /// Vertex positions in wire order.
+    points: [Point3; 3],
+}
+
+impl SignedTriangle {
+    /// The body's [`summation_point`], its edges read in the direction each
+    /// face's orientation runs them.
+    fn summation_point(triangles: &[Self]) -> Point3 {
+        let cancel = directed_edges_cancel(triangles.iter().map(|t| {
+            let [a, b, c] = t.ids;
+            if t.orientation < 0.0 {
+                [a, c, b]
+            } else {
+                [a, b, c]
+            }
+        }));
+        summation_point(cancel, triangles.iter().flat_map(|t| t.points))
+    }
 }
 
 /// Compute the volume of a solid directly from its face vertex
@@ -3627,7 +3744,9 @@ pub fn solid_volume_from_faces(
     // Outer shell plus every cavity shell.
     let faces = remus_topology::explorer::solid_faces(topo, solid)?;
 
-    let mut total = 0.0;
+    // Signed triangles, gathered first so the tetrahedra can be taken about
+    // the body's own `summation_point` rather than the world origin (B56).
+    let mut triangles: Vec<SignedTriangle> = Vec::with_capacity(faces.len());
     let mut all_planar_triangles = true;
 
     for fid in faces {
@@ -3647,6 +3766,7 @@ pub fn solid_volume_from_faces(
         }
 
         let mut pts = Vec::with_capacity(3);
+        let mut ids = Vec::with_capacity(3);
         for oe in edges {
             let edge = topo.edge(oe.edge())?;
             if !matches!(edge.curve(), EdgeCurve::Line) {
@@ -3659,24 +3779,33 @@ pub fn solid_volume_from_faces(
                 edge.end()
             };
             pts.push(topo.vertex(vid)?.point());
+            ids.push(vid.index());
         }
         if !all_planar_triangles {
             break;
         }
-
-        let a = Vec3::new(pts[0].x(), pts[0].y(), pts[0].z());
-        let b = Vec3::new(pts[1].x(), pts[1].y(), pts[1].z());
-        let c = Vec3::new(pts[2].x(), pts[2].y(), pts[2].z());
 
         // Enumerating the cavity shells is not enough on its own: a cavity's
         // faces are stored REVERSED, and the wire winding alone does not say
         // so. Without this the void's tetrahedra add instead of subtract and a
         // hollow triangulated body reads as the outer body PLUS the void.
         let orientation = if face.is_reversed() { -1.0 } else { 1.0 };
-        total += orientation * a.dot(b.cross(c));
+        triangles.push(SignedTriangle {
+            orientation,
+            ids: [ids[0], ids[1], ids[2]],
+            points: [pts[0], pts[1], pts[2]],
+        });
     }
 
     if all_planar_triangles {
+        let reference = SignedTriangle::summation_point(&triangles);
+        let total: f64 = triangles
+            .iter()
+            .map(|t| {
+                let [a, b, c] = t.points;
+                t.orientation * six_tetra_volume(reference, a, b, c)
+            })
+            .sum();
         Ok((total / 6.0).abs())
     } else {
         Err(crate::OperationsError::InvalidInput {
@@ -3782,31 +3911,27 @@ fn solid_center_of_mass_tessellated_legacy(
     // Outer shell plus every cavity shell.
     let faces = remus_topology::explorer::solid_faces(topo, solid)?;
 
+    let meshes = faces
+        .into_iter()
+        .map(|fid| tessellate::tessellate(topo, fid, deflection))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    // About one local reference for every face, as in `meshes_six_volume`
+    // (B56).
+    let reference = local_reference(
+        meshes
+            .iter()
+            .flat_map(|mesh| mesh.indices.iter().map(|&i| mesh.positions[i as usize])),
+    )
+    .unwrap_or_else(|| Point3::new(0.0, 0.0, 0.0));
     let mut total_vol: f64 = 0.0;
-    let mut cx = 0.0;
-    let mut cy = 0.0;
-    let mut cz = 0.0;
-
-    for fid in faces {
-        let mesh = tessellate::tessellate(topo, fid, deflection)?;
-        let idx = &mesh.indices;
-        let pos = &mesh.positions;
-        let tri_count = idx.len() / 3;
-
-        for t in 0..tri_count {
-            let v0 = pos[idx[t * 3] as usize];
-            let v1 = pos[idx[t * 3 + 1] as usize];
-            let v2 = pos[idx[t * 3 + 2] as usize];
-
-            let a = Vec3::new(v0.x(), v0.y(), v0.z());
-            let b = Vec3::new(v1.x(), v1.y(), v1.z());
-            let c = Vec3::new(v2.x(), v2.y(), v2.z());
-
-            let signed_vol = a.dot(b.cross(c));
+    let mut moment = Vec3::new(0.0, 0.0, 0.0);
+    for mesh in &meshes {
+        for t in mesh.indices.chunks_exact(3) {
+            let [a, b, c] = [t[0], t[1], t[2]].map(|i| mesh.positions[i as usize]);
+            let signed_vol = six_tetra_volume(reference, a, b, c);
             total_vol += signed_vol;
-            cx += signed_vol * (v0.x() + v1.x() + v2.x());
-            cy += signed_vol * (v0.y() + v1.y() + v2.y());
-            cz += signed_vol * (v0.z() + v1.z() + v2.z());
+            moment += ((a - reference) + (b - reference) + (c - reference)) * signed_vol;
         }
     }
 
@@ -3823,8 +3948,7 @@ fn solid_center_of_mass_tessellated_legacy(
         return Ok(Point3::new(sx / n, sy / n, sz / n));
     }
 
-    let denom = 4.0 * total_vol;
-    Ok(Point3::new(cx / denom, cy / denom, cz / denom))
+    Ok(reference + moment * (1.0 / (4.0 * total_vol)))
 }
 
 /// Compute center of mass directly from face vertex positions for
@@ -3842,11 +3966,7 @@ fn center_of_mass_from_faces(
 
     let faces = remus_topology::explorer::solid_faces(topo, solid)?;
 
-    let mut total_vol = 0.0;
-    let mut cx = 0.0;
-    let mut cy = 0.0;
-    let mut cz = 0.0;
-
+    let mut triangles: Vec<SignedTriangle> = Vec::with_capacity(faces.len());
     for fid in faces {
         let face = topo.face(fid)?;
         if !matches!(face.surface(), FaceSurface::Plane { .. }) {
@@ -3863,6 +3983,7 @@ fn center_of_mass_from_faces(
         }
 
         let mut pts = Vec::with_capacity(3);
+        let mut ids = Vec::with_capacity(3);
         for oe in edges {
             let edge = topo.edge(oe.edge())?;
             if !matches!(edge.curve(), EdgeCurve::Line) {
@@ -3876,21 +3997,31 @@ fn center_of_mass_from_faces(
                 edge.end()
             };
             pts.push(topo.vertex(vid)?.point());
+            ids.push(vid.index());
         }
-
-        let a = Vec3::new(pts[0].x(), pts[0].y(), pts[0].z());
-        let b = Vec3::new(pts[1].x(), pts[1].y(), pts[1].z());
-        let c = Vec3::new(pts[2].x(), pts[2].y(), pts[2].z());
 
         // A face carried reversed points its wire the other way round, so its
         // tetrahedra count with the opposite sign. Cavity shells are stored
         // exactly that way.
         let orientation = if face.is_reversed() { -1.0 } else { 1.0 };
-        let signed_vol = orientation * a.dot(b.cross(c));
+        triangles.push(SignedTriangle {
+            orientation,
+            ids: [ids[0], ids[1], ids[2]],
+            points: [pts[0], pts[1], pts[2]],
+        });
+    }
+
+    // Tetrahedra about the body's `summation_point` (B56): each has its apex
+    // at the reference, so its centroid is the reference plus a quarter of
+    // its three local corners' sum.
+    let reference = SignedTriangle::summation_point(&triangles);
+    let mut total_vol = 0.0;
+    let mut moment = Vec3::new(0.0, 0.0, 0.0);
+    for t in &triangles {
+        let [a, b, c] = t.points;
+        let signed_vol = t.orientation * six_tetra_volume(reference, a, b, c);
         total_vol += signed_vol;
-        cx += signed_vol * (pts[0].x() + pts[1].x() + pts[2].x());
-        cy += signed_vol * (pts[0].y() + pts[1].y() + pts[2].y());
-        cz += signed_vol * (pts[0].z() + pts[1].z() + pts[2].z());
+        moment += ((a - reference) + (b - reference) + (c - reference)) * signed_vol;
     }
 
     if total_vol.abs() < 1e-15 {
@@ -3899,8 +4030,152 @@ fn center_of_mass_from_faces(
         });
     }
 
-    let denom = 4.0 * total_vol;
-    Ok(Point3::new(cx / denom, cy / denom, cz / denom))
+    Ok(reference + moment * (1.0 / (4.0 * total_vol)))
+}
+
+/// B56: the mesh sums are taken about a local reference point. The public
+/// routes are covered in `tests/regress_b56_volume_local_reference.rs`; these
+/// reach the private ones.
+#[cfg(test)]
+mod local_reference_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+    use remus_math::mat::Mat4;
+
+    /// The direct route's split of `det(a, b, c)` into
+    /// `det(a - r, b - r, c - r) + r . ((b - a) x (c - a))` is an identity:
+    /// near the origin, where the
+    /// plain triple product is well conditioned, the two agree to round-off
+    /// for any reference.
+    #[test]
+    fn origin_split_matches_the_triple_product() {
+        let tris = [
+            [
+                Point3::new(0.3, -0.2, 0.9),
+                Point3::new(1.1, 0.4, -0.5),
+                Point3::new(-0.7, 0.8, 0.2),
+            ],
+            [
+                Point3::new(-1.0, -1.0, 0.5),
+                Point3::new(0.25, 1.5, 1.0),
+                Point3::new(0.9, -0.6, -1.2),
+            ],
+        ];
+        for r in [
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(0.4, -0.3, 0.1),
+            Point3::new(-2.0, 1.5, 3.0),
+        ] {
+            let rv = r - Point3::new(0.0, 0.0, 0.0);
+            for [a, b, c] in tris {
+                let plain = (a - Point3::new(0.0, 0.0, 0.0))
+                    .dot((b - Point3::new(0.0, 0.0, 0.0)).cross(c - Point3::new(0.0, 0.0, 0.0)));
+                let split = six_tetra_volume(r, a, b, c) + rv.dot((b - a).cross(c - a));
+                assert!(
+                    (plain - split).abs() <= 1e-12 * plain.abs().max(1.0),
+                    "reference {r:?}: split {split} against the triple product {plain}"
+                );
+            }
+        }
+    }
+
+    /// The per-face and whole-solid mesh sums of a 1e-3 sphere moved by the
+    /// B26 harness offset read what they read in place: the move leaves the
+    /// meshes' shapes unchanged. About the world origin both drifted by
+    /// tenths of a percent.
+    #[test]
+    fn small_body_mesh_sums_do_not_move_with_the_body() {
+        let scale = 1e-3;
+        let deflection = 1e-3 * scale;
+        let mut topo = Topology::new();
+        let solid = crate::primitives::make_sphere(&mut topo, 0.7 * scale, 16).unwrap();
+        let per_face_in_place =
+            volume_from_per_face_tessellation(&topo, solid, deflection).unwrap();
+        let mesh_in_place = signed_volume_from_mesh(
+            &tessellate::tessellate_solid(&topo, solid, deflection).unwrap(),
+        );
+
+        crate::transform::transform_solid(&mut topo, solid, &Mat4::translation(13.0, -7.0, 5.0))
+            .unwrap();
+        let per_face_moved = volume_from_per_face_tessellation(&topo, solid, deflection).unwrap();
+        let mesh_moved = signed_volume_from_mesh(
+            &tessellate::tessellate_solid(&topo, solid, deflection).unwrap(),
+        );
+
+        for (route, in_place, moved) in [
+            ("per-face", per_face_in_place, per_face_moved),
+            ("whole-solid", mesh_in_place, mesh_moved),
+        ] {
+            let rel = (moved - in_place).abs() / in_place;
+            assert!(
+                in_place > 0.0 && rel <= 1e-6,
+                "{route} mesh sum: {moved:e} moved, {in_place:e} in place ({rel:e})"
+            );
+        }
+    }
+
+    /// An axis-aligned `size` cube at `corner` as an indexed outward mesh.
+    fn cube_mesh(corner: Point3, size: f64) -> tessellate::TriangleMesh {
+        let positions = (0..8_u8)
+            .map(|i| {
+                let bit = |k: u8| f64::from((i >> k) & 1) * size;
+                corner + Vec3::new(bit(0), bit(1), bit(2))
+            })
+            .collect();
+        tessellate::TriangleMesh {
+            positions,
+            normals: Vec::new(),
+            indices: vec![
+                0, 2, 3, 0, 3, 1, // -z
+                4, 5, 7, 4, 7, 6, // +z
+                0, 1, 5, 0, 5, 4, // -y
+                2, 6, 7, 2, 7, 3, // +y
+                0, 4, 6, 0, 6, 2, // -x
+                1, 3, 7, 1, 7, 5, // +x
+            ],
+        }
+    }
+
+    /// The summation point follows [`directed_edges_cancel`]: a closed,
+    /// consistently wound mesh is summed about its own box centre, and one
+    /// with a hole or a face wound the wrong way keeps the historic origin
+    /// sum. The defective cube sits with the bad face on `z = 0`, where it
+    /// contributes nothing about the origin, which is how the origin sum
+    /// hid it from the slotted-bin fuse and the B17 Off-policy box.
+    #[test]
+    fn edge_cancellation_selects_the_summation_point() {
+        let closed = cube_mesh(Point3::new(0.0, 0.0, 0.0), 2.0);
+        let mut flipped = closed.clone();
+        flipped.indices[..6].copy_from_slice(&[0, 3, 2, 0, 1, 3]);
+        let mut holed = closed.clone();
+        holed.indices.drain(..6);
+
+        let tris = |m: &tessellate::TriangleMesh| {
+            m.indices
+                .chunks_exact(3)
+                .map(|t| [t[0], t[1], t[2]])
+                .collect::<Vec<_>>()
+        };
+        assert!(directed_edges_cancel(tris(&closed)));
+        assert!(!directed_edges_cancel(tris(&flipped)));
+        assert!(!directed_edges_cancel(tris(&holed)));
+
+        // Closed: exact, and unchanged far away at small scale.
+        assert!((signed_volume_from_mesh(&closed) - 8.0).abs() <= 1e-12);
+        let small = cube_mesh(Point3::new(13.0, -7.0, 5.0), 1e-3);
+        assert!((signed_volume_from_mesh(&small) - 1e-9).abs() <= 1e-9 * 1e-9);
+
+        // Defective: the origin sum, which reads 8 for both because the
+        // bad face lies in z = 0. About the box centre they read 16/3 and 20/3.
+        for (what, mesh) in [("flipped", &flipped), ("holed", &holed)] {
+            let volume = signed_volume_from_mesh(mesh);
+            assert!(
+                (volume - 8.0).abs() <= 1e-12,
+                "{what} cube: {volume}, not the origin sum 8"
+            );
+        }
+    }
 }
 
 #[cfg(test)]
