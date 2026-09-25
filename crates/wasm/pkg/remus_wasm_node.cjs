@@ -7071,11 +7071,18 @@ class BrepKernel {
      *
      * Exact analytic and Gauss-quadrature paths run first, so the result
      * is deflection-independent on those paths; `deflection` only controls
-     * the tessellation fallback.
+     * the tessellation fallback. A body with a face the per-face routes
+     * mis-measure (a quadric wall trimmed by a NURBS curve, such as a
+     * countersink cut through a wall) is measured on its closed whole-solid
+     * mesh; if that mesh comes out open, the exact Gauss integral is
+     * returned instead, never the per-face estimate.
      *
      * # Errors
      *
-     * Returns an error if the solid handle is invalid or tessellation fails.
+     * Returns an error if the solid handle is invalid or tessellation fails,
+     * and refuses (`solid_volume: unsupported configuration: …`) when such a
+     * body's mesh is open and one of its faces is outside the exact
+     * integrator as well.
      * @param {number} solid
      * @param {number} deflection
      * @returns {number}
