@@ -350,7 +350,11 @@ Refinements the implementation added to the design above:
   results journals that operation as a barrier instead.
 - **Default V2 offsets carry construction identity.** The intersection-joint
   assembler returns the exact one-to-one source-face map; `offset_journaled`
-  records it transactionally as `Construction` evolution. Arc-joint and
+  records it transactionally as `Construction` evolution, together with edge
+  and vertex claims induced from that map by exact incidence
+  (`operations::boundary_evolution`, B18): unique incidence binds, a new
+  adjacency is `Generated`, and shared incidence (torus seams, a sphere's
+  equator ring) is `Unresolved` with a typed reason. Arc-joint and
   self-intersection-removal variants may add or replace faces after that step,
   so the face-map entry point refuses them until those generated/replaced-face
   records exist.
