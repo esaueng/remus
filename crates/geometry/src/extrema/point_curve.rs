@@ -12,8 +12,11 @@ use super::CurveProjection;
 /// Maximum iterations for Newton-Raphson refinement.
 const MAX_ITER: usize = 50;
 
-/// Convergence tolerance on the parameter step.
-const PARAM_TOL: f64 = 1e-10;
+/// Convergence tolerance on the parameter step, relative to the range.
+const PARAM_TOL_REL: f64 = 1e-14;
+
+/// Maximum step halvings per Newton iteration.
+const MAX_BACKTRACK: usize = 40;
 
 /// Number of uniform samples used in the global search phase.
 const N_SAMPLES: usize = 64;
@@ -99,7 +102,7 @@ pub fn point_to_circle(point: Point3, circle: &Circle3D) -> CurveProjection {
 ///    each step.
 ///
 /// Convergence is declared when the parameter update `|Δt|` drops below
-/// `1e-10`, or after 50 iterations (whichever comes first).
+/// `1e-14` of the range, or after 50 iterations (whichever comes first).
 ///
 /// # Examples
 ///
@@ -154,51 +157,72 @@ pub fn point_to_curve<C: ParametricCurve>(
         }
     }
 
-    // ── Phase 2: Newton-Raphson refinement ───────────────────────────────────
-    // We solve f(t) = dot(C(t) - P, C'(t)) = 0 where C'(t) is the actual
-    // velocity (not necessarily unit-length).
+    // ── Phase 2: safeguarded Newton refinement ───────────────────────────────
+    // Solve f(t) = (C(t) − P)·C'(t) = 0, the stationarity of
+    // g(t) = ½|C(t) − P|² (g' = f). `ParametricCurve` exposes positions
+    // only up to a tangent of unspecified length, so C' and C'' come from
+    // central differences (`curve_derivatives`).
     //
-    // The `ParametricCurve::tangent` method returns a *unit* tangent, so we
-    // recover the velocity magnitude via finite differences:
-    //   C'(t) ≈ (C(t+h) - C(t-h)) / (2h)
-    //
-    // Newton step: Δt = f / f', where
-    //   f  = dot(C(t)-P, velocity(t))
-    //   f' ≈ dot(velocity(t), velocity(t))   [Gauss-Newton, drops curvature term]
-    let h = (t_end - t_start) * 1e-6;
-    let h = h.max(1e-9);
+    // The FULL derivative f' = |C'|² + (C − P)·C'' is used. The
+    // Gauss-Newton approximation f' ≈ |C'|² drops the curvature term,
+    // which is not small at a distance: at an ellipse's minor-axis vertex
+    // seen from 4 radii the dropped term equals the kept one, so every
+    // step was twice too long and the iterate orbited the minimum; at a
+    // hyperbola vertex the step was three times too long and diverged
+    // (B10). When f' <= 0 (near a distance maximum) the Gauss-Newton step
+    // is used instead: it is always a descent direction for g. Every step
+    // is backtracked until the distance does not increase (or the
+    // stationarity residual halves), and convergence is judged relative
+    // to the parameter range, so the
+    // result does not depend on the model or parameter scale.
+    let span = t_end - t_start;
+    let param_tol = span * PARAM_TOL_REL;
+    let dist_sq_at = |t: f64| (curve.evaluate(t) - point).length_squared();
     let mut t = best_t;
+    let mut g = dist_sq_at(t);
     for _ in 0..MAX_ITER {
-        let p = curve.evaluate(t);
+        let (p, vel, acc) = super::curve_derivatives(curve, t, t_start, t_end);
         let diff = p - point;
 
-        // Finite-difference velocity (actual C'(t), not unit-normalised).
-        let t_fwd = (t + h).min(t_end);
-        let t_bwd = (t - h).max(t_start);
-        let p_fwd = curve.evaluate(t_fwd);
-        let p_bwd = curve.evaluate(t_bwd);
-        let inv2h = 1.0 / (t_fwd - t_bwd);
-        let vel_x = (p_fwd.x() - p_bwd.x()) * inv2h;
-        let vel_y = (p_fwd.y() - p_bwd.y()) * inv2h;
-        let vel_z = (p_fwd.z() - p_bwd.z()) * inv2h;
-
-        // f(t) = dot(C(t) - P, C'(t))
-        let f = diff.x() * vel_x + diff.y() * vel_y + diff.z() * vel_z;
-
-        // f'(t) ≈ |C'(t)|^2 (Gauss-Newton approximation).
-        let vel_sq = vel_x * vel_x + vel_y * vel_y + vel_z * vel_z;
-        if vel_sq < f64::EPSILON {
+        let f = diff.dot(vel);
+        let vel_sq = vel.length_squared();
+        if !(vel_sq.is_finite() && vel_sq > 0.0) || f == 0.0 {
             break;
         }
+        let full = vel_sq + diff.dot(acc);
+        let mut step = if full.is_finite() && full > 0.0 {
+            f / full
+        } else {
+            f / vel_sq
+        };
 
-        let delta = f / vel_sq;
-        let t_new = (t - delta).clamp(t_start, t_end);
-
-        if (t_new - t).abs() < PARAM_TOL {
-            t = t_new;
-            break;
+        // Backtrack until the squared distance does not increase, or the
+        // stationarity residual at least halves. Near the minimum g is flat
+        // to second order, so comparing g values alone can only locate the
+        // foot to ~sqrt(eps); the residual is accurate to eps.
+        let stationarity = |t: f64| {
+            let (p, vel, _) = super::curve_derivatives(curve, t, t_start, t_end);
+            (p - point).dot(vel).abs()
+        };
+        let mut accepted = None;
+        for _ in 0..MAX_BACKTRACK {
+            let t_new = (t - step).clamp(t_start, t_end);
+            let g_new = dist_sq_at(t_new);
+            if g_new <= g || stationarity(t_new) <= 0.5 * f.abs() {
+                accepted = Some((t_new, g_new));
+                break;
+            }
+            step *= 0.5;
         }
+        let Some((t_new, g_new)) = accepted else {
+            break;
+        };
+        let moved = (t_new - t).abs();
         t = t_new;
+        g = g.min(g_new);
+        if moved <= param_tol {
+            break;
+        }
     }
 
     let closest = curve.evaluate(t);
