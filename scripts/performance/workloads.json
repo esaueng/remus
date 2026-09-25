@@ -10,9 +10,17 @@
   ],
   "procedural_fixtures": {
     "unit-boxes": {
-      "dimensions": [1, 1, 1],
+      "dimensions": [
+        1,
+        1,
+        1
+      ],
       "transform_calls": 150,
-      "translation_per_call": [0.001, 0, 0]
+      "translation_per_call": [
+        0.001,
+        0,
+        0
+      ]
     },
     "straight-chain": {
       "point_rule": "(i, 0, 0), i in 0..size",
@@ -42,9 +50,23 @@
       "fixture": "unit-boxes"
     },
     {
+      "id": "native_transform_direct_50_checkpoint",
+      "family": "transform",
+      "scenario": "native_transform_direct_checkpoint",
+      "size": 50,
+      "fixture": "unit-boxes"
+    },
+    {
       "id": "native_transform_direct_200",
       "family": "transform",
       "scenario": "native_transform_direct",
+      "size": 200,
+      "fixture": "unit-boxes"
+    },
+    {
+      "id": "native_transform_direct_200_checkpoint",
+      "family": "transform",
+      "scenario": "native_transform_direct_checkpoint",
       "size": 200,
       "fixture": "unit-boxes"
     },
@@ -56,9 +78,23 @@
       "fixture": "unit-boxes"
     },
     {
+      "id": "native_transform_direct_400_checkpoint",
+      "family": "transform",
+      "scenario": "native_transform_direct_checkpoint",
+      "size": 400,
+      "fixture": "unit-boxes"
+    },
+    {
       "id": "native_transform_batch_50",
       "family": "transform",
       "scenario": "native_transform_batch",
+      "size": 50,
+      "fixture": "unit-boxes"
+    },
+    {
+      "id": "native_transform_batch_50_checkpoint",
+      "family": "transform",
+      "scenario": "native_transform_batch_checkpoint",
       "size": 50,
       "fixture": "unit-boxes"
     },
@@ -70,9 +106,23 @@
       "fixture": "unit-boxes"
     },
     {
+      "id": "native_transform_batch_200_checkpoint",
+      "family": "transform",
+      "scenario": "native_transform_batch_checkpoint",
+      "size": 200,
+      "fixture": "unit-boxes"
+    },
+    {
       "id": "native_transform_batch_400",
       "family": "transform",
       "scenario": "native_transform_batch",
+      "size": 400,
+      "fixture": "unit-boxes"
+    },
+    {
+      "id": "native_transform_batch_400_checkpoint",
+      "family": "transform",
+      "scenario": "native_transform_batch_checkpoint",
       "size": 400,
       "fixture": "unit-boxes"
     },
@@ -84,9 +134,23 @@
       "fixture": "unit-boxes"
     },
     {
+      "id": "wasm_transform_direct_50_checkpoint",
+      "family": "transform",
+      "scenario": "wasm_transform_direct_checkpoint",
+      "size": 50,
+      "fixture": "unit-boxes"
+    },
+    {
       "id": "wasm_transform_direct_200",
       "family": "transform",
       "scenario": "wasm_transform_direct",
+      "size": 200,
+      "fixture": "unit-boxes"
+    },
+    {
+      "id": "wasm_transform_direct_200_checkpoint",
+      "family": "transform",
+      "scenario": "wasm_transform_direct_checkpoint",
       "size": 200,
       "fixture": "unit-boxes"
     },
@@ -98,9 +162,23 @@
       "fixture": "unit-boxes"
     },
     {
+      "id": "wasm_transform_direct_400_checkpoint",
+      "family": "transform",
+      "scenario": "wasm_transform_direct_checkpoint",
+      "size": 400,
+      "fixture": "unit-boxes"
+    },
+    {
       "id": "wasm_transform_batch_50",
       "family": "transform",
       "scenario": "wasm_transform_batch",
+      "size": 50,
+      "fixture": "unit-boxes"
+    },
+    {
+      "id": "wasm_transform_batch_50_checkpoint",
+      "family": "transform",
+      "scenario": "wasm_transform_batch_checkpoint",
       "size": 50,
       "fixture": "unit-boxes"
     },
@@ -112,9 +190,23 @@
       "fixture": "unit-boxes"
     },
     {
+      "id": "wasm_transform_batch_200_checkpoint",
+      "family": "transform",
+      "scenario": "wasm_transform_batch_checkpoint",
+      "size": 200,
+      "fixture": "unit-boxes"
+    },
+    {
       "id": "wasm_transform_batch_400",
       "family": "transform",
       "scenario": "wasm_transform_batch",
+      "size": 400,
+      "fixture": "unit-boxes"
+    },
+    {
+      "id": "wasm_transform_batch_400_checkpoint",
+      "family": "transform",
+      "scenario": "wasm_transform_batch_checkpoint",
       "size": 400,
       "fixture": "unit-boxes"
     },

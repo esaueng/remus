@@ -2338,3 +2338,197 @@ fn qualify_duplicate_repair(
         }
     }
 }
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn journaled_linear_pattern_records_total_instance_construction_history() {
+    use remus_math::vec::Vec3;
+    use remus_operations::journal_ops::{linear_pattern_journaled, solid_entity_keys};
+    use std::collections::BTreeSet;
+
+    let mut topo = Topology::new();
+    let source = make_box(&mut topo, 2.0, 3.0, 4.0).unwrap();
+    let unrelated = make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+    let source_keys: BTreeSet<_> = solid_entity_keys(&topo, source)
+        .unwrap()
+        .into_iter()
+        .collect();
+    let identity =
+        linear_pattern_journaled(&mut topo, source, Vec3::new(1.0, 0.0, 0.0), 10.0, 1).unwrap();
+    assert_eq!(
+        topo.compound(identity.compound).unwrap().solids(),
+        &[source]
+    );
+    assert!(identity.map.generated.is_empty());
+    let references: Vec<_> = [EntityKind::Face, EntityKind::Edge, EntityKind::Vertex]
+        .into_iter()
+        .map(|kind| {
+            let reference = PersistentRef::operation_output(identity.op, kind, 0);
+            let resolution = resolve(&topo, &reference);
+            let Resolution::Bound {
+                entity,
+                provenance: Provenance::Construction,
+            } = resolution
+            else {
+                panic!("identity pattern must resolve {kind:?}: {resolution:?}");
+            };
+            (reference, entity)
+        })
+        .collect();
+    let pattern =
+        linear_pattern_journaled(&mut topo, source, Vec3::new(1.0, 0.0, 0.0), 10.0, 3).unwrap();
+    let members = topo.compound(pattern.compound).unwrap().solids();
+    assert_eq!(members.len(), 3);
+    assert_eq!(members[0], source);
+    let result: BTreeSet<_> = members
+        .iter()
+        .flat_map(|&solid| solid_entity_keys(&topo, solid).unwrap())
+        .collect();
+    assert_eq!(result.len(), 3 * (6 + 12 + 8));
+    assert!(
+        pattern
+            .map
+            .completeness_for_result(
+                result
+                    .iter()
+                    .filter(|key| key.kind == EntityKind::Face)
+                    .map(|key| key.index)
+            )
+            .is_resolved()
+    );
+    let journal = topo.journal();
+    let EntryPayload::Evolution {
+        origin,
+        scope,
+        events,
+    } = journal.entries().last().unwrap().payload()
+    else {
+        panic!("pattern must have construction evolution");
+    };
+    assert_eq!(*origin, RecordedOrigin::Construction);
+    let recorded: BTreeSet<_> = events
+        .iter()
+        .map(|(ordinal, _)| journal.key_of(*ordinal).unwrap())
+        .collect();
+    assert_eq!(recorded, result);
+    assert_eq!(events.len(), result.len());
+    assert_eq!(
+        scope
+            .iter()
+            .map(|ordinal| journal.key_of(*ordinal).unwrap())
+            .collect::<BTreeSet<_>>(),
+        result
+    );
+    assert!(
+        solid_entity_keys(&topo, unrelated)
+            .unwrap()
+            .iter()
+            .all(|key| !result.contains(key))
+    );
+    for (instance, &solid) in members.iter().enumerate() {
+        for target in solid_entity_keys(&topo, solid).unwrap() {
+            let ordinal = journal.ordinal_of(target).unwrap();
+            let event = &events
+                .iter()
+                .find(|(subject, _)| *subject == ordinal)
+                .unwrap()
+                .1;
+            if instance == 0 {
+                assert!(
+                    matches!(event, EntityEvent::Preserved { from } | EntityEvent::Modified { from } if *from == ordinal)
+                );
+                continue;
+            }
+            let EntityEvent::Generated { sources } = event else {
+                panic!("every copy is generated from exactly one original: {event:?}");
+            };
+            assert_eq!(sources.len(), 1);
+            let original = journal.key_of(sources[0]).unwrap();
+            assert!(source_keys.contains(&original));
+            assert_eq!(original.kind, target.kind);
+            #[allow(clippy::cast_precision_loss)]
+            let translation = Vec3::new(10.0 * instance as f64, 0.0, 0.0);
+            let assert_vertex = |a, b| {
+                let expected = topo.vertex(a).unwrap().point() + translation;
+                let actual = topo.vertex(b).unwrap().point();
+                assert!((expected - actual).length() < 1e-10);
+            };
+            match target.kind {
+                EntityKind::Vertex => assert_vertex(
+                    topo.vertex_id_from_index(original.index).unwrap(),
+                    topo.vertex_id_from_index(target.index).unwrap(),
+                ),
+                EntityKind::Edge => {
+                    let a = topo
+                        .edge(topo.edge_id_from_index(original.index).unwrap())
+                        .unwrap();
+                    let b = topo
+                        .edge(topo.edge_id_from_index(target.index).unwrap())
+                        .unwrap();
+                    assert_vertex(a.start(), b.start());
+                    assert_vertex(a.end(), b.end());
+                }
+                EntityKind::Face => {
+                    assert!(pattern.map.generated[&original.index].contains(&target.index));
+                }
+            }
+        }
+    }
+    for (reference, original) in references {
+        assert_eq!(
+            resolve(&topo, &reference),
+            Resolution::Bound {
+                entity: original,
+                provenance: Provenance::Construction
+            }
+        );
+    }
+    for (kind, count) in [
+        (EntityKind::Face, 18),
+        (EntityKind::Edge, 36),
+        (EntityKind::Vertex, 24),
+    ] {
+        let mut resolved = BTreeSet::new();
+        for index in 0..count {
+            let Resolution::Bound {
+                entity,
+                provenance: Provenance::Construction,
+            } = resolve(
+                &topo,
+                &PersistentRef::operation_output(pattern.op, kind, index),
+            )
+            else {
+                panic!("every instance output must resolve by its construction identity");
+            };
+            assert!(resolved.insert(entity));
+        }
+        assert_eq!(
+            resolved,
+            result
+                .iter()
+                .copied()
+                .filter(|key| key.kind == kind)
+                .collect()
+        );
+    }
+    let face = solid_faces(&topo, source)
+        .unwrap()
+        .into_iter()
+        .find(|&face| {
+            topo.face(face)
+                .unwrap()
+                .effective_plane_normal()
+                .is_some_and(|normal| normal.z() > 0.9)
+        })
+        .unwrap();
+    let signature =
+        remus_topology::naming::EntitySignature::capture_face(&topo, face, 1e-7).unwrap();
+    let ambiguous = resolve(&topo, &PersistentRef::signature(signature));
+    assert!(
+        matches!(&ambiguous, Resolution::Ambiguous { candidates, .. } if candidates.len() == 3)
+    );
+    assert!(matches!(
+        ambiguous.into_entities(),
+        Err(remus_topology::TopologyError::RefAmbiguous { candidates: 3, .. })
+    ));
+}

@@ -14,6 +14,7 @@ pub(crate) mod corner;
 pub mod face_face;
 pub mod fillet_builder;
 pub mod g1_chain;
+mod quarter_cylinder_corner;
 pub mod query;
 pub mod radius_law;
 pub(crate) mod section;

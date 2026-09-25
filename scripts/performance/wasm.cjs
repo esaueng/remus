@@ -5,7 +5,9 @@ const [pkg, scenario, sizeArg, samplesArg, warmupArg] = process.argv.slice(2);
 const size = Number(sizeArg),
   samples = Number(samplesArg),
   warmup = Number(warmupArg);
-assert(['wasm_transform_direct', 'wasm_transform_batch'].includes(scenario));
+assert(['wasm_transform_direct', 'wasm_transform_batch',
+  'wasm_transform_direct_checkpoint', 'wasm_transform_batch_checkpoint'].includes(scenario));
+const checkpoint = scenario.endsWith('_checkpoint');
 assert(Number.isInteger(size) && size >= 2 && size <= 8192);
 assert(Number.isInteger(samples) && samples >= 1 && samples <= 1000);
 assert(Number.isInteger(warmup) && warmup >= 1 && warmup <= 100);
@@ -40,9 +42,11 @@ for (let sample = 0; sample < samples + warmup; sample++) {
     const input = JSON.stringify(
       Array.from({ length: calls }, () => ({ op: 'transform', args: { solid: base, matrix } })),
     );
+    const checkpointId = checkpoint ? kernel.checkpoint() : undefined;
+    const checkpointCount = kernel.checkpointCount();
     let output;
     const start = performance.now();
-    if (scenario === 'wasm_transform_direct') {
+    if (scenario.startsWith('wasm_transform_direct')) {
       for (let i = 0; i < calls; i++) kernel.transformSolid(base, Float64Array.from(matrix));
     } else output = kernel.executeBatch(input);
     const ns = (performance.now() - start) * 1e6;
@@ -52,6 +56,12 @@ for (let sample = 0; sample < samples + warmup; sample++) {
     [0.15, 0, 0, 1.15, 1, 1].forEach((x, i) => near(moved[i], x));
     [0, 0, 0, 1, 1, 1].forEach((x, i) => near(stationary[i], x));
     near(kernel.volume(base, 0.5), 1);
+    if (checkpoint) {
+      kernel.restore(checkpointId);
+      const restored = kernel.boundingBox(base);
+      [0, 0, 0, 1, 1, 1].forEach((x, i) => near(restored[i], x));
+      near(kernel.volume(base, 0.5), 1);
+    }
     console.log(
       JSON.stringify({
         schema: 'remus-performance-sample-v1',
@@ -61,7 +71,10 @@ for (let sample = 0; sample < samples + warmup; sample++) {
         warmup: sample < warmup,
         operation_ns: ns,
         validation: 'passed',
-        metrics: { calls, volume: 1, translation_x: 0.15, untouched_solid_checked: true },
+        metrics: { calls, volume: 1, translation_x: 0.15, untouched_solid_checked: true,
+          checkpoint_count: checkpointCount, checkpoint_restore_checked: checkpoint,
+          transaction_counters: null,
+          transaction_counters_note: 'Installed package is uninstrumented; no inferred snapshot counts.' },
       }),
     );
   } finally {

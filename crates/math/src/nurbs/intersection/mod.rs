@@ -34,7 +34,7 @@ use crate::vec::Point3;
 pub use chaining::chain_intersection_points;
 pub use curve_surface::{CurveSurfaceHit, intersect_curve_surface};
 pub use line::intersect_line_nurbs;
-pub use plane::intersect_plane_nurbs;
+pub use plane::{intersect_plane_nurbs, plane_bilinear_ruling};
 pub use surface_seeding::{intersect_nurbs_nurbs, intersect_nurbs_nurbs_with_context};
 
 /// Maximum iterations for Newton-type solvers.

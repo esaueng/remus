@@ -177,6 +177,13 @@ impl<'a> FilletBuilder<'a> {
             }
         }
 
+        if !external_support_side
+            && let Some(result) =
+                crate::quarter_cylinder_corner::try_build(topo, self.solid, &chain_work, &laws)?
+        {
+            return Ok(result);
+        }
+
         // Two or more chains touching the same vertex need a vertex blend
         // there. The corner solver computes exact geometry for that
         // (`corner::compute_corners` already returns patches), but this builder

@@ -19,6 +19,8 @@ wasm-opt = ["-Oz", "--enable-simd"]
 default = ["io"]
 # Diagnostic-only build; never enabled in the shipped package.
 workflow-probes = []
+# Native diagnostic builds only; no shipped JS exports.
+perf-counters = ["remus-topology/perf-counters"]
 # Bundle the file-format translators into the kernel module. The shipped
 # browser package builds WITHOUT this (see `cargo xtask wasm-build`): the
 # translators ship as the separate `remus-wasm-io` module and bodies cross

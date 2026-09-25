@@ -17,6 +17,7 @@ import {
   runOpenZcadCylindricalFaceResizeRegression,
   runPartialCylinderResizeRegression,
   runDirectEditHistoryRegression,
+  runLinearPatternHistoryRegression,
   runSurfaceReplacementHistoryRegression,
   runCylindricalRadiusHistoryRegression,
   runBlendResizeHistoryRegression,
@@ -36,6 +37,9 @@ import {
   runTangencyBandRegression,
   runBooleanScaleRegression,
   runAnisotropicBooleanRegression,
+  runCylinderSeamNotchRegression,
+  runCurvedCornerBlendRegression,
+  runFreeformRulingRegression,
   runZeroAreaMeshExportRegression,
 } from './openzcad-wasm-consumer-regressions.mjs';
 
@@ -1035,6 +1039,10 @@ runTorusNotchRegression({ BrepKernel });
 runTangencyBandRegression({ BrepKernel });
 runPartialCylinderResizeRegression({ BrepKernel, RemusIo });
 runDirectEditHistoryRegression({ BrepKernel, RemusIo });
+runLinearPatternHistoryRegression({ BrepKernel });
+runCylinderSeamNotchRegression({ BrepKernel });
+runCurvedCornerBlendRegression({ BrepKernel });
+runFreeformRulingRegression({ BrepKernel });
 runSurfaceReplacementHistoryRegression({ BrepKernel, RemusIo });
 runCylindricalRadiusHistoryRegression({ BrepKernel, RemusIo });
 runBlendResizeHistoryRegression({ BrepKernel, RemusIo });
