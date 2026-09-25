@@ -302,6 +302,13 @@ pub fn wire_polygon_curve_sampled(
 /// containment tests that ignore these polygons treat holes as material.
 /// Wires that sample to fewer than 3 points carry no area and are skipped.
 ///
+/// Each hole is outlined exactly as [`face_polygon`] outlines the outer wire,
+/// open curved edges included. A hole used to contribute one chord per open
+/// arc, so a composite hole of long arcs lost the lens between each arc and
+/// its chord: on the torus pierced rim to rim by a frustum (a disc hole of six
+/// marched arcs), the arcs bow about 0.06 rad of `u` past their chords, and
+/// ray hits in that sliver counted as material.
+///
 /// # Errors
 ///
 /// Returns an error if any topology entity referenced by the face is missing.
@@ -309,7 +316,7 @@ pub fn face_hole_polygons(
     topo: &Topology,
     face_id: FaceId,
 ) -> Result<Vec<Vec<Point3>>, CheckError> {
-    face_hole_polygons_sampled(topo, face_id, CLOSED_CURVE_SAMPLES)
+    face_hole_polygons_curve_sampled(topo, face_id, CLOSED_CURVE_SAMPLES, OPEN_CURVE_SAMPLES)
 }
 
 /// [`face_hole_polygons`] with the closed-curve sample count chosen by the
