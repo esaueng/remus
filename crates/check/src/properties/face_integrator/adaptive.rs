@@ -352,8 +352,8 @@ impl SpanModel {
     }
 }
 
-struct SlicedIntegrator<'a, S> {
-    surface: &'a S,
+struct SlicedIntegrator<'a> {
+    surface: &'a dyn ParametricSurface,
     domain: &'a Sliced<'a>,
     options: &'a PropertiesOptions,
     scratch: DerivativeScratch,
@@ -361,7 +361,7 @@ struct SlicedIntegrator<'a, S> {
     models: Vec<SpanModel>,
 }
 
-impl<S: ParametricSurface> SlicedIntegrator<'_, S> {
+impl SlicedIntegrator<'_> {
     /// One outer Gauss rule on `(a, b)`; each inner span is tiled as at level
     /// zero and then split `2^level` times.
     #[allow(clippy::cast_precision_loss)]
@@ -539,9 +539,15 @@ fn priority(error: &Components, budget: &Components) -> f64 {
 /// accuracy from sub-ulp slivers that polyline trim vertices create next to a
 /// seam, where the integrand jumps by a steep outline segment yet the sliver
 /// contributes ~1e-15 of the face.
+///
+/// The surface is taken as a trait object on purpose: this path runs only on
+/// non-default controls, and one out-of-line copy instead of one per carrier
+/// type keeps ~55 KB out of each WASM module, at the cost of a virtual call
+/// that is negligible next to a surface evaluation.
+#[inline(never)]
 #[allow(clippy::cast_precision_loss)]
-pub(super) fn integrate_sliced<S: ParametricSurface>(
-    surface: &S,
+pub(super) fn integrate_sliced(
+    surface: &dyn ParametricSurface,
     domain: &Sliced<'_>,
     sign: f64,
     options: &PropertiesOptions,

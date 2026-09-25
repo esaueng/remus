@@ -2656,7 +2656,7 @@ impl Accumulator {
     /// `scratch` is thread-local reuse storage for the NURBS derivative
     /// solve; other surfaces ignore it. Callers must not share one scratch
     /// across threads.
-    fn add<S: ParametricSurface>(
+    fn add<S: ParametricSurface + ?Sized>(
         &mut self,
         surface: &S,
         u: f64,
