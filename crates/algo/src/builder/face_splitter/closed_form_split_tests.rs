@@ -539,16 +539,28 @@ fn check_notch_regions(
     // The lens interior lies under the chain, the band's above it or
     // outside the notch.
     let depth_at = |z: f64| if on_bottom { z - z0 } else { z0 + h - z };
+    // Both samples also keep clear of their region's boundary: along their
+    // meridian they sit in the middle half of the region's extent, not
+    // grazing a rim or the chain where a classifier ray starts on-boundary.
+    let middle_half = |x: f64, lo: f64, hi: f64| {
+        let f = (x - lo) / (hi - lo);
+        f > 0.25 && f < 0.75
+    };
     let (lt, lz, _) = m[lens].interior;
     assert!(
-        ang_dist(lt, centre) < alpha && depth_at(lz) > 0.0 && depth_at(lz) < d_at(lt),
-        "{ctx}: lens interior {:?} is not under the chain",
+        ang_dist(lt, centre) < alpha && middle_half(depth_at(lz), 0.0, d_at(lt)),
+        "{ctx}: lens interior {:?} is not well under the chain",
         m[lens].interior
     );
     let (bt, bz, _) = m[band].interior;
+    let band_floor = if ang_dist(bt, centre) < alpha {
+        d_at(bt)
+    } else {
+        0.0
+    };
     assert!(
-        bz > z0 && bz < z0 + h && (ang_dist(bt, centre) >= alpha || depth_at(bz) > d_at(bt)),
-        "{ctx}: band interior {:?} is inside the lens",
+        middle_half(depth_at(bz), band_floor, h),
+        "{ctx}: band interior {:?} is not well inside the band",
         m[band].interior
     );
     assert_sections_shared(regions, sections, ctx);
@@ -652,7 +664,9 @@ fn rim_to_rim_chains_split_lateral_into_two_sectors_of_closed_form_area() {
                                     mk.net_turn
                                 );
                                 assert!((mk.interior.2 - r).abs() < 1e-9 * r.max(1.0), "{ctx}");
-                                assert!(mk.interior.1 > z0 && mk.interior.1 < z0 + h, "{ctx}");
+                                // Mid-wall along its meridian, clear of both rims.
+                                let f = (mk.interior.1 - z0) / h;
+                                assert!(f > 0.25 && f < 0.75, "{ctx}: interior height {f}");
                                 assert_eq!(regions[k].reversed, reversed, "{ctx}");
                                 assert_chart_consistent(&regions[k], &surface, r, &ctx);
                             }
@@ -1038,8 +1052,11 @@ fn arc_section(circle: &Circle3D, a: Point3, b: Point3, surface: &FaceSurface) -
     }
 }
 
-/// Samples of a circular wire edge along its MINOR arc (every arc in the
-/// collar fixture spans less than π), independent of stored flags.
+/// Samples of a circular wire edge. With an exact trim, the trimmed span in
+/// the curve's own parameter, oriented by the edge's stored ends (which it
+/// must reach). Without one, a closed circle is a full turn in the sense its
+/// `forward` flag gives, and an open arc is its minor arc (every untrimmed
+/// arc in these fixtures spans less than π).
 fn minor_arc(e: &OrientedPCurveEdge) -> Vec<Point3> {
     let EdgeCurve::Circle(c) = &e.curve_3d else {
         panic!(
@@ -1047,9 +1064,26 @@ fn minor_arc(e: &OrientedPCurveEdge) -> Vec<Point3> {
             e.curve_3d.type_tag()
         );
     };
+    if let Some((t0, t1)) = e.trim.filter(|_| (e.start_3d - e.end_3d).length() > 1e-9) {
+        let mut pts: Vec<Point3> = (0..=1024)
+            .map(|k| c.evaluate((t1 - t0).mul_add(f64::from(k) / 1024.0, t0)))
+            .collect();
+        if (pts[0] - e.start_3d).length() > (pts[1024] - e.start_3d).length() {
+            pts.reverse();
+        }
+        assert!(
+            (pts[0] - e.start_3d).length() < WELD && (pts[1024] - e.end_3d).length() < WELD,
+            "trimmed arc does not run between its stored ends"
+        );
+        return pts;
+    }
     let (n, ctr) = (c.normal(), c.center());
     let (s, t) = (e.start_3d - ctr, e.end_3d - ctr);
-    let sweep = s.cross(t).dot(n).atan2(s.dot(t));
+    let sweep = if (e.start_3d - e.end_3d).length() < 1e-9 {
+        if e.forward { TAU } else { -TAU }
+    } else {
+        s.cross(t).dot(n).atan2(s.dot(t))
+    };
     (0..=1024)
         .map(|k| {
             let (sn, cs) = (sweep * f64::from(k) / 1024.0).sin_cos();
@@ -1144,5 +1178,146 @@ fn box_walls_split_faceted_hemisphere_into_collar_and_four_caps() {
             }
         }
         assert!(collar && caps.iter().all(|&c| c), "{ctx}: missing a cell");
+    }
+}
+
+/// Signed area of a hemisphere wire projected onto the equator plane
+/// (positive counter-clockwise from +z), from exact circle samples.
+fn projected_area(wire: &[OrientedPCurveEdge], ctx: &str) -> f64 {
+    let mut pts = Vec::new();
+    for (i, e) in wire.iter().enumerate() {
+        let next = &wire[(i + 1) % wire.len()];
+        assert!(
+            (e.end_3d - next.start_3d).length() < WELD,
+            "{ctx}: open wire"
+        );
+        pts.extend(minor_arc(e));
+    }
+    0.5 * (0..pts.len())
+        .map(|i| {
+            let (p, q) = (pts[i], pts[(i + 1) % pts.len()]);
+            p.x().mul_add(q.y(), -(q.x() * p.y()))
+        })
+        .sum::<f64>()
+}
+
+/// The two routes of the collar splitter the four-wall test does not take.
+///
+/// - One wall `x = a` leaves a single open chain and two seam arcs: the
+///   exact two-patch route must return the cap beyond the wall (the
+///   circular segment `r²·acos(a/r) − a·√(r² − a²)` from +z) and the rest.
+/// - Four walls plus a lid `z = c` below the pole (whose latitude circle,
+///   of radius `ρ_c = √(r² − c²) < a`, stays inside the walls) add a closed
+///   section: the collar must carry it as a hole and the lid's cap
+///   (projected area `π·ρ_c²`) come back as its own cell.
+#[test]
+fn one_wall_and_lidded_box_split_faceted_hemisphere_exactly() {
+    for rad in [2.0, 50.0] {
+        check_one_wall_and_lid(rad, 0.85);
+    }
+}
+
+/// B57: with the walls close under the lid the collar's classification
+/// sample (the lid latitude nudged a fixed amount toward the equator) lands
+/// beyond a wall, in a wall cap.
+#[test]
+#[ignore = "open: B57 — collar interior sample overshoots a wall close under the lid"]
+fn b57_collar_sample_stays_inside_walls_close_under_the_lid() {
+    for rad in [2.0, 50.0] {
+        check_one_wall_and_lid(rad, 0.75);
+    }
+}
+
+fn check_one_wall_and_lid(rad: f64, frac: f64) {
+    let a = frac * rad;
+    let rho = (rad * rad - a * a).sqrt();
+    let segment = rad * rad * (a / rad).acos() - a * rho;
+    for lid in [false, true] {
+        let (topo, face) = hemisphere(rad, 64);
+        let surface = topo.face(face).unwrap().surface().clone();
+        let walls = if lid { 4 } else { 1 };
+        let mut sections = Vec::new();
+        for k in 0..walls {
+            let (sn, cs) = (f64::from(k) * PI / 2.0).sin_cos();
+            let rot = |x: f64, y: f64, z: f64| Point3::new(x * cs - y * sn, x * sn + y * cs, z);
+            let circle = Circle3D::new(rot(a, 0.0, 0.0), Vec3::new(-cs, -sn, 0.0), rho).unwrap();
+            let (lo, apex, hi) = (rot(a, -rho, 0.0), rot(a, 0.0, rho), rot(a, rho, 0.0));
+            sections.push(arc_section(&circle, lo, apex, &surface));
+            sections.push(arc_section(&circle, apex, hi, &surface));
+        }
+        let c = 0.5 * (rho + rad);
+        let rho_c = c.mul_add(-c, rad * rad).sqrt();
+        if lid {
+            let ring =
+                Circle3D::new(Point3::new(0.0, 0.0, c), Vec3::new(0.0, 0.0, 1.0), rho_c).unwrap();
+            let p = Point3::new(rho_c, 0.0, c);
+            let t0 = ring.project(p);
+            let curve = EdgeCurve::Circle(ring);
+            let pcurve = crate::builder::pcurve_compute::compute_pcurve_on_surface(
+                &curve,
+                p,
+                p,
+                &surface,
+                &[],
+                None,
+            )
+            .unwrap();
+            sections.push(SectionEdge {
+                curve_3d: curve,
+                trim: Some((t0, t0 + TAU)),
+                pcurve_a: pcurve.clone(),
+                pcurve_b: pcurve,
+                ..line_section(p, p)
+            });
+        }
+        let ctx = format!("r={rad} a={a} lid={lid}");
+        let regions = split(&topo, face, &sections);
+        let disc = PI * rad * rad;
+        let lid_area = PI * rho_c * rho_c;
+        let mut seen = Vec::new();
+        for sf in &regions {
+            let p = sf
+                .precomputed_interior
+                .expect("collar cells carry an interior");
+            assert!(
+                ((p - Point3::new(0.0, 0.0, 0.0)).length() - rad).abs() < 1e-9 * rad,
+                "{ctx}"
+            );
+            assert!(p.z() > 0.0, "{ctx}: interior below the equator");
+            assert_eq!(sf.parent, face, "{ctx}");
+            let outer = projected_area(&sf.outer_wire, &ctx);
+            let holes: f64 = sf.inner_wires.iter().map(|w| projected_area(w, &ctx)).sum();
+            let beyond_wall = p.x() > a || p.y() > a || p.x() < -a || p.y() < -a;
+            let (name, want_outer, want_holes) = if !lid {
+                if p.x() > a {
+                    ("cap", segment, 0.0)
+                } else {
+                    ("rest", disc - segment, 0.0)
+                }
+            } else if beyond_wall {
+                ("wall cap", segment, 0.0)
+            } else if p.z() > c {
+                ("lid cap", lid_area, 0.0)
+            } else {
+                ("collar", 4.0f64.mul_add(-segment, disc), -lid_area)
+            };
+            assert_close(outer, want_outer, 1e-5, &format!("{ctx}: {name} outer"));
+            if sf.inner_wires.is_empty() {
+                assert!(want_holes == 0.0, "{ctx}: {name} lost its hole");
+            } else {
+                assert_eq!(sf.inner_wires.len(), 1, "{ctx}: {name} holes");
+                assert_close(holes, want_holes, 1e-5, &format!("{ctx}: {name} hole"));
+            }
+            seen.push(name);
+        }
+        seen.sort_unstable();
+        let want: Vec<&str> = if lid {
+            vec![
+                "collar", "lid cap", "wall cap", "wall cap", "wall cap", "wall cap",
+            ]
+        } else {
+            vec!["cap", "rest"]
+        };
+        assert_eq!(seen, want, "{ctx}: cells");
     }
 }
