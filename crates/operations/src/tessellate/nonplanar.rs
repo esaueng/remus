@@ -3138,19 +3138,26 @@ pub(super) fn tessellate_nonplanar_cdt(
                 let lo = (curved_v_min - dense_dv).max(v_min);
                 let hi = (curved_v_max + dense_dv).min(v_max);
                 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                let rows = (((hi - lo) / dense_dv).ceil() as usize).max(1);
+                let wanted = (((hi - lo) / dense_dv).ceil() as usize).max(1);
                 // This loop includes both end rows and scans the complete
                 // boundary once for containment and (for interior points)
                 // once more for clearance. Bound that multiplicative work
-                // before doing any classification or allocation.
+                // before doing any classification or allocation: take as
+                // many of the wanted rows as the polygon classification
+                // budget admits (see `dense_trim_rows_within_budget`).
+                let rows = dense_trim_rows_within_budget(wanted, n_u, boundary_uv_ref.len());
                 let dense_candidates = n_u.saturating_sub(1).checked_mul(rows.saturating_add(1));
-                // If the dense refinement alone would exceed the polygon
-                // classification budget, keep the already-bounded base grid
-                // and let the CDT triangulate from the shared boundary. Do
-                // not fail the whole face here: that routes valid cylinder
+                // If not even one row fits, keep the already-bounded base
+                // grid and let the CDT triangulate from the shared boundary.
+                // Do not fail the whole face here: that routes valid cylinder
                 // walls to the independent snap fallback, which can crack at
                 // shared rims.
-                if validate_interior_polygon_work(dense_candidates, Some(boundary_uv_ref.len()), 2)
+                if rows > 0
+                    && validate_interior_polygon_work(
+                        dense_candidates,
+                        Some(boundary_uv_ref.len()),
+                        2,
+                    )
                     .is_ok()
                 {
                     let boundary_cdt: Vec<Point2> =
@@ -3796,6 +3803,28 @@ fn stepped_rim_interior_points(
         }
     }
     Ok((!points.is_empty()).then_some(points))
+}
+
+/// Dense trim-band rows, capped to what the interior polygon budget admits.
+///
+/// The band's `rows + 1` lines of `n_u - 1` columns each scan the
+/// `boundary`-sample trim twice, so they cost `(n_u - 1)(rows + 1)·2·boundary`
+/// tests against [`MAX_INTERIOR_POLYGON_TESTS`]. Past that budget the whole
+/// band used to be dropped, leaving the trim valley to the base grid's
+/// single mid-height row whenever `interior_rows_for_boundary` keeps its
+/// two-row default (a 33–127-sample run): a cylinder cut by a slab tilted
+/// 30° then bridged its ellipse trim with chords spanning a quarter of the
+/// wall at 0.005–0.002 deflection, reading 4.9 % low in volume on a closed,
+/// manifold mesh. Fewer rows still support the valley, so keep as many as
+/// fit; zero only when not even one row does.
+fn dense_trim_rows_within_budget(wanted: usize, n_u: usize, boundary: usize) -> usize {
+    let per_row = n_u
+        .saturating_sub(1)
+        .saturating_mul(boundary)
+        .saturating_mul(2);
+    MAX_INTERIOR_POLYGON_TESTS
+        .checked_div(per_row)
+        .map_or(wanted, |fit| wanted.min(fit.saturating_sub(1)))
 }
 
 /// Estimate the effective radius of a surface for sample density calculation.
