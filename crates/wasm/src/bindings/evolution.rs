@@ -75,6 +75,127 @@ fn entity_evolution_json(evolution: &EntityEvolution) -> serde_json::Value {
     serde_json::json!({ "faces": faces, "edges": edges, "vertices": vertices })
 }
 
+/// The stable JSON encoding of result-aware face, edge and vertex history
+/// (B18): every result entity's event, typed reasons on every unresolved
+/// record, and the per-kind completeness report against the result.
+///
+/// Face events: `modified` (`from`, one source), `merged` (`from`, several),
+/// `generated` (`faces`), `unresolved` (`candidates`, `reason`); `deleted`
+/// lists consumed source faces. Edge and vertex events: `modified` (`from`),
+/// `merged` (`from`), `generated` (`faces`, the source faces the entity was
+/// built between), `unresolved` (`candidates`, `reason`). Reasons are
+/// `ambiguous_incidence`, `unmapped_incident_face` or
+/// `unresolved_face_origin`.
+fn entity_history_json(
+    faces: &remus_operations::evolution::EvolutionMap,
+    boundary: &remus_operations::boundary_evolution::BoundaryEvolution,
+    completeness: &remus_operations::boundary_evolution::EntityCompletenessReport,
+) -> serde_json::Value {
+    use remus_operations::boundary_evolution::{BoundaryEvent, UnresolvedReason};
+    use std::collections::BTreeMap;
+
+    let indices = |values: &[usize]| values.iter().copied().map(index_u32).collect::<Vec<_>>();
+
+    let mut modified: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for (&input, outputs) in &faces.modified {
+        for &output in outputs {
+            modified.entry(output).or_default().push(input);
+        }
+    }
+    let mut generated: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for (&input, outputs) in &faces.generated {
+        for &output in outputs {
+            generated.entry(output).or_default().push(input);
+        }
+    }
+    let mut face_events: BTreeMap<usize, serde_json::Value> = BTreeMap::new();
+    for (output, mut inputs) in modified {
+        inputs.sort_unstable();
+        inputs.dedup();
+        let event = match inputs.as_slice() {
+            [single] => serde_json::json!({
+                "face": index_u32(output), "event": "modified", "from": index_u32(*single),
+            }),
+            _ => serde_json::json!({
+                "face": index_u32(output), "event": "merged", "from": indices(&inputs),
+            }),
+        };
+        face_events.insert(output, event);
+    }
+    for (output, mut inputs) in generated {
+        inputs.sort_unstable();
+        inputs.dedup();
+        face_events.insert(
+            output,
+            serde_json::json!({
+                "face": index_u32(output), "event": "generated", "faces": indices(&inputs),
+            }),
+        );
+    }
+    for (&output, candidates) in &faces.unresolved {
+        face_events.insert(
+            output,
+            serde_json::json!({
+                "face": index_u32(output),
+                "event": "unresolved",
+                "candidates": indices(candidates),
+                "reason": UnresolvedReason::UnresolvedFaceOrigin.as_str(),
+            }),
+        );
+    }
+    let mut deleted: Vec<usize> = faces.deleted.iter().copied().collect();
+    deleted.sort_unstable();
+
+    let boundary_events = |kind: &str, claims: &BTreeMap<usize, BoundaryEvent>| {
+        claims
+            .iter()
+            .map(|(&subject, event)| {
+                let mut value = match event {
+                    BoundaryEvent::Modified { from } => {
+                        serde_json::json!({ "event": "modified", "from": index_u32(*from) })
+                    }
+                    BoundaryEvent::Merged { from } => {
+                        serde_json::json!({ "event": "merged", "from": indices(from) })
+                    }
+                    BoundaryEvent::Generated { faces } => {
+                        serde_json::json!({ "event": "generated", "faces": indices(faces) })
+                    }
+                    BoundaryEvent::Unresolved { candidates, reason } => serde_json::json!({
+                        "event": "unresolved",
+                        "candidates": indices(candidates),
+                        "reason": reason.as_str(),
+                    }),
+                };
+                value[kind] = serde_json::json!(index_u32(subject));
+                value
+            })
+            .collect::<Vec<_>>()
+    };
+
+    let report = |report: &remus_operations::evolution::CompletenessReport| {
+        serde_json::json!({
+            "omitted": indices(&report.omitted),
+            "phantom": indices(&report.phantom),
+            "unresolved": indices(&report.unresolved_outputs),
+        })
+    };
+
+    serde_json::json!({
+        "origin": faces.origin.as_str(),
+        "faces": face_events.into_values().collect::<Vec<_>>(),
+        "deleted": indices(&deleted),
+        "edges": boundary_events("edge", &boundary.edges),
+        "vertices": boundary_events("vertex", &boundary.vertices),
+        "completeness": {
+            "accounted": completeness.is_accounted(),
+            "resolved": completeness.is_resolved(),
+            "faces": report(&completeness.faces),
+            "edges": report(&completeness.edges),
+            "vertices": report(&completeness.vertices),
+        },
+    })
+}
+
 fn replacement_vector(
     value: &serde_json::Value,
     key: &str,
@@ -512,11 +633,17 @@ impl BrepKernel {
         let solid_id = self
             .resolve_solid(solid)
             .map_err(StructuredWasmError::from)?;
-        let journaled = journal_ops::offset_journaled(self.topo_mut(), solid_id, distance)
-            .map_err(StructuredWasmError::from)?;
+        let journaled =
+            journal_ops::offset_journaled_with_entities(self.topo_mut(), solid_id, distance)
+                .map_err(StructuredWasmError::from)?;
         Ok(serde_json::json!({
             "solid": crate::handles::solid_id_to_u32(journaled.solid),
             "op": u32::try_from(journaled.op.value()).unwrap_or(u32::MAX),
+            "evolution": entity_history_json(
+                &journaled.map,
+                &journaled.boundary,
+                &journaled.completeness,
+            ),
         }))
     }
 
@@ -927,8 +1054,15 @@ impl BrepKernel {
             .map_err(structured_to_js)
     }
 
-    /// V2 offset journaled as one construction-derived face-evolution entry
-    /// (kind `offset`). Returns JSON `{"solid", "op"}`.
+    /// V2 offset journaled as one construction-derived face, edge and vertex
+    /// evolution entry (kind `offset`).
+    ///
+    /// Returns JSON `{"solid", "op", "evolution"}`. `evolution` lists every
+    /// result face, edge and vertex as `modified`, `merged`, `generated` or
+    /// `unresolved` (with `candidates` and a typed `reason`, such as
+    /// `ambiguous_incidence` for a torus seam), plus a `completeness` report
+    /// (`accounted`, `resolved`, and per-kind `omitted`/`phantom`/`unresolved`
+    /// lists) checked against the actual result.
     #[wasm_bindgen(js_name = "offsetJournaled")]
     pub fn offset_journaled_js(&mut self, solid: u32, distance: f64) -> Result<String, JsError> {
         validate_finite(distance, "distance")?;
@@ -2247,7 +2381,8 @@ mod evolution_contract_tests {
         assert_eq!(entry["kind"], "offset");
         assert_eq!(entry["type"], "evolution");
         assert_eq!(entry["detail"]["origin"], "construction");
-        assert_eq!(entry["detail"]["events"], 6);
+        assert_eq!(entry["detail"]["events"], 6 + 12 + 8);
+        assert_eq!(payload["evolution"]["completeness"]["resolved"], true);
 
         let mut batch = BrepKernel::new();
         run(
@@ -2267,7 +2402,128 @@ mod evolution_contract_tests {
         let batch_entry = results[1].as_array().unwrap().last().unwrap();
         assert_eq!(batch_entry["kind"], "offset");
         assert_eq!(batch_entry["type"], "evolution");
-        assert_eq!(batch_entry["detail"]["events"], 6);
+        assert_eq!(batch_entry["detail"]["events"], 6 + 12 + 8);
+    }
+
+    /// B18: a torus offset's two seams share one face-use multiset, so
+    /// neither can be bound to a source seam. The typed unresolved record
+    /// (`ambiguous_incidence`, both source seams as candidates) must reach
+    /// JS unchanged through the direct binding, `executeBatch`, and
+    /// `executeBatchV2`, beside an accounted-but-unresolved completeness
+    /// report; the box's history is fully resolved with every result edge
+    /// and vertex attributed.
+    #[test]
+    fn offset_journaled_typed_unresolved_survives_every_envelope() {
+        let mut direct = BrepKernel::new();
+        let torus = direct.make_torus_solid(3.0, 1.0, 16).unwrap();
+        let source_edges: Vec<u64> = direct
+            .get_solid_edges(torus)
+            .unwrap()
+            .into_iter()
+            .map(u64::from)
+            .collect();
+        let payload: serde_json::Value =
+            serde_json::from_str(&direct.offset_journaled_js(torus, 0.3).unwrap()).unwrap();
+        let evolution = &payload["evolution"];
+        assert_eq!(evolution["origin"], "construction");
+        let completeness = &evolution["completeness"];
+        assert_eq!(completeness["accounted"], true);
+        assert_eq!(completeness["resolved"], false);
+        let result_edges: Vec<u64> = direct
+            .get_solid_edges(u32::try_from(payload["solid"].as_u64().unwrap()).unwrap())
+            .unwrap()
+            .into_iter()
+            .map(u64::from)
+            .collect();
+        let unresolved: Vec<u64> = completeness["edges"]["unresolved"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_u64().unwrap())
+            .collect();
+        assert_eq!(unresolved, result_edges);
+        for kind in ["faces", "edges", "vertices"] {
+            assert_eq!(completeness[kind]["omitted"], serde_json::json!([]));
+            assert_eq!(completeness[kind]["phantom"], serde_json::json!([]));
+        }
+        let edges = evolution["edges"].as_array().unwrap();
+        assert_eq!(edges.len(), 2);
+        for edge in edges {
+            assert_eq!(edge["event"], "unresolved");
+            assert_eq!(edge["reason"], "ambiguous_incidence");
+            assert_eq!(edge["candidates"], serde_json::json!(source_edges));
+        }
+        assert_eq!(evolution["vertices"][0]["event"], "modified");
+        assert_eq!(evolution["faces"][0]["event"], "modified");
+
+        // The same record through both batch contracts.
+        for v2 in [false, true] {
+            let mut batch = BrepKernel::new();
+            let ops = serde_json::json!([
+                {"op": "makeTorus", "args": {"majorRadius": 3.0, "minorRadius": 1.0, "segments": 16}},
+                {"op": "offsetJournaled", "args": {"solid": 0, "distance": 0.3}},
+            ]);
+            let response = if v2 {
+                batch.execute_batch_v2(&ops.to_string())
+            } else {
+                batch.execute_batch(&ops.to_string())
+            };
+            let parsed: serde_json::Value = serde_json::from_str(&response).unwrap();
+            assert_eq!(
+                parsed[1]["ok"], payload,
+                "v2={v2}: envelope must not drop the record"
+            );
+        }
+
+        // A box: everything attributed, nothing unresolved.
+        let mut kernel = BrepKernel::new();
+        let cube = kernel.make_box_solid(2.0, 3.0, 4.0).unwrap();
+        let payload: serde_json::Value =
+            serde_json::from_str(&kernel.offset_journaled_js(cube, 0.25).unwrap()).unwrap();
+        let evolution = &payload["evolution"];
+        assert_eq!(evolution["completeness"]["resolved"], true);
+        assert_eq!(evolution["faces"].as_array().unwrap().len(), 6);
+        assert_eq!(evolution["edges"].as_array().unwrap().len(), 12);
+        assert_eq!(evolution["vertices"].as_array().unwrap().len(), 8);
+        for kind in ["faces", "edges", "vertices"] {
+            assert!(
+                evolution[kind]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|event| event["event"] == "modified"),
+                "{kind}"
+            );
+        }
+    }
+
+    /// A refused offset reaches `executeBatchV2` as a typed error and
+    /// publishes no history, beside earlier results that stay usable.
+    #[test]
+    fn refused_offset_journaled_is_typed_and_atomic_in_batch_v2() {
+        let mut kernel = BrepKernel::new();
+        let response = kernel.execute_batch_v2(
+            &serde_json::json!([
+                {"op": "makeBox", "args": {"width": 2.0, "height": 2.0, "depth": 2.0}},
+                {"op": "journalSummary", "args": {}},
+                {"op": "offsetJournaled", "args": {"solid": 0, "distance": -1.5}},
+                {"op": "journalSummary", "args": {}},
+                {"op": "volume", "args": {"solid": 0, "deflection": 0.1}},
+            ])
+            .to_string(),
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&response).unwrap();
+        let error = &parsed[2]["error"];
+        assert!(error["code"].is_string(), "{error}");
+        assert!(
+            error["message"].as_str().unwrap().contains("collapsed"),
+            "{error}"
+        );
+        assert_eq!(
+            parsed[1]["ok"], parsed[3]["ok"],
+            "refusal published history"
+        );
+        assert!((parsed[4]["ok"].as_f64().unwrap() - 8.0).abs() < 1e-9);
     }
 
     #[test]
