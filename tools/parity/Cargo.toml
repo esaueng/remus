@@ -11,6 +11,10 @@ version = "0.1.0"
 name = "remus-parity-native"
 path = "src/main.rs"
 
+[[bin]]
+name = "remus-split-io-native"
+path = "src/split_io_native.rs"
+
 [dependencies]
 remus.workspace = true
 remus-check.workspace = true
