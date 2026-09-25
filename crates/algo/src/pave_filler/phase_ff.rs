@@ -920,48 +920,6 @@ pub fn perform_with_context(
             } else {
                 raw_curves
             };
-            // The same lens arises when a torus tube notches a frustum or
-            // cylinder wall at ONE rim (B39 oblique cell): the wall section
-            // leaves and re-enters the same rim circle, so it and the rim span
-            // between its ends share both endpoints. Split it at its midpoint
-            // too — into two independent curves (exact knot insertion), so
-            // every consumer that reads a NURBS edge over its curve's own
-            // domain sees each half, not the whole arc twice.
-            let torus_wall_pair = (matches!(surf_a, FaceSurface::Torus(_))
-                && matches!(surf_b, FaceSurface::Cone(_) | FaceSurface::Cylinder(_)))
-                || (matches!(surf_b, FaceSurface::Torus(_))
-                    && matches!(surf_a, FaceSurface::Cone(_) | FaceSurface::Cylinder(_)));
-            let raw_curves = if torus_wall_pair {
-                let mut out = Vec::with_capacity(raw_curves.len() + 1);
-                for raw in raw_curves {
-                    if let EdgeCurve::NurbsCurve(nurbs) = &raw.curve
-                        && (raw.p_start - raw.p_end).length() > tol.linear
-                        && section_notches_one_rim(surf_a, surf_b, v_range_a, v_range_b, &raw, tol)
-                        && let Ok((left, right)) = remus_math::nurbs::knot_ops::curve_split(
-                            nurbs,
-                            f64::midpoint(raw.t_range.0, raw.t_range.1),
-                        )
-                    {
-                        let pm = ParametricCurve::evaluate(&left, left.domain().1);
-                        for (piece, p_start, p_end) in
-                            [(left, raw.p_start, pm), (right, pm, raw.p_end)]
-                        {
-                            out.push(RawCurve {
-                                bbox: nurbs_curve_bbox(&piece),
-                                t_range: piece.domain(),
-                                curve: EdgeCurve::NurbsCurve(piece),
-                                p_start,
-                                p_end,
-                            });
-                        }
-                    } else {
-                        out.push(raw);
-                    }
-                }
-                out
-            } else {
-                raw_curves
-            };
             for raw in raw_curves {
                 let mut raw = raw;
                 // Closed Circle3D sections — produced by plane-sphere
@@ -3073,37 +3031,21 @@ fn trim_torus_oval_to_box_face(
     let _ = ext_a;
     let _ = ext_b;
 
-    // The box face's straight boundary edges (its rectangle sides) — or, for
-    // a disk cap (a frustum/cylinder end face: outer wire all circle arcs, no
-    // holes), its rim arcs.
+    // The box face's straight boundary edges (its rectangle sides).
     let face = topo.face(plane_face).ok()?;
     let wire = topo.wire(face.outer_wire()).ok()?;
     let mut box_edges: Vec<(Point3, Point3)> = Vec::new();
-    let mut rim_arcs: Vec<(remus_math::curves::Circle3D, (f64, f64))> = Vec::new();
     for oe in wire.edges() {
         let e = topo.edge(oe.edge()).ok()?;
-        match e.curve() {
-            EdgeCurve::Line => {
-                let s = topo.vertex(e.start()).ok()?.point();
-                let en = topo.vertex(e.end()).ok()?.point();
-                box_edges.push((s, en));
-            }
-            EdgeCurve::Circle(circle) => {
-                rim_arcs.push((circle.clone(), e.strict_domain().ok()?));
-            }
-            // B24: exhaustive over `EdgeCurve` — only straight box sides and
-            // circular cap rims have an exact torus crossing here; any other
-            // boundary defers to the sample-clip path.
-            EdgeCurve::NurbsCurve(_)
-            | EdgeCurve::Ellipse(_)
-            | EdgeCurve::Hyperbola(_)
-            | EdgeCurve::Parabola(_) => return None,
+        if !matches!(e.curve(), EdgeCurve::Line) {
+            return None; // not a straight-edged wall — defer
         }
+        let s = topo.vertex(e.start()).ok()?.point();
+        let en = topo.vertex(e.end()).ok()?.point();
+        box_edges.push((s, en));
     }
-    let straight_box = rim_arcs.is_empty() && box_edges.len() >= 3;
-    let disk_cap = box_edges.is_empty() && !rim_arcs.is_empty() && face.inner_wires().is_empty();
-    if !straight_box && !disk_cap {
-        return None; // mixed or degenerate outline — defer
+    if box_edges.len() < 3 {
+        return None;
     }
 
     // Branch membership uses a coarse sampled distance, whose spacing scales
@@ -3142,85 +3084,13 @@ fn trim_torus_oval_to_box_face(
         }
     }
 
-    // Disk cap: the rim arcs must share ONE circle, so "inside the face" is
-    // exactly "inside that circle" — the sampled plane extent carries a
-    // margin band wider than the sliver an oval can bulge past a rim (the
-    // B39 unit cell's base-cap oval leaves its r=1.5 rim by only ~0.03), so
-    // it cannot pick the kept arcs here.
-    let rim = if disk_cap {
-        let (first, _) = &rim_arcs[0];
-        let same_circle = rim_arcs.iter().all(|(c, _)| {
-            (c.center() - first.center()).length() <= tol.linear * 100.0
-                && (c.radius() - first.radius()).abs() <= tol.linear * 100.0
-        });
-        if !same_circle {
-            return None;
-        }
-        Some((first.center(), first.radius()))
-    } else {
-        None
-    };
-    // Rim ∩ torus crossings, exact to roundoff: the torus implicit changes
-    // sign along the rim at every transversal crossing, so bracket it on a
-    // dense angle grid and bisect. The oval and the rim both lie in the cap
-    // plane, so a rim point on the torus is on the plane×torus section — the
-    // SAME point the partner wall section (torus × frustum/cylinder wall,
-    // marched onto the wall's rim band edge) ends on, so the composite
-    // pierce loop chains through it (B39).
-    let torus_implicit = |p: Point3| -> f64 {
-        let d = p - torus.center();
-        let axial = d.dot(torus.z_axis());
-        let radial = (d - torus.z_axis() * axial).length() - torus.major_radius();
-        radial.mul_add(radial, axial * axial) - torus.minor_radius() * torus.minor_radius()
-    };
-    for (circle, (t0, t1)) in &rim_arcs {
-        const RIM_SAMPLES: u32 = 720;
-        let at = |t: f64| ParametricCurve::evaluate(circle, t);
-        let mut prev_t = *t0;
-        let mut prev_in = torus_implicit(at(prev_t)) < 0.0;
-        for i in 1..=RIM_SAMPLES {
-            let t = (t1 - t0).mul_add(f64::from(i) / f64::from(RIM_SAMPLES), *t0);
-            let inside = torus_implicit(at(t)) < 0.0;
-            if inside != prev_in {
-                let (mut lo, mut hi) = (prev_t, t);
-                for _ in 0..80 {
-                    let mid = f64::midpoint(lo, hi);
-                    if (torus_implicit(at(mid)) < 0.0) == prev_in {
-                        lo = mid;
-                    } else {
-                        hi = mid;
-                    }
-                }
-                let p = at(f64::midpoint(lo, hi));
-                let mut min_d = f64::MAX;
-                for j in 0..=128 {
-                    let tt = raw.t_range.0 + (raw.t_range.1 - raw.t_range.0) * f64::from(j) / 128.0;
-                    min_d = min_d.min(
-                        (raw.curve
-                            .evaluate_with_endpoints(tt, raw.p_start, raw.p_end)
-                            - p)
-                            .length(),
-                    );
-                }
-                if min_d < on_oval_tol && !crossings.iter().any(|c| (*c - p).length() < dedup_tol) {
-                    crossings.push(p);
-                }
-            }
-            prev_t = t;
-            prev_in = inside;
-        }
-    }
-    let inside_face = |p: Point3| -> bool {
-        rim.map_or_else(|| plane_ext.contains(p), |(c, r)| (p - c).length() < r)
-    };
-
     // No boundary crossing: the oval is wholly inside (or outside) the box face.
     if crossings.is_empty() {
         // Inside → keep whole; outside → the caller's sample-clip drops it.
         let mid = raw
             .curve
             .evaluate_with_endpoints(0.5, raw.p_start, raw.p_end);
-        return if inside_face(mid) {
+        return if plane_ext.contains(mid) {
             Some(vec![raw.clone()])
         } else {
             None
@@ -3289,7 +3159,7 @@ fn trim_torus_oval_to_box_face(
         if pts.len() < 4 {
             continue;
         }
-        if !inside_face(pts[pts.len() / 2]) {
+        if !plane_ext.contains(pts[pts.len() / 2]) {
             continue;
         }
         let last = pts.len() - 1;
@@ -5055,64 +4925,6 @@ fn compute_face_bboxes(
         bboxes.push(compute_face_bbox(topo, fid, tol)?);
     }
     Ok(bboxes)
-}
-
-/// Whether an open section on a torus × frustum/cylinder-wall pair leaves
-/// and re-enters the wall through the SAME rim: both ends sit on one bound of
-/// the wall's axial band. Such a section and the rim span between its ends
-/// share both endpoints, a co-endpoint lens the endpoint-keyed edge merge
-/// cannot tell apart, so the caller gives the section an interior vertex.
-/// A section running rim-to-rim across the band has distinct ends on
-/// distinct rims and is left whole.
-fn section_notches_one_rim(
-    surf_a: &FaceSurface,
-    surf_b: &FaceSurface,
-    v_range_a: Option<(f64, f64)>,
-    v_range_b: Option<(f64, f64)>,
-    raw: &RawCurve,
-    tol: Tolerance,
-) -> bool {
-    let (wall, v_range) = match (surf_a, surf_b) {
-        (FaceSurface::Cone(_) | FaceSurface::Cylinder(_), FaceSurface::Torus(_)) => {
-            (surf_a, v_range_a)
-        }
-        (FaceSurface::Torus(_), FaceSurface::Cone(_) | FaceSurface::Cylinder(_)) => {
-            (surf_b, v_range_b)
-        }
-        // B24: exhaustive over the `FaceSurface` pair — only a torus against
-        // a frustum/cylinder wall notches a rim here.
-        (FaceSurface::Plane { .. } | FaceSurface::Nurbs(_) | FaceSurface::Sphere(_), _)
-        | (
-            FaceSurface::Cone(_) | FaceSurface::Cylinder(_),
-            FaceSurface::Plane { .. }
-            | FaceSurface::Nurbs(_)
-            | FaceSurface::Cylinder(_)
-            | FaceSurface::Cone(_)
-            | FaceSurface::Sphere(_),
-        )
-        | (
-            FaceSurface::Torus(_),
-            FaceSurface::Plane { .. }
-            | FaceSurface::Nurbs(_)
-            | FaceSurface::Sphere(_)
-            | FaceSurface::Torus(_),
-        ) => return false,
-    };
-    let Some((v0, v1)) = v_range else {
-        return false;
-    };
-    let (Some((_, vs)), Some((_, ve))) = (
-        wall.project_point(raw.p_start),
-        wall.project_point(raw.p_end),
-    ) else {
-        return false;
-    };
-    // The marcher bisects its band exit onto the rim to roundoff; the
-    // weld-scale band only absorbs projection noise.
-    let band = tol.linear * 100.0;
-    [v0, v1]
-        .into_iter()
-        .any(|bound| (vs - bound).abs() <= band && (ve - bound).abs() <= band)
 }
 
 /// A rectangular ring-torus patch can end at a cylinder's axial end plane.

@@ -1240,16 +1240,11 @@ pub(super) fn tessellate_torus_notch_band(
         return Ok(false);
     };
 
-    // Ring angle u of each loop as a function of the tube angle v: piecewise
-    // linear over the loop's v-sorted shared vertices, unwrapped about the
-    // loop's mean u. A loop sits at a u-BAND where a tool wall cuts the tube,
-    // but it need not sit at one u: an oblique wall's composite loop (a wall
-    // arc plus a cap arc) wanders ~13° of ring angle (B39's oblique torus–cone
-    // cell). Interior rows at CONSTANT u, started past each loop's u-spread,
-    // stitched every loop vertex to one far row — flat triangles ~0.8 long
-    // across the curved tube, 3e-2 off the surface at a 5e-4 request and ~1 %
-    // of the band's volume. Rows are therefore RULED between the loops at each
-    // v, so every stitch stays local.
+    // Ring-angle (u) of each loop: each loop sits at a u-BAND where a box wall
+    // cuts the tube. The outer loop's v-winding selects its material side by
+    // the oriented-surface boundary rule: positive v runs keep decreasing u;
+    // negative v runs keep increasing u. Include each loop's half-u-spread so
+    // interior rows start at the kept-side edge, not inside the boundary strip.
     let mean_u = |ring: &[(f64, u32)]| -> f64 {
         let (mut sx, mut sy) = (0.0, 0.0);
         for &(_, g) in ring {
@@ -1259,71 +1254,43 @@ pub(super) fn tessellate_torus_notch_band(
         }
         sy.atan2(sx).rem_euclid(TAU)
     };
-    let wrap_pi = |d: f64| (d + PI).rem_euclid(TAU) - PI;
-    let u_table = |ring: &[(f64, u32)], mean: f64| -> Vec<(f64, f64)> {
+    // Max signed u-offset of a ring's vertices from its mean (wrap into (-π,π]).
+    let half_spread = |ring: &[(f64, u32)], mean: f64| -> f64 {
         ring.iter()
-            .map(|&(v, g)| {
+            .map(|&(_, g)| {
                 let (u, _) = project(merged.positions[g as usize]);
-                (v, mean + wrap_pi(u - mean))
+                let d = (u - mean + PI).rem_euclid(TAU) - PI;
+                d.abs()
             })
-            .collect()
+            .fold(0.0_f64, f64::max)
     };
-    // Periodic linear interpolation of a v-sorted `(v, u)` table.
-    let u_at = |table: &[(f64, f64)], v: f64| -> f64 {
-        let n = table.len();
-        let i = table.partition_point(|&(tv, _)| tv <= v);
-        let (lo, hi) = if i == 0 || i == n {
-            let (lv, lu) = table[n - 1];
-            let (hv, hu) = table[0];
-            ((lv, lu), (hv + TAU, hu))
-        } else {
-            (table[i - 1], table[i])
-        };
-        let vq = if v < lo.0 { v + TAU } else { v };
-        let dv = hi.0 - lo.0;
-        if dv <= f64::EPSILON {
-            return f64::midpoint(lo.1, hi.1);
-        }
-        lo.1 + (hi.1 - lo.1) * ((vq - lo.0) / dv)
-    };
-    let table_a = u_table(&ring_a, mean_u(&ring_a));
-    let table_b = u_table(&ring_b, mean_u(&ring_b));
+    let u_a = mean_u(&ring_a);
+    let u_b = mean_u(&ring_b);
+    let spread_a = half_spread(&ring_a, u_a);
+    let spread_b = half_spread(&ring_b, u_b);
 
-    // The outer loop's v-winding selects the material side by the
-    // oriented-surface boundary rule: positive v runs keep decreasing u;
-    // negative v runs keep increasing u. `delta(v)` is the signed ring-angle
-    // run from loop A to loop B across the kept band at tube angle v.
     let increasing = outer_winding < 0.0;
-    let delta = |v: f64| -> f64 {
-        let (ua, ub) = (u_at(&table_a, v), u_at(&table_b, v));
-        if increasing {
-            (ub - ua).rem_euclid(TAU)
-        } else {
-            -(ua - ub).rem_euclid(TAU)
-        }
+    let (u_start, u_end) = if increasing {
+        let span = (u_b - u_a).rem_euclid(TAU);
+        (u_a + spread_a, u_a + span - spread_b)
+    } else {
+        let span = (u_a - u_b).rem_euclid(TAU);
+        (u_a - spread_a, u_a - span + spread_b)
     };
+    let span = (u_end - u_start).abs();
+    if span < 1e-6 {
+        return Ok(false);
+    }
 
+    // Interior rows: full-v circles at constant u, stepped along the sweep. Count
+    // from chord deviation over the band's u-arc-length (radius ≈ R, the ring).
+    let n_u =
+        segments_for_chord_deviation_a(torus.major_radius(), span, deflection, angular_tol, true)
+            .max(2);
     // v-resolution: a full tube circle.
     let n_v =
         segments_for_chord_deviation_a(torus.minor_radius(), TAU, deflection, angular_tol, true)
             .max(8);
-    #[allow(clippy::cast_precision_loss)]
-    let row_v = |j: usize| TAU * (j as f64) / (n_v as f64);
-    let deltas: Vec<f64> = (0..n_v).map(|j| delta(row_v(j))).collect();
-    // Loops touching (or crossing) in u bound no band here: defer.
-    if deltas
-        .iter()
-        .any(|d| d.abs() < 1e-6 || d.abs() > TAU - 1e-6)
-    {
-        return Ok(false);
-    }
-    let span = deltas.iter().fold(0.0_f64, |m, d| m.max(d.abs()));
-
-    // Interior rows stepped across the band, counted from chord deviation over
-    // the band's widest u-arc-length (radius ≈ R, the ring).
-    let n_u =
-        segments_for_chord_deviation_a(torus.major_radius(), span, deflection, angular_tol, true)
-            .max(2);
 
     // Same work bound the CDT interior path applies. A band mesher declines
     // rather than erroring: the caller then routes the face to a path that
@@ -1332,16 +1299,15 @@ pub(super) fn tessellate_torus_notch_band(
         return Ok(false);
     }
 
-    // Interior row `s` (0 < s < 1 of the way from loop A to loop B), sorted by
-    // v, of fresh vertices.
-    let build_row = |s: f64,
-                     merged: &mut TriangleMesh,
-                     point_to_global: &mut DetHashMap<(i64, i64, i64), u32>|
+    // Build interior rings as `LatRing` (sorted by v) of fresh vertices.
+    let build_u_ring = |u: f64,
+                        merged: &mut TriangleMesh,
+                        point_to_global: &mut DetHashMap<(i64, i64, i64), u32>|
      -> LatRing {
         let mut row: LatRing = Vec::with_capacity(n_v);
-        for (j, d) in deltas.iter().enumerate() {
-            let v = row_v(j);
-            let u = (u_at(&table_a, v) + s * d).rem_euclid(TAU);
+        for j in 0..n_v {
+            #[allow(clippy::cast_precision_loss)]
+            let v = TAU * (j as f64) / (n_v as f64);
             let p = torus.evaluate(u, v);
             let key = point_merge_key(p, MERGE_GRID);
             let gid = *point_to_global.entry(key).or_insert_with(|| {
@@ -1364,7 +1330,8 @@ pub(super) fn tessellate_torus_notch_band(
     let mut prev: LatRing = ring_a;
     for iu in 1..n_u {
         #[allow(clippy::cast_precision_loss)]
-        let row = build_row(iu as f64 / n_u as f64, merged, point_to_global);
+        let u = u_start + (u_end - u_start) * (iu as f64) / (n_u as f64);
+        let row = build_u_ring(u.rem_euclid(TAU), merged, point_to_global);
         stitch_rings(merged, &prev, &row, &emit);
         prev = row;
     }
