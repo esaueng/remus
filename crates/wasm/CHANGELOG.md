@@ -32,6 +32,14 @@
 
 ### Features
 
+* `massProperties` (direct and `executeBatch`) accepts optional
+  `adaptiveEps`, `maxDepth` (`0..=32`) and `gaussOrder` (`1..=20`) numerical
+  controls, effective on every face family including trimmed, NURBS and
+  torus-band faces. Omitting them reproduces the previous result exactly.
+  Out-of-range or non-numeric values fail with `invalid_argument` naming the
+  argument; the batch form previously ignored them silently. A tolerance the
+  depth or work budget cannot meet refuses instead of returning an
+  unconverged result.
 * Add `offsetJournaled` to the direct and `executeBatch` APIs, returning the
   result solid and operation id while recording total construction-derived
   face evolution instead of an offset barrier.
