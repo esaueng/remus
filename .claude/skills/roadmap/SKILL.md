@@ -138,7 +138,8 @@ in #500: finding-14 cut/sibling, 18, 21, small-scale cut translation), one B46
 blend-band witness (`regress_torus_pierce_band.rs`, still fails 3/3), one
 P-Class 2.6 witness (`qualify_boolean_anisotropic.rs`, still fails 3/3), and
 five B10 seeds (`b10_curve_curve.rs` ×2, `b10_conic_distance.rs` ×3, all still
-fail 3/3). The other twelve are one ~2 min perf run
+fail 3/3; the two `b10_curve_curve.rs` crossing seeds were fixed and
+un-ignored in PR #642 (2026-09-25), leaving the three conic-distance seeds). The other twelve are one ~2 min perf run
 (`boolean/tests.rs::staircase_fuse_with_cylinders`), two manual release-mode
 `unify_faces` scaling measurements (`regress_unify_scaling.rs`, issue #284),
 and nine print-only diagnostics (`profile_intersect.rs` ×3, the two #696
@@ -147,6 +148,8 @@ the five in flight (every other ignored test re-run 3× on 2026-09-18; `io`,
 `algo`, `math`, and `wasm` carry no actual ignores). The concave-notch fillet
 and obtuse-ridge chamfer pins are no longer ignored after #398. Re-run
 landscape diagnostics with `--ignored --nocapture` before re-opening a case.
+Added since that snapshot: the B55 curved-offset scale witness
+(`crates/offset/tests/regress_curved_offset_scale.rs`, fails on `main`).
 Current work lives in the master roadmap; closed narratives live in
 `campaign-history.md`.
 
@@ -160,6 +163,8 @@ harness's own option-honoured floor misreading a correct 0.05 fillet on an
 - **A NURBS carrier with a coplanar control net is the plane it is; recognise it before FF/EF/face-info, and gate that recognition on exact planarity:** applying the trimmed-extent and chart-crossing machinery to a genuinely curved import paved 12,408 noise crossings and broke its splitter (`helpers::planar_nurbs_as_plane`, PR #396). Also: never feed a NURBS knot span to the arc-chord formula as radians (`tessellate/nonplanar.rs` grid sizer).
 - **Prune NURBS pairs with conservative boxes that are result-identical by construction:** control-net box (convex hull) on the face side, endpoint-padded edge box on the edge side, gate at a multiple of every threshold the scan uses, and count survivors with a `perf-counters` scaling guard (`phase_ef.rs`, `distance.rs`, PRs #394/#395).
 - **Blend resize identity requires construction support lineage plus a complete unique boundary incidence map:** a rebuilt band is not automatically a preserved face (`crates/operations/tests/journal_resize_blend.rs`); removal additionally requires complete boundary merge/deletion coverage, and broader regions refuse the journaled path.
+
+- **A total exact face map induces edge/vertex history by incidence, but only where incidence is unique;** shared incidence (torus seams, a sphere's equator ring) must stay typed unresolved, and seams are parametrisation artifacts the offset engine rebuilds elsewhere, so a nearest-geometry oracle misjudges them (`crates/operations/src/boundary_evolution.rs`, `qualify_offset_entity_evolution.rs`, B18).
 
 - **Journal setup belongs inside the operation transaction:** `journal_begin` can publish an outstanding global barrier before geometry runs; refusal must restore it (`crates/operations/tests/journal.rs`, shell/split and boolean/pattern unpublished-history regressions).
 
@@ -176,7 +181,7 @@ harness's own option-honoured floor misreading a correct 0.05 fillet on an
 - **Public profile construction must use the strict wire-to-face path;** the low-level plane-from-points builder is not a collinearity validity gate (`crates/remus/src/model.rs`, PR #225).
 - **Performance baselines start from measured stack families, not a guessed loop list;** O3.1's 3% census and native-only Criterion map live in `docs/kernel-maturity/o31-inner-loop-baseline.md`.
 - **Exact rational conic twins do not preserve angle-linear parameter speed;** compare positions after projection plus tangent direction and curvature, and use a deterministic one-sided radial derivative at revolution poles (`crates/math/src/surfaces/swept/tests.rs`, PR #189).
-- **Bezier-clip fat-line clips converge to the control-polygon midpoint, not the true crossing — and the sampled-AABB prefilter then prunes the phantom branch, so transversal conic-twin crossings vanish silently;** `clip_to_fat_line` re-uses full-segment control-polygon distances at every depth (only t-coordinates narrow), biasing each clip ~0.009 param units until the root is excluded (~depth 8), and absolute merge/Newton tolerances fragment double roots and blind sub-scales (`crates/geometry/tests/b10_curve_curve.rs`, B10).
+- **Bezier clipping must rebuild the fat line from the CURRENT sub-segments at every depth (fixed 2026-09-25, B10):** re-using the parent control polygon made every clip a fixed centred shrink that dropped off-centre roots silently; judge termination, Newton, merge and overlap-vs-tangency in model space, and separate a tangent contact from an overlap by second-order (tangent + curvature) agreement, never Hausdorff alone (`crates/math/src/nurbs/bezier_clip.rs`, `crates/geometry/tests/b10_curve_curve.rs`).
 - **A curve lying IN a surface resolves every seed as a hit (no overlap model in `intersect_curve_surface`);** a constant-coordinate "transversal" test config can be coincident — check the direction against the surface normal before believing a spray (`crates/geometry/tests/b10_curve_surface.rs`, B10).
 - **Gauss-Newton extrema stalls where |(C−P)·a| ≈ |v|² (minor-axis ellipse vertex from 4 radii: the dropped curvature term equals the kept term, scale-invariant);** a right-distance/wrong-point answer passes unless stationarity is asserted (`crates/geometry/tests/b10_conic_distance.rs`, B10).
 
