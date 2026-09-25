@@ -92,6 +92,10 @@ struct ResultSpec {
     validation_index: usize,
     mesh_quality_index: usize,
     faces_index: usize,
+    /// Optional `validateSolidChecked` probe (the check crate's validator),
+    /// a native-only second validator for the fixture cells.
+    #[serde(default)]
+    checked_validation_index: Option<usize>,
 }
 
 impl ResultSpec {
@@ -159,6 +163,10 @@ struct Observation {
     /// result volume without a second envelope.
     #[serde(skip_serializing_if = "BTreeMap::is_empty", default)]
     volumes_by_index: BTreeMap<usize, f64>,
+    /// The check crate's validator error count when the case carried a
+    /// `checkedValidationIndex` probe (fixture cells); absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    checked_validation_errors: Option<u64>,
 }
 
 /// Whether a batch op answers with a `{solid, ...}` object rather than a bare
@@ -409,6 +417,17 @@ fn get_f64(args: &Value, key: &str) -> Result<f64, RunnerError> {
         .ok_or_else(|| err(format!("missing or invalid '{key}'")))
 }
 
+fn decode_hex(hex: &str) -> Result<Vec<u8>, RunnerError> {
+    let hex = hex.trim();
+    if !hex.len().is_multiple_of(2) {
+        return Err(err("bytesHex has odd length"));
+    }
+    (0..hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).map_err(|e| err(format!("bytesHex: {e}"))))
+        .collect()
+}
+
 fn get_f64_or(args: &Value, key: &str, default: f64) -> f64 {
     args.get(key).and_then(Value::as_f64).unwrap_or(default)
 }
@@ -442,6 +461,15 @@ fn resolve_ref(value: &Value, ok_values: &[Value]) -> Result<Value, RunnerError>
         .ok_or_else(|| err(format!("fromOp {from} out of range")))?
         .clone();
     if let Some(pick) = value.get("pick").and_then(Value::as_str) {
+        // `pick: solid` reads the handle out of a `{solid, quality}` boolean
+        // response, so a fixture cell can chain exact-only booleans the way
+        // the WASM direct calls do (`out.solid`).
+        if pick == "solid" {
+            return source
+                .get("solid")
+                .cloned()
+                .ok_or_else(|| err("pick source has no solid handle"));
+        }
         let list = source
             .as_array()
             .ok_or_else(|| err("pick source must be a handle list"))?;
@@ -519,7 +547,9 @@ fn resolve_args(args: &Value, ok_values: &[Value], model: &Model) -> Result<Valu
             map.insert("edges".to_owned(), Value::Array(vec![resolved]));
         }
     }
-    for key in ["face", "profile", "pathEdge", "wire", "solid"] {
+    for key in [
+        "face", "profile", "pathEdge", "wire", "solid", "solidA", "solidB",
+    ] {
         if let Some(entry) = map.get(key).cloned()
             && entry.get("fromOp").is_some()
         {
@@ -1259,6 +1289,42 @@ fn dispatch(
             *quality = Some("exact".to_owned());
             Ok(solid_handle(result))
         }
+        "deserializeSolids" => {
+            // Fixture entry shared with the WASM direct path: the same
+            // hex-encoded exact arena document (`--step-to-arena`) enters
+            // both surfaces through `deserialize_solids`, so the operands
+            // are bit-identical by construction.
+            let hex = args
+                .get("bytesHex")
+                .and_then(Value::as_str)
+                .ok_or_else(|| ops_err("missing 'bytesHex'"))?;
+            let bytes = decode_hex(hex).map_err(|e| ops_err(&e.0))?;
+            let solids = remus_io::arena_io::deserialize_solids(&bytes, model.topology_mut())
+                .map_err(|e| ops_err(&format!("arena document: {e}")))?;
+            Ok(Value::Array(solids.into_iter().map(solid_handle).collect()))
+        }
+        "validateSolidChecked" => {
+            // The check crate's validator (errors only): the second
+            // validator the native hammer mirror runs. The WASM kernel does
+            // not export it, so the JS driver records it as native-only.
+            let solid = as_solid(
+                model,
+                args.get("solid")
+                    .ok_or_else(|| ops_err("missing 'solid'"))?,
+            )?;
+            let report = remus_check::validate::validate_solid(
+                model.topology(),
+                solid,
+                &remus_check::validate::ValidateOptions::default(),
+            )
+            .map_err(|e| ops_err(&format!("check validate: {e}")))?;
+            let errors = report
+                .issues
+                .iter()
+                .filter(|issue| issue.severity == remus_check::validate::Severity::Error)
+                .count();
+            Ok(serde_json::json!(errors))
+        }
         "volume" => {
             let solid = as_solid(
                 model,
@@ -1285,7 +1351,13 @@ fn dispatch(
                     .ok_or_else(|| ops_err("missing 'solid'"))?,
             )?;
             let deflection = get_f64_or(args, "deflection", 0.1);
-            let mesh = model.tessellate(solid, deflection)?;
+            // Honor an explicit angular tolerance exactly as the WASM
+            // `meshQuality(solid, deflection, angularTolerance)` call does;
+            // omitted keeps each surface's default.
+            let mesh = match args.get("angularTolerance").and_then(Value::as_f64) {
+                Some(angular) => model.tessellate_with_tolerance(solid, deflection, angular)?,
+                None => model.tessellate(solid, deflection)?,
+            };
             let quality = welded_mesh_quality(&mesh);
             Ok(serde_json::json!({
                 "triangleCount": quality.triangle_count,
@@ -1487,6 +1559,7 @@ fn observe(case: Case) -> Result<Observation, RunnerError> {
             rollback_faces,
             evolution: None,
             volumes_by_index: BTreeMap::new(),
+            checked_validation_errors: None,
         });
     }
 
@@ -1563,6 +1636,14 @@ fn observe(case: Case) -> Result<Observation, RunnerError> {
     let validation_errors = response_ok(&responses, case.result.validation_index, "validation")?
         .as_u64()
         .ok_or_else(|| err("validation response is not an integer"))?;
+    let checked_validation_errors = match case.result.checked_validation_index {
+        Some(index) => Some(
+            response_ok(&responses, index, "checked validation")?
+                .as_u64()
+                .ok_or_else(|| err("checked validation response is not an integer"))?,
+        ),
+        None => None,
+    };
     let mesh_quality =
         response_ok(&responses, case.result.mesh_quality_index, "mesh quality")?.clone();
     let faces = response_ok(&responses, case.result.faces_index, "solid faces")?
@@ -1652,6 +1733,7 @@ fn observe(case: Case) -> Result<Observation, RunnerError> {
         rollback_faces: None,
         evolution,
         volumes_by_index,
+        checked_validation_errors,
     })
 }
 
@@ -1671,7 +1753,34 @@ fn detect_nurbs_kind(model: &Model, face: FaceId) -> Result<String, RunnerError>
     }
 }
 
+/// `--step-to-arena PATH`: read a STEP file natively and print its solids as
+/// one hex-encoded exact arena document on stdout. The fixture cells feed
+/// these bytes to BOTH surfaces through `deserializeSolids`, so a STEP
+/// fixture enters the WASM kernel package (built without the translators)
+/// as bit-identical operands to the native run.
+fn step_to_arena(path: &str) -> Result<(), Box<dyn Error>> {
+    let text = std::fs::read_to_string(path)?;
+    let mut topology = remus_topology::Topology::new();
+    let solids = remus_io::step::reader::read_step(&text, &mut topology)?;
+    let bytes = remus_io::arena_io::serialize_solids(&topology, &solids)?;
+    let mut hex = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        use std::fmt::Write as _;
+        write!(hex, "{byte:02x}")?;
+    }
+    hex.push('\n');
+    io::Write::write_all(&mut io::stdout(), hex.as_bytes())?;
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("--step-to-arena") {
+        let path = args
+            .get(2)
+            .ok_or_else(|| err("usage: remus-parity-native --step-to-arena PATH"))?;
+        return step_to_arena(path);
+    }
     let mut input = String::new();
     io::stdin().read_to_string(&mut input)?;
     let case: Case = serde_json::from_str(&input)?;
