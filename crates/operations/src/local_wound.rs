@@ -1370,8 +1370,40 @@ mod tests {
         start: VertexId,
         end: VertexId,
         center: Point3,
+        normal: Vec3,
+        radius: f64,
+    ) -> EdgeId {
+        minor_circle_with_trim(
+            topo,
+            start,
+            end,
+            center,
+            normal,
+            radius,
+            TrimLayout::default(),
+        )
+    }
+
+    /// How a fixture circle stores its minor-arc trim.  The geometry is the
+    /// same exact arc in every layout; only the parameter bookkeeping moves.
+    #[derive(Clone, Copy, Default)]
+    struct TrimLayout {
+        /// Parameter of the start vertex (the reference direction is rotated
+        /// so the start lands here instead of at zero).
+        offset: f64,
+        /// Store the arc on the opposite normal so its parameter decreases
+        /// from start to end (a negative-span trim).
+        decreasing: bool,
+    }
+
+    fn minor_circle_with_trim(
+        topo: &mut Topology,
+        start: VertexId,
+        end: VertexId,
+        center: Point3,
         mut normal: Vec3,
         radius: f64,
+        layout: TrimLayout,
     ) -> EdgeId {
         let start_point = topo.vertex(start).unwrap().point();
         let end_point = topo.vertex(end).unwrap().point();
@@ -1385,8 +1417,22 @@ mod tests {
             end_parameter = circle.project(end_point).rem_euclid(std::f64::consts::TAU);
         }
         assert!(end_parameter > 1e-9 && end_parameter <= std::f64::consts::PI + 1e-9);
+        let sweep = if layout.decreasing {
+            circle = build(normal * -1.0);
+            -end_parameter
+        } else {
+            end_parameter
+        };
+        // Rotate the reference direction by -offset: the start vertex then
+        // evaluates at `offset` and the end at `offset + sweep`.
+        let (sin, cos) = layout.offset.sin_cos();
+        let reference = circle.u_axis() * cos - circle.v_axis() * sin;
+        let circle = Circle3D::new_with_ref(center, circle.normal(), radius, reference).unwrap();
+        let trim = (layout.offset, layout.offset + sweep);
+        assert!((circle.evaluate(trim.0) - start_point).length() < 1e-12 * radius.max(1.0));
+        assert!((circle.evaluate(trim.1) - end_point).length() < 1e-12 * radius.max(1.0));
         let mut edge = Edge::new(start, end, EdgeCurve::Circle(circle));
-        edge.set_trim(Some((0.0, end_parameter)));
+        edge.set_trim(Some(trim));
         topo.add_edge(edge)
     }
 
@@ -1399,7 +1445,50 @@ mod tests {
     /// uses the five exact plane/sphere or cylinder/sphere circles.  No boolean
     /// or fitted 3D curve participates in the fixture.
     fn sphere_ended_band_fixture(scale: f64) -> Fixture {
-        let (r, l, h, sphere_radius) = (2.0 * scale, 4.0 * scale, 3.0 * scale, 8.0 * scale);
+        sphere_ended_band_fixture_with(&FixtureOptions {
+            scale,
+            ..FixtureOptions::default()
+        })
+    }
+
+    /// Variations of the same exact body.  Every option changes only how the
+    /// identical solid is stored or how tall its planar column is, so each
+    /// variant has the same closed-form sharp corner and volume integrand.
+    #[derive(Clone, Copy)]
+    struct FixtureOptions {
+        scale: f64,
+        /// Depth of the planar bottom cap below the sphere centre, in units
+        /// of `scale` (the original fixture uses 3).
+        depth: f64,
+        /// Spherical chart axis and longitude reference; `None` is the
+        /// world frame.
+        sphere_frame: Option<(Vec3, Vec3)>,
+        /// Store the two changed plane/sphere circles from the band terminal
+        /// outward instead of toward it (the opposite `replace_start` arm).
+        reverse_sphere_boundaries: bool,
+        /// Parameter bookkeeping of those two circles.
+        sphere_boundary_trim: TrimLayout,
+        /// Multiply every stored plane equation by this factor.
+        plane_storage_scale: f64,
+    }
+
+    impl Default for FixtureOptions {
+        fn default() -> Self {
+            Self {
+                scale: 1.0,
+                depth: 3.0,
+                sphere_frame: None,
+                reverse_sphere_boundaries: false,
+                sphere_boundary_trim: TrimLayout::default(),
+                plane_storage_scale: 1.0,
+            }
+        }
+    }
+
+    fn sphere_ended_band_fixture_with(options: &FixtureOptions) -> Fixture {
+        let scale = options.scale;
+        let (r, l, h, sphere_radius) =
+            (2.0 * scale, 4.0 * scale, options.depth * scale, 8.0 * scale);
         let z_corner = (sphere_radius * sphere_radius - 2.0 * l * l).sqrt();
         let z_side = (sphere_radius * sphere_radius - r * r - l * l).sqrt();
         let z_band = (sphere_radius * sphere_radius - r * r).sqrt();
@@ -1437,13 +1526,16 @@ mod tests {
             Vec3::new(0.0, 1.0, 0.0),
             (sphere_radius * sphere_radius - l * l).sqrt(),
         );
-        let t12 = minor_circle(
+        let reversed = options.reverse_sphere_boundaries;
+        let (t12_start, t12_end) = if reversed { (t2, t1) } else { (t1, t2) };
+        let t12 = minor_circle_with_trim(
             &mut topo,
-            t1,
-            t2,
+            t12_start,
+            t12_end,
             Point3::new(r, 0.0, 0.0),
             Vec3::new(1.0, 0.0, 0.0),
             (sphere_radius * sphere_radius - r * r).sqrt(),
+            options.sphere_boundary_trim,
         );
         let t23 = minor_circle(
             &mut topo,
@@ -1453,13 +1545,15 @@ mod tests {
             Vec3::new(0.0, 0.0, 1.0),
             r,
         );
-        let t34 = minor_circle(
+        let (t34_start, t34_end) = if reversed { (t4, t3) } else { (t3, t4) };
+        let t34 = minor_circle_with_trim(
             &mut topo,
-            t3,
-            t4,
+            t34_start,
+            t34_end,
             Point3::new(0.0, r, 0.0),
             Vec3::new(0.0, 1.0, 0.0),
             (sphere_radius * sphere_radius - r * r).sqrt(),
+            options.sphere_boundary_trim,
         );
         let t40 = minor_circle(
             &mut topo,
@@ -1508,7 +1602,7 @@ mod tests {
             vec![
                 OrientedEdge::new(b12, false),
                 OrientedEdge::new(v1, true),
-                OrientedEdge::new(t12, true),
+                OrientedEdge::new(t12, !reversed),
                 OrientedEdge::new(v2, false),
             ],
             FaceSurface::Plane {
@@ -1534,7 +1628,7 @@ mod tests {
             vec![
                 OrientedEdge::new(b34, false),
                 OrientedEdge::new(v3, true),
-                OrientedEdge::new(t34, true),
+                OrientedEdge::new(t34, !reversed),
                 OrientedEdge::new(v4, false),
             ],
             FaceSurface::Plane {
@@ -1555,15 +1649,24 @@ mod tests {
                 d: l,
             },
         );
-        let sphere = SphericalSurface::new(Point3::new(0.0, 0.0, 0.0), sphere_radius).unwrap();
+        let sphere = match options.sphere_frame {
+            None => SphericalSurface::new(Point3::new(0.0, 0.0, 0.0), sphere_radius),
+            Some((axis, reference)) => SphericalSurface::with_frame(
+                Point3::new(0.0, 0.0, 0.0),
+                sphere_radius,
+                axis,
+                reference,
+            ),
+        }
+        .unwrap();
         let sphere_face = face(
             &mut topo,
             vec![
                 OrientedEdge::new(t01, false),
                 OrientedEdge::new(t40, false),
-                OrientedEdge::new(t34, false),
+                OrientedEdge::new(t34, reversed),
                 OrientedEdge::new(t23, false),
-                OrientedEdge::new(t12, false),
+                OrientedEdge::new(t12, reversed),
             ],
             FaceSurface::Sphere(sphere),
         );
@@ -1580,6 +1683,20 @@ mod tests {
             .unwrap(),
         );
         let solid = topo.add_solid(Solid::new(shell, vec![]));
+
+        // Multiplying by the default factor 1.0 is exact, so the original
+        // fixture is unchanged.
+        for plane_face in [bottom, south, support_x, support_y, west] {
+            let FaceSurface::Plane { normal, d } = *topo.face(plane_face).unwrap().surface() else {
+                unreachable!("fixture plane");
+            };
+            topo.face_mut(plane_face)
+                .unwrap()
+                .set_surface(FaceSurface::Plane {
+                    normal: normal * options.plane_storage_scale,
+                    d: d * options.plane_storage_scale,
+                });
+        }
 
         // Give the two changed analytic boundaries real per-use p-curve
         // authority.  The healer must replace it with validated p-curves, not
@@ -1630,8 +1747,12 @@ mod tests {
     /// the spherical height above the exact sharp square footprint, rather
     /// than reusing B-rep faces, tessellation, or the operations volume path.
     fn sharp_volume_oracle(scale: f64) -> f64 {
+        sharp_volume_oracle_with_depth(scale, 3.0)
+    }
+
+    fn sharp_volume_oracle_with_depth(scale: f64, depth: f64) -> f64 {
         const N: usize = 400;
-        let (lo, hi, bottom, radius) = (-4.0 * scale, 2.0 * scale, 3.0 * scale, 8.0 * scale);
+        let (lo, hi, bottom, radius) = (-4.0 * scale, 2.0 * scale, depth * scale, 8.0 * scale);
         let step = (hi - lo) / N as f64;
         let mut sum = 0.0;
         for ix in 0..=N {
@@ -1943,6 +2064,930 @@ mod tests {
             remus_topology::explorer::solid_entity_counts(&before_public, solid).unwrap(),
             remus_topology::explorer::solid_entity_counts(&topo, solid).unwrap(),
             "public transaction rolls back every attempted reconstruction"
+        );
+    }
+
+    // ---- B19 survivor tranche: independent oracles for the sphere-end
+    // certificates.  Every expected value below is derived from the fixture's
+    // closed-form geometry (plane x = r, plane y = r, sphere |p| = R), never
+    // from a previous run of the code under test.
+
+    const R_SPHERE: f64 = 8.0;
+
+    fn sphere_corner(scale: f64) -> Point3 {
+        Point3::new(2.0 * scale, 2.0 * scale, (64.0_f64 - 8.0).sqrt() * scale)
+    }
+
+    fn unit(normal: Vec3, d: f64) -> UnitPlane {
+        UnitPlane { normal, d }
+    }
+
+    fn plane_residual(plane: UnitPlane, point: Point3) -> f64 {
+        plane.normal.dot(Vec3::new(point.x(), point.y(), point.z())) - plane.d
+    }
+
+    /// Heal the given fixture variant and check it against the closed-form
+    /// sharp body: one support/support line and two plane/sphere circles meet
+    /// the exact root, each circle keeps its far vertex and grows by exactly
+    /// the angle from the old terminal to the root on its own carrier.
+    fn assert_heals_to_sharp_corner(options: &FixtureOptions) -> (Topology, SolidId) {
+        let Fixture {
+            mut topo,
+            solid,
+            band,
+            supports,
+            sphere_boundaries,
+        } = sphere_ended_band_fixture_with(options);
+        assert_valid(&topo, solid);
+        let scale = options.scale;
+        let corner = sphere_corner(scale);
+        let mut expected_spans = Vec::new();
+        for (edge, terminal_y) in sphere_boundaries.into_iter().zip([0.0, 2.0 * scale]) {
+            let data = topo.edge(edge).unwrap();
+            let EdgeCurve::Circle(circle) = data.curve() else {
+                panic!("fixture sphere boundary is a circle");
+            };
+            let (t0, t1) = data.strict_domain().unwrap();
+            // The old terminal is the band vertex on this circle: (r, 0, zb)
+            // on x = r, or (0, r, zb) on y = r.
+            let zb = (60.0_f64).sqrt() * scale;
+            let terminal = if terminal_y == 0.0 {
+                Point3::new(2.0 * scale, 0.0, zb)
+            } else {
+                Point3::new(0.0, 2.0 * scale, zb)
+            };
+            let a = (terminal - circle.center()).normalize().unwrap();
+            let b = (corner - circle.center()).normalize().unwrap();
+            let growth = a.dot(b).clamp(-1.0, 1.0).acos();
+            expected_spans.push(((t1 - t0).abs() + growth, circle.center()));
+        }
+        let before_faces = remus_topology::explorer::solid_faces(&topo, solid)
+            .unwrap()
+            .len();
+        let outcome = heal_cylinder_plane_band_sphere_end(&mut topo, solid, band, supports)
+            .unwrap_or_else(|error| panic!("heal failed: {error}"))
+            .expect("qualified sphere end");
+        assert_valid(&topo, outcome.solid);
+        assert_manifold_vertex_disks(&topo, outcome.solid);
+        assert_eq!(
+            remus_topology::explorer::solid_faces(&topo, outcome.solid)
+                .unwrap()
+                .len(),
+            before_faces - 1
+        );
+        let near = |point: Point3| (point - corner).length() < 1e-9 * scale.max(1.0);
+        let mut lines = 0;
+        let mut spans = Vec::new();
+        for edge in remus_topology::explorer::solid_edges(&topo, outcome.solid).unwrap() {
+            let data = topo.edge(edge).unwrap();
+            let start = topo.vertex(data.start()).unwrap().point();
+            let end = topo.vertex(data.end()).unwrap().point();
+            if !(near(start) || near(end)) {
+                continue;
+            }
+            match data.curve() {
+                EdgeCurve::Line => lines += 1,
+                EdgeCurve::Circle(circle) => {
+                    let (t0, t1) = data.strict_domain().unwrap();
+                    assert!((circle.evaluate(t0) - start).length() < 1e-9 * scale.max(1.0));
+                    assert!((circle.evaluate(t1) - end).length() < 1e-9 * scale.max(1.0));
+                    spans.push(((t1 - t0).abs(), circle.center()));
+                }
+                other => panic!("unexpected {} at the sharp corner", other.type_tag()),
+            }
+        }
+        assert_eq!(lines, 1, "one support/support sharp line reaches the root");
+        assert_eq!(spans.len(), 2, "two extended plane/sphere circles");
+        for (expected, center) in expected_spans {
+            let (actual, _) = spans
+                .iter()
+                .copied()
+                .find(|(_, c)| (*c - center).length() < 1e-12 * scale.max(1.0))
+                .expect("extended circle keeps its exact carrier");
+            assert!(
+                (actual - expected).abs() < 1e-9,
+                "extended span {actual} != old span + exact growth {expected}"
+            );
+        }
+        (topo, outcome.solid)
+    }
+
+    #[test]
+    fn unit_plane_normalizes_the_stored_plane_equation() {
+        let mut topo = Topology::new();
+        let a = vertex(&mut topo, 0.0, 0.0, 3.0);
+        let b = vertex(&mut topo, 1.0, 0.0, 3.0);
+        let c = vertex(&mut topo, 0.0, 1.0, 3.0);
+        let edges = [
+            line(&mut topo, a, b),
+            line(&mut topo, b, c),
+            line(&mut topo, c, a),
+        ];
+        let plane = face(
+            &mut topo,
+            edges
+                .iter()
+                .map(|edge| OrientedEdge::new(*edge, true))
+                .collect(),
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 2.5),
+                d: 7.5,
+            },
+        );
+        let unit = unit_plane(&topo, plane).unwrap().unwrap();
+        assert!((unit.normal - Vec3::new(0.0, 0.0, 1.0)).length() < 1e-15);
+        assert!(
+            (unit.d - 3.0).abs() < 1e-15,
+            "offset of z = 3 is 3, got {}",
+            unit.d
+        );
+    }
+
+    #[test]
+    fn non_unit_plane_storage_heals_to_the_same_sharp_corner() {
+        for plane_storage_scale in [2.5, 0.4] {
+            assert_heals_to_sharp_corner(&FixtureOptions {
+                plane_storage_scale,
+                ..FixtureOptions::default()
+            });
+        }
+    }
+
+    #[test]
+    fn triple_plane_corner_solves_oblique_planes_and_refuses_near_parallel() {
+        // Three oblique unit planes through the known point p.
+        let p = Point3::new(1.25, -0.5, 2.0);
+        let planes = [
+            Vec3::new(1.0, 2.0, 2.0) * (1.0 / 3.0),
+            Vec3::new(-2.0, 1.0, 2.0) * (1.0 / 3.0),
+            Vec3::new(0.6, 0.0, 0.8),
+        ]
+        .map(|normal| unit(normal, normal.dot(Vec3::new(p.x(), p.y(), p.z()))));
+        let corner = triple_plane_corner(planes[0], planes[1], planes[2]).expect("transverse");
+        assert!((corner - p).length() < 1e-12, "corner {corner:?} != {p:?}");
+        for plane in planes {
+            assert!(plane_residual(plane, corner).abs() < 1e-12);
+        }
+        // A third plane within 1e-8 rad of the first gives |det| ~ 1e-8,
+        // below the 1e-6 corner gate: no meaningful corner exists.
+        let tilt = 1e-8;
+        let almost = unit(
+            Vec3::new(1.0, 2.0 + tilt, 2.0) * (1.0 / (9.0 + 4.0 * tilt).sqrt()),
+            1.0,
+        );
+        assert!(triple_plane_corner(planes[0], planes[1], almost).is_none());
+    }
+
+    fn assert_roots_on_line_and_sphere(
+        roots: &[Point3],
+        origin: Point3,
+        direction: Vec3,
+        center: Point3,
+        radius: f64,
+    ) {
+        let unit_direction = direction.normalize().unwrap();
+        for root in roots {
+            let offset = *root - origin;
+            let off_line = (offset - unit_direction * offset.dot(unit_direction)).length();
+            assert!(
+                off_line < 1e-9 * radius.max(1.0),
+                "root off the line by {off_line}"
+            );
+            let off_sphere = ((*root - center).length() - radius).abs();
+            assert!(
+                off_sphere < 1e-9 * radius.max(1.0),
+                "root off the sphere by {off_sphere}"
+            );
+        }
+    }
+
+    #[test]
+    fn line_sphere_roots_are_invariant_to_direction_length() {
+        // Line x = 2, y = 2 through the radius-8 sphere: roots z = ±sqrt(56).
+        let center = Point3::new(0.0, 0.0, 0.0);
+        let origin = Point3::new(2.0, 2.0, -3.0);
+        let expected = (56.0_f64).sqrt();
+        for length in [1.0, 3.0, 0.25, 1e-7] {
+            let direction = Vec3::new(0.0, 0.0, length);
+            let roots = line_sphere_roots(origin, direction, center, R_SPHERE);
+            assert_eq!(roots.len(), 2, "direction length {length}");
+            assert_roots_on_line_and_sphere(&roots, origin, direction, center, R_SPHERE);
+            assert!((roots[0].z() + expected).abs() < 1e-12);
+            assert!((roots[1].z() - expected).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn line_sphere_roots_separate_distinct_roots_from_tangency() {
+        let center = Point3::new(0.0, 0.0, 0.0);
+        let direction = Vec3::new(0.0, 0.0, 1.0);
+        // Chord half-length 1e-4 (roots 2e-4 apart, far above the 1e-7
+        // modeling tolerance): two genuine roots.
+        let span = 1e-4;
+        let distance = (R_SPHERE * R_SPHERE - span * span).sqrt();
+        let origin = Point3::new(distance, 0.0, 0.0);
+        let roots = line_sphere_roots(origin, direction, center, R_SPHERE);
+        assert_eq!(roots.len(), 2);
+        assert_roots_on_line_and_sphere(&roots, origin, direction, center, R_SPHERE);
+        assert!(((roots[1] - roots[0]).length() - 2.0 * span).abs() < 1e-9);
+        // Chord half-length 5e-8, below the modeling tolerance: tangent.
+        let span = 5e-8;
+        let distance = (R_SPHERE * R_SPHERE - span * span).sqrt();
+        let origin = Point3::new(distance, 0.0, 0.0);
+        assert!(line_sphere_roots(origin, direction, center, R_SPHERE).is_empty());
+        // At radius 1e6 the squared chord 1e-3 is below the cancellation
+        // noise of R^2 - d^2 (~64 eps * 1e12): the roots are not certified.
+        let radius: f64 = 1e6;
+        let span_squared = 1e-3;
+        let origin = Point3::new((radius * radius - span_squared).sqrt(), 0.0, 0.0);
+        assert!(line_sphere_roots(origin, direction, center, radius).is_empty());
+    }
+
+    fn sphere_r8() -> remus_math::surfaces::SphericalSurface {
+        SphericalSurface::new(Point3::new(0.0, 0.0, 0.0), R_SPHERE).unwrap()
+    }
+
+    #[test]
+    fn plane_sphere_circle_certificate_accepts_the_exact_section() {
+        // Plane x = 2 meets |p| = 8 in the circle centred (2,0,0), r^2 = 60.
+        let plane = unit(Vec3::new(1.0, 0.0, 0.0), 2.0);
+        for normal in [Vec3::new(1.0, 0.0, 0.0), Vec3::new(-1.0, 0.0, 0.0)] {
+            let circle =
+                Circle3D::new(Point3::new(2.0, 0.0, 0.0), normal, 60.0_f64.sqrt()).unwrap();
+            assert!(certify_plane_sphere_circle(&circle, plane, &sphere_r8()));
+        }
+        // A squared radius 2e-7 off is inside the R-scaled tolerance 1e-7 * 8.
+        let near = Circle3D::new(
+            Point3::new(2.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            (60.0_f64 + 2e-7).sqrt(),
+        )
+        .unwrap();
+        assert!(certify_plane_sphere_circle(&near, plane, &sphere_r8()));
+        // Plane z = 0 is the great circle, radius 8 (r^2 = 64 differs from 2r).
+        let equator =
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 8.0).unwrap();
+        assert!(certify_plane_sphere_circle(
+            &equator,
+            unit(Vec3::new(0.0, 0.0, 1.0), 0.0),
+            &sphere_r8()
+        ));
+    }
+
+    #[test]
+    fn plane_sphere_circle_certificate_refuses_each_violated_clause() {
+        let plane = unit(Vec3::new(1.0, 0.0, 0.0), 2.0);
+        let sphere = sphere_r8();
+        // 1. A genuine sphere section on a plane tilted 1e-5 rad about y whose
+        //    centre still lies on x = 2: centre and radius clauses hold, only
+        //    the normal clause (1 - cos 1e-5 = 5e-11 > 1e-12) refuses.
+        let tilt: f64 = 1e-5;
+        let tilted = Vec3::new(tilt.cos(), 0.0, tilt.sin());
+        let distance = 2.0 / tilt.cos();
+        let tilted_circle = Circle3D::new(
+            Point3::new(0.0, 0.0, 0.0) + tilted * distance,
+            tilted,
+            (R_SPHERE * R_SPHERE - distance * distance).sqrt(),
+        )
+        .unwrap();
+        assert!((plane_residual(plane, tilted_circle.center())).abs() < 1e-12);
+        assert!(!certify_plane_sphere_circle(&tilted_circle, plane, &sphere));
+        // 2. The exact section of the parallel plane x = 2 + 1e-4: it lies on
+        //    the sphere, but not on the support plane.
+        let shifted = 2.0 + 1e-4;
+        let off_plane = Circle3D::new(
+            Point3::new(shifted, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            (R_SPHERE * R_SPHERE - shifted * shifted).sqrt(),
+        )
+        .unwrap();
+        assert!(!certify_plane_sphere_circle(&off_plane, plane, &sphere));
+        // 3. In-plane circle with the section radius but a centre 1e-4 off the
+        //    sphere axis: plane and radius clauses hold, it is not on the sphere.
+        let off_axis = Circle3D::new(
+            Point3::new(2.0, 1e-4, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            60.0_f64.sqrt(),
+        )
+        .unwrap();
+        assert!(!certify_plane_sphere_circle(&off_axis, plane, &sphere));
+        // 4. Correct centre and plane, radius 1e-4 too large.
+        let wrong_radius = Circle3D::new(
+            Point3::new(2.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            60.0_f64.sqrt() + 1e-4,
+        )
+        .unwrap();
+        assert!(!certify_plane_sphere_circle(&wrong_radius, plane, &sphere));
+    }
+
+    /// Circle of radius 3 about the z axis, u axis +x: `evaluate(t)` is the
+    /// point at polar angle t, so expected parameters are exact angles.
+    fn polar_circle() -> Circle3D {
+        Circle3D::new_with_ref(
+            Point3::new(0.0, 0.0, 1.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            3.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn extended_circle_trim_grows_the_named_terminal_by_the_exact_angle() {
+        let circle = polar_circle();
+        let tau = std::f64::consts::TAU;
+        // (old domain, replace_start, angle of the new terminal, expected).
+        // Domains are placed on shifted periods and in both parameter
+        // directions; each expectation is the unique continuation of the
+        // named terminal that keeps the other terminal fixed.
+        let cases = [
+            ((0.0, 1.0), false, 1.5, (0.0, 1.5)),
+            ((0.0, 1.0), true, -0.25, (-0.25, 1.0)),
+            (
+                (2.0 * tau + 0.5, 2.0 * tau + 1.0),
+                false,
+                1.75,
+                (2.0 * tau + 0.5, 2.0 * tau + 1.75),
+            ),
+            (
+                (2.0 * tau + 0.5, 2.0 * tau + 1.0),
+                true,
+                0.25,
+                (2.0 * tau + 0.25, 2.0 * tau + 1.0),
+            ),
+            ((-5.0, -4.0), false, -3.5, (-5.0, -3.5)),
+            ((-5.0, -4.0), true, -5.25, (-5.25, -4.0)),
+            // Decreasing parameter: the end grows downward, the start upward.
+            ((4.0, 3.0), false, 2.5, (4.0, 2.5)),
+            ((4.0, 3.0), true, 4.5, (4.5, 3.0)),
+            ((-3.0, -4.0), false, -4.75, (-3.0, -4.75)),
+            ((-3.0, -4.0), true, -2.5, (-2.5, -4.0)),
+            // Growth across the principal-angle seam of `project`.
+            ((2.5, 3.0), false, 3.5, (2.5, 3.5)),
+            ((-2.5, -3.0), false, -3.5, (-2.5, -3.5)),
+            // A zero-length growth is the old domain itself, in every branch.
+            ((0.5, 2.0), false, 2.0, (0.5, 2.0)),
+            ((0.5, 2.0), true, 0.5, (0.5, 2.0)),
+            ((4.0, 3.0), false, 3.0, (4.0, 3.0)),
+            ((4.0, 3.0), true, 4.0, (4.0, 3.0)),
+        ];
+        for (old, replace_start, angle, expected) in cases {
+            let point = circle.evaluate(angle);
+            let actual = extended_circle_trim(&circle, old, replace_start, point)
+                .unwrap_or_else(|error| panic!("{old:?} {replace_start} {angle}: {error}"));
+            assert!(
+                (actual.0 - expected.0).abs() < 1e-12 && (actual.1 - expected.1).abs() < 1e-12,
+                "{old:?} replace_start={replace_start} angle={angle}: got {actual:?}, expected {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn extended_circle_trim_refuses_retraction_and_overturn() {
+        let circle = polar_circle();
+        // A point strictly inside the old arc would shorten it: no
+        // continuation of that terminal reaches it within one turn.
+        for (old, replace_start, angle) in [
+            ((0.0, 2.0), false, 1.0),
+            ((0.0, 2.0), true, 1.0),
+            ((2.0, 0.0), false, 1.0),
+            ((2.0, 0.0), true, 1.0),
+            ((-1.0, 5.0), false, 4.0),
+            ((5.0, -1.0), true, 4.0),
+        ] {
+            assert!(
+                extended_circle_trim(&circle, old, replace_start, circle.evaluate(angle)).is_err(),
+                "{old:?} replace_start={replace_start} angle={angle}"
+            );
+        }
+    }
+
+    fn circle_edge_topology(
+        domain: (f64, f64),
+    ) -> (Topology, EdgeId, VertexId, VertexId, Circle3D) {
+        let circle = polar_circle();
+        let mut topo = Topology::new();
+        let start = topo.add_vertex(Vertex::new(
+            circle.evaluate(domain.0),
+            Tolerance::new().linear,
+        ));
+        let end = topo.add_vertex(Vertex::new(
+            circle.evaluate(domain.1),
+            Tolerance::new().linear,
+        ));
+        let mut edge = Edge::new(start, end, EdgeCurve::Circle(circle.clone()));
+        edge.set_trim(Some(domain));
+        let edge = topo.add_edge(edge);
+        (topo, edge, start, end, circle)
+    }
+
+    #[test]
+    fn locally_extends_circle_edge_accepts_growth_below_half_a_turn() {
+        use std::f64::consts::PI;
+        for (domain, grow_end, angle) in [
+            ((1.0, 2.0), true, 2.5),
+            ((1.0, 2.0), false, 0.25),
+            ((7.0, 6.0), true, 5.0),
+            ((7.0, 6.0), false, 7.5),
+            // Zero growth: the root is the old terminal itself.
+            ((1.0, 2.0), true, 2.0),
+            ((-4.0, -3.5), false, -4.0),
+            // Just under half a turn of growth.
+            ((1.0, 2.0), true, 2.0 + PI - 1e-3),
+        ] {
+            let (topo, edge, start, end, circle) = circle_edge_topology(domain);
+            let old_vertex = if grow_end { end } else { start };
+            assert!(
+                locally_extends_circle_edge(&topo, edge, old_vertex, circle.evaluate(angle))
+                    .unwrap(),
+                "{domain:?} grow_end={grow_end} angle={angle}"
+            );
+        }
+    }
+
+    #[test]
+    fn locally_extends_circle_edge_refuses_non_local_roots() {
+        use std::f64::consts::PI;
+        let (topo, edge, start, end, circle) = circle_edge_topology((1.0, 2.0));
+        // More than half a turn of growth reaches the far branch.
+        assert!(
+            !locally_extends_circle_edge(&topo, edge, end, circle.evaluate(2.0 + PI + 1e-3))
+                .unwrap()
+        );
+        assert!(
+            !locally_extends_circle_edge(&topo, edge, start, circle.evaluate(1.0 - PI - 1e-3))
+                .unwrap()
+        );
+        // A root inside the arc would retract it.
+        assert!(!locally_extends_circle_edge(&topo, edge, end, circle.evaluate(1.5)).unwrap());
+        // A point 1e-4 off the carrier is not on the extended trim.
+        let off = circle.evaluate(2.5) + Vec3::new(0.0, 0.0, 1e-4);
+        assert!(!locally_extends_circle_edge(&topo, edge, end, off).unwrap());
+        // A vertex that is not an endpoint of the edge names no terminal.
+        let mut topo = topo;
+        let stray = topo.add_vertex(Vertex::new(circle.evaluate(3.0), Tolerance::new().linear));
+        assert!(!locally_extends_circle_edge(&topo, edge, stray, circle.evaluate(2.5)).unwrap());
+    }
+
+    #[test]
+    fn shifted_decreasing_and_reversed_trims_heal_to_the_same_extension() {
+        for reverse_sphere_boundaries in [false, true] {
+            for (offset, decreasing) in [(2.0, false), (-5.0, false), (9.0, true), (-1.5, true)] {
+                assert_heals_to_sharp_corner(&FixtureOptions {
+                    reverse_sphere_boundaries,
+                    sphere_boundary_trim: TrimLayout { offset, decreasing },
+                    ..FixtureOptions::default()
+                });
+            }
+        }
+    }
+
+    #[test]
+    fn sphere_chart_seam_in_either_longitude_direction_heals() {
+        // Rotate the spherical chart so its longitude seam sweeps across the
+        // two extended circles, with the chart axis both up and down (the
+        // latter reverses the longitude direction of the same arcs).
+        for axis in [Vec3::new(0.0, 0.0, 1.0), Vec3::new(0.0, 0.0, -1.0)] {
+            for step in 0..12 {
+                let angle = f64::from(step) * std::f64::consts::TAU / 12.0;
+                let reference = Vec3::new(angle.cos(), angle.sin(), 0.0);
+                assert_heals_to_sharp_corner(&FixtureOptions {
+                    sphere_frame: Some((axis, reference)),
+                    ..FixtureOptions::default()
+                });
+            }
+        }
+    }
+
+    #[test]
+    fn deep_column_far_root_is_excluded_by_the_cap_hemisphere_alone() {
+        // With the planar cap at z = -10 both line/sphere roots z = ±sqrt(56)
+        // advance from the cap and both are local extensions of the old
+        // circles (the far one by 165 degrees); only the cap-hemisphere proof
+        // rejects the disconnected far root.
+        let options = FixtureOptions {
+            depth: 10.0,
+            ..FixtureOptions::default()
+        };
+        let fixture = sphere_ended_band_fixture_with(&options);
+        let plan =
+            classify_sphere_end(&fixture.topo, fixture.solid, fixture.band, fixture.supports)
+                .unwrap()
+                .expect("qualified sphere end");
+        let far = Point3::new(2.0, 2.0, -(56.0_f64).sqrt());
+        let travel = (fixture
+            .topo
+            .vertex(plan.sphere_vertices[0])
+            .unwrap()
+            .point()
+            - fixture
+                .topo
+                .vertex(plan.planar_vertices[0])
+                .unwrap()
+                .point())
+        .normalize()
+        .unwrap();
+        assert!(
+            (far - plan.planar_corner).dot(travel) > 1.0,
+            "far root advances from the cap"
+        );
+        for (edge, vertex) in plan.sphere_boundaries.into_iter().zip(plan.sphere_vertices) {
+            assert!(locally_extends_circle_edge(&fixture.topo, edge, vertex, far).unwrap());
+        }
+        assert!((plan.sphere_corner - sphere_corner(1.0)).length() < 1e-12);
+
+        let (topo, solid) = assert_heals_to_sharp_corner(&options);
+        let measured = crate::measure::solid_volume(&topo, solid, 0.00001)
+            .unwrap()
+            .abs();
+        let oracle = sharp_volume_oracle_with_depth(1.0, 10.0);
+        assert!(
+            (measured - oracle).abs() <= oracle * 2e-6,
+            "independent sharp-volume oracle: measured={measured:.12}, oracle={oracle:.12}"
+        );
+    }
+
+    /// Classification must refuse, and the public healer must leave the
+    /// arena untouched.
+    fn assert_refuses_without_mutation(fixture: Fixture, what: &str) {
+        let Fixture {
+            mut topo,
+            solid,
+            band,
+            supports,
+            ..
+        } = fixture;
+        assert!(
+            classify_sphere_end(&topo, solid, band, supports)
+                .unwrap_or_else(|error| panic!("{what}: typed refusal expected, got {error}"))
+                .is_none(),
+            "{what}: classification must refuse"
+        );
+        let slots = topo.allocated_slot_count();
+        assert!(
+            heal_cylinder_plane_band_sphere_end(&mut topo, solid, band, supports)
+                .unwrap_or_else(|error| panic!("{what}: {error}"))
+                .is_none(),
+            "{what}: healer must decline"
+        );
+        assert_eq!(
+            topo.allocated_slot_count(),
+            slots,
+            "{what}: arena unchanged"
+        );
+    }
+
+    fn vertex_at(topo: &Topology, solid: SolidId, target: Point3) -> VertexId {
+        remus_topology::explorer::solid_vertices(topo, solid)
+            .unwrap()
+            .into_iter()
+            .find(|vertex| (topo.vertex(*vertex).unwrap().point() - target).length() < 1e-12)
+            .unwrap_or_else(|| panic!("no fixture vertex at {target:?}"))
+    }
+
+    #[test]
+    fn uncertified_sphere_boundary_circle_refuses() {
+        // Replace the x = r boundary carrier by the circle through the same
+        // two vertices, in the same plane, whose centre sits 1e-3 along the
+        // chord bisector: the trim is exact at both vertices, but the carrier
+        // is not the plane/sphere section.
+        let mut fixture = sphere_ended_band_fixture(1.0);
+        let edge = fixture.sphere_boundaries[0];
+        let data = fixture.topo.edge(edge).unwrap();
+        let EdgeCurve::Circle(circle) = data.curve().clone() else {
+            unreachable!("fixture circle");
+        };
+        let start = fixture.topo.vertex(data.start()).unwrap().point();
+        let end = fixture.topo.vertex(data.end()).unwrap().point();
+        let bisector = circle.normal().cross(end - start).normalize().unwrap();
+        let center = circle.center() + bisector * 1e-3;
+        let moved = Circle3D::new_with_ref(
+            center,
+            circle.normal(),
+            (start - center).length(),
+            start - center,
+        )
+        .unwrap();
+        let end_parameter = moved.project(end).rem_euclid(std::f64::consts::TAU);
+        assert!(end_parameter < std::f64::consts::PI);
+        assert!((moved.evaluate(end_parameter) - end).length() < 1e-12);
+        let edge_data = fixture.topo.edge_mut(edge).unwrap();
+        edge_data.set_curve(EdgeCurve::Circle(moved));
+        edge_data.set_trim(Some((0.0, end_parameter)));
+        assert!(fixture.topo.edge(edge).unwrap().strict_domain().is_ok());
+        assert_refuses_without_mutation(fixture, "uncertified circle");
+    }
+
+    #[test]
+    fn opposed_spring_travel_refuses() {
+        // Move the y = r terminal below its planar vertex: the two springs
+        // then travel in opposite directions and define no wound direction.
+        let mut fixture = sphere_ended_band_fixture(1.0);
+        let terminal = vertex_at(
+            &fixture.topo,
+            fixture.solid,
+            Point3::new(0.0, 2.0, (60.0_f64).sqrt()),
+        );
+        fixture
+            .topo
+            .vertex_mut(terminal)
+            .unwrap()
+            .set_point(Point3::new(0.0, 2.0, -5.0));
+        assert_refuses_without_mutation(fixture, "opposed springs");
+    }
+
+    #[test]
+    fn terminals_on_opposite_cap_hemispheres_refuse() {
+        // Deep column; the y = r terminal is moved to the lower sphere root of
+        // its own support line.  It is still on the sphere, the support plane
+        // and the band carrier, and still above its planar vertex, but the two
+        // old terminals now lie on opposite hemispheres of the wound.
+        let mut fixture = sphere_ended_band_fixture_with(&FixtureOptions {
+            depth: 10.0,
+            ..FixtureOptions::default()
+        });
+        let zb = (60.0_f64).sqrt();
+        let terminal = vertex_at(&fixture.topo, fixture.solid, Point3::new(0.0, 2.0, zb));
+        fixture
+            .topo
+            .vertex_mut(terminal)
+            .unwrap()
+            .set_point(Point3::new(0.0, 2.0, -zb));
+        assert_refuses_without_mutation(fixture, "opposite hemispheres");
+    }
+
+    #[test]
+    fn band_carrier_violations_refuse() {
+        // (a) The band cylinder 1e-4 too large: every spring endpoint is off
+        //     the carrier radially, nothing else changes.
+        let mut fixture = sphere_ended_band_fixture(1.0);
+        fixture
+            .topo
+            .face_mut(fixture.band)
+            .unwrap()
+            .set_surface(FaceSurface::Cylinder(
+                CylindricalSurface::new(
+                    Point3::new(0.0, 0.0, 0.0),
+                    Vec3::new(0.0, 0.0, 1.0),
+                    2.0 + 1e-4,
+                )
+                .unwrap(),
+            ));
+        assert_refuses_without_mutation(fixture, "radius off carrier");
+
+        // (b) A horizontal cylinder along (1,-1,0)/sqrt 2 through all four
+        //     spring endpoints: every endpoint is on the carrier, but the
+        //     springs are not generatrices.
+        let mut fixture = sphere_ended_band_fixture(1.0);
+        let zb = (60.0_f64).sqrt();
+        let (mid, half) = (0.5 * (zb - 3.0), 0.5 * (zb + 3.0));
+        let axis = Vec3::new(1.0, -1.0, 0.0) * std::f64::consts::FRAC_1_SQRT_2;
+        let sideways =
+            CylindricalSurface::new(Point3::new(0.0, 0.0, mid), axis, (2.0 + half * half).sqrt())
+                .unwrap();
+        for point in [
+            Point3::new(2.0, 0.0, -3.0),
+            Point3::new(2.0, 0.0, zb),
+            Point3::new(0.0, 2.0, -3.0),
+            Point3::new(0.0, 2.0, zb),
+        ] {
+            let offset = point - sideways.origin();
+            let radial = (offset - axis * offset.dot(axis)).length();
+            assert!(
+                (radial - sideways.radius()).abs() < 1e-12,
+                "endpoint on the sideways carrier"
+            );
+        }
+        fixture
+            .topo
+            .face_mut(fixture.band)
+            .unwrap()
+            .set_surface(FaceSurface::Cylinder(sideways));
+        assert_refuses_without_mutation(fixture, "springs not generatrices");
+
+        // (c) Rotate the x = r spring 0.01 rad about the band axis: it stays a
+        //     generatrix on the carrier and parallel to the other spring, and
+        //     its terminal stays on the sphere, but it leaves the x = r
+        //     support plane by r (1 - cos 0.01) = 1e-4.
+        let mut fixture = sphere_ended_band_fixture(1.0);
+        let (sin, cos) = (0.01_f64).sin_cos();
+        for z in [-3.0, zb] {
+            let vertex = vertex_at(&fixture.topo, fixture.solid, Point3::new(2.0, 0.0, z));
+            fixture
+                .topo
+                .vertex_mut(vertex)
+                .unwrap()
+                .set_point(Point3::new(2.0 * cos, 2.0 * sin, z));
+        }
+        assert_refuses_without_mutation(fixture, "spring off its support plane");
+    }
+
+    #[test]
+    fn terminal_vertex_touched_by_a_fourth_face_refuses() {
+        // A tetrahedral lump pinched onto the planar terminal (r, 0, -3):
+        // it shares that vertex but no edge, so the terminal is no longer the
+        // simple three-face corner the reconstruction replaces.
+        let mut fixture = sphere_ended_band_fixture(1.0);
+        let pinch = vertex_at(&fixture.topo, fixture.solid, Point3::new(2.0, 0.0, -3.0));
+        let topo = &mut fixture.topo;
+        let a = vertex(topo, 3.0, -1.0, -4.0);
+        let b = vertex(topo, 4.0, 0.0, -4.0);
+        let c = vertex(topo, 3.0, 1.0, -4.0);
+        let pa = line(topo, pinch, a);
+        let pb = line(topo, pinch, b);
+        let pc = line(topo, pinch, c);
+        let ab = line(topo, a, b);
+        let bc = line(topo, b, c);
+        let ca = line(topo, c, a);
+        let plane = |normal: Vec3| FaceSurface::Plane {
+            normal,
+            d: normal.dot(Vec3::new(2.0, 0.0, -3.0)),
+        };
+        let lump = [
+            face(
+                topo,
+                vec![
+                    OrientedEdge::new(pa, true),
+                    OrientedEdge::new(ab, true),
+                    OrientedEdge::new(pb, false),
+                ],
+                plane(Vec3::new(1.0, -1.0, 1.0)),
+            ),
+            face(
+                topo,
+                vec![
+                    OrientedEdge::new(pb, true),
+                    OrientedEdge::new(bc, true),
+                    OrientedEdge::new(pc, false),
+                ],
+                plane(Vec3::new(1.0, 1.0, 1.0)),
+            ),
+            face(
+                topo,
+                vec![
+                    OrientedEdge::new(pc, true),
+                    OrientedEdge::new(ca, true),
+                    OrientedEdge::new(pa, false),
+                ],
+                plane(Vec3::new(-1.0, 0.0, 1.0)),
+            ),
+            face(
+                topo,
+                vec![
+                    OrientedEdge::new(ab, false),
+                    OrientedEdge::new(ca, false),
+                    OrientedEdge::new(bc, false),
+                ],
+                FaceSurface::Plane {
+                    normal: Vec3::new(0.0, 0.0, -1.0),
+                    d: 4.0,
+                },
+            ),
+        ];
+        let shell = topo.solid(fixture.solid).unwrap().outer_shell();
+        let mut faces = topo.shell(shell).unwrap().faces().to_vec();
+        faces.extend(lump);
+        let shell = topo.add_shell(Shell::new(faces).unwrap());
+        fixture.solid = topo.add_solid(Solid::new(shell, vec![]));
+        assert_refuses_without_mutation(fixture, "pinched terminal");
+    }
+
+    #[test]
+    fn sharp_corner_outside_the_local_patch_refuses() {
+        // Tilt the planar end to k*y + z = -3s: the planar sharp corner drops
+        // to z = -3s - 2sk while the old terminal stays at (2s, 0, -3s).  The
+        // displacement bound is 4 * max(patch span, r).
+        for (scale, tilt) in [(1.0, 30.0), (0.1, 23.5)] {
+            let mut fixture = sphere_ended_band_fixture(scale);
+            let displacement = (4.0 * scale * scale + (2.0 * scale * tilt).powi(2)).sqrt();
+            // Widest pair of old terminals: (2s, 0, sqrt(60) s) to (0, 2s, -3s).
+            let span = (8.0 + (60.0_f64.sqrt() + 3.0).powi(2)).sqrt() * scale;
+            let bound = 4.0 * f64::max(span, 2.0 * scale);
+            assert!(displacement > bound * 1.02, "{displacement} vs {bound}");
+            let bottom = remus_topology::explorer::solid_faces(&fixture.topo, fixture.solid)
+                .unwrap()
+                .into_iter()
+                .find(|face| {
+                    matches!(
+                        fixture.topo.face(*face).unwrap().surface(),
+                        FaceSurface::Plane { normal, .. } if normal.z() < -0.5
+                    )
+                })
+                .unwrap();
+            let norm = (1.0 + tilt * tilt).sqrt();
+            fixture
+                .topo
+                .face_mut(bottom)
+                .unwrap()
+                .set_surface(FaceSurface::Plane {
+                    normal: Vec3::new(0.0, tilt / norm, 1.0 / norm),
+                    d: -3.0 * scale / norm,
+                });
+            let Fixture {
+                mut topo,
+                solid,
+                band,
+                supports,
+                ..
+            } = fixture;
+            let slots = topo.allocated_slot_count();
+            let error = match heal_cylinder_plane_band_sphere_end(&mut topo, solid, band, supports)
+            {
+                Err(error) => error,
+                Ok(outcome) => panic!(
+                    "scale {scale}: far corner must refuse, got {}",
+                    if outcome.is_some() {
+                        "a result"
+                    } else {
+                        "a decline"
+                    }
+                ),
+            };
+            assert!(
+                error.to_string().contains("outside the local blend patch"),
+                "scale {scale}: {error}"
+            );
+            assert_eq!(topo.allocated_slot_count(), slots);
+        }
+    }
+
+    #[test]
+    fn rotated_bodies_heal_across_planar_chart_seams() {
+        // Planar p-curve charts derive their axes from the stored normal, so
+        // turning the body about z sweeps each support's circle angles across
+        // the principal-angle seam.  Every placement heals to the rotated
+        // closed-form corner.
+        for reverse_sphere_boundaries in [false, true] {
+            for step in 0..12 {
+                let angle = f64::from(step) * std::f64::consts::TAU / 12.0 + 0.1;
+                let Fixture {
+                    mut topo,
+                    solid,
+                    band,
+                    supports,
+                    ..
+                } = sphere_ended_band_fixture_with(&FixtureOptions {
+                    reverse_sphere_boundaries,
+                    ..FixtureOptions::default()
+                });
+                let rotation = remus_math::mat::Mat4::rotation_z(angle);
+                crate::transform::transform_solid(&mut topo, solid, &rotation).unwrap();
+                let outcome = heal_cylinder_plane_band_sphere_end(&mut topo, solid, band, supports)
+                    .unwrap_or_else(|error| panic!("angle {angle}: {error}"))
+                    .expect("rotated sphere end stays qualified");
+                assert_valid(&topo, outcome.solid);
+                let corner = rotation.mul_point(sphere_corner(1.0));
+                let reaches = remus_topology::explorer::solid_vertices(&topo, outcome.solid)
+                    .unwrap()
+                    .into_iter()
+                    .any(|vertex| (topo.vertex(vertex).unwrap().point() - corner).length() < 1e-9);
+                assert!(reaches, "angle {angle}: sharp corner at the rotated root");
+            }
+        }
+    }
+
+    #[test]
+    fn root_that_extends_only_one_boundary_circle_refuses() {
+        // Store the y = r boundary as the complementary major arc between the
+        // same two vertices (same exact carrier, trim > pi).  Growing that arc
+        // past its band terminal to the sharp root would sweep more than half
+        // a turn, so the root is local to the x = r circle only.
+        let mut fixture = sphere_ended_band_fixture(1.0);
+        let edge = fixture.sphere_boundaries[1];
+        let data = fixture.topo.edge(edge).unwrap();
+        let EdgeCurve::Circle(circle) = data.curve().clone() else {
+            unreachable!("fixture circle");
+        };
+        let (t0, t1) = data.strict_domain().unwrap();
+        let minor = t1 - t0;
+        assert!(minor.abs() < std::f64::consts::PI);
+        // Same carrier on the opposite normal: flipped(-t) == circle(t), so
+        // the major arc from the start vertex runs over (-t0, -t0 + (2pi - |minor|)).
+        let flipped = Circle3D::new_with_ref(
+            circle.center(),
+            circle.normal() * -1.0,
+            circle.radius(),
+            circle.u_axis(),
+        )
+        .unwrap();
+        let major = std::f64::consts::TAU - minor.abs();
+        let trim = (-t0, -t0 + major);
+        let start = fixture.topo.vertex(data.start()).unwrap().point();
+        let end = fixture.topo.vertex(data.end()).unwrap().point();
+        assert!((flipped.evaluate(trim.0) - start).length() < 1e-12);
+        assert!((flipped.evaluate(trim.1) - end).length() < 1e-12);
+        let edge_data = fixture.topo.edge_mut(edge).unwrap();
+        edge_data.set_curve(EdgeCurve::Circle(flipped));
+        edge_data.set_trim(Some(trim));
+        let plan =
+            classify_sphere_end(&fixture.topo, fixture.solid, fixture.band, fixture.supports);
+        let Err(error) = plan else {
+            panic!("a root local to one circle only must not qualify");
+        };
+        assert!(
+            error.to_string().contains("expected exactly one"),
+            "{error}"
         );
     }
 }
