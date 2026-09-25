@@ -1499,6 +1499,15 @@ pub fn compute_solid_bbox(
                     .curve()
                     .evaluate_with_endpoints(t_mid, start_pos, end_pos);
                 points.push(mid);
+                // Endpoints and midpoint alone under-bound a conic: a full
+                // circle (start == end) contributes a single chord, not its
+                // extent. The per-axis extremes make circle and ellipse arcs
+                // exact wherever the seam sits.
+                points.extend(crate::conic_bounds::conic_arc_axis_extrema(
+                    edge.curve(),
+                    t0,
+                    t1,
+                ));
             }
         }
     }
@@ -1710,6 +1719,81 @@ mod tests {
         // Above the tube.
         let above = classify_ray_cast(&topo, solid, Point3::new(3.0, 0.0, 2.0)).unwrap();
         assert_eq!(above, crate::builder::face_class::FaceClass::Outside);
+    }
+
+    /// A closed cylinder (r = 2, h = 1 about (0.5, −1.5)) whose two rims are
+    /// single full-circle edges starting at `seam` radians. The lateral face's
+    /// outer wire is the bottom rim, the seam generator, the top rim, and the
+    /// generator back.
+    fn make_seamed_cylinder(topo: &mut Topology, seam: f64) -> remus_topology::solid::SolidId {
+        use remus_math::curves::Circle3D;
+        use remus_math::surfaces::CylindricalSurface;
+        let (cx, cy, r) = (0.5, -1.5, 2.0);
+        let axis = Vec3::new(0.0, 0.0, 1.0);
+        let dir = Vec3::new(seam.cos(), seam.sin(), 0.0);
+        let rim = |z: f64| Circle3D::new_with_ref(Point3::new(cx, cy, z), axis, r, dir).unwrap();
+        let (bottom, top) = (rim(-0.5), rim(0.5));
+        let vb = topo.add_vertex(Vertex::new(bottom.evaluate(0.0), 1e-7));
+        let vt = topo.add_vertex(Vertex::new(top.evaluate(0.0), 1e-7));
+        let mut circle_edge = |v, c| {
+            let mut edge = Edge::new(v, v, EdgeCurve::Circle(c));
+            edge.set_trim(Some((0.0, std::f64::consts::TAU)));
+            topo.add_edge(edge)
+        };
+        let eb = circle_edge(vb, bottom);
+        let et = circle_edge(vt, top);
+        let generator = topo.add_edge(Edge::new(vb, vt, EdgeCurve::Line));
+        let loop_of = |topo: &mut Topology, edges: Vec<OrientedEdge>| {
+            topo.add_wire(Wire::new(edges, true).unwrap())
+        };
+        let wb = loop_of(topo, vec![OrientedEdge::new(eb, false)]);
+        let wt = loop_of(topo, vec![OrientedEdge::new(et, true)]);
+        let wl = loop_of(
+            topo,
+            vec![
+                OrientedEdge::new(eb, true),
+                OrientedEdge::new(generator, true),
+                OrientedEdge::new(et, false),
+                OrientedEdge::new(generator, false),
+            ],
+        );
+        let plane = |sign: f64| FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, sign),
+            d: 0.5,
+        };
+        let fb = topo.add_face(Face::new(wb, vec![], plane(-1.0)));
+        let ft = topo.add_face(Face::new(wt, vec![], plane(1.0)));
+        let wall = CylindricalSurface::new(Point3::new(cx, cy, -0.5), axis, r).unwrap();
+        let fl = topo.add_face(Face::new(wl, vec![], FaceSurface::Cylinder(wall)));
+        let shell = topo.add_shell(Shell::new(vec![fb, ft, fl]).unwrap());
+        topo.add_solid(Solid::new(shell, vec![]))
+    }
+
+    /// The solid broad-phase box must contain every full-circle rim wherever
+    /// its seam sits. Endpoints plus the parameter midpoint gave a closed
+    /// circle a single chord, so the VV/VE/EF phases reported the B52 box vs
+    /// cylinder (rim r = 2 about (0.5, −1.5), seam rotated 2.5 rad) disjoint.
+    #[test]
+    fn solid_bbox_contains_full_circle_rims_at_every_seam() {
+        for k in 0..32 {
+            let seam = f64::from(k).mul_add(std::f64::consts::TAU / 32.0, 0.25);
+            let mut topo = Topology::default();
+            let solid = make_seamed_cylinder(&mut topo, seam);
+            let bbox = compute_solid_bbox(&topo, solid).unwrap();
+            for (got, want) in [
+                (bbox.min.x(), -1.5),
+                (bbox.max.x(), 2.5),
+                (bbox.min.y(), -3.5),
+                (bbox.max.y(), 0.5),
+                (bbox.min.z(), -0.5),
+                (bbox.max.z(), 0.5),
+            ] {
+                assert!(
+                    (got - want).abs() <= 1e-12,
+                    "seam {seam:.4}: solid box bound {got} vs rim extent {want}"
+                );
+            }
+        }
     }
 
     #[test]
