@@ -4,35 +4,52 @@
 //! rational twins; parabola/hyperbola twins are single-span exact Beziers
 //! and ride the same path) x relative configuration (disjoint, tangent,
 //! crossing, coincident, near-tangent within 10·tol) x scale (1e-3, 1,
-//! 1e3). The oracle is independent of the code under test: closed-form
-//! analytic answers (`Circle3D::intersect_circle`, line crossing formulae)
-//! for the intersection COUNT and CONTACT KIND, plus dense re-evaluation
-//! of every reported hit on BOTH NURBS twins (the B19 curve-intersection
-//! fuzz oracle shape) for the distance leg.
+//! 1e3) x placement (identity + one fixed rigid motion applied to BOTH
+//! twins, preserving the configuration). The oracle is independent of the
+//! code under test: closed-form analytic answers (`Circle3D::intersect_circle`,
+//! ellipse carrier implicit solves, line crossing formulae) for the
+//! intersection COUNT and CONTACT KIND, plus dense re-evaluation of every
+//! reported hit on BOTH NURBS twins (the B19 curve-intersection fuzz oracle
+//! shape) for the distance leg.
 //!
 //! Per the roadmap lesson "exact rational conic twins do not preserve
 //! parameter speed", hit identity is asserted by 3D POSITION (after
 //! projection onto each twin), never by comparing NURBS parameters
 //! against analytic angles.
 //!
-//! KNOWN FINDING (this file, 2026-09-16): transversal twin crossings are
-//! MISSED by `curve_curve_intersect_full` (returns 0 hits where the
-//! closed form certifies 2). Root cause: the Sederberg-Nishita fat-line
-//! clip converges to the control-polygon midpoint, not the true crossing
-//! (measured bias ~0.009 in segment-parameter units on the circle-twin
-//! pair); once the clip window excludes the root, the sampled-AABB
-//! prefilter prunes the phantom branch and the intersection vanishes
-//! silently. The crossing cells below are `#[ignore]`d seeds retaining
-//! that finding; the disjoint/tangent/coincident/near-tangent cells run
-//! green and pin the current behavior.
+//! HISTORY (this file): transversal twin crossings were MISSED by
+//! `curve_curve_intersect_full` (0 hits where the closed form certifies 2).
+//! Two defects, both in `math/src/nurbs/bezier_clip.rs`, fixed 2026-09-25:
+//! (1) the Sederberg-Nishita clip re-used the FULL segment control net at
+//! every depth (only t-coordinates narrowed), biasing each clip toward the
+//! control-polygon midpoint (~0.009 param units per clip on the circle-twin
+//! pair) until the window excluded the true root by depth ~6–8, after which
+//! the sampled-AABB prefilter pruned the phantom branch; fixed by
+//! subdividing to the live-interval net (`sub_control_points` via
+//! `curve_split`). (2) the good-clip path recursed with swapped operand
+//! order but reported hits/overlaps without unswapping, transposing u1/u2
+//! on odd-depth branches; fixed with a `swapped` parity flag
+//! (`unswap_hit`, overlap unswap). Coincident twins use an
+//! identical-segment fast path (`segs_identical`) so the tighter clips do
+//! not enumerate O(n²) partially-overlapping pairs.
 //!
 //! MINIMIZED SEED (rational quarter-arcs, degree 2, w=√2/2):
 //! A: (0,-1),(1,-1),(1,0) — unit-circle arc angles -90°..0°.
 //! B: (0.5,0),(0.5,-1),(1.5,-1) — unit circle at (1.5,0), angles
 //! 180°..270°. True crossing (0.75,-0.6614) at A-u=0.5378, B-u=0.4622;
-//! the clip walks B to its midpoint 0.5 and drops the root by depth ~8.
-//! See `bezier_clip.rs::clip_to_fat_line` (control-polygon distances are
-//! re-used at every depth; only the t-coordinates narrow).
+//! pre-fix the clip walked B to its midpoint 0.5 and dropped the root by
+//! depth ~8 (see `clip_to_fat_line`). Post-fix this pair reports 1 hit on
+//! both twins to ~1e-8 (see `b10_circle_twins_crossing_two_hits`).
+//!
+//! ELLIPSE WITNESS (corrected 2026-09-25): `Ellipse3D::new` with +Z normal
+//! puts the major axis on u=(0,1,0) and the minor on v=(-1,0,0), so centers
+//! separated by 2.5s along world X are separated along the MINOR axis
+//! (half-extent 1s each, need ≤2s to touch) and are DISJOINT — the prior
+//! witness asserted 2 crossings for disjoint ellipses and its own scan saw
+//! 0. The corrected witness pins the major axis to world X via
+//! `new_with_ref(ref=(1,0,0))` (u=(1,0,0) major 2s, v=(0,1,0) minor 1s) with
+//! the same 2.5s X-offset, giving proven transversal crossings at
+//! (1.25s,±0.7806s) (closed-form solve below + carrier-frame scan).
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -41,6 +58,7 @@ use std::f64::consts::TAU;
 use remus_geometry::convert::curve_to_nurbs::{circle_to_nurbs, ellipse_to_nurbs, line_to_nurbs};
 use remus_geometry::extrema::curve_to_curve;
 use remus_math::curves::{Circle3D, Ellipse3D};
+use remus_math::mat::Mat4;
 use remus_math::nurbs::bezier_clip::curve_curve_intersect_full;
 use remus_math::nurbs::curve::NurbsCurve;
 use remus_math::vec::{Point3, Vec3};
@@ -134,12 +152,91 @@ fn assert_crossings_found(
             want.y(),
         );
     }
+    // Unique roots: hits must be pairwise distinct in 3D (no duplicates).
+    for i in 0..result.hits.len() {
+        for j in (i + 1)..result.hits.len() {
+            let d = (result.hits[i].point - result.hits[j].point).length();
+            assert!(
+                d > band,
+                "{name}: duplicate hits {i},{j} {d:.3e} apart (band {band:.0e})",
+            );
+        }
+    }
+    // Domain validity + finiteness for every hit.
+    let (da0, da1) = a.domain();
+    let (db0, db1) = b.domain();
+    for h in &result.hits {
+        assert!(
+            h.u1.is_finite() && h.u2.is_finite(),
+            "{name}: non-finite hit params",
+        );
+        assert!(
+            h.u1 >= da0 - TOL && h.u1 <= da1 + TOL,
+            "{name}: u1={} outside domain [{da0},{da1}]",
+            h.u1,
+        );
+        assert!(
+            h.u2 >= db0 - TOL && h.u2 <= db1 + TOL,
+            "{name}: u2={} outside domain [{db0},{db1}]",
+            h.u2,
+        );
+    }
+}
+
+/// Operand-swap stability: swapping twins must give the same COUNT and the
+/// same 3D positions (order may differ; rational twins do not preserve
+/// parameter speed, so compare geometry, never parameters).
+fn assert_swap_stable(a: &NurbsCurve, b: &NurbsCurve, expected: &[Point3], band: f64, name: &str) {
+    let fwd = curve_curve_intersect_full(a, b, TOL).unwrap();
+    let rev = curve_curve_intersect_full(b, a, TOL).unwrap();
+    assert_eq!(
+        fwd.hits.len(),
+        rev.hits.len(),
+        "{name}: swap changes hit count {} vs {}",
+        fwd.hits.len(),
+        rev.hits.len(),
+    );
+    assert_eq!(
+        fwd.hits.len(),
+        expected.len(),
+        "{name}: expected {} hits, got {}",
+        expected.len(),
+        fwd.hits.len(),
+    );
+    for want in expected {
+        let in_rev = rev.hits.iter().any(|h| {
+            let on_b = b.evaluate(h.u1);
+            let on_a = a.evaluate(h.u2);
+            (on_b - *want).length() <= band
+                && (on_a - *want).length() <= band
+                && (on_b - on_a).length() <= band
+        });
+        assert!(
+            in_rev,
+            "{name}: swapped solve misses ({:.6},{:.6})",
+            want.x(),
+            want.y(),
+        );
+    }
+}
+
+/// Fixed rigid motion applied to BOTH twins (rotation + translation only,
+/// exact on rational control nets): preserves every relative configuration
+/// while exercising non-axis-aligned seeding/refinement.
+fn rigid() -> Mat4 {
+    Mat4::translation(3.0, -2.0, 5.0)
+        * Mat4::rotation_x(std::f64::consts::FRAC_PI_6)
+        * Mat4::rotation_z(0.2967)
+}
+
+fn xform_curve(c: &NurbsCurve, m: Mat4) -> NurbsCurve {
+    let cps: Vec<Point3> = c.control_points().iter().map(|p| m.mul_point(*p)).collect();
+    NurbsCurve::new(c.degree(), c.knots().to_vec(), cps, c.weights().to_vec()).unwrap()
 }
 
 // ── circle twin × circle twin ─────────────────────────────────────────────
 
 #[test]
-#[ignore = "open: B10 seed — bezier-clip misses transversal twin crossings (fat-line clip bias); disjoint/tangent/coincident legs run below"]
 fn b10_circle_twins_crossing_two_hits() {
     for scale in SCALES {
         let c1 = circle(0.0, 0.0, scale);
@@ -148,6 +245,88 @@ fn b10_circle_twins_crossing_two_hits() {
         assert_eq!(oracle.len(), 2, "oracle must certify 2 crossings");
         let (a, b) = (twin(&c1), twin(&c2));
         assert_crossings_found(&a, &b, &oracle, 1e-6 * scale.max(1.0), "circle-crossing");
+        assert_swap_stable(
+            &a,
+            &b,
+            &oracle,
+            1e-6 * scale.max(1.0),
+            "circle-crossing-swap",
+        );
+        // Rigid placement: same relative geometry, transformed oracle.
+        let m = rigid();
+        let (ta, tb) = (xform_curve(&a, m), xform_curve(&b, m));
+        let expected: Vec<Point3> = oracle.iter().map(|p| m.mul_point(*p)).collect();
+        assert_crossings_found(
+            &ta,
+            &tb,
+            &expected,
+            1e-6 * scale.max(1.0),
+            "circle-crossing-rigid",
+        );
+        assert_swap_stable(
+            &ta,
+            &tb,
+            &expected,
+            1e-6 * scale.max(1.0),
+            "circle-crossing-rigid-swap",
+        );
+    }
+}
+
+#[test]
+fn b10_circle_twins_partial_arcs() {
+    // Partial arcs that still contain both transversal crossings must report
+    // both; a partial arc containing neither must report empty. Independently
+    // proven by Circle3D parameter ranges (see module docs for the crossing
+    // angles): left circle crossings at t≈3.99/5.44 (right half, pi..TAU),
+    // right circle crossings at t≈0.85/2.29 (left half, 0..pi).
+    use std::f64::consts::PI;
+    for scale in SCALES {
+        let c1 = circle(0.0, 0.0, scale);
+        let c2 = circle(1.5 * scale, 0.0, scale);
+        let oracle = analytic_crossings(&c1, &c2);
+        assert_eq!(oracle.len(), 2);
+        let band = 1e-6 * scale.max(1.0);
+        // Right half of C1 (pi..TAU) vs full C2: both crossings inside.
+        let a_part = circle_to_nurbs(&c1, PI, TAU).unwrap();
+        let b_full = twin(&c2);
+        assert_crossings_found(&a_part, &b_full, &oracle, band, "circle-partial-contains");
+        assert_swap_stable(
+            &a_part,
+            &b_full,
+            &oracle,
+            band,
+            "circle-partial-contains-swap",
+        );
+        // Left half of C1 (0..pi) vs full C2: neither crossing inside.
+        let a_empty = circle_to_nurbs(&c1, 0.0, PI).unwrap();
+        let r = curve_curve_intersect_full(&a_empty, &b_full, TOL).unwrap();
+        assert!(
+            r.hits.is_empty() && r.overlaps.is_empty(),
+            "circle-partial-empty @ scale {scale}: got {} hits {} overlaps",
+            r.hits.len(),
+            r.overlaps.len(),
+        );
+    }
+}
+
+#[test]
+fn b10_circle_twins_reversed_direction_same_positions() {
+    // Same geometry traced the other way round must give the same 3D
+    // positions (rational twins do not preserve parameter speed, so compare
+    // geometry and normalized tangents, never parameters).
+    for scale in SCALES {
+        let c1 = circle(0.0, 0.0, scale);
+        let c2 = circle(1.5 * scale, 0.0, scale);
+        let oracle = analytic_crossings(&c1, &c2);
+        assert_eq!(oracle.len(), 2);
+        let band = 1e-6 * scale.max(1.0);
+        let (a_rev, b_rev) = (twin(&c1.reversed()), twin(&c2.reversed()));
+        assert_crossings_found(&a_rev, &b_rev, &oracle, band, "circle-reversed");
+        assert_swap_stable(&a_rev, &b_rev, &oracle, band, "circle-reversed-swap");
+        // Mixed directions must agree as well.
+        let b = twin(&c2);
+        assert_crossings_found(&a_rev, &b, &oracle, band, "circle-reversed-mixed");
     }
 }
 
@@ -305,24 +484,62 @@ fn b10_line_twins_disjoint_no_hits() {
 
 // ── ellipse twin × ellipse twin ───────────────────────────────────────────
 
+/// Ellipse pair with the major axis pinned to world X via `new_with_ref`:
+/// a=2s along (1,0,0), b=1s along (0,1,0), centers 2.5s apart along X.
+/// Closed-form oracle (independent): subtract the two implicit equations
+/// (x/2s)²+(y/1s)²=1 and ((x−2.5s)/2s)²+(y/1s)²=1 → x=1.25s, then
+/// y=±s·sqrt(1−0.625²)=±0.780624…s. Transversal (distinct tangents).
+fn ellipse_pair(scale: f64) -> (Ellipse3D, Ellipse3D, Vec<Point3>) {
+    let major_ref = Vec3::new(1.0, 0.0, 0.0);
+    let e1 = Ellipse3D::new_with_ref(
+        Point3::new(0.0, 0.0, 0.0),
+        Vec3::new(0.0, 0.0, 1.0),
+        2.0 * scale,
+        scale,
+        major_ref,
+    )
+    .unwrap();
+    let e2 = Ellipse3D::new_with_ref(
+        Point3::new(2.5 * scale, 0.0, 0.0),
+        Vec3::new(0.0, 0.0, 1.0),
+        2.0 * scale,
+        scale,
+        major_ref,
+    )
+    .unwrap();
+    // Prove the frame: major must be world X for the offset to be along it.
+    assert!(
+        (e1.u_axis() - Vec3::new(1.0, 0.0, 0.0)).length() <= 1e-12,
+        "ellipse major axis not pinned to X: {:?}",
+        e1.u_axis(),
+    );
+    let y = (1.0 - 0.625_f64 * 0.625_f64).sqrt() * scale;
+    let expected = vec![
+        Point3::new(1.25 * scale, y, 0.0),
+        Point3::new(1.25 * scale, -y, 0.0),
+    ];
+    // Prove the oracle positions lie on BOTH carriers (independent of twins).
+    for want in &expected {
+        for e in [&e1, &e2] {
+            let v = *want - e.center();
+            let x = v.dot(e.u_axis()) / e.semi_major();
+            let yy = v.dot(e.v_axis()) / e.semi_minor();
+            let resid = (x * x + yy * yy - 1.0).abs();
+            assert!(
+                resid <= 1e-12,
+                "ellipse oracle off carrier: resid {resid:.3e} at ({:.4},{:.4})",
+                want.x(),
+                want.y(),
+            );
+        }
+    }
+    (e1, e2, expected)
+}
+
 #[test]
-#[ignore = "open: B10 seed — same bezier-clip transversal miss as the circle twins (ellipse arcs share the fat-line path)"]
 fn b10_ellipse_twins_crossing() {
     for scale in SCALES {
-        let e1 = Ellipse3D::new(
-            Point3::new(0.0, 0.0, 0.0),
-            Vec3::new(0.0, 0.0, 1.0),
-            2.0 * scale,
-            scale,
-        )
-        .unwrap();
-        let e2 = Ellipse3D::new(
-            Point3::new(2.5 * scale, 0.0, 0.0),
-            Vec3::new(0.0, 0.0, 1.0),
-            2.0 * scale,
-            scale,
-        )
-        .unwrap();
+        let (e1, e2, expected) = ellipse_pair(scale);
         let (a, b) = (
             ellipse_to_nurbs(&e1, 0.0, TAU).unwrap(),
             ellipse_to_nurbs(&e2, 0.0, TAU).unwrap(),
@@ -352,13 +569,78 @@ fn b10_ellipse_twins_crossing() {
             crossings >= 2,
             "oracle scan must see >= 2 crossings @ scale {scale}, saw {crossings}",
         );
-        let result = curve_curve_intersect_full(&a, &b, TOL).unwrap();
-        assert_eq!(
-            result.hits.len(),
-            2,
-            "ellipse crossing @ scale {scale}: got {} hits {} overlaps",
-            result.hits.len(),
-            result.overlaps.len(),
+        let band = 1e-6 * scale.max(1.0);
+        assert_crossings_found(&a, &b, &expected, band, "ellipse-crossing");
+        assert_swap_stable(&a, &b, &expected, band, "ellipse-crossing-swap");
+        // Rigid placement: same relative geometry, transformed oracle.
+        let m = rigid();
+        let (ta, tb) = (xform_curve(&a, m), xform_curve(&b, m));
+        let texpected: Vec<Point3> = expected.iter().map(|p| m.mul_point(*p)).collect();
+        assert_crossings_found(&ta, &tb, &texpected, band, "ellipse-crossing-rigid");
+        assert_swap_stable(&ta, &tb, &texpected, band, "ellipse-crossing-rigid-swap");
+    }
+}
+
+#[test]
+fn b10_ellipse_twins_partial_arcs() {
+    // Partial arcs with the same quarter-arc weights as the full twins:
+    // E1 upper half [0,pi] (sin≥0) contains the upper crossing (t≈0.895,
+    // cos=0.625>0) but not the lower (t≈5.39); lower half [pi,TAU] contains
+    // the lower but not the upper. Each gives exactly 1 hit, proven by the
+    // closed-form angles. An empty half ([pi/2,3pi/2], cos≤0, contains
+    // neither since both have cos=0.625>0) gives 0.
+    use std::f64::consts::PI;
+    for scale in SCALES {
+        let (e1, e2, expected) = ellipse_pair(scale);
+        let band = 1e-6 * scale.max(1.0);
+        let b_full = ellipse_to_nurbs(&e2, 0.0, TAU).unwrap();
+        // Upper half → upper crossing only.
+        let a_upper = ellipse_to_nurbs(&e1, 0.0, PI).unwrap();
+        assert_crossings_found(
+            &a_upper,
+            &b_full,
+            &expected[0..1],
+            band,
+            "ellipse-partial-upper",
         );
+        assert_swap_stable(
+            &a_upper,
+            &b_full,
+            &expected[0..1],
+            band,
+            "ellipse-partial-upper-swap",
+        );
+        // Lower half → lower crossing only.
+        let a_lower = ellipse_to_nurbs(&e1, PI, TAU).unwrap();
+        assert_crossings_found(
+            &a_lower,
+            &b_full,
+            &expected[1..2],
+            band,
+            "ellipse-partial-lower",
+        );
+        // Left half (cos≤0) → empty.
+        let a_empty = ellipse_to_nurbs(&e1, PI * 0.5, PI * 1.5).unwrap();
+        let r = curve_curve_intersect_full(&a_empty, &b_full, TOL).unwrap();
+        assert!(
+            r.hits.is_empty() && r.overlaps.is_empty(),
+            "ellipse-partial-empty @ scale {scale}: got {} hits {} overlaps",
+            r.hits.len(),
+            r.overlaps.len(),
+        );
+    }
+}
+
+#[test]
+fn b10_ellipse_twins_reversed_direction_same_positions() {
+    for scale in SCALES {
+        let (e1, e2, expected) = ellipse_pair(scale);
+        let band = 1e-6 * scale.max(1.0);
+        let (a_rev, b_rev) = (
+            ellipse_to_nurbs(&e1.reversed(), 0.0, TAU).unwrap(),
+            ellipse_to_nurbs(&e2.reversed(), 0.0, TAU).unwrap(),
+        );
+        assert_crossings_found(&a_rev, &b_rev, &expected, band, "ellipse-reversed");
+        assert_swap_stable(&a_rev, &b_rev, &expected, band, "ellipse-reversed-swap");
     }
 }
