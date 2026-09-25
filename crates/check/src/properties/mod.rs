@@ -17,32 +17,49 @@ use crate::CheckError;
 
 /// Options for property computation.
 ///
-/// Adaptive quadrature is supported on analytic curved faces resolved by the
-/// existing trim resolver to unmasked UV rectangles (full-revolution bands and
-/// spherical caps). Polygon masks remain unsupported even if rectangular.
-/// The estimator compares a Gauss rule with its four subdivided rules for all
-/// area, volume and raw moment components. It is a numerical convergence test,
-/// not a certified geometric error bound or a bound on the assembled centroid
-/// or inertia after cancellation.
+/// All three controls are effective on every quadrature path; none is
+/// silently ignored.
 ///
-/// Exact planar boundary integrals need no refinement. NURBS faces, sampled
-/// planar boundaries, polygon-trimmed curved faces and special torus tube bands
-/// retain fixed quadrature only with the default adaptive controls. Non-default
-/// adaptive controls on those paths return [`CheckError::IntegrationFailed`].
-/// In particular, tightening `adaptive_eps` cannot improve a sampled trim.
+/// * **Untrimmed analytic patches** (full-revolution bands, spherical caps,
+///   and other analytic faces the trim resolver maps to an unmasked UV
+///   rectangle) always refine: each initial patch is compared with its four
+///   quadrants until the estimator converges.
+/// * **Trimmed curved faces, NURBS faces and torus tube bands** keep the
+///   historical fixed composite rule while `adaptive_eps` and `max_depth` are
+///   both at their defaults, so default measurements do not move. Any other
+///   pair refines them as sliced domains: the outer axis is cut at every trim
+///   vertex (or, on a torus band, every rim sample) and, on a NURBS carrier,
+///   at every interior knot; inner spans are split at interior knots too, so
+///   each Gauss cell sees one polynomial piece. Refinement halves an outer
+///   interval while doubling its inner tiling, worst interval first, until
+///   the summed estimate meets the face-level budget.
+/// * **Exact planar boundary integrals** and the **sampled planar polygon
+///   fallback** integrate in closed form; there is no quadrature to refine, so
+///   any validated controls are satisfied.
+///
+/// The estimator compares a coarse rule with its refinement for all area,
+/// volume and raw moment components. It measures quadrature convergence over
+/// the face's resolved domain. It is not a certified geometric error bound,
+/// nor a bound on the assembled centroid or inertia after cancellation. A
+/// sampled trim outline is part of the resolved domain, so tightening
+/// `adaptive_eps` cannot reduce its chord error.
 /// The order-only [`face_integrator::integrate_face`] API remains fixed-order.
 #[derive(Debug, Clone)]
 pub struct PropertiesOptions {
     /// Gauss quadrature order in `1..=20` (default 5).
     pub gauss_order: usize,
     /// Positive finite relative quadrature-estimator tolerance (default 1e-6).
-    /// Component scales use absolute integrals grouped by physical dimension,
-    /// per initial patch, so zero moments do not require a dimensional floor.
+    /// Component scales use absolute integrals grouped by physical dimension
+    /// (per initial patch on a rectangle, per face on a sliced domain), so
+    /// zero moments do not require a dimensional floor.
     pub adaptive_eps: f64,
     /// Maximum recursive subdivisions beyond the initial patches (default 8).
     /// Zero permits only the initial coarse/fine convergence comparison.
-    /// Depth exhaustion, a safety depth of 32, or 32,768 Gauss-rule evaluations
-    /// per face returns an error. The latter limits apply even to larger requests.
+    /// Depth exhaustion, a safety depth of 32, or the per-face work budget
+    /// returns an error; the latter two apply even to larger requests. The
+    /// budget is `32,768 * gauss_order²` surface evaluations (32,768 tensor
+    /// rules) on a rectangle and 64 times that on a sliced domain, whose base
+    /// pass alone must visit every trim window and knot piece.
     pub max_depth: usize,
 }
 

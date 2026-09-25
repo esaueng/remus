@@ -10,6 +10,75 @@ use remus_operations::measure;
 use crate::error::{WasmError, validate_finite, validate_positive};
 use crate::kernel::BrepKernel;
 
+/// Deepest refinement `massProperties` accepts; the native integrator caps any
+/// larger request at this safety depth, so the binding refuses it instead of
+/// clamping silently.
+const MASS_PROPERTIES_MAX_DEPTH: usize = 32;
+
+/// Resolve the optional `massProperties` numerical controls onto the native
+/// [`measure::mass_properties_default_options`].
+///
+/// An absent control keeps its default, so the no-argument call is the
+/// historical `massProperties`. A present control is validated strictly;
+/// failures name the JS argument that caused them.
+pub fn mass_properties_options(
+    adaptive_eps: Option<f64>,
+    max_depth: Option<f64>,
+    gauss_order: Option<f64>,
+) -> Result<remus_check::properties::PropertiesOptions, (WasmError, &'static str)> {
+    let mut options = measure::mass_properties_default_options();
+    if let Some(eps) = adaptive_eps {
+        validate_positive(eps, "adaptiveEps").map_err(|e| (e, "adaptiveEps"))?;
+        options.adaptive_eps = eps;
+    }
+    if let Some(depth) = max_depth {
+        let depth = crate::error::validate_iteration_budget(depth, "maxDepth")
+            .map_err(|e| (e, "maxDepth"))?;
+        if depth > MASS_PROPERTIES_MAX_DEPTH {
+            return Err((
+                WasmError::InvalidInput {
+                    reason: format!(
+                        "maxDepth must be at most {MASS_PROPERTIES_MAX_DEPTH}, got {depth}"
+                    ),
+                },
+                "maxDepth",
+            ));
+        }
+        options.max_depth = depth;
+    }
+    if let Some(order) = gauss_order {
+        let order = crate::error::validate_iteration_budget(order, "gaussOrder")
+            .map_err(|e| (e, "gaussOrder"))?;
+        if !(1..=remus_math::quadrature::MAX_ORDER).contains(&order) {
+            return Err((
+                WasmError::InvalidInput {
+                    reason: format!(
+                        "gaussOrder must be in 1..={}, got {order}",
+                        remus_math::quadrature::MAX_ORDER
+                    ),
+                },
+                "gaussOrder",
+            ));
+        }
+        options.gauss_order = order;
+    }
+    Ok(options)
+}
+
+/// Serialize mass properties into the `MassPropertiesResult` shape.
+pub fn mass_properties_result(
+    props: &remus_check::properties::GProps,
+) -> crate::types::MassPropertiesResult {
+    let (moments, axes) = props.principal_inertia();
+    crate::types::MassPropertiesResult {
+        volume: props.mass,
+        center_of_mass: vec![props.center.x(), props.center.y(), props.center.z()],
+        inertia: props.inertia.to_vec(),
+        principal_moments: moments.to_vec(),
+        principal_axes: axes.iter().flatten().copied().collect(),
+    }
+}
+
 fn detailed_validation_result(
     report: remus_operations::validate::ValidationReport,
 ) -> crate::types::ValidationReportResult {
@@ -261,22 +330,45 @@ impl BrepKernel {
     /// Integration runs on the exact face geometry (analytic and NURBS
     /// surfaces, no tessellation), so there is no deflection parameter.
     ///
+    /// # Numerical controls (optional)
+    ///
+    /// Omitting all three reproduces the historical call exactly
+    /// (`gaussOrder = 8`, `adaptiveEps = 1e-6`, `maxDepth = 8`).
+    ///
+    /// * `adaptiveEps` — positive finite relative tolerance of the
+    ///   coarse-versus-refined quadrature estimator, applied to every area,
+    ///   volume and moment component per initial patch.
+    /// * `maxDepth` — integer `0..=32`: refinement levels beyond the initial
+    ///   patches. Larger values are rejected, not clamped.
+    /// * `gaussOrder` — integer `1..=20`: the Gauss rule per quadrature cell.
+    ///
+    /// Untrimmed analytic patches always refine. Trimmed curved faces, NURBS
+    /// faces and torus tube bands keep the historical fixed rule while
+    /// `adaptiveEps` and `maxDepth` are both at their defaults and refine with
+    /// any other pair; passing the default values explicitly is the same as
+    /// omitting them. Refinement converges the quadrature over the face's
+    /// resolved domain; it does not reduce the chord error of a sampled trim
+    /// outline. Exact and sampled planar faces integrate in closed form.
+    ///
     /// # Errors
     ///
-    /// Returns an error if the solid handle is invalid, integration fails,
-    /// or the solid has zero volume.
+    /// Returns an error if the solid handle is invalid, a control is out of
+    /// range, the requested tolerance cannot be met within `maxDepth` or the
+    /// per-face work budget (never an unconverged result), integration
+    /// fails, or the solid has zero volume.
     #[wasm_bindgen(js_name = "massProperties")]
-    pub fn mass_properties(&self, solid: u32) -> Result<JsValue, JsError> {
+    pub fn mass_properties(
+        &self,
+        solid: u32,
+        adaptive_eps: Option<f64>,
+        max_depth: Option<f64>,
+        gauss_order: Option<f64>,
+    ) -> Result<JsValue, JsError> {
+        let options =
+            mass_properties_options(adaptive_eps, max_depth, gauss_order).map_err(|(e, _)| e)?;
         let solid_id = self.resolve_solid(solid)?;
-        let props = measure::mass_properties(&self.topo, solid_id)?;
-        let (moments, axes) = props.principal_inertia();
-        let result = crate::types::MassPropertiesResult {
-            volume: props.mass,
-            center_of_mass: vec![props.center.x(), props.center.y(), props.center.z()],
-            inertia: props.inertia.to_vec(),
-            principal_moments: moments.to_vec(),
-            principal_axes: axes.iter().flatten().copied().collect(),
-        };
+        let props = measure::mass_properties_with_options(&self.topo, solid_id, &options)?;
+        let result = mass_properties_result(&props);
         Ok(serde_json::to_string(&result)
             .map_err(|e| JsError::new(&e.to_string()))?
             .into())
@@ -1075,6 +1167,175 @@ mod tests {
                     "batch Izz: {bizz} vs {expected_izz}"
                 );
             }
+        }
+    }
+
+    // ── Mass-properties numerical controls (B20 follow-up) ──────────
+
+    fn batch_v2(k: &mut BrepKernel, script: &str) -> serde_json::Value {
+        serde_json::from_str(&k.execute_batch_v2(script)).unwrap()
+    }
+
+    #[test]
+    fn mass_properties_controls_default_to_the_native_contract() {
+        let options = super::mass_properties_options(None, None, None).unwrap();
+        let native = remus_operations::measure::mass_properties_default_options();
+        assert_eq!(options.gauss_order, 8);
+        assert_eq!(options.gauss_order, native.gauss_order);
+        assert_eq!(
+            options.adaptive_eps.to_bits(),
+            native.adaptive_eps.to_bits()
+        );
+        assert_eq!(options.max_depth, native.max_depth);
+        let set = super::mass_properties_options(Some(1e-9), Some(12.0), Some(3.0)).unwrap();
+        assert_eq!(
+            (set.adaptive_eps, set.max_depth, set.gauss_order),
+            (1e-9, 12, 3)
+        );
+    }
+
+    #[test]
+    fn batch_mass_properties_absent_controls_equal_explicit_defaults_bitwise() {
+        for build in [
+            r#"{"op": "makeSphere", "args": {"radius": 2}}"#,
+            r#"{"op": "makeCylinder", "args": {"radius": 3, "height": 10}}"#,
+            r#"{"op": "makeTorus", "args": {"majorRadius": 3, "minorRadius": 1}}"#,
+        ] {
+            let mut k = BrepKernel::new();
+            let r = k.execute_batch(&format!(
+                r#"[{build},
+                    {{"op": "massProperties", "args": {{"solid": 0}}}},
+                    {{"op": "massProperties", "args": {{"solid": 0, "adaptiveEps": 1e-6, "maxDepth": 8, "gaussOrder": 8}}}},
+                    {{"op": "massProperties", "args": {{"solid": 0, "adaptiveEps": null, "maxDepth": null, "gaussOrder": null}}}}]"#
+            ));
+            let parsed: serde_json::Value = serde_json::from_str(&r).unwrap();
+            assert!(parsed[1]["ok"].is_object(), "{r}");
+            assert_eq!(parsed[1]["ok"], parsed[2]["ok"], "{build}: {r}");
+            assert_eq!(parsed[1]["ok"], parsed[3]["ok"], "{build}: {r}");
+            let native =
+                remus_operations::measure::mass_properties(&k.topo, k.resolve_solid(0).unwrap())
+                    .unwrap();
+            assert_eq!(
+                parsed[1]["ok"]["volume"].as_f64().unwrap().to_bits(),
+                native.mass.to_bits()
+            );
+        }
+    }
+
+    /// The controls must change the answer within their documented meaning:
+    /// a coarse request is accepted with a visibly larger error than a tight
+    /// one, and the tight one meets the closed form. The sphere and torus are
+    /// untrimmed analytic patches. The cylinder wall carries a polygon seam
+    /// mask, which used to refuse any non-default control; it now refines as
+    /// a sliced domain (its full-revolution moments are exact under any rule,
+    /// so it shows acceptance and accuracy rather than a coarse gap).
+    #[test]
+    fn batch_mass_properties_controls_converge_to_closed_forms() {
+        use remus_check::properties::analytic;
+        let coarse = r#""gaussOrder": 1, "adaptiveEps": 0.1, "maxDepth": 20"#;
+        let tight = r#""gaussOrder": 3, "adaptiveEps": 1e-9, "maxDepth": 24"#;
+        for (build, expected, gap) in [
+            (
+                r#"{"op": "makeSphere", "args": {"radius": 2}}"#,
+                analytic::sphere_props(2.0),
+                true,
+            ),
+            (
+                r#"{"op": "makeTorus", "args": {"majorRadius": 3, "minorRadius": 1}}"#,
+                analytic::torus_props(3.0, 1.0),
+                true,
+            ),
+            (
+                r#"{"op": "makeCylinder", "args": {"radius": 2, "height": 3}}"#,
+                analytic::cylinder_props(2.0, 3.0),
+                false,
+            ),
+        ] {
+            let mut k = BrepKernel::new();
+            let r = batch_v2(
+                &mut k,
+                &format!(
+                    r#"[{build},
+                    {{"op": "massProperties", "args": {{"solid": 0, {coarse}}}}},
+                    {{"op": "massProperties", "args": {{"solid": 0, {tight}}}}}]"#
+                ),
+            );
+            let error = |i: usize| {
+                let ok = &r[i]["ok"];
+                assert!(ok.is_object(), "{build}: {r}");
+                let volume = ok["volume"].as_f64().unwrap();
+                let ixx = ok["inertia"][0].as_f64().unwrap();
+                let izz = ok["inertia"][2].as_f64().unwrap();
+                [
+                    (volume - expected.mass).abs() / expected.mass,
+                    (ixx - expected.inertia[0]).abs() / expected.inertia[0],
+                    (izz - expected.inertia[2]).abs() / expected.inertia[2],
+                ]
+                .into_iter()
+                .fold(0.0, f64::max)
+            };
+            let (coarse_error, tight_error) = (error(1), error(2));
+            assert!(tight_error <= 1e-10, "{build}: tight error {tight_error:e}");
+            if gap {
+                assert!(
+                    coarse_error > 1e-3 && coarse_error > 1e6 * tight_error.max(1e-16),
+                    "{build}: coarse {coarse_error:e} vs tight {tight_error:e}"
+                );
+            } else {
+                assert!(coarse_error <= 1e-13, "{build}: coarse {coarse_error:e}");
+            }
+        }
+    }
+
+    #[test]
+    fn batch_mass_properties_unreachable_tolerance_refuses_typed() {
+        let mut k = BrepKernel::new();
+        let r = batch_v2(
+            &mut k,
+            r#"[{"op": "makeSphere", "args": {"radius": 2}},
+                {"op": "massProperties", "args": {"solid": 0, "gaussOrder": 1, "adaptiveEps": 1e-14, "maxDepth": 0}}]"#,
+        );
+        assert!(
+            r[1]["ok"].is_null(),
+            "an unconverged result must not be returned: {r}"
+        );
+        let message = r[1]["error"]["message"].as_str().unwrap_or_default();
+        assert!(message.contains("max_depth"), "{r}");
+        assert_ne!(r[1]["error"]["code"], "invalid_argument", "{r}");
+    }
+
+    #[test]
+    fn batch_mass_properties_rejects_invalid_controls_naming_the_argument() {
+        for (argument, bad) in [
+            ("adaptiveEps", "0"),
+            ("adaptiveEps", "-1e-6"),
+            ("adaptiveEps", r#""tight""#),
+            ("adaptiveEps", "true"),
+            ("maxDepth", "-1"),
+            ("maxDepth", "2.5"),
+            ("maxDepth", "33"),
+            ("maxDepth", r#""deep""#),
+            ("gaussOrder", "0"),
+            ("gaussOrder", "21"),
+            ("gaussOrder", "4.5"),
+            ("gaussOrder", "[8]"),
+        ] {
+            let mut k = BrepKernel::new();
+            let r = batch_v2(
+                &mut k,
+                &format!(
+                    r#"[{{"op": "makeSphere", "args": {{"radius": 2}}}},
+                    {{"op": "massProperties", "args": {{"solid": 0, "{argument}": {bad}}}}}]"#
+                ),
+            );
+            assert_eq!(
+                r[1]["error"]["code"], "invalid_argument",
+                "{argument}={bad}: {r}"
+            );
+            assert_eq!(
+                r[1]["error"]["details"]["argument"], argument,
+                "{argument}={bad}: {r}"
+            );
         }
     }
 
