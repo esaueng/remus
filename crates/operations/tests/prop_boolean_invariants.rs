@@ -520,9 +520,14 @@ fn check_valid_closed_oriented_impl(
 /// `regress_b33_tangent_seam_fuse.rs` are their permanent regressions.
 fn is_finding2(input: &BoolPairInput) -> bool {
     // Pinned-2 family (seed fd003939 and siblings): cylinder(3, *) ×
-    // sphere(1) at unit scale under x-axis rotation — the fuse carries
-    // supplement wire self-intersections + vertex-on-curve warnings while
-    // the ops-validator stays clean. Offsets/height/angle vary by sibling.
+    // sphere(1) at unit scale under x-axis rotation. Its original signature
+    // (supplement wire self-intersections + vertex-on-curve warnings on an
+    // ops-clean fuse) was a checker false positive — split NURBS halves
+    // evaluated over the whole carrier — fixed 2026-09-24 (B33). The arm
+    // stays for what the family sweep still shows: fuses accepted only by
+    // the relaxed ops gate with `ShellOrientationConsistent` errors, and a
+    // sphere equator tangent to the cap rim that pinches the cap's outer
+    // wire (a genuine `WireSelfIntersection`, oz = h at (0, -2)).
     #[allow(clippy::float_cmp)]
     let pinned2 = matches!(
         (input.a, input.b, input.axis, input.scale),
@@ -556,12 +561,13 @@ fn is_finding2(input: &BoolPairInput) -> bool {
             && ox > -2.0 && ox < 1.0
             && oy > -1.0 && oy < 2.0
     );
-    // Sphere–cone wire-damage class (finding 20): sphere(1) × cone(h=2.5)
-    // at unit scale, z-rotated quarter-turn, offset (-1,-2,-1.5) — all legs
-    // ops-valid with sane volumes/translation and clean meshes, yet every
-    // leg carries supplement wire self-intersections (cone radii vary:
-    // (1.0,1.5), (1.0,2.0), (1.5,1.5) observed). Same wire-damage class as
-    // the pinned-2 arm above. Same carve-out, same §B row (B33 extended).
+    // Sphere–cone class (finding 20): sphere(1) × cone(h=2.5) at unit
+    // scale, z-rotated quarter-turn (cone radii vary: (1.0,1.5), (1.0,2.0),
+    // (1.5,1.5) observed). Its supplement wire self-intersections were the
+    // same checker false positive as the pinned-2 arm, fixed 2026-09-24
+    // (B33). The arm stays because the family sweep still shows legs
+    // accepted only by the relaxed ops gate with `ShellOrientationConsistent`
+    // errors. Same carve-out, same §B row (B33 extended).
     #[allow(clippy::float_cmp)]
     let spherecone = matches!(
         (input.a, input.b, input.axis, input.angle, input.scale),
@@ -2871,12 +2877,15 @@ fn b26_finding19_grazing_sibling() {
 /// ops-valid with sane volumes/translation and a clean mesh, yet carries
 /// two `WireSelfIntersection` errors from the check-crate supplement (the
 /// cut and intersect legs show the same signature). Same wire-damage class
-/// as finding 2 — owned by the extended §B row B33, no new row. Committed
-/// as `#[ignore]` per the testing skill: it fails until the owning row
-/// fixes the kernel. Do NOT fix in the B26 proptest PR.
+/// as finding 2 — owned by the extended §B row B33, no new row.
 /// Minimized from `prop_random_curved_pair_identities` (committed seed).
+/// Closed with B33 (2026-09-24): a checker false positive, not wire damage.
+/// Split halves of one NURBS section share a single carrier and differ only
+/// by trim; the check crate's wire and vertex-on-curve arms evaluated the
+/// carrier's full knot span, so each half reached its sibling's far vertex
+/// (the two `WireSelfIntersection` errors at distance 0 and ten
+/// `VertexOnCurve` warnings). They now evaluate the edge's trim.
 #[test]
-#[ignore = "open: sphere-cone wire self-intersections (B26 finding 20)"]
 fn b26_finding20_spherecone_wires() {
     use remus_operations::primitives::{make_cone, make_sphere};
     let m = Mat4::translation(-1.0, -2.0, -1.5) * Mat4::rotation_z(std::f64::consts::FRAC_PI_2);
@@ -2886,22 +2895,27 @@ fn b26_finding20_spherecone_wires() {
     remus_operations::transform::transform_solid(&mut topo, b, &m).expect("placement applies");
     let f = exact_boolean(&mut topo, BooleanOp::Fuse, a, b).expect("exact fuse succeeds");
     check_exact_quality(&f, "finding-20 fuse").expect("exact quality");
-    // The failing oracle: both validators must be clean.
+    // Both validators must be clean.
     check_valid_closed_oriented(&topo, f.solid, "finding-20 fuse").expect("fully valid");
-    // Health premise (passes today): the fuse mesh is watertight — pinned
-    // so the repro tracks full health, not just the supplement.
+    // Full health, not just the supplement: the fuse mesh is watertight.
     check_watertight_mesh_scaled(&topo, f.solid, "finding-20 fuse").expect("mesh watertight");
 }
 
 /// Second pinned instance of finding 20 (2026-09-16): the same sphere–cone
 /// shapes with a wider cone top (r1=2.0 instead of 1.5) — all three legs
-/// ops-valid with sane volumes/translation and clean meshes, yet every leg
-/// carries supplement wire self-intersections. Same owner row (B33
-/// extended): the wire-damage class, not the placement, is broken. No
-/// persisted proptest seed (shrinking aborted) — this repro is the
-/// retention. Minimized from `prop_random_curved_pair_identities`.
+/// ops-valid with sane volumes/translation. No persisted proptest seed
+/// (shrinking aborted) — this repro is the retention. Minimized from
+/// `prop_random_curved_pair_identities`.
+/// The supplement wire self-intersections were a checker false positive
+/// (split NURBS halves evaluated over the whole carrier), fixed with B33 on
+/// 2026-09-24: both validators are now clean on every leg. Still open (row
+/// B33): the fuse mesh opens with 3 boundary edges at the scale-derived
+/// deflection, like the cut leg's (gated in the proptest by
+/// `finding20_cutmesh`). The 2026-09-16 note that the fuse mesh was
+/// watertight no longer holds on main; the validator assert used to fail
+/// first and hid it.
 #[test]
-#[ignore = "open: sphere-cone wires, wider-top sibling (B26 finding 20)"]
+#[ignore = "open: sphere-cone wider-top fuse mesh opens, 3 boundary edges (B26 finding 20)"]
 fn b26_finding20_spherecone_sibling() {
     use remus_operations::primitives::{make_cone, make_sphere};
     let m = Mat4::translation(-1.0, -2.0, -1.5) * Mat4::rotation_z(std::f64::consts::FRAC_PI_2);
@@ -2911,12 +2925,11 @@ fn b26_finding20_spherecone_sibling() {
     remus_operations::transform::transform_solid(&mut topo, b, &m).expect("placement applies");
     let f = exact_boolean(&mut topo, BooleanOp::Fuse, a, b).expect("exact fuse succeeds");
     check_exact_quality(&f, "finding-20-sib fuse").expect("exact quality");
-    // The failing oracle: both validators must be clean.
+    // Passes since the 2026-09-24 checker fix: both validators are clean.
     check_valid_closed_oriented(&topo, f.solid, "finding-20-sib fuse").expect("fully valid");
-    // Health premise (passes today): the fuse mesh is watertight — pinned
-    // so the repro tracks full health, not just the supplement. (The CUT
-    // mesh of this input opens at fine deflection; the suite gate above
-    // covers it and row B33 documents it.)
+    // The failing oracle: the fuse mesh must be watertight. (The CUT mesh
+    // of this input opens the same way; the suite gate covers it and row
+    // B33 documents both.)
     check_watertight_mesh_scaled(&topo, f.solid, "finding-20-sib fuse").expect("mesh watertight");
 }
 
@@ -2927,8 +2940,10 @@ fn b26_finding20_spherecone_sibling() {
 /// owner row (B33 extended): the wire-damage class, not the cone radii, is
 /// broken. No persisted proptest seed (shrinking aborted) — this repro is
 /// the retention. Minimized from `prop_random_curved_pair_identities`.
+/// Closed with B33 (2026-09-24): the same checker false positive as
+/// `b26_finding20_spherecone_wires` (split NURBS halves evaluated over the
+/// whole carrier); every oracle below is now green.
 #[test]
-#[ignore = "open: sphere-cone wires, equal-radii sibling (B26 finding 20)"]
 fn b26_finding20_spherecone_equalradii() {
     use remus_operations::primitives::{make_cone, make_sphere};
     let m = Mat4::translation(-1.0, -2.0, -1.5) * Mat4::rotation_z(std::f64::consts::FRAC_PI_2);
@@ -2938,9 +2953,9 @@ fn b26_finding20_spherecone_equalradii() {
     remus_operations::transform::transform_solid(&mut topo, b, &m).expect("placement applies");
     let f = exact_boolean(&mut topo, BooleanOp::Fuse, a, b).expect("exact fuse succeeds");
     check_exact_quality(&f, "finding-20-eq fuse").expect("exact quality");
-    // The failing oracle: both validators must be clean.
+    // Both validators must be clean.
     check_valid_closed_oriented(&topo, f.solid, "finding-20-eq fuse").expect("fully valid");
-    // Health premises (pass today): watertight mesh, sane translation.
+    // Full health: watertight mesh, sane translation.
     check_watertight_mesh_scaled(&topo, f.solid, "finding-20-eq fuse").expect("mesh watertight");
     check_translation_invariant_scaled(&topo, f.solid, "finding-20-eq fuse")
         .expect("translation invariant");
@@ -3841,8 +3856,14 @@ fn b51_toruscone_sweep_disjoint_fuse_drops_torus() {
 /// owning row fixes the kernel. Do NOT fix in the B26 proptest PR — filed
 /// as a new §B row.
 /// Minimized from `prop_random_curved_pair_identities` (committed seed).
+/// Re-probed 2026-09-24 (row B40): the two `WireSelfIntersection` errors
+/// (and ten `VertexOnCurve` warnings) were a checker false positive — split
+/// NURBS halves evaluated over the whole carrier — and are gone on every
+/// leg; both validators now pass. Still open: the fuse mesh (714 boundary
+/// edges, 0 non-manifold at the scale-derived deflection). The cut mesh is
+/// now closed and the intersect now succeeds with a closed mesh.
 #[test]
-#[ignore = "open: cone-sphere small-scale wire/mesh damage (B26 finding 15)"]
+#[ignore = "open: cone-sphere small-scale fuse mesh opens, 714 boundary edges (B26 finding 15)"]
 fn b26_finding15_conesphere_wire_mesh() {
     use remus_operations::primitives::{make_cone, make_sphere};
     let m =
@@ -3853,8 +3874,8 @@ fn b26_finding15_conesphere_wire_mesh() {
     remus_operations::transform::transform_solid(&mut topo, b, &m).expect("placement applies");
     let f = exact_boolean(&mut topo, BooleanOp::Fuse, a, b).expect("exact fuse succeeds");
     check_exact_quality(&f, "finding-15 fuse").expect("exact quality");
-    // The failing oracles: both validators must be clean, and the mesh of
-    // the result must be watertight and manifold.
+    // Both validators must be clean (green since the 2026-09-24 checker
+    // fix). The failing oracle: the mesh must be watertight and manifold.
     check_valid_closed_oriented(&topo, f.solid, "finding-15 fuse").expect("fully valid");
     check_watertight_mesh_scaled(&topo, f.solid, "finding-15 fuse").expect("mesh watertight");
 }
