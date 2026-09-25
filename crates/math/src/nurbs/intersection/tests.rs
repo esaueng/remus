@@ -1856,7 +1856,7 @@ mod marching_oracles {
         assert!(branches.iter().any(|b| b.point.x() < 0.0));
     }
 
-    /// Ready-repro for B61. At a transversal crossing the curvature
+    /// Ready-repro for B63. At a transversal crossing the curvature
     /// difference of the two surfaces is indefinite (here `±c` in the `xy`
     /// frame), and the branch directions are its null (asymptotic) directions,
     /// the lines `x = 0` and `y = 0`. The marcher confirms a branch only when
@@ -1864,7 +1864,7 @@ mod marching_oracles {
     /// crossing goes unreported, and `second_order_tangent` returns the
     /// eigenvector of the smaller-magnitude eigenvalue: the bisector.
     #[test]
-    #[ignore = "open: B61 — SSI branch points: absolute eigenvalue gate and bisector tangent"]
+    #[ignore = "open: B63 — SSI branch points: absolute eigenvalue gate and bisector tangent"]
     fn steep_saddle_crossing_reports_its_branch_and_asymptotic_tangent() {
         let c = 0.2;
         let s1 = saddle(c);

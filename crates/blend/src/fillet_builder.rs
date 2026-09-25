@@ -3774,12 +3774,12 @@ mod closed_rim_oracles {
     /// normal `(1, k)/√(1 + k²)`. The ball touches the base, so `zc = r`, and
     /// sits `r` inside the wall: `ρc = 2 − k·zc − r·√(1 + k²)`.
     ///
-    /// Ready-repro for B62: the analytic plane-cone arm places the ball on the
+    /// Ready-repro for B64: the analytic plane-cone arm places the ball on the
     /// empty side of the rim (tube centre at `z = −r`, major radius
     /// `r_p + r·cot(α/2)`), growing the base disc past the rim instead of
     /// rounding the corner.
     #[test]
-    #[ignore = "open: B62 — plane-cone rim fillet builds the mirrored torus (ball outside the material)"]
+    #[ignore = "open: B64 — plane-cone rim fillet builds the mirrored torus (ball outside the material)"]
     fn frustum_base_rim_fillet_matches_the_cone_plane_rolling_ball() {
         let (k, h, r) = (0.25_f64, 2.0, 0.3);
         let mut topo = Topology::new();
@@ -3817,11 +3817,11 @@ mod closed_rim_oracles {
     /// normal `(1, k)/√(1 + k²)`. The ball touches the cap, so `zc = H − r`,
     /// and sits `r` inside the wall: `ρc = 2 − k·zc − r·√(1 + k²)`.
     ///
-    /// Ready-repro for B62: the analytic plane-cone arm declines a cone that
+    /// Ready-repro for B64: the analytic plane-cone arm declines a cone that
     /// flares away from the plate, the walker's NURBS band has no closed-rim
     /// assembler, and the trim path refuses with `TrimmingFailure`.
     #[test]
-    #[ignore = "open: B62 — small-end frustum rim fillet refuses (TrimmingFailure)"]
+    #[ignore = "open: B64 — small-end frustum rim fillet refuses (TrimmingFailure)"]
     fn frustum_small_end_rim_fillet_matches_the_cone_plane_rolling_ball() {
         let (k, h, r) = (0.25_f64, 2.0, 0.3);
         let mut topo = Topology::new();
