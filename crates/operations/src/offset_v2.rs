@@ -141,6 +141,58 @@ pub fn offset_solid_v2_with_evolution(
     })
 }
 
+/// An offset with result-aware face, edge and vertex history (B18).
+#[derive(Debug, Clone)]
+pub struct OffsetEntityEvolution {
+    /// The offset solid.
+    pub solid: SolidId,
+    /// Construction-derived one-to-one face map.
+    pub faces: EvolutionMap,
+    /// Edge and vertex claims induced from `faces` by exact incidence.
+    pub boundary: crate::boundary_evolution::BoundaryEvolution,
+    /// `faces` and `boundary` compared against every result entity.
+    pub completeness: crate::boundary_evolution::EntityCompletenessReport,
+}
+
+/// Offset every face and return construction-derived face, edge and vertex
+/// history, checked against the actual result entity sets.
+///
+/// The geometry is exactly [`offset_solid_v2_with_evolution`]'s. Edge and
+/// vertex claims are induced from its one-to-one face map by exact
+/// incidence (see [`crate::boundary_evolution`]): every result edge and
+/// vertex is `modified` from its unique source, `generated` where source
+/// faces newly meet, or unresolved with a typed reason when several source
+/// entities share its incidence (a torus's two seams, for example).
+///
+/// # Errors
+///
+/// Returns the errors of [`offset_solid_v2_with_evolution`], or
+/// [`OperationsError::InvalidInput`] if the history fails to account for
+/// every result face, edge and vertex. Any failure rolls the topology back.
+pub fn offset_solid_v2_with_entity_evolution(
+    topo: &mut Topology,
+    solid: SolidId,
+    distance: f64,
+) -> Result<OffsetEntityEvolution, OperationsError> {
+    use crate::boundary_evolution::{
+        SourceIncidence, completeness_for_result_solids, induce_boundary_evolution,
+        require_accounted,
+    };
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let source = SourceIncidence::capture(topo, solid)?;
+        let (result, faces) = offset_solid_v2_with_evolution(topo, solid, distance)?;
+        let boundary = induce_boundary_evolution(topo, &source, &faces, result)?;
+        let completeness = completeness_for_result_solids(topo, &faces, &boundary, &[result])?;
+        require_accounted("offset", &completeness)?;
+        Ok(OffsetEntityEvolution {
+            solid: result,
+            faces,
+            boundary,
+            completeness,
+        })
+    })
+}
+
 /// Shell (hollow solid) operation (V2 pipeline).
 ///
 /// # Errors

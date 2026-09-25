@@ -405,6 +405,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Assembly management | `assembly.rs` |
 | 2D sketch constraint solver | `sketch.rs` |
 | Evolution tracking | `evolution.rs` |
+| Result-aware edge/vertex evolution induced from an exact face map (typed unresolved reasons, F/E/V completeness) | `boundary_evolution.rs` |
 | Compound operations | `compound_ops.rs` |
 | Blend v2 wrappers (fillet/chamfer) | `blend_ops.rs` |
 | Exact standalone face-face blend sheets | `face_face_blend.rs` |

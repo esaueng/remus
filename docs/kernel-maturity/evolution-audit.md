@@ -39,7 +39,7 @@ that an original reference remains Bound. Test paths are repository-relative.
 | Fillet / chamfer creation | Faces only, with unresolved output claims retained | `crates/operations/tests/journal.rs`: `blend_face_evolution_journals_with_unresolved_claims_intact`; WASM `chamfer_journaled_severs_edge_refs_like_any_faces_only_entry` | Edge/vertex construction maps |
 | Analytic blend-band resize | Journaled single-cylinder/planar-support path retains F/E/V on resize and records complete merges/deletions on removal; legacy resize remains faces-only | `crates/operations/tests/journal_resize_blend.rs`; WASM `blend_resize_history_has_direct_batch_parity_and_rollback`; packaged consumer regression | Multi-face regions, curved supports and ambiguous boundaries remain outside the journaled path |
 | Linear pattern | Face map over instances | `crates/operations/src/journal_ops.rs`: `linear_pattern_journaled` | Edge/vertex maps; native whole-call rollback now covered below |
-| Default V2 offset | One-to-one face construction map | `crates/operations/tests/journal.rs`: `journaled_offsets_carry_face_references_through_exact_evolution` | Boundary maps, arc-joint and self-intersection-removal provenance |
+| Default V2 offset | F/E/V: one-to-one construction face map, plus edge/vertex claims induced from it by exact incidence and checked against the actual result sets; shared incidence stays typed unresolved | `crates/operations/tests/qualify_offset_entity_evolution.rs`; `crates/operations/tests/journal.rs`: `journaled_offsets_carry_face_references_through_exact_evolution`; WASM `offset_journaled_typed_unresolved_survives_every_envelope` | Torus seams and sphere equator rings need engine-level edge records; arc-joint and self-intersection-removal provenance; curved offsets refuse from 100 units (B55) |
 | Shell / plane split | Face maps, including explicitly unresolved generated caps/rims | `crates/operations/tests/qualify_evolution_coverage.rs` | Edge/vertex maps; whole-call rollback repaired by this audit's regression slice |
 | Extrude / revolve / sweep / loft / section | No family-wide total journal coverage established by this audit | Construction modules in `crates/operations/src/` | Construction attribution for caps, side faces and boundary entities; one family per slice |
 
@@ -130,6 +130,80 @@ bands/corners, curved supports and ambiguous periodic boundaries need separate
 attribution. The wrapper adds a whole-topology snapshot; large-arena
 performance is not qualified here.
 
+## Default V2 offset boundary history (B18, 2026-09-25)
+
+This slice closes the default V2 offset family: every result face, edge and
+vertex is attributed or listed as unresolved with a typed reason, and the
+claim is checked against the actual result entity sets. Offset geometry is
+unchanged.
+
+The public producers and consumers traced for this family are these:
+
+- **Native producers.** `offset_solid_v2_with_evolution` (faces only,
+  unchanged) and the new `offset_solid_v2_with_entity_evolution`.
+- **Native journal wrappers.** `offset_journaled` and the new
+  `offset_journaled_with_entities`. The first delegates to the second and
+  now journals edges and vertices as well as faces.
+- **WASM.** `offsetJournaled` on the direct binding, `executeBatch` and
+  `executeBatchV2`. It adds an `evolution` field with every event, typed
+  reasons and the completeness report. OpenZCAD's adapter calls
+  `offsetSolidV2`, whose contract is unchanged.
+
+`operations::boundary_evolution` induces the boundary claims. A result
+edge's face-use multiset, or a result vertex's face set, is mapped back
+through the exact `modified` claims. The result is compared with the source
+solid's own incidence, captured before the offset runs:
+
+| Source entities with that incidence | Claim |
+|---|---|
+| Exactly one | `Modified` from it; several result pieces naming one source form a split |
+| None | `Generated` from the source faces that now meet |
+| Several | `Unresolved`, `ambiguous_incidence`, naming the candidates |
+| An incident face without one `modified` source | `Unresolved`, `unmapped_incident_face` |
+
+No coordinate or tolerance is consulted. The journal keeps the candidates;
+the typed reason lives in the native result and the WASM envelope.
+`EntityCompletenessReport` extends the 2026-09-21 face-only checker to all
+three kinds. The producer refuses, and rolls back, any history that omits a
+result entity or claims one outside the result.
+
+Evidence is in `crates/operations/tests/qualify_offset_entity_evolution.rs`:
+
+- **Resolved primitives.** Box at 0.001, 1 and 1000 units; cylinder and
+  cone at 0.001, 1 and 10 units. Each runs outward and inward, at the
+  origin and under a rigid placement. Every claim is fully resolved and
+  bijective, and matches an independent oracle. Ordinary edges and vertices
+  must be the strictly nearest source entity. Seams are checked by role,
+  because the engine rebuilds a cylinder seam at its own circle start (90°
+  from the source seam).
+- **Incomplete records.** A dropped face, edge or vertex record and a
+  phantom edge claim are each reported per kind and refused.
+- **Split and merge.** A split edge binds `BoundMany` over both pieces, and
+  each merged source binds the merged edge. Dropping one piece's record
+  reports exactly that piece.
+- **Typed unresolved.** Torus seams at three scales and both signs, and the
+  sphere's equator ring, stay `ambiguous_incidence` and fail closed on
+  reference resolution. The torus vertex still binds.
+- **Journal.** Edge and vertex references bind the claimed successor
+  through a second offset. This test fails with faces-only recording.
+- **Geometry and refusal.** The history path matches the plain offset bit
+  for bit. A refused offset is atomic and publishes its outstanding gap
+  exactly once on the next success.
+
+The WASM contracts check that the torus's typed record reaches JS
+identically through the direct binding, `executeBatch` and
+`executeBatchV2`. They also check that a refused offset is a typed
+`executeBatchV2` error that publishes no history.
+`scripts/test-wasm-smoke.mjs` repeats the direct and batch checks against the
+built package.
+
+The slice also found a defect outside history. Intersection-joint offsets
+of cylinders and cones refuse from 100 units up with "no reconstructed wire
+loops", while boxes offset at every scale. The plain offset fails
+identically, so this change did not cause it. It is pinned as bridge row
+B55 by the ignored ready-repro in
+`crates/offset/tests/regress_curved_offset_scale.rs`.
+
 ## Hosted proof snapshot
 
 These are historical run results, not proof of the next PR's head. Refresh
@@ -174,9 +248,16 @@ This slice neither bypasses the failing test nor changes CI routing.
    cylindrical band between planar supports, including zero-radius removal with
    complete merge/deletion history. Extend multi-face regions and curved supports
    only with construction boundary correspondence.
-3. Extend one B18 family at a time: shell/offset boundary maps, split/section
-   boundaries, then sweep-family cap attribution. Preserve explicit unresolved
-   records outside each qualified domain.
+3. Extend one B18 family at a time. **Done: default V2 offset F/E/V
+   (2026-09-25, above).** Remaining, in order: shell boundary maps
+   (`shell_op` rebuilds both skins and rims from polygon specs, so it needs
+   its own spec-to-edge records), split/section boundaries, then sweep-family
+   cap attribution. Face-only entries that still sever edge and vertex
+   references are fillet/chamfer creation, linear pattern, shell and plane
+   split. Offset residuals are torus seams and sphere equator rings, which
+   need edge records from the offset engine's intersection phase, plus
+   arc-joint and self-intersection-removal provenance. Preserve explicit
+   unresolved records outside each qualified domain.
 4. Run 2.4d's merged quadric integration matrix and reconcile its existing
    exit gate before attempting broader arrangements. Continue the 2.6/2.7
    named scale and tangency gaps separately.
