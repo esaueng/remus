@@ -608,3 +608,47 @@ fn steep_torus_notch_meshes_closed_at_fine_deflection() {
         }
     }
 }
+
+/// Ready-repro (B65): the cross-drilled shaft of
+/// `cross_drilled_display_mesh_is_closed_and_matches_brep_volume` (shaft
+/// r = 3, h = 30, bored along x at mid-height). The bore wall is bounded by
+/// its two marched saddle curves, which touch the wall's v extremes at only
+/// four points, so `tessellate_nonplanar_cdt` withholds the NURBS-rail
+/// densification from it. At b = 2 the wall then sags 16 × the deflection
+/// at 0.05 and 397 × at 0.002, and the closed mesh reads up to 0.87 % over
+/// the exact volume (inside that test's 2 % band); at b = 1, 6.5 × at
+/// 0.002. With the densification the same walls hold ≤ 0.63 × and the volume
+/// converges from below. The exact volume: 270π minus the bore's
+/// intersection with the shaft, ∫ 4·√(9 − y²)·√(b² − y²) dy over |y| ≤ b.
+/// Exit: this passes.
+#[test]
+#[ignore = "open: B65 — a cross-drilled bore wall is meshed without its trim densification"]
+fn cross_drilled_bore_wall_stays_within_the_chord_bound() {
+    use std::f64::consts::PI;
+    for b in [2.0_f64, 1.0] {
+        let (topo, solid) = super::shaft_drilled_with(b);
+        let removed = simpson(
+            |y: f64| 4.0 * (9.0 - y * y).max(0.0).sqrt() * (b * b - y * y).max(0.0).sqrt(),
+            -b,
+            b,
+            200_000,
+        );
+        let exact = PI * 9.0 * 30.0 - removed;
+        for deflection in [0.05, 0.02, 0.006, 0.002] {
+            let what = format!("bore r = {b}");
+            let (mesh, faces) = closed_mesh_by_face(&topo, solid, deflection);
+            // Chords only: the marched saddle curves also leave rim vertices
+            // up to 1.4e-4 off the bore (b = 2), a separate observation.
+            for (i, face) in faces.iter().enumerate() {
+                if matches!(face.surface, FaceSurface::Cylinder(_)) {
+                    let (_, sag) = vertex_and_sag(face);
+                    assert!(
+                        sag <= 2.0 * deflection,
+                        "{what}: face {i} sags {sag} at deflection {deflection}"
+                    );
+                }
+            }
+            assert_volume_within_chord_bound(&mesh, exact, deflection, &what);
+        }
+    }
+}
