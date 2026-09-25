@@ -139,8 +139,8 @@ blend-band witness (`regress_torus_pierce_band.rs`, still fails 3/3), one
 P-Class 2.6 witness (`qualify_boolean_anisotropic.rs`, still fails 3/3), and
 five B10 seeds (`b10_curve_curve.rs` ×2, `b10_conic_distance.rs` ×3, all still
 fail 3/3; the two `b10_curve_curve.rs` crossing seeds were fixed and
-un-ignored in PR #642 (2026-09-25) and the three conic-distance seeds in the
-follow-up B10 conic PR, so B10 owns no ignored seeds). The other twelve are one ~2 min perf run
+un-ignored in PR #642 (2026-09-25) and the three conic-distance seeds in PR
+#658, so B10 owns no ignored seeds). The other twelve are one ~2 min perf run
 (`boolean/tests.rs::staircase_fuse_with_cylinders`), two manual release-mode
 `unify_faces` scaling measurements (`regress_unify_scaling.rs`, issue #284),
 and nine print-only diagnostics (`profile_intersect.rs` ×3, the two #696
