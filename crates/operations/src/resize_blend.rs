@@ -3836,6 +3836,17 @@ fn replace_face_wire(
     Ok(())
 }
 
+/// Normal about which an exact circle edge travels from its start vertex to
+/// its end vertex.  A decreasing trim runs the stored circle clockwise, so its
+/// travel normal is the opposite of the stored one; comparing stored normals
+/// alone would flip the replacement of such an edge.
+fn circle_travel_normal(edge: &Edge, circle: &Circle3D) -> Vec3 {
+    match edge.strict_domain() {
+        Ok((start, end)) if end < start => circle.normal() * -1.0,
+        _ => circle.normal(),
+    }
+}
+
 fn oriented_replacement(
     topo: &Topology,
     old: OrientedEdge,
@@ -3846,7 +3857,7 @@ fn oriented_replacement(
     let EdgeCurve::Circle(old_circle) = old_edge.curve() else {
         return Ok(OrientedEdge::new(new_edge, old.is_forward()));
     };
-    let aligned = old_circle.normal().dot(new_curve_normal) >= 0.0;
+    let aligned = circle_travel_normal(old_edge, old_circle).dot(new_curve_normal) >= 0.0;
     Ok(OrientedEdge::new(
         new_edge,
         if aligned {
@@ -4368,10 +4379,11 @@ fn contact_direction(
     let Some(oriented) = wire.iter().find(|edge| contacts.contains(&edge.edge())) else {
         return Err(reconstruction("support contact is empty"));
     };
-    let EdgeCurve::Circle(circle) = topo.edge(oriented.edge())?.curve() else {
+    let edge = topo.edge(oriented.edge())?;
+    let EdgeCurve::Circle(circle) = edge.curve() else {
         return Err(reconstruction("support contact is not circular"));
     };
-    Ok(if circle.normal().dot(axis) >= 0.0 {
+    Ok(if circle_travel_normal(edge, circle).dot(axis) >= 0.0 {
         oriented.is_forward()
     } else {
         !oriented.is_forward()
@@ -4838,7 +4850,7 @@ pub fn resize_blend_failure_code(error: &OperationsError) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::panic, clippy::unwrap_used)]
+    #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
     use super::*;
 
@@ -5218,6 +5230,584 @@ mod tests {
         ];
         for (error, expected) in cases {
             assert_eq!(error.code(), expected);
+        }
+    }
+
+    // ---- B19 survivor tranche: split spring-chain proof, contiguity, and
+    // helper certificates.  The chain fixture is a band carrier x^2 + y^2 = 1
+    // with the tangent support plane x = 1; every perturbation below moves a
+    // vertex by a stated amount against exactly one clause of the proof.
+
+    use remus_math::surfaces::CylindricalSurface;
+    use remus_topology::face::Face;
+
+    struct ChainFixture {
+        topo: Topology,
+        support: FaceId,
+        band: FaceId,
+        contacts: Vec<EdgeId>,
+        chain_vertices: Vec<VertexId>,
+    }
+
+    fn line_edge(topo: &mut Topology, start: VertexId, end: VertexId) -> EdgeId {
+        topo.add_edge(Edge::new(start, end, EdgeCurve::Line))
+    }
+
+    /// Band/support pair sharing the open chain through `points`.  The
+    /// support wire runs the chain forward; the band wire runs it backward.
+    fn chain_fixture(points: &[Point3]) -> ChainFixture {
+        let mut topo = Topology::new();
+        let vertices: Vec<_> = points
+            .iter()
+            .map(|point| topo.add_vertex(Vertex::new(*point, Tolerance::new().linear)))
+            .collect();
+        let contacts: Vec<_> = vertices
+            .windows(2)
+            .map(|pair| line_edge(&mut topo, pair[0], pair[1]))
+            .collect();
+        let (first, last) = (vertices[0], *vertices.last().unwrap());
+        let off_support = topo.add_vertex(Vertex::new(
+            Point3::new(1.0, 5.0, 5.0),
+            Tolerance::new().linear,
+        ));
+        let off_band = topo.add_vertex(Vertex::new(
+            Point3::new(0.0, 1.0, 5.0),
+            Tolerance::new().linear,
+        ));
+        let mut support_uses: Vec<_> = contacts
+            .iter()
+            .map(|edge| OrientedEdge::new(*edge, true))
+            .collect();
+        let closing = [
+            line_edge(&mut topo, last, off_support),
+            line_edge(&mut topo, off_support, first),
+        ];
+        support_uses.extend(closing.map(|edge| OrientedEdge::new(edge, true)));
+        let mut band_uses: Vec<_> = contacts
+            .iter()
+            .rev()
+            .map(|edge| OrientedEdge::new(*edge, false))
+            .collect();
+        let closing = [
+            line_edge(&mut topo, first, off_band),
+            line_edge(&mut topo, off_band, last),
+        ];
+        band_uses.extend(closing.map(|edge| OrientedEdge::new(edge, true)));
+        let support_wire = topo.add_wire(Wire::new(support_uses, true).unwrap());
+        let band_wire = topo.add_wire(Wire::new(band_uses, true).unwrap());
+        let support = topo.add_face(Face::new(
+            support_wire,
+            Vec::new(),
+            FaceSurface::Plane {
+                normal: Vec3::new(1.0, 0.0, 0.0),
+                d: 1.0,
+            },
+        ));
+        let band = topo.add_face(Face::new(
+            band_wire,
+            Vec::new(),
+            FaceSurface::Cylinder(
+                CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0)
+                    .unwrap(),
+            ),
+        ));
+        ChainFixture {
+            topo,
+            support,
+            band,
+            contacts,
+            chain_vertices: vertices,
+        }
+    }
+
+    fn prove(fixture: &ChainFixture) -> Result<Option<SpringChain>, OperationsError> {
+        prove_spring_chain(
+            &fixture.topo,
+            fixture.support,
+            fixture.band,
+            fixture.contacts.clone(),
+        )
+    }
+
+    fn generatrix(z: &[f64]) -> Vec<Point3> {
+        z.iter().map(|z| Point3::new(1.0, 0.0, *z)).collect()
+    }
+
+    #[test]
+    fn split_generatrix_chain_is_proved_in_walk_order() {
+        let fixture = chain_fixture(&generatrix(&[0.0, 4.0, 10.0]));
+        let chain = prove(&fixture)
+            .unwrap()
+            .expect("collinear split generatrix");
+        assert_eq!(chain.edges, fixture.contacts);
+        assert_eq!(
+            chain.endpoints,
+            [fixture.chain_vertices[0], fixture.chain_vertices[2]]
+        );
+        assert_eq!(chain.interior_vertices, vec![fixture.chain_vertices[1]]);
+
+        // A split vertex 5e-8 off the line (inside the 1e-7 modeling
+        // tolerance) is still the same generatrix.
+        let mut points = generatrix(&[0.0, 4.0, 10.0]);
+        points[1] = Point3::new(1.0, 5e-8, 4.0);
+        assert!(prove(&chain_fixture(&points)).unwrap().is_some());
+    }
+
+    #[test]
+    fn split_chain_proof_refuses_each_violated_clause() {
+        let refuses = |points: &[Point3], clause: &str| {
+            let error = match prove(&chain_fixture(points)) {
+                Err(error) => error,
+                Ok(chain) => panic!(
+                    "{clause}: expected a typed refusal, got {:?}",
+                    chain.map(|c| c.edges)
+                ),
+            };
+            assert!(
+                error.to_string().contains(clause),
+                "expected '{clause}', got {error}"
+            );
+        };
+        // In-plane drift of the split vertex by 1e-5: still on the support
+        // plane and within 5e-11 of the carrier, but off the common line.
+        let mut points = generatrix(&[0.0, 4.0, 10.0]);
+        points[1] = Point3::new(1.0, 1e-5, 4.0);
+        refuses(&points, "not collinear");
+        // The whole chain turned 0.01 rad about the band axis: a collinear
+        // generatrix on the carrier, 5e-5 off the support plane.
+        let (sin, cos) = (0.01_f64).sin_cos();
+        let turned: Vec<_> = [0.0, 4.0, 10.0]
+            .iter()
+            .map(|z| Point3::new(cos, sin, *z))
+            .collect();
+        refuses(&turned, "leaves its planar support");
+        // The whole chain slid 1e-3 along the support plane: collinear,
+        // parallel to the axis, on the plane, but 5e-7 off the carrier.
+        let slid: Vec<_> = [0.0, 4.0, 10.0]
+            .iter()
+            .map(|z| Point3::new(1.0, 1e-3, *z))
+            .collect();
+        refuses(&slid, "leaves the cylindrical band carrier");
+        // A zero-length middle segment (two vertices at z = 4) overlaps.
+        refuses(
+            &generatrix(&[0.0, 4.0, 4.0, 10.0]),
+            "backtracks or overlaps",
+        );
+    }
+
+    #[test]
+    fn single_contact_outside_the_proof_declines_to_the_fallback() {
+        // One contact tilted 1e-5 rad inside the support plane: every vertex
+        // is on the plane and within 5e-9 of the carrier, but the line is not
+        // a generatrix.  A single edge declines (`Ok(None)`) rather than
+        // raising the split-chain refusal.
+        let fixture = chain_fixture(&[Point3::new(1.0, 0.0, 0.0), Point3::new(1.0, 1e-4, 10.0)]);
+        assert!(prove(&fixture).unwrap().is_none());
+    }
+
+    #[test]
+    fn chain_must_be_the_same_contiguous_run_on_both_faces() {
+        // The band carries a parallel duplicate of the second chain edge
+        // (same endpoints, different edge), in either traversal direction.
+        for reverse in [false, true] {
+            let mut fixture = chain_fixture(&generatrix(&[0.0, 4.0, 10.0]));
+            let [a, m, b] = fixture.chain_vertices[..] else {
+                unreachable!("three chain vertices");
+            };
+            let duplicate = line_edge(&mut fixture.topo, m, b);
+            let side = fixture.topo.add_vertex(Vertex::new(
+                Point3::new(0.0, 1.0, 5.0),
+                Tolerance::new().linear,
+            ));
+            let uses = if reverse {
+                vec![
+                    OrientedEdge::new(duplicate, false),
+                    OrientedEdge::new(fixture.contacts[0], false),
+                    OrientedEdge::new(line_edge(&mut fixture.topo, a, side), true),
+                    OrientedEdge::new(line_edge(&mut fixture.topo, side, b), true),
+                ]
+            } else {
+                vec![
+                    OrientedEdge::new(fixture.contacts[0], true),
+                    OrientedEdge::new(duplicate, true),
+                    OrientedEdge::new(line_edge(&mut fixture.topo, b, side), true),
+                    OrientedEdge::new(line_edge(&mut fixture.topo, side, a), true),
+                ]
+            };
+            let wire = fixture.topo.add_wire(Wire::new(uses, true).unwrap());
+            fixture
+                .topo
+                .set_face_boundary_wires(fixture.band, wire, Vec::new())
+                .unwrap();
+            assert!(
+                !face_contains_contiguous_chain(
+                    &fixture.topo,
+                    fixture.band,
+                    &fixture.contacts,
+                    &fixture.chain_vertices
+                )
+                .unwrap()
+            );
+            assert!(
+                face_contains_contiguous_chain(
+                    &fixture.topo,
+                    fixture.support,
+                    &fixture.contacts,
+                    &fixture.chain_vertices
+                )
+                .unwrap()
+            );
+            let Err(error) = prove(&fixture) else {
+                panic!("band lacks the chain: expected a typed refusal");
+            };
+            assert!(
+                error.to_string().contains("contiguous boundary run"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn point_line_distance_matches_the_perpendicular_distance() {
+        let a = Point3::new(1.0, 2.0, 3.0);
+        let b = Point3::new(1.0, 2.0, 13.0);
+        for (offset, expected) in [(3e-5, 3e-5), (0.0, 0.0), (2.5, 2.5)] {
+            let point = Point3::new(1.0 + offset, 2.0, 7.0);
+            assert!((point_line_distance(point, a, b) - expected).abs() < 1e-15);
+        }
+    }
+
+    #[test]
+    fn closed_circle_certificate_checks_seam_and_vertex_tolerance() {
+        let circle = || {
+            Circle3D::new_with_ref(
+                Point3::new(0.0, 0.0, 2.0),
+                Vec3::new(0.0, 0.0, 1.0),
+                3.0,
+                Vec3::new(1.0, 0.0, 0.0),
+            )
+            .unwrap()
+        };
+        let seam = Point3::new(3.0, 0.0, 2.0);
+        let attempt = |point: Point3, tolerance: f64| {
+            let mut topo = Topology::new();
+            let vertex = topo.add_vertex(Vertex::new(point, tolerance));
+            add_certified_closed_circle_edge(&mut topo, vertex, circle())
+        };
+        // A zero vertex tolerance is valid; the kernel default applies.
+        assert!(attempt(seam, 0.0).is_ok());
+        assert!(attempt(seam + Vec3::new(0.0, 0.0, 5e-8), 0.0).is_ok());
+        // Negative or non-finite vertex tolerances are malformed.
+        assert!(attempt(seam, -1.0).is_err());
+        assert!(attempt(seam, f64::NAN).is_err());
+        // A seam vertex 1e-3 off the circle is not the recovered sharp circle.
+        assert!(attempt(seam + Vec3::new(0.0, 0.0, 1e-3), 0.0).is_err());
+    }
+
+    #[test]
+    fn line_solvers_are_invariant_to_direction_length() {
+        // Oblique, non-unit directions whose true crossing is known.
+        let crossing = Point3::new(2.0, -1.0, 4.0);
+        let da = Vec3::new(3.0, 1.0, -2.0);
+        let db = Vec3::new(-0.5, 2.0, 0.25);
+        let hit = line_line_intersection(crossing - da * 1.7, da, crossing + db * 0.6, db)
+            .expect("transverse lines");
+        assert!((hit - crossing).length() < 1e-12, "{hit:?}");
+
+        let normal = Vec3::new(2.0, 3.0, 6.0) * (1.0 / 7.0);
+        let d = normal.dot(Vec3::new(crossing.x(), crossing.y(), crossing.z()));
+        let direction = Vec3::new(0.3, -2.0, 5.0);
+        let hit = line_plane_intersection(crossing + direction * 2.3, direction, normal, d)
+            .expect("transverse line");
+        assert!((hit - crossing).length() < 1e-12, "{hit:?}");
+    }
+
+    #[test]
+    fn unit_plane_of_normalizes_the_stored_equation() {
+        let mut topo = Topology::new();
+        let a = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 3.0), 1e-7));
+        let b = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 3.0), 1e-7));
+        let c = topo.add_vertex(Vertex::new(Point3::new(0.0, 1.0, 3.0), 1e-7));
+        let uses = [(a, b), (b, c), (c, a)]
+            .map(|(start, end)| OrientedEdge::new(line_edge(&mut topo, start, end), true))
+            .to_vec();
+        let wire = topo.add_wire(Wire::new(uses, true).unwrap());
+        let face = Face::new(
+            wire,
+            Vec::new(),
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 2.5),
+                d: 7.5,
+            },
+        );
+        let (normal, d) = unit_plane_of(&face).unwrap();
+        assert!((normal - Vec3::new(0.0, 0.0, 1.0)).length() < 1e-15);
+        assert!((d - 3.0).abs() < 1e-15, "z = 3 has unit offset 3, got {d}");
+    }
+
+    #[test]
+    fn orient_corners_requires_both_endpoints() {
+        let mut topo = Topology::new();
+        let a = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
+        let b = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
+        let edge = line_edge(&mut topo, a, b);
+        let (pa, pb) = (Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 0.0, 0.0));
+        let elsewhere = Point3::new(2.0, 0.0, 0.0);
+        assert!(orient_corners(&topo, edge, pa, pb).unwrap().is_forward());
+        assert!(!orient_corners(&topo, edge, pb, pa).unwrap().is_forward());
+        // Exactly one endpoint matching, in either traversal, is not a span.
+        for (from, to) in [
+            (pa, elsewhere),
+            (elsewhere, pb),
+            (pb, elsewhere),
+            (elsewhere, pa),
+        ] {
+            assert!(orient_corners(&topo, edge, from, to).is_err());
+        }
+    }
+
+    #[test]
+    fn multi_face_band_selection_keeps_the_established_defeature_logic() {
+        // A cylindrical band split into two faces on one carrier is outside the
+        // surgical scope: deleting one half must reach the established
+        // defeature logic, not the single-face surgical selection rule.
+        let (mut topo, blended) = crate::test_helpers::blended_box(&[0]);
+        let (split, halves) = crate::test_helpers::split_band(&mut topo, blended);
+        let error = crate::defeature::defeature(&mut topo, split, &[halves[0]])
+            .expect_err("a half band has no exact sharp closure");
+        assert!(
+            !error
+                .to_string()
+                .contains("must contain exactly the complete analytic blend band"),
+            "multi-face bands decline the surgical selection rule: {error}"
+        );
+    }
+
+    /// How a band's exact cylinder-side contact circles are stored; every
+    /// variant is the same point set traversed the same way by every face.
+    #[derive(Clone, Copy, Debug)]
+    enum CircleStorage {
+        AsBuilt,
+        /// Opposite stored normal with a decreasing trim.
+        DecreasingTrim,
+        /// The same arcs stored end-to-start on the opposite normal with an
+        /// increasing trim; every face use flips.
+        ReversedEdge,
+    }
+
+    fn restore_band_circles(
+        topo: &mut Topology,
+        solid: SolidId,
+        band: FaceId,
+        storage: CircleStorage,
+    ) {
+        use remus_topology::explorer::solid_faces;
+        // Only the contact with the cylindrical support changes storage; its
+        // sibling contact keeps the fillet's own convention, so the rebuilt
+        // sharp edge must be oriented from each contact's actual travel.
+        let adjacency = topo.build_adjacency(solid).unwrap();
+        let circles: Vec<_> = face_edges(topo, band)
+            .unwrap()
+            .into_iter()
+            .filter(|edge| {
+                matches!(topo.edge(*edge).unwrap().curve(), EdgeCurve::Circle(_))
+                    && adjacency.faces_for_edge(*edge).iter().any(|face| {
+                        *face != band
+                            && matches!(
+                                topo.face(*face).unwrap().surface(),
+                                FaceSurface::Cylinder(_)
+                            )
+                    })
+            })
+            .collect();
+        assert!(!circles.is_empty());
+        for edge_id in circles {
+            let data = topo.edge(edge_id).unwrap();
+            let (start, end, tolerance) = (data.start(), data.end(), data.tolerance());
+            let EdgeCurve::Circle(circle) = data.curve().clone() else {
+                unreachable!("filtered circles");
+            };
+            let (t0, t1) = data.strict_domain().unwrap();
+            // flipped(-t) == circle(t)
+            let flipped = EdgeCurve::Circle(
+                Circle3D::new_with_ref(
+                    circle.center(),
+                    circle.normal() * -1.0,
+                    circle.radius(),
+                    circle.u_axis(),
+                )
+                .unwrap(),
+            );
+            let uses: Vec<_> = topo
+                .pcurves_for_edge(edge_id)
+                .into_iter()
+                .map(|(face, forward, _)| (face, forward))
+                .collect();
+            match storage {
+                CircleStorage::AsBuilt => {}
+                CircleStorage::DecreasingTrim => {
+                    for (face, forward) in uses {
+                        topo.remove_pcurve_oriented(edge_id, face, forward).unwrap();
+                    }
+                    let edge = topo.edge_mut(edge_id).unwrap();
+                    edge.set_curve(flipped);
+                    edge.set_trim(Some((-t0, -t1)));
+                }
+                CircleStorage::ReversedEdge => {
+                    // The same arc from `end` to `start`, increasing on the
+                    // flipped circle; every face use flips.
+                    let mut reversed = Edge::with_tolerance(end, start, flipped, tolerance);
+                    reversed.set_trim(Some((-t1, -t0)));
+                    let reversed = topo.add_edge(reversed);
+                    for face in solid_faces(topo, solid).unwrap() {
+                        let data = topo.face(face).unwrap();
+                        let wires: Vec<_> = std::iter::once(data.outer_wire())
+                            .chain(data.inner_wires().iter().copied())
+                            .collect();
+                        let mut rebuilt = Vec::new();
+                        let mut touched = false;
+                        for wire in wires {
+                            let uses: Vec<_> = topo
+                                .wire(wire)
+                                .unwrap()
+                                .edges()
+                                .iter()
+                                .map(|oriented| {
+                                    if oriented.edge() == edge_id {
+                                        touched = true;
+                                        OrientedEdge::new(reversed, !oriented.is_forward())
+                                    } else {
+                                        *oriented
+                                    }
+                                })
+                                .collect();
+                            rebuilt.push(topo.add_wire(Wire::new(uses, true).unwrap()));
+                        }
+                        if touched {
+                            topo.set_face_boundary_wires(face, rebuilt[0], rebuilt[1..].to_vec())
+                                .unwrap();
+                        }
+                    }
+                }
+            }
+        }
+        let report = crate::validate::validate_solid(topo, solid).unwrap();
+        assert!(report.is_valid(), "{storage:?} input: {:?}", report.issues);
+    }
+
+    fn torus_band(topo: &Topology, solid: SolidId) -> FaceId {
+        remus_topology::explorer::solid_faces(topo, solid)
+            .unwrap()
+            .into_iter()
+            .find(|face| matches!(topo.face(*face).unwrap().surface(), FaceSurface::Torus(_)))
+            .unwrap()
+    }
+
+    fn assert_rim_removal(
+        topo: &mut Topology,
+        solid: SolidId,
+        band: FaceId,
+        radius: f64,
+        sharp_volume: f64,
+        what: String,
+    ) {
+        let result = resize_blend(topo, solid, band, radius, 0.0)
+            .unwrap_or_else(|error| panic!("{what}: {error}"));
+        let report = crate::validate::validate_solid(topo, result.solid).unwrap();
+        assert!(report.is_valid(), "{what}: {:?}", report.issues);
+        let volume = crate::measure::solid_volume(topo, result.solid, 0.001).unwrap();
+        assert!(
+            (volume - sharp_volume).abs() < sharp_volume * 1e-6,
+            "{what}: volume {volume} vs sharp {sharp_volume}"
+        );
+    }
+
+    #[test]
+    fn plane_cylinder_rim_removal_is_independent_of_circle_storage() {
+        use remus_topology::explorer::solid_edges;
+        for storage in [
+            CircleStorage::AsBuilt,
+            CircleStorage::DecreasingTrim,
+            CircleStorage::ReversedEdge,
+        ] {
+            let mut topo = Topology::new();
+            let sharp = crate::primitives::make_cylinder(&mut topo, 10.0, 20.0).unwrap();
+            let rim = solid_edges(&topo, sharp)
+                .unwrap()
+                .into_iter()
+                .find(|edge| matches!(topo.edge(*edge).unwrap().curve(), EdgeCurve::Circle(_)))
+                .unwrap();
+            let solid = fillet_v2(&mut topo, sharp, &[rim], 2.0).unwrap().solid;
+            let band = torus_band(&topo, solid);
+            restore_band_circles(&mut topo, solid, band, storage);
+            // Closed-form sharp body: the plain 10 x 20 cylinder.
+            let sharp_volume = std::f64::consts::PI * 100.0 * 20.0;
+            assert_rim_removal(
+                &mut topo,
+                solid,
+                band,
+                2.0,
+                sharp_volume,
+                format!("{storage:?}"),
+            );
+        }
+    }
+
+    #[test]
+    fn cylinder_cone_rim_removal_is_independent_of_circle_storage() {
+        use remus_topology::explorer::solid_edges;
+        for storage in [
+            CircleStorage::AsBuilt,
+            CircleStorage::DecreasingTrim,
+            CircleStorage::ReversedEdge,
+        ] {
+            let mut topo = Topology::new();
+            // Radius-3 cylinder (height 5) fused to a 3 -> 1 cone of height 4:
+            // the sharp shoulder volume is pi*9*5 + pi*4*(9 + 3 + 1)/3.
+            let cylinder = crate::primitives::make_cylinder(&mut topo, 3.0, 5.0).unwrap();
+            let cone = crate::primitives::make_cone(&mut topo, 3.0, 1.0, 4.0).unwrap();
+            crate::transform::transform_solid(
+                &mut topo,
+                cone,
+                &remus_math::mat::Mat4::translation(0.0, 0.0, 5.0),
+            )
+            .unwrap();
+            let sharp =
+                crate::boolean::boolean(&mut topo, crate::boolean::BooleanOp::Fuse, cylinder, cone)
+                    .unwrap();
+            let adjacency = topo.build_adjacency(sharp).unwrap();
+            let shoulder = solid_edges(&topo, sharp)
+                .unwrap()
+                .into_iter()
+                .find(|edge| {
+                    let faces = adjacency.faces_for_edge(*edge);
+                    faces.len() == 2
+                        && faces.iter().any(|face| {
+                            matches!(topo.face(*face).unwrap().surface(), FaceSurface::Cone(_))
+                        })
+                        && faces.iter().any(|face| {
+                            matches!(
+                                topo.face(*face).unwrap().surface(),
+                                FaceSurface::Cylinder(_)
+                            )
+                        })
+                })
+                .unwrap();
+            let solid = fillet_v2(&mut topo, sharp, &[shoulder], 0.25)
+                .unwrap()
+                .solid;
+            let band = torus_band(&topo, solid);
+            restore_band_circles(&mut topo, solid, band, storage);
+            let pi = std::f64::consts::PI;
+            let sharp_volume = pi * 9.0 * 5.0 + pi * 4.0 * (9.0 + 3.0 + 1.0) / 3.0;
+            assert_rim_removal(
+                &mut topo,
+                solid,
+                band,
+                0.25,
+                sharp_volume,
+                format!("{storage:?}"),
+            );
         }
     }
 }

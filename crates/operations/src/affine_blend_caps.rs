@@ -976,4 +976,474 @@ mod tests {
         .unwrap();
         assert!(certify_affine_nurbs_plane(&translated_twist, Tolerance::new().linear).is_none());
     }
+
+    // ---- B19 survivor tranche.  Each patch below is built from explicit
+    // control points in the cap plane, so which boundary lies inside its
+    // bounded domain is known by construction, not from the code under test.
+
+    /// Degree-one 2x2 patch spanning `origin + [0,1]u + [0,1]v`, with the
+    /// same shifted parameter domain as `affine_patch`.
+    fn affine_patch_frame(origin: Point3, u: Vec3, v: Vec3) -> NurbsSurface {
+        // Snap to a 2^-20 grid: the corner sums below are then exact, which
+        // the certificate's error-free mixed-coefficient proof requires.  The
+        // snap moves a side by < 1e-6, far inside every margin used here.
+        let snap = |value: f64| (value * 1_048_576.0).round() / 1_048_576.0;
+        let origin = Point3::new(snap(origin.x()), snap(origin.y()), snap(origin.z()));
+        let u = Vec3::new(snap(u.x()), snap(u.y()), snap(u.z()));
+        let v = Vec3::new(snap(v.x()), snap(v.y()), snap(v.z()));
+        let p00 = origin;
+        let p10 = origin + u;
+        let p01 = origin + v;
+        let p11 = p10 + v;
+        NurbsSurface::new(
+            1,
+            1,
+            vec![2.0, 2.0, 8.0, 8.0],
+            vec![-3.0, -3.0, 3.0, 3.0],
+            vec![vec![p00, p01], vec![p10, p11]],
+            vec![vec![3.0; 2]; 2],
+        )
+        .unwrap()
+    }
+
+    use remus_math::vec::Point3;
+
+    /// Cap-plane frame of the fixture: circle centre, its in-plane axes, and
+    /// the extents of every cap vertex along them.
+    struct CapFrame {
+        center: Point3,
+        u: Vec3,
+        v: Vec3,
+        lo: (f64, f64),
+        hi: (f64, f64),
+    }
+
+    fn cap_frame(fixture: &Fixture) -> CapFrame {
+        let EdgeCurve::Circle(circle) = fixture.topo.edge(fixture.cross).unwrap().curve().clone()
+        else {
+            panic!("cross edge is not circular");
+        };
+        let (u, v) = (circle.u_axis(), circle.v_axis());
+        let mut lo = (f64::INFINITY, f64::INFINITY);
+        let mut hi = (f64::NEG_INFINITY, f64::NEG_INFINITY);
+        for edge in face_edges(&fixture.topo, fixture.cap).unwrap() {
+            let data = fixture.topo.edge(edge).unwrap();
+            for vertex in [data.start(), data.end()] {
+                let offset = fixture.topo.vertex(vertex).unwrap().point() - circle.center();
+                let (a, b) = (offset.dot(u), offset.dot(v));
+                lo = (lo.0.min(a), lo.1.min(b));
+                hi = (hi.0.max(a), hi.1.max(b));
+            }
+        }
+        CapFrame {
+            center: circle.center(),
+            u,
+            v,
+            lo,
+            hi,
+        }
+    }
+
+    fn assert_declines_without_mutation(fixture: &mut Fixture, what: &str) {
+        let slots = fixture.topo.allocated_slot_count();
+        let result = heal_cylinder_plane_band_affine_cap(
+            &mut fixture.topo,
+            fixture.solid,
+            fixture.band,
+            fixture.supports,
+        )
+        .unwrap_or_else(|error| panic!("{what}: expected a scope decline, got {error}"));
+        assert!(result.is_none(), "{what}: must decline");
+        assert_eq!(
+            fixture.topo.allocated_slot_count(),
+            slots,
+            "{what}: arena unchanged"
+        );
+    }
+
+    #[test]
+    fn patch_holding_the_cross_arc_but_not_the_cap_lines_declines() {
+        // Half-span 1.5 around the unit fillet circle holds its whole carrier;
+        // the 10 mm cap lines leave the bounded patch.
+        let mut fixture = fixture();
+        let patch = affine_patch(&fixture.topo, fixture.cross, 1.5);
+        fixture
+            .topo
+            .face_mut(fixture.cap)
+            .unwrap()
+            .set_surface(FaceSurface::Nurbs(patch));
+        assert_declines_without_mutation(&mut fixture, "lines outside patch");
+    }
+
+    #[test]
+    fn patch_holding_the_cap_lines_but_not_the_cross_arc_declines() {
+        // A patch rotated 45 degrees whose near edge runs 1e-3 inside the arc
+        // chord: every cap line (and its midpoint) is inside, but the arc
+        // bulges past the chord toward the removed sharp corner.
+        let mut fixture = fixture();
+        let EdgeCurve::Circle(circle) = fixture.topo.edge(fixture.cross).unwrap().curve().clone()
+        else {
+            panic!("cross edge is not circular");
+        };
+        let data = fixture.topo.edge(fixture.cross).unwrap();
+        let chord =
+            [data.start(), data.end()].map(|vertex| fixture.topo.vertex(vertex).unwrap().point());
+        let center = circle.center();
+        // The removed sharp corner completes the square C, P, K, Q.
+        let corner = chord[0] + (chord[1] - center);
+        let along = (center - corner).normalize().unwrap();
+        let across = circle.normal().cross(along).normalize().unwrap();
+        let depth = (chord[0] - corner).dot(along);
+        assert!(((chord[1] - corner).dot(along) - depth).abs() < 1e-12);
+        let (mut far, mut lo, mut hi) = (depth, 0.0_f64, 0.0_f64);
+        for edge in face_edges(&fixture.topo, fixture.cap).unwrap() {
+            let data = fixture.topo.edge(edge).unwrap();
+            for vertex in [data.start(), data.end()] {
+                let offset = fixture.topo.vertex(vertex).unwrap().point() - corner;
+                far = far.max(offset.dot(along));
+                lo = lo.min(offset.dot(across));
+                hi = hi.max(offset.dot(across));
+            }
+        }
+        let origin = corner + along * (depth - 1e-3) + across * (lo - 1.0);
+        let patch = affine_patch_frame(
+            origin,
+            along * (far - depth + 1.0),
+            across * (hi - lo + 2.0),
+        );
+        let certificate = certify_affine_nurbs_plane(&patch, Tolerance::new().linear).unwrap();
+        for edge in face_edges(&fixture.topo, fixture.cap).unwrap() {
+            if edge != fixture.cross {
+                assert!(certify_source_line(&fixture.topo, edge, &certificate).unwrap());
+            }
+        }
+        assert!(!certify_cross_trim(&fixture.topo, fixture.cross, &certificate).unwrap());
+        fixture
+            .topo
+            .face_mut(fixture.cap)
+            .unwrap()
+            .set_surface(FaceSurface::Nurbs(patch));
+        assert_declines_without_mutation(&mut fixture, "arc outside patch");
+    }
+
+    #[test]
+    fn tight_patch_around_the_sharp_cap_heals_exactly() {
+        // The patch covers the cap square plus 0.25 mm: the restored sharp cap
+        // and every rebuilt boundary lie inside, with little room to spare.
+        let mut fixture = fixture();
+        let frame = cap_frame(&fixture);
+        let margin = 0.25;
+        let origin =
+            frame.center + frame.u * (frame.lo.0 - margin) + frame.v * (frame.lo.1 - margin);
+        let patch = affine_patch_frame(
+            origin,
+            frame.u * (frame.hi.0 - frame.lo.0 + 2.0 * margin),
+            frame.v * (frame.hi.1 - frame.lo.1 + 2.0 * margin),
+        );
+        let expected = install_affine_cap(&mut fixture, patch);
+        let result = crate::resize_blend::resize_blend(
+            &mut fixture.topo,
+            fixture.solid,
+            fixture.band,
+            1.0,
+            0.0,
+        )
+        .unwrap();
+        assert_eq!(
+            solid_entity_counts(&fixture.topo, result.solid).unwrap(),
+            (6, 12, 8)
+        );
+        let volume = crate::measure::solid_volume(&fixture.topo, result.solid, 0.01).unwrap();
+        assert!(
+            (volume - 1000.0).abs() <= 1e-7,
+            "sharp 10 mm cube, got {volume}"
+        );
+        let [cap_index] = result.evolution.modified[&fixture.cap.index()].as_slice() else {
+            panic!("cap has one exact successor");
+        };
+        let cap = fixture.topo.face_id_from_index(*cap_index).unwrap();
+        assert!(matches!(
+            fixture.topo.face(cap).unwrap().surface(),
+            FaceSurface::Nurbs(surface) if surface == &expected
+        ));
+    }
+
+    #[test]
+    fn no_live_face_keeps_the_nurbs_carrier_without_its_pcurves() {
+        // The private proxy copy is live in the arena until compaction.  Every
+        // face carrying the restored NURBS carrier, including that copy, must
+        // keep p-curves on all of its edge uses.
+        let mut fixture = fixture();
+        let patch = affine_patch(&fixture.topo, fixture.cross, 16.0);
+        let expected = install_affine_cap(&mut fixture, patch);
+        heal_cylinder_plane_band_affine_cap(
+            &mut fixture.topo,
+            fixture.solid,
+            fixture.band,
+            fixture.supports,
+        )
+        .unwrap()
+        .expect("qualified affine cap");
+        let mut carriers = 0;
+        for (face, data) in fixture.topo.faces().iter() {
+            if !matches!(data.surface(), FaceSurface::Nurbs(surface) if surface == &expected) {
+                continue;
+            }
+            carriers += 1;
+            let uses = fixture.topo.face_oriented_edges(face).unwrap().len();
+            assert_eq!(
+                fixture.topo.pcurves_for_face(face).len(),
+                uses,
+                "NURBS face {} lost p-curve authority",
+                face.index()
+            );
+        }
+        assert!(
+            carriers >= 3,
+            "source, proxy copy and result carry the NURBS cap"
+        );
+    }
+
+    fn circle_edge(
+        topo: &mut Topology,
+        circle: remus_math::curves::Circle3D,
+        domain: (f64, f64),
+    ) -> EdgeId {
+        let start = topo.add_vertex(remus_topology::vertex::Vertex::new(
+            circle.evaluate(domain.0),
+            Tolerance::new().linear,
+        ));
+        let end = topo.add_vertex(remus_topology::vertex::Vertex::new(
+            circle.evaluate(domain.1),
+            Tolerance::new().linear,
+        ));
+        let mut edge = remus_topology::edge::Edge::new(start, end, EdgeCurve::Circle(circle));
+        edge.set_trim(Some(domain));
+        topo.add_edge(edge)
+    }
+
+    #[test]
+    fn cross_trim_certificate_checks_the_true_carrier_extrema() {
+        use remus_math::curves::Circle3D;
+        // Unit circle about (0.3, -0.2, 5) in z = 5.  The patch rectangle is
+        // rotated 0.37 rad against the circle axes, so every UV extremum sits
+        // at a non-trivial phase.  Moving one side 1e-4 inside the circle
+        // exposes exactly one extremal point.
+        let rho: f64 = 0.37;
+        let (sin, cos) = rho.sin_cos();
+        let du = Vec3::new(cos, sin, 0.0);
+        let dv = Vec3::new(-sin, cos, 0.0);
+        let center = Point3::new(0.3, -0.2, 5.0);
+        let circle = Circle3D::new_with_ref(
+            center,
+            Vec3::new(0.0, 0.0, 1.0),
+            1.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let mut topo = Topology::new();
+        let edge = circle_edge(&mut topo, circle, (0.25, 1.75));
+        let certificate = |lo: (f64, f64), hi: (f64, f64)| {
+            let origin = center + du * lo.0 + dv * lo.1;
+            let patch = affine_patch_frame(origin, du * (hi.0 - lo.0), dv * (hi.1 - lo.1));
+            certify_affine_nurbs_plane(&patch, Tolerance::new().linear).unwrap()
+        };
+        // The far sides sit 0.75 beyond the circle so the centre's patch
+        // parameters are off the domain midpoint (non-zero in v).
+        let (inset, cut, far) = (1.0 + 1e-4, 1.0 - 1e-4, 1.75);
+        assert!(
+            certify_cross_trim(&topo, edge, &certificate((-inset, -inset), (far, far))).unwrap()
+        );
+        for (lo, hi) in [
+            ((-cut, -inset), (far, far)),
+            ((-inset, -cut), (far, far)),
+            ((-inset, -inset), (cut, far)),
+            ((-inset, -inset), (far, cut)),
+        ] {
+            assert!(
+                !certify_cross_trim(&topo, edge, &certificate(lo, hi)).unwrap(),
+                "patch {lo:?}..{hi:?} cuts the carrier"
+            );
+        }
+
+        // A 0.01 mm circle tilted 5e-6 rad from the cap plane: every point is
+        // within 5e-8 of the plane, but its normal disagrees by more than the
+        // 1e-12 angular gate (1 - cos 5e-6 = 1.25e-11).
+        let tilt: f64 = 5e-6;
+        let small = Circle3D::new_with_ref(
+            center,
+            Vec3::new(tilt.sin(), 0.0, tilt.cos()),
+            0.01,
+            Vec3::new(0.0, 1.0, 0.0),
+        )
+        .unwrap();
+        let tilted = circle_edge(&mut topo, small, (0.25, 1.75));
+        let generous = certificate((-inset, -inset), (far, far));
+        assert!(!certify_cross_trim(&topo, tilted, &generous).unwrap());
+    }
+
+    #[test]
+    fn source_line_certificate_refuses_a_collapsed_line() {
+        use remus_topology::vertex::Vertex;
+        let patch = affine_patch_frame(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(4.0, 0.0, 0.0),
+            Vec3::new(0.0, 4.0, 0.0),
+        );
+        let certificate = certify_affine_nurbs_plane(&patch, Tolerance::new().linear).unwrap();
+        let mut topo = Topology::new();
+        // Distinct vertices at one point inside the patch (u = 3.5, v = 1.5):
+        // the edge has no affine direction.
+        let a = topo.add_vertex(Vertex::new(
+            Point3::new(2.0, 3.0, 0.0),
+            Tolerance::new().linear,
+        ));
+        let b = topo.add_vertex(Vertex::new(
+            Point3::new(2.0, 3.0, 0.0),
+            Tolerance::new().linear,
+        ));
+        let c = topo.add_vertex(Vertex::new(
+            Point3::new(3.0, 1.0, 0.0),
+            Tolerance::new().linear,
+        ));
+        let collapsed = topo.add_edge(remus_topology::edge::Edge::new(a, b, EdgeCurve::Line));
+        let proper = topo.add_edge(remus_topology::edge::Edge::new(a, c, EdgeCurve::Line));
+        assert!(!certify_source_line(&topo, collapsed, &certificate).unwrap());
+        assert!(certify_source_line(&topo, proper, &certificate).unwrap());
+    }
+
+    #[test]
+    fn non_cylindrical_band_or_curved_support_declines() {
+        // Same topology and certified cap; only the band carrier changes.
+        let mut spherical = fixture();
+        let patch = affine_patch(&spherical.topo, spherical.cross, 16.0);
+        install_affine_cap(&mut spherical, patch);
+        let sphere =
+            remus_math::surfaces::SphericalSurface::new(Point3::new(0.0, 0.0, 0.0), 3.0).unwrap();
+        spherical
+            .topo
+            .face_mut(spherical.band)
+            .unwrap()
+            .set_surface(FaceSurface::Sphere(sphere));
+        assert_declines_without_mutation(&mut spherical, "spherical band");
+
+        // Same topology; one support is a cylinder instead of a plane.
+        let mut fixture = fixture();
+        let patch = affine_patch(&fixture.topo, fixture.cross, 16.0);
+        install_affine_cap(&mut fixture, patch);
+        let cylinder = remus_math::surfaces::CylindricalSurface::new(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            50.0,
+        )
+        .unwrap();
+        fixture
+            .topo
+            .face_mut(fixture.supports[1])
+            .unwrap()
+            .set_surface(FaceSurface::Cylinder(cylinder));
+        assert_declines_without_mutation(&mut fixture, "cylindrical support");
+    }
+
+    /// Split `edge` at its midpoint in every wire that uses it.
+    fn split_line_edge(topo: &mut Topology, solid: SolidId, edge: EdgeId) {
+        use remus_topology::edge::Edge;
+        use remus_topology::vertex::Vertex;
+        use remus_topology::wire::{OrientedEdge, Wire};
+        let data = topo.edge(edge).unwrap();
+        let (start, end) = (data.start(), data.end());
+        let midpoint = topo.vertex(start).unwrap().point()
+            + (topo.vertex(end).unwrap().point() - topo.vertex(start).unwrap().point()) * 0.5;
+        let middle = topo.add_vertex(Vertex::new(midpoint, Tolerance::new().linear));
+        let first = topo.add_edge(Edge::new(start, middle, EdgeCurve::Line));
+        let second = topo.add_edge(Edge::new(middle, end, EdgeCurve::Line));
+        for face in solid_faces(topo, solid).unwrap() {
+            let outer = topo.face(face).unwrap().outer_wire();
+            let uses = topo.wire(outer).unwrap().edges().to_vec();
+            if !uses.iter().any(|use_| use_.edge() == edge) {
+                continue;
+            }
+            let mut rebuilt = Vec::new();
+            for use_ in uses {
+                if use_.edge() == edge {
+                    if use_.is_forward() {
+                        rebuilt.push(OrientedEdge::new(first, true));
+                        rebuilt.push(OrientedEdge::new(second, true));
+                    } else {
+                        rebuilt.push(OrientedEdge::new(second, false));
+                        rebuilt.push(OrientedEdge::new(first, false));
+                    }
+                } else {
+                    rebuilt.push(use_);
+                }
+            }
+            let wire = topo.add_wire(Wire::new(rebuilt, true).unwrap());
+            let inner = topo.face(face).unwrap().inner_wires().to_vec();
+            topo.set_face_boundary_wires(face, wire, inner).unwrap();
+        }
+    }
+
+    #[test]
+    fn split_spring_contact_is_outside_the_affine_adapter() {
+        // The adapter qualifies exactly one contact edge per support; a split
+        // spring belongs to the general split-chain proof instead.
+        let mut fixture = fixture();
+        let patch = affine_patch(&fixture.topo, fixture.cross, 16.0);
+        install_affine_cap(&mut fixture, patch);
+        let adjacency = fixture.topo.build_adjacency(fixture.solid).unwrap();
+        let spring = face_edges(&fixture.topo, fixture.band)
+            .unwrap()
+            .into_iter()
+            .find(|edge| {
+                adjacency
+                    .faces_for_edge(*edge)
+                    .contains(&fixture.supports[0])
+            })
+            .unwrap();
+        split_line_edge(&mut fixture.topo, fixture.solid, spring);
+        assert!(
+            crate::validate::validate_solid(&fixture.topo, fixture.solid)
+                .unwrap()
+                .is_valid()
+        );
+        assert_declines_without_mutation(&mut fixture, "split spring");
+    }
+
+    #[test]
+    fn affine_cap_with_an_inner_wire_declines() {
+        use remus_topology::edge::Edge;
+        use remus_topology::vertex::Vertex;
+        use remus_topology::wire::{OrientedEdge, Wire};
+        let mut fixture = fixture();
+        let patch = affine_patch(&fixture.topo, fixture.cross, 16.0);
+        install_affine_cap(&mut fixture, patch);
+        let frame = cap_frame(&fixture);
+        let mid = (
+            0.5 * (frame.lo.0 + frame.hi.0),
+            0.5 * (frame.lo.1 + frame.hi.1),
+        );
+        let corners = [(-1.0, -1.0), (-1.0, 1.0), (1.0, 1.0), (1.0, -1.0)].map(|(a, b)| {
+            let point = frame.center + frame.u * (mid.0 + a) + frame.v * (mid.1 + b);
+            fixture
+                .topo
+                .add_vertex(Vertex::new(point, Tolerance::new().linear))
+        });
+        let hole: Vec<_> = (0..4)
+            .map(|index| {
+                let edge = fixture.topo.add_edge(Edge::new(
+                    corners[index],
+                    corners[(index + 1) % 4],
+                    EdgeCurve::Line,
+                ));
+                OrientedEdge::new(edge, true)
+            })
+            .collect();
+        let inner = fixture.topo.add_wire(Wire::new(hole, true).unwrap());
+        let outer = fixture.topo.face(fixture.cap).unwrap().outer_wire();
+        fixture
+            .topo
+            .set_face_boundary_wires(fixture.cap, outer, vec![inner])
+            .unwrap();
+        assert_declines_without_mutation(&mut fixture, "cap with a hole");
+    }
 }
