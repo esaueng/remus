@@ -371,12 +371,18 @@ fn open_mesh_exact_volume(
             )));
         }
     }
+    // The same point, order and controls as `mass_properties`, so the two
+    // agree to round-off even where chord-sampled trims leave the integrated
+    // boundary a residual short of closed (B58).
+    let reference = remus_check::properties::integration_reference(topo, solid)?;
+    let options = remus_check::properties::PropertiesOptions {
+        gauss_order: OPEN_MESH_GAUSS_ORDER,
+        ..Default::default()
+    };
     let mut total = 0.0;
     for fid in faces {
-        total += remus_check::properties::face_integrator::integrate_face(
-            topo,
-            fid,
-            OPEN_MESH_GAUSS_ORDER,
+        total += remus_check::properties::face_integrator::integrate_face_about(
+            topo, fid, &options, reference,
         )?
         .volume;
     }
@@ -3837,6 +3843,9 @@ pub fn solid_volume_from_faces(
 /// Bodies whose boundary falls entirely in the first two families measure at
 /// ≤ 1e-6 relative against closed forms at every model scale (1e-3/1/1e3)
 /// and every caller deflection (see `b20_exact_measurement_scale_matrix`).
+/// The boundary integrals are taken about a point on the body rather than
+/// the world origin, so none of this degrades with distance from the origin
+/// (B58, `regress_b58_mass_properties_local_reference.rs`).
 ///
 /// # Errors
 ///
