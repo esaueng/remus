@@ -4412,7 +4412,7 @@ fn b40_pole_patch_meshes_the_enclosed_pole_on_either_winding() {
 #[test]
 fn b40_pole_patch_latitude_loop_matches_cap_area() {
     // A constant 60° colatitude loop bounds a cap of area 2 pi r^2 (1 - cos).
-    let (sphere, mut mesh, ids) = b40_loop(360, true, |_| 1.047_197_551, |_| 0.0);
+    let (sphere, mut mesh, ids) = b40_loop(360, true, |_| std::f64::consts::FRAC_PI_3, |_| 0.0);
     let mut lookup = DetHashMap::default();
     assert!(super::sphere_pole_patch::fill_sphere_pole_winding_patch(
         &sphere,
@@ -4434,7 +4434,7 @@ fn b40_pole_patch_latitude_loop_matches_cap_area() {
             (b - a).cross(c - a).length() / 2.0
         })
         .sum();
-    let exact = std::f64::consts::TAU * 4.0 * (1.0 - 1.047_197_551_f64.cos());
+    let exact = std::f64::consts::TAU * 4.0 * (1.0 - std::f64::consts::FRAC_PI_3.cos());
     assert!(
         (area - exact).abs() / exact < 1e-3,
         "cap area {area} vs {exact}"
