@@ -1,9 +1,19 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { expandContractMatrix, scoreContractCase, summarizeEvolution } from './contract-matrix.mjs';
+import {
+  FAILURE_CLASSES,
+  HAMMER_HOLDER_FIXTURE,
+  HAMMER_SHIFTED_INTERSECT_ID,
+  classifyFailures,
+  expandContractMatrix,
+  resolveFixtures,
+  scoreContractCase,
+  summarizeEvolution,
+  summarizeFailureClasses,
+} from './contract-matrix.mjs';
 
-test('contract matrix covers the eleven required evidence cells', () => {
+test('contract matrix covers the twelve required evidence cells', () => {
   const cases = expandContractMatrix();
   assert.deepEqual(
     cases.map(({ id }) => id),
@@ -19,6 +29,7 @@ test('contract matrix covers the eleven required evidence cells', () => {
       'contract/invalid-primitive-input',
       'contract/empty-intersect-sentinel',
       'contract/contained-cut-refusal',
+      'contract/hammer-shifted-intersect',
     ],
   );
   const titles = Object.fromEntries(cases.map(({ id, title }) => [id, title]));
@@ -35,6 +46,182 @@ test('contract matrix covers the eleven required evidence cells', () => {
   assert.match(titles['contract/invalid-primitive-input'], /invalid primitive/);
   assert.match(titles['contract/empty-intersect-sentinel'], /empty intersect/);
   assert.match(titles['contract/contained-cut-refusal'], /contained-cut/);
+  assert.match(titles[HAMMER_SHIFTED_INTERSECT_ID], /hammer-holder shifted intersect/);
+});
+
+function hammerObservation(overrides = {}) {
+  return {
+    outcome: 'success',
+    diagnosticCodes: [],
+    quality: 'exact',
+    volume: 5000,
+    faceCount: 104,
+    validationErrors: 0,
+    checkedValidationErrors: null,
+    meshQuality: { triangleCount: 20000, boundaryEdges: 0, nonManifoldEdges: 0, eulerCharacteristic: 2, isWatertight: true },
+    operandVolume: 9299.47,
+    ...overrides,
+  };
+}
+
+test('hammer shifted-intersect cell replays the smoke sequence from one exact arena document, direct-only', () => {
+  const cases = expandContractMatrix();
+  const c = cases.find(({ id }) => id === HAMMER_SHIFTED_INTERSECT_ID);
+  assert.equal(c.directOnly, true);
+  assert.match(c.directOnlyScope, /deserializeSolids/);
+  assert.equal(c.fixture.step, HAMMER_HOLDER_FIXTURE);
+  assert.match(HAMMER_HOLDER_FIXTURE, /shapr3d_hammer_holder\.step$/);
+  // Both operands enter through the same arena document; the mask is the
+  // smoke's 29x53x70 box at (-18,-10,0); the shifted copy sits at -2 in x.
+  assert.deepEqual(c.batch[0], { op: 'deserializeSolids', args: { fixture: HAMMER_HOLDER_FIXTURE } });
+  assert.deepEqual(c.batch[5], { op: 'deserializeSolids', args: { fixture: HAMMER_HOLDER_FIXTURE } });
+  assert.deepEqual(c.batch[1].args, { width: 29, height: 53, depth: 70 });
+  assert.deepEqual(c.batch[2].args.matrix.slice(0, 4), [1, 0, 0, -18]);
+  assert.deepEqual(c.batch[6].args.matrix.slice(0, 4), [1, 0, 0, -2]);
+  assert.equal(c.batch[3].args.operation, 'cut');
+  assert.equal(c.batch[4].args.operation, 'intersect');
+  assert.equal(c.batch[c.booleanIndex].args.operation, 'intersect');
+  assert.deepEqual(c.batch[c.booleanIndex].args.solidA, { fromOp: 4, pick: 'solid' });
+  for (const index of [3, 4, c.booleanIndex]) assert.equal(c.batch[index].args.exactOnly, true);
+  assert.deepEqual(c.resultHandle, { fromOp: c.booleanIndex });
+  // Probes: volume at 0.01, both validators, watertightness at (0.05, 0.1),
+  // the face list, and the common's volume for the strict-inside bound.
+  assert.deepEqual(c.batch[c.volumeIndex].args.deflection, 0.01);
+  assert.equal(c.batch[c.validationIndex].op, 'validateSolid');
+  assert.equal(c.batch[c.checkedValidationIndex].op, 'validateSolidChecked');
+  assert.deepEqual(c.batch[c.meshQualityIndex].args, { solid: { fromOp: 7, pick: 'solid' }, deflection: 0.05, angularTolerance: 0.1 });
+  assert.equal(c.batch[c.facesIndex].op, 'getSolidFaces');
+  assert.deepEqual(c.batch[c.operandVolumeIndex].args.solid, { fromOp: 4, pick: 'solid' });
+  assert.deepEqual(c.expect, {
+    outcome: 'success',
+    quality: 'exact',
+    faces: 104,
+    validationErrors: 0,
+    watertight: true,
+    volumeBelowOperand: true,
+    crossSurfaceVolumeBound: 5e-8,
+  });
+});
+
+test('resolveFixtures swaps every fixture argument for the loaded arena hex, once per STEP path', () => {
+  const cases = expandContractMatrix();
+  const loads = [];
+  const resolved = resolveFixtures(cases, (step) => {
+    loads.push(step);
+    return 'cafe';
+  });
+  assert.deepEqual(loads, [HAMMER_HOLDER_FIXTURE]);
+  const c = resolved.find(({ id }) => id === HAMMER_SHIFTED_INTERSECT_ID);
+  assert.deepEqual(c.batch[0], { op: 'deserializeSolids', args: { bytesHex: 'cafe' } });
+  assert.deepEqual(c.batch[5], { op: 'deserializeSolids', args: { bytesHex: 'cafe' } });
+  assert.equal(c.batch.some((item) => item.args?.fixture), false);
+  // Untouched cells keep their batches by identity; the source list is not mutated.
+  const exact = cases.find(({ id }) => id === 'contract/exact-fuse');
+  assert.equal(resolved.find(({ id }) => id === 'contract/exact-fuse').batch, exact.batch);
+  assert.equal(cases.find(({ id }) => id === HAMMER_SHIFTED_INTERSECT_ID).batch[0].args.fixture, HAMMER_HOLDER_FIXTURE);
+  assert.throws(() => resolveFixtures(cases, () => ''), /empty arena document/);
+});
+
+test('hammer cell gates face count, both validators, watertightness, and the strict-inside volume on every surface', () => {
+  const cases = expandContractMatrix();
+  const c = cases.find(({ id }) => id === HAMMER_SHIFTED_INTERSECT_ID);
+  const native = hammerObservation({ checkedValidationErrors: 0 });
+  const stages = scoreContractCase(c, { native, fresh: hammerObservation(), committed: hammerObservation() });
+  assert.ok(stages.filter(({ required }) => required).every(({ passed }) => passed));
+  const invariantsOf = (surface) => new Set(stages.filter((s) => s.surface === surface).map(({ invariant }) => invariant));
+  for (const invariant of ['batch_success', 'disclosed_quality', 'face_count', 'strict_validation', 'watertight_mesh', 'volume_below_operand']) {
+    assert.ok(invariantsOf('native').has(invariant), `native missing ${invariant}`);
+    assert.ok(invariantsOf('fresh').has(invariant), `fresh missing ${invariant}`);
+  }
+  // The check-crate validator has no WASM binding: it gates natively and
+  // is absent, not vacuously green, on the installed surfaces.
+  assert.ok(invariantsOf('native').has('checked_validation'));
+  assert.equal(invariantsOf('fresh').has('checked_validation'), false);
+  for (const invariant of ['face_count_agreement', 'validation_agreement', 'mesh_quality_agreement', 'volume_agreement', 'quality_agreement']) {
+    assert.ok(invariantsOf('cross-surface').has(invariant), `cross-surface missing ${invariant}`);
+  }
+  assert.equal(stages.some(({ failureClass }) => failureClass), false, 'green stages carry no failure class');
+
+  // The check-crate validator failing natively is a contract violation.
+  const checkedRed = scoreContractCase(c, { native: hammerObservation({ checkedValidationErrors: 2 }), fresh: hammerObservation() });
+  const checked = checkedRed.find(({ surface, invariant }) => surface === 'native' && invariant === 'checked_validation');
+  assert.equal(checked.passed, false);
+  assert.equal(checked.failureClass, FAILURE_CLASSES.contractViolation);
+
+  // A volume outside (0, common) or a cross-surface volume drift is a finding.
+  const inflated = scoreContractCase(c, { native, fresh: hammerObservation({ volume: 9400 }) });
+  assert.equal(inflated.find(({ surface, invariant }) => surface === 'fresh' && invariant === 'volume_below_operand')?.passed, false);
+  assert.equal(inflated.find(({ invariant }) => invariant === 'volume_agreement')?.passed, false);
+  const drifted = scoreContractCase(c, { native, fresh: hammerObservation({ volume: 5000 * (1 + 1e-7) }) });
+  assert.equal(drifted.find(({ invariant }) => invariant === 'volume_agreement')?.passed, false);
+  const within = scoreContractCase(c, { native, fresh: hammerObservation({ volume: 5000 * (1 + 1e-9) }) });
+  assert.equal(within.find(({ invariant }) => invariant === 'volume_agreement')?.passed, true);
+});
+
+test('the B39 wasm32-only refusal and free edges report as platform_divergence, never as a contract violation', () => {
+  const cases = expandContractMatrix();
+  const c = cases.find(({ id }) => id === HAMMER_SHIFTED_INTERSECT_ID);
+  const native = hammerObservation({ checkedValidationErrors: 0 });
+
+  // 8539b266 shape: native closes, the fresh tarball refuses exact-only.
+  const refused = { outcome: 'batch_error', diagnosticCodes: ['operation_failed'], rollbackVolumes: [], rollbackFaces: null };
+  const stages = scoreContractCase(c, { native, fresh: refused, committed: hammerObservation() });
+  const failed = stages.filter(({ required, passed }) => required && !passed);
+  assert.ok(failed.length > 0);
+  assert.ok(failed.every(({ failureClass }) => failureClass === FAILURE_CLASSES.platformDivergence), JSON.stringify(failed));
+  assert.ok(failed.some(({ surface, invariant }) => surface === 'fresh' && invariant === 'batch_success'));
+  assert.ok(failed.some(({ surface, invariant }) => surface === 'cross-surface' && invariant === 'outcome_agreement'));
+  assert.ok(stages.filter(({ surface }) => surface === 'native').every(({ passed }) => passed));
+  const classes = summarizeFailureClasses(stages);
+  assert.ok(classes.platform_divergence.length >= 2);
+  assert.equal(classes.contract_violation, undefined);
+
+  // The same 104-face result with 4 free edges on the installed surface:
+  // the validators and the mesh disagree while the face count agrees.
+  const leaky = hammerObservation({
+    validationErrors: 1,
+    meshQuality: { triangleCount: 20000, boundaryEdges: 4, nonManifoldEdges: 0, eulerCharacteristic: 1, isWatertight: false },
+  });
+  const leakyStages = scoreContractCase(c, { native, fresh: leaky });
+  for (const invariant of ['strict_validation', 'watertight_mesh']) {
+    const stage = leakyStages.find((s) => s.surface === 'fresh' && s.invariant === invariant);
+    assert.equal(stage.passed, false, invariant);
+    assert.equal(stage.failureClass, FAILURE_CLASSES.platformDivergence, invariant);
+  }
+  for (const invariant of ['validation_agreement', 'mesh_quality_agreement']) {
+    const stage = leakyStages.find((s) => s.invariant === invariant);
+    assert.equal(stage.passed, false, invariant);
+    assert.equal(stage.failureClass, FAILURE_CLASSES.platformDivergence, invariant);
+  }
+  assert.equal(leakyStages.find(({ invariant }) => invariant === 'face_count_agreement')?.passed, true);
+
+  // When the native facade misses the pin too, nothing is a platform
+  // divergence: every failure is a contract violation.
+  const bothLeaky = scoreContractCase(c, { native: { ...leaky, checkedValidationErrors: 1 }, fresh: leaky });
+  const bothFailed = bothLeaky.filter(({ required, passed }) => required && !passed);
+  assert.ok(bothFailed.length > 0);
+  assert.ok(bothFailed.every(({ failureClass }) => failureClass === FAILURE_CLASSES.contractViolation));
+  assert.deepEqual(Object.keys(summarizeFailureClasses(bothLeaky)), [FAILURE_CLASSES.contractViolation]);
+});
+
+test('classifyFailures applies to every cell: a green native with a red installed surface is a platform divergence', () => {
+  const cases = expandContractMatrix();
+  const c = cases.find(({ id }) => id === 'contract/exact-fuse');
+  const good = { outcome: 'success', diagnosticCodes: [], quality: 'exact', volume: 15 };
+  const approx = { ...good, quality: 'approximate' };
+  const stages = scoreContractCase(c, { native: good, fresh: approx });
+  const quality = stages.find(({ surface, invariant }) => surface === 'fresh' && invariant === 'disclosed_quality');
+  assert.equal(quality.passed, false);
+  assert.equal(quality.failureClass, FAILURE_CLASSES.platformDivergence);
+  assert.equal(stages.find(({ invariant }) => invariant === 'quality_agreement')?.failureClass, FAILURE_CLASSES.platformDivergence);
+  const nativeRed = scoreContractCase(c, { native: approx, fresh: good });
+  assert.equal(
+    nativeRed.find(({ surface, invariant }) => surface === 'native' && invariant === 'disclosed_quality')?.failureClass,
+    FAILURE_CLASSES.contractViolation,
+  );
+  // Non-gating stages never carry a class.
+  assert.ok(classifyFailures([{ surface: 'cross-surface', invariant: 'x', passed: false, required: false }])
+    .every(({ failureClass }) => failureClass === undefined));
 });
 
 test('evolution cells drive the *WithEvolution batch ops and expect construction-derived buckets', () => {

@@ -27,6 +27,7 @@ mod nurbs;
 mod planar;
 pub(crate) mod rim_chain;
 mod solid;
+mod sphere_pole_patch;
 #[cfg(test)]
 mod tests;
 

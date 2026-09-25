@@ -124,6 +124,113 @@ function canonicalJson(value) {
   return JSON.stringify(value);
 }
 
+// The WASM smoke's hammer-holder shifted intersect
+// (`scripts/test-wasm-smoke.mjs`, "hammer opening replay"): import the real
+// Shapr3D hammer holder, cut and intersect it with a translated 29x53x70
+// mask, then intersect the 101-face common with a copy of the source shifted
+// by -2 in x. Expected: 104 exact faces, both validators clean, watertight
+// at (0.05, 0.1), and a volume strictly between 0 and the common's.
+//
+// PR #618 (B39) made exactly this step refuse on wasm32 only: the marched
+// torus-fillet x cylinder section ends agreed across platforms to ~1e-12,
+// yet the WASM result carried 4 free edges while the native run closed.
+// Nothing native catches that class, so the cell pins BOTH surfaces from
+// bit-identical operands: the STEP fixture enters each kernel as the same
+// exact arena document (`remus-parity-native --step-to-arena`, decoded by
+// `deserializeSolids` on both), because the kernel package ships without the
+// STEP translator. Batch has no arena-document op and the harness must not
+// extend the WASM API, so the cell is direct-only on the installed surfaces
+// (like the cancellation cell); the check-crate validator likewise has no
+// WASM binding and is recorded as native-only evidence.
+export const HAMMER_HOLDER_FIXTURE = 'crates/io/tests/data/shapr3d_hammer_holder.step';
+export const HAMMER_SHIFTED_INTERSECT_ID = 'contract/hammer-shifted-intersect';
+
+function hammerShiftedIntersectCell() {
+  const batch = [
+    { op: 'deserializeSolids', args: { fixture: HAMMER_HOLDER_FIXTURE } },
+    { op: 'makeBox', args: { width: 29, height: 53, depth: 70 } },
+    { op: 'transform', args: { solid: { fromOp: 1 }, matrix: translationMatrix([-18, -10, 0]) } },
+    {
+      op: 'booleanWithQuality',
+      args: { operation: 'cut', solidA: { fromOp: 0, pick: 'first' }, solidB: { fromOp: 1 }, exactOnly: true },
+    },
+    {
+      op: 'booleanWithQuality',
+      args: { operation: 'intersect', solidA: { fromOp: 0, pick: 'first' }, solidB: { fromOp: 1 }, exactOnly: true },
+    },
+    { op: 'deserializeSolids', args: { fixture: HAMMER_HOLDER_FIXTURE } },
+    { op: 'transform', args: { solid: { fromOp: 5, pick: 'first' }, matrix: translationMatrix([-2, 0, 0]) } },
+    {
+      op: 'booleanWithQuality',
+      args: {
+        operation: 'intersect',
+        solidA: { fromOp: 4, pick: 'solid' },
+        solidB: { fromOp: 5, pick: 'first' },
+        exactOnly: true,
+      },
+    },
+    { op: 'volume', args: { solid: { fromOp: 7, pick: 'solid' }, deflection: 0.01 } },
+    { op: 'validateSolid', args: { solid: { fromOp: 7, pick: 'solid' } } },
+    { op: 'meshQuality', args: { solid: { fromOp: 7, pick: 'solid' }, deflection: 0.05, angularTolerance: 0.1 } },
+    { op: 'getSolidFaces', args: { solid: { fromOp: 7, pick: 'solid' } } },
+    { op: 'volume', args: { solid: { fromOp: 4, pick: 'solid' }, deflection: 0.01 } },
+    { op: 'validateSolidChecked', args: { solid: { fromOp: 7, pick: 'solid' } } },
+  ];
+  return {
+    id: HAMMER_SHIFTED_INTERSECT_ID,
+    title: 'hammer-holder shifted intersect (real STEP fixture, direct-only, platform-divergence pin)',
+    description:
+      'the WASM smoke\'s hammer opening replay up to its shifted intersect: '
+      + '104 exact faces, both validators clean, watertight at (0.05, 0.1), '
+      + 'and a volume strictly inside the common on every surface; the '
+      + 'B39/#618 wasm32-only free-edge refusal reports as platform_divergence',
+    fixture: { step: HAMMER_HOLDER_FIXTURE, ops: [0, 5] },
+    batch,
+    booleanIndex: 7,
+    resultHandle: { fromOp: 7 },
+    volumeIndex: 8,
+    validationIndex: 9,
+    meshQualityIndex: 10,
+    facesIndex: 11,
+    operandVolumeIndex: 12,
+    checkedValidationIndex: 13,
+    directOnly: true,
+    directOnlyScope:
+      'batch has no arena-document op (deserializeSolids) and the harness must not extend the WASM API',
+    expect: {
+      outcome: 'success',
+      quality: 'exact',
+      faces: 104,
+      validationErrors: 0,
+      watertight: true,
+      volumeBelowOperand: true,
+      crossSurfaceVolumeBound: 5e-8,
+    },
+  };
+}
+
+// Replace every `{fixture}` arena-document argument with the hex bytes the
+// loader answers for that STEP path (the native runner's `--step-to-arena`
+// in the live harness, a stub in the unit tests). Cells without a fixture
+// pass through untouched.
+export function resolveFixtures(cases, loadArenaHex) {
+  const cache = new Map();
+  const hexFor = (step) => {
+    if (!cache.has(step)) cache.set(step, loadArenaHex(step));
+    return cache.get(step);
+  };
+  return cases.map((c) => {
+    if (!c.fixture) return c;
+    const batch = c.batch.map((item) => {
+      if (item.op !== 'deserializeSolids' || !item.args?.fixture) return item;
+      const bytesHex = hexFor(item.args.fixture);
+      assert.ok(typeof bytesHex === 'string' && bytesHex.length > 0, `${c.id}: empty arena document for ${item.args.fixture}`);
+      return { op: item.op, args: { bytesHex } };
+    });
+    return { ...c, batch };
+  });
+}
+
 export function expandContractMatrix() {
   const exact = overlappingBoxesBatch();
   const refusal = tangentBossBatch({ exactOnly: true });
@@ -373,6 +480,7 @@ export function expandContractMatrix() {
         rollbackFaces: 6,
       },
     },
+    hammerShiftedIntersectCell(),
   ];
 }
 
@@ -450,6 +558,26 @@ export function scoreContractCase(c, observations) {
             && canonicalJson(unresolved) === canonicalJson(c.expect.unresolvedBucket),
         );
       }
+      if (c.expect.validationErrors !== undefined) {
+        // The operations validator (`validateSolid`), present on every
+        // surface. The check crate's validator has no WASM binding, so it
+        // gates only where a surface reports it (native).
+        add(surface, 'strict_validation', observation.validationErrors === c.expect.validationErrors);
+        if (observation.checkedValidationErrors !== undefined && observation.checkedValidationErrors !== null) {
+          add(surface, 'checked_validation', observation.checkedValidationErrors === c.expect.validationErrors);
+        }
+      }
+      if (c.expect.watertight !== undefined) {
+        add(surface, 'watertight_mesh', meshWatertight(observation.meshQuality) === c.expect.watertight);
+      }
+      if (c.expect.volumeBelowOperand) {
+        add(
+          surface,
+          'volume_below_operand',
+          Number.isFinite(observation.volume) && Number.isFinite(observation.operandVolume)
+            && observation.volume > 0 && observation.volume < observation.operandVolume,
+        );
+      }
     }
   }
 
@@ -498,8 +626,78 @@ export function scoreContractCase(c, observations) {
         false,
       );
     }
+    if (c.expect.outcome === 'success' && c.expect.validationErrors !== undefined) {
+      add(
+        'cross-surface',
+        'validation_agreement',
+        rest.every((o) => (o.validationErrors ?? null) === (first.validationErrors ?? null)),
+      );
+    }
+    if (c.expect.outcome === 'success' && c.expect.watertight !== undefined) {
+      add(
+        'cross-surface',
+        'mesh_quality_agreement',
+        rest.every((o) => meshWatertight(o.meshQuality) === meshWatertight(first.meshQuality)
+          && (o.meshQuality?.boundaryEdges ?? null) === (first.meshQuality?.boundaryEdges ?? null)
+          && (o.meshQuality?.nonManifoldEdges ?? null) === (first.meshQuality?.nonManifoldEdges ?? null)),
+      );
+    }
+    if (c.expect.outcome === 'success' && c.expect.crossSurfaceVolumeBound !== undefined) {
+      add(
+        'cross-surface',
+        'volume_agreement',
+        Number.isFinite(first.volume) && rest.every((o) => Number.isFinite(o.volume)
+          && relativeError(o.volume, first.volume) <= c.expect.crossSurfaceVolumeBound),
+      );
+    }
   }
-  return stages;
+  return classifyFailures(stages);
+}
+
+function meshWatertight(meshQuality) {
+  if (!meshQuality || typeof meshQuality !== 'object') return null;
+  return meshQuality.isWatertight === true
+    && meshQuality.boundaryEdges === 0
+    && meshQuality.nonManifoldEdges === 0;
+}
+
+// Failure classes. A required stage that fails is either a
+// `contract_violation` (the native facade itself misses the pin, or every
+// surface misses it together) or a `platform_divergence`: the native run
+// meets every per-surface gate while an installed WASM surface does not,
+// or the surfaces disagree with each other. The B39/#618 hammer refusal is
+// the model case — native closed, wasm32 left 4 free edges — and it must
+// read as its own class, never as a generic contract failure. Passing and
+// non-gating stages carry no class.
+export const FAILURE_CLASSES = Object.freeze({
+  platformDivergence: 'platform_divergence',
+  contractViolation: 'contract_violation',
+});
+
+export function classifyFailures(stages) {
+  const nativeGreen = stages
+    .filter(({ surface, required }) => surface === 'native' && required)
+    .every(({ passed }) => passed);
+  return stages.map((stage) => {
+    if (stage.passed || !stage.required) return stage;
+    const divergent = nativeGreen && (stage.surface === 'cross-surface' || stage.surface !== 'native');
+    return {
+      ...stage,
+      failureClass: divergent ? FAILURE_CLASSES.platformDivergence : FAILURE_CLASSES.contractViolation,
+    };
+  });
+}
+
+// Group the failed required stages of a whole report by failure class so a
+// platform divergence is visible at the top level, not buried in a stage list.
+export function summarizeFailureClasses(stages) {
+  const summary = {};
+  for (const stage of stages) {
+    if (stage.passed || !stage.required) continue;
+    const key = stage.failureClass ?? FAILURE_CLASSES.contractViolation;
+    (summary[key] ??= []).push({ case: stage.case, surface: stage.surface, invariant: stage.invariant });
+  }
+  return summary;
 }
 
 function attempt(command, args, payload) {
@@ -836,6 +1034,65 @@ function runDirectCase(c, kernel, mod) {
       rollbackPreserved: JSON.stringify(before) === JSON.stringify(countsOf(tool)),
     };
   }
+  if (c.id === HAMMER_SHIFTED_INTERSECT_ID) {
+    const bytesOf = (index) => {
+      const hex = c.batch[index]?.args?.bytesHex;
+      assert.ok(typeof hex === 'string' && hex.length > 0, `${c.id}: fixture bytes were not resolved (op ${index})`);
+      return new Uint8Array(Buffer.from(hex, 'hex'));
+    };
+    // Same sequence as the batch spec and the smoke: source, mask, cut,
+    // common, shifted copy, shifted intersect; every boolean exact-only.
+    const [source] = Array.from(kernel.deserializeSolids(bytesOf(0)));
+    const mask = kernel.makeBox(29, 53, 70);
+    kernel.transformSolid(mask, new Float64Array(translationMatrix([-18, -10, 0])));
+    const probe = (solid) => ({
+      validationErrors: kernel.validateSolid(solid),
+      strictIssues: JSON.parse(kernel.validateSolidDetailed(solid)).issues
+        .filter((issue) => issue.severity === 'error')
+        .map((issue) => issue.description),
+      meshQuality: JSON.parse(kernel.meshQuality(solid, 0.05, 0.1)),
+      faceCount: kernel.getSolidFaces(solid).length,
+      volume: kernel.volume(solid, 0.01),
+    });
+    const cut = kernel.booleanWithQuality('cut', source, mask, true);
+    const cutProbe = probe(cut.solid);
+    const common = kernel.booleanWithQuality('intersect', source, mask, true);
+    const commonProbe = probe(common.solid);
+    const [shifted] = Array.from(kernel.deserializeSolids(bytesOf(5)));
+    kernel.transformSolid(shifted, new Float64Array(translationMatrix([-2, 0, 0])));
+    let out;
+    try {
+      out = kernel.booleanWithQuality('intersect', common.solid, shifted, true);
+    } catch (error) {
+      // The exact-only refusal the smoke saw on 8539b266: report it as a
+      // typed refusal with the earlier stages as evidence, so the scorer
+      // can tell "wasm32 refused where native closed" from a crash.
+      return {
+        ...base,
+        outcome: 'batch_error',
+        diagnosticCodes: ['operation_failed'],
+        directError: String(error?.message ?? error),
+        stages: { cut: { quality: cut.quality, ...cutProbe }, common: { quality: common.quality, ...commonProbe } },
+        checkedValidator: 'not exported by the WASM kernel; native-only evidence',
+      };
+    }
+    const result = probe(out.solid);
+    return {
+      ...base,
+      outcome: 'success',
+      diagnosticCodes: [],
+      quality: out.quality,
+      volume: result.volume,
+      faceCount: result.faceCount,
+      validationErrors: result.validationErrors,
+      strictIssues: result.strictIssues,
+      checkedValidationErrors: null,
+      checkedValidator: 'not exported by the WASM kernel; native-only evidence',
+      meshQuality: result.meshQuality,
+      operandVolume: commonProbe.volume,
+      stages: { cut: { quality: cut.quality, ...cutProbe }, common: { quality: common.quality, ...commonProbe } },
+    };
+  }
   throw new Error(`unknown contract case ${c.id}`);
 }
 
@@ -862,6 +1119,9 @@ function normalizeWasmObservation(c, raw) {
       faceCount: raw.faceCount ?? null,
       evolution: raw.evolution ?? null,
       operandVolume: raw.operandVolume ?? null,
+      validationErrors: raw.validationErrors ?? null,
+      checkedValidationErrors: raw.checkedValidationErrors ?? null,
+      meshQuality: raw.meshQuality ?? null,
       direct: raw,
     };
   }
@@ -903,7 +1163,13 @@ async function main() {
   const [nativeRunner, freshPackageDir, committedPackageDirArg] = process.argv.slice(2);
   assert.ok(nativeRunner && freshPackageDir, 'usage: contract-matrix.mjs NATIVE_RUNNER FRESH_PACKAGE_DIR [COMMITTED_PACKAGE_DIR]');
   const committedPackageDir = committedPackageDirArg ?? resolve(repoRoot, 'crates/wasm/pkg');
-  const cases = expandContractMatrix();
+  // Fixture cells carry their STEP operands as one exact arena document
+  // produced by the native runner, so both surfaces decode identical bytes.
+  const cases = resolveFixtures(expandContractMatrix(), (step) => execFileSync(
+    resolve(nativeRunner),
+    ['--step-to-arena', resolve(repoRoot, step)],
+    { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
+  ).trim());
   const temporaryRoot = mkdtempSync(resolve(tmpdir(), 'remus-o15-contract-'));
   const started = performance.now();
   try {
@@ -954,18 +1220,27 @@ async function main() {
         id: c.id,
         batch: c.batch,
         result: {
-          handle: 0,
+          handle: c.resultHandle ?? 0,
           booleanIndex: c.booleanIndex ?? 0,
           volumeIndex: c.volumeIndex ?? 0,
           validationIndex: c.validationIndex ?? 0,
           meshQualityIndex: c.meshQualityIndex ?? 0,
           facesIndex: c.facesIndex ?? 0,
+          ...(c.checkedValidationIndex !== undefined ? { checkedValidationIndex: c.checkedValidationIndex } : {}),
         },
       };
       const native = attempt(resolve(nativeRunner), [], payload);
-      const freshBatch = attempt(process.execPath, [self, '--wasm-batch-child', fresh.entry], c);
+      // A direct-only cell (fixture cells: batch has no arena-document op)
+      // skips the batch children instead of recording a vacuous unknown-op
+      // refusal as evidence.
+      const skippedBatch = { outcome: 'skipped', diagnosticCodes: [], reason: c.directOnlyScope ?? 'direct-only cell' };
+      const freshBatch = c.directOnly
+        ? skippedBatch
+        : attempt(process.execPath, [self, '--wasm-batch-child', fresh.entry], c);
       const freshDirect = attempt(process.execPath, [self, '--wasm-direct-child', fresh.entry], c);
-      const committedBatch = attempt(process.execPath, [self, '--wasm-batch-child', committed.entry], c);
+      const committedBatch = c.directOnly
+        ? skippedBatch
+        : attempt(process.execPath, [self, '--wasm-batch-child', committed.entry], c);
       const committedDirect = attempt(process.execPath, [self, '--wasm-direct-child', committed.entry], c);
       const nativeNorm = normalizeNativeForContract(c, native);
       // The cancellation cell is direct-only by construction: batch has no
@@ -973,11 +1248,13 @@ async function main() {
       // the scored WASM observations come from the installed direct calls
       // while the batch responses ride along as evidence. The native
       // runner's `booleanWithCancelledContext` batch op is the harness-only
-      // native counterpart of that same pre-cancelled scope.
-      const scoreFresh = c.id === 'contract/cancelled-boolean'
+      // native counterpart of that same pre-cancelled scope. Fixture cells
+      // (`directOnly`) score the same way.
+      const directScored = c.directOnly || c.id === 'contract/cancelled-boolean';
+      const scoreFresh = directScored
         ? normalizeWasmObservation(c, freshDirect)
         : normalizeWasmObservation(c, freshBatch);
-      const scoreCommitted = c.id === 'contract/cancelled-boolean'
+      const scoreCommitted = directScored
         ? normalizeWasmObservation(c, committedDirect)
         : normalizeWasmObservation(c, committedBatch);
       observations.push({
@@ -1003,6 +1280,7 @@ async function main() {
     // batch arm on the same bytes.
     const directConsistency = observations.flatMap((obs) => {
       const c = cases.find(({ id }) => id === obs.case);
+      if (c.directOnly) return [];
       return ['fresh', 'committed'].map((surface) => {
         const batch = surface === 'fresh' ? obs.freshBatch : obs.committedBatch;
         const direct = surface === 'fresh' ? obs.freshDirectRaw : obs.committedDirectRaw;
@@ -1015,14 +1293,16 @@ async function main() {
     const passed = failedStages.length === 0;
     const report = {
       schema_version: 1,
-      scope: 'O1.5 contract slice: exact / exact-only refusal / disclosed approximation / invalid handle / rollback / pre-cancelled cancellation / evolution reports (fuse, cut) / invalid primitive input / empty-intersect sentinel / contained-cut refusal, batch plus installed-direct',
+      scope: 'O1.5 contract slice: exact / exact-only refusal / disclosed approximation / invalid handle / rollback / pre-cancelled cancellation / evolution reports (fuse, cut) / invalid primitive input / empty-intersect sentinel / contained-cut refusal / hammer-holder shifted intersect (real STEP fixture, platform-divergence pin), batch plus installed-direct',
       provenance: { native: nativeProvenance, fresh: freshProvenance, committed: committedProvenance },
       staleness,
       cancellationScope: 'pre-cancelled token only; a synchronous WASM call cannot process a later JS cancellation message on the same thread',
+      fixtures: cases.filter(({ fixture }) => fixture).map(({ id, fixture }) => ({ id, step: fixture.step, entry: 'exact arena document via remus-parity-native --step-to-arena, deserializeSolids on every surface' })),
       timeout_ms: timeoutMs,
       matrix: { cases: cases.map(({ id, title }) => ({ id, title })) },
       elapsed_ms: performance.now() - started,
       passed,
+      failure_classes: summarizeFailureClasses(stages),
       failed_stages: failedStages,
       known_gaps: knownGaps,
       stages: [...stages, ...directConsistency],
@@ -1066,6 +1346,9 @@ function normalizeNativeForContract(c, native) {
       faceCount: native.census?.faces ?? null,
       evolution: native.evolution ?? null,
       operandVolume,
+      // `validationErrors` and `meshQuality` already ride in the geometric
+      // envelope; the check-crate probe is the runner's native-only field.
+      checkedValidationErrors: native.checkedValidationErrors ?? null,
     };
   }
   return native;
