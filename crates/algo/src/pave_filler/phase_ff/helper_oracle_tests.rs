@@ -728,8 +728,28 @@ fn torus_oval_on_a_disk_cap_keeps_the_exact_in_cap_arc_for_any_rim_seam() {
     let rim = Circle3D::new(rim_center, normal, rim_radius).unwrap();
     // The cap's seam vertex is an artifact of construction; the kept arc
     // must not depend on where it sits, nor on the rim being split in two.
-    for k in 0..8 {
-        let seam = -3.0 + f64::from(k) * 0.8;
+    // Seams spread round the rim, plus seams placed just inside and just
+    // outside the tube within the on-oval band (0.05 from the outer section
+    // circle), where the rim's starting side must still be read correctly.
+    let near_oval_seams = [-0.05, 0.05, -0.02, 0.02].map(|offset: f64| {
+        // In-plane rim angle φ (from the rim center, away from the torus
+        // axis) where the rim is `outer + offset` from the axis.
+        let target = cut.outer + offset;
+        let cos_phi =
+            (target * target - 3.0 * 3.0 - rim_radius * rim_radius) / (2.0 * 3.0 * rim_radius);
+        let phi = cos_phi.acos() * offset.signum();
+        let seam_point =
+            rim_center + Vec3::new(rim_radius * phi.cos(), rim_radius * phi.sin(), 0.0);
+        assert!(
+            ((seam_point - cut.axis_foot).length() - target).abs() < 1e-9,
+            "fixture: seam sits {offset} from the outer section circle"
+        );
+        rim.project(seam_point)
+    });
+    let seams = (0..8)
+        .map(|k| -3.0 + f64::from(k) * 0.8)
+        .chain(near_oval_seams);
+    for seam in seams {
         let mut topo = Topology::new();
         let wire = closed_circle_wire(&mut topo, &rim, seam);
         let face = topo.add_face(Face::new(wire, vec![], cut.plane()));
