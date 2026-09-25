@@ -10,7 +10,7 @@ Outputs (all lowercase booleans except ``mode``):
   carrying the ``ci:full`` label (``--full``).
 * ``wasm`` — build and validate the distributable WASM packages. True for
   heavy changes when ``full`` is set or the diff touches a WASM-affecting
-  path.
+  path, which includes every crate under ``crates/``.
 * ``mode`` — ``full``, ``pr``, ``docs``, ``package``, or ``ci-only``.
 """
 
@@ -42,8 +42,17 @@ AGENT_DIRECTORIES = (".claude/",)
 PACKAGE_DIRECTORIES = ("crates/wasm/pkg/", "crates/wasm-io/pkg/")
 # Paths whose change can alter the distributable WASM binaries or their
 # packaging in a way the native suite does not exercise.
-WASM_DIRECTORIES = ("crates/wasm/", "crates/wasm-io/", "xtask/", "tools/vs-bench/")
-WASM_FILENAMES = {"Cargo.lock", "Cargo.toml", "rust-toolchain.toml"}
+#
+# Every crate sits below the wasm bindings, so any change under `crates/`
+# can break the packaged kernel. This used to list only `crates/wasm/` and
+# `crates/wasm-io/`, which made the package smoke a main-only gate for engine
+# changes: PR #618 (algo, math, operations) passed PR CI with WASM
+# Build & Validate skipped, then failed that job on main at 8539b266.
+# The job runs beside Test (median 13.6 vs 20.6 minutes on hosted runners,
+# 2026-09), so selecting it for every kernel PR does not lengthen the PR.
+WASM_DIRECTORIES = ("crates/", "xtask/", "tools/vs-bench/")
+# `.cargo/config.toml` defines the `cargo xtask` alias the package build runs.
+WASM_FILENAMES = {"Cargo.lock", "Cargo.toml", "rust-toolchain.toml", ".cargo/config.toml"}
 
 
 @dataclass(frozen=True)
