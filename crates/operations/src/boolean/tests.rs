@@ -9535,3 +9535,92 @@ fn scaling_distance_query_prunes_far_nurbs_faces() {
         "expected box pruning to keep at most 32 probes, got {probes}"
     );
 }
+
+/// Vertex-on-edge projection work on a touching-box grid (PERF-M04).
+///
+/// Fusing a left-fold chain of touching unit boxes forces T-junctions: grid
+/// vertices lying mid-edge on already-placed neighbors survive the AABB
+/// broad-phase and endpoint rejection, so they must run the closest-point
+/// projection. This pins the current cost shape deterministically:
+///
+/// - every surviving pair runs the generic sampled projection (33 samples
+///   plus 20 ternary refinement steps of 2 evaluations = 73 curve
+///   evaluations; asserted exactly, not bounded);
+/// - no `Line` pair takes an analytic fast path yet (`ve_line_projections`
+///   stays 0 — landing PERF-B01 must update this guard and its roadmap row);
+/// - removing the broad-phase would project every cross pair (~32k here),
+///   so the absolute cap trips gross blowup with wide headroom.
+///
+/// Runs only with `--features perf-counters`; the dedicated CI step
+/// exercises it alongside the issue-#987 scaling guard above.
+#[cfg(feature = "perf-counters")]
+#[test]
+fn scaling_ve_projection_counts_sampled_line_work() {
+    use remus_math::mat::Mat4;
+
+    let fuse_grid = |n: usize| -> (remus_algo::perf::PerfSnapshot, f64) {
+        let mut topo = Topology::new();
+        let mut ids = Vec::new();
+        for row in 0..n {
+            for col in 0..n {
+                let s = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+                crate::transform::transform_solid(
+                    &mut topo,
+                    s,
+                    &Mat4::translation(col as f64, row as f64, 0.0),
+                )
+                .unwrap();
+                ids.push(s);
+            }
+        }
+        remus_algo::perf::reset();
+        let mut acc = ids[0];
+        for id in ids.iter().skip(1) {
+            acc = crate::boolean::boolean(&mut topo, crate::boolean::BooleanOp::Fuse, acc, *id)
+                .unwrap();
+        }
+        let vol = crate::measure::solid_volume(&topo, acc, 0.01).unwrap();
+        let expected = (n * n) as f64;
+        assert!(
+            (vol - expected).abs() < 1e-9,
+            "grid fuse volume {vol} != {expected}"
+        );
+        let report = crate::validate::validate_solid(&topo, acc).unwrap();
+        assert!(report.is_valid(), "{:?}", report.issues);
+        (remus_algo::perf::snapshot(), vol)
+    };
+
+    let (s1, _) = fuse_grid(2);
+    let (s4, _) = fuse_grid(4);
+    eprintln!(
+        "ve guard @ 2x2 -> 4x4 grids: sampled {} -> {}, evals {} -> {}, line {} -> {}",
+        s1.ve_sampled_probes,
+        s4.ve_sampled_probes,
+        s1.ve_projection_evals,
+        s4.ve_projection_evals,
+        s1.ve_line_projections,
+        s4.ve_line_projections,
+    );
+
+    assert!(
+        s4.ve_sampled_probes > 0,
+        "VE projection instrumentation was not exercised by the grid fuse"
+    );
+    assert_eq!(
+        s4.ve_projection_evals,
+        73 * s4.ve_sampled_probes,
+        "each generic VE projection must perform exactly 73 curve evaluations \
+         (33 samples + 2 x 20 ternary steps); sampled={} evals={}",
+        s4.ve_sampled_probes,
+        s4.ve_projection_evals,
+    );
+    assert_eq!(
+        s4.ve_line_projections, 0,
+        "no analytic Line VE path exists yet; landing it must update this guard"
+    );
+    assert!(
+        s4.ve_sampled_probes < 1_000,
+        "VE broad-phase regressed: {} sampled projections on the 4x4 grid (ungated: ~32k)",
+        s4.ve_sampled_probes,
+    );
+}

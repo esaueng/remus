@@ -1993,3 +1993,305 @@ mod marching_oracles {
         }
     }
 }
+// -- Spatial chaining equivalence (PERF-N03) --
+//
+// The grid + ring walk must reproduce the all-pairs + full-scan outcome
+// bit-for-bit on every input shape: branches, loops, exact ties, dense
+// balls, grid-aligned boundary hugs, mixed scales, non-finite points and
+// degenerate thresholds. The oracle below is the verbatim pre-optimization
+// algorithm; a seeded xorshift keeps the cases deterministic.
+
+/// Verbatim pre-N03 chaining: all-pairs adjacency, `contains` endpoint
+/// degrees, full-scan nearest-unused walk. Test-only oracle.
+fn naive_chain(points: &[IntersectionPoint], threshold: f64) -> Vec<Vec<IntersectionPoint>> {
+    if points.is_empty() {
+        return Vec::new();
+    }
+    let n = points.len();
+    let threshold_sq = threshold * threshold;
+    let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for i in 0..n {
+        for j in (i + 1)..n {
+            let d = points[i].point - points[j].point;
+            if d.x().mul_add(d.x(), d.y().mul_add(d.y(), d.z() * d.z())) < threshold_sq {
+                adj[i].push(j);
+                adj[j].push(i);
+            }
+        }
+    }
+    let mut visited = vec![false; n];
+    let mut components: Vec<Vec<usize>> = Vec::new();
+    for start in 0..n {
+        if visited[start] {
+            continue;
+        }
+        let mut component = Vec::new();
+        let mut queue = std::collections::VecDeque::new();
+        queue.push_back(start);
+        visited[start] = true;
+        while let Some(idx) = queue.pop_front() {
+            component.push(idx);
+            for &neighbor in &adj[idx] {
+                if !visited[neighbor] {
+                    visited[neighbor] = true;
+                    queue.push_back(neighbor);
+                }
+            }
+        }
+        components.push(component);
+    }
+    let mut chains = Vec::with_capacity(components.len());
+    for comp in &components {
+        if comp.is_empty() {
+            continue;
+        }
+        let start_idx = comp
+            .iter()
+            .copied()
+            .min_by_key(|&i| adj[i].iter().filter(|&&j| comp.contains(&j)).count())
+            .unwrap_or(comp[0]);
+        let mut chain = Vec::with_capacity(comp.len());
+        let mut used = vec![false; n];
+        let mut current = start_idx;
+        used[current] = true;
+        chain.push(points[current]);
+        for _ in 1..comp.len() {
+            let mut best_dist = f64::MAX;
+            let mut best_idx = None;
+            for &idx in comp {
+                if used[idx] {
+                    continue;
+                }
+                let d = points[current].point - points[idx].point;
+                let dist_sq = d.x().mul_add(d.x(), d.y().mul_add(d.y(), d.z() * d.z()));
+                if dist_sq < best_dist {
+                    best_dist = dist_sq;
+                    best_idx = Some(idx);
+                }
+            }
+            if let Some(next) = best_idx {
+                used[next] = true;
+                chain.push(points[next]);
+                current = next;
+            } else {
+                break;
+            }
+        }
+        chains.push(chain);
+    }
+    chains
+}
+
+/// Deterministic xorshift64* uniform in [0, 1).
+fn xorshift_unit(state: &mut u64) -> f64 {
+    *state ^= *state >> 12;
+    *state ^= *state << 25;
+    *state ^= *state >> 27;
+    ((*state).wrapping_mul(0x2545_F491_4F6C_DD1D) >> 11) as f64 / (u64::MAX >> 11) as f64
+}
+
+fn mk_point(x: f64, y: f64, z: f64, a: f64, b: f64) -> IntersectionPoint {
+    IntersectionPoint {
+        point: Point3::new(x, y, z),
+        param1: (a, b),
+        param2: (b, a),
+    }
+}
+
+fn point_bits(p: &IntersectionPoint) -> (u64, u64, u64, u64, u64, u64, u64) {
+    (
+        p.point.x().to_bits(),
+        p.point.y().to_bits(),
+        p.point.z().to_bits(),
+        p.param1.0.to_bits(),
+        p.param1.1.to_bits(),
+        p.param2.0.to_bits(),
+        p.param2.1.to_bits(),
+    )
+}
+
+/// Assert the shipped chaining matches the naive oracle bit-for-bit:
+/// same components in the same order, same walk order, same carried
+/// parameters. `-0.0` vs `0.0` and NaN payloads compare by bits.
+fn check_chains_equivalent(points: &[IntersectionPoint], threshold: f64) {
+    let expected = naive_chain(points, threshold);
+    let actual = chain_intersection_points(points, threshold);
+    assert_eq!(
+        actual.len(),
+        expected.len(),
+        "component count differs (n={}, threshold={threshold})",
+        points.len()
+    );
+    for (c, (a, e)) in actual.iter().zip(expected.iter()).enumerate() {
+        assert_eq!(
+            a.len(),
+            e.len(),
+            "chain {c} length differs (n={}, threshold={threshold})",
+            points.len()
+        );
+        for (k, (pa, pe)) in a.iter().zip(e.iter()).enumerate() {
+            assert_eq!(
+                point_bits(pa),
+                point_bits(pe),
+                "chain {c} point {k} differs (n={}, threshold={threshold})",
+                points.len()
+            );
+        }
+    }
+}
+
+#[test]
+fn spatial_chain_matches_oracle_on_straight_chains() {
+    for n in [0usize, 1, 2, 3, 33, 200, 1500] {
+        let points: Vec<IntersectionPoint> = (0..n)
+            .map(|i| mk_point(i as f64, 0.0, 0.0, i as f64, 0.0))
+            .collect();
+        check_chains_equivalent(&points, 1.1);
+    }
+}
+
+#[test]
+fn spatial_chain_matches_oracle_on_loops_and_ties() {
+    // Closed loop: every point has two equidistant neighbors.
+    let ring: Vec<IntersectionPoint> = (0..300)
+        .map(|i| {
+            let a = i as f64 / 300.0 * std::f64::consts::TAU;
+            mk_point(a.cos(), a.sin(), 0.0, a, 0.0)
+        })
+        .collect();
+    check_chains_equivalent(&ring, 0.15);
+    // Regular polygon around the walk start: exact distance ties between
+    // symmetric unused candidates stress the first-in-component tie-break.
+    let mut star = vec![mk_point(0.0, 0.0, 0.0, 0.0, 0.0)];
+    for i in 0..12 {
+        let a = i as f64 / 12.0 * std::f64::consts::TAU;
+        star.push(mk_point(a.cos(), a.sin(), 0.0, a, 1.0));
+    }
+    check_chains_equivalent(&star, 1.05);
+    // Dense ball: everything connects; the walk is pure ordering stress.
+    let mut rng = 0x243F_6A88_85A3_08D3u64;
+    let ball: Vec<IntersectionPoint> = (0..300)
+        .map(|i| {
+            let f = i as f64;
+            mk_point(
+                xorshift_unit(&mut rng) * 0.2,
+                xorshift_unit(&mut rng) * 0.2,
+                xorshift_unit(&mut rng) * 0.2,
+                f,
+                -f,
+            )
+        })
+        .collect();
+    check_chains_equivalent(&ball, 1.0);
+}
+
+#[test]
+fn spatial_chain_matches_oracle_on_grids_and_clusters() {
+    // Integer grid at threshold 1.1: cell boundaries (multiples of a
+    // non-representable width) fall near integers, exercising boundary-hug
+    // cell assignment.
+    let mut grid = Vec::new();
+    for x in 0..20 {
+        for y in 0..20 {
+            grid.push(mk_point(x as f64, y as f64, 0.0, x as f64, y as f64));
+        }
+    }
+    check_chains_equivalent(&grid, 1.1);
+    check_chains_equivalent(&grid, 1.5);
+    // Sparse clusters with a thin bridge.
+    let mut rng = 0xB529_7A4D_5280_4982u64;
+    let mut cloud = Vec::new();
+    for c in 0..10 {
+        for _ in 0..30 {
+            cloud.push(mk_point(
+                c as f64 * 50.0 + xorshift_unit(&mut rng) * 2.0,
+                xorshift_unit(&mut rng) * 2.0,
+                xorshift_unit(&mut rng) * 2.0,
+                c as f64,
+                xorshift_unit(&mut rng),
+            ));
+        }
+    }
+    for i in 0..=40 {
+        let t = i as f64 * 10.0;
+        cloud.push(mk_point(t, 0.0, 0.0, t, t));
+    }
+    check_chains_equivalent(&cloud, 3.0);
+}
+
+#[test]
+fn spatial_chain_matches_oracle_across_scales() {
+    for scale in [1e-3f64, 1.0, 1e3] {
+        let mut rng = 0x3333_3333_3333_3333u64 ^ scale.to_bits();
+        for size in [7usize, 60, 300] {
+            let points: Vec<IntersectionPoint> = (0..size)
+                .map(|i| {
+                    let f = i as f64;
+                    mk_point(
+                        xorshift_unit(&mut rng) * scale * 10.0,
+                        xorshift_unit(&mut rng) * scale * 10.0,
+                        xorshift_unit(&mut rng) * scale,
+                        f,
+                        -f,
+                    )
+                })
+                .collect();
+            // Threshold near the mean spacing, plus a sparse and a dense cut.
+            check_chains_equivalent(&points, scale);
+            check_chains_equivalent(&points, scale * 0.05);
+            check_chains_equivalent(&points, scale * 30.0);
+        }
+    }
+}
+
+#[test]
+fn spatial_chain_matches_oracle_on_degenerate_inputs() {
+    let points: Vec<IntersectionPoint> = (0..12)
+        .map(|i| mk_point(i as f64 * 0.5, 1.0, -1.0, i as f64, 0.5))
+        .collect();
+    // Zero, negative (squared comparison), NaN and infinite thresholds.
+    check_chains_equivalent(&points, 0.0);
+    check_chains_equivalent(&points, -0.0);
+    check_chains_equivalent(&points, -1.0);
+    check_chains_equivalent(&points, f64::NAN);
+    check_chains_equivalent(&points, f64::INFINITY);
+    check_chains_equivalent(&points, f64::NEG_INFINITY);
+    check_chains_equivalent(&points, 1e-300);
+    check_chains_equivalent(&points, 1e300);
+    // Empty and singleton inputs at every degenerate threshold.
+    for threshold in [0.0, 1.1, f64::NAN, f64::INFINITY] {
+        check_chains_equivalent(&[], threshold);
+        check_chains_equivalent(&points[..1], threshold);
+    }
+    // Non-finite coordinates mix with finite ones.
+    let mut mixed = points;
+    mixed.push(mk_point(f64::NAN, 0.0, 0.0, 0.0, 0.0));
+    mixed.push(mk_point(f64::INFINITY, 1.0, 1.0, 1.0, 1.0));
+    mixed.push(mk_point(0.0, 0.0, f64::NEG_INFINITY, 2.0, 2.0));
+    mixed.push(mk_point(
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::INFINITY,
+        3.0,
+        3.0,
+    ));
+    check_chains_equivalent(&mixed, 1.1);
+    check_chains_equivalent(&mixed, f64::INFINITY);
+    // Coincident duplicates: zero-distance ties everywhere.
+    let dupes: Vec<IntersectionPoint> = (0..40)
+        .map(|i| mk_point(1.0, 2.0, 3.0, i as f64, 0.0))
+        .collect();
+    check_chains_equivalent(&dupes, 0.5);
+    // Near-boundary adversarial: points a few ulps off multiples of the
+    // threshold, where cell assignment could flip between neighbors.
+    let cell = 1.1f64;
+    let mut rng = 0xABCD_EF01_2345_6789u64;
+    let hug: Vec<IntersectionPoint> = (0..300)
+        .map(|i| {
+            let k = (xorshift_unit(&mut rng) * 40.0).floor();
+            let eps = (xorshift_unit(&mut rng) - 0.5) * 32.0 * f64::EPSILON * k.max(1.0) * cell;
+            mk_point(k * cell + eps, 0.0, 0.0, i as f64, eps)
+        })
+        .collect();
+    check_chains_equivalent(&hug, cell);
+}

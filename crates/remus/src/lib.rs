@@ -7,7 +7,7 @@ pub use model::Model;
 // Stable, typed errors are available without making users learn the internal
 // crate graph.
 pub use remus_check::CheckError;
-pub use remus_check::properties::GProps;
+pub use remus_check::properties::{GProps, PropertiesOptions};
 pub use remus_heal::HealError;
 pub use remus_io::IoError;
 pub use remus_math::MathError;
@@ -43,7 +43,8 @@ pub use remus_operations::journal_ops::{
 };
 pub use remus_operations::loft::loft;
 pub use remus_operations::measure::{
-    edge_length, face_area, face_perimeter, mass_properties, solid_bounding_box,
+    MASS_PROPERTIES_GAUSS_ORDER, edge_length, face_area, face_perimeter, mass_properties,
+    mass_properties_default_options, mass_properties_with_options, solid_bounding_box,
     solid_center_of_mass, solid_surface_area, solid_volume, wire_length,
 };
 pub use remus_operations::pipe::pipe;
@@ -88,22 +89,22 @@ pub mod prelude {
         FaceId, FallbackPolicy, FixConfig, FixMode, FixResult, GProps, GcsSystem, HealError,
         ImportLimits, IoError, Journal, JournaledBlend, JournaledBoolean, LineData, LineId, Mat4,
         MathError, Model, NurbsCurve, OpId, OperationContext, OperationsError, OrientationCheck,
-        PersistentRef, Point3, PointData, PointId, Provenance, Resolution, Severity, SketchError,
-        SolidId, SolveClassification, SolveDiagnostics, SolveResult, StepImportDiagnostic,
-        StepReadResult, StepValidationDiagnostic, StepValidationDiagnosticCode,
-        StepValidationOptions, StepValidationProperties, StepValidationProperty,
-        StepValidationReport, StepWriteOptions, Topology, TopologyError, TriangleMesh,
-        TriangleMeshUV, ValidationIssue, ValidationOptions, ValidationReport, Vec3,
+        PersistentRef, Point3, PointData, PointId, PropertiesOptions, Provenance, Resolution,
+        Severity, SketchError, SolidId, SolveClassification, SolveDiagnostics, SolveResult,
+        StepImportDiagnostic, StepReadResult, StepValidationDiagnostic,
+        StepValidationDiagnosticCode, StepValidationOptions, StepValidationProperties,
+        StepValidationProperty, StepValidationReport, StepWriteOptions, Topology, TopologyError,
+        TriangleMesh, TriangleMeshUV, ValidationIssue, ValidationOptions, ValidationReport, Vec3,
         WeldedMeshQuality, WireId, WorkBudgets, boolean_journaled, boolean_with_context,
         boundary_edge_count, chamfer_journaled, chamfer_v2, edge_length, euler_characteristic,
         extrude, face_area, face_perimeter, fillet_journaled, fillet_v2, fix_shape, is_watertight,
         loft, make_box, make_cone, make_cylinder, make_sphere, make_torus, mass_properties,
-        non_manifold_edge_count, pipe, read_step, read_step_with_limits,
-        read_step_with_limits_and_report, read_step_with_report, read_step_with_validation,
-        resolve, revolve, solid_bounding_box, solid_center_of_mass, solid_surface_area,
-        solid_volume, sweep, tessellate, tessellate_solid, tessellate_solid_with_tolerance,
-        tessellate_with_tolerance, tessellate_with_uvs, validate_solid,
-        validate_solid_with_options, welded_mesh_quality, wire_length, write_step,
+        mass_properties_with_options, non_manifold_edge_count, pipe, read_step,
+        read_step_with_limits, read_step_with_limits_and_report, read_step_with_report,
+        read_step_with_validation, resolve, revolve, solid_bounding_box, solid_center_of_mass,
+        solid_surface_area, solid_volume, sweep, tessellate, tessellate_solid,
+        tessellate_solid_with_tolerance, tessellate_with_tolerance, tessellate_with_uvs,
+        validate_solid, validate_solid_with_options, welded_mesh_quality, wire_length, write_step,
         write_step_with_options,
     };
 }
