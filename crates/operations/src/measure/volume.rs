@@ -162,6 +162,104 @@ fn mesh_boundary_edge_count(mesh: &tessellate::TriangleMesh) -> usize {
     counts.values().filter(|&&c| c != 2).count()
 }
 
+/// Whether `BK_VOL_TRACE` is set, resolved once per process.
+fn vol_trace_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("BK_VOL_TRACE").is_some())
+}
+
+/// `BK_VOL_TRACE=1`: print which [`solid_volume`] route produced, or declined,
+/// a reading, one `VOL_TRACE` line per decision on stderr.
+///
+/// Diagnostic only. It writes to stderr directly because the `log::debug!`
+/// traces it replaces never emitted where they were needed: neither the test
+/// harness nor the WASM console bridge installs a logger at debug level, so a
+/// wrong volume could not be attributed to its route without a rebuild. The
+/// message is built lazily, so an unset variable costs one cached flag read.
+#[allow(clippy::print_stderr)]
+fn vol_trace(message: impl FnOnce() -> String) {
+    if vol_trace_enabled() {
+        eprintln!("VOL_TRACE {}", message());
+    }
+}
+
+/// Whether a whole-solid mesh is closed: non-empty, every edge shared by
+/// exactly two triangles.
+fn mesh_is_closed(mesh: &tessellate::TriangleMesh) -> bool {
+    !mesh.indices.is_empty() && mesh_boundary_edge_count(mesh) == 0
+}
+
+/// The whole-solid mesh at the clamp, when `deflection` is finer than the
+/// clamp and the mesh there is CLOSED; `None` otherwise.
+///
+/// Every coarser request is measured at the clamp, `bbox_diag * 5e-5` (see
+/// [`volume_tessellation_deflection`]), so a closed clamp mesh gives the
+/// reading any coarser request returns: the coarsest reading [`solid_volume`]
+/// may give, never coarser. A mesh that cracks only at a request finer than
+/// the clamp then measures to the clamp's chord accuracy instead of leaving
+/// the closed-mesh route. The pre-B39 torus–cone oblique cell is the recorded
+/// case: its fuse, cut and intersect meshes were closed at their ~5.2e-4
+/// clamp and open at 2e-4 and 1e-4 (4 and 7 bad edges), where the old
+/// fall-through read 5.43, 0.176 and 0.460 against 18.775, 13.80 and 1.003.
+fn clamp_retry_mesh_with(
+    topo: &Topology,
+    solid: SolidId,
+    deflection: f64,
+    mut mesh_at: impl FnMut(f64) -> Result<tessellate::TriangleMesh, crate::OperationsError>,
+) -> Result<Option<tessellate::TriangleMesh>, crate::OperationsError> {
+    let clamp = volume_tessellation_deflection(topo, solid, f64::INFINITY);
+    if !(clamp.is_finite() && clamp > deflection) {
+        return Ok(None);
+    }
+    let mesh = mesh_at(clamp)?;
+    if mesh_is_closed(&mesh) {
+        vol_trace(|| format!("whole-solid mesh closed at the clamp {clamp:e}"));
+        return Ok(Some(mesh));
+    }
+    vol_trace(|| {
+        format!(
+            "whole-solid mesh OPEN at the clamp {clamp:e} too ({} bad edges)",
+            mesh_boundary_edge_count(&mesh)
+        )
+    });
+    Ok(None)
+}
+
+/// The whole-solid mesh the generic route reads a volume off: the mesh at the
+/// effective (already clamped) `deflection`, or, when that is open, the
+/// closed clamp mesh from [`clamp_retry_mesh_with`]. When the clamp mesh is
+/// open too, the mesh at `deflection` comes back still open.
+fn whole_solid_mesh(
+    topo: &Topology,
+    solid: SolidId,
+    deflection: f64,
+) -> Result<tessellate::TriangleMesh, crate::OperationsError> {
+    whole_solid_mesh_with(topo, solid, deflection, |d| {
+        tessellate::tessellate_solid(topo, solid, d)
+    })
+}
+
+/// [`whole_solid_mesh`] over any whole-solid mesher, so the retry can be
+/// tested on a mesh opened on purpose.
+fn whole_solid_mesh_with(
+    topo: &Topology,
+    solid: SolidId,
+    deflection: f64,
+    mut mesh_at: impl FnMut(f64) -> Result<tessellate::TriangleMesh, crate::OperationsError>,
+) -> Result<tessellate::TriangleMesh, crate::OperationsError> {
+    let mesh = mesh_at(deflection)?;
+    if mesh_is_closed(&mesh) {
+        return Ok(mesh);
+    }
+    vol_trace(|| {
+        format!(
+            "whole-solid mesh OPEN at {deflection:e} ({} bad edges)",
+            mesh_boundary_edge_count(&mesh)
+        )
+    });
+    Ok(clamp_retry_mesh_with(topo, solid, deflection, mesh_at)?.unwrap_or(mesh))
+}
+
 /// Gauss order of the open-mesh fallback: the order [`mass_properties`]
 /// integrates at, so the two exact routes agree to round-off.
 const OPEN_MESH_GAUSS_ORDER: usize = 8;
@@ -182,8 +280,18 @@ const OPEN_MESH_GAUSS_ORDER: usize = 8;
 /// * closed mesh with no volume → `Ok(None)`, the historic fall-through for a
 ///   degenerate mesh;
 /// * open mesh → [`open_mesh_exact_volume`]: the boundary-trimmed Gauss
-///   integral over every face, or a typed [`crate::OperationsError::Unsupported`]
-///   when some face is outside what that integrator measures.
+///   integral over every face;
+/// * open mesh with a face outside what that integrator measures → the
+///   closed clamp mesh's volume when the request was finer than the clamp
+///   (see [`clamp_retry_mesh_with`]), else a typed
+///   [`crate::OperationsError::Unsupported`].
+///
+/// The exact integral goes first because it is the more accurate of the two
+/// where it applies: on the pre-B39 torus–cone fuse it read 18.7748 at the
+/// 2e-4 request, the clamp mesh 18.7542, against an 18.7750 oracle. The
+/// clamp retry stands in only for the refusal, so a body whose mesh cracks
+/// at a fine request is measured the way a coarser request measures it
+/// rather than refused.
 ///
 /// `why` names the face class that sent the body here; it only appears in the
 /// refusal.
@@ -193,8 +301,32 @@ fn required_closed_mesh_volume(
     deflection: f64,
     why: &'static str,
 ) -> Result<Option<f64>, crate::OperationsError> {
-    let mesh = tessellate::tessellate_solid(topo, solid, deflection)?;
-    closed_mesh_or_exact_volume(topo, solid, &mesh, why)
+    required_closed_mesh_volume_with(topo, solid, deflection, why, |d| {
+        tessellate::tessellate_solid(topo, solid, d)
+    })
+}
+
+/// [`required_closed_mesh_volume`] over any whole-solid mesher, so the
+/// open-mesh order (exact integral, then clamp retry, then refusal) can be
+/// tested on a mesh opened on purpose.
+fn required_closed_mesh_volume_with(
+    topo: &Topology,
+    solid: SolidId,
+    deflection: f64,
+    why: &'static str,
+    mut mesh_at: impl FnMut(f64) -> Result<tessellate::TriangleMesh, crate::OperationsError>,
+) -> Result<Option<f64>, crate::OperationsError> {
+    let mesh = mesh_at(deflection)?;
+    let refusal = match closed_mesh_or_exact_volume(topo, solid, &mesh, why) {
+        Err(refusal @ crate::OperationsError::Unsupported { .. }) => refusal,
+        answer => return answer,
+    };
+    let Some(retried) = clamp_retry_mesh_with(topo, solid, deflection, mesh_at)? else {
+        return Err(refusal);
+    };
+    let volume = signed_volume_from_mesh(&retried);
+    vol_trace(|| format!("{why}: closed clamp mesh instead of refusing -> {volume}"));
+    Ok((volume > 1e-12).then_some(volume))
 }
 
 /// [`required_closed_mesh_volume`] on an already built whole-solid mesh.
@@ -204,11 +336,14 @@ fn closed_mesh_or_exact_volume(
     mesh: &tessellate::TriangleMesh,
     why: &'static str,
 ) -> Result<Option<f64>, crate::OperationsError> {
-    if !mesh.indices.is_empty() && mesh_boundary_edge_count(mesh) == 0 {
+    if mesh_is_closed(mesh) {
         let volume = signed_volume_from_mesh(mesh);
+        vol_trace(|| format!("{why}: closed whole-solid mesh -> {volume}"));
         return Ok((volume > 1e-12).then_some(volume));
     }
-    open_mesh_exact_volume(topo, solid, why).map(Some)
+    let exact = open_mesh_exact_volume(topo, solid, why);
+    vol_trace(|| format!("{why}: open whole-solid mesh -> exact fallback {exact:?}"));
+    exact.map(Some)
 }
 
 /// The exact fallback for a body whose required whole-solid mesh is open:
@@ -1719,7 +1854,10 @@ pub fn solid_is_inverted(topo: &Topology, solid: SolidId) -> Result<bool, crate:
 /// revolution); only solids outside those families fall through to the
 /// signed-tetrahedra method on a surface tessellation, where for each
 /// triangle `(v0, v1, v2)` the signed volume of the tetrahedron it forms
-/// with the origin is `v0 . (v1 x v2) / 6`.
+/// with a reference point `r` is `(v0 - r) . ((v1 - r) x (v2 - r)) / 6`. For
+/// a closed mesh the reference is the centre of the mesh's bounding box
+/// rather than the world origin, so the reading does not change when the
+/// body is moved (B56).
 ///
 /// On every exact path the result is deflection-independent: `deflection`
 /// only controls the tessellation fallback. See
@@ -1742,9 +1880,19 @@ pub fn solid_is_inverted(topo: &Topology, solid: SolidId) -> Result<bool, crate:
 /// parameter value measures within that error of its closed-mesh neighbours,
 /// not with a route-sized jump.
 ///
+/// Before refusing, a mesh that was open at a request FINER than the clamp is
+/// retried once at the clamp (`bbox_diag * 5e-5`), the deflection every
+/// coarser request is measured at, and a closed clamp mesh is the answer.
+/// The exact integral stays first because it is the more accurate reading
+/// where it applies. On the pre-B39 torus–cone fuse at a 2e-4 request (open
+/// mesh; the old fall-through read 5.43) it gives 18.7748 and the clamp mesh
+/// 18.7542, against an 18.7750 oracle.
+///
 /// Bodies with no such face keep the fall-through below: a mesh volume is
 /// only taken unchecked on the final generic path, where no per-face route
-/// is known to be wrong.
+/// is known to be wrong, and only after the same clamp retry.
+///
+/// Set `BK_VOL_TRACE=1` to print the route each call takes to stderr.
 ///
 /// # Orientation
 ///
@@ -1760,8 +1908,9 @@ pub fn solid_is_inverted(topo: &Topology, solid: SolidId) -> Result<bool, crate:
 ///
 /// Returns an error if tessellation or topology lookups fail, and
 /// [`crate::OperationsError::Unsupported`] when a body that must be measured
-/// on its closed mesh tessellates open and carries a face the exact Gauss
-/// integrator does not measure either (see above).
+/// on its closed mesh tessellates open, carries a face the exact Gauss
+/// integrator does not measure either, and has no closed mesh at the clamp to
+/// fall back on (see above).
 pub fn solid_volume(
     topo: &Topology,
     solid: SolidId,
@@ -1769,9 +1918,7 @@ pub fn solid_volume(
 ) -> Result<f64, crate::OperationsError> {
     // Fast path: exact analytic formula for known primitives.
     if let Some(v) = try_analytic_solid_volume(topo, solid) {
-        if std::env::var("BK_VOL_TRACE").is_ok() {
-            log::debug!("VOL_TRACE try_analytic -> {v}");
-        }
+        vol_trace(|| format!("try_analytic -> {v}"));
         return Ok(v);
     }
 
@@ -1782,9 +1929,7 @@ pub fn solid_volume(
     // tessellation paths below suffer on bored quadrics (e.g. a cylinder
     // drilled through a sphere).
     if let Some(v) = analytic_faces_solid_volume(topo, solid)? {
-        if std::env::var("BK_VOL_TRACE").is_ok() {
-            log::debug!("VOL_TRACE analytic_faces -> {v}");
-        }
+        vol_trace(|| format!("analytic_faces -> {v}"));
         return Ok(v);
     }
 
@@ -1795,9 +1940,7 @@ pub fn solid_volume(
     // does NOT catch boolean results that merely happen to have arc-bounded
     // planar faces (rounded-rect caps, arc-frame lips).
     if let Some(v) = analytic_revolution_solid_volume(topo, solid) {
-        if std::env::var("BK_VOL_TRACE").is_ok() {
-            log::debug!("VOL_TRACE revolution -> {v}");
-        }
+        vol_trace(|| format!("revolution -> {v}"));
         return Ok(v);
     }
 
@@ -1807,7 +1950,9 @@ pub fn solid_volume(
     // deflection). Clamp the deflection to a small fraction of the solid's
     // extent — never coarsening a finer request — so the volume is accurate
     // regardless of the (preview-tuned) deflection the caller passes.
+    let requested = deflection;
     let deflection = volume_tessellation_deflection(topo, solid, deflection);
+    vol_trace(|| format!("deflection requested {requested:e} -> {deflection:e}"));
 
     // A scalloped sphere collar (box ∩ sphere) cannot be per-face tessellated
     // watertight (its band path needs the solid's shared boundary vertices), and
@@ -1852,12 +1997,21 @@ pub fn solid_volume(
                 | FaceSurface::Nurbs(_) => None,
             };
             let Some(contribution) = contribution else {
+                vol_trace(|| {
+                    format!(
+                        "torus notch band integral declined at face {} ({})",
+                        face_id.index(),
+                        topo.face(face_id)
+                            .map_or("?", |face| face.surface().type_tag())
+                    )
+                });
                 integral = None;
                 break;
             };
             integral = integral.map(|volume| volume + contribution.volume);
         }
         if let Some(volume) = integral {
+            vol_trace(|| format!("torus notch band integral -> {}", volume.abs()));
             return Ok(volume.abs());
         }
         // An open mesh must not fall through to the torus's analytic
@@ -1899,6 +2053,7 @@ pub fn solid_volume(
     // (e.g. mesh imports), compute volume directly from face geometry.
     // This avoids re-tessellation which has known WASM winding issues.
     if let Ok(v) = solid_volume_from_faces(topo, solid, deflection) {
+        vol_trace(|| format!("planar triangle faces -> {v}"));
         return Ok(v);
     }
 
@@ -2056,7 +2211,9 @@ pub fn solid_volume(
         {
             return Ok(volume);
         }
-        return volume_from_direct_face_tessellation(topo, solid, deflection);
+        let v = volume_from_direct_face_tessellation(topo, solid, deflection)?;
+        vol_trace(|| format!("direct face tessellation -> {v}"));
+        return Ok(v);
     }
 
     let faces = remus_topology::explorer::solid_faces(topo, solid)?;
@@ -2077,21 +2234,37 @@ pub fn solid_volume(
         })
         && let Some(volume) = exact_analytic_face_volume(topo, solid, deflection, true)
     {
+        vol_trace(|| format!("plane/cylinder exact faces -> {volume}"));
         return Ok(volume);
     }
 
     // Try watertight tessellation -- gives correct volume via signed tetrahedra
-    // since the mesh is closed.
-    let mesh = tessellate::tessellate_solid(topo, solid, deflection)?;
+    // since the mesh is closed. A mesh open at a request finer than the clamp
+    // is retried at the clamp first (see [`whole_solid_mesh`]). One that is
+    // open there too is still read here, unchecked: no per-face route is
+    // known to be wrong for the bodies that reach this point. Refusing them
+    // instead failed 12 workspace tests that pass on this reading (a half
+    // cylinder, lofted frustums, concave fillet notches, a hollow solid,
+    // tiny-scale transforms; 1–34 open edges each), so it stays the last
+    // resort.
+    let mesh = whole_solid_mesh(topo, solid, deflection)?;
     if !mesh.indices.is_empty() {
         let vol = signed_volume_from_mesh(&mesh);
         if vol > 1e-12 {
+            vol_trace(|| {
+                format!(
+                    "final whole-solid mesh ({} bad edges) -> {vol}",
+                    mesh_boundary_edge_count(&mesh)
+                )
+            });
             return Ok(vol);
         }
     }
 
     // Fallback: per-face tessellation with centroid-based winding correction.
-    volume_from_per_face_tessellation(topo, solid, deflection)
+    let v = volume_from_per_face_tessellation(topo, solid, deflection)?;
+    vol_trace(|| format!("per-face tessellation fallback -> {v}"));
+    Ok(v)
 }
 
 /// Divergence-theorem volume of a solid WITHOUT the absolute value, so the sign
@@ -2111,42 +2284,145 @@ pub fn oriented_solid_volume(
     deflection: f64,
 ) -> Result<f64, crate::OperationsError> {
     let mesh = tessellate::tessellate_solid(topo, solid, deflection)?;
-    let idx = &mesh.indices;
-    let pos = &mesh.positions;
-    let mut total = 0.0;
-    for t in 0..idx.len() / 3 {
-        let v0 = pos[idx[t * 3] as usize];
-        let v1 = pos[idx[t * 3 + 1] as usize];
-        let v2 = pos[idx[t * 3 + 2] as usize];
-        let a = Vec3::new(v0.x(), v0.y(), v0.z());
-        let b = Vec3::new(v1.x(), v1.y(), v1.z());
-        let c = Vec3::new(v2.x(), v2.y(), v2.z());
-        total += a.dot(b.cross(c));
+    Ok(whole_mesh_six_volume(&mesh) / 6.0)
+}
+
+/// The centre of the axis-aligned bounding box of `points`, or `None` when
+/// there are none: the point the mesh-sum routes in this module take their
+/// signed tetrahedra about (see [`summation_point`]).
+///
+/// Not the world origin (B56). A tetrahedron `(o, a, b, c)` spanned from the
+/// origin to a triangle `offset` away from it has a triple product of order
+/// `|offset|²·L` whose rounding error is of order `ε·|offset|³`, while the
+/// body's volume is of order `L³`. A 1e-3 cone–sphere boolean moved by
+/// (13, −7, 5) kept a mesh of identical shape yet read up to 0.7 % off.
+/// About a point of the body the terms are of order `L³` and the reading does
+/// not move with the body. The bounding-box centre also leaves the reading
+/// independent of vertex order, and so of the tessellator's traversal.
+fn local_reference(points: impl IntoIterator<Item = Point3>) -> Option<Point3> {
+    let mut points = points.into_iter();
+    let first = points.next()?;
+    let (lo, hi) = points.fold((first, first), |(lo, hi), p| {
+        (
+            Point3::new(lo.x().min(p.x()), lo.y().min(p.y()), lo.z().min(p.z())),
+            Point3::new(hi.x().max(p.x()), hi.y().max(p.y()), hi.z().max(p.z())),
+        )
+    });
+    Some(lo + (hi - lo) * 0.5)
+}
+
+/// Whether every directed edge of `triangles` is cancelled by the same edge
+/// run the other way: each undirected edge is used as often in one direction
+/// as in the other.
+///
+/// That is exactly when the triangles' vector areas sum to zero, so exactly
+/// when their signed tetrahedra sum is the same about every point. A mesh
+/// with a hole fails it, and so does a closed one with a face wound the
+/// wrong way, whose edges run twice in the same direction.
+fn directed_edges_cancel<K: Copy + Ord + std::hash::Hash>(
+    triangles: impl IntoIterator<Item = [K; 3]>,
+) -> bool {
+    use remus_math::det_hash::DetHashMap;
+    let mut net: DetHashMap<(K, K), i64> = DetHashMap::default();
+    for [a, b, c] in triangles {
+        for (p, q) in [(a, b), (b, c), (c, a)] {
+            match p.cmp(&q) {
+                std::cmp::Ordering::Less => *net.entry((p, q)).or_insert(0) += 1,
+                std::cmp::Ordering::Greater => *net.entry((q, p)).or_insert(0) -= 1,
+                std::cmp::Ordering::Equal => {}
+            }
+        }
     }
-    Ok(total / 6.0)
+    net.values().all(|&n| n == 0)
+}
+
+/// The point a whole-body triangle sum is taken about: the
+/// [`local_reference`] of `points` when the triangles' directed edges cancel
+/// (see [`directed_edges_cancel`]), else the world origin.
+///
+/// A body whose edges cancel encloses the same volume about every point, so
+/// it is summed about its own bounding-box centre and reads the same
+/// wherever it sits (B56).
+///
+/// One whose edges do not cancel (a hole, or a face wound the wrong way) has
+/// no reference-free volume: moving the reference by `t` moves the sum by `t`
+/// dotted with the uncancelled vector area. It keeps the historic
+/// world-origin sum, so B56 changes no such reading. That is not a claim the
+/// origin is right. It is right only by symmetry when the defect lies in a
+/// plane through the origin: the slotted no-lip bin body fixture, as first
+/// captured (repaired as B59), tessellated at deflection 0.05 with 48 edges
+/// run twice the same way on its x = 0 and y = 0 planes, and read 106091.8
+/// about the origin, against `solid_volume`'s 106099.5, but 49075.1 about
+/// its box centre. Such meshes
+/// are the business of the open-mesh routing around
+/// [`closed_mesh_or_exact_volume`], not of the summation point.
+fn summation_point(edges_cancel: bool, points: impl IntoIterator<Item = Point3>) -> Point3 {
+    let origin = Point3::new(0.0, 0.0, 0.0);
+    if edges_cancel {
+        local_reference(points).unwrap_or(origin)
+    } else {
+        origin
+    }
+}
+
+/// Six times the signed volume of the tetrahedron spanned from `reference`
+/// to the triangle `(p0, p1, p2)`. See [`summation_point`].
+fn six_tetra_volume(reference: Point3, p0: Point3, p1: Point3, p2: Point3) -> f64 {
+    (p0 - reference).dot((p1 - reference).cross(p2 - reference))
+}
+
+/// Six times the signed tetrahedra sum over a whole-solid mesh, about its
+/// [`summation_point`].
+fn whole_mesh_six_volume(mesh: &tessellate::TriangleMesh) -> f64 {
+    let triangles = || mesh.indices.chunks_exact(3).map(|t| [t[0], t[1], t[2]]);
+    let reference = summation_point(
+        directed_edges_cancel(triangles()),
+        mesh.indices.iter().map(|&i| mesh.positions[i as usize]),
+    );
+    triangles()
+        .map(|t| {
+            let [p0, p1, p2] = t.map(|i| mesh.positions[i as usize]);
+            six_tetra_volume(reference, p0, p1, p2)
+        })
+        .sum()
+}
+
+/// Six times the signed tetrahedra sum over separately tessellated face
+/// meshes that together bound one body, about ONE [`local_reference`] for
+/// all of them: the pieces sum to the body's volume only about a common
+/// point, and per-piece references would leave each piece's share depending
+/// on its own placement. The pieces share no vertex indices, so their edges
+/// never cancel by index; the seam cracks between them are chord-sized, and
+/// about a point of the body their error does not grow with its distance
+/// from the origin.
+fn meshes_six_volume(meshes: &[tessellate::TriangleMesh]) -> f64 {
+    let Some(reference) = local_reference(
+        meshes
+            .iter()
+            .flat_map(|mesh| mesh.indices.iter().map(|&i| mesh.positions[i as usize])),
+    ) else {
+        return 0.0;
+    };
+    meshes
+        .iter()
+        .flat_map(|mesh| {
+            mesh.indices.chunks_exact(3).map(|t| {
+                six_tetra_volume(
+                    reference,
+                    mesh.positions[t[0] as usize],
+                    mesh.positions[t[1] as usize],
+                    mesh.positions[t[2] as usize],
+                )
+            })
+        })
+        .sum()
 }
 
 /// Compute signed volume from a watertight triangle mesh using
-/// the divergence theorem (signed tetrahedra method).
+/// the divergence theorem (signed tetrahedra method), about the mesh's
+/// [`summation_point`].
 fn signed_volume_from_mesh(mesh: &tessellate::TriangleMesh) -> f64 {
-    let idx = &mesh.indices;
-    let pos = &mesh.positions;
-    let tri_count = idx.len() / 3;
-
-    let mut total = 0.0;
-    for t in 0..tri_count {
-        let v0 = pos[idx[t * 3] as usize];
-        let v1 = pos[idx[t * 3 + 1] as usize];
-        let v2 = pos[idx[t * 3 + 2] as usize];
-
-        let a = Vec3::new(v0.x(), v0.y(), v0.z());
-        let b = Vec3::new(v1.x(), v1.y(), v1.z());
-        let c = Vec3::new(v2.x(), v2.y(), v2.z());
-
-        total += a.dot(b.cross(c));
-    }
-
-    (total / 6.0).abs()
+    (whole_mesh_six_volume(mesh) / 6.0).abs()
 }
 
 /// Compute volume by tessellating each face independently and summing
@@ -2165,30 +2441,15 @@ fn volume_from_per_face_tessellation(
     // subtract the void without any extra sign handling here.
     let faces = remus_topology::explorer::solid_faces(topo, solid)?;
 
-    let mut total: f64 = 0.0;
+    let mut meshes = Vec::with_capacity(faces.len());
     for fid in faces {
         let mesh = tessellate::tessellate(topo, fid, deflection)?;
         let idx = &mesh.indices;
-        if std::env::var("BK_VOL_TRACE").is_ok() {
-            log::debug!("VOL_TRACE direct plane face {fid:?} tris={}", idx.len() / 3);
-        }
-        let pos = &mesh.positions;
-        let tri_count = idx.len() / 3;
-
-        for t in 0..tri_count {
-            let v0 = pos[idx[t * 3] as usize];
-            let v1 = pos[idx[t * 3 + 1] as usize];
-            let v2 = pos[idx[t * 3 + 2] as usize];
-
-            let a = Vec3::new(v0.x(), v0.y(), v0.z());
-            let b = Vec3::new(v1.x(), v1.y(), v1.z());
-            let c = Vec3::new(v2.x(), v2.y(), v2.z());
-
-            total += a.dot(b.cross(c));
-        }
+        vol_trace(|| format!("per-face face {} tris={}", fid.index(), idx.len() / 3));
+        meshes.push(mesh);
     }
 
-    let signed_volume = total / 6.0;
+    let signed_volume = meshes_six_volume(&meshes) / 6.0;
     if signed_volume < 0.0 {
         log::debug!(
             "volume_from_per_face_tessellation: raw signed volume is negative ({signed_volume:.6}), \
@@ -3400,9 +3661,7 @@ pub fn volume_from_direct_face_tessellation(
         match face.surface() {
             FaceSurface::Cylinder(_) => {
                 let v = analytic_cylinder_signed_volume(topo, fid)? * 6.0;
-                if std::env::var("BK_VOL_TRACE").is_ok() {
-                    log::debug!("VOL_TRACE direct cyl face {:?} -> {}", fid, v / 6.0);
-                }
+                vol_trace(|| format!("direct cyl face {} -> {}", fid.index(), v / 6.0));
                 total += v;
                 continue;
             }
@@ -3421,28 +3680,52 @@ pub fn volume_from_direct_face_tessellation(
             FaceSurface::Plane { .. } | FaceSurface::Nurbs(_) => {}
         }
 
+        // The analytic terms above are taken about the world origin, so this
+        // face's tetrahedra must be too. Each is split exactly as
+        // `det(a, b, c) = det(a - r, b - r, c - r) + r . ((b - a) x (c - a))`
+        // about a local `r`: both parts are formed from differences, which
+        // keeps the rounding error of order `ε·|r|·L²`, like the analytic
+        // terms', instead of the `ε·|r|³` of the triple product about the
+        // origin (B56).
         let mesh = tessellate::tessellate(topo, fid, deflection)?;
-        let idx = &mesh.indices;
-        let pos = &mesh.positions;
-        let tri_count = idx.len() / 3;
-
-        let mut face_total = 0.0;
-        for t in 0..tri_count {
-            let v0 = pos[idx[t * 3] as usize];
-            let v1 = pos[idx[t * 3 + 1] as usize];
-            let v2 = pos[idx[t * 3 + 2] as usize];
-
-            let a = Vec3::new(v0.x(), v0.y(), v0.z());
-            let b = Vec3::new(v1.x(), v1.y(), v1.z());
-            let c = Vec3::new(v2.x(), v2.y(), v2.z());
-
-            face_total += a.dot(b.cross(c));
+        let Some(reference) = local_reference(mesh.positions.iter().copied()) else {
+            continue;
+        };
+        let r = reference - Point3::new(0.0, 0.0, 0.0);
+        for t in mesh.indices.chunks_exact(3) {
+            let [p0, p1, p2] = [t[0], t[1], t[2]].map(|i| mesh.positions[i as usize]);
+            total += six_tetra_volume(reference, p0, p1, p2) + r.dot((p1 - p0).cross(p2 - p0));
         }
-
-        total += face_total;
     }
 
     Ok((total / 6.0).abs())
+}
+
+/// One planar triangle face of an all-triangle body (a mesh import), as the
+/// face-based volume and centroid routes read it.
+struct SignedTriangle {
+    /// `-1` for a face carried reversed, else `1`.
+    orientation: f64,
+    /// Vertex indices in wire order.
+    ids: [usize; 3],
+    /// Vertex positions in wire order.
+    points: [Point3; 3],
+}
+
+impl SignedTriangle {
+    /// The body's [`summation_point`], its edges read in the direction each
+    /// face's orientation runs them.
+    fn summation_point(triangles: &[Self]) -> Point3 {
+        let cancel = directed_edges_cancel(triangles.iter().map(|t| {
+            let [a, b, c] = t.ids;
+            if t.orientation < 0.0 {
+                [a, c, b]
+            } else {
+                [a, b, c]
+            }
+        }));
+        summation_point(cancel, triangles.iter().flat_map(|t| t.points))
+    }
 }
 
 /// Compute the volume of a solid directly from its face vertex
@@ -3467,7 +3750,9 @@ pub fn solid_volume_from_faces(
     // Outer shell plus every cavity shell.
     let faces = remus_topology::explorer::solid_faces(topo, solid)?;
 
-    let mut total = 0.0;
+    // Signed triangles, gathered first so the tetrahedra can be taken about
+    // the body's own `summation_point` rather than the world origin (B56).
+    let mut triangles: Vec<SignedTriangle> = Vec::with_capacity(faces.len());
     let mut all_planar_triangles = true;
 
     for fid in faces {
@@ -3487,6 +3772,7 @@ pub fn solid_volume_from_faces(
         }
 
         let mut pts = Vec::with_capacity(3);
+        let mut ids = Vec::with_capacity(3);
         for oe in edges {
             let edge = topo.edge(oe.edge())?;
             if !matches!(edge.curve(), EdgeCurve::Line) {
@@ -3499,24 +3785,33 @@ pub fn solid_volume_from_faces(
                 edge.end()
             };
             pts.push(topo.vertex(vid)?.point());
+            ids.push(vid.index());
         }
         if !all_planar_triangles {
             break;
         }
-
-        let a = Vec3::new(pts[0].x(), pts[0].y(), pts[0].z());
-        let b = Vec3::new(pts[1].x(), pts[1].y(), pts[1].z());
-        let c = Vec3::new(pts[2].x(), pts[2].y(), pts[2].z());
 
         // Enumerating the cavity shells is not enough on its own: a cavity's
         // faces are stored REVERSED, and the wire winding alone does not say
         // so. Without this the void's tetrahedra add instead of subtract and a
         // hollow triangulated body reads as the outer body PLUS the void.
         let orientation = if face.is_reversed() { -1.0 } else { 1.0 };
-        total += orientation * a.dot(b.cross(c));
+        triangles.push(SignedTriangle {
+            orientation,
+            ids: [ids[0], ids[1], ids[2]],
+            points: [pts[0], pts[1], pts[2]],
+        });
     }
 
     if all_planar_triangles {
+        let reference = SignedTriangle::summation_point(&triangles);
+        let total: f64 = triangles
+            .iter()
+            .map(|t| {
+                let [a, b, c] = t.points;
+                t.orientation * six_tetra_volume(reference, a, b, c)
+            })
+            .sum();
         Ok((total / 6.0).abs())
     } else {
         Err(crate::OperationsError::InvalidInput {
@@ -3625,31 +3920,27 @@ fn solid_center_of_mass_tessellated_legacy(
     // Outer shell plus every cavity shell.
     let faces = remus_topology::explorer::solid_faces(topo, solid)?;
 
+    let meshes = faces
+        .into_iter()
+        .map(|fid| tessellate::tessellate(topo, fid, deflection))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    // About one local reference for every face, as in `meshes_six_volume`
+    // (B56).
+    let reference = local_reference(
+        meshes
+            .iter()
+            .flat_map(|mesh| mesh.indices.iter().map(|&i| mesh.positions[i as usize])),
+    )
+    .unwrap_or_else(|| Point3::new(0.0, 0.0, 0.0));
     let mut total_vol: f64 = 0.0;
-    let mut cx = 0.0;
-    let mut cy = 0.0;
-    let mut cz = 0.0;
-
-    for fid in faces {
-        let mesh = tessellate::tessellate(topo, fid, deflection)?;
-        let idx = &mesh.indices;
-        let pos = &mesh.positions;
-        let tri_count = idx.len() / 3;
-
-        for t in 0..tri_count {
-            let v0 = pos[idx[t * 3] as usize];
-            let v1 = pos[idx[t * 3 + 1] as usize];
-            let v2 = pos[idx[t * 3 + 2] as usize];
-
-            let a = Vec3::new(v0.x(), v0.y(), v0.z());
-            let b = Vec3::new(v1.x(), v1.y(), v1.z());
-            let c = Vec3::new(v2.x(), v2.y(), v2.z());
-
-            let signed_vol = a.dot(b.cross(c));
+    let mut moment = Vec3::new(0.0, 0.0, 0.0);
+    for mesh in &meshes {
+        for t in mesh.indices.chunks_exact(3) {
+            let [a, b, c] = [t[0], t[1], t[2]].map(|i| mesh.positions[i as usize]);
+            let signed_vol = six_tetra_volume(reference, a, b, c);
             total_vol += signed_vol;
-            cx += signed_vol * (v0.x() + v1.x() + v2.x());
-            cy += signed_vol * (v0.y() + v1.y() + v2.y());
-            cz += signed_vol * (v0.z() + v1.z() + v2.z());
+            moment += ((a - reference) + (b - reference) + (c - reference)) * signed_vol;
         }
     }
 
@@ -3666,8 +3957,7 @@ fn solid_center_of_mass_tessellated_legacy(
         return Ok(Point3::new(sx / n, sy / n, sz / n));
     }
 
-    let denom = 4.0 * total_vol;
-    Ok(Point3::new(cx / denom, cy / denom, cz / denom))
+    Ok(reference + moment * (1.0 / (4.0 * total_vol)))
 }
 
 /// Compute center of mass directly from face vertex positions for
@@ -3685,11 +3975,7 @@ fn center_of_mass_from_faces(
 
     let faces = remus_topology::explorer::solid_faces(topo, solid)?;
 
-    let mut total_vol = 0.0;
-    let mut cx = 0.0;
-    let mut cy = 0.0;
-    let mut cz = 0.0;
-
+    let mut triangles: Vec<SignedTriangle> = Vec::with_capacity(faces.len());
     for fid in faces {
         let face = topo.face(fid)?;
         if !matches!(face.surface(), FaceSurface::Plane { .. }) {
@@ -3706,6 +3992,7 @@ fn center_of_mass_from_faces(
         }
 
         let mut pts = Vec::with_capacity(3);
+        let mut ids = Vec::with_capacity(3);
         for oe in edges {
             let edge = topo.edge(oe.edge())?;
             if !matches!(edge.curve(), EdgeCurve::Line) {
@@ -3719,21 +4006,31 @@ fn center_of_mass_from_faces(
                 edge.end()
             };
             pts.push(topo.vertex(vid)?.point());
+            ids.push(vid.index());
         }
-
-        let a = Vec3::new(pts[0].x(), pts[0].y(), pts[0].z());
-        let b = Vec3::new(pts[1].x(), pts[1].y(), pts[1].z());
-        let c = Vec3::new(pts[2].x(), pts[2].y(), pts[2].z());
 
         // A face carried reversed points its wire the other way round, so its
         // tetrahedra count with the opposite sign. Cavity shells are stored
         // exactly that way.
         let orientation = if face.is_reversed() { -1.0 } else { 1.0 };
-        let signed_vol = orientation * a.dot(b.cross(c));
+        triangles.push(SignedTriangle {
+            orientation,
+            ids: [ids[0], ids[1], ids[2]],
+            points: [pts[0], pts[1], pts[2]],
+        });
+    }
+
+    // Tetrahedra about the body's `summation_point` (B56): each has its apex
+    // at the reference, so its centroid is the reference plus a quarter of
+    // its three local corners' sum.
+    let reference = SignedTriangle::summation_point(&triangles);
+    let mut total_vol = 0.0;
+    let mut moment = Vec3::new(0.0, 0.0, 0.0);
+    for t in &triangles {
+        let [a, b, c] = t.points;
+        let signed_vol = t.orientation * six_tetra_volume(reference, a, b, c);
         total_vol += signed_vol;
-        cx += signed_vol * (pts[0].x() + pts[1].x() + pts[2].x());
-        cy += signed_vol * (pts[0].y() + pts[1].y() + pts[2].y());
-        cz += signed_vol * (pts[0].z() + pts[1].z() + pts[2].z());
+        moment += ((a - reference) + (b - reference) + (c - reference)) * signed_vol;
     }
 
     if total_vol.abs() < 1e-15 {
@@ -3742,8 +4039,152 @@ fn center_of_mass_from_faces(
         });
     }
 
-    let denom = 4.0 * total_vol;
-    Ok(Point3::new(cx / denom, cy / denom, cz / denom))
+    Ok(reference + moment * (1.0 / (4.0 * total_vol)))
+}
+
+/// B56: the mesh sums are taken about a local reference point. The public
+/// routes are covered in `tests/regress_b56_volume_local_reference.rs`; these
+/// reach the private ones.
+#[cfg(test)]
+mod local_reference_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+    use remus_math::mat::Mat4;
+
+    /// The direct route's split of `det(a, b, c)` into
+    /// `det(a - r, b - r, c - r) + r . ((b - a) x (c - a))` is an identity:
+    /// near the origin, where the
+    /// plain triple product is well conditioned, the two agree to round-off
+    /// for any reference.
+    #[test]
+    fn origin_split_matches_the_triple_product() {
+        let tris = [
+            [
+                Point3::new(0.3, -0.2, 0.9),
+                Point3::new(1.1, 0.4, -0.5),
+                Point3::new(-0.7, 0.8, 0.2),
+            ],
+            [
+                Point3::new(-1.0, -1.0, 0.5),
+                Point3::new(0.25, 1.5, 1.0),
+                Point3::new(0.9, -0.6, -1.2),
+            ],
+        ];
+        for r in [
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(0.4, -0.3, 0.1),
+            Point3::new(-2.0, 1.5, 3.0),
+        ] {
+            let rv = r - Point3::new(0.0, 0.0, 0.0);
+            for [a, b, c] in tris {
+                let plain = (a - Point3::new(0.0, 0.0, 0.0))
+                    .dot((b - Point3::new(0.0, 0.0, 0.0)).cross(c - Point3::new(0.0, 0.0, 0.0)));
+                let split = six_tetra_volume(r, a, b, c) + rv.dot((b - a).cross(c - a));
+                assert!(
+                    (plain - split).abs() <= 1e-12 * plain.abs().max(1.0),
+                    "reference {r:?}: split {split} against the triple product {plain}"
+                );
+            }
+        }
+    }
+
+    /// The per-face and whole-solid mesh sums of a 1e-3 sphere moved by the
+    /// B26 harness offset read what they read in place: the move leaves the
+    /// meshes' shapes unchanged. About the world origin both drifted by
+    /// tenths of a percent.
+    #[test]
+    fn small_body_mesh_sums_do_not_move_with_the_body() {
+        let scale = 1e-3;
+        let deflection = 1e-3 * scale;
+        let mut topo = Topology::new();
+        let solid = crate::primitives::make_sphere(&mut topo, 0.7 * scale, 16).unwrap();
+        let per_face_in_place =
+            volume_from_per_face_tessellation(&topo, solid, deflection).unwrap();
+        let mesh_in_place = signed_volume_from_mesh(
+            &tessellate::tessellate_solid(&topo, solid, deflection).unwrap(),
+        );
+
+        crate::transform::transform_solid(&mut topo, solid, &Mat4::translation(13.0, -7.0, 5.0))
+            .unwrap();
+        let per_face_moved = volume_from_per_face_tessellation(&topo, solid, deflection).unwrap();
+        let mesh_moved = signed_volume_from_mesh(
+            &tessellate::tessellate_solid(&topo, solid, deflection).unwrap(),
+        );
+
+        for (route, in_place, moved) in [
+            ("per-face", per_face_in_place, per_face_moved),
+            ("whole-solid", mesh_in_place, mesh_moved),
+        ] {
+            let rel = (moved - in_place).abs() / in_place;
+            assert!(
+                in_place > 0.0 && rel <= 1e-6,
+                "{route} mesh sum: {moved:e} moved, {in_place:e} in place ({rel:e})"
+            );
+        }
+    }
+
+    /// An axis-aligned `size` cube at `corner` as an indexed outward mesh.
+    fn cube_mesh(corner: Point3, size: f64) -> tessellate::TriangleMesh {
+        let positions = (0..8_u8)
+            .map(|i| {
+                let bit = |k: u8| f64::from((i >> k) & 1) * size;
+                corner + Vec3::new(bit(0), bit(1), bit(2))
+            })
+            .collect();
+        tessellate::TriangleMesh {
+            positions,
+            normals: Vec::new(),
+            indices: vec![
+                0, 2, 3, 0, 3, 1, // -z
+                4, 5, 7, 4, 7, 6, // +z
+                0, 1, 5, 0, 5, 4, // -y
+                2, 6, 7, 2, 7, 3, // +y
+                0, 4, 6, 0, 6, 2, // -x
+                1, 3, 7, 1, 7, 5, // +x
+            ],
+        }
+    }
+
+    /// The summation point follows [`directed_edges_cancel`]: a closed,
+    /// consistently wound mesh is summed about its own box centre, and one
+    /// with a hole or a face wound the wrong way keeps the historic origin
+    /// sum. The defective cube sits with the bad face on `z = 0`, where it
+    /// contributes nothing about the origin, which is how the origin sum
+    /// hid it from the slotted-bin fuse and the B17 Off-policy box.
+    #[test]
+    fn edge_cancellation_selects_the_summation_point() {
+        let closed = cube_mesh(Point3::new(0.0, 0.0, 0.0), 2.0);
+        let mut flipped = closed.clone();
+        flipped.indices[..6].copy_from_slice(&[0, 3, 2, 0, 1, 3]);
+        let mut holed = closed.clone();
+        holed.indices.drain(..6);
+
+        let tris = |m: &tessellate::TriangleMesh| {
+            m.indices
+                .chunks_exact(3)
+                .map(|t| [t[0], t[1], t[2]])
+                .collect::<Vec<_>>()
+        };
+        assert!(directed_edges_cancel(tris(&closed)));
+        assert!(!directed_edges_cancel(tris(&flipped)));
+        assert!(!directed_edges_cancel(tris(&holed)));
+
+        // Closed: exact, and unchanged far away at small scale.
+        assert!((signed_volume_from_mesh(&closed) - 8.0).abs() <= 1e-12);
+        let small = cube_mesh(Point3::new(13.0, -7.0, 5.0), 1e-3);
+        assert!((signed_volume_from_mesh(&small) - 1e-9).abs() <= 1e-9 * 1e-9);
+
+        // Defective: the origin sum, which reads 8 for both because the
+        // bad face lies in z = 0. About the box centre they read 16/3 and 20/3.
+        for (what, mesh) in [("flipped", &flipped), ("holed", &holed)] {
+            let volume = signed_volume_from_mesh(mesh);
+            assert!(
+                (volume - 8.0).abs() <= 1e-12,
+                "{what} cube: {volume}, not the origin sum 8"
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -4462,5 +4903,188 @@ mod regression_tests {
             ),
             "an open collar mesh must refuse, got {refusal:?}"
         );
+    }
+
+    /// A mesh opened on purpose, the way a shared-edge crack opens one: its
+    /// first triangle dropped.
+    fn opened(mut mesh: tessellate::TriangleMesh) -> tessellate::TriangleMesh {
+        mesh.indices.drain(0..3);
+        mesh
+    }
+
+    /// A curved body, so its mesh depends on the deflection, and its clamp.
+    fn cylinder_and_clamp() -> (Topology, SolidId, f64) {
+        let mut topo = Topology::new();
+        let solid = crate::primitives::make_cylinder(&mut topo, 2.0, 5.0).unwrap();
+        let clamp = volume_tessellation_deflection(&topo, solid, f64::INFINITY);
+        assert!(clamp.is_finite() && clamp > 0.0);
+        (topo, solid, clamp)
+    }
+
+    /// A whole-solid mesh that is open at a request finer than the clamp but
+    /// closed at the clamp is replaced by the clamp mesh: the reading every
+    /// coarser request gets. The pre-B39 torus–cone fuse was this case: open
+    /// at 2e-4 (read 5.43 through the fall-through), closed at its 5.3e-4
+    /// clamp (18.754 against an 18.775 oracle).
+    #[test]
+    #[allow(clippy::float_cmp)] // the same deflections handed back, bit for bit
+    fn open_fine_mesh_is_retried_at_the_clamp() {
+        let (topo, solid, clamp) = cylinder_and_clamp();
+        let fine = clamp / 4.0;
+        let mut tried = Vec::new();
+        let mesh = whole_solid_mesh_with(&topo, solid, fine, |d| {
+            tried.push(d);
+            let mesh = tessellate::tessellate_solid(&topo, solid, d)?;
+            Ok(if d < clamp { opened(mesh) } else { mesh })
+        })
+        .unwrap();
+        assert_eq!(tried, vec![fine, clamp], "one retry, at the clamp");
+        assert!(mesh_is_closed(&mesh), "the closed clamp mesh is returned");
+        let at_clamp = tessellate::tessellate_solid(&topo, solid, clamp).unwrap();
+        assert_eq!(mesh.indices, at_clamp.indices);
+        // An inscribed mesh reads low by its chord loss, about (4/3)·δ/r of
+        // the volume at sagitta δ on radius r (2.5e-4 here); 1.5× slack.
+        let volume = signed_volume_from_mesh(&mesh);
+        let (radius, exact) = (2.0, std::f64::consts::PI * 2.0 * 2.0 * 5.0);
+        assert!(
+            volume < exact && exact - volume <= 1.5 * (4.0 / 3.0) * (clamp / radius) * exact,
+            "clamp reading {volume} vs closed form {exact}"
+        );
+        // And the closed-mesh route takes it, not the exact fallback.
+        let routed = closed_mesh_or_exact_volume(&topo, solid, &mesh, "test").unwrap();
+        assert_eq!(routed, Some(volume));
+    }
+
+    /// Open at the clamp as well: no coarser mesh is ever tried, and the mesh
+    /// at the request comes back still open, for the caller's open-mesh rule
+    /// (the exact fallback or a typed refusal on the closed-mesh routes). A
+    /// request at the clamp, where every coarser request lands, is not
+    /// retried at all, and neither is a closed mesh.
+    #[test]
+    fn mesh_open_at_the_clamp_comes_back_open() {
+        let (topo, solid, clamp) = cylinder_and_clamp();
+        for (deflection, attempts) in [(clamp / 4.0, 2), (clamp, 1)] {
+            let mut calls = 0;
+            let mesh = whole_solid_mesh_with(&topo, solid, deflection, |d| {
+                calls += 1;
+                assert!(
+                    d >= deflection && d <= clamp,
+                    "never coarser than the clamp: {d:e}"
+                );
+                Ok(opened(tessellate::tessellate_solid(&topo, solid, d)?))
+            })
+            .unwrap();
+            assert_eq!(calls, attempts, "at {deflection:e}");
+            assert!(!mesh_is_closed(&mesh), "at {deflection:e}");
+            let requested = opened(tessellate::tessellate_solid(&topo, solid, deflection).unwrap());
+            assert_eq!(
+                mesh.indices, requested.indices,
+                "at {deflection:e}: the mesh at the request comes back"
+            );
+        }
+        let mut calls = 0;
+        let mesh = whole_solid_mesh_with(&topo, solid, clamp / 4.0, |d| {
+            calls += 1;
+            tessellate::tessellate_solid(&topo, solid, d)
+        })
+        .unwrap();
+        assert_eq!(calls, 1, "a closed mesh is not retried");
+        assert!(mesh_is_closed(&mesh));
+    }
+
+    /// A mesher that opens every mesh finer than `clamp` and, with
+    /// `open_at_clamp`, the clamp mesh too.
+    fn cracking_mesher(
+        topo: &Topology,
+        solid: SolidId,
+        clamp: f64,
+        open_at_clamp: bool,
+    ) -> impl FnMut(f64) -> Result<tessellate::TriangleMesh, crate::OperationsError> + '_ {
+        move |d| {
+            let mesh = tessellate::tessellate_solid(topo, solid, d)?;
+            Ok(if d < clamp || open_at_clamp {
+                opened(mesh)
+            } else {
+                mesh
+            })
+        }
+    }
+
+    /// The open-mesh order on a body the exact integrator measures: the Gauss
+    /// integral answers whether or not the clamp mesh would close, because it
+    /// is the more accurate reading.
+    #[test]
+    fn open_mesh_takes_the_exact_integral_before_the_clamp_retry() {
+        let (topo, solid) = countersunk_arm();
+        let clamp = volume_tessellation_deflection(&topo, solid, f64::INFINITY);
+        let gauss = mass_properties(&topo, solid).unwrap().mass.abs();
+        let exact = countersunk_arm_volume();
+        for open_at_clamp in [false, true] {
+            let volume = required_closed_mesh_volume_with(
+                &topo,
+                solid,
+                clamp / 4.0,
+                "test",
+                cracking_mesher(&topo, solid, clamp, open_at_clamp),
+            )
+            .unwrap()
+            .unwrap();
+            assert!(
+                (volume - gauss).abs() <= 1e-9 * exact,
+                "open_at_clamp={open_at_clamp}: {volume} must be the Gauss integral {gauss}"
+            );
+        }
+    }
+
+    /// The open-mesh order on a body the exact integrator declines (a
+    /// scalloped box ∩ sphere collar): a request finer than the clamp whose
+    /// mesh cracks takes the closed clamp mesh instead of a refusal, and only
+    /// an open clamp mesh, or a request already at the clamp, refuses.
+    #[test]
+    fn unqualified_open_mesh_takes_the_closed_clamp_mesh_before_refusing() {
+        use remus_math::mat::Mat4;
+        let mut topo = Topology::new();
+        let bx = crate::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+        let sp = crate::primitives::make_sphere(&mut topo, 6.0, 24).unwrap();
+        crate::transform::transform_solid(&mut topo, sp, &Mat4::translation(5.0, 5.0, 5.0))
+            .unwrap();
+        let solid =
+            crate::boolean::boolean(&mut topo, crate::boolean::BooleanOp::Intersect, bx, sp)
+                .unwrap();
+        assert!(solid_has_scalloped_sphere_collar(&topo, solid).unwrap());
+        let clamp = volume_tessellation_deflection(&topo, solid, f64::INFINITY);
+        let at_clamp = tessellate::tessellate_solid(&topo, solid, clamp).unwrap();
+        assert!(mesh_is_closed(&at_clamp), "premise: the clamp mesh closes");
+        let clamp_volume = signed_volume_from_mesh(&at_clamp);
+
+        let retried = required_closed_mesh_volume_with(
+            &topo,
+            solid,
+            clamp / 4.0,
+            "scalloped sphere collar",
+            cracking_mesher(&topo, solid, clamp, false),
+        )
+        .unwrap();
+        assert_eq!(retried, Some(clamp_volume), "the closed clamp mesh answers");
+
+        for (deflection, open_at_clamp) in [(clamp / 4.0, true), (clamp, true)] {
+            let refusal = required_closed_mesh_volume_with(
+                &topo,
+                solid,
+                deflection,
+                "scalloped sphere collar",
+                cracking_mesher(&topo, solid, clamp, open_at_clamp),
+            );
+            assert!(
+                matches!(
+                    refusal,
+                    Err(crate::OperationsError::Unsupported {
+                        operation: "solid_volume",
+                        ..
+                    })
+                ),
+                "at {deflection:e}: an open clamp mesh must refuse, got {refusal:?}"
+            );
+        }
     }
 }
