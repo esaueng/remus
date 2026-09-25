@@ -194,6 +194,7 @@ Quick reference — find the right file for any task:
 | Coedge — one directed use of an edge by a face boundary | `coedge.rs` |
 | Loop — ordered cycle of coedges bounding a face | `face_loop.rs` |
 | Transactional mutation (`run_transacted`, `run_validated`) | `transaction.rs` |
+| Opt-in transaction scope, snapshot, and COW counters | `transaction/perf.rs` |
 | Attribute store (names, colors, app ids) | `attributes.rs` |
 | Append-only evolution journal | `journal.rs` |
 | Persistent references and their resolver | `naming.rs` |
@@ -247,6 +248,7 @@ Quick reference — find the right file for any task:
 | Fillet builder (orchestration) | `fillet_builder.rs` |
 | Chamfer builder (orchestration) | `chamfer_builder.rs` |
 | Vertex blend / corner solver | `corner.rs` |
+| Exact two-ridge quarter-cylinder corner and sharp-edge ledge | `quarter_cylinder_corner.rs` |
 | Face trimming along contact curves | `trimmer.rs` |
 | Shared builder utilities | `builder_utils.rs` |
 | G1-continuous fillet edge-chain expansion | `g1_chain.rs` |
@@ -425,6 +427,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Task | File(s) |
 |------|---------|
 | STEP read/write | `step/reader.rs`, `step/writer.rs` |
+| Native STEP assembly subset | `step/reader/assembly.rs`, `step/writer/assembly.rs` |
 | IGES read/write | `iges/reader.rs`, `iges/writer.rs` |
 | STL read/write/import | `stl/reader.rs`, `stl/writer.rs`, `stl/import.rs` |
 | 3MF read/write | `threemf/reader.rs`, `threemf/writer.rs` |
