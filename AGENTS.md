@@ -419,6 +419,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Cylindrical blend removal with certified affine NURBS caps | `affine_blend_caps.rs` |
 | Atomic removal of explicitly selected connected blend groups | `remove_blends.rs` |
 | Full-turn rim chain recognition | `tessellate/rim_chain.rs` |
+| Sphere patches holding a pole (loop winds once around the axis) | `tessellate/sphere_pole_patch.rs` |
 | Shared test assertion helpers | `test_helpers.rs` |
 
 ### L3: io (`crates/io/src/`)
