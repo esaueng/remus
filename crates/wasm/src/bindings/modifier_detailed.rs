@@ -1,7 +1,10 @@
 //! O4.7 typed direct-method results for the modifier family.
 //!
 //! `filletDetailed`, `chamferDetailed`, `shellDetailed` and `offsetDetailed`
-//! are additive twins of `fillet`, `chamfer`, `shell` and `offsetSolid`. Each
+//! are additive twins of `fillet`, `chamfer`, `shell` and `offsetSolid`; the
+//! blend variants `filletV2Detailed`, `chamferV2Detailed`,
+//! `chamferDistanceAngleDetailed` and `filletVariableDetailed` twin
+//! `filletV2`, `chamferV2`, `chamferDistanceAngle` and `filletVariable`. Each
 //! runs the same engine path as its legacy method and returns the typed
 //! [`SolidOperationDetailedResult`] the boolean twins return, never throwing
 //! on a refusal:
@@ -12,8 +15,8 @@
 //! - **refused**: `status: "error"` with the kernel diagnostic `code` and
 //!   `category`, and the topology rolled back to its pre-call state.
 //!
-//! An exact-only request never publishes an approximate result. For fillet,
-//! chamfer and offset, `exactOnly: true` refuses with category
+//! An exact-only request never publishes an approximate result. For offset
+//! and every blend twin, `exactOnly: true` refuses with category
 //! `quality_refused` and code `exact_only_unattainable`. Shell, like its
 //! legacy method, is exact-only unless `approximationSpacing` is given; it
 //! keeps that method's refusal of a kept NURBS face, which today projects as
@@ -39,7 +42,12 @@ use remus_topology::explorer::solid_faces;
 use remus_topology::face::{FaceId, FaceSurface};
 use remus_topology::solid::SolidId;
 
-use crate::error::{StructuredWasmError, validate_finite, validate_positive};
+use remus_operations::OperationsError;
+use remus_operations::blend_ops::BlendResult;
+use remus_topology::edge::EdgeId;
+
+use super::operations::parse_variable_fillet_specs;
+use crate::error::{StructuredWasmError, WasmError, validate_finite, validate_positive};
 use crate::handles::{face_id_to_u32, solid_id_to_u32};
 use crate::helpers::panic_message;
 use crate::kernel::BrepKernel;
@@ -146,6 +154,106 @@ impl BrepKernel {
     }
 }
 
+#[wasm_bindgen]
+impl BrepKernel {
+    /// Fillet edges on the v2 walking engine alone and return exact,
+    /// disclosed-approximate, or refused results as typed data.
+    ///
+    /// Additive twin of [`filletV2`](Self::fillet_v2), unchanged. Quality,
+    /// `details.engine` and `exactOnly` follow
+    /// [`filletDetailed`](Self::fillet_detailed).
+    #[wasm_bindgen(js_name = "filletV2Detailed")]
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn fillet_v2_detailed(
+        &mut self,
+        solid: u32,
+        edge_handles: Vec<u32>,
+        radius: f64,
+        exact_only: Option<bool>,
+    ) -> Result<tsify::Ts<SolidOperationDetailedResult>, JsError> {
+        Ok(self
+            .fillet_v2_detailed_impl(solid, &edge_handles, radius, exact_only.unwrap_or(false))
+            .into_ts()?)
+    }
+
+    /// Two-distance chamfer on the v2 blend engine, as typed data.
+    ///
+    /// Additive twin of [`chamferV2`](Self::chamfer_v2), unchanged. Quality,
+    /// `details.engine` and `exactOnly` follow
+    /// [`filletDetailed`](Self::fillet_detailed).
+    #[wasm_bindgen(js_name = "chamferV2Detailed")]
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn chamfer_v2_detailed(
+        &mut self,
+        solid: u32,
+        edge_handles: Vec<u32>,
+        d1: f64,
+        d2: f64,
+        exact_only: Option<bool>,
+    ) -> Result<tsify::Ts<SolidOperationDetailedResult>, JsError> {
+        Ok(self
+            .chamfer_v2_detailed_impl(solid, &edge_handles, d1, d2, exact_only.unwrap_or(false))
+            .into_ts()?)
+    }
+
+    /// Distance-angle chamfer on the v2 blend engine, as typed data.
+    ///
+    /// Additive twin of [`chamferDistanceAngle`](Self::chamfer_distance_angle),
+    /// unchanged; `angle` is in radians, inside `(0, π/2)`. Quality,
+    /// `details.engine` and `exactOnly` follow
+    /// [`filletDetailed`](Self::fillet_detailed).
+    #[wasm_bindgen(js_name = "chamferDistanceAngleDetailed")]
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn chamfer_distance_angle_detailed(
+        &mut self,
+        solid: u32,
+        edge_handles: Vec<u32>,
+        distance: f64,
+        angle: f64,
+        exact_only: Option<bool>,
+    ) -> Result<tsify::Ts<SolidOperationDetailedResult>, JsError> {
+        Ok(self
+            .chamfer_distance_angle_detailed_impl(
+                solid,
+                &edge_handles,
+                distance,
+                angle,
+                exact_only.unwrap_or(false),
+            )
+            .into_ts()?)
+    }
+
+    /// Variable-radius fillet, as typed data.
+    ///
+    /// Additive twin of [`filletVariable`](Self::fillet_variable), unchanged:
+    /// `json` is the same spec array. That engine carries no engine tag, so
+    /// success details hold `quality` (and `approximateFaces`) but no
+    /// `engine`; `exactOnly` follows
+    /// [`filletDetailed`](Self::fillet_detailed). Malformed JSON is an
+    /// `invalid_argument` refusal, not a thrown error.
+    #[wasm_bindgen(js_name = "filletVariableDetailed")]
+    pub fn fillet_variable_detailed(
+        &mut self,
+        solid: u32,
+        json: &str,
+        exact_only: Option<bool>,
+    ) -> Result<tsify::Ts<SolidOperationDetailedResult>, JsError> {
+        let specs =
+            serde_json::from_str::<Vec<Value>>(json).map_err(|error| WasmError::InvalidInput {
+                reason: format!("invalid JSON: {error}"),
+            });
+        let result = match specs {
+            Ok(specs) => {
+                self.fillet_variable_detailed_impl(solid, &specs, exact_only.unwrap_or(false))
+            }
+            Err(error) => SolidOperationDetailedResult::error(
+                StructuredWasmError::from(error).with_direct_operation("filletVariable"),
+            ),
+        };
+        Ok(result.into_ts()?)
+    }
+}
+
 /// Natively-testable bodies shared by the direct twins and the batch ops.
 impl BrepKernel {
     pub(crate) fn fillet_detailed_impl(
@@ -175,7 +283,7 @@ impl BrepKernel {
                 "fillet",
                 &input_faces,
                 result.solid,
-                result.engine,
+                Some(result.engine),
                 exact_only,
             )
         })
@@ -208,7 +316,7 @@ impl BrepKernel {
                 "chamfer",
                 &input_faces,
                 result,
-                engine,
+                Some(engine),
                 exact_only,
             )
         })
@@ -302,6 +410,136 @@ impl BrepKernel {
         })
     }
 
+    pub(crate) fn fillet_v2_detailed_impl(
+        &mut self,
+        solid: u32,
+        edge_handles: &[u32],
+        radius: f64,
+        exact_only: bool,
+    ) -> SolidOperationDetailedResult {
+        self.walking_blend_detailed(
+            "filletV2",
+            || validate_positive(radius, "radius"),
+            solid,
+            edge_handles,
+            exact_only,
+            |topo, solid, edges| remus_operations::blend_ops::fillet_v2(topo, solid, edges, radius),
+        )
+    }
+
+    pub(crate) fn chamfer_v2_detailed_impl(
+        &mut self,
+        solid: u32,
+        edge_handles: &[u32],
+        d1: f64,
+        d2: f64,
+        exact_only: bool,
+    ) -> SolidOperationDetailedResult {
+        self.walking_blend_detailed(
+            "chamferV2",
+            || {
+                validate_positive(d1, "d1")?;
+                validate_positive(d2, "d2")
+            },
+            solid,
+            edge_handles,
+            exact_only,
+            |topo, solid, edges| {
+                remus_operations::blend_ops::chamfer_v2(topo, solid, edges, d1, d2)
+            },
+        )
+    }
+
+    pub(crate) fn chamfer_distance_angle_detailed_impl(
+        &mut self,
+        solid: u32,
+        edge_handles: &[u32],
+        distance: f64,
+        angle: f64,
+        exact_only: bool,
+    ) -> SolidOperationDetailedResult {
+        self.walking_blend_detailed(
+            "chamferDistanceAngle",
+            || {
+                validate_positive(distance, "distance")?;
+                validate_positive(angle, "angle")?;
+                if angle >= std::f64::consts::FRAC_PI_2 {
+                    return Err(WasmError::InvalidInput {
+                        reason: "angle must be less than π/2".into(),
+                    });
+                }
+                Ok(())
+            },
+            solid,
+            edge_handles,
+            exact_only,
+            |topo, solid, edges| {
+                remus_operations::blend_ops::chamfer_distance_angle(
+                    topo, solid, edges, distance, angle,
+                )
+            },
+        )
+    }
+
+    pub(crate) fn fillet_variable_detailed_impl(
+        &mut self,
+        solid: u32,
+        specs: &[Value],
+        exact_only: bool,
+    ) -> SolidOperationDetailedResult {
+        self.run_modifier_detailed("filletVariable", "Variable fillet", |kernel| {
+            let solid_id = kernel.resolve_solid(solid)?;
+            let edge_specs = parse_variable_fillet_specs(kernel, specs)?;
+            let input_faces = face_set(kernel.topo(), solid_id)?;
+            let result = remus_operations::fillet::fillet_variable_with_setbacks(
+                kernel.topo_mut(),
+                solid_id,
+                &edge_specs,
+            )
+            .map_err(StructuredWasmError::blend_failure)?;
+            blend_outcome(
+                kernel.topo(),
+                "variable fillet",
+                &input_faces,
+                result,
+                None,
+                exact_only,
+            )
+        })
+    }
+
+    /// Shared body of the single-engine walking-blend twins: argument checks,
+    /// handle resolution, the engine call, then quality classification.
+    fn walking_blend_detailed(
+        &mut self,
+        operation: &'static str,
+        validate: impl FnOnce() -> Result<(), WasmError>,
+        solid: u32,
+        edge_handles: &[u32],
+        exact_only: bool,
+        engine: impl FnOnce(&mut Topology, SolidId, &[EdgeId]) -> Result<BlendResult, OperationsError>,
+    ) -> SolidOperationDetailedResult {
+        self.run_modifier_detailed(operation, operation, |kernel| {
+            validate()?;
+            let solid_id = kernel.resolve_solid(solid)?;
+            let edge_ids = edge_handles
+                .iter()
+                .map(|&handle| kernel.resolve_edge(handle))
+                .collect::<Result<Vec<_>, _>>()?;
+            let input_faces = face_set(kernel.topo(), solid_id)?;
+            let result = engine(kernel.topo_mut(), solid_id, &edge_ids)
+                .map_err(StructuredWasmError::blend_failure)?;
+            blend_outcome(
+                kernel.topo(),
+                operation,
+                &input_faces,
+                result.solid,
+                Some(result.engine),
+                exact_only,
+            )
+        })
+    }
+
     /// Shared envelope discipline for the modifier twins.
     ///
     /// Refuses on a poisoned kernel, snapshots topology, and restores it on
@@ -379,7 +617,7 @@ fn blend_outcome(
     operation: &str,
     input_faces: &HashSet<FaceId>,
     result: SolidId,
-    engine: BlendEngine,
+    engine: Option<BlendEngine>,
     exact_only: bool,
 ) -> Result<(u32, Map<String, Value>), StructuredWasmError> {
     let mut approximate = Vec::new();
@@ -391,16 +629,21 @@ fn blend_outcome(
         }
     }
     if exact_only && !approximate.is_empty() {
-        return Err(StructuredWasmError::exact_only_unattainable(format!(
+        let mut refusal = StructuredWasmError::exact_only_unattainable(format!(
             "exact-only policy: the {operation} produced {} NURBS face(s) with no exact \
              form; the approximate result was declined",
             approximate.len()
         ))
-        .with_detail("engine", engine_name(engine))
-        .with_detail("approximateFaceCount", approximate.len()));
+        .with_detail("approximateFaceCount", approximate.len());
+        if let Some(engine) = engine {
+            refusal = refusal.with_detail("engine", engine_name(engine));
+        }
+        return Err(refusal);
     }
     let mut details = Map::new();
-    details.insert("engine".into(), Value::from(engine_name(engine)));
+    if let Some(engine) = engine {
+        details.insert("engine".into(), Value::from(engine_name(engine)));
+    }
     if approximate.is_empty() {
         details.insert("quality".into(), Value::from(QUALITY_EXACT));
     } else {

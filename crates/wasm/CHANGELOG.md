@@ -32,6 +32,13 @@
 
 ### Features
 
+* Add `filletV2Detailed`, `chamferV2Detailed`,
+  `chamferDistanceAngleDetailed`, and `filletVariableDetailed` (direct and
+  batch), typed O4.7 twins of the blend variants with the same envelope,
+  `exactOnly` flag, and rollback as `filletDetailed`. `filletVariableDetailed`
+  takes the same spec JSON (batch: `specs` array), reports malformed JSON as
+  an `invalid_argument` result, and carries no `engine` detail. A
+  constant-law variable fillet discloses its NURBS wall as `approximate`.
 * `massProperties` (direct and `executeBatch`) accepts optional
   `adaptiveEps`, `maxDepth` (`0..=32`) and `gaussOrder` (`1..=20`) numerical
   controls, effective on every face family including trimmed, NURBS and

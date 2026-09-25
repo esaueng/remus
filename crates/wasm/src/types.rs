@@ -30,8 +30,9 @@ pub enum SolidOperationDetailedResult {
         category: Option<String>,
         /// Structured success context. Empty for the exact-only boolean
         /// family; the modifier family (`filletDetailed`, `chamferDetailed`,
-        /// `shellDetailed`, `offsetDetailed`) discloses the result's
-        /// `quality` (`"exact"` or `"approximate"`) and what was approximated.
+        /// `shellDetailed`, `offsetDetailed`, and the blend-variant twins)
+        /// discloses the result's `quality` (`"exact"` or `"approximate"`)
+        /// and what was approximated.
         #[tsify(type = "Record<string, unknown>")]
         details: Map<String, Value>,
         /// Handle of the committed solid.
