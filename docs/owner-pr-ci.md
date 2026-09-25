@@ -166,11 +166,15 @@ kernel PR waits only for the checks that can fail on its diff:
   push, merge group and dispatch, and for a PR only while it carries the
   `ci:full` label (label it, then re-run or push).
 - **Package build** (`wasm`): WASM Build & Validate and the advisory size
-  report. Selected with tier 2, and on any PR whose diff touches
-  `crates/wasm*`, `xtask`, `tools/vs-bench`, the WASM scripts, `Cargo.lock`,
-  `Cargo.toml`, or `rust-toolchain.toml`. A kernel-only PR does not rebuild
-  the distributable packages; the main push and the publisher's refresh PR
-  cover that.
+  report. Selected with tier 2, and on any PR whose diff touches any crate
+  under `crates/`, `xtask`, `tools/vs-bench`, the WASM scripts,
+  `Cargo.lock`, `Cargo.toml`, `rust-toolchain.toml`, or `.cargo/config.toml`.
+  Every crate sits below the wasm bindings, so an engine change must pass the
+  package smoke before merge. Until 2026-09-24 only `crates/wasm*` selected
+  it: PR #618 (algo, math and operations only) passed PR CI with the job
+  skipped and then failed `scripts/test-wasm-smoke.mjs` on main. The job runs
+  beside Test (median 13.6 vs 20.6 minutes), so it adds runner time, not PR
+  latency. Docs-only and CI-metadata-only PRs still skip it.
 - **Package refresh**: a diff confined to `crates/wasm/pkg` and
   `crates/wasm-io/pkg` runs the full suite. Paths alone do not prove that the
   committed bytes came from a trusted build; no package-only validation bypass
