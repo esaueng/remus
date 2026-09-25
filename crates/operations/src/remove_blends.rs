@@ -414,3 +414,79 @@ fn validate_boundary_history(
     }
     Ok(history)
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
+
+    use remus_topology::explorer::solid_edges;
+
+    use super::*;
+    use crate::test_helpers::{blended_box, cylinder_faces, split_band};
+
+    /// Run group recognition with a watchdog: a carrier walk that re-queues
+    /// faces it already found never terminates, which must fail the test
+    /// rather than stall the suite.
+    fn recognize_with_watchdog(
+        topo: Topology,
+        solid: SolidId,
+        seeds: Vec<FaceId>,
+    ) -> Result<Vec<FaceId>, OperationsError> {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = recognize_group(&topo, solid, &seeds).map(|group| group.faces);
+            let _ = sender.send(result);
+        });
+        receiver
+            .recv_timeout(std::time::Duration::from_secs(60))
+            .expect("blend group recognition must terminate")
+    }
+
+    #[test]
+    fn any_seed_on_a_split_band_recognizes_the_whole_carrier_band() {
+        let (mut topo, blended) = blended_box(&[0]);
+        let (split, halves) = split_band(&mut topo, blended);
+        let mut expected = halves.to_vec();
+        expected.sort_unstable_by_key(|face| face.index());
+        for seeds in [
+            vec![halves[0]],
+            vec![halves[1]],
+            vec![halves[1], halves[0], halves[1]],
+        ] {
+            let group = recognize_with_watchdog(topo.clone(), split, seeds.clone())
+                .unwrap_or_else(|error| panic!("seeds {seeds:?}: {error}"));
+            assert_eq!(
+                group, expected,
+                "seeds {seeds:?} name the one split carrier band"
+            );
+        }
+    }
+
+    #[test]
+    fn disconnected_seeds_name_the_number_of_groups() {
+        // Two blends on edges that share no face: two separate groups.
+        let mut topo = Topology::new();
+        let sharp = crate::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+        let edges = solid_edges(&topo, sharp).unwrap();
+        let faces_of = |edge: EdgeId| -> BTreeSet<FaceId> {
+            let adjacency = topo.build_adjacency(sharp).unwrap();
+            adjacency.faces_for_edge(edge).iter().copied().collect()
+        };
+        let first = edges[0];
+        let second = edges
+            .iter()
+            .copied()
+            .find(|edge| faces_of(*edge).is_disjoint(&faces_of(first)))
+            .expect("an edge sharing no face with the first");
+        let solid = crate::blend_ops::fillet_v2(&mut topo, sharp, &[first, second], 1.0)
+            .unwrap()
+            .solid;
+        let bands = cylinder_faces(&topo, solid);
+        assert_eq!(bands.len(), 2);
+        let error = remove_blends(&mut topo, solid, &bands).unwrap_err();
+        assert!(
+            error.to_string().contains("identify 2 disconnected groups"),
+            "two separated bands are two groups: {error}"
+        );
+    }
+}

@@ -151,7 +151,10 @@ and obtuse-ridge chamfer pins are no longer ignored after #398. Re-run
 landscape diagnostics with `--ignored --nocapture` before re-opening a case.
 Added since that snapshot: the B55 curved-offset scale witness
 (`crates/offset/tests/regress_curved_offset_scale.rs`, fails on `main`), the
-B66 SSI branch-point witness (`math/src/nurbs/intersection/tests.rs`), and the
+B64/B65 lidded box–sphere witnesses
+(`crates/operations/tests/regress_sphere_lidded_box_collar.rs`, plus the B65
+collar-sample repro in `crates/algo/src/builder/face_splitter/closed_form_split_tests.rs`),
+the B66 SSI branch-point witness (`math/src/nurbs/intersection/tests.rs`), and the
 two B67 plane–cone rim fillet witnesses (`blend/src/fillet_builder.rs`
 `closed_rim_oracles`), and the B68, B69 and B70 tessellation witnesses
 (`operations/src/tessellate/tests/mutation_oracles.rs`), all failing on `main`.
