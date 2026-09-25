@@ -82,6 +82,14 @@
   an empty mesh, and accepts an optional `angularTolerance` matching
   `tessellateSolid` and `tessellateSolidGrouped`. Batch calls accept the same
   additive `angularTolerance` argument.
+* `filletVariable` and batch `filletVariable` refuse a radius that reaches
+  past a planar support face with the walking engine's support-cliff error
+  (`operation_failed`, `details.kernelCode = "cliff-encountered"`, message
+  naming the requested and available radius) and roll back (B63). On a
+  10 mm box, radius 11 and 20 used to return valid-looking but wrong solids
+  (474.0 and 427.7 mm³, against closed forms of 740.3 and 141.6), while
+  radius 50 was refused later as `invalid_argument` / `invalid-input`. All
+  three now get the cliff code.
 
 ## [0.4.0](https://github.com/andymai/brepkit/compare/v0.3.1...v0.4.0) (2026-03-04)
 
