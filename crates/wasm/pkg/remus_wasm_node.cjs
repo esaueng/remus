@@ -519,6 +519,29 @@ class BrepKernel {
         return v2;
     }
     /**
+     * Chamfer edges and return exact, disclosed-approximate, or refused
+     * results as typed data.
+     *
+     * Additive twin of [`chamfer`](Self::chamfer_solid): the planar bevel
+     * first, then the walking builder, with the legacy method unchanged.
+     * `details.engine` is `planarBevel`, `walking`, or `mixed`; quality and
+     * `exactOnly` follow [`filletDetailed`](Self::fillet_detailed).
+     * @param {number} solid
+     * @param {Uint32Array} edge_handles
+     * @param {number} distance
+     * @param {boolean | null} [exact_only]
+     * @returns {SolidOperationDetailedResult}
+     */
+    chamferDetailed(solid, edge_handles, distance, exact_only) {
+        const ptr0 = passArray32ToWasm0(edge_handles, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.brepkernel_chamferDetailed(this.__wbg_ptr, solid, ptr0, len0, distance, isLikeNone(exact_only) ? 0xFFFFFF : exact_only ? 1 : 0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
      * Chamfer edges with distance and angle using the v2 blend engine.
      *
      * Returns a new solid handle.
@@ -1887,6 +1910,33 @@ class BrepKernel {
         var v2 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
         wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
         return v2;
+    }
+    /**
+     * Fillet edges and return exact, disclosed-approximate, or refused
+     * results as typed data.
+     *
+     * Additive twin of [`fillet`](Self::fillet_solid): the same engine
+     * cascade and whole-selection rule, with the legacy method's return
+     * value and thrown errors unchanged. On success `details.engine` names
+     * the blend engine (`walking`, `rollingBall`, or `mixed`). A result
+     * that introduces a NURBS face — a sampled blend wall with no closed
+     * form — reports `quality: "approximate"` and lists those faces under
+     * `approximateFaces`. With `exactOnly: true` such a result is rolled
+     * back and refused (`quality_refused` / `exact_only_unattainable`).
+     * @param {number} solid
+     * @param {Uint32Array} edge_handles
+     * @param {number} radius
+     * @param {boolean | null} [exact_only]
+     * @returns {SolidOperationDetailedResult}
+     */
+    filletDetailed(solid, edge_handles, radius, exact_only) {
+        const ptr0 = passArray32ToWasm0(edge_handles, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.brepkernel_filletDetailed(this.__wbg_ptr, solid, ptr0, len0, radius, isLikeNone(exact_only) ? 0xFFFFFF : exact_only ? 1 : 0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
     }
     /**
      * V2 fillet journaled as one evolution entry (kind `fillet`).
@@ -4859,6 +4909,30 @@ class BrepKernel {
         return this;
     }
     /**
+     * Offset every face of a solid and return exact, disclosed-approximate,
+     * or refused results as typed data.
+     *
+     * Additive twin of [`offsetSolid`](Self::offset_solid), on the same
+     * engine. Analytic faces offset exactly. A NURBS input face would be
+     * offset by a sampled refit, so a result reports `quality:
+     * "approximate"` and lists those input faces under `sampledFaces`; with
+     * `exactOnly: true` the call refuses before touching topology
+     * (`quality_refused` / `exact_only_unattainable`). The offset
+     * intersector does not yet join a NURBS face to any neighbour, so a
+     * permissive NURBS offset currently ends in that engine's own refusal.
+     * @param {number} solid
+     * @param {number} distance
+     * @param {boolean | null} [exact_only]
+     * @returns {SolidOperationDetailedResult}
+     */
+    offsetDetailed(solid, distance, exact_only) {
+        const ret = wasm.brepkernel_offsetDetailed(this.__wbg_ptr, solid, distance, isLikeNone(exact_only) ? 0xFFFFFF : exact_only ? 1 : 0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
      * Offset a face by a distance along its surface normal.
      *
      * Returns the new offset face handle.
@@ -4909,8 +4983,15 @@ class BrepKernel {
         return takeFromExternrefTable0(ret[0]);
     }
     /**
-     * V2 offset journaled as one construction-derived face-evolution entry
-     * (kind `offset`). Returns JSON `{"solid", "op"}`.
+     * V2 offset journaled as one construction-derived face, edge and vertex
+     * evolution entry (kind `offset`).
+     *
+     * Returns JSON `{"solid", "op", "evolution"}`. `evolution` lists every
+     * result face, edge and vertex as `modified`, `merged`, `generated` or
+     * `unresolved` (with `candidates` and a typed `reason`, such as
+     * `ambiguous_incidence` for a torus seam), plus a `completeness` report
+     * (`accounted`, `resolved`, and per-kind `omitted`/`phantom`/`unresolved`
+     * lists) checked against the actual result.
      * @param {number} solid
      * @param {number} distance
      * @returns {string}
@@ -6180,6 +6261,32 @@ class BrepKernel {
         return ret[0] >>> 0;
     }
     /**
+     * Hollow a solid and return exact, disclosed-approximate, or refused
+     * results as typed data.
+     *
+     * Additive twin of [`shell`](Self::shell_solid). Like the legacy method
+     * it is exact-only by default: a kept NURBS face is refused with the
+     * legacy refusal (`operation_failed` / `internal`, message naming the
+     * NURBS face) and the topology rolled back. A positive finite
+     * `approximation_spacing` opts into the sampled NURBS inner skin, which
+     * is then disclosed as `quality: "approximate"` with the model-unit
+     * `deflection` and the `sampledFaces` handles of the input solid.
+     * @param {number} solid
+     * @param {number} thickness
+     * @param {Uint32Array} open_faces
+     * @param {number | null} [approximation_spacing]
+     * @returns {SolidOperationDetailedResult}
+     */
+    shellDetailed(solid, thickness, open_faces, approximation_spacing) {
+        const ptr0 = passArray32ToWasm0(open_faces, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.brepkernel_shellDetailed(this.__wbg_ptr, solid, thickness, ptr0, len0, !isLikeNone(approximation_spacing), isLikeNone(approximation_spacing) ? 0 : approximation_spacing);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
      * Hollow a solid with disclosed inner-skin quality.
      *
      * The plain [`shell`](Self::shell_solid) binding is exact-only: a solid
@@ -7071,11 +7178,18 @@ class BrepKernel {
      *
      * Exact analytic and Gauss-quadrature paths run first, so the result
      * is deflection-independent on those paths; `deflection` only controls
-     * the tessellation fallback.
+     * the tessellation fallback. A body with a face the per-face routes
+     * mis-measure (a quadric wall trimmed by a NURBS curve, such as a
+     * countersink cut through a wall) is measured on its closed whole-solid
+     * mesh; if that mesh comes out open, the exact Gauss integral is
+     * returned instead, never the per-face estimate.
      *
      * # Errors
      *
-     * Returns an error if the solid handle is invalid or tessellation fails.
+     * Returns an error if the solid handle is invalid or tessellation fails,
+     * and refuses (`solid_volume: unsupported configuration: …`) when such a
+     * body's mesh is open and one of its faces is outside the exact
+     * integrator as well.
      * @param {number} solid
      * @param {number} deflection
      * @returns {number}

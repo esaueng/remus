@@ -43,8 +43,7 @@ Details and the full path list: [reference.md](reference.md), section "Volume pa
 
 - Rust ground truth: `remus_check::classify::classify_point` (analytic ray casting, majority vote over fixed ray directions, perturbed recovery rays). Returns `Inside | Outside | OnBoundary`.
 - The winding-number variants `classify_point_winding` and `classify_point_robust` return confidently WRONG answers (Outside for interior points) on faceted, stepped, boolean-result, and NURBS-heavy solids, and `robust` never falls back because the winding value is not near 0.5. This has caused multiple wrong diagnoses. Rule: winding only for clean analytic primitives, ray-cast for everything you are actually verifying.
-- Caveat: all check-crate classifiers walk `outer_shell()` faces only. A probe inside a cavity bounded by an inner shell is not tested against the cavity faces.
-- Known gap (2026-09-24): `classify_point` misreads trimmed torus faces (bands, composite holes): ~14 % of grid points on the B45 band fixture, 0.3–5 % on the B39 cells. For those, use ray parity against the watertight mesh with analytic membership (`crates/operations/tests/regress_b39_toruscone_composite_pierce.rs::mesh_contains`).
+- Caveat: curved trims are tested as sampled loops (32 points per curved edge), so keep probes clear of them by more than that chord error. A trim loop that wraps a period (a torus band between two pierce loops) is decided by wire orientation, face on the left in the surface's own (u, v), and only on tori: a seamless two-ring cylinder or cone band still reads as empty. Inner shells are covered.
 - JS side: the `classifyPoint` binding routes to the operations-crate tessellation-based ray caster with a fixed deflection of 0.1. Fine for spot checks; in Rust prefer the check-crate analytic version.
 
 ## Watertightness: two distinct questions
