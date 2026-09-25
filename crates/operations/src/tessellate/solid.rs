@@ -1113,6 +1113,16 @@ fn tessellate_faces_core(
         .map(|job| run_planar_cdt(&job.pts2d, job.outer_count, &job.inner_wire_ranges))
         .collect();
 
+    // Where the planar CDT jobs' triangles start, so a job whose boundary
+    // segment another job Steiner-split can be repaired after all of them
+    // have emitted (see `split_triangles_spanning_boundary_splits`).
+    let cdt_index_start = merged.indices.len();
+    let cdt_face_start = tri_faces.as_ref().map_or(0, Vec::len);
+    // Steiner points each job's constraint recovery put ON a boundary
+    // segment, keyed by the segment's undirected global pair `(lo, hi)`,
+    // with the parameter measured from `lo` towards `hi`.
+    let mut boundary_splits: DetHashMap<(u32, u32), Vec<(f64, u32)>> = DetHashMap::default();
+
     for (job, result) in cdt_jobs.iter().zip(cdt_results) {
         let (tris, steiner) = result?;
 
@@ -1176,6 +1186,17 @@ fn tessellate_faces_core(
                 let (Some(gi), Some(gj)) = (job.all_global_ids[i], job.all_global_ids[j]) else {
                     continue;
                 };
+                if gi != gj {
+                    let (key, flip) = if gi < gj {
+                        ((gi, gj), false)
+                    } else {
+                        ((gj, gi), true)
+                    };
+                    boundary_splits.entry(key).or_default().extend(
+                        run.iter()
+                            .map(|&(t, gid)| (if flip { 1.0 - t } else { t }, gid)),
+                    );
+                }
                 'chains: for chain in edge_global_indices.values_mut() {
                     for p in 0..chain.len().saturating_sub(1) {
                         if chain[p] == gi && chain[p + 1] == gj {
@@ -1239,6 +1260,22 @@ fn tessellate_faces_core(
                 merged.indices.push(g2);
             }
         }
+    }
+
+    // The chain splice above reaches only the faces tessellated AFTER the
+    // CDT jobs. Every job was triangulated up front, so a neighbour that is
+    // itself a holed plane still spans the split segment in one triangle:
+    // a T-junction crack along the shared edge (a countersunk bracket's
+    // floor cap Steiner-split its edge with the arm face that carries an
+    // emboss hole, leaving three open mesh edges). Split those triangles at
+    // the recorded Steiner points so both sides share every vertex.
+    if !boundary_splits.is_empty() {
+        split_triangles_spanning_boundary_splits(
+            &mut merged.indices,
+            cdt_index_start,
+            tri_faces.as_mut().map(|tf| (tf, cdt_face_start)),
+            boundary_splits,
+        );
     }
 
     for &fi in &other_face_indices {
@@ -1362,6 +1399,122 @@ fn tessellate_faces_core(
     }
 
     Ok((merged, tri_faces, all_faces.len()))
+}
+
+/// Split every triangle in `indices[start..]` whose edge spans a boundary
+/// segment that a planar CDT job's constraint recovery Steiner-split.
+///
+/// `splits` maps a segment's undirected global pair `(lo, hi)` to the Steiner
+/// vertices recovery placed on it, each with its parameter from `lo` towards
+/// `hi`. Several jobs may split the same segment (at the same or different
+/// points), so the points are merged into one ordered chain per segment, and
+/// ANY triangle edge joining two chain members that are not adjacent in it —
+/// the unsplit segment itself, or one half of a differently split one — is
+/// replaced by a fan from the opposite vertex through the members between
+/// them. The fan keeps the triangle's winding (each piece reuses the edge's
+/// direction) and adds no vertex that is not already shared, and a point
+/// strictly inside a segment is never collinear with the opposite vertex of
+/// a non-degenerate triangle, so every piece has positive area.
+///
+/// `tri_faces`, when tracked, is the parallel per-triangle face list and the
+/// offset of the same range in it; each piece inherits its triangle's face.
+pub(super) fn split_triangles_spanning_boundary_splits(
+    indices: &mut Vec<u32>,
+    start: usize,
+    tri_faces: Option<(&mut Vec<u32>, usize)>,
+    splits: DetHashMap<(u32, u32), Vec<(f64, u32)>>,
+) {
+    // One ordered vertex chain per split segment, and each member's place in
+    // the chains it belongs to.
+    let mut chains: Vec<Vec<u32>> = Vec::with_capacity(splits.len());
+    let mut member: DetHashMap<u32, Vec<(usize, usize)>> = DetHashMap::default();
+    let mut keys: Vec<_> = splits.into_iter().collect();
+    keys.sort_by_key(|&(key, _)| key);
+    for ((lo, hi), mut points) in keys {
+        points.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut chain = vec![lo];
+        for (_, gid) in points {
+            if !chain.contains(&gid) && gid != hi {
+                chain.push(gid);
+            }
+        }
+        chain.push(hi);
+        let ci = chains.len();
+        for (pos, &gid) in chain.iter().enumerate() {
+            member.entry(gid).or_default().push((ci, pos));
+        }
+        chains.push(chain);
+    }
+    // The chain members strictly between `a` and `b`, ordered from `a`, when
+    // `a`–`b` skips over at least one of them.
+    let between = |a: u32, b: u32| -> Option<Vec<u32>> {
+        let (ma, mb) = (member.get(&a)?, member.get(&b)?);
+        for &(ca, pa) in ma {
+            for &(cb, pb) in mb {
+                if ca != cb || pa.abs_diff(pb) < 2 {
+                    continue;
+                }
+                let chain = &chains[ca];
+                return Some(if pa < pb {
+                    chain[pa + 1..pb].to_vec()
+                } else {
+                    chain[pb + 1..pa].iter().rev().copied().collect()
+                });
+            }
+        }
+        None
+    };
+
+    let tri_start = start / 3;
+    let tri_count = indices.len() / 3;
+    let (mut faces_out, face_offset) = match &tri_faces {
+        Some((_, offset)) => (Some(Vec::with_capacity(tri_count - tri_start)), *offset),
+        None => (None, 0),
+    };
+    let mut indices_out: Vec<u32> = Vec::with_capacity(indices.len() - start);
+    let mut stack: Vec<[u32; 3]> = Vec::new();
+    for t in tri_start..tri_count {
+        let face = tri_faces
+            .as_ref()
+            .and_then(|(tf, offset)| tf.get(offset + (t - tri_start)).copied());
+        stack.push([indices[t * 3], indices[t * 3 + 1], indices[t * 3 + 2]]);
+        // Each split strictly shortens the spanning edge's chain gap, so the
+        // pieces of one triangle are bounded by the chain lengths; the cap is
+        // a backstop against malformed input, not a tuning knob.
+        let mut budget = 4 * chains.iter().map(Vec::len).sum::<usize>() + 8;
+        while let Some(tri) = stack.pop() {
+            let split = if budget == 0 {
+                None
+            } else {
+                (0..3).find_map(|e| {
+                    let (a, b, c) = (tri[e], tri[(e + 1) % 3], tri[(e + 2) % 3]);
+                    between(a, b).map(|mids| (a, b, c, mids))
+                })
+            };
+            if let Some((a, b, c, mids)) = split {
+                budget -= 1;
+                let mut prev = a;
+                for &m in mids.iter().chain(std::iter::once(&b)) {
+                    stack.push([prev, m, c]);
+                    prev = m;
+                }
+            } else {
+                indices_out.extend_from_slice(&tri);
+                if let Some(out) = faces_out.as_mut() {
+                    // Tracked lists are parallel by construction, so the face
+                    // is always present; the default only keeps the two
+                    // lists the same length if that ever breaks.
+                    out.push(face.unwrap_or_default());
+                }
+            }
+        }
+    }
+    indices.truncate(start);
+    indices.extend(indices_out);
+    if let (Some((tf, _)), Some(out)) = (tri_faces, faces_out) {
+        tf.truncate(face_offset);
+        tf.extend(out);
+    }
 }
 
 /// Tessellate a single face, reusing shared edge vertices from the global mesh.

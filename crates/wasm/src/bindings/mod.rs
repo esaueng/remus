@@ -32,6 +32,8 @@ mod fillet_fail_closed_tests;
 #[cfg(test)]
 mod gridfinity_tests;
 #[cfg(test)]
+mod growing_holder_volume_tests;
+#[cfg(test)]
 mod holed_face_tests;
 #[cfg(test)]
 mod qualify_convex_hull_tests;

@@ -475,6 +475,99 @@ fn tessellate_plain_cylinder_watertight() {
     );
 }
 
+/// Undirected edge-use counts of a triangle list.
+fn edge_uses(indices: &[u32]) -> DetHashMap<(u32, u32), usize> {
+    let mut uses = DetHashMap::default();
+    for tri in indices.chunks_exact(3) {
+        for (a, b) in [(tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])] {
+            *uses.entry((a.min(b), a.max(b))).or_insert(0) += 1;
+        }
+    }
+    uses
+}
+
+/// B54: two planar CDT jobs share the segment 0–1. Job A's constraint
+/// recovery Steiner-split it at 4 (triangles 0-4-2, 4-1-2); job B, already
+/// triangulated, still spans it with 1-0-3. The repair must split B's
+/// triangle at 4 with its winding kept, leave A untouched, and keep the
+/// per-triangle face list parallel — closing the T-junction with no new
+/// vertex.
+#[test]
+fn boundary_steiner_split_reaches_an_already_triangulated_neighbour() {
+    // Segment 0 → 1 along x; A above it (apex 2), B below (apex 3).
+    let mut indices = vec![0, 4, 2, 4, 1, 2, 1, 0, 3];
+    let mut faces = vec![7, 7, 9];
+    let before = edge_uses(&indices);
+    for open in [(0, 1), (0, 4), (1, 4)] {
+        assert_eq!(
+            before[&open], 1,
+            "T-junction: {open:?} is used by one side only"
+        );
+    }
+
+    let mut splits = DetHashMap::default();
+    // Recorded from job A's side as 0 → 1, parameter 0.5.
+    splits.insert((0_u32, 1_u32), vec![(0.5, 4_u32)]);
+    super::solid::split_triangles_spanning_boundary_splits(
+        &mut indices,
+        0,
+        Some((&mut faces, 0)),
+        splits,
+    );
+
+    assert_eq!(indices.len(), 12, "B's spanning triangle becomes two");
+    assert_eq!(faces.len(), 4, "the face list stays parallel");
+    let mut tris: Vec<([u32; 3], u32)> = indices
+        .chunks_exact(3)
+        .map(|t| [t[0], t[1], t[2]])
+        .zip(faces.iter().copied())
+        .collect();
+    tris.sort_unstable();
+    // B (face 9) keeps its 1 → 0 edge direction through the Steiner vertex.
+    assert_eq!(
+        tris,
+        vec![
+            ([0, 4, 2], 7),
+            ([1, 4, 3], 9),
+            ([4, 0, 3], 9),
+            ([4, 1, 2], 7)
+        ]
+    );
+    let after = edge_uses(&indices);
+    assert!(
+        !after.contains_key(&(0, 1)),
+        "no triangle spans the split segment"
+    );
+    for half in [(0, 4), (1, 4)] {
+        assert_eq!(after[&half], 2, "{half:?} is shared by both faces");
+    }
+}
+
+/// Two jobs split the same segment at different points; each side's halves
+/// span the other's Steiner vertex until both are merged into one chain.
+#[test]
+fn boundary_steiner_splits_from_both_sides_merge_into_one_chain() {
+    // Segment 0 → 1. A split it at 4 (t = 0.25 from 0), B at 5 (t = 0.75
+    // from 0, recorded from B's side as 1 → 0 at 0.25).
+    let mut indices = vec![0, 4, 2, 4, 1, 2, 1, 5, 3, 5, 0, 3];
+    let mut splits = DetHashMap::default();
+    splits.insert((0_u32, 1_u32), vec![(0.25, 4_u32), (1.0 - 0.25, 5_u32)]);
+    super::solid::split_triangles_spanning_boundary_splits(&mut indices, 0, None, splits);
+    let uses = edge_uses(&indices);
+    for piece in [(0, 4), (4, 5), (1, 5)] {
+        assert_eq!(uses[&piece], 2, "{piece:?} must be shared by both sides");
+    }
+    assert!(
+        !uses.contains_key(&(0, 1)) && !uses.contains_key(&(0, 5)) && !uses.contains_key(&(1, 4)),
+        "no triangle spans a Steiner vertex"
+    );
+    assert_eq!(
+        indices.len(),
+        18,
+        "each side's one spanning half splits in two"
+    );
+}
+
 /// Regression for issue #262: the non-planar CDT sized its global-id map by
 /// the insert-time vertex count, but constraint recovery can Steiner-split a
 /// constraint (a self-crossing UV boundary forces exactly that), growing the
