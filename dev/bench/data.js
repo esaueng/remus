@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790373937477,
+  "lastUpdate": 1790375680284,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -65257,6 +65257,240 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 89560,
             "range": "± 385",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8972565db16472cdf23f966dbafd78ea23a12bda",
+          "message": "test(algo): triage the face-splitter mutation survivors and fix the dead sector rescue (B19) (#664)\n\n* test(algo): closed-form oracles for the periodic-lateral splitter shortcuts (B19)\n\nThe 2026-09-25 mutation run (36075171651) left 201 face-splitter mutants\nalive: 189 in split_periodic_face_by_rim_chains, whose every mutant\nincluding `Ok(None)` survived because no algo test reached it, plus the\nband, sector and sphere-collar shortcuts in special_cases.rs.\n\nNew closed_form_split_tests.rs drives split_face_2d on a primitive-style\ncylinder lateral and a faceted hemisphere. Each region is measured from\nits 3D wire (carriers re-sampled, theta unwrapped or equator-projected,\nshoelace area) against the closed-form area of the region the sections\nwere built to bound, with interior membership, 3D closure, orientation\nand shared-section accounting:\n\n- rim notch (planar-ellipse chain): band + lens, bottom/top rim, three\n  scales, scrambled and reversed pieces, reversed faces\n- two helix rim-to-rim chains: clear and seam-side sectors\n- weld-scale joint gap (3e-6) still chains\n- out-of-cell configurations decline\n- closed rings: stacked bands\n- four box walls on a hemisphere: collar + four circular-segment caps\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_019UFEbZRXQ6Svppwq2EUfuq\n\n* fix(algo): hand the one-ruling sector rescue the unsplit cylinder boundary (B19)\n\nsplit_periodic_face_into_sectors needs the lateral's boundary as two\nCLOSED rim circles plus the seam. Its call site passed\n`all_edges[..n_boundary_edges]`, where the rims are already halved at the\nseam antipode and split at every section endpoint, so the rescue declined\non every ruling off the seam and has never fired since it landed. The\ngreedy's under-split region (seam up, top rim, seam down) stood instead,\ndropping the bottom rim and the ruling.\n\nSnapshot the boundary where the sibling periodic shortcuts read it and\npass that. Found by the mutation run: `-> None` and `-> Some(vec![])`\nboth survived. Regression test: one full-height ruling on a cylinder\nlateral must yield two sectors of areas r*theta*h and r*(2pi - theta)*h;\nbefore this change it yields one region.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_019UFEbZRXQ6Svppwq2EUfuq\n\n* test(algo): break the rim-chain fixtures' symmetries and pin the chart contract (B19)\n\nThe first mutation pass over split_periodic_face_by_rim_chains left\nsurvivors that the fixtures could not see: a notch symmetric about the\nseam antipode (mirror mutants land on the same meridian), rims at z = 0\n(`v + v_bot` == `v - v_bot`), NURBS domains starting at 0 (`d1 + d0` ==\n`d1 - d0`), and unchecked stored UVs and seam pcurves.\n\n- notches off-centre, in the far half past the rim's half-turn split,\n  and hugging the seam from both sides; rims at z = 0, below zero and\n  above zero; a second piece order that attaches a reversed piece at the\n  chain's tail\n- sector chains of unequal lean and a clear span past the half-turn split\n- marched sections carry a knot domain shifted to start at 2.5\n- chart oracle: section-edge UVs map back to their 3D ends under the\n  cylinder map, chains stay continuous in u, synthesized seam pcurves run\n  from their start toward their end\n- declines: a lone rim-to-rim chain, a seam-crossing sector chain, a\n  one-rim boundary, a W chain touching the rim mid-way\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_019UFEbZRXQ6Svppwq2EUfuq\n\n* test(algo): hold the rim-chain splitter to its own cell, not only the dispatcher (B19)\n\nFor an in-cell notch a later fallback in split_face_2d can trace the same\ntwo regions, so a rim-chain splitter that wrongly declined (its interior\ncrossing search mutated to miss the chain) still passed through the\ndispatcher. The notch and sector oracles now also run on the splitter's\ndirect output and require it to accept. Adds rims straddling z = 0.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_019UFEbZRXQ6Svppwq2EUfuq\n\n* test: pin the lidded box–sphere collar and file B56/B57 ready-repros (B19)\n\nThe collar arrangement's lid route (a closed latitude section inside the\nbox walls) and its two-patch route (one wall, one open chain) had no algo\ntest. New hemisphere fixtures pin both against closed-form projected\nareas (circular segments, the lid disc as the collar's hole), and the\nrim-chain interiors must now sit in the middle half of their region's\nextent along their meridian.\n\nTwo defects surfaced, both pre-existing on main, filed as ready-repros:\n\n- B56: sphere minus a lidded box drops the lid-cap lump; the cut returns\n  only the four wall caps (a = 0.9 r: volume 0.121 vs 0.348). Silent.\n- B57: with the walls close under the lid (a = 0.75 r) the collar's\n  classification sample, the lid latitude nudged a fixed amount toward\n  the equator, lands in a wall cap and the exact boolean is refused.\n  Bounding the nudge by the first wall arc on the meridian makes the\n  intersect exact (checked against a numerical integral), but turns the\n  cut from refused into B56's wrong result, so the fix waits on B56.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_019UFEbZRXQ6Svppwq2EUfuq\n\n* docs(roadmap): file B56 and B57 from the B19 face-splitter tranche\n\nB56: sphere minus a lidded box silently drops the lid-cap lump.\nB57: the collar classification sample overshoots a wall close under the\nlid and the exact boolean is refused; the fix is ready but waits on B56.\nBoth witnesses are recorded in the roadmap skill's ready-repro inventory.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_019UFEbZRXQ6Svppwq2EUfuq\n\n* docs(b19): face-splitter survivor tranche triage (2026-09-25 run)\n\nPer-survivor table for the 201 face-splitter survivors of mutation run\n36075171651: 145 killed, 39 equivalent and 15 unkillable with proofs, 2\nexposing the dead sector rescue (fixed). Before/after whole-function\ncounts, the out-of-tranche remainder by function, and the B19 row entry.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_019UFEbZRXQ6Svppwq2EUfuq\n\n* test(algo): keep the closed-form splitter tests inside the hash and wildcard ratchets\n\nCI's Repository Policy flagged the new test file on two ratchets that\nonly scan tracked files (so the local runs before it was committed\npassed): a std HashMap handed to split_face_2d, and a `_ =>` arm over\nEdgeCurve. Pass a DetHashMap and spell both EdgeCurve matches out\nexhaustively. Test behaviour is unchanged.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_019UFEbZRXQ6Svppwq2EUfuq\n\n* chore: remove stray empty file committed in a merge\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_019UFEbZRXQ6Svppwq2EUfuq\n\n---------\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-09-25T15:26:50-07:00",
+          "tree_id": "181561532d37a6ddfe05a261c4dbf94dcf43e921",
+          "url": "https://github.com/esaueng/remus/commit/8972565db16472cdf23f966dbafd78ea23a12bda"
+        },
+        "date": 1790375678913,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1235657,
+            "range": "± 3715",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1342195,
+            "range": "± 1432",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 27364,
+            "range": "± 107",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 11073575,
+            "range": "± 15434",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 11107692,
+            "range": "± 23542",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 10668722,
+            "range": "± 23888",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 1073640,
+            "range": "± 890",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 17664947,
+            "range": "± 220939",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 31521784,
+            "range": "± 66260",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 28,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 112,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 62,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 218,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 166,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 770,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 135,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 366,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 242,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 510,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 997,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 2682,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 12,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 29,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 54,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 54,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 545825,
+            "range": "± 643",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 9611996,
+            "range": "± 895071",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 164816,
+            "range": "± 278",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 500418,
+            "range": "± 497",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 61925,
+            "range": "± 444",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 971338,
+            "range": "± 4301",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 11195044,
+            "range": "± 40668",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 783407,
+            "range": "± 2036",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 1152455,
+            "range": "± 9847",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 78302,
+            "range": "± 195",
             "unit": "ns/iter"
           }
         ]
