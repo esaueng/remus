@@ -4,7 +4,7 @@
 //! geometry types (circles, cylinders, etc.) and NURBS representations.
 
 use crate::context::OperationContext;
-use crate::curves::{Circle3D, Ellipse3D};
+use crate::curves::{Circle3D, Ellipse3D, Hyperbola3D, Parabola3D};
 use crate::nurbs::curve::NurbsCurve;
 use crate::nurbs::projection::project_point_to_surface;
 use crate::nurbs::surface::NurbsSurface;
@@ -94,7 +94,8 @@ pub trait ParametricSurface {
 
 /// Unified interface for parametric curve evaluation.
 ///
-/// Implemented by analytic curves ([`Circle3D`], [`Ellipse3D`]) and [`NurbsCurve`].
+/// Implemented by analytic curves ([`Circle3D`], [`Ellipse3D`], [`Parabola3D`],
+/// [`Hyperbola3D`]) and [`NurbsCurve`].
 pub trait ParametricCurve {
     /// Evaluate the curve at parameter `t`.
     fn evaluate(&self, t: f64) -> Point3;
@@ -104,6 +105,17 @@ pub trait ParametricCurve {
 
     /// Parameter domain as `(t_min, t_max)`.
     fn domain(&self) -> (f64, f64);
+
+    /// Exact first and second parameter derivatives `(C'(t), C''(t))`.
+    ///
+    /// Generic solvers (projection, curve-curve extrema) need true
+    /// derivatives: [`Self::tangent`] has no guaranteed length. Carriers
+    /// that know their derivatives return them here; the default `None`
+    /// makes a solver fall back to finite differences, which lose accuracy
+    /// wherever a piecewise carrier (a NURBS knot) is only `C¹`.
+    fn derivative_pair(&self, _t: f64) -> Option<(Vec3, Vec3)> {
+        None
+    }
 }
 
 // ── ParametricSurface implementations ────────────────────────────────
@@ -409,6 +421,16 @@ impl ParametricCurve for Circle3D {
     fn domain(&self) -> (f64, f64) {
         (0.0, std::f64::consts::TAU)
     }
+
+    #[inline]
+    fn derivative_pair(&self, t: f64) -> Option<(Vec3, Vec3)> {
+        let (sin_t, cos_t) = t.sin_cos();
+        let (u, v, r) = (self.u_axis(), self.v_axis(), self.radius());
+        Some((
+            u * (-r * sin_t) + v * (r * cos_t),
+            u * (-r * cos_t) + v * (-r * sin_t),
+        ))
+    }
 }
 
 impl ParametricCurve for Ellipse3D {
@@ -426,6 +448,78 @@ impl ParametricCurve for Ellipse3D {
     fn domain(&self) -> (f64, f64) {
         (0.0, std::f64::consts::TAU)
     }
+
+    #[inline]
+    fn derivative_pair(&self, t: f64) -> Option<(Vec3, Vec3)> {
+        let (sin_t, cos_t) = t.sin_cos();
+        let (u, v) = (self.u_axis(), self.v_axis());
+        let (a, b) = (self.semi_major(), self.semi_minor());
+        Some((
+            u * (-a * sin_t) + v * (b * cos_t),
+            u * (-a * cos_t) + v * (-b * sin_t),
+        ))
+    }
+}
+
+/// The parabola's parameter runs over all reals (`t = 0` is the vertex and
+/// `t` carries units of length), so its domain is unbounded. Generic
+/// extrema solvers take an explicit finite range; pass the trimmed span of
+/// the edge or the region of interest, never this domain directly.
+impl ParametricCurve for Parabola3D {
+    #[inline]
+    fn evaluate(&self, t: f64) -> Point3 {
+        self.evaluate(t)
+    }
+
+    #[inline]
+    fn tangent(&self, t: f64) -> Vec3 {
+        self.tangent(t)
+    }
+
+    #[inline]
+    fn domain(&self) -> (f64, f64) {
+        (f64::NEG_INFINITY, f64::INFINITY)
+    }
+
+    #[inline]
+    fn derivative_pair(&self, t: f64) -> Option<(Vec3, Vec3)> {
+        let two_f = 2.0 * self.focal_length();
+        Some((
+            self.axis_dir() * (t / two_f) + self.u_axis(),
+            self.axis_dir() * (1.0 / two_f),
+        ))
+    }
+}
+
+/// The hyperbola branch `center + a·cosh(t)·u + b·sinh(t)·v` is defined for
+/// all real `t`, so its domain is unbounded. Generic extrema solvers take
+/// an explicit finite range; pass the trimmed span, never this domain.
+impl ParametricCurve for Hyperbola3D {
+    #[inline]
+    fn evaluate(&self, t: f64) -> Point3 {
+        self.evaluate(t)
+    }
+
+    #[inline]
+    fn tangent(&self, t: f64) -> Vec3 {
+        self.tangent(t)
+    }
+
+    #[inline]
+    fn domain(&self) -> (f64, f64) {
+        (f64::NEG_INFINITY, f64::INFINITY)
+    }
+
+    #[inline]
+    fn derivative_pair(&self, t: f64) -> Option<(Vec3, Vec3)> {
+        let (sinh_t, cosh_t) = (t.sinh(), t.cosh());
+        let (u, v) = (self.u_axis(), self.v_axis());
+        let (a, b) = (self.semi_major(), self.semi_minor());
+        Some((
+            u * (a * sinh_t) + v * (b * cosh_t),
+            u * (a * cosh_t) + v * (b * sinh_t),
+        ))
+    }
 }
 
 impl ParametricCurve for NurbsCurve {
@@ -442,5 +536,63 @@ impl ParametricCurve for NurbsCurve {
     #[inline]
     fn domain(&self) -> (f64, f64) {
         self.domain()
+    }
+
+    #[inline]
+    fn derivative_pair(&self, t: f64) -> Option<(Vec3, Vec3)> {
+        let ders = self.derivatives(t, 2);
+        Some((*ders.get(1)?, *ders.get(2)?))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use super::*;
+
+    /// `derivative_pair` must be the true derivatives of `evaluate`: check
+    /// both against fourth-order central differences of positions.
+    fn assert_derivative_pair<C: ParametricCurve>(curve: &C, ts: &[f64], name: &str) {
+        let h = 1e-3;
+        for &t in ts {
+            let (d1, d2) = curve.derivative_pair(t).expect("exact derivatives");
+            let p = |k: f64| curve.evaluate(k.mul_add(h, t));
+            let fd1 = ((p(1.0) - p(-1.0)) * 8.0 - (p(2.0) - p(-2.0))) * (1.0 / (12.0 * h));
+            let c = p(0.0);
+            let fd2 = ((p(1.0) - c) * 16.0 + (p(-1.0) - c) * 16.0 - (p(2.0) - c) - (p(-2.0) - c))
+                * (1.0 / (12.0 * h * h));
+            let e1 = (d1 - fd1).length() / d1.length().max(1.0);
+            let e2 = (d2 - fd2).length() / d2.length().max(1.0);
+            assert!(
+                e1 < 1e-9 && e2 < 1e-5,
+                "{name} at t={t}: errors ({e1:.2e}, {e2:.2e})"
+            );
+        }
+    }
+
+    #[test]
+    fn conic_and_nurbs_derivative_pairs_match_positions() {
+        let n = Vec3::new(0.3, -0.4, 0.866);
+        let c = Point3::new(1.0, -2.0, 0.5);
+        let ts = [-1.3, -0.2, 0.0, 0.7, 2.9];
+        assert_derivative_pair(&Circle3D::new(c, n, 1.7).unwrap(), &ts, "circle");
+        assert_derivative_pair(&Ellipse3D::new(c, n, 2.5, 0.8).unwrap(), &ts, "ellipse");
+        let axis = Vec3::new(0.0, 0.6, 0.8);
+        assert_derivative_pair(&Parabola3D::new(c, axis, 0.9).unwrap(), &ts, "parabola");
+        assert_derivative_pair(&Hyperbola3D::new(c, n, 1.5, 0.6).unwrap(), &ts, "hyperbola");
+        let nurbs = NurbsCurve::new(
+            3,
+            vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+            vec![
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(1.0, 2.0, -1.0),
+                Point3::new(3.0, -1.0, 2.0),
+                Point3::new(4.0, 1.0, 0.0),
+            ],
+            vec![1.0, 0.7, 1.3, 1.0],
+        )
+        .unwrap();
+        assert_derivative_pair(&nurbs, &[0.1, 0.35, 0.5, 0.8], "nurbs");
     }
 }
