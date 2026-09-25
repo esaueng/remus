@@ -3661,20 +3661,33 @@ fn march_analytic_intersection(
     // Angular thresholds for curvature-adaptive stepping.
     let max_angle = 10.0_f64.to_radians();
     let min_angle = 2.0_f64.to_radians();
-    // Band exits land exactly on the band edge only for a torus against a
-    // frustum or cylinder WALL — the family whose wall arcs must chain with
-    // cap-plane sections at exact rim crossings (B39). Every other marched
-    // pair keeps its trace ending at the last in-band sample: their
-    // downstream consumers are calibrated to that end. Measured: an exact
-    // end on the rim crossing of two coplanar frustum caps misbuilds the
-    // tapered-feet fuse, and exact ends of sphere × corner-round traces that
-    // run off the sphere patch survive the in-both restriction and weave an
-    // X across the round (hammer-holder opening replay).
-    let torus_wall = |s: &AnalyticSurface<'_>, t: &AnalyticSurface<'_>| {
-        matches!(s, AnalyticSurface::Torus(_))
-            && matches!(t, AnalyticSurface::Cone(_) | AnalyticSurface::Cylinder(_))
-    };
-    let bisect_exits = torus_wall(a, b) || torus_wall(b, a);
+    // Band exits land exactly on the band edge only for a FULL-TUBE torus
+    // against a frustum or cylinder WALL — the family whose wall arcs must
+    // chain with cap-plane sections at exact rim crossings (B39). With the
+    // torus band spanning the whole tube, the trace can only leave through
+    // the wall's band, i.e. at a rim. Every other marched pair keeps its trace
+    // ending at the last in-band sample: their downstream consumers are
+    // calibrated to that end. Measured:
+    // - an exact end on the rim crossing of two coplanar frustum caps
+    //   misbuilds the tapered-feet fuse (cone × cone);
+    // - exact ends of sphere × corner-round traces that run off the sphere
+    //   patch survive the in-both restriction and weave an X across the round
+    //   (hammer-holder opening replay);
+    // - a torus FILLET patch (a partial tube band) against a fillet cylinder:
+    //   the hammer holder's shifted intersect takes 12 such exits, 10 of them
+    //   through the torus patch's own band edge, landing on patch-boundary
+    //   corners. Natively the result closes; on wasm32, whose libm rounds
+    //   differently, the same exits leave 4 free edges and the exact boolean
+    //   refuses (WASM smoke, 2026-09-24). Step-short ends there are absorbed by
+    //   the EF paves and junction snapping the fillet patches were built with.
+    let full_tube_torus_wall =
+        |s: &AnalyticSurface<'_>, s_v: (f64, f64), t: &AnalyticSurface<'_>| {
+            matches!(s, AnalyticSurface::Torus(_))
+                && s_v.1 - s_v.0 >= TAU - 1e-9
+                && matches!(t, AnalyticSurface::Cone(_) | AnalyticSurface::Cylinder(_))
+        };
+    let bisect_exits =
+        full_tube_torus_wall(a, v_range_a, b) || full_tube_torus_wall(b, v_range_b, a);
 
     // March forward from seed, collecting points.
     let mut forward = Vec::new();
@@ -5534,7 +5547,49 @@ mod tests {
         }
     }
 
-    /// The band-edge landing is scoped to torus × wall marches. Other marched
+    /// The band-edge landing needs a FULL-TUBE torus: a torus fillet patch (a
+    /// partial tube band, the imported hammer holder's corner rounds) against
+    /// a wall keeps its step-short end. Same wall arcs as the B39 unit cell,
+    /// but the torus is a patch whose band still contains both arcs: the
+    /// traces leave through the wall's rims exactly as before, yet their ends
+    /// must stay off the rim. Landing them on patch-boundary corners took the
+    /// hammer holder's shifted intersect to 4 free edges on wasm32 (the WASM
+    /// smoke, 2026-09-24) while native libm happened to close it.
+    #[test]
+    fn torus_patch_marches_keep_their_band_exit() {
+        use crate::traits::ParametricCurve;
+        let torus = ToroidalSurface::new(Point3::new(0.0, 0.0, 0.0), 3.0, 0.5).unwrap();
+        let cone = ConicalSurface::new(
+            Point3::new(-1.5, 2.0, 1.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            2.0_f64.atan2(1.0),
+        )
+        .unwrap();
+        let band = (5.0_f64.sqrt(), 1.5 * 5.0_f64.sqrt());
+        let curves = intersect_analytic_analytic_bounded(
+            AnalyticSurface::Torus(&torus),
+            AnalyticSurface::Cone(&cone),
+            32,
+            Some((0.05, 4.5)),
+            Some(band),
+        )
+        .unwrap();
+        assert!(!curves.is_empty());
+        for c in &curves {
+            let (t0, t1) = c.curve.domain();
+            for t in [t0, t1] {
+                let p = ParametricCurve::evaluate(&c.curve, t);
+                let (_, v) = cone.project_point(p);
+                let off = (v - band.0).abs().min((v - band.1).abs());
+                assert!(
+                    off > 1e-6,
+                    "torus-patch × wall trace end {p:?} was moved onto the rim ({off:e})"
+                );
+            }
+        }
+    }
+
+    /// The band-edge landing is scoped to full-tube torus × wall marches. Other marched
     /// pairs keep their previous end (the last in-band sample): their
     /// downstream consumers are calibrated to it — two frustums side by side
     /// (the tapered-feet fuse) misbuild when their wall section lands exactly
