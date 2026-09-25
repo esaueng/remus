@@ -162,6 +162,104 @@ fn mesh_boundary_edge_count(mesh: &tessellate::TriangleMesh) -> usize {
     counts.values().filter(|&&c| c != 2).count()
 }
 
+/// Whether `BK_VOL_TRACE` is set, resolved once per process.
+fn vol_trace_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("BK_VOL_TRACE").is_some())
+}
+
+/// `BK_VOL_TRACE=1`: print which [`solid_volume`] route produced, or declined,
+/// a reading, one `VOL_TRACE` line per decision on stderr.
+///
+/// Diagnostic only. It writes to stderr directly because the `log::debug!`
+/// traces it replaces never emitted where they were needed: neither the test
+/// harness nor the WASM console bridge installs a logger at debug level, so a
+/// wrong volume could not be attributed to its route without a rebuild. The
+/// message is built lazily, so an unset variable costs one cached flag read.
+#[allow(clippy::print_stderr)]
+fn vol_trace(message: impl FnOnce() -> String) {
+    if vol_trace_enabled() {
+        eprintln!("VOL_TRACE {}", message());
+    }
+}
+
+/// Whether a whole-solid mesh is closed: non-empty, every edge shared by
+/// exactly two triangles.
+fn mesh_is_closed(mesh: &tessellate::TriangleMesh) -> bool {
+    !mesh.indices.is_empty() && mesh_boundary_edge_count(mesh) == 0
+}
+
+/// The whole-solid mesh at the clamp, when `deflection` is finer than the
+/// clamp and the mesh there is CLOSED; `None` otherwise.
+///
+/// Every coarser request is measured at the clamp, `bbox_diag * 5e-5` (see
+/// [`volume_tessellation_deflection`]), so a closed clamp mesh gives the
+/// reading any coarser request returns: the coarsest reading [`solid_volume`]
+/// may give, never coarser. A mesh that cracks only at a request finer than
+/// the clamp then measures to the clamp's chord accuracy instead of leaving
+/// the closed-mesh route. The pre-B39 torus–cone oblique cell is the recorded
+/// case: its fuse, cut and intersect meshes were closed at their ~5.2e-4
+/// clamp and open at 2e-4 and 1e-4 (4 and 7 bad edges), where the old
+/// fall-through read 5.43, 0.176 and 0.460 against 18.775, 13.80 and 1.003.
+fn clamp_retry_mesh_with(
+    topo: &Topology,
+    solid: SolidId,
+    deflection: f64,
+    mut mesh_at: impl FnMut(f64) -> Result<tessellate::TriangleMesh, crate::OperationsError>,
+) -> Result<Option<tessellate::TriangleMesh>, crate::OperationsError> {
+    let clamp = volume_tessellation_deflection(topo, solid, f64::INFINITY);
+    if !(clamp.is_finite() && clamp > deflection) {
+        return Ok(None);
+    }
+    let mesh = mesh_at(clamp)?;
+    if mesh_is_closed(&mesh) {
+        vol_trace(|| format!("whole-solid mesh closed at the clamp {clamp:e}"));
+        return Ok(Some(mesh));
+    }
+    vol_trace(|| {
+        format!(
+            "whole-solid mesh OPEN at the clamp {clamp:e} too ({} bad edges)",
+            mesh_boundary_edge_count(&mesh)
+        )
+    });
+    Ok(None)
+}
+
+/// The whole-solid mesh the generic route reads a volume off: the mesh at the
+/// effective (already clamped) `deflection`, or, when that is open, the
+/// closed clamp mesh from [`clamp_retry_mesh_with`]. When the clamp mesh is
+/// open too, the mesh at `deflection` comes back still open.
+fn whole_solid_mesh(
+    topo: &Topology,
+    solid: SolidId,
+    deflection: f64,
+) -> Result<tessellate::TriangleMesh, crate::OperationsError> {
+    whole_solid_mesh_with(topo, solid, deflection, |d| {
+        tessellate::tessellate_solid(topo, solid, d)
+    })
+}
+
+/// [`whole_solid_mesh`] over any whole-solid mesher, so the retry can be
+/// tested on a mesh opened on purpose.
+fn whole_solid_mesh_with(
+    topo: &Topology,
+    solid: SolidId,
+    deflection: f64,
+    mut mesh_at: impl FnMut(f64) -> Result<tessellate::TriangleMesh, crate::OperationsError>,
+) -> Result<tessellate::TriangleMesh, crate::OperationsError> {
+    let mesh = mesh_at(deflection)?;
+    if mesh_is_closed(&mesh) {
+        return Ok(mesh);
+    }
+    vol_trace(|| {
+        format!(
+            "whole-solid mesh OPEN at {deflection:e} ({} bad edges)",
+            mesh_boundary_edge_count(&mesh)
+        )
+    });
+    Ok(clamp_retry_mesh_with(topo, solid, deflection, mesh_at)?.unwrap_or(mesh))
+}
+
 /// Gauss order of the open-mesh fallback: the order [`mass_properties`]
 /// integrates at, so the two exact routes agree to round-off.
 const OPEN_MESH_GAUSS_ORDER: usize = 8;
@@ -182,8 +280,18 @@ const OPEN_MESH_GAUSS_ORDER: usize = 8;
 /// * closed mesh with no volume → `Ok(None)`, the historic fall-through for a
 ///   degenerate mesh;
 /// * open mesh → [`open_mesh_exact_volume`]: the boundary-trimmed Gauss
-///   integral over every face, or a typed [`crate::OperationsError::Unsupported`]
-///   when some face is outside what that integrator measures.
+///   integral over every face;
+/// * open mesh with a face outside what that integrator measures → the
+///   closed clamp mesh's volume when the request was finer than the clamp
+///   (see [`clamp_retry_mesh_with`]), else a typed
+///   [`crate::OperationsError::Unsupported`].
+///
+/// The exact integral goes first because it is the more accurate of the two
+/// where it applies: on the pre-B39 torus–cone fuse it read 18.7748 at the
+/// 2e-4 request, the clamp mesh 18.7542, against an 18.7750 oracle. The
+/// clamp retry stands in only for the refusal, so a body whose mesh cracks
+/// at a fine request is measured the way a coarser request measures it
+/// rather than refused.
 ///
 /// `why` names the face class that sent the body here; it only appears in the
 /// refusal.
@@ -193,8 +301,32 @@ fn required_closed_mesh_volume(
     deflection: f64,
     why: &'static str,
 ) -> Result<Option<f64>, crate::OperationsError> {
-    let mesh = tessellate::tessellate_solid(topo, solid, deflection)?;
-    closed_mesh_or_exact_volume(topo, solid, &mesh, why)
+    required_closed_mesh_volume_with(topo, solid, deflection, why, |d| {
+        tessellate::tessellate_solid(topo, solid, d)
+    })
+}
+
+/// [`required_closed_mesh_volume`] over any whole-solid mesher, so the
+/// open-mesh order (exact integral, then clamp retry, then refusal) can be
+/// tested on a mesh opened on purpose.
+fn required_closed_mesh_volume_with(
+    topo: &Topology,
+    solid: SolidId,
+    deflection: f64,
+    why: &'static str,
+    mut mesh_at: impl FnMut(f64) -> Result<tessellate::TriangleMesh, crate::OperationsError>,
+) -> Result<Option<f64>, crate::OperationsError> {
+    let mesh = mesh_at(deflection)?;
+    let refusal = match closed_mesh_or_exact_volume(topo, solid, &mesh, why) {
+        Err(refusal @ crate::OperationsError::Unsupported { .. }) => refusal,
+        answer => return answer,
+    };
+    let Some(retried) = clamp_retry_mesh_with(topo, solid, deflection, mesh_at)? else {
+        return Err(refusal);
+    };
+    let volume = signed_volume_from_mesh(&retried);
+    vol_trace(|| format!("{why}: closed clamp mesh instead of refusing -> {volume}"));
+    Ok((volume > 1e-12).then_some(volume))
 }
 
 /// [`required_closed_mesh_volume`] on an already built whole-solid mesh.
@@ -204,11 +336,14 @@ fn closed_mesh_or_exact_volume(
     mesh: &tessellate::TriangleMesh,
     why: &'static str,
 ) -> Result<Option<f64>, crate::OperationsError> {
-    if !mesh.indices.is_empty() && mesh_boundary_edge_count(mesh) == 0 {
+    if mesh_is_closed(mesh) {
         let volume = signed_volume_from_mesh(mesh);
+        vol_trace(|| format!("{why}: closed whole-solid mesh -> {volume}"));
         return Ok((volume > 1e-12).then_some(volume));
     }
-    open_mesh_exact_volume(topo, solid, why).map(Some)
+    let exact = open_mesh_exact_volume(topo, solid, why);
+    vol_trace(|| format!("{why}: open whole-solid mesh -> exact fallback {exact:?}"));
+    exact.map(Some)
 }
 
 /// The exact fallback for a body whose required whole-solid mesh is open:
@@ -1739,9 +1874,19 @@ pub fn solid_is_inverted(topo: &Topology, solid: SolidId) -> Result<bool, crate:
 /// parameter value measures within that error of its closed-mesh neighbours,
 /// not with a route-sized jump.
 ///
+/// Before refusing, a mesh that was open at a request FINER than the clamp is
+/// retried once at the clamp (`bbox_diag * 5e-5`), the deflection every
+/// coarser request is measured at, and a closed clamp mesh is the answer.
+/// The exact integral stays first because it is the more accurate reading
+/// where it applies. On the pre-B39 torus–cone fuse at a 2e-4 request (open
+/// mesh; the old fall-through read 5.43) it gives 18.7748 and the clamp mesh
+/// 18.7542, against an 18.7750 oracle.
+///
 /// Bodies with no such face keep the fall-through below: a mesh volume is
 /// only taken unchecked on the final generic path, where no per-face route
-/// is known to be wrong.
+/// is known to be wrong, and only after the same clamp retry.
+///
+/// Set `BK_VOL_TRACE=1` to print the route each call takes to stderr.
 ///
 /// # Orientation
 ///
@@ -1757,8 +1902,9 @@ pub fn solid_is_inverted(topo: &Topology, solid: SolidId) -> Result<bool, crate:
 ///
 /// Returns an error if tessellation or topology lookups fail, and
 /// [`crate::OperationsError::Unsupported`] when a body that must be measured
-/// on its closed mesh tessellates open and carries a face the exact Gauss
-/// integrator does not measure either (see above).
+/// on its closed mesh tessellates open, carries a face the exact Gauss
+/// integrator does not measure either, and has no closed mesh at the clamp to
+/// fall back on (see above).
 pub fn solid_volume(
     topo: &Topology,
     solid: SolidId,
@@ -1766,9 +1912,7 @@ pub fn solid_volume(
 ) -> Result<f64, crate::OperationsError> {
     // Fast path: exact analytic formula for known primitives.
     if let Some(v) = try_analytic_solid_volume(topo, solid) {
-        if std::env::var("BK_VOL_TRACE").is_ok() {
-            log::debug!("VOL_TRACE try_analytic -> {v}");
-        }
+        vol_trace(|| format!("try_analytic -> {v}"));
         return Ok(v);
     }
 
@@ -1779,9 +1923,7 @@ pub fn solid_volume(
     // tessellation paths below suffer on bored quadrics (e.g. a cylinder
     // drilled through a sphere).
     if let Some(v) = analytic_faces_solid_volume(topo, solid)? {
-        if std::env::var("BK_VOL_TRACE").is_ok() {
-            log::debug!("VOL_TRACE analytic_faces -> {v}");
-        }
+        vol_trace(|| format!("analytic_faces -> {v}"));
         return Ok(v);
     }
 
@@ -1792,9 +1934,7 @@ pub fn solid_volume(
     // does NOT catch boolean results that merely happen to have arc-bounded
     // planar faces (rounded-rect caps, arc-frame lips).
     if let Some(v) = analytic_revolution_solid_volume(topo, solid) {
-        if std::env::var("BK_VOL_TRACE").is_ok() {
-            log::debug!("VOL_TRACE revolution -> {v}");
-        }
+        vol_trace(|| format!("revolution -> {v}"));
         return Ok(v);
     }
 
@@ -1804,7 +1944,9 @@ pub fn solid_volume(
     // deflection). Clamp the deflection to a small fraction of the solid's
     // extent — never coarsening a finer request — so the volume is accurate
     // regardless of the (preview-tuned) deflection the caller passes.
+    let requested = deflection;
     let deflection = volume_tessellation_deflection(topo, solid, deflection);
+    vol_trace(|| format!("deflection requested {requested:e} -> {deflection:e}"));
 
     // A scalloped sphere collar (box ∩ sphere) cannot be per-face tessellated
     // watertight (its band path needs the solid's shared boundary vertices), and
@@ -1849,12 +1991,21 @@ pub fn solid_volume(
                 | FaceSurface::Nurbs(_) => None,
             };
             let Some(contribution) = contribution else {
+                vol_trace(|| {
+                    format!(
+                        "torus notch band integral declined at face {} ({})",
+                        face_id.index(),
+                        topo.face(face_id)
+                            .map_or("?", |face| face.surface().type_tag())
+                    )
+                });
                 integral = None;
                 break;
             };
             integral = integral.map(|volume| volume + contribution.volume);
         }
         if let Some(volume) = integral {
+            vol_trace(|| format!("torus notch band integral -> {}", volume.abs()));
             return Ok(volume.abs());
         }
         // An open mesh must not fall through to the torus's analytic
@@ -1896,6 +2047,7 @@ pub fn solid_volume(
     // (e.g. mesh imports), compute volume directly from face geometry.
     // This avoids re-tessellation which has known WASM winding issues.
     if let Ok(v) = solid_volume_from_faces(topo, solid, deflection) {
+        vol_trace(|| format!("planar triangle faces -> {v}"));
         return Ok(v);
     }
 
@@ -2053,7 +2205,9 @@ pub fn solid_volume(
         {
             return Ok(volume);
         }
-        return volume_from_direct_face_tessellation(topo, solid, deflection);
+        let v = volume_from_direct_face_tessellation(topo, solid, deflection)?;
+        vol_trace(|| format!("direct face tessellation -> {v}"));
+        return Ok(v);
     }
 
     let faces = remus_topology::explorer::solid_faces(topo, solid)?;
@@ -2074,21 +2228,37 @@ pub fn solid_volume(
         })
         && let Some(volume) = exact_analytic_face_volume(topo, solid, deflection, true)
     {
+        vol_trace(|| format!("plane/cylinder exact faces -> {volume}"));
         return Ok(volume);
     }
 
     // Try watertight tessellation -- gives correct volume via signed tetrahedra
-    // since the mesh is closed.
-    let mesh = tessellate::tessellate_solid(topo, solid, deflection)?;
+    // since the mesh is closed. A mesh open at a request finer than the clamp
+    // is retried at the clamp first (see [`whole_solid_mesh`]). One that is
+    // open there too is still read here, unchecked: no per-face route is
+    // known to be wrong for the bodies that reach this point. Refusing them
+    // instead failed 12 workspace tests that pass on this reading (a half
+    // cylinder, lofted frustums, concave fillet notches, a hollow solid,
+    // tiny-scale transforms; 1–34 open edges each), so it stays the last
+    // resort.
+    let mesh = whole_solid_mesh(topo, solid, deflection)?;
     if !mesh.indices.is_empty() {
         let vol = signed_volume_from_mesh(&mesh);
         if vol > 1e-12 {
+            vol_trace(|| {
+                format!(
+                    "final whole-solid mesh ({} bad edges) -> {vol}",
+                    mesh_boundary_edge_count(&mesh)
+                )
+            });
             return Ok(vol);
         }
     }
 
     // Fallback: per-face tessellation with centroid-based winding correction.
-    volume_from_per_face_tessellation(topo, solid, deflection)
+    let v = volume_from_per_face_tessellation(topo, solid, deflection)?;
+    vol_trace(|| format!("per-face tessellation fallback -> {v}"));
+    Ok(v)
 }
 
 /// Divergence-theorem volume of a solid WITHOUT the absolute value, so the sign
@@ -2269,9 +2439,7 @@ fn volume_from_per_face_tessellation(
     for fid in faces {
         let mesh = tessellate::tessellate(topo, fid, deflection)?;
         let idx = &mesh.indices;
-        if std::env::var("BK_VOL_TRACE").is_ok() {
-            log::debug!("VOL_TRACE direct plane face {fid:?} tris={}", idx.len() / 3);
-        }
+        vol_trace(|| format!("per-face face {} tris={}", fid.index(), idx.len() / 3));
         meshes.push(mesh);
     }
 
@@ -3487,9 +3655,7 @@ pub fn volume_from_direct_face_tessellation(
         match face.surface() {
             FaceSurface::Cylinder(_) => {
                 let v = analytic_cylinder_signed_volume(topo, fid)? * 6.0;
-                if std::env::var("BK_VOL_TRACE").is_ok() {
-                    log::debug!("VOL_TRACE direct cyl face {:?} -> {}", fid, v / 6.0);
-                }
+                vol_trace(|| format!("direct cyl face {} -> {}", fid.index(), v / 6.0));
                 total += v;
                 continue;
             }
@@ -4728,5 +4894,188 @@ mod regression_tests {
             ),
             "an open collar mesh must refuse, got {refusal:?}"
         );
+    }
+
+    /// A mesh opened on purpose, the way a shared-edge crack opens one: its
+    /// first triangle dropped.
+    fn opened(mut mesh: tessellate::TriangleMesh) -> tessellate::TriangleMesh {
+        mesh.indices.drain(0..3);
+        mesh
+    }
+
+    /// A curved body, so its mesh depends on the deflection, and its clamp.
+    fn cylinder_and_clamp() -> (Topology, SolidId, f64) {
+        let mut topo = Topology::new();
+        let solid = crate::primitives::make_cylinder(&mut topo, 2.0, 5.0).unwrap();
+        let clamp = volume_tessellation_deflection(&topo, solid, f64::INFINITY);
+        assert!(clamp.is_finite() && clamp > 0.0);
+        (topo, solid, clamp)
+    }
+
+    /// A whole-solid mesh that is open at a request finer than the clamp but
+    /// closed at the clamp is replaced by the clamp mesh: the reading every
+    /// coarser request gets. The pre-B39 torus–cone fuse was this case: open
+    /// at 2e-4 (read 5.43 through the fall-through), closed at its 5.3e-4
+    /// clamp (18.754 against an 18.775 oracle).
+    #[test]
+    #[allow(clippy::float_cmp)] // the same deflections handed back, bit for bit
+    fn open_fine_mesh_is_retried_at_the_clamp() {
+        let (topo, solid, clamp) = cylinder_and_clamp();
+        let fine = clamp / 4.0;
+        let mut tried = Vec::new();
+        let mesh = whole_solid_mesh_with(&topo, solid, fine, |d| {
+            tried.push(d);
+            let mesh = tessellate::tessellate_solid(&topo, solid, d)?;
+            Ok(if d < clamp { opened(mesh) } else { mesh })
+        })
+        .unwrap();
+        assert_eq!(tried, vec![fine, clamp], "one retry, at the clamp");
+        assert!(mesh_is_closed(&mesh), "the closed clamp mesh is returned");
+        let at_clamp = tessellate::tessellate_solid(&topo, solid, clamp).unwrap();
+        assert_eq!(mesh.indices, at_clamp.indices);
+        // An inscribed mesh reads low by its chord loss, about (4/3)·δ/r of
+        // the volume at sagitta δ on radius r (2.5e-4 here); 1.5× slack.
+        let volume = signed_volume_from_mesh(&mesh);
+        let (radius, exact) = (2.0, std::f64::consts::PI * 2.0 * 2.0 * 5.0);
+        assert!(
+            volume < exact && exact - volume <= 1.5 * (4.0 / 3.0) * (clamp / radius) * exact,
+            "clamp reading {volume} vs closed form {exact}"
+        );
+        // And the closed-mesh route takes it, not the exact fallback.
+        let routed = closed_mesh_or_exact_volume(&topo, solid, &mesh, "test").unwrap();
+        assert_eq!(routed, Some(volume));
+    }
+
+    /// Open at the clamp as well: no coarser mesh is ever tried, and the mesh
+    /// at the request comes back still open, for the caller's open-mesh rule
+    /// (the exact fallback or a typed refusal on the closed-mesh routes). A
+    /// request at the clamp, where every coarser request lands, is not
+    /// retried at all, and neither is a closed mesh.
+    #[test]
+    fn mesh_open_at_the_clamp_comes_back_open() {
+        let (topo, solid, clamp) = cylinder_and_clamp();
+        for (deflection, attempts) in [(clamp / 4.0, 2), (clamp, 1)] {
+            let mut calls = 0;
+            let mesh = whole_solid_mesh_with(&topo, solid, deflection, |d| {
+                calls += 1;
+                assert!(
+                    d >= deflection && d <= clamp,
+                    "never coarser than the clamp: {d:e}"
+                );
+                Ok(opened(tessellate::tessellate_solid(&topo, solid, d)?))
+            })
+            .unwrap();
+            assert_eq!(calls, attempts, "at {deflection:e}");
+            assert!(!mesh_is_closed(&mesh), "at {deflection:e}");
+            let requested = opened(tessellate::tessellate_solid(&topo, solid, deflection).unwrap());
+            assert_eq!(
+                mesh.indices, requested.indices,
+                "at {deflection:e}: the mesh at the request comes back"
+            );
+        }
+        let mut calls = 0;
+        let mesh = whole_solid_mesh_with(&topo, solid, clamp / 4.0, |d| {
+            calls += 1;
+            tessellate::tessellate_solid(&topo, solid, d)
+        })
+        .unwrap();
+        assert_eq!(calls, 1, "a closed mesh is not retried");
+        assert!(mesh_is_closed(&mesh));
+    }
+
+    /// A mesher that opens every mesh finer than `clamp` and, with
+    /// `open_at_clamp`, the clamp mesh too.
+    fn cracking_mesher(
+        topo: &Topology,
+        solid: SolidId,
+        clamp: f64,
+        open_at_clamp: bool,
+    ) -> impl FnMut(f64) -> Result<tessellate::TriangleMesh, crate::OperationsError> + '_ {
+        move |d| {
+            let mesh = tessellate::tessellate_solid(topo, solid, d)?;
+            Ok(if d < clamp || open_at_clamp {
+                opened(mesh)
+            } else {
+                mesh
+            })
+        }
+    }
+
+    /// The open-mesh order on a body the exact integrator measures: the Gauss
+    /// integral answers whether or not the clamp mesh would close, because it
+    /// is the more accurate reading.
+    #[test]
+    fn open_mesh_takes_the_exact_integral_before_the_clamp_retry() {
+        let (topo, solid) = countersunk_arm();
+        let clamp = volume_tessellation_deflection(&topo, solid, f64::INFINITY);
+        let gauss = mass_properties(&topo, solid).unwrap().mass.abs();
+        let exact = countersunk_arm_volume();
+        for open_at_clamp in [false, true] {
+            let volume = required_closed_mesh_volume_with(
+                &topo,
+                solid,
+                clamp / 4.0,
+                "test",
+                cracking_mesher(&topo, solid, clamp, open_at_clamp),
+            )
+            .unwrap()
+            .unwrap();
+            assert!(
+                (volume - gauss).abs() <= 1e-9 * exact,
+                "open_at_clamp={open_at_clamp}: {volume} must be the Gauss integral {gauss}"
+            );
+        }
+    }
+
+    /// The open-mesh order on a body the exact integrator declines (a
+    /// scalloped box ∩ sphere collar): a request finer than the clamp whose
+    /// mesh cracks takes the closed clamp mesh instead of a refusal, and only
+    /// an open clamp mesh, or a request already at the clamp, refuses.
+    #[test]
+    fn unqualified_open_mesh_takes_the_closed_clamp_mesh_before_refusing() {
+        use remus_math::mat::Mat4;
+        let mut topo = Topology::new();
+        let bx = crate::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+        let sp = crate::primitives::make_sphere(&mut topo, 6.0, 24).unwrap();
+        crate::transform::transform_solid(&mut topo, sp, &Mat4::translation(5.0, 5.0, 5.0))
+            .unwrap();
+        let solid =
+            crate::boolean::boolean(&mut topo, crate::boolean::BooleanOp::Intersect, bx, sp)
+                .unwrap();
+        assert!(solid_has_scalloped_sphere_collar(&topo, solid).unwrap());
+        let clamp = volume_tessellation_deflection(&topo, solid, f64::INFINITY);
+        let at_clamp = tessellate::tessellate_solid(&topo, solid, clamp).unwrap();
+        assert!(mesh_is_closed(&at_clamp), "premise: the clamp mesh closes");
+        let clamp_volume = signed_volume_from_mesh(&at_clamp);
+
+        let retried = required_closed_mesh_volume_with(
+            &topo,
+            solid,
+            clamp / 4.0,
+            "scalloped sphere collar",
+            cracking_mesher(&topo, solid, clamp, false),
+        )
+        .unwrap();
+        assert_eq!(retried, Some(clamp_volume), "the closed clamp mesh answers");
+
+        for (deflection, open_at_clamp) in [(clamp / 4.0, true), (clamp, true)] {
+            let refusal = required_closed_mesh_volume_with(
+                &topo,
+                solid,
+                deflection,
+                "scalloped sphere collar",
+                cracking_mesher(&topo, solid, clamp, open_at_clamp),
+            );
+            assert!(
+                matches!(
+                    refusal,
+                    Err(crate::OperationsError::Unsupported {
+                        operation: "solid_volume",
+                        ..
+                    })
+                ),
+                "at {deflection:e}: an open clamp mesh must refuse, got {refusal:?}"
+            );
+        }
     }
 }
