@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790351818175,
+  "lastUpdate": 1790353189963,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -61747,6 +61747,240 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 77659,
             "range": "± 1202",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "46b3d59824acb8e68b1487ec4defa13d6e7b3757",
+          "message": "fix(algo): close the B39 wasm32 hammer divergence and pin it as an O1.5 parity cell (#644)\n\n* test(parity): pin the hammer shifted intersect as an O1.5 platform-divergence cell\n\nAdd contract/hammer-shifted-intersect to the O1.5 contract slice: the WASM\nsmoke's hammer opening replay up to its shiftedCommon step, run on the\nnative facade, the freshly packed tarball, and the committed package.\n\n- The Shapr3D hammer-holder STEP enters every surface as one exact arena\n  document (remus-parity-native --step-to-arena, then deserializeSolids),\n  so the operands are bit-identical by construction.\n- Per surface: 104 exact faces, the operations validator at zero errors\n  (plus the check-crate validator natively, which has no WASM binding),\n  watertight at (0.05, 0.1), and a volume strictly inside the common.\n- Across surfaces: face count, validation, mesh quality, quality, and\n  volume at the 5e-8 relative bound.\n- Every failed required stage now carries a failure class:\n  platform_divergence (native meets the gate, an installed surface or\n  the cross-surface agreement does not) or contract_violation, summarized\n  as failure_classes in the report.\n\nThe cell is direct-only on the installed surfaces because batch has no\narena-document op and the harness must not extend the WASM API.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n* fix(algo): drop marched traces that duplicate an exact tangent torus rim\n\nThe hammer holder's shifted intersect meets a torus fillet patch against\nthe shifted body's copy of its own x-axis cylinder. That pair is a\ntangency: the surfaces touch along the fillet rim circle, which\ntangent_torus_boundary_sections already emits exactly. The generic\nmarcher also traced the same tangency, and a trace along a double root\nis ill-conditioned: normals parallel to 1.6e-6 rad, 1.2e-4 off the true\ncircle at r = 8.\n\nThat trace was a co-endpoint duplicate of the rim arc. The loop walker\nordered the two tangent edges at their shared vertices by an angle that\nis zero to roundoff. Natively it read as an out-and-back spur the builder\nexcised. On wasm32 the same ~1e-12 libm perturbation made the trace the\npatch boundary and left 4 free edges. That is why #618 refused only in\nthe WASM smoke. No weld band can close a duplicate, so the emitted\ngeometry is controlled instead.\n\nis_marched_trace_of_tangent_rim drops a NURBS trace when every sample is\na tangency lying near one exact rim. Both bands derive from the 100·tol\nweld scale through the tangency conditioning: position sqrt(2·r·δ) and\nnormal angle sqrt(2·δ/r). A transversal crossing keeps finite normal\nangles and leaves the circle, so it is kept. No global tolerance changes.\n\nProof: with the pre-#627 landing re-enabled for fillet patches under a\ntemporary compile-time switch, the WASM replay closed (104 exact faces,\n0 free edges, watertight). The switch is removed, and the full-tube scope\nfrom #627 stands.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n* docs(roadmap): file B57, a native/WASM outcome divergence on cone-torus fuse\n\nThe O1.5 extended matrix, re-run on this head, shows one cell where the\nsurfaces disagree on outcome rather than on fallback partitioning:\ncone-torus/fuse/scale=1/placement=rigid refuses natively while the WASM\npackage returns a disclosed approximate 966-face result. The native\nrefusal reproduces identically on base 2794ae2d, so it predates this\nbranch. File it as B57 and link it from the O1.5 row.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Fable 5.1 <noreply@anthropic.com>",
+          "timestamp": "2026-09-25T16:11:54Z",
+          "tree_id": "01d9061f78785e491afcb6e83753c3ec024f5418",
+          "url": "https://github.com/esaueng/remus/commit/46b3d59824acb8e68b1487ec4defa13d6e7b3757"
+        },
+        "date": 1790353188123,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1235518,
+            "range": "± 1735",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1341602,
+            "range": "± 3612",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 26723,
+            "range": "± 22",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 11060894,
+            "range": "± 15610",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 11078517,
+            "range": "± 88156",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 10667218,
+            "range": "± 17160",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 1073415,
+            "range": "± 13623",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 17579757,
+            "range": "± 105580",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 31344002,
+            "range": "± 220712",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 27,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 112,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 62,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 218,
+            "range": "± 12",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 166,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 783,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 135,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 365,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 243,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 509,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 989,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 2683,
+            "range": "± 8",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 13,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 29,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 54,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 54,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 545450,
+            "range": "± 519",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 9577652,
+            "range": "± 11868",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 167387,
+            "range": "± 431",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 503930,
+            "range": "± 506",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 61095,
+            "range": "± 124",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 976955,
+            "range": "± 1497",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 11246899,
+            "range": "± 40601",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 778654,
+            "range": "± 955",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 1151944,
+            "range": "± 1451",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 77431,
+            "range": "± 156",
             "unit": "ns/iter"
           }
         ]
