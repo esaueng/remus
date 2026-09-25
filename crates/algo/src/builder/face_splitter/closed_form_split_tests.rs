@@ -407,7 +407,7 @@ const NOTCHES: [(f64, f64); 4] = [(PI, PI / 3.0), (4.5, 0.5), (0.9, 0.6), (TAU -
 fn rim_notch_splits_lateral_into_band_and_lens_of_closed_form_area() {
     for (r, h) in [(1.0, 2.0), (25.0, 10.0), (0.2, 0.5)] {
         let depth = 0.45 * h;
-        for z0 in [0.0, -1.5 * h, 0.5 * h] {
+        for z0 in [0.0, -1.5 * h, -0.5 * h, 0.5 * h] {
             for (centre, alpha) in NOTCHES {
                 for on_bottom in [true, false] {
                     for reversed in [false, true] {
@@ -469,7 +469,40 @@ fn check_notch(
             marched(&reversed_pts(&pieces[2])),
         ]
     };
-    let regions = split(&topo, face, &sections);
+    // Through the dispatcher, and the rim-chain splitter on its own: a
+    // later fallback can happen to trace the same notch, which would hide a
+    // splitter that wrongly declines its own cell.
+    let direct = rim_chains(&topo, face, &sections)
+        .unwrap_or_else(|| panic!("{ctx}: the rim-chain splitter declined its own cell"));
+    for (path, regions) in [
+        ("dispatch", split(&topo, face, &sections)),
+        ("direct", direct),
+    ] {
+        let ctx = &format!("{ctx} [{path}]");
+        check_notch_regions(
+            &regions, &sections, &surface, r, h, z0, depth, centre, alpha, on_bottom, reversed,
+            face, ctx,
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn check_notch_regions(
+    regions: &[SplitSubFace],
+    sections: &[SectionEdge],
+    surface: &FaceSurface,
+    r: f64,
+    h: f64,
+    z0: f64,
+    depth: f64,
+    centre: f64,
+    alpha: f64,
+    on_bottom: bool,
+    reversed: bool,
+    face: FaceId,
+    ctx: &str,
+) {
+    let d_at = |t: f64| notch_depth(t - centre + PI, alpha, depth);
     assert_eq!(regions.len(), 2, "{ctx}: want band + lens");
     let lens_area = notch_area(r, alpha, depth);
     let total = TAU * r * h;
@@ -501,7 +534,7 @@ fn check_notch(
         assert_eq!(regions[k].parent, face, "{ctx}");
         assert_eq!(regions[k].rank, Rank::A, "{ctx}");
         assert!(regions[k].inner_wires.is_empty(), "{ctx}");
-        assert_chart_consistent(&regions[k], &surface, r, ctx);
+        assert_chart_consistent(&regions[k], surface, r, ctx);
     }
     // The lens interior lies under the chain, the band's above it or
     // outside the notch.
@@ -518,7 +551,7 @@ fn check_notch(
         "{ctx}: band interior {:?} is inside the lens",
         m[band].interior
     );
-    assert_sections_shared(&regions, &sections, ctx);
+    assert_sections_shared(regions, sections, ctx);
     // The band keeps the whole far rim and both seam uses.
     let far_z = if on_bottom { z0 + h } else { z0 };
     let band_wire = &regions[band].outer_wire;
@@ -554,7 +587,7 @@ fn rim_to_rim_chains_split_lateral_into_two_sectors_of_closed_form_area() {
         (0.5, 0.3, 4.6, -0.2),
     ];
     for (r, h) in [(1.0, 2.0), (25.0, 10.0), (0.2, 0.5)] {
-        for z0 in [0.0, -1.5 * h, 0.5 * h] {
+        for z0 in [0.0, -1.5 * h, -0.5 * h, 0.5 * h] {
             for (ta, la, tb, lb) in configs {
                 for reversed in [false, true] {
                     for flip in [false, true] {
@@ -585,61 +618,70 @@ fn rim_to_rim_chains_split_lateral_into_two_sectors_of_closed_form_area() {
                                 marched(&b[1]),
                             ]
                         };
-                        let regions = split(&topo, face, &sections);
-                        assert_eq!(regions.len(), 2, "{ctx}: want two sectors");
-                        let m: Vec<Measured> = regions.iter().map(|sf| measure(sf, r)).collect();
-                        let clear_area = r * h * (tb - ta + 0.5 * (lb - la));
-                        let clear_is_0 =
-                            (m[0].area - clear_area).abs() < (m[1].area - clear_area).abs();
-                        let (clear, seam_side) = if clear_is_0 { (0, 1) } else { (1, 0) };
-                        assert_close(
-                            m[clear].area,
-                            clear_area,
-                            1e-6,
-                            &format!("{ctx}: clear sector"),
-                        );
-                        assert_close(
-                            m[seam_side].area,
-                            TAU.mul_add(r * h, -clear_area),
-                            1e-6,
-                            &format!("{ctx}: seam sector"),
-                        );
-                        for (k, mk) in m.iter().enumerate() {
-                            assert!(
-                                mk.net_turn.abs() < 1e-6,
-                                "{ctx}: region {k} winds {}",
-                                mk.net_turn
+                        let direct = rim_chains(&topo, face, &sections).unwrap_or_else(|| {
+                            panic!("{ctx}: the rim-chain splitter declined its own cell")
+                        });
+                        for (path, regions) in [
+                            ("dispatch", split(&topo, face, &sections)),
+                            ("direct", direct),
+                        ] {
+                            let ctx = format!("{ctx} [{path}]");
+                            assert_eq!(regions.len(), 2, "{ctx}: want two sectors");
+                            let m: Vec<Measured> =
+                                regions.iter().map(|sf| measure(sf, r)).collect();
+                            let clear_area = r * h * (tb - ta + 0.5 * (lb - la));
+                            let clear_is_0 =
+                                (m[0].area - clear_area).abs() < (m[1].area - clear_area).abs();
+                            let (clear, seam_side) = if clear_is_0 { (0, 1) } else { (1, 0) };
+                            assert_close(
+                                m[clear].area,
+                                clear_area,
+                                1e-6,
+                                &format!("{ctx}: clear sector"),
                             );
-                            assert!((mk.interior.2 - r).abs() < 1e-9 * r.max(1.0), "{ctx}");
-                            assert!(mk.interior.1 > z0 && mk.interior.1 < z0 + h, "{ctx}");
-                            assert_eq!(regions[k].reversed, reversed, "{ctx}");
-                            assert_chart_consistent(&regions[k], &surface, r, &ctx);
+                            assert_close(
+                                m[seam_side].area,
+                                TAU.mul_add(r * h, -clear_area),
+                                1e-6,
+                                &format!("{ctx}: seam sector"),
+                            );
+                            for (k, mk) in m.iter().enumerate() {
+                                assert!(
+                                    mk.net_turn.abs() < 1e-6,
+                                    "{ctx}: region {k} winds {}",
+                                    mk.net_turn
+                                );
+                                assert!((mk.interior.2 - r).abs() < 1e-9 * r.max(1.0), "{ctx}");
+                                assert!(mk.interior.1 > z0 && mk.interior.1 < z0 + h, "{ctx}");
+                                assert_eq!(regions[k].reversed, reversed, "{ctx}");
+                                assert_chart_consistent(&regions[k], &surface, r, &ctx);
+                            }
+                            let between = |(t, z, _): (f64, f64, f64)| {
+                                let f = (z - z0) / h;
+                                t > la.mul_add(f, ta) && t < lb.mul_add(f, tb)
+                            };
+                            assert!(
+                                between(m[clear].interior),
+                                "{ctx}: clear interior {:?}",
+                                m[clear].interior
+                            );
+                            assert!(
+                                !between(m[seam_side].interior),
+                                "{ctx}: seam interior {:?}",
+                                m[seam_side].interior
+                            );
+                            assert_sections_shared(&regions, &sections, &ctx);
+                            // Only the seam-side sector touches the seam, and it
+                            // carries it both ways.
+                            let seams = |k: usize| {
+                                regions[k]
+                                    .outer_wire
+                                    .iter()
+                                    .filter(|e| matches!(e.curve_3d, EdgeCurve::Line))
+                                    .count()
+                            };
+                            assert_eq!((seams(seam_side), seams(clear)), (2, 0), "{ctx}");
                         }
-                        let between = |(t, z, _): (f64, f64, f64)| {
-                            let f = (z - z0) / h;
-                            t > la.mul_add(f, ta) && t < lb.mul_add(f, tb)
-                        };
-                        assert!(
-                            between(m[clear].interior),
-                            "{ctx}: clear interior {:?}",
-                            m[clear].interior
-                        );
-                        assert!(
-                            !between(m[seam_side].interior),
-                            "{ctx}: seam interior {:?}",
-                            m[seam_side].interior
-                        );
-                        assert_sections_shared(&regions, &sections, &ctx);
-                        // Only the seam-side sector touches the seam, and it
-                        // carries it both ways.
-                        let seams = |k: usize| {
-                            regions[k]
-                                .outer_wire
-                                .iter()
-                                .filter(|e| matches!(e.curve_3d, EdgeCurve::Line))
-                                .count()
-                        };
-                        assert_eq!((seams(seam_side), seams(clear)), (2, 0), "{ctx}");
                     }
                 }
             }
