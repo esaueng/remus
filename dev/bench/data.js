@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790347871647,
+  "lastUpdate": 1790349739320,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -61279,6 +61279,240 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 88553,
             "range": "± 338",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1faf307bdac2f22d336041498e0ceed84894b87e",
+          "message": "fix(tessellate): mesh sphere patches that hold a pole as the pole cap (B40) (#646)\n\n* fix(tessellate): mesh sphere patches that hold a pole as the pole cap (B40)\n\nA trimmed sphere face whose single boundary loop winds once around the\ncarrier's polar axis contains a pole. The parametric CDT unwraps that\nloop into an open curve spanning a full u period and closes it with a\nchord, so it meshed the complementary lens between the equator and the\nsection instead. The lens runs the shared section edges in the\nneighbour's own direction: the B26 finding-15 cone-sphere fuse opened\nwith 1428 one-sided edges at the harness deflection, at every scale, and\nat coarse deflection the boundary weld plus coincident-triangle removal\nerased both sides into a closed but wrong mesh.\n\nAdd a narrow structured path to the sphere-cap chain. It certifies a\nsingle +-1 azimuth winding clear of both poles, picks the enclosed pole\nfrom the winding sign (the latitude-cap rule, in the carrier frame),\nand constrains the loop verbatim in a stereographic chart from the\nexcluded pole, which is one-to-one on the patch. Samples are charted by\nunit direction, so marched section edges 2.7e-5 r off the sphere chart\ncorrectly without loosening the hemisphere filler's on-sphere gate.\nAnything else declines to the existing CDT.\n\nUn-ignore b26_finding15_conesphere_wire_mesh. Add\nregress_b40_conesphere_small_scale.rs: the witness and a contained-pole\nfamily whose cut keeps REVERSED pole patches, at 1e-3/1/1e3 for fuse,\ncut and intersect, against inclusion-exclusion closed forms, sag-bounded\nmesh volumes, watertightness at 0.1/0.01/harness deflection, both\nvalidators, ray-cast probes and translation invariance. An ignored\nready-repro pins the measure-layer remainder: solid_volume's signed\ntetrahedra about the world origin drift 0.7% for a 1e-3 body moved 13\nunits, although its mesh is unchanged.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n* docs(roadmap): close B40 with evidence and file the B56 volume remainder\n\nB40 is Done: the open cone-sphere fuse mesh was a pole-holding sphere\npatch meshed as its complement, at every scale. File the measure-layer\nremainder it exposed as B56 (solid_volume's signed tetrahedra about the\nworld origin drift for a small body far from it), correct the earlier\nsnap-reconciliation reading in the mesh-class diagnostics note, and add\none-line lessons to the tessellation and roadmap skills.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n* fix(tessellate): leave level rings on the latitude-cap and sweep paths\n\nThe pole-cap path also caught primitive hemispheres, whose equator\nloop winds once around the axis at one latitude. The parametric CDT\ndeclines those on its negligible-height guard, and the established\nsweep meshes them; taking them changed the sphere goldens and\ndropped a disjoint cone-sphere fuse volume 0.36%. Decline any loop\nwith no latitude spread, pin that decline in the unit tests, and move\nthe cap-area check to a tilted small circle.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Fable 5.1 <noreply@anthropic.com>",
+          "timestamp": "2026-09-25T15:11:50Z",
+          "tree_id": "e4563158bcba5ef518a9b8692f9b6a1bb7b0a3c4",
+          "url": "https://github.com/esaueng/remus/commit/1faf307bdac2f22d336041498e0ceed84894b87e"
+        },
+        "date": 1790349737288,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1050659,
+            "range": "± 108932",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1135344,
+            "range": "± 73832",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 22577,
+            "range": "± 74",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 9361211,
+            "range": "± 35664",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 9362755,
+            "range": "± 190667",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 9041257,
+            "range": "± 78237",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 915590,
+            "range": "± 3768",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 14697992,
+            "range": "± 180239",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 26381563,
+            "range": "± 209074",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 20,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 73,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 35,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 156,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 125,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 527,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 124,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 258,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 194,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 365,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 786,
+            "range": "± 13",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 2040,
+            "range": "± 10",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 9,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 29,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 47,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 47,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 435773,
+            "range": "± 1846",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 7692641,
+            "range": "± 8021",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 131344,
+            "range": "± 942",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 391952,
+            "range": "± 1782",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 53740,
+            "range": "± 222",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 811416,
+            "range": "± 7800",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 9368930,
+            "range": "± 42928",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 652575,
+            "range": "± 1617",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 968137,
+            "range": "± 6012",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 68922,
+            "range": "± 1470",
             "unit": "ns/iter"
           }
         ]
