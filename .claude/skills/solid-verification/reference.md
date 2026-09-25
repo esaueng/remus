@@ -76,12 +76,14 @@ Probe selection: sample the intent, not the space. Centers of every carved pocke
 | 1 | Closed form | `try_analytic_solid_volume` | Pure primitive: sphere, cylinder, cone/frustum, torus. Not box (all-planar solids fall through and are exact via tessellation). Bails on any NURBS face or any face with inner wires |
 | 2 | Guarded Gauss | `analytic_faces_solid_volume` | All-analytic solid matching narrow structural guards (e.g. bored sphere with constant-v outer wire); uses `remus_check::properties::face_integrator::integrate_face` per face |
 | 3 | Revolution | `analytic_revolution_solid_volume` | Fully analytic surface-of-revolution solid: one shared axis, concentric circular caps, no NURBS, no inner wires. Deliberately narrow so it never fires on boolean results with arc-bounded planar caps |
-| 4-5 | Gated mesh | shape guards + `signed_volume_from_mesh` | Specific boolean shapes (scalloped-sphere collar, torus notch band), gated on `mesh_boundary_edge_count == 0`; falls through rather than return a leaky volume |
+| 4-5 | Gated mesh | shape guards + `required_closed_mesh_volume` | Specific boolean shapes (scalloped-sphere collar, torus notch band, non-latitude sphere patch) that the later per-face paths mis-measure. Closed whole-solid mesh; if open, the exact Gauss integral over qualified faces, else the closed clamp mesh for a finer request, else a typed `Unsupported`. It used to fall through to path 7, which read 5.43 for an 18.775 torus–cone fuse |
 | 6 | Direct faces | `solid_volume_from_faces` | All-planar-triangular solids (mesh imports) |
-| 7 | Per-face tess | `volume_from_direct_face_tessellation` | Faces with inner wires or reversed non-planar faces |
-| 8 | Whole-solid tess | `tessellate_solid` + `signed_volume_from_mesh`, fallback `volume_from_per_face_tessellation` | Everything else. Signed tetrahedra: abs(sum of v0 dot (v1 cross v2)) / 6 |
+| 7 | Per-face tess | `volume_from_direct_face_tessellation` | Faces with inner wires or reversed non-planar faces. Bodies with a NURBS face, a NURBS-trimmed quadric wall, a non-latitude sphere or a torus bore beside a NURBS-rimmed plane go to the closed whole-solid mesh first, under the same open-mesh rule as 4-5 |
+| 8 | Whole-solid tess | `whole_solid_mesh` + `signed_volume_from_mesh`, fallback `volume_from_per_face_tessellation` | Everything else. Signed tetrahedra: abs(sum of v0 dot (v1 cross v2)) / 6. An open mesh at a request finer than the clamp is retried at the clamp; one open there too is still read, unchecked (the residual fail-open case) |
 
 Mental model: an analytic tier (1-3), a direct/per-face tier (6-7), a tessellation tier (4-5, 8).
+
+Which path answered: run with `BK_VOL_TRACE=1` and read the `VOL_TRACE` lines on stderr (`--nocapture` under `cargo test`). It writes to stderr directly because no test or WASM logger is installed at debug level.
 
 ### The deflection clamp
 

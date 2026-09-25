@@ -32,6 +32,35 @@
 
 ### Features
 
+* `massProperties` (direct and `executeBatch`) accepts optional
+  `adaptiveEps`, `maxDepth` (`0..=32`) and `gaussOrder` (`1..=20`) numerical
+  controls, effective on every face family including trimmed, NURBS and
+  torus-band faces. Omitting them reproduces the previous result exactly.
+  Out-of-range or non-numeric values fail with `invalid_argument` naming the
+  argument; the batch form previously ignored them silently. A tolerance the
+  depth or work budget cannot meet refuses instead of returning an
+  unconverged result.
+* Add `filletDetailed`, `chamferDetailed`, `shellDetailed`, and
+  `offsetDetailed` (direct methods and `executeBatch`/`executeBatchV2` ops of
+  the same names), typed O4.7 twins of `fillet`, `chamfer`, `shell`, and
+  `offsetSolid`. Each returns a `SolidOperationDetailedResult`: success
+  discloses `details.quality` (`exact` or `approximate`, plus
+  `approximateFaces`, `sampledFaces`, or `deflection`) and, for blends,
+  `details.engine`; a refusal is data carrying the kernel code and category,
+  with topology rolled back. `exactOnly` (fillet, chamfer, offset) refuses an
+  approximate result with `quality_refused` / `exact_only_unattainable`;
+  shell stays exact-only unless `approximationSpacing` is given. The batch
+  ops return the same envelope as their `ok` value. Legacy methods are
+  unchanged.
+* `offsetJournaled` (direct, `executeBatch`, `executeBatchV2`) adds an
+  `evolution` field beside `solid` and `op`. It lists every result face,
+  edge and vertex as `modified`, `merged`, `generated`, or `unresolved`
+  with `candidates` and a typed `reason` (`ambiguous_incidence`,
+  `unmapped_incident_face`, `unresolved_face_origin`). It also carries a
+  `completeness` report (`accounted`, `resolved`, per-kind `omitted`,
+  `phantom` and `unresolved` lists) checked against the actual result. The
+  journal entry now records edges and vertices, so a box offset journals
+  26 events instead of 6, and edge and vertex references resolve across it.
 * Add `offsetJournaled` to the direct and `executeBatch` APIs, returning the
   result solid and operation id while recording total construction-derived
   face evolution instead of an offset barrier.
@@ -53,6 +82,14 @@
   an empty mesh, and accepts an optional `angularTolerance` matching
   `tessellateSolid` and `tessellateSolidGrouped`. Batch calls accept the same
   additive `angularTolerance` argument.
+* `filletVariable` and batch `filletVariable` refuse a radius that reaches
+  past a planar support face with the walking engine's support-cliff error
+  (`operation_failed`, `details.kernelCode = "cliff-encountered"`, message
+  naming the requested and available radius) and roll back (B63). On a
+  10 mm box, radius 11 and 20 used to return valid-looking but wrong solids
+  (474.0 and 427.7 mm³, against closed forms of 740.3 and 141.6), while
+  radius 50 was refused later as `invalid_argument` / `invalid-input`. All
+  three now get the cliff code.
 
 ## [0.4.0](https://github.com/andymai/brepkit/compare/v0.3.1...v0.4.0) (2026-03-04)
 
