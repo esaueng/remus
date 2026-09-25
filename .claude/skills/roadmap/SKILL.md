@@ -139,7 +139,8 @@ blend-band witness (`regress_torus_pierce_band.rs`, still fails 3/3), one
 P-Class 2.6 witness (`qualify_boolean_anisotropic.rs`, still fails 3/3), and
 five B10 seeds (`b10_curve_curve.rs` ×2, `b10_conic_distance.rs` ×3, all still
 fail 3/3; the two `b10_curve_curve.rs` crossing seeds were fixed and
-un-ignored in PR #642 (2026-09-25), leaving the three conic-distance seeds). The other twelve are one ~2 min perf run
+un-ignored in PR #642 (2026-09-25) and the three conic-distance seeds in PR
+#658, so B10 owns no ignored seeds). The other twelve are one ~2 min perf run
 (`boolean/tests.rs::staircase_fuse_with_cylinders`), two manual release-mode
 `unify_faces` scaling measurements (`regress_unify_scaling.rs`, issue #284),
 and nine print-only diagnostics (`profile_intersect.rs` ×3, the two #696
@@ -183,7 +184,7 @@ harness's own option-honoured floor misreading a correct 0.05 fillet on an
 - **Exact rational conic twins do not preserve angle-linear parameter speed;** compare positions after projection plus tangent direction and curvature, and use a deterministic one-sided radial derivative at revolution poles (`crates/math/src/surfaces/swept/tests.rs`, PR #189).
 - **Bezier clipping must rebuild the fat line from the CURRENT sub-segments at every depth (fixed 2026-09-25, B10):** re-using the parent control polygon made every clip a fixed centred shrink that dropped off-centre roots silently; judge termination, Newton, merge and overlap-vs-tangency in model space, and separate a tangent contact from an overlap by second-order (tangent + curvature) agreement, never Hausdorff alone (`crates/math/src/nurbs/bezier_clip.rs`, `crates/geometry/tests/b10_curve_curve.rs`).
 - **A curve lying IN a surface resolves every seed as a hit (no overlap model in `intersect_curve_surface`);** a constant-coordinate "transversal" test config can be coincident — check the direction against the surface normal before believing a spray (`crates/geometry/tests/b10_curve_surface.rs`, B10).
-- **Gauss-Newton extrema stalls where |(C−P)·a| ≈ |v|² (minor-axis ellipse vertex from 4 radii: the dropped curvature term equals the kept term, scale-invariant);** a right-distance/wrong-point answer passes unless stationarity is asserted (`crates/geometry/tests/b10_conic_distance.rs`, B10).
+- **Extrema Newton must keep the residual-times-curvature term (fixed 2026-09-25, B10):** Gauss-Newton overshot 2x at an ellipse minor vertex (orbit), 3x at a hyperbola vertex (diverged) and went singular for parallel closest tangents; assert stationarity (a right-distance/wrong-point answer passes otherwise), backtrack on a halved residual as well as on distance (distance alone resolves the foot to sqrt(eps)), and derive a closed-form query's minima before trusting "the vertex is closest" (`crates/geometry/src/extrema/`, `crates/geometry/tests/b10_conic_distance.rs`).
 
 - **Tightening a section to its opposing face's true extent exposes arrangement gaps the overlong section masked;** a curved face must pre-split sections at its own wire vertices, and a section arc's endpoint-T test must use the true curve, not its chord (deepened-notch foil, PR #363).
 - **Exact circular trims on bilinear/Coons caps are vacuous — a planar section of one is a hyperbola or ruling line, never a circle;** curved cap holes stay typed-refused (with rollback), chase the certified iso-rect class or converged-approximate paths instead (`crates/operations/tests/qualify_b12_annular_coons.rs`, B12).
@@ -202,6 +203,11 @@ harness's own option-honoured floor misreading a correct 0.05 fillet on an
 - **Marched/fitted section geometry is good to ~1e-6; every exact-tolerance
   (1e-7) gate it meets needs a weld-scale (100·tol) band.** Four separate gaps
   in one family (weld anchors, T-splits, on-plane checks, junction discs).
+- **A marched trace along a TANGENCY is a co-endpoint duplicate of the exact
+  rim the pair already carries; no weld band closes a duplicate, drop it at
+  emission** (`phase_ff::is_marched_trace_of_tangent_rim`; the hammer shifted
+  intersect closed natively as a spur and leaked 4 free edges on wasm32,
+  O1.5 cell `contract/hammer-shifted-intersect`, PR after #627).
 - **The face splitter is a web of mutual calibrations.** On any
   `face_splitter` or section/clip change run ALL foils: d4, honeycomb pcut3,
   divider-lip, the nub fixtures, cylinder-slot, groove-mouth, junction-disc.
@@ -253,6 +259,7 @@ harness's own option-honoured floor misreading a correct 0.05 fillet on an
   a volume that disagrees with a pin can be Remus being MORE exact (the
   snapClip clip volume, the K0.1 parabolic fillet file).
 - **Rigid-motion paths must carry a placed carrier's frame, not rebuild it default-aligned:** re-creating a moved sphere from center + radius silently un-rotated it, tilting the equator against its hemispheres and breaking pole choice and CDT bounds three ways (B41, `crates/operations/tests/regress_sphere_transform_frame.rs`, PR #495).
+- **A watertight coarse mesh can be two wrong sides erased:** a pole-holding sphere patch meshed as its complement at every scale, and the boundary weld plus coincident-triangle removal cancelled it against the neighbour; per-face attribution with weld/dedupe off shows the real mismatch (B40, `tessellate/sphere_pole_patch.rs`).
 - **A measurement route chosen because another is known wrong must never fall back to it:** `solid_volume`'s closed-mesh gates fell through to the rectangle on an open mesh, and a width sweep mixing routes carried the whole route error into its differences; the open case now takes the exact Gauss integral or refuses typed (B54, `crates/operations/tests/regress_volume_open_mesh_route.rs`).
 - **Holed planes are all CDT-triangulated before any Steiner splice runs:** a boundary Steiner point one holed plane inserts must be split into an already-meshed holed-plane neighbour, not only spliced into the edge chain for later faces (B54, `tessellate/solid.rs::split_triangles_spanning_boundary_splits`).
 - **A seam that stops a blend chain walk is either a genuine surface transition (cross it) or a same-surface split (stop):** check outward normals pairwise plus an actual surface change before refusing; the equal-radius corner degenerates to a sphere with a singular Jacobian and needs the closed form (sequential fillet, `crates/blend/src/g1_chain.rs`, PR #496).
