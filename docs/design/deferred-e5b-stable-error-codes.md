@@ -3,9 +3,9 @@
 Status: implemented as the additive `executeBatchV2` contract. O4.7 has begun
 the additive direct-method rollout with typed `fuseDetailed`, `cutDetailed`,
 and `intersectDetailed` results, followed by the modifier family
-(`filletDetailed`, `chamferDetailed`, `shellDetailed`, `offsetDetailed`). The
-legacy `executeBatch` wire format and existing direct-method behavior remain
-unchanged.
+(`filletDetailed`, `chamferDetailed`, `shellDetailed`, `offsetDetailed`) and
+the blend variants. The legacy `executeBatch` wire format and existing
+direct-method behavior remain unchanged.
 
 ## Context
 
@@ -114,6 +114,12 @@ its legacy exact-only default and opts into approximation with
 `approximationSpacing`. Every refusal restores the pre-call topology. Batch
 ops of the same names return the identical envelope as their `ok` value, so a
 refusal is data in a batch too.
+
+The third slice covers the blend variants on the same pattern:
+`filletV2Detailed`, `chamferV2Detailed`, `chamferDistanceAngleDetailed`, and
+`filletVariableDetailed`. The variable fillet runs an engine with no engine
+tag, so its details omit `engine`; its constant-law wall is a NURBS fit and
+reports `approximate`.
 
 The remaining mutating direct-method families and typed replacements for the
 JSON-string returns remain O4.7 follow-up work.
