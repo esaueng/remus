@@ -489,6 +489,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Qualified-operation integration tests | `bindings/qualify_ops_tests.rs` |
 | Direct/batch B6 primitive qualification | `bindings/qualify_primitives_tests.rs` |
 | Direct/batch B6 convex-hull/Minkowski qualification | `bindings/qualify_convex_hull_tests.rs` |
+| Direct/batch B6 plane-section/split qualification | `bindings/qualify_section_split_tests.rs` |
 | Growing-holder recipe `volume` contract (B54: closed-form −5440 width step through `executeBatch`) | `bindings/growing_holder_volume_tests.rs` |
 
 ### L4: wasm-io (`crates/wasm-io/src/`)

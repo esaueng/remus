@@ -42,4 +42,6 @@ mod qualify_ops_tests;
 #[cfg(test)]
 mod qualify_primitives_tests;
 #[cfg(test)]
+mod qualify_section_split_tests;
+#[cfg(test)]
 mod sequential_fillet_tests;
