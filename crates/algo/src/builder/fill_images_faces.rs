@@ -5664,3 +5664,6 @@ mod tests {
         assert!(instantiate_test_edge(&mut topo, &transient).is_err());
     }
 }
+
+#[cfg(test)]
+mod helper_oracle_tests;
