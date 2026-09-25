@@ -380,7 +380,7 @@ export const runFreeformRulingRegression = ({ BrepKernel }) => {
         assert.equal(JSON.parse(kernel.meshQuality(result.solid, 0.01)).isWatertight, true);
         const expected = operation === 'cut' ? 60 : 36;
         assert.ok(
-          Math.abs(kernel.massProperties(result.solid).volume - expected) / expected < 1e-6,
+          Math.abs(JSON.parse(kernel.massProperties(result.solid)).volume - expected) / expected < 1e-6,
         );
         for (const x of [-1, 1]) {
           const inside = operation === 'cut' ? x < 0.5 : x > 0.5;
@@ -443,8 +443,9 @@ export const runCurvedCornerBlendRegression = ({ BrepKernel }) => {
         const result = kernel.filletWithEvolution(source, Uint32Array.from(edges), r);
         assertCompleteEvolution(result, 'curved corner');
         assert.equal(result.evolution.provenance, 'construction');
-        solid = result.solid;
+        solid = result.result.solid;
       }
+      assert.ok(Number.isInteger(solid));
       const kinds = Array.from(kernel.getSolidFaces(solid), (face) => kernel.getSurfaceType(face));
       assert.deepEqual(
         ['plane', 'cylinder', 'sphere'].map((kind) => kinds.filter((v) => v === kind).length),
@@ -528,7 +529,7 @@ export const runCylinderSeamNotchRegression = ({ BrepKernel }) => {
               inside ? 'inside' : 'outside',
             );
           }
-          volumes[operation] = kernel.massProperties(result.solid).volume;
+          volumes[operation] = JSON.parse(kernel.massProperties(result.solid)).volume;
         } finally {
           kernel.free();
         }
