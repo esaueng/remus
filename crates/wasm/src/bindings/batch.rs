@@ -66,6 +66,23 @@ fn get_angular_tolerance(args: &serde_json::Value) -> Result<f64, StructuredWasm
     Ok(angular_tolerance)
 }
 
+/// An optional numeric argument: absent or `null` is `None`; anything else
+/// present must be a JSON number.
+fn get_optional_f64(
+    args: &serde_json::Value,
+    name: &'static str,
+) -> Result<Option<f64>, StructuredWasmError> {
+    match args.get(name) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(value) => value.as_f64().map(Some).ok_or_else(|| {
+            StructuredWasmError::invalid_argument(
+                format!("invalid '{name}': expected number"),
+                Some(name),
+            )
+        }),
+    }
+}
+
 fn get_optional_work_budget(
     args: &serde_json::Value,
     name: &str,
@@ -1422,17 +1439,19 @@ impl BrepKernel {
             }
             "massProperties" => {
                 let s = get_u32(args, "solid")?;
+                let options = super::measure::mass_properties_options(
+                    get_optional_f64(args, "adaptiveEps")?,
+                    get_optional_f64(args, "maxDepth")?,
+                    get_optional_f64(args, "gaussOrder")?,
+                )
+                .map_err(|(error, name)| {
+                    StructuredWasmError::invalid_argument(error.to_string(), Some(name))
+                })?;
                 let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
-                let props = measure::mass_properties(&self.topo, solid_id)
+                let props = measure::mass_properties_with_options(&self.topo, solid_id, &options)
                     .map_err(StructuredWasmError::from)?;
-                let (moments, axes) = props.principal_inertia();
-                Ok(serde_json::json!({
-                    "volume": props.mass,
-                    "centerOfMass": [props.center.x(), props.center.y(), props.center.z()],
-                    "inertia": props.inertia,
-                    "principalMoments": moments,
-                    "principalAxes": axes.iter().flatten().copied().collect::<Vec<f64>>(),
-                }))
+                serde_json::to_value(super::measure::mass_properties_result(&props))
+                    .map_err(|e| StructuredWasmError::internal(e.to_string()))
             }
             "meshQuality" => {
                 let s = get_u32(args, "solid")?;
