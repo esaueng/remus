@@ -2209,3 +2209,764 @@ mod weight_cache_tests {
         assert_ne!(a, c);
     }
 }
+
+/// Semantic normal tests closing the `normal_from_partials` survivor family.
+///
+/// Every assertion is tied to public geometric behavior with an independent
+/// oracle (analytic plane/cylinder/sphere formulas or central finite
+/// differences of `evaluate`), never to a second call of the same normal
+/// implementation. The inventory this module closes:
+///
+/// * `surface.rs:266` / `288` threshold `>`: `==` and `<` mutants force the
+///   non-degenerate fast path into the fallback (then `Err`); every
+///   non-degenerate test below asserts `Ok`, killing them. `>=` is
+///   equivalent (only differs when `|cross|² == 1e-30` exactly).
+/// * `surface.rs:273-274` epsilon scale: `*1e-6` -> `+1e-6`/`/1e-6` makes the
+///   pole fallback jump to a far edge (wrong normal or `Err`); the four
+///   single-direction pole tests use tight direction assertions to kill
+///   them. `-` -> `/` on `(u1-u0)` divides by the domain minimum (0 for the
+///   standard knots) giving `inf` and the same far-edge failure. `-` -> `+`
+///   is equivalent when the domain minimum is 0 (`u1+u0 == u1-u0`); the
+///   shifted-domain test pins the fallback correct for non-zero minima.
+/// * `surface.rs:277-280` perturbation signs: each of the four directions is
+///   the unique success for one fixture (collapsed-u0 needs `+u`,
+///   collapsed-u1 needs `-u`, south pole needs `+v`, north pole needs `-v`),
+///   so flipping or scaling that direction to a degenerate/clamped site
+///   turns `Ok` into `Err`.
+/// * `surface.rs:228/250/265/945` `Ok(Default::default())` mutants are
+///   unviable (`Vec3` has no `Default` impl).
+#[cfg(test)]
+mod normal_semantic_tests {
+    #![allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::too_many_lines,
+        clippy::many_single_char_names,
+        clippy::cast_precision_loss
+    )]
+
+    use super::*;
+    use crate::surfaces::CylindricalSurface;
+    use crate::vec::{Point3, Vec3};
+
+    fn fd_tangents(s: &NurbsSurface, u: f64, v: f64, h: f64) -> (Vec3, Vec3) {
+        let (u0, u1) = s.domain_u();
+        let (v0, v1) = s.domain_v();
+        // Central differences wherever the stencil fits; one-sided at the
+        // domain walls (used only for interior assertions below).
+        let (pu_plus, pu_minus) = ((u + h).min(u1), (u - h).max(u0));
+        let (pv_plus, pv_minus) = ((v + h).min(v1), (v - h).max(v0));
+        let p_up = s.evaluate(pu_plus, v);
+        let p_dn = s.evaluate(pu_minus, v);
+        let p_ur = s.evaluate(u, pv_plus);
+        let p_dr = s.evaluate(u, pv_minus);
+        let hu = pu_plus - pu_minus;
+        let hv = pv_plus - pv_minus;
+        let du = Vec3::new(
+            (p_up.x() - p_dn.x()) / hu,
+            (p_up.y() - p_dn.y()) / hu,
+            (p_up.z() - p_dn.z()) / hu,
+        );
+        let dv = Vec3::new(
+            (p_ur.x() - p_dr.x()) / hv,
+            (p_ur.y() - p_dr.y()) / hv,
+            (p_ur.z() - p_dr.z()) / hv,
+        );
+        (du, dv)
+    }
+
+    fn assert_unit(n: Vec3, label: &str) {
+        let len = n.length();
+        assert!(
+            (len - 1.0).abs() < 1e-12,
+            "{label}: normal not unit: len={len:.6e} n=({:.6e},{:.6e},{:.6e})",
+            n.x(),
+            n.y(),
+            n.z()
+        );
+    }
+
+    fn assert_direction(n: Vec3, expected: Vec3, tol: f64, label: &str) {
+        let diff = Vec3::new(
+            n.x() - expected.x(),
+            n.y() - expected.y(),
+            n.z() - expected.z(),
+        );
+        let drift = diff.length();
+        let dot = n.dot(expected);
+        assert!(
+            drift < tol && dot > 1.0 - tol,
+            "{label}: direction drift {drift:.3e} dot {dot:.12} n=({:.6e},{:.6e},{:.6e}) expected=({:.6e},{:.6e},{:.6e})",
+            n.x(),
+            n.y(),
+            n.z(),
+            expected.x(),
+            expected.y(),
+            expected.z()
+        );
+    }
+
+    fn assert_orthogonal_to_fd(n: Vec3, s: &NurbsSurface, u: f64, v: f64, tol: f64, label: &str) {
+        let (fdu, fdv) = fd_tangents(s, u, v, 1e-6);
+        for (name, t) in [("du", fdu), ("dv", fdv)] {
+            let denom = t.length().max(1e-18);
+            let sine = (n.dot(t) / denom).abs();
+            assert!(
+                sine < tol,
+                "{label}: normal not orthogonal to FD {name} at ({u},{v}): |n.t|/|t|={sine:.3e}"
+            );
+        }
+    }
+
+    fn assert_normal_matches_oracle(s: &NurbsSurface, u: f64, v: f64, expected: Vec3, label: &str) {
+        let tol = 1e-9;
+        let n = s.normal(u, v).expect("non-degenerate normal must succeed");
+        assert_unit(n, label);
+        assert_direction(n, expected, 1e-9, label);
+        assert_orthogonal_to_fd(n, s, u, v, 1e-6, label);
+        // The scratch entry points must agree geometrically too (not just
+        // bitwise with the allocating path): both are checked against the
+        // same independent oracle.
+        let mut scratch = DerivativeScratch::new();
+        let n_scratch = scratch
+            .normal_from(s, u, v)
+            .expect("scratch normal must succeed");
+        assert_unit(n_scratch, &format!("{label} [scratch]"));
+        assert_direction(n_scratch, expected, tol, &format!("{label} [scratch]"));
+        let (n_fused, _, _) = scratch.normal_partials_from(s, u, v);
+        let n_fused = n_fused.expect("fused normal must succeed");
+        assert_direction(n_fused, expected, tol, &format!("{label} [fused]"));
+        // A reused scratch across calls must stay correct (no stale state).
+        let n_reused = scratch
+            .normal_from(s, u, v)
+            .expect("reused scratch must succeed");
+        assert_direction(n_reused, expected, tol, &format!("{label} [reused]"));
+        // The cached evaluator path is a third implementation: check it
+        // against the oracle, not against the allocating normal.
+        let mut eval = s.evaluator();
+        let n_eval = eval.normal(u, v);
+        assert_direction(n_eval, expected, 1e-8, &format!("{label} [evaluator]"));
+    }
+
+    /// Flat XY plane with the test-suite winding: S(u,v) = (v,u,0), so
+    /// du x dv = (0,0,-1). The sign is the point: the old `bilinear_normal`
+    /// test accepted either sign via `abs`, letting an orientation flip
+    /// survive.
+    fn xy_plane() -> NurbsSurface {
+        NurbsSurface::new(
+            1,
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![
+                vec![Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 0.0, 0.0)],
+                vec![Point3::new(0.0, 1.0, 0.0), Point3::new(1.0, 1.0, 0.0)],
+            ],
+            vec![vec![1.0, 1.0], vec![1.0, 1.0]],
+        )
+        .expect("valid plane")
+    }
+
+    /// Same plane with opposite winding (swap the u rows): normal (0,0,+1).
+    fn xy_plane_reversed() -> NurbsSurface {
+        NurbsSurface::new(
+            1,
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![
+                vec![Point3::new(0.0, 1.0, 0.0), Point3::new(1.0, 1.0, 0.0)],
+                vec![Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 0.0, 0.0)],
+            ],
+            vec![vec![1.0, 1.0], vec![1.0, 1.0]],
+        )
+        .expect("valid reversed plane")
+    }
+
+    /// Transposed plane (swap u/v control net): S(u,v) = (u,v,0), normal
+    /// (0,0,+1). Covers the supported u/v reversal: transposition flips the
+    /// cross-product order.
+    fn xy_plane_transposed() -> NurbsSurface {
+        NurbsSurface::new(
+            1,
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![
+                vec![Point3::new(0.0, 0.0, 0.0), Point3::new(0.0, 1.0, 0.0)],
+                vec![Point3::new(1.0, 0.0, 0.0), Point3::new(1.0, 1.0, 0.0)],
+            ],
+            vec![vec![1.0, 1.0], vec![1.0, 1.0]],
+        )
+        .expect("valid transposed plane")
+    }
+
+    fn exact_cylinder() -> NurbsSurface {
+        let cyl =
+            CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 2.0)
+                .expect("valid cylinder");
+        cyl.to_nurbs(0.0, 5.0).expect("exact cylinder NURBS")
+    }
+
+    /// Geometrically exact rational sphere (Piegl-Tiller 9x5 form), copied
+    /// here so the math-layer test does not depend on the heal crate. The
+    /// oracle is the radial direction, independent of the derivative code.
+    fn exact_sphere(center: Point3, radius: f64) -> NurbsSurface {
+        use std::f64::consts::{FRAC_1_SQRT_2, FRAC_PI_2, TAU};
+        let dirs_u = [
+            (1.0, 0.0),
+            (1.0, 1.0),
+            (0.0, 1.0),
+            (-1.0, 1.0),
+            (-1.0, 0.0),
+            (-1.0, -1.0),
+            (0.0, -1.0),
+            (1.0, -1.0),
+            (1.0, 0.0),
+        ];
+        let w_u = [
+            1.0,
+            FRAC_1_SQRT_2,
+            1.0,
+            FRAC_1_SQRT_2,
+            1.0,
+            FRAC_1_SQRT_2,
+            1.0,
+            FRAC_1_SQRT_2,
+            1.0,
+        ];
+        let merid = [
+            (0.0, -radius),
+            (radius, -radius),
+            (radius, 0.0),
+            (radius, radius),
+            (0.0, radius),
+        ];
+        let w_v = [1.0, FRAC_1_SQRT_2, 1.0, FRAC_1_SQRT_2, 1.0];
+        let mut cps = Vec::with_capacity(9);
+        let mut ws = Vec::with_capacity(9);
+        for (i, &(dx, dy)) in dirs_u.iter().enumerate() {
+            let mut row = Vec::with_capacity(5);
+            let mut wrow = Vec::with_capacity(5);
+            for (j, &(rm, zm)) in merid.iter().enumerate() {
+                row.push(Point3::new(
+                    center.x() + dx * rm,
+                    center.y() + dy * rm,
+                    center.z() + zm,
+                ));
+                wrow.push(w_u[i] * w_v[j]);
+            }
+            cps.push(row);
+            ws.push(wrow);
+        }
+        let knots_u = vec![
+            0.0,
+            0.0,
+            0.0,
+            TAU * 0.25,
+            TAU * 0.25,
+            TAU * 0.5,
+            TAU * 0.5,
+            TAU * 0.75,
+            TAU * 0.75,
+            TAU,
+            TAU,
+            TAU,
+        ];
+        let knots_v = vec![
+            -FRAC_PI_2, -FRAC_PI_2, -FRAC_PI_2, 0.0, 0.0, FRAC_PI_2, FRAC_PI_2, FRAC_PI_2,
+        ];
+        NurbsSurface::new(2, 2, knots_u, knots_v, cps, ws).expect("exact sphere NURBS")
+    }
+
+    fn radial_cylinder_expected(s: &NurbsSurface, u: f64, v: f64) -> Vec3 {
+        let p = s.evaluate(u, v);
+        let r = Vec3::new(p.x(), p.y(), 0.0);
+        r.normalize().expect("cylinder point off-axis")
+    }
+
+    fn radial_sphere_expected(s: &NurbsSurface, center: Point3, u: f64, v: f64) -> Vec3 {
+        let p = s.evaluate(u, v);
+        let r = Vec3::new(p.x() - center.x(), p.y() - center.y(), p.z() - center.z());
+        r.normalize().expect("sphere point off-center")
+    }
+
+    #[test]
+    fn plane_normal_has_signed_orientation() {
+        let s = xy_plane();
+        // Interior plus all four corners and edge midpoints: the fast path
+        // (no fallback) must report the signed -Z everywhere.
+        let expected = Vec3::new(0.0, 0.0, -1.0);
+        for (u, v) in [
+            (0.5, 0.5),
+            (0.0, 0.0),
+            (1.0, 0.0),
+            (0.0, 1.0),
+            (1.0, 1.0),
+            (0.5, 0.0),
+            (0.5, 1.0),
+            (0.0, 0.5),
+            (1.0, 0.5),
+        ] {
+            assert_normal_matches_oracle(&s, u, v, expected, &format!("plane at ({u},{v})"));
+        }
+    }
+
+    #[test]
+    fn reversed_and_transposed_planes_flip_normal() {
+        // Opposite winding and u/v transposition both flip du x dv.
+        let expected_pos = Vec3::new(0.0, 0.0, 1.0);
+        for (label, s) in [
+            ("reversed", xy_plane_reversed()),
+            ("transposed", xy_plane_transposed()),
+        ] {
+            for (u, v) in [(0.5, 0.5), (0.0, 0.0), (1.0, 1.0), (0.25, 0.75)] {
+                assert_normal_matches_oracle(
+                    &s,
+                    u,
+                    v,
+                    expected_pos,
+                    &format!("{label} at ({u},{v})"),
+                );
+            }
+        }
+        // The two orientations must be opposite, not just unit.
+        let n_fwd = xy_plane().normal(0.5, 0.5).expect("fwd");
+        let n_rev = xy_plane_reversed().normal(0.5, 0.5).expect("rev");
+        assert!(
+            (n_fwd.dot(n_rev) + 1.0).abs() < 1e-12,
+            "reversal must negate: dot={:.6e}",
+            n_fwd.dot(n_rev)
+        );
+    }
+
+    #[test]
+    fn cylinder_patch_normal_is_radial_outward() {
+        let s = exact_cylinder();
+        // Mid-span angles plus axial boundaries: the oracle is the radial
+        // direction from the evaluated point itself, independent of the
+        // derivative tables and of the analytic parameter mapping.
+        for (u, v) in [
+            (0.0625, 0.5),
+            (0.1875, 0.5),
+            (0.3125, 0.2),
+            (0.4375, 0.8),
+            (0.5625, 0.0),
+            (0.6875, 1.0),
+            (0.8125, 0.3),
+            (0.9375, 0.7),
+        ] {
+            let expected = radial_cylinder_expected(&s, u, v);
+            // Outwardness: radial component must be +1, not just unit.
+            assert!(
+                expected.length() > 0.99,
+                "test oracle degenerate at ({u},{v})"
+            );
+            assert_normal_matches_oracle(&s, u, v, expected, &format!("cylinder at ({u},{v})"));
+            let n = s.normal(u, v).expect("cylinder normal");
+            assert!(
+                n.dot(expected) > 1.0 - 1e-9,
+                "cylinder normal must point outward at ({u},{v}): dot={:.12}",
+                n.dot(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn sphere_patch_normal_is_radial_with_pole_fallback() {
+        let center = Point3::new(0.0, 0.0, 0.0);
+        let s = exact_sphere(center, 3.0);
+        // Non-polar latitudes: full oracle (unit + radial + FD orthogonality).
+        for (u, v) in [(0.4, -0.7), (1.7, -0.2), (3.0, 0.0), (4.4, 0.5), (5.8, 1.0)] {
+            let expected = radial_sphere_expected(&s, center, u, v);
+            assert_normal_matches_oracle(&s, u, v, expected, &format!("sphere at ({u},{v})"));
+        }
+        // Poles are degenerate (du = 0 along the collapsed row): the
+        // L'Hopital fallback must recover the pole axis. Only the v-away
+        // perturbation succeeds, so these pin the v+/v- perturbation arms.
+        // Tolerance is 1e-5: the fallback steps one epsilon (pi*1e-6) off the
+        // pole, whose exact normal already tilts ~3e-6 rad from the axis; a
+        // broken epsilon jumping to a far edge misses by ~1 rad.
+        let (u0, u1) = s.domain_u();
+        let (v0, v1) = s.domain_v();
+        let umid = 0.5 * (u0 + u1);
+        let south = s
+            .normal(umid, v0)
+            .expect("south pole fallback must succeed");
+        assert_unit(south, "south pole");
+        assert_direction(south, Vec3::new(0.0, 0.0, -1.0), 1e-5, "south pole");
+        let north = s
+            .normal(umid, v1)
+            .expect("north pole fallback must succeed");
+        assert_unit(north, "north pole");
+        assert_direction(north, Vec3::new(0.0, 0.0, 1.0), 1e-5, "north pole");
+        // Scratch paths must agree at the poles too.
+        let mut scratch = DerivativeScratch::new();
+        let south_scratch = scratch.normal_from(&s, umid, v0).expect("south scratch");
+        assert_direction(
+            south_scratch,
+            Vec3::new(0.0, 0.0, -1.0),
+            1e-5,
+            "south scratch",
+        );
+        let north_scratch = scratch.normal_from(&s, umid, v1).expect("north scratch");
+        assert_direction(
+            north_scratch,
+            Vec3::new(0.0, 0.0, 1.0),
+            1e-5,
+            "north scratch",
+        );
+    }
+
+    /// First u-row collapsed to a point: at (u0, v) only the +u perturbation
+    /// leaves the degenerate edge. Pins the `(u + eps)` arm.
+    fn collapsed_u0_surface() -> NurbsSurface {
+        NurbsSurface::new(
+            1,
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![
+                vec![Point3::new(0.0, 0.0, 0.0), Point3::new(0.0, 0.0, 0.0)],
+                vec![Point3::new(0.0, 1.0, 0.0), Point3::new(1.0, 1.0, 0.0)],
+            ],
+            vec![vec![1.0, 1.0], vec![1.0, 1.0]],
+        )
+        .expect("collapsed-u0")
+    }
+
+    /// Last u-row collapsed: at (u1, v) only the -u perturbation succeeds.
+    /// Pins the `(u - eps)` arm.
+    fn collapsed_u1_surface() -> NurbsSurface {
+        NurbsSurface::new(
+            1,
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![
+                vec![Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 0.0, 0.0)],
+                vec![Point3::new(0.0, 1.0, 0.0), Point3::new(0.0, 1.0, 0.0)],
+            ],
+            vec![vec![1.0, 1.0], vec![1.0, 1.0]],
+        )
+        .expect("collapsed-u1")
+    }
+
+    /// Interior pinch with curved fallback: S(u,v) = ((u-0.5)^2, v,
+    /// (u-0.5)*v) as an exact degree (2,1) Bezier. At (0.5, 0) the base
+    /// cross vanishes; the +u perturbation recovers (0,0,+1) while a far-u
+    /// jump lands on a tilted facet (~26 degrees off). Pins the u-epsilon
+    /// scale arms (`*1e-6` -> `+1e-6`/`/1e-6` and the `u1/u0` division) which
+    /// planar collapsed edges cannot distinguish (constant normal).
+    fn curved_pinch_surface() -> NurbsSurface {
+        NurbsSurface::new(
+            2,
+            1,
+            vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![
+                vec![Point3::new(0.25, 0.0, 0.0), Point3::new(0.25, 1.0, -0.5)],
+                vec![Point3::new(-0.25, 0.0, 0.0), Point3::new(-0.25, 1.0, 0.0)],
+                vec![Point3::new(0.25, 0.0, 0.0), Point3::new(0.25, 1.0, 0.5)],
+            ],
+            vec![vec![1.0, 1.0], vec![1.0, 1.0], vec![1.0, 1.0]],
+        )
+        .expect("curved pinch")
+    }
+
+    #[test]
+    fn curved_pinch_recovers_via_plus_u_with_tight_direction() {
+        let s = curved_pinch_surface();
+        // Sanity: the base point is genuinely degenerate.
+        let d = s.derivatives(0.5, 0.0, 1);
+        assert!(
+            d[1][0].cross(d[0][1]).length_squared() < 1e-30,
+            "pinch base must be degenerate"
+        );
+        // The ordered fallback tries +u first: small step gives (0,0,+1).
+        // Tolerance is 1e-5: the epsilon step tilts ~1e-6 rad off the axis,
+        // while a far-edge jump misses by ~0.46 rad (dot 0.894).
+        let expected = Vec3::new(0.0, 0.0, 1.0);
+        let n = s.normal(0.5, 0.0).expect("pinch must recover via +u");
+        assert_unit(n, "curved pinch");
+        assert_direction(n, expected, 1e-5, "curved pinch");
+        // A far-u jump (broken epsilon) lands ~26 degrees off: document the
+        // discrimination the tight assertion provides.
+        let far = s.normal(1.0, 0.0).expect("far facet");
+        assert!(
+            far.dot(expected) < 1.0 - 1e-3,
+            "far facet must differ: dot={:.6}",
+            far.dot(expected)
+        );
+        let mut scratch = DerivativeScratch::new();
+        let n_scratch = scratch.normal_from(&s, 0.5, 0.0).expect("pinch scratch");
+        assert_direction(n_scratch, expected, 1e-5, "curved pinch scratch");
+    }
+
+    #[test]
+    fn collapsed_u_edges_recover_via_single_u_direction() {
+        // Interior of a collapsed edge is genuinely degenerate (cross = 0);
+        // the fallback must step off the edge. Each edge needs a different
+        // sign, pinning both u-perturbation arms with tight direction checks
+        // (a far-edge jump from a broken epsilon would miss by ~90 degrees).
+        let expected = Vec3::new(0.0, 0.0, -1.0);
+        let s0 = collapsed_u0_surface();
+        let (u0, _) = s0.domain_u();
+        let n0 = s0.normal(u0, 0.5).expect("u0 edge must recover via +u");
+        assert_unit(n0, "collapsed u0");
+        assert_direction(n0, expected, 1e-9, "collapsed u0");
+        let mut scratch = DerivativeScratch::new();
+        let n0_scratch = scratch.normal_from(&s0, u0, 0.5).expect("u0 scratch");
+        assert_direction(n0_scratch, expected, 1e-9, "collapsed u0 scratch");
+
+        let s1 = collapsed_u1_surface();
+        let (_, u1) = s1.domain_u();
+        let n1 = s1.normal(u1, 0.5).expect("u1 edge must recover via -u");
+        assert_unit(n1, "collapsed u1");
+        assert_direction(n1, expected, 1e-9, "collapsed u1");
+        let n1_scratch = scratch.normal_from(&s1, u1, 0.5).expect("u1 scratch");
+        assert_direction(n1_scratch, expected, 1e-9, "collapsed u1 scratch");
+    }
+
+    #[test]
+    fn fully_degenerate_surfaces_refuse_with_zero_vector() {
+        // All control points coincident: every perturbation stays degenerate.
+        // This is the genuinely-undefined case and must stay a typed refusal,
+        // not a fallback normal. Guards the `Err(ZeroVector)` tail against
+        // mutants that would return a default/zero normal as Ok.
+        let flat = vec![vec![Point3::new(1.0, 2.0, 3.0); 2]; 2];
+        let s = NurbsSurface::new(
+            1,
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            flat,
+            vec![vec![1.0, 1.0], vec![1.0, 1.0]],
+        )
+        .expect("degenerate point surface constructs");
+        for (u, v) in [(0.5, 0.5), (0.0, 0.0), (1.0, 1.0)] {
+            assert!(
+                matches!(s.normal(u, v), Err(crate::MathError::ZeroVector)),
+                "point-degenerate must refuse at ({u},{v})"
+            );
+            let mut scratch = DerivativeScratch::new();
+            assert!(matches!(
+                scratch.normal_from(&s, u, v),
+                Err(crate::MathError::ZeroVector)
+            ));
+        }
+        // Collinear wire (zero area but non-zero extent) is equally undefined.
+        let line_pts: Vec<Vec<Point3>> = (0..2)
+            .map(|_| vec![Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 0.0, 0.0)])
+            .collect();
+        let line = NurbsSurface::new(
+            1,
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            line_pts,
+            vec![vec![1.0, 1.0], vec![1.0, 1.0]],
+        )
+        .expect("collinear surface constructs");
+        assert!(matches!(
+            line.normal(0.5, 0.5),
+            Err(crate::MathError::ZeroVector)
+        ));
+    }
+
+    #[test]
+    fn scale_and_rigid_placement_preserve_normal_geometry() {
+        // Uniform scale + translation must not change the unit normal; a
+        // rigid rotation must rotate it the same way. Uses independent
+        // expected vectors, not a second normal call.
+        let s = xy_plane();
+        let expected = Vec3::new(0.0, 0.0, -1.0);
+        // Scale by 2.5 about the origin and translate: plane stays z = tz.
+        let scaled_pts: Vec<Vec<Point3>> = s
+            .control_points()
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .map(|p| Point3::new(p.x() * 2.5 + 10.0, p.y() * 2.5 - 3.0, p.z() * 2.5 + 5.0))
+                    .collect()
+            })
+            .collect();
+        let scaled = NurbsSurface::new(
+            1,
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            scaled_pts,
+            vec![vec![1.0, 1.0], vec![1.0, 1.0]],
+        )
+        .expect("scaled plane");
+        for (u, v) in [(0.5, 0.5), (0.0, 0.0), (1.0, 1.0)] {
+            assert_normal_matches_oracle(&scaled, u, v, expected, &format!("scaled at ({u},{v})"));
+        }
+        // Millimeter scale (1e-3) and kilometer scale (1e3): the 1e-30
+        // area threshold must not flip the outcome on either side.
+        for scale in [1e-3, 1e3] {
+            let pts: Vec<Vec<Point3>> = s
+                .control_points()
+                .iter()
+                .map(|row| {
+                    row.iter()
+                        .map(|p| Point3::new(p.x() * scale, p.y() * scale, p.z() * scale))
+                        .collect()
+                })
+                .collect();
+            let tiny = NurbsSurface::new(
+                1,
+                1,
+                vec![0.0, 0.0, 1.0, 1.0],
+                vec![0.0, 0.0, 1.0, 1.0],
+                pts,
+                vec![vec![1.0, 1.0], vec![1.0, 1.0]],
+            )
+            .expect("scaled plane");
+            let n = tiny.normal(0.5, 0.5).expect("scaled normal");
+            assert_direction(n, expected, 1e-9, &format!("scale {scale}"));
+        }
+        // 90-degree rotation about X: (x,y,z) -> (x,-z,y); -Z becomes +Y.
+        let rotated_pts: Vec<Vec<Point3>> = s
+            .control_points()
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .map(|p| Point3::new(p.x(), -p.z(), p.y()))
+                    .collect()
+            })
+            .collect();
+        let rotated = NurbsSurface::new(
+            1,
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            rotated_pts,
+            vec![vec![1.0, 1.0], vec![1.0, 1.0]],
+        )
+        .expect("rotated plane");
+        assert_normal_matches_oracle(
+            &rotated,
+            0.5,
+            0.5,
+            Vec3::new(0.0, 1.0, 0.0),
+            "rotated plane",
+        );
+    }
+
+    #[test]
+    fn shifted_domain_fallback_uses_domain_scale() {
+        // Non-zero domain minimum distinguishes `(u1-u0)` from `(u1+u0)`;
+        // the fallback epsilon must scale with the width either way and the
+        // recovered normal must still be exact. This documents the `-`->`+`
+        // epsilon mutants as equivalent for smooth fallbacks (both epsilons
+        // are O(width*1e-6) and land on the same facet).
+        let s = NurbsSurface::new(
+            1,
+            1,
+            vec![2.0, 2.0, 5.0, 5.0],
+            vec![3.0, 3.0, 7.0, 7.0],
+            vec![
+                vec![Point3::new(0.0, 0.0, 0.0), Point3::new(0.0, 0.0, 0.0)],
+                vec![Point3::new(0.0, 1.0, 0.0), Point3::new(1.0, 1.0, 0.0)],
+            ],
+            vec![vec![1.0, 1.0], vec![1.0, 1.0]],
+        )
+        .expect("shifted collapsed edge");
+        let (u0, _) = s.domain_u();
+        let n = s.normal(u0, 5.0).expect("shifted fallback");
+        assert_direction(n, Vec3::new(0.0, 0.0, -1.0), 1e-9, "shifted collapsed");
+    }
+
+    #[test]
+    fn one_scratch_across_degrees_and_surfaces_stays_correct() {
+        // Repeated scratch reuse plus transitions between surface degrees:
+        // one scratch walks a bilinear plane, a (2,1) cylinder, a (2,2)
+        // rational patch, a (3,3) bicubic, and the exact sphere. Every stop
+        // is checked against its independent oracle, so a stale-buffer
+        // regression cannot hide behind allocating-vs-scratch agreement.
+        let plane = xy_plane();
+        let cylinder = exact_cylinder();
+        let sphere = exact_sphere(Point3::new(0.0, 0.0, 0.0), 2.0);
+        let bicubic = NurbsSurface::new(
+            3,
+            3,
+            vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+            vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+            (0..4)
+                .map(|i| {
+                    (0..4)
+                        .map(|j| {
+                            Point3::new(f64::from(j), f64::from(i), (f64::from(i + j) * 0.5).sin())
+                        })
+                        .collect()
+                })
+                .collect(),
+            vec![vec![1.0; 4]; 4],
+        )
+        .expect("bicubic");
+        let mut scratch = DerivativeScratch::new();
+        // Plane (1,1).
+        let n = scratch.normal_from(&plane, 0.5, 0.5).expect("plane");
+        assert_direction(n, Vec3::new(0.0, 0.0, -1.0), 1e-12, "reuse plane");
+        // Cylinder (2,1) at a mid-span angle.
+        let (cu, cv) = (0.3125, 0.4);
+        let n = scratch.normal_from(&cylinder, cu, cv).expect("cylinder");
+        assert_direction(
+            n,
+            radial_cylinder_expected(&cylinder, cu, cv),
+            1e-9,
+            "reuse cylinder",
+        );
+        // Rational biquadratic (2,2) checked against finite differences.
+        let rational = NurbsSurface::new(
+            2,
+            2,
+            vec![0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0],
+            vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            (0..4)
+                .map(|i| {
+                    (0..3)
+                        .map(|j| {
+                            let (x, y) = (f64::from(i), f64::from(j));
+                            Point3::new(x, y, (x * y).sin() * 0.5)
+                        })
+                        .collect()
+                })
+                .collect(),
+            vec![vec![1.0; 3]; 4],
+        )
+        .expect("rational");
+        let (ru, rv) = (0.3, 0.6);
+        let (n, _, _) = scratch.normal_partials_from(&rational, ru, rv);
+        let n = n.expect("rational");
+        let (fdu, fdv) = fd_tangents(&rational, ru, rv, 1e-6);
+        let n_fd = fdu.cross(fdv).normalize().expect("fd normal");
+        assert!(
+            (n.dot(n_fd) - 1.0).abs() < 1e-6,
+            "reuse rational alignment {:.9}",
+            n.dot(n_fd)
+        );
+        // Bicubic (3,3) against finite differences.
+        let (bu, bv) = (0.4, 0.6);
+        let n = scratch.normal_from(&bicubic, bu, bv).expect("bicubic");
+        let (fdu, fdv) = fd_tangents(&bicubic, bu, bv, 1e-6);
+        let n_fd = fdu.cross(fdv).normalize().expect("fd bicubic");
+        assert!(
+            (n.dot(n_fd) - 1.0).abs() < 1e-6,
+            "reuse bicubic alignment {:.9}",
+            n.dot(n_fd)
+        );
+        // Sphere (2,2) 9x5 grid: radial oracle after the degree jumps.
+        let (su, sv) = (2.2, 0.3);
+        let n = scratch.normal_from(&sphere, su, sv).expect("sphere");
+        assert_direction(
+            n,
+            radial_sphere_expected(&sphere, Point3::new(0.0, 0.0, 0.0), su, sv),
+            1e-9,
+            "reuse sphere",
+        );
+    }
+}
