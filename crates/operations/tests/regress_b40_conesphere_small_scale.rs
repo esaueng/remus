@@ -42,10 +42,10 @@
 //! - translation invariance: the mesh under the harness's absolute offset,
 //!   `solid_volume` under a body-proportional one.
 //!
-//! Not fixed here: `solid_volume`'s whole-solid route sums signed
-//! tetrahedra about the world origin (`measure/volume.rs`,
-//! `signed_volume_from_mesh`). A 1e-3 body moved 13 units away cancels
-//! catastrophically and reads up to 0.7% off although its mesh is unchanged.
+//! Found here and fixed as B56: `solid_volume`'s whole-solid route summed
+//! signed tetrahedra about the world origin (`measure/volume.rs`,
+//! `signed_volume_from_mesh`), so a 1e-3 body moved 13 units away cancelled
+//! catastrophically and read up to 0.7% off although its mesh was unchanged.
 //! `b40_solid_volume_far_translation_small_scale` pins it.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -296,7 +296,7 @@ fn check_leg(family: &Family, scale: f64, op: BooleanOp) {
     // by the harness's absolute offset (thousands of body lengths at 1e-3
     // scale) it stays watertight with the same enclosed volume. The kernel's
     // volume must hold under a body-proportional move. (Its reading under the
-    // absolute offset is the open measure-layer case pinned by
+    // absolute offset is the B56 measure-layer case pinned by
     // `b40_solid_volume_far_translation_small_scale`.)
     let mut moved = topo.clone();
     transform_solid(&mut moved, solid, &Mat4::translation(13.0, -7.0, 5.0)).unwrap();
@@ -380,14 +380,13 @@ fn b40_contained_pole_large_scale() {
     check_family_at(1, SCALES[2]);
 }
 
-/// Open measure-layer case found closing B40: at 1e-3 scale, the harness's
-/// absolute (13, -7, 5) move leaves the mesh bit-for-bit the same shape (see
-/// `check_leg`) yet `solid_volume` drifts by up to 0.7% on every leg. Its
-/// whole-solid route (`signed_volume_from_mesh`) sums signed tetrahedra about
-/// the world origin, so terms of order `|offset|^3` cancel to a 1e-9 result.
-/// Fails until that sum is taken about a local reference point.
+/// Measure-layer case found closing B40 (B56): at 1e-3 scale, the harness's
+/// absolute (13, -7, 5) move leaves the mesh the same shape (see `check_leg`),
+/// yet `solid_volume` drifted by up to 0.7% on every leg while its
+/// whole-solid route (`signed_volume_from_mesh`) summed signed tetrahedra
+/// about the world origin: terms of order `|offset|^3` cancelled to a 1e-9
+/// result. The sum is now taken about the mesh's bounding-box centre.
 #[test]
-#[ignore = "open: solid_volume signed-tetrahedra sum about the world origin cancels for a 1e-3 body moved 13 units (0.7%)"]
 fn b40_solid_volume_far_translation_small_scale() {
     for family in &families() {
         for op in OPS {
