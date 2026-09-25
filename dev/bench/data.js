@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790370247086,
+  "lastUpdate": 1790372119714,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -64789,6 +64789,240 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 56368,
             "range": "± 618",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "15353938f31d146356c391c4242605d507629394",
+          "message": "test: triage the B19 math/blend survivor tranche; file B66 and B67 (#667)\n\n* test(math): pin SSI marcher and seeding survivors with closed-form oracles\n\nB19 survivor tranche from the 2026-09-25 Mutation Testing run. Six new\ntests in `nurbs/intersection/tests.rs::marching_oracles`, each against an\nexact case:\n\n- a rational half-cylinder resting on a plane: the march follows the\n  contact line x = z = 0 end to end (length 0.998 * L, 4 * step cap), and\n  `second_order_tangent` returns the ruling in either surface order;\n- the plane z = 0 against z = c*x*y: a march through the crossing reports\n  branch seeds on the transverse line y = 0, on both sides;\n- two perpendicular 2 cm planes: grid seeding finds their chord below the\n  absolute 0.1 distance floor;\n- `surface_newton_step` on an affine patch hits the foot of the\n  perpendicular exactly, and iterates to the closed-form cylinder foot.\n\nAdds the ignored B61 ready-repro: at a steeper saddle crossing no branch\nis reported and the singular tangent is the bisector, not an asymptotic\ndirection.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_014oRAAQMGsY8tYr6TfxgFc6\n\n* test(blend): pin closed-rim fillet survivors against the rolling ball\n\nB19 survivor tranche from the 2026-09-25 Mutation Testing run.\n`fillet_builder.rs::closed_rim_oracles` builds bodies of revolution in\nthe blend crate and fillets their circular rims:\n\n- the top rim of a cylinder must give the torus of the rolling ball\n  (centre H - r, major R - r, minor r), both contact circles, and a band\n  whose outward normal faces away from the ball and matches both\n  supports across the contact circles;\n- the cylinder-to-cone junction must be recognised as the exact torus\n  with the ball centre r * tan(beta / 2) below the junction.\n\nAdds two ignored B62 ready-repros: the frustum base rim, where the\nplane-cone arm builds the mirrored torus (ball outside the material),\nand the frustum small-end rim, which is refused with TrimmingFailure.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_014oRAAQMGsY8tYr6TfxgFc6\n\n* docs(roadmap): record the B19 math/blend survivor tranche; file B61 and B62\n\nB19: the 27 math/blend survivors of run 36075171651 outside PR #639's\nnormal family, triaged 19 killed, 7 equivalent with proofs, 1 real\ndefect, with before/after mutation counts.\n\nB61: SSI branch points. The marcher confirms a branch only below an\nabsolute eigenvalue gate, and the singular tangent at a transversal\ncrossing is the bisector.\n\nB62: the plane-cone rim fillet places the rolling ball outside the\nmaterial (wrong volume through the public fillet), and refuses the\nsmall-end frustum rim.\n\nRoadmap skill: ignored-inventory note and two one-line lessons.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_014oRAAQMGsY8tYr6TfxgFc6\n\n* docs(roadmap): restate the B62 witness volume measured on merged main\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_014oRAAQMGsY8tYr6TfxgFc6\n\n* docs(roadmap): renumber this branch's rows to B63 and B64\n\nMain has since taken B62 (and skipped B61), so the SSI branch-point row\nbecomes B63 and the plane-cone rim fillet row B64, with their ignored\nready-repro reasons and roadmap-skill notes.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_014oRAAQMGsY8tYr6TfxgFc6\n\n* docs(roadmap): renumber this branch's rows to B66 and B67\n\nmain has taken B63 (variable fillet width, #656) and #664 claims B64/B65.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01XmUrsvhcEH4mLLT5UfB162\n\n---------\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-09-25T14:27:30-07:00",
+          "tree_id": "9c7e38793a1bd9f44d679f550d050385ce5b4ed4",
+          "url": "https://github.com/esaueng/remus/commit/15353938f31d146356c391c4242605d507629394"
+        },
+        "date": 1790372118426,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1272424,
+            "range": "± 1449",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1368586,
+            "range": "± 42981",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 27168,
+            "range": "± 25",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 11899050,
+            "range": "± 20029",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 11892088,
+            "range": "± 7146",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 11461850,
+            "range": "± 10329",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 1133300,
+            "range": "± 1879",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 17681780,
+            "range": "± 74844",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 32666929,
+            "range": "± 247956",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 39,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 108,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 65,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 220,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 159,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 815,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 166,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 356,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 225,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 521,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 752,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 3252,
+            "range": "± 44",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 17,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 36,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 62,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 62,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 544810,
+            "range": "± 1054",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 9773349,
+            "range": "± 16215",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 160229,
+            "range": "± 234",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 517797,
+            "range": "± 1269",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 61132,
+            "range": "± 1716",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 926454,
+            "range": "± 3177",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 11446683,
+            "range": "± 523358",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 835398,
+            "range": "± 10017",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 1183324,
+            "range": "± 60645",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 89121,
+            "range": "± 862",
             "unit": "ns/iter"
           }
         ]
