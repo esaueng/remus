@@ -302,8 +302,10 @@ lines after the fixes. "Killed" names the first failing test in the cargo-mutant
 
 ## Verification
 
-- `cargo nextest run --workspace --cargo-profile ci-test`: 5,809 passed, 0 failed.
-- `cargo test -p remus-wasm`: 567 + 1 passed.
+After merging `origin/main` (with #624, #646 and the other B19 tranches):
+
+- `cargo nextest run --workspace --cargo-profile ci-test`: 5,955 passed, 0 failed.
+- `cargo test -p remus-wasm`: 584 + 1 passed.
 - `cargo clippy --all-targets --all-features -- -D warnings`, `cargo fmt --all -- --check`,
   `taplo fmt --check`, `cargo machete` (pre-commit, every commit).
 - `scripts/check-boundaries.sh`, `check-det-hash.sh`, `check-doc-paths.sh`,
@@ -315,3 +317,6 @@ lines after the fixes. "Killed" names the first failing test in the cargo-mutant
 - `cargo xtask wasm-build` (with `wasm-opt` 117 on `PATH`: `wasm-pack`'s own download does not trust
   this environment's TLS proxy) and `node scripts/test-wasm-smoke.mjs`: all pass. The rebuilt
   packages were not committed.
+- The two fixes' regression tests fail with the old computation restored and pass with the fix; the
+  B68, B69 and B70 ready-repros fail on this base.
+- This is local validation; the weekly Mutation Testing run on `main` remains the whole-list proof.
