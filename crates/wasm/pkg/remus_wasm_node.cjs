@@ -4578,15 +4578,40 @@ class BrepKernel {
      * Integration runs on the exact face geometry (analytic and NURBS
      * surfaces, no tessellation), so there is no deflection parameter.
      *
+     * # Numerical controls (optional)
+     *
+     * Omitting all three reproduces the historical call exactly
+     * (`gaussOrder = 8`, `adaptiveEps = 1e-6`, `maxDepth = 8`).
+     *
+     * * `adaptiveEps` — positive finite relative tolerance of the
+     *   coarse-versus-refined quadrature estimator, applied to every area,
+     *   volume and moment component per initial patch.
+     * * `maxDepth` — integer `0..=32`: refinement levels beyond the initial
+     *   patches. Larger values are rejected, not clamped.
+     * * `gaussOrder` — integer `1..=20`: the Gauss rule per quadrature cell.
+     *
+     * Untrimmed analytic patches always refine. Trimmed curved faces, NURBS
+     * faces and torus tube bands keep the historical fixed rule while
+     * `adaptiveEps` and `maxDepth` are both at their defaults and refine with
+     * any other pair; passing the default values explicitly is the same as
+     * omitting them. Refinement converges the quadrature over the face's
+     * resolved domain; it does not reduce the chord error of a sampled trim
+     * outline. Exact and sampled planar faces integrate in closed form.
+     *
      * # Errors
      *
-     * Returns an error if the solid handle is invalid, integration fails,
-     * or the solid has zero volume.
+     * Returns an error if the solid handle is invalid, a control is out of
+     * range, the requested tolerance cannot be met within `maxDepth` or the
+     * per-face work budget (never an unconverged result), integration
+     * fails, or the solid has zero volume.
      * @param {number} solid
+     * @param {number | null} [adaptive_eps]
+     * @param {number | null} [max_depth]
+     * @param {number | null} [gauss_order]
      * @returns {any}
      */
-    massProperties(solid) {
-        const ret = wasm.brepkernel_massProperties(this.__wbg_ptr, solid);
+    massProperties(solid, adaptive_eps, max_depth, gauss_order) {
+        const ret = wasm.brepkernel_massProperties(this.__wbg_ptr, solid, !isLikeNone(adaptive_eps), isLikeNone(adaptive_eps) ? 0 : adaptive_eps, !isLikeNone(max_depth), isLikeNone(max_depth) ? 0 : max_depth, !isLikeNone(gauss_order), isLikeNone(gauss_order) ? 0 : gauss_order);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
