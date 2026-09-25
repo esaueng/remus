@@ -3771,11 +3771,15 @@ fn b51_toruscone_sweep_disjoint_fuse_drops_torus() {
 /// Re-probed 2026-09-24 (row B40): the two `WireSelfIntersection` errors
 /// (and ten `VertexOnCurve` warnings) were a checker false positive — split
 /// NURBS halves evaluated over the whole carrier — and are gone on every
-/// leg; both validators now pass. Still open: the fuse mesh (714 boundary
-/// edges, 0 non-manifold at the scale-derived deflection). The cut mesh is
-/// now closed and the intersect now succeeds with a closed mesh.
+/// leg; both validators now pass. The open fuse mesh was the tessellator,
+/// at every scale (B40, 2026-09-25): each retained sphere face holds a pole
+/// and its loop winds once around it, so the parametric CDT closed the loop
+/// with a chord and meshed the complementary lens. That lens ran the shared
+/// section edges in the cone's own direction (1428 one-sided edges at the
+/// harness deflection). A stereographic pole-cap mesher now takes such
+/// faces. Permanent regression; the full scale × operation sweep is
+/// `regress_b40_conesphere_small_scale.rs`.
 #[test]
-#[ignore = "open: cone-sphere small-scale fuse mesh opens, 714 boundary edges (B26 finding 15)"]
 fn b26_finding15_conesphere_wire_mesh() {
     use remus_operations::primitives::{make_cone, make_sphere};
     let m =

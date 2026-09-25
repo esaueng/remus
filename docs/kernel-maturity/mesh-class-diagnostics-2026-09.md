@@ -299,6 +299,12 @@ validity (validators not run; mesher clean at all deflections).
 
 ## B40 — Cone–sphere small-scale wire self-intersections + open mesh (finding 15)
 
+> **Superseded (2026-09-25, B40 closed):** the snap-reconciliation reading
+> below is wrong. The fuse's sphere faces each hold a pole; the parametric CDT
+> meshed the complementary lens, open at every scale at the harness
+> deflection, and the "clean" coarse meshes were the boundary weld plus
+> coincident-triangle removal erasing both sides. See the B40 row.
+
 Repro: `b26_finding15_conesphere_wire_mesh` (~3530). Verbatim: frustum cone
 `r0=0.001/r1=0.0005/h=0.001`, sphere `r=0.001` seg 8, `T(0,0,0.001)*Rx(3π/2)`;
 fuse + cut legs probed (`/tmp/probe_b40.log`, head `3785eebc`).
