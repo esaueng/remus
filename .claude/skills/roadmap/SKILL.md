@@ -202,6 +202,11 @@ harness's own option-honoured floor misreading a correct 0.05 fillet on an
 - **Marched/fitted section geometry is good to ~1e-6; every exact-tolerance
   (1e-7) gate it meets needs a weld-scale (100·tol) band.** Four separate gaps
   in one family (weld anchors, T-splits, on-plane checks, junction discs).
+- **A marched trace along a TANGENCY is a co-endpoint duplicate of the exact
+  rim the pair already carries; no weld band closes a duplicate, drop it at
+  emission** (`phase_ff::is_marched_trace_of_tangent_rim`; the hammer shifted
+  intersect closed natively as a spur and leaked 4 free edges on wasm32,
+  O1.5 cell `contract/hammer-shifted-intersect`, PR after #627).
 - **The face splitter is a web of mutual calibrations.** On any
   `face_splitter` or section/clip change run ALL foils: d4, honeycomb pcut3,
   divider-lip, the nub fixtures, cylinder-slot, groove-mouth, junction-disc.
