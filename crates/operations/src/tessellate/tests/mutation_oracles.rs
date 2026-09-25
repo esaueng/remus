@@ -373,6 +373,22 @@ fn pointed_cone_with_a_side_hole_tiles_its_exact_area() {
                 (meshed - area).abs() <= slack,
                 "{what}, deflection {deflection}: cone face meshes {meshed} of exact {area} (slack {slack})"
             );
+            // The cylinder wall is trimmed by the marched footprint (NURBS
+            // rails between railed rims), so the CDT densifies its trim band.
+            // Hold it to the deflection itself, as
+            // `nurbs_trimmed_cylinder_keeps_chords_near_surface` does, with
+            // 10 % for the edge-midpoint samples: without the densification
+            // this wall sags 1.2–1.5 × the deflection.
+            for wall in faces
+                .iter()
+                .filter(|f| matches!(f.surface, FaceSurface::Cylinder(_)))
+            {
+                let (_, sag) = vertex_and_sag(wall);
+                assert!(
+                    sag <= 1.1 * deflection,
+                    "{what}: NURBS-railed wall sags {sag} at deflection {deflection}"
+                );
+            }
             assert_volume_within_chord_bound(&mesh, volume, deflection, &what);
         }
         counts.push(per_deflection);
@@ -481,40 +497,55 @@ fn ellipse_trimmed_cylinder_wall_stays_within_the_chord_bound() {
 
 /// Filleting a cylinder's top rim leaves a torus band bounded by two
 /// once-used circles and seamed by its profile arc. Its rims are densified
-/// to the band mesher's own wrap density: the chords stay within the
-/// deflection and the volume matches Pappus. The removed ring's section is a
+/// to the band mesher's own wrap density; without that the pool's sparser
+/// rims stitch against denser interior rows: the ρ = 1.5 band sags past the
+/// deflection and the B46-sized ρ = 0.05 band meshes open at 0.1 and 0.05.
+/// So: a closed mesh, the structured band within the deflection itself (its
+/// contract; it holds ≤ 0.25 ×), every other analytic face within the
+/// chord bound, and the volume on Pappus — the removed ring's section is a
 /// square minus a quarter disc, (1 − π/4)ρ², whose centroid sits
 /// ρ(10 − 3π)/(12 − 3π) in from the corner.
 #[test]
 fn filleted_cap_rim_band_stays_within_the_chord_bound() {
     use std::f64::consts::PI;
-    let (r, h, rho) = (5.0, 8.0, 1.5);
-    let mut topo = Topology::new();
-    let cyl = crate::primitives::make_cylinder(&mut topo, r, h).unwrap();
-    let rim = remus_topology::explorer::solid_edges(&topo, cyl)
-        .unwrap()
-        .into_iter()
-        .find(|&e| {
-            let edge = topo.edge(e).unwrap();
-            edge.start() == edge.end()
-                && matches!(edge.curve(), remus_topology::edge::EdgeCurve::Circle(_))
-                && (topo.vertex(edge.start()).unwrap().point().z() - h).abs() < 1e-9
-        })
-        .unwrap();
-    let solid = crate::blend_ops::fillet_v2(&mut topo, cyl, &[rim], rho)
-        .unwrap()
-        .solid;
-    let centroid = rho * (10.0 - 3.0 * PI) / (12.0 - 3.0 * PI);
-    let exact = PI * r * r * h - (1.0 - PI / 4.0) * rho * rho * 2.0 * PI * (r - centroid);
-    for deflection in [0.1, 0.02, 0.004] {
-        let (mesh, faces) = closed_mesh_by_face(&topo, solid, deflection);
-        assert!(
-            faces
+    let (r, h) = (5.0, 8.0);
+    for (rho, deflections) in [
+        (1.5, &[0.1, 0.05, 0.02, 0.004][..]),
+        (0.05, &[0.1, 0.05, 0.01][..]),
+    ] {
+        let mut topo = Topology::new();
+        let cyl = crate::primitives::make_cylinder(&mut topo, r, h).unwrap();
+        let rim = remus_topology::explorer::solid_edges(&topo, cyl)
+            .unwrap()
+            .into_iter()
+            .find(|&e| {
+                let edge = topo.edge(e).unwrap();
+                edge.start() == edge.end()
+                    && matches!(edge.curve(), remus_topology::edge::EdgeCurve::Circle(_))
+                    && (topo.vertex(edge.start()).unwrap().point().z() - h).abs() < 1e-9
+            })
+            .unwrap();
+        let solid = crate::blend_ops::fillet_v2(&mut topo, cyl, &[rim], rho)
+            .unwrap()
+            .solid;
+        let centroid = rho * (10.0 - 3.0 * PI) / (12.0 - 3.0 * PI);
+        let exact = PI * r * r * h - (1.0 - PI / 4.0) * rho * rho * 2.0 * PI * (r - centroid);
+        for &deflection in deflections {
+            let what = format!("rim fillet ρ = {rho}");
+            let (mesh, faces) = closed_mesh_by_face(&topo, solid, deflection);
+            let bands: Vec<_> = faces
                 .iter()
-                .any(|f| matches!(f.surface, FaceSurface::Torus(_)))
-        );
-        assert_faces_follow_their_carriers(&faces, deflection, "rim fillet");
-        assert_volume_within_chord_bound(&mesh, exact, deflection, "rim fillet");
+                .filter(|f| matches!(f.surface, FaceSurface::Torus(_)))
+                .collect();
+            assert_eq!(bands.len(), 1, "{what}");
+            let (_, sag) = vertex_and_sag(bands[0]);
+            assert!(
+                sag <= deflection,
+                "{what}: torus band sags {sag} at deflection {deflection}"
+            );
+            assert_faces_follow_their_carriers(&faces, deflection, &what);
+            assert_volume_within_chord_bound(&mesh, exact, deflection, &what);
+        }
     }
 }
 
