@@ -2,6 +2,9 @@
 
 use super::*;
 
+mod off_axis_cap;
+mod u_bracket_floor;
+
 #[test]
 fn cdt_simple_square() {
     let mut cdt = Cdt::new((Point2::new(-1.0, -1.0), Point2::new(2.0, 2.0)));
@@ -852,5 +855,158 @@ fn constraint_collinearity_preserves_resolved_offsets_on_long_segments() {
                 assert!(cdt.constraints.contains(&sorted_pair(near, end)));
             }
         }
+    }
+}
+
+/// B54: the U-bracket floor cap's constraint (25, 32)-(25, 8) recovers by
+/// flips alone.
+///
+/// The first-crossing flip loop stalled on it. Both crossing edges it
+/// inspects, the first seen from each endpoint, refuse to flip. One has a
+/// reflex quad. The other's flip diagonal (25, 8)-(31, 8) runs exactly
+/// through the collinear boundary vertex (29, 8). Three flippable edges sat
+/// further along the corridor, but the loop never looked at them. It spun to
+/// its budget and the bisect backstop split the edge at (25, 20). The face
+/// was valid, but its neighbour across that edge did not get the Steiner
+/// point, which cracked the solid's mesh (#619).
+///
+/// The y placement is the exact rotation (x, y) -> (-y, x) of the capture.
+/// The z placement is the exact swap (x, y) -> (y, x), which also reverses
+/// every wire. Both stalled the same way.
+#[test]
+fn cdt_u_bracket_floor_recovers_constraints_without_steiner_points() {
+    type Placement = fn(f64, f64) -> Point2;
+    let placements: [(&str, Placement); 3] = [
+        ("x", |x, y| Point2::new(x, y)),
+        ("y", |x, y| Point2::new(-y, x)),
+        ("z", |x, y| Point2::new(y, x)),
+    ];
+    for (name, place) in placements {
+        let pts: Vec<Point2> = u_bracket_floor::POINTS
+            .iter()
+            .map(|&(x, y)| place(x, y))
+            .collect();
+        let mut lo = Point2::new(f64::INFINITY, f64::INFINITY);
+        let mut hi = Point2::new(f64::NEG_INFINITY, f64::NEG_INFINITY);
+        for p in &pts {
+            lo = Point2::new(lo.x().min(p.x()), lo.y().min(p.y()));
+            hi = Point2::new(hi.x().max(p.x()), hi.y().max(p.y()));
+        }
+
+        // The same call sequence as `run_planar_cdt`.
+        let mut cdt = Cdt::with_capacity((lo, hi), pts.len());
+        let ids = cdt.insert_points_hilbert(&pts).unwrap();
+        let mut wire_edges = Vec::new();
+        for (start, end) in u_bracket_floor::WIRES {
+            let n = end - start;
+            for i in 0..n {
+                let (a, b) = (ids[start + i], ids[start + (i + 1) % n]);
+                cdt.insert_constraint(a, b).unwrap();
+                wire_edges.push((a, b));
+            }
+        }
+
+        assert_eq!(
+            cdt.vertices().len(),
+            cdt.super_count + pts.len(),
+            "{name}: constraint recovery inserted a Steiner point"
+        );
+        let mut tri_edges = DetHashSet::default();
+        for (a, b, c) in cdt.triangles() {
+            for (p, q) in [(a, b), (b, c), (c, a)] {
+                tri_edges.insert(sorted_pair(p, q));
+            }
+        }
+        for &(a, b) in &wire_edges {
+            assert!(
+                tri_edges.contains(&sorted_pair(a, b)),
+                "{name}: wire edge {:?}-{:?} is not a triangulation edge",
+                cdt.vertices()[a],
+                cdt.vertices()[b]
+            );
+        }
+
+        let outer = u_bracket_floor::WIRES[0].1;
+        cdt.remove_exterior(&wire_edges[..outer]);
+        let barrier: DetHashSet<(usize, usize)> =
+            wire_edges.iter().map(|&(a, b)| sorted_pair(a, b)).collect();
+        for (x, y) in u_bracket_floor::HOLE_SEEDS {
+            assert!(cdt.flood_remove_from_point(place(x, y), &barrier));
+        }
+
+        // The triangles tile the face exactly: every one CCW, and together
+        // the outer area minus both holes.
+        let verts = cdt.vertices();
+        let mut area = 0.0;
+        for (a, b, c) in cdt.triangles() {
+            let t = signed_tri_area(verts[a], verts[b], verts[c]);
+            assert!(t > 0.0, "{name}: triangle ({a}, {b}, {c}) has area {t}");
+            area += t;
+        }
+        let [(o0, o1), (a0, a1), (b0, b1)] = u_bracket_floor::WIRES;
+        let expected =
+            shoelace_area(&pts[o0..o1]) - shoelace_area(&pts[a0..a1]) - shoelace_area(&pts[b0..b1]);
+        assert!(
+            (area - expected).abs() <= 1e-12 * expected,
+            "{name}: triangles cover {area}, face area is {expected}"
+        );
+    }
+}
+
+/// A constraint that stalls flip recovery while it genuinely crosses an
+/// earlier constraint gets split at the crossing, not bisected toward it.
+///
+/// Constraint (29, 30) crosses (32, 48) in the captured cap. Flips cannot
+/// remove a constrained edge, so the two must meet at one new vertex on
+/// both. Earlier states of this CDT reached that crossing only after blind
+/// midpoint splits: two Steiner vertices on main, and five after the
+/// crossing-edge queue first landed, because the queue bailed on the
+/// constraint and left it to the bisect backstop.
+#[test]
+fn cdt_constraint_crossing_behind_a_stall_splits_at_the_intersection() {
+    let h = off_axis_cap::HALF_EXTENT;
+    let mut cdt = Cdt::with_capacity(
+        (Point2::new(-h, -h), Point2::new(h, h)),
+        off_axis_cap::POINTS.len(),
+    );
+    let ids: Vec<usize> = off_axis_cap::POINTS
+        .iter()
+        .map(|&(x, y)| cdt.insert_point(Point2::new(x, y)).unwrap())
+        .collect();
+    for (a, b) in off_axis_cap::CONSTRAINTS {
+        cdt.insert_constraint(ids[a], ids[b]).unwrap();
+    }
+
+    let first_new = cdt.super_count + off_axis_cap::POINTS.len();
+    assert_eq!(
+        cdt.vertices().len(),
+        first_new + 1,
+        "only the crossing point may be added"
+    );
+    let crossing = first_new;
+    let verts = cdt.vertices();
+    let on_segment = |a: usize, b: usize| {
+        let (pa, pb, pc) = (verts[ids[a]], verts[ids[b]], verts[crossing]);
+        let d = pb - pa;
+        let t = (pc - pa).dot(d) / d.length_squared();
+        let off = orient2d(pa, pb, pc).abs() / d.length();
+        t > 0.0 && t < 1.0 && off < 1e-12
+    };
+    assert!(on_segment(29, 30) && on_segment(32, 48));
+
+    let mut tri_edges = DetHashSet::default();
+    for (a, b, c) in cdt.triangles() {
+        let t = signed_tri_area(verts[a], verts[b], verts[c]);
+        assert!(t > 0.0, "triangle ({a}, {b}, {c}) has area {t}");
+        for (p, q) in [(a, b), (b, c), (c, a)] {
+            tri_edges.insert(sorted_pair(p, q));
+        }
+    }
+    for end in [29, 30, 32, 48] {
+        let piece = sorted_pair(ids[end], crossing);
+        assert!(
+            cdt.constraints.contains(&piece) && tri_edges.contains(&piece),
+            "the split piece from point {end} to the crossing is missing"
+        );
     }
 }
