@@ -17,6 +17,9 @@ use remus_topology::wire::{OrientedEdge, Wire};
 use super::nurbs::tessellate_nurbs;
 use super::*;
 
+mod mesh_oracles;
+mod mutation_oracles;
+
 #[test]
 fn tessellate_square() {
     let mut topo = Topology::new();
