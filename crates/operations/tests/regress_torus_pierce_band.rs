@@ -8,7 +8,9 @@
 
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
+use remus_check::classify::{ClassifyOptions, PointClassification, classify_point};
 use remus_math::mat::Mat4;
+use remus_math::vec::Point3;
 use remus_operations::blend_ops::fillet_v2;
 use remus_operations::boolean::{BooleanOp, boolean};
 use remus_operations::measure::{mass_properties, solid_bounding_box, solid_volume};
@@ -30,16 +32,29 @@ const CONE_R0: f64 = 8.0;
 const CONE_R1: f64 = 5.5;
 const CONE_H: f64 = 5.0;
 
+/// Where the frustum sits: its local axis (+z, base at z = 0) mapped onto +X.
+fn placement() -> Mat4 {
+    Mat4::translation(0.0, -4.0, -4.0) * Mat4::rotation_y(FRAC_PI_2)
+}
+
 /// Torus in XY at the origin, fused with a frustum whose axis runs along +X
 /// from x = 0 (radius 8) to x = 5 (radius 5.5) at y = z = -4. The tube enters
 /// through the base cap (a plane through the torus axis) and leaves through the
 /// cone wall.
 fn build(topo: &mut Topology) -> SolidId {
+    build_op(topo, BooleanOp::Fuse, false)
+}
+
+/// The same operands under any boolean; `frustum_first` swaps them.
+fn build_op(topo: &mut Topology, op: BooleanOp, frustum_first: bool) -> SolidId {
     let torus = make_torus(topo, MAJOR, MINOR, 16).unwrap();
     let cone = make_cone(topo, CONE_R0, CONE_R1, CONE_H).unwrap();
-    let place = Mat4::translation(0.0, -4.0, -4.0) * Mat4::rotation_y(FRAC_PI_2);
-    transform_solid(topo, cone, &place).unwrap();
-    boolean(topo, BooleanOp::Fuse, torus, cone).unwrap()
+    transform_solid(topo, cone, &placement()).unwrap();
+    if frustum_first {
+        boolean(topo, op, cone, torus).unwrap()
+    } else {
+        boolean(topo, op, torus, cone).unwrap()
+    }
 }
 
 /// Closed-form pieces plus the tube-inside-frustum overlap by the midpoint rule
@@ -209,4 +224,86 @@ fn fillet_on_base_rim_stays_watertight_at_coarse_deflection() {
     let result = fillet_v2(&mut topo, solid, &[edges[0]], 0.05).unwrap();
     assert!(!result.is_partial);
     assert_watertight(&topo, result.solid, "fillet", &[0.1, 0.01]);
+}
+
+/// The ray-cast classifier against analytic membership on a grid around the
+/// band, for every boolean of the two operands.
+///
+/// The band's two loops each wrap the tube, so projected to the torus `(u, v)`
+/// domain neither bounds a polygon: the fused band rejected every ray hit and
+/// 843 of 7062 grid points (every one inside the tube and outside the frustum)
+/// read `Outside`. The classifier is the ground truth the verification skills
+/// reach for, so it has to agree here before it can vouch for anything else.
+#[test]
+fn ray_cast_classifier_agrees_with_analytic_membership() {
+    let inverse = placement().inverse().unwrap();
+    // Distance to the tube surface, and signed depth inside the frustum (its
+    // radial term is measured square to the axis, so it over-states the
+    // distance to the slanted wall slightly: a stricter skip, never a looser).
+    let tube = |p: Point3| (p.x().hypot(p.y()) - MAJOR).hypot(p.z()) - MINOR;
+    let frustum = |p: Point3| {
+        let q = inverse.mul_point(p);
+        let radius = CONE_R0 + (CONE_R1 - CONE_R0) * q.z() / CONE_H;
+        q.z().min(CONE_H - q.z()).min(radius - q.x().hypot(q.y()))
+    };
+    let options = ClassifyOptions::default();
+    for (op, frustum_first) in [
+        (BooleanOp::Fuse, false),
+        (BooleanOp::Cut, false),
+        (BooleanOp::Cut, true),
+        (BooleanOp::Intersect, false),
+    ] {
+        let mut topo = Topology::new();
+        let solid = build_op(&mut topo, op, frustum_first);
+        let (mut probed, mut wrong) = (0, Vec::new());
+        let (nx, ny, nz) = (30_u32, 30_u32, 8_u32);
+        for i in 0..nx {
+            for j in 0..ny {
+                for k in 0..nz {
+                    let along = |lo: f64, hi: f64, s: u32, n: u32| {
+                        lo + (hi - lo) * f64::from(s) / f64::from(n - 1)
+                    };
+                    let p = Point3::new(
+                        along(-4.6, 4.6, i, nx),
+                        along(-4.6, 4.6, j, ny),
+                        along(-0.6, 0.6, k, nz),
+                    );
+                    let (t, f) = (tube(p), frustum(p));
+                    if t.abs() < 0.02 || f.abs() < 0.02 {
+                        continue;
+                    }
+                    let (in_torus, in_frustum) = (t < 0.0, f > 0.0);
+                    let (a, b) = if frustum_first {
+                        (in_frustum, in_torus)
+                    } else {
+                        (in_torus, in_frustum)
+                    };
+                    let expected = match op {
+                        BooleanOp::Fuse => a || b,
+                        BooleanOp::Cut => a && !b,
+                        BooleanOp::Intersect => a && b,
+                    };
+                    probed += 1;
+                    let got = classify_point(&topo, solid, p, &options).unwrap();
+                    let agrees = match got {
+                        PointClassification::Inside => expected,
+                        PointClassification::Outside => !expected,
+                        // Every probe is at least 0.02 clear of both surfaces.
+                        PointClassification::OnBoundary => false,
+                    };
+                    if !agrees {
+                        wrong.push((p, got));
+                    }
+                }
+            }
+        }
+        assert!(probed > 7000, "{op:?}: only {probed} probes");
+        assert!(
+            wrong.is_empty(),
+            "{op:?} (frustum first: {frustum_first}): {} of {probed} probes misread, \
+             e.g. {:?}",
+            wrong.len(),
+            &wrong[..wrong.len().min(4)]
+        );
+    }
 }
