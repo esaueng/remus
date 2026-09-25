@@ -636,8 +636,9 @@ for (const operation of ['fillet', 'chamfer']) {
   console.log(`ok - ${method}: typed, complete, exact-geometry parity`);
 }
 
-// Offset face identity is construction-derived and reaches both public WASM
-// routes as a real journal evolution entry, never a barrier.
+// Offset face, edge and vertex identity is construction-derived and reaches
+// both public WASM routes as a real journal evolution entry, never a barrier
+// (B18). Every result entity is attributed or typed unresolved.
 {
   const directKernel = new BrepKernel();
   const source = directKernel.makeBox(2, 2, 2);
@@ -651,7 +652,12 @@ for (const operation of ['fillet', 'chamfer']) {
       origin: directEntry.detail.origin,
       events: directEntry.detail.events,
     },
-    { kind: 'offset', type: 'evolution', origin: 'construction', events: 6 },
+    { kind: 'offset', type: 'evolution', origin: 'construction', events: 6 + 12 + 8 },
+  );
+  assert.equal(direct.evolution.completeness.resolved, true);
+  assert.deepEqual(
+    [direct.evolution.faces.length, direct.evolution.edges.length, direct.evolution.vertices.length],
+    [6, 12, 8],
   );
 
   const batchKernel = new BrepKernel();
@@ -667,8 +673,32 @@ for (const operation of ['fillet', 'chamfer']) {
   assert.deepEqual(batch[1].ok, direct);
   assert.equal(batch[2].ok.at(-1).kind, 'offset');
   assert.equal(batch[2].ok.at(-1).type, 'evolution');
-  assert.equal(batch[2].ok.at(-1).detail.events, 6);
-  console.log('ok - offsetJournaled direct/batch construction evolution');
+  assert.equal(batch[2].ok.at(-1).detail.events, 6 + 12 + 8);
+
+  // A torus's two seams share one incidence: typed unresolved, never guessed,
+  // and identical through the direct binding and executeBatchV2.
+  const torusKernel = new BrepKernel();
+  const torus = torusKernel.makeTorus(3, 1, 16);
+  const seams = Array.from(torusKernel.getSolidEdges(torus));
+  const torusDirect = JSON.parse(torusKernel.offsetJournaled(torus, 0.3));
+  assert.equal(torusDirect.evolution.completeness.accounted, true);
+  assert.equal(torusDirect.evolution.completeness.resolved, false);
+  assert.equal(torusDirect.evolution.edges.length, 2);
+  for (const edge of torusDirect.evolution.edges) {
+    assert.equal(edge.event, 'unresolved');
+    assert.equal(edge.reason, 'ambiguous_incidence');
+    assert.deepEqual(edge.candidates, seams);
+  }
+  const torusBatch = JSON.parse(
+    new BrepKernel().executeBatchV2(
+      JSON.stringify([
+        { op: 'makeTorus', args: { majorRadius: 3, minorRadius: 1, segments: 16 } },
+        { op: 'offsetJournaled', args: { solid: 0, distance: 0.3 } },
+      ]),
+    ),
+  );
+  assert.deepEqual(torusBatch[1].ok, torusDirect);
+  console.log('ok - offsetJournaled direct/batch face, edge and vertex evolution');
 }
 
 // A stored/transported payload is untrusted input: malformed versions,
