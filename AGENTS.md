@@ -462,6 +462,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Shape construction (vertices, edges, wires, faces) | `bindings/shapes.rs` |
 | Modeling operations (extrude, revolve, sweep, loft, fillet, etc.) | `bindings/operations.rs` |
 | Boolean operations (fuse, cut, intersect) | `bindings/booleans.rs` |
+| Typed modifier results (`filletDetailed`, `chamferDetailed`, `shellDetailed`, `offsetDetailed`) | `bindings/modifier_detailed.rs` |
 | Transform, copy, mirror, pattern | `bindings/transforms.rs` |
 | Topology query, edge/surface evaluation | `bindings/query.rs` |
 | Measurement (volume, area, bbox, distances) | `bindings/measure.rs` |
