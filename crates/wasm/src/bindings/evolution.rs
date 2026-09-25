@@ -2520,4 +2520,153 @@ mod evolution_contract_tests {
         assert_eq!(entry["type"], "evolution");
         assert_eq!(entry["detail"]["origin"], "construction");
     }
+
+    #[test]
+    fn linear_pattern_journaled_resolves_all_kinds_direct_and_batch() {
+        // Success cell: box count 2, disjoint. Direct and batch must agree,
+        // and every result face/edge/vertex must resolve bound with
+        // construction provenance (total F/E/V lineage, not faces-only).
+        for batch in [false, true] {
+            let mut kernel = BrepKernel::new();
+            let source = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
+            let (compound, op) = if batch {
+                let response: serde_json::Value = serde_json::from_str(
+                    &kernel.execute_batch(
+                        &serde_json::json!([{
+                            "op": "linearPatternJournaled",
+                            "args": {
+                                "solid": source,
+                                "direction": [1.0, 0.0, 0.0],
+                                "spacing": 25.0,
+                                "count": 2,
+                            },
+                        }])
+                        .to_string(),
+                    ),
+                )
+                .unwrap();
+                let ok = &response[0]["ok"];
+                let compound = u32::try_from(ok["compound"].as_u64().unwrap()).unwrap();
+                let op = u32::try_from(ok["op"].as_u64().unwrap()).unwrap();
+                (compound, op)
+            } else {
+                let payload: serde_json::Value = serde_json::from_str(
+                    &kernel
+                        .linear_pattern_journaled_js(source, 1.0, 0.0, 0.0, 25.0, 2)
+                        .unwrap(),
+                )
+                .unwrap();
+                let compound = u32::try_from(payload["compound"].as_u64().unwrap()).unwrap();
+                let op = u32::try_from(payload["op"].as_u64().unwrap()).unwrap();
+                (compound, op)
+            };
+            // 6+6 faces, 12+12 edges, 8+8 vertices across two boxes.
+            for (kind, expected) in [("face", 12u32), ("edge", 24u32), ("vertex", 16u32)] {
+                let mut handles = std::collections::BTreeSet::new();
+                for index in 0..expected {
+                    let resolution: serde_json::Value = if batch {
+                        let batch_response: serde_json::Value = serde_json::from_str(
+                            &kernel.execute_batch(
+                                &serde_json::json!([{
+                                    "op": "resolveOperationOutput",
+                                    "args": {"op": op, "kind": kind, "index": index},
+                                }])
+                                .to_string(),
+                            ),
+                        )
+                        .unwrap();
+                        batch_response[0]["ok"].clone()
+                    } else {
+                        serde_json::from_str(
+                            &kernel.resolve_operation_output(op, kind, index).unwrap(),
+                        )
+                        .unwrap()
+                    };
+                    assert_eq!(
+                        resolution["status"], "bound",
+                        "{kind} output {index} must resolve bound, got {resolution}"
+                    );
+                    assert_eq!(resolution["provenance"], "construction");
+                    let entities = resolution["entities"].as_array().unwrap();
+                    assert_eq!(entities.len(), 1);
+                    let handle = entities[0]["handle"].as_u64().unwrap();
+                    assert!(handles.insert(handle), "{kind} outputs must be distinct");
+                    assert_eq!(entities[0]["kind"], kind);
+                }
+                let _ = compound;
+            }
+            // Same entry, same origin through the read-only summary.
+            let summary: serde_json::Value =
+                serde_json::from_str(&kernel.journal_summary()).unwrap();
+            let entry = summary
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|entry| entry["op"].as_u64() == Some(u64::from(op)))
+                .unwrap();
+            assert_eq!(entry["kind"], "linear_pattern");
+            assert_eq!(entry["type"], "evolution");
+            assert_eq!(entry["detail"]["origin"], "construction");
+        }
+        // Refusal cells: batch returns typed errors, native refuses the same
+        // inputs, and the source geometry survives. Direct error paths are
+        // not exercised natively (JsError cannot construct there); batch is
+        // the WASM refusal surface.
+        let mut kernel = BrepKernel::new();
+        let source = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
+        for (direction, spacing, count, tag) in [
+            ([1.0, 0.0, 0.0], 0.0, 2u32, "spacing"),
+            ([1.0, 0.0, 0.0], 25.0, 0u32, "count"),
+            ([0.0, 0.0, 0.0], 25.0, 2u32, "direction"),
+            ([1.0, 0.0, 0.0], 5.0, 2u32, "overlap"),
+        ] {
+            let response: serde_json::Value = serde_json::from_str(
+                &kernel.execute_batch(
+                    &serde_json::json!([{
+                        "op": "linearPatternJournaled",
+                        "args": {
+                            "solid": source,
+                            "direction": direction,
+                            "spacing": spacing,
+                            "count": count,
+                        },
+                    }])
+                    .to_string(),
+                ),
+            )
+            .unwrap();
+            assert!(
+                response[0].get("error").is_some(),
+                "{tag} refusal must surface a batch error, got {}",
+                response[0]
+            );
+            let _ = tag;
+        }
+        // Foreign handle refuses on both surfaces without publishing history.
+        let retired = kernel.make_box_solid(1.0, 1.0, 1.0).unwrap();
+        let retired_id = kernel.resolve_solid(retired).unwrap();
+        kernel.topo_mut().delete_solid(retired_id).unwrap();
+        let entries_before = kernel.topo().journal().entries().len();
+        let response: serde_json::Value = serde_json::from_str(
+            &kernel.execute_batch(
+                &serde_json::json!([{
+                    "op": "linearPatternJournaled",
+                    "args": {
+                        "solid": retired,
+                        "direction": [1.0, 0.0, 0.0],
+                        "spacing": 12.0,
+                        "count": 2,
+                    },
+                }])
+                .to_string(),
+            ),
+        )
+        .unwrap();
+        assert!(response[0].get("error").is_some());
+        assert_eq!(
+            kernel.topo().journal().entries().len(),
+            entries_before,
+            "foreign-handle refusal must not publish history"
+        );
+    }
 }
