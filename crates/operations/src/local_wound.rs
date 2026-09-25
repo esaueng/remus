@@ -2316,6 +2316,14 @@ mod tests {
                 Circle3D::new(Point3::new(2.0, 0.0, 0.0), normal, 60.0_f64.sqrt()).unwrap();
             assert!(certify_plane_sphere_circle(&circle, plane, &sphere_r8()));
         }
+        // A squared radius 2e-7 off is inside the R-scaled tolerance 1e-7 * 8.
+        let near = Circle3D::new(
+            Point3::new(2.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            (60.0_f64 + 2e-7).sqrt(),
+        )
+        .unwrap();
+        assert!(certify_plane_sphere_circle(&near, plane, &sphere_r8()));
         // Plane z = 0 is the great circle, radius 8 (r^2 = 64 differs from 2r).
         let equator =
             Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 8.0).unwrap();
@@ -2418,8 +2426,11 @@ mod tests {
             // Growth across the principal-angle seam of `project`.
             ((2.5, 3.0), false, 3.5, (2.5, 3.5)),
             ((-2.5, -3.0), false, -3.5, (-2.5, -3.5)),
-            // A zero-length growth is the old domain itself.
+            // A zero-length growth is the old domain itself, in every branch.
             ((0.5, 2.0), false, 2.0, (0.5, 2.0)),
+            ((0.5, 2.0), true, 0.5, (0.5, 2.0)),
+            ((4.0, 3.0), false, 3.0, (4.0, 3.0)),
+            ((4.0, 3.0), true, 4.0, (4.0, 3.0)),
         ];
         for (old, replace_start, angle, expected) in cases {
             let point = circle.evaluate(angle);
