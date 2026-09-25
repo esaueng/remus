@@ -470,7 +470,16 @@ pub fn perform_with_context(
                 v_range_b,
                 context,
             )?;
-            raw_curves.extend(tangent_torus_boundary_sections(topo, fa, fb, tol)?);
+            // A tangent rim the pair carries exactly replaces any marched
+            // trace of the same tangency: the trace is a co-endpoint duplicate
+            // of the rim arc that the loop walker orders by a zero angle.
+            let tangent_rims = tangent_torus_boundary_sections(topo, fa, fb, tol)?;
+            if !tangent_rims.is_empty() {
+                raw_curves.retain(|raw| {
+                    !is_marched_trace_of_tangent_rim(raw, &tangent_rims, surf_a, surf_b, tol)
+                });
+            }
+            raw_curves.extend(tangent_rims);
             // Intersection implementations are allowed to refuse, never to
             // smuggle an invalid parameter span into a sampler that would
             // quietly classify every NaN point as outside and drop the curve.
@@ -5370,6 +5379,79 @@ fn tangent_torus_boundary_sections(
     Ok(sections)
 }
 
+/// Is `raw` a marched trace that merely re-traces one of the pair's exact
+/// tangent rim circles?
+///
+/// A torus fillet patch tangent to a cylinder wall (its own fillet rim, or
+/// the same x-axis cylinder on a copy of the body translated along x) has
+/// no transversal section there: the surfaces touch along the rim circle,
+/// which [`tangent_torus_boundary_sections`] already emits exactly so that
+/// `link_existing` welds it onto the boundary edge. The generic marcher
+/// still walks the tangency, and a trace along a double root is
+/// ill-conditioned: a point within δ of both carriers can sit √(2·r·δ) off
+/// the true contact circle (the hammer holder's shifted intersect measured
+/// 1.2e-4 at r = 8, with the normals parallel to 1.6e-6 rad along the whole
+/// trace), far past every 1e-7 gate downstream. Emitted beside the exact
+/// circle it is a co-endpoint duplicate of a rim arc — the lens no
+/// endpoint-keyed merge can resolve — and the loop walker orders the two
+/// tangent edges at their shared vertices by an angle that is zero to
+/// roundoff. Natively that read as an out-and-back spur the builder
+/// excised; on wasm32, whose libm rounds differently, the same ~1e-12
+/// perturbation made the trace the patch boundary and left the rim arc and
+/// the trace as 4 free edges (WASM smoke, 2026-09-24, #618 / #627). No weld
+/// band fixes a duplicate; the geometry emitted is controlled instead.
+///
+/// Dropped when EVERY sample of the trace is a tangency — both carrier
+/// normals parallel within the angular conditioning band — lying within the
+/// positional conditioning band of one exact rim. Both bands derive from
+/// the 100·tol weld scale δ through the tangency conditioning (position
+/// √(2·r·δ), angle √(2·δ/r)); nothing global changes. A transversal crossing
+/// has finite normal angles and leaves the circle, so it is kept.
+fn is_marched_trace_of_tangent_rim(
+    raw: &RawCurve,
+    tangent_rims: &[RawCurve],
+    surf_a: &FaceSurface,
+    surf_b: &FaceSurface,
+    tol: Tolerance,
+) -> bool {
+    const SAMPLES: u32 = 32;
+    if !matches!(raw.curve, EdgeCurve::NurbsCurve(_)) {
+        return false;
+    }
+    let weld = tol.linear * 100.0;
+    let span = raw.t_range.1 - raw.t_range.0;
+    let samples: Vec<Point3> = (0..=SAMPLES)
+        .map(|k| {
+            raw_point_at(
+                raw,
+                raw.t_range.0 + span * f64::from(k) / f64::from(SAMPLES),
+            )
+        })
+        .collect();
+    tangent_rims.iter().any(|rim| {
+        let EdgeCurve::Circle(circle) = &rim.curve else {
+            return false;
+        };
+        let r = circle.radius();
+        let position_band = (2.0 * r * weld).sqrt().max(weld);
+        let angle_band = (2.0 * weld / r).sqrt().min(1.0);
+        samples.iter().all(|&p| {
+            let d = p - circle.center();
+            let h = d.dot(circle.normal());
+            let radial = (d - circle.normal() * h).length();
+            if h.hypot(radial - r) > position_band {
+                return false;
+            }
+            let (Some((ua, va)), Some((ub, vb))) =
+                (surf_a.project_point(p), surf_b.project_point(p))
+            else {
+                return false;
+            };
+            surf_a.normal(ua, va).cross(surf_b.normal(ub, vb)).length() <= angle_band
+        })
+    })
+}
+
 /// Compute raw intersection curves between two surfaces.
 ///
 /// Dispatches by surface type pair. Raw curves are returned without
@@ -8175,6 +8257,108 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    /// A marched NURBS trace that re-traces a tangent rim within the
+    /// tangency conditioning band is dropped; a trace that leaves the
+    /// circle, or the same trace on a pair whose normals cross, is kept.
+    #[test]
+    fn marched_trace_of_tangent_rim_is_dropped_and_crossings_are_kept() {
+        use remus_math::{
+            curves::Circle3D,
+            nurbs::fitting::interpolate,
+            surfaces::{CylindricalSurface, ToroidalSurface},
+        };
+        let tol = Tolerance::default();
+        for scale in [0.01, 1.0, 100.0] {
+            let torus = ToroidalSurface::with_axis(
+                Point3::new(2.0, -3.0, 4.0),
+                8.0 * scale,
+                3.0 * scale,
+                Vec3::new(1.0, 2.0, 3.0),
+            )
+            .unwrap();
+            let radial = torus.x_axis();
+            let centre = torus.center() + radial * torus.major_radius();
+            let axis = radial.cross(torus.z_axis()).normalize().unwrap();
+            let r = torus.minor_radius();
+            let circle = Circle3D::new_with_ref(centre, axis, r, radial).unwrap();
+            let domain = (1.6, 3.1);
+            let rim = RawCurve {
+                curve: EdgeCurve::Circle(circle.clone()),
+                bbox: circle_bbox(&circle),
+                t_range: domain,
+                p_start: circle.evaluate(domain.0),
+                p_end: circle.evaluate(domain.1),
+            };
+            let tangent = FaceSurface::Cylinder(CylindricalSurface::new(centre, axis, r).unwrap());
+            let torus_surface = FaceSurface::Torus(torus.clone());
+            let trace = |off_circle: f64| -> RawCurve {
+                // The marcher's noise along a tangency: samples displaced
+                // along the tube (the cylinder axis) by up to `off_circle`.
+                let points: Vec<Point3> = (0..24)
+                    .map(|k| {
+                        let t = domain.0 + (domain.1 - domain.0) * f64::from(k) / 23.0;
+                        let wobble = if k % 2 == 0 { off_circle } else { -off_circle };
+                        circle.evaluate(t) + axis * wobble
+                    })
+                    .collect();
+                let nurbs = interpolate(&points, 3).unwrap();
+                let t_range = nurbs.domain();
+                RawCurve {
+                    bbox: Aabb3::from_points(points.iter().copied()),
+                    t_range,
+                    p_start: points[0],
+                    p_end: points[23],
+                    curve: EdgeCurve::NurbsCurve(nurbs),
+                }
+            };
+            // The hammer holder's measured deviation, scaled: 1.2e-4 at r = 8.
+            let noisy = trace(1.2e-4 * scale);
+            for (a, b) in [(&torus_surface, &tangent), (&tangent, &torus_surface)] {
+                assert!(
+                    is_marched_trace_of_tangent_rim(&noisy, std::slice::from_ref(&rim), a, b, tol),
+                    "tangential trace at scale {scale} must be dropped"
+                );
+            }
+            // Past the positional conditioning band √(2·r·δ) it is not the rim.
+            let far = trace((2.0 * r * tol.linear * 100.0).sqrt() * 4.0);
+            assert!(!is_marched_trace_of_tangent_rim(
+                &far,
+                std::slice::from_ref(&rim),
+                &torus_surface,
+                &tangent,
+                tol
+            ));
+            // The same trace against a cylinder whose axis crosses the rim
+            // plane: normals meet at a finite angle, so it is a real section.
+            let tilted_axis = (axis + radial * 0.3).normalize().unwrap();
+            let crossing =
+                FaceSurface::Cylinder(CylindricalSurface::new(centre, tilted_axis, r).unwrap());
+            assert!(!is_marched_trace_of_tangent_rim(
+                &noisy,
+                std::slice::from_ref(&rim),
+                &torus_surface,
+                &crossing,
+                tol
+            ));
+            // Without an exact rim there is nothing to duplicate; the exact
+            // circle itself is never a marched trace.
+            assert!(!is_marched_trace_of_tangent_rim(
+                &noisy,
+                &[],
+                &torus_surface,
+                &tangent,
+                tol
+            ));
+            assert!(!is_marched_trace_of_tangent_rim(
+                &rim,
+                std::slice::from_ref(&rim),
+                &torus_surface,
+                &tangent,
+                tol
+            ));
         }
     }
 
