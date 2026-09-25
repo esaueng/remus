@@ -13,8 +13,9 @@
 //! offset is the harness offset scaled with the body, so every scale sits the
 //! same ~1.3e4 body lengths from the origin. Every exact arm of the integrator
 //! is on the path: planar Green closed forms (box, cone and cylinder caps),
-//! untrimmed quadric quadrature (sphere, cone), the full torus, and
-//! polygon-trimmed cylinder bands (the cross-drilled shaft).
+//! untrimmed quadric quadrature (sphere, cone), the full torus,
+//! polygon-trimmed cylinder bands (the cross-drilled shaft), and NURBS
+//! quadrature (the box converted to B-spline carriers).
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -24,6 +25,7 @@ use remus_math::mat::Mat4;
 use remus_math::vec::{Point3, Vec3};
 use remus_operations::boolean::{BooleanOp, boolean};
 use remus_operations::copy::copy_and_transform_solid;
+use remus_operations::heal::convert_to_bspline;
 use remus_operations::measure::{mass_properties, solid_center_of_mass};
 use remus_operations::primitives::{make_box, make_cone, make_cylinder, make_sphere, make_torus};
 use remus_operations::transform::transform_solid;
@@ -42,6 +44,14 @@ type Build = fn(&mut Topology, f64) -> SolidId;
 
 fn box_body(topo: &mut Topology, s: f64) -> SolidId {
     make_box(topo, s, 2.0 * s, 3.0 * s).unwrap()
+}
+
+/// The box with every plane converted to a bilinear B-spline carrier: NURBS
+/// quadrature over trimmed faces.
+fn bspline_box_body(topo: &mut Topology, s: f64) -> SolidId {
+    let body = box_body(topo, s);
+    assert!(convert_to_bspline(topo, body).unwrap() > 0);
+    body
 }
 
 fn sphere_body(topo: &mut Topology, s: f64) -> SolidId {
@@ -76,8 +86,9 @@ fn cross_drilled_body(topo: &mut Topology, s: f64) -> SolidId {
     body
 }
 
-const BODIES: [(&str, Build); 6] = [
+const BODIES: [(&str, Build); 7] = [
     ("box", box_body),
+    ("B-spline box", bspline_box_body),
     ("sphere", sphere_body),
     ("frustum", frustum_body),
     ("pointed cone", pointed_cone_body),
