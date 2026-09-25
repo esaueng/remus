@@ -50,7 +50,7 @@ Details and the full path list: [reference.md](reference.md), section "Volume pa
 
 - B-Rep watertight: every edge maps to exactly 2 faces. Check via `validate_solid` errors, or get the actual open loops from `find_free_bounds`.
 - Mesh watertight: `boundary_edge_count(&mesh) == 0 && non_manifold_edge_count(&mesh) == 0`.
-- They can disagree in both directions: the tessellator can stitch a closed mesh over a leaky B-Rep, and a closed B-Rep can tessellate with per-face seam boundary edges. Check both when it matters; `solid_volume` itself gates some paths on a watertight mesh and falls through rather than return a leaky volume.
+- They can disagree in both directions: the tessellator can stitch a closed mesh over a leaky B-Rep, and a closed B-Rep can tessellate with per-face seam boundary edges. Check both when it matters. `solid_volume` sends some body classes to the whole-solid mesh because the per-face routes mis-measure them. When that mesh is open it answers with the exact boundary-trimmed Gauss integral, else the closed clamp mesh (for a request finer than the clamp), else a typed `Unsupported`; it never falls through to the per-face route. `BK_VOL_TRACE=1` prints the route each call takes to stderr.
 
 ## Verification bar for shipping a geometry change
 
