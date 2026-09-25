@@ -170,7 +170,7 @@ fn batch_fillet_success_changes_the_answer_and_keeps_the_input() {
 
 /// Baseline defect, batch surface: `filletVariable` with r=50 on a 10 mm box
 /// returned `ok` and a new handle measuring 3242.011 mm³ — the volume GREW.
-/// Now both batch contracts refuse it, and the input is untouched. Since B59
+/// Now both batch contracts refuse it, and the input is untouched. Since B63
 /// the refusal is the support cliff the walking engine reports (the radius
 /// is wider than the 10 mm faces), raised before any geometry is built.
 #[test]

@@ -530,7 +530,7 @@ pub fn fillet_variable_with_setbacks(
 }
 
 /// Refuse a variable-radius stripe whose contact would land on or past the far
-/// boundary of one of its planar support faces (B59).
+/// boundary of one of its planar support faces (B63).
 ///
 /// This engine places each contact `r(t)` away from the spine along the
 /// support face, perpendicular to the spine, and trims the face there. When

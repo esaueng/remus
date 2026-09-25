@@ -84,7 +84,7 @@ The gridfinity D5 lip is the closest real exercise of a filleted closed rim: `cr
 
 ### (c) Variable fillet stripe ends are chords. Engine: v1 variable (`filletVariable`).
 
-`crates/operations/src/fillet/mod.rs::fillet_variable_transacted` emits its exact NURBS wall as a position-only `FaceSpec::Surface` and the cap faces as `FaceSpec::Planar`, so the assembler mints `Line` edges across each stripe end: chords `r(1 − cos 45°)` off the wall. `validateSolid` passes; the mesh volume reads low by ~0.022·r²·L and Gauss by more. Every `filletVariable` result has it (B61, ready-repro `crates/operations/tests/regress_variable_fillet_chord_end_trim.rs`). Width is guarded: a radius at or past a planar support's far boundary refuses as `cliff-encountered` before assembly (B59, `reject_variable_support_cliffs`).
+`crates/operations/src/fillet/mod.rs::fillet_variable_transacted` emits its exact NURBS wall as a position-only `FaceSpec::Surface` and the cap faces as `FaceSpec::Planar`, so the assembler mints `Line` edges across each stripe end: chords `r(1 − cos 45°)` off the wall. `validateSolid` passes; the mesh volume reads low by ~0.022·r²·L and Gauss by more. Every `filletVariable` result has it (B61, ready-repro `crates/operations/tests/regress_variable_fillet_chord_end_trim.rs`). Width is guarded: a radius at or past a planar support's far boundary refuses as `cliff-encountered` before assembly (B63, `reject_variable_support_cliffs`).
 
 ## Scope reminders
 

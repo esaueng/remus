@@ -2,7 +2,7 @@
 //! straight chord, so its blend face is bounded by edges that do not lie on
 //! it.
 //!
-//! Found diagnosing B59's in-range volume gap (2026-09-25): a constant-law
+//! Found diagnosing B63's in-range volume gap (2026-09-25): a constant-law
 //! radius-9 stripe on one vertical edge of a 10³ box measures 824.41 on its
 //! mesh at every deflection (0.1, 0.01, 0.001) and 749.12 by Gauss, against
 //! the closed form 826.1725 that the walking engine hits to 1e-10. The blend

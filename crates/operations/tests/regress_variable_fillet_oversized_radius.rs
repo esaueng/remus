@@ -1,4 +1,4 @@
-//! B59 regression: the variable-radius fillet accepted a radius its support
+//! B63 regression: the variable-radius fillet accepted a radius its support
 //! faces cannot hold and returned wrong geometry that still validated.
 //!
 //! Found while adding the O4.7 `filletVariableDetailed` twin (2026-09-25). On
