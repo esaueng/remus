@@ -214,7 +214,7 @@ export const brepkernel_makeTangentArc3d: (a: number, b: number, c: number, d: n
 export const brepkernel_makeTorus: (a: number, b: number, c: number, d: number) => [number, number, number];
 export const brepkernel_makeVertex: (a: number, b: number, c: number, d: number) => [number, number, number];
 export const brepkernel_makeWire: (a: number, b: number, c: number, d: number) => [number, number, number];
-export const brepkernel_massProperties: (a: number, b: number) => [number, number, number];
+export const brepkernel_massProperties: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number];
 export const brepkernel_measureCurvatureAtEdge: (a: number, b: number, c: number) => [number, number, number, number];
 export const brepkernel_measureCurvatureAtSurface: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const brepkernel_mergeCoincidentVertices: (a: number, b: number, c: number) => [number, number, number];
