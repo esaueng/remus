@@ -6428,6 +6428,15 @@ fn split_face_2d_impl(
         );
     }
 
+    // The one-ruling sector rescue below reads the boundary as the periodic
+    // shortcuts above do: two CLOSED rim circles plus the seam. From here on
+    // the rims are halved at the seam antipode and split at every section
+    // endpoint, and handed that split boundary the rescue declined on every
+    // ruling off the seam (B19), leaving the greedy's under-split region.
+    let unsplit_cylinder_boundary =
+        (u_periodic && matches!(surface, FaceSurface::Cylinder(_)) && !sections.is_empty())
+            .then(|| boundary_edges.clone());
+
     // For periodic faces, align closed boundary edge UV with seam edge UV.
     // The same 3D vertex projects to u=0 (from circle unwrapping) and u=seam
     // (from Line edge projection). Shift the circle UV so it starts at seam_u.
@@ -7749,14 +7758,9 @@ fn split_face_2d_impl(
         && !sections.is_empty()
         && matches!(&surface, FaceSurface::Cylinder(_))
         && original_inner_wires.is_empty()
+        && let Some(boundary) = unsplit_cylinder_boundary.as_deref()
         && let Some(sectors) = split_periodic_face_into_sectors(
-            &surface,
-            &all_edges[..n_boundary_edges],
-            sections,
-            rank,
-            reversed,
-            face_id,
-            tol.linear,
+            &surface, boundary, sections, rank, reversed, face_id, tol.linear,
         )
     {
         return Ok(sectors);

@@ -710,6 +710,51 @@ fn closed_rings_split_lateral_into_bands_of_closed_form_area() {
     }
 }
 
+/// One full-height ruling plus the seam cut the lateral into two sectors
+/// (the mid-wall pad whose second wall crossing rides the seam). The greedy
+/// walker reads the once-cut annulus as a single region; the sector rescue
+/// must return both, of areas `r·θ·h` and `r·(2π − θ)·h`.
+#[test]
+fn one_ruling_splits_lateral_into_two_sectors_of_closed_form_area() {
+    for (r, h) in [(1.0, 2.0), (25.0, 10.0)] {
+        for theta in [2.0, 4.5] {
+            for downward in [false, true] {
+                let (topo, face) = lateral(r, h, false);
+                let (a, b) = (on_cyl(r, theta, 0.0), on_cyl(r, theta, h));
+                let ruling = if downward {
+                    line_section(b, a)
+                } else {
+                    line_section(a, b)
+                };
+                let ctx = format!("r={r} theta={theta} downward={downward}");
+                let regions = split(&topo, face, &[ruling]);
+                assert_eq!(regions.len(), 2, "{ctx}: want two sectors");
+                let mut total = 0.0;
+                for sf in &regions {
+                    let m = measure(sf, r);
+                    assert!(m.net_turn.abs() < 1e-6, "{ctx}: sector winds");
+                    let (t, z, _) = m.interior;
+                    assert!(z > 0.0 && z < h, "{ctx}");
+                    let width = if t < theta { theta } else { TAU - theta };
+                    assert_close(
+                        m.area,
+                        r * width * h,
+                        1e-6,
+                        &format!("{ctx}: sector at θ={t}"),
+                    );
+                    total += m.area;
+                }
+                assert_close(
+                    total,
+                    TAU * r * h,
+                    1e-9,
+                    &format!("{ctx}: sectors tile the lateral"),
+                );
+            }
+        }
+    }
+}
+
 /// The upper hemisphere of a sphere of radius `rad` about the origin, bounded
 /// (like a faceted import) by an `n`-gon inscribed in the equator, traversed
 /// counter-clockwise from +z so the face lies above it.
