@@ -214,6 +214,7 @@ Quick reference — find the right file for any task:
 | FaceInfo population | `pave_filler/fill_face_info.rs` |
 | Builder (face splitting + assembly) | `builder/mod.rs`, `builder/assemble.rs` |
 | Face splitting (UV-space) | `builder/face_splitter/` (mod, containment, conversion, edge_splitting, sampling, special_cases), `builder/classify_2d.rs` |
+| Closed-form oracles for the splitter's periodic-lateral and sphere-collar shortcuts (tests) | `builder/face_splitter/closed_form_split_tests.rs` |
 | PCurve computation | `builder/pcurve_compute.rs` |
 | Plane frame (3D↔UV projection) | `builder/plane_frame.rs` |
 | Wire loop reconstruction | `builder/wire_builder.rs` |
