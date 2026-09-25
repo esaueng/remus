@@ -165,6 +165,199 @@ fn nurbs(scenario: &str, samples: usize, warmup: usize) {
     }
 }
 
+/// Seed one document: `size` unrelated unit boxes parked far from the
+/// origin plus two overlapping operands at the origin.
+///
+/// Returns the kernel, operand handles, one untouched handle with its
+/// expected bounding box, every seeded handle, and the setup cost in ns
+/// (seeding stays outside the timed edit; only its cost is reported).
+fn boolean_doc(size: usize) -> (BrepKernel, u32, u32, u32, [f64; 6], Vec<u32>, u128) {
+    let start = Instant::now();
+    let mut kernel = BrepKernel::new();
+    let seeds = vec![json!({"op":"makeBox", "args":{"width":1.,"height":1.,"depth":1.}}); size + 2];
+    let handles = batch(
+        &mut kernel,
+        &serde_json::to_string(&seeds).unwrap(),
+        size + 2,
+    );
+    let ids: Vec<u32> = handles
+        .iter()
+        .map(|row| u32::try_from(row["ok"].as_u64().expect("solid handle")).unwrap())
+        .collect();
+    assert_eq!(
+        ids.iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        size + 2,
+        "seeding must create distinct solids"
+    );
+    for (k, &id) in ids.iter().enumerate().take(size) {
+        let x = 1000. + k as f64 * 10.;
+        kernel
+            .transform_solid_binding(
+                id,
+                vec![
+                    1., 0., 0., x, 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1.,
+                ],
+            )
+            .expect("park unrelated solid");
+    }
+    let (a, b) = (ids[size], ids[size + 1]);
+    kernel
+        .transform_solid_binding(
+            b,
+            vec![
+                1., 0., 0., 0.5, 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1.,
+            ],
+        )
+        .expect("overlap operand");
+    let untouched = ids[size - 1];
+    let ux = 1000. + (size - 1) as f64 * 10.;
+    let setup_ns = start.elapsed().as_nanos();
+    (
+        kernel,
+        a,
+        b,
+        untouched,
+        [ux, 0., 0., ux + 1., 1., 1.],
+        ids,
+        setup_ns,
+    )
+}
+
+/// Peak resident set size in KiB, Linux only; `None` elsewhere.
+fn peak_rss_kib() -> Option<u64> {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()?
+        .lines()
+        .find(|l| l.starts_with("VmHWM"))?
+        .split_whitespace()
+        .nth(1)?
+        .parse()
+        .ok()
+}
+
+fn check_bbox(kernel: &mut BrepKernel, solid: u32, expected: [f64; 6]) {
+    let query = json!([{"op":"boundingBox","args":{"solid":solid}}]);
+    let values = batch(kernel, &query.to_string(), 1);
+    for i in 0..6 {
+        near(values[0]["ok"][i].as_f64().unwrap(), expected[i]);
+    }
+}
+
+fn check_volume(kernel: &mut BrepKernel, solid: u32, expected: f64) {
+    let query = json!([{"op":"volume","args":{"solid":solid,"deflection":0.01}}]);
+    let values = batch(kernel, &query.to_string(), 1);
+    near(values[0]["ok"].as_f64().unwrap(), expected);
+}
+
+/// Fixed local fuse amid `size` unrelated solids: half-overlap unit boxes
+/// fuse to a 1.5-volume analytic box. Phases are timed separately; the timed
+/// total excludes one-time seeding. The kernel phase includes the
+/// transaction's internal snapshot; the explicit snapshot phase times the
+/// checkpoint mechanism on the same document.
+fn bool_success(size: usize) -> (u128, Value) {
+    let (mut kernel, a, b, untouched, untouched_box, mut all, setup_ns) = boolean_doc(size);
+    let start = Instant::now();
+    kernel.checkpoint();
+    let snapshot_ns = start.elapsed().as_nanos();
+    let start = Instant::now();
+    let r = kernel.fuse(a, b).expect("fuse must succeed");
+    let kernel_ns = start.elapsed().as_nanos();
+    all.push(r);
+    let start = Instant::now();
+    check_volume(&mut kernel, r, 1.5);
+    check_bbox(&mut kernel, r, [0., 0., 0., 1.5, 1., 1.]);
+    check_bbox(&mut kernel, untouched, untouched_box);
+    check_volume(&mut kernel, untouched, 1.);
+    let validation_ns = start.elapsed().as_nanos();
+    let start = Instant::now();
+    let bytes = kernel.serialize_solids(&all).expect("serialize document");
+    let ser_ns = start.elapsed().as_nanos();
+    let start = Instant::now();
+    drop(kernel);
+    let teardown_ns = start.elapsed().as_nanos();
+    let total = snapshot_ns + kernel_ns + validation_ns + ser_ns + teardown_ns;
+    (
+        total,
+        json!({
+            "phases_ms": {
+                "setup": setup_ns as f64 / 1e6,
+                "snapshot": snapshot_ns as f64 / 1e6,
+                "kernel": kernel_ns as f64 / 1e6,
+                "validation": validation_ns as f64 / 1e6,
+                "serialization": ser_ns as f64 / 1e6,
+                "teardown": teardown_ns as f64 / 1e6,
+            },
+            "volume": 1.5,
+            "untouched_solid_checked": true,
+            "solids": all.len(),
+            "serialization_bytes": bytes.len(),
+            "peak_rss_kib": peak_rss_kib(),
+        }),
+    )
+}
+
+/// Refused edit on the same document shape: cutting a solid from itself is
+/// a typed `operation_failed` refusal with transactional rollback. The
+/// kernel phase covers the trivial-relation classification plus rollback;
+/// validation re-proves the untouched and operand solids are intact.
+fn bool_refused(size: usize) -> (u128, Value) {
+    let (mut kernel, a, b, untouched, untouched_box, all, setup_ns) = boolean_doc(size);
+    let start = Instant::now();
+    kernel.checkpoint();
+    let snapshot_ns = start.elapsed().as_nanos();
+    let start = Instant::now();
+    let output = kernel.execute_batch_v2(
+        &serde_json::json!([{"op":"cut","args":{"solidA":a,"solidB":a}}]).to_string(),
+    );
+    let kernel_ns = start.elapsed().as_nanos();
+    let rows: Vec<Value> = serde_json::from_str(&output).expect("batch v2 JSON");
+    assert_eq!(rows.len(), 1);
+    let error = rows[0].get("error").expect("cut must refuse");
+    assert_eq!(
+        error.get("code").and_then(Value::as_str),
+        Some("operation_failed")
+    );
+    assert_eq!(
+        error.get("category").and_then(Value::as_str),
+        Some("internal")
+    );
+    let start = Instant::now();
+    check_bbox(&mut kernel, a, [0., 0., 0., 1., 1., 1.]);
+    check_bbox(&mut kernel, b, [0.5, 0., 0., 1.5, 1., 1.]);
+    check_bbox(&mut kernel, untouched, untouched_box);
+    check_volume(&mut kernel, untouched, 1.);
+    let validation_ns = start.elapsed().as_nanos();
+    let start = Instant::now();
+    let bytes = kernel.serialize_solids(&all).expect("serialize document");
+    let ser_ns = start.elapsed().as_nanos();
+    let start = Instant::now();
+    drop(kernel);
+    let teardown_ns = start.elapsed().as_nanos();
+    let total = snapshot_ns + kernel_ns + validation_ns + ser_ns + teardown_ns;
+    (
+        total,
+        json!({
+            "phases_ms": {
+                "setup": setup_ns as f64 / 1e6,
+                "snapshot": snapshot_ns as f64 / 1e6,
+                "kernel": kernel_ns as f64 / 1e6,
+                "validation": validation_ns as f64 / 1e6,
+                "serialization": ser_ns as f64 / 1e6,
+                "teardown": teardown_ns as f64 / 1e6,
+            },
+            "error_code": "operation_failed",
+            "error_category": "internal",
+            "rollback_checked": true,
+            "solids": all.len(),
+            "serialization_bytes": bytes.len(),
+            "peak_rss_kib": peak_rss_kib(),
+        }),
+    )
+}
+
 fn emit(scenario: &str, size: usize, sample: usize, warmup: usize, ns: u128, metrics: Value) {
     println!(
         "{}",
@@ -196,6 +389,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     chain(size)
                 } else {
                     transform(size, scenario == "native_transform_direct")
+                };
+                emit(scenario, size, sample, warmup, ns, metrics);
+            }
+        }
+        "native_bool_fuse" | "native_bool_refused" => {
+            assert!((2..=8192).contains(&size));
+            for sample in 0..samples + warmup {
+                let (ns, metrics) = if scenario == "native_bool_fuse" {
+                    bool_success(size)
+                } else {
+                    bool_refused(size)
                 };
                 emit(scenario, size, sample, warmup, ns, metrics);
             }
