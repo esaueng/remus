@@ -8,16 +8,19 @@
 //! (residual ⊥ tangent) so a right-distance/wrong-point answer cannot
 //! pass.
 //!
-//! RECORDED SCOPE (2026-09-16, do not widen): parabola and hyperbola
-//! have NO `ParametricCurve` impl, so the generic `point_to_curve` /
+//! SCOPE (corrected 2026-09-25): parabola and hyperbola have NO
+//! `ParametricCurve` impl, so the generic `point_to_curve` /
 //! `curve_to_curve` solvers cannot consume them — those cells are
 //! `#[ignore]`d seeds owning the missing-impl gap (math `traits.rs`),
-//! not solver failures. Ellipse NURBS twins are approximate in
-//! `geometry::convert` (control net scaled by semi-axis index, max-x
-//! 1.0 for a=2) and `point_to_curve` Newton can orbit instead of
-//! converging on high-curvature twins — twin-vs-analytic comparisons
-//! therefore assert positions after projection plus tangent/curvature
-//! per the roadmap lesson, and live in the ignored twin-parity cell.
+//! not solver failures, and stay ignored in this slice. Ellipse NURBS
+//! twins are EXACT rational conics (affine images of exact circle twins);
+//! the prior "approximate twin (max-x 1.0 for a=2, residual 3.0)" was a
+//! witness bug — it measured world x/2, y/1 while `Ellipse3D::new` with +Z
+//! puts the major (2) on u=(0,1,0) and the minor (1) on v=(-1,0,0), i.e. the
+//! axes were swapped. Measured in the carrier frame (u/v dots) the twin
+//! residual is ≤2e-15 at 1e-3/1/1e3 (see `b10_conic_twin_parity`). The
+//! `point_to_curve` minor-vertex stall noted in `b10_ellipse_point_distance_cells`
+//! is retained as recorded behavior, not asserted exact.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -269,34 +272,54 @@ fn b10_hyperbola_extrema_seed() {
 // ── twin parity (positions after projection + tangent/curvature) ──────────
 
 #[test]
-#[ignore = "open: B10 seed — ellipse_to_nurbs twin is approximate (control net scaled by semi-axis index: max-x 1.0 for a=2) and point_to_curve Newton orbits on high-curvature twins instead of converging; twin-parity cells unqualified"]
-fn b10_conic_twin_parity_seed() {
+fn b10_conic_twin_parity() {
     // Per the roadmap lesson, twin comparison asserts POSITIONS after
     // projection plus tangent direction and curvature — never parameter
-    // speed. Currently the twin itself is off-geometry (implicit
-    // residual ~3.0 at mid-arc), so even position comparison fails: the
-    // seed owns both the approximate twin and the Newton orbit.
-    use remus_geometry::convert::curve_to_nurbs::ellipse_to_nurbs;
-    let e = Ellipse3D::new(
-        Point3::new(0.0, 0.0, 0.0),
-        Vec3::new(0.0, 0.0, 1.0),
-        2.0,
-        1.0,
-    )
-    .unwrap();
-    let twin = ellipse_to_nurbs(&e, 0.0, TAU).unwrap();
-    let (t0, t1) = twin.domain();
-    let mut max_resid = 0.0_f64;
-    for i in 0..=64 {
-        #[allow(clippy::cast_precision_loss)]
-        let u = t0 + (t1 - t0) * i as f64 / 64.0;
-        let p = twin.evaluate(u);
-        let x = p.x() / 2.0;
-        let y = p.y() / 1.0;
-        max_resid = max_resid.max((x * x + y * y - 1.0).abs());
+    // speed. The twin is exact (affine image of the exact circle twin);
+    // the implicit check MUST use the carrier axes (u/v dots), not world
+    // x/y: `Ellipse3D::new` with +Z puts major 2 on u=(0,1,0) and minor 1
+    // on v=(-1,0,0), so world x/2+y/1 swaps the axes and reports residual 3.
+    use remus_geometry::convert::curve_to_nurbs::{circle_to_nurbs, ellipse_to_nurbs};
+    use remus_math::vec::Vec3;
+    for scale in SCALES {
+        let e = Ellipse3D::new(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            2.0 * scale,
+            scale,
+        )
+        .unwrap();
+        let twin = ellipse_to_nurbs(&e, 0.0, TAU).unwrap();
+        let (t0, t1) = twin.domain();
+        let mut max_resid = 0.0_f64;
+        for i in 0..=64 {
+            #[allow(clippy::cast_precision_loss)]
+            let u = t0 + (t1 - t0) * i as f64 / 64.0;
+            let p = twin.evaluate(u);
+            let v = p - e.center();
+            let x = v.dot(e.u_axis()) / e.semi_major();
+            let y = v.dot(e.v_axis()) / e.semi_minor();
+            max_resid = max_resid.max((x * x + y * y - 1.0).abs());
+        }
+        assert!(
+            max_resid <= 1e-9,
+            "ellipse twin off-geometry @ scale {scale}: implicit residual {max_resid:.3e}",
+        );
+        // Circle twin exactness in the same carrier frame (control).
+        let c = Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), scale).unwrap();
+        let ctwin = circle_to_nurbs(&c, 0.0, TAU).unwrap();
+        let (ct0, ct1) = ctwin.domain();
+        let mut cmax = 0.0_f64;
+        for i in 0..=64 {
+            #[allow(clippy::cast_precision_loss)]
+            let u = ct0 + (ct1 - ct0) * i as f64 / 64.0;
+            let p = ctwin.evaluate(u);
+            let d = ((p - c.center()).length() - c.radius()).abs();
+            cmax = cmax.max(d);
+        }
+        assert!(
+            cmax <= 1e-9 * scale.max(1.0),
+            "circle twin off-geometry @ scale {scale}: radial residual {cmax:.3e}",
+        );
     }
-    assert!(
-        max_resid <= 1e-9,
-        "ellipse twin off-geometry: implicit residual {max_resid:.3e}",
-    );
 }

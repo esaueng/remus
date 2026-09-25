@@ -8,6 +8,7 @@
 use crate::MathError;
 use crate::nurbs::curve::NurbsCurve;
 use crate::nurbs::decompose::curve_to_bezier_segments;
+use crate::nurbs::knot_ops::curve_split;
 use crate::vec::{Point3, Vec3};
 
 /// Maximum recursion depth for Bezier clipping.
@@ -109,6 +110,7 @@ pub fn curve_curve_intersect_full(
                 u2_hi,
                 tolerance,
                 0,
+                false,
                 &mut hits,
                 &mut overlaps,
             );
@@ -362,6 +364,60 @@ const DEGENERATE_FAT_LINE: f64 = 1e-12;
 /// Number of samples for approximate Hausdorff distance check.
 const HAUSDORFF_SAMPLES: usize = 5;
 
+/// Whether two Bezier segments are bit-identical (same degree, control net
+/// and weights). Coincident twins built from the same analytic carrier by
+/// the same converter decompose into identical segments; detecting that
+/// lets the recursion report the common parameter range as overlap
+/// immediately instead of enumerating all partially-overlapping pairs.
+fn segs_identical(a: &NurbsCurve, b: &NurbsCurve) -> bool {
+    a.degree() == b.degree()
+        && a.control_points() == b.control_points()
+        && a.weights() == b.weights()
+        && a.knots() == b.knots()
+}
+
+/// Control points of the subsegment `[lo, hi]` of a Bezier segment.
+///
+/// Sederberg–Nishita clipping must clip against the CURRENT interval's
+/// control net. Re-using the full segment's net at every depth (only
+/// re-mapping the t-coordinates) biases each clip toward the control-polygon
+/// midpoint: on transversal rational conic twins the window walks to 0.5 and
+/// excludes the true root by depth ~6–8, after which the sampled-AABB
+/// prefilter prunes the phantom branch and the hit vanishes silently.
+/// Subdividing (in homogeneous space, via [`curve_split`]) tightens the fat
+/// line to the live interval so the true root survives.
+///
+/// Returns `None` when subdivision fails (near-degenerate interval); callers
+/// fall back to the full net, preserving the prior behavior there.
+fn sub_control_points(seg: &NurbsCurve, lo: f64, hi: f64) -> Option<Vec<Point3>> {
+    const END_EPS: f64 = 1e-12;
+    let (d0, d1) = seg.domain();
+    // Clamp defensive jitter; an empty or inverted interval has no net.
+    let lo = lo.clamp(d0.min(d1), d0.max(d1));
+    let hi = hi.clamp(d0.min(d1), d0.max(d1));
+    if hi <= lo {
+        return None;
+    }
+    let at_start = (lo - d0).abs() <= END_EPS * (d1 - d0).max(1.0);
+    let at_end = (hi - d1).abs() <= END_EPS * (d1 - d0).max(1.0);
+    if at_start && at_end {
+        return Some(seg.control_points().to_vec());
+    }
+    // Split off the trailing part first so the leading split sees the
+    // already-narrowed domain.
+    if at_start {
+        let (left, _) = curve_split(seg, hi).ok()?;
+        return Some(left.control_points().to_vec());
+    }
+    if at_end {
+        let (_, right) = curve_split(seg, lo).ok()?;
+        return Some(right.control_points().to_vec());
+    }
+    let (left, _) = curve_split(seg, hi).ok()?;
+    let (_, target) = curve_split(&left, lo).ok()?;
+    Some(target.control_points().to_vec())
+}
+
 /// Recursive Bezier clipping core.
 #[allow(clippy::too_many_arguments)]
 fn bezier_clip_recurse(
@@ -373,6 +429,7 @@ fn bezier_clip_recurse(
     u_b_hi: f64,
     tolerance: f64,
     depth: usize,
+    swapped: bool,
     hits: &mut Vec<CurveCurveHit>,
     overlaps: &mut Vec<CurveCurveOverlap>,
 ) {
@@ -384,15 +441,18 @@ fn bezier_clip_recurse(
         let u1_mid = 0.5 * (u_a_lo + u_a_hi);
         let u2_mid = 0.5 * (u_b_lo + u_b_hi);
         if let Some(hit) = newton_refine(seg_a, seg_b, u1_mid, u2_mid, tolerance) {
-            hits.push(hit);
+            hits.push(unswap_hit(hit, swapped));
         } else {
             // Newton failed; use midpoint approximation.
             let pt = seg_a.evaluate(u1_mid);
-            hits.push(CurveCurveHit {
-                u1: u1_mid,
-                u2: u2_mid,
-                point: pt,
-            });
+            hits.push(unswap_hit(
+                CurveCurveHit {
+                    u1: u1_mid,
+                    u2: u2_mid,
+                    point: pt,
+                },
+                swapped,
+            ));
         }
         return;
     }
@@ -400,7 +460,7 @@ fn bezier_clip_recurse(
     if depth >= MAX_DEPTH {
         // Before giving up, check for coincident overlap.
         if check_overlap(
-            seg_a, seg_b, u_a_lo, u_a_hi, u_b_lo, u_b_hi, tolerance, overlaps,
+            seg_a, seg_b, u_a_lo, u_a_hi, u_b_lo, u_b_hi, tolerance, swapped, overlaps,
         ) {
             return;
         }
@@ -408,11 +468,14 @@ fn bezier_clip_recurse(
         let u1_mid = 0.5 * (u_a_lo + u_a_hi);
         let u2_mid = 0.5 * (u_b_lo + u_b_hi);
         let pt = seg_a.evaluate(u1_mid);
-        hits.push(CurveCurveHit {
-            u1: u1_mid,
-            u2: u2_mid,
-            point: pt,
-        });
+        hits.push(unswap_hit(
+            CurveCurveHit {
+                u1: u1_mid,
+                u2: u2_mid,
+                point: pt,
+            },
+            swapped,
+        ));
         return;
     }
 
@@ -423,14 +486,43 @@ fn bezier_clip_recurse(
     // boxes are one ULP apart. Pad by the intersection tolerance so a branch
     // is only discarded when the curves are provably farther apart than the
     // tolerance at which hits are reported.
+    //
+    // Identical-segment fast path: coincident Beziers (same control net and
+    // weights, e.g. same circle twin twice) overlap over their common
+    // parameter range. Reporting the overlap here avoids exploring the
+    // O(n²) overlapping-interval pairs that live-interval clipping would
+    // otherwise keep (each partially-overlapping pair legitimately
+    // intersects, but enumerating all of them explodes into tens of
+    // thousands of tiny overlaps/hits instead of one clean overlap).
+    if segs_identical(seg_a, seg_b) {
+        let lo = u_a_lo.max(u_b_lo);
+        let hi = u_a_hi.min(u_b_hi);
+        if hi > lo {
+            overlaps.push(CurveCurveOverlap {
+                u1_start: lo,
+                u1_end: hi,
+                u2_start: lo,
+                u2_end: hi,
+            });
+            return;
+        }
+        // Disjoint intervals of the same curve cannot intersect (except at a
+        // shared endpoint, handled below via normal clipping/AABB).
+    }
     let aabb_a = sub_aabb(seg_a, u_a_lo, u_a_hi);
     let aabb_b = sub_aabb(seg_b, u_b_lo, u_b_hi);
     if !aabb_a.expanded(tolerance).intersects(aabb_b) {
         return;
     }
 
-    let cps_a = seg_a.control_points();
-    let cps_b = seg_b.control_points();
+    let full_a = seg_a.control_points();
+    let full_b = seg_b.control_points();
+    // Live-interval control nets: the fat line must tighten as the window
+    // narrows. Fall back to the full net only when subdivision fails.
+    let sub_a = sub_control_points(seg_a, u_a_lo, u_a_hi).unwrap_or_else(|| full_a.to_vec());
+    let sub_b = sub_control_points(seg_b, u_b_lo, u_b_hi).unwrap_or_else(|| full_b.to_vec());
+    let cps_a: &[Point3] = &sub_a;
+    let cps_b: &[Point3] = &sub_b;
 
     // Early overlap detection: if both fat lines are degenerate (near-zero
     // thickness), the curves are collinear. Check for overlap immediately
@@ -443,7 +535,7 @@ fn bezier_clip_recurse(
     {
         // Both curves are essentially straight lines — check overlap.
         if check_overlap(
-            seg_a, seg_b, u_a_lo, u_a_hi, u_b_lo, u_b_hi, tolerance, overlaps,
+            seg_a, seg_b, u_a_lo, u_a_hi, u_b_lo, u_b_hi, tolerance, swapped, overlaps,
         ) {
             return;
         }
@@ -469,6 +561,7 @@ fn bezier_clip_recurse(
                 u_a_hi,
                 tolerance,
                 depth + 1,
+                !swapped,
                 hits,
                 overlaps,
             );
@@ -494,6 +587,7 @@ fn bezier_clip_recurse(
                     new_b_hi,
                     tolerance,
                     depth + 1,
+                    swapped,
                     hits,
                     overlaps,
                 );
@@ -505,7 +599,7 @@ fn bezier_clip_recurse(
         // subdividing further — coincident curves will never clip effectively.
         if depth >= OVERLAP_CHECK_DEPTH
             && check_overlap(
-                seg_a, seg_b, u_a_lo, u_a_hi, new_b_lo, new_b_hi, tolerance, overlaps,
+                seg_a, seg_b, u_a_lo, u_a_hi, new_b_lo, new_b_hi, tolerance, swapped, overlaps,
             )
         {
             return;
@@ -513,10 +607,30 @@ fn bezier_clip_recurse(
 
         // Subdivide the longer interval.
         subdivide_and_recurse(
-            seg_a, seg_b, u_a_lo, u_a_hi, new_b_lo, new_b_hi, tolerance, depth, hits, overlaps,
+            seg_a, seg_b, u_a_lo, u_a_hi, new_b_lo, new_b_hi, tolerance, depth, swapped, hits,
+            overlaps,
         );
     }
     // If clip_to_fat_line returned None, no intersection in this pair.
+}
+
+/// Map a locally-reported hit back to the original operand order.
+///
+/// The recursion swaps `seg_a`/`seg_b` to alternate the fat-line direction;
+/// hits reported from a swapped frame carry transposed parameters. The 3D
+/// point is unaffected (it lies on both curves at a true crossing), but the
+/// parameters must be unswapped so both-geometry re-evaluation sees the
+/// correct pairing.
+fn unswap_hit(hit: CurveCurveHit, swapped: bool) -> CurveCurveHit {
+    if swapped {
+        CurveCurveHit {
+            u1: hit.u2,
+            u2: hit.u1,
+            point: hit.point,
+        }
+    } else {
+        hit
+    }
 }
 
 /// Check if two curve segments are coincident over the given parameter
@@ -532,6 +646,7 @@ fn check_overlap(
     u_b_lo: f64,
     u_b_hi: f64,
     tolerance: f64,
+    swapped: bool,
     overlaps: &mut Vec<CurveCurveOverlap>,
 ) -> bool {
     let span_a = u_a_hi - u_a_lo;
@@ -581,11 +696,17 @@ fn check_overlap(
     }
 
     if max_dist < tolerance * 10.0 {
+        // Report in original operand order (see `unswap_hit`).
+        let (a_lo, a_hi, b_lo, b_hi) = if swapped {
+            (u_b_lo, u_b_hi, u_a_lo, u_a_hi)
+        } else {
+            (u_a_lo, u_a_hi, u_b_lo, u_b_hi)
+        };
         overlaps.push(CurveCurveOverlap {
-            u1_start: u_a_lo,
-            u1_end: u_a_hi,
-            u2_start: u_b_lo,
-            u2_end: u_b_hi,
+            u1_start: a_lo,
+            u1_end: a_hi,
+            u2_start: b_lo,
+            u2_end: b_hi,
         });
         true
     } else {
@@ -604,6 +725,7 @@ fn subdivide_and_recurse(
     u_b_hi: f64,
     tolerance: f64,
     depth: usize,
+    swapped: bool,
     hits: &mut Vec<CurveCurveHit>,
     overlaps: &mut Vec<CurveCurveOverlap>,
 ) {
@@ -621,6 +743,7 @@ fn subdivide_and_recurse(
             u_b_hi,
             tolerance,
             depth + 1,
+            swapped,
             hits,
             overlaps,
         );
@@ -633,6 +756,7 @@ fn subdivide_and_recurse(
             u_b_hi,
             tolerance,
             depth + 1,
+            swapped,
             hits,
             overlaps,
         );
@@ -647,6 +771,7 @@ fn subdivide_and_recurse(
             mid,
             tolerance,
             depth + 1,
+            swapped,
             hits,
             overlaps,
         );
@@ -659,6 +784,7 @@ fn subdivide_and_recurse(
             u_b_hi,
             tolerance,
             depth + 1,
+            swapped,
             hits,
             overlaps,
         );
