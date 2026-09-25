@@ -153,3 +153,45 @@ cross-target gates are outcome, diagnostic-code, quality, oracle-volume
 their known approximate partition differences are unchanged: byte identity
 stays visible and non-gating, and no tolerance was relaxed to make a cell
 pass.
+
+## Split import/export slice
+
+`split-io-matrix.mjs` qualifies the actual distributed split packages
+together — kernel plus translator — over the exact arena-document boundary,
+executed on three evidence modes (native facade, freshly packed/installed
+pair, committed installed pair). Run it from the repository root:
+
+```bash
+bash scripts/test-o15-split-io.sh
+```
+
+The script builds the native split runner and fresh Node-target WASM builds
+of **both** packages (kernel `--no-default-features`, translator default
+features) into temp dirs, packs each tarball, installs the pair into a
+disposable npm consumer, and drives six cells through direct calls only
+(the shipped kernel has no legacy I/O batch ops by construction):
+
+- valid STEP import (`RemusIo.importStep` → arena bytes →
+  `kernel.deserializeSolids` → volume/validate/census/probes) against the
+  shared `split-box-2x3x4.step` fixture (volume 24, 6 planes, 1 shell);
+- kernel-created box plus qualified hollow cut (outer 10 minus inner 8 at
+  1,1,1) through `serializeSolids` → `exportStep` → re-import into a fresh
+  session (volumes 24/488, faces 6/12, shells 1/2, wall-inside /
+  cavity-outside / outside-outside probes);
+- the existing `openzcad_e_analytic_fillet_plate.step` periodic fixture
+  (volume 9522.743…, 10 faces, 48 per-use pcurves on native and 48 `PCURVE(`
+  in re-exported STEP on every surface);
+- malformed/limit-refused STEP (`maxInputBytes: 4`) preserving the
+  pre-existing box (volume, faces, serialized bytes identical);
+- truncated/empty arena transfer preserving earlier solids and handle
+  validity;
+- two independent sessions with repeated success/refusal (no partial
+  solids, no leaked cross-session handles).
+
+Fresh mode records one pinned source/configuration for both tarballs
+(same revision, dirty flag, toolchain, features, both package versions,
+both tarball/WASM hashes, both installed consumer entries). Committed mode
+installs `crates/wasm/pkg` + `crates/wasm-io/pkg` into its own consumer and
+labels the relationship `unverified` — a version match alone is never
+source equivalence. The geometric 366-cell matrix and its disclosed
+approximate-partition differences are untouched.
