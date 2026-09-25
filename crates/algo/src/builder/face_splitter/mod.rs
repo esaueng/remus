@@ -4,6 +4,8 @@
 //! them to [`OrientedPCurveEdge`]s in the face's parameter space, calls
 //! the wire builder, and produces [`SplitSubFace`]s.
 
+#[cfg(test)]
+mod closed_form_split_tests;
 mod containment;
 mod conversion;
 mod edge_splitting;
