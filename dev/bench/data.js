@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790372119714,
+  "lastUpdate": 1790373937477,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -65023,6 +65023,240 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 89121,
             "range": "± 862",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "584e01840c8cbce8ec3694203a593b12efcb0c6c",
+          "message": "test(operations): triage the B19 blend-reconstruction mutation survivors (#674)\n\n* fix(operations): orient rim sharp circles by contact travel direction\n\nPlane/cylinder and cylinder/cone rim removal chose the orientation of the\nrebuilt sharp circle by comparing stored circle normals only. A contact\ncircle stored on the opposite normal with a decreasing trim is the same arc\ntraversed the same way, yet it was spliced backwards and the reconstruction\nrefused with \"shared edges have inconsistent face orientations\". Both sites\nnow use the normal about which the contact actually travels from its start\nto its end vertex.\n\nRegression: resize_blend::tests::{plane_cylinder,cylinder_cone}_rim_removal\n_is_independent_of_circle_storage store the cylinder-side contact as built,\nwith a decreasing trim, and as a reversed edge, and check validity and the\nclosed-form sharp volume; both fail on the previous code.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01RJz9Xv7R771ZvxP2WW88LU\n\n* test(operations): kill B19 survivors in the exact blend reconstruction modules\n\nTranche from Mutation Testing run 36075171651 (230 survivors in\nresize_blend, local_wound, affine_blend_caps and remove_blends). New tests\nuse oracles independent of the code under test: closed-form sharp corners\nand extension angles, the Simpson volume of the sharp column, closed-form\ncube/cylinder/shoulder volumes, hand-built refusal inputs that violate one\nproof clause each, and construction-history resolution.\n\n- local_wound: unit tests for the plane/sphere circle certificate, line and\n  sphere roots, triple-plane corner, circle-trim extension and locality;\n  fixture variants (deep column, chart frames, trim offsets, reversed\n  boundaries, non-unit planes, rotations) and one-clause refusals for the\n  cap-hemisphere, wound-direction, carrier, pinch-vertex and displacement\n  evidence.\n- affine_blend_caps: patches that hold the arc but not the lines and vice\n  versa, a tight patch, carrier-extrema and collapsed-line certificates,\n  proxy p-curve restoration, and scope declines.\n- remove_blends: split-band recognition under a watchdog and the\n  disconnected-group count.\n- resize_blend: split spring-chain proof clauses, chain contiguity, helper\n  solvers, the closed-circle certificate, delete-face routing, and towel-rack\n  compound-end tampers naming each R8 certificate, plus the +y journaled\n  oblique-spring history.\n\nThe split-band fixture moves into test_helpers. The exact-blend evidence\ntable records that a band split across its axis is recognized as one band\nbut its reconstruction refuses.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01RJz9Xv7R771ZvxP2WW88LU\n\n* test(operations): cover zero-growth decreasing trims and the scaled circle tolerance\n\nThe first after-sweep left three local_wound survivors the tranche meant to\nkill: the R-scaled radius tolerance in the plane/sphere circle certificate\nand the angular allowance on both decreasing-trim branches of\nextended_circle_trim. Add a section 2e-7 off in squared radius (inside\n1e-7 * R) and zero-growth cases on every trim branch.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01RJz9Xv7R771ZvxP2WW88LU\n\n* test(operations): require both endpoints in each orient_corners traversal\n\nThe after-sweep left the reverse-orientation conjunction of orient_corners\nalive: no case matched exactly one endpoint of the reversed traversal. Check\nall four one-endpoint mismatches.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01RJz9Xv7R771ZvxP2WW88LU\n\n* docs(kernel-maturity): record the B19 blend-reconstruction survivor tranche\n\nOne row per survivor for the 230 CI survivors of run 36075171651 in\nresize_blend, local_wound, affine_blend_caps and remove_blends: 114 killed\nby the new tests, 110 with an equivalence, unreachability or tolerance-\nboundary proof, and 6 stated findings. The B19 row carries the per-function\nsummary and the rim-orientation defect found on the way.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01RJz9Xv7R771ZvxP2WW88LU\n\n---------\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-09-25T14:57:34-07:00",
+          "tree_id": "c5f78681449797c3d128c927369b3a3bf179edf0",
+          "url": "https://github.com/esaueng/remus/commit/584e01840c8cbce8ec3694203a593b12efcb0c6c"
+        },
+        "date": 1790373935700,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1273871,
+            "range": "± 4052",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1365792,
+            "range": "± 1548",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 27067,
+            "range": "± 134",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 11933222,
+            "range": "± 32921",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 11916876,
+            "range": "± 17580",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 11482226,
+            "range": "± 208833",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 1132291,
+            "range": "± 3394",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 17672970,
+            "range": "± 53976",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 32298500,
+            "range": "± 328232",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 39,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 107,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 65,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 218,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 160,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 806,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 166,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 356,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 226,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 520,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 752,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 3255,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 17,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 36,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 62,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 62,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 541355,
+            "range": "± 516",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 9812055,
+            "range": "± 29442",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 159295,
+            "range": "± 371",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 517668,
+            "range": "± 1096",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 65156,
+            "range": "± 978",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 931807,
+            "range": "± 3318",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 10720008,
+            "range": "± 33218",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 839414,
+            "range": "± 8540",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 1182578,
+            "range": "± 1850",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 89560,
+            "range": "± 385",
             "unit": "ns/iter"
           }
         ]
