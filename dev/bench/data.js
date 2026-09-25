@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790358130224,
+  "lastUpdate": 1790359787435,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -62683,6 +62683,240 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 58423,
             "range": "± 74",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c99cd19d6a5e577308195f5ee0a94e824ceb6ca9",
+          "message": "fix(geometry): full-Newton conic extrema and parabola/hyperbola carriers (B10) (#658)\n\n* fix(geometry): full-Newton conic extrema and parabola/hyperbola carriers (B10)\n\nThe three B10 conic-distance seeds:\n\n- Parabola3D and Hyperbola3D implement ParametricCurve (unbounded\n  domain, documented: solvers take an explicit finite range).\n- ParametricCurve gains a defaulted derivative_pair returning exact\n  (C', C''); NURBS, circle, ellipse, parabola and hyperbola implement it.\n  Generic solvers fall back to 4th-order central differences otherwise.\n- point_to_curve and curve_to_curve took Gauss-Newton steps that drop\n  the residual-times-curvature term. At a distance that term is not\n  small: the step was 2x too long at an ellipse minor vertex (the\n  iterate orbited), 3x at a hyperbola vertex (diverged), and the\n  Gauss-Newton matrix is singular for parallel closest tangents (a line\n  against a parabola's vertex tangent). Both now take a safeguarded full\n  Newton step (Gauss-Newton or scaled gradient when the Hessian is not\n  positive definite), backtrack until the distance does not increase or\n  the stationarity residual halves (g alone only resolves the foot to\n  sqrt(eps)), and judge convergence relative to the parameter range.\n\nThe seeds' own oracles were wrong and are corrected against closed\nforms: both parabola and hyperbola queries lay beyond the vertex's\ncentre of curvature (the vertex is a local distance maximum there), and\nthe twin-parity seed read the ellipse in a fixed x-major frame while\nEllipse3D::new puts the major axis on +Y, so it measured a residual of\n~3 on an exact twin. All three are live cells at 1e-3/1/1e3 with\nclosed-form distances, feet and asserted stationarity; the ellipse\nminor-vertex cell's recorded stall is now pinned exactly.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n* docs(roadmap): record the B10 conic-distance fix and evidence\n\nUpdate the B10 row (conic-distance seeds closed), the roadmap skill's\nignore inventory and extrema lesson, and add the dig narrative to the\ncampaign history.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n* docs(roadmap): link the B10 conic-distance row to PR #658\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Fable 5.1 <noreply@anthropic.com>",
+          "timestamp": "2026-09-25T11:01:47-07:00",
+          "tree_id": "f4614a2507b7b3c5e7bd60c512fdaf9c9a1e0dd2",
+          "url": "https://github.com/esaueng/remus/commit/c99cd19d6a5e577308195f5ee0a94e824ceb6ca9"
+        },
+        "date": 1790359785904,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1364812,
+            "range": "± 26741",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1423678,
+            "range": "± 17783",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 27626,
+            "range": "± 492",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 12321243,
+            "range": "± 23456",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 12311890,
+            "range": "± 11182",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 11849034,
+            "range": "± 211803",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 1174922,
+            "range": "± 2171",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 18916446,
+            "range": "± 385995",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 34101512,
+            "range": "± 818525",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 36,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 105,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 63,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 220,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 165,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 814,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 173,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 352,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 230,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 504,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 824,
+            "range": "± 37",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 3392,
+            "range": "± 19",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 24,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 33,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 66,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 66,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 560430,
+            "range": "± 1168",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 10349652,
+            "range": "± 211068",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 162856,
+            "range": "± 301",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 525701,
+            "range": "± 479",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 63041,
+            "range": "± 268",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 979323,
+            "range": "± 3522",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 11510106,
+            "range": "± 9429",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 862455,
+            "range": "± 1614",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 1219854,
+            "range": "± 7583",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 99407,
+            "range": "± 3237",
             "unit": "ns/iter"
           }
         ]
