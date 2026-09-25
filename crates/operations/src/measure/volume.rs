@@ -162,6 +162,148 @@ fn mesh_boundary_edge_count(mesh: &tessellate::TriangleMesh) -> usize {
     counts.values().filter(|&&c| c != 2).count()
 }
 
+/// Gauss order of the open-mesh fallback: the order [`mass_properties`]
+/// integrates at, so the two exact routes agree to round-off.
+const OPEN_MESH_GAUSS_ORDER: usize = 8;
+
+/// Volume of a body whose per-face measurement is known to be wrong for one
+/// of its face classes, so it must be measured on its CLOSED whole-solid mesh
+/// (shared rim vertices, divergence theorem).
+///
+/// This is the single place that decides what happens when that mesh is
+/// OPEN, and the answer is never the per-face route the body was sent here to
+/// avoid. An open mesh used to fall through to the paths below it, which for
+/// these bodies integrate the analytic bounding rectangle of a trimmed wall:
+/// a countersunk bracket whose floor cap cracked at one width read 28.9 mm³
+/// heavy there while its neighbouring widths measured on the closed mesh, so
+/// a width-to-width difference inherited the whole error. Instead:
+///
+/// * closed mesh with positive volume → the mesh volume, as before;
+/// * closed mesh with no volume → `Ok(None)`, the historic fall-through for a
+///   degenerate mesh;
+/// * open mesh → [`open_mesh_exact_volume`]: the boundary-trimmed Gauss
+///   integral over every face, or a typed [`crate::OperationsError::Unsupported`]
+///   when some face is outside what that integrator measures.
+///
+/// `why` names the face class that sent the body here; it only appears in the
+/// refusal.
+fn required_closed_mesh_volume(
+    topo: &Topology,
+    solid: SolidId,
+    deflection: f64,
+    why: &'static str,
+) -> Result<Option<f64>, crate::OperationsError> {
+    let mesh = tessellate::tessellate_solid(topo, solid, deflection)?;
+    closed_mesh_or_exact_volume(topo, solid, &mesh, why)
+}
+
+/// [`required_closed_mesh_volume`] on an already built whole-solid mesh.
+fn closed_mesh_or_exact_volume(
+    topo: &Topology,
+    solid: SolidId,
+    mesh: &tessellate::TriangleMesh,
+    why: &'static str,
+) -> Result<Option<f64>, crate::OperationsError> {
+    if !mesh.indices.is_empty() && mesh_boundary_edge_count(mesh) == 0 {
+        let volume = signed_volume_from_mesh(mesh);
+        return Ok((volume > 1e-12).then_some(volume));
+    }
+    open_mesh_exact_volume(topo, solid, why).map(Some)
+}
+
+/// The exact fallback for a body whose required whole-solid mesh is open:
+/// the boundary-trimmed Gauss integral over every face of every shell — the
+/// [`mass_properties`] route, at its order.
+///
+/// Refuses with a typed [`crate::OperationsError::Unsupported`] instead of
+/// guessing when any face is outside what that integrator measures (see
+/// [`gauss_unqualified_face`]) or the integral comes back non-finite or zero.
+fn open_mesh_exact_volume(
+    topo: &Topology,
+    solid: SolidId,
+    why: &'static str,
+) -> Result<f64, crate::OperationsError> {
+    let refuse = |reason: String| crate::OperationsError::Unsupported {
+        operation: "solid_volume",
+        reason: format!("{why}: the whole-solid mesh is open and {reason}"),
+    };
+    let faces = remus_topology::explorer::solid_faces(topo, solid)?;
+    for &fid in &faces {
+        if let Some(class) = gauss_unqualified_face(topo, fid)? {
+            return Err(refuse(format!(
+                "face {} is a {class}, which no exact integrator measures",
+                fid.index()
+            )));
+        }
+    }
+    let mut total = 0.0;
+    for fid in faces {
+        total += remus_check::properties::face_integrator::integrate_face(
+            topo,
+            fid,
+            OPEN_MESH_GAUSS_ORDER,
+        )?
+        .volume;
+    }
+    if !total.is_finite() || negligible_volume(topo, solid).is_none_or(|floor| total.abs() <= floor)
+    {
+        return Err(refuse(format!(
+            "the exact face integral is not a volume ({total})"
+        )));
+    }
+    Ok(total.abs())
+}
+
+/// The face class, when a face's boundary-trimmed Gauss integral
+/// ([`remus_check::properties::face_integrator::integrate_face`]) is NOT
+/// known to measure it; `None` when it is.
+///
+/// Each class is one the integrator documents as outside its trimmed domain,
+/// and each is already routed around it elsewhere in this module:
+///
+/// * a sphere face with holes whose outer wire leaves its latitude (a
+///   scalloped box ∩ sphere collar) — its hole-clipping models only a band
+///   between two latitudes (see [`analytic_faces_solid_volume`]);
+/// * a torus face with holes or a tube-wrapping rim that the qualified
+///   two-rim band integrator declines;
+/// * a cylinder/cone wall notched at three or more levels whose rim winds the
+///   period (the wavy band of a circle-outside cone/box fuse) — with no closed
+///   outline the integrator falls back to the analytic rectangle (see
+///   [`quadric_wall_boundary_winds_period`]).
+///
+/// Planes (Green's theorem on the real boundary), NURBS patches, closing
+/// quadric trims — NURBS-trimmed countersink cones and cross-drilled bores
+/// among them — and holed cylinder/cone walls integrate on their outline.
+fn gauss_unqualified_face(
+    topo: &Topology,
+    fid: FaceId,
+) -> Result<Option<&'static str>, crate::OperationsError> {
+    let face = topo.face(fid)?;
+    Ok(match face.surface() {
+        FaceSurface::Sphere(sphere) => (!face.inner_wires().is_empty()
+            && !sphere_outer_wire_constant_v(topo, fid, sphere)?)
+        .then_some("scalloped sphere collar"),
+        FaceSurface::Torus(torus) => {
+            let trimmed = !face.inner_wires().is_empty()
+                || torus_wire_wraps_tube(topo, face.outer_wire(), torus);
+            (trimmed
+                && remus_check::properties::face_integrator::integrate_torus_band_face(
+                    topo,
+                    fid,
+                    OPEN_MESH_GAUSS_ORDER,
+                )?
+                .is_none())
+            .then_some("torus trim outside the qualified two-rim band family")
+        }
+        FaceSurface::Cylinder(_) | FaceSurface::Cone(_) => {
+            (quadric_wall_is_notched_band(topo, fid)
+                && quadric_wall_boundary_winds_period(topo, fid))
+            .then_some("notched quadric wall whose rim winds the period")
+        }
+        FaceSurface::Plane { .. } | FaceSurface::Nurbs(_) => None,
+    })
+}
+
 /// Whether a quadric wall's boundary carries a NURBS trim — an intersection
 /// curve no iso-`u`/`v` rectangle can bound.
 ///
@@ -1577,6 +1719,27 @@ pub fn solid_is_inverted(topo: &Topology, solid: SolidId) -> Result<bool, crate:
 /// only controls the tessellation fallback. See
 /// [`mass_properties`] for the stated error bound of the quadrature path.
 ///
+/// # Bodies measured on their closed mesh, and open meshes
+///
+/// A body with a face whose per-face route is known to mis-measure it — a
+/// quadric wall trimmed by a NURBS intersection curve (a countersink cone
+/// clipped by the part's walls), a sphere patch off its latitudes, a
+/// scalloped sphere collar, an unqualified torus notch band, a NURBS face on
+/// the direct path, a torus bore beside a NURBS-rimmed plane — is measured on
+/// its closed whole-solid mesh, to that mesh's chord accuracy at the clamped
+/// deflection. When that mesh comes out OPEN, the result is the exact
+/// boundary-trimmed Gauss integral over every face (the [`mass_properties`]
+/// route, to its stated bound), or, when a face is outside what that
+/// integrator measures, a typed [`crate::OperationsError::Unsupported`]. It
+/// is never the per-face route the body was sent away from. The two routes
+/// differ by the mesh's chord error, so a body whose mesh opens at one
+/// parameter value measures within that error of its closed-mesh neighbours,
+/// not with a route-sized jump.
+///
+/// Bodies with no such face keep the fall-through below: a mesh volume is
+/// only taken unchecked on the final generic path, where no per-face route
+/// is known to be wrong.
+///
 /// # Orientation
 ///
 /// The result is a MAGNITUDE: an inside-out solid reports the same positive
@@ -1589,7 +1752,10 @@ pub fn solid_is_inverted(topo: &Topology, solid: SolidId) -> Result<bool, crate:
 ///
 /// # Errors
 ///
-/// Returns an error if tessellation or topology lookups fail.
+/// Returns an error if tessellation or topology lookups fail, and
+/// [`crate::OperationsError::Unsupported`] when a body that must be measured
+/// on its closed mesh tessellates open and carries a face the exact Gauss
+/// integrator does not measure either (see above).
 pub fn solid_volume(
     topo: &Topology,
     solid: SolidId,
@@ -1642,13 +1808,17 @@ pub fn solid_volume(
     // its analytic integral is the hard u-dependent lune trim we defer. The
     // whole-solid mesh IS watertight, so take the divergence-theorem volume off
     // that closed mesh.
-    if solid_has_scalloped_sphere_collar(topo, solid)? {
-        let mesh = tessellate::tessellate_solid(topo, solid, deflection)?;
-        if !mesh.indices.is_empty() && mesh_boundary_edge_count(&mesh) == 0 {
-            return Ok(signed_volume_from_mesh(&mesh));
-        }
-        // Non-watertight mesh: fall through to the generic paths below rather
-        // than return a leaky volume.
+    //
+    // An OPEN mesh must not fall through: every path below reads the collar
+    // through its analytic bounding rectangle. The exact fallback declines the
+    // collar itself too (its lune bites are outside the Gauss trim domain), so
+    // an open collar mesh is a typed refusal — see
+    // [`required_closed_mesh_volume`].
+    if solid_has_scalloped_sphere_collar(topo, solid)?
+        && let Some(volume) =
+            required_closed_mesh_volume(topo, solid, deflection, "scalloped sphere collar")?
+    {
+        return Ok(volume);
     }
 
     // Qualified two-rim torus bands integrate over their retained surface.
@@ -1684,11 +1854,14 @@ pub fn solid_volume(
         if let Some(volume) = integral {
             return Ok(volume.abs());
         }
-        let mesh = tessellate::tessellate_solid(topo, solid, deflection)?;
-        if !mesh.indices.is_empty() && mesh_boundary_edge_count(&mesh) == 0 {
-            return Ok(signed_volume_from_mesh(&mesh));
+        // An open mesh must not fall through to the torus's analytic
+        // rectangle below; the exact fallback measures the band when the
+        // qualified band integrator accepts it and refuses otherwise.
+        if let Some(volume) =
+            required_closed_mesh_volume(topo, solid, deflection, "torus notch band")?
+        {
+            return Ok(volume);
         }
-        // Non-watertight mesh: fall through rather than return a leaky volume.
     }
 
     // A sphere patch bounded by a non-latitude circle is not a rectangular
@@ -1709,14 +1882,11 @@ pub fn solid_volume(
         }
         found
     };
-    if has_non_band_sphere {
-        let mesh = tessellate::tessellate_solid(topo, solid, deflection)?;
-        if !mesh.indices.is_empty() && mesh_boundary_edge_count(&mesh) == 0 {
-            let volume = signed_volume_from_mesh(&mesh);
-            if volume > 1e-12 {
-                return Ok(volume);
-            }
-        }
+    if has_non_band_sphere
+        && let Some(volume) =
+            required_closed_mesh_volume(topo, solid, deflection, "non-latitude sphere patch")?
+    {
+        return Ok(volume);
     }
 
     // Fast path: for solids made entirely of planar triangular faces
@@ -1826,13 +1996,22 @@ pub fn solid_volume(
         let has_quadric_nurbs_trim = outer_faces
             .iter()
             .any(|&fid| quadric_face_has_nurbs_trim(topo, fid));
+        //
+        // When that mesh is OPEN the direct path below is exactly the route
+        // these bodies were sent away from (the rectangle over a NURBS-trimmed
+        // wall, a NURBS face's own mesh), so the open case takes the exact
+        // face integral instead — a countersunk bracket whose floor cap
+        // cracked read 28.9 mm³ heavy through the rectangle.
         if has_nurbs || has_quadric_nurbs_trim || has_non_band_sphere {
-            let mesh = tessellate::tessellate_solid(topo, solid, deflection)?;
-            if !mesh.indices.is_empty() && mesh_boundary_edge_count(&mesh) == 0 {
-                let vol = signed_volume_from_mesh(&mesh);
-                if vol > 1e-12 {
-                    return Ok(vol);
-                }
+            let why = if has_quadric_nurbs_trim {
+                "NURBS-trimmed quadric wall"
+            } else if has_nurbs {
+                "NURBS face"
+            } else {
+                "non-latitude sphere patch"
+            };
+            if let Some(volume) = required_closed_mesh_volume(topo, solid, deflection, why)? {
+                return Ok(volume);
             }
         }
         // Even without a NURBS face on the solid, a NURBS-TRIMMED plane falls
@@ -1859,14 +2038,17 @@ pub fn solid_volume(
                             .is_none_or(|exact| !exact.exact_boundary)
                 })
             })
+            // Open: the direct path's NURBS-rimmed planes would sample their
+            // raw knot domain (~3 % light), so the exact face integral —
+            // or a typed refusal for an unqualified torus trim — instead.
+            && let Some(volume) = required_closed_mesh_volume(
+                topo,
+                solid,
+                deflection,
+                "torus bore with a NURBS-rimmed plane",
+            )?
         {
-            let mesh = tessellate::tessellate_solid(topo, solid, deflection)?;
-            if !mesh.indices.is_empty() && mesh_boundary_edge_count(&mesh) == 0 {
-                let vol = signed_volume_from_mesh(&mesh);
-                if vol > 1e-12 {
-                    return Ok(vol);
-                }
-            }
+            return Ok(volume);
         }
         return volume_from_direct_face_tessellation(topo, solid, deflection);
     }
@@ -4094,6 +4276,182 @@ mod regression_tests {
             "annular cap contribution should subtract the inner segment: \
              expected {expected}, got {cap_v} (inflated would be {})",
             h * PI * (r_out * r_out + r_in * r_in) / 3.0
+        );
+    }
+
+    /// An 8×20×20 arm with OpenZCAD's countersunk Ø5 through hole (Ø9 × 90°
+    /// countersink, revolved radial section, 0.2 overshoot each end) centred
+    /// 4 in from each side face: the countersink's r = 4.5 rim overhangs both
+    /// 8-wide faces, so the cone wall is trimmed by two hyperbolas — a
+    /// NURBS-trimmed quadric wall.
+    fn countersunk_arm() -> (Topology, SolidId) {
+        use remus_math::mat::Mat4;
+        let mut topo = Topology::new();
+        let arm = crate::primitives::make_box(&mut topo, 8.0, 20.0, 20.0).unwrap();
+        let (radius, sink_radius, entry, total) = (2.5_f64, 4.5_f64, 0.2_f64, 20.4_f64);
+        let half_tangent = (std::f64::consts::FRAC_PI_2 / 2.0).tan();
+        let sink_depth = (sink_radius - radius) / half_tangent;
+        let section: Vec<Point3> = [
+            (0.0, 0.0),
+            (entry.mul_add(half_tangent, sink_radius), 0.0),
+            (radius, entry + sink_depth),
+            (radius, total),
+            (0.0, total),
+        ]
+        .iter()
+        .map(|&(r, a)| Point3::new(r, 0.0, a))
+        .collect();
+        let wire = make_polygon_wire(&mut topo, &section, 1e-7).unwrap();
+        let face = remus_topology::builder::make_planar_face_from_wire(&mut topo, wire).unwrap();
+        let tool = crate::revolve::revolve(
+            &mut topo,
+            face,
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            std::f64::consts::TAU,
+        )
+        .unwrap();
+        // The adapter's cylinder frame for an axis along -z at (4, 10, 20.2).
+        let frame = Mat4([
+            [0.0, 1.0, 0.0, 4.0],
+            [1.0, 0.0, 0.0, 10.0],
+            [0.0, 0.0, -1.0, 20.2],
+            [0.0, 0.0, 0.0, 1.0],
+        ]);
+        crate::transform::transform_solid(&mut topo, tool, &frame).unwrap();
+        let drilled =
+            crate::boolean::boolean(&mut topo, crate::boolean::BooleanOp::Cut, arm, tool).unwrap();
+        (topo, drilled)
+    }
+
+    /// Closed form of [`countersunk_arm`]: the block minus a Ø5 bore over the
+    /// 18 below the countersink, minus the countersink frustum (r = 2.5 → 4.5
+    /// over 2), clipped to the arm's |x − 4| ≤ 4 once its radius passes 4.
+    fn countersunk_arm_volume() -> f64 {
+        let a = 4.0_f64;
+        // ∫ (2r²·asin(a/r) + 2a·√(r²−a²)) dr, the clipped disc area.
+        let clipped = |r: f64| {
+            let s = r.mul_add(r, -a * a).sqrt();
+            let l = (r + s).ln();
+            (2.0 * r.powi(3) / 3.0).mul_add(
+                (a / r).asin(),
+                (2.0 * a / 3.0) * (r / 2.0).mul_add(s, a * a / 2.0 * l),
+            ) + a * r.mul_add(s, -a * a * l)
+        };
+        let half_tangent = (std::f64::consts::FRAC_PI_2 / 2.0).tan();
+        let sink = (std::f64::consts::PI * (a.powi(3) - 2.5_f64.powi(3)) / 3.0 + clipped(4.5)
+            - clipped(a))
+            * half_tangent;
+        let bore = std::f64::consts::PI * 2.5 * 2.5 * (20.0 - 2.0 / half_tangent);
+        8.0 * 20.0 * 20.0 - bore - sink
+    }
+
+    /// The open-mesh contract: a body sent to its closed whole-solid mesh
+    /// because a NURBS-trimmed quadric wall defeats the per-face rectangle
+    /// integrators is measured by the exact face integral when that mesh is
+    /// open — never by the rectangle it was routed around (the OpenZCAD
+    /// growing-holder regression: 28.9 mm³ heavy at the one width whose mesh
+    /// cracked).
+    #[test]
+    fn open_required_mesh_takes_the_exact_integral_not_the_rectangle() {
+        let (topo, solid) = countersunk_arm();
+        let faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
+        assert!(
+            faces
+                .iter()
+                .any(|&fid| quadric_face_has_nurbs_trim(&topo, fid)),
+            "the countersink cone must be trimmed by NURBS hyperbolas"
+        );
+        assert!(
+            faces
+                .iter()
+                .all(|&fid| gauss_unqualified_face(&topo, fid).unwrap().is_none()),
+            "every face of the countersunk arm is on a qualified Gauss path"
+        );
+        let exact = countersunk_arm_volume();
+        let gauss = mass_properties(&topo, solid).unwrap().mass.abs();
+        // The Gauss residual is the 128-sample trim outline's chord error on
+        // the cone (measured 0.0043 mm³, 1.6e-6 relative), not quadrature.
+        let gauss_budget = 1e-5 * exact;
+        assert!(
+            (gauss - exact).abs() <= gauss_budget,
+            "Gauss {gauss} vs closed form {exact}"
+        );
+        // The rectangle the open mesh used to fall through to.
+        let rectangle = volume_from_direct_face_tessellation(&topo, solid, 0.001).unwrap();
+        assert!(
+            (rectangle - exact).abs() > 1.0,
+            "the per-face route must be the known-wrong one here: {rectangle} vs {exact}"
+        );
+
+        let mesh = tessellate::tessellate_solid(&topo, solid, 0.001).unwrap();
+        assert_eq!(mesh_boundary_edge_count(&mesh), 0, "closed mesh expected");
+        let closed = closed_mesh_or_exact_volume(&topo, solid, &mesh, "test")
+            .unwrap()
+            .unwrap();
+        assert!(
+            (closed - signed_volume_from_mesh(&mesh)).abs() <= 1e-12 * exact,
+            "a closed mesh keeps its own volume"
+        );
+
+        // Open the mesh the way a shared-edge crack does: drop one triangle.
+        let mut open = mesh;
+        open.indices.drain(0..3);
+        assert!(mesh_boundary_edge_count(&open) > 0);
+        let fallback = closed_mesh_or_exact_volume(&topo, solid, &open, "test")
+            .unwrap()
+            .unwrap();
+        assert!(
+            (fallback - gauss).abs() <= 1e-9 * exact,
+            "open mesh must take the exact face integral: {fallback} vs Gauss {gauss}"
+        );
+        assert!(
+            (fallback - exact).abs() <= gauss_budget,
+            "open-mesh volume {fallback} vs closed form {exact}"
+        );
+        // And the public route agrees with the closed form to the mesh's
+        // chord budget on the (closed) production mesh.
+        let measured = solid_volume(&topo, solid, 0.001).unwrap();
+        assert!(
+            (measured - exact).abs() <= 1e-4 * exact,
+            "solid_volume {measured} vs closed form {exact}"
+        );
+    }
+
+    /// When the face the body was routed for is outside the exact
+    /// integrator's trim domain too (a scalloped box ∩ sphere collar), an open
+    /// mesh is a typed refusal rather than the collar's analytic rectangle.
+    #[test]
+    fn open_required_mesh_refuses_an_unqualified_collar() {
+        use remus_math::mat::Mat4;
+        let mut topo = Topology::new();
+        let bx = crate::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+        let sp = crate::primitives::make_sphere(&mut topo, 6.0, 24).unwrap();
+        crate::transform::transform_solid(&mut topo, sp, &Mat4::translation(5.0, 5.0, 5.0))
+            .unwrap();
+        let solid =
+            crate::boolean::boolean(&mut topo, crate::boolean::BooleanOp::Intersect, bx, sp)
+                .unwrap();
+        assert!(solid_has_scalloped_sphere_collar(&topo, solid).unwrap());
+
+        let mut mesh = tessellate::tessellate_solid(&topo, solid, 0.01).unwrap();
+        assert_eq!(mesh_boundary_edge_count(&mesh), 0, "closed mesh expected");
+        assert!(
+            closed_mesh_or_exact_volume(&topo, solid, &mesh, "test")
+                .unwrap()
+                .is_some()
+        );
+        mesh.indices.drain(0..3);
+        let refusal = closed_mesh_or_exact_volume(&topo, solid, &mesh, "scalloped sphere collar");
+        assert!(
+            matches!(
+                refusal,
+                Err(crate::OperationsError::Unsupported {
+                    operation: "solid_volume",
+                    ..
+                })
+            ),
+            "an open collar mesh must refuse, got {refusal:?}"
         );
     }
 }
