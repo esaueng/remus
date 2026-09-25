@@ -472,6 +472,27 @@ impl Model {
         remus_operations::measure::mass_properties(&self.topology, solid)
     }
 
+    /// Computes exact-integrated mass properties with caller-chosen numerical
+    /// controls.
+    ///
+    /// Start from [`crate::mass_properties_default_options`] to reproduce
+    /// [`Self::mass_properties`] and change only the controls you need. See
+    /// [`crate::mass_properties_with_options`] for what `gauss_order`,
+    /// `adaptive_eps` and `max_depth` control on each face family.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OperationsError`] for invalid options, a refinement request
+    /// the depth or work budget cannot satisfy, or a solid that cannot be
+    /// integrated.
+    pub fn mass_properties_with_options(
+        &self,
+        solid: SolidId,
+        options: &crate::PropertiesOptions,
+    ) -> Result<GProps, OperationsError> {
+        remus_operations::measure::mass_properties_with_options(&self.topology, solid, options)
+    }
+
     /// Computes a solid's axis-aligned bounding box.
     ///
     /// # Errors
@@ -689,6 +710,55 @@ mod tests {
                 .unwrap()
                 .starts_with("ISO-10303-21;")
         );
+    }
+
+    #[test]
+    fn mass_properties_with_options_honours_the_numerical_controls() {
+        let mut model = Model::new();
+        let sphere = model.make_sphere(2.0, 16).unwrap();
+        let defaults = crate::mass_properties_default_options();
+        assert_eq!(
+            format!("{:?}", model.mass_properties(sphere).unwrap()),
+            format!(
+                "{:?}",
+                model
+                    .mass_properties_with_options(sphere, &defaults)
+                    .unwrap()
+            )
+        );
+
+        // Closed form: I = 2/5·m·r² with m = 4/3·π·r³, r = 2.
+        let truth = 0.4 * (4.0 / 3.0 * std::f64::consts::PI * 8.0) * 4.0;
+        let error = |options: &crate::PropertiesOptions| {
+            let props = model.mass_properties_with_options(sphere, options).unwrap();
+            (props.inertia[0] - truth).abs() / truth
+        };
+        let coarse = error(&crate::PropertiesOptions {
+            gauss_order: 1,
+            adaptive_eps: 0.1,
+            max_depth: 20,
+        });
+        let tight = error(&crate::PropertiesOptions {
+            gauss_order: 3,
+            adaptive_eps: 1e-9,
+            max_depth: 24,
+        });
+        assert!(tight <= 1e-10, "tight {tight:e}");
+        assert!(
+            coarse > 1e6 * tight.max(1e-16),
+            "coarse {coarse:e}, tight {tight:e}"
+        );
+
+        let invalid = crate::PropertiesOptions {
+            adaptive_eps: f64::NAN,
+            ..defaults
+        };
+        assert!(matches!(
+            model.mass_properties_with_options(sphere, &invalid),
+            Err(OperationsError::Check(
+                crate::CheckError::IntegrationFailed(_)
+            ))
+        ));
     }
 
     #[test]

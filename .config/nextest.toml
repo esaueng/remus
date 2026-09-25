@@ -38,3 +38,7 @@ priority = 65
 [[profile.default.overrides]]
 filter = 'test(all_committed_bundles_replay)'
 priority = 60
+
+[[profile.default.overrides]]
+filter = 'test(hammer_holder_adaptive_ladder_converges_monotonically_to_the_finest_reference) | test(hammer_holder_adaptive_reference_agrees_with_mesh_and_vendor_volumes)'
+priority = 70
