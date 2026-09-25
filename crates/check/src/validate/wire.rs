@@ -257,7 +257,11 @@ fn check_wire_self_intersection_impl(
                 edge_segments.push(pts);
             }
             remus_topology::edge::EdgeCurve::NurbsCurve(nc) => {
-                let (t0, t1) = nc.domain();
+                // Sample the EDGE, not its carrier: split halves of one
+                // section share a single curve and differ only by trim, so
+                // the full knot span of one half would reach the other's
+                // far vertex and read as a crossing.
+                let (t0, t1) = edge.trim().unwrap_or_else(|| nc.domain());
                 let mut pts = Vec::with_capacity(samples_per_edge + 1);
                 for k in 0..=samples_per_edge {
                     let t = t0 + (t1 - t0) * (k as f64) / (samples_per_edge as f64);
@@ -1378,6 +1382,101 @@ mod tests {
             "dip below the axis must cross it: {issues:?}"
         );
         assert_eq!(issues[0].check, CheckId::WireSelfIntersection);
+    }
+
+    /// Split `curve` at its mid-parameter into two edges that SHARE the one
+    /// carrier and differ only by trim, as the FF section splitter and the
+    /// face splitter's co-endpoint midpoint splits emit them. With
+    /// `reverse_second`, the second half is stored `end → mid` with a
+    /// reversed trim span and used backwards, so the wire still runs
+    /// `start → mid → end`. Returns `(start, end, first, second)`.
+    fn split_nurbs_halves(
+        topo: &mut Topology,
+        curve: &remus_math::nurbs::curve::NurbsCurve,
+        reverse_second: bool,
+    ) -> (VertexId, VertexId, OrientedEdge, OrientedEdge) {
+        let (d0, d1) = curve.domain();
+        let dm = 0.5 * (d0 + d1);
+        let va = topo.add_vertex(Vertex::new(curve.evaluate(d0), 1e-7));
+        let vm = topo.add_vertex(Vertex::new(curve.evaluate(dm), 1e-7));
+        let vb = topo.add_vertex(Vertex::new(curve.evaluate(d1), 1e-7));
+        let first = topo.add_edge(Edge::new(va, vm, EdgeCurve::NurbsCurve(curve.clone())));
+        topo.edge_mut(first).unwrap().set_trim(Some((d0, dm)));
+        let second = if reverse_second {
+            let e = topo.add_edge(Edge::new(vb, vm, EdgeCurve::NurbsCurve(curve.clone())));
+            topo.edge_mut(e).unwrap().set_trim(Some((d1, dm)));
+            oriented(e, false)
+        } else {
+            let e = topo.add_edge(Edge::new(vm, vb, EdgeCurve::NurbsCurve(curve.clone())));
+            topo.edge_mut(e).unwrap().set_trim(Some((dm, d1)));
+            oriented(e, true)
+        };
+        (va, vb, oriented(first, true), second)
+    }
+
+    #[test]
+    fn nurbs_trimmed_halves_of_one_curve_clean() {
+        // Regression: the NURBS arm sampled the carrier's knot span, so each
+        // half read as the whole curve and reached the sibling's far vertex
+        // — a false crossing (distance ~0) with the lines at both ends.
+        for reverse_second in [false, true] {
+            let mut topo = Topology::new();
+            let curve = shallow_nurbs();
+            let (va, vb, first, second) = split_nurbs_halves(&mut topo, &curve, reverse_second);
+            let c = vtx(&mut topo, 4.0, 2.0);
+            let d = vtx(&mut topo, 0.0, 2.0);
+            let wire = add_wire(
+                vec![
+                    first,
+                    second,
+                    oriented(line_edge(&mut topo, vb, c), true),
+                    oriented(line_edge(&mut topo, c, d), true),
+                    oriented(line_edge(&mut topo, d, va), true),
+                ],
+                true,
+                &mut topo,
+            );
+            let issues = check_wire_self_intersection(&topo, wire, 1e-6).unwrap();
+            assert!(
+                issues.is_empty(),
+                "trimmed halves of one NURBS carrier must stay clear \
+                 (reverse_second = {reverse_second}): {issues:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn nurbs_trimmed_halves_crossing_reported() {
+        // The trim bounds the sampling; it must not exempt a real crossing
+        // inside the trimmed span.
+        for reverse_second in [false, true] {
+            let mut topo = Topology::new();
+            let curve = dip_nurbs();
+            let (va, vb, first, second) = split_nurbs_halves(&mut topo, &curve, reverse_second);
+            let f = vtx(&mut topo, -1.0, 0.0);
+            let g = vtx(&mut topo, 5.0, 0.0);
+            let h = vtx(&mut topo, 5.0, 3.0);
+            let wire = add_wire(
+                vec![
+                    first,
+                    second,
+                    oriented(line_edge(&mut topo, vb, f), true),
+                    oriented(line_edge(&mut topo, f, g), true),
+                    oriented(line_edge(&mut topo, g, h), true),
+                    oriented(line_edge(&mut topo, h, va), true),
+                ],
+                true,
+                &mut topo,
+            );
+            let issues = check_wire_self_intersection(&topo, wire, 1e-6).unwrap();
+            assert_eq!(
+                issues.len(),
+                1,
+                "the y = 0 line must cross the trimmed dip \
+                 (reverse_second = {reverse_second}): {issues:?}"
+            );
+            assert_eq!(issues[0].check, CheckId::WireSelfIntersection);
+        }
     }
 
     #[test]
