@@ -4896,6 +4896,11 @@ fn compute_face_bbox(topo: &Topology, face_id: FaceId, tol: Tolerance) -> Result
             let pt = edge.curve().evaluate_with_endpoints(t, start_pos, end_pos);
             points.push(pt);
         }
+        // Samples alone under-bound a circle or ellipse: the box of an
+        // 8-interval full circle is an inscribed octagon's, up to
+        // r·(1 − cos π/8) ≈ 7.6 % of the radius short on an axis, and by how
+        // much depends on where the seam puts the samples (B52).
+        points.extend(conic_arc_axis_extrema(edge.curve(), t0, t1));
     }
 
     // A sphere or torus face bulges beyond its boundary edges (a hemisphere's
@@ -4939,6 +4944,53 @@ fn compute_face_bbox(topo: &Topology, face_id: FaceId, tol: Tolerance) -> Result
             max: Point3::new(0.0, 0.0, 0.0),
         },
     })
+}
+
+/// The points of a circle or ellipse arc that are extreme along each world
+/// axis, restricted to the arc's parameter window `[t0, t1]`.
+///
+/// Along axis `k` the conic reads `c_k + a·u_k·cos t + b·v_k·sin t`, extreme
+/// at `t* = atan2(b·v_k, a·u_k)` and `t* + π`. Each extremum whose periodic
+/// copy lands inside the window is returned; together with the arc's endpoints
+/// these bound the arc exactly (to rounding), wherever its seam sits. Other
+/// carriers return nothing: lines are bounded by their endpoints, and the
+/// remaining curves keep their existing sampled bound.
+fn conic_arc_axis_extrema(curve: &EdgeCurve, t0: f64, t1: f64) -> Vec<Point3> {
+    let (u_axis, v_axis, a, b) = match curve {
+        EdgeCurve::Circle(c) => (c.u_axis(), c.v_axis(), c.radius(), c.radius()),
+        EdgeCurve::Ellipse(e) => (e.u_axis(), e.v_axis(), e.semi_major(), e.semi_minor()),
+        // B24: exhaustive over `EdgeCurve` — only the trigonometric conics
+        // have closed-form axis extrema here.
+        EdgeCurve::Line
+        | EdgeCurve::NurbsCurve(_)
+        | EdgeCurve::Hyperbola(_)
+        | EdgeCurve::Parabola(_) => return Vec::new(),
+    };
+    let (lo, hi) = if t0 <= t1 { (t0, t1) } else { (t1, t0) };
+    if !(lo.is_finite() && hi.is_finite()) {
+        return Vec::new();
+    }
+    let tau = std::f64::consts::TAU;
+    let mut out = Vec::new();
+    for (uk, vk) in [
+        (u_axis.x(), v_axis.x()),
+        (u_axis.y(), v_axis.y()),
+        (u_axis.z(), v_axis.z()),
+    ] {
+        // Every point pushed lies on the arc, so the bound never widens past
+        // it — even for an axis normal to the conic plane (`atan2(0, 0)`).
+        let t_star = (b * vk).atan2(a * uk);
+        for cand in [t_star, t_star + std::f64::consts::PI] {
+            // First periodic copy of `cand` at or after `lo`.
+            let t = ((lo - cand) / tau).ceil().mul_add(tau, cand);
+            if t <= hi {
+                // Circles and ellipses ignore the endpoint arguments.
+                let unused = Point3::new(0.0, 0.0, 0.0);
+                out.push(curve.evaluate_with_endpoints(t, unused, unused));
+            }
+        }
+    }
+    out
 }
 
 /// Pole-side axis of a spherical face, from its boundary winding: the summed
@@ -9822,6 +9874,116 @@ mod conic_crossing_tests {
         let pedge = Edge::new(ps, pe, EdgeCurve::Parabola(parabola));
         let hits = conic_edge_plane_crossings(&pedge, normal, 0.5).unwrap();
         assert!(hits.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod face_bbox_conic_tests {
+    #![allow(clippy::unwrap_used)]
+    use remus_math::aabb::Aabb3;
+    use remus_math::curves::{Circle3D, Ellipse3D};
+    use remus_math::tolerance::Tolerance;
+    use remus_math::vec::{Point3, Vec3};
+    use remus_topology::Topology;
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::face::{Face, FaceId, FaceSurface};
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
+
+    use super::{compute_face_bbox, conic_arc_axis_extrema};
+
+    /// A z = 0.5 disc bounded by one closed circle edge.
+    fn disc_face(topo: &mut Topology, circle: Circle3D) -> FaceId {
+        let v = topo.add_vertex(Vertex::new(circle.evaluate(0.0), 1e-7));
+        let mut edge = Edge::new(v, v, EdgeCurve::Circle(circle));
+        edge.set_trim(Some((0.0, std::f64::consts::TAU)));
+        let e = topo.add_edge(edge);
+        let w = topo.add_wire(Wire::new(vec![OrientedEdge::new(e, true)], true).unwrap());
+        topo.add_face(Face::new(
+            w,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.5,
+            },
+        ))
+    }
+
+    /// B52: the face broad-phase box must contain the whole rim wherever the
+    /// seam sits. The box–cylinder notch (rim r = 2 about (0.5, −1.5)) lost
+    /// its x = 0 generator at y = 0.436 when the seam at 2.0 rad put the
+    /// 8-interval sampled box top at y = 0.374 instead of 0.5.
+    #[test]
+    fn closed_circle_face_box_is_exact_at_every_seam() {
+        let (cx, cy, r) = (0.5, -1.5, 2.0);
+        for k in 0..64 {
+            let seam = f64::from(k).mul_add(std::f64::consts::TAU / 64.0, 0.3);
+            let mut topo = Topology::new();
+            let circle = Circle3D::new_with_ref(
+                Point3::new(cx, cy, 0.5),
+                Vec3::new(0.0, 0.0, 1.0),
+                r,
+                Vec3::new(seam.cos(), seam.sin(), 0.0),
+            )
+            .unwrap();
+            let face = disc_face(&mut topo, circle);
+            let bb = compute_face_bbox(&topo, face, Tolerance::default()).unwrap();
+            for (got, want) in [
+                (bb.min.x(), cx - r),
+                (bb.max.x(), cx + r),
+                (bb.min.y(), cy - r),
+                (bb.max.y(), cy + r),
+            ] {
+                assert!(
+                    (got - want).abs() <= 1e-12,
+                    "seam {seam:.4}: box bound {got} vs rim extent {want}"
+                );
+            }
+        }
+    }
+
+    /// Ellipse arcs: the extrema plus the endpoints bound a dense sampling of
+    /// every window, and every returned point lies on the ellipse (the bound
+    /// never widens past the arc).
+    #[test]
+    fn ellipse_arc_extrema_bound_a_dense_sampling() {
+        let (a, b) = (3.0, 1.25);
+        let center = Point3::new(1.0, 2.0, 3.0);
+        let ellipse = Ellipse3D::new_with_ref(
+            center,
+            Vec3::new(1.0, 2.0, 2.0),
+            a,
+            b,
+            Vec3::new(2.0, -1.0, 0.0),
+        )
+        .unwrap();
+        let curve = EdgeCurve::Ellipse(ellipse.clone());
+        for (t0, t1) in [
+            (0.2, 1.4),
+            (-2.0, 3.5),
+            (5.0, 9.0),
+            (0.0, std::f64::consts::TAU),
+        ] {
+            let extrema = conic_arc_axis_extrema(&curve, t0, t1);
+            for p in &extrema {
+                let d = *p - center;
+                let (x, y) = (d.dot(ellipse.u_axis()) / a, d.dot(ellipse.v_axis()) / b);
+                assert!(
+                    (x.hypot(y) - 1.0).abs() <= 1e-12 && d.dot(ellipse.normal()).abs() <= 1e-12,
+                    "arc ({t0}, {t1}): extremum {p:?} off the ellipse"
+                );
+            }
+            let mut pts = vec![ellipse.evaluate(t0), ellipse.evaluate(t1)];
+            pts.extend(extrema);
+            let boxed = Aabb3::from_points(pts).expanded(1e-12);
+            for i in 0..=20_000 {
+                let t = (t1 - t0).mul_add(f64::from(i) / 20_000.0, t0);
+                assert!(
+                    boxed.contains_point(ellipse.evaluate(t)),
+                    "arc ({t0}, {t1}): point at t={t} escapes the box"
+                );
+            }
+        }
     }
 }
 

@@ -469,20 +469,18 @@ fn b32_box_cone_sibling_fuse_is_seam_placement_invariant() {
     }
 }
 
-/// Ready-repro, discovered while closing B32 (2026-09-24), owner row B52:
-/// the CYLINDER twin of the sibling (box 2.5×1×1 with a cylinder r=2, h=1
-/// at the same `translation(0.5,-1.5,-0.5) · rotation_z(rot)` placement)
-/// refuses all three legs `ExactOnlyUnattainable` at seam rotations 0.3 and
-/// 2.0 rad about the cylinder's own axis, while 0, 1.0, π/2, 2.5, π, 4.0,
-/// 3π/2 and 5.5 fuse exact (Gauss 14.71997). The raw GFA fuse at 2.0 drops
-/// the bottom cap and leaves the lateral with zero area (V−E+F = 1): the
-/// lateral reaches the wire builder with none of its notch sections, and the
-/// greedy walker discards the bottom rim as at the cone (same
-/// `discarding incomplete loop` warning at the seam's bottom vertex). The
-/// cone arm's orphaned-rim rescue does not apply — there is no section in
-/// the trace input to recover. Acceptance target encoded below.
+/// B52 witness, discovered while closing B32 (2026-09-24): the CYLINDER twin
+/// of the sibling (box 2.5×1×1 with a cylinder r=2, h=1 at the same
+/// `translation(0.5,-1.5,-0.5) · rotation_z(rot)` placement) refused all
+/// three legs `ExactOnlyUnattainable` at seam rotations 0.3 and 2.0 rad about
+/// the cylinder's own axis (Gauss 14.71997 elsewhere). Not a splitter defect:
+/// the FF broad phase boxed the lateral by 9 samples per rim circle, an
+/// inscribed octagon whose top fell short of the rim (y = 0.374 vs 0.5 at
+/// 2.0), so the x = 0 wall's generator at y = 0.436 was dropped and the
+/// lateral reached the wire builder without that notch side. Fixed by the
+/// exact conic-arc face box (`phase_ff::conic_arc_axis_extrema`); the
+/// full seam sweep lives in `regress_b52_box_cylinder_rim_notch.rs`.
 #[test]
-#[ignore = "open: box-cylinder rim notch refuses at seam rotations 0.3 and 2.0 (B52)"]
 fn b52_box_cylinder_notch_is_seam_placement_invariant() {
     let build = |topo: &mut Topology, rot: f64| {
         let m = Mat4::translation(0.5, -1.5, -0.5) * Mat4::rotation_z(rot);
