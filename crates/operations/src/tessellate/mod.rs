@@ -27,6 +27,7 @@ mod nurbs;
 mod planar;
 pub(crate) mod rim_chain;
 mod solid;
+mod sphere_pole_patch;
 #[cfg(test)]
 mod tests;
 
@@ -42,6 +43,7 @@ pub use mesh_ops::{
     EdgeLines, WeldedMeshQuality, boundary_edge_count, is_watertight, non_manifold_edge_count,
     sample_solid_edges, sample_solid_edges_filtered, welded_mesh_quality,
 };
+pub(crate) use solid::tessellate_closed_face_set;
 pub use solid::{
     tessellate_body_with_tolerance, tessellate_sheet, tessellate_sheet_with_tolerance,
     tessellate_solid, tessellate_solid_for_boolean, tessellate_solid_grouped_with_tolerance,

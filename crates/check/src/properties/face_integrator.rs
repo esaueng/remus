@@ -22,28 +22,48 @@ mod adaptive;
 struct IntegrationRule<'a> {
     order: usize,
     adaptive: Option<&'a PropertiesOptions>,
+    /// A NURBS carrier's `(u, v)` knot vectors. Adaptive cells split on the
+    /// interior knots so each Gauss rule sees one polynomial piece; the fixed
+    /// rule ignores them.
+    knots: Option<(&'a [f64], &'a [f64])>,
+    /// Point the positional integrands are taken about (B58).
+    reference: Point3,
 }
 
-impl IntegrationRule<'_> {
-    fn fixed(self) -> Result<Self, CheckError> {
-        if let Some(options) = self.adaptive {
-            let defaults = PropertiesOptions::default();
-            if options.adaptive_eps.to_bits() != defaults.adaptive_eps.to_bits()
-                || options.max_depth != defaults.max_depth
-            {
-                return Err(CheckError::IntegrationFailed(
-                    "adaptive controls unsupported for this sampled trim or freeform domain; default controls retain fixed quadrature".into(),
-                ));
-            }
-        }
-        Ok(Self {
+impl<'a> IntegrationRule<'a> {
+    /// Adaptive controls for a domain whose historical default is fixed
+    /// quadrature: trimmed (sliced) domains, NURBS carriers and torus tube
+    /// bands.
+    ///
+    /// The default control pair keeps the fixed rule bit for bit, so existing
+    /// default measurements do not move; any other pair requests refinement.
+    /// Returns `None` for the order-only API as well.
+    fn requested_refinement(self) -> Option<&'a PropertiesOptions> {
+        let options = self.adaptive?;
+        let defaults = PropertiesOptions::default();
+        (options.adaptive_eps.to_bits() != defaults.adaptive_eps.to_bits()
+            || options.max_depth != defaults.max_depth)
+            .then_some(options)
+    }
+
+    /// This rule with refinement kept only when [`Self::requested_refinement`]
+    /// asks for it.
+    fn compatibility(self) -> Self {
+        Self {
             order: self.order,
-            adaptive: None,
-        })
+            adaptive: self.requested_refinement(),
+            knots: self.knots,
+            reference: self.reference,
+        }
     }
 }
 
 /// Contribution of a single face to global geometric properties.
+///
+/// Every positional quantity (volume, first and second moments, the surface
+/// centroid sums) is taken about a reference point: the world origin for
+/// [`integrate_face`] and [`integrate_face_with_options`], the caller's point
+/// for [`integrate_face_about`]. Only `area` is independent of it.
 #[derive(Debug, Clone)]
 pub struct FaceContribution {
     /// Face area.
@@ -56,17 +76,17 @@ pub struct FaceContribution {
     pub volume_moment_y: f64,
     /// Volume-weighted z-moment: (1/2) integral of z^2 * n_z dA (divergence theorem).
     pub volume_moment_z: f64,
-    /// Raw volume integral of `x²` about the global origin.
+    /// Raw volume integral of `x²` about the reference point.
     pub volume_second_x: f64,
-    /// Raw volume integral of `y²` about the global origin.
+    /// Raw volume integral of `y²` about the reference point.
     pub volume_second_y: f64,
-    /// Raw volume integral of `z²` about the global origin.
+    /// Raw volume integral of `z²` about the reference point.
     pub volume_second_z: f64,
-    /// Raw volume integral of `xy` about the global origin.
+    /// Raw volume integral of `xy` about the reference point.
     pub volume_product_xy: f64,
-    /// Raw volume integral of `xz` about the global origin.
+    /// Raw volume integral of `xz` about the reference point.
     pub volume_product_xz: f64,
-    /// Raw volume integral of `yz` about the global origin.
+    /// Raw volume integral of `yz` about the reference point.
     pub volume_product_yz: f64,
     /// Area-weighted centroid x-component (for surface centroid, not solid CoM).
     pub centroid_x: f64,
@@ -135,6 +155,8 @@ pub fn integrate_face(
         IntegrationRule {
             order: gauss_order,
             adaptive: None,
+            knots: None,
+            reference: Point3::new(0.0, 0.0, 0.0),
         },
     )
 }
@@ -147,21 +169,59 @@ pub fn integrate_face(
 ///
 /// # Errors
 ///
-/// Returns [`CheckError::IntegrationFailed`] for invalid options, unsupported
-/// non-default adaptive controls, non-finite integrals, or exhausted depth/work.
+/// Returns [`CheckError::IntegrationFailed`] for invalid options, non-finite
+/// integrals, or a refinement request the depth or work budget cannot meet.
 /// Also propagates missing topology and geometry errors.
 pub fn integrate_face_with_options(
     topo: &Topology,
     face_id: FaceId,
     options: &PropertiesOptions,
 ) -> Result<FaceContribution, CheckError> {
+    integrate_face_about(topo, face_id, options, Point3::new(0.0, 0.0, 0.0))
+}
+
+/// [`integrate_face_with_options`] with every positional integrand taken
+/// about `reference` instead of the world origin.
+///
+/// The volume, first-moment and second-moment integrands are polynomials in
+/// the position `P`. About the origin, a face far from it carries terms of
+/// order |P|·L², |P|²·L² and |P|³·L² that a closed body cancels down to its
+/// L³, L⁴ and L⁵ answers, and the round-off and quadrature error of the large
+/// terms survive the cancellation: a 1e-3 frustum 1.5e4 lengths away read its
+/// inertia tensor several times off (B58). Integrating `P − reference` for a
+/// reference on or near the body keeps every term at the body's own scale.
+///
+/// Summed over a closed body the volume is the same about any reference, and
+/// the first moments about `reference` are the origin moments less
+/// `reference` times the volume. Callers shift the centroid back by
+/// `reference`; see [`super::solid_properties`].
+///
+/// # Errors
+///
+/// As [`integrate_face_with_options`], plus a non-finite `reference`.
+pub fn integrate_face_about(
+    topo: &Topology,
+    face_id: FaceId,
+    options: &PropertiesOptions,
+    reference: Point3,
+) -> Result<FaceContribution, CheckError> {
     options.validate()?;
+    if ![reference.x(), reference.y(), reference.z()]
+        .iter()
+        .all(|c| c.is_finite())
+    {
+        return Err(CheckError::IntegrationFailed(
+            "integration reference point must be finite".into(),
+        ));
+    }
     integrate_face_impl(
         topo,
         face_id,
         IntegrationRule {
             order: options.gauss_order,
             adaptive: Some(options),
+            knots: None,
+            reference,
         },
     )
 }
@@ -178,7 +238,7 @@ fn integrate_face_impl(
     match face.surface() {
         FaceSurface::Plane { normal, .. } => {
             let effective_normal = if reversed { -*normal } else { *normal };
-            integrate_planar_face(topo, face_id, effective_normal, rule)
+            integrate_planar_face(topo, face_id, effective_normal, rule.reference)
         }
         FaceSurface::Cylinder(s) => {
             let full = (
@@ -409,8 +469,7 @@ fn integrate_face_impl(
             integrate_with_trimming(s, u_range, v_range, rule, sign, &uv, PatchScale::ANGULAR)
         }
         FaceSurface::Torus(s) => {
-            if let Some(band) = integrate_torus_tube_band(topo, face_id, s, rule.order, sign)? {
-                rule.fixed()?;
+            if let Some(band) = integrate_torus_tube_band(topo, face_id, s, rule, sign)? {
                 return Ok(band);
             }
             let full = ((0.0, std::f64::consts::TAU), (0.0, std::f64::consts::TAU));
@@ -423,7 +482,10 @@ fn integrate_face_impl(
             integrate_with_trimming(s, u_range, v_range, rule, sign, &uv, PatchScale::ANGULAR)
         }
         FaceSurface::Nurbs(s) => {
-            let rule = rule.fixed()?;
+            let rule = IntegrationRule {
+                knots: Some((s.knots_u(), s.knots_v())),
+                ..rule.compatibility()
+            };
             let full = (s.domain_u(), s.domain_v());
             let periodic_u = s.is_periodic_u();
             let periodic_v = s.is_periodic_v();
@@ -575,21 +637,32 @@ pub fn integrate_torus_band_face(
         topo,
         face_id,
         torus,
-        gauss_order,
+        IntegrationRule {
+            order: gauss_order,
+            adaptive: None,
+            knots: None,
+            reference: Point3::new(0.0, 0.0, 0.0),
+        },
         if face.is_reversed() { -1.0 } else { 1.0 },
     )
 }
 
 /// Integrate between two tube-wrapping rims using their oriented material side.
+///
+/// Non-default adaptive controls refine the same sliced domain (tube-angle
+/// breaks at every rim sample, sweep spans between the rims); the default
+/// controls and the order-only API keep the fixed rule.
 #[allow(clippy::too_many_lines, clippy::cast_precision_loss)]
 fn integrate_torus_tube_band(
     topo: &Topology,
     face_id: FaceId,
     torus: &remus_math::surfaces::ToroidalSurface,
-    order: usize,
+    rule: IntegrationRule<'_>,
     sign: f64,
 ) -> Result<Option<FaceContribution>, CheckError> {
     use std::f64::consts::{PI, TAU};
+    let order = rule.order;
+    let reference = rule.reference;
     let face = topo.face(face_id)?;
     if face.inner_wires().len() != 1 {
         return Ok(None);
@@ -672,6 +745,37 @@ fn integrate_torus_tube_band(
     }
     breaks.sort_by(f64::total_cmp);
     breaks.dedup_by(|a, b| (*a - *b).abs() < 1e-12);
+    let sweep = |v: f64| {
+        let a = at(&rings[0], v);
+        let b = at(&rings[1], v);
+        let span = if windings[0] < 0.0 {
+            (b - a).rem_euclid(TAU)
+        } else {
+            -(a - b).rem_euclid(TAU)
+        };
+        (a, span)
+    };
+    if let Some(options) = rule.requested_refinement() {
+        let spans = |v: f64| {
+            let (a, span) = sweep(v);
+            vec![(a, a + span)]
+        };
+        return adaptive::integrate_sliced(
+            torus,
+            &adaptive::Sliced {
+                breaks: &breaks,
+                inner_knots: &[],
+                outer_scale: f64::INFINITY,
+                inner_scale: PatchScale::ANGULAR.u,
+                spans: &spans,
+                outer_is_v: true,
+            },
+            sign,
+            options,
+            reference,
+        )
+        .map(Some);
+    }
     let gauss = gauss_legendre_points(order);
     let mut acc = Accumulator::default();
     let mut scratch = DerivativeScratch::new();
@@ -680,13 +784,7 @@ fn integrate_torus_tube_band(
         let v_mid = f64::midpoint(interval[0], interval[1]);
         for gv in gauss {
             let v = v_scale.mul_add(gv.x, v_mid);
-            let a = at(&rings[0], v);
-            let b = at(&rings[1], v);
-            let span = if windings[0] < 0.0 {
-                (b - a).rem_euclid(TAU)
-            } else {
-                -(a - b).rem_euclid(TAU)
-            };
+            let (a, span) = sweep(v);
             let patches = patch_count(span.abs(), PatchScale::ANGULAR.u);
             let step = span / patches as f64;
             for patch in 0..patches {
@@ -698,6 +796,7 @@ fn integrate_torus_tube_band(
                         u,
                         v,
                         gu.w * gv.w * step.abs() / 2.0 * v_scale,
+                        reference,
                         &mut scratch,
                     );
                 }
@@ -1373,7 +1472,7 @@ fn integrate_planar_face(
     topo: &Topology,
     face_id: FaceId,
     normal: Vec3,
-    rule: IntegrationRule<'_>,
+    reference: Point3,
 ) -> Result<FaceContribution, CheckError> {
     let normal = normal.normalize().map_err(|_| {
         CheckError::IntegrationFailed("planar face has a zero or non-finite normal".into())
@@ -1383,18 +1482,20 @@ fn integrate_planar_face(
     // undercounts a circular cap by the sagitta area (~0.2% at the default
     // discretization), far above the accuracy of the parametric quadrature
     // the curved faces get.
-    if let Some(contrib) = integrate_planar_face_exact(topo, face_id, normal)? {
+    if let Some(contrib) = integrate_planar_face_exact(topo, face_id, normal, reference)? {
         return Ok(contrib);
     }
-    rule.fixed()?;
+    // The sampled-boundary fallback integrates its polygon in closed form, so
+    // there is no quadrature for adaptive controls to refine: any validated
+    // controls are satisfied and the sampled boundary is the stated residual.
     let polygon = crate::util::face_polygon(topo, face_id)?;
-    let mut contrib = integrate_planar_polygon(&polygon, normal);
+    let mut contrib = integrate_planar_polygon(&polygon, normal, reference);
 
     let face = topo.face(face_id)?;
     let inner: Vec<_> = face.inner_wires().to_vec();
     for wid in inner {
         let hole = crate::util::wire_polygon(topo, wid)?;
-        let h = integrate_planar_polygon(&hole, normal);
+        let h = integrate_planar_polygon(&hole, normal, reference);
         contrib.area -= h.area;
         contrib.volume -= h.volume;
         contrib.volume_moment_x -= h.volume_moment_x;
@@ -1414,8 +1515,13 @@ fn integrate_planar_face(
     Ok(contrib)
 }
 
-/// Integrate a planar polygon's contribution via fan triangulation.
-fn integrate_planar_polygon(polygon: &[Point3], normal: Vec3) -> FaceContribution {
+/// Integrate a planar polygon's contribution via fan triangulation, about
+/// `reference`.
+fn integrate_planar_polygon(
+    polygon: &[Point3],
+    normal: Vec3,
+    reference: Point3,
+) -> FaceContribution {
     if polygon.len() < 3 {
         return FaceContribution {
             area: 0.0,
@@ -1453,8 +1559,12 @@ fn integrate_planar_polygon(polygon: &[Point3], normal: Vec3) -> FaceContributio
     let mut cy = 0.0;
     let mut cz = 0.0;
 
+    let local = |p: Point3| {
+        let d = p - reference;
+        Point3::new(d.x(), d.y(), d.z())
+    };
     for i in 1..polygon.len() - 1 {
-        let (a, b, c) = (polygon[0], polygon[i], polygon[i + 1]);
+        let (a, b, c) = (local(polygon[0]), local(polygon[i]), local(polygon[i + 1]));
         let ab = b - a;
         let ac = c - a;
         let cross = Vec3::new(
@@ -2505,6 +2615,7 @@ fn integrate_planar_face_exact(
     topo: &Topology,
     face_id: FaceId,
     normal: Vec3,
+    reference: Point3,
 ) -> Result<Option<FaceContribution>, CheckError> {
     let face = topo.face(face_id)?;
     let outer_wire = face.outer_wire();
@@ -2542,11 +2653,13 @@ fn integrate_planar_face_exact(
         }
     }
 
-    // Linear forms of the global coordinates in the in-plane basis:
-    // x = origin.x + e1.x·s + e2.x·t, etc.
-    let lx = [origin.x(), e1.x(), e2.x()];
-    let ly = [origin.y(), e1.y(), e2.y()];
-    let lz = [origin.z(), e1.z(), e2.z()];
+    // Linear forms of the coordinates about `reference` in the in-plane
+    // basis: x − reference.x = (origin − reference).x + e1.x·s + e2.x·t, etc.
+    // The monomial moments above are already local to the face.
+    let anchor = origin - reference;
+    let lx = [anchor.x(), e1.x(), e2.x()];
+    let ly = [anchor.y(), e1.y(), e2.y()];
+    let lz = [anchor.z(), e1.z(), e2.z()];
     let lin = |l: [f64; 3]| -> Poly2 {
         let mut p = [0.0; 10];
         p[0] = l[0];
@@ -2601,17 +2714,19 @@ struct Accumulator {
 
 impl Accumulator {
     /// Add one abscissa's contribution, weighted by `w` (which already carries
-    /// the map from the reference interval to the patch).
+    /// the map from the reference interval to the patch), with every
+    /// positional integrand taken about `reference`.
     ///
     /// `scratch` is thread-local reuse storage for the NURBS derivative
     /// solve; other surfaces ignore it. Callers must not share one scratch
     /// across threads.
-    fn add<S: ParametricSurface>(
+    fn add<S: ParametricSurface + ?Sized>(
         &mut self,
         surface: &S,
         u: f64,
         v: f64,
         w: f64,
+        reference: Point3,
         scratch: &mut DerivativeScratch,
     ) {
         // One solve for position and both partials (a NURBS surface would
@@ -2620,6 +2735,7 @@ impl Accumulator {
         // before trusting them, so analytic surfaces (whose default ignores
         // the hint) and NURBS faces alike get exactly the unhinted answer.
         let (p, du, dv, _, _) = surface.span_hinted_point_and_partials_with_scratch(u, v, scratch);
+        let p = p - reference;
 
         // Normal = du x dv (unnormalized, includes Jacobian)
         let n = Vec3::new(
@@ -2632,8 +2748,7 @@ impl Accumulator {
         self.area += w * n_len;
 
         // Volume: (1/3) P dot N (unnormalized N includes Jacobian)
-        let pv = Vec3::new(p.x(), p.y(), p.z());
-        self.vol += w * pv.dot(n) / 3.0;
+        self.vol += w * p.dot(n) / 3.0;
 
         // Volume moments via divergence theorem:
         // CoM_x = (1/2V) surface_integral(x^2 * n_x dA)
@@ -2759,6 +2874,23 @@ fn patch_count(span: f64, scale: f64) -> usize {
     ((span.abs() / scale).ceil() as usize).clamp(1, MAX_PATCHES)
 }
 
+/// Distinct knot values strictly inside `range`, sorted.
+fn interior_knots(knots: &[f64], range: (f64, f64)) -> Vec<f64> {
+    let (lo, hi) = if range.0 <= range.1 {
+        range
+    } else {
+        (range.1, range.0)
+    };
+    let mut inside: Vec<f64> = knots
+        .iter()
+        .copied()
+        .filter(|&k| k.is_finite() && k > lo && k < hi)
+        .collect();
+    inside.sort_by(f64::total_cmp);
+    inside.dedup();
+    inside
+}
+
 /// Integrate a parametric surface over a UV domain by Gauss quadrature,
 /// keeping only what `trim` accepts.
 ///
@@ -2781,10 +2913,72 @@ fn integrate_parametric<S: ParametricSurface>(
     trim: &UvTrim<'_>,
     scale: PatchScale,
 ) -> Result<FaceContribution, CheckError> {
-    if trim.splits_domain() {
-        rule.fixed()?;
-    } else if let Some(options) = rule.adaptive {
-        return adaptive::integrate(surface, u_range, v_range, sign, scale, options);
+    // Trimmed domains and NURBS carriers refine as sliced domains (an
+    // untrimmed NURBS patch is one constant span per knot-aligned window);
+    // untrimmed analytic rectangles refine by quadrants.
+    let sliced = if trim.splits_domain() {
+        rule.requested_refinement()
+    } else if rule.knots.is_some() {
+        rule.adaptive
+    } else {
+        None
+    };
+    if let Some(options) = sliced {
+        let mut breaks = if trim.splits_domain() {
+            trim.u_breaks(u_range)
+        } else {
+            vec![u_range.0, u_range.1]
+        };
+        let (knots_u, knots_v) = rule.knots.unwrap_or((&[], &[]));
+        breaks.extend(interior_knots(knots_u, u_range));
+        breaks.sort_by(f64::total_cmp);
+        breaks.dedup();
+        let inner_knots = interior_knots(knots_v, v_range);
+        // With cells aligned to the knots, one Gauss rule per knot span is the
+        // natural starting cell; refinement supplies any further resolution.
+        // The fixed rule's sub-span tiling exists only because it cannot align.
+        #[allow(clippy::cast_precision_loss)]
+        let start = if rule.knots.is_some() {
+            PatchScale {
+                u: scale.u * PATCHES_PER_KNOT_SPAN as f64,
+                v: scale.v * PATCHES_PER_KNOT_SPAN as f64,
+            }
+        } else {
+            scale
+        };
+        let spans = |u: f64| {
+            if trim.splits_domain() {
+                trim.v_spans(u, v_range)
+            } else {
+                vec![v_range]
+            }
+        };
+        return adaptive::integrate_sliced(
+            surface,
+            &adaptive::Sliced {
+                breaks: &breaks,
+                inner_knots: &inner_knots,
+                outer_scale: start.u,
+                inner_scale: start.v,
+                spans: &spans,
+                outer_is_v: false,
+            },
+            sign,
+            options,
+            rule.reference,
+        );
+    }
+    if !trim.splits_domain()
+        && let Some(options) = rule.adaptive
+    {
+        return adaptive::integrate(
+            surface,
+            (u_range, v_range),
+            sign,
+            scale,
+            options,
+            rule.reference,
+        );
     }
     let gauss_pts = gauss_legendre_points(rule.order);
     let nu = patch_count(u_range.1 - u_range.0, scale.u);
@@ -2824,6 +3018,7 @@ fn integrate_parametric<S: ParametricSurface>(
                                     u,
                                     v,
                                     gpu.w * gpv.w * u_scale * v_scale,
+                                    rule.reference,
                                     &mut scratch,
                                 );
                             }
@@ -2854,6 +3049,7 @@ fn integrate_parametric<S: ParametricSurface>(
                         u,
                         v,
                         gpu.w * gpv.w * u_scale * v_scale,
+                        rule.reference,
                         &mut scratch,
                     );
                 }
@@ -3104,6 +3300,99 @@ mod tests {
         assert!((volume - 180.0 * PI * PI).abs() < 1e-7);
     }
 
+    /// Non-default controls refine the two-rim tube band instead of refusing,
+    /// converging on closed forms; the default pair keeps the fixed rule.
+    #[test]
+    fn torus_tube_band_refines_toward_closed_form_on_request() {
+        use remus_math::{curves::Circle3D, surfaces::ToroidalSurface};
+        use remus_topology::{
+            edge::Edge,
+            face::Face,
+            vertex::Vertex,
+            wire::{OrientedEdge, Wire},
+        };
+        use std::f64::consts::{PI, TAU};
+        let (big, small) = (10.0_f64, 3.0_f64);
+        let center = Point3::new(13.0, -7.0, 5.0);
+        let torus = ToroidalSurface::new(center, big, small).unwrap();
+        let mut topo = Topology::new();
+        let mut edges = Vec::new();
+        for u in [0.2_f64, 1.2] {
+            let radial = Vec3::new(u.cos(), u.sin(), 0.0);
+            let circle = Circle3D::new_with_ref(
+                center + radial * big,
+                Vec3::new(u.sin(), -u.cos(), 0.0),
+                small,
+                radial,
+            )
+            .unwrap();
+            let vertex = topo.add_vertex(Vertex::new(center + radial * (big + small), 1e-7));
+            let mut edge = Edge::new(vertex, vertex, EdgeCurve::Circle(circle));
+            edge.set_trim(Some((0.0, TAU)));
+            edges.push(topo.add_edge(edge));
+        }
+        let outer =
+            topo.add_wire(Wire::new(vec![OrientedEdge::new(edges[0], false)], true).unwrap());
+        let inner =
+            topo.add_wire(Wire::new(vec![OrientedEdge::new(edges[1], true)], true).unwrap());
+        let face = topo.add_face(Face::new(outer, vec![inner], FaceSurface::Torus(torus)));
+
+        let defaults = PropertiesOptions::default();
+        assert_eq!(
+            format!(
+                "{:?}",
+                integrate_face(&topo, face, defaults.gauss_order).unwrap()
+            ),
+            format!(
+                "{:?}",
+                integrate_face_with_options(&topo, face, &defaults).unwrap()
+            )
+        );
+
+        // Band u in [0.2, 1.2]: A = Δu·2π·R·r and
+        // ∫x dA = cx·A + r·(sin 1.2 − sin 0.2)·(2πR² + πr²).
+        let area = 2.0 * PI * big * small;
+        let centroid_x = center.x() * area
+            + small * (1.2_f64.sin() - 0.2_f64.sin()) * (2.0 * PI * big * big + PI * small * small);
+        let errors = |options: &PropertiesOptions| {
+            let c = integrate_face_with_options(&topo, face, options).unwrap();
+            [
+                (c.area - area).abs() / area,
+                (c.centroid_x - centroid_x).abs() / centroid_x.abs(),
+            ]
+        };
+        // The rims are constant-angle circles, so the area integrand is exact
+        // under every rule and only round-off separates settings; the
+        // trigonometric centroid moment carries the quadrature error.
+        let coarse = errors(&PropertiesOptions {
+            gauss_order: 1,
+            adaptive_eps: 0.5,
+            max_depth: 0,
+        });
+        assert!(coarse[0] <= 1e-12, "coarse area error {:e}", coarse[0]);
+        let mut previous = coarse[1];
+        for eps in [1e-3, 1e-5, 1e-7, 1e-9, 1e-11] {
+            let now = errors(&PropertiesOptions {
+                gauss_order: 4,
+                adaptive_eps: eps,
+                max_depth: 24,
+            });
+            assert!(now[0] <= 1e-12, "area error {:e} at eps {eps:e}", now[0]);
+            assert!(
+                now[1] <= previous.max(1e-14),
+                "centroid moment regressed at eps {eps:e}: {:e} > {previous:e}",
+                now[1]
+            );
+            previous = now[1];
+        }
+        assert!(previous <= 1e-12, "tight centroid error {previous:e}");
+        assert!(
+            coarse[1] > 1e4 * previous,
+            "coarse {:e} vs tight {previous:e}",
+            coarse[1]
+        );
+    }
+
     #[test]
     fn planar_fan_is_signed_on_nonconvex_polygons() {
         let poly = [
@@ -3115,13 +3404,132 @@ mod tests {
             Point3::new(0.0, 10.0, 2.0),
         ];
         let up = Vec3::new(0.0, 0.0, 1.0);
-        let contribution = integrate_planar_polygon(&poly, up);
+        let contribution = integrate_planar_polygon(&poly, up, Point3::new(0.0, 0.0, 0.0));
         assert!((contribution.area - 75.0).abs() < 1e-9);
         assert!((contribution.volume - 50.0).abs() < 1e-9);
 
         let reversed: Vec<Point3> = poly.iter().rev().copied().collect();
-        let reversed_contribution = integrate_planar_polygon(&reversed, up);
+        let reversed_contribution =
+            integrate_planar_polygon(&reversed, up, Point3::new(0.0, 0.0, 0.0));
         assert!((reversed_contribution.area - 75.0).abs() < 1e-9);
         assert!((reversed_contribution.volume - 50.0).abs() < 1e-9);
+    }
+
+    /// Every field of a contribution, in declaration order.
+    fn fields(c: &FaceContribution) -> [f64; 14] {
+        [
+            c.area,
+            c.volume,
+            c.volume_moment_x,
+            c.volume_moment_y,
+            c.volume_moment_z,
+            c.volume_second_x,
+            c.volume_second_y,
+            c.volume_second_z,
+            c.volume_product_xy,
+            c.volume_product_xz,
+            c.volume_product_yz,
+            c.centroid_x,
+            c.centroid_y,
+            c.centroid_z,
+        ]
+    }
+
+    /// Each field of `moved` matches `here` to `rel` of the largest field of
+    /// like dimension (area, volume, first moments, second moments, surface
+    /// centroid sums), which is how the adaptive estimator groups them too.
+    fn assert_covariant(here: &FaceContribution, moved: &FaceContribution, rel: f64) {
+        let (a, b) = (fields(here), fields(moved));
+        for group in [0..1, 1..2, 2..5, 5..11, 11..14] {
+            let scale = a[group.clone()].iter().fold(0.0_f64, |m, x| m.max(x.abs()));
+            for i in group {
+                assert!(
+                    (a[i] - b[i]).abs() <= rel * scale,
+                    "field {i}: {} in place, {} moved and taken about the offset",
+                    a[i],
+                    b[i]
+                );
+            }
+        }
+    }
+
+    /// B58: a polygon moved by `t` and integrated about `t` is the polygon in
+    /// place integrated about the origin.
+    #[test]
+    fn planar_fan_about_a_reference_is_translation_covariant() {
+        let poly = [
+            Point3::new(0.0, 0.0, 2e-3),
+            Point3::new(1e-2, 0.0, 2e-3),
+            Point3::new(1e-2, 5e-3, 3e-3),
+            Point3::new(5e-3, 5e-3, 3e-3),
+            Point3::new(5e-3, 1e-2, 4e-3),
+            Point3::new(0.0, 1e-2, 4e-3),
+        ];
+        let normal = Vec3::new(0.0, -0.1, 1.0).normalize().unwrap();
+        let t = Vec3::new(13.0, -7.0, 5.0);
+        let reference = Point3::new(13.0, -7.0, 5.0);
+        let moved: Vec<Point3> = poly.iter().map(|&p| p + t).collect();
+        let here = integrate_planar_polygon(&poly, normal, Point3::new(0.0, 0.0, 0.0));
+        let about = integrate_planar_polygon(&moved, normal, reference);
+        assert_covariant(&here, &about, 1e-11);
+    }
+
+    /// B58, torus tube-band arm: the band moved by `t` and integrated about
+    /// `t` matches the band at the origin integrated about the origin.
+    #[test]
+    fn torus_tube_band_about_a_reference_is_translation_covariant() {
+        use remus_math::{curves::Circle3D, surfaces::ToroidalSurface};
+        use remus_topology::{
+            edge::Edge,
+            face::Face,
+            vertex::Vertex,
+            wire::{OrientedEdge, Wire},
+        };
+        use std::f64::consts::TAU;
+        let band = |topo: &mut Topology, center: Point3| {
+            let torus = ToroidalSurface::new(center, 1e-2, 3e-3).unwrap();
+            let mut edges = Vec::new();
+            for u in [0.2_f64, 1.2] {
+                let radial = Vec3::new(u.cos(), u.sin(), 0.0);
+                let circle = Circle3D::new_with_ref(
+                    center + radial * 1e-2,
+                    Vec3::new(u.sin(), -u.cos(), 0.0),
+                    3e-3,
+                    radial,
+                )
+                .unwrap();
+                let vertex = topo.add_vertex(Vertex::new(center + radial * 1.3e-2, 1e-9));
+                let mut edge = Edge::new(vertex, vertex, EdgeCurve::Circle(circle));
+                edge.set_trim(Some((0.0, TAU)));
+                edges.push(topo.add_edge(edge));
+            }
+            let outer =
+                topo.add_wire(Wire::new(vec![OrientedEdge::new(edges[0], false)], true).unwrap());
+            let inner =
+                topo.add_wire(Wire::new(vec![OrientedEdge::new(edges[1], true)], true).unwrap());
+            topo.add_face(Face::new(outer, vec![inner], FaceSurface::Torus(torus)))
+        };
+        let mut topo = Topology::new();
+        let origin = Point3::new(0.0, 0.0, 0.0);
+        let offset = Point3::new(13.0, -7.0, 5.0);
+        let here = band(&mut topo, origin);
+        let moved = band(&mut topo, offset);
+        let options = PropertiesOptions::default();
+        let a = integrate_face_about(&topo, here, &options, origin).unwrap();
+        let b = integrate_face_about(&topo, moved, &options, offset).unwrap();
+        assert!(a.volume.abs() > 0.0);
+        assert_covariant(&a, &b, 1e-9);
+    }
+
+    #[test]
+    fn integrate_face_about_rejects_a_non_finite_reference() {
+        let mut topo = Topology::new();
+        let solid = remus_topology::test_utils::make_unit_cube_manifold(&mut topo);
+        let face = remus_topology::explorer::solid_faces(&topo, solid).unwrap()[0];
+        let options = PropertiesOptions::default();
+        assert!(
+            integrate_face_about(&topo, face, &options, Point3::new(f64::NAN, 0.0, 0.0)).is_err()
+        );
+        assert!(integrate_face_about(&topo, face, &options, Point3::new(1.0, 2.0, 3.0)).is_ok());
     }
 }

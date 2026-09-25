@@ -295,11 +295,15 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "fillet"
         | "filletDetailed"
         | "filletVariable"
+        | "filletVariableDetailed"
         | "filletV2"
+        | "filletV2Detailed"
         | "faceFaceBlend"
         | "faceFaceBlendWithHoldLine"
         | "chamferV2"
+        | "chamferV2Detailed"
         | "chamferDistanceAngle"
+        | "chamferDistanceAngleDetailed"
         | "shell"
         | "shellDetailed"
         | "shellWithQuality"
@@ -1459,17 +1463,19 @@ impl BrepKernel {
             }
             "massProperties" => {
                 let s = get_u32(args, "solid")?;
+                let options = super::measure::mass_properties_options(
+                    get_optional_f64(args, "adaptiveEps")?,
+                    get_optional_f64(args, "maxDepth")?,
+                    get_optional_f64(args, "gaussOrder")?,
+                )
+                .map_err(|(error, name)| {
+                    StructuredWasmError::invalid_argument(error.to_string(), Some(name))
+                })?;
                 let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
-                let props = measure::mass_properties(&self.topo, solid_id)
+                let props = measure::mass_properties_with_options(&self.topo, solid_id, &options)
                     .map_err(StructuredWasmError::from)?;
-                let (moments, axes) = props.principal_inertia();
-                Ok(serde_json::json!({
-                    "volume": props.mass,
-                    "centerOfMass": [props.center.x(), props.center.y(), props.center.z()],
-                    "inertia": props.inertia,
-                    "principalMoments": moments,
-                    "principalAxes": axes.iter().flatten().copied().collect::<Vec<f64>>(),
-                }))
+                serde_json::to_value(super::measure::mass_properties_result(&props))
+                    .map_err(|e| StructuredWasmError::internal(e.to_string()))
             }
             "meshQuality" => {
                 let s = get_u32(args, "solid")?;
@@ -2061,6 +2067,47 @@ impl BrepKernel {
                     self.chamfer_detailed_impl(solid, &edges, distance, exact_only),
                 )
                 .map_err(StructuredWasmError::from)
+            }
+            "filletV2Detailed" => {
+                let solid = get_u32(args, "solid")?;
+                let radius = get_f64(args, "radius")?;
+                let edges = get_u32_array_optional(args, "edges")?;
+                let exact_only = get_optional_bool(args, "exactOnly")?.unwrap_or(false);
+                serde_json::to_value(
+                    self.fillet_v2_detailed_impl(solid, &edges, radius, exact_only),
+                )
+                .map_err(StructuredWasmError::from)
+            }
+            "chamferV2Detailed" => {
+                let solid = get_u32(args, "solid")?;
+                let d1 = get_f64(args, "d1")?;
+                let d2 = get_f64(args, "d2")?;
+                let edges = get_u32_array_optional(args, "edges")?;
+                let exact_only = get_optional_bool(args, "exactOnly")?.unwrap_or(false);
+                serde_json::to_value(
+                    self.chamfer_v2_detailed_impl(solid, &edges, d1, d2, exact_only),
+                )
+                .map_err(StructuredWasmError::from)
+            }
+            "chamferDistanceAngleDetailed" => {
+                let solid = get_u32(args, "solid")?;
+                let distance = get_f64(args, "distance")?;
+                let angle = get_f64(args, "angle")?;
+                let edges = get_u32_array_optional(args, "edges")?;
+                let exact_only = get_optional_bool(args, "exactOnly")?.unwrap_or(false);
+                serde_json::to_value(self.chamfer_distance_angle_detailed_impl(
+                    solid, &edges, distance, angle, exact_only,
+                ))
+                .map_err(StructuredWasmError::from)
+            }
+            "filletVariableDetailed" => {
+                let solid = get_u32(args, "solid")?;
+                let specs = args["specs"].as_array().ok_or_else(|| {
+                    StructuredWasmError::invalid_argument("missing 'specs' array", Some("specs"))
+                })?;
+                let exact_only = get_optional_bool(args, "exactOnly")?.unwrap_or(false);
+                serde_json::to_value(self.fillet_variable_detailed_impl(solid, specs, exact_only))
+                    .map_err(StructuredWasmError::from)
             }
             "shellDetailed" => {
                 let solid = get_u32(args, "solid")?;

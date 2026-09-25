@@ -134,13 +134,45 @@ batch where the API exists:
   probe the native runner answers via `volumesByIndex`);
 - contained-cut refusal (cutting a box fully inside its tool refuses typed:
   the kernel `EmptyResult` reaches the wire as `operation_failed`, and the
-  tool still measures volume 64 with 6 faces).
+  tool still measures volume 64 with 6 faces);
+- hammer-holder shifted intersect (`contract/hammer-shifted-intersect`, the
+  WASM smoke's "hammer opening replay" up to its `shiftedCommon` step): the
+  real Shapr3D hammer holder (`crates/io/tests/data/shapr3d_hammer_holder.step`)
+  is cut and intersected with the smoke's translated 29×53×70 mask, then the
+  101-face common is intersected with a copy of the source shifted by −2 in
+  x, every boolean exact-only. Per surface the cell gates 104 faces, quality
+  `exact`, the operations validator at zero errors, watertightness at
+  (0.05, 0.1), and a volume strictly between 0 and the common's; across
+  surfaces it gates face count, validation, mesh quality, quality, and the
+  volume at the 5e-8 relative bound. The check-crate validator has no WASM
+  binding, so it gates natively only (`validateSolidChecked`) and is labeled
+  native-only evidence rather than passing vacuously. The STEP fixture enters
+  every surface as ONE exact arena document (`remus-parity-native
+  --step-to-arena`, decoded by `deserializeSolids` on each kernel), because
+  the kernel package ships without the STEP translator; the operands are
+  therefore bit-identical by construction. Batch has no arena-document op and
+  the harness must not extend the WASM API, so the cell is direct-only on the
+  installed surfaces (`directOnly`), like the cancellation cell.
 
 The failure-class cells assert the same coarse wire `code` on every surface
 (the native runner mirrors `StructuredWasmError`'s `From<OperationsError>`
 mapping); the empty-result refusal maps through that mapping's catch-all
 arm, so its `code` is `operation_failed` with category `internal` on all
 three surfaces — a vocabulary observation, not a parity gap.
+
+Every failed required stage carries a failure class, summarized at the top
+of the report as `failure_classes`. A `platform_divergence` is a stage the
+native facade meets while an installed WASM surface does not, or a
+cross-surface disagreement over a native-green cell; everything else is a
+`contract_violation` (the native facade itself misses the pin, or every
+surface misses it together). The hammer cell is the model case: PR #618
+(B39) made its shifted intersect refuse on wasm32 only — the marched
+torus-fillet × cylinder section ends agreed across platforms to ~1e-12, yet
+the WASM result carried 4 free edges while the native run closed — and
+nothing native could catch that class (`io/tests/regress_hammer_opening_wasm_replay.rs`
+passes on both sides). On the pre-#627 landing the cell reports the refusal
+and the free edges as `platform_divergence` on the fresh tarball; a bad
+result on every surface would be a `contract_violation`.
 
 Cancellation scope is labeled honestly: a synchronous WASM call cannot
 process a later JS cancellation message on the same thread, so only the
@@ -153,3 +185,45 @@ cross-target gates are outcome, diagnostic-code, quality, oracle-volume
 their known approximate partition differences are unchanged: byte identity
 stays visible and non-gating, and no tolerance was relaxed to make a cell
 pass.
+
+## Split import/export slice
+
+`split-io-matrix.mjs` qualifies the actual distributed split packages
+together — kernel plus translator — over the exact arena-document boundary,
+executed on three evidence modes (native facade, freshly packed/installed
+pair, committed installed pair). Run it from the repository root:
+
+```bash
+bash scripts/test-o15-split-io.sh
+```
+
+The script builds the native split runner and fresh Node-target WASM builds
+of **both** packages (kernel `--no-default-features`, translator default
+features) into temp dirs, packs each tarball, installs the pair into a
+disposable npm consumer, and drives six cells through direct calls only
+(the shipped kernel has no legacy I/O batch ops by construction):
+
+- valid STEP import (`RemusIo.importStep` → arena bytes →
+  `kernel.deserializeSolids` → volume/validate/census/probes) against the
+  shared `split-box-2x3x4.step` fixture (volume 24, 6 planes, 1 shell);
+- kernel-created box plus qualified hollow cut (outer 10 minus inner 8 at
+  1,1,1) through `serializeSolids` → `exportStep` → re-import into a fresh
+  session (volumes 24/488, faces 6/12, shells 1/2, wall-inside /
+  cavity-outside / outside-outside probes);
+- the existing `openzcad_e_analytic_fillet_plate.step` periodic fixture
+  (volume 9522.743…, 10 faces, 48 per-use pcurves on native and 48 `PCURVE(`
+  in re-exported STEP on every surface);
+- malformed/limit-refused STEP (`maxInputBytes: 4`) preserving the
+  pre-existing box (volume, faces, serialized bytes identical);
+- truncated/empty arena transfer preserving earlier solids and handle
+  validity;
+- two independent sessions with repeated success/refusal (no partial
+  solids, no leaked cross-session handles).
+
+Fresh mode records one pinned source/configuration for both tarballs
+(same revision, dirty flag, toolchain, features, both package versions,
+both tarball/WASM hashes, both installed consumer entries). Committed mode
+installs `crates/wasm/pkg` + `crates/wasm-io/pkg` into its own consumer and
+labels the relationship `unverified` — a version match alone is never
+source equivalence. The geometric 366-cell matrix and its disclosed
+approximate-partition differences are untouched.

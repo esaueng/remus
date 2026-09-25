@@ -1626,3 +1626,672 @@ fn ssi_results_are_invariant_under_projective_weight_scaling() {
         }
     }
 }
+
+// -- Marcher and seeding oracles (B19 survivor tranche, 2026-09-25 run) --
+//
+// Every expectation below comes from closed-form geometry: the exact contact
+// line of a cylinder resting on a plane, the two ruling lines of a hyperbolic
+// paraboloid cut by its tangent plane, the chord of two crossing planes, and
+// the foot of a perpendicular. None of them compares against earlier output.
+mod marching_oracles {
+    use super::*;
+    use crate::context::OperationContext;
+
+    use super::super::surface_marching::{march_with_branches, surface_newton_step};
+    use crate::nurbs::surface::DerivativeScratch;
+
+    /// Exact rational half-cylinder of radius `r` resting on `z = 0`: axis
+    /// along +y through `(0, ·, r)`, `u` sweeps the lower semicircle from
+    /// `(-r, ·, r)` through the contact line `u = 0.5` to `(r, ·, r)`, `v`
+    /// runs the length `len` along y.
+    ///
+    /// The contact point is the knot shared by two exact quarter arcs, so its
+    /// point and `∂/∂u` are exact: the surface normal there is exactly `±z`.
+    fn half_cylinder_on_plane(r: f64, len: f64) -> NurbsSurface {
+        let w = std::f64::consts::FRAC_1_SQRT_2;
+        let profile = [(-r, r), (-r, 0.0), (0.0, 0.0), (r, 0.0), (r, r)];
+        let control = profile
+            .iter()
+            .map(|&(x, z)| vec![Point3::new(x, 0.0, z), Point3::new(x, len, z)])
+            .collect();
+        let weights = [1.0, w, 1.0, w, 1.0]
+            .iter()
+            .map(|&wi| vec![wi, wi])
+            .collect();
+        NurbsSurface::new(
+            2,
+            1,
+            vec![0.0, 0.0, 0.0, 0.5, 0.5, 1.0, 1.0, 1.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            control,
+            weights,
+        )
+        .unwrap()
+    }
+
+    /// Bilinear patch of the plane `z = 0` over `[x0, x1] × [y0, y1]`.
+    fn plane_z0(x0: f64, x1: f64, y0: f64, y1: f64) -> NurbsSurface {
+        NurbsSurface::new(
+            1,
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![
+                vec![Point3::new(x0, y0, 0.0), Point3::new(x0, y1, 0.0)],
+                vec![Point3::new(x1, y0, 0.0), Point3::new(x1, y1, 0.0)],
+            ],
+            vec![vec![1.0; 2]; 2],
+        )
+        .unwrap()
+    }
+
+    /// The hyperbolic paraboloid `z = c·x·y` over `[-1, 1]²`. Bilinear
+    /// interpolation of these four corners is exactly that quadric.
+    fn saddle(c: f64) -> NurbsSurface {
+        NurbsSurface::new(
+            1,
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![
+                vec![Point3::new(-1.0, -1.0, c), Point3::new(-1.0, 1.0, -c)],
+                vec![Point3::new(1.0, -1.0, -c), Point3::new(1.0, 1.0, c)],
+            ],
+            vec![vec![1.0; 2]; 2],
+        )
+        .unwrap()
+    }
+
+    /// The fixture is the cylinder it claims to be.
+    fn assert_on_cylinder(s: &NurbsSurface, r: f64) {
+        for i in 0..=10 {
+            for j in 0..=4 {
+                let p = s.evaluate(f64::from(i) / 10.0, f64::from(j) / 4.0);
+                let radial = p.x().hypot(p.z() - r);
+                assert!(
+                    (radial - r).abs() < 1e-12,
+                    "fixture off the cylinder: {p:?}"
+                );
+            }
+        }
+    }
+
+    /// A cylinder lying on a plane meets it along a line where the two normals
+    /// are exactly parallel, so `n1 × n2` vanishes at every traced point and
+    /// only the singular (second-order) tangent can move the march. The trace
+    /// must follow the contact line `x = z = 0` from one clamped `v` end of the
+    /// cylinder to the other: length `0.998 · len` (the non-periodic 0.1%
+    /// margin at each end), with no step longer than the `4 × step` cap.
+    #[test]
+    fn march_follows_the_exact_contact_line_of_a_resting_cylinder() {
+        let (r, len) = (1.0, 4.0);
+        let cyl = half_cylinder_on_plane(r, len);
+        assert_on_cylinder(&cyl, r);
+        let plane = plane_z0(-2.0, 2.0, -1.0, 5.0);
+
+        let seed_point = Point3::new(0.0, 0.5 * len, 0.0);
+        assert!((cyl.evaluate(0.5, 0.5) - seed_point).length() < 1e-15);
+        assert!((plane.evaluate(0.5, 0.5) - seed_point).length() < 1e-15);
+        let seed = IntersectionPoint {
+            point: seed_point,
+            param1: (0.5, 0.5),
+            param2: (0.5, 0.5),
+        };
+
+        let (step, tol) = (0.05, 1e-7);
+        let traced = march_intersection(&cyl, &plane, &seed, step, tol);
+        assert!(traced.len() >= 3, "march stalled at the seed: {traced:?}");
+
+        for pt in &traced {
+            // On both surfaces' implicit equations: z = 0 and x² + (z-r)² = r²
+            // intersect only in the line x = z = 0.
+            assert!(pt.point.x().abs() < 1e-12, "off the contact line: {pt:?}");
+            assert!(pt.point.z().abs() < 1e-12, "off the plane: {pt:?}");
+            // Each parameter pair reproduces the point within the SSI residual
+            // contract (`|S1 − S2| < tolerance`).
+            assert!((cyl.evaluate(pt.param1.0, pt.param1.1) - pt.point).length() <= tol);
+            assert!((plane.evaluate(pt.param2.0, pt.param2.1) - pt.point).length() <= tol);
+        }
+
+        let ys: Vec<f64> = traced.iter().map(|p| p.point.y()).collect();
+        assert!(
+            ys.windows(2).all(|w| w[1] > w[0]),
+            "trace must run monotonically along the line: {ys:?}"
+        );
+        let margin = 1e-3 * len;
+        assert!((ys[0] - margin).abs() < 1e-12, "start {}", ys[0]);
+        assert!((ys[ys.len() - 1] - (len - margin)).abs() < 1e-12);
+        let length: f64 = traced
+            .windows(2)
+            .map(|w| (w[1].point - w[0].point).length())
+            .sum();
+        assert!(
+            (length - (len - 2.0 * margin)).abs() < 1e-12,
+            "length {length}"
+        );
+        // Parameter steps never exceed `max_h = 4 · step` (v spans `len`).
+        let max_gap = traced
+            .windows(2)
+            .map(|w| (w[1].point - w[0].point).length())
+            .fold(0.0_f64, f64::max);
+        assert!(
+            max_gap <= 4.0 * step * len + 1e-12,
+            "step cap exceeded: {max_gap}"
+        );
+    }
+
+    /// On a contact line the curvature difference of the two surfaces has one
+    /// zero eigenvalue, and its eigenvector is the ruling itself: `±y` here,
+    /// whichever surface's parameterization the direction is built from.
+    #[test]
+    fn second_order_tangent_on_a_contact_line_is_the_ruling() {
+        let cyl = half_cylinder_on_plane(1.0, 4.0);
+        let plane = plane_z0(-2.0, 2.0, -1.0, 5.0);
+        for v in [0.1, 0.3, 0.5, 0.9] {
+            // Plane parameter of the contact point (0, 4v, 0).
+            let v2 = (4.0 * v + 1.0) / 6.0;
+            for dir in [
+                second_order_tangent(&cyl, &plane, 0.5, v, 0.5, v2, &mut SsiScratch::new()),
+                second_order_tangent(&plane, &cyl, 0.5, v2, 0.5, v, &mut SsiScratch::new()),
+            ] {
+                let dir = dir.expect("contact line has a well-defined ruling direction");
+                assert!(
+                    (dir.y().abs() - 1.0).abs() < 1e-12,
+                    "not the ruling: {dir:?}"
+                );
+                assert!(dir.x().abs() < 1e-12 && dir.z().abs() < 1e-12, "{dir:?}");
+            }
+        }
+    }
+
+    /// The plane `z = 0` cuts `z = c·x·y` in the two lines `x = 0` and
+    /// `y = 0`, crossing at the origin where the normals are parallel. A march
+    /// along `x = 0` passes that crossing, and the branch it reports must lie
+    /// on the other line: on both surfaces, on `y = 0`, clear of the traced
+    /// branch, and on both sides of it (the transverse line continues both
+    /// ways).
+    #[test]
+    fn march_through_a_saddle_crossing_reports_the_transverse_branch() {
+        let c = 0.02;
+        let s1 = saddle(c);
+        let s2 = plane_z0(-1.5, 1.5, -1.5, 1.5);
+        let tol = 1e-7;
+        let seed = refine_ssi_point(&s1, &s2, 0.5, 0.8, 0.5, 0.7, tol).unwrap();
+        assert!(seed.point.x().abs() < 1e-9 && (seed.point.y() - 0.6).abs() < 1e-9);
+
+        let (traced, branches) = march_with_branches(
+            &s1,
+            &s2,
+            &seed,
+            0.05,
+            tol,
+            &OperationContext::new(),
+            &mut SsiScratch::new(),
+        )
+        .unwrap();
+
+        let on_both = |p: Point3| p.z().abs() <= tol && (p.z() - c * p.x() * p.y()).abs() <= tol;
+        assert!(traced.iter().all(|p| on_both(p.point)));
+        assert!(
+            traced.iter().any(|p| p.point.y() < 0.0) && traced.iter().any(|p| p.point.y() > 0.0),
+            "the trace must pass the crossing"
+        );
+
+        assert!(!branches.is_empty(), "crossing passed without a branch");
+        for b in &branches {
+            let p = b.point;
+            assert!(on_both(p), "branch seed off the intersection: {p:?}");
+            assert!(
+                p.y().abs() < 1e-9,
+                "branch seed not on the y = 0 line: {p:?}"
+            );
+            assert!(
+                p.x().abs() > 10.0 * tol,
+                "branch seed on the traced branch: {p:?}"
+            );
+            assert!((s1.evaluate(b.param1.0, b.param1.1) - p).length() <= tol);
+            assert!((s2.evaluate(b.param2.0, b.param2.1) - p).length() <= tol);
+        }
+        assert!(branches.iter().any(|b| b.point.x() > 0.0));
+        assert!(branches.iter().any(|b| b.point.x() < 0.0));
+    }
+
+    /// Ready-repro for B66. At a transversal crossing the curvature
+    /// difference of the two surfaces is indefinite (here `±c` in the `xy`
+    /// frame), and the branch directions are its null (asymptotic) directions,
+    /// the lines `x = 0` and `y = 0`. The marcher confirms a branch only when
+    /// both eigenvalues are below an absolute 0.1, so a steeper saddle's
+    /// crossing goes unreported, and `second_order_tangent` returns the
+    /// eigenvector of the smaller-magnitude eigenvalue: the bisector.
+    #[test]
+    #[ignore = "open: B66 — SSI branch points: absolute eigenvalue gate and bisector tangent"]
+    fn steep_saddle_crossing_reports_its_branch_and_asymptotic_tangent() {
+        let c = 0.2;
+        let s1 = saddle(c);
+        let s2 = plane_z0(-1.5, 1.5, -1.5, 1.5);
+        let tol = 1e-7;
+
+        let t = second_order_tangent(&s1, &s2, 0.5, 0.5, 0.5, 0.5, &mut SsiScratch::new())
+            .expect("a crossing has two tangent directions");
+        assert!(
+            t.x().abs().min(t.y().abs()) < 1e-9,
+            "tangent at the crossing must follow x = 0 or y = 0, got {t:?}"
+        );
+
+        let seed = refine_ssi_point(&s1, &s2, 0.5, 0.8, 0.5, 0.7, tol).unwrap();
+        let (_, branches) = march_with_branches(
+            &s1,
+            &s2,
+            &seed,
+            0.05,
+            tol,
+            &OperationContext::new(),
+            &mut SsiScratch::new(),
+        )
+        .unwrap();
+        assert!(
+            branches
+                .iter()
+                .any(|b| b.point.y().abs() < 1e-9 && b.point.x().abs() > 10.0 * tol),
+            "crossing passed without a transverse branch: {branches:?}"
+        );
+    }
+
+    /// Two perpendicular planes 2 cm across meet in a chord.
+    /// Every grid pair is closer than the seeder's 0.1 floor, so it must refine
+    /// them and return points of that chord.
+    #[test]
+    fn grid_seeding_finds_a_crossing_below_the_distance_floor() {
+        let k = 0.01;
+        let y0 = 0.3 * k;
+        let a = plane_z0(-k, k, -k, k);
+        // The plane y = y0 over x, z ∈ [-k, k].
+        let b = NurbsSurface::new(
+            1,
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![
+                vec![Point3::new(-k, y0, -k), Point3::new(-k, y0, k)],
+                vec![Point3::new(k, y0, -k), Point3::new(k, y0, k)],
+            ],
+            vec![vec![1.0; 2]; 2],
+        )
+        .unwrap();
+
+        let tol = 1e-9;
+        let seeds = find_ssi_seeds_grid(&a, &b, 8, tol);
+        assert!(
+            !seeds.is_empty(),
+            "the chord y = {y0}, z = 0 was not seeded"
+        );
+        for s in &seeds {
+            let p = s.point;
+            assert!(p.z().abs() <= tol && (p.y() - y0).abs() <= tol, "{p:?}");
+            assert!(p.x().abs() <= k * (1.0 + 1e-12), "{p:?}");
+        }
+    }
+
+    /// One Newton step on an affine patch lands exactly on the foot of the
+    /// perpendicular: for `T = S(u*, v*) + h·n` the step from any `(u, v)` is
+    /// `(u* − u, v* − v)`.
+    #[test]
+    fn surface_newton_step_on_an_affine_patch_hits_the_foot_exactly() {
+        let o = Point3::new(1.0, -2.0, 0.5);
+        let a = Vec3::new(3.0, 0.5, -1.0);
+        let b = Vec3::new(-1.0, 2.0, 0.25);
+        let at = |u: f64, v: f64| o + a * u + b * v;
+        let patch = NurbsSurface::new(
+            1,
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![
+                vec![at(0.0, 0.0), at(0.0, 1.0)],
+                vec![at(1.0, 0.0), at(1.0, 1.0)],
+            ],
+            vec![vec![1.0; 2]; 2],
+        )
+        .unwrap();
+        let n = a.cross(b).normalize().unwrap();
+        let mut scratch = DerivativeScratch::new();
+        for &(us, vs, h) in &[(0.7, 0.2, 0.9), (0.15, 0.85, -2.0), (0.5, 0.5, 0.0)] {
+            let target = at(us, vs) + n * h;
+            for &(u0, v0) in &[(0.1, 0.1), (0.9, 0.4), (0.3, 0.95)] {
+                let (du, dv) = surface_newton_step(&mut scratch, &patch, u0, v0, target);
+                assert!((du - (us - u0)).abs() < 1e-12, "du {du} for {us}-{u0}");
+                assert!((dv - (vs - v0)).abs() < 1e-12, "dv {dv} for {vs}-{v0}");
+            }
+        }
+    }
+
+    /// Iterated Newton steps on the exact cylinder converge to the closed-form
+    /// closest point: the radial projection of the target onto the circle of
+    /// its height. (Gauss-Newton on a curved surface converges linearly, at a
+    /// rate near `|ρ − r| / r`, hence the generous iteration count.)
+    #[test]
+    fn surface_newton_step_iterates_to_the_cylinder_foot() {
+        let (r, len) = (1.0, 4.0);
+        let cyl = half_cylinder_on_plane(r, len);
+        let mut scratch = DerivativeScratch::new();
+        // Targets outside and inside the lower half-tube.
+        for &(theta_deg, rho, y) in &[(200.0_f64, 1.3, 1.1), (300.0, 0.8, 3.2), (250.0, 1.6, 0.6)] {
+            let theta = theta_deg.to_radians();
+            let target = Point3::new(rho * theta.cos(), y, r + rho * theta.sin());
+            let foot = Point3::new(r * theta.cos(), y, r + r * theta.sin());
+            let (mut u, mut v) = (0.5, 0.5);
+            for _ in 0..200 {
+                let (du, dv) = surface_newton_step(&mut scratch, &cyl, u, v, target);
+                u = (u + du).clamp(0.0, 1.0);
+                v = (v + dv).clamp(0.0, 1.0);
+            }
+            let p = cyl.evaluate(u, v);
+            assert!(
+                (p - foot).length() < 1e-9,
+                "θ={theta_deg}: {p:?} vs {foot:?}"
+            );
+        }
+    }
+}
+// -- Spatial chaining equivalence (PERF-N03) --
+//
+// The grid + ring walk must reproduce the all-pairs + full-scan outcome
+// bit-for-bit on every input shape: branches, loops, exact ties, dense
+// balls, grid-aligned boundary hugs, mixed scales, non-finite points and
+// degenerate thresholds. The oracle below is the verbatim pre-optimization
+// algorithm; a seeded xorshift keeps the cases deterministic.
+
+/// Verbatim pre-N03 chaining: all-pairs adjacency, `contains` endpoint
+/// degrees, full-scan nearest-unused walk. Test-only oracle.
+fn naive_chain(points: &[IntersectionPoint], threshold: f64) -> Vec<Vec<IntersectionPoint>> {
+    if points.is_empty() {
+        return Vec::new();
+    }
+    let n = points.len();
+    let threshold_sq = threshold * threshold;
+    let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for i in 0..n {
+        for j in (i + 1)..n {
+            let d = points[i].point - points[j].point;
+            if d.x().mul_add(d.x(), d.y().mul_add(d.y(), d.z() * d.z())) < threshold_sq {
+                adj[i].push(j);
+                adj[j].push(i);
+            }
+        }
+    }
+    let mut visited = vec![false; n];
+    let mut components: Vec<Vec<usize>> = Vec::new();
+    for start in 0..n {
+        if visited[start] {
+            continue;
+        }
+        let mut component = Vec::new();
+        let mut queue = std::collections::VecDeque::new();
+        queue.push_back(start);
+        visited[start] = true;
+        while let Some(idx) = queue.pop_front() {
+            component.push(idx);
+            for &neighbor in &adj[idx] {
+                if !visited[neighbor] {
+                    visited[neighbor] = true;
+                    queue.push_back(neighbor);
+                }
+            }
+        }
+        components.push(component);
+    }
+    let mut chains = Vec::with_capacity(components.len());
+    for comp in &components {
+        if comp.is_empty() {
+            continue;
+        }
+        let start_idx = comp
+            .iter()
+            .copied()
+            .min_by_key(|&i| adj[i].iter().filter(|&&j| comp.contains(&j)).count())
+            .unwrap_or(comp[0]);
+        let mut chain = Vec::with_capacity(comp.len());
+        let mut used = vec![false; n];
+        let mut current = start_idx;
+        used[current] = true;
+        chain.push(points[current]);
+        for _ in 1..comp.len() {
+            let mut best_dist = f64::MAX;
+            let mut best_idx = None;
+            for &idx in comp {
+                if used[idx] {
+                    continue;
+                }
+                let d = points[current].point - points[idx].point;
+                let dist_sq = d.x().mul_add(d.x(), d.y().mul_add(d.y(), d.z() * d.z()));
+                if dist_sq < best_dist {
+                    best_dist = dist_sq;
+                    best_idx = Some(idx);
+                }
+            }
+            if let Some(next) = best_idx {
+                used[next] = true;
+                chain.push(points[next]);
+                current = next;
+            } else {
+                break;
+            }
+        }
+        chains.push(chain);
+    }
+    chains
+}
+
+/// Deterministic xorshift64* uniform in [0, 1).
+fn xorshift_unit(state: &mut u64) -> f64 {
+    *state ^= *state >> 12;
+    *state ^= *state << 25;
+    *state ^= *state >> 27;
+    ((*state).wrapping_mul(0x2545_F491_4F6C_DD1D) >> 11) as f64 / (u64::MAX >> 11) as f64
+}
+
+fn mk_point(x: f64, y: f64, z: f64, a: f64, b: f64) -> IntersectionPoint {
+    IntersectionPoint {
+        point: Point3::new(x, y, z),
+        param1: (a, b),
+        param2: (b, a),
+    }
+}
+
+fn point_bits(p: &IntersectionPoint) -> (u64, u64, u64, u64, u64, u64, u64) {
+    (
+        p.point.x().to_bits(),
+        p.point.y().to_bits(),
+        p.point.z().to_bits(),
+        p.param1.0.to_bits(),
+        p.param1.1.to_bits(),
+        p.param2.0.to_bits(),
+        p.param2.1.to_bits(),
+    )
+}
+
+/// Assert the shipped chaining matches the naive oracle bit-for-bit:
+/// same components in the same order, same walk order, same carried
+/// parameters. `-0.0` vs `0.0` and NaN payloads compare by bits.
+fn check_chains_equivalent(points: &[IntersectionPoint], threshold: f64) {
+    let expected = naive_chain(points, threshold);
+    let actual = chain_intersection_points(points, threshold);
+    assert_eq!(
+        actual.len(),
+        expected.len(),
+        "component count differs (n={}, threshold={threshold})",
+        points.len()
+    );
+    for (c, (a, e)) in actual.iter().zip(expected.iter()).enumerate() {
+        assert_eq!(
+            a.len(),
+            e.len(),
+            "chain {c} length differs (n={}, threshold={threshold})",
+            points.len()
+        );
+        for (k, (pa, pe)) in a.iter().zip(e.iter()).enumerate() {
+            assert_eq!(
+                point_bits(pa),
+                point_bits(pe),
+                "chain {c} point {k} differs (n={}, threshold={threshold})",
+                points.len()
+            );
+        }
+    }
+}
+
+#[test]
+fn spatial_chain_matches_oracle_on_straight_chains() {
+    for n in [0usize, 1, 2, 3, 33, 200, 1500] {
+        let points: Vec<IntersectionPoint> = (0..n)
+            .map(|i| mk_point(i as f64, 0.0, 0.0, i as f64, 0.0))
+            .collect();
+        check_chains_equivalent(&points, 1.1);
+    }
+}
+
+#[test]
+fn spatial_chain_matches_oracle_on_loops_and_ties() {
+    // Closed loop: every point has two equidistant neighbors.
+    let ring: Vec<IntersectionPoint> = (0..300)
+        .map(|i| {
+            let a = i as f64 / 300.0 * std::f64::consts::TAU;
+            mk_point(a.cos(), a.sin(), 0.0, a, 0.0)
+        })
+        .collect();
+    check_chains_equivalent(&ring, 0.15);
+    // Regular polygon around the walk start: exact distance ties between
+    // symmetric unused candidates stress the first-in-component tie-break.
+    let mut star = vec![mk_point(0.0, 0.0, 0.0, 0.0, 0.0)];
+    for i in 0..12 {
+        let a = i as f64 / 12.0 * std::f64::consts::TAU;
+        star.push(mk_point(a.cos(), a.sin(), 0.0, a, 1.0));
+    }
+    check_chains_equivalent(&star, 1.05);
+    // Dense ball: everything connects; the walk is pure ordering stress.
+    let mut rng = 0x243F_6A88_85A3_08D3u64;
+    let ball: Vec<IntersectionPoint> = (0..300)
+        .map(|i| {
+            let f = i as f64;
+            mk_point(
+                xorshift_unit(&mut rng) * 0.2,
+                xorshift_unit(&mut rng) * 0.2,
+                xorshift_unit(&mut rng) * 0.2,
+                f,
+                -f,
+            )
+        })
+        .collect();
+    check_chains_equivalent(&ball, 1.0);
+}
+
+#[test]
+fn spatial_chain_matches_oracle_on_grids_and_clusters() {
+    // Integer grid at threshold 1.1: cell boundaries (multiples of a
+    // non-representable width) fall near integers, exercising boundary-hug
+    // cell assignment.
+    let mut grid = Vec::new();
+    for x in 0..20 {
+        for y in 0..20 {
+            grid.push(mk_point(x as f64, y as f64, 0.0, x as f64, y as f64));
+        }
+    }
+    check_chains_equivalent(&grid, 1.1);
+    check_chains_equivalent(&grid, 1.5);
+    // Sparse clusters with a thin bridge.
+    let mut rng = 0xB529_7A4D_5280_4982u64;
+    let mut cloud = Vec::new();
+    for c in 0..10 {
+        for _ in 0..30 {
+            cloud.push(mk_point(
+                c as f64 * 50.0 + xorshift_unit(&mut rng) * 2.0,
+                xorshift_unit(&mut rng) * 2.0,
+                xorshift_unit(&mut rng) * 2.0,
+                c as f64,
+                xorshift_unit(&mut rng),
+            ));
+        }
+    }
+    for i in 0..=40 {
+        let t = i as f64 * 10.0;
+        cloud.push(mk_point(t, 0.0, 0.0, t, t));
+    }
+    check_chains_equivalent(&cloud, 3.0);
+}
+
+#[test]
+fn spatial_chain_matches_oracle_across_scales() {
+    for scale in [1e-3f64, 1.0, 1e3] {
+        let mut rng = 0x3333_3333_3333_3333u64 ^ scale.to_bits();
+        for size in [7usize, 60, 300] {
+            let points: Vec<IntersectionPoint> = (0..size)
+                .map(|i| {
+                    let f = i as f64;
+                    mk_point(
+                        xorshift_unit(&mut rng) * scale * 10.0,
+                        xorshift_unit(&mut rng) * scale * 10.0,
+                        xorshift_unit(&mut rng) * scale,
+                        f,
+                        -f,
+                    )
+                })
+                .collect();
+            // Threshold near the mean spacing, plus a sparse and a dense cut.
+            check_chains_equivalent(&points, scale);
+            check_chains_equivalent(&points, scale * 0.05);
+            check_chains_equivalent(&points, scale * 30.0);
+        }
+    }
+}
+
+#[test]
+fn spatial_chain_matches_oracle_on_degenerate_inputs() {
+    let points: Vec<IntersectionPoint> = (0..12)
+        .map(|i| mk_point(i as f64 * 0.5, 1.0, -1.0, i as f64, 0.5))
+        .collect();
+    // Zero, negative (squared comparison), NaN and infinite thresholds.
+    check_chains_equivalent(&points, 0.0);
+    check_chains_equivalent(&points, -0.0);
+    check_chains_equivalent(&points, -1.0);
+    check_chains_equivalent(&points, f64::NAN);
+    check_chains_equivalent(&points, f64::INFINITY);
+    check_chains_equivalent(&points, f64::NEG_INFINITY);
+    check_chains_equivalent(&points, 1e-300);
+    check_chains_equivalent(&points, 1e300);
+    // Empty and singleton inputs at every degenerate threshold.
+    for threshold in [0.0, 1.1, f64::NAN, f64::INFINITY] {
+        check_chains_equivalent(&[], threshold);
+        check_chains_equivalent(&points[..1], threshold);
+    }
+    // Non-finite coordinates mix with finite ones.
+    let mut mixed = points;
+    mixed.push(mk_point(f64::NAN, 0.0, 0.0, 0.0, 0.0));
+    mixed.push(mk_point(f64::INFINITY, 1.0, 1.0, 1.0, 1.0));
+    mixed.push(mk_point(0.0, 0.0, f64::NEG_INFINITY, 2.0, 2.0));
+    mixed.push(mk_point(
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::INFINITY,
+        3.0,
+        3.0,
+    ));
+    check_chains_equivalent(&mixed, 1.1);
+    check_chains_equivalent(&mixed, f64::INFINITY);
+    // Coincident duplicates: zero-distance ties everywhere.
+    let dupes: Vec<IntersectionPoint> = (0..40)
+        .map(|i| mk_point(1.0, 2.0, 3.0, i as f64, 0.0))
+        .collect();
+    check_chains_equivalent(&dupes, 0.5);
+    // Near-boundary adversarial: points a few ulps off multiples of the
+    // threshold, where cell assignment could flip between neighbors.
+    let cell = 1.1f64;
+    let mut rng = 0xABCD_EF01_2345_6789u64;
+    let hug: Vec<IntersectionPoint> = (0..300)
+        .map(|i| {
+            let k = (xorshift_unit(&mut rng) * 40.0).floor();
+            let eps = (xorshift_unit(&mut rng) - 0.5) * 32.0 * f64::EPSILON * k.max(1.0) * cell;
+            mk_point(k * cell + eps, 0.0, 0.0, i as f64, eps)
+        })
+        .collect();
+    check_chains_equivalent(&hug, cell);
+}

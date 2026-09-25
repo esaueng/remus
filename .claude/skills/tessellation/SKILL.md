@@ -65,6 +65,7 @@ CDT (`tessellate_nonplanar_cdt`) is correct for faces whose UV boundary is a gen
 ## Degenerate-UV traps
 
 - **Constant-v bands give CDT nothing to bound.** A sphere/torus band between two constant-v full-revolution loops projects each boundary to a zero-area back-and-forth segment in UV; CDT then fills the removed cap. The dispatch comment in `solid.rs` (search `degenerates in UV`) documents this. Structured band meshers exist because of it.
+- **A loop that winds once around the sphere axis holds a pole.** Unwrapped, it is an open curve over a full u period; CDT closes it with a chord and meshes the complementary lens, whose shared edges run the neighbour's direction. It is one-sided at fine deflection, and at coarse deflection weld plus coincident-triangle removal erase both sides into a closed but wrong mesh. `tessellate/sphere_pole_patch.rs` takes these faces (B40); judge any "clean" coarse mesh by its volume, not its boundary count.
 - **Closed edges: start == end.** Any quantity derived from a closed edge's endpoints (param range, winding, extent) collapses to zero. `circle_param_range` and `sample_edge` in `edge_sampling.rs` special-case `edge.is_closed()` to return the full period. Rule: whenever an edge can be closed, sample points along the curve; never derive from endpoints. The boolean engine learned the same lesson (`face_boundary_all_degenerate` in `crates/algo/src/pave_filler/phase_ff.rs` samples along curves).
 
 ## Triangle orientation: orient runs, not triangles

@@ -170,7 +170,9 @@ fn batch_fillet_success_changes_the_answer_and_keeps_the_input() {
 
 /// Baseline defect, batch surface: `filletVariable` with r=50 on a 10 mm box
 /// returned `ok` and a new handle measuring 3242.011 mm³ — the volume GREW.
-/// Now both batch contracts refuse it, and the input is untouched.
+/// Now both batch contracts refuse it, and the input is untouched. Since B63
+/// the refusal is the support cliff the walking engine reports (the radius
+/// is wider than the 10 mm faces), raised before any geometry is built.
 #[test]
 fn batch_fillet_variable_oversized_radius_is_a_typed_refusal() {
     let mut k = BrepKernel::new();
@@ -194,7 +196,7 @@ fn batch_fillet_variable_oversized_radius_is_a_typed_refusal() {
         .as_str()
         .expect("legacy batch must refuse the oversized variable fillet");
     assert!(
-        message.contains("convex"),
+        message.contains("requested radius 50, available radius 10"),
         "the refusal must name the geometric impossibility, got: {message}"
     );
     let v = legacy[1]["ok"].as_f64().unwrap();
@@ -212,7 +214,7 @@ fn batch_fillet_variable_oversized_radius_is_a_typed_refusal() {
     );
     let error = &structured[0]["error"];
     assert_eq!(
-        error["details"]["kernelCode"], "invalid-input",
+        error["details"]["kernelCode"], "cliff-encountered",
         "the structured refusal must carry the fine-grained code: {error}"
     );
 }

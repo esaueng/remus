@@ -133,7 +133,7 @@ Quick reference — find the right file for any task:
 | Analytic-analytic intersection | `analytic_intersection.rs` |
 | AABB / bounding boxes | `aabb.rs` |
 | BVH (bounding volume hierarchy) | `bvh.rs` |
-| CDT (constrained Delaunay) | `cdt/` (mod, insert, locate, constraints, adjacency, tests) |
+| CDT (constrained Delaunay) | `cdt/` (mod, insert, locate, constraints, adjacency, tests, tests/off_axis_cap, tests/u_bracket_floor) |
 | Convex hull | `convex_hull.rs` |
 | Filtered exact predicates | `filtered.rs` |
 | Float tolerance | `tolerance.rs` |
@@ -233,6 +233,9 @@ Quick reference — find the right file for any task:
 | PCurves for split edges on their faces | `pave_filler/make_pcurves.rs` |
 | Deterministic work counters (complexity guards) | `perf.rs` |
 | Exact axis extremes of circle/ellipse arcs (broad-phase boxes) | `conic_bounds.rs` |
+| Independent-oracle tests for phase-FF exact-vs-refuse helpers (disc clip, one-hit graze, torus oval trim, one-rim notch) | `pave_filler/phase_ff/helper_oracle_tests.rs` |
+| Independent-oracle tests for builder-solid helpers (conic support, closed-pair traversal, revolved wire winding) | `builder/builder_solid/helper_oracle_tests.rs` |
+| Independent-oracle tests for fill-images section helpers (cap discs, closed-section containment, curved-face segment classifier) | `builder/fill_images_faces/helper_oracle_tests.rs` |
 
 ### L2: blend (`crates/blend/src/`)
 | Task | File(s) |
@@ -421,6 +424,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Cylindrical blend removal with certified affine NURBS caps | `affine_blend_caps.rs` |
 | Atomic removal of explicitly selected connected blend groups | `remove_blends.rs` |
 | Full-turn rim chain recognition | `tessellate/rim_chain.rs` |
+| Sphere patches holding a pole (loop winds once around the axis) | `tessellate/sphere_pole_patch.rs` |
 | Shared test assertion helpers | `test_helpers.rs` |
 
 ### L3: io (`crates/io/src/`)
@@ -463,7 +467,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Shape construction (vertices, edges, wires, faces) | `bindings/shapes.rs` |
 | Modeling operations (extrude, revolve, sweep, loft, fillet, etc.) | `bindings/operations.rs` |
 | Boolean operations (fuse, cut, intersect) | `bindings/booleans.rs` |
-| Typed modifier results (`filletDetailed`, `chamferDetailed`, `shellDetailed`, `offsetDetailed`) | `bindings/modifier_detailed.rs` |
+| Typed modifier results (`filletDetailed`, `chamferDetailed`, `shellDetailed`, `offsetDetailed`, and the `filletV2`/`chamferV2`/`chamferDistanceAngle`/`filletVariable` twins) | `bindings/modifier_detailed.rs` |
 | Transform, copy, mirror, pattern | `bindings/transforms.rs` |
 | Topology query, edge/surface evaluation | `bindings/query.rs` |
 | Measurement (volume, area, bbox, distances) | `bindings/measure.rs` |
@@ -492,6 +496,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Qualified-operation integration tests | `bindings/qualify_ops_tests.rs` |
 | Direct/batch B6 primitive qualification | `bindings/qualify_primitives_tests.rs` |
 | Direct/batch B6 convex-hull/Minkowski qualification | `bindings/qualify_convex_hull_tests.rs` |
+| Direct/batch B6 plane-section/split qualification | `bindings/qualify_section_split_tests.rs` |
 | Growing-holder recipe `volume` contract (B54: closed-form −5440 width step through `executeBatch`) | `bindings/growing_holder_volume_tests.rs` |
 
 ### L4: wasm-io (`crates/wasm-io/src/`)

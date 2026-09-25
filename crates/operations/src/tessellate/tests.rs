@@ -4303,3 +4303,216 @@ fn nurbs_trimmed_cylinder_keeps_chords_near_surface() {
         );
     }
 }
+
+// ── B40: sphere patch holding a pole ─────────────────────────────────────
+
+/// Push a loop at colatitude `colat(theta)` (measured from `+z`) onto a
+/// sphere of radius 2 into a fresh mesh, `n` samples, traversed with
+/// increasing azimuth when `ccw`, each sample pushed radially off the sphere
+/// by the relative `noise(theta)` (marched sections sit ~1e-5 off it).
+fn b40_loop(
+    n: usize,
+    ccw: bool,
+    colat: impl Fn(f64) -> f64,
+    noise: impl Fn(f64) -> f64,
+) -> (
+    remus_math::surfaces::SphericalSurface,
+    TriangleMesh,
+    Vec<u32>,
+) {
+    let sphere =
+        remus_math::surfaces::SphericalSurface::new(Point3::new(0.5, -0.25, 1.0), 2.0).unwrap();
+    let mut mesh = TriangleMesh::default();
+    let mut ids = Vec::new();
+    for i in 0..n {
+        #[allow(clippy::cast_precision_loss)]
+        let mut theta = std::f64::consts::TAU * i as f64 / n as f64;
+        if !ccw {
+            theta = -theta;
+        }
+        let phi = colat(theta);
+        let dir = Vec3::new(phi.sin() * theta.cos(), phi.sin() * theta.sin(), phi.cos());
+        let point = sphere.center() + dir * (2.0 * (1.0 + noise(theta)));
+        #[allow(clippy::cast_possible_truncation)]
+        ids.push(mesh.positions.len() as u32);
+        mesh.positions.push(point);
+        mesh.normals.push(dir);
+    }
+    (sphere, mesh, ids)
+}
+
+/// One-sided half-edges of the emitted triangles.
+fn b40_open_half_edges(mesh: &TriangleMesh) -> DetHashSet<(u32, u32)> {
+    let mut half = DetHashSet::default();
+    for t in mesh.indices.chunks_exact(3) {
+        for e in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+            half.insert(e);
+        }
+    }
+    half.iter()
+        .copied()
+        .filter(|&(a, b)| !half.contains(&(b, a)))
+        .collect()
+}
+
+#[test]
+fn b40_pole_patch_meshes_the_enclosed_pole_on_either_winding() {
+    for ccw in [true, false] {
+        // A wavy loop between colatitudes 50° and 70° (around +z when ccw,
+        // around -z otherwise, where it reads as colatitude 110°–130°),
+        // radially noisy like a marched section.
+        let (sphere, mut mesh, ids) = b40_loop(
+            240,
+            ccw,
+            |t| 1.047 + 0.17 * (3.0 * t).sin(),
+            |t| 2e-5 * (5.0 * t).cos(),
+        );
+        let mut lookup = DetHashMap::default();
+        assert!(super::sphere_pole_patch::fill_sphere_pole_winding_patch(
+            &sphere,
+            &ids,
+            0.01,
+            remus_math::chord::DEFAULT_ANGULAR_TOL,
+            &mut mesh,
+            &mut lookup,
+        ));
+        // The only open half-edges are the loop's own segments, in its own
+        // traversal direction: the patch lies on the loop's left.
+        let expected: DetHashSet<(u32, u32)> = (0..ids.len())
+            .map(|i| (ids[i], ids[(i + 1) % ids.len()]))
+            .collect();
+        assert_eq!(b40_open_half_edges(&mesh), expected, "ccw={ccw}");
+        // Every triangle faces outward, and the enclosed pole is covered.
+        let pole = if ccw { 1.0 } else { -1.0 };
+        let mut covers_pole = false;
+        for t in mesh.indices.chunks_exact(3) {
+            let (a, b, c) = (
+                mesh.positions[t[0] as usize],
+                mesh.positions[t[1] as usize],
+                mesh.positions[t[2] as usize],
+            );
+            let centroid = a + ((b - a) + (c - a)) * (1.0 / 3.0);
+            assert!(
+                (b - a).cross(c - a).dot(centroid - sphere.center()) > 0.0,
+                "ccw={ccw}: inward triangle"
+            );
+            // Seen along the axis, some triangle on the pole's side must
+            // contain the axis itself.
+            let rel = |p: Point3| p - sphere.center();
+            if [a, b, c].iter().all(|&p| pole * rel(p).z() > 0.0) {
+                let side = |p: Point3, q: Point3| {
+                    let (p, q) = (rel(p), rel(q));
+                    p.x() * q.y() - p.y() * q.x()
+                };
+                let s = [side(a, b), side(b, c), side(c, a)];
+                covers_pole |= s.iter().all(|&v| v >= 0.0) || s.iter().all(|&v| v <= 0.0);
+            }
+        }
+        assert!(covers_pole, "ccw={ccw}: the enclosed pole is not covered");
+    }
+}
+
+#[test]
+fn b40_pole_patch_tilted_circle_matches_cap_area() {
+    // A small circle of angular radius 60 deg about an axis tilted 20 deg
+    // from +z still encloses the +z pole and is not a level ring. Any such
+    // cap has area 2 pi r^2 (1 - cos(60 deg)).
+    let sphere =
+        remus_math::surfaces::SphericalSurface::new(Point3::new(0.5, -0.25, 1.0), 2.0).unwrap();
+    let (alpha, beta) = (std::f64::consts::FRAC_PI_3, 20.0_f64.to_radians());
+    let axis = Vec3::new(beta.sin(), 0.0, beta.cos());
+    let (e1, e2) = (
+        Vec3::new(beta.cos(), 0.0, -beta.sin()),
+        Vec3::new(0.0, 1.0, 0.0),
+    );
+    let mut mesh = TriangleMesh::default();
+    let ids: Vec<u32> = (0..360)
+        .map(|i| {
+            let t = std::f64::consts::TAU * f64::from(i) / 360.0;
+            let d = axis * alpha.cos() + (e1 * t.cos() + e2 * t.sin()) * alpha.sin();
+            #[allow(clippy::cast_possible_truncation)]
+            let id = mesh.positions.len() as u32;
+            mesh.positions.push(sphere.center() + d * 2.0);
+            mesh.normals.push(d);
+            id
+        })
+        .collect();
+    let mut lookup = DetHashMap::default();
+    assert!(super::sphere_pole_patch::fill_sphere_pole_winding_patch(
+        &sphere,
+        &ids,
+        0.001,
+        remus_math::chord::DEFAULT_ANGULAR_TOL,
+        &mut mesh,
+        &mut lookup,
+    ));
+    let area: f64 = mesh
+        .indices
+        .chunks_exact(3)
+        .map(|t| {
+            let (a, b, c) = (
+                mesh.positions[t[0] as usize],
+                mesh.positions[t[1] as usize],
+                mesh.positions[t[2] as usize],
+            );
+            (b - a).cross(c - a).length() / 2.0
+        })
+        .sum();
+    let exact = std::f64::consts::TAU * 4.0 * (1.0 - alpha.cos());
+    assert!(
+        (area - exact).abs() / exact < 1e-3,
+        "cap area {area} vs {exact}"
+    );
+}
+
+#[test]
+fn b40_pole_patch_declines_loops_that_do_not_wind_once() {
+    let fill =
+        |sphere: &remus_math::surfaces::SphericalSurface, mesh: &mut TriangleMesh, ids: &[u32]| {
+            let before = (mesh.positions.len(), mesh.indices.len());
+            let mut lookup = DetHashMap::default();
+            let ok = super::sphere_pole_patch::fill_sphere_pole_winding_patch(
+                sphere,
+                ids,
+                0.01,
+                remus_math::chord::DEFAULT_ANGULAR_TOL,
+                mesh,
+                &mut lookup,
+            );
+            assert_eq!(
+                before,
+                (mesh.positions.len(), mesh.indices.len()),
+                "declines leave no trace"
+            );
+            ok
+        };
+    // A small loop around an equator point encloses no pole.
+    let sphere =
+        remus_math::surfaces::SphericalSurface::new(Point3::new(0.0, 0.0, 0.0), 1.0).unwrap();
+    let mut mesh = TriangleMesh::default();
+    let ids: Vec<u32> = (0..64)
+        .map(|i| {
+            #[allow(clippy::cast_precision_loss)]
+            let a = std::f64::consts::TAU * f64::from(i) / 64.0;
+            let d = Vec3::new(1.0, 0.2 * a.cos(), 0.2 * a.sin());
+            let d = d * (1.0 / d.length());
+            #[allow(clippy::cast_possible_truncation)]
+            let id = mesh.positions.len() as u32;
+            mesh.positions.push(Point3::new(0.0, 0.0, 0.0) + d);
+            mesh.normals.push(d);
+            id
+        })
+        .collect();
+    assert!(!fill(&sphere, &mut mesh, &ids));
+    // A loop through the pole has no certifiable azimuth.
+    let (sphere, mut mesh, ids) = b40_loop(64, true, |t| 1.0 + t.cos(), |_| 0.0);
+    assert!(!fill(&sphere, &mut mesh, &ids));
+    // A level ring (one latitude, like a primitive hemisphere's equator)
+    // stays on the latitude-cap and sweep paths.
+    let (sphere, mut mesh, ids) = b40_loop(128, true, |_| 1.2, |_| 0.0);
+    assert!(!fill(&sphere, &mut mesh, &ids));
+    // A loop that winds twice is not a pole cap boundary.
+    let (sphere, mut mesh, ids) = b40_loop(128, true, |_| 1.2, |_| 0.0);
+    let doubled: Vec<u32> = ids.iter().chain(ids.iter()).copied().collect();
+    assert!(!fill(&sphere, &mut mesh, &doubled));
+}
