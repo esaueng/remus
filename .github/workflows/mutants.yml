@@ -13,9 +13,23 @@ env:
 permissions:
   contents: read
 
+# B19: the sharded, fail-closed callee plans the week's in-diff mutants once,
+# splits them across a round-robin shard matrix sized by
+# scripts/plan-mutation-shards.py, and fails any shard with a missed,
+# timed-out or unexamined mutant (scripts/mutants-verdict.py). The per-mutant
+# settings live in `.cargo/mutants.toml`; both scripts and the config are read
+# from the checkout, so tuning them needs no pin change.
+#
+# Pin rule (scripts/test-ubuntu-ci-routing.py): the pin must be a commit on
+# main whose copy of the callee is byte-identical to the checked-in file. A PR
+# that edits fleet-mutants-sharded.yml therefore cannot re-pin to its own
+# branch commit (it dangles after squash-merge, PR #499); land the callee
+# change first, then re-pin to that squash commit in a follow-up, checking
+# `git merge-base --is-ancestor <sha> origin/main` and the file content.
+# 2a735434 is the squash of PR #614, which introduced the sharded callee.
 jobs:
   checks:
-    uses: esaueng/remus/.github/workflows/fleet-mutants.yml@0771d6806848fc6a0ad9cb20c6acf27739b5941b
+    uses: esaueng/remus/.github/workflows/fleet-mutants-sharded.yml@2a7354348933bf4b213662240bfd3b7a0cf1294d
     permissions:
       contents: read
       pull-requests: read
