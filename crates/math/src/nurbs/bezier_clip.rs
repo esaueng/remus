@@ -2,6 +2,14 @@
 //!
 //! Decomposes NURBS curves into Bezier segments, then uses recursive
 //! fat-line clipping to find all intersection points.
+//!
+//! Every depth works on the CURRENT windows: both are blossomed out of
+//! their parent segments, the fat line and the distance polygon come from
+//! those sub-segments, and rational windows are clipped through their
+//! weighted distance numerators. Termination, Newton polishing, duplicate
+//! merging and the overlap/tangent-contact split are judged in model
+//! space, so the result does not depend on how parameter speed relates to
+//! the model scale (roadmap B10).
 
 #![allow(clippy::similar_names, clippy::suspicious_operation_groupings)]
 
@@ -75,6 +83,13 @@ pub fn curve_curve_intersect(
 /// Use this instead of [`curve_curve_intersect`] when you need to detect
 /// shared sub-arcs between curves.
 ///
+/// `tolerance` is a model-space distance: a point hit is reported only
+/// where the two curves come within `tolerance` of each other, and hits
+/// closer than `tolerance` (or joined by a stretch along which the curves
+/// stay within `tolerance`) are one contact. Hit points are polished to
+/// floating-point precision relative to the model scale, not merely to
+/// `tolerance`.
+///
 /// # Errors
 ///
 /// Returns an error if curve decomposition fails.
@@ -86,14 +101,18 @@ pub fn curve_curve_intersect_full(
     let segments1 = curve_to_bezier_segments(curve1)?;
     let segments2 = curve_to_bezier_segments(curve2)?;
 
-    let mut hits = Vec::new();
-    let mut overlaps = Vec::new();
+    let mut out = ClipOutput {
+        tolerance,
+        hits: Vec::new(),
+        overlaps: Vec::new(),
+    };
 
     for seg1 in &segments1 {
-        let aabb1 = seg1.aabb();
+        // Control-point boxes contain their (positive-weight) segments;
+        // pad by the reporting tolerance like the recursive early exit.
+        let aabb1 = seg1.aabb().expanded(tolerance);
         for seg2 in &segments2 {
-            let aabb2 = seg2.aabb();
-            if !aabb1.intersects(aabb2) {
+            if !aabb1.intersects(seg2.aabb()) {
                 continue;
             }
 
@@ -101,173 +120,349 @@ pub fn curve_curve_intersect_full(
             let (u2_lo, u2_hi) = seg2.domain();
 
             bezier_clip_recurse(
-                seg1,
-                seg2,
-                u1_lo,
-                u1_hi,
-                u2_lo,
-                u2_hi,
-                tolerance,
+                ClipSide::new(seg1, u1_lo, u1_hi),
+                ClipSide::new(seg2, u2_lo, u2_hi),
+                false,
                 0,
-                &mut hits,
-                &mut overlaps,
+                &mut out,
             );
         }
     }
 
-    merge_duplicate_hits(&mut hits, tolerance);
-    merge_overlaps(&mut overlaps, tolerance);
-    // Remove point hits that fall within an overlap interval.
+    let ClipOutput {
+        mut hits,
+        mut overlaps,
+        ..
+    } = out;
+    merge_duplicate_hits(&mut hits, curve1, curve2, tolerance);
+    merge_overlaps(&mut overlaps, curve1, tolerance);
+    // Remove point hits that fall within an overlap interval. The
+    // interval test runs in curve1's parameter space, so the model-space
+    // tolerance is converted through the local parameter speed.
     if !overlaps.is_empty() {
         hits.retain(|h| {
+            let slack = param_tolerance(curve1, h.u1, tolerance);
             !overlaps
                 .iter()
-                .any(|o| h.u1 >= o.u1_start - tolerance && h.u1 <= o.u1_end + tolerance)
+                .any(|o| h.u1 >= o.u1_start - slack && h.u1 <= o.u1_end + slack)
         });
     }
     Ok(CurveCurveResult { hits, overlaps })
 }
 
-/// Signed distances of control points to the fat line defined by the first
-/// and last control points of the curve.
+/// Convert a model-space `tolerance` into a parameter-space slack on
+/// `curve` at `u`, through the local parameter speed `|C'(u)|`.
+fn param_tolerance(curve: &NurbsCurve, u: f64, tolerance: f64) -> f64 {
+    let speed = curve.derivatives(u, 1).get(1).map_or(0.0, |d| d.length());
+    if speed.is_finite() && speed > 0.0 {
+        tolerance / speed
+    } else {
+        0.0
+    }
+}
+
+/// Accumulated output of one recursive clipping run.
+struct ClipOutput {
+    /// Model-space reporting tolerance.
+    tolerance: f64,
+    /// Point hits, always stored as `(curve1, curve2)` parameters.
+    hits: Vec<CurveCurveHit>,
+    /// Coincident intervals, always stored as `(curve1, curve2)` parameters.
+    overlaps: Vec<CurveCurveOverlap>,
+}
+
+impl ClipOutput {
+    /// Record a hit found with the recursion's `(a, b)` roles, undoing a
+    /// role swap so `u1` always belongs to the first input curve.
+    fn push_hit(&mut self, swapped: bool, u_a: f64, u_b: f64, point: Point3) {
+        let (u1, u2) = if swapped { (u_b, u_a) } else { (u_a, u_b) };
+        self.hits.push(CurveCurveHit { u1, u2, point });
+    }
+
+    /// Record an overlap found with the recursion's `(a, b)` roles.
+    fn push_overlap(&mut self, swapped: bool, a: ClipSide<'_>, b: ClipSide<'_>) {
+        let (first, second) = if swapped { (b, a) } else { (a, b) };
+        self.overlaps.push(CurveCurveOverlap {
+            u1_start: first.lo,
+            u1_end: first.hi,
+            u2_start: second.lo,
+            u2_end: second.hi,
+        });
+    }
+}
+
+/// One side of a clipping pair: a single-span Bezier segment and the
+/// parameter window of it still under consideration.
+#[derive(Clone, Copy)]
+struct ClipSide<'s> {
+    seg: &'s NurbsCurve,
+    lo: f64,
+    hi: f64,
+}
+
+impl<'s> ClipSide<'s> {
+    const fn new(seg: &'s NurbsCurve, lo: f64, hi: f64) -> Self {
+        Self { seg, lo, hi }
+    }
+
+    const fn with_window(self, lo: f64, hi: f64) -> Self {
+        Self::new(self.seg, lo, hi)
+    }
+
+    fn span(self) -> f64 {
+        self.hi - self.lo
+    }
+
+    fn mid(self) -> f64 {
+        0.5 * (self.lo + self.hi)
+    }
+
+    /// Map a local sub-window parameter `t` in `[0, 1]` to the segment's
+    /// native parameter, pinning the ends so a full-window clip is exact.
+    fn at(self, t: f64) -> f64 {
+        if t <= 0.0 {
+            self.lo
+        } else if t >= 1.0 {
+            self.hi
+        } else {
+            t.mul_add(self.span(), self.lo).clamp(self.lo, self.hi)
+        }
+    }
+
+    /// Narrow the window to the local sub-interval `[t0, t1]`.
+    fn narrowed(self, t0: f64, t1: f64) -> Self {
+        let lo = self.at(t0);
+        let hi = self.at(t1).max(lo);
+        self.with_window(lo, hi)
+    }
+
+    /// Whether the window can no longer be split in floating point.
+    fn at_param_floor(self) -> bool {
+        let magnitude = self.lo.abs().max(self.hi.abs()).max(f64::MIN_POSITIVE);
+        self.span() <= 64.0 * f64::EPSILON * magnitude
+    }
+}
+
+/// Rational Bezier control data of a [`ClipSide`] window, recomputed from
+/// the parent segment at every clipping depth.
 ///
-/// Returns `(line_dir, d_values, d_min, d_max, ref_normal)` where `line_dir`
-/// is the normalized baseline direction, `d_values` are the signed distances
-/// for each control point, `d_min`/`d_max` bound the fat line, and
-/// `ref_normal` is the reference normal used for consistent sign convention.
-#[allow(clippy::type_complexity)]
-fn fat_line(cps: &[Point3]) -> Option<(Vec3, Vec<f64>, f64, f64, Option<Vec3>)> {
-    let n = cps.len();
-    if n < 2 {
-        return None;
-    }
-    let p0 = cps[0];
-    let pn = cps[n - 1];
-    let baseline = pn - p0;
-    let baseline_len = baseline.length();
-    if baseline_len < 1e-30 {
-        return None;
-    }
-    let dir = Vec3::new(
-        baseline.x() / baseline_len,
-        baseline.y() / baseline_len,
-        baseline.z() / baseline_len,
-    );
+/// Sederberg-Nishita clipping is only sound (and only converges) when the
+/// fat line and the distance polygon describe the CURRENT sub-curve.
+/// Re-using the parent segment's control polygon while narrowing only the
+/// parameter window turns every clip into a fixed centred shrink toward
+/// the window midpoint, which excludes an off-centre root within a few
+/// levels (B10).
+struct SubSegment {
+    /// Cartesian control points of the window.
+    pts: Vec<Point3>,
+    /// Weights of the window (positive because the parent's are).
+    weights: Vec<f64>,
+}
 
-    // Compute signed distance for each control point.
-    // Use the cross product magnitude as the signed perpendicular distance.
-    //
-    // For consistent sign convention in 3D: establish a reference normal from
-    // the first non-degenerate cross product, then project all subsequent
-    // cross products onto it. This prevents sign flips for nearly-coplanar
-    // curves where the dominant component can change due to floating-point noise.
-    let ref_normal = cps
-        .iter()
-        .map(|&pi| (pi - p0).cross(dir))
-        .find(|c| c.length() > 1e-20);
+impl SubSegment {
+    /// Extract the window by blossoming the parent segment's homogeneous
+    /// control points: control point `i` of the window `[s0, s1]` is the
+    /// blossom `b(s1^i, s0^(p-i))`. Each window is taken directly from the
+    /// parent, so rounding does not accumulate across depths.
+    fn new(side: ClipSide<'_>) -> Option<Self> {
+        let (a, b) = side.seg.domain();
+        let width = b - a;
+        if width.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) {
+            return None;
+        }
+        let s0 = ((side.lo - a) / width).clamp(0.0, 1.0);
+        let s1 = ((side.hi - a) / width).clamp(0.0, 1.0);
+        let cps = side.seg.control_points();
+        let ws = side.seg.weights();
+        let n = cps.len();
+        if n < 2 || ws.len() != n {
+            return None;
+        }
+        let degree = n - 1;
+        let homogeneous: Vec<[f64; 4]> = cps
+            .iter()
+            .zip(ws)
+            .map(|(c, &w)| [c.x() * w, c.y() * w, c.z() * w, w])
+            .collect();
 
-    let dists: Vec<f64> = cps
-        .iter()
-        .map(|&pi| {
-            let v = pi - p0;
-            let cross = v.cross(dir);
-            let len = cross.length();
-            let sign = match ref_normal {
-                Some(ref_n) => {
-                    if cross.dot(ref_n) >= 0.0 {
-                        1.0
-                    } else {
-                        -1.0
+        let mut pts = Vec::with_capacity(n);
+        let mut weights = Vec::with_capacity(n);
+        let mut scratch = homogeneous.clone();
+        for i in 0..=degree {
+            scratch.copy_from_slice(&homogeneous);
+            for level in 0..degree {
+                let t = if level < i { s1 } else { s0 };
+                for j in 0..(degree - level) {
+                    let next = scratch[j + 1];
+                    for (k, value) in scratch[j].iter_mut().enumerate() {
+                        *value = t.mul_add(next[k] - *value, *value);
                     }
                 }
-                None => dominant_sign(cross),
-            };
-            len * sign
-        })
-        .collect();
-
-    let d_min = dists.iter().copied().fold(f64::INFINITY, f64::min).min(0.0);
-    let d_max = dists
-        .iter()
-        .copied()
-        .fold(f64::NEG_INFINITY, f64::max)
-        .max(0.0);
-
-    Some((dir, dists, d_min, d_max, ref_normal))
-}
-
-/// Return +1.0 or -1.0 based on the dominant component of the cross product.
-fn dominant_sign(cross: Vec3) -> f64 {
-    let ax = cross.x().abs();
-    let ay = cross.y().abs();
-    let az = cross.z().abs();
-    let val = if ax >= ay && ax >= az {
-        cross.x()
-    } else if ay >= az {
-        cross.y()
-    } else {
-        cross.z()
-    };
-    if val >= 0.0 { 1.0 } else { -1.0 }
-}
-
-/// Clip the parameter interval of `curve_b` against the fat line of
-/// `curve_a`. Returns the new `(t_lo, t_hi)` interval for B, or `None`
-/// if no intersection is possible.
-#[allow(clippy::too_many_lines)]
-fn clip_to_fat_line(
-    cps_a: &[Point3],
-    cps_b: &[Point3],
-    t_b_lo: f64,
-    t_b_hi: f64,
-) -> Option<(f64, f64)> {
-    let (dir, _dists_a, d_min, d_max, ref_normal_a) = fat_line(cps_a)?;
-
-    let p0_a = cps_a[0];
-    let n_b = cps_b.len();
-    if n_b < 2 {
-        return None;
+            }
+            let h = scratch[0];
+            if !(h[3].is_finite() && h[3] > 0.0) {
+                return None;
+            }
+            pts.push(Point3::new(h[0] / h[3], h[1] / h[3], h[2] / h[3]));
+            weights.push(h[3]);
+        }
+        Some(Self { pts, weights })
     }
 
-    // Compute signed distances of B's control points to A's fat line.
-    // CRITICAL: use the SAME reference normal that fat_line used for A's own
-    // control points. If we compute a different reference normal from B's
-    // points, the sign convention can flip, making d_min/d_max bounds
-    // inconsistent with B's distance values.
-    //
-    // When A's ref_normal is None (e.g. A is a straight line where all
-    // points lie on the baseline), we fall back to dominant_sign per-point.
-    // Do NOT try to establish a different reference from B's points — that
-    // can produce a sign polarity opposite to what the convex hull clip
-    // expects relative to d_min/d_max = 0.
-    let ref_normal_b = ref_normal_a;
+    /// Control-point box: contains the window's curve (positive weights).
+    fn aabb(&self) -> crate::aabb::Aabb3 {
+        crate::aabb::Aabb3::from_points(self.pts.iter().copied())
+    }
+
+    /// Diagonal of the control-point box: the window's 3D size bound.
+    fn extent(&self) -> f64 {
+        let b = self.aabb();
+        (b.max - b.min).length()
+    }
+
+    /// Largest absolute control-point coordinate: the rounding scale.
+    fn magnitude(&self) -> f64 {
+        self.pts
+            .iter()
+            .map(|p| p.x().abs().max(p.y().abs()).max(p.z().abs()))
+            .fold(0.0, f64::max)
+    }
+
+    /// Largest control-point distance from the chord line: zero for a
+    /// straight window.
+    fn flatness(&self) -> f64 {
+        let p0 = self.pts[0];
+        let chord = self.pts[self.pts.len() - 1] - p0;
+        let len = chord.length();
+        if len.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) {
+            return self.extent();
+        }
+        let dir = chord * (1.0 / len);
+        self.pts
+            .iter()
+            .map(|&p| {
+                let v = p - p0;
+                (v - dir * v.dot(dir)).length()
+            })
+            .fold(0.0, f64::max)
+    }
+}
+
+/// Outcome of clipping one window against the other's fat line.
+enum Clip {
+    /// The window cannot meet the fat line: no intersection here.
+    Empty,
+    /// Local sub-interval `[t0, t1]` of `[0, 1]` that may still intersect.
+    Interval(f64, f64),
+}
+
+/// Unit normal of `a`'s fat line: perpendicular to `a`'s chord, pointing
+/// toward `a`'s farthest control point (the in-plane normal for a planar
+/// window). A straight `a` borrows the direction toward `b` so the slab
+/// still separates the pair. Soundness does not depend on the choice:
+/// any unit direction gives a valid slab; the choice only sets how thin
+/// `a`'s slab is.
+fn fat_line_normal(a: &SubSegment, b: &SubSegment) -> Option<Vec3> {
+    let p0 = a.pts[0];
+    let mut chord = a.pts[a.pts.len() - 1] - p0;
+    let a_extent = a.extent();
+    if chord.length() <= a_extent * 1e-9 {
+        // Closed or collapsed window: the chord is undefined, so take the
+        // direction to the farthest control point instead.
+        chord = a
+            .pts
+            .iter()
+            .map(|&p| p - p0)
+            .max_by(|u, v| u.length_squared().total_cmp(&v.length_squared()))?;
+    }
+    let chord_len = chord.length();
+    if !(chord_len.is_finite() && chord_len > 0.0) {
+        return None;
+    }
+    let dir = chord * (1.0 / chord_len);
+    let farthest_perp = |pts: &[Point3]| {
+        pts.iter()
+            .map(|&p| {
+                let v = p - p0;
+                v - dir * v.dot(dir)
+            })
+            .max_by(|u, v| u.length_squared().total_cmp(&v.length_squared()))
+    };
+    let mut normal = farthest_perp(&a.pts)?;
+    if normal.length() <= chord_len * 1e-9 {
+        normal = farthest_perp(&b.pts)?;
+    }
+    if normal.length() <= chord_len * 1e-15 {
+        // Both windows lie on one line: any perpendicular will do.
+        let axis = if dir.x().abs() <= dir.y().abs() && dir.x().abs() <= dir.z().abs() {
+            Vec3::new(1.0, 0.0, 0.0)
+        } else if dir.y().abs() <= dir.z().abs() {
+            Vec3::new(0.0, 1.0, 0.0)
+        } else {
+            Vec3::new(0.0, 0.0, 1.0)
+        };
+        normal = dir.cross(axis);
+    }
+    let len = normal.length();
+    if !(len.is_finite() && len > 0.0) {
+        return None;
+    }
+    Some(normal * (1.0 / len))
+}
+
+/// Clip window `b` against the fat line of window `a`.
+///
+/// The fat line is the slab `{P : (P - a0)·m in [d_min, d_max]}` spanned
+/// by `a`'s own control points (it contains `a`'s curve because the
+/// weights are positive), widened by `pad` to absorb rounding. The signed
+/// distance is the AFFINE functional `(P - a0)·m`, so for a rational `b`
+/// the condition `d(t) >= d_min` holds exactly where the numerator
+/// `sum w_i B_i(t) (d_i - d_min)` is non-negative (and likewise for
+/// `d_max`): each one-sided test is the convex hull of the weighted
+/// control distances against zero, and the clip is the intersection of
+/// the two intervals.
+fn clip_to_fat_line(a: &SubSegment, b: &SubSegment, pad: f64) -> Clip {
+    let Some(m) = fat_line_normal(a, b) else {
+        return Clip::Interval(0.0, 1.0);
+    };
+    let p0 = a.pts[0];
+    let (mut d_min, mut d_max) = a
+        .pts
+        .iter()
+        .map(|&p| (p - p0).dot(m))
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), d| {
+            (lo.min(d), hi.max(d))
+        });
+    d_min -= pad;
+    d_max += pad;
 
     #[allow(clippy::cast_precision_loss)]
-    let dist_pts: Vec<(f64, f64)> = cps_b
-        .iter()
-        .enumerate()
-        .map(|(i, &pi)| {
-            let v = pi - p0_a;
-            let cross = v.cross(dir);
-            let len = cross.length();
-            let sign = match ref_normal_b {
-                Some(ref_n) => {
-                    if cross.dot(ref_n) >= 0.0 {
-                        1.0
-                    } else {
-                        -1.0
-                    }
-                }
-                None => dominant_sign(cross),
-            };
-            let t = t_b_lo + (t_b_hi - t_b_lo) * (i as f64) / ((n_b - 1) as f64);
-            (t, len * sign)
-        })
-        .collect();
-
-    // Find the parameter interval where the convex hull of dist_pts
-    // intersects the band [d_min, d_max].
-    convex_hull_clip(&dist_pts, d_min, d_max)
+    let degree = (b.pts.len() - 1) as f64;
+    let weighted = |bound: f64| -> Vec<(f64, f64)> {
+        b.pts
+            .iter()
+            .zip(&b.weights)
+            .enumerate()
+            .map(|(i, (&p, &w))| {
+                #[allow(clippy::cast_precision_loss)]
+                let t = i as f64 / degree;
+                (t, w * ((p - p0).dot(m) - bound))
+            })
+            .collect()
+    };
+    let Some((lo0, lo1)) = convex_hull_clip(&weighted(d_min), 0.0, f64::MAX) else {
+        return Clip::Empty;
+    };
+    let Some((hi0, hi1)) = convex_hull_clip(&weighted(d_max), -f64::MAX, 0.0) else {
+        return Clip::Empty;
+    };
+    let t0 = lo0.max(hi0).max(0.0);
+    let t1 = lo1.min(hi1).min(1.0);
+    if t0 > t1 {
+        Clip::Empty
+    } else {
+        Clip::Interval(t0, t1)
+    }
 }
 
 /// Clip the convex hull of a set of (t, d) points against the horizontal
@@ -362,178 +557,302 @@ const DEGENERATE_FAT_LINE: f64 = 1e-12;
 /// Number of samples for approximate Hausdorff distance check.
 const HAUSDORFF_SAMPLES: usize = 5;
 
-/// Recursive Bezier clipping core.
-#[allow(clippy::too_many_arguments)]
-fn bezier_clip_recurse(
-    seg_a: &NurbsCurve,
-    seg_b: &NurbsCurve,
-    u_a_lo: f64,
-    u_a_hi: f64,
-    u_b_lo: f64,
-    u_b_hi: f64,
-    tolerance: f64,
-    depth: usize,
-    hits: &mut Vec<CurveCurveHit>,
-    overlaps: &mut Vec<CurveCurveOverlap>,
-) {
-    // Base case: both intervals are small enough.
-    let span_a = u_a_hi - u_a_lo;
-    let span_b = u_b_hi - u_b_lo;
+/// Fat-line padding relative to the coordinate magnitude. It absorbs the
+/// rounding of the blossomed control points so a root lying exactly on a
+/// slab boundary (a crossing at a window end, a tangent contact) is not
+/// clipped away by a few ULPs. It is far below any modelling tolerance
+/// and does not widen what counts as an intersection.
+const CLIP_NOISE_PAD: f64 = 1e-12;
 
-    if span_a < tolerance && span_b < tolerance {
-        let u1_mid = 0.5 * (u_a_lo + u_a_hi);
-        let u2_mid = 0.5 * (u_b_lo + u_b_hi);
-        if let Some(hit) = newton_refine(seg_a, seg_b, u1_mid, u2_mid, tolerance) {
-            hits.push(hit);
-        } else {
-            // Newton failed; use midpoint approximation.
-            let pt = seg_a.evaluate(u1_mid);
-            hits.push(CurveCurveHit {
-                u1: u1_mid,
-                u2: u2_mid,
-                point: pt,
-            });
-        }
+/// Recursive Bezier clipping core.
+///
+/// `swapped` records whether `a` is the second input curve, so hits and
+/// overlaps are reported in `(curve1, curve2)` order whatever the role
+/// alternation depth.
+#[allow(clippy::too_many_lines)]
+fn bezier_clip_recurse(
+    a: ClipSide<'_>,
+    b: ClipSide<'_>,
+    swapped: bool,
+    depth: usize,
+    out: &mut ClipOutput,
+) {
+    let tolerance = out.tolerance;
+    let (Some(sub_a), Some(sub_b)) = (SubSegment::new(a), SubSegment::new(b)) else {
+        return;
+    };
+
+    // Base case: both windows are within the model-space tolerance (or
+    // cannot be split further). Termination is judged on the windows' 3D
+    // size, never on raw parameter spans: a parameter span means a
+    // different model distance on every curve and scale.
+    let a_done = sub_a.extent() <= tolerance || a.at_param_floor();
+    let b_done = sub_b.extent() <= tolerance || b.at_param_floor();
+    if a_done && b_done {
+        emit_point_hit(a, b, swapped, out);
         return;
     }
 
     if depth >= MAX_DEPTH {
         // Before giving up, check for coincident overlap.
-        if check_overlap(
-            seg_a, seg_b, u_a_lo, u_a_hi, u_b_lo, u_b_hi, tolerance, overlaps,
-        ) {
+        if check_overlap_aligned(a, b, swapped, out) {
             return;
         }
-        // Not coincident — report current best guess as a point hit.
-        let u1_mid = 0.5 * (u_a_lo + u_a_hi);
-        let u2_mid = 0.5 * (u_b_lo + u_b_hi);
-        let pt = seg_a.evaluate(u1_mid);
-        hits.push(CurveCurveHit {
-            u1: u1_mid,
-            u2: u2_mid,
-            point: pt,
-        });
+        // Not coincident: report the polished point only if it verifies.
+        emit_point_hit(a, b, swapped, out);
         return;
     }
 
-    // AABB check for early exit. The boxes are built from sampled curve
-    // points at clipped parameters, so both carry ULP-level rounding; when a
-    // clip collapses an interval to zero width the box degenerates to a
-    // single point and an exact test can reject a true intersection whose
-    // boxes are one ULP apart. Pad by the intersection tolerance so a branch
-    // is only discarded when the curves are provably farther apart than the
-    // tolerance at which hits are reported.
-    let aabb_a = sub_aabb(seg_a, u_a_lo, u_a_hi);
-    let aabb_b = sub_aabb(seg_b, u_b_lo, u_b_hi);
-    if !aabb_a.expanded(tolerance).intersects(aabb_b) {
+    // Degenerate-AABB early exit. The boxes are the windows' control-point
+    // boxes (they contain the curves); when a clip collapses a window to
+    // zero width a box degenerates to a point, and an exact test can
+    // reject a true intersection whose boxes are one ULP apart. Pad by the
+    // intersection tolerance so a branch is only discarded when the
+    // curves are provably farther apart than the reporting tolerance.
+    if !sub_a.aabb().expanded(tolerance).intersects(sub_b.aabb()) {
         return;
     }
-
-    let cps_a = seg_a.control_points();
-    let cps_b = seg_b.control_points();
 
     // Early overlap detection: if both fat lines are degenerate (near-zero
     // thickness), the curves are collinear. Check for overlap immediately
     // instead of subdividing 2^30 times.
     if depth <= 2
-        && let Some((_, _, d_min_a, d_max_a, _)) = fat_line(cps_a)
-        && (d_max_a - d_min_a) < DEGENERATE_FAT_LINE
-        && let Some((_, _, d_min_b, d_max_b, _)) = fat_line(cps_b)
-        && (d_max_b - d_min_b) < DEGENERATE_FAT_LINE
+        && sub_a.flatness() < DEGENERATE_FAT_LINE
+        && sub_b.flatness() < DEGENERATE_FAT_LINE
+        && check_overlap(a, b, swapped, out)
     {
-        // Both curves are essentially straight lines — check overlap.
-        if check_overlap(
-            seg_a, seg_b, u_a_lo, u_a_hi, u_b_lo, u_b_hi, tolerance, overlaps,
-        ) {
+        return;
+    }
+
+    let pad = CLIP_NOISE_PAD * sub_a.magnitude().max(sub_b.magnitude());
+
+    // Clip B against A's fat line.
+    let Clip::Interval(tb0, tb1) = clip_to_fat_line(&sub_a, &sub_b, pad) else {
+        return;
+    };
+    let b_clipped = b.narrowed(tb0, tb1);
+    if tb1 - tb0 < CLIP_THRESHOLD {
+        // Good clip: recurse with swapped roles (clip A against B next).
+        bezier_clip_recurse(b_clipped, a, !swapped, depth + 1, out);
+        return;
+    }
+
+    // Clip A against the (possibly narrowed) B's fat line.
+    let sub_b_clipped = if tb0 > 0.0 || tb1 < 1.0 {
+        match SubSegment::new(b_clipped) {
+            Some(s) => s,
+            None => return,
+        }
+    } else {
+        sub_b
+    };
+    let Clip::Interval(ta0, ta1) = clip_to_fat_line(&sub_b_clipped, &sub_a, pad) else {
+        return;
+    };
+    let a_clipped = a.narrowed(ta0, ta1);
+    if ta1 - ta0 < CLIP_THRESHOLD {
+        bezier_clip_recurse(a_clipped, b_clipped, swapped, depth + 1, out);
+        return;
+    }
+
+    // Neither clip was effective. At high depth, check for overlap before
+    // subdividing further — coincident curves will never clip effectively.
+    if depth >= OVERLAP_CHECK_DEPTH {
+        if check_overlap_aligned(a_clipped, b_clipped, swapped, out) {
+            return;
+        }
+        // A window lying wholly within tolerance of the other curve, yet
+        // not coincident to second order, is one tangent contact: every
+        // hit the pair could still produce is merged into one contact
+        // later, so refine a single point instead of tiling the whole
+        // tolerance well down to tolerance-sized windows.
+        if let Some((u, v)) = tolerance_contact(a_clipped, b_clipped, tolerance) {
+            if let Some(hit) = newton_refine(a.seg, b.seg, u, v, tolerance) {
+                out.push_hit(swapped, hit.u1, hit.u2, hit.point);
+            }
             return;
         }
     }
 
-    // Try clipping B against A's fat line.
-    if let Some((new_b_lo, new_b_hi)) = clip_to_fat_line(cps_a, cps_b, u_b_lo, u_b_hi) {
-        let new_span_b = new_b_hi - new_b_lo;
-        let ratio = if span_b > 1e-30 {
-            new_span_b / span_b
-        } else {
-            1.0
-        };
-
-        if ratio < CLIP_THRESHOLD {
-            // Good clip: recurse with swapped roles (clip A against B next).
-            bezier_clip_recurse(
-                seg_b,
-                seg_a,
-                new_b_lo,
-                new_b_hi,
-                u_a_lo,
-                u_a_hi,
-                tolerance,
-                depth + 1,
-                hits,
-                overlaps,
-            );
-            return;
-        }
-
-        // Try clipping A against B's fat line.
-        if let Some((new_a_lo, new_a_hi)) = clip_to_fat_line(cps_b, cps_a, u_a_lo, u_a_hi) {
-            let new_span_a = new_a_hi - new_a_lo;
-            let ratio_a = if span_a > 1e-30 {
-                new_span_a / span_a
-            } else {
-                1.0
-            };
-
-            if ratio_a < CLIP_THRESHOLD {
-                bezier_clip_recurse(
-                    seg_a,
-                    seg_b,
-                    new_a_lo,
-                    new_a_hi,
-                    new_b_lo,
-                    new_b_hi,
-                    tolerance,
-                    depth + 1,
-                    hits,
-                    overlaps,
-                );
-                return;
-            }
-        }
-
-        // Neither clip was effective. At high depth, check for overlap before
-        // subdividing further — coincident curves will never clip effectively.
-        if depth >= OVERLAP_CHECK_DEPTH
-            && check_overlap(
-                seg_a, seg_b, u_a_lo, u_a_hi, new_b_lo, new_b_hi, tolerance, overlaps,
-            )
-        {
-            return;
-        }
-
-        // Subdivide the longer interval.
-        subdivide_and_recurse(
-            seg_a, seg_b, u_a_lo, u_a_hi, new_b_lo, new_b_hi, tolerance, depth, hits, overlaps,
+    // Subdivide the window that is larger in model space (and still
+    // splittable).
+    let split_a = if a_done {
+        false
+    } else if b_done {
+        true
+    } else {
+        sub_a.extent() >= sub_b_clipped.extent()
+    };
+    if split_a {
+        let mid = a_clipped.mid();
+        bezier_clip_recurse(
+            a_clipped.with_window(a_clipped.lo, mid),
+            b_clipped,
+            swapped,
+            depth + 1,
+            out,
+        );
+        bezier_clip_recurse(
+            a_clipped.with_window(mid, a_clipped.hi),
+            b_clipped,
+            swapped,
+            depth + 1,
+            out,
+        );
+    } else {
+        let mid = b_clipped.mid();
+        bezier_clip_recurse(
+            a_clipped,
+            b_clipped.with_window(b_clipped.lo, mid),
+            swapped,
+            depth + 1,
+            out,
+        );
+        bezier_clip_recurse(
+            a_clipped,
+            b_clipped.with_window(mid, b_clipped.hi),
+            swapped,
+            depth + 1,
+            out,
         );
     }
-    // If clip_to_fat_line returned None, no intersection in this pair.
+}
+
+/// Polish the window pair's midpoint with Newton and record it only if
+/// the curves verifiably meet within the reporting tolerance there.
+fn emit_point_hit(a: ClipSide<'_>, b: ClipSide<'_>, swapped: bool, out: &mut ClipOutput) {
+    if let Some(hit) = newton_refine(a.seg, b.seg, a.mid(), b.mid(), out.tolerance) {
+        out.push_hit(swapped, hit.u1, hit.u2, hit.point);
+    }
+}
+
+/// Overlap check on the stretch the two windows actually share.
+///
+/// Sound fat-line clips do not keep coincident windows aligned: a clip
+/// against a window that is a prefix of the other stops where the slab
+/// ends, not where the shared stretch ends, so the pair keeps one
+/// window's tail that the other does not cover. A Hausdorff test on such
+/// a misaligned pair always fails and the pair would subdivide down to
+/// the tolerance. Trim each window to the parameters of the window ends
+/// (its own and the other's, projected) that lie on the other curve, then
+/// run the Hausdorff test on the aligned pair.
+fn check_overlap_aligned(
+    a: ClipSide<'_>,
+    b: ClipSide<'_>,
+    swapped: bool,
+    out: &mut ClipOutput,
+) -> bool {
+    let tolerance = out.tolerance;
+    let on_other = 10.0 * tolerance;
+    let mut a_params = Vec::with_capacity(4);
+    let mut b_params = Vec::with_capacity(4);
+    for u in [a.lo, a.hi] {
+        let (v, dist) = project_onto_window(b, a.seg.evaluate(u));
+        if dist <= on_other {
+            a_params.push(u);
+            b_params.push(v);
+        }
+    }
+    for v in [b.lo, b.hi] {
+        let (u, dist) = project_onto_window(a, b.seg.evaluate(v));
+        if dist <= on_other {
+            a_params.push(u);
+            b_params.push(v);
+        }
+    }
+    let (Some(a_shared), Some(b_shared)) =
+        (shared_window(a, &a_params), shared_window(b, &b_params))
+    else {
+        return false;
+    };
+    check_overlap(a_shared, b_shared, swapped, out)
+}
+
+/// Samples per window for the tolerance-contact test.
+const CONTACT_SAMPLES: usize = 6;
+
+/// If one window lies wholly within `tolerance` of the other curve's
+/// window (checked at [`CONTACT_SAMPLES`] + 1 points, each projected onto
+/// the other window), return the closest sampled parameter pair as a
+/// refinement start, in `(a, b)` order.
+fn tolerance_contact(a: ClipSide<'_>, b: ClipSide<'_>, tolerance: f64) -> Option<(f64, f64)> {
+    let within = |own: ClipSide<'_>, other: ClipSide<'_>| -> Option<(f64, f64, f64)> {
+        let mut best: Option<(f64, f64, f64)> = None;
+        for i in 0..=CONTACT_SAMPLES {
+            #[allow(clippy::cast_precision_loss)]
+            let u = own.at(i as f64 / CONTACT_SAMPLES as f64);
+            let (v, dist) = project_onto_window(other, own.seg.evaluate(u));
+            if dist > tolerance {
+                return None;
+            }
+            if best.is_none_or(|(_, _, d)| dist < d) {
+                best = Some((u, v, dist));
+            }
+        }
+        best
+    };
+    if let Some((u, v, _)) = within(a, b) {
+        return Some((u, v));
+    }
+    within(b, a).map(|(v, u, _)| (u, v))
+}
+
+/// The sub-window of `side` spanned by `params`, if it has positive length.
+fn shared_window<'s>(side: ClipSide<'s>, params: &[f64]) -> Option<ClipSide<'s>> {
+    let lo = params.iter().copied().fold(f64::INFINITY, f64::min);
+    let hi = params.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    (lo < hi).then(|| side.with_window(lo.max(side.lo), hi.min(side.hi)))
+}
+
+/// Closest point of `side`'s window to `p`: coarse sampling followed by
+/// Newton on `(C(u) - p)·C'(u) = 0`, clamped to the window. Returns the
+/// parameter and the distance.
+fn project_onto_window(side: ClipSide<'_>, p: Point3) -> (f64, f64) {
+    const SAMPLES: usize = 16;
+    let mut best_u = side.lo;
+    let mut best_d = f64::INFINITY;
+    for i in 0..=SAMPLES {
+        #[allow(clippy::cast_precision_loss)]
+        let u = side.at(i as f64 / SAMPLES as f64);
+        let d = (side.seg.evaluate(u) - p).length();
+        if d < best_d {
+            best_u = u;
+            best_d = d;
+        }
+    }
+    let mut u = best_u;
+    for _ in 0..MAX_NEWTON {
+        let ders = side.seg.derivatives(u, 2);
+        let (Some(&c1), Some(&c2)) = (ders.get(1), ders.get(2)) else {
+            break;
+        };
+        let r = side.seg.evaluate(u) - p;
+        let g = r.dot(c1);
+        let dg = c1.dot(c1) + r.dot(c2);
+        if !(dg.is_finite() && dg > 0.0) {
+            break;
+        }
+        let next = (u - g / dg).clamp(side.lo, side.hi);
+        let d = (side.seg.evaluate(next) - p).length();
+        if d < best_d {
+            best_u = next;
+            best_d = d;
+            u = next;
+        } else {
+            break;
+        }
+    }
+    (best_u, best_d)
 }
 
 /// Check if two curve segments are coincident over the given parameter
 /// intervals. Samples points on curve A and checks their distance to
 /// curve B. If the maximum distance (approximate Hausdorff distance)
 /// is below tolerance, emits an overlap and returns `true`.
-#[allow(clippy::too_many_arguments)]
-fn check_overlap(
-    seg_a: &NurbsCurve,
-    seg_b: &NurbsCurve,
-    u_a_lo: f64,
-    u_a_hi: f64,
-    u_b_lo: f64,
-    u_b_hi: f64,
-    tolerance: f64,
-    overlaps: &mut Vec<CurveCurveOverlap>,
-) -> bool {
+fn check_overlap(a: ClipSide<'_>, b: ClipSide<'_>, swapped: bool, out: &mut ClipOutput) -> bool {
+    let tolerance = out.tolerance;
+    let (seg_a, seg_b) = (a.seg, b.seg);
+    let (u_a_lo, u_a_hi, u_b_lo, u_b_hi) = (a.lo, a.hi, b.lo, b.hi);
     let span_a = u_a_hi - u_a_lo;
     let span_b = u_b_hi - u_b_lo;
 
@@ -580,109 +899,72 @@ fn check_overlap(
         max_dist = max_dist.max(best_dist);
     }
 
-    if max_dist < tolerance * 10.0 {
-        overlaps.push(CurveCurveOverlap {
-            u1_start: u_a_lo,
-            u1_end: u_a_hi,
-            u2_start: u_b_lo,
-            u2_end: u_b_hi,
-        });
+    if max_dist < tolerance * 10.0 && coincident_to_second_order(a, b, tolerance) {
+        out.push_overlap(swapped, a, b);
         true
     } else {
         false
     }
 }
 
-/// Subdivide the longer curve at the midpoint and recurse on both halves.
-#[allow(clippy::too_many_arguments)]
-fn subdivide_and_recurse(
-    seg_a: &NurbsCurve,
-    seg_b: &NurbsCurve,
-    u_a_lo: f64,
-    u_a_hi: f64,
-    u_b_lo: f64,
-    u_b_hi: f64,
-    tolerance: f64,
-    depth: usize,
-    hits: &mut Vec<CurveCurveHit>,
-    overlaps: &mut Vec<CurveCurveOverlap>,
-) {
-    let span_a = u_a_hi - u_a_lo;
-    let span_b = u_b_hi - u_b_lo;
-
-    if span_a > span_b {
-        let mid = 0.5 * (u_a_lo + u_a_hi);
-        bezier_clip_recurse(
-            seg_a,
-            seg_b,
-            u_a_lo,
-            mid,
-            u_b_lo,
-            u_b_hi,
-            tolerance,
-            depth + 1,
-            hits,
-            overlaps,
-        );
-        bezier_clip_recurse(
-            seg_a,
-            seg_b,
-            mid,
-            u_a_hi,
-            u_b_lo,
-            u_b_hi,
-            tolerance,
-            depth + 1,
-            hits,
-            overlaps,
-        );
-    } else {
-        let mid = 0.5 * (u_b_lo + u_b_hi);
-        bezier_clip_recurse(
-            seg_a,
-            seg_b,
-            u_a_lo,
-            u_a_hi,
-            u_b_lo,
-            mid,
-            tolerance,
-            depth + 1,
-            hits,
-            overlaps,
-        );
-        bezier_clip_recurse(
-            seg_a,
-            seg_b,
-            u_a_lo,
-            u_a_hi,
-            mid,
-            u_b_hi,
-            tolerance,
-            depth + 1,
-            hits,
-            overlaps,
-        );
+/// Unit tangent and curvature vector of `curve` at `u`.
+fn tangent_and_curvature(curve: &NurbsCurve, u: f64) -> Option<(Vec3, Vec3)> {
+    let ders = curve.derivatives(u, 2);
+    let (&d1, &d2) = (ders.get(1)?, ders.get(2)?);
+    let speed_sq = d1.length_squared();
+    if !(speed_sq.is_finite() && speed_sq > 0.0) {
+        return None;
     }
+    let tangent = d1 * (1.0 / speed_sq.sqrt());
+    let normal_part = d2 - tangent * d2.dot(tangent);
+    Some((tangent, normal_part * (1.0 / speed_sq)))
 }
 
-/// Compute a conservative AABB for a sub-interval of a curve by sampling.
-/// For Bezier segments the full AABB is already tight from control points,
-/// but for sub-intervals we sample densely.
-fn sub_aabb(curve: &NurbsCurve, u_lo: f64, u_hi: f64) -> crate::aabb::Aabb3 {
-    const N_SAMPLES: usize = 8;
-    let mut pts = Vec::with_capacity(N_SAMPLES + 1);
-    #[allow(clippy::cast_precision_loss)]
-    for i in 0..=N_SAMPLES {
-        let t = u_lo + (u_hi - u_lo) * (i as f64) / (N_SAMPLES as f64);
-        pts.push(curve.evaluate(t));
-    }
-    crate::aabb::Aabb3::from_points(pts)
+/// Second-order coincidence test for a window pair that already passed
+/// the Hausdorff test.
+///
+/// A tangent contact is within any tolerance of the other curve over a
+/// stretch of length ~ sqrt(tolerance / relative curvature), which grows
+/// with the model scale and as the tolerance loosens, so a Hausdorff test
+/// alone reports tangent contacts as overlaps. Coincident curves also
+/// share their tangent direction and curvature vector; a tangent contact
+/// does not (its relative curvature is non-zero). Accept the overlap only
+/// if the tangent-angle and curvature differences at the window middle
+/// would separate the curves by no more than `tolerance` across the
+/// parent segments' size.
+fn coincident_to_second_order(a: ClipSide<'_>, b: ClipSide<'_>, tolerance: f64) -> bool {
+    let u = a.mid();
+    let (v, _) = project_onto_window(b, a.seg.evaluate(u));
+    let (Some((ta, ka)), Some((tb, kb))) = (
+        tangent_and_curvature(a.seg, u),
+        tangent_and_curvature(b.seg, v),
+    ) else {
+        // No usable differential geometry (a degenerate parameterization):
+        // fall back to the Hausdorff verdict.
+        return true;
+    };
+    let size = SubSegment::new(ClipSide::new(a.seg, a.seg.domain().0, a.seg.domain().1))
+        .map_or(0.0, |s| s.extent())
+        .max(
+            SubSegment::new(ClipSide::new(b.seg, b.seg.domain().0, b.seg.domain().1))
+                .map_or(0.0, |s| s.extent()),
+        );
+    let direction_gap = ta.cross(tb).length() * size;
+    let curvature_gap = (ka - kb).length() * size * size / 8.0;
+    direction_gap <= tolerance && curvature_gap <= tolerance
 }
 
 /// Newton-Raphson refinement for a curve-curve intersection.
 ///
-/// Given approximate parameters `(u1, u2)`, refine to find the exact
-/// intersection. Uses a 2x2 least-squares projection from 3D.
+/// Given approximate parameters `(u1, u2)`, refine toward the exact
+/// intersection with a 2x2 least-squares (Gauss-Newton) step from 3D.
+///
+/// Convergence and acceptance are separate. The iteration polishes until
+/// the gap reaches floating-point resolution RELATIVE TO THE MODEL SCALE
+/// (or stops improving), so hits are exact at every scale; the result is
+/// then accepted only if the best gap reached is within `tolerance`. The
+/// start point itself counts as an iterate, so a failed or singular step
+/// (tangent contact) can never make the answer worse.
 fn newton_refine(
     curve_a: &NurbsCurve,
     curve_b: &NurbsCurve,
@@ -693,13 +975,14 @@ fn newton_refine(
     let (a_lo, a_hi) = curve_a.domain();
     let (b_lo, b_hi) = curve_b.domain();
 
-    for _ in 0..MAX_NEWTON {
-        let pa = curve_a.evaluate(u1);
-        let pb = curve_b.evaluate(u2);
-        let f = pa - pb; // Vec3
+    let mut pa = curve_a.evaluate(u1);
+    let mut f = pa - curve_b.evaluate(u2);
+    let mut best = (f.length(), u1, u2, pa);
 
-        if f.length() < tolerance {
-            return Some(CurveCurveHit { u1, u2, point: pa });
+    for _ in 0..MAX_NEWTON {
+        let magnitude = pa.x().abs().max(pa.y().abs()).max(pa.z().abs());
+        if best.0 <= 64.0 * f64::EPSILON * magnitude {
+            break;
         }
 
         let da = curve_a.derivatives(u1, 1);
@@ -716,9 +999,11 @@ fn newton_refine(
         let r1 = -t1.dot(f);
         let r2 = t2.dot(f);
 
+        // Scale-free singularity test: det / (|t1|^2 |t2|^2) = sin^2 of
+        // the tangent angle.
         let det = j11 * j22 - j12 * j12;
-        if det.abs() < 1e-30 {
-            return None; // Degenerate (parallel tangents at this point).
+        if !(det.is_finite() && det > f64::EPSILON * f64::EPSILON * j11 * j22) {
+            break; // Parallel tangents (tangent contact) at this point.
         }
 
         let du1 = (j22 * r1 - j12 * r2) / det;
@@ -726,61 +1011,87 @@ fn newton_refine(
 
         u1 = (u1 + du1).clamp(a_lo, a_hi);
         u2 = (u2 + du2).clamp(b_lo, b_hi);
+        pa = curve_a.evaluate(u1);
+        f = pa - curve_b.evaluate(u2);
+        let gap = f.length();
+        if gap < best.0 {
+            best = (gap, u1, u2, pa);
+        } else {
+            break; // No further progress at this precision.
+        }
     }
 
-    // Check convergence after max iterations.
-    let pa = curve_a.evaluate(u1);
-    let pb = curve_b.evaluate(u2);
-    if (pa - pb).length() < tolerance * 10.0 {
-        Some(CurveCurveHit { u1, u2, point: pa })
-    } else {
-        None
-    }
+    let (gap, u1, u2, point) = best;
+    (gap <= tolerance).then_some(CurveCurveHit { u1, u2, point })
 }
 
-/// Merge duplicate intersection hits that are closer than `tolerance`.
-fn merge_duplicate_hits(hits: &mut Vec<CurveCurveHit>, tolerance: f64) {
+/// Whether two hits are the same contact: their points coincide within
+/// `tolerance`, or the curves stay within `tolerance` of each other all
+/// along the stretch between them (a tangent or near-tangent contact
+/// found from several windows). Both tests are in model space.
+fn same_contact(
+    curve1: &NurbsCurve,
+    curve2: &NurbsCurve,
+    h: &CurveCurveHit,
+    k: &CurveCurveHit,
+    tolerance: f64,
+) -> bool {
+    if (h.point - k.point).length() <= tolerance {
+        return true;
+    }
+    [0.25_f64, 0.5, 0.75].iter().all(|&s| {
+        let u1 = s.mul_add(k.u1 - h.u1, h.u1);
+        let u2 = s.mul_add(k.u2 - h.u2, h.u2);
+        (curve1.evaluate(u1) - curve2.evaluate(u2)).length() <= tolerance
+    })
+}
+
+/// Merge hits that are the same contact (see [`same_contact`]), keeping
+/// the representative with the smallest gap between the two curves.
+fn merge_duplicate_hits(
+    hits: &mut Vec<CurveCurveHit>,
+    curve1: &NurbsCurve,
+    curve2: &NurbsCurve,
+    tolerance: f64,
+) {
     if hits.len() <= 1 {
         return;
     }
 
-    // Sort by u1, then merge nearby hits.
-    hits.sort_by(|a, b| a.u1.partial_cmp(&b.u1).unwrap_or(std::cmp::Ordering::Equal));
+    hits.sort_by(|a, b| a.u1.total_cmp(&b.u1).then(a.u2.total_cmp(&b.u2)));
 
-    let mut merged = Vec::with_capacity(hits.len());
-    merged.push(hits[0]);
-
-    for hit in hits.iter().skip(1) {
-        if let Some(last) = merged.last()
-            && (hit.u1 - last.u1).abs() < tolerance
-            && (hit.u2 - last.u2).abs() < tolerance
+    let mut merged: Vec<(CurveCurveHit, f64)> = Vec::with_capacity(hits.len());
+    for hit in hits.iter() {
+        let gap = (curve1.evaluate(hit.u1) - curve2.evaluate(hit.u2)).length();
+        if let Some(slot) = merged
+            .iter_mut()
+            .find(|(kept, _)| same_contact(curve1, curve2, kept, hit, tolerance))
         {
-            // Duplicate — skip it.
-            continue;
+            if gap < slot.1 {
+                *slot = (*hit, gap);
+            }
+        } else {
+            merged.push((*hit, gap));
         }
-        merged.push(*hit);
     }
 
-    *hits = merged;
+    *hits = merged.into_iter().map(|(hit, _)| hit).collect();
 }
 
 /// Merge adjacent or overlapping overlap intervals.
-fn merge_overlaps(overlaps: &mut Vec<CurveCurveOverlap>, tolerance: f64) {
+fn merge_overlaps(overlaps: &mut Vec<CurveCurveOverlap>, curve1: &NurbsCurve, tolerance: f64) {
     if overlaps.len() <= 1 {
         return;
     }
-    overlaps.sort_by(|a, b| {
-        a.u1_start
-            .partial_cmp(&b.u1_start)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    overlaps.sort_by(|a, b| a.u1_start.total_cmp(&b.u1_start));
 
     let mut merged = Vec::with_capacity(overlaps.len());
     merged.push(overlaps[0]);
 
     for ov in overlaps.iter().skip(1) {
         if let Some(last) = merged.last_mut() {
-            if ov.u1_start <= last.u1_end + tolerance {
+            let slack = param_tolerance(curve1, last.u1_end, tolerance);
+            if ov.u1_start <= last.u1_end + slack {
                 // Extend the existing interval.
                 last.u1_end = last.u1_end.max(ov.u1_end);
                 last.u2_start = last.u2_start.min(ov.u2_start);
@@ -1097,5 +1408,192 @@ mod tests {
             "identical curves should produce overlap, got {} hits",
             result.hits.len()
         );
+    }
+
+    /// Rational quadratic arc with the standard 90-degree middle weight.
+    fn quarter_arc(p0: Point3, p1: Point3, p2: Point3, knot_hi: f64) -> NurbsCurve {
+        let w = std::f64::consts::FRAC_1_SQRT_2;
+        NurbsCurve::new(
+            2,
+            vec![0.0, 0.0, 0.0, knot_hi, knot_hi, knot_hi],
+            vec![p0, p1, p2],
+            vec![1.0, w, 1.0],
+        )
+        .expect("valid arc")
+    }
+
+    /// B10 minimized seed: two unit quarter-arcs crossing off their
+    /// parameter midpoints. Re-using the parent control polygon at every
+    /// depth turned each clip into a fixed shrink toward the window
+    /// midpoint, excluded the root by depth 7, and the pair was pruned
+    /// with no hit. The closed form is (0.75, -sqrt(1 - 0.75^2)).
+    #[test]
+    fn b10_minimized_seed_off_centre_arc_crossing() {
+        // Unit circle at the origin, angles -90..0 degrees.
+        let a = quarter_arc(
+            Point3::new(0.0, -1.0, 0.0),
+            Point3::new(1.0, -1.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            1.0,
+        );
+        // Unit circle at (1.5, 0), angles 180..270 degrees.
+        let b = quarter_arc(
+            Point3::new(0.5, 0.0, 0.0),
+            Point3::new(0.5, -1.0, 0.0),
+            Point3::new(1.5, -1.0, 0.0),
+            1.0,
+        );
+        let want = Point3::new(0.75, -(1.0_f64 - 0.5625).sqrt(), 0.0);
+        let result = curve_curve_intersect_full(&a, &b, 1e-7).expect("no error");
+        assert!(result.overlaps.is_empty());
+        assert_eq!(result.hits.len(), 1, "hits: {:?}", result.hits);
+        let hit = result.hits[0];
+        assert!((a.evaluate(hit.u1) - want).length() < 1e-14);
+        assert!((b.evaluate(hit.u2) - want).length() < 1e-14);
+        // The crossing is off-centre on both arcs (the old clip's fixed
+        // point was 0.5 on each).
+        assert!((hit.u1 - 0.5).abs() > 0.03 && (hit.u2 - 0.5).abs() > 0.03);
+    }
+
+    /// Blossomed windows are the parent curve restricted to the window.
+    #[test]
+    fn sub_segment_window_matches_parent() {
+        let seg = quarter_arc(
+            Point3::new(3.0, -1.0, 2.0),
+            Point3::new(5.0, 4.0, -1.0),
+            Point3::new(-2.0, 6.0, 1.0),
+            4.0,
+        );
+        for (lo, hi) in [(0.0, 4.0), (0.3, 1.7), (2.9, 3.1), (1.0, 1.0 + 1e-9)] {
+            let sub = SubSegment::new(ClipSide::new(&seg, lo, hi)).expect("window");
+            let window =
+                NurbsCurve::new(2, vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0], sub.pts, sub.weights)
+                    .expect("valid window");
+            for i in 0..=8 {
+                let t = f64::from(i) / 8.0;
+                let gap = (window.evaluate(t) - seg.evaluate(t.mul_add(hi - lo, lo))).length();
+                assert!(gap < 1e-12, "window [{lo},{hi}] t={t}: gap {gap:.3e}");
+            }
+        }
+    }
+
+    /// The recursion alternates which curve it clips; hits must still be
+    /// reported with `u1` on the first curve and `u2` on the second, which
+    /// only shows when the two parameter domains differ.
+    #[test]
+    fn hit_parameters_follow_input_order_across_role_swaps() {
+        let line = make_line(Point3::new(0.0, 0.0, 0.0), Point3::new(2.0, 2.0, 0.0));
+        let arc = quarter_arc(
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(1.0, 1.0, 0.0),
+            Point3::new(0.0, 1.0, 0.0),
+            10.0,
+        );
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        let want = Point3::new(s, s, 0.0);
+        for (c1, c2) in [(&line, &arc), (&arc, &line)] {
+            let hits = curve_curve_intersect(c1, c2, 1e-9).expect("no error");
+            assert_eq!(hits.len(), 1, "hits: {hits:?}");
+            assert!((c1.evaluate(hits[0].u1) - want).length() < 1e-12);
+            assert!((c2.evaluate(hits[0].u2) - want).length() < 1e-12);
+        }
+    }
+
+    /// A tangent contact is within tolerance of the other curve over a
+    /// stretch that grows with the model scale; it must still be reported
+    /// as one point hit on the contact, never as an overlap and never as
+    /// scattered fragments.
+    #[test]
+    fn tangent_arcs_one_contact_at_every_scale() {
+        for scale in [1e-3, 1.0, 1e3] {
+            // Arc of the circle of radius `scale` at the origin (-90..0
+            // degrees) and its mirror across x = scale: externally tangent
+            // at (scale, 0) with a shared tangent line.
+            let a = quarter_arc(
+                Point3::new(0.0, -scale, 0.0),
+                Point3::new(scale, -scale, 0.0),
+                Point3::new(scale, 0.0, 0.0),
+                1.0,
+            );
+            let b = quarter_arc(
+                Point3::new(2.0 * scale, -scale, 0.0),
+                Point3::new(scale, -scale, 0.0),
+                Point3::new(scale, 0.0, 0.0),
+                1.0,
+            );
+            for tol in [1e-7, 1e-9] {
+                let result = curve_curve_intersect_full(&a, &b, tol).expect("no error");
+                assert!(
+                    result.overlaps.is_empty(),
+                    "scale {scale} tol {tol}: overlap"
+                );
+                assert_eq!(result.hits.len(), 1, "scale {scale} tol {tol}");
+                let p = a.evaluate(result.hits[0].u1);
+                assert!((p - Point3::new(scale, 0.0, 0.0)).length() <= 1e-6 * scale);
+            }
+        }
+    }
+
+    /// The `bezier_clip/cubic_pair` bench pair: two x-monotone cubic
+    /// S-curves crossing three times. The pre-B10 clip returned no hits at
+    /// all here. The oracle counts sign changes of the y-difference of the
+    /// two graphs on a dense x grid, independent of the clipper.
+    #[test]
+    fn wavy_cubic_pair_three_crossings() {
+        let knots = vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0];
+        let a = NurbsCurve::new(
+            3,
+            knots.clone(),
+            vec![
+                Point3::new(-1.0, -1.0, 0.0),
+                Point3::new(-0.25, 1.25, 0.0),
+                Point3::new(0.25, -1.25, 0.0),
+                Point3::new(1.0, 1.0, 0.0),
+            ],
+            vec![1.0; 4],
+        )
+        .expect("valid cubic");
+        let b = NurbsCurve::new(
+            3,
+            knots,
+            vec![
+                Point3::new(-1.0, 0.8, 0.0),
+                Point3::new(-0.25, -1.0, 0.0),
+                Point3::new(0.25, 1.0, 0.0),
+                Point3::new(1.0, -0.8, 0.0),
+            ],
+            vec![1.0; 4],
+        )
+        .expect("valid cubic");
+
+        let graph = |c: &NurbsCurve| -> Vec<Point3> {
+            (0..=4000)
+                .map(|i| c.evaluate(f64::from(i) / 4000.0))
+                .collect()
+        };
+        let (pa, pb) = (graph(&a), graph(&b));
+        let y_at = |pts: &[Point3], x: f64| {
+            let i = pts.partition_point(|q| q.x() < x).clamp(1, pts.len() - 1);
+            let (q0, q1) = (pts[i - 1], pts[i]);
+            (q1.y() - q0.y()).mul_add((x - q0.x()) / (q1.x() - q0.x()), q0.y())
+        };
+        let mut sign_changes = 0;
+        let mut prev = y_at(&pa, -1.0) - y_at(&pb, -1.0);
+        for i in 1..=2000 {
+            let x = f64::from(i).mul_add(1.0 / 1000.0, -1.0);
+            let d = y_at(&pa, x) - y_at(&pb, x);
+            if d.signum() != prev.signum() {
+                sign_changes += 1;
+            }
+            prev = d;
+        }
+        assert_eq!(sign_changes, 3, "oracle must certify 3 crossings");
+
+        let result = curve_curve_intersect_full(&a, &b, 1e-8).expect("no error");
+        assert!(result.overlaps.is_empty());
+        assert_eq!(result.hits.len(), 3, "hits: {:?}", result.hits);
+        for hit in &result.hits {
+            assert!((a.evaluate(hit.u1) - b.evaluate(hit.u2)).length() < 1e-12);
+        }
     }
 }
