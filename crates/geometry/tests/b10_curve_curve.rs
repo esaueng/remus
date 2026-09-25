@@ -15,24 +15,25 @@
 //! projection onto each twin), never by comparing NURBS parameters
 //! against analytic angles.
 //!
-//! KNOWN FINDING (this file, 2026-09-16): transversal twin crossings are
-//! MISSED by `curve_curve_intersect_full` (returns 0 hits where the
-//! closed form certifies 2). Root cause: the Sederberg-Nishita fat-line
-//! clip converges to the control-polygon midpoint, not the true crossing
-//! (measured bias ~0.009 in segment-parameter units on the circle-twin
-//! pair); once the clip window excludes the root, the sampled-AABB
-//! prefilter prunes the phantom branch and the intersection vanishes
-//! silently. The crossing cells below are `#[ignore]`d seeds retaining
-//! that finding; the disjoint/tangent/coincident/near-tangent cells run
-//! green and pin the current behavior.
+//! FINDING (2026-09-16), FIXED (2026-09-25): transversal twin crossings
+//! were MISSED by `curve_curve_intersect_full` (0 hits where the closed
+//! form certifies 2). `clip_to_fat_line` re-used the parent segment's
+//! control polygon at every depth and only narrowed the parameter
+//! window, so every clip was the same centred shrink ([1/4, 3/4] of the
+//! window on the minimized seed below): the windows walked to the
+//! parameter midpoint 0.5, the true root (A-u 0.5378) left A's window at
+//! depth 7, and the sampled-AABB prefilter pruned the pair at depth 8.
+//! The clip now blossoms both windows out of their parent segments at
+//! every depth, clips the weighted (rational) distance numerators of an
+//! affine fat-line functional, and terminates, polishes, merges and
+//! separates overlaps from tangent contacts in model-space (scale-
+//! relative) terms. The crossing cells are live regressions.
 //!
-//! MINIMIZED SEED (rational quarter-arcs, degree 2, w=√2/2):
+//! MINIMIZED SEED (rational quarter-arcs, degree 2, w=√2/2; pinned as
+//! `bezier_clip.rs::tests::b10_minimized_seed_off_centre_arc_crossing`):
 //! A: (0,-1),(1,-1),(1,0) — unit-circle arc angles -90°..0°.
 //! B: (0.5,0),(0.5,-1),(1.5,-1) — unit circle at (1.5,0), angles
-//! 180°..270°. True crossing (0.75,-0.6614) at A-u=0.5378, B-u=0.4622;
-//! the clip walks B to its midpoint 0.5 and drops the root by depth ~8.
-//! See `bezier_clip.rs::clip_to_fat_line` (control-polygon distances are
-//! re-used at every depth; only the t-coordinates narrow).
+//! 180°..270°. True crossing (0.75,-0.6614) at A-u=0.5378, B-u=0.4622.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -139,7 +140,6 @@ fn assert_crossings_found(
 // ── circle twin × circle twin ─────────────────────────────────────────────
 
 #[test]
-#[ignore = "open: B10 seed — bezier-clip misses transversal twin crossings (fat-line clip bias); disjoint/tangent/coincident legs run below"]
 fn b10_circle_twins_crossing_two_hits() {
     for scale in SCALES {
         let c1 = circle(0.0, 0.0, scale);
@@ -147,7 +147,8 @@ fn b10_circle_twins_crossing_two_hits() {
         let oracle = analytic_crossings(&c1, &c2);
         assert_eq!(oracle.len(), 2, "oracle must certify 2 crossings");
         let (a, b) = (twin(&c1), twin(&c2));
-        assert_crossings_found(&a, &b, &oracle, 1e-6 * scale.max(1.0), "circle-crossing");
+        assert_crossings_found(&a, &b, &oracle, 1e-9 * scale, "circle-crossing");
+        assert_hits_on_both_twins(&a, &b, TOL, "circle-crossing");
     }
 }
 
@@ -170,45 +171,51 @@ fn b10_circle_twins_disjoint_no_hits() {
 
 #[test]
 fn b10_circle_twins_tangent_reports_contact() {
-    // Exact tangent (centers 2r apart): the closed form certifies a single
-    // tangential contact at (r, 0). Record — do not widen — the solver's
-    // exact tolerance behavior at this cell:
-    // - scale 1, tol 1e-7: 1 hit on the contact (within 2e-7);
-    // - scale 1e-3, tol 1e-7: 1 true hit + 2 phantom duplicates
-    //   (gaps 3.7e-4/1.1e-3 — the absolute merge/hit tolerance does not
-    //   scale with the model);
-    // - tol 1e-9: the double root fragments into 4 near-duplicate hits
-    //   (param-space merge uses an absolute tolerance blind to rational
-    //   parameter speed);
-    // - scale 1e3, tol 1e-7: 2 hits, one 6.7e-4 off the contact.
-    // The pinned assertion is therefore scale-1-only: exactly one hit,
-    // on the closed-form contact. The other scales are recorded above
-    // and owned by the same root (absolute tolerances in
-    // merge_duplicate_hits / newton_refine, bezier_clip.rs).
-    let scale = 1.0;
-    let c1 = circle(0.0, 0.0, scale);
-    let c2 = circle(2.0 * scale, 0.0, scale);
-    let oracle = analytic_crossings(&c1, &c2);
-    assert_eq!(oracle.len(), 1, "oracle must certify 1 tangent contact");
-    let (a, b) = (twin(&c1), twin(&c2));
-    let result = curve_curve_intersect_full(&a, &b, TOL).unwrap();
-    assert_eq!(
-        result.hits.len(),
-        1,
-        "tangent twins @ scale {scale}: expected 1 hit, got {}",
-        result.hits.len(),
-    );
-    let hit = &result.hits[0];
-    let band = 1e-6 * scale.max(1.0);
-    assert!(
-        (a.evaluate(hit.u1) - oracle[0]).length() <= band,
-        "tangent hit off contact @ scale {scale}",
-    );
-    assert!(
-        (b.evaluate(hit.u2) - oracle[0]).length() <= band,
-        "tangent hit off contact (twin B) @ scale {scale}",
-    );
-    assert_hits_on_both_twins(&a, &b, TOL, "tangent");
+    // Tangent twins: external (equal radii, centers 2r apart) and internal
+    // (radius r/2 inside, centers r/2 apart), with the contact direction at
+    // 0 (the twin's parameter origin), 1 and 2.3 rad (inside a segment).
+    // The closed form puts the single contact on the line of centers at
+    // distance r from A's center. Pinned at every scale and at tol 1e-7
+    // and 1e-9: exactly one point hit (never an overlap, never fragments)
+    // on the contact within 1e-6 relative. A double root is only
+    // determined to ~sqrt(eps) relative (the gap is quadratic in the
+    // offset), so the band is the conditioning floor, not a widening.
+    //
+    // Before the B10 fix (absolute parameter-space merge/Newton
+    // tolerances) this cell held only at scale 1: scale 1e-3 gave 1 true
+    // hit + 2 phantoms, scale 1e3 gave 2 hits (one 6.7e-4 off), and tol
+    // 1e-9 fragmented the double root into 4 near-duplicate hits.
+    for scale in SCALES {
+        for tol in [TOL, 1e-9] {
+            for angle in [0.0_f64, 1.0, 2.3] {
+                let (dx, dy) = (angle.cos(), angle.sin());
+                for (kind, r2, dist) in [("external", 1.0, 2.0), ("internal", 0.5, 0.5)] {
+                    let c1 = circle(0.0, 0.0, scale);
+                    let c2 = circle(dist * scale * dx, dist * scale * dy, r2 * scale);
+                    let contact = Point3::new(scale * dx, scale * dy, 0.0);
+                    let (a, b) = (twin(&c1), twin(&c2));
+                    let name = format!("{kind} tangent @ scale {scale} tol {tol} angle {angle}");
+                    let result = curve_curve_intersect_full(&a, &b, tol).unwrap();
+                    assert!(result.overlaps.is_empty(), "{name}: reported as overlap");
+                    assert_eq!(
+                        result.hits.len(),
+                        1,
+                        "{name}: expected 1 hit, got {}",
+                        result.hits.len(),
+                    );
+                    let hit = &result.hits[0];
+                    let band = 1e-6 * scale;
+                    let off_a = (a.evaluate(hit.u1) - contact).length();
+                    let off_b = (b.evaluate(hit.u2) - contact).length();
+                    assert!(
+                        off_a <= band && off_b <= band,
+                        "{name}: hit off contact by ({off_a:.3e}, {off_b:.3e})",
+                    );
+                    assert_hits_on_both_twins(&a, &b, tol, &name);
+                }
+            }
+        }
+    }
 }
 
 #[test]
@@ -306,29 +313,43 @@ fn b10_line_twins_disjoint_no_hits() {
 // ── ellipse twin × ellipse twin ───────────────────────────────────────────
 
 #[test]
-#[ignore = "open: B10 seed — same bezier-clip transversal miss as the circle twins (ellipse arcs share the fat-line path)"]
 fn b10_ellipse_twins_crossing() {
+    // Major axes along +X (explicit reference direction: the plain
+    // constructor picks an arbitrary in-plane major axis, which for a +Z
+    // normal is +Y and made the original seed's ellipses disjoint).
+    // Closed form for x^2/(2s)^2 + y^2/s^2 = 1 and the same ellipse
+    // shifted by 2.5s along X: the symmetric pair meets at x = 1.25s,
+    // y = +/- s*sqrt(1 - (1.25/2)^2), a transversal crossing.
     for scale in SCALES {
-        let e1 = Ellipse3D::new(
+        let x_axis = Vec3::new(1.0, 0.0, 0.0);
+        let z_axis = Vec3::new(0.0, 0.0, 1.0);
+        let e1 = Ellipse3D::new_with_ref(
             Point3::new(0.0, 0.0, 0.0),
-            Vec3::new(0.0, 0.0, 1.0),
+            z_axis,
             2.0 * scale,
             scale,
+            x_axis,
         )
         .unwrap();
-        let e2 = Ellipse3D::new(
+        let e2 = Ellipse3D::new_with_ref(
             Point3::new(2.5 * scale, 0.0, 0.0),
-            Vec3::new(0.0, 0.0, 1.0),
+            z_axis,
             2.0 * scale,
             scale,
+            x_axis,
         )
         .unwrap();
         let (a, b) = (
             ellipse_to_nurbs(&e1, 0.0, TAU).unwrap(),
             ellipse_to_nurbs(&e2, 0.0, TAU).unwrap(),
         );
-        // Oracle: independent implicit-equation scan — count sign changes
-        // of e2's implicit function along dense samples of twin A.
+        let y = scale * (1.0_f64 - 0.625 * 0.625).sqrt();
+        let oracle = [
+            Point3::new(1.25 * scale, y, 0.0),
+            Point3::new(1.25 * scale, -y, 0.0),
+        ];
+        // Second independent leg: count sign changes of e2's implicit
+        // function along dense samples of twin A.
         let (da0, da1) = a.domain();
         let implicit_b = |p: Point3| {
             let v = p - e2.center();
@@ -348,17 +369,11 @@ fn b10_ellipse_twins_crossing() {
             }
             prev = v;
         }
-        assert!(
-            crossings >= 2,
-            "oracle scan must see >= 2 crossings @ scale {scale}, saw {crossings}",
-        );
-        let result = curve_curve_intersect_full(&a, &b, TOL).unwrap();
         assert_eq!(
-            result.hits.len(),
-            2,
-            "ellipse crossing @ scale {scale}: got {} hits {} overlaps",
-            result.hits.len(),
-            result.overlaps.len(),
+            crossings, 2,
+            "implicit scan must see exactly the 2 closed-form crossings @ scale {scale}",
         );
+        assert_crossings_found(&a, &b, &oracle, 1e-9 * scale, "ellipse-crossing");
+        assert_hits_on_both_twins(&a, &b, TOL, "ellipse-crossing");
     }
 }
