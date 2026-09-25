@@ -2978,6 +2978,68 @@ pub(super) fn tessellate_nonplanar_cdt(
         hole_cdt_ids.push(ids);
     }
 
+    // Surface point and normal of an interior (non-boundary) CDT vertex.
+    let interior_point_3d = |cdt_pt: Point2| -> (Point3, Vec3) {
+        let (pu_raw, pv) = from_cdt(cdt_pt);
+        let surface = face_data.surface();
+        // The unwrapped rectangle of a closed-u NURBS face can straddle
+        // its knot-domain boundary; NURBS evaluation clamps out-of-domain
+        // parameters, which would collapse every straddling vertex onto
+        // the seam meridian. Wrap by the period instead. Analytic
+        // surfaces evaluate trigonometrically and need no wrap.
+        let pu = if let FaceSurface::Nurbs(s) = surface {
+            let (du0, du1) = s.domain_u();
+            if s.is_periodic_u() && du1 > du0 && (pu_raw < du0 || pu_raw > du1) {
+                du0 + (pu_raw - du0).rem_euclid(du1 - du0)
+            } else {
+                pu_raw
+            }
+        } else {
+            pu_raw
+        };
+        let pt3 = eval_surface_point(surface, pu, pv);
+        let base_nrm = surface.normal(pu, pv);
+        // A GFA band face on a recognized wall evaluates its interior
+        // grid through the EXACT chart too: the unwrapped CDT rectangle
+        // straddles the knot-domain seam (u in [0.75, 1.75] on a [0, 1]
+        // chart), and raw NURBS evaluation clamps the overhang onto the
+        // seam meridian — collapsing every straddling vertex (the wrap
+        // arm above only fixes periodic-u surfaces via the knot width,
+        // not the chart period). Map chart-u back to the knot domain by
+        // the period before evaluating. Converted primitives keep the
+        // established knot-width wrap.
+        let (pt3, nrm) = match surface {
+            FaceSurface::Nurbs(nurbs)
+                if has_section_circle && remus_algo::wall_chart(surface).is_some() =>
+            {
+                let (du0, _du1) = nurbs.domain_u();
+                let wrapped_u = du0 + (pu_raw - du0).rem_euclid(1.0);
+                let pt = nurbs.evaluate(wrapped_u, pv);
+                // Outward normal from the recovered cylinder (exact for
+                // a wall; the NURBS normal at a clamped seam sample is
+                // not defined by the chart copy the CDT means).
+                let n = remus_algo::wall_chart(surface)
+                    .map(|wall| {
+                        let (ang, _) = wall.project_point(pt);
+                        wall.normal(ang, 0.0)
+                    })
+                    .unwrap_or(base_nrm);
+                (pt, n)
+            }
+            // B24: exhaustive over `FaceSurface` — only a
+            // recognized-wall NURBS face re-charts its interior
+            // grid; every other carrier keeps raw evaluation.
+            FaceSurface::Plane { .. }
+            | FaceSurface::Nurbs(_)
+            | FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_) => (pt3, base_nrm),
+        };
+
+        (pt3, nrm)
+    };
+
     if du > 1e-15 && dv > 1e-15 {
         let (n_u, n_v) =
             interior_grid_resolution(face_data.surface(), du, dv, deflection, angular_tol);
@@ -3247,6 +3309,23 @@ pub(super) fn tessellate_nonplanar_cdt(
                 ),
             });
         }
+        // One sample per vertex-merge cell (B53). Emission welds every CDT
+        // vertex by `point_merge_key`, but the CDT triangulates the samples it
+        // was given: two samples in one cell become one mesh vertex, and the
+        // triangles between them repeat edges, so the face mesh goes
+        // non-manifold without a single duplicate triangle. The base grid and
+        // the dense trim rows share their columns, so at some deflections a
+        // dense row lands within the merge cell of a base row (the finding-17
+        // box-cone cut wall, 87 non-manifold edges at a bbox·1e-5 deflection).
+        // Keep the first sample of each cell, boundary samples first; dropping
+        // an interior sample never invalidates the triangulation.
+        let mut taken: DetHashSet<(i64, i64, i64)> = boundary_3d
+            .iter()
+            .chain(hole_boundaries_3d.iter().flatten())
+            .map(|&(point, _, _, _)| point_merge_key(point, MERGE_GRID))
+            .collect();
+        interior_pts
+            .retain(|&point| taken.insert(point_merge_key(interior_point_3d(point).0, MERGE_GRID)));
         if !interior_pts.is_empty() {
             let interior_cdt_ids = cdt
                 .insert_points_hilbert(&interior_pts)
@@ -3280,63 +3359,7 @@ pub(super) fn tessellate_nonplanar_cdt(
         if let Some(gid) = cdt_to_global.get(i).copied().flatten() {
             final_global_ids[i] = gid;
         } else if i >= 3 {
-            let (pu_raw, pv) = from_cdt(cdt_verts[i]);
-            let surface = face_data.surface();
-            // The unwrapped rectangle of a closed-u NURBS face can straddle
-            // its knot-domain boundary; NURBS evaluation clamps out-of-domain
-            // parameters, which would collapse every straddling vertex onto
-            // the seam meridian. Wrap by the period instead. Analytic
-            // surfaces evaluate trigonometrically and need no wrap.
-            let pu = if let FaceSurface::Nurbs(s) = surface {
-                let (du0, du1) = s.domain_u();
-                if s.is_periodic_u() && du1 > du0 && (pu_raw < du0 || pu_raw > du1) {
-                    du0 + (pu_raw - du0).rem_euclid(du1 - du0)
-                } else {
-                    pu_raw
-                }
-            } else {
-                pu_raw
-            };
-            let pt3 = eval_surface_point(surface, pu, pv);
-            let base_nrm = surface.normal(pu, pv);
-            // A GFA band face on a recognized wall evaluates its interior
-            // grid through the EXACT chart too: the unwrapped CDT rectangle
-            // straddles the knot-domain seam (u in [0.75, 1.75] on a [0, 1]
-            // chart), and raw NURBS evaluation clamps the overhang onto the
-            // seam meridian — collapsing every straddling vertex (the wrap
-            // arm above only fixes periodic-u surfaces via the knot width,
-            // not the chart period). Map chart-u back to the knot domain by
-            // the period before evaluating. Converted primitives keep the
-            // established knot-width wrap.
-            let (pt3, nrm) = match surface {
-                FaceSurface::Nurbs(nurbs)
-                    if has_section_circle && remus_algo::wall_chart(surface).is_some() =>
-                {
-                    let (du0, _du1) = nurbs.domain_u();
-                    let wrapped_u = du0 + (pu_raw - du0).rem_euclid(1.0);
-                    let pt = nurbs.evaluate(wrapped_u, pv);
-                    // Outward normal from the recovered cylinder (exact for
-                    // a wall; the NURBS normal at a clamped seam sample is
-                    // not defined by the chart copy the CDT means).
-                    let n = remus_algo::wall_chart(surface)
-                        .map(|wall| {
-                            let (ang, _) = wall.project_point(pt);
-                            wall.normal(ang, 0.0)
-                        })
-                        .unwrap_or(base_nrm);
-                    (pt, n)
-                }
-                // B24: exhaustive over `FaceSurface` — only a
-                // recognized-wall NURBS face re-charts its interior
-                // grid; every other carrier keeps raw evaluation.
-                FaceSurface::Plane { .. }
-                | FaceSurface::Nurbs(_)
-                | FaceSurface::Cylinder(_)
-                | FaceSurface::Cone(_)
-                | FaceSurface::Sphere(_)
-                | FaceSurface::Torus(_) => (pt3, base_nrm),
-            };
-
+            let (pt3, nrm) = interior_point_3d(cdt_verts[i]);
             let key = point_merge_key(pt3, MERGE_GRID);
             let gid = *point_to_global.entry(key).or_insert_with(|| {
                 let idx = merged.positions.len() as u32;

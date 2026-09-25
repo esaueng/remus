@@ -455,13 +455,29 @@ pub(crate) fn triangles_intersect(a: [Point3; 3], b: [Point3; 3], tolerance: f64
     !intersect_triangles(a[0], a[1], a[2], b[0], b[1], b[2], tolerance).is_empty()
 }
 
-/// Return whether two triangles share a segment with non-zero length.
+/// Return whether two triangles share an intersection segment anywhere other
+/// than at the given `contacts` points: true when some segment has an endpoint
+/// farther than `contact_band` from every contact point. With no contacts this
+/// is the plain narrow-phase test.
 ///
 /// This is exposed within the crate so boolean acceptance guards can use the
 /// same robust narrow-phase test as mesh co-refinement without duplicating its
 /// geometric predicates.
-pub(crate) fn triangle_surfaces_intersect(a: [Point3; 3], b: [Point3; 3], tolerance: f64) -> bool {
-    !intersect_triangles(a[0], a[1], a[2], b[0], b[1], b[2], tolerance).is_empty()
+///
+/// Two closed pieces that share a topological vertex (lumps touching at a
+/// point, B53) tessellate with that vertex in both meshes, so their triangles
+/// meet there without the surfaces overlapping anywhere else.
+pub(crate) fn triangle_surfaces_intersect_off_contacts(
+    a: [Point3; 3],
+    b: [Point3; 3],
+    tolerance: f64,
+    contacts: &[Point3],
+    contact_band: f64,
+) -> bool {
+    let at_contact = |p: Point3| contacts.iter().any(|c| (p - *c).length() <= contact_band);
+    intersect_triangles(a[0], a[1], a[2], b[0], b[1], b[2], tolerance)
+        .iter()
+        .any(|segment| !(at_contact(segment.p0) && at_contact(segment.p1)))
 }
 
 /// Imprint a grazing contact: `touching`'s edge that lies in `host`'s plane
