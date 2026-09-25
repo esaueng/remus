@@ -5555,8 +5555,15 @@ mod tests {
         let elsewhere = Point3::new(2.0, 0.0, 0.0);
         assert!(orient_corners(&topo, edge, pa, pb).unwrap().is_forward());
         assert!(!orient_corners(&topo, edge, pb, pa).unwrap().is_forward());
-        assert!(orient_corners(&topo, edge, pa, elsewhere).is_err());
-        assert!(orient_corners(&topo, edge, elsewhere, pb).is_err());
+        // Exactly one endpoint matching, in either traversal, is not a span.
+        for (from, to) in [
+            (pa, elsewhere),
+            (elsewhere, pb),
+            (pb, elsewhere),
+            (elsewhere, pa),
+        ] {
+            assert!(orient_corners(&topo, edge, from, to).is_err());
+        }
     }
 
     #[test]
