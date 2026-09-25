@@ -5260,6 +5260,17 @@ pub(super) fn tessellate_sphere_cap_shared(
             merged,
             point_to_global,
         )?
+        // A patch whose loop winds once around the carrier's polar axis
+        // holds a pole: the parametric CDT below closes its unwrapped loop
+        // with a chord and meshes the complementary lens instead (B40).
+        || super::sphere_pole_patch::fill_sphere_pole_winding_patch(
+            sphere,
+            &boundary,
+            deflection,
+            angular_tol,
+            merged,
+            point_to_global,
+        )
     {
         Ok(true)
     } else {
