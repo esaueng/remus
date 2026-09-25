@@ -232,6 +232,7 @@ Quick reference — find the right file for any task:
 | Link section blocks to existing boundary blocks | `pave_filler/link_existing.rs` |
 | PCurves for split edges on their faces | `pave_filler/make_pcurves.rs` |
 | Deterministic work counters (complexity guards) | `perf.rs` |
+| Exact axis extremes of circle/ellipse arcs (broad-phase boxes) | `conic_bounds.rs` |
 
 ### L2: blend (`crates/blend/src/`)
 | Task | File(s) |
