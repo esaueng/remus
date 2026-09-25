@@ -749,6 +749,20 @@ fn check_edge_face_pairs(
                                 && containments[face_idx].accepts(p)
                         },
                     )
+                    // B53: the grazing contact can also coincide with a vertex
+                    // an earlier phase minted ON THIS EDGE — EE solves the
+                    // edge against the face's own boundary rim with a
+                    // well-conditioned double root, while this scan's distance
+                    // minimum lands sqrt-of-residual along the edge (1.6e-7 on
+                    // the finding-17 box edge tangent to the cone's top rim).
+                    // The operand-vertex index never holds those, so look at
+                    // the edge's own extra paves under the same incidence
+                    // check.
+                    .or_else(|| {
+                        edge_extra_pave_within(topo, arena, eid, pt, snap_window, tol.linear, |p| {
+                            distance_to_surface(p, surface, grid) <= tol.linear
+                        })
+                    })
                     .and_then(|vid| {
                         let vp = topo.vertex(vid).ok()?.point();
                         let d = end_pos - start_pos;
@@ -823,6 +837,51 @@ fn check_edge_face_pairs(
     }
 
     Ok(())
+}
+
+/// The vertex of an extra pave already on `edge` that lies within `radius` of
+/// `point` and passes `accept`; `None` when there is none, or when two
+/// candidates farther than `distinct_tol` apart both qualify (the same
+/// unambiguity rule as the operand-vertex index).
+fn edge_extra_pave_within(
+    topo: &Topology,
+    arena: &GfaArena,
+    edge: EdgeId,
+    point: Point3,
+    radius: f64,
+    distinct_tol: f64,
+    accept: impl Fn(Point3) -> bool,
+) -> Option<remus_topology::vertex::VertexId> {
+    let mut best: Option<(f64, Point3, remus_topology::vertex::VertexId)> = None;
+    let mut ambiguous = false;
+    for &pb_id in arena.edge_pave_blocks.get(&edge)? {
+        let Some(pb) = arena.pave_blocks.get(pb_id) else {
+            continue;
+        };
+        for pave in &pb.extra_paves {
+            let vertex = arena.resolve_vertex(pave.vertex);
+            let Ok(v) = topo.vertex(vertex) else {
+                continue;
+            };
+            let pos = v.point();
+            let distance = (pos - point).length();
+            if distance > radius || !accept(pos) {
+                continue;
+            }
+            match best {
+                Some((best_distance, best_pos, _)) => {
+                    ambiguous |= (pos - best_pos).length() > distinct_tol;
+                    if distance < best_distance {
+                        best = Some((distance, pos, vertex));
+                    }
+                }
+                None => best = Some((distance, pos, vertex)),
+            }
+        }
+    }
+    (!ambiguous)
+        .then(|| best.map(|(_, _, vertex)| vertex))
+        .flatten()
 }
 
 /// Find edge-cylinder crossings against a recognized converted wall.

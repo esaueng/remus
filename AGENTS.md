@@ -214,6 +214,7 @@ Quick reference — find the right file for any task:
 | FaceInfo population | `pave_filler/fill_face_info.rs` |
 | Builder (face splitting + assembly) | `builder/mod.rs`, `builder/assemble.rs` |
 | Face splitting (UV-space) | `builder/face_splitter/` (mod, containment, conversion, edge_splitting, sampling, special_cases), `builder/classify_2d.rs` |
+| Closed-form oracles for the splitter's periodic-lateral and sphere-collar shortcuts (tests) | `builder/face_splitter/closed_form_split_tests.rs` |
 | PCurve computation | `builder/pcurve_compute.rs` |
 | Plane frame (3D↔UV projection) | `builder/plane_frame.rs` |
 | Wire loop reconstruction | `builder/wire_builder.rs` |
@@ -233,6 +234,9 @@ Quick reference — find the right file for any task:
 | PCurves for split edges on their faces | `pave_filler/make_pcurves.rs` |
 | Deterministic work counters (complexity guards) | `perf.rs` |
 | Exact axis extremes of circle/ellipse arcs (broad-phase boxes) | `conic_bounds.rs` |
+| Independent-oracle tests for phase-FF exact-vs-refuse helpers (disc clip, one-hit graze, torus oval trim, one-rim notch) | `pave_filler/phase_ff/helper_oracle_tests.rs` |
+| Independent-oracle tests for builder-solid helpers (conic support, closed-pair traversal, revolved wire winding) | `builder/builder_solid/helper_oracle_tests.rs` |
+| Independent-oracle tests for fill-images section helpers (cap discs, closed-section containment, curved-face segment classifier) | `builder/fill_images_faces/helper_oracle_tests.rs` |
 
 ### L2: blend (`crates/blend/src/`)
 | Task | File(s) |
@@ -464,7 +468,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Shape construction (vertices, edges, wires, faces) | `bindings/shapes.rs` |
 | Modeling operations (extrude, revolve, sweep, loft, fillet, etc.) | `bindings/operations.rs` |
 | Boolean operations (fuse, cut, intersect) | `bindings/booleans.rs` |
-| Typed modifier results (`filletDetailed`, `chamferDetailed`, `shellDetailed`, `offsetDetailed`) | `bindings/modifier_detailed.rs` |
+| Typed modifier results (`filletDetailed`, `chamferDetailed`, `shellDetailed`, `offsetDetailed`, and the `filletV2`/`chamferV2`/`chamferDistanceAngle`/`filletVariable` twins) | `bindings/modifier_detailed.rs` |
 | Transform, copy, mirror, pattern | `bindings/transforms.rs` |
 | Topology query, edge/surface evaluation | `bindings/query.rs` |
 | Measurement (volume, area, bbox, distances) | `bindings/measure.rs` |
@@ -493,6 +497,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Qualified-operation integration tests | `bindings/qualify_ops_tests.rs` |
 | Direct/batch B6 primitive qualification | `bindings/qualify_primitives_tests.rs` |
 | Direct/batch B6 convex-hull/Minkowski qualification | `bindings/qualify_convex_hull_tests.rs` |
+| Direct/batch B6 plane-section/split qualification | `bindings/qualify_section_split_tests.rs` |
 | Growing-holder recipe `volume` contract (B54: closed-form −5440 width step through `executeBatch`) | `bindings/growing_holder_volume_tests.rs` |
 
 ### L4: wasm-io (`crates/wasm-io/src/`)

@@ -150,7 +150,13 @@ the five in flight (every other ignored test re-run 3× on 2026-09-18; `io`,
 and obtuse-ridge chamfer pins are no longer ignored after #398. Re-run
 landscape diagnostics with `--ignored --nocapture` before re-opening a case.
 Added since that snapshot: the B55 curved-offset scale witness
-(`crates/offset/tests/regress_curved_offset_scale.rs`, fails on `main`).
+(`crates/offset/tests/regress_curved_offset_scale.rs`, fails on `main`), the
+B64/B65 lidded box–sphere witnesses
+(`crates/operations/tests/regress_sphere_lidded_box_collar.rs`, plus the B65
+collar-sample repro in `crates/algo/src/builder/face_splitter/closed_form_split_tests.rs`),
+the B66 SSI branch-point witness (`math/src/nurbs/intersection/tests.rs`), and the
+two B67 plane–cone rim fillet witnesses (`blend/src/fillet_builder.rs`
+`closed_rim_oracles`), all failing on `main`.
 Current work lives in the master roadmap; closed narratives live in
 `campaign-history.md`.
 
@@ -177,6 +183,7 @@ harness's own option-honoured floor misreading a correct 0.05 fillet on an
   a mesh-fallback solid with only a log line; B21 now makes those paths exact-only. Read `BooleanOutcome` or use
   `ExactOnly` in any verification, never the bare handle.
 - **Pin fleet workflows to a commit reachable from `main`, never the PR branch head;** squash-merge plus branch deletion leaves the pin dangling and the Classify Changes routing tests fail on every later PR (`scripts/test-ubuntu-ci-routing.py`, PR #499).
+- **The mutation oracle is per package, so a kernel helper pinned only by `operations` or `io` regressions is unmeasured:** the B32/B33/B39 phase-FF helpers surfaced 172 weekly survivors until algo-level tests with closed-form oracles pinned them (`crates/algo/src/pave_filler/phase_ff/helper_oracle_tests.rs`, `docs/kernel-maturity/mutants-algo-ff-2026-09-25.md`).
 - **cargo-mutants 27 discovers `.cargo/mutants.toml`, not a root-level config;** verify real default selection and stale-path refusals with `scripts/test-mutants-scope.py` before claiming mutation scope (B19).
 - **Deterministic STEP emission sorts unordered face, void-shell, and hole-loop aggregates by arena ID but never sorts coedges;** coedge sequence carries boundary traversal semantics (`crates/io/src/step/writer.rs`).
 - **Public profile construction must use the strict wire-to-face path;** the low-level plane-from-points builder is not a collinearity validity gate (`crates/remus/src/model.rs`, PR #225).
@@ -188,6 +195,8 @@ harness's own option-honoured floor misreading a correct 0.05 fillet on an
 
 - **Tightening a section to its opposing face's true extent exposes arrangement gaps the overlong section masked;** a curved face must pre-split sections at its own wire vertices, and a section arc's endpoint-T test must use the true curve, not its chord (deepened-notch foil, PR #363).
 - **Exact circular trims on bilinear/Coons caps are vacuous — a planar section of one is a hyperbola or ruling line, never a circle;** curved cap holes stay typed-refused (with rollback), chase the certified iso-rect class or converged-approximate paths instead (`crates/operations/tests/qualify_b12_annular_coons.rs`, B12).
+- **A closed-rim fillet that passes validity can be the mirror-image blend;** check that the ball centre sits inside the material and that the removed volume matches Pappus — the plane–cone arm shipped a flared-foot torus behind validity-only tests (B67, `blend/src/fillet_builder.rs::closed_rim_oracles`).
+- **A test that accepts `None` or "any direction" kills no mutant;** the existing SSI tangency tests did, so the B19 marcher survivors ran free — build the exact case (a cylinder resting on a plane, a saddle cut by its tangent plane) whose answer is a closed form (`math/src/nurbs/intersection/tests.rs::marching_oracles`).
 - **Replay a fuzz artifact natively and print BOTH measurements before believing its message;** an assertion that formats one reading twice reads exactly like a no-op that never happened (`modifier_ops`, 2026-09-02).
 - **Not every scenario failure is a boolean fallback.** Tessellation density,
   shared-rim meshing, and face orientation produced whole failure families with
@@ -259,9 +268,11 @@ harness's own option-honoured floor misreading a correct 0.05 fillet on an
   a volume that disagrees with a pin can be Remus being MORE exact (the
   snapClip clip volume, the K0.1 parabolic fillet file).
 - **Rigid-motion paths must carry a placed carrier's frame, not rebuild it default-aligned:** re-creating a moved sphere from center + radius silently un-rotated it, tilting the equator against its hemispheres and breaking pole choice and CDT bounds three ways (B41, `crates/operations/tests/regress_sphere_transform_frame.rs`, PR #495).
+- **Adaptive quadrature over sampled trims needs a face-level error budget and knot-aligned cells:** a per-interval relative test starves on sub-ulp slivers next to seams, and NURBS cells straddling knots converge algebraically (one hammer face, 161 s → 10 s once aligned); uniform full-revolution tilings can also be exact by symmetric cancellation, so assert the error envelope, not raw monotonicity (B20, `check/src/properties/face_integrator/adaptive.rs`).
 - **A watertight coarse mesh can be two wrong sides erased:** a pole-holding sphere patch meshed as its complement at every scale, and the boundary weld plus coincident-triangle removal cancelled it against the neighbour; per-face attribution with weld/dedupe off shows the real mismatch (B40, `tessellate/sphere_pole_patch.rs`).
 - **A measurement route chosen because another is known wrong must never fall back to it:** `solid_volume`'s closed-mesh gates fell through to the rectangle on an open mesh, and a width sweep mixing routes carried the whole route error into its differences; the open case now takes the exact Gauss integral or refuses typed (B54, `crates/operations/tests/regress_volume_open_mesh_route.rs`).
 - **Holed planes are all CDT-triangulated before any Steiner splice runs:** a boundary Steiner point one holed plane inserts must be split into an already-meshed holed-plane neighbour, not only spliced into the edge chain for later faces (B54, `tessellate/solid.rs::split_triangles_spanning_boundary_splits`).
+- **A position-only `FaceSpec` mints `Line` edges, so a curved wall bounded by one carries chords that still validate:** the variable fillet's exact wall measured 824.4 against 826.2 because its end edges were chords, not because the fit was loose — sample the wall's boundary edges against the wall before calling a volume gap fit tolerance (B61, `crates/operations/tests/regress_variable_fillet_chord_end_trim.rs`).
 - **A seam that stops a blend chain walk is either a genuine surface transition (cross it) or a same-surface split (stop):** check outward normals pairwise plus an actual surface change before refusing; the equal-radius corner degenerates to a sphere with a singular Jacobian and needs the closed form (sequential fillet, `crates/blend/src/g1_chain.rs`, PR #496).
 - **Pin reusable-workflow callers only to main-reachable commits, never pre-squash branch SHAs:** a deleted source branch turns every PR's Classify Changes job into `fatal: path ... exists on disk, but not in ...` (`fuzz.yml` fleet-fuzz pin, PR #499, still OPEN).
 
