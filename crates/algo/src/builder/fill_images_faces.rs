@@ -3768,7 +3768,9 @@ fn clip_line_to_face_extent(
 /// Only pave junctions of the face's boundary edges (the interior image
 /// vertices the pave machinery minted) are split points: they are exactly the
 /// places an operand edge meets this face's boundary. Line sections are left
-/// to their calibrated boundary clip.
+/// to their calibrated boundary clip, and CLOSED curved sections (a full
+/// circle touching the outline, e.g. a cylinder inscribed in a box wall) to
+/// the closed-loop machinery that already treats them as holes.
 fn split_plane_curved_sections_at_boundary_junctions<S: BuildHasher>(
     topo: &Topology,
     face_id: FaceId,
@@ -3776,10 +3778,10 @@ fn split_plane_curved_sections_at_boundary_junctions<S: BuildHasher>(
     edge_images: &HashMap<EdgeId, Vec<EdgeId>, S>,
     tol: f64,
 ) -> Vec<crate::builder::split_types::SectionEdge> {
-    if sections
-        .iter()
-        .all(|s| matches!(s.curve_3d, EdgeCurve::Line))
-    {
+    let splittable = |s: &crate::builder::split_types::SectionEdge| {
+        !matches!(s.curve_3d, EdgeCurve::Line) && (s.end - s.start).length() > tol
+    };
+    if !sections.iter().any(splittable) {
         return sections;
     }
     let junctions = face_boundary_image_junctions(topo, face_id, edge_images);
@@ -3789,7 +3791,7 @@ fn split_plane_curved_sections_at_boundary_junctions<S: BuildHasher>(
     let empty = std::collections::HashMap::new();
     let mut out = Vec::with_capacity(sections.len());
     for s in sections {
-        if matches!(s.curve_3d, EdgeCurve::Line) {
+        if !splittable(&s) {
             out.push(s);
         } else {
             out.extend(presplit_sections_at_registry(
