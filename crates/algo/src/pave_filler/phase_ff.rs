@@ -470,7 +470,16 @@ pub fn perform_with_context(
                 v_range_b,
                 context,
             )?;
-            raw_curves.extend(tangent_torus_boundary_sections(topo, fa, fb, tol)?);
+            // A tangent rim the pair carries exactly replaces any marched
+            // trace of the same tangency: the trace is a co-endpoint duplicate
+            // of the rim arc that the loop walker orders by a zero angle.
+            let tangent_rims = tangent_torus_boundary_sections(topo, fa, fb, tol)?;
+            if !tangent_rims.is_empty() {
+                raw_curves.retain(|raw| {
+                    !is_marched_trace_of_tangent_rim(raw, &tangent_rims, surf_a, surf_b, tol)
+                });
+            }
+            raw_curves.extend(tangent_rims);
             // Intersection implementations are allowed to refuse, never to
             // smuggle an invalid parameter span into a sampler that would
             // quietly classify every NaN point as outside and drop the curve.
@@ -4887,6 +4896,11 @@ fn compute_face_bbox(topo: &Topology, face_id: FaceId, tol: Tolerance) -> Result
             let pt = edge.curve().evaluate_with_endpoints(t, start_pos, end_pos);
             points.push(pt);
         }
+        // Samples alone under-bound a circle or ellipse: the box of an
+        // 8-interval full circle is an inscribed octagon's, up to
+        // r·(1 − cos π/8) ≈ 7.6 % of the radius short on an axis, and by how
+        // much depends on where the seam puts the samples (B52).
+        points.extend(conic_arc_axis_extrema(edge.curve(), t0, t1));
     }
 
     // A sphere or torus face bulges beyond its boundary edges (a hemisphere's
@@ -4930,6 +4944,53 @@ fn compute_face_bbox(topo: &Topology, face_id: FaceId, tol: Tolerance) -> Result
             max: Point3::new(0.0, 0.0, 0.0),
         },
     })
+}
+
+/// The points of a circle or ellipse arc that are extreme along each world
+/// axis, restricted to the arc's parameter window `[t0, t1]`.
+///
+/// Along axis `k` the conic reads `c_k + a·u_k·cos t + b·v_k·sin t`, extreme
+/// at `t* = atan2(b·v_k, a·u_k)` and `t* + π`. Each extremum whose periodic
+/// copy lands inside the window is returned; together with the arc's endpoints
+/// these bound the arc exactly (to rounding), wherever its seam sits. Other
+/// carriers return nothing: lines are bounded by their endpoints, and the
+/// remaining curves keep their existing sampled bound.
+fn conic_arc_axis_extrema(curve: &EdgeCurve, t0: f64, t1: f64) -> Vec<Point3> {
+    let (u_axis, v_axis, a, b) = match curve {
+        EdgeCurve::Circle(c) => (c.u_axis(), c.v_axis(), c.radius(), c.radius()),
+        EdgeCurve::Ellipse(e) => (e.u_axis(), e.v_axis(), e.semi_major(), e.semi_minor()),
+        // B24: exhaustive over `EdgeCurve` — only the trigonometric conics
+        // have closed-form axis extrema here.
+        EdgeCurve::Line
+        | EdgeCurve::NurbsCurve(_)
+        | EdgeCurve::Hyperbola(_)
+        | EdgeCurve::Parabola(_) => return Vec::new(),
+    };
+    let (lo, hi) = if t0 <= t1 { (t0, t1) } else { (t1, t0) };
+    if !(lo.is_finite() && hi.is_finite()) {
+        return Vec::new();
+    }
+    let tau = std::f64::consts::TAU;
+    let mut out = Vec::new();
+    for (uk, vk) in [
+        (u_axis.x(), v_axis.x()),
+        (u_axis.y(), v_axis.y()),
+        (u_axis.z(), v_axis.z()),
+    ] {
+        // Every point pushed lies on the arc, so the bound never widens past
+        // it — even for an axis normal to the conic plane (`atan2(0, 0)`).
+        let t_star = (b * vk).atan2(a * uk);
+        for cand in [t_star, t_star + std::f64::consts::PI] {
+            // First periodic copy of `cand` at or after `lo`.
+            let t = ((lo - cand) / tau).ceil().mul_add(tau, cand);
+            if t <= hi {
+                // Circles and ellipses ignore the endpoint arguments.
+                let unused = Point3::new(0.0, 0.0, 0.0);
+                out.push(curve.evaluate_with_endpoints(t, unused, unused));
+            }
+        }
+    }
+    out
 }
 
 /// Pole-side axis of a spherical face, from its boundary winding: the summed
@@ -5368,6 +5429,79 @@ fn tangent_torus_boundary_sections(
         });
     }
     Ok(sections)
+}
+
+/// Is `raw` a marched trace that merely re-traces one of the pair's exact
+/// tangent rim circles?
+///
+/// A torus fillet patch tangent to a cylinder wall (its own fillet rim, or
+/// the same x-axis cylinder on a copy of the body translated along x) has
+/// no transversal section there: the surfaces touch along the rim circle,
+/// which [`tangent_torus_boundary_sections`] already emits exactly so that
+/// `link_existing` welds it onto the boundary edge. The generic marcher
+/// still walks the tangency, and a trace along a double root is
+/// ill-conditioned: a point within δ of both carriers can sit √(2·r·δ) off
+/// the true contact circle (the hammer holder's shifted intersect measured
+/// 1.2e-4 at r = 8, with the normals parallel to 1.6e-6 rad along the whole
+/// trace), far past every 1e-7 gate downstream. Emitted beside the exact
+/// circle it is a co-endpoint duplicate of a rim arc — the lens no
+/// endpoint-keyed merge can resolve — and the loop walker orders the two
+/// tangent edges at their shared vertices by an angle that is zero to
+/// roundoff. Natively that read as an out-and-back spur the builder
+/// excised; on wasm32, whose libm rounds differently, the same ~1e-12
+/// perturbation made the trace the patch boundary and left the rim arc and
+/// the trace as 4 free edges (WASM smoke, 2026-09-24, #618 / #627). No weld
+/// band fixes a duplicate; the geometry emitted is controlled instead.
+///
+/// Dropped when EVERY sample of the trace is a tangency — both carrier
+/// normals parallel within the angular conditioning band — lying within the
+/// positional conditioning band of one exact rim. Both bands derive from
+/// the 100·tol weld scale δ through the tangency conditioning (position
+/// √(2·r·δ), angle √(2·δ/r)); nothing global changes. A transversal crossing
+/// has finite normal angles and leaves the circle, so it is kept.
+fn is_marched_trace_of_tangent_rim(
+    raw: &RawCurve,
+    tangent_rims: &[RawCurve],
+    surf_a: &FaceSurface,
+    surf_b: &FaceSurface,
+    tol: Tolerance,
+) -> bool {
+    const SAMPLES: u32 = 32;
+    if !matches!(raw.curve, EdgeCurve::NurbsCurve(_)) {
+        return false;
+    }
+    let weld = tol.linear * 100.0;
+    let span = raw.t_range.1 - raw.t_range.0;
+    let samples: Vec<Point3> = (0..=SAMPLES)
+        .map(|k| {
+            raw_point_at(
+                raw,
+                raw.t_range.0 + span * f64::from(k) / f64::from(SAMPLES),
+            )
+        })
+        .collect();
+    tangent_rims.iter().any(|rim| {
+        let EdgeCurve::Circle(circle) = &rim.curve else {
+            return false;
+        };
+        let r = circle.radius();
+        let position_band = (2.0 * r * weld).sqrt().max(weld);
+        let angle_band = (2.0 * weld / r).sqrt().min(1.0);
+        samples.iter().all(|&p| {
+            let d = p - circle.center();
+            let h = d.dot(circle.normal());
+            let radial = (d - circle.normal() * h).length();
+            if h.hypot(radial - r) > position_band {
+                return false;
+            }
+            let (Some((ua, va)), Some((ub, vb))) =
+                (surf_a.project_point(p), surf_b.project_point(p))
+            else {
+                return false;
+            };
+            surf_a.normal(ua, va).cross(surf_b.normal(ub, vb)).length() <= angle_band
+        })
+    })
 }
 
 /// Compute raw intersection curves between two surfaces.
@@ -8178,6 +8312,108 @@ mod tests {
         }
     }
 
+    /// A marched NURBS trace that re-traces a tangent rim within the
+    /// tangency conditioning band is dropped; a trace that leaves the
+    /// circle, or the same trace on a pair whose normals cross, is kept.
+    #[test]
+    fn marched_trace_of_tangent_rim_is_dropped_and_crossings_are_kept() {
+        use remus_math::{
+            curves::Circle3D,
+            nurbs::fitting::interpolate,
+            surfaces::{CylindricalSurface, ToroidalSurface},
+        };
+        let tol = Tolerance::default();
+        for scale in [0.01, 1.0, 100.0] {
+            let torus = ToroidalSurface::with_axis(
+                Point3::new(2.0, -3.0, 4.0),
+                8.0 * scale,
+                3.0 * scale,
+                Vec3::new(1.0, 2.0, 3.0),
+            )
+            .unwrap();
+            let radial = torus.x_axis();
+            let centre = torus.center() + radial * torus.major_radius();
+            let axis = radial.cross(torus.z_axis()).normalize().unwrap();
+            let r = torus.minor_radius();
+            let circle = Circle3D::new_with_ref(centre, axis, r, radial).unwrap();
+            let domain = (1.6, 3.1);
+            let rim = RawCurve {
+                curve: EdgeCurve::Circle(circle.clone()),
+                bbox: circle_bbox(&circle),
+                t_range: domain,
+                p_start: circle.evaluate(domain.0),
+                p_end: circle.evaluate(domain.1),
+            };
+            let tangent = FaceSurface::Cylinder(CylindricalSurface::new(centre, axis, r).unwrap());
+            let torus_surface = FaceSurface::Torus(torus.clone());
+            let trace = |off_circle: f64| -> RawCurve {
+                // The marcher's noise along a tangency: samples displaced
+                // along the tube (the cylinder axis) by up to `off_circle`.
+                let points: Vec<Point3> = (0..24)
+                    .map(|k| {
+                        let t = domain.0 + (domain.1 - domain.0) * f64::from(k) / 23.0;
+                        let wobble = if k % 2 == 0 { off_circle } else { -off_circle };
+                        circle.evaluate(t) + axis * wobble
+                    })
+                    .collect();
+                let nurbs = interpolate(&points, 3).unwrap();
+                let t_range = nurbs.domain();
+                RawCurve {
+                    bbox: Aabb3::from_points(points.iter().copied()),
+                    t_range,
+                    p_start: points[0],
+                    p_end: points[23],
+                    curve: EdgeCurve::NurbsCurve(nurbs),
+                }
+            };
+            // The hammer holder's measured deviation, scaled: 1.2e-4 at r = 8.
+            let noisy = trace(1.2e-4 * scale);
+            for (a, b) in [(&torus_surface, &tangent), (&tangent, &torus_surface)] {
+                assert!(
+                    is_marched_trace_of_tangent_rim(&noisy, std::slice::from_ref(&rim), a, b, tol),
+                    "tangential trace at scale {scale} must be dropped"
+                );
+            }
+            // Past the positional conditioning band √(2·r·δ) it is not the rim.
+            let far = trace((2.0 * r * tol.linear * 100.0).sqrt() * 4.0);
+            assert!(!is_marched_trace_of_tangent_rim(
+                &far,
+                std::slice::from_ref(&rim),
+                &torus_surface,
+                &tangent,
+                tol
+            ));
+            // The same trace against a cylinder whose axis crosses the rim
+            // plane: normals meet at a finite angle, so it is a real section.
+            let tilted_axis = (axis + radial * 0.3).normalize().unwrap();
+            let crossing =
+                FaceSurface::Cylinder(CylindricalSurface::new(centre, tilted_axis, r).unwrap());
+            assert!(!is_marched_trace_of_tangent_rim(
+                &noisy,
+                std::slice::from_ref(&rim),
+                &torus_surface,
+                &crossing,
+                tol
+            ));
+            // Without an exact rim there is nothing to duplicate; the exact
+            // circle itself is never a marched trace.
+            assert!(!is_marched_trace_of_tangent_rim(
+                &noisy,
+                &[],
+                &torus_surface,
+                &tangent,
+                tol
+            ));
+            assert!(!is_marched_trace_of_tangent_rim(
+                &rim,
+                std::slice::from_ref(&rim),
+                &torus_surface,
+                &tangent,
+                tol
+            ));
+        }
+    }
+
     fn square_plane_face(topo: &mut Topology, half_extent: f64) -> FaceId {
         use remus_topology::face::Face;
         use remus_topology::wire::{OrientedEdge, Wire};
@@ -9638,5 +9874,115 @@ mod conic_crossing_tests {
         let pedge = Edge::new(ps, pe, EdgeCurve::Parabola(parabola));
         let hits = conic_edge_plane_crossings(&pedge, normal, 0.5).unwrap();
         assert!(hits.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod face_bbox_conic_tests {
+    #![allow(clippy::unwrap_used)]
+    use remus_math::aabb::Aabb3;
+    use remus_math::curves::{Circle3D, Ellipse3D};
+    use remus_math::tolerance::Tolerance;
+    use remus_math::vec::{Point3, Vec3};
+    use remus_topology::Topology;
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::face::{Face, FaceId, FaceSurface};
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
+
+    use super::{compute_face_bbox, conic_arc_axis_extrema};
+
+    /// A z = 0.5 disc bounded by one closed circle edge.
+    fn disc_face(topo: &mut Topology, circle: Circle3D) -> FaceId {
+        let v = topo.add_vertex(Vertex::new(circle.evaluate(0.0), 1e-7));
+        let mut edge = Edge::new(v, v, EdgeCurve::Circle(circle));
+        edge.set_trim(Some((0.0, std::f64::consts::TAU)));
+        let e = topo.add_edge(edge);
+        let w = topo.add_wire(Wire::new(vec![OrientedEdge::new(e, true)], true).unwrap());
+        topo.add_face(Face::new(
+            w,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.5,
+            },
+        ))
+    }
+
+    /// B52: the face broad-phase box must contain the whole rim wherever the
+    /// seam sits. The box–cylinder notch (rim r = 2 about (0.5, −1.5)) lost
+    /// its x = 0 generator at y = 0.436 when the seam at 2.0 rad put the
+    /// 8-interval sampled box top at y = 0.374 instead of 0.5.
+    #[test]
+    fn closed_circle_face_box_is_exact_at_every_seam() {
+        let (cx, cy, r) = (0.5, -1.5, 2.0);
+        for k in 0..64 {
+            let seam = f64::from(k).mul_add(std::f64::consts::TAU / 64.0, 0.3);
+            let mut topo = Topology::new();
+            let circle = Circle3D::new_with_ref(
+                Point3::new(cx, cy, 0.5),
+                Vec3::new(0.0, 0.0, 1.0),
+                r,
+                Vec3::new(seam.cos(), seam.sin(), 0.0),
+            )
+            .unwrap();
+            let face = disc_face(&mut topo, circle);
+            let bb = compute_face_bbox(&topo, face, Tolerance::default()).unwrap();
+            for (got, want) in [
+                (bb.min.x(), cx - r),
+                (bb.max.x(), cx + r),
+                (bb.min.y(), cy - r),
+                (bb.max.y(), cy + r),
+            ] {
+                assert!(
+                    (got - want).abs() <= 1e-12,
+                    "seam {seam:.4}: box bound {got} vs rim extent {want}"
+                );
+            }
+        }
+    }
+
+    /// Ellipse arcs: the extrema plus the endpoints bound a dense sampling of
+    /// every window, and every returned point lies on the ellipse (the bound
+    /// never widens past the arc).
+    #[test]
+    fn ellipse_arc_extrema_bound_a_dense_sampling() {
+        let (a, b) = (3.0, 1.25);
+        let center = Point3::new(1.0, 2.0, 3.0);
+        let ellipse = Ellipse3D::new_with_ref(
+            center,
+            Vec3::new(1.0, 2.0, 2.0),
+            a,
+            b,
+            Vec3::new(2.0, -1.0, 0.0),
+        )
+        .unwrap();
+        let curve = EdgeCurve::Ellipse(ellipse.clone());
+        for (t0, t1) in [
+            (0.2, 1.4),
+            (-2.0, 3.5),
+            (5.0, 9.0),
+            (0.0, std::f64::consts::TAU),
+        ] {
+            let extrema = conic_arc_axis_extrema(&curve, t0, t1);
+            for p in &extrema {
+                let d = *p - center;
+                let (x, y) = (d.dot(ellipse.u_axis()) / a, d.dot(ellipse.v_axis()) / b);
+                assert!(
+                    (x.hypot(y) - 1.0).abs() <= 1e-12 && d.dot(ellipse.normal()).abs() <= 1e-12,
+                    "arc ({t0}, {t1}): extremum {p:?} off the ellipse"
+                );
+            }
+            let mut pts = vec![ellipse.evaluate(t0), ellipse.evaluate(t1)];
+            pts.extend(extrema);
+            let boxed = Aabb3::from_points(pts).expanded(1e-12);
+            for i in 0..=20_000 {
+                let t = (t1 - t0).mul_add(f64::from(i) / 20_000.0, t0);
+                assert!(
+                    boxed.contains_point(ellipse.evaluate(t)),
+                    "arc ({t0}, {t1}): point at t={t} escapes the box"
+                );
+            }
+        }
     }
 }
