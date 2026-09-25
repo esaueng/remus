@@ -227,6 +227,25 @@ impl StructuredWasmError {
         Self::new(WasmErrorCode::OperationFailed, message)
     }
 
+    /// An exact-only request whose only available result is approximate:
+    /// category `quality_refused`, native code `exact_only_unattainable` —
+    /// the same projection as `OperationsError::ExactOnlyUnattainable`.
+    pub(crate) fn exact_only_unattainable(message: impl Into<String>) -> Self {
+        let mut structured = Self::operation_failed(message);
+        structured.category = FailureCategory::QualityRefused.as_str();
+        structured.details.insert(
+            "kernelCode".to_string(),
+            Value::from("exact_only_unattainable"),
+        );
+        structured
+    }
+
+    /// Attach one structured detail field.
+    pub(crate) fn with_detail(mut self, key: &str, value: impl Into<Value>) -> Self {
+        self.details.insert(key.to_string(), value.into());
+        self
+    }
+
     pub(crate) fn resource_limit(
         message: impl Into<String>,
         resource: &'static str,
@@ -416,13 +435,7 @@ impl From<remus_operations::OperationsError> for StructuredWasmError {
         let message = error.to_string();
         match error {
             remus_operations::OperationsError::ExactOnlyUnattainable => {
-                let mut structured = Self::operation_failed(message);
-                structured.category = FailureCategory::QualityRefused.as_str();
-                structured.details.insert(
-                    "kernelCode".to_string(),
-                    Value::from("exact_only_unattainable"),
-                );
-                structured
+                Self::exact_only_unattainable(message)
             }
             remus_operations::OperationsError::InvalidInput { .. } => {
                 Self::invalid_argument(message, None)
