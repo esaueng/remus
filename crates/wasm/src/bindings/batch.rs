@@ -446,6 +446,8 @@ impl BrepKernel {
         op: &str,
         args: &serde_json::Value,
     ) -> BatchItemResult {
+        #[cfg(feature = "perf-counters")]
+        let _scope = remus_topology::transaction::perf::Scope::enter(kind != BatchOpKind::ReadOnly);
         if kind == BatchOpKind::ReadOnly {
             // O(1). Still correct if the op does mutate: `Rc::make_mut` in
             // `topo_mut` sees the extra reference and copies the pre-op arenas

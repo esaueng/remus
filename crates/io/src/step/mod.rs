@@ -13,3 +13,8 @@ pub use writer::{
     StepWriteOptions, write_step, write_step_bodies, write_step_bodies_with_options,
     write_step_sheets, write_step_with_options,
 };
+
+pub use reader::assembly::{
+    StepAssemblyReadResult, read_step_assembly, read_step_assembly_with_limits,
+};
+pub use writer::assembly::write_step_assembly;

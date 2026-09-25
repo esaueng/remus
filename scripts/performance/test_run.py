@@ -108,6 +108,9 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual({c["family"] for c in cases}, {"nurbs", "transform", "chain"})
         for path in ["native_transform_direct", "native_transform_batch", "wasm_transform_direct", "wasm_transform_batch"]:
             self.assertEqual([c["size"] for c in cases if c["scenario"] == path], [50, 200, 400])
+        for path in ["native_transform_direct_checkpoint", "native_transform_batch_checkpoint",
+                     "wasm_transform_direct_checkpoint", "wasm_transform_batch_checkpoint"]:
+            self.assertEqual([c["size"] for c in cases if c["scenario"] == path], [50, 200, 400])
         for fixture in manifest["fixtures"]:
             self.assertEqual(baseline.digest(baseline.ROOT / fixture["path"]), fixture["sha256"])
 

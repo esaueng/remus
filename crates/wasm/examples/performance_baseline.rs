@@ -37,7 +37,7 @@ fn checked_batch(output: &str, count: usize) -> Vec<Value> {
     rows
 }
 
-fn transform(size: usize, direct: bool) -> (u128, Value) {
+fn transform(size: usize, direct: bool, checkpoint: bool) -> (u128, Value) {
     let mut kernel = BrepKernel::new();
     let seeds = vec![json!({"op":"makeBox", "args":{"width":1.,"height":1.,"depth":1.}}); size];
     let handles = batch(&mut kernel, &serde_json::to_string(&seeds).unwrap(), size);
@@ -53,6 +53,12 @@ fn transform(size: usize, direct: bool) -> (u128, Value) {
         CALLS
     ])
     .unwrap();
+    let checkpoint_id = checkpoint.then(|| kernel.checkpoint());
+    let checkpoint_count = kernel.checkpoint_count();
+    #[cfg(feature = "perf-counters")]
+    let census = kernel.performance_topology_census();
+    #[cfg(feature = "perf-counters")]
+    remus_topology::transaction::perf::reset().expect("no active transaction before witness");
     let start = Instant::now();
     let output = if direct {
         for _ in 0..CALLS {
@@ -65,6 +71,14 @@ fn transform(size: usize, direct: bool) -> (u128, Value) {
         Some(kernel.execute_batch(&input))
     };
     let ns = start.elapsed().as_nanos();
+    #[cfg(feature = "perf-counters")]
+    let counters = remus_topology::transaction::perf::snapshot();
+    #[cfg(feature = "perf-counters")]
+    assert_eq!(
+        kernel.performance_topology_census(),
+        census,
+        "fixed edit preserves entity census"
+    );
     if let Some(output) = output {
         checked_batch(&output, CALLS);
     }
@@ -81,10 +95,35 @@ fn transform(size: usize, direct: bool) -> (u128, Value) {
         near(values[2]["ok"][i].as_f64().unwrap(), stationary[i]);
     }
     near(values[1]["ok"].as_f64().unwrap(), 1.);
-    (
-        ns,
-        json!({"calls":CALLS,"volume":1.,"translation_x":0.15,"untouched_solid_checked":true}),
-    )
+    if let Some(id) = checkpoint_id {
+        kernel.restore(id).expect("checkpoint restore");
+        let restored = batch(
+            &mut kernel,
+            &json!([
+                {"op":"boundingBox","args":{"solid":base}},
+                {"op":"volume","args":{"solid":base,"deflection":0.5}}
+            ])
+            .to_string(),
+            2,
+        );
+        for (i, expected) in stationary.iter().enumerate() {
+            near(restored[0]["ok"][i].as_f64().unwrap(), *expected);
+        }
+        near(restored[1]["ok"].as_f64().unwrap(), 1.);
+    }
+    #[allow(unused_mut)]
+    let mut metrics = json!({"calls":CALLS,"volume":1.,"translation_x":0.15,
+        "untouched_solid_checked":true, "checkpoint_count":checkpoint_count,
+        "checkpoint_restore_checked":checkpoint, "transaction_counters":null});
+    #[cfg(feature = "perf-counters")]
+    {
+        assert_eq!(counters.active_depth, 0);
+        metrics["topology_before"] = census;
+        metrics["transaction_counters"] = json!({"transactions":counters.transactions,
+            "snapshots":counters.snapshots,"cow_copies":counters.cow_copies,
+            "max_depth":counters.max_depth,"active_depth":counters.active_depth});
+    }
+    (ns, metrics)
 }
 
 fn chain(size: usize) -> (u128, Value) {
@@ -189,13 +228,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             #[cfg(not(feature = "io"))]
             return Err("NURBS benchmarks require --features io".into());
         }
-        "native_chain" | "native_transform_direct" | "native_transform_batch" => {
+        "native_chain"
+        | "native_transform_direct"
+        | "native_transform_batch"
+        | "native_transform_direct_checkpoint"
+        | "native_transform_batch_checkpoint" => {
             assert!((2..=8192).contains(&size));
             for sample in 0..samples + warmup {
                 let (ns, metrics) = if scenario == "native_chain" {
                     chain(size)
                 } else {
-                    transform(size, scenario == "native_transform_direct")
+                    transform(
+                        size,
+                        scenario.starts_with("native_transform_direct"),
+                        scenario.ends_with("_checkpoint"),
+                    )
                 };
                 emit(scenario, size, sample, warmup, ns, metrics);
             }

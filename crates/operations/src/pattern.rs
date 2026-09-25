@@ -7,9 +7,10 @@ use remus_math::tolerance::Tolerance;
 use remus_math::vec::Vec3;
 use remus_topology::Topology;
 use remus_topology::compound::{Compound, CompoundId};
+use remus_topology::journal::EntityKey;
 use remus_topology::solid::SolidId;
 
-use crate::copy::copy_solid_with_face_map;
+use crate::copy::{copy_solid_with_entity_map, copy_solid_with_face_map};
 use crate::evolution::EvolutionMap;
 use crate::transform::transform_solid;
 
@@ -87,6 +88,23 @@ pub fn linear_pattern_with_evolution(
     spacing: f64,
     count: usize,
 ) -> Result<(CompoundId, EvolutionMap), crate::OperationsError> {
+    linear_pattern_with_entity_evolution(topo, solid, direction, spacing, count)
+        .map(|result| (result.compound, result.faces))
+}
+
+pub(crate) struct LinearPatternEvolution {
+    pub compound: CompoundId,
+    pub faces: EvolutionMap,
+    pub boundaries: Vec<(EntityKey, EntityKey)>,
+}
+
+pub(crate) fn linear_pattern_with_entity_evolution(
+    topo: &mut Topology,
+    solid: SolidId,
+    direction: Vec3,
+    spacing: f64,
+    count: usize,
+) -> Result<LinearPatternEvolution, crate::OperationsError> {
     remus_topology::transaction::run_transacted(topo, |topo| {
         linear_pattern_impl(topo, solid, direction, spacing, count)
     })
@@ -98,7 +116,7 @@ fn linear_pattern_impl(
     direction: Vec3,
     spacing: f64,
     count: usize,
-) -> Result<(CompoundId, EvolutionMap), crate::OperationsError> {
+) -> Result<LinearPatternEvolution, crate::OperationsError> {
     let tol = Tolerance::new();
 
     if count < 1 {
@@ -115,12 +133,38 @@ fn linear_pattern_impl(
     let dir = direction.normalize()?;
 
     let mut tracker = PatternTracker::new(topo, solid)?;
+    let mut boundaries: Vec<_> = remus_topology::explorer::solid_edges(topo, solid)?
+        .into_iter()
+        .map(|id| EntityKey::edge(id.index()))
+        .chain(
+            remus_topology::explorer::solid_vertices(topo, solid)?
+                .into_iter()
+                .map(|id| EntityKey::vertex(id.index())),
+        )
+        .map(|key| (key, key))
+        .collect();
     let mut solids = Vec::with_capacity(count);
     solids.push(solid);
 
     for i in 1..count {
-        let (copy, face_map) = copy_solid_with_face_map(topo, solid)?;
-        tracker.record_instance(&face_map);
+        let copied = copy_solid_with_entity_map(topo, solid)?;
+        let copy = copied.solid;
+        tracker.record_instance(
+            &copied
+                .face_map
+                .into_iter()
+                .map(|(source, target)| (source, target.index()))
+                .collect(),
+        );
+        boundaries.extend(
+            copied
+                .edge_map
+                .into_iter()
+                .map(|(source, target)| (EntityKey::edge(source), EntityKey::edge(target.index()))),
+        );
+        boundaries.extend(copied.vertex_map.into_iter().map(|(source, target)| {
+            (EntityKey::vertex(source), EntityKey::vertex(target.index()))
+        }));
         #[allow(clippy::cast_precision_loss)]
         let offset = dir * (spacing * i as f64);
         let matrix = Mat4::translation(offset.x(), offset.y(), offset.z());
@@ -128,7 +172,13 @@ fn linear_pattern_impl(
         solids.push(copy);
     }
 
-    finish_pattern(topo, solids, tracker)
+    let (compound, faces) = finish_pattern(topo, solids, tracker)?;
+    boundaries.sort_unstable();
+    Ok(LinearPatternEvolution {
+        compound,
+        faces,
+        boundaries,
+    })
 }
 
 /// Create a circular pattern of a solid.

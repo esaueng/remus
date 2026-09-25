@@ -469,20 +469,9 @@ fn b32_box_cone_sibling_fuse_is_seam_placement_invariant() {
     }
 }
 
-/// Ready-repro, discovered while closing B32 (2026-09-24), owner row B52:
-/// the CYLINDER twin of the sibling (box 2.5×1×1 with a cylinder r=2, h=1
-/// at the same `translation(0.5,-1.5,-0.5) · rotation_z(rot)` placement)
-/// refuses all three legs `ExactOnlyUnattainable` at seam rotations 0.3 and
-/// 2.0 rad about the cylinder's own axis, while 0, 1.0, π/2, 2.5, π, 4.0,
-/// 3π/2 and 5.5 fuse exact (Gauss 14.71997). The raw GFA fuse at 2.0 drops
-/// the bottom cap and leaves the lateral with zero area (V−E+F = 1): the
-/// lateral reaches the wire builder with none of its notch sections, and the
-/// greedy walker discards the bottom rim as at the cone (same
-/// `discarding incomplete loop` warning at the seam's bottom vertex). The
-/// cone arm's orphaned-rim rescue does not apply — there is no section in
-/// the trace input to recover. Acceptance target encoded below.
+/// B52: rotating a cylinder seam must not lose valid notch sections to the
+/// face-face broad phase. Sampled circular-rim bounds formerly dropped them.
 #[test]
-#[ignore = "open: box-cylinder rim notch refuses at seam rotations 0.3 and 2.0 (B52)"]
 fn b52_box_cylinder_notch_is_seam_placement_invariant() {
     let build = |topo: &mut Topology, rot: f64| {
         let m = Mat4::translation(0.5, -1.5, -0.5) * Mat4::rotation_z(rot);
@@ -493,13 +482,28 @@ fn b52_box_cylinder_notch_is_seam_placement_invariant() {
     };
     let v_box = 2.5;
     let v_cyl = std::f64::consts::PI * 4.0;
-    for rot in [0.3, 2.0] {
+    for rot in [
+        0.0,
+        0.3,
+        1.0,
+        std::f64::consts::FRAC_PI_2,
+        2.0,
+        2.5,
+        std::f64::consts::PI,
+        4.0,
+        3.0 * std::f64::consts::FRAC_PI_2,
+        5.5,
+    ] {
         let what = format!("box-cylinder rot={rot}");
         let run = |op: BooleanOp| {
             let mut t = Topology::new();
             let (a, b) = build(&mut t, rot);
             let s = exact_boolean(&mut t, op, a, b).unwrap_or_else(|e| panic!("{what}: {e}"));
-            assert_strict_valid(&t, s, &format!("{what} {op:?}"));
+            let label = format!("{what} {op:?}");
+            assert_strict_valid(&t, s, &label);
+            assert_watertight(&t, s, &label);
+            assert_b52_material(&t, s, op, &label);
+            assert_translation_invariant(&t, s, &label);
             gauss_volume(&t, s)
         };
         let (gf, gc, gi) = (
@@ -514,6 +518,76 @@ fn b52_box_cylinder_notch_is_seam_placement_invariant() {
         assert!(
             (gc + gi - v_box).abs() / v_box <= 1e-6,
             "{what}: cut {gc:.9} + inter {gi:.9} != box"
+        );
+    }
+}
+
+fn assert_b52_material(topo: &Topology, solid: SolidId, op: BooleanOp, what: &str) {
+    use remus_check::classify::{ClassifyOptions, PointClassification, classify_point};
+    use remus_math::vec::Point3;
+    use remus_topology::face::FaceSurface;
+    let faces = remus_topology::explorer::solid_faces(topo, solid).unwrap();
+    assert!(faces.len() <= 20, "{what}: {} faces", faces.len());
+    assert!(
+        faces
+            .iter()
+            .any(|f| matches!(topo.face(*f).unwrap().surface(), FaceSurface::Cylinder(_)))
+    );
+    assert!(faces.iter().all(|f| matches!(
+        topo.face(*f).unwrap().surface(),
+        FaceSurface::Plane { .. } | FaceSurface::Cylinder(_)
+    )));
+    let mut uses = std::collections::BTreeMap::new();
+    #[allow(clippy::cast_possible_truncation)]
+    let quantize = |p: Point3| {
+        [
+            (p.x() * 1e6).round() as i64,
+            (p.y() * 1e6).round() as i64,
+            (p.z() * 1e6).round() as i64,
+        ]
+    };
+    for face in faces {
+        let face = topo.face(face).unwrap();
+        for wire in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+            for oe in topo.wire(wire).unwrap().edges() {
+                let edge = topo.edge(oe.edge()).unwrap();
+                let start = topo.vertex(edge.start()).unwrap().point();
+                let end = topo.vertex(edge.end()).unwrap().point();
+                let (lo, hi) = edge.strict_domain().unwrap();
+                let mid = edge
+                    .curve()
+                    .evaluate_with_endpoints(f64::midpoint(lo, hi), start, end);
+                let mut ends = [quantize(start), quantize(end)];
+                ends.sort_unstable();
+                *uses.entry((ends, quantize(mid))).or_insert(0) += 1;
+            }
+        }
+    }
+    assert!(
+        uses.values().all(|count| *count == 2),
+        "{what}: position-quantized edge uses {uses:?}"
+    );
+    for (point, in_box, in_cylinder) in [
+        (Point3::new(0.5, 0.2, 0.25), true, true),
+        (Point3::new(2.0, 0.8, 0.8), true, false),
+        (Point3::new(0.5, -1.5, -0.25), false, true),
+        (Point3::new(0.5, -1.5, -0.6), false, false),
+        (Point3::new(3.0, 2.0, 0.25), false, false),
+    ] {
+        let inside = match op {
+            BooleanOp::Fuse => in_box || in_cylinder,
+            BooleanOp::Cut => in_box && !in_cylinder,
+            BooleanOp::Intersect => in_box && in_cylinder,
+        };
+        let want = if inside {
+            PointClassification::Inside
+        } else {
+            PointClassification::Outside
+        };
+        assert_eq!(
+            classify_point(topo, solid, point, &ClassifyOptions::default()).unwrap(),
+            want,
+            "{what}: probe {point:?}"
         );
     }
 }

@@ -6098,7 +6098,27 @@ fn split_face_2d_impl(
     let has_open_section = sections
         .iter()
         .any(|s| (s.start - s.end).length() > tol.linear);
-    if all_boundary_line && !is_plane && has_open_section {
+    // A certified bilinear ruling is an ordinary chart divider. The no-seam
+    // shortcut reconstructs a spherical rim and leaves this cap unsplit.
+    let nurbs_line_sections = if let FaceSurface::Nurbs(nurbs) = &surface {
+        let clamped = |knots: &[f64]| match knots {
+            [a, b, c, d] => a.to_bits() == b.to_bits() && c.to_bits() == d.to_bits() && b < c,
+            _ => false,
+        };
+        nurbs.degree_u() == 1
+            && nurbs.degree_v() == 1
+            && nurbs.control_points().len() == 2
+            && nurbs.control_points().iter().all(|row| row.len() == 2)
+            && !nurbs.is_rational()
+            && clamped(nurbs.knots_u())
+            && clamped(nurbs.knots_v())
+            && sections
+                .iter()
+                .all(|section| matches!(section.curve_3d, EdgeCurve::Line))
+    } else {
+        false
+    };
+    if all_boundary_line && !is_plane && has_open_section && !nurbs_line_sections {
         return split_noseam_face_direct(
             &surface,
             &boundary_edges,

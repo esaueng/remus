@@ -1342,6 +1342,166 @@ mod evolution_contract_tests {
         );
     }
 
+    #[test]
+    fn linear_pattern_history_has_direct_batch_reference_parity() {
+        use remus_topology::journal::{EntityKind, OpId};
+        use remus_topology::naming::{PersistentRef, Provenance, Resolution, resolve};
+        let mut results = Vec::new();
+        for batch in [false, true] {
+            let mut kernel = BrepKernel::new();
+            let source = kernel.make_box_solid(2.0, 3.0, 4.0).unwrap();
+            let identity = kernel
+                .linear_pattern_journaled_json(source, [1.0, 0.0, 0.0], 10.0, 1)
+                .unwrap();
+            let anchor = OpId::from_value(identity["op"].as_u64().unwrap());
+            let references: Vec<_> = [EntityKind::Face, EntityKind::Edge, EntityKind::Vertex]
+                .into_iter()
+                .map(|kind| {
+                    let reference = PersistentRef::operation_output(anchor, kind, 0);
+                    let resolution = resolve(kernel.topo(), &reference);
+                    assert!(matches!(
+                        resolution,
+                        Resolution::Bound {
+                            provenance: Provenance::Construction,
+                            ..
+                        }
+                    ));
+                    (reference, resolution)
+                })
+                .collect();
+            let pattern: serde_json::Value = if batch {
+                run(&mut kernel, serde_json::json!([
+                    {"op":"linearPatternJournaled", "args":{"solid":source,"direction":[1,0,0],"spacing":10,"count":3}}
+                ])).remove(0)
+            } else {
+                serde_json::from_str(
+                    &kernel
+                        .linear_pattern_journaled_js(source, 1.0, 0.0, 0.0, 10.0, 3)
+                        .unwrap(),
+                )
+                .unwrap()
+            };
+            assert_eq!(pattern.as_object().unwrap().len(), 2);
+            let operation = OpId::from_value(pattern["op"].as_u64().unwrap());
+            let compound = kernel
+                .topo()
+                .compound_id_from_index(
+                    usize::try_from(pattern["compound"].as_u64().unwrap()).unwrap(),
+                )
+                .unwrap();
+            let actual: std::collections::BTreeSet<_> = kernel
+                .topo()
+                .compound(compound)
+                .unwrap()
+                .solids()
+                .iter()
+                .flat_map(|&solid| {
+                    remus_operations::journal_ops::solid_entity_keys(kernel.topo(), solid).unwrap()
+                })
+                .collect();
+            let mut resolved = std::collections::BTreeSet::new();
+            for (kind, count) in [
+                (EntityKind::Face, 18),
+                (EntityKind::Edge, 36),
+                (EntityKind::Vertex, 24),
+            ] {
+                for index in 0..count {
+                    let resolution = resolve(
+                        kernel.topo(),
+                        &PersistentRef::operation_output(operation, kind, index),
+                    );
+                    let Resolution::Bound {
+                        entity,
+                        provenance: Provenance::Construction,
+                    } = resolution
+                    else {
+                        panic!("{resolution:?}");
+                    };
+                    assert!(resolved.insert(entity));
+                }
+            }
+            assert_eq!(resolved, actual);
+            for (reference, expected) in references {
+                assert_eq!(resolve(kernel.topo(), &reference), expected);
+            }
+            results.push((pattern, kernel.journal_summary()));
+        }
+        assert_eq!(results[0], results[1]);
+    }
+
+    #[test]
+    fn linear_pattern_refusals_restore_history_after_copying() {
+        for (spacing, count) in [(10.0, 0), (0.0, 3), (1.0, 3)] {
+            for batch in [false, true] {
+                let mut kernel = BrepKernel::new();
+                let source = kernel.make_box_solid(2.0, 3.0, 4.0).unwrap();
+                kernel
+                    .linear_pattern_journaled_json(source, [1.0, 0.0, 0.0], 10.0, 1)
+                    .unwrap();
+                let before = kernel.topo().journal().snapshot();
+                let source_id = kernel.resolve_solid(source).unwrap();
+                let vertices =
+                    remus_topology::explorer::solid_vertices(kernel.topo(), source_id).unwrap();
+                let geometry: Vec<_> = vertices
+                    .iter()
+                    .map(|&id| kernel.topo().vertex(id).unwrap().point())
+                    .collect();
+                let counts = (
+                    kernel.topo().num_vertices(),
+                    kernel.topo().num_edges(),
+                    kernel.topo().num_faces(),
+                    kernel.topo().num_solids(),
+                    kernel.topo().num_compounds(),
+                );
+                let allocated = kernel.topo().allocated_slot_count();
+                if batch {
+                    let response: serde_json::Value = serde_json::from_str(&kernel.execute_batch_v2(&serde_json::json!([
+                        {"op":"linearPatternJournaled", "args":{"solid":source,"direction":[1,0,0],"spacing":spacing,"count":count}}
+                    ]).to_string())).unwrap();
+                    assert!(response[0]["error"].is_object(), "{response}");
+                } else {
+                    assert!(
+                        kernel
+                            .linear_pattern_journaled_json(source, [1.0, 0.0, 0.0], spacing, count)
+                            .is_err()
+                    );
+                }
+                let after = kernel.topo().journal().snapshot();
+                assert_eq!(after.entries, before.entries);
+                assert_eq!(after.index, before.index);
+                assert_eq!(after.next_ordinal, before.next_ordinal);
+                assert_eq!(
+                    counts,
+                    (
+                        kernel.topo().num_vertices(),
+                        kernel.topo().num_edges(),
+                        kernel.topo().num_faces(),
+                        kernel.topo().num_solids(),
+                        kernel.topo().num_compounds()
+                    )
+                );
+                let source_id = kernel.resolve_solid(source).unwrap();
+                assert!(
+                    (remus_operations::measure::solid_volume(kernel.topo(), source_id, 0.01)
+                        .unwrap()
+                        - 24.0)
+                        .abs()
+                        < 1e-8
+                );
+                assert_eq!(
+                    geometry,
+                    vertices
+                        .iter()
+                        .map(|&id| kernel.topo().vertex(id).unwrap().point())
+                        .collect::<Vec<_>>()
+                );
+                if spacing > 0.0 && spacing < 2.0 {
+                    assert!(kernel.topo().allocated_slot_count() > allocated);
+                }
+            }
+        }
+    }
+
     fn replacement_box() -> (BrepKernel, u32, u32) {
         let mut kernel = BrepKernel::new();
         let source = kernel.make_box_solid(3.0, 5.0, 7.0).unwrap();

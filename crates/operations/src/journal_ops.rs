@@ -6,6 +6,8 @@
 //! - [`boolean_journaled`] runs a GFA boolean and journals its full
 //!   construction-derived vertex/edge/face evolution (Issue 12) as one
 //!   entry.
+//! - [`linear_pattern_journaled`] records construction-derived face, edge, and
+//!   vertex provenance for the original solid and each copied instance.
 //! - [`record_face_evolution`] journals any operation that produces an
 //!   [`EvolutionMap`] (v2 blends via
 //!   [`fillet_with_evolution`](crate::blend_ops::fillet_with_evolution),
@@ -436,14 +438,14 @@ pub fn chamfer_journaled(
 pub struct JournaledPattern {
     /// The compound of pattern instances.
     pub compound: remus_topology::CompoundId,
-    /// The journal entry recording per-instance face provenance.
+    /// The journal entry recording per-instance face, edge, and vertex provenance.
     pub op: OpId,
     /// The recorded face-evolution map.
     pub map: EvolutionMap,
 }
 
 /// Runs a linear pattern and journals its construction-derived
-/// per-instance face provenance as one entry (kind `linear_pattern`),
+/// per-instance face, edge, and vertex provenance as one entry (kind `linear_pattern`),
 /// scoped over the original solid and every instance.
 ///
 /// # Errors
@@ -459,10 +461,28 @@ pub fn linear_pattern_journaled(
 ) -> Result<JournaledPattern, OperationsError> {
     remus_topology::transaction::run_transacted(topo, |topo| {
         let pending = begin_scoped(topo, "linear_pattern", &[solid])?;
-        let (compound, map) =
-            crate::pattern::linear_pattern_with_evolution(topo, solid, direction, spacing, count)?;
+        let evolution = crate::pattern::linear_pattern_with_entity_evolution(
+            topo, solid, direction, spacing, count,
+        )?;
+        let compound = evolution.compound;
+        let map = evolution.faces;
+        let outputs: Vec<_> = evolution
+            .boundaries
+            .into_iter()
+            .map(|(source, target)| {
+                let event = if source == target {
+                    EventDraft::Preserved { from: source }
+                } else {
+                    EventDraft::Generated {
+                        sources: vec![source],
+                    }
+                };
+                (target, event)
+            })
+            .collect();
         let members = topo.compound(compound)?.solids().to_vec();
-        let op = record_face_evolution(topo, pending, &map, &members)?;
+        let op =
+            record_entity_evolution_with_outputs(topo, pending, &map, &members, &[], &outputs)?;
         Ok(JournaledPattern { compound, op, map })
     })
 }

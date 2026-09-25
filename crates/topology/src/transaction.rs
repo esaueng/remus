@@ -30,6 +30,9 @@
 
 use crate::Topology;
 
+#[cfg(feature = "perf-counters")]
+pub mod perf;
+
 /// Runs `operation` transactionally: on `Err`, the topology is restored to
 /// its pre-operation state (including handle-slot high-water marks) before
 /// the error is returned.
@@ -41,6 +44,8 @@ pub fn run_transacted<T, E>(
     topo: &mut Topology,
     operation: impl FnOnce(&mut Topology) -> Result<T, E>,
 ) -> Result<T, E> {
+    #[cfg(feature = "perf-counters")]
+    let _scope = perf::Scope::enter(true);
     let snapshot = topo.clone();
     match operation(topo) {
         Ok(value) => Ok(value),
@@ -68,6 +73,8 @@ pub fn run_validated<T, E>(
     operation: impl FnOnce(&mut Topology) -> Result<T, E>,
     validate: impl FnOnce(&Topology, &T) -> Result<(), E>,
 ) -> Result<T, E> {
+    #[cfg(feature = "perf-counters")]
+    let _scope = perf::Scope::enter(true);
     let snapshot = topo.clone();
     let result = operation(topo).and_then(|value| validate(topo, &value).map(|()| value));
     if result.is_err() {

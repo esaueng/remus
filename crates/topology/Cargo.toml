@@ -19,6 +19,7 @@ proptest.workspace = true
 [features]
 default = []
 
+perf-counters = []
 test-utils = []
 
 [lints]

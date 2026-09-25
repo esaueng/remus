@@ -2851,15 +2851,16 @@ mod tests {
         let solid = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
         let before = topology_counts(kernel.topo());
 
-        let mut unguarded = kernel.topo().clone();
+        let mut native = kernel.topo().clone();
+        let before_slots = native.allocated_slot_count();
         let solid_id = kernel.resolve_solid(solid).unwrap();
-        remus_operations::offset_v2::offset_solid_v2(&mut unguarded, solid_id, -6.0)
+        remus_operations::offset_v2::offset_solid_v2(&mut native, solid_id, -6.0)
             .expect_err("collapsed offset must fail its postcondition");
-        assert_ne!(
-            topology_counts(&unguarded),
-            before,
+        assert!(
+            native.allocated_slot_count() > before_slots,
             "witness must exercise a failure after topology allocation"
         );
+        assert_eq!(topology_counts(&native), before);
 
         let error = kernel
             .offset_solid_impl(solid, -6.0)
