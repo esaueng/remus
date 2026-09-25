@@ -943,11 +943,20 @@ fn variable_fillet_spec_refusals_match_legacy_batch_v2() {
             "malformed setback",
             json!([{"edge": edge, "law": "constant", "start": 1.0, "end": 1.0, "startSetback": "far"}]),
         ),
+        // B63 closed: the variable engine now refuses a radius wider than
+        // its support faces with the walking engine's cliff diagnostic.
+        (
+            "oversized radius",
+            json!([{"edge": edge, "law": "constant", "start": 20.0, "end": 20.0}]),
+        ),
     ] {
         let before = counts(&kernel);
         let direct =
             envelope(kernel.fillet_variable_detailed_impl(solid, specs.as_array().unwrap(), false));
         assert_eq!(direct["status"], "error", "{label}: {direct}");
+        if label == "oversized radius" {
+            assert_eq!(direct["code"], "cliff-encountered", "{direct}");
+        }
         assert_eq!(counts(&kernel), before, "{label}: mutated");
         let legacy = batch_v2(
             &mut kernel,

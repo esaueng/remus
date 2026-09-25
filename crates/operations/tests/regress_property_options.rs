@@ -326,19 +326,17 @@ fn analytic_revolution_domains_match_independent_closed_form_properties() {
         adaptive_eps: 1e-9,
         ..Default::default()
     };
-    for (index, (solid, expected, area)) in fixtures.into_iter().enumerate() {
-        let options = if index == 0 {
-            // The primitive cylinder retains a polygon mask around its seam.
-            let error = solid_properties(&topo, solid, &options).unwrap_err();
-            assert!(error.to_string().contains("unsupported"), "{error}");
-            assert!(solid_volume(&topo, solid, &options).is_err());
-            assert!(solid_area(&topo, solid, &options).is_err());
-            assert!(center_of_mass(&topo, solid, &options).is_err());
-            PropertiesOptions::default()
-        } else {
-            options.clone()
-        };
+    for (solid, expected, area) in fixtures {
+        // The primitive cylinder's wall retains a polygon mask around its
+        // seam; it now refines as a sliced domain instead of refusing.
         let actual = solid_properties(&topo, solid, &options).unwrap();
+        near(
+            solid_volume(&topo, solid, &options).unwrap(),
+            expected.mass,
+            expected.mass,
+        );
+        let center = center_of_mass(&topo, solid, &options).unwrap();
+        near(center.z(), expected.center.z(), 3.0);
         near(actual.mass, expected.mass, expected.mass);
         near(solid_area(&topo, solid, &options).unwrap(), area, area);
         near(actual.center.x(), expected.center.x(), 3.0);
@@ -346,6 +344,138 @@ fn analytic_revolution_domains_match_independent_closed_form_properties() {
         near(actual.center.z(), expected.center.z(), 3.0);
         for (a, e) in actual.inertia.into_iter().zip(expected.inertia) {
             near(a, e, expected.inertia[0]);
+        }
+    }
+}
+
+/// `mass_properties_with_options` is the public native path that accepts the
+/// adaptive controls; at the documented default options it must be the
+/// historical `mass_properties` bit for bit.
+#[test]
+fn mass_properties_with_default_options_is_bitwise_mass_properties() {
+    use remus_operations::measure::{
+        MASS_PROPERTIES_GAUSS_ORDER, mass_properties, mass_properties_default_options,
+        mass_properties_with_options,
+    };
+    use remus_operations::primitives::{make_box, make_cone, make_cylinder, make_torus};
+    let defaults = mass_properties_default_options();
+    assert_eq!(defaults.gauss_order, MASS_PROPERTIES_GAUSS_ORDER);
+    assert_eq!(
+        defaults.adaptive_eps.to_bits(),
+        PropertiesOptions::default().adaptive_eps.to_bits()
+    );
+    assert_eq!(defaults.max_depth, PropertiesOptions::default().max_depth);
+    let mut topo = Topology::new();
+    for solid in [
+        make_box(&mut topo, 2.0, 3.0, 4.0).unwrap(),
+        make_sphere(&mut topo, 2.0, 16).unwrap(),
+        make_cylinder(&mut topo, 2.0, 3.0).unwrap(),
+        make_cone(&mut topo, 2.0, 0.5, 3.0).unwrap(),
+        make_torus(&mut topo, 3.0, 1.0, 16).unwrap(),
+    ] {
+        let historical = mass_properties(&topo, solid).unwrap();
+        let explicit = mass_properties_with_options(&topo, solid, &defaults).unwrap();
+        assert_eq!(format!("{historical:?}"), format!("{explicit:?}"));
+    }
+}
+
+/// Independent closed forms for every quadric primitive.
+///
+/// * Every setting of an `adaptive_eps` ladder lands within its own requested
+///   tolerance of the closed form on volume and on two inertia components, so
+///   the error envelope tightens monotonically with the request.
+/// * The sphere's raw error also falls monotonically at every step. The other
+///   bodies are full revolutions whose uniform coarse tiling can be exact by
+///   symmetric error cancellation, which partial refinement gives up (the
+///   torus reads ~1e-16 at 1e-3 and ~5e-10 at 1e-4, both inside their
+///   requests), so only the envelope is monotone for them.
+/// * A deliberately coarse request is accepted with a visibly larger error
+///   than the tightest one, and the tightest meets the closed form to 1e-10.
+///
+/// The cylinder wall is polygon-masked at its seam, so it exercises the
+/// sliced refinement; the sphere, cone and torus exercise the rectangular
+/// one. Order 3 keeps the tightest request inside the rectangular path's
+/// 32,768-rule work budget.
+#[test]
+fn adaptive_controls_converge_monotonically_on_primitive_closed_forms() {
+    use remus_check::properties::analytic;
+    use remus_operations::measure::mass_properties_with_options;
+    use remus_operations::primitives::{make_cone, make_cylinder, make_torus};
+    let mut topo = Topology::new();
+    let fixtures = [
+        (
+            "sphere",
+            make_sphere(&mut topo, 2.0, 16).unwrap(),
+            analytic::sphere_props(2.0),
+        ),
+        (
+            "cylinder",
+            make_cylinder(&mut topo, 2.0, 3.0).unwrap(),
+            analytic::cylinder_props(2.0, 3.0),
+        ),
+        (
+            "cone",
+            make_cone(&mut topo, 2.0, 0.0, 3.0).unwrap(),
+            analytic::cone_props(2.0, 0.0, 3.0),
+        ),
+        (
+            "torus",
+            make_torus(&mut topo, 3.0, 1.0, 16).unwrap(),
+            analytic::torus_props(3.0, 1.0),
+        ),
+    ];
+    for (name, solid, expected) in fixtures {
+        let errors = |options: &PropertiesOptions| {
+            let p = mass_properties_with_options(&topo, solid, options).unwrap();
+            [
+                (p.mass - expected.mass).abs() / expected.mass,
+                (p.inertia[0] - expected.inertia[0]).abs() / expected.inertia[0],
+                (p.inertia[2] - expected.inertia[2]).abs() / expected.inertia[2],
+            ]
+        };
+        // Order 1 with a loose tolerance: a uniform depth-0 midpoint tiling is
+        // exact on the torus by symmetry, so leave room for partial refinement.
+        let coarse = errors(&PropertiesOptions {
+            gauss_order: 1,
+            adaptive_eps: 0.1,
+            max_depth: 20,
+        });
+        let mut previous = [f64::INFINITY; 3];
+        for eps in [1e-1, 1e-3, 1e-5, 1e-7, 1e-9] {
+            let now = errors(&PropertiesOptions {
+                gauss_order: 3,
+                adaptive_eps: eps,
+                max_depth: 24,
+            });
+            for (k, &n) in now.iter().enumerate() {
+                assert!(
+                    n <= eps,
+                    "{name} component {k} error {n:e} exceeds its request {eps:e}"
+                );
+                if name == "sphere" {
+                    assert!(
+                        n <= previous[k],
+                        "{name} component {k} regressed at eps {eps:e}: {n:e} > {:e}",
+                        previous[k]
+                    );
+                }
+            }
+            previous = now;
+        }
+        let worst_coarse = coarse.iter().copied().fold(0.0, f64::max);
+        let worst_tight = previous.iter().copied().fold(0.0, f64::max);
+        assert!(worst_tight <= 1e-10, "{name}: tight error {worst_tight:e}");
+        if name == "cylinder" {
+            // A full-revolution wall integrates its periodic trigonometric
+            // moments to round-off under any rule, so there is no coarse gap
+            // to show; the partial-arc cylinder in the check crate's
+            // `regress_property_option_domains` carries that assertion.
+            assert!(worst_coarse <= 1e-13, "{name}: coarse {worst_coarse:e}");
+        } else {
+            assert!(
+                worst_coarse > 1e-3 && worst_coarse > 1e6 * worst_tight.max(1e-16),
+                "{name}: coarse {worst_coarse:e} vs tight {worst_tight:e}"
+            );
         }
     }
 }
