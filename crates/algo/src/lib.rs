@@ -25,6 +25,7 @@ pub mod perf;
 
 mod builder;
 pub mod classifier;
+mod conic_bounds;
 
 pub use builder::FaceClass;
 pub use builder::pcurve_compute::{
