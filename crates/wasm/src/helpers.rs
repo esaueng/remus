@@ -278,6 +278,9 @@ pub fn json_f64(val: &serde_json::Value, key: &str) -> Result<f64, JsError> {
 /// typed error (`UnsupportedVertexBlend`, `TrimmingFailure`, `RadiusTooLarge`,
 /// …) rather than the historical silent input-handle no-op. The input solid is
 /// always left in its untouched pre-attempt state on failure.
+// The bindings reach the cascade through `fillet_whole_selection_result`;
+// this plain-handle form remains for the helper tests below.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn try_fillet(
     topo: &mut remus_topology::Topology,
     solid_id: remus_topology::solid::SolidId,
@@ -309,6 +312,24 @@ pub fn try_fillet_with_origins(
     ),
     remus_operations::OperationsError,
 > {
+    try_fillet_result(topo, solid_id, edge_ids, radius)
+        .map(|result| (result.solid, result.face_origins))
+}
+
+/// [`try_fillet`], returning the complete [`BlendResult`] of the cascade so a
+/// caller can disclose which engine produced the solid.
+///
+/// [`BlendResult`]: remus_operations::blend_ops::BlendResult
+///
+/// # Errors
+///
+/// Same as [`try_fillet`].
+pub fn try_fillet_result(
+    topo: &mut remus_topology::Topology,
+    solid_id: remus_topology::solid::SolidId,
+    edge_ids: &[remus_topology::edge::EdgeId],
+    radius: f64,
+) -> Result<remus_operations::blend_ops::BlendResult, remus_operations::OperationsError> {
     // Drop tangent / degenerate edges (e.g. a fillet face's G1 contact line
     // with its planar neighbour). If none qualify there is nothing to blend,
     // which is a selection problem the caller must hear about — not a
@@ -323,8 +344,7 @@ pub fn try_fillet_with_origins(
     }
     let edges = edges.as_slice();
 
-    let result = remus_operations::blend_ops::fillet_cascade(topo, solid_id, edges, radius)?;
-    Ok((result.solid, result.face_origins))
+    remus_operations::blend_ops::fillet_cascade(topo, solid_id, edges, radius)
 }
 
 /// [`try_fillet`], with the rule that the answer must cover every edge named.
@@ -354,8 +374,23 @@ pub fn fillet_whole_selection(
     edge_ids: &[remus_topology::edge::EdgeId],
     radius: f64,
 ) -> Result<remus_topology::solid::SolidId, remus_operations::OperationsError> {
-    let primary = match try_fillet(topo, solid_id, edge_ids, radius) {
-        Ok(solid) => return Ok(solid),
+    fillet_whole_selection_result(topo, solid_id, edge_ids, radius).map(|result| result.solid)
+}
+
+/// [`fillet_whole_selection`], returning the complete cascade
+/// [`BlendResult`](remus_operations::blend_ops::BlendResult).
+///
+/// # Errors
+///
+/// Same as [`fillet_whole_selection`].
+pub fn fillet_whole_selection_result(
+    topo: &mut remus_topology::Topology,
+    solid_id: remus_topology::solid::SolidId,
+    edge_ids: &[remus_topology::edge::EdgeId],
+    radius: f64,
+) -> Result<remus_operations::blend_ops::BlendResult, remus_operations::OperationsError> {
+    let primary = match try_fillet_result(topo, solid_id, edge_ids, radius) {
+        Ok(result) => return Ok(result),
         Err(e) => e,
     };
 
@@ -423,6 +458,30 @@ pub fn try_chamfer_with_origins(
     ),
     remus_operations::OperationsError,
 > {
+    try_chamfer_with_engine(topo, solid_id, edge_ids, distance)
+        .map(|(solid, origins, _)| (solid, origins))
+}
+
+/// [`try_chamfer_with_origins`], also naming the engine that produced the
+/// solid (`PlanarBevel` for the flat bevel, the walking builder's own
+/// [`BlendEngine`](remus_operations::blend_ops::BlendEngine) otherwise).
+///
+/// # Errors
+///
+/// Same as [`try_chamfer`].
+pub fn try_chamfer_with_engine(
+    topo: &mut remus_topology::Topology,
+    solid_id: remus_topology::solid::SolidId,
+    edge_ids: &[remus_topology::edge::EdgeId],
+    distance: f64,
+) -> Result<
+    (
+        remus_topology::solid::SolidId,
+        Option<remus_operations::blend_ops::BlendFaceOrigins>,
+        remus_operations::blend_ops::BlendEngine,
+    ),
+    remus_operations::OperationsError,
+> {
     let is_valid = |topo: &remus_topology::Topology, s: remus_topology::solid::SolidId| -> bool {
         topo.solid(s)
             .and_then(|sd| topo.shell(sd.outer_shell()))
@@ -441,12 +500,16 @@ pub fn try_chamfer_with_origins(
         remus_operations::blend_ops::planar_chamfer_with_origins(topo, solid_id, edge_ids, distance)
         && is_valid(topo, s)
     {
-        return Ok((s, Some(origins)));
+        return Ok((
+            s,
+            Some(origins),
+            remus_operations::blend_ops::BlendEngine::PlanarBevel,
+        ));
     }
     topo.restore_preserving_handle_slots(&snapshot);
 
     match remus_operations::blend_ops::chamfer_v2(topo, solid_id, edge_ids, distance, distance) {
-        Ok(r) if is_valid(topo, r.solid) => Ok((r.solid, r.face_origins)),
+        Ok(r) if is_valid(topo, r.solid) => Ok((r.solid, r.face_origins, r.engine)),
         Ok(_) => {
             topo.restore_preserving_handle_slots(&snapshot);
             Err(remus_operations::OperationsError::InvalidInput {

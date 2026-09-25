@@ -2,8 +2,10 @@
 
 Status: implemented as the additive `executeBatchV2` contract. O4.7 has begun
 the additive direct-method rollout with typed `fuseDetailed`, `cutDetailed`,
-and `intersectDetailed` results. The legacy `executeBatch` wire format and
-existing direct-method behavior remain unchanged.
+and `intersectDetailed` results, followed by the modifier family
+(`filletDetailed`, `chamferDetailed`, `shellDetailed`, `offsetDetailed`). The
+legacy `executeBatch` wire format and existing direct-method behavior remain
+unchanged.
 
 ## Context
 
@@ -97,6 +99,21 @@ empty. On failure, `status` is `error`, `value` is null, and `code` is the
 same native registry code carried by `executeBatchV2.details.kernelCode`, or
 the stable batch-v2 wire code when no finer native code exists. `details`
 preserves structured context plus the human-readable `message`.
+
+The second slice is the modifier family: `filletDetailed`, `chamferDetailed`,
+`shellDetailed`, and `offsetDetailed`, twins of `fillet`, `chamfer`, `shell`,
+and `offsetSolid` on the same engine paths. They return the same
+`SolidOperationDetailedResult`, but a modifier result is not exact by
+contract, so success `details` disclose `quality` (`exact` or `approximate`)
+and what was approximated: the new NURBS blend faces (`approximateFaces`),
+the sampled input faces (`sampledFaces`), or the shell sample spacing
+(`deflection`); blends also name their `engine`. Fillet, chamfer, and offset
+take an optional `exactOnly` flag that refuses an approximate result with
+category `quality_refused` and code `exact_only_unattainable`; shell keeps
+its legacy exact-only default and opts into approximation with
+`approximationSpacing`. Every refusal restores the pre-call topology. Batch
+ops of the same names return the identical envelope as their `ok` value, so a
+refusal is data in a batch too.
 
 The remaining mutating direct-method families and typed replacements for the
 JSON-string returns remain O4.7 follow-up work.
