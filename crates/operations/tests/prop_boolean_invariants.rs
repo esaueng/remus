@@ -1705,15 +1705,14 @@ fn is_oblique_boxtorus(input: &BoolPairInput) -> bool {
         )
 }
 
-/// Finding-17 neighborhood predicate for the generation exclusion: six
-/// observed inputs sharing box × cone(r1=2.5) at axis 2, angle 3π/2,
-/// offset (0.5,-1.5,-0.5) — drifting cut volumes, open fuse meshes, low
-/// closed-form agreement, and (decisively) a CDT integer-overflow PANIC
-/// inside the intersect path that no oracle gate can contain. The panic
-/// (B42, #495) and the finding-17 repros (B32) are closed; an exhaustive
-/// 2026-09-24 sweep of all 17,150 members found no panic and no fuse
-/// failure but 23 unit-scale cut legs still failing (two families, pinned
-/// by `b26_finding17_nbhd_*`), so the exclusion stays on row B53's account.
+/// Finding-17 neighborhood predicate: box × cone(r1=2.5) at axis 2, angle
+/// 3π/2, offset (0.5,-1.5,-0.5) — once drifting cut volumes, open fuse
+/// meshes, and a CDT integer-overflow PANIC inside the intersect path. It
+/// was excluded from generation until the panic (B42, #495), the finding-17
+/// repros (B32) and the 23 residual cut legs (B53, pinned by
+/// `b26_finding17_nbhd_*`) closed; the exhaustive 17,150-input sweep
+/// (`b53_finding17_neighborhood_sweep`) is clean, so the cell is drawn again
+/// and the predicate now only enumerates the sweep.
 #[allow(clippy::float_cmp)]
 fn is_finding17_neighborhood(input: &BoolPairInput) -> bool {
     matches!(
@@ -1786,19 +1785,17 @@ fn arb_bool_pair_slow() -> impl Strategy<Value = BoolPairInput> {
                 scale,
             })
         })
-        // Finding 13 (sphere–torus), finding 14 (torus–cone), the
-        // finding-17 neighborhood, and oblique box–torus pairs: excluded
-        // from generation at every scale — pervasively broken across
-        // placements and scales, up to a CDT integer-overflow PANIC inside
-        // the intersect path that no oracle gate can contain (pinned
-        // repros + rows B38/B39/B44/B53). Rejection rate is ~1/5 of draws
-        // — far below the abort threshold.
+        // Finding 13 (sphere–torus), finding 14 (torus–cone), and oblique
+        // box–torus pairs: excluded from generation at every scale —
+        // pervasively broken across placements and scales (pinned repros +
+        // rows B38/B39/B44). The finding-17 neighborhood is drawn again
+        // since B53 closed it (clean exhaustive sweep). Rejection rate is
+        // ~1/5 of draws — far below the abort threshold.
         .prop_filter(
             "broken cells excluded until their rows close",
             |input: &BoolPairInput| {
                 !is_sphere_torus_pair(&input.a, &input.b)
                     && !is_torus_cone_pair(&input.a, &input.b)
-                    && !is_finding17_neighborhood(input)
                     && !is_oblique_boxtorus(input)
             },
         )
@@ -2064,12 +2061,9 @@ fn check_bool_pair(input: &BoolPairInput) -> Result<(), TestCaseError> {
             && oz == -1.75
             && sc == 1.0
     );
-    // (No finding-17 gate here by design: the neighborhood is excluded
-    // from generation entirely — see `arb_bool_pair_slow`. Its panic and
-    // its B32 repros are closed; the residual cut families
-    // (`b26_finding17_nbhd_*`, row B53) own the cell now. If the exclusion
-    // is ever lifted, these legs fail LOUD through the standard oracles
-    // below.)
+    // (No finding-17 gate here by design: the neighborhood's panic (B42),
+    // its B32 repros and its B53 residue are closed, and the cell is drawn
+    // again with every standard oracle below judging it.)
     // Finding-16 pair-cell gate (pinned repros + row B41): cone–sphere
     // disjoint fuses carry open meshes (16/8 boundary at 1e3/unit) with
     // low volumes (8%/6.6%) on fully valid B-Reps, identically across
@@ -3135,8 +3129,13 @@ fn finding17_nbhd_input(box_dims: (f64, f64, f64), r0: f64, h: f64) -> BoolPairI
 /// {1.5, 2, 2.5}) × cone(r0=3, h=dz+0.5)): the cone's top cap lands on the
 /// box's top face, and the cut — Exact quality, ops-valid — carries one
 /// check-crate `WireSelfIntersection` error (deviation ~3e-15).
+/// Closed with B53 (2026-09-25): the rim is tangent to the box's `y = 1` top
+/// edge, so the cut is two lumps touching at that point. The box-top section
+/// ran through the tangency pave, leaving one top face whose wire revisited
+/// it; plane faces now split curved sections at their boundary pave
+/// junctions, and the boolean gate accepts lumps that share a vertex.
+/// `regress_b53_finding17_neighborhood.rs` pins the family.
 #[test]
-#[ignore = "open: coplanar cone-cap box cut wire self-intersection (B53)"]
 fn b26_finding17_nbhd_coplanar_cap_cut() {
     check_bool_pair(&finding17_nbhd_input((2.5, 1.0, 2.0), 3.0, 2.5)).expect("full B26 battery");
 }
@@ -3147,10 +3146,99 @@ fn b26_finding17_nbhd_coplanar_cap_cut() {
 /// B-Rep is valid on both validators with Gauss = kernel volume, yet its
 /// mesh at the harness deflection (bbox · 1e-5) carries 87 non-manifold
 /// edges — the fine-deflection mesh class of findings 19/22.
+/// Closed with B53 (2026-09-25): a dense trim row of the non-planar CDT grid
+/// landed inside the vertex-merge cell of a base-grid row, so two CDT samples
+/// welded into one mesh vertex; the mesher now keeps one sample per cell.
 #[test]
-#[ignore = "open: box-cone cut non-manifold mesh at harness deflection (B53)"]
 fn b26_finding17_nbhd_cut_mesh() {
     check_bool_pair(&finding17_nbhd_input((3.0, 3.0, 1.0), 1.0, 2.5)).expect("full B26 battery");
+}
+
+/// Manual exhaustive sweep of the finding-17 neighbourhood (row B53): every
+/// member of `is_finding17_neighborhood` the slow strategy can draw — 343
+/// boxes (half-unit dims in [1, 4]) × 25 cones (r0, h half-unit in [1, 3],
+/// r1 = 2.5) × scales 1/1e3 = 17,150 inputs — through `check_bool_pair`,
+/// in parallel, with panics caught. Prints the pass/reject/fail/panic counts,
+/// how many fuse/intersect/cut legs came back exact (the rest refused typed),
+/// and every failing input; fails if any input fails or panics. Run with
+/// `cargo test --release -p remus-operations --test prop_boolean_invariants
+/// b53_finding17_neighborhood_sweep -- --ignored --nocapture`.
+#[test]
+#[ignore = "manual: exhaustive 17,150-input sweep of the finding-17 neighbourhood (B53)"]
+fn b53_finding17_neighborhood_sweep() {
+    use rayon::prelude::*;
+    let half = |k: u8| f64::from(k) * 0.5;
+    let mut inputs = Vec::new();
+    for dx in 2u8..=8 {
+        for dy in 2u8..=8 {
+            for dz in 2u8..=8 {
+                for r0 in 2u8..=6 {
+                    for h in 2u8..=6 {
+                        for scale in [1.0, 1e3] {
+                            let mut input = finding17_nbhd_input(
+                                (half(dx), half(dy), half(dz)),
+                                half(r0),
+                                half(h),
+                            );
+                            input.scale = scale;
+                            assert!(is_finding17_neighborhood(&input));
+                            inputs.push(input);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(inputs.len(), 17_150);
+    // Per input: the battery verdict (or a caught panic) and which legs
+    // (fuse, intersect, cut) came back exact rather than refused.
+    type Outcome = (Result<(), TestCaseError>, [bool; 3]);
+    let outcomes: Vec<(usize, Result<Outcome, ()>)> = inputs
+        .par_iter()
+        .enumerate()
+        .map(|(i, input)| {
+            let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let verdict = check_bool_pair(input);
+                let exact = [BooleanOp::Fuse, BooleanOp::Intersect, BooleanOp::Cut]
+                    .map(|op| run_pair_op(input, op).is_ok());
+                (verdict, exact)
+            }));
+            (i, run.map_err(|_| ()))
+        })
+        .collect();
+    let (mut pass, mut reject, mut fail, mut panicked) = (0usize, 0usize, 0usize, 0usize);
+    let mut exact_legs = [0usize; 3];
+    for (i, outcome) in &outcomes {
+        let Ok((verdict, exact)) = outcome else {
+            panicked += 1;
+            println!("PANIC {:?}", inputs[*i]);
+            continue;
+        };
+        for (count, ok) in exact_legs.iter_mut().zip(exact) {
+            *count += usize::from(*ok);
+        }
+        match verdict {
+            Ok(()) => pass += 1,
+            Err(TestCaseError::Reject(_)) => reject += 1,
+            Err(TestCaseError::Fail(why)) => {
+                fail += 1;
+                println!("FAIL {:?}: {why}", inputs[*i]);
+            }
+        }
+    }
+    println!(
+        "finding-17 neighbourhood sweep: {} inputs, {pass} pass, {reject} reject, {fail} fail, \
+         {panicked} panic; exact legs: fuse {}, intersect {}, cut {}",
+        inputs.len(),
+        exact_legs[0],
+        exact_legs[1],
+        exact_legs[2]
+    );
+    assert_eq!(
+        fail + panicked,
+        0,
+        "finding-17 neighbourhood sweep is not clean"
+    );
 }
 
 /// Ready-repro for the eighteenth proptest-found defect (2026-09-16): a
