@@ -705,6 +705,9 @@ for (const operation of ['fillet', 'chamfer']) {
       chamferDetailed: { edges: [edge], distance: 1 },
       shellDetailed: { thickness: 1, faces: [face] },
       offsetDetailed: { distance: 1 },
+      filletV2Detailed: { edges: [edge], radius: 1 },
+      chamferV2Detailed: { edges: [edge], d1: 1, d2: 2 },
+      chamferDistanceAngleDetailed: { edges: [edge], distance: 1, angle: 0.5 },
     })[op];
 
   twin(
@@ -738,6 +741,74 @@ for (const operation of ['fillet', 'chamfer']) {
     'offsetDetailed',
     (k, r) => assert.ok(Math.abs(k.volume(r.value, DEFLECTION) - 1728) < 1e-6),
   );
+
+  twin(
+    'filletV2Detailed',
+    (k, box, edge) => k.filletV2Detailed(box, Uint32Array.of(edge), 1),
+    'filletV2Detailed',
+    (k, r) => {
+      assert.equal(r.details.engine, 'rollingBall');
+      const expected = 1000 - (1 - Math.PI / 4) * 10;
+      assert.ok(Math.abs(k.volume(r.value, DEFLECTION) - expected) < 1e-6);
+    },
+  );
+  twin(
+    'chamferV2Detailed',
+    (k, box, edge) => k.chamferV2Detailed(box, Uint32Array.of(edge), 1, 2),
+    'chamferV2Detailed',
+    (k, r) => {
+      assert.equal(r.details.engine, 'planarBevel');
+      assert.ok(Math.abs(k.volume(r.value, DEFLECTION) - 990) < 1e-6);
+    },
+  );
+  twin(
+    'chamferDistanceAngleDetailed',
+    (k, box, edge) => k.chamferDistanceAngleDetailed(box, Uint32Array.of(edge), 1, 0.5),
+    'chamferDistanceAngleDetailed',
+    (k, r) => {
+      assert.equal(r.details.engine, 'planarBevel');
+      const expected = 1000 - 0.5 * Math.tan(0.5) * 10;
+      assert.ok(Math.abs(k.volume(r.value, DEFLECTION) - expected) < 1e-6);
+    },
+  );
+
+  // The variable engine's constant-law wall is a NURBS fit: disclosed, and
+  // refused under exactOnly with the model untouched.
+  {
+    const k = new BrepKernel();
+    const box = k.makeBox(10, 10, 10);
+    const edge = k.getSolidEdges(box)[0];
+    const spec = [{ edge, law: 'constant', start: 1, end: 1 }];
+    const before = k.volume(box, DEFLECTION);
+    const refused = k.filletVariableDetailed(box, JSON.stringify(spec), true);
+    assert.equal(refused.status, 'error');
+    assert.equal(refused.code, 'exact_only_unattainable');
+    assert.equal(refused.category, 'quality_refused');
+    assert.ok(Math.abs(k.volume(box, DEFLECTION) - before) < 1e-9);
+    const malformed = k.filletVariableDetailed(box, '{not json', false);
+    assert.equal(malformed.status, 'error');
+    assert.equal(malformed.code, 'invalid_argument');
+    assert.equal(malformed.details.operation, 'filletVariable');
+    const disclosed = k.filletVariableDetailed(box, JSON.stringify(spec));
+    assert.equal(disclosed.status, 'ok', JSON.stringify(disclosed));
+    assert.equal(disclosed.details.quality, 'approximate');
+    assert.equal(disclosed.details.engine, undefined);
+    assert.ok(disclosed.details.approximateFaces.length > 0);
+
+    const batchKernel = new BrepKernel();
+    const batch = JSON.parse(
+      batchKernel.executeBatchV2(
+        JSON.stringify([
+          { op: 'makeBox', args: { width: 10, height: 10, depth: 10 } },
+          { op: 'filletVariableDetailed', args: { solid: box, specs: spec, exactOnly: true } },
+          { op: 'filletVariableDetailed', args: { solid: box, specs: spec } },
+        ]),
+      ),
+    );
+    assert.deepEqual(batch[1].ok, refused);
+    assert.deepEqual(batch[2].ok, disclosed);
+    console.log('ok - filletVariableDetailed: disclosed NURBS wall, exact-only refusal, batch parity');
+  }
 
   // Refusals are data with the kernel code, and leave the model untouched.
   const refusalKernel = new BrepKernel();

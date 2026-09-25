@@ -640,3 +640,336 @@ fn offset_exact_only_refuses_sampled_nurbs_before_touching_topology() {
     assert_eq!(batch[1]["ok"], engine);
     assert_eq!(counts(&kernel), before);
 }
+
+// ── Blend variants: filletV2, chamferV2, chamferDistanceAngle, filletVariable ──
+
+/// The walking-engine blend variants over the 10³ box's first edge.
+#[derive(Clone, Copy, Debug)]
+enum Variant {
+    FilletV2,
+    ChamferV2,
+    ChamferDistanceAngle,
+}
+
+impl Variant {
+    const ALL: [Self; 3] = [Self::FilletV2, Self::ChamferV2, Self::ChamferDistanceAngle];
+    const ANGLE: f64 = 0.5;
+
+    const fn detailed_op(self) -> &'static str {
+        match self {
+            Self::FilletV2 => "filletV2Detailed",
+            Self::ChamferV2 => "chamferV2Detailed",
+            Self::ChamferDistanceAngle => "chamferDistanceAngleDetailed",
+        }
+    }
+
+    const fn legacy_op(self) -> &'static str {
+        match self {
+            Self::FilletV2 => "filletV2",
+            Self::ChamferV2 => "chamferV2",
+            Self::ChamferDistanceAngle => "chamferDistanceAngle",
+        }
+    }
+
+    fn args(self, solid: u32, edge: u32) -> Value {
+        match self {
+            Self::FilletV2 => json!({"solid": solid, "edges": [edge], "radius": 1.0}),
+            Self::ChamferV2 => json!({"solid": solid, "edges": [edge], "d1": 1.0, "d2": 2.0}),
+            Self::ChamferDistanceAngle => {
+                json!({"solid": solid, "edges": [edge], "distance": 1.0, "angle": Self::ANGLE})
+            }
+        }
+    }
+
+    fn direct(self, kernel: &mut BrepKernel, solid: u32, edge: u32, exact_only: bool) -> Value {
+        envelope(match self {
+            Self::FilletV2 => kernel.fillet_v2_detailed_impl(solid, &[edge], 1.0, exact_only),
+            Self::ChamferV2 => {
+                kernel.chamfer_v2_detailed_impl(solid, &[edge], 1.0, 2.0, exact_only)
+            }
+            Self::ChamferDistanceAngle => kernel.chamfer_distance_angle_detailed_impl(
+                solid,
+                &[edge],
+                1.0,
+                Self::ANGLE,
+                exact_only,
+            ),
+        })
+    }
+
+    const fn engine(self) -> &'static str {
+        match self {
+            Self::FilletV2 => "rollingBall",
+            Self::ChamferV2 | Self::ChamferDistanceAngle => "planarBevel",
+        }
+    }
+
+    /// Closed-form volume on the 10³ box.
+    fn expected_volume(self) -> f64 {
+        match self {
+            Self::FilletV2 => (1.0 - std::f64::consts::FRAC_PI_4).mul_add(-10.0, 1000.0),
+            Self::ChamferV2 => 1000.0 - 0.5 * 1.0 * 2.0 * 10.0,
+            Self::ChamferDistanceAngle => 1000.0 - 0.5 * Self::ANGLE.tan() * 10.0,
+        }
+    }
+}
+
+#[test]
+fn exact_blend_variants_match_both_batch_contracts_and_the_legacy_geometry() {
+    for variant in Variant::ALL {
+        for exact_only in [false, true] {
+            let (mut kernel, solid, edge, _) = box_kernel();
+            let direct = variant.direct(&mut kernel, solid, edge, exact_only);
+            assert_eq!(direct["status"], "ok", "{variant:?}: {direct}");
+            assert!(direct["code"].is_null());
+            assert_eq!(
+                direct["details"]["quality"], "exact",
+                "{variant:?}: {direct}"
+            );
+            assert_eq!(direct["details"]["engine"], variant.engine(), "{variant:?}");
+            let result = handle(&direct["value"]);
+            let direct_volume = volume(&kernel, result);
+            assert!(
+                (direct_volume - variant.expected_volume()).abs() < 1e-6,
+                "{variant:?}: volume {direct_volume} vs {}",
+                variant.expected_volume()
+            );
+
+            let mut args = variant.args(solid, edge);
+            if exact_only {
+                args["exactOnly"] = json!(true);
+            }
+            let ops = json!([
+                {"op": "makeBox", "args": {"width": 10, "height": 10, "depth": 10}},
+                {"op": variant.detailed_op(), "args": args},
+            ]);
+            let v2 = batch_v2(&mut BrepKernel::new(), &ops);
+            assert_eq!(
+                v2[1]["ok"], direct,
+                "{variant:?}: direct/executeBatchV2 parity"
+            );
+            let legacy = batch_legacy(&mut BrepKernel::new(), &ops);
+            assert_eq!(
+                legacy[1]["ok"], direct,
+                "{variant:?}: direct/executeBatch parity"
+            );
+
+            let (mut legacy_kernel, ..) = box_kernel();
+            let legacy = batch_v2(
+                &mut legacy_kernel,
+                &json!([{"op": variant.legacy_op(), "args": variant.args(solid, edge)}]),
+            );
+            let legacy_solid = handle(&legacy[0]["ok"]);
+            assert_eq!(legacy_solid, result, "{variant:?}: same handle allocation");
+            assert!((volume(&legacy_kernel, legacy_solid) - direct_volume).abs() < 1e-9);
+        }
+    }
+}
+
+#[test]
+fn blend_variant_refusals_match_legacy_batch_v2_and_mutate_nothing() {
+    for variant in Variant::ALL {
+        let (mut kernel, solid, edge, _) = box_kernel();
+        let mut cases = vec![
+            ("invalid solid", variant.args(u32::MAX, edge)),
+            ("invalid edge", variant.args(solid, u32::MAX)),
+            ("oversized", {
+                let mut args = variant.args(solid, edge);
+                for key in ["radius", "d1", "d2", "distance"] {
+                    if args.get(key).is_some() {
+                        args[key] = json!(20.0);
+                    }
+                }
+                args
+            }),
+        ];
+        if matches!(variant, Variant::ChamferDistanceAngle) {
+            let mut args = variant.args(solid, edge);
+            args["angle"] = json!(std::f64::consts::FRAC_PI_2);
+            cases.push(("right angle", args));
+        }
+        for (label, args) in cases {
+            let before = counts(&kernel);
+            let batch = batch_v2(
+                &mut kernel,
+                &json!([{"op": variant.detailed_op(), "args": args}]),
+            );
+            let direct = &batch[0]["ok"];
+            assert_eq!(direct["status"], "error", "{variant:?}/{label}: {batch}");
+            assert!(direct["value"].is_null());
+            assert_eq!(direct["details"]["operation"], variant.legacy_op());
+            assert_eq!(counts(&kernel), before, "{variant:?}/{label}: mutated");
+
+            let legacy = batch_v2(
+                &mut kernel,
+                &json!([{"op": variant.legacy_op(), "args": args}]),
+            );
+            let legacy_error = &legacy[0]["error"];
+            assert_eq!(
+                direct["code"].as_str().unwrap(),
+                v2_code(legacy_error),
+                "{variant:?}/{label}: detailed={direct} legacy={legacy_error}"
+            );
+            assert_eq!(
+                direct["category"], legacy_error["category"],
+                "{variant:?}/{label}"
+            );
+            assert_eq!(counts(&kernel), before);
+        }
+    }
+}
+
+#[test]
+fn walking_variant_exact_only_refuses_the_saddle_wall_with_rollback() {
+    let mut kernel = BrepKernel::new();
+    let (solid, saddle) = crossed_cylinders(&mut kernel);
+    let solid_id = kernel.resolve_solid(solid).unwrap();
+    let before = live_counts(&kernel);
+    let before_faces = remus_topology::explorer::solid_faces(kernel.topo(), solid_id).unwrap();
+    let refused = envelope(kernel.fillet_v2_detailed_impl(solid, &[saddle], 0.5, true));
+    assert_eq!(refused["status"], "error", "{refused}");
+    assert_eq!(refused["code"], "exact_only_unattainable");
+    assert_eq!(refused["category"], "quality_refused");
+    assert_eq!(refused["details"]["operation"], "filletV2");
+    assert_eq!(refused["details"]["engine"], "walking");
+    assert_eq!(live_counts(&kernel), before);
+    assert_eq!(
+        remus_topology::explorer::solid_faces(kernel.topo(), solid_id).unwrap(),
+        before_faces
+    );
+}
+
+/// A constant-law variable fillet runs the variable engine, whose wall is a
+/// NURBS fit even where `filletDetailed` builds an exact cylinder.
+fn variable_spec(edge: u32) -> Value {
+    json!({"edge": edge, "law": "constant", "start": 1.0, "end": 1.0})
+}
+
+#[test]
+fn variable_fillet_discloses_its_nurbs_wall_and_exact_only_refuses_it() {
+    let (mut kernel, solid, edge, _) = box_kernel();
+    let solid_id = kernel.resolve_solid(solid).unwrap();
+    let input_faces: HashSet<FaceId> =
+        remus_topology::explorer::solid_faces(kernel.topo(), solid_id)
+            .unwrap()
+            .into_iter()
+            .collect();
+    let before = live_counts(&kernel);
+    let before_volume = volume(&kernel, solid);
+
+    let refused =
+        envelope(kernel.fillet_variable_detailed_impl(solid, &[variable_spec(edge)], true));
+    assert_eq!(refused["status"], "error", "{refused}");
+    assert_eq!(refused["code"], "exact_only_unattainable");
+    assert_eq!(refused["category"], "quality_refused");
+    assert_eq!(refused["details"]["operation"], "filletVariable");
+    assert!(
+        refused["details"].get("engine").is_none(),
+        "no engine tag: {refused}"
+    );
+    assert_eq!(
+        live_counts(&kernel),
+        before,
+        "exact-only refusal must roll back"
+    );
+    assert!((volume(&kernel, solid) - before_volume).abs() < 1e-12);
+
+    let disclosed =
+        envelope(kernel.fillet_variable_detailed_impl(solid, &[variable_spec(edge)], false));
+    assert_eq!(disclosed["status"], "ok", "{disclosed}");
+    assert_eq!(disclosed["details"]["quality"], "approximate");
+    assert!(disclosed["details"].get("engine").is_none());
+    let result = kernel.resolve_solid(handle(&disclosed["value"])).unwrap();
+    let approximate: HashSet<u32> = disclosed["details"]["approximateFaces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(handle)
+        .collect();
+    let new_nurbs: HashSet<u32> = remus_topology::explorer::solid_faces(kernel.topo(), result)
+        .unwrap()
+        .into_iter()
+        .filter(|face| {
+            !input_faces.contains(face)
+                && matches!(
+                    kernel.topo().face(*face).unwrap().surface(),
+                    FaceSurface::Nurbs(_)
+                )
+        })
+        .map(face_id_to_u32)
+        .collect();
+    assert!(!approximate.is_empty());
+    assert_eq!(approximate, new_nurbs);
+    // The fit stays close to the exact rounded box it approximates.
+    let exact = (1.0 - std::f64::consts::FRAC_PI_4).mul_add(-10.0, 1000.0);
+    assert!((volume(&kernel, handle(&disclosed["value"])) - exact).abs() < 0.05);
+
+    // Same body behind the batch op, and the same solid as legacy
+    // `filletVariable` when replayed on identical kernels.
+    let (mut batch_kernel, ..) = box_kernel();
+    let batch = batch_v2(
+        &mut batch_kernel,
+        &json!([
+            {"op": "filletVariableDetailed", "args": {"solid": solid, "specs": [variable_spec(edge)], "exactOnly": true}},
+            {"op": "filletVariableDetailed", "args": {"solid": solid, "specs": [variable_spec(edge)]}},
+        ]),
+    );
+    assert_eq!(batch[0]["ok"], refused);
+    assert_eq!(batch[1]["ok"], disclosed);
+
+    let (mut fresh, ..) = box_kernel();
+    let fresh_result =
+        envelope(fresh.fillet_variable_detailed_impl(solid, &[variable_spec(edge)], false));
+    let (mut legacy_kernel, ..) = box_kernel();
+    let legacy = batch_v2(
+        &mut legacy_kernel,
+        &json!([{"op": "filletVariable", "args": {"solid": solid, "specs": [variable_spec(edge)]}}]),
+    );
+    let legacy_solid = handle(&legacy[0]["ok"]);
+    assert_eq!(legacy_solid, handle(&fresh_result["value"]));
+    assert!((volume(&legacy_kernel, legacy_solid) - volume(&fresh, legacy_solid)).abs() < 1e-9);
+}
+
+#[test]
+fn variable_fillet_spec_refusals_match_legacy_batch_v2() {
+    let (mut kernel, solid, edge, _) = box_kernel();
+    for (label, specs) in [
+        (
+            "missing edge",
+            json!([{"law": "constant", "start": 1.0, "end": 1.0}]),
+        ),
+        ("invalid edge", json!([variable_spec(u32::MAX)])),
+        (
+            "malformed setback",
+            json!([{"edge": edge, "law": "constant", "start": 1.0, "end": 1.0, "startSetback": "far"}]),
+        ),
+    ] {
+        let before = counts(&kernel);
+        let direct =
+            envelope(kernel.fillet_variable_detailed_impl(solid, specs.as_array().unwrap(), false));
+        assert_eq!(direct["status"], "error", "{label}: {direct}");
+        assert_eq!(counts(&kernel), before, "{label}: mutated");
+        let legacy = batch_v2(
+            &mut kernel,
+            &json!([{"op": "filletVariable", "args": {"solid": solid, "specs": specs}}]),
+        );
+        let legacy_error = &legacy[0]["error"];
+        assert_eq!(
+            direct["code"].as_str().unwrap(),
+            v2_code(legacy_error),
+            "{label}"
+        );
+        assert_eq!(direct["category"], legacy_error["category"], "{label}");
+        let batch = batch_v2(
+            &mut kernel,
+            &json!([{"op": "filletVariableDetailed", "args": {"solid": solid, "specs": specs}}]),
+        );
+        assert_eq!(batch[0]["ok"], direct, "{label}: batch twin parity");
+    }
+    // A missing spec array is a batch argument error, like the legacy op.
+    let response = batch_v2(
+        &mut kernel,
+        &json!([{"op": "filletVariableDetailed", "args": {"solid": solid}}]),
+    );
+    assert_eq!(response[0]["error"]["code"], "invalid_argument");
+}
