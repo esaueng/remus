@@ -2043,3 +2043,239 @@ fn tampered_generatrix_proof_refuses_with_rollback() {
         "{what}: refusal preserves volume"
     );
 }
+
+// ---- B19 survivor tranche: one tamper per compound-end certificate.  Each
+// tamper violates exactly one clause of the transverse-cylinder proof by a
+// stated amount; the refusal must name that clause and roll back.  A
+// mutated proof that skips the clause is caught later by a different
+// certificate (or not at all), so the reason, not just the error, is the
+// oracle.
+
+/// The kept R8/support generatrix E_z of `band`: a line on the R8 end and a
+/// support with exactly one band vertex.  Returns (edge, far vertex).
+fn kept_r8_generatrix(
+    topo: &Topology,
+    solid: SolidId,
+    band: FaceId,
+    supports: &[FaceId],
+    r8: FaceId,
+) -> (
+    remus_topology::edge::EdgeId,
+    remus_topology::vertex::VertexId,
+) {
+    let adjacency = topo.build_adjacency(solid).unwrap();
+    let band_vertices: std::collections::HashSet<_> = topo
+        .wire(topo.face(band).unwrap().outer_wire())
+        .unwrap()
+        .edges()
+        .iter()
+        .flat_map(|oriented| {
+            let edge = topo.edge(oriented.edge()).unwrap();
+            [edge.start(), edge.end()]
+        })
+        .collect();
+    let mut found = Vec::new();
+    for edge in remus_topology::explorer::solid_edges(topo, solid).unwrap() {
+        let data = topo.edge(edge).unwrap();
+        let faces = adjacency.faces_for_edge(edge);
+        if !matches!(data.curve(), EdgeCurve::Line)
+            || !faces.contains(&r8)
+            || !faces.iter().any(|face| supports.contains(face))
+        {
+            continue;
+        }
+        let ends = [data.start(), data.end()];
+        if ends.iter().filter(|v| band_vertices.contains(v)).count() == 1 {
+            let far = if band_vertices.contains(&ends[0]) {
+                ends[1]
+            } else {
+                ends[0]
+            };
+            found.push((edge, far));
+        }
+    }
+    assert_eq!(found.len(), 1, "one kept R8/support generatrix");
+    found[0]
+}
+
+/// Rotate `point` about the R8 axis by `angle` (stays on the carrier).
+fn rotate_about_r8(
+    r8: &remus_math::surfaces::CylindricalSurface,
+    point: remus_math::vec::Point3,
+    angle: f64,
+) -> remus_math::vec::Point3 {
+    let axis = r8.axis().normalize().unwrap();
+    let offset = point - r8.origin();
+    let along = axis * offset.dot(axis);
+    let radial = offset - along;
+    let (sin, cos) = angle.sin_cos();
+    r8.origin() + along + radial * cos + axis.cross(radial) * sin
+}
+
+/// Refusal with rollback whose reason names `clause`.
+fn assert_compound_refusal(topo: &mut Topology, solid: SolidId, band: FaceId, clause: &str) {
+    let faces_before = remus_topology::explorer::solid_faces(topo, solid)
+        .unwrap()
+        .len();
+    let census_before = surface_census(topo, solid);
+    let error = remus_operations::resize_blend::resize_blend(topo, solid, band, 1.0, 0.0)
+        .expect_err("tampered compound end must refuse");
+    assert!(
+        format!("{error}").contains(clause),
+        "refusal must name '{clause}', got {error}"
+    );
+    assert_eq!(
+        remus_topology::explorer::solid_faces(topo, solid)
+            .unwrap()
+            .len(),
+        faces_before
+    );
+    assert_eq!(surface_census(topo, solid), census_before);
+}
+
+fn r8_band_setup(
+    what: &str,
+) -> (
+    Topology,
+    SolidId,
+    FaceId,
+    Vec<FaceId>,
+    Vec<FaceId>,
+    FaceId,
+    remus_math::surfaces::CylindricalSurface,
+) {
+    let (topo, solid) = load_fixture();
+    let band = select_r1(&topo, solid, 5, 1.0, what);
+    let (supports, planar_ends, curved_ends) = supports_and_ends(&topo, solid, band);
+    assert_eq!(curved_ends.len(), 1, "{what}: one R8 end face");
+    let FaceSurface::Cylinder(r8) = topo.face(curved_ends[0]).unwrap().surface().clone() else {
+        panic!("{what}: R8 end is a cylinder");
+    };
+    (topo, solid, band, supports, planar_ends, curved_ends[0], r8)
+}
+
+#[test]
+fn r8_generatrix_proofs_refuse_their_own_violations() {
+    // (a) Far endpoint of E_z turned 2e-4 rad about the R8 axis: still on
+    //     the carrier, but E_z tilts 9.4e-5 rad (1 - cos = 4.4e-9 > 1e-9).
+    let what = "towel-R1-r8-direction";
+    let (mut topo, solid, band, supports, _, r8_face, r8) = r8_band_setup(what);
+    let (_, far) = kept_r8_generatrix(&topo, solid, band, &supports, r8_face);
+    let point = topo.vertex(far).unwrap().point();
+    topo.vertex_mut(far)
+        .unwrap()
+        .set_point(rotate_about_r8(&r8, point, 2e-4));
+    assert_compound_refusal(&mut topo, solid, band, "is not an R8 generatrix");
+
+    // (b) Far endpoint moved 1e-5 radially off the carrier: the tilt
+    //     (1 - cos 5.9e-7 = 1.7e-13) passes the direction gate.
+    let what = "towel-R1-r8-radial";
+    let (mut topo, solid, band, supports, _, r8_face, r8) = r8_band_setup(what);
+    let (_, far) = kept_r8_generatrix(&topo, solid, band, &supports, r8_face);
+    let point = topo.vertex(far).unwrap().point();
+    let axis = r8.axis().normalize().unwrap();
+    let offset = point - r8.origin();
+    let radial = (offset - axis * offset.dot(axis)).normalize().unwrap();
+    topo.vertex_mut(far)
+        .unwrap()
+        .set_point(point + radial * 1e-5);
+    assert_compound_refusal(&mut topo, solid, band, "leaves the R8 carrier");
+
+    // (c) Far endpoint turned 5e-5 rad: on the carrier and inside the
+    //     direction gate, but E_z now leaves the support plane and passes
+    //     ~2e-5 from the support/support sharp line: no exact piercing.
+    let what = "towel-R1-r8-skew";
+    let (mut topo, solid, band, supports, _, r8_face, r8) = r8_band_setup(what);
+    let (_, far) = kept_r8_generatrix(&topo, solid, band, &supports, r8_face);
+    let point = topo.vertex(far).unwrap().point();
+    topo.vertex_mut(far)
+        .unwrap()
+        .set_point(rotate_about_r8(&r8, point, 5e-5));
+    assert_compound_refusal(&mut topo, solid, band, "solve is skewed");
+}
+
+#[test]
+fn r8_oblique_corner_proof_refuses_an_offset_oblique_face() {
+    // Shift the oblique end plane by 1e-4 along its normal: the recovered
+    // Q* (on R8 and the support) no longer lies on the oblique face.
+    let what = "towel-R1-r8-oblique";
+    let (mut topo, solid, band, _, planar_ends, _, _) = r8_band_setup(what);
+    let oblique = planar_ends
+        .iter()
+        .copied()
+        .find(|face| {
+            let (normal, _) = unit_plane(&topo, *face);
+            normal.x().abs() < 1.0 - 1e-6
+        })
+        .expect("oblique cap");
+    let FaceSurface::Plane { normal, d } = *topo.face(oblique).unwrap().surface() else {
+        unreachable!("oblique cap is planar");
+    };
+    topo.face_mut(oblique)
+        .unwrap()
+        .set_surface(FaceSurface::Plane {
+            normal,
+            d: d + 1e-4 * normal.length(),
+        });
+    assert_compound_refusal(&mut topo, solid, band, "misses oblique face");
+}
+
+#[test]
+fn journaled_plus_y_r8_removal_resolves_the_oblique_spring_to_line_and_arc() {
+    use remus_topology::journal::{EntityKey, EntityKind, EventDraft, EvolutionDraft};
+    use remus_topology::naming::{PersistentRef, Provenance, Resolution, resolve};
+    // Mirror of `journaled_r8_removal_records_total_history` on the +y band,
+    // whose oblique-side spring is stored in the opposite direction.
+    let what = "towel-R1-r8-journaled-plus-y";
+    let (mut topo, solid) = load_fixture();
+    let band = select_r1(&topo, solid, 5, 1.0, what);
+    let (supports, planar_ends, curved_ends) = supports_and_ends(&topo, solid, band);
+    let corners = derive_r8_corners(
+        &topo,
+        solid,
+        band,
+        &supports,
+        &planar_ends,
+        curved_ends[0],
+        what,
+    );
+    let adjacency = topo.build_adjacency(solid).unwrap();
+    let spring = remus_topology::explorer::solid_edges(&topo, solid)
+        .unwrap()
+        .into_iter()
+        .find(|edge| {
+            let faces = adjacency.faces_for_edge(*edge);
+            faces.contains(&band)
+                && faces.contains(&corners.sy)
+                && matches!(topo.edge(*edge).unwrap().curve(), EdgeCurve::Line)
+        })
+        .expect("oblique-side spring");
+    let key = EntityKey::edge(spring.index());
+    let pending = topo.journal_begin("spring-reference");
+    let mut draft = EvolutionDraft::construction();
+    draft.add_scope([key]);
+    draft.push(key, EventDraft::Generated { sources: vec![] });
+    let anchor = topo.journal_record_evolution(pending, draft).unwrap();
+    let reference = PersistentRef::operation_output(anchor, EntityKind::Edge, 0);
+    let result =
+        remus_operations::journal_ops::resize_blend_journaled(&mut topo, solid, band, 1.0, 0.0)
+            .unwrap();
+    let Resolution::BoundMany {
+        entities,
+        provenance: Provenance::Construction,
+    } = resolve(&topo, &reference)
+    else {
+        panic!("{what}: spring must resolve to its sharp-plus-arc replacement");
+    };
+    let mut kinds: Vec<_> = entities
+        .iter()
+        .map(|key| {
+            let edge = topo.edge_id_from_index(key.index).unwrap();
+            topo.edge(edge).unwrap().curve().type_tag()
+        })
+        .collect();
+    kinds.sort_unstable();
+    assert_eq!(kinds, vec!["circle", "line"], "{what}");
+    assert_valid(&topo, result.solid, what);
+    assert_manifold_exact(&topo, result.solid, what);
+}
