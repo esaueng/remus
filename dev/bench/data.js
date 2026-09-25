@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790356488812,
+  "lastUpdate": 1790358130224,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -62449,6 +62449,240 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 88990,
             "range": "± 417",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "dbb3f5907dd83e789380ea253a598023cdc8d763",
+          "message": "fix(measure): sum volume tetrahedra about the body, not the origin (B56) (#648)\n\n* fix(tessellate): mesh sphere patches that hold a pole as the pole cap (B40)\n\nA trimmed sphere face whose single boundary loop winds once around the\ncarrier's polar axis contains a pole. The parametric CDT unwraps that\nloop into an open curve spanning a full u period and closes it with a\nchord, so it meshed the complementary lens between the equator and the\nsection instead. The lens runs the shared section edges in the\nneighbour's own direction: the B26 finding-15 cone-sphere fuse opened\nwith 1428 one-sided edges at the harness deflection, at every scale, and\nat coarse deflection the boundary weld plus coincident-triangle removal\nerased both sides into a closed but wrong mesh.\n\nAdd a narrow structured path to the sphere-cap chain. It certifies a\nsingle +-1 azimuth winding clear of both poles, picks the enclosed pole\nfrom the winding sign (the latitude-cap rule, in the carrier frame),\nand constrains the loop verbatim in a stereographic chart from the\nexcluded pole, which is one-to-one on the patch. Samples are charted by\nunit direction, so marched section edges 2.7e-5 r off the sphere chart\ncorrectly without loosening the hemisphere filler's on-sphere gate.\nAnything else declines to the existing CDT.\n\nUn-ignore b26_finding15_conesphere_wire_mesh. Add\nregress_b40_conesphere_small_scale.rs: the witness and a contained-pole\nfamily whose cut keeps REVERSED pole patches, at 1e-3/1/1e3 for fuse,\ncut and intersect, against inclusion-exclusion closed forms, sag-bounded\nmesh volumes, watertightness at 0.1/0.01/harness deflection, both\nvalidators, ray-cast probes and translation invariance. An ignored\nready-repro pins the measure-layer remainder: solid_volume's signed\ntetrahedra about the world origin drift 0.7% for a 1e-3 body moved 13\nunits, although its mesh is unchanged.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n* docs(roadmap): close B40 with evidence and file the B56 volume remainder\n\nB40 is Done: the open cone-sphere fuse mesh was a pole-holding sphere\npatch meshed as its complement, at every scale. File the measure-layer\nremainder it exposed as B56 (solid_volume's signed tetrahedra about the\nworld origin drift for a small body far from it), correct the earlier\nsnap-reconciliation reading in the mesh-class diagnostics note, and add\none-line lessons to the tessellation and roadmap skills.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n* fix(tessellate): leave level rings on the latitude-cap and sweep paths\n\nThe pole-cap path also caught primitive hemispheres, whose equator\nloop winds once around the axis at one latitude. The parametric CDT\ndeclines those on its negligible-height guard, and the established\nsweep meshes them; taking them changed the sphere goldens and\ndropped a disjoint cone-sphere fuse volume 0.36%. Decline any loop\nwith no latitude spread, pin that decline in the unit tests, and move\nthe cap-area check to a tilted small circle.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n* test(tessellate): use FRAC_PI_3 in the B40 pole-cap area test\n\nclippy::approx_constant rejects the 1.047_197_551 literal under\n-D warnings, which blocks the pre-commit hook. Both uses change together,\nso the cap-area oracle stays consistent with the loop it measures.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* fix(measure): sum volume tetrahedra about the body, not the origin (B56)\n\nEvery triangle sum in measure/volume.rs took its signed tetrahedra about\nthe world origin. Each triple product then carries an eps*|offset|^3\nrounding error against an L^3 answer, so a 1e-3 cone-sphere boolean moved\nby (13, -7, 5) read up to 0.7% off with an unchanged mesh, and a 1e-3\ntriangulated body's face-based centroid landed 0.18 radii from its centre.\n\nWhole-solid meshes and planar-triangle bodies are now summed about their\nbounding-box centre whenever every directed edge is cancelled by its\nreverse, which is exactly when the sum is the same about every point. A\nmesh with a hole or an inward-wound face has no reference-free volume and\nkeeps the historic origin sum, so none of those readings change: the\nslotted no-lip bin body, the B17 Off-policy box and the STL 8-vertex box\nfixture all carry such a face in a plane through the origin and measured\nright only because it contributes nothing there. The per-face sum uses one\nlocal reference for all faces. The direct route, which mixes mesh faces\nwith origin-referenced analytic terms, splits each determinant exactly\ninto a local part plus r.((b-a)x(c-a)), cutting its error to eps*|r|*L^2.\n\nUn-ignore the B40 witness, add regress_b56_volume_local_reference and unit\ntests for the private routes, close B56 and file B58 (the check-crate Gauss\nintegrator behind mass_properties has the same origin reference; a 1e-3\ncone's inertia reads 25x off 13 units away).\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Fable 5.1 <noreply@anthropic.com>",
+          "timestamp": "2026-09-25T10:35:33-07:00",
+          "tree_id": "883a5d9ecf4e5f352c43d1b7831e8d6b4ce1e92c",
+          "url": "https://github.com/esaueng/remus/commit/dbb3f5907dd83e789380ea253a598023cdc8d763"
+        },
+        "date": 1790358128367,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 856564,
+            "range": "± 1225",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 936219,
+            "range": "± 1564",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 18794,
+            "range": "± 645",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 7889531,
+            "range": "± 81206",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 7955662,
+            "range": "± 434444",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 7608819,
+            "range": "± 7361",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 750345,
+            "range": "± 3143",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 12180634,
+            "range": "± 12597",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 23384454,
+            "range": "± 1146441",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 20,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 69,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 31,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 131,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 108,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 474,
+            "range": "± 10",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 106,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 267,
+            "range": "± 8",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 163,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 337,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 667,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 1898,
+            "range": "± 51",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 8,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 24,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 50,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 47,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 364274,
+            "range": "± 816",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 7223172,
+            "range": "± 91945",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 112351,
+            "range": "± 2850",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 333285,
+            "range": "± 223",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 45202,
+            "range": "± 45",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 670614,
+            "range": "± 19126",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 7875729,
+            "range": "± 240721",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 531746,
+            "range": "± 25146",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 900020,
+            "range": "± 7203",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 58423,
+            "range": "± 74",
             "unit": "ns/iter"
           }
         ]
