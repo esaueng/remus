@@ -260,6 +260,39 @@ fn disc_clip_decides_point_segments_by_distance_to_the_center() {
 }
 
 #[test]
+fn disc_clip_keeps_segments_that_touch_the_tolerance_circle_at_one_point() {
+    // A disc about the origin in z = 0. Its plane frame is then axis-aligned
+    // and exact, so the touch points below sit on the tolerance circle
+    // (radius r + linear tolerance) with no rounding at all.
+    let r = 1.7;
+    let r_tol = r + Tolerance::new().linear;
+    let disc = Disc::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), r, 0.4);
+    let touch = Point3::new(-r_tol, 0.0, 0.0);
+    // (from, to): each segment meets the tolerance circle only at `touch`.
+    let cases = [
+        // Tangent there.
+        (touch, Point3::new(-r_tol, 2.0, 0.0)),
+        (Point3::new(-r_tol, -2.0, 0.0), touch),
+        // Leaving radially outward from it.
+        (touch, Point3::new(-r_tol - 1.0, 0.0, 0.0)),
+        (
+            Point3::new(0.0, r_tol, 0.0),
+            Point3::new(0.0, r_tol + 3.0, 0.0),
+        ),
+    ];
+    for (p, q) in cases {
+        assert!(
+            (segment_distance(disc.center, p, q) - r_tol).abs() <= 0.0,
+            "fixture: {p:?} -> {q:?} touches the tolerance circle exactly"
+        );
+        assert!(
+            disc.keeps(p, q),
+            "a touch at exactly r + tolerance is kept: {p:?} -> {q:?}"
+        );
+    }
+}
+
+#[test]
 fn disc_clip_matches_the_distance_oracle_on_generated_segments() {
     for (disc, span, seed) in [
         (tilted_disc(), 4.0, 0x5eed_0001_u64),
@@ -552,6 +585,8 @@ struct TorusCut {
     axis_foot: Point3,
     outer: f64,
     inner: f64,
+    /// Start of the oval's knot domain (its length is always 4).
+    domain_start: f64,
 }
 
 impl TorusCut {
@@ -566,14 +601,22 @@ impl TorusCut {
             axis_foot,
             outer: major + half,
             inner: major - half,
+            domain_start: 1.0,
         }
+    }
+
+    /// The same cut with the oval's parameter domain starting at `t0`.
+    const fn with_domain_start(mut self, t0: f64) -> Self {
+        self.domain_start = t0;
+        self
     }
 
     fn in_plane(&self, x: f64, y: f64) -> Point3 {
         self.axis_foot + Vec3::new(x, y, 0.0)
     }
 
-    /// The outer section circle as an exact rational NURBS over `[1, 5]`,
+    /// The outer section circle as an exact rational NURBS over
+    /// `[domain_start, domain_start + 4]`,
     /// shaped like the marcher's closed oval (a non-`Line`, non-`Circle`
     /// closed curve with a domain that does not start at zero).
     fn outer_oval(&self) -> RawCurve {
@@ -594,12 +637,15 @@ impl TorusCut {
             .map(|&(x, y)| self.in_plane(self.outer * x, self.outer * y))
             .collect();
         let weights = vec![1.0, w, 1.0, w, 1.0, w, 1.0, w, 1.0];
-        let knots = vec![1.0, 1.0, 1.0, 2.0, 2.0, 3.0, 3.0, 4.0, 4.0, 5.0, 5.0, 5.0];
+        let t0 = self.domain_start;
+        let knots = [0.0, 0.0, 0.0, 1.0, 1.0, 2.0, 2.0, 3.0, 3.0, 4.0, 4.0, 4.0]
+            .map(|k| k + t0)
+            .to_vec();
         let curve = NurbsCurve::new(2, knots, points.clone(), weights).unwrap();
         RawCurve {
             curve: EdgeCurve::NurbsCurve(curve),
             bbox: Aabb3::from_points(points.iter().copied()),
-            t_range: (1.0, 5.0),
+            t_range: (t0, t0 + 4.0),
             p_start: points[0],
             p_end: points[0],
         }
@@ -716,8 +762,22 @@ fn cap_center_and_radius(cut: &TorusCut) -> (Point3, f64) {
 
 #[test]
 fn torus_oval_on_a_disk_cap_keeps_the_exact_in_cap_arc_for_any_rim_seam() {
-    let cut = TorusCut::new();
-    let (rim_center, rim_radius) = cap_center_and_radius(&cut);
+    // Two caps: one crossing the other section branch far outside the kept
+    // arc's angular span, one crossing it well inside that span (so an
+    // off-branch crossing would split the kept arc). Two oval domains: one
+    // starting above zero, one below.
+    for (offset, rim_radius, t0) in [(3.0, 1.5, 1.0), (4.2, 2.5, -3.0), (3.0, 1.5, -3.0)] {
+        disk_cap_seam_sweep(&TorusCut::new().with_domain_start(t0), offset, rim_radius);
+    }
+}
+
+fn disk_cap_seam_sweep(cut: &TorusCut, offset_from_axis: f64, rim_radius: f64) {
+    let rim_center = cut.in_plane(offset_from_axis, 0.0);
+    // The cap reaches across the other (inner) section circle too.
+    assert!(
+        offset_from_axis - rim_radius < cut.inner,
+        "fixture: the cap spans both branches"
+    );
     let ends = circle_circle(cut.axis_foot, cut.outer, rim_center, rim_radius);
     let half_angle = {
         let e = ends[0] - cut.axis_foot;
@@ -735,8 +795,8 @@ fn torus_oval_on_a_disk_cap_keeps_the_exact_in_cap_arc_for_any_rim_seam() {
         // In-plane rim angle φ (from the rim center, away from the torus
         // axis) where the rim is `outer + offset` from the axis.
         let target = cut.outer + offset;
-        let cos_phi =
-            (target * target - 3.0 * 3.0 - rim_radius * rim_radius) / (2.0 * 3.0 * rim_radius);
+        let d = offset_from_axis;
+        let cos_phi = (target * target - d * d - rim_radius * rim_radius) / (2.0 * d * rim_radius);
         let phi = cos_phi.acos() * offset.signum();
         let seam_point =
             rim_center + Vec3::new(rim_radius * phi.cos(), rim_radius * phi.sin(), 0.0);
@@ -1196,4 +1256,76 @@ fn a_torus_section_notching_one_frustum_rim_is_split_at_an_interior_vertex() {
         joint_axial > 1e-3 && joint_axial < 1.0 - 1e-3,
         "the joint vertex {joint:?} lies inside the wall band, axial {joint_axial}"
     );
+}
+
+#[test]
+fn torus_oval_on_a_notched_box_face_drops_the_short_excursion_through_the_notch() {
+    // The straight box with a slot cut in from its far side: the oval leaves
+    // the face through the slot's floor and re-enters through its roof, 0.1
+    // later. Only the two in-face arcs survive; the excursion is outside.
+    let cut = TorusCut::new();
+    let (x0, x1, y0, y1) = (3.0, 5.2, -1.0, 1.3);
+    let (slot_x, slot_y0, slot_y1) = (4.0, 0.2, 0.3);
+    let outline = [
+        (x0, y0),
+        (x1, y0),
+        (x1, slot_y0),
+        (slot_x, slot_y0),
+        (slot_x, slot_y1),
+        (x1, slot_y1),
+        (x1, y1),
+        (x0, y1),
+    ];
+    let corners: Vec<Point3> = outline.iter().map(|&(x, y)| cut.in_plane(x, y)).collect();
+    let mut topo = Topology::new();
+    let face = polygon_face(&mut topo, &corners, Vec3::new(0.0, 0.0, 1.0));
+    let pieces = cut.trim(&mut topo, face).expect("the two in-face arcs");
+
+    let x_at = |y: f64| cut.outer.mul_add(cut.outer, -y * y).sqrt();
+    let angle_at = |y: f64| y.atan2(x_at(y));
+    let crossings = [y0, slot_y0, slot_y1, y1].map(|y| cut.in_plane(x_at(y), y));
+    let expected_angle = (angle_at(slot_y0) - angle_at(y0)) + (angle_at(y1) - angle_at(slot_y1));
+    let foot = cut.axis_foot;
+    let in_face = |p: Point3| {
+        let (x, y) = (p.x() - foot.x(), p.y() - foot.y());
+        let in_box = x >= x0 - 1e-9 && x <= x1 + 1e-9 && y >= y0 - 1e-9 && y <= y1 + 1e-9;
+        let in_slot = x > slot_x + 1e-9 && y > slot_y0 + 1e-9 && y < slot_y1 - 1e-9;
+        in_box && !in_slot
+    };
+    let mut angle = 0.0;
+    for piece in &pieces {
+        let mut prev: Option<Vec3> = None;
+        for i in 0..=64 {
+            let t = piece.t_range.0 + (piece.t_range.1 - piece.t_range.0) * f64::from(i) / 64.0;
+            let p = piece
+                .curve
+                .evaluate_with_endpoints(t, piece.p_start, piece.p_end);
+            let radial = Vec3::new(p.x() - foot.x(), p.y() - foot.y(), 0.0);
+            assert!(
+                (radial.length() - cut.outer).abs() < 1e-6,
+                "sample off the section circle"
+            );
+            assert!(
+                in_face(p),
+                "kept sample {p:?} lies in the slot or outside the face"
+            );
+            if let Some(a) = prev {
+                angle += a.cross(radial).z().atan2(a.dot(radial)).abs();
+            }
+            prev = Some(radial);
+        }
+    }
+    assert!(
+        (angle - expected_angle).abs() < 1e-6,
+        "kept arcs span {angle} rad, the in-face arcs span {expected_angle}"
+    );
+    for crossing in crossings {
+        assert!(
+            pieces.iter().any(|piece| {
+                (piece.p_start - crossing).length() < 1e-8
+                    || (piece.p_end - crossing).length() < 1e-8
+            }),
+            "no kept arc ends at the exact crossing {crossing:?}"
+        );
+    }
 }
