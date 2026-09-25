@@ -82,6 +82,10 @@ The boolean pipeline reconciles this class of problem with `refine_boundary_edge
 
 The gridfinity D5 lip is the closest real exercise of a filleted closed rim: `crates/wasm/src/bindings/gridfinity_tests.rs::gridfinity_d5_box_with_filleted_lip`. It is a LIVE, non-ignored `#[test]` that PASSES, and it guards the fix: it fillets a peak rim edge via the default `fillet` op (the `try_fillet` chain, so rolling-ball first, not the pure v2 path) and asserts the filleted lip stays watertight and genus-0 (`lip_euler >= 2`, `lip_val <= 2`), then fuses it onto the box. The test comment attributes the closure to the fillet's arc-runout closure plus arc-preserving reassembly. Do not hunt for an open non-manifold d5 bug: the test asserts the opposite. Use it as the regression guard when touching the fillet chain, and re-run it after any trimmer change to catch a regression back into the edge-sharing failure described above.
 
+### (c) Variable fillet stripe ends are chords. Engine: v1 variable (`filletVariable`).
+
+`crates/operations/src/fillet/mod.rs::fillet_variable_transacted` emits its exact NURBS wall as a position-only `FaceSpec::Surface` and the cap faces as `FaceSpec::Planar`, so the assembler mints `Line` edges across each stripe end: chords `r(1 − cos 45°)` off the wall. `validateSolid` passes; the mesh volume reads low by ~0.022·r²·L and Gauss by more. Every `filletVariable` result has it (B61, ready-repro `crates/operations/tests/regress_variable_fillet_chord_end_trim.rs`). Width is guarded: a radius at or past a planar support's far boundary refuses as `cliff-encountered` before assembly (B59, `reject_variable_support_cliffs`).
+
 ## Scope reminders
 
 - The blend WALL of a curved-neighbor fillet is a NURBS surface with no closed form. Do not chase exact-analytic recovery of it.
