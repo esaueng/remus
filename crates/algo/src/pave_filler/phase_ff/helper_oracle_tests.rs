@@ -817,7 +817,7 @@ fn disk_cap_seam_sweep(cut: &TorusCut, offset_from_axis: f64, rim_radius: f64) {
             .trim(&mut topo, face)
             .unwrap_or_else(|| panic!("seam {seam}: the in-cap arc was refused"));
         assert_kept_arc(
-            &cut,
+            cut,
             &pieces,
             ends,
             2.0 * half_angle,
@@ -842,7 +842,7 @@ fn disk_cap_seam_sweep(cut: &TorusCut, offset_from_axis: f64, rim_radius: f64) {
             .trim(&mut topo, face)
             .unwrap_or_else(|| panic!("split rim at seam {seam}: refused"));
         assert_kept_arc(
-            &cut,
+            cut,
             &pieces,
             ends,
             2.0 * half_angle,
