@@ -4850,7 +4850,7 @@ pub fn resize_blend_failure_code(error: &OperationsError) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::panic, clippy::unwrap_used)]
+    #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
     use super::*;
 
@@ -5231,6 +5231,349 @@ mod tests {
         for (error, expected) in cases {
             assert_eq!(error.code(), expected);
         }
+    }
+
+    // ---- B19 survivor tranche: split spring-chain proof, contiguity, and
+    // helper certificates.  The chain fixture is a band carrier x^2 + y^2 = 1
+    // with the tangent support plane x = 1; every perturbation below moves a
+    // vertex by a stated amount against exactly one clause of the proof.
+
+    use remus_math::surfaces::CylindricalSurface;
+    use remus_topology::face::Face;
+
+    struct ChainFixture {
+        topo: Topology,
+        support: FaceId,
+        band: FaceId,
+        contacts: Vec<EdgeId>,
+        chain_vertices: Vec<VertexId>,
+    }
+
+    fn line_edge(topo: &mut Topology, start: VertexId, end: VertexId) -> EdgeId {
+        topo.add_edge(Edge::new(start, end, EdgeCurve::Line))
+    }
+
+    /// Band/support pair sharing the open chain through `points`.  The
+    /// support wire runs the chain forward; the band wire runs it backward.
+    fn chain_fixture(points: &[Point3]) -> ChainFixture {
+        let mut topo = Topology::new();
+        let vertices: Vec<_> = points
+            .iter()
+            .map(|point| topo.add_vertex(Vertex::new(*point, Tolerance::new().linear)))
+            .collect();
+        let contacts: Vec<_> = vertices
+            .windows(2)
+            .map(|pair| line_edge(&mut topo, pair[0], pair[1]))
+            .collect();
+        let (first, last) = (vertices[0], *vertices.last().unwrap());
+        let off_support = topo.add_vertex(Vertex::new(
+            Point3::new(1.0, 5.0, 5.0),
+            Tolerance::new().linear,
+        ));
+        let off_band = topo.add_vertex(Vertex::new(
+            Point3::new(0.0, 1.0, 5.0),
+            Tolerance::new().linear,
+        ));
+        let mut support_uses: Vec<_> = contacts
+            .iter()
+            .map(|edge| OrientedEdge::new(*edge, true))
+            .collect();
+        let closing = [
+            line_edge(&mut topo, last, off_support),
+            line_edge(&mut topo, off_support, first),
+        ];
+        support_uses.extend(closing.map(|edge| OrientedEdge::new(edge, true)));
+        let mut band_uses: Vec<_> = contacts
+            .iter()
+            .rev()
+            .map(|edge| OrientedEdge::new(*edge, false))
+            .collect();
+        let closing = [
+            line_edge(&mut topo, first, off_band),
+            line_edge(&mut topo, off_band, last),
+        ];
+        band_uses.extend(closing.map(|edge| OrientedEdge::new(edge, true)));
+        let support_wire = topo.add_wire(Wire::new(support_uses, true).unwrap());
+        let band_wire = topo.add_wire(Wire::new(band_uses, true).unwrap());
+        let support = topo.add_face(Face::new(
+            support_wire,
+            Vec::new(),
+            FaceSurface::Plane {
+                normal: Vec3::new(1.0, 0.0, 0.0),
+                d: 1.0,
+            },
+        ));
+        let band = topo.add_face(Face::new(
+            band_wire,
+            Vec::new(),
+            FaceSurface::Cylinder(
+                CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0)
+                    .unwrap(),
+            ),
+        ));
+        ChainFixture {
+            topo,
+            support,
+            band,
+            contacts,
+            chain_vertices: vertices,
+        }
+    }
+
+    fn prove(fixture: &ChainFixture) -> Result<Option<SpringChain>, OperationsError> {
+        prove_spring_chain(
+            &fixture.topo,
+            fixture.support,
+            fixture.band,
+            fixture.contacts.clone(),
+        )
+    }
+
+    fn generatrix(z: &[f64]) -> Vec<Point3> {
+        z.iter().map(|z| Point3::new(1.0, 0.0, *z)).collect()
+    }
+
+    #[test]
+    fn split_generatrix_chain_is_proved_in_walk_order() {
+        let fixture = chain_fixture(&generatrix(&[0.0, 4.0, 10.0]));
+        let chain = prove(&fixture)
+            .unwrap()
+            .expect("collinear split generatrix");
+        assert_eq!(chain.edges, fixture.contacts);
+        assert_eq!(
+            chain.endpoints,
+            [fixture.chain_vertices[0], fixture.chain_vertices[2]]
+        );
+        assert_eq!(chain.interior_vertices, vec![fixture.chain_vertices[1]]);
+
+        // A split vertex 5e-8 off the line (inside the 1e-7 modeling
+        // tolerance) is still the same generatrix.
+        let mut points = generatrix(&[0.0, 4.0, 10.0]);
+        points[1] = Point3::new(1.0, 5e-8, 4.0);
+        assert!(prove(&chain_fixture(&points)).unwrap().is_some());
+    }
+
+    #[test]
+    fn split_chain_proof_refuses_each_violated_clause() {
+        let refuses = |points: &[Point3], clause: &str| {
+            let error = match prove(&chain_fixture(points)) {
+                Err(error) => error,
+                Ok(chain) => panic!(
+                    "{clause}: expected a typed refusal, got {:?}",
+                    chain.map(|c| c.edges)
+                ),
+            };
+            assert!(
+                error.to_string().contains(clause),
+                "expected '{clause}', got {error}"
+            );
+        };
+        // In-plane drift of the split vertex by 1e-5: still on the support
+        // plane and within 5e-11 of the carrier, but off the common line.
+        let mut points = generatrix(&[0.0, 4.0, 10.0]);
+        points[1] = Point3::new(1.0, 1e-5, 4.0);
+        refuses(&points, "not collinear");
+        // The whole chain turned 0.01 rad about the band axis: a collinear
+        // generatrix on the carrier, 5e-5 off the support plane.
+        let (sin, cos) = (0.01_f64).sin_cos();
+        let turned: Vec<_> = [0.0, 4.0, 10.0]
+            .iter()
+            .map(|z| Point3::new(cos, sin, *z))
+            .collect();
+        refuses(&turned, "leaves its planar support");
+        // The whole chain slid 1e-3 along the support plane: collinear,
+        // parallel to the axis, on the plane, but 5e-7 off the carrier.
+        let slid: Vec<_> = [0.0, 4.0, 10.0]
+            .iter()
+            .map(|z| Point3::new(1.0, 1e-3, *z))
+            .collect();
+        refuses(&slid, "leaves the cylindrical band carrier");
+        // A zero-length middle segment (two vertices at z = 4) overlaps.
+        refuses(
+            &generatrix(&[0.0, 4.0, 4.0, 10.0]),
+            "backtracks or overlaps",
+        );
+    }
+
+    #[test]
+    fn single_contact_outside_the_proof_declines_to_the_fallback() {
+        // One contact tilted 1e-5 rad inside the support plane: every vertex
+        // is on the plane and within 5e-9 of the carrier, but the line is not
+        // a generatrix.  A single edge declines (`Ok(None)`) rather than
+        // raising the split-chain refusal.
+        let fixture = chain_fixture(&[Point3::new(1.0, 0.0, 0.0), Point3::new(1.0, 1e-4, 10.0)]);
+        assert!(prove(&fixture).unwrap().is_none());
+    }
+
+    #[test]
+    fn chain_must_be_the_same_contiguous_run_on_both_faces() {
+        // The band carries a parallel duplicate of the second chain edge
+        // (same endpoints, different edge), in either traversal direction.
+        for reverse in [false, true] {
+            let mut fixture = chain_fixture(&generatrix(&[0.0, 4.0, 10.0]));
+            let [a, m, b] = fixture.chain_vertices[..] else {
+                unreachable!("three chain vertices");
+            };
+            let duplicate = line_edge(&mut fixture.topo, m, b);
+            let side = fixture.topo.add_vertex(Vertex::new(
+                Point3::new(0.0, 1.0, 5.0),
+                Tolerance::new().linear,
+            ));
+            let uses = if reverse {
+                vec![
+                    OrientedEdge::new(duplicate, false),
+                    OrientedEdge::new(fixture.contacts[0], false),
+                    OrientedEdge::new(line_edge(&mut fixture.topo, a, side), true),
+                    OrientedEdge::new(line_edge(&mut fixture.topo, side, b), true),
+                ]
+            } else {
+                vec![
+                    OrientedEdge::new(fixture.contacts[0], true),
+                    OrientedEdge::new(duplicate, true),
+                    OrientedEdge::new(line_edge(&mut fixture.topo, b, side), true),
+                    OrientedEdge::new(line_edge(&mut fixture.topo, side, a), true),
+                ]
+            };
+            let wire = fixture.topo.add_wire(Wire::new(uses, true).unwrap());
+            fixture
+                .topo
+                .set_face_boundary_wires(fixture.band, wire, Vec::new())
+                .unwrap();
+            assert!(
+                !face_contains_contiguous_chain(
+                    &fixture.topo,
+                    fixture.band,
+                    &fixture.contacts,
+                    &fixture.chain_vertices
+                )
+                .unwrap()
+            );
+            assert!(
+                face_contains_contiguous_chain(
+                    &fixture.topo,
+                    fixture.support,
+                    &fixture.contacts,
+                    &fixture.chain_vertices
+                )
+                .unwrap()
+            );
+            let Err(error) = prove(&fixture) else {
+                panic!("band lacks the chain: expected a typed refusal");
+            };
+            assert!(
+                error.to_string().contains("contiguous boundary run"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn point_line_distance_matches_the_perpendicular_distance() {
+        let a = Point3::new(1.0, 2.0, 3.0);
+        let b = Point3::new(1.0, 2.0, 13.0);
+        for (offset, expected) in [(3e-5, 3e-5), (0.0, 0.0), (2.5, 2.5)] {
+            let point = Point3::new(1.0 + offset, 2.0, 7.0);
+            assert!((point_line_distance(point, a, b) - expected).abs() < 1e-15);
+        }
+    }
+
+    #[test]
+    fn closed_circle_certificate_checks_seam_and_vertex_tolerance() {
+        let circle = || {
+            Circle3D::new_with_ref(
+                Point3::new(0.0, 0.0, 2.0),
+                Vec3::new(0.0, 0.0, 1.0),
+                3.0,
+                Vec3::new(1.0, 0.0, 0.0),
+            )
+            .unwrap()
+        };
+        let seam = Point3::new(3.0, 0.0, 2.0);
+        let attempt = |point: Point3, tolerance: f64| {
+            let mut topo = Topology::new();
+            let vertex = topo.add_vertex(Vertex::new(point, tolerance));
+            add_certified_closed_circle_edge(&mut topo, vertex, circle())
+        };
+        // A zero vertex tolerance is valid; the kernel default applies.
+        assert!(attempt(seam, 0.0).is_ok());
+        assert!(attempt(seam + Vec3::new(0.0, 0.0, 5e-8), 0.0).is_ok());
+        // Negative or non-finite vertex tolerances are malformed.
+        assert!(attempt(seam, -1.0).is_err());
+        assert!(attempt(seam, f64::NAN).is_err());
+        // A seam vertex 1e-3 off the circle is not the recovered sharp circle.
+        assert!(attempt(seam + Vec3::new(0.0, 0.0, 1e-3), 0.0).is_err());
+    }
+
+    #[test]
+    fn line_solvers_are_invariant_to_direction_length() {
+        // Oblique, non-unit directions whose true crossing is known.
+        let crossing = Point3::new(2.0, -1.0, 4.0);
+        let da = Vec3::new(3.0, 1.0, -2.0);
+        let db = Vec3::new(-0.5, 2.0, 0.25);
+        let hit = line_line_intersection(crossing - da * 1.7, da, crossing + db * 0.6, db)
+            .expect("transverse lines");
+        assert!((hit - crossing).length() < 1e-12, "{hit:?}");
+
+        let normal = Vec3::new(2.0, 3.0, 6.0) * (1.0 / 7.0);
+        let d = normal.dot(Vec3::new(crossing.x(), crossing.y(), crossing.z()));
+        let direction = Vec3::new(0.3, -2.0, 5.0);
+        let hit = line_plane_intersection(crossing + direction * 2.3, direction, normal, d)
+            .expect("transverse line");
+        assert!((hit - crossing).length() < 1e-12, "{hit:?}");
+    }
+
+    #[test]
+    fn unit_plane_of_normalizes_the_stored_equation() {
+        let mut topo = Topology::new();
+        let a = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 3.0), 1e-7));
+        let b = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 3.0), 1e-7));
+        let c = topo.add_vertex(Vertex::new(Point3::new(0.0, 1.0, 3.0), 1e-7));
+        let uses = [(a, b), (b, c), (c, a)]
+            .map(|(start, end)| OrientedEdge::new(line_edge(&mut topo, start, end), true))
+            .to_vec();
+        let wire = topo.add_wire(Wire::new(uses, true).unwrap());
+        let face = Face::new(
+            wire,
+            Vec::new(),
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 2.5),
+                d: 7.5,
+            },
+        );
+        let (normal, d) = unit_plane_of(&face).unwrap();
+        assert!((normal - Vec3::new(0.0, 0.0, 1.0)).length() < 1e-15);
+        assert!((d - 3.0).abs() < 1e-15, "z = 3 has unit offset 3, got {d}");
+    }
+
+    #[test]
+    fn orient_corners_requires_both_endpoints() {
+        let mut topo = Topology::new();
+        let a = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
+        let b = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
+        let edge = line_edge(&mut topo, a, b);
+        let (pa, pb) = (Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 0.0, 0.0));
+        let elsewhere = Point3::new(2.0, 0.0, 0.0);
+        assert!(orient_corners(&topo, edge, pa, pb).unwrap().is_forward());
+        assert!(!orient_corners(&topo, edge, pb, pa).unwrap().is_forward());
+        assert!(orient_corners(&topo, edge, pa, elsewhere).is_err());
+        assert!(orient_corners(&topo, edge, elsewhere, pb).is_err());
+    }
+
+    #[test]
+    fn multi_face_band_selection_keeps_the_established_defeature_logic() {
+        // A cylindrical band split into two faces on one carrier is outside the
+        // surgical scope: deleting one half must reach the established
+        // defeature logic, not the single-face surgical selection rule.
+        let (mut topo, blended) = crate::test_helpers::blended_box(&[0]);
+        let (split, halves) = crate::test_helpers::split_band(&mut topo, blended);
+        let error = crate::defeature::defeature(&mut topo, split, &[halves[0]])
+            .expect_err("a half band has no exact sharp closure");
+        assert!(
+            !error
+                .to_string()
+                .contains("must contain exactly the complete analytic blend band"),
+            "multi-face bands decline the surgical selection rule: {error}"
+        );
     }
 
     /// How a band's exact cylinder-side contact circles are stored; every
