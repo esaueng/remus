@@ -1348,21 +1348,6 @@ pub fn intersect_plane_torus(
         }
 
         if chain.len() >= 4 {
-            // The walk has no direction yet at its start. A grid corner the
-            // curve passes close to yields two crossings (one per adjacent grid
-            // edge) a small fraction of the spacing apart; when the second one
-            // lies BEHIND the start, the nearest-neighbour step takes it first
-            // and then doubles back past the start, so the fitted loop retraces
-            // itself at its seam (B39: a cap-plane oval that came within 2e-6 of
-            // itself and folded both meshes there). Mid-chain pairs are safe —
-            // the incoming direction already orders them. Put the pair in walk
-            // order.
-            if (crossing_pts[chain[1]].2 - crossing_pts[chain[0]].2)
-                .dot(crossing_pts[chain[2]].2 - crossing_pts[chain[1]].2)
-                < 0.0
-            {
-                chain.swap(0, 1);
-            }
             let mut pts: Vec<Point3> = chain.iter().map(|&i| crossing_pts[i].2).collect();
             let mut ipts: Vec<IntersectionPoint> = chain
                 .iter()
@@ -3661,20 +3646,6 @@ fn march_analytic_intersection(
     // Angular thresholds for curvature-adaptive stepping.
     let max_angle = 10.0_f64.to_radians();
     let min_angle = 2.0_f64.to_radians();
-    // Band exits land exactly on the band edge only for a torus against a
-    // frustum or cylinder WALL — the family whose wall arcs must chain with
-    // cap-plane sections at exact rim crossings (B39). Every other marched
-    // pair keeps its trace ending at the last in-band sample: their
-    // downstream consumers are calibrated to that end. Measured: an exact
-    // end on the rim crossing of two coplanar frustum caps misbuilds the
-    // tapered-feet fuse, and exact ends of sphere × corner-round traces that
-    // run off the sphere patch survive the in-both restriction and weave an
-    // X across the round (hammer-holder opening replay).
-    let torus_wall = |s: &AnalyticSurface<'_>, t: &AnalyticSurface<'_>| {
-        matches!(s, AnalyticSurface::Torus(_))
-            && matches!(t, AnalyticSurface::Cone(_) | AnalyticSurface::Cylinder(_))
-    };
-    let bisect_exits = torus_wall(a, b) || torus_wall(b, a);
 
     // March forward from seed, collecting points.
     let mut forward = Vec::new();
@@ -3751,44 +3722,6 @@ fn march_analytic_intersection(
                 || vb2 >= v_range_b.1;
 
             if out_a || out_b {
-                // The trace is bounded to the carriers' parametric bands, so
-                // it must END on the band it left, not one step short of it:
-                // stopping at the last in-band sample left the end up to a
-                // full step (~2% of the carrier) off the band boundary — a
-                // torus x frustum-wall arc ended ~0.02 from the rim it
-                // crosses — and no junction weld downstream can close that
-                // gap, so a composite loop built from this section and the
-                // cap-plane section through the same rim point never chains
-                // (B39). Bisect the exiting step along the corrected
-                // intersection curve for the last in-band point.
-                if bisect_exits
-                    && let Some(end) = bisect_band_exit(
-                        a,
-                        b,
-                        surf_a,
-                        norm_a,
-                        surf_b,
-                        norm_b,
-                        current,
-                        t_dir,
-                        h,
-                        u_range_a,
-                        v_range_a,
-                        u_range_b,
-                        v_range_b,
-                        u_periodic_a,
-                        u_periodic_b,
-                    )
-                {
-                    if (end - current).length() > h_min {
-                        points.push(end);
-                    } else if let Some(last) = points.last_mut() {
-                        // The previous sample already sat on the band edge
-                        // to within the minimum step: move it onto the edge
-                        // rather than interpolate through a near-duplicate.
-                        *last = end;
-                    }
-                }
                 reached_end = true;
                 break;
             }
@@ -3831,98 +3764,6 @@ fn march_analytic_intersection(
     }
 
     Ok(result)
-}
-
-/// Last in-band point of a marched trace whose next step left a carrier's
-/// parametric band.
-///
-/// Bisects the step length `h` from `current` (in band) along `t_dir`,
-/// correcting every probe onto both surfaces, with the same band predicate
-/// the marcher uses. Returns the in-band side of the converged bracket — on
-/// the band boundary to roundoff — or `None` (the marcher keeps its previous
-/// end) when there is no single band crossing to land on:
-/// - `current` itself already reads out of band after correction, or the
-///   corrected full step does not;
-/// - a CORNER exit — the trace leaves BOTH carriers' bands at the same point
-///   (two frustum walls meeting exactly where their coplanar cap rims cross:
-///   the point is a four-face junction the coplanar-cap machinery owns, not a
-///   rim crossing of one wall).
-#[allow(clippy::too_many_arguments)]
-fn bisect_band_exit(
-    a: &AnalyticSurface<'_>,
-    b: &AnalyticSurface<'_>,
-    surf_a: &dyn Fn(f64, f64) -> Point3,
-    norm_a: &dyn Fn(f64, f64) -> Vec3,
-    surf_b: &dyn Fn(f64, f64) -> Point3,
-    norm_b: &dyn Fn(f64, f64) -> Vec3,
-    current: Point3,
-    t_dir: Vec3,
-    h: f64,
-    u_range_a: (f64, f64),
-    v_range_a: (f64, f64),
-    u_range_b: (f64, f64),
-    v_range_b: (f64, f64),
-    u_periodic_a: bool,
-    u_periodic_b: bool,
-) -> Option<Point3> {
-    let out_a = |p: Point3| -> bool {
-        let (ua, va) = project_analytic(a, p, u_range_a, v_range_a);
-        (!u_periodic_a && (ua <= u_range_a.0 || ua >= u_range_a.1))
-            || va <= v_range_a.0
-            || va >= v_range_a.1
-    };
-    let out_b = |p: Point3| -> bool {
-        let (ub, vb) = project_analytic(b, p, u_range_b, v_range_b);
-        (!u_periodic_b && (ub <= u_range_b.0 || ub >= u_range_b.1))
-            || vb <= v_range_b.0
-            || vb >= v_range_b.1
-    };
-    let out_of_band = |p: Point3| out_a(p) || out_b(p);
-    let probe = |s: f64| -> Point3 {
-        correct_to_intersection(
-            a,
-            b,
-            surf_a,
-            norm_a,
-            surf_b,
-            norm_b,
-            Point3::new(
-                s.mul_add(t_dir.x(), current.x()),
-                s.mul_add(t_dir.y(), current.y()),
-                s.mul_add(t_dir.z(), current.z()),
-            ),
-            u_range_a,
-            v_range_a,
-            u_range_b,
-            v_range_b,
-            20,
-        )
-    };
-    if out_of_band(current) || !out_of_band(probe(h)) {
-        return None;
-    }
-    let (mut lo, mut hi) = (0.0_f64, h);
-    let mut inside = current;
-    let mut outside = probe(h);
-    for _ in 0..64 {
-        let mid = 0.5 * (lo + hi);
-        if mid <= lo || mid >= hi {
-            break;
-        }
-        let p = probe(mid);
-        if out_of_band(p) {
-            hi = mid;
-            outside = p;
-        } else {
-            lo = mid;
-            inside = p;
-        }
-    }
-    // Corner exit: both bands end at the crossing.
-    if out_a(outside) && out_b(outside) {
-        return None;
-    }
-    Some(inside)
 }
 
 /// Project a 3D point onto an analytic surface using the surface's
@@ -5487,135 +5328,6 @@ mod tests {
                     on_torus.abs() < 1e-3,
                     "plane×torus point {p:?} must lie on the torus"
                 );
-            }
-        }
-    }
-
-    /// B39: a bounded marched trace ends ON the band edge it leaves, not one
-    /// step short of it. A torus tube crossing a frustum wall (the B39 unit
-    /// cell: R=3/r=0.5 torus, frustum wall between its rims at cone v ∈
-    /// [√5, 1.5·√5]) meets the wall in two arcs running rim to rim; each arc
-    /// end must sit on a rim to roundoff so the cap-plane sections through the
-    /// same rim∩torus crossings chain onto it. Before the fix the ends sat up
-    /// to a full march step (~0.02) short.
-    #[test]
-    fn marched_trace_ends_on_the_band_edge_it_leaves() {
-        use crate::traits::ParametricCurve;
-        let torus = ToroidalSurface::new(Point3::new(0.0, 0.0, 0.0), 3.0, 0.5).unwrap();
-        let cone = ConicalSurface::new(
-            Point3::new(-1.5, 2.0, 1.0),
-            Vec3::new(1.0, 0.0, 0.0),
-            2.0_f64.atan2(1.0),
-        )
-        .unwrap();
-        let band = (5.0_f64.sqrt(), 1.5 * 5.0_f64.sqrt());
-        let curves = intersect_analytic_analytic_bounded(
-            AnalyticSurface::Torus(&torus),
-            AnalyticSurface::Cone(&cone),
-            32,
-            None,
-            Some(band),
-        )
-        .unwrap();
-        assert_eq!(curves.len(), 2, "two wall arcs, rim to rim");
-        for c in &curves {
-            let (t0, t1) = c.curve.domain();
-            let mut rims = Vec::new();
-            for t in [t0, t1] {
-                let p = ParametricCurve::evaluate(&c.curve, t);
-                let (_, v) = cone.project_point(p);
-                let off = (v - band.0).abs().min((v - band.1).abs());
-                assert!(off < 1e-9, "trace end {p:?} is {off:e} off the band edge");
-                rims.push((v - band.0).abs() < (v - band.1).abs());
-                let (u, w) = torus.project_point(p);
-                assert!((torus.evaluate(u, w) - p).length() < 1e-9);
-            }
-            assert_ne!(rims[0], rims[1], "each arc runs from one rim to the other");
-        }
-    }
-
-    /// The band-edge landing is scoped to torus × wall marches. Other marched
-    /// pairs keep their previous end (the last in-band sample): their
-    /// downstream consumers are calibrated to it — two frustums side by side
-    /// (the tapered-feet fuse) misbuild when their wall section lands exactly
-    /// on the crossing of their coplanar top rims.
-    #[test]
-    fn non_torus_marches_keep_their_band_exit() {
-        use crate::traits::ParametricCurve;
-        // make_cone(2.0, 2.5, 5.0) twice, the second moved 4 along x: apex 20
-        // below the r = 2 base, walls between cone v = 20/sin a and 25/sin a.
-        let half = 25.0_f64.atan2(2.5);
-        let wall = |x: f64| {
-            ConicalSurface::new(Point3::new(x, 0.0, -20.0), Vec3::new(0.0, 0.0, 1.0), half).unwrap()
-        };
-        let (a, b) = (wall(0.0), wall(4.0));
-        let band = (20.0 / half.sin(), 25.0 / half.sin());
-        let curves = intersect_analytic_analytic_bounded(
-            AnalyticSurface::Cone(&a),
-            AnalyticSurface::Cone(&b),
-            32,
-            Some(band),
-            Some(band),
-        )
-        .unwrap();
-        assert!(!curves.is_empty());
-        for c in &curves {
-            let (t0, t1) = c.curve.domain();
-            for t in [t0, t1] {
-                let p = ParametricCurve::evaluate(&c.curve, t);
-                let (_, v) = a.project_point(p);
-                assert!(
-                    (v - band.1).abs() > 1e-6,
-                    "cone × cone trace end {p:?} was moved onto the top band edge"
-                );
-            }
-        }
-    }
-
-    /// B39: the plane×torus oval fit never retraces itself at its seam. A
-    /// grid corner the section passes close to yields two crossings a small
-    /// fraction of the spacing apart; when the greedy chain started on the
-    /// one AHEAD, it stepped back to the other and doubled over the start, so
-    /// the fitted loop came within 2e-6 of itself and both meshes folded
-    /// there. The plane `y = z` through the torus axis is that case (the B39
-    /// oblique cell's base cap); `z = 0.2` is the general-position companion.
-    #[test]
-    fn plane_torus_oval_never_retraces_its_seam() {
-        use crate::traits::ParametricCurve;
-        let torus = ToroidalSurface::new(Point3::new(0.0, 0.0, 0.0), 3.0, 0.5).unwrap();
-        let s = std::f64::consts::FRAC_1_SQRT_2;
-        for (normal, d) in [
-            (Vec3::new(0.0, s, -s), 0.0),
-            (Vec3::new(0.0, 0.0, 1.0), 0.2),
-        ] {
-            let curves = intersect_plane_torus(&torus, normal, d).unwrap();
-            assert!(!curves.is_empty(), "plane {normal:?} crosses the tube");
-            for c in &curves {
-                let (t0, t1) = c.curve.domain();
-                let n = 4000_u32;
-                let pts: Vec<Point3> = (0..n)
-                    .map(|i| {
-                        ParametricCurve::evaluate(
-                            &c.curve,
-                            t0 + (t1 - t0) * f64::from(i) / f64::from(n),
-                        )
-                    })
-                    .collect();
-                for i in 0..pts.len() {
-                    let prev = pts[(i + pts.len() - 1) % pts.len()];
-                    let next = pts[(i + 1) % pts.len()];
-                    assert!(
-                        (pts[i] - prev).dot(next - pts[i]) > 0.0,
-                        "fit doubles back at {:?} (plane {normal:?})",
-                        pts[i]
-                    );
-                    let (u, v) = torus.project_point(pts[i]);
-                    assert!(
-                        (torus.evaluate(u, v) - pts[i]).length() < 5e-5,
-                        "fit leaves the torus at {:?}",
-                        pts[i]
-                    );
-                }
             }
         }
     }
